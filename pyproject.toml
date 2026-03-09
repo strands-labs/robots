@@ -155,10 +155,15 @@ source = "vcs"
 [tool.hatch.build.targets.wheel]
 packages = ["strands_robots"]
 
+# Default environment: includes lint tools + test deps + runtime stubs
 [tool.hatch.envs.default]
 dependencies = [
     "pytest>=6.0",
     "pytest-cov",
+    "black",
+    "isort",
+    "flake8",
+    "mypy",
     "Pillow>=8.0.0",
     "requests>=2.28.0",
     "msgpack>=1.0.0",
@@ -167,6 +172,19 @@ dependencies = [
 [tool.hatch.envs.default.scripts]
 test = "pytest {args:tests}"
 lint = ["black --check strands_robots tests", "isort --check-only strands_robots tests", "flake8 strands_robots tests"]
+format = ["black strands_robots tests", "isort strands_robots tests"]
+
+# Dedicated lint environment: skip project install for fast CI (~10s vs ~150s)
+[tool.hatch.envs.lint]
+skip-install = true
+dependencies = [
+    "black",
+    "isort",
+    "flake8",
+]
+
+[tool.hatch.envs.lint.scripts]
+check = ["black --check strands_robots tests", "isort --check-only strands_robots tests", "flake8 strands_robots tests"]
 format = ["black strands_robots tests", "isort strands_robots tests"]
 
 [tool.black]
