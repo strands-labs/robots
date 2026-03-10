@@ -5,3 +5,5 @@ max-line-length = 120
 # Both are documented black incompatibilities:
 # https://black.readthedocs.io/en/stable/guides/using_black_with_other_tools.html#flake8
 extend-ignore = W503, E203
+per-file-ignores =
+    tests/*:E402,F811,E501

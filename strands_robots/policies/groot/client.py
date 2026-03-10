@@ -1,61 +1,123 @@
 #!/usr/bin/env python3
-"""GR00T inference client — thin ZMQ wrapper for policy server communication.
+"""
+GR00T Client Implementation — ZMQ client for inference service communication.
 
-SPDX-License-Identifier: Apache-2.0
+Dependencies (msgpack, zmq) are imported lazily so the module can be
+imported even when they are not installed (local-mode does not need them).
 """
 
 import io
+import json
+from typing import Any, Dict
 
-import msgpack
 import numpy as np
-import zmq
+
+from .data_config import ModalityConfig
+
+# Lazy imports
+_zmq = None
+_msgpack = None
 
 
-def _encode(obj):
-    """Encode numpy arrays for msgpack transport."""
-    if isinstance(obj, np.ndarray):
-        buf = io.BytesIO()
-        np.save(buf, obj, allow_pickle=False)
-        return {"__ndarray_class__": True, "as_npy": buf.getvalue()}
-    return obj
-
-
-def _decode(obj):
-    """Decode numpy arrays from msgpack transport."""
-    if isinstance(obj, dict) and "__ndarray_class__" in obj:
-        return np.load(io.BytesIO(obj["as_npy"]), allow_pickle=False)
-    return obj
-
-
-class GR00TClient:
-    """Minimal ZMQ client for GR00T inference servers."""
-
-    def __init__(self, host="localhost", port=5555):
-        self.ctx = zmq.Context()
-        self.sock = self.ctx.socket(zmq.REQ)
-        self.sock.connect(f"tcp://{host}:{port}")
-
-    def get_action(self, observations):
-        """Send observations, receive action chunk."""
-        request = {"endpoint": "get_action", "data": observations}
-        self.sock.send(msgpack.packb(request, default=_encode))
-        response = msgpack.unpackb(self.sock.recv(), object_hook=_decode)
-        if isinstance(response, dict) and "error" in response:
-            raise RuntimeError(f"GR00T server error: {response['error']}")
-        return response
-
-    def ping(self):
-        """Check server connectivity."""
+def _ensure_deps():
+    global _zmq, _msgpack
+    if _zmq is None:
         try:
-            request = {"endpoint": "ping"}
-            self.sock.send(msgpack.packb(request, default=_encode))
-            msgpack.unpackb(self.sock.recv(), object_hook=_decode)
+            import msgpack
+            import zmq
+
+            _zmq = zmq
+            _msgpack = msgpack
+        except ImportError as e:
+            raise ImportError("GR00T service client requires: pip install pyzmq msgpack") from e
+
+
+class MsgSerializer:
+    """Message serializer for ZMQ communication with GR00T inference service."""
+
+    @staticmethod
+    def to_bytes(data: dict) -> bytes:
+        _ensure_deps()
+        return _msgpack.packb(data, default=MsgSerializer.encode_custom_classes)
+
+    @staticmethod
+    def from_bytes(data: bytes) -> dict:
+        _ensure_deps()
+        return _msgpack.unpackb(data, object_hook=MsgSerializer.decode_custom_classes)
+
+    @staticmethod
+    def decode_custom_classes(obj):
+        if "__ModalityConfig_class__" in obj:
+            obj = ModalityConfig(**json.loads(obj["as_json"]))
+        if "__ndarray_class__" in obj:
+            obj = np.load(io.BytesIO(obj["as_npy"]), allow_pickle=False)
+        return obj
+
+    @staticmethod
+    def encode_custom_classes(obj):
+        if isinstance(obj, ModalityConfig):
+            return {"__ModalityConfig_class__": True, "as_json": obj.model_dump_json()}
+        if isinstance(obj, np.ndarray):
+            output = io.BytesIO()
+            np.save(output, obj, allow_pickle=False)
+            return {"__ndarray_class__": True, "as_npy": output.getvalue()}
+        return obj
+
+
+class BaseInferenceClient:
+    """Base client for communicating with GR00T inference services."""
+
+    def __init__(self, host: str = "localhost", port: int = 5555, timeout_ms: int = 15000, api_token: str = None):
+        _ensure_deps()
+        self.context = _zmq.Context()
+        self.host = host
+        self.port = port
+        self.timeout_ms = timeout_ms
+        # TODO(security): api_token is sent in plaintext over unencrypted TCP.
+        # Consider CurveZMQ or TLS tunnel for non-localhost deployments.
+        self.api_token = api_token
+        self._init_socket()
+
+    def _init_socket(self):
+        self.socket = self.context.socket(_zmq.REQ)
+        self.socket.connect(f"tcp://{self.host}:{self.port}")
+
+    def ping(self) -> bool:
+        try:
+            self.call_endpoint("ping", requires_input=False)
             return True
-        except zmq.error.ZMQError:
+        except Exception:
+            self._init_socket()
             return False
 
+    def call_endpoint(self, endpoint: str, data: dict | None = None, requires_input: bool = True) -> dict:
+        request: dict = {"endpoint": endpoint}
+        if requires_input:
+            request["data"] = data
+        if self.api_token:
+            request["api_token"] = self.api_token
+        self.socket.send(MsgSerializer.to_bytes(request))
+        message = self.socket.recv()
+        response = MsgSerializer.from_bytes(message)
+        if "error" in response:
+            raise RuntimeError(f"Server error: {response['error']}")
+        return response
+
     def __del__(self):
-        if hasattr(self, "sock"):
-            self.sock.close()
-        if hasattr(self, "ctx"):
-            self.ctx.term()
+        if hasattr(self, "socket"):
+            self.socket.close()
+        if hasattr(self, "context"):
+            self.context.term()
+
+
+class ExternalRobotInferenceClient(BaseInferenceClient):
+    """Client for GR00T inference services (ZMQ)."""
+
+    def get_action(self, observations: Dict[str, Any]) -> Dict[str, Any]:
+        return self.call_endpoint("get_action", observations)
+
+
+# Convenience alias
+Gr00tClient = ExternalRobotInferenceClient
+
+__all__ = ["ExternalRobotInferenceClient", "Gr00tClient", "BaseInferenceClient", "MsgSerializer"]

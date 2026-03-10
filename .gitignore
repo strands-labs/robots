@@ -8,4 +8,5 @@ camera_samples
 build
 dist
 .strands_robots
-.coveragesite/
+.coverage
+site/
