@@ -1,0 +1,110 @@
+site_name: Strands Robots
+site_url: https://strands-labs.github.io/robots
+site_description: "Robot control, simulation, and training for Agents"
+repo_url: https://github.com/strands-labs/robots
+repo_name: strands-labs/robots
+extra_css:
+- stylesheets/extra.css?v=1
+extra_javascript:
+- https://unpkg.com/mermaid@10/dist/mermaid.min.js
+nav:
+- Home: index.md
+- "🗺️ Learning Path": learning-path.md
+- Tutorial:
+  - Overview: tutorial/index.md
+  - 1. Your First Robot: tutorial/01-your-first-robot.md
+  - 2. Simulation: tutorial/02-simulation.md
+  - 3. Policies: tutorial/03-policies.md
+  - 4. AI Agents: tutorial/04-agents.md
+  - 5. Multi-Robot: tutorial/05-multi-robot.md
+  - 6. Recording Data: tutorial/06-recording.md
+  - 7. Training: tutorial/07-training.md
+  - 8. Real Hardware: tutorial/08-real-hardware.md
+  - 9. Advanced: tutorial/09-advanced.md
+- Getting Started:
+  - Quickstart: getting-started/quickstart.md
+  - Installation: getting-started/installation.md
+  - Robot Factory: getting-started/robot-factory.md
+- Robots:
+  - Catalog: robots/index.md
+  - Arms: robots/arms.md
+  - Bimanual: robots/bimanual.md
+  - Hands: robots/hands.md
+  - Humanoids: robots/humanoids.md
+  - Mobile: robots/mobile.md
+- Simulation:
+  - Overview: simulation/overview.md
+  - World Building: simulation/world-building.md
+  - Domain Randomization: simulation/domain-randomization.md
+  - Gymnasium Env: simulation/gymnasium-env.md
+- Policy Providers:
+  - Overview: policies/overview.md
+  - GR00T: policies/groot.md
+  - LeRobot Local: policies/lerobot-local.md
+  - Custom Policies: policies/custom-policies.md
+- Real Hardware:
+  - Robot Control: hardware/robot-control.md
+  - Tools: hardware/tools.md
+- Training:
+  - Overview: training/overview.md
+- Recording & Datasets: recording.md
+- Examples:
+  - Overview: examples/overview.md
+- Architecture: architecture.md
+- API Reference: api-reference.md
+- Contributing: contributing.md
+- Troubleshooting: troubleshooting.md
+theme:
+  name: material
+  logo: assets/strands-robots-logo.png
+  favicon: assets/strands-robots-logo.png
+  palette:
+    - scheme: default
+      primary: white
+      accent: green
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: slate
+      primary: black
+      accent: green
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+  - navigation.sections
+  - navigation.expand
+  - navigation.indexes
+  - toc.follow
+  - content.code.copy
+  - content.tabs.link
+  - navigation.top
+  - navigation.tracking
+markdown_extensions:
+- pymdownx.highlight:
+    anchor_linenums: true
+- pymdownx.inlinehilite
+- pymdownx.superfences:
+    custom_fences:
+    - name: mermaid
+      class: mermaid
+      format: !!python/name:pymdownx.superfences.fence_code_format ''
+- pymdownx.tabbed:
+    alternate_style: true
+- admonition
+- pymdownx.details
+- pymdownx.betterem
+- pymdownx.mark
+- pymdownx.caret
+- pymdownx.tilde
+- pymdownx.keys
+- pymdownx.tasklist:
+    custom_checkbox: true
+- pymdownx.emoji:
+    emoji_index: !!python/name:material.extensions.emoji.twemoji ''
+    emoji_generator: !!python/name:material.extensions.emoji.to_svg ''
+- attr_list
+- md_in_html
+- tables
+- toc:
+    permalink: true

@@ -1,0 +1,136 @@
+<svg width="290" height="463" viewBox="0 0 290 463" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <!-- Metallic gradient for arm links -->
+    <linearGradient id="link" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#B8B8B8"/>
+      <stop offset="35%" stop-color="#A0A0A0"/>
+      <stop offset="65%" stop-color="#888888"/>
+      <stop offset="100%" stop-color="#707070"/>
+    </linearGradient>
+    <!-- Joint gradient (darker, mechanical) -->
+    <radialGradient id="joint" cx="40%" cy="35%">
+      <stop offset="0%" stop-color="#C0C0C0"/>
+      <stop offset="60%" stop-color="#909090"/>
+      <stop offset="100%" stop-color="#606060"/>
+    </radialGradient>
+    <!-- Gripper gradient -->
+    <linearGradient id="grip" x1="0%" y1="100%" x2="0%" y2="0%">
+      <stop offset="0%" stop-color="#909090"/>
+      <stop offset="100%" stop-color="#C8C8C8"/>
+    </linearGradient>
+    <!-- Green glow filter -->
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="2.5" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="softglow">
+      <feGaussianBlur stdDeviation="4"/>
+    </filter>
+    <!-- Joint highlight -->
+    <filter id="jglow">
+      <feGaussianBlur stdDeviation="1" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+
+  <!-- ====== GREEN STRAND (intelligence ribbon — unchanged from Strands logo) ====== -->
+  <path d="M259.147 0.981812C271.389 -2.57498 284.197 4.46571 287.754 16.7074C291.311 28.9492 284.27 41.757 272.028 45.3138L71.1727 103.671C40.7142 112.521 37.1976 154.262 65.7459 168.083L241.343 253.093C307.872 285.302 299.794 382.546 228.862 403.336L30.4041 461.502C18.1707 465.088 5.34708 458.078 1.76153 445.844C-1.8239 433.611 5.18637 420.787 17.4197 417.202L215.878 359.035C246.277 350.125 249.739 308.449 221.226 294.645L45.6297 209.635C-20.9834 177.386 -12.7772 79.9893 58.2928 59.3402L259.147 0.981812Z" fill="#00FF77"/>
+
+  <!-- ====== ROBOT ARM (replaces gray strand — same trajectory, articulated) ====== -->
+
+  <!-- === ARM LINKS (thick rounded segments between joints) === -->
+  <!-- Link style: rounded bars with metallic gradient, 16px wide to match original strand width -->
+  
+  <!-- Link 0→1: Shoulder to upper joint -->
+  <line x1="97.3" y1="52.8" x2="108" y2="103.8" stroke="url(#link)" stroke-width="16" stroke-linecap="round"/>
+  <!-- Link 1→2: Upper arm (long reach right) -->
+  <line x1="108" y1="103.8" x2="201.5" y2="130.2" stroke="url(#link)" stroke-width="15" stroke-linecap="round"/>
+  <!-- Link 2→3: Forearm bend down -->
+  <line x1="201.5" y1="130.2" x2="205.9" y2="176.3" stroke="url(#link)" stroke-width="14" stroke-linecap="round"/>
+  <!-- Link 3→4: Wrist crossing left -->
+  <line x1="205.9" y1="176.3" x2="118.4" y2="218.7" stroke="url(#link)" stroke-width="14" stroke-linecap="round"/>
+  <!-- Link 4→5: Forearm continue left -->
+  <line x1="118.4" y1="218.7" x2="31" y2="261.1" stroke="url(#link)" stroke-width="13" stroke-linecap="round"/>
+  <!-- Link 5→6: Lower arm curve down -->
+  <line x1="31" y1="261.1" x2="9.8" y2="344.5" stroke="url(#link)" stroke-width="13" stroke-linecap="round"/>
+  <!-- Link 6→7: Wrist segment right -->
+  <line x1="9.8" y1="344.5" x2="96.3" y2="383.7" stroke="url(#link)" stroke-width="12" stroke-linecap="round"/>
+  <!-- Link 7→8: To gripper -->
+  <line x1="96.3" y1="383.7" x2="189.6" y2="411" stroke="url(#link)" stroke-width="12" stroke-linecap="round"/>
+
+  <!-- === JOINTS (mechanical pivot points) === -->
+  <!-- Each joint: outer ring + inner circle + highlight -->
+  
+  <!-- Joint 0: Shoulder mount (base) -->
+  <circle cx="97.3" cy="52.8" r="11" fill="url(#joint)" stroke="#606060" stroke-width="1.2"/>
+  <circle cx="97.3" cy="52.8" r="5" fill="#505050"/>
+  <circle cx="94" cy="49.5" r="2" fill="#D0D0D0" opacity="0.6"/>
+  
+  <!-- Joint 1 -->
+  <circle cx="108" cy="103.8" r="10.5" fill="url(#joint)" stroke="#606060" stroke-width="1.2"/>
+  <circle cx="108" cy="103.8" r="4.5" fill="#505050"/>
+  <circle cx="105" cy="100.5" r="1.8" fill="#D0D0D0" opacity="0.6"/>
+
+  <!-- Joint 2 -->
+  <circle cx="201.5" cy="130.2" r="10" fill="url(#joint)" stroke="#606060" stroke-width="1.1"/>
+  <circle cx="201.5" cy="130.2" r="4.5" fill="#505050"/>
+  <circle cx="199" cy="127.5" r="1.8" fill="#D0D0D0" opacity="0.6"/>
+
+  <!-- Joint 3 -->
+  <circle cx="205.9" cy="176.3" r="9.5" fill="url(#joint)" stroke="#606060" stroke-width="1.1"/>
+  <circle cx="205.9" cy="176.3" r="4" fill="#505050"/>
+  <circle cx="203.5" cy="173.8" r="1.6" fill="#D0D0D0" opacity="0.6"/>
+
+  <!-- Joint 4 -->
+  <circle cx="118.4" cy="218.7" r="9.5" fill="url(#joint)" stroke="#606060" stroke-width="1.1"/>
+  <circle cx="118.4" cy="218.7" r="4" fill="#505050"/>
+  <circle cx="116" cy="216.2" r="1.6" fill="#D0D0D0" opacity="0.6"/>
+
+  <!-- Joint 5 -->
+  <circle cx="31" cy="261.1" r="9" fill="url(#joint)" stroke="#606060" stroke-width="1"/>
+  <circle cx="31" cy="261.1" r="4" fill="#505050"/>
+  <circle cx="28.8" cy="258.8" r="1.5" fill="#D0D0D0" opacity="0.6"/>
+
+  <!-- Joint 6 -->
+  <circle cx="9.8" cy="344.5" r="9" fill="url(#joint)" stroke="#606060" stroke-width="1"/>
+  <circle cx="9.8" cy="344.5" r="4" fill="#505050"/>
+  <circle cx="7.8" cy="342.2" r="1.5" fill="#D0D0D0" opacity="0.6"/>
+
+  <!-- Joint 7 -->
+  <circle cx="96.3" cy="383.7" r="8.5" fill="url(#joint)" stroke="#606060" stroke-width="1"/>
+  <circle cx="96.3" cy="383.7" r="3.5" fill="#505050"/>
+  <circle cx="94.3" cy="381.5" r="1.4" fill="#D0D0D0" opacity="0.6"/>
+
+  <!-- === GRIPPER (at the end — slightly open, reaching) === -->
+  <!-- Wrist joint -->
+  <circle cx="189.6" cy="411" r="8" fill="url(#joint)" stroke="#606060" stroke-width="1"/>
+  <circle cx="189.6" cy="411" r="3.5" fill="#505050"/>
+  <circle cx="187.5" cy="409" r="1.3" fill="#D0D0D0" opacity="0.6"/>
+  
+  <!-- Finger 1 (left) -->
+  <line x1="189.6" y1="411" x2="178" y2="436" stroke="url(#grip)" stroke-width="7" stroke-linecap="round"/>
+  <line x1="178" y1="436" x2="172" y2="452" stroke="url(#grip)" stroke-width="5.5" stroke-linecap="round"/>
+  <circle cx="178" cy="436" r="4" fill="url(#joint)" stroke="#606060" stroke-width="0.8"/>
+  <circle cx="178" cy="436" r="1.8" fill="#505050"/>
+  <!-- Fingertip -->
+  <circle cx="172" cy="452" r="3.5" fill="url(#joint)" stroke="#606060" stroke-width="0.6"/>
+  
+  <!-- Finger 2 (right) -->
+  <line x1="189.6" y1="411" x2="205" y2="434" stroke="url(#grip)" stroke-width="7" stroke-linecap="round"/>
+  <line x1="205" y1="434" x2="212" y2="449" stroke="url(#grip)" stroke-width="5.5" stroke-linecap="round"/>
+  <circle cx="205" cy="434" r="4" fill="url(#joint)" stroke="#606060" stroke-width="0.8"/>
+  <circle cx="205" cy="434" r="1.8" fill="#505050"/>
+  <!-- Fingertip -->
+  <circle cx="212" cy="449" r="3.5" fill="url(#joint)" stroke="#606060" stroke-width="0.6"/>
+
+  <!-- === GREEN ENERGY flowing through arm joints (intelligence weaving through body) === -->
+  <!-- Subtle green glow at crossing points where green strand meets arm -->
+  <circle cx="108" cy="103.8" r="6" fill="#00FF77" opacity="0.12" filter="url(#softglow)"/>
+  <circle cx="118.4" cy="218.7" r="6" fill="#00FF77" opacity="0.12" filter="url(#softglow)"/>
+  <circle cx="9.8" cy="344.5" r="6" fill="#00FF77" opacity="0.12" filter="url(#softglow)"/>
+  
+  <!-- Green energy dots at key joints -->
+  <circle cx="108" cy="103.8" r="2" fill="#00FF77" opacity="0.5" filter="url(#jglow)"/>
+  <circle cx="118.4" cy="218.7" r="2" fill="#00FF77" opacity="0.5" filter="url(#jglow)"/>
+  <circle cx="9.8" cy="344.5" r="2" fill="#00FF77" opacity="0.5" filter="url(#jglow)"/>
+</svg>
