@@ -1,0 +1,52 @@
+# Newton G1 Locomotion Training Configuration
+#
+# For use with NewtonGymEnv + Stable Baselines 3 or CleanRL.
+# Runs on Thor (AGX Thor, sm_110) or any GPU with 24GB+ VRAM.
+#
+# Usage:
+#   python samples/06_raytraced_training/train_isaac_lab.py \
+#     --framework newton_gym --config configs/newton_g1_locomotion.yaml
+
+newton:
+  solver: featherstone          # Best for articulated robots
+  device: "cuda:0"
+  num_envs: 4096
+  substeps: 4                   # Physics substeps per step
+  dt: 0.005                     # Time step (seconds)
+  gravity: [0, 0, -9.81]
+
+robot:
+  name: unitree_g1              # Unitree G1 humanoid
+  # urdf_path auto-resolved via strands_robots.assets
+
+task:
+  description: "Walk forward at 1.0 m/s on flat terrain"
+  max_episode_steps: 1000
+  reward:
+    forward_velocity_weight: 2.0
+    alive_bonus: 0.5
+    energy_penalty: -0.001
+    torque_penalty: -0.0001
+    joint_limit_penalty: -1.0
+
+training:
+  algorithm: PPO
+  total_timesteps: 10_000_000
+  learning_rate: 3.0e-4
+  batch_size: 4096
+  n_epochs: 5
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_range: 0.2
+  entropy_coef: 0.01
+  value_coef: 0.5
+
+  # Logging
+  log_interval: 10
+  save_interval: 100
+  eval_interval: 50
+  eval_episodes: 10
+
+  # Output
+  output_dir: "outputs/newton_g1_locomotion"
+  experiment_name: "g1_walk_forward"

@@ -1,0 +1,5 @@
+# Generated outputs
+output/
+marble_output/
+*.png
+*.mp4

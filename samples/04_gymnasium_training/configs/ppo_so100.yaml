@@ -1,0 +1,30 @@
+# PPO training configuration for SO-100 arm
+# Usage:  python train_ppo.py  (reads defaults; override with CLI flags)
+
+algorithm: ppo
+robot_name: so100
+task: "reach a target position"
+backend: mujoco
+
+# PPO hyperparameters
+total_timesteps: 100000
+learning_rate: 3.0e-4
+n_steps: 128
+batch_size: 64
+gamma: 0.99
+gae_lambda: 0.95
+clip_range: 0.2
+ent_coef: 0.0
+vf_coef: 0.5
+
+# Checkpointing
+output_dir: ./ppo_so100
+save_freq: 20000
+eval_freq: 10000
+eval_episodes: 5
+log_interval: 10
+
+# Reproducibility
+seed: 42
+device: auto
+verbose: 1

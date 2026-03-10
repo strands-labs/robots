@@ -1,0 +1,39 @@
+# Fleet Configuration: 3 SO-100 Arms
+#
+# Three identical SO-100 6-DOF arms arranged in a workspace.
+# All use the same robot type but different peer IDs for coordination.
+
+fleet:
+  name: "3-arm workspace"
+  description: "Three SO-100 arms for collaborative manipulation"
+
+robots:
+  - name: "left_arm"
+    type: "so100"
+    peer_id: "left_arm"
+    position: [-0.25, 0.0, 0.0]  # Meters from origin
+    policy_provider: "mock"
+
+  - name: "center_arm"
+    type: "so100"
+    peer_id: "center_arm"
+    position: [0.0, 0.0, 0.0]
+    policy_provider: "mock"
+
+  - name: "right_arm"
+    type: "so100"
+    peer_id: "right_arm"
+    position: [0.25, 0.0, 0.0]
+    policy_provider: "mock"
+
+# Mesh configuration
+mesh:
+  enabled: true
+  # Discovery: UDP multicast (default), no broker needed
+  # For remote: set ZENOH_CONNECT=tcp/192.168.1.100:7447
+
+# Default task parameters
+defaults:
+  policy_provider: "mock"
+  duration: 10.0
+  control_hz: 50

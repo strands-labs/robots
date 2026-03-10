@@ -1,0 +1,638 @@
+{
+  "generated_at": "2026-03-07T03:50:52.540063",
+  "issue_pr_chains": 13,
+  "self_heal_cycles": 96,
+  "agent_sessions": 11,
+  "longest_session_commits": 110,
+  "scheduled_commits": 146,
+  "event_driven_commits": 85,
+  "cross_device_dispatches": 44,
+  "commit_type_distribution": {
+    "fix": 109,
+    "other": 107,
+    "feat": 49,
+    "test": 42,
+    "docs": 41,
+    "merge": 14,
+    "chore": 7,
+    "refactor": 4,
+    "ci": 1
+  },
+  "chains": [
+    {
+      "issue": null,
+      "pr": null,
+      "branch": "fix/test-suite-failures"
+    },
+    {
+      "issue": 36,
+      "pr": null,
+      "branch": "fix/issue-36-lerobot-v3-recording"
+    },
+    {
+      "issue": null,
+      "pr": 31,
+      "branch": "newton-backend-critical-gaps"
+    },
+    {
+      "issue": null,
+      "pr": 26,
+      "branch": "dreamgen-training"
+    },
+    {
+      "issue": null,
+      "pr": 25,
+      "branch": "video-motion-dataset-visualizer"
+    },
+    {
+      "issue": null,
+      "pr": 17,
+      "branch": "test-simulation-numpy-import"
+    },
+    {
+      "issue": null,
+      "pr": 18,
+      "branch": "fix-mobile-google-robot-dedup"
+    },
+    {
+      "issue": null,
+      "pr": 19,
+      "branch": "policy-resolver-coverage"
+    },
+    {
+      "issue": null,
+      "pr": 16,
+      "branch": "robot-catalog"
+    },
+    {
+      "issue": null,
+      "pr": 15,
+      "branch": "policies-and-sim-skips"
+    },
+    {
+      "issue": null,
+      "pr": 11,
+      "branch": "chore-gh-workflows"
+    },
+    {
+      "issue": null,
+      "pr": 10,
+      "branch": "add-notice-security"
+    },
+    {
+      "issue": null,
+      "pr": 9,
+      "branch": "nvidia-inference-improvements"
+    }
+  ],
+  "self_heal_details": [
+    {
+      "sha": "d55ace8",
+      "message": "fix: resolve cv2 __spec__ mock errors and mujoco camera render fallback",
+      "date": "2026-03-06"
+    },
+    {
+      "sha": "f5f77ad",
+      "message": "test: strengthen CUDA lib path discovery tests + fix 16 lint errors",
+      "date": "2026-03-07"
+    },
+    {
+      "sha": "eb23b2b",
+      "message": "fix: CosmosTrainer CUDA 12/13 LD_LIBRARY_PATH discovery (#145)",
+      "date": "2026-03-07"
+    },
+    {
+      "sha": "bc099f9",
+      "message": "fix: remove last 10 ruff errors in agent.py and artifacts/generate_cast.py",
+      "date": "2026-03-07"
+    },
+    {
+      "sha": "3d65c0c",
+      "message": "fix: remove 326 lint errors across examples/, presentation/, and tools/ (#144)",
+      "date": "2026-03-06"
+    },
+    {
+      "sha": "35a7f7b",
+      "message": "fix: remove 193 lint errors \u2014 F401 unused imports, F841 unused vars, I001 import sort, W293 whitespace across 19 script files (#143)",
+      "date": "2026-03-06"
+    },
+    {
+      "sha": "2682145",
+      "message": "fix: resolve 19 lint errors + cv2 pre-mock for use_lerobot tests (54%\u2192100%)",
+      "date": "2026-03-06"
+    },
+    {
+      "sha": "7b90139",
+      "message": "fix: resolve 118 lint errors \u2014 F841 unused vars, F401 noqa, I001 import sort",
+      "date": "2026-03-06"
+    },
+    {
+      "sha": "46bb7a0",
+      "message": "fix: WAL file rotation timestamp collision \u2014 add monotonic counter for unique filenames",
+      "date": "2026-03-06"
+    },
+    {
+      "sha": "cfbfee3",
+      "message": "fix: evaluate() catches gymnasium stub ImportError + robust skipif guards",
+      "date": "2026-03-06"
+    },
+    {
+      "sha": "886ed1c",
+      "message": "fix: remove 442 lint errors \u2014 unused imports, unsorted imports, whitespace across 73 files",
+      "date": "2026-03-06"
+    },
+    {
+      "sha": "02e3259",
+      "message": "fix: remove last ruff lint error \u2014 0 errors across codebase (#136)",
+      "date": "2026-03-06"
+    },
+    {
+      "sha": "376c05a",
+      "message": "fix: 2 Newton test assertions for updated newton-sim 1.x API",
+      "date": "2026-03-06"
+    },
+    {
+      "sha": "4aa7b2a",
+      "message": "test: 62 new dashboard serve tests (25%\u219277%) + fix 74 lint errors (F401/F841)",
+      "date": "2026-03-06"
+    },
+    {
+      "sha": "dc3ba47",
+      "message": "fix: Isaac Sim GPU backend path discovery + CosmosTrainer CUDA libs + USD converter kwargs (#131)",
+      "date": "2026-03-06"
+    },
+    {
+      "sha": "6e8cc3f",
+      "message": "fix(newton): adapt Newton backend to newton-sim 1.x API + procedural robots",
+      "date": "2026-03-05"
+    },
+    {
+      "sha": "f489eae",
+      "message": "fix: use 'is' for type identity comparisons (E721)",
+      "date": "2026-03-05"
+    },
+    {
+      "sha": "f953545",
+      "message": "refactor: auto-fix 178 lint errors \u2014 import sorting, whitespace, f-string placeholders",
+      "date": "2026-03-05"
+    },
+    {
+      "sha": "431371c",
+      "message": "fix: 3 undefined name errors (F821), 6 bare excepts (E722), 2 invalid noqa",
+      "date": "2026-03-05"
+    },
+    {
+      "sha": "a1daf9c",
+      "message": "fix: 31 test failures \u2014 lerobot skipif guards, async\u2192sync conversion, find_spec check",
+      "date": "2026-03-05"
+    },
+    {
+      "sha": "57752f3",
+      "message": "fix: add OpenGL display skip guards for 3 MuJoCo render tests",
+      "date": "2026-03-05"
+    },
+    {
+      "sha": "d78c19a",
+      "message": "fix: 7 test failures \u2014 cosmos spec format, otel skipif, zenoh Config() mock",
+      "date": "2026-03-05"
+    },
+    {
+      "sha": "15f5e15",
+      "message": "fix: HF data collection \u2014 getattr for DatasetInfo + auth handling (#125) (#129)",
+      "date": "2026-03-05"
+    },
+    {
+      "sha": "4d4d103",
+      "message": "fix: Newton auto-create articulation for orphan joints",
+      "date": "2026-03-05"
+    },
+    {
+      "sha": "75a0ed5",
+      "message": "fix: CosmosTrainer None base_model_path + T7 Marble list return",
+      "date": "2026-03-05"
+    },
+    {
+      "sha": "2a12d96",
+      "message": "fix: Cosmos Transfer 2.5 \u2014 6 bugs fixed",
+      "date": "2026-03-05"
+    },
+    {
+      "sha": "aa8a671",
+      "message": "fix: remove duplicate 'repo_id' key in Robot tool schema (F601)",
+      "date": "2026-03-05"
+    },
+    {
+      "sha": "cbaefe1",
+      "message": "fix: GTC slide code bugs + otel test guard for SDK-less CI",
+      "date": "2026-03-05"
+    },
+    {
+      "sha": "61f0c51",
+      "message": "fix: guard psutil import in test_lerobot_teleoperate with importorskip (#119)",
+      "date": "2026-03-05"
+    },
+    {
+      "sha": "a8f00dc",
+      "message": "fix: WAL cleanup off-by-one and IsaacGymEnv deferred-init crash (#120)",
+      "date": "2026-03-05"
+    },
+    {
+      "sha": "4959a9c",
+      "message": "fix: forward named policy_type param in lerobot_local branch of _get_policy()",
+      "date": "2026-03-04"
+    },
+    {
+      "sha": "1860acb",
+      "message": "fix: prevent mock torch leaking from test_robometer into test_record (#112)",
+      "date": "2026-03-03"
+    },
+    {
+      "sha": "90b3bc1",
+      "message": "fix: add exception handling to robometer_reward_fn closure (#110)",
+      "date": "2026-03-03"
+    },
+    {
+      "sha": "203ea01",
+      "message": "fix: CosmosTrainer LoRA/freeze_backbone warnings, thread-safety docs (#109)",
+      "date": "2026-03-03"
+    },
+    {
+      "sha": "ec29d2a",
+      "message": "fix: Newton delegation passes num_envs/device via NewtonConfig (#107)",
+      "date": "2026-03-03"
+    },
+    {
+      "sha": "b695bcc",
+      "message": "fix: CosmosTrainer CLI, MJCF\u2192USD converter, StrandsSimEnv backend (#106)",
+      "date": "2026-03-04"
+    },
+    {
+      "sha": "5218530",
+      "message": "fix: use singleton pipeline in generate action, make table static collider",
+      "date": "2026-03-03"
+    },
+    {
+      "sha": "50b30c4",
+      "message": "fix: use patch.dict to block lerobot reimport in import-error tests",
+      "date": "2026-03-03"
+    },
+    {
+      "sha": "4f93a4c",
+      "message": "fix: move numpy import inside plyfile block in _read_ply_vertices",
+      "date": "2026-03-03"
+    },
+    {
+      "sha": "1bc357a",
+      "message": "fix: recover 32 broken tests \u2014 mock torch in omnivla, add msgpack dep, fix gymnasium mock leak",
+      "date": "2026-03-03"
+    },
+    {
+      "sha": "3c93dea",
+      "message": "fix: add Pillow and requests to hatch test deps for CI",
+      "date": "2026-03-03"
+    },
+    {
+      "sha": "48ad805",
+      "message": "fix: handle numpy scalar types in lerobot_local state extraction, improve tests",
+      "date": "2026-03-03"
+    },
+    {
+      "sha": "cda5042",
+      "message": "fix: add usd-core to isaac optional deps for MJCF\u2192USD asset conversion",
+      "date": "2026-03-03"
+    },
+    {
+      "sha": "37c5961",
+      "message": "fix: stabilize flaky test_stop_flag timing in test_record.py",
+      "date": "2026-03-03"
+    },
+    {
+      "sha": "2ca106c",
+      "message": "fix: use CPU device in IsaacGymEnv tests to avoid CUDA driver requirement (#99)",
+      "date": "2026-03-02"
+    },
+    {
+      "sha": "7101dc4",
+      "message": "fix(tests): use builtins.__import__ to mock Newton in rl_trainer and training_pipeline tests",
+      "date": "2026-03-02"
+    },
+    {
+      "sha": "76a1216",
+      "message": "fix: mock gymnasium in test_newton_gym_env and test_envs \u2014 recover 69 tests, 55% coverage (#97)",
+      "date": "2026-03-02"
+    },
+    {
+      "sha": "752f161",
+      "message": "fix: add plane geom, ball joint, batch_convert from PR #94 (#95)",
+      "date": "2026-03-02"
+    },
+    {
+      "sha": "74dca5f",
+      "message": "fix: Isaac Sim GPU fixes \u2014 CosmosTrainer subprocess env, IsaacGymEnv, evaluate backend (#96)",
+      "date": "2026-03-03"
+    },
+    {
+      "sha": "d9dc615",
+      "message": "fix: Thor GPU test fixes \u2014 Newton import mocking for sm_101/sm_110",
+      "date": "2026-03-02"
+    },
+    {
+      "sha": "dfb6227",
+      "message": "fix(cosmos): eagerly resolve train script path in CosmosTrainer.__init__",
+      "date": "2026-03-03"
+    },
+    {
+      "sha": "660259a",
+      "message": "fix: asset_converter \u2014 full mesh geometry extraction, OBJ\u2192STL pre-conversion, batch API (#70) (#93)",
+      "date": "2026-03-02"
+    },
+    {
+      "sha": "be9b74c",
+      "message": "fix: update tests for Newton __all__ count and CosmosTrainer script path detection",
+      "date": "2026-03-02"
+    },
+    {
+      "sha": "6e5e2d8",
+      "message": "fix: prevent double disconnect in RecordSession __del__",
+      "date": "2026-03-02"
+    },
+    {
+      "sha": "7656677",
+      "message": "fix: export RL trainer + NewtonGymEnv, warn on DreamgenIdm misused params (#73) (#89)",
+      "date": "2026-03-02"
+    },
+    {
+      "sha": "a89b855",
+      "message": "fix: auto-detect headless environments for MuJoCo rendering (#86) (#87)",
+      "date": "2026-03-02"
+    },
+    {
+      "sha": "58e3e4a",
+      "message": "fix: normalize scalar gravity in Simulation.create_world and set_gravity",
+      "date": "2026-03-02"
+    },
+    {
+      "sha": "d0aeced",
+      "message": "fix: make strands import lazy in download.py + fix 13 test failures in test_lerobot_local",
+      "date": "2026-03-02"
+    },
+    {
+      "sha": "cb03083",
+      "message": "fix: add PEP8 class name aliases for CosmosPredictPolicy and DreamZeroPolicy",
+      "date": "2026-03-02"
+    },
+    {
+      "sha": "995649d",
+      "message": "fix: apply strands mock pattern to test_lerobot_calibrate.py and test_teleoperator.py",
+      "date": "2026-03-02"
+    },
+    {
+      "sha": "31e7f4d",
+      "message": "fix: unlock 53 more tests by mocking strands in gr00t_inference, lerobot_teleoperate, lerobot_dataset tests",
+      "date": "2026-03-02"
+    },
+    {
+      "sha": "a889dc3",
+      "message": "fix: make 389 tests runnable without strands SDK \u2014 mock @tool decorator, fix lerobot module mocking",
+      "date": "2026-03-02"
+    },
+    {
+      "sha": "a555792",
+      "message": "fix: prevent mock mujoco leak from test_simulation_mock into later tests",
+      "date": "2026-03-02"
+    },
+    {
+      "sha": "95f67bf",
+      "message": "fix: make inference tests robust against environment port pollution",
+      "date": "2026-03-02"
+    },
+    {
+      "sha": "0867394",
+      "message": "fix: skip 6 tests that require mujoco when it's not installed",
+      "date": "2026-03-02"
+    },
+    {
+      "sha": "48a302b",
+      "message": "fix: update test_assets.py counts for openarm robot (32 models, 54 aliases)",
+      "date": "2026-03-02"
+    },
+    {
+      "sha": "fdb9283",
+      "message": "fix: xvla VLA tokenization in strands-robots format path + max_len_seq overflow",
+      "date": "2026-03-02"
+    },
+    {
+      "sha": "fb9e371",
+      "message": "fix: xvla VLA support \u2014 inject language tokens, fix BCHW image format, handle numpy inputs",
+      "date": "2026-03-02"
+    },
+    {
+      "sha": "5de7443",
+      "message": "fix: use MuJoCo 'hinge' joint type instead of URDF 'revolute'",
+      "date": "2026-03-01"
+    },
+    {
+      "sha": "34596e8",
+      "message": "fix: handle flash_attn CUDA 13 ABI mismatch in lerobot_local policy",
+      "date": "2026-03-02"
+    },
+    {
+      "sha": "d3cfae5",
+      "message": "fix: handle RuntimeError from flash_attn/transformers in LeRobot policy imports",
+      "date": "2026-03-02"
+    },
+    {
+      "sha": "f058976",
+      "message": "fix: evaluate() render_mode bug, numpy import in hot loop, event loop per-step overhead (#75)",
+      "date": "2026-03-02"
+    },
+    {
+      "sha": "09a86d8",
+      "message": "fix: use correct Gr00tPolicy class name in integration tests",
+      "date": "2026-03-02"
+    },
+    {
+      "sha": "da6bbe5",
+      "message": "Fix: 17->18 providers in tutorial 03",
+      "date": "2026-03-01"
+    },
+    {
+      "sha": "15fb2fc",
+      "message": "Fix Isaac Sim errors: Nucleus auto-setup, remove register_isaaclab_tasks (v0.54+), add docstring notes on gym.make + torch tensors",
+      "date": "2026-03-01"
+    },
+    {
+      "sha": "d8d8630",
+      "message": "fix: Newton factory status check, inference tool port/mock consistency, test alignment",
+      "date": "2026-03-01"
+    },
+    {
+      "sha": "4e0c034",
+      "message": "fix: resolve 176 test failures in inference tool and newton backend tests",
+      "date": "2026-03-01"
+    },
+    {
+      "sha": "153bcfe",
+      "message": "Merge fix/test-suite-failures: resolve 180 test failures \u2014 0 failures, 0 errors",
+      "date": "2026-03-01"
+    },
+    {
+      "sha": "30a92b4",
+      "message": "fix: resolve 180 test failures \u2014 mock dependencies, fix create_policy error masking",
+      "date": "2026-03-01"
+    },
+    {
+      "sha": "71a6c79",
+      "message": "fix: LeRobot v3 recording compatibility \u2014 task per-frame, save_episode signature, feature format",
+      "date": "2026-03-01"
+    },
+    {
+      "sha": "f556e11",
+      "message": "fix: use selective import mock in lerobot_dataset tests to avoid pathlib breakage",
+      "date": "2026-03-01"
+    },
+    {
+      "sha": "b65f3da",
+      "message": "fix: Isaac Sim backend dome light indentation bug",
+      "date": "2026-03-01"
+    },
+    {
+      "sha": "fe3dd19",
+      "message": "fix: add_camera destroys robot model when robots already loaded",
+      "date": "2026-03-01"
+    },
+    {
+      "sha": "2f2e25d",
+      "message": "fix: get_video_info ImportError fallback no longer crashes on missing files",
+      "date": "2026-03-01"
+    },
+    {
+      "sha": "615debe",
+      "message": "fix: resolve flaky T7.7 port scan tests \u2014 mock instead of hardcoded port binding",
+      "date": "2026-03-01"
+    },
+    {
+      "sha": "ba4f4c2",
+      "message": "fix: action truthiness bug in record.py + 89 tests (14% \u2192 96% coverage)",
+      "date": "2026-03-01"
+    },
+    {
+      "sha": "e2ced1a",
+      "message": "fix: guard 233 test failures/errors with proper dependency checks",
+      "date": "2026-03-01"
+    },
+    {
+      "sha": "d4863d5",
+      "message": "fix: Newton backend critical API gaps \u2014 contacts, clear_forces, eval_fk, register_custom_attributes, replicate order, reset()",
+      "date": "2026-03-01"
+    },
+    {
+      "sha": "f45cb3e",
+      "message": "fix: add inference tool export + missing hf_model_id defaults + 123 tests",
+      "date": "2026-03-01"
+    },
+    {
+      "sha": "4892266",
+      "message": "fix: gear_sonic missing default_num_gpus=2",
+      "date": "2026-03-01"
+    },
+    {
+      "sha": "7c9100f",
+      "message": "fix: Newton backend record_video() 5 bugs \u2014 AttributeError, wrong keys, missing imports",
+      "date": "2026-03-01"
+    },
+    {
+      "sha": "d3c9bb6",
+      "message": "fix: add missing exports, aliases, and utility functions",
+      "date": "2026-03-01"
+    },
+    {
+      "sha": "2fcd86c",
+      "message": "fix: auto-download missing mesh assets in Simulation.add_robot",
+      "date": "2026-03-01"
+    },
+    {
+      "sha": "9096cd5",
+      "message": "fix: 17 test failures \u2014 wrong API calls, missing mj_forward, VideoEncoder args, mesh detection",
+      "date": "2026-03-01"
+    },
+    {
+      "sha": "fd93706",
+      "message": "fix: guard numpy import in test_simulation.py to prevent collection errors",
+      "date": "2026-02-28"
+    },
+    {
+      "sha": "2053383",
+      "message": "fix: resolve merge conflicts \u2014 rebase on main, add mobile-manipulation page",
+      "date": "2026-02-28"
+    }
+  ],
+  "sessions": [
+    {
+      "start": "2026-02-28T21:55:03Z",
+      "end": "2026-02-28T22:04:56Z",
+      "commits": 5,
+      "first_message": "docs: update robot counts to 31 and aliases to 50+ (#10)"
+    },
+    {
+      "start": "2026-03-01T01:30:45Z",
+      "end": "2026-03-01T04:57:55Z",
+      "commits": 6,
+      "first_message": "feat(tests): add comprehensive tests for kinematics and processor modules"
+    },
+    {
+      "start": "2026-03-01T06:53:39Z",
+      "end": "2026-03-01T08:09:54Z",
+      "commits": 3,
+      "first_message": "test: add 112 tests for dreamgen (95%) and training (93%)"
+    },
+    {
+      "start": "2026-03-01T06:27:28-05:00",
+      "end": "2026-03-01T11:58:54Z",
+      "commits": 5,
+      "first_message": "feat: universal VLA/WFM inference tool \u2014 one tool to start any policy server"
+    },
+    {
+      "start": "2026-03-01T11:58:34Z",
+      "end": "2026-03-03T00:54:26Z",
+      "commits": 110,
+      "first_message": "feat: add 548 end-to-end tests for all 17 policy providers (#28)"
+    },
+    {
+      "start": "2026-03-02T20:03:53-05:00",
+      "end": "2026-03-03T17:56:23-05:00",
+      "commits": 19,
+      "first_message": "fix: add plane geom, ball joint, batch_convert from PR #94 (#95)"
+    },
+    {
+      "start": "2026-03-03T19:56:57-05:00",
+      "end": "2026-03-05T05:12:21Z",
+      "commits": 24,
+      "first_message": "fix: Newton delegation passes num_envs/device via NewtonConfig (#107)"
+    },
+    {
+      "start": "2026-03-05T05:14:56Z",
+      "end": "2026-03-06T01:13:30Z",
+      "commits": 31,
+      "first_message": "docs: update __init__.py docstring \u2014 31\u219232 bundled robot models"
+    },
+    {
+      "start": "2026-03-06T00:26:26-05:00",
+      "end": "2026-03-06T16:56:55Z",
+      "commits": 10,
+      "first_message": "fix: remove last ruff lint error \u2014 0 errors across codebase (#136)"
+    },
+    {
+      "start": "2026-03-07T00:00:32Z",
+      "end": "2026-03-07T00:44:17Z",
+      "commits": 3,
+      "first_message": "fix: remove last 10 ruff errors in agent.py and artifacts/generate_cast.py"
+    },
+    {
+      "start": "2026-03-07T01:00:03Z",
+      "end": "2026-03-07T03:39:57Z",
+      "commits": 3,
+      "first_message": "test: strengthen CUDA lib path discovery tests + fix 16 lint errors"
+    }
+  ]
+}

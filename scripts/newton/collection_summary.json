@@ -1,0 +1,9 @@
+{
+  "total_episodes": 64,
+  "total_steps": 25600,
+  "sim_hz": 200,
+  "control_hz": 50,
+  "num_dofs": 43,
+  "gpu": "NVIDIA L40S",
+  "pipeline": "Newton + MuJoCo Warp \u2192 LeRobot format \u2192 GR00T N1 compatible"
+}

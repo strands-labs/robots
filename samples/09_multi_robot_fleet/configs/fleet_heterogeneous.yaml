@@ -1,0 +1,65 @@
+# Fleet Configuration: Heterogeneous Fleet
+#
+# A mixed-type fleet with different capabilities:
+# - SO-100 arm for manipulation
+# - Unitree G1 humanoid for locomotion + manipulation
+# - Unitree Go2 quadruped for mobile base duties
+#
+# All share the same Zenoh mesh for coordination.
+
+fleet:
+  name: "heterogeneous workspace"
+  description: "Arm + humanoid + quadruped for complex tasks"
+
+robots:
+  - name: "manipulator"
+    type: "so100"
+    peer_id: "manipulator"
+    role: "Tabletop manipulation (6 DOF arm)"
+    position: [0.0, 0.0, 0.0]
+    policy_provider: "mock"
+    capabilities:
+      - "pick"
+      - "place"
+      - "handover"
+
+  - name: "humanoid"
+    type: "unitree_g1"
+    peer_id: "humanoid"
+    role: "Full-body tasks (29+ DOF)"
+    position: [1.0, 0.0, 0.0]
+    policy_provider: "mock"
+    capabilities:
+      - "walk"
+      - "reach"
+      - "carry"
+      - "bimanual"
+
+  - name: "quadruped"
+    type: "unitree_go2"
+    peer_id: "quadruped"
+    role: "Mobile base and transport"
+    position: [2.0, 0.0, 0.0]
+    policy_provider: "mock"
+    capabilities:
+      - "walk"
+      - "navigate"
+      - "follow"
+      - "transport"
+
+# Optional: Reachy Mini as an expressive companion
+# Uncomment if a Reachy Mini is on the network (native Zenoh)
+#  - name: "reachy"
+#    type: "reachy_mini"
+#    peer_id: "reachy"
+#    role: "Expressive head (6-DOF Stewart platform)"
+#    external: true  # Not created by strands-robots, discovered via Zenoh
+#    zenoh_topic: "reachy_mini/*"
+
+mesh:
+  enabled: true
+
+defaults:
+  policy_provider: "mock"
+  duration: 15.0
+  control_hz: 50

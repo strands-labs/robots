@@ -1,0 +1,294 @@
+{
+  "generated_at": "2026-03-07T03:53:51.802969",
+  "total_workflows": 12,
+  "triggers_covered": [
+    "discussion",
+    "discussion_comment",
+    "issue_comment",
+    "issues",
+    "pull_request",
+    "pull_request_review",
+    "pull_request_review_comment",
+    "push",
+    "schedule",
+    "workflow_call",
+    "workflow_dispatch"
+  ],
+  "automation_coverage_pct": 100.0,
+  "runner_fleet": {
+    "ubuntu-latest": [
+      "agent.yml",
+      "ci.yml",
+      "control.yml",
+      "test-lint.yml",
+      "training-smoke.yml"
+    ],
+    "self-hosted": [
+      "isaac-sim.yml",
+      "isaac_sim_ci.yml",
+      "mac-mini.yml",
+      "reachy_mini.yml",
+      "thor.yml",
+      "thor_ci.yml"
+    ],
+    "isaac-sim": [
+      "isaac-sim.yml",
+      "isaac_sim_ci.yml"
+    ],
+    "mac-mini": [
+      "mac-mini.yml"
+    ],
+    "": [
+      "pr-and-push.yml"
+    ],
+    "reachy-mini": [
+      "reachy_mini.yml"
+    ],
+    "thor": [
+      "thor.yml",
+      "thor_ci.yml"
+    ]
+  },
+  "scheduled_workflows": [
+    "agent.yml",
+    "control.yml",
+    "isaac_sim_ci.yml",
+    "thor_ci.yml"
+  ],
+  "dispatch_graph": {
+    "agent.yml": [
+      "(via API)"
+    ],
+    "isaac-sim.yml": [
+      "(via API)"
+    ],
+    "mac-mini.yml": [
+      "(via API)"
+    ],
+    "thor.yml": [
+      "(via API)"
+    ]
+  },
+  "workflows": [
+    {
+      "filename": "agent.yml",
+      "name": "Agent",
+      "triggers": [
+        "schedule",
+        "issues",
+        "issue_comment",
+        "pull_request",
+        "pull_request_review",
+        "discussion",
+        "discussion_comment",
+        "pull_request_review_comment",
+        "workflow_dispatch"
+      ],
+      "runners": [
+        "ubuntu-latest"
+      ],
+      "jobs": [
+        "agent"
+      ],
+      "is_self_hosted": false,
+      "has_schedule": true,
+      "has_agent": true
+    },
+    {
+      "filename": "ci.yml",
+      "name": "CI",
+      "triggers": [
+        "push"
+      ],
+      "runners": [
+        "ubuntu-latest"
+      ],
+      "jobs": [
+        "deploy"
+      ],
+      "is_self_hosted": false,
+      "has_schedule": false,
+      "has_agent": false
+    },
+    {
+      "filename": "control.yml",
+      "name": "Control Loop",
+      "triggers": [
+        "schedule",
+        "workflow_dispatch"
+      ],
+      "runners": [
+        "ubuntu-latest"
+      ],
+      "jobs": [
+        "control"
+      ],
+      "is_self_hosted": false,
+      "has_schedule": true,
+      "has_agent": true
+    },
+    {
+      "filename": "isaac-sim.yml",
+      "name": "Isaac Sim Agent",
+      "triggers": [
+        "workflow_dispatch",
+        "workflow_call"
+      ],
+      "runners": [
+        "self-hosted",
+        "isaac-sim"
+      ],
+      "jobs": [
+        "isaac-sim"
+      ],
+      "is_self_hosted": true,
+      "has_schedule": false,
+      "has_agent": true
+    },
+    {
+      "filename": "isaac_sim_ci.yml",
+      "name": "Isaac Sim Integration Tests",
+      "triggers": [
+        "push",
+        "pull_request",
+        "workflow_dispatch",
+        "schedule"
+      ],
+      "runners": [
+        "self-hosted",
+        "isaac-sim"
+      ],
+      "jobs": [
+        "isaac-sim-integration"
+      ],
+      "is_self_hosted": true,
+      "has_schedule": true,
+      "has_agent": true
+    },
+    {
+      "filename": "mac-mini.yml",
+      "name": "Mac Mini Agent",
+      "triggers": [
+        "workflow_dispatch",
+        "workflow_call"
+      ],
+      "runners": [
+        "self-hosted",
+        "mac-mini"
+      ],
+      "jobs": [
+        "mac-mini"
+      ],
+      "is_self_hosted": true,
+      "has_schedule": false,
+      "has_agent": true
+    },
+    {
+      "filename": "pr-and-push.yml",
+      "name": "Pull Request and Push Action",
+      "triggers": [
+        "pull_request",
+        "push"
+      ],
+      "runners": [
+        ""
+      ],
+      "jobs": [
+        "call-test-lint"
+      ],
+      "is_self_hosted": false,
+      "has_schedule": false,
+      "has_agent": false
+    },
+    {
+      "filename": "reachy_mini.yml",
+      "name": "Reachy Mini Agent",
+      "triggers": [
+        "workflow_dispatch",
+        "workflow_call"
+      ],
+      "runners": [
+        "self-hosted",
+        "reachy-mini"
+      ],
+      "jobs": [
+        "reachy-mini"
+      ],
+      "is_self_hosted": true,
+      "has_schedule": false,
+      "has_agent": true
+    },
+    {
+      "filename": "test-lint.yml",
+      "name": "Test and Lint",
+      "triggers": [
+        "workflow_call"
+      ],
+      "runners": [
+        "ubuntu-latest"
+      ],
+      "jobs": [
+        "test-lint"
+      ],
+      "is_self_hosted": false,
+      "has_schedule": false,
+      "has_agent": false
+    },
+    {
+      "filename": "thor.yml",
+      "name": "Thor Agent",
+      "triggers": [
+        "workflow_dispatch",
+        "workflow_call"
+      ],
+      "runners": [
+        "self-hosted",
+        "thor"
+      ],
+      "jobs": [
+        "thor"
+      ],
+      "is_self_hosted": true,
+      "has_schedule": false,
+      "has_agent": true
+    },
+    {
+      "filename": "thor_ci.yml",
+      "name": "Thor Integration Tests",
+      "triggers": [
+        "push",
+        "pull_request",
+        "workflow_dispatch",
+        "schedule"
+      ],
+      "runners": [
+        "self-hosted",
+        "thor"
+      ],
+      "jobs": [
+        "thor-integration"
+      ],
+      "is_self_hosted": true,
+      "has_schedule": true,
+      "has_agent": true
+    },
+    {
+      "filename": "training-smoke.yml",
+      "name": "Training Smoke Tests",
+      "triggers": [
+        "push",
+        "pull_request",
+        "workflow_dispatch"
+      ],
+      "runners": [
+        "ubuntu-latest"
+      ],
+      "jobs": [
+        "training-smoke"
+      ],
+      "is_self_hosted": false,
+      "has_schedule": false,
+      "has_agent": true
+    }
+  ]
+}

@@ -1,0 +1,68 @@
+# SO-100 Hardware Deployment Configuration
+# 6 DOF manipulator + gripper, Feetech serial servos
+
+robot_type: so100_follower
+max_velocity_scale: 0.5  # Start at 50% speed for safety
+emergency_stop_on_violation: false  # Soft clamp (set true for production)
+
+# Connection
+connection:
+  type: usb_serial
+  port: auto  # Auto-detect Feetech bus
+  baudrate: 1000000
+
+# Camera setup
+cameras:
+  webcam:
+    index_or_path: 0
+    width: 640
+    height: 480
+    fps: 30
+
+# Joint limits (radians)
+joints:
+  - name: shoulder_pan
+    pos_min: -2.6
+    pos_max: 2.6
+    vel_max: 1.5
+
+  - name: shoulder_lift
+    pos_min: -1.8
+    pos_max: 1.8
+    vel_max: 1.5
+
+  - name: elbow
+    pos_min: -2.6
+    pos_max: 2.6
+    vel_max: 1.5
+
+  - name: wrist_pitch
+    pos_min: -1.8
+    pos_max: 1.8
+    vel_max: 1.5
+
+  - name: wrist_roll
+    pos_min: -2.6
+    pos_max: 2.6
+    vel_max: 1.5
+
+  - name: gripper
+    pos_min: 0.0
+    pos_max: 1.0
+    vel_max: 2.0
+
+# Workspace bounding box (metres, relative to robot base)
+workspace:
+  x_min: 0.05
+  x_max: 0.45
+  y_min: -0.25
+  y_max: 0.25
+  z_min: -0.05  # Slightly below table for push tasks
+  z_max: 0.35
+
+# Policy settings
+policy:
+  provider: groot
+  data_config: so100_dualcam
+  frequency_hz: 50
+  max_duration: 60.0  # Hard timeout in seconds

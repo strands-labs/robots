@@ -1,0 +1,82 @@
+# Unitree G1 EDU Plus Hardware Deployment Configuration
+# 29 DOF humanoid, Ethernet connection
+
+robot_type: g1
+max_velocity_scale: 0.3  # Humanoids start slow!
+emergency_stop_on_violation: true  # Hard stop — humanoid can fall
+
+# Connection
+connection:
+  type: ethernet
+  ip: 192.168.123.161
+  sdk: unitree_sdk2
+
+# Camera setup (built-in stereo)
+cameras:
+  head_left:
+    device: /dev/video0
+    width: 640
+    height: 480
+    fps: 30
+  head_right:
+    device: /dev/video1
+    width: 640
+    height: 480
+    fps: 30
+
+# Joint limits (radians) — 29 DOF
+# Left arm (7), Right arm (7), Left leg (6), Right leg (6), Torso (3)
+joints:
+  # Left arm
+  - { name: l_shoulder_pitch,  pos_min: -3.10, pos_max: 2.60, vel_max: 2.0 }
+  - { name: l_shoulder_roll,   pos_min: -1.57, pos_max: 2.09, vel_max: 2.0 }
+  - { name: l_shoulder_yaw,    pos_min: -2.66, pos_max: 2.66, vel_max: 2.0 }
+  - { name: l_elbow,           pos_min: -1.57, pos_max: 2.09, vel_max: 2.0 }
+  - { name: l_wrist_roll,      pos_min: -1.57, pos_max: 1.57, vel_max: 2.0 }
+  - { name: l_wrist_pitch,     pos_min: -0.52, pos_max: 0.52, vel_max: 2.0 }
+  - { name: l_wrist_yaw,       pos_min: -0.52, pos_max: 0.52, vel_max: 2.0 }
+  # Right arm
+  - { name: r_shoulder_pitch,  pos_min: -3.10, pos_max: 2.60, vel_max: 2.0 }
+  - { name: r_shoulder_roll,   pos_min: -2.09, pos_max: 1.57, vel_max: 2.0 }
+  - { name: r_shoulder_yaw,    pos_min: -2.66, pos_max: 2.66, vel_max: 2.0 }
+  - { name: r_elbow,           pos_min: -2.09, pos_max: 1.57, vel_max: 2.0 }
+  - { name: r_wrist_roll,      pos_min: -1.57, pos_max: 1.57, vel_max: 2.0 }
+  - { name: r_wrist_pitch,     pos_min: -0.52, pos_max: 0.52, vel_max: 2.0 }
+  - { name: r_wrist_yaw,       pos_min: -0.52, pos_max: 0.52, vel_max: 2.0 }
+  # Left leg
+  - { name: l_hip_roll,        pos_min: -0.52, pos_max: 0.52, vel_max: 3.0 }
+  - { name: l_hip_pitch,       pos_min: -1.05, pos_max: 1.57, vel_max: 3.0 }
+  - { name: l_hip_yaw,         pos_min: -0.52, pos_max: 0.52, vel_max: 3.0 }
+  - { name: l_knee,            pos_min: -0.09, pos_max: 2.09, vel_max: 3.0 }
+  - { name: l_ankle_pitch,     pos_min: -0.87, pos_max: 0.87, vel_max: 3.0 }
+  - { name: l_ankle_roll,      pos_min: -0.35, pos_max: 0.35, vel_max: 3.0 }
+  # Right leg
+  - { name: r_hip_roll,        pos_min: -0.52, pos_max: 0.52, vel_max: 3.0 }
+  - { name: r_hip_pitch,       pos_min: -1.57, pos_max: 1.05, vel_max: 3.0 }
+  - { name: r_hip_yaw,         pos_min: -0.52, pos_max: 0.52, vel_max: 3.0 }
+  - { name: r_knee,            pos_min: -2.09, pos_max: 0.09, vel_max: 3.0 }
+  - { name: r_ankle_pitch,     pos_min: -0.87, pos_max: 0.87, vel_max: 3.0 }
+  - { name: r_ankle_roll,      pos_min: -0.35, pos_max: 0.35, vel_max: 3.0 }
+  # Torso
+  - { name: torso_yaw,         pos_min: -2.87, pos_max: 2.87, vel_max: 1.5 }
+  - { name: torso_pitch,       pos_min: -0.35, pos_max: 0.35, vel_max: 1.5 }
+  - { name: torso_roll,        pos_min: -0.35, pos_max: 0.35, vel_max: 1.5 }
+
+# Workspace (standing position, metres from base)
+workspace:
+  x_min: -1.0
+  x_max: 1.0
+  y_min: -1.0
+  y_max: 1.0
+  z_min: 0.0
+  z_max: 2.0
+
+# Policy settings
+policy:
+  provider: groot
+  data_config: g1_dualarm
+  frequency_hz: 50
+  max_duration: 30.0
+
+# G1-specific safety
+balance_check: true  # Monitor IMU for fall detection

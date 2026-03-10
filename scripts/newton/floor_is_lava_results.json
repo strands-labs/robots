@@ -1,0 +1,37 @@
+{
+  "events": [
+    {
+      "t": 0.9,
+      "event": "EXPLOSION",
+      "z": 98784247808.0
+    }
+  ],
+  "traces": [
+    {
+      "t": 0.0,
+      "z": 0.8029
+    },
+    {
+      "t": 0.5,
+      "z": 0.8018
+    }
+  ],
+  "robot": "Unitree G1 29-DoF EDU Plus (NVIDIA Orin)",
+  "room": "Cagatay's Room (20 meshes, 170,022 verts)",
+  "lava_threshold_z": 0.05,
+  "survival_s": 0.9,
+  "wall_s": 5.5,
+  "alive": false,
+  "death_reason": "Articulation explosion at 0.9s",
+  "exploded": true,
+  "explode_time": 0.9,
+  "min_pelvis_z": 0.565,
+  "joints": 29,
+  "bodies": 31,
+  "drives": 29,
+  "score": 9,
+  "realtime_factor": 1.81,
+  "physics_hz": 120,
+  "gpu": "NVIDIA L40S",
+  "notes": "MJCF FixedJoint deleted for free-float. XformCache readback. Explodes ~1.8s due to articulation instability without root constraint."
+}

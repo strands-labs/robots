@@ -1,0 +1,168 @@
+{
+  "generated_at": "2026-03-07T03:50:32.420711",
+  "total_commits": 374,
+  "agent_commits": 231,
+  "human_commits": 143,
+  "unknown_commits": 0,
+  "agent_percentage": 61.8,
+  "human_percentage": 38.2,
+  "commits_by_author": {
+    "strands-agent": 179,
+    "cagataycali": 112,
+    "github-actions[bot]": 46,
+    "./c\u00b2": 24,
+    "Arron Bailiss": 4,
+    "Alexander Tsyplikhin": 3,
+    "Strands Agent": 3,
+    "strands-agent[bot]": 2,
+    "strands-bot": 1
+  },
+  "commits_by_date": {
+    "2025-11-10": {
+      "agent": 0,
+      "human": 2,
+      "unknown": 0
+    },
+    "2025-11-11": {
+      "agent": 0,
+      "human": 3,
+      "unknown": 0
+    },
+    "2025-11-12": {
+      "agent": 0,
+      "human": 1,
+      "unknown": 0
+    },
+    "2025-11-13": {
+      "agent": 0,
+      "human": 5,
+      "unknown": 0
+    },
+    "2025-11-18": {
+      "agent": 0,
+      "human": 1,
+      "unknown": 0
+    },
+    "2025-12-10": {
+      "agent": 0,
+      "human": 6,
+      "unknown": 0
+    },
+    "2025-12-11": {
+      "agent": 0,
+      "human": 2,
+      "unknown": 0
+    },
+    "2026-02-06": {
+      "agent": 0,
+      "human": 2,
+      "unknown": 0
+    },
+    "2026-02-13": {
+      "agent": 0,
+      "human": 1,
+      "unknown": 0
+    },
+    "2026-02-18": {
+      "agent": 0,
+      "human": 4,
+      "unknown": 0
+    },
+    "2026-02-19": {
+      "agent": 0,
+      "human": 1,
+      "unknown": 0
+    },
+    "2026-02-23": {
+      "agent": 0,
+      "human": 7,
+      "unknown": 0
+    },
+    "2026-02-24": {
+      "agent": 0,
+      "human": 17,
+      "unknown": 0
+    },
+    "2026-02-25": {
+      "agent": 0,
+      "human": 18,
+      "unknown": 0
+    },
+    "2026-02-26": {
+      "agent": 0,
+      "human": 12,
+      "unknown": 0
+    },
+    "2026-02-27": {
+      "agent": 0,
+      "human": 12,
+      "unknown": 0
+    },
+    "2026-02-28": {
+      "agent": 11,
+      "human": 11,
+      "unknown": 0
+    },
+    "2026-03-01": {
+      "agent": 77,
+      "human": 20,
+      "unknown": 0
+    },
+    "2026-03-02": {
+      "agent": 50,
+      "human": 5,
+      "unknown": 0
+    },
+    "2026-03-03": {
+      "agent": 24,
+      "human": 5,
+      "unknown": 0
+    },
+    "2026-03-04": {
+      "agent": 10,
+      "human": 0,
+      "unknown": 0
+    },
+    "2026-03-05": {
+      "agent": 35,
+      "human": 1,
+      "unknown": 0
+    },
+    "2026-03-06": {
+      "agent": 19,
+      "human": 6,
+      "unknown": 0
+    },
+    "2026-03-07": {
+      "agent": 5,
+      "human": 1,
+      "unknown": 0
+    }
+  },
+  "longest_agent_chain": 110,
+  "longest_agent_chain_commits": [
+    "fe1f100 feat: add 548 end-to-end tests for all 17 policy providers (",
+    "3698018 feat: add 548 end-to-end tests for all 17 policy providers (",
+    "46a5ee5 test: add 50 mock-based inference tests \u2014 coverage 60% \u2192 92%",
+    "e2ced1a fix: guard 233 test failures/errors with proper dependency c",
+    "ba4f4c2 fix: action truthiness bug in record.py + 89 tests (14% \u2192 96",
+    "573040f test: add 235 tests for record, tools, cosmos_transfer, visu",
+    "615debe fix: resolve flaky T7.7 port scan tests \u2014 mock instead of ha",
+    "d014ca5 test: remove xfail for nvidia/gr00t policy resolver \u2014 now pa",
+    "2f2e25d fix: get_video_info ImportError fallback no longer crashes o",
+    "fe3dd19 fix: add_camera destroys robot model when robots already loa"
+  ],
+  "agent_authors": [
+    "Strands Agent",
+    "github-actions[bot]",
+    "strands-agent",
+    "strands-agent[bot]",
+    "strands-bot"
+  ],
+  "human_authors": [
+    "./c\u00b2",
+    "Alexander Tsyplikhin",
+    "Arron Bailiss",
+    "cagataycali"
+  ]
+}

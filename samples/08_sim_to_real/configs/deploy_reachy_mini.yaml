@@ -1,0 +1,55 @@
+# Reachy Mini Hardware Deployment Configuration
+# 6+2 DOF (6 arm + 2 head), Zenoh native connection
+
+robot_type: reachy_mini
+max_velocity_scale: 0.5
+emergency_stop_on_violation: false
+
+# Connection — Reachy Mini uses Zenoh natively
+connection:
+  type: zenoh
+  # Zenoh auto-discovers the robot on the local network
+  # Override with explicit peer if needed:
+  # peer: tcp/192.168.1.100:7447
+
+# Camera setup (head-mounted)
+cameras:
+  left_eye:
+    device: zenoh  # Camera streams via Zenoh topics
+    width: 640
+    height: 480
+    fps: 30
+  right_eye:
+    device: zenoh
+    width: 640
+    height: 480
+    fps: 30
+
+# Joint limits (radians) — 6 arm + 2 head
+joints:
+  # Arm joints
+  - { name: shoulder_pitch, pos_min: -1.57, pos_max: 1.57, vel_max: 1.0 }
+  - { name: shoulder_roll,  pos_min: -1.57, pos_max: 0.52, vel_max: 1.0 }
+  - { name: elbow_yaw,      pos_min: -1.57, pos_max: 1.57, vel_max: 1.0 }
+  - { name: elbow_pitch,    pos_min: -2.27, pos_max: 0.0,  vel_max: 1.0 }
+  - { name: wrist_roll,     pos_min: -1.57, pos_max: 1.57, vel_max: 1.0 }
+  - { name: gripper,        pos_min: 0.0,   pos_max: 1.0,  vel_max: 1.5 }
+  # Head joints
+  - { name: head_pan,       pos_min: -1.05, pos_max: 1.05, vel_max: 0.5 }
+  - { name: head_tilt,      pos_min: -0.52, pos_max: 0.35, vel_max: 0.5 }
+
+# Workspace (metres, relative to robot base)
+workspace:
+  x_min: 0.05
+  x_max: 0.40
+  y_min: -0.30
+  y_max: 0.30
+  z_min: -0.10
+  z_max: 0.40
+
+# Policy settings
+policy:
+  provider: groot
+  data_config: reachy_mini
+  frequency_hz: 50
+  max_duration: 45.0

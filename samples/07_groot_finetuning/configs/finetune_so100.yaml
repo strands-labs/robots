@@ -1,0 +1,46 @@
+# GR00T N1.6 Fine-Tuning Config — SO-100 Pick-and-Place
+#
+# Optimized for fine-tuning on SO-100 manipulation data.
+# Default: train projector + diffusion head only (fastest, lowest VRAM).
+#
+# Usage:
+#   python samples/07_groot_finetuning/finetune_groot.py \
+#       --config samples/07_groot_finetuning/configs/finetune_so100.yaml
+
+# Model
+base_model_path: "nvidia/GR00T-N1-2B"
+embodiment_tag: "new_embodiment"
+data_config: "so100_dualcam"
+
+# Dataset (update this path to your recorded data from Sample 05)
+dataset_path: "./datasets/so100_pick_and_place"
+output_dir: "./checkpoints/groot_so100_finetuned"
+
+# Which model components to train
+# (fewer components = faster training, less VRAM)
+components:
+  tune_llm: false              # Qwen3 LLM — freeze for task-specific fine-tuning
+  tune_visual: false           # Eagle vision — freeze (pretrained features are good)
+  tune_projector: true         # Cross-modal projector — TRAIN (adapts vision→LLM)
+  tune_diffusion_model: true   # Diffusion action head — TRAIN (learns new actions)
+
+# Training hyperparameters
+training:
+  max_steps: 10000           # ~15 min on L40S with projector+diffusion only
+  batch_size: 16             # Reduce to 8 if OOM
+  learning_rate: 1.0e-4      # Default for GR00T fine-tuning
+  weight_decay: 1.0e-5
+  warmup_ratio: 0.05         # 5% warmup
+  num_gpus: 1
+  save_steps: 2000           # Save checkpoint every 2K steps
+  save_total_limit: 3        # Keep last 3 checkpoints
+  num_workers: 2
+  seed: 42
+  use_wandb: false           # Set true for Weights & Biases logging
+
+# Notes:
+# - SO-100 has 6 DOF: 5 arm joints + 1 gripper
+# - so100_dualcam uses 2 cameras: webcam (front) + wrist
+# - Action horizon: 16 steps (GR00T default)
+# - Expected training data: 50-200 episodes of pick-and-place
+# - VRAM: ~20-25GB with projector + diffusion only

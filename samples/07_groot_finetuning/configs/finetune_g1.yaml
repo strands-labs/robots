@@ -1,0 +1,51 @@
+# GR00T N1.6 Fine-Tuning Config — Unitree G1 Humanoid
+#
+# For fine-tuning on Unitree G1 whole-body or manipulation data.
+# G1 has significantly more DOF than SO-100, so needs more training.
+#
+# Usage:
+#   python samples/07_groot_finetuning/finetune_groot.py \
+#       --config samples/07_groot_finetuning/configs/finetune_g1.yaml
+
+# Model
+base_model_path: "nvidia/GR00T-N1-2B"
+embodiment_tag: "new_embodiment"
+data_config: "unitree_g1"          # Dual-arm config (14 DOF: 7 left + 7 right)
+# data_config: "unitree_g1_full_body"  # Full body with legs
+# data_config: "unitree_g1_locomanip"  # Loco-manipulation (walk + manipulate)
+
+# Dataset
+dataset_path: "./datasets/g1_manipulation"
+output_dir: "./checkpoints/groot_g1_finetuned"
+
+# Components — train more components for humanoid (higher dimensional)
+components:
+  tune_llm: false              # Keep frozen unless data > 1000 episodes
+  tune_visual: false           # Keep frozen
+  tune_projector: true         # TRAIN — adapts multi-camera vision to LLM
+  tune_diffusion_model: true   # TRAIN — learns 14-DOF action generation
+
+# Training hyperparameters (longer than SO-100 due to higher DOF)
+training:
+  max_steps: 20000           # ~30 min on L40S
+  batch_size: 8              # Smaller batch due to higher state/action dims
+  learning_rate: 5.0e-5      # Lower LR for stability with many DOF
+  weight_decay: 1.0e-5
+  warmup_ratio: 0.10         # Longer warmup for complex embodiment
+  num_gpus: 1
+  save_steps: 5000
+  save_total_limit: 3
+  num_workers: 2
+  seed: 42
+  use_wandb: false
+
+# Notes:
+# - Unitree G1 has 14 DOF for dual arms (7 per arm)
+# - unitree_g1 config: 1 front camera, left_arm + right_arm states
+# - unitree_g1_full_body: adds legs (6 DOF each), head (2 DOF)
+# - unitree_g1_locomanip: combined locomotion + manipulation
+# - Action horizon: 16 steps
+# - Expected training data: 100-500 episodes
+# - VRAM: ~25-30GB (higher state/action dimensions)
+# - For locomotion tasks, consider Newton GPU backend for evaluation
+#   (much faster than MuJoCo for high-DOF robots)

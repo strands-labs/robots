@@ -1,0 +1,34 @@
+# Cosmos Transfer 2.5 — depth-only configuration
+# Used by cosmos_transfer.py and train_on_transferred.py
+
+model_variant: depth
+num_gpus: 1
+guidance: 3.0
+num_steps: 35
+control_weight: 1.0
+output_resolution: "720"
+seed: 2025
+
+# Prompt template — fill in per-episode details
+prompt_template: >
+  A robot arm {action} on a {surface} in a {environment}
+  with {lighting} lighting
+
+# Example prompts for different scenes
+example_prompts:
+  kitchen: "A robot arm picking up objects on a wooden counter in a bright modern kitchen with warm lighting"
+  lab: "A robot arm manipulating objects on a steel workbench in a robotics lab with fluorescent lighting"
+  office: "A robot arm sorting items on a desk in a home office with natural window light"
+
+# Control signal generation
+depth:
+  source: mujoco  # Use physics engine depth buffer (pixel-perfect)
+  fallback: video_depth_anything  # For pre-recorded videos without depth
+
+edge:
+  threshold: medium  # low=(50,100) medium=(100,200) high=(200,400)
+  weight: 0.3  # Lower weight = more creative freedom
+
+seg:
+  method: sam2  # sam2 or colour_quantised (fallback)
+  weight: 0.5

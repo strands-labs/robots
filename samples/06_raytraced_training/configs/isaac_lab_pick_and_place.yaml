@@ -1,0 +1,55 @@
+# Isaac Lab Pick-and-Place Training Configuration
+#
+# For use with IsaacLabTrainer (RSL-RL or SB3 framework).
+# Runs on EC2 L40S or Thor with Isaac Sim installed.
+#
+# Usage:
+#   python samples/06_raytraced_training/train_isaac_lab.py \
+#     --task lift --framework rsl_rl --config configs/isaac_lab_pick_and_place.yaml
+
+isaac_lab:
+  task: lift                    # Isaac Lab task ID
+  rl_framework: rsl_rl          # rsl_rl | sb3 | skrl | rl_games
+  algorithm: PPO
+  num_envs: 4096
+  device: "cuda:0"
+  headless: true
+
+training:
+  max_iterations: 2000
+  seed: 42
+
+  # RSL-RL PPO config
+  rsl_rl:
+    learning_rate: 1.0e-3
+    num_learning_epochs: 5
+    num_mini_batches: 4
+    gamma: 0.99
+    lam: 0.95
+    clip_param: 0.2
+    value_loss_coef: 1.0
+    entropy_coef: 0.01
+    desired_kl: 0.01
+
+  # Network architecture
+  policy_hidden_dims: [256, 128, 64]
+  value_hidden_dims: [256, 128, 64]
+  activation: elu
+
+  # Logging
+  log_interval: 10
+  save_interval: 200
+
+  # Output
+  output_dir: "outputs/isaac_lab_pick_and_place"
+  experiment_name: "so100_lift"
+  enable_wandb: false
+
+rendering:
+  # RTX settings for photorealistic training data
+  mode: rtx                     # rtx | rasterize
+  width: 640
+  height: 480
+  fps: 30
+  save_renders: false           # Save rendered frames to disk
+  render_interval: 100          # Render every N steps (for logging)
