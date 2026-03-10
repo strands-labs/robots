@@ -180,7 +180,7 @@ def resolve_policy(
             return provider, kwargs
 
         # Unknown org but has / → assume HF model, try lerobot_local
-        logger.warning(f"Unknown HF org '{org}', defaulting to lerobot_local for '{policy}'")
+        logger.info(f"Unknown HF org '{org}', defaulting to lerobot_local for '{policy}'")
         kwargs["pretrained_name_or_path"] = policy
         kwargs.update(extra_kwargs)
         return "lerobot_local", kwargs
@@ -198,10 +198,6 @@ def resolve_policy(
         pass
 
     # ── 5. Fallback: assume it's a local path or model name ──
-    logger.warning(
-        f"Unrecognized policy '{policy}', falling back to lerobot_local. "
-        f"Note: this may load and execute code from HuggingFace if trust_remote_code=True."
-    )
     kwargs["pretrained_name_or_path"] = policy
     kwargs.update(extra_kwargs)
     return "lerobot_local", kwargs

@@ -151,10 +151,7 @@ def _auto_detect_mode(canonical: str, robot_info: Optional[Dict]) -> str:
                     kw in (getattr(p, "description", "") + getattr(p, "manufacturer_string", "")).lower()
                     for kw in robot_servo_keywords
                 )
-                and not any(
-                    s in getattr(p, "description", "").lower()
-                    for s in ["bluetooth", "internal", "debug", "apple", "modem"]
-                )
+                and not any(s in getattr(p, "description", "").lower() for s in ["bluetooth", "internal", "debug", "apple", "modem"])
             ]
             if robot_ports:
                 logger.info(f"Auto-detected robot hardware: {[p.device for p in robot_ports]}")
@@ -165,7 +162,7 @@ def _auto_detect_mode(canonical: str, robot_info: Optional[Dict]) -> str:
     return "sim"
 
 
-def create_robot(
+def Robot(
     name: str,
     mode: str = "auto",
     backend: str = "mujoco",
@@ -300,10 +297,7 @@ def create_robot(
 
 
 # Backward compat
-# Convenience alias — Robot() reads naturally in user code:
-#   sim = Robot("so100")
-# but create_robot() is the canonical name (it's a factory function, not a class).
-Robot = create_robot
+create_robot = Robot
 
 
 def list_robots(mode: str = "all") -> List[Dict[str, Any]]:
