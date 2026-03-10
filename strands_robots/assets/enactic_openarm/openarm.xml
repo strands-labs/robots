@@ -1,0 +1,148 @@
+<mujoco model="openarm">
+  <compiler angle="radian" meshdir="assets/" autolimits="true"/>
+  <option integrator="implicitfast" cone="elliptic" impratio="10"/>
+
+  <default>
+    <default class="openarm">
+      <joint armature="0.1" damping="2.0" frictionloss="0.1"/>
+      <position kp="80" kv="4"/>
+      <default class="shoulder">
+        <joint armature="0.15" damping="3.0"/>
+        <position kp="120" kv="6"/>
+      </default>
+      <default class="elbow">
+        <joint armature="0.12" damping="2.5"/>
+        <position kp="100" kv="5"/>
+      </default>
+      <default class="wrist">
+        <joint armature="0.05" damping="1.0"/>
+        <position kp="40" kv="2"/>
+      </default>
+      <default class="gripper">
+        <joint armature="0.01" damping="0.5"/>
+        <position kp="200" kv="10"/>
+      </default>
+      <default class="visual">
+        <geom type="mesh" contype="0" conaffinity="0" group="2" rgba="0.85 0.85 0.85 1"/>
+      </default>
+      <default class="collision">
+        <geom type="capsule" group="3" rgba="0.8 0.6 0.4 0.5"/>
+      </default>
+    </default>
+  </default>
+
+  <asset>
+    <texture type="2d" name="groundplane" builtin="checker" mark="edge" rgb1="0.25 0.26 0.25" rgb2="0.22 0.22 0.22" markrgb="0.3 0.3 0.3" width="300" height="300"/>
+    <material name="groundplane" texture="groundplane" texrepeat="5 5" texuniform="true" reflectance="0.2"/>
+    <material name="metal_dark" rgba="0.3 0.3 0.35 1" specular="0.5" shininess="0.5"/>
+    <material name="metal_light" rgba="0.75 0.75 0.8 1" specular="0.7" shininess="0.7"/>
+    <material name="actuator_blue" rgba="0.2 0.3 0.6 1" specular="0.4" shininess="0.3"/>
+    <material name="gripper_dark" rgba="0.25 0.25 0.3 1" specular="0.3" shininess="0.2"/>
+  </asset>
+
+  <worldbody>
+    <body name="base_link" pos="0 0 0">
+      <inertial pos="0 0 0" mass="2.0" diaginertia="0.005 0.005 0.005"/>
+      <body name="link0" pos="0 0 0">
+        <inertial pos="-0.000948 0.000158 0.030769" mass="1.143" fullinertia="0.001128 0.000962 0.00147 -4e-06 -3.3e-05 -7e-06"/>
+        <geom class="collision" size="0.045 0.03" pos="0 0 0.03" rgba="0.3 0.3 0.35 0.5"/>
+        <geom class="visual" type="cylinder" size="0.05 0.03" pos="0 0 0.03" material="metal_dark"/>
+        <body name="link1" pos="0 0 0.0625">
+          <inertial pos="0.001147 0.000033 0.053953" mass="1.142" fullinertia="0.001567 0.001273 0.001016 -1e-06 -2.9e-05 1e-06"/>
+          <joint name="joint1" class="shoulder" axis="0 0 1" range="-1.3963 3.4907" type="hinge"/>
+          <geom class="collision" size="0.04 0.05" pos="0 0 0.04"/>
+          <geom class="visual" type="cylinder" size="0.042 0.045" pos="0 0 0.04" material="actuator_blue"/>
+          <body name="link2" pos="-0.0301 0 0.06">
+            <inertial pos="0.008396 0 0.032566" mass="0.278" fullinertia="0.000359 0.000376 0.000232 1e-06 -0.000109 1e-06"/>
+            <joint name="joint2" class="shoulder" axis="-1 0 0" range="-1.7453 1.7453" type="hinge"/>
+            <geom class="collision" size="0.035 0.03" pos="0 0 0.03"/>
+            <geom class="visual" type="cylinder" size="0.037 0.025" pos="0 0 0.03" material="metal_light"/>
+            <body name="link3" pos="0.0301 0 0.06625">
+              <inertial pos="-0.002105 0.000555 0.090475" mass="1.074" fullinertia="0.004372 0.004319 0.000661 1e-06 1.1e-05 -3.6e-05"/>
+              <joint name="joint3" class="elbow" axis="0 0 1" range="-1.5708 1.5708" type="hinge"/>
+              <geom class="collision" size="0.032 0.075" pos="0 0 0.075"/>
+              <geom class="visual" type="capsule" size="0.03 0.065" pos="0 0 0.075" material="metal_dark"/>
+              <body name="link4" pos="0 0.0315 0.15375">
+                <inertial pos="-0.0029 -0.03031 0.0634" mass="0.635" fullinertia="0.000623 0.000511 0.000334 -1e-06 -1.9e-05 3.8e-05"/>
+                <joint name="joint4" class="elbow" axis="0 1 0" range="0 2.4435" type="hinge"/>
+                <geom class="collision" size="0.03 0.05" pos="0 -0.02 0.05"/>
+                <geom class="visual" type="capsule" size="0.028 0.04" pos="0 -0.02 0.05" material="actuator_blue"/>
+                <body name="link5" pos="0 -0.0315 0.0955">
+                  <inertial pos="-0.00305 0.000887 0.04308" mass="0.616" fullinertia="0.000423 0.000445 0.000324 -8e-06 6e-06 -6e-06"/>
+                  <joint name="joint5" class="wrist" axis="0 0 1" range="-1.5708 1.5708" type="hinge"/>
+                  <geom class="collision" size="0.025 0.04" pos="0 0 0.04"/>
+                  <geom class="visual" type="cylinder" size="0.027 0.035" pos="0 0 0.04" material="metal_light"/>
+                  <body name="link6" pos="0.0375 0 0.1205">
+                    <inertial pos="-0.037137 0.000332 -0.00009" mass="0.475" fullinertia="0.000143 0.000157 0.000159 1e-06 1e-06 1e-06"/>
+                    <joint name="joint6" class="wrist" axis="1 0 0" range="-0.7854 0.7854" type="hinge"/>
+                    <geom class="collision" size="0.022 0.02" pos="-0.02 0 0"/>
+                    <geom class="visual" type="box" size="0.025 0.022 0.018" pos="-0.02 0 0" material="metal_dark"/>
+                    <body name="link7" pos="-0.0375 0 0">
+                      <inertial pos="0.000069 0.012662 0.069519" mass="0.466" fullinertia="0.000639 0.000497 0.000342 1e-06 1e-06 8.9e-05"/>
+                      <joint name="joint7" class="wrist" axis="0 1 0" range="-1.5708 1.5708" type="hinge"/>
+                      <geom class="collision" size="0.022 0.025" pos="0 0.01 0.03"/>
+                      <geom class="visual" type="box" size="0.022 0.025 0.022" pos="0 0.01 0.035" material="actuator_blue"/>
+                      <body name="ee_link" pos="0 0.0205 0">
+                        <site name="ee_site" pos="0 0 0.06" size="0.005" rgba="1 0 0 1"/>
+                        <body name="finger1" pos="0 -0.015 0.05">
+                          <inertial pos="0 0 0.025" mass="0.05" diaginertia="1e-05 1e-05 5e-06"/>
+                          <joint name="finger_joint1" class="gripper" axis="0 1 0" range="0 0.044" type="slide"/>
+                          <geom class="collision" size="0.008 0.003 0.025" type="box" pos="0 0 0.025"/>
+                          <geom class="visual" type="box" size="0.008 0.003 0.025" pos="0 0 0.025" material="gripper_dark"/>
+                        </body>
+                        <body name="finger2" pos="0 0.015 0.05">
+                          <inertial pos="0 0 0.025" mass="0.05" diaginertia="1e-05 1e-05 5e-06"/>
+                          <joint name="finger_joint2" class="gripper" axis="0 -1 0" range="0 0.044" type="slide"/>
+                          <geom class="collision" size="0.008 0.003 0.025" type="box" pos="0 0 0.025"/>
+                          <geom class="visual" type="box" size="0.008 0.003 0.025" pos="0 0 0.025" material="gripper_dark"/>
+                        </body>
+                        <site name="grasp_site" pos="0 0 0.075" size="0.01" rgba="0 1 0 0.5"/>
+                      </body>
+                    </body>
+                  </body>
+                </body>
+              </body>
+            </body>
+          </body>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+
+  <actuator>
+    <position name="act_joint1" joint="joint1" class="shoulder" ctrlrange="-1.3963 3.4907"/>
+    <position name="act_joint2" joint="joint2" class="shoulder" ctrlrange="-1.7453 1.7453"/>
+    <position name="act_joint3" joint="joint3" class="elbow" ctrlrange="-1.5708 1.5708"/>
+    <position name="act_joint4" joint="joint4" class="elbow" ctrlrange="0 2.4435"/>
+    <position name="act_joint5" joint="joint5" class="wrist" ctrlrange="-1.5708 1.5708"/>
+    <position name="act_joint6" joint="joint6" class="wrist" ctrlrange="-0.7854 0.7854"/>
+    <position name="act_joint7" joint="joint7" class="wrist" ctrlrange="-1.5708 1.5708"/>
+    <position name="act_finger1" joint="finger_joint1" class="gripper" ctrlrange="0 0.044"/>
+    <position name="act_finger2" joint="finger_joint2" class="gripper" ctrlrange="0 0.044"/>
+  </actuator>
+
+  <sensor>
+    <jointpos name="joint1_pos" joint="joint1"/>
+    <jointpos name="joint2_pos" joint="joint2"/>
+    <jointpos name="joint3_pos" joint="joint3"/>
+    <jointpos name="joint4_pos" joint="joint4"/>
+    <jointpos name="joint5_pos" joint="joint5"/>
+    <jointpos name="joint6_pos" joint="joint6"/>
+    <jointpos name="joint7_pos" joint="joint7"/>
+    <jointpos name="finger1_pos" joint="finger_joint1"/>
+    <jointpos name="finger2_pos" joint="finger_joint2"/>
+    <jointvel name="joint1_vel" joint="joint1"/>
+    <jointvel name="joint2_vel" joint="joint2"/>
+    <jointvel name="joint3_vel" joint="joint3"/>
+    <jointvel name="joint4_vel" joint="joint4"/>
+    <jointvel name="joint5_vel" joint="joint5"/>
+    <jointvel name="joint6_vel" joint="joint6"/>
+    <jointvel name="joint7_vel" joint="joint7"/>
+    <framepos name="ee_pos" objtype="site" objname="ee_site"/>
+    <framequat name="ee_quat" objtype="site" objname="ee_site"/>
+  </sensor>
+
+  <keyframe>
+    <key name="home" qpos="1.57 0 -1.57 1.57 0 0 0 0.022 0.022"/>
+  </keyframe>
+</mujoco>
