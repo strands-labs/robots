@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "strands-robots"
 dynamic = ["version"]
-description = "AI-powered robot control, simulation, and training for Strands Agents — 35 robots, 18 policy providers, MuJoCo + Isaac Sim + Newton"
+description = "AI-powered robot control, simulation, and training for Strands Agents — integrates with MuJoCo, Isaac Sim, Newton, and many more"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "Apache-2.0"}
@@ -46,14 +46,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-ml = [
+lerobot = [
     "torch>=2.0.0",
     "lerobot>=0.4.0",
-]
-hardware = [
     "lerobot[feetech]",
 ]
-sim = [
+mujoco = [
     "mujoco>=3.0.0",
     "Pillow>=8.0.0",
 ]
@@ -98,7 +96,7 @@ robometer = [
 zenoh = [
     "eclipse-zenoh>=1.0.0",
 ]
-vla = [
+policies = [
     "transformers>=4.40.0",
     "sentencepiece>=0.1.99",
     "num2words>=0.5.13",
@@ -112,16 +110,16 @@ leisaac = [
     "lerobot>=0.4.0",
 ]
 all = [
-    "strands-robots[ml]",
-    "strands-robots[hardware]",
-    "strands-robots[sim]",
-    "strands-robots[vla]",
+    "strands-robots[lerobot]",
+    "strands-robots[mujoco]",
+    "strands-robots[policies]",
     "strands-robots[newton]",
     "strands-robots[cosmos-transfer]",
     "strands-robots[cosmos-predict]",
     "strands-robots[marble]",
     "strands-robots[robometer]",
     "strands-robots[zenoh]",
+    "strands-robots[leisaac]",
 ]
 dev = [
     "pytest>=6.0",
@@ -131,15 +129,10 @@ dev = [
     "flake8",
     "mypy",
 ]
-docs = [
-    "mkdocs-material>=9.0",
-    "pymdown-extensions>=10.0",
-    "mkdocstrings[python]",
-]
 
 [project.urls]
 Homepage = "https://github.com/strands-labs/robots"
-Documentation = "https://strands-labs.github.io/robots/"
+Documentation = "https://github.com/strands-labs/robots#readme"
 Repository = "https://github.com/strands-labs/robots.git"
 Issues = "https://github.com/strands-labs/robots/issues"
 Changelog = "https://github.com/strands-labs/robots/releases"

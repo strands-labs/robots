@@ -1,3 +1,5 @@
 [flake8]
 max-line-length = 120
-extend-ignore = E203, W503
+# W503: line break before binary operator — conflicts with black formatter
+# black prefers breaking before operators (PEP 8 recommended since 2016)
+extend-ignore = W503
