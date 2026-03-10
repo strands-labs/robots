@@ -154,10 +154,11 @@ dependencies = [
     "Pillow>=8.0.0",
     "requests>=2.28.0",
     "msgpack>=1.0.0",
+    "pyserial>=3.5",
 ]
 
 [tool.hatch.envs.default.scripts]
-test = "pytest {args:tests}"
+test = "pytest {args:tests} --ignore=tests/integ"
 lint = ["black --check strands_robots tests", "isort --check-only strands_robots tests", "flake8 strands_robots tests"]
 format = ["black strands_robots tests", "isort strands_robots tests"]
 
@@ -172,5 +173,3 @@ line_length = 120
 multi_line_output = 3
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
-addopts = "-v --cov=strands_robots --cov-report=term-missing"
