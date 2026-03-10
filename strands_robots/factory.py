@@ -151,7 +151,10 @@ def _auto_detect_mode(canonical: str, robot_info: Optional[Dict]) -> str:
                     kw in (getattr(p, "description", "") + getattr(p, "manufacturer_string", "")).lower()
                     for kw in robot_servo_keywords
                 )
-                and not any(s in getattr(p, "description", "").lower() for s in ["bluetooth", "internal", "debug", "apple", "modem"])
+                and not any(
+                    s in getattr(p, "description", "").lower()
+                    for s in ["bluetooth", "internal", "debug", "apple", "modem"]
+                )
             ]
             if robot_ports:
                 logger.info(f"Auto-detected robot hardware: {[p.device for p in robot_ports]}")

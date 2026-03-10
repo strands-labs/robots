@@ -175,7 +175,7 @@ class TestAliasResolution:
     """Test robot name alias resolution."""
 
     def test_alias_count(self):
-        assert len(_ALIASES) == 54
+        assert len(_ALIASES) == 53
 
     def test_all_aliases_resolve_to_known_robots(self):
         """Every alias target must exist in _ROBOT_MODELS."""

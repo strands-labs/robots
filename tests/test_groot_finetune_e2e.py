@@ -361,6 +361,7 @@ class TestConvertToLeRobotFormat(unittest.TestCase):
         import tempfile
 
         import pyarrow.parquet as pq
+
         from scripts.training.groot_finetune_pipeline import _convert_to_lerobot_format
 
         with tempfile.TemporaryDirectory() as tmpdir:

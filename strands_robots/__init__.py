@@ -120,3 +120,124 @@ try:
     __all__.append("DreamgenPolicy")
 except ImportError:
     pass
+
+# --- Tier 5: Simulation & Environments ---
+try:
+    from strands_robots.simulation import Simulation  # noqa: F401
+
+    __all__.append("Simulation")
+except ImportError:
+    pass
+
+try:
+    from strands_robots.envs import StrandsSimEnv  # noqa: F401
+
+    __all__.append("StrandsSimEnv")
+except ImportError:
+    pass
+
+# --- Tier 6: Training & Recording ---
+try:
+    from strands_robots.training import TrainConfig, Trainer, create_trainer  # noqa: F401
+
+    __all__.extend(["Trainer", "TrainConfig", "create_trainer"])
+except ImportError:
+    pass
+
+try:
+    from strands_robots.record import EpisodeStats, RecordMode, RecordSession  # noqa: F401
+
+    __all__.extend(["RecordSession", "RecordMode", "EpisodeStats"])
+except ImportError:
+    pass
+
+try:
+    from strands_robots.dataset_recorder import DatasetRecorder  # noqa: F401
+
+    __all__.append("DatasetRecorder")
+except ImportError:
+    pass
+
+# --- Tier 7: Video, Visualization & Processing ---
+try:
+    from strands_robots.video import VideoEncoder, encode_frames  # noqa: F401
+
+    __all__.extend(["VideoEncoder", "encode_frames"])
+except ImportError:
+    pass
+
+try:
+    from strands_robots.visualizer import RecordingVisualizer  # noqa: F401
+
+    __all__.append("RecordingVisualizer")
+except ImportError:
+    pass
+
+try:
+    from strands_robots.processor import ProcessedPolicy, ProcessorBridge  # noqa: F401
+
+    __all__.extend(["ProcessorBridge", "ProcessedPolicy"])
+except ImportError:
+    pass
+
+# --- Tier 8: Kinematics & Motion ---
+try:
+    from strands_robots.kinematics import Kinematics, create_kinematics  # noqa: F401
+
+    __all__.extend(["Kinematics", "create_kinematics"])
+except ImportError:
+    pass
+
+try:
+    from strands_robots.motion_library import Motion, MotionLibrary  # noqa: F401
+
+    __all__.extend(["MotionLibrary", "Motion"])
+except ImportError:
+    pass
+
+# --- Tier 9: RL & Reward ---
+try:
+    from strands_robots.rl_trainer import RLConfig, SB3Trainer, create_rl_trainer  # noqa: F401
+
+    __all__.extend(["SB3Trainer", "RLConfig", "create_rl_trainer"])
+except ImportError:
+    pass
+
+try:
+    from strands_robots.robometer import StrandsRobometerRewardWrapper, robometer_reward_fn  # noqa: F401
+
+    __all__.extend(["StrandsRobometerRewardWrapper", "robometer_reward_fn"])
+except ImportError:
+    pass
+
+# --- Tier 10: Isaac & LeIsaac ---
+try:
+    from strands_robots.leisaac import LeIsaacEnv, create_leisaac_env  # noqa: F401
+
+    __all__.extend(["LeIsaacEnv", "create_leisaac_env"])
+except ImportError:
+    pass
+
+# --- Tier 11: Marble 3D Generation ---
+try:
+    from strands_robots.marble import MarbleConfig, MarblePipeline  # noqa: F401
+
+    __all__.extend(["MarblePipeline", "MarbleConfig"])
+except ImportError:
+    pass
+
+# --- Tier 12: DreamGen Pipeline ---
+try:
+    from strands_robots.dreamgen import DreamGenConfig, DreamGenPipeline  # noqa: F401
+
+    __all__.extend(["DreamGenPipeline", "DreamGenConfig"])
+except ImportError:
+    pass
+
+# --- Tier 13: Zenoh Mesh Networking ---
+try:
+    from strands_robots.zenoh_mesh import Mesh, get_peers  # noqa: F401
+
+    __all__.extend(["Mesh", "get_peers"])
+except ImportError:
+    pass
