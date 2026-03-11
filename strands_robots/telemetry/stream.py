@@ -165,7 +165,7 @@ class TelemetryStream:
             daemon=True,
         )
         self._flush_thread.start()
-        logger.info(f"TelemetryStream started for robot={self.robot_id}")
+        logger.info("TelemetryStream started for robot=%s", self.robot_id)
 
     def stop(self, timeout: float = 5.0) -> None:
         """Stop the flush thread and drain remaining events."""
@@ -183,6 +183,12 @@ class TelemetryStream:
         logger.info(
             f"TelemetryStream stopped for robot={self.robot_id} | stats={self.get_stats()}"
         )
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.stop()
 
     def add_transport(self, transport: TransportConfig) -> None:
         """Register a transport backend."""
@@ -326,7 +332,7 @@ class TelemetryStream:
             try:
                 self._flush_all()
             except Exception as e:
-                logger.error(f"Flush error: {e}")
+                logger.error("Flush error: %s", e)
                 with self._stats_lock:
                     self._stats["errors"] += 1
             self._shutdown_event.wait(timeout=self._flush_interval)

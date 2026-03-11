@@ -106,7 +106,7 @@ class DreamzeroPolicy(Policy):
 
     def set_robot_state_keys(self, robot_state_keys: List[str]) -> None:
         self._robot_state_keys = robot_state_keys
-        logger.info(f"🔧 DreamZero robot state keys: {self._robot_state_keys}")
+        logger.info("🔧 DreamZero robot state keys: %s", self._robot_state_keys)
 
     def _ensure_connected(self):
         """Lazily connect to the DreamZero server."""
@@ -129,7 +129,7 @@ class DreamzeroPolicy(Policy):
                 )
 
         uri = f"ws://{self._host}:{self._port}"
-        logger.info(f"🌊 Connecting to DreamZero server at {uri}...")
+        logger.info("🌊 Connecting to DreamZero server at %s...", uri)
 
         try:
             self._ws = websockets.sync.client.connect(
@@ -146,7 +146,7 @@ class DreamzeroPolicy(Policy):
             self._packer = msgpack_numpy.Packer()
             self._connected = True
 
-            logger.info(f"🌊 Connected! Server config: {self._server_config}")
+            logger.info("🌊 Connected! Server config: %s", self._server_config)
 
         except ConnectionRefusedError:
             raise ConnectionError(
@@ -157,7 +157,7 @@ class DreamzeroPolicy(Policy):
         except Exception as e:
             # Try wss://
             uri_s = f"wss://{self._host}:{self._port}"
-            logger.info(f"ws:// failed, trying {uri_s}...")
+            logger.info("ws:// failed, trying %s...", uri_s)
             try:
                 self._ws = websockets.sync.client.connect(
                     uri_s,
@@ -170,7 +170,7 @@ class DreamzeroPolicy(Policy):
                 self._server_config = msgpack_numpy.unpackb(raw_config)
                 self._packer = msgpack_numpy.Packer()
                 self._connected = True
-                logger.info(f"🌊 Connected via wss! Config: {self._server_config}")
+                logger.info("🌊 Connected via wss! Config: %s", self._server_config)
             except Exception:
                 raise ConnectionError(
                     f"Cannot connect to DreamZero server at {self._host}:{self._port}: {e}"
@@ -391,7 +391,7 @@ class DreamzeroPolicy(Policy):
         try:
             from openpi_client import msgpack_numpy
         except ImportError:
-            import msgpack_numpy  # noqa: F401
+            import msgpack_numpy
 
         reset_msg = {"endpoint": "reset"}
         self._ws.send(self._packer.pack(reset_msg))
@@ -400,7 +400,7 @@ class DreamzeroPolicy(Policy):
         # New session
         self._session_id = str(uuid.uuid4())
         self._step = 0
-        logger.info(f"🌊 DreamZero reset. New session: {self._session_id[:8]}...")
+        logger.info("🌊 DreamZero reset. New session: %s...", self._session_id[:8])
 
     def close(self):
         """Close the WebSocket connection."""
@@ -412,6 +412,12 @@ class DreamzeroPolicy(Policy):
             self._ws = None
             self._connected = False
             logger.info("🌊 DreamZero connection closed")
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
 
     def __del__(self):
         self.close()
