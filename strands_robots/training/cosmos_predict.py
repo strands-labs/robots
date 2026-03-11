@@ -4,7 +4,8 @@ import logging
 import warnings
 from typing import Any, Dict, Optional
 
-from ._base import TrainConfig, Trainer, _build_cosmos_subprocess_env
+from ._base import TrainConfig, Trainer
+from ._cosmos_utils import _build_cosmos_subprocess_env
 
 logger = logging.getLogger(__name__)
 
