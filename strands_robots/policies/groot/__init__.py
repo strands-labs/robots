@@ -14,7 +14,7 @@ from typing import Any, Dict, List, Optional, Union
 import numpy as np
 
 from .. import Policy
-from .data_config import DATA_CONFIG_MAP, BaseDataConfig, load_data_config  # noqa: F401
+from .data_config import DATA_CONFIG_MAP, BaseDataConfig, load_data_config
 
 # Convenience aliases for common import patterns
 Gr00tDataConfig = BaseDataConfig
@@ -44,8 +44,8 @@ def _detect_groot_version() -> Optional[str]:
     try:
         from gr00t.data.embodiment_tags import (
             EmbodimentTag as _EmbodimentTag,
-        )  # noqa: F401
-        from gr00t.policy.gr00t_policy import Gr00tPolicy as _Gr00tPolicy  # noqa: F401
+        )
+        from gr00t.policy.gr00t_policy import Gr00tPolicy as _Gr00tPolicy
 
         _GROOT_VERSION = "n1.6"
         logger.info("Detected GR00T N1.6 (gr00t.policy.gr00t_policy)")
@@ -55,7 +55,7 @@ def _detect_groot_version() -> Optional[str]:
 
     # Try N1.5
     try:
-        from gr00t.model.policy import Gr00tPolicy as _  # noqa: F401
+        from gr00t.model.policy import Gr00tPolicy as _
 
         _GROOT_VERSION = "n1.5"
         logger.info("Detected GR00T N1.5 (gr00t.model.policy)")
@@ -146,7 +146,7 @@ class Gr00tPolicy(Policy):
         logger.info(
             f"🧠 GR00T Policy [{self._mode}] v={self._groot_version or 'service-only'}"
         )
-        logger.info(f"   config={self.data_config_name} cameras={self.camera_keys}")
+        logger.info("   config=%s cameras=%s", self.data_config_name, self.camera_keys)
 
     # ------------------------------------------------------------------
     # Local model loading
@@ -206,7 +206,7 @@ class Gr00tPolicy(Policy):
         kwargs = {k: v for k, v in kwargs.items() if v is not None}
 
         self._local_policy = N15Policy(**kwargs)
-        logger.info(f"✅ GR00T N1.5 loaded from {model_path}")
+        logger.info("✅ GR00T N1.5 loaded from %s", model_path)
 
     def _load_n16(
         self, model_path: str, embodiment_tag: str, denoising_steps: int, device: str
@@ -232,7 +232,7 @@ class Gr00tPolicy(Policy):
             model_path=model_path,
             device=device,
         )
-        logger.info(f"✅ GR00T N1.6 loaded from {model_path}")
+        logger.info("✅ GR00T N1.6 loaded from %s", model_path)
 
     # ------------------------------------------------------------------
     # Policy interface

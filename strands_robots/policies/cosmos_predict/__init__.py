@@ -217,7 +217,7 @@ class CosmosPredictPolicy(Policy):
 
     def set_robot_state_keys(self, robot_state_keys: List[str]) -> None:
         self._robot_state_keys = robot_state_keys
-        logger.info(f"🔧 Cosmos Predict robot state keys: {self._robot_state_keys}")
+        logger.info("🔧 Cosmos Predict robot state keys: %s", self._robot_state_keys)
 
     def _ensure_loaded(self):
         """Lazy-load model, dataset stats, and text embeddings."""
@@ -230,7 +230,7 @@ class CosmosPredictPolicy(Policy):
                 import requests
 
                 requests.get(f"{self._server_url}/health", timeout=5)
-                logger.info(f"🌌 Cosmos server connected: {self._server_url}")
+                logger.info("🌌 Cosmos server connected: %s", self._server_url)
             except Exception as e:
                 logger.warning(
                     f"Cosmos server not reachable at {self._server_url}: {e}"
@@ -239,7 +239,7 @@ class CosmosPredictPolicy(Policy):
             return
 
         # Local mode — load model
-        logger.info(f"🌌 Loading Cosmos Predict 2.5 from {self._model_id}...")
+        logger.info("🌌 Loading Cosmos Predict 2.5 from %s...", self._model_id)
         start = time.time()
 
         self._device = detect_device(self._requested_device)
@@ -252,7 +252,7 @@ class CosmosPredictPolicy(Policy):
             self._load_world_model()
 
         elapsed = time.time() - start
-        logger.info(f"🌌 Cosmos loaded in {elapsed:.1f}s on {self._device}")
+        logger.info("🌌 Cosmos loaded in %.1fs on %s", elapsed, self._device)
         self._loaded = True
 
     def _load_policy_model(self):
@@ -283,7 +283,7 @@ class CosmosPredictPolicy(Policy):
                 self._dataset_stats = cosmos_load_dataset_stats(
                     self._dataset_stats_path
                 )
-                logger.info(f"🌌 Dataset stats loaded from {self._dataset_stats_path}")
+                logger.info("🌌 Dataset stats loaded from %s", self._dataset_stats_path)
             else:
                 # Try to find dataset_statistics.json in the HF cache
                 try:
@@ -304,14 +304,14 @@ class CosmosPredictPolicy(Policy):
                         if os.path.exists(stats_path):
                             self._dataset_stats = cosmos_load_dataset_stats(stats_path)
                             self._dataset_stats_path = stats_path
-                            logger.info(f"🌌 Dataset stats auto-resolved: {stats_path}")
+                            logger.info("🌌 Dataset stats auto-resolved: %s", stats_path)
                             break
                     if not self._dataset_stats:
                         logger.warning(
                             "🌌 No dataset statistics found — actions will not be un-normalized"
                         )
                 except Exception as e:
-                    logger.warning(f"🌌 Could not auto-resolve dataset stats: {e}")
+                    logger.warning("🌌 Could not auto-resolve dataset stats: %s", e)
 
             # Initialize text embeddings cache (auto-resolve from HF if needed)
             if not self._t5_embeddings_path and self._dataset_stats_path:
@@ -327,7 +327,7 @@ class CosmosPredictPolicy(Policy):
                     t5_path = os.path.join(ckpt_dir, fname)
                     if os.path.exists(t5_path):
                         self._t5_embeddings_path = t5_path
-                        logger.info(f"🌌 T5 embeddings auto-resolved: {t5_path}")
+                        logger.info("🌌 T5 embeddings auto-resolved: %s", t5_path)
                         break
 
             if self._t5_embeddings_path:
@@ -336,7 +336,7 @@ class CosmosPredictPolicy(Policy):
                     worker_id=0,
                     embeddings_kind=self._text_embeddings_kind,
                 )
-                logger.info(f"🌌 Text embeddings loaded ({self._text_embeddings_kind})")
+                logger.info("🌌 Text embeddings loaded (%s)", self._text_embeddings_kind)
 
         except ImportError as e:
             raise ImportError(
@@ -757,7 +757,7 @@ class CosmosPredictPolicy(Policy):
         **kwargs,
     ) -> List[Dict[str, Any]]:
         """Inference via remote Cosmos policy server."""
-        import io  # noqa: F401
+        import io
 
         import requests
 

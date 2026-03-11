@@ -46,7 +46,7 @@ Requirements:
 
 import logging as _logging
 import os
-from pathlib import Path as _Path  # noqa: F401
+from pathlib import Path as _Path
 from typing import Optional as _Optional
 
 _logger = _logging.getLogger(__name__)

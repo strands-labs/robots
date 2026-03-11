@@ -7,7 +7,7 @@ __all__ = ["LocalWALTransport", "StdoutTransport"]
 
 # OTel transport is optional (requires opentelemetry SDK)
 try:
-    from strands_robots.telemetry.transports.otel import OTelTransport  # noqa: F401
+    from strands_robots.telemetry.transports.otel import OTelTransport
 
     __all__.append("OTelTransport")
 except ImportError:

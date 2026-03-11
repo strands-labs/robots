@@ -42,7 +42,7 @@ Usage:
 import logging
 import os
 from dataclasses import dataclass, field
-from pathlib import Path  # noqa: F401
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import numpy as np
@@ -119,9 +119,9 @@ class DreamGenPipeline:
         self._idm_model = None
 
         logger.info("🎬 DreamGen Pipeline initialized")
-        logger.info(f"📹 Video model: {config.video_model}")
-        logger.info(f"🧠 IDM: {config.idm_checkpoint}")
-        logger.info(f"🤖 Embodiment: {config.embodiment_tag}")
+        logger.info("📹 Video model: %s", config.video_model)
+        logger.info("🧠 IDM: %s", config.idm_checkpoint)
+        logger.info("🤖 Embodiment: %s", config.embodiment_tag)
 
     def finetune_video_model(
         self,
@@ -145,8 +145,8 @@ class DreamGenPipeline:
         # This would invoke the actual video model fine-tuning
         # For WAN2.1: uses diffusers LoRA fine-tuning
         # The actual implementation depends on which video model
-        import subprocess  # noqa: F401
-        import sys  # noqa: F401
+        import subprocess
+        import sys
 
         # Build preprocessing + fine-tuning command based on model
         model_scripts = {
@@ -241,7 +241,7 @@ class DreamGenPipeline:
                         }
                     )
 
-        logger.info(f"📹 {len(generated)} video generation tasks prepared")
+        logger.info("📹 %s video generation tasks prepared", len(generated))
         logger.info("💡 Execute with: pipeline._run_video_generation(output_dir)")
 
         return generated
@@ -294,7 +294,7 @@ class DreamGenPipeline:
                 frame_path = os.path.join(output_dir, f"sim_frame_{i}.mp4")
                 # Save single frame as video (placeholder — real usage provides full sim recordings)
                 sim_videos.append(frame_path)
-                logger.info(f"   Saved sim frame {i} → {frame_path}")
+                logger.info("   Saved sim frame %s → %s", i, frame_path)
 
         control_type = kwargs.get("control_type", "depth")
         model_variant = kwargs.get("model_variant", "7B")
@@ -395,7 +395,7 @@ class DreamGenPipeline:
         """Extract actions using IDM sliding window approach."""
         trajectories = []
 
-        logger.info(f"🧠 Loading IDM from {self.config.idm_checkpoint}...")
+        logger.info("🧠 Loading IDM from %s...", self.config.idm_checkpoint)
         # Lazy-load IDM
         if self._idm_model is None:
             try:
@@ -406,7 +406,7 @@ class DreamGenPipeline:
                     from gr00t.model.idm import (
                         IDM,
                         IDMConfig,
-                    )  # Register model type  # noqa: F401
+                    )
                 except ImportError:
                     pass
                 self._idm_model = AutoModel.from_pretrained(self.config.idm_checkpoint)
@@ -415,7 +415,7 @@ class DreamGenPipeline:
                     self._idm_model.to("cuda")
                 logger.info("✅ IDM loaded")
             except Exception as e:
-                logger.error(f"❌ Failed to load IDM: {e}")
+                logger.error("❌ Failed to load IDM: %s", e)
                 logger.info(
                     "💡 Returning placeholder trajectories for pipeline testing"
                 )
@@ -441,7 +441,7 @@ class DreamGenPipeline:
             try:
                 frames = self._load_video_frames(video_path)
             except Exception as e:
-                logger.warning(f"⚠️ Failed to load {video_path}: {e}")
+                logger.warning("⚠️ Failed to load %s: %s", video_path, e)
                 continue
 
             # IDM sliding window: predict H actions from frame pairs
@@ -469,7 +469,7 @@ class DreamGenPipeline:
                     )
                 )
 
-        logger.info(f"✅ Extracted {len(trajectories)} neural trajectories")
+        logger.info("✅ Extracted %s neural trajectories", len(trajectories))
         return trajectories
 
     def _extract_latent_actions(self, videos, output_dir):
@@ -525,7 +525,7 @@ class DreamGenPipeline:
                 with open(os.path.join(traj_dir, "instruction.txt"), "w") as f:
                     f.write(traj.instruction)
 
-        logger.info(f"✅ Dataset created at {output_path}")
+        logger.info("✅ Dataset created at %s", output_path)
 
         return {
             "output_path": output_path,

@@ -530,7 +530,7 @@ class CosmosTransferPipeline:
         """
         try:
             import cv2  # type: ignore[import-untyped]
-            import numpy as np  # type: ignore[import-untyped]  # noqa: F401
+            import numpy as np  # type: ignore[import-untyped]
         except ImportError as exc:
             raise ImportError(
                 "OpenCV (cv2) and NumPy are required for edge control "
@@ -621,8 +621,8 @@ class CosmosTransferPipeline:
             RuntimeError: If segmentation generation fails.
         """
         try:
-            import cv2  # type: ignore[import-untyped]  # noqa: F401
-            import numpy as np  # type: ignore[import-untyped]  # noqa: F401
+            import cv2  # type: ignore[import-untyped]
+            import numpy as np  # type: ignore[import-untyped]
         except ImportError as exc:
             raise ImportError(
                 "OpenCV (cv2) and NumPy are required for segmentation control "

@@ -243,7 +243,7 @@ def create_policy(provider: str, **kwargs) -> Policy:
             resolved_provider = None
             resolved_kwargs = {}
         except Exception as e:
-            logger.warning(f"Policy resolution failed for '{provider}': {e}")
+            logger.warning("Policy resolution failed for '%s': %s", provider, e)
             resolved_provider = None
             resolved_kwargs = {}
 

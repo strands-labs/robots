@@ -177,10 +177,10 @@ class LerobotAsyncPolicy(Policy):
         self._connected = False
         self._timestep = 0
 
-        logger.info(f"🤖 LeRobot Async Policy: {policy_type}")
-        logger.info(f"📡 Server: {server_address} (TLS: {'yes' if use_tls else 'no'})")
-        logger.info(f"🧠 Model: {pretrained_name_or_path}")
-        logger.info(f"⚡ Actions/chunk: {actions_per_chunk}")
+        logger.info("🤖 LeRobot Async Policy: %s", policy_type)
+        logger.info("📡 Server: %s (TLS: %s)", server_address, 'yes' if use_tls else 'no')
+        logger.info("🧠 Model: %s", pretrained_name_or_path)
+        logger.info("⚡ Actions/chunk: %s", actions_per_chunk)
 
     @property
     def provider_name(self) -> str:
@@ -189,7 +189,7 @@ class LerobotAsyncPolicy(Policy):
     def set_robot_state_keys(self, robot_state_keys: List[str]) -> None:
         """Set robot state keys from connected robot."""
         self.robot_state_keys = robot_state_keys
-        logger.info(f"🔧 LeRobot async state keys: {self.robot_state_keys}")
+        logger.info("🔧 LeRobot async state keys: %s", self.robot_state_keys)
 
     def _ensure_connected(self):
         """Ensure gRPC connection is established."""
@@ -212,7 +212,7 @@ class LerobotAsyncPolicy(Policy):
                     # Use system default root certificates
                     credentials = grpc.ssl_channel_credentials()
                 self._channel = grpc.secure_channel(self.server_address, credentials)
-                logger.info(f"🔒 TLS channel to {self.server_address}")
+                logger.info("🔒 TLS channel to %s", self.server_address)
             else:
                 # Insecure channel — acceptable for localhost, warn for remote
                 if not self.server_address.startswith(
@@ -248,7 +248,7 @@ class LerobotAsyncPolicy(Policy):
             )
 
             self._connected = True
-            logger.info(f"✅ Connected to LeRobot server at {self.server_address}")
+            logger.info("✅ Connected to LeRobot server at %s", self.server_address)
 
         except ImportError as e:
             raise ImportError(
@@ -256,7 +256,7 @@ class LerobotAsyncPolicy(Policy):
                 f"Install: pip install lerobot[async]"
             ) from e
         except Exception as e:
-            logger.error(f"❌ Failed to connect to LeRobot server: {e}")
+            logger.error("❌ Failed to connect to LeRobot server: %s", e)
             raise
 
     async def get_actions(
@@ -275,7 +275,7 @@ class LerobotAsyncPolicy(Policy):
         self._ensure_connected()
 
         try:
-            import grpc  # noqa: F401
+            import grpc
             from lerobot.async_inference.helpers import TimedObservation
             from lerobot.transport import services_pb2
 
@@ -316,10 +316,10 @@ class LerobotAsyncPolicy(Policy):
 
         except TypeError as e:
             # Type validation failed — server sent unexpected data
-            logger.error(f"❌ Server sent invalid data (possible security issue): {e}")
+            logger.error("❌ Server sent invalid data (possible security issue): %s", e)
             return self._generate_zero_actions()
         except Exception as e:
-            logger.error(f"❌ LeRobot async inference error: {e}")
+            logger.error("❌ LeRobot async inference error: %s", e)
             return self._generate_zero_actions()
 
     def _build_raw_observation(
@@ -365,7 +365,7 @@ class LerobotAsyncPolicy(Policy):
                     action_dict[key] = 0.0
             robot_actions.append(action_dict)
 
-        logger.debug(f"⚡ Converted {len(robot_actions)} actions from LeRobot server")
+        logger.debug("⚡ Converted %s actions from LeRobot server", len(robot_actions))
         return robot_actions
 
     def _generate_zero_actions(self) -> List[Dict[str, Any]]:

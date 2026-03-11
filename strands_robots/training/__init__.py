@@ -38,8 +38,8 @@ Usage:
 import logging
 import warnings
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field  # noqa: F401
-from typing import Any, Dict, List, Optional  # noqa: F401
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -181,9 +181,9 @@ class Gr00tTrainer(Trainer):
         self.config = config or TrainConfig(dataset_path=dataset_path)
         self.extra_kwargs = kwargs
 
-        logger.info(f"🧠 GR00T Trainer: {base_model_path}")
-        logger.info(f"📁 Dataset: {dataset_path}")
-        logger.info(f"🤖 Embodiment: {embodiment_tag}")
+        logger.info("🧠 GR00T Trainer: %s", base_model_path)
+        logger.info("📁 Dataset: %s", dataset_path)
+        logger.info("🤖 Embodiment: %s", embodiment_tag)
 
     @property
     def provider_name(self) -> str:
@@ -243,7 +243,7 @@ class Gr00tTrainer(Trainer):
         if self.data_config:
             cmd.extend(["--data-config", self.data_config])
 
-        logger.info(f"🚀 Launching GR00T training: {' '.join(cmd[:6])}...")
+        logger.info("🚀 Launching GR00T training: %s...", ' '.join(cmd[:6]))
 
         result = subprocess.run(cmd, capture_output=False)
         return {
@@ -314,7 +314,7 @@ class LerobotTrainer(Trainer):
         logger.info(
             f"🤗 LeRobot Trainer: {policy_type} ({'in-process' if in_process else 'subprocess'})"
         )
-        logger.info(f"📁 Dataset: {dataset_repo_id}")
+        logger.info("📁 Dataset: %s", dataset_repo_id)
 
     @property
     def provider_name(self) -> str:
@@ -366,7 +366,7 @@ class LerobotTrainer(Trainer):
             return train_cfg
 
         except ImportError as e:
-            logger.warning(f"LeRobot training config not available: {e}")
+            logger.warning("LeRobot training config not available: %s", e)
             return None
 
     def train(self, **kwargs) -> Dict[str, Any]:
@@ -405,11 +405,11 @@ class LerobotTrainer(Trainer):
         if train_cfg is None:
             raise RuntimeError("Failed to build LeRobot training config")
 
-        logger.info(f"🚀 Starting in-process LeRobot training: {self.policy_type}")
+        logger.info("🚀 Starting in-process LeRobot training: %s", self.policy_type)
         logger.info(
             f"   Steps: {self.config.max_steps}, Batch: {self.config.batch_size}"
         )
-        logger.info(f"   Output: {self.config.output_dir}")
+        logger.info("   Output: %s", self.config.output_dir)
 
         # Run the actual LeRobot training function
         try:
@@ -423,7 +423,7 @@ class LerobotTrainer(Trainer):
                 "status": "completed",
             }
         except Exception as e:
-            logger.error(f"Training failed: {e}")
+            logger.error("Training failed: %s", e)
             return {
                 "provider": "lerobot",
                 "mode": "in_process",
@@ -487,7 +487,7 @@ class LerobotTrainer(Trainer):
             try:
                 return self._evaluate_in_process(checkpoint_path, **kwargs)
             except Exception as e:
-                logger.warning(f"In-process eval failed: {e}")
+                logger.warning("In-process eval failed: %s", e)
 
         logger.info("📊 Use lerobot eval scripts for evaluation")
         return {
@@ -510,7 +510,7 @@ class LerobotTrainer(Trainer):
             f"--seed={self.config.seed}",
         ]
 
-        logger.info(f"📊 Evaluating: {checkpoint_path} on {self.eval_env}")
+        logger.info("📊 Evaluating: %s on %s", checkpoint_path, self.eval_env)
         result = subprocess.run(cmd, capture_output=True, text=True)
 
         return {
@@ -568,8 +568,8 @@ class DreamgenIdmTrainer(Trainer):
             )
 
         logger.info("🎬 DreamGen IDM Trainer")
-        logger.info(f"📁 Dataset: {dataset_path}")
-        logger.info(f"🤖 Config: {data_config}")
+        logger.info("📁 Dataset: %s", dataset_path)
+        logger.info("🤖 Config: %s", data_config)
 
     @property
     def provider_name(self) -> str:
@@ -666,8 +666,8 @@ class DreamgenVlaTrainer(Trainer):
         self.config = config or TrainConfig(dataset_path=dataset_path)
         self.extra_kwargs = kwargs
 
-        logger.info(f"🎬 DreamGen VLA Trainer: {base_model_path}")
-        logger.info(f"📁 Dataset: {dataset_path}")
+        logger.info("🎬 DreamGen VLA Trainer: %s", base_model_path)
+        logger.info("📁 Dataset: %s", dataset_path)
 
     @property
     def provider_name(self) -> str:
@@ -873,7 +873,7 @@ class CosmosTrainer(Trainer):
         # before calling train() and get a clear error early.
         self.train_script_path = self._resolve_train_script(train_script_path)
         if self.train_script_path:
-            logger.info(f"✅ Cosmos training script: {self.train_script_path}")
+            logger.info("✅ Cosmos training script: %s", self.train_script_path)
         else:
             logger.warning(
                 "⚠️ Cosmos training script not found on disk. "
@@ -881,9 +881,9 @@ class CosmosTrainer(Trainer):
                 "or install cosmos-predict2 source to ~/cosmos-predict2.5/"
             )
 
-        logger.info(f"🌌 Cosmos Trainer: {base_model_path}")
-        logger.info(f"📁 Dataset: {dataset_path}")
-        logger.info(f"🎯 Mode: {mode}, Suite: {suite}")
+        logger.info("🌌 Cosmos Trainer: %s", base_model_path)
+        logger.info("📁 Dataset: %s", dataset_path)
+        logger.info("🎯 Mode: %s, Suite: %s", mode, suite)
 
     @property
     def provider_name(self) -> str:
@@ -928,7 +928,7 @@ class CosmosTrainer(Trainer):
             if existing:
                 new_pythonpath = new_pythonpath + os.pathsep + existing
             env["PYTHONPATH"] = new_pythonpath
-            logger.info(f"✅ Cosmos subprocess PYTHONPATH prepended: {repo_root}")
+            logger.info("✅ Cosmos subprocess PYTHONPATH prepended: %s", repo_root)
 
         # Ensure CUDA shared libraries are findable in the subprocess.
         # On systems with CUDA 13+ installed, packages compiled against
@@ -1009,7 +1009,7 @@ class CosmosTrainer(Trainer):
             repo_root = os.path.dirname(os.path.dirname(os.path.abspath(script_path)))
             full = os.path.join(repo_root, rel)
             if not os.path.isfile(full):
-                logger.warning(f"Config file not found at {full}, using path anyway")
+                logger.warning("Config file not found at %s, using path anyway", full)
 
         return rel
 
@@ -1096,11 +1096,11 @@ class CosmosTrainer(Trainer):
         for key, value in kwargs.items():
             cmd.append(f"{key}={value}")
 
-        logger.info(f"🚀 Launching Cosmos post-training ({self.mode})...")
-        logger.info(f"   Config: {config_file}")
-        logger.info(f"   Experiment: {self.config_name}")
-        logger.info(f"   GPUs: {num_gpus}, Steps: {self.config.max_steps}")
-        logger.info(f"   Command: {' '.join(cmd[:8])}...")
+        logger.info("🚀 Launching Cosmos post-training (%s)...", self.mode)
+        logger.info("   Config: %s", config_file)
+        logger.info("   Experiment: %s", self.config_name)
+        logger.info("   GPUs: %s, Steps: %s", num_gpus, self.config.max_steps)
+        logger.info("   Command: %s...", ' '.join(cmd[:8]))
 
         # ── Derive working directory and subprocess env ──
         sub_env = self._build_subprocess_env(script_path)
@@ -1299,7 +1299,7 @@ class CosmosTransferTrainer(Trainer):
         # Eagerly resolve training script path
         self.train_script_path = self._resolve_train_script(train_script_path)
         if self.train_script_path:
-            logger.info(f"✅ Cosmos Transfer training script: {self.train_script_path}")
+            logger.info("✅ Cosmos Transfer training script: %s", self.train_script_path)
         else:
             logger.warning(
                 "⚠️ Cosmos Transfer training script not found on disk. "
@@ -1307,9 +1307,9 @@ class CosmosTransferTrainer(Trainer):
                 "or install cosmos-transfer2.5 source."
             )
 
-        logger.info(f"🔄 Cosmos Transfer Trainer: {base_model_path}")
-        logger.info(f"📁 Dataset: {dataset_path}")
-        logger.info(f"🎯 Mode: {mode}, Control: {control_type}")
+        logger.info("🔄 Cosmos Transfer Trainer: %s", base_model_path)
+        logger.info("📁 Dataset: %s", dataset_path)
+        logger.info("🎯 Mode: %s, Control: %s", mode, control_type)
 
     @property
     def provider_name(self) -> str:
@@ -1359,7 +1359,7 @@ class CosmosTransferTrainer(Trainer):
             repo_root = os.path.dirname(os.path.dirname(os.path.abspath(script_path)))
             full = os.path.join(repo_root, rel)
             if not os.path.isfile(full):
-                logger.warning(f"Config file not found at {full}, using path anyway")
+                logger.warning("Config file not found at %s, using path anyway", full)
 
         return rel
 
@@ -1532,12 +1532,12 @@ class CosmosTransferTrainer(Trainer):
         for key, value in kwargs.items():
             cmd.append(f"{key}={value}")
 
-        logger.info(f"🚀 Launching Cosmos Transfer post-training ({self.mode})...")
-        logger.info(f"   Config: {config_file}")
-        logger.info(f"   Experiment: {self.config_name}")
-        logger.info(f"   Control: {self.control_type}, Weight: {self.control_weight}")
-        logger.info(f"   GPUs: {num_gpus}, Steps: {self.config.max_steps}")
-        logger.info(f"   Command: {' '.join(cmd[:8])}...")
+        logger.info("🚀 Launching Cosmos Transfer post-training (%s)...", self.mode)
+        logger.info("   Config: %s", config_file)
+        logger.info("   Experiment: %s", self.config_name)
+        logger.info("   Control: %s, Weight: %s", self.control_type, self.control_weight)
+        logger.info("   GPUs: %s, Steps: %s", num_gpus, self.config.max_steps)
+        logger.info("   Command: %s...", ' '.join(cmd[:8]))
 
         # Build working directory and subprocess env
         sub_env = self._build_subprocess_env(script_path)
@@ -1640,7 +1640,7 @@ def evaluate(
                 f"🚀 Using Newton GPU backend for evaluation (solver={env._config.solver})"
             )
         except ImportError as e:
-            logger.warning(f"Newton backend not available: {e}")
+            logger.warning("Newton backend not available: %s", e)
             return {
                 "success_rate": 0.0,
                 "mean_reward": 0.0,
@@ -1650,7 +1650,7 @@ def evaluate(
                 "error": f"Newton backend requires newton-sim and warp-lang: {e}",
             }
         except Exception as e:
-            logger.warning(f"Newton env creation failed: {e}")
+            logger.warning("Newton env creation failed: %s", e)
             return {
                 "success_rate": 0.0,
                 "mean_reward": 0.0,
@@ -1678,7 +1678,7 @@ def evaluate(
             )
             logger.info("🚀 Using Isaac Sim GPU backend for evaluation")
         except ImportError as e:
-            logger.warning(f"Isaac backend not available: {e}")
+            logger.warning("Isaac backend not available: %s", e)
             return {
                 "success_rate": 0.0,
                 "mean_reward": 0.0,
@@ -1688,7 +1688,7 @@ def evaluate(
                 "error": f"Isaac backend requires Isaac Sim: {e}",
             }
         except Exception as e:
-            logger.warning(f"Isaac env creation failed: {e}")
+            logger.warning("Isaac env creation failed: %s", e)
             return {
                 "success_rate": 0.0,
                 "mean_reward": 0.0,
@@ -1749,7 +1749,7 @@ def evaluate(
                     else:
                         actions = policy.get_actions(obs_dict, task)
                 except Exception as e:
-                    logger.debug(f"Policy error at step {episode_steps}: {e}")
+                    logger.debug("Policy error at step %s: %s", episode_steps, e)
                     # Use zero action on error
                     actions = [{}]
 

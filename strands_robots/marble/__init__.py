@@ -74,7 +74,7 @@ import logging
 import os
 import shutil
 import subprocess
-import tempfile  # noqa: F401
+import tempfile
 import time
 import uuid
 from dataclasses import asdict, dataclass, field
@@ -719,8 +719,8 @@ class MarblePipeline:
     def _try_pxr_conversion(self, ply_path: str, output_path: str) -> bool:
         """Attempt PLY→USD conversion via OpenUSD (pxr)."""
         try:
-            import numpy as np  # noqa: F401
-            from pxr import Gf, Sdf, Usd, UsdGeom  # type: ignore[import-untyped]  # noqa: F401
+            import numpy as np
+            from pxr import Gf, Sdf, Usd, UsdGeom  # type: ignore[import-untyped]
         except ImportError:
             logger.debug("OpenUSD (pxr) not available for PLY conversion.")
             return False
@@ -801,7 +801,7 @@ class MarblePipeline:
         try:
             # Try plyfile first (requires numpy)
             try:
-                import numpy as np  # noqa: F401
+                import numpy as np
                 from plyfile import PlyData  # type: ignore[import-untyped]
 
                 plydata = PlyData.read(ply_path)
@@ -1007,7 +1007,7 @@ class MarblePipeline:
     ) -> bool:
         """Attempt USD scene composition via OpenUSD."""
         try:
-            from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics  # type: ignore  # noqa: F401
+            from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics  # type: ignore
         except ImportError:
             logger.debug("OpenUSD not available for scene composition.")
             return False

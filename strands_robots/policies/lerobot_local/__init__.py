@@ -12,7 +12,7 @@ Usage:
 
 import logging
 import time
-from typing import Any, Dict, List, Optional  # noqa: F401
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 
@@ -55,7 +55,7 @@ def _resolve_policy_class_from_hub(pretrained_name_or_path: str):
                 config = json.load(f)
             policy_type = config.get("type")
         except Exception as e:
-            logger.warning(f"Could not download config.json: {e}")
+            logger.warning("Could not download config.json: %s", e)
 
     if not policy_type:
         raise ValueError(
@@ -190,7 +190,7 @@ class LerobotLocalPolicy(Policy):
     def _load_model(self):
         import warnings
 
-        import torch  # noqa: F401
+        import torch
 
         warnings.filterwarnings("ignore", message=".*Device.*")
 
@@ -206,7 +206,7 @@ class LerobotLocalPolicy(Policy):
         except (ImportError, Exception):
             pass
 
-        logger.info(f"Loading {self.pretrained_name_or_path}...")
+        logger.info("Loading %s...", self.pretrained_name_or_path)
         start = time.time()
 
         # Resolve the correct policy class — zero hardcoding
@@ -260,14 +260,14 @@ class LerobotLocalPolicy(Policy):
                     overrides=self.processor_overrides or {},
                 )
                 if self._processor_bridge.is_active:
-                    logger.info(f"Processor bridge loaded: {self._processor_bridge}")
+                    logger.info("Processor bridge loaded: %s", self._processor_bridge)
                 else:
                     self._processor_bridge = None
                     logger.debug(
                         "No processor configs found, using raw obs/action flow"
                     )
             except Exception as e:
-                logger.debug(f"Processor bridge not loaded: {e}")
+                logger.debug("Processor bridge not loaded: %s", e)
                 self._processor_bridge = None
 
     async def get_actions(
@@ -459,7 +459,7 @@ class LerobotLocalPolicy(Policy):
                                 encoded["attention_mask"].bool().to(self._device)
                             )
                 except Exception as e:
-                    logger.debug(f"VLA tokenization fallback failed: {e}")
+                    logger.debug("VLA tokenization fallback failed: %s", e)
 
             return batch
 
@@ -581,7 +581,7 @@ class LerobotLocalPolicy(Policy):
                             "input_ids"
                         ].to(self._device)
                 except Exception as e:
-                    logger.warning(f"VLA language token injection failed: {e}")
+                    logger.warning("VLA language token injection failed: %s", e)
 
             if needs_task:
                 for feat_name in self._input_features:

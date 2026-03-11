@@ -101,9 +101,9 @@ class DreamgenPolicy(Policy):
         self._policy = None
         self._previous_frame = None
 
-        logger.info(f"🎬 DreamGen Policy: mode={mode}")
-        logger.info(f"🧠 Model: {model_path}")
-        logger.info(f"⚡ Action horizon: {action_horizon}, dim: {action_dim}")
+        logger.info("🎬 DreamGen Policy: mode=%s", mode)
+        logger.info("🧠 Model: %s", model_path)
+        logger.info("⚡ Action horizon: %s, dim: %s", action_horizon, action_dim)
 
     @property
     def provider_name(self) -> str:
@@ -112,7 +112,7 @@ class DreamgenPolicy(Policy):
     def set_robot_state_keys(self, robot_state_keys: List[str]) -> None:
         """Set robot state keys from connected robot."""
         self.robot_state_keys = robot_state_keys
-        logger.info(f"🔧 DreamGen state keys: {self.robot_state_keys}")
+        logger.info("🔧 DreamGen state keys: %s", self.robot_state_keys)
 
     def _load_idm(self):
         """Lazy-load IDM model."""
@@ -120,20 +120,20 @@ class DreamgenPolicy(Policy):
             return
 
         try:
-            import torch  # noqa: F401
-            from transformers import AutoConfig, AutoModel  # noqa: F401
+            import torch
+            from transformers import AutoConfig, AutoModel
 
             # Register IDM model type (GR00T-Dreams registers this)
             try:
-                from gr00t.model.idm import IDM, IDMConfig  # noqa: F401
+                from gr00t.model.idm import IDM, IDMConfig
             except ImportError:
                 logger.warning("GR00T-Dreams IDM not importable, trying AutoModel")
 
-            logger.info(f"🔄 Loading IDM from {self.model_path}...")
+            logger.info("🔄 Loading IDM from %s...", self.model_path)
             self._model = AutoModel.from_pretrained(self.model_path)
             self._model.eval()
             self._model.to(self.device)
-            logger.info(f"✅ IDM loaded on {self.device}")
+            logger.info("✅ IDM loaded on %s", self.device)
 
         except Exception as e:
             raise ImportError(
@@ -156,7 +156,7 @@ class DreamgenPolicy(Policy):
             if not self.modality_transform:
                 raise ValueError("modality_transform required for VLA mode")
 
-            logger.info(f"🔄 Loading GR00T-Dreams VLA from {self.model_path}...")
+            logger.info("🔄 Loading GR00T-Dreams VLA from %s...", self.model_path)
             self._policy = DreamsGr00tPolicy(
                 model_path=self.model_path,
                 embodiment_tag=self.embodiment_tag,
@@ -165,7 +165,7 @@ class DreamgenPolicy(Policy):
                 denoising_steps=self.denoising_steps,
                 device=self.device,
             )
-            logger.info(f"✅ GR00T-Dreams VLA loaded on {self.device}")
+            logger.info("✅ GR00T-Dreams VLA loaded on %s", self.device)
 
         except ImportError as e:
             raise ImportError(
@@ -248,7 +248,7 @@ class DreamgenPolicy(Policy):
             return self._actions_to_dicts(action_pred)
 
         except Exception as e:
-            logger.error(f"❌ IDM inference error: {e}")
+            logger.error("❌ IDM inference error: %s", e)
             self._previous_frame = current_frame
             return self._generate_zero_actions()
 
@@ -269,7 +269,7 @@ class DreamgenPolicy(Policy):
             return self._convert_dreams_actions(action_dict)
 
         except Exception as e:
-            logger.error(f"❌ GR00T-Dreams VLA inference error: {e}")
+            logger.error("❌ GR00T-Dreams VLA inference error: %s", e)
             return self._generate_zero_actions()
 
     def _extract_frame(self, observation_dict: Dict[str, Any]) -> Optional[np.ndarray]:

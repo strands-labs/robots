@@ -32,7 +32,7 @@ Usage:
 import logging
 import os
 from collections import deque
-from dataclasses import dataclass  # noqa: F401
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -155,8 +155,8 @@ class GearSonicPolicy(Policy):
         # Resolve model directory
         self._model_dir = self._resolve_model_dir(model_dir)
 
-        logger.info(f"🦿 GEAR-SONIC policy: mode={mode}, device={device}")
-        logger.info(f"   Models: {self._model_dir}")
+        logger.info("🦿 GEAR-SONIC policy: mode=%s, device=%s", mode, device)
+        logger.info("   Models: %s", self._model_dir)
 
     def _resolve_model_dir(self, model_dir: Optional[str]) -> str:
         """Resolve model directory — use local or download from HF."""
@@ -173,7 +173,7 @@ class GearSonicPolicy(Policy):
                 local_dir=cache_dir,
                 allow_patterns=["*.onnx", "*.yaml"],
             )
-            logger.info(f"Downloaded GEAR-SONIC models to {local}")
+            logger.info("Downloaded GEAR-SONIC models to %s", local)
             return local
         except Exception as e:
             if model_dir:
@@ -199,7 +199,7 @@ class GearSonicPolicy(Policy):
         )
 
         d = self._model_dir
-        logger.info(f"🔄 Loading GEAR-SONIC ONNX models from {d}...")
+        logger.info("🔄 Loading GEAR-SONIC ONNX models from %s...", d)
 
         self._encoder = ort.InferenceSession(
             f"{d}/model_encoder.onnx", providers=providers
