@@ -4,6 +4,7 @@ Consolidates common patterns that were copy-pasted across 10+ policy modules:
 - Image extraction from observation dicts → PIL Image
 - Device auto-detection (CUDA → MPS → CPU)
 - Number parsing from VLM text output → numpy arrays
+- trust_remote_code opt-in gate
 
 These are intentionally simple, stateless helper functions — no classes, no state.
 Import them directly into your policy module.
@@ -17,10 +18,32 @@ Usage:
 """
 
 import logging
+import os
 import re
 from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
+
+_trust_remote_code_warned = False
+
+
+def check_trust_remote_code(model_id: str = "") -> None:
+    """Log a warning the first time trust_remote_code is used.
+
+    Set ``STRANDS_TRUST_REMOTE_CODE=1`` to silence the warning.
+    """
+    global _trust_remote_code_warned
+    if os.environ.get("STRANDS_TRUST_REMOTE_CODE", "").strip() in ("1", "true", "yes"):
+        return
+    if _trust_remote_code_warned:
+        return
+    _trust_remote_code_warned = True
+    logger.warning(
+        "Loading %s with trust_remote_code=True. This executes code from the "
+        "model repository. Only load models you trust. Set "
+        "STRANDS_TRUST_REMOTE_CODE=1 to silence this warning.",
+        model_id or "model",
+    )
 
 
 def extract_pil_image(
@@ -142,4 +165,4 @@ def parse_numbers_from_text(
     return np.array(values[:action_dim], dtype=np.float32)
 
 
-__all__ = ["extract_pil_image", "detect_device", "parse_numbers_from_text"]
+__all__ = ["check_trust_remote_code", "extract_pil_image", "detect_device", "parse_numbers_from_text"]

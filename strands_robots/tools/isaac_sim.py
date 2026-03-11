@@ -38,6 +38,7 @@ Actions:
 import json
 import logging
 import os
+import tempfile
 import time
 from typing import Any, Dict, Optional
 
@@ -48,6 +49,16 @@ logger = logging.getLogger(__name__)
 # Global backend instance
 _backend = None
 _backend_config = None
+_state_dir = None
+
+
+def _get_state_dir() -> str:
+    """Return a per-process temp directory for state files."""
+    global _state_dir
+    if _state_dir is None or not os.path.isdir(_state_dir):
+        _state_dir = tempfile.mkdtemp(prefix="strands_isaac_sim_")
+    return _state_dir
+
 _isaac_env = None
 
 
@@ -398,7 +409,7 @@ def isaac_sim(
 
         # ── save_state / load_state ───────────────────────────────
         elif action == "save_state":
-            path = output_path or "/tmp/isaac_sim_state.json"
+            path = output_path or os.path.join(_get_state_dir(), "isaac_sim_state.json")
             if _backend and _backend._robot:
                 obs = _backend.get_observation()
                 import json as json_mod
@@ -428,7 +439,7 @@ def isaac_sim(
             }
 
         elif action == "load_state":
-            path = input_path or "/tmp/isaac_sim_state.json"
+            path = input_path or os.path.join(_get_state_dir(), "isaac_sim_state.json")
             if not os.path.exists(path):
                 return {
                     "status": "error",

@@ -10,6 +10,7 @@ This tool provides comprehensive pose management for robotic arms, including:
 
 import json
 import logging
+import re
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -59,7 +60,8 @@ class PoseManager:
             else Path.cwd() / ".strands_robots" / "poses"
         )
         self.storage_dir.mkdir(parents=True, exist_ok=True)
-        self.pose_file = self.storage_dir / f"{robot_id}_poses.json"
+        safe_id = re.sub(r"[^\w\-.]", "_", robot_id)
+        self.pose_file = self.storage_dir / f"{safe_id}_poses.json"
         self.poses: Dict[str, RobotPose] = {}
         self._load_poses()
 

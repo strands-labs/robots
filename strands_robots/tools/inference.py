@@ -18,6 +18,7 @@ import os
 import signal
 import socket
 import subprocess
+import tempfile
 import time
 from typing import Any, Dict, Optional
 
@@ -224,18 +225,25 @@ def _launch_lerobot(model_id: str, port: int, device: str) -> Dict:
 
 def _launch_http_serve(model_id: str, port: int, host: str, provider: str) -> Dict:
     """Launch a minimal HTTP inference server for generic HF models."""
-    script_dir = "/tmp/strands_robots_inference"
-    os.makedirs(script_dir, exist_ok=True)
-    script = os.path.join(script_dir, f"serve_{provider}_{port}.py")
+    script_dir = tempfile.mkdtemp(prefix="strands_robots_inference_")
+    script = os.path.join(script_dir, "serve.py")
 
-    with open(script, "w") as f:
-        f.write(f'''#!/usr/bin/env python3
-"""Auto-generated HTTP inference server for {provider}"""
-import json, logging, numpy as np
+    # Values are passed via environment variables to avoid code injection
+    # through model_id/provider strings interpolated into source code.
+    _SERVE_SCRIPT = '''\
+#!/usr/bin/env python3
+"""Auto-generated HTTP inference server."""
+import json, logging, os, numpy as np
 from http.server import HTTPServer, BaseHTTPRequestHandler
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("{provider}")
-MODEL, _model, _proc = "{model_id}", None, None
+
+MODEL = os.environ["STRANDS_SERVE_MODEL_ID"]
+PROVIDER = os.environ["STRANDS_SERVE_PROVIDER"]
+HOST = os.environ.get("STRANDS_SERVE_HOST", "127.0.0.1")
+PORT = int(os.environ["STRANDS_SERVE_PORT"])
+
+logger = logging.getLogger(PROVIDER)
+_model, _proc = None, None
 
 def load():
     global _model, _proc
@@ -253,25 +261,36 @@ class H(BaseHTTPRequestHandler):
         try:
             load()
             self.send_response(200); self.send_header("Content-Type","application/json"); self.end_headers()
-            self.wfile.write(json.dumps({{"actions":[[0.0]*7+[1.0]],"status":"ok"}}).encode())
+            self.wfile.write(json.dumps({"actions":[[0.0]*7+[1.0]],"status":"ok"}).encode())
         except Exception as e:
             self.send_response(500); self.end_headers()
-            self.wfile.write(json.dumps({{"error":str(e)}}).encode())
+            self.wfile.write(json.dumps({"error":str(e)}).encode())
     def do_GET(self):
         self.send_response(200); self.send_header("Content-Type","application/json"); self.end_headers()
-        self.wfile.write(json.dumps({{"provider":"{provider}","model":MODEL,"status":"running"}}).encode())
+        self.wfile.write(json.dumps({"provider":PROVIDER,"model":MODEL,"status":"running"}).encode())
     def log_message(self, fmt, *a): logger.info(fmt % a)
 
 if __name__ == "__main__":
-    logger.info(f"Starting {{MODEL}} on {host}:{port}")
-    HTTPServer(("{host}", {port}), H).serve_forever()
-''')
+    logger.info(f"Starting {MODEL} on {HOST}:{PORT}")
+    HTTPServer((HOST, PORT), H).serve_forever()
+'''
 
+    with open(script, "w") as f:
+        f.write(_SERVE_SCRIPT)
+
+    env = {
+        **os.environ,
+        "STRANDS_SERVE_MODEL_ID": model_id,
+        "STRANDS_SERVE_PROVIDER": provider,
+        "STRANDS_SERVE_HOST": host,
+        "STRANDS_SERVE_PORT": str(port),
+    }
     proc = subprocess.Popen(
         ["python", script],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         start_new_session=True,
+        env=env,
     )
     return {"pid": proc.pid, "cmd": f"python {script}"}
 
@@ -341,7 +360,7 @@ def inference(
     checkpoint_path: str = None,
     model_id: str = None,
     port: int = None,
-    host: str = "0.0.0.0",
+    host: str = "127.0.0.1",
     num_gpus: int = None,
     timeout: int = 120,
     # Provider-specific (passed through as kwargs)
@@ -702,12 +721,9 @@ def _generate_hf_serve_script(
     model_id: str, port: int, host: str, provider: str
 ) -> str:
     """Generate an HTTP serve script, return path."""
-    script_dir = "/tmp/strands_robots_inference"
-    os.makedirs(script_dir, exist_ok=True)
-    script = os.path.join(script_dir, f"serve_{provider}_{port}.py")
-    # Reuse launch logic to create script, but we just return path
-    _launch_http_serve(model_id, port, host, provider)
-    return script
+    result = _launch_http_serve(model_id, port, host, provider)
+    # Extract script path from the command
+    return result["cmd"].replace("python ", "")
 
 
 def _start_dreamzero(

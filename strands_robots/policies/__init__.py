@@ -217,7 +217,9 @@ def create_policy(provider: str, **kwargs) -> Policy:
     .. warning:: Security — trust_remote_code
 
         Most HF VLA providers load models with ``trust_remote_code=True``.
-        Only load models from organisations you trust.
+        Only load models from organisations you trust. Set
+        ``STRANDS_TRUST_REMOTE_CODE=1`` to acknowledge and silence the
+        runtime warning.
     """
     # 1. Check runtime registry first (user-registered providers)
     resolved_name = _runtime_aliases.get(provider, provider)

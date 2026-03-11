@@ -338,7 +338,7 @@ class RecordingVisualizer:
 
         try:
             self._web_server = socketserver.TCPServer(
-                ("0.0.0.0", self.port), DashboardHandler
+                ("127.0.0.1", self.port), DashboardHandler
             )
             thread = threading.Thread(
                 target=self._web_server.serve_forever, daemon=True

@@ -424,7 +424,7 @@ class StereoDepthPipeline:
         logger.info("Loading stereo model from %s", model_path)
 
         t0 = time.monotonic()
-        model = torch.load(model_path, map_location="cpu", weights_only=False)
+        model = torch.load(model_path, map_location="cpu", weights_only=True)
         model.args.valid_iters = self.config.valid_iters
         model.args.max_disp = self.config.max_disp
 

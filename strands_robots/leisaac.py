@@ -274,6 +274,9 @@ class LeIsaacEnv:
         try:
             from lerobot.envs.factory import make_env
 
+            from strands_robots.policies._utils import check_trust_remote_code
+
+            check_trust_remote_code(self.env_script)
             logger.info(f"Loading from EnvHub: {self.env_script}")
             envs_dict = make_env(
                 self.env_script,

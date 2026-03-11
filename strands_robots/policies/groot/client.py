@@ -6,11 +6,14 @@ imported even when they are not installed (local-mode does not need them).
 
 import io
 import json
+import logging
 from typing import Any, Dict
 
 import numpy as np
 
 from .data_config import ModalityConfig
+
+logger = logging.getLogger(__name__)
 
 # Lazy imports
 _zmq = None
@@ -74,15 +77,22 @@ class BaseInferenceClient:
         timeout_ms: int = 15000,
         api_token: str = None,
     ):
-        # TODO(security): api_token is sent in plaintext over TCP.  ZMQ does not
-        # provide transport encryption by default.  Consider adding CurveZMQ or a
-        # TLS tunnel for non-localhost deployments.
         _ensure_deps()
         self.context = _zmq.Context()
         self.host = host
         self.port = port
         self.timeout_ms = timeout_ms
         self.api_token = api_token
+
+        if api_token and host not in ("localhost", "127.0.0.1", "::1"):
+            logger.warning(
+                "API token will be sent in plaintext over TCP to %s:%s. "
+                "ZMQ does not encrypt traffic by default. Consider using a "
+                "TLS tunnel or SSH port-forward for non-localhost deployments.",
+                host,
+                port,
+            )
+
         self._init_socket()
 
     def _init_socket(self):

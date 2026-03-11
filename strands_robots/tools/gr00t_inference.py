@@ -23,7 +23,7 @@ def gr00t_inference(
     data_config: str = "fourier_gr1_arms_only",
     embodiment_tag: str = "gr1",
     denoising_steps: int = 4,
-    host: str = "0.0.0.0",
+    host: str = "127.0.0.1",
     container_name: str = None,
     timeout: int = 60,
     use_tensorrt: bool = False,
