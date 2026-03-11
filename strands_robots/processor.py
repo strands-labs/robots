@@ -38,6 +38,8 @@ from typing import Any, Dict, List, Optional
 
 import numpy as np
 
+from strands_robots.policies import Policy
+
 logger = logging.getLogger(__name__)
 
 # Standard pipeline config filenames used by LeRobot
@@ -154,9 +156,9 @@ class ProcessorBridge:
                 f"{len(preprocessor)} steps"
             )
         except (FileNotFoundError, ValueError) as e:
-            logger.debug(f"No preprocessor found: {e}")
+            logger.debug("No preprocessor found: %s", e)
         except Exception as e:
-            logger.warning(f"Failed to load preprocessor: {e}")
+            logger.warning("Failed to load preprocessor: %s", e)
 
         # Load postprocessor
         try:
@@ -170,9 +172,9 @@ class ProcessorBridge:
                 f"{len(postprocessor)} steps"
             )
         except (FileNotFoundError, ValueError) as e:
-            logger.debug(f"No postprocessor found: {e}")
+            logger.debug("No postprocessor found: %s", e)
         except Exception as e:
-            logger.warning(f"Failed to load postprocessor: {e}")
+            logger.warning("Failed to load postprocessor: %s", e)
 
         return cls(
             preprocessor=preprocessor,
@@ -217,7 +219,7 @@ class ProcessorBridge:
             processed = self._preprocessor.process_observation(observation)
             return processed
         except Exception as e:
-            logger.warning(f"Preprocessor failed, passing raw observation: {e}")
+            logger.warning("Preprocessor failed, passing raw observation: %s", e)
             return observation
 
     def postprocess(self, action: Any) -> Any:
@@ -238,7 +240,7 @@ class ProcessorBridge:
             processed = self._postprocessor.process_action(action)
             return processed
         except Exception as e:
-            logger.warning(f"Postprocessor failed, passing raw action: {e}")
+            logger.warning("Postprocessor failed, passing raw action: %s", e)
             return action
 
     def process_full_transition(self, transition: Dict[str, Any]) -> Dict[str, Any]:
@@ -259,7 +261,7 @@ class ProcessorBridge:
         try:
             return self._preprocessor(transition)
         except Exception as e:
-            logger.warning(f"Full transition processing failed: {e}")
+            logger.warning("Full transition processing failed: %s", e)
             return transition
 
     def reset(self):
@@ -315,12 +317,14 @@ class ProcessorBridge:
         return f"ProcessorBridge({pre}, {post})"
 
 
-class ProcessedPolicy:
+class ProcessedPolicy(Policy):
     """Wraps a strands-robots Policy with automatic pre/post processing.
 
     Transparently applies the ProcessorBridge to observations before inference
     and to actions after inference. The wrapped policy works identically to
     the original but with normalized/processed data.
+
+    Inherits from Policy so ``isinstance(wrapped, Policy)`` returns True.
     """
 
     def __init__(self, policy, bridge: ProcessorBridge):
