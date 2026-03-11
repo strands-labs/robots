@@ -81,7 +81,7 @@ def _frame_to_image_content(frame: np.ndarray, format: str = "jpg") -> Dict[str,
         return {"image": {"format": image_format, "source": {"bytes": image_bytes}}}
 
     except Exception as e:
-        logger.error(f"Failed to convert frame to image content: {e}")
+        logger.error("Failed to convert frame to image content: %s", e)
         return {"text": f"❌ Failed to encode image: {str(e)}"}
 
 
@@ -284,7 +284,7 @@ def _discover_cameras() -> Dict[str, Any]:
             try:
                 realsense_cameras = RealSenseCamera.find_cameras()
             except Exception as e:
-                logger.warning(f"RealSense camera discovery failed: {e}")
+                logger.warning("RealSense camera discovery failed: %s", e)
 
         total_cameras = len(opencv_cameras) + len(realsense_cameras)
 
@@ -669,8 +669,9 @@ def _record_video_sequence(
                 if frames_captured % fps == 0:
                     elapsed = time.time() - start_time
                     remaining = capture_duration - elapsed
-                    print(
-                        f"Recording... {elapsed:.1f}s / {capture_duration:.1f}s ({remaining:.1f}s remaining)"
+                    logger.info(
+                        "Recording... %.1fs / %.1fs (%.1fs remaining)",
+                        elapsed, capture_duration, remaining,
                     )
 
         finally:
@@ -726,8 +727,8 @@ def _preview_camera_live(
         fps_counter_start = time.time()
         fps_frame_count = 0
 
-        print(f"🎥 Starting live preview from {camera_type.upper()} camera {camera_id}")
-        print(f"⏱️  Duration: {preview_duration}s | Press 'q' to quit early")
+        logger.info("Starting live preview from %s camera %s", camera_type.upper(), camera_id)
+        logger.info("Duration: %ds | Press 'q' to quit early", preview_duration)
 
         try:
             while time.time() - start_time < preview_duration:
@@ -763,13 +764,13 @@ def _preview_camera_live(
                 # Calculate and display FPS every second
                 if time.time() - fps_counter_start >= 1.0:
                     actual_fps = fps_frame_count / (time.time() - fps_counter_start)
-                    print(f"📊 Live FPS: {actual_fps:.1f} | Frames: {frames_displayed}")
+                    logger.info("Live FPS: %.1f | Frames: %d", actual_fps, frames_displayed)
                     fps_counter_start = time.time()
                     fps_frame_count = 0
 
                 # Check for quit key
                 if cv2.waitKey(1) & 0xFF == ord("q"):
-                    print("👋 Preview stopped by user")
+                    logger.info("Preview stopped by user")
                     break
 
                 # Maintain target FPS

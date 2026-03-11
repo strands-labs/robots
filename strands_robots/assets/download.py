@@ -62,7 +62,7 @@ def download_robots(names=None, category=None, force=False) -> Dict[str, Any]:
             if canonical in _ROBOT_MODELS:
                 resolved_names.append(canonical)
             else:
-                logger.warning(f"Unknown robot: {n} (resolved to: {canonical})")
+                logger.warning("Unknown robot: %s (resolved to: %s)", n, canonical)
         robots = {n: _ROBOT_MODELS[n] for n in resolved_names}
     elif category:
         robots = {n: m for n, m in _ROBOT_MODELS.items() if m["category"] == category}
@@ -119,8 +119,8 @@ def download_robots(names=None, category=None, force=False) -> Dict[str, Any]:
             "message": f"All {len(robots)} robots already downloaded. Use force=True to re-download.",
         }
 
-    print(f"Downloading {len(to_download)} robot(s) from MuJoCo Menagerie...")
-    logger.info(f"Downloading {len(to_download)} robots: {list(to_download.keys())}")
+    logger.info("Downloading %d robot(s) from MuJoCo Menagerie...", len(to_download))
+    logger.info("Downloading %d robots: %s", len(to_download), list(to_download.keys()))
 
     downloaded = []
     failed = []
@@ -128,7 +128,7 @@ def download_robots(names=None, category=None, force=False) -> Dict[str, Any]:
     # Clone menagerie to temp dir (shallow)
     with tempfile.TemporaryDirectory() as tmpdir:
         clone_dir = os.path.join(tmpdir, "mujoco_menagerie")
-        print(f"Cloning {MENAGERIE_REPO}...")
+        logger.info("Cloning %s...", MENAGERIE_REPO)
 
         try:
             subprocess.run(
@@ -158,7 +158,7 @@ def download_robots(names=None, category=None, force=False) -> Dict[str, Any]:
             dst = assets_dir / info["dir"]
 
             if not src.exists():
-                print(f"  ⚠️  {name}: source dir not found ({info['dir']})")
+                logger.warning("%s: source dir not found (%s)", name, info['dir'])
                 failed.append(name)
                 continue
 
@@ -174,16 +174,15 @@ def download_robots(names=None, category=None, force=False) -> Dict[str, Any]:
                         f.unlink()
 
                 downloaded.append(name)
-                print(f"  ✅ {name:<20s} ({info['description']})")
+                logger.info("Downloaded %s (%s)", name, info['description'])
             except Exception as e:
                 failed.append(name)
-                print(f"  ❌ {name}: {e}")
-                logger.error(f"Failed to download {name}: {e}")
+                logger.error("Failed to download %s: %s", name, e)
 
-    print(
-        f"\nDone! {len(downloaded)} downloaded, {len(skipped)} skipped, {len(failed)} failed."
+    logger.info(
+        "Done! %d downloaded, %d skipped, %d failed.", len(downloaded), len(skipped), len(failed)
     )
-    print(f"Assets saved to: {assets_dir}")
+    logger.info("Assets saved to: %s", assets_dir)
 
     return {
         "downloaded": len(downloaded),
@@ -301,7 +300,7 @@ def download_assets(
             }
 
     except Exception as e:
-        logger.error(f"download_assets error: {e}")
+        logger.error("download_assets error: %s", e)
         return {
             "status": "error",
             "content": [{"text": f"❌ Error: {str(e)}"}],

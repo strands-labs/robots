@@ -98,7 +98,7 @@ class RecordingVisualizer:
 
         self._thread = threading.Thread(target=self._display_loop, daemon=True)
         self._thread.start()
-        logger.info(f"Visualizer started (mode={self.mode})")
+        logger.info("Visualizer started (mode=%s)", self.mode)
 
     def stop(self):
         """Stop the visualization."""
@@ -177,7 +177,7 @@ class RecordingVisualizer:
                     self._render_json()
                 # web mode is event-driven, no polling needed
             except Exception as e:
-                logger.debug(f"Visualizer render error: {e}")
+                logger.debug("Visualizer render error: %s", e)
 
             time.sleep(1.0 / self.refresh_rate)
 
@@ -295,7 +295,7 @@ class RecordingVisualizer:
             logger.warning("matplotlib not available, falling back to terminal mode")
             self.mode = "terminal"
         except Exception as e:
-            logger.debug(f"Matplotlib render error: {e}")
+            logger.debug("Matplotlib render error: %s", e)
 
     def _start_web_server(self):
         """Start a simple HTTP server for web-based visualization."""
@@ -344,10 +344,9 @@ class RecordingVisualizer:
                 target=self._web_server.serve_forever, daemon=True
             )
             thread.start()
-            logger.info(f"Visualizer web dashboard: http://localhost:{self.port}")
-            print(f"🎬 Live dashboard: http://localhost:{self.port}")
+            logger.info("Visualizer web dashboard: http://localhost:%d", self.port)
         except Exception as e:
-            logger.error(f"Web server failed: {e}")
+            logger.error("Web server failed: %s", e)
 
     def get_stats_dict(self) -> Dict[str, Any]:
         """Get current stats as dict (for tool integration)."""
