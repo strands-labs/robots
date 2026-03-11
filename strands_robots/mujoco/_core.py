@@ -13,7 +13,8 @@ from strands.types._events import ToolResultEvent
 from strands.types.tools import ToolSpec, ToolUse
 
 from ._rendering import apply_sim_action, get_sim_observation
-from ._tool import build_tool_spec, dispatch_action, stream as _stream
+from ._tool import build_tool_spec, dispatch_action
+from ._tool import stream as _stream
 from ._types import SimWorld
 from ._viewer import close_viewer_internal
 

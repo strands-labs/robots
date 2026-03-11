@@ -7,7 +7,7 @@ import os
 import shutil
 import tempfile
 import xml.etree.ElementTree as ET
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List
 
 from ._builder import MJCFBuilder
 from ._registry import _ensure_mujoco

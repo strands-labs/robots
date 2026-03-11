@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List
 
 from ._builder import MJCFBuilder
 from ._registry import _ensure_mujoco
@@ -61,7 +61,7 @@ def create_world(
     # Build initial empty scene
     compile_world(sim)
 
-    from ._registry import _HAS_ASSET_MANAGER, _URDF_REGISTRY
+    from ._registry import _URDF_REGISTRY
 
     try:
         from strands_robots.assets import list_available_robots as _list_menagerie_robots

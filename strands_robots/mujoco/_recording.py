@@ -10,8 +10,6 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict
 
-import numpy as np
-
 from ._registry import _ensure_mujoco
 from ._rendering import apply_sim_action, get_renderer, get_sim_observation
 
