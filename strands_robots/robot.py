@@ -144,7 +144,7 @@ class Robot(AgentTool):
         # Initialize robot using lerobot's abstraction
         self.robot = self._initialize_robot(robot, cameras, **kwargs)
 
-        logger.info(f"🤖 {tool_name} initialized with async capabilities")
+        logger.info("🤖 %s initialized with async capabilities", tool_name)
         logger.info(
             f"📱 Robot: {self.robot.name} (type: {getattr(self.robot, 'robot_type', 'unknown')})"
         )
@@ -155,14 +155,14 @@ class Robot(AgentTool):
         # Get camera info if available
         if hasattr(self.robot, "config") and hasattr(self.robot.config, "cameras"):
             cameras_list = list(self.robot.config.cameras.keys())
-            logger.info(f"📹 Cameras: {cameras_list}")
+            logger.info("📹 Cameras: %s", cameras_list)
 
         # Get features from LeRobot robot if available
         self._observation_features = getattr(self.robot, "observation_features", {})
         self._action_features = getattr(self.robot, "action_features", {})
 
         if data_config:
-            logger.info(f"⚙️ Data config: {data_config}")
+            logger.info("⚙️ Data config: %s", data_config)
 
         # Zenoh mesh — every Robot is a peer by default
         try:
@@ -170,7 +170,7 @@ class Robot(AgentTool):
 
             self.mesh = init_mesh(self, peer_id=peer_id, peer_type="robot", mesh=mesh)
         except Exception as e:
-            logger.debug(f"Mesh init skipped: {e}")
+            logger.debug("Mesh init skipped: %s", e)
             self.mesh = None
 
     def _initialize_robot(
@@ -387,10 +387,10 @@ class Robot(AgentTool):
 
             # Check if already connected
             if self.robot.is_connected:
-                logger.info(f"✅ {self.robot} already connected")
+                logger.info("✅ %s already connected", self.robot)
                 return True, ""
 
-            logger.info(f"🔌 Connecting to {self.robot}...")
+            logger.info("🔌 Connecting to %s...", self.robot)
 
             # Handle robot connection using lerobot's error handling patterns
             try:
@@ -401,7 +401,7 @@ class Robot(AgentTool):
 
             except DeviceAlreadyConnectedError:
                 # This is expected and fine - robot is already connected
-                logger.info(f"✅ {self.robot} was already connected")
+                logger.info("✅ %s was already connected", self.robot)
 
             except Exception:
                 raise
@@ -409,7 +409,7 @@ class Robot(AgentTool):
             # Final connection check
             if not self.robot.is_connected:
                 error_msg = f"Failed to connect to {self.robot}"
-                logger.error(f"❌ {error_msg}")
+                logger.error("❌ %s", error_msg)
                 return False, error_msg
 
             # Check robot calibration
@@ -418,15 +418,15 @@ class Robot(AgentTool):
                     f"Robot {self.robot} is not calibrated. Please calibrate the robot manually"
                     " first using LeRobot's calibration process (lerobot-calibrate)"
                 )
-                logger.error(f"❌ {error_msg}")
+                logger.error("❌ %s", error_msg)
                 return False, error_msg
 
-            logger.info(f"✅ {self.robot} connected and ready")
+            logger.info("✅ %s connected and ready", self.robot)
             return True, ""
 
         except Exception as e:
             error_msg = f"Robot connection failed: {e}. Ensure robot is calibrated and accessible on the specified port"
-            logger.error(f"❌ {error_msg}")
+            logger.error("❌ %s", error_msg)
             return False, error_msg
 
     async def _initialize_policy(self, policy: Policy) -> bool:
@@ -451,7 +451,7 @@ class Robot(AgentTool):
             return True
 
         except Exception as e:
-            logger.error(f"❌ Failed to initialize policy: {e}")
+            logger.error("❌ Failed to initialize policy: %s", e)
             return False
 
     async def _execute_task_async(
@@ -500,8 +500,8 @@ class Robot(AgentTool):
                 )
                 return
 
-            logger.info(f"🎯 Starting task: '{instruction}' on {self.tool_name_str}")
-            logger.info(f"🧠 Using policy: {policy_provider}")
+            logger.info("🎯 Starting task: '%s' on %s", instruction, self.tool_name_str)
+            logger.info("🧠 Using policy: %s", policy_provider)
 
             self._task_state.update(status=TaskStatus.RUNNING)
             start_time = time.time()
@@ -557,7 +557,7 @@ class Robot(AgentTool):
                 )
 
         except Exception as e:
-            logger.error(f"❌ Task execution failed: {e}")
+            logger.error("❌ Task execution failed: %s", e)
             self._task_state.update(status=TaskStatus.ERROR, error_message=str(e))
 
     def _execute_task_sync(
@@ -712,7 +712,7 @@ class Robot(AgentTool):
         if self._task_state.task_future:
             self._task_state.task_future.cancel()
 
-        logger.info(f"🛑 Task stopped: {self._task_state.instruction}")
+        logger.info("🛑 Task stopped: %s", self._task_state.instruction)
 
         return {
             "status": "success",
@@ -765,11 +765,12 @@ class Robot(AgentTool):
 
         # Try to use DatasetRecorder (LeRobotDataset)
         try:
-            from .dataset_recorder import HAS_LEROBOT_DATASET, DatasetRecorder
+            from .dataset_recorder import DatasetRecorder, has_lerobot_dataset
         except ImportError:
-            HAS_LEROBOT_DATASET = False
+            def has_lerobot_dataset():
+                return False
 
-        if not HAS_LEROBOT_DATASET:
+        if not has_lerobot_dataset():
             return {
                 "status": "error",
                 "content": [
@@ -926,11 +927,13 @@ class Robot(AgentTool):
         import asyncio
 
         async def _replay_async():
-            # Load dataset
+            # Load dataset and resolve episode frame range
             try:
-                from lerobot.datasets.lerobot_dataset import LeRobotDataset
+                from .dataset_recorder import load_lerobot_episode
 
-                ds = LeRobotDataset(repo_id=repo_id, root=root)
+                ds, episode_start, episode_length = load_lerobot_episode(
+                    repo_id, episode, root
+                )
             except ImportError:
                 return {
                     "status": "error",
@@ -940,81 +943,10 @@ class Robot(AgentTool):
                         }
                     ],
                 }
-            except Exception as e:
+            except (ValueError, Exception) as e:
                 return {
                     "status": "error",
-                    "content": [
-                        {"text": f"❌ Failed to load dataset '{repo_id}': {e}"}
-                    ],
-                }
-
-            # Get episode info
-            num_episodes = (
-                ds.meta.total_episodes
-                if hasattr(ds.meta, "total_episodes")
-                else len(ds.meta.episodes)
-            )
-            if episode >= num_episodes:
-                return {
-                    "status": "error",
-                    "content": [
-                        {
-                            "text": f"❌ Episode {episode} out of range (0-{num_episodes - 1})"
-                        }
-                    ],
-                }
-
-            # Resolve the frame range for the target episode.
-            # LeRobot datasets store frames contiguously; we need the
-            # global start index and length for this episode.
-            #
-            # Strategy:
-            #   1. episode_data_index (LeRobot v2) — O(1) lookup
-            #   2. meta.episodes (LeRobot v1) — sum lengths
-            #   3. Fallback: linear scan of episode_index per frame
-            episode_start = 0
-            episode_length = 0
-            try:
-                if hasattr(ds, "episode_data_index"):
-                    # LeRobot v2: direct from/to index table
-                    from_idx = ds.episode_data_index["from"][episode].item()
-                    to_idx = ds.episode_data_index["to"][episode].item()
-                    episode_start = from_idx
-                    episode_length = to_idx - from_idx
-                else:
-                    # LeRobot v1: accumulate lengths from episode metadata
-                    for i in range(episode):
-                        episode_info = (
-                            ds.meta.episodes[i] if hasattr(ds.meta, "episodes") else {}
-                        )
-                        episode_start += episode_info.get("length", 0)
-                    episode_info = (
-                        ds.meta.episodes[episode]
-                        if hasattr(ds.meta, "episodes")
-                        else {}
-                    )
-                    episode_length = episode_info.get("length", 0)
-            except Exception:
-                # Last resort: scan frames to find episode boundaries
-                episode_length = 0
-                for idx in range(len(ds)):
-                    frame = ds[idx]
-                    frame_episode = (
-                        frame.get("episode_index", -1) if hasattr(frame, "get") else -1
-                    )
-                    if hasattr(frame_episode, "item"):
-                        frame_episode = frame_episode.item()
-                    if frame_episode == episode:
-                        if episode_length == 0:
-                            episode_start = idx
-                        episode_length += 1
-                    elif episode_length > 0:
-                        break
-
-            if episode_length == 0:
-                return {
-                    "status": "error",
-                    "content": [{"text": f"❌ Episode {episode} has no frames"}],
+                    "content": [{"text": f"❌ {e}"}],
                 }
 
             # Connect robot
@@ -1097,7 +1029,7 @@ class Robot(AgentTool):
                         await asyncio.sleep(sleep_time)
 
             except Exception as e:
-                logger.error(f"Replay error at frame {frames_sent}: {e}")
+                logger.error("Replay error at frame %s: %s", frames_sent, e)
             finally:
                 self._task_state.status = TaskStatus.IDLE
 
@@ -1493,7 +1425,7 @@ class Robot(AgentTool):
                 )
 
         except Exception as e:
-            logger.error(f"❌ {self.tool_name_str} error: {e}")
+            logger.error("❌ %s error: %s", self.tool_name_str, e)
             yield ToolResultEvent(
                 {
                     "toolUseId": tool_use.get("toolUseId", ""),
@@ -1519,10 +1451,16 @@ class Robot(AgentTool):
             # Shutdown executor
             self._executor.shutdown(wait=True)
 
-            logger.info(f"🧹 {self.tool_name_str} cleanup completed")
+            logger.info("🧹 %s cleanup completed", self.tool_name_str)
 
         except Exception as e:
-            logger.error(f"❌ Cleanup error for {self.tool_name_str}: {e}")
+            logger.error("❌ Cleanup error for %s: %s", self.tool_name_str, e)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.cleanup()
 
     def __del__(self):
         """Destructor to ensure cleanup."""
@@ -1570,7 +1508,7 @@ class Robot(AgentTool):
             return status_data
 
         except Exception as e:
-            logger.error(f"❌ Error getting status for {self.tool_name_str}: {e}")
+            logger.error("❌ Error getting status for %s: %s", self.tool_name_str, e)
             return {
                 "robot_name": self.tool_name_str,
                 "error": str(e),
@@ -1588,7 +1526,7 @@ class Robot(AgentTool):
                 await asyncio.to_thread(self.robot.disconnect)
 
             self.cleanup()
-            logger.info(f"🛑 {self.tool_name_str} stopped and disconnected")
+            logger.info("🛑 %s stopped and disconnected", self.tool_name_str)
 
         except Exception as e:
-            logger.error(f"❌ Error stopping robot: {e}")
+            logger.error("❌ Error stopping robot: %s", e)

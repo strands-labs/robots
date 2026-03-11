@@ -74,9 +74,11 @@ from strands_robots._async_utils import _resolve_coroutine
 
 # LeRobotDataset recording (optional — falls back to JSON if not installed)
 try:
-    from .dataset_recorder import HAS_LEROBOT_DATASET, DatasetRecorder
+    from .dataset_recorder import DatasetRecorder, has_lerobot_dataset
 except ImportError:
-    HAS_LEROBOT_DATASET = False
+    def has_lerobot_dataset():
+        return False
+
     DatasetRecorder = None
 
 logger = logging.getLogger(__name__)
@@ -247,7 +249,7 @@ def register_urdf(data_config: str, urdf_path: str):
         urdf_path: Absolute path or relative filename to the URDF/MJCF file
     """
     _URDF_REGISTRY[data_config] = urdf_path
-    logger.info(f"📋 Registered model for '{data_config}': {urdf_path}")
+    logger.info("📋 Registered model for '%s': %s", data_config, urdf_path)
 
 
 def resolve_model(name: str, prefer_scene: bool = True) -> Optional[str]:
@@ -320,7 +322,7 @@ def resolve_urdf(data_config: str) -> Optional[str]:
     except ImportError:
         pass
 
-    logger.debug(f"URDF not found for '{data_config}' in search paths")
+    logger.debug("URDF not found for '%s' in search paths", data_config)
     return None
 
 
@@ -459,6 +461,8 @@ class SimWorld:
     _trajectory: List[TrajectoryStep] = field(default_factory=list)
     # LeRobotDataset recorder (training-ready format)
     _dataset_recorder: Any = None
+    # Temp directory for scene composition (cleaned up on __del__)
+    _tmpdir: Any = None
 
 
 # ===================================================================
@@ -630,7 +634,8 @@ class MJCFBuilder:
         Joint/actuator names are namespaced to avoid collisions.
         """
         mj = _ensure_mujoco()
-        tmpdir = tempfile.mkdtemp(prefix="strands_sim_")
+        world._tmpdir = tempfile.TemporaryDirectory(prefix="strands_sim_")
+        tmpdir = world._tmpdir.name
 
         # Convert each robot URDF to MJCF and save
         robot_xmls = {}
@@ -642,9 +647,9 @@ class MJCFBuilder:
                 robot_xml_path = os.path.join(tmpdir, f"{robot_name}.xml")
                 mj.mj_saveLastXML(robot_xml_path, model)
                 robot_xmls[robot_name] = robot_xml_path
-                logger.debug(f"Converted {robot.urdf_path} → {robot_xml_path}")
+                logger.debug("Converted %s → %s", robot.urdf_path, robot_xml_path)
             except Exception as e:
-                logger.error(f"Failed to convert URDF for '{robot_name}': {e}")
+                logger.error("Failed to convert URDF for '%s': %s", robot_name, e)
                 raise
 
         # Build master scene XML
@@ -824,7 +829,7 @@ class Simulation(AgentTool):
         self._renderers: Dict[tuple, Any] = {}
         self._renderer_model = None  # Track which model the renderers are for
 
-        logger.info(f"🎮 Simulation tool '{tool_name}' initialized")
+        logger.info("🎮 Simulation tool '%s' initialized", tool_name)
 
         # Zenoh mesh — every Simulation is a peer by default
         try:
@@ -832,7 +837,7 @@ class Simulation(AgentTool):
 
             self.mesh = init_mesh(self, peer_id=peer_id, peer_type="sim", mesh=mesh)
         except Exception as e:
-            logger.debug(f"Mesh init skipped: {e}")
+            logger.debug("Mesh init skipped: %s", e)
             self.mesh = None
 
     # -------------------------------------------------------------------
@@ -1034,7 +1039,7 @@ class Simulation(AgentTool):
             n_joints = self._world._model.njnt
             n_actuators = self._world._model.nu
 
-            logger.info(f"🌍 Scene loaded: {scene_path}")
+            logger.info("🌍 Scene loaded: %s", scene_path)
             return {
                 "status": "success",
                 "content": [
@@ -1048,7 +1053,7 @@ class Simulation(AgentTool):
                 ],
             }
         except Exception as e:
-            logger.error(f"Failed to load scene: {e}")
+            logger.error("Failed to load scene: %s", e)
             return {
                 "status": "error",
                 "content": [{"text": f"❌ Failed to load scene: {e}"}],
@@ -1064,7 +1069,7 @@ class Simulation(AgentTool):
             self._world._data = mj.MjData(self._world._model)
             self._world.status = SimStatus.IDLE
         except Exception as e:
-            logger.error(f"World compilation failed: {e}")
+            logger.error("World compilation failed: %s", e)
             raise
 
     def _recompile_world(self) -> Dict[str, Any]:
@@ -1135,12 +1140,9 @@ class Simulation(AgentTool):
             return
 
         # Auto-download from Menagerie
-        # User-visible message (logger.info may not show with default config)
-        print(
-            f"⬇️  Downloading mesh files for '{robot_name}' from MuJoCo Menagerie (first time only)..."
-        )
         logger.info(
-            f"Mesh files missing for '{robot_name}' — auto-downloading from MuJoCo Menagerie..."
+            "Downloading mesh files for '%s' from MuJoCo Menagerie (first time only)...",
+            robot_name,
         )
         try:
             from strands_robots.assets import resolve_robot_name
@@ -1149,13 +1151,10 @@ class Simulation(AgentTool):
             canonical = resolve_robot_name(robot_name)
             download_robots(names=[canonical], force=True)
         except Exception as e:
-            print(f"⚠️  Auto-download failed for '{robot_name}': {e}")
-            print(
-                f"   Try manually: python -m strands_robots.assets.download {robot_name}"
-            )
             logger.warning(
-                f"Auto-download failed for '{robot_name}': {e}. "
-                "MuJoCo will attempt to load anyway (may fail on missing meshes)."
+                "Auto-download failed for '%s': %s. "
+                "Try manually: python -m strands_robots.assets.download %s",
+                robot_name, e, robot_name,
             )
 
     def add_robot(
@@ -1293,7 +1292,7 @@ class Simulation(AgentTool):
             for _ in range(100):
                 mj.mj_step(model, data)
 
-            logger.info(f"Robot '{name}' added from {os.path.basename(resolved_path)}")
+            logger.info("Robot '%s' added from %s", name, os.path.basename(resolved_path))
             source = (
                 f"data_config='{data_config}'"
                 if data_config
@@ -1317,7 +1316,7 @@ class Simulation(AgentTool):
             }
 
         except Exception as e:
-            logger.error(f"Failed to add robot '{name}': {e}")
+            logger.error("Failed to add robot '%s': %s", name, e)
             return {"status": "error", "content": [{"text": f"❌ Failed to load: {e}"}]}
 
     def remove_robot(self, name: str) -> Dict[str, Any]:
@@ -1333,7 +1332,7 @@ class Simulation(AgentTool):
             try:
                 future.result(timeout=5.0)
             except Exception:
-                logger.debug(f"Policy thread for '{name}' did not finish cleanly")
+                logger.debug("Policy thread for '%s' did not finish cleanly", name)
             del self._policy_threads[name]
         del self._world.robots[name]
         return {
@@ -1473,7 +1472,7 @@ class Simulation(AgentTool):
                         ],
                     }
             except Exception as e:
-                logger.warning(f"Object injection failed, tracking metadata only: {e}")
+                logger.warning("Object injection failed, tracking metadata only: %s", e)
                 return {
                     "status": "success",
                     "content": [
@@ -1607,7 +1606,7 @@ class Simulation(AgentTool):
 
             return True
         except Exception as e:
-            logger.error(f"Object injection reload failed: {e}")
+            logger.error("Object injection reload failed: %s", e)
             # Clean up temp directory on failure too
             try:
                 import shutil
@@ -1698,7 +1697,7 @@ class Simulation(AgentTool):
             self._world._data = new_data
             return True
         except Exception as e:
-            logger.error(f"Body ejection failed for \'{body_name}\': {e}")
+            logger.error("Body ejection failed for \'%s\': %s", body_name, e)
             # Fallback to recompile (lossy but at least works)
             self._recompile_world()
             return False
@@ -1868,7 +1867,7 @@ class Simulation(AgentTool):
 
             return True
         except Exception as e:
-            logger.error(f"Camera injection reload failed: {e}")
+            logger.error("Camera injection reload failed: %s", e)
             try:
                 if scene_path.endswith("_strands_scene_with_cameras.xml"):
                     os.remove(scene_path)
@@ -1948,7 +1947,7 @@ class Simulation(AgentTool):
                     renderer.update_scene(data, camera=cam_id)
                     obs[cname] = renderer.render().copy()
                 except Exception as e:
-                    logger.debug(f"Camera render failed for {cname}: {e}")
+                    logger.debug("Camera render failed for %s: %s", cname, e)
 
         return obs
 
@@ -2482,12 +2481,14 @@ class Simulation(AgentTool):
             return {"status": "error", "content": [{"text": "No world."}]}
         # Re-check at call time to avoid stale module-level state from test mocks
         try:
-            from .dataset_recorder import HAS_LEROBOT_DATASET as _has_lerobot
             from .dataset_recorder import DatasetRecorder as _DatasetRecorder
+            from .dataset_recorder import has_lerobot_dataset as _has_lerobot
         except ImportError:
-            _has_lerobot = False
+            def _has_lerobot():
+                return False
+
             _DatasetRecorder = None
-        if not _has_lerobot or _DatasetRecorder is None:
+        if not _has_lerobot() or _DatasetRecorder is None:
             return {
                 "status": "error",
                 "content": [
@@ -2525,7 +2526,7 @@ class Simulation(AgentTool):
                     )
                 if dataset_dir.exists() and dataset_dir.is_dir():
                     shutil.rmtree(dataset_dir)
-                    logger.info(f"Removed existing dataset dir: {dataset_dir}")
+                    logger.info("Removed existing dataset dir: %s", dataset_dir)
 
             joint_names = []
             camera_keys = []
@@ -2564,7 +2565,7 @@ class Simulation(AgentTool):
             }
         except Exception as e:
             self._world._recording = False
-            logger.error(f"Dataset recorder init failed: {e}")
+            logger.error("Dataset recorder init failed: %s", e)
             return {
                 "status": "error",
                 "content": [{"text": f"Dataset init failed: {e}"}],
@@ -2748,7 +2749,7 @@ class Simulation(AgentTool):
                     coro_or_result = policy.get_actions(observation, instruction)
                     actions = _resolve_coroutine(coro_or_result)
                 except Exception as e:
-                    logger.warning(f"Policy inference failed at frame {frame_idx}: {e}")
+                    logger.warning("Policy inference failed at frame %s: %s", frame_idx, e)
                     actions = [{key: 0.0 for key in robot.joint_names}]
 
                 # Apply first action
@@ -2820,7 +2821,7 @@ class Simulation(AgentTool):
                         if os.path.exists(cosmos_out_path)
                         else 0
                     )
-                    logger.info(f"🎬 Cosmos Transfer complete: {cosmos_kb:.0f} KB")
+                    logger.info("🎬 Cosmos Transfer complete: %.0f KB", cosmos_kb)
                 except ImportError:
                     logger.warning(
                         "Cosmos Transfer not available (missing deps). Skipping."
@@ -2847,7 +2848,7 @@ class Simulation(AgentTool):
 
         except Exception as e:
             robot.policy_running = False
-            logger.error(f"Video recording failed: {e}")
+            logger.error("Video recording failed: %s", e)
             return {
                 "status": "error",
                 "content": [{"text": f"❌ Video recording failed: {e}"}],
@@ -2895,66 +2896,22 @@ class Simulation(AgentTool):
                 "content": [{"text": f"❌ Robot '{robot_name}' not found"}],
             }
 
-        # Load dataset
+        # Load dataset and resolve episode frame range
         try:
-            from lerobot.datasets.lerobot_dataset import LeRobotDataset
+            from .dataset_recorder import load_lerobot_episode
 
-            ds = LeRobotDataset(repo_id=repo_id, root=root)
+            ds, episode_start, episode_length = load_lerobot_episode(
+                repo_id, episode, root
+            )
         except ImportError:
             return {
                 "status": "error",
                 "content": [{"text": "❌ lerobot not installed"}],
             }
-        except Exception as e:
+        except (ValueError, Exception) as e:
             return {
                 "status": "error",
-                "content": [{"text": f"❌ Failed to load '{repo_id}': {e}"}],
-            }
-
-        # Get episode frame range
-        num_episodes = (
-            ds.meta.total_episodes
-            if hasattr(ds.meta, "total_episodes")
-            else len(ds.meta.episodes)
-        )
-        if episode >= num_episodes:
-            return {
-                "status": "error",
-                "content": [
-                    {
-                        "text": f"❌ Episode {episode} out of range (0-{num_episodes - 1})"
-                    }
-                ],
-            }
-
-        # Resolve the frame range for this episode.
-        # LeRobot stores a global frame index — episode_data_index["from"]/["to"]
-        # gives the exact slice. Fallback: sum episode lengths from metadata.
-        # Last resort: scan frames by episode_index field.
-        episode_start = 0
-        try:
-            if hasattr(ds, "episode_data_index"):
-                from_idx = ds.episode_data_index["from"][episode].item()
-                to_idx = ds.episode_data_index["to"][episode].item()
-                episode_start = from_idx
-                episode_length = to_idx - from_idx
-            else:
-                for i in range(episode):
-                    episode_info = (
-                        ds.meta.episodes[i] if hasattr(ds.meta, "episodes") else {}
-                    )
-                    episode_start += episode_info.get("length", 0)
-                episode_info = (
-                    ds.meta.episodes[episode] if hasattr(ds.meta, "episodes") else {}
-                )
-                episode_length = episode_info.get("length", 0)
-        except Exception:
-            episode_length = min(len(ds), 1000)
-
-        if episode_length == 0:
-            return {
-                "status": "error",
-                "content": [{"text": f"❌ Episode {episode} has no frames"}],
+                "content": [{"text": f"❌ {e}"}],
             }
 
         # Replay loop
@@ -3793,6 +3750,12 @@ class Simulation(AgentTool):
         self._close_viewer()
         self._executor.shutdown(wait=False)
         self._shutdown_event.set()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.cleanup()
 
     def __del__(self):
         try:

@@ -20,6 +20,7 @@ Usage:
     recorder.push_to_hub()
 """
 
+import functools
 import logging
 import sys
 from typing import Any, Dict, List, Optional
@@ -33,65 +34,28 @@ logger = logging.getLogger(__name__)
 # `datasets` → `pandas`, which can crash with a numpy ABI mismatch on
 # systems where the system pandas was compiled against an older numpy
 # (e.g. JetPack / Jetson with system pandas 2.1.4 + pip numpy 2.x).
-#
-# Instead we expose a lazy sentinel and a lazy accessor for
-# LeRobotDataset that only attempt the import when actually needed.
 
 
-class _LazyLeRobotCheck:
-    """Lazy boolean sentinel for lerobot availability.
+@functools.lru_cache(maxsize=1)
+def has_lerobot_dataset() -> bool:
+    """Check if lerobot is available. Result is cached after first call."""
+    try:
+        from lerobot.datasets.lerobot_dataset import LeRobotDataset  # noqa: F401
 
-    Evaluates to True/False on first boolean check (``if HAS_LEROBOT_DATASET:``).
-    Caches the result so the import is attempted at most once.
-    This avoids importing lerobot at module load time while remaining
-    backward-compatible with code that does ``if HAS_LEROBOT_DATASET:``.
-    """
-
-    def __init__(self):
-        self._result: Optional[bool] = None
-
-    def _check(self) -> bool:
-        if self._result is not None:
-            return self._result
-        try:
-            from lerobot.datasets.lerobot_dataset import LeRobotDataset  # noqa: F401
-
-            self._result = True
-        except (ImportError, ValueError, RuntimeError) as exc:
-            logger.debug(f"lerobot not available: {exc}")
-            self._result = False
-        return self._result
-
-    def __bool__(self) -> bool:
-        return self._check()
-
-    def __repr__(self) -> str:
-        if self._result is None:
-            return "<LazyLeRobotCheck: not yet evaluated>"
-        return f"<LazyLeRobotCheck: {self._result}>"
-
-
-HAS_LEROBOT_DATASET = _LazyLeRobotCheck()
+        return True
+    except (ImportError, ValueError, RuntimeError) as exc:
+        logger.debug("lerobot not available: %s", exc)
+        return False
 
 
 def _get_lerobot_dataset_class():
     """Import and return LeRobotDataset class, or raise ImportError.
 
-    Supports test mocking: if ``strands_robots.dataset_recorder.HAS_LEROBOT_DATASET``
-    has been replaced with a plain ``False``, raises immediately. If
-    ``strands_robots.dataset_recorder.LeRobotDataset`` has been set (by a test mock),
-    returns that class directly.
+    Supports test mocking: if ``strands_robots.dataset_recorder.LeRobotDataset``
+    has been set (by a test mock), returns that class directly.
     """
     # Support test mocking: check module-level overrides
     this_module = sys.modules[__name__]
-
-    # If HAS_LEROBOT_DATASET was replaced with plain False by a test, honour it
-    has_flag = getattr(this_module, "HAS_LEROBOT_DATASET", True)
-    if has_flag is False or (isinstance(has_flag, bool) and not has_flag):
-        raise ImportError(
-            "lerobot not installed. Install with: pip install lerobot\n"
-            "Required for LeRobotDataset recording."
-        )
 
     # If a test injected a mock LeRobotDataset class, use it
     mock_cls = getattr(this_module, "LeRobotDataset", None)
@@ -139,10 +103,11 @@ class DatasetRecorder:
         self.dataset = dataset
         self.default_task = task
         self.frame_count = 0
+        self.dropped_frame_count = 0
         self.episode_count = 0
         self._closed = False
-        self._cached_state_keys: Optional[List[str]] = None
-        self._cached_action_keys: Optional[List[str]] = None
+        self._cached_state_keys: Optional[list[str]] = None
+        self._cached_action_keys: Optional[list[str]] = None
 
     @classmethod
     def create(
@@ -216,7 +181,7 @@ class DatasetRecorder:
         dataset = LeRobotDatasetCls.create(**create_kwargs)
 
         recorder = cls(dataset=dataset, task=task)
-        logger.info(f"DatasetRecorder ready: {repo_id}")
+        logger.info("DatasetRecorder ready: %s", repo_id)
         return recorder
 
     @classmethod
@@ -410,7 +375,8 @@ class DatasetRecorder:
             self.dataset.add_frame(frame)
             self.frame_count += 1
         except Exception as e:
-            logger.warning(f"add_frame failed (frame {self.frame_count}): {e}")
+            self.dropped_frame_count += 1
+            logger.warning("add_frame failed (frame %d, dropped %d): %s", self.frame_count, self.dropped_frame_count, e)
 
     def save_episode(self) -> Dict[str, Any]:
         """Finalize current episode — writes parquet, encodes video, computes stats.
@@ -437,7 +403,7 @@ class DatasetRecorder:
                 "total_frames": ep_frames,
             }
         except Exception as e:
-            logger.error(f"save_episode failed: {e}")
+            logger.error("save_episode failed: %s", e)
             return {"status": "error", "message": str(e)}
 
     def finalize(self) -> None:
@@ -447,7 +413,7 @@ class DatasetRecorder:
         try:
             self.dataset.finalize()
         except Exception as e:
-            logger.warning(f"finalize warning: {e}")
+            logger.warning("finalize warning: %s", e)
         self._closed = True
 
     def push_to_hub(
@@ -466,7 +432,7 @@ class DatasetRecorder:
         """
         try:
             self.dataset.push_to_hub(tags=tags, private=private)
-            logger.info(f"Dataset pushed to hub: {self.dataset.repo_id}")
+            logger.info("Dataset pushed to hub: %s", self.dataset.repo_id)
             return {
                 "status": "success",
                 "repo_id": self.dataset.repo_id,
@@ -474,7 +440,7 @@ class DatasetRecorder:
                 "frames": self.frame_count,
             }
         except Exception as e:
-            logger.error(f"push_to_hub failed: {e}")
+            logger.error("push_to_hub failed: %s", e)
             return {"status": "error", "message": str(e)}
 
     @property
@@ -490,3 +456,62 @@ class DatasetRecorder:
             f"DatasetRecorder(repo_id={self.repo_id}, "
             f"episodes={self.episode_count}, frames={self.frame_count})"
         )
+
+
+# ── Shared replay-episode helpers ────────────────────────────────────
+
+
+def load_lerobot_episode(repo_id: str, episode: int = 0, root: Optional[str] = None):
+    """Load a LeRobotDataset and resolve the frame range for an episode.
+
+    Returns:
+        Tuple of (dataset, episode_start, episode_length) on success.
+
+    Raises:
+        ImportError: If lerobot is not installed.
+        ValueError: If the episode is out of range or has no frames.
+    """
+    from lerobot.datasets.lerobot_dataset import LeRobotDataset
+
+    ds = LeRobotDataset(repo_id=repo_id, root=root)
+
+    num_episodes = (
+        ds.meta.total_episodes
+        if hasattr(ds.meta, "total_episodes")
+        else len(ds.meta.episodes)
+    )
+    if episode >= num_episodes:
+        raise ValueError(f"Episode {episode} out of range (0-{num_episodes - 1})")
+
+    episode_start = 0
+    episode_length = 0
+    try:
+        if hasattr(ds, "episode_data_index"):
+            from_idx = ds.episode_data_index["from"][episode].item()
+            to_idx = ds.episode_data_index["to"][episode].item()
+            episode_start = from_idx
+            episode_length = to_idx - from_idx
+        else:
+            for i in range(episode):
+                ep_info = ds.meta.episodes[i] if hasattr(ds.meta, "episodes") else {}
+                episode_start += ep_info.get("length", 0)
+            ep_info = ds.meta.episodes[episode] if hasattr(ds.meta, "episodes") else {}
+            episode_length = ep_info.get("length", 0)
+    except Exception:
+        # Last resort: scan frames to find episode boundaries
+        for idx in range(len(ds)):
+            frame = ds[idx]
+            frame_ep = frame.get("episode_index", -1) if hasattr(frame, "get") else -1
+            if hasattr(frame_ep, "item"):
+                frame_ep = frame_ep.item()
+            if frame_ep == episode:
+                if episode_length == 0:
+                    episode_start = idx
+                episode_length += 1
+            elif episode_length > 0:
+                break
+
+    if episode_length == 0:
+        raise ValueError(f"Episode {episode} has no frames")
+
+    return ds, episode_start, episode_length
