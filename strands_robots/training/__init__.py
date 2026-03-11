@@ -1845,7 +1845,6 @@ def create_trainer(provider: str, **kwargs) -> Trainer:
         - "dreamgen_vla": DreamGen VLA fine-tuning (GR00T-Dreams)
         - "cosmos_predict": Cosmos Predict 2.5 post-training
         - "cosmos_transfer": Cosmos Transfer 2.5 ControlNet post-training (sim-to-real)
-        - "robometer": Robometer VLM reward-head fine-tuning
 
     Returns:
         Trainer instance
@@ -1887,15 +1886,6 @@ def create_trainer(provider: str, **kwargs) -> Trainer:
         "cosmos_predict": CosmosTrainer,
         "cosmos_transfer": CosmosTransferTrainer,
     }
-
-    # Lazy-load optional providers that have heavy deps
-    if provider == "robometer" and provider not in providers:
-        try:
-            from strands_robots.robometer import RobometerTrainer
-
-            providers["robometer"] = RobometerTrainer
-        except ImportError:
-            pass
 
     if provider not in providers:
         raise ValueError(

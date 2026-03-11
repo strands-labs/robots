@@ -324,27 +324,7 @@ try:
 except (ImportError, AttributeError, OSError):
     pass
 
-# Robometer VLM reward model (reward wrappers, benchmarking, data loading)
-try:
-    from strands_robots.robometer import (
-        RobometerBenchmark,
-        RobometerTrainer,
-        StrandsRobometerRewardWrapper,
-        robometer_reward_fn,
-        strands_robots_loader,
-    )
 
-    __all__.extend(
-        [
-            "StrandsRobometerRewardWrapper",
-            "robometer_reward_fn",
-            "RobometerTrainer",
-            "strands_robots_loader",
-            "RobometerBenchmark",
-        ]
-    )
-except (ImportError, AttributeError, OSError):
-    pass
 
 # LeIsaac × LeRobot EnvHub (Lightwheel AI — IsaacSim environments)
 try:

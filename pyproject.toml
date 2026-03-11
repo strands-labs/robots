@@ -99,13 +99,6 @@ marble = [
     # 3DGrut installed from source: github.com/nv-tlabs/3dgrut (PLY→USDZ Gaussian splat conversion)
     # Marble API access: marble.worldlabs.ai (requires API key — set WLT_API_KEY)
 ]
-robometer = [
-    "torch>=2.0.0",
-    "transformers>=4.40.0",
-    "scipy>=1.10.0",
-    # robometer installed from source: github.com/robometer/robometer
-    # Optional: peft for LoRA fine-tuning
-]
 zenoh = [
     "eclipse-zenoh>=1.0.0",
 ]
@@ -131,7 +124,6 @@ all = [
     "strands-robots[cosmos-transfer]",
     "strands-robots[cosmos-predict]",
     "strands-robots[marble]",
-    "strands-robots[robometer]",
     "strands-robots[zenoh]",
 ]
 dev = [
