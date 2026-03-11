@@ -1,4 +1,4 @@
-"""Unified Robot Factory — convenience layer over Simulation and HardwareRobot.
+"""Unified Robot Factory — convenience layer over simulation backends and HardwareRobot.
 
 Provides:
     - ``Robot("so100")`` → auto-detects sim/real, returns the right backend
@@ -62,7 +62,7 @@ def Robot(
     peer_id: str = None,
     **kwargs,
 ):
-    """Create a robot — returns Simulation, IsaacSimBackend, NewtonBackend, or HardwareRobot.
+    """Create a robot — returns a simulation backend (MujocoBackend, IsaacSimBackend, NewtonBackend) or HardwareRobot.
 
     This is a convenience factory, NOT a wrapper class.  You get the real
     backend instance back — with full access to all its methods.
@@ -80,7 +80,7 @@ def Robot(
         **kwargs: Forwarded to the underlying backend.
 
     Returns:
-        Simulation (MuJoCo), IsaacSimBackend, NewtonBackend, or HardwareRobot.
+        MujocoBackend, IsaacSimBackend, NewtonBackend, or HardwareRobot.
 
     Examples::
 
@@ -147,9 +147,9 @@ def Robot(
 
         else:
             # MuJoCo CPU backend (default)
-            from strands_robots.simulation import Simulation
+            from strands_robots.mujoco import MujocoBackend
             sim_name = canonical
-            sim = Simulation(
+            sim = MujocoBackend(
                 tool_name=f"{canonical}_sim", mesh=mesh, peer_id=peer_id, **kwargs
             )
             sim.create_world()

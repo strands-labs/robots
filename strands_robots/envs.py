@@ -1,6 +1,6 @@
-"""Gymnasium environment wrapper for strands-robots Simulation.
+"""Gymnasium environment wrapper for strands-robots simulation backends.
 
-Wraps the MuJoCo Simulation as a standard gymnasium.Env so LeRobot's
+Wraps a simulation backend as a standard gymnasium.Env so LeRobot's
 train/eval scripts work directly with our sim.
 
 Provides standard Gymnasium step/reset/render interface for RL training.
@@ -33,9 +33,9 @@ if HAS_GYM:
 
     class StrandsSimEnv(gym.Env):
         """
-        Gymnasium wrapper for strands_robots.Simulation.
+        Gymnasium wrapper for strands-robots simulation backends.
 
-        Converts the action-based Simulation API into the standard
+        Converts the action-based simulation API into the standard
         Gym step()/reset()/render() interface.
 
         Usage:
@@ -175,9 +175,9 @@ if HAS_GYM:
 
         def _init_sim(self):
             """Initialize the simulation to determine observation/action spaces."""
-            from strands_robots.simulation import Simulation
+            from strands_robots.mujoco import MujocoBackend
 
-            self._sim = Simulation(
+            self._sim = MujocoBackend(
                 tool_name="gym_sim",
                 default_timestep=self.physics_dt,
             )
@@ -373,7 +373,7 @@ if HAS_GYM:
 
         @property
         def unwrapped_sim(self):
-            """Access the underlying Simulation object for advanced usage."""
+            """Access the underlying simulation backend for advanced usage."""
             return self._sim
 
     # Register the environment with Gymnasium

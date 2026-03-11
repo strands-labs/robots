@@ -12,7 +12,7 @@ Key capabilities:
   sim-to-real transfer, trajectory optimization, and learned control.
 - **CollisionPipeline**: Proper broad-phase collision detection with configurable
   margin and gradient support for differentiable contacts.
-- **Same high-level API as simulation.py**: ``create_world``, ``add_robot``,
+- **Same high-level API as MujocoBackend**: ``create_world``, ``add_robot``,
   ``step``, ``render``, and the familiar strands-robots interface.
 - **Multiple solver backends**: MuJoCo, Featherstone, SemiImplicit, XPBD, VBD,
   Style3D, ImplicitMPM — choose the best fit for your task.

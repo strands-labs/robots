@@ -194,7 +194,7 @@ class IsaacLabEnv:
     (num_envs, obs_dim). We convert to CPU dicts for Policy ABC compatibility.
 
     For single-env evaluation (num_envs=1), observations are flat dicts
-    just like MuJoCo simulation.py returns.
+    just like MujocoBackend returns.
 
     Usage:
         env = IsaacLabEnv(config=IsaacLabEnvConfig(

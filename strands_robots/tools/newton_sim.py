@@ -1,7 +1,7 @@
 """Newton GPU-Accelerated Physics Simulation Tool for Strands Agents.
 
 This AgentTool wraps NewtonBackend to give AI agents full control over
-GPU-accelerated physics simulation via natural language. Like simulation.py
+GPU-accelerated physics simulation via natural language. Like MujocoBackend
 but powered by Newton (7 solvers, 4096+ parallel envs, differentiable).
 
 Usage via Agent:

@@ -1,4 +1,4 @@
-"""Async-to-sync helpers shared across robot.py and simulation.py."""
+"""Async-to-sync helpers shared across robot.py and simulation backends."""
 
 import asyncio
 import concurrent.futures

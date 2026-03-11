@@ -1,12 +1,12 @@
 """Isaac Sim GPU-accelerated simulation backend for strands-robots.
 
-Alternative to the MuJoCo Simulation class. Uses NVIDIA Isaac Sim for:
+Alternative to the MujocoBackend class. Uses NVIDIA Isaac Sim for:
 - GPU-parallel physics (thousands of envs simultaneously)
 - RTX rendering (photorealistic cameras, ray-traced lighting)
 - Deformable body simulation
 - Advanced sensor simulation (LIDAR, IMU, contact)
 
-Implements the same high-level API as simulation.py so it can be used
+Implements the same high-level API as MujocoBackend so it can be used
 as a drop-in replacement via Robot("so100", backend="isaac").
 
 Key difference from MuJoCo backend:
@@ -176,11 +176,11 @@ class IsaacSimConfig:
 class IsaacSimBackend:
     """GPU-accelerated simulation backend using NVIDIA Isaac Sim.
 
-    This is the Isaac Sim equivalent of strands_robots.simulation.Simulation.
+    This is the Isaac Sim equivalent of strands_robots.mujoco.MujocoBackend.
     It provides the same conceptual interface (create_world, add_robot, step, render)
     but runs on GPU with parallel environments.
 
-    Differences from MuJoCo Simulation:
+    Differences from MujocoBackend:
         - Parallel envs: num_envs parameter creates N identical envs on GPU
         - USD assets: Loads Universal Scene Description files instead of MJCF/URDF
         - RTX rendering: Photorealistic camera images via ray tracing
@@ -493,7 +493,7 @@ class IsaacSimBackend:
     def get_observation(self, robot_name: str = None) -> Dict[str, Any]:
         """Get observations from the simulation (GPU tensors).
 
-        Returns observations in the same format as MuJoCo simulation.py
+        Returns observations in the same format as MujocoBackend
         for Policy ABC compatibility.
         """
         if self._robot is None:
@@ -535,7 +535,7 @@ class IsaacSimBackend:
     ) -> Dict[str, Any]:
         """Run a strands-robots Policy on the Isaac Sim backend.
 
-        Uses the same Policy ABC as MuJoCo simulation.py — zero code changes.
+        Uses the same Policy ABC as MujocoBackend — zero code changes.
         """
         import asyncio
         import time
