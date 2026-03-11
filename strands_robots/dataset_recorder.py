@@ -141,6 +141,8 @@ class DatasetRecorder:
         self.frame_count = 0
         self.episode_count = 0
         self._closed = False
+        self._cached_state_keys: Optional[List[str]] = None
+        self._cached_action_keys: Optional[List[str]] = None
 
     @classmethod
     def create(
@@ -350,15 +352,16 @@ class DatasetRecorder:
         # Use feature schema ordering to match the dataset schema declared in _build_features().
         if state_keys:
             state_vals = []
-            feat = self.dataset.features.get("observation.state", {})
-            state_names = (
-                feat.get("names", [])
-                if isinstance(feat, dict)
-                else getattr(feat, "names", [])
-            )
+            if self._cached_state_keys is None:
+                feat = self.dataset.features.get("observation.state", {})
+                state_names = (
+                    feat.get("names", [])
+                    if isinstance(feat, dict)
+                    else getattr(feat, "names", [])
+                )
+                self._cached_state_keys = state_names if state_names else sorted(state_keys)
 
-            ordered_keys = state_names if state_names else sorted(state_keys)
-            for k in ordered_keys:
+            for k in self._cached_state_keys:
                 v = observation.get(k)
                 if v is None:
                     state_vals.append(0.0)
@@ -376,15 +379,16 @@ class DatasetRecorder:
         # Use feature schema ordering for actions too.
         if action:
             action_vals = []
-            feat = self.dataset.features.get("action", {})
-            action_names = (
-                feat.get("names", [])
-                if isinstance(feat, dict)
-                else getattr(feat, "names", [])
-            )
+            if self._cached_action_keys is None:
+                feat = self.dataset.features.get("action", {})
+                action_names = (
+                    feat.get("names", [])
+                    if isinstance(feat, dict)
+                    else getattr(feat, "names", [])
+                )
+                self._cached_action_keys = action_names if action_names else sorted(action.keys())
 
-            ordered_keys = action_names if action_names else sorted(action.keys())
-            for k in ordered_keys:
+            for k in self._cached_action_keys:
                 v = action.get(k)
                 if v is None:
                     action_vals.append(0.0)

@@ -266,9 +266,10 @@ class Robot(AgentTool):
         """Resolve a robot type string to its LeRobot Config class.
 
         Resolution order:
-        1. Scan lerobot.robots submodules for *Config classes
-        2. Match by class name convention (e.g. "so100_follower" -> SO100FollowerConfig)
-        3. Match by config.type property (instantiate and check)
+        1. Check LeRobot's choice registry for an exact type match
+        2. Scan lerobot.robots submodules for *Config classes
+        3. Match by class name convention (e.g. "so100_follower" -> SO100FollowerConfig)
+        4. Fuzzy match on module/class name parts
 
         No hardcoding — any Config class LeRobot ships, we find.
         """
@@ -277,16 +278,27 @@ class Robot(AgentTool):
 
         import lerobot.robots as lr_robots
 
+        _, _RobotConfig, _, _ = _import_lerobot()
+
         # Normalize the robot_type for matching
         robot_type_lower = robot_type.lower().replace("-", "_")
 
-        # Build expected class name: "so100_follower" -> "So100FollowerConfig" or "SO100FollowerConfig"
-        # We'll do case-insensitive matching
+        # Strategy 1: Import all submodules to populate the choice registry, then look up directly
+        for importer, modname, ispkg in pkgutil.iter_modules(lr_robots.__path__):
+            if modname in ("config", "robot", "utils"):
+                continue
+            try:
+                importlib.import_module(f"lerobot.robots.{modname}")
+            except Exception:
+                continue
+
+        known = _RobotConfig.get_known_choices()
+        if robot_type_lower in known:
+            return known[robot_type_lower]
+
+        # Strategy 2: Class name match (case-insensitive)
         expected_class_lower = robot_type_lower.replace("_", "") + "config"
-
         candidates = []
-
-        _, _RobotConfig, _, _ = _import_lerobot()
 
         for importer, modname, ispkg in pkgutil.iter_modules(lr_robots.__path__):
             if modname in ("config", "robot", "utils"):
@@ -301,39 +313,14 @@ class Robot(AgentTool):
                         and issubclass(obj, _RobotConfig)
                         and obj is not _RobotConfig
                     ):
-                        # Strategy 1: Class name match (case-insensitive)
                         if attr_name.lower().replace("_", "") == expected_class_lower:
                             return obj
-
                         candidates.append((attr_name, obj, modname))
-            except Exception:
-                continue
-
-        # Strategy 2: Check if any candidate's .type property matches robot_type
-        for class_name, cls, modname in candidates:
-            try:
-                # Some configs need required args — try common patterns
-                for test_kwargs in [
-                    {"id": "test"},
-                    {"id": "test", "port": "/dev/null"},
-                    {},
-                ]:
-                    try:
-                        instance = cls(**test_kwargs)
-                        if (
-                            hasattr(instance, "type")
-                            and instance.type == robot_type_lower
-                        ):
-                            return cls
-                        break  # Instance created, type didn't match, move on
-                    except TypeError:
-                        continue  # Try next kwargs pattern
             except Exception:
                 continue
 
         # Strategy 3: Fuzzy match — module name contains robot_type parts
         for class_name, cls, modname in candidates:
-            # e.g. robot_type="so100_follower", modname="so_follower"
             type_parts = robot_type_lower.split("_")
             if all(
                 part in modname.lower() or part in class_name.lower()

@@ -42,6 +42,14 @@ from strands_robots.telemetry.types import (
 
 logger = logging.getLogger(__name__)
 
+try:
+    import numpy as np
+
+    _HAS_NUMPY = True
+except ImportError:
+    np = None  # type: ignore[assignment]
+    _HAS_NUMPY = False
+
 
 @dataclass
 class TransportConfig:
@@ -368,15 +376,13 @@ class TelemetryStream:
 
         # Serialize batch
         serialized = [self._serialize_event(e) for e in events]
-        raw_bytes = sum(
-            len(json.dumps(s, separators=(",", ":")).encode()) for s in serialized
-        )
+        batch_json = json.dumps(serialized, separators=(",", ":")).encode("utf-8")
+        raw_bytes = len(batch_json)
 
         # Compress if above threshold
         batch_payload: Any
         compressed = False
         if raw_bytes > self._compression_threshold:
-            batch_json = json.dumps(serialized, separators=(",", ":")).encode("utf-8")
             batch_payload = gzip.compress(batch_json)
             compressed = True
             with self._stats_lock:
@@ -397,15 +403,9 @@ class TelemetryStream:
 
     def _serialize_event(self, event: TelemetryEvent) -> Dict[str, Any]:
         """Serialize a single event to dict (numpy-aware)."""
-        try:
-            import numpy as np
-
-            HAS_NP = True
-        except ImportError:
-            HAS_NP = False
 
         def _convert(obj: Any) -> Any:
-            if HAS_NP:
+            if _HAS_NUMPY:
                 if isinstance(obj, np.ndarray):
                     return obj.tolist()
                 if isinstance(obj, (np.integer,)):

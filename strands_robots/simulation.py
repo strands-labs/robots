@@ -63,7 +63,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
+from typing import Any, AsyncGenerator, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 from strands.tools.tools import AgentTool
@@ -1990,6 +1990,7 @@ class Simulation(AgentTool):
         duration: float = 10.0,
         action_horizon: int = 8,
         control_frequency: float = 50.0,
+        fast_mode: bool = False,
         **policy_kwargs,
     ) -> Dict[str, Any]:
         """Run a policy on a simulated robot (blocking). Same Policy ABC as robot.py."""
@@ -2054,7 +2055,8 @@ class Simulation(AgentTool):
 
                     self._apply_sim_action(robot_name, action_dict)
                     robot.policy_steps += 1
-                    time.sleep(action_sleep)
+                    if not fast_mode:
+                        time.sleep(action_sleep)
 
             elapsed = time.time() - start_time
             robot.policy_running = False
@@ -2083,6 +2085,7 @@ class Simulation(AgentTool):
         policy_provider: str = "mock",
         instruction: str = "",
         duration: float = 10.0,
+        fast_mode: bool = False,
         **policy_kwargs,
     ) -> Dict[str, Any]:
         """Start policy execution in background (non-blocking).
@@ -2095,6 +2098,7 @@ class Simulation(AgentTool):
             policy_provider: Policy provider name (e.g. "groot", "lerobot_local", "mock")
             instruction: Natural language instruction
             duration: Maximum duration in seconds
+            fast_mode: If True, skip sleep between actions for faster data collection
             **policy_kwargs: Extra kwargs forwarded to create_policy
         """
         if self._world is None or self._world._data is None:
@@ -2111,6 +2115,7 @@ class Simulation(AgentTool):
             policy_provider,
             instruction,
             duration,
+            fast_mode=fast_mode,
             **policy_kwargs,
         )
         self._policy_threads[robot_name] = future
@@ -3511,256 +3516,272 @@ class Simulation(AgentTool):
             )
 
     def _dispatch_action(self, action: str, d: Dict[str, Any]) -> Dict[str, Any]:
-        """Route action to method."""
-        # World
-        if action == "create_world":
-            cw_kwargs = {"ground_plane": d.get("ground_plane", True)}
-            if d.get("timestep") is not None:
-                cw_kwargs["timestep"] = d["timestep"]
-            if d.get("gravity") is not None:
-                cw_kwargs["gravity"] = d["gravity"]
-            return self.create_world(**cw_kwargs)
-        elif action == "load_scene":
-            return self.load_scene(d.get("scene_path", ""))
-        elif action == "reset":
-            return self.reset()
-        elif action == "get_state":
-            return self.get_state()
-        elif action == "destroy":
-            return self.destroy()
-
-        # Robots
-        elif action == "add_robot":
-            ar_kwargs = {"name": d.get("robot_name", d.get("name", "robot_0"))}
-            if d.get("urdf_path") is not None:
-                ar_kwargs["urdf_path"] = d["urdf_path"]
-            if d.get("data_config") is not None:
-                ar_kwargs["data_config"] = d["data_config"]
-            if d.get("position") is not None:
-                ar_kwargs["position"] = d["position"]
-            if d.get("orientation") is not None:
-                ar_kwargs["orientation"] = d["orientation"]
-            return self.add_robot(**ar_kwargs)
-        elif action == "remove_robot":
-            return self.remove_robot(d.get("robot_name", d.get("name", "")))
-        elif action == "list_robots":
-            return self.list_robots()
-        elif action == "get_robot_state":
-            return self.get_robot_state(d.get("robot_name", ""))
-
-        # Objects
-        elif action == "add_object":
-            return self.add_object(
-                name=d.get("name", ""),
-                shape=d.get("shape", "box"),
-                position=d.get("position"),
-                orientation=d.get("orientation"),
-                size=d.get("size"),
-                color=d.get("color"),
-                mass=d.get("mass", 0.1),
-                is_static=d.get("is_static", False),
-                mesh_path=d.get("mesh_path"),
-            )
-        elif action == "remove_object":
-            return self.remove_object(d.get("name", ""))
-        elif action == "move_object":
-            return self.move_object(
-                d.get("name", ""), d.get("position"), d.get("orientation")
-            )
-        elif action == "list_objects":
-            return self.list_objects()
-
-        # Cameras
-        elif action == "add_camera":
-            return self.add_camera(
-                name=d.get("name", "cam"),
-                position=d.get("position"),
-                target=d.get("target"),
-                fov=d.get("fov", 60.0),
-                width=d.get("width", 640),
-                height=d.get("height", 480),
-            )
-        elif action == "remove_camera":
-            return self.remove_camera(d.get("name", ""))
-
-        # Policy
-        elif action == "run_policy":
-            kw = {
-                k: d[k]
-                for k in [
-                    "policy_port",
-                    "policy_host",
-                    "model_path",
-                    "server_address",
-                    "policy_type",
-                ]
-                if k in d
-            }
-            return self.run_policy(
-                robot_name=d.get("robot_name", ""),
-                policy_provider=d.get("policy_provider", "mock"),
-                instruction=d.get("instruction", ""),
-                duration=d.get("duration", 10.0),
-                action_horizon=d.get("action_horizon", 8),
-                control_frequency=d.get("control_frequency", 50.0),
-                **kw,
-            )
-        elif action == "start_policy":
-            kw = {
-                k: d[k]
-                for k in [
-                    "policy_port",
-                    "policy_host",
-                    "model_path",
-                    "server_address",
-                    "policy_type",
-                ]
-                if k in d
-            }
-            return self.start_policy(
-                robot_name=d.get("robot_name", ""),
-                policy_provider=d.get("policy_provider", "mock"),
-                instruction=d.get("instruction", ""),
-                duration=d.get("duration", 10.0),
-                **kw,
-            )
-        elif action == "stop_policy":
-            rn = d.get("robot_name", "")
-            if self._world and rn in self._world.robots:
-                self._world.robots[rn].policy_running = False
-                return {
-                    "status": "success",
-                    "content": [{"text": f"🛑 Stopped on '{rn}'"}],
-                }
-            return {"status": "error", "content": [{"text": f"❌ '{rn}' not found."}]}
-
-        # Observation
-        elif action == "render":
-            return self.render(
-                d.get("camera_name", "default"), d.get("width"), d.get("height")
-            )
-        elif action == "render_depth":
-            return self.render_depth(
-                d.get("camera_name", "default"), d.get("width"), d.get("height")
-            )
-        elif action == "get_contacts":
-            return self.get_contacts()
-
-        # Control
-        elif action == "step":
-            return self.step(d.get("n_steps", 1))
-        elif action == "set_gravity":
-            return self.set_gravity(d.get("gravity", [0, 0, -9.81]))
-        elif action == "set_timestep":
-            return self.set_timestep(d.get("timestep", 0.002))
-
-        # Domain randomization
-        elif action == "randomize":
-            return self.randomize(
-                randomize_colors=d.get("randomize_colors", True),
-                randomize_lighting=d.get("randomize_lighting", True),
-                randomize_physics=d.get("randomize_physics", False),
-                randomize_positions=d.get("randomize_positions", False),
-                position_noise=d.get("position_noise", 0.02),
-                seed=d.get("seed"),
-            )
-
-        # Recording
-        elif action == "start_recording":
-            rec_kwargs = {
-                "task": d.get("instruction", d.get("task", "")),
-                "fps": d.get("fps", 30),
-                "push_to_hub": d.get("push_to_hub", False),
-                "vcodec": d.get("vcodec", "libsvtav1"),
-            }
-            if d.get("repo_id") is not None:
-                rec_kwargs["repo_id"] = d["repo_id"]
-            if d.get("root") is not None:
-                rec_kwargs["root"] = d["root"]
-            return self.start_recording(**rec_kwargs)
-        elif action == "stop_recording":
-            return self.stop_recording(d.get("output_path"))
-        elif action == "get_recording_status":
-            return self.get_recording_status()
-        elif action == "record_video":
-            kw = {
-                k: d[k]
-                for k in [
-                    "policy_port",
-                    "policy_host",
-                    "model_path",
-                    "server_address",
-                    "policy_type",
-                    "pretrained_name_or_path",
-                ]
-                if k in d
-            }
-            return self.record_video(
-                robot_name=d.get("robot_name", ""),
-                policy_provider=d.get("policy_provider", "lerobot_local"),
-                instruction=d.get("instruction", ""),
-                duration=d.get("duration", 10.0),
-                fps=d.get("fps", 30),
-                camera_name=d.get("camera_name"),
-                width=d.get("width", 640),
-                height=d.get("height", 480),
-                output_path=d.get("output_path"),
-                **kw,
-            )
-
-        # Viewer
-        elif action == "open_viewer":
-            return self.open_viewer()
-        elif action == "close_viewer":
-            return self.close_viewer()
-
-        # URDF registry
-        elif action == "list_urdfs":
-            return self.list_urdfs_action()
-        elif action == "register_urdf":
-            return self.register_urdf_action(
-                d.get("data_config", ""), d.get("urdf_path", "")
-            )
-
-        # Introspection
-        elif action == "get_features":
-            return self.get_features()
-
-        elif action == "replay_episode":
-            repo_id = d.get("repo_id")
-            if not repo_id:
-                return {
-                    "status": "error",
-                    "content": [{"text": "❌ repo_id required for replay_episode"}],
-                }
-            return self.replay_episode(
-                repo_id=repo_id,
-                robot_name=d.get("robot_name"),
-                episode=d.get("episode", 0),
-                root=d.get("root"),
-                speed=d.get("speed", 1.0),
-            )
-
-        elif action == "eval_policy":
-            return self.eval_policy(
-                robot_name=d.get("robot_name"),
-                policy_provider=d.get("policy_provider", "mock"),
-                instruction=d.get("instruction", ""),
-                n_episodes=d.get("n_episodes", 10),
-                max_steps=d.get("max_steps", 300),
-                success_fn=d.get("success_fn"),
-                **{
-                    k: v
-                    for k, v in d.items()
-                    if k.startswith("pretrained") or k in ("policy_type", "device")
-                },
-            )
-
-        else:
+        """Route action to method via dispatch table."""
+        handler = self._ACTION_DISPATCH.get(action)
+        if handler is None:
             return {
                 "status": "error",
                 "content": [{"text": f"❌ Unknown action: {action}"}],
             }
+        return handler(self, d)
+
+    @staticmethod
+    def _extract_policy_kwargs(d: Dict[str, Any]) -> Dict[str, Any]:
+        """Extract optional policy kwargs from dispatch dict."""
+        return {
+            k: d[k]
+            for k in ("policy_port", "policy_host", "model_path", "server_address", "policy_type")
+            if k in d
+        }
+
+    @staticmethod
+    def _extract_optional(d: Dict[str, Any], *keys: str) -> Dict[str, Any]:
+        """Extract keys from d only if their values are not None."""
+        return {k: d[k] for k in keys if d.get(k) is not None}
+
+    # --- Individual dispatch handlers ---
+
+    def _do_create_world(self, d):
+        kw = {"ground_plane": d.get("ground_plane", True)}
+        kw.update(self._extract_optional(d, "timestep", "gravity"))
+        return self.create_world(**kw)
+
+    def _do_load_scene(self, d):
+        return self.load_scene(d.get("scene_path", ""))
+
+    def _do_reset(self, d):
+        return self.reset()
+
+    def _do_get_state(self, d):
+        return self.get_state()
+
+    def _do_destroy(self, d):
+        return self.destroy()
+
+    def _do_add_robot(self, d):
+        kw = {"name": d.get("robot_name", d.get("name", "robot_0"))}
+        kw.update(self._extract_optional(d, "urdf_path", "data_config", "position", "orientation"))
+        return self.add_robot(**kw)
+
+    def _do_remove_robot(self, d):
+        return self.remove_robot(d.get("robot_name", d.get("name", "")))
+
+    def _do_list_robots(self, d):
+        return self.list_robots()
+
+    def _do_get_robot_state(self, d):
+        return self.get_robot_state(d.get("robot_name", ""))
+
+    def _do_add_object(self, d):
+        return self.add_object(
+            name=d.get("name", ""),
+            shape=d.get("shape", "box"),
+            position=d.get("position"),
+            orientation=d.get("orientation"),
+            size=d.get("size"),
+            color=d.get("color"),
+            mass=d.get("mass", 0.1),
+            is_static=d.get("is_static", False),
+            mesh_path=d.get("mesh_path"),
+        )
+
+    def _do_remove_object(self, d):
+        return self.remove_object(d.get("name", ""))
+
+    def _do_move_object(self, d):
+        return self.move_object(d.get("name", ""), d.get("position"), d.get("orientation"))
+
+    def _do_list_objects(self, d):
+        return self.list_objects()
+
+    def _do_add_camera(self, d):
+        return self.add_camera(
+            name=d.get("name", "cam"),
+            position=d.get("position"),
+            target=d.get("target"),
+            fov=d.get("fov", 60.0),
+            width=d.get("width", 640),
+            height=d.get("height", 480),
+        )
+
+    def _do_remove_camera(self, d):
+        return self.remove_camera(d.get("name", ""))
+
+    def _do_run_policy(self, d):
+        return self.run_policy(
+            robot_name=d.get("robot_name", ""),
+            policy_provider=d.get("policy_provider", "mock"),
+            instruction=d.get("instruction", ""),
+            duration=d.get("duration", 10.0),
+            action_horizon=d.get("action_horizon", 8),
+            control_frequency=d.get("control_frequency", 50.0),
+            fast_mode=d.get("fast_mode", False),
+            **self._extract_policy_kwargs(d),
+        )
+
+    def _do_start_policy(self, d):
+        return self.start_policy(
+            robot_name=d.get("robot_name", ""),
+            policy_provider=d.get("policy_provider", "mock"),
+            instruction=d.get("instruction", ""),
+            duration=d.get("duration", 10.0),
+            fast_mode=d.get("fast_mode", False),
+            **self._extract_policy_kwargs(d),
+        )
+
+    def _do_stop_policy(self, d):
+        rn = d.get("robot_name", "")
+        if self._world and rn in self._world.robots:
+            self._world.robots[rn].policy_running = False
+            return {"status": "success", "content": [{"text": f"🛑 Stopped on '{rn}'"}]}
+        return {"status": "error", "content": [{"text": f"❌ '{rn}' not found."}]}
+
+    def _do_render(self, d):
+        return self.render(d.get("camera_name", "default"), d.get("width"), d.get("height"))
+
+    def _do_render_depth(self, d):
+        return self.render_depth(d.get("camera_name", "default"), d.get("width"), d.get("height"))
+
+    def _do_get_contacts(self, d):
+        return self.get_contacts()
+
+    def _do_step(self, d):
+        return self.step(d.get("n_steps", 1))
+
+    def _do_set_gravity(self, d):
+        return self.set_gravity(d.get("gravity", [0, 0, -9.81]))
+
+    def _do_set_timestep(self, d):
+        return self.set_timestep(d.get("timestep", 0.002))
+
+    def _do_randomize(self, d):
+        return self.randomize(
+            randomize_colors=d.get("randomize_colors", True),
+            randomize_lighting=d.get("randomize_lighting", True),
+            randomize_physics=d.get("randomize_physics", False),
+            randomize_positions=d.get("randomize_positions", False),
+            position_noise=d.get("position_noise", 0.02),
+            seed=d.get("seed"),
+        )
+
+    def _do_start_recording(self, d):
+        kw = {
+            "task": d.get("instruction", d.get("task", "")),
+            "fps": d.get("fps", 30),
+            "push_to_hub": d.get("push_to_hub", False),
+            "vcodec": d.get("vcodec", "libsvtav1"),
+        }
+        kw.update(self._extract_optional(d, "repo_id", "root"))
+        return self.start_recording(**kw)
+
+    def _do_stop_recording(self, d):
+        return self.stop_recording(d.get("output_path"))
+
+    def _do_get_recording_status(self, d):
+        return self.get_recording_status()
+
+    def _do_record_video(self, d):
+        kw = {
+            k: d[k]
+            for k in (
+                "policy_port", "policy_host", "model_path",
+                "server_address", "policy_type", "pretrained_name_or_path",
+            )
+            if k in d
+        }
+        return self.record_video(
+            robot_name=d.get("robot_name", ""),
+            policy_provider=d.get("policy_provider", "lerobot_local"),
+            instruction=d.get("instruction", ""),
+            duration=d.get("duration", 10.0),
+            fps=d.get("fps", 30),
+            camera_name=d.get("camera_name"),
+            width=d.get("width", 640),
+            height=d.get("height", 480),
+            output_path=d.get("output_path"),
+            **kw,
+        )
+
+    def _do_open_viewer(self, d):
+        return self.open_viewer()
+
+    def _do_close_viewer(self, d):
+        return self.close_viewer()
+
+    def _do_list_urdfs(self, d):
+        return self.list_urdfs_action()
+
+    def _do_register_urdf(self, d):
+        return self.register_urdf_action(d.get("data_config", ""), d.get("urdf_path", ""))
+
+    def _do_get_features(self, d):
+        return self.get_features()
+
+    def _do_replay_episode(self, d):
+        repo_id = d.get("repo_id")
+        if not repo_id:
+            return {"status": "error", "content": [{"text": "❌ repo_id required for replay_episode"}]}
+        return self.replay_episode(
+            repo_id=repo_id,
+            robot_name=d.get("robot_name"),
+            episode=d.get("episode", 0),
+            root=d.get("root"),
+            speed=d.get("speed", 1.0),
+        )
+
+    def _do_eval_policy(self, d):
+        return self.eval_policy(
+            robot_name=d.get("robot_name"),
+            policy_provider=d.get("policy_provider", "mock"),
+            instruction=d.get("instruction", ""),
+            n_episodes=d.get("n_episodes", 10),
+            max_steps=d.get("max_steps", 300),
+            success_fn=d.get("success_fn"),
+            **{
+                k: v
+                for k, v in d.items()
+                if k.startswith("pretrained") or k in ("policy_type", "device")
+            },
+        )
+
+    _ACTION_DISPATCH: Dict[str, Callable] = {
+        "create_world": _do_create_world,
+        "load_scene": _do_load_scene,
+        "reset": _do_reset,
+        "get_state": _do_get_state,
+        "destroy": _do_destroy,
+        "add_robot": _do_add_robot,
+        "remove_robot": _do_remove_robot,
+        "list_robots": _do_list_robots,
+        "get_robot_state": _do_get_robot_state,
+        "add_object": _do_add_object,
+        "remove_object": _do_remove_object,
+        "move_object": _do_move_object,
+        "list_objects": _do_list_objects,
+        "add_camera": _do_add_camera,
+        "remove_camera": _do_remove_camera,
+        "run_policy": _do_run_policy,
+        "start_policy": _do_start_policy,
+        "stop_policy": _do_stop_policy,
+        "render": _do_render,
+        "render_depth": _do_render_depth,
+        "get_contacts": _do_get_contacts,
+        "step": _do_step,
+        "set_gravity": _do_set_gravity,
+        "set_timestep": _do_set_timestep,
+        "randomize": _do_randomize,
+        "start_recording": _do_start_recording,
+        "stop_recording": _do_stop_recording,
+        "get_recording_status": _do_get_recording_status,
+        "record_video": _do_record_video,
+        "open_viewer": _do_open_viewer,
+        "close_viewer": _do_close_viewer,
+        "list_urdfs": _do_list_urdfs,
+        "register_urdf": _do_register_urdf,
+        "get_features": _do_get_features,
+        "replay_episode": _do_replay_episode,
+        "eval_policy": _do_eval_policy,
+    }
 
     def cleanup(self):
         if hasattr(self, "mesh") and self.mesh:

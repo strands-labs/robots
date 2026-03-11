@@ -31,6 +31,7 @@ Usage:
 
 import logging
 import os
+from collections import deque
 from dataclasses import dataclass  # noqa: F401
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -142,11 +143,12 @@ class GearSonicPolicy(Policy):
         self._planner = None
 
         # State history buffers
-        self._joint_pos_history: List[np.ndarray] = []
-        self._joint_vel_history: List[np.ndarray] = []
-        self._action_history: List[np.ndarray] = []
-        self._angular_vel_history: List[np.ndarray] = []
-        self._gravity_history: List[np.ndarray] = []
+        self._max_history = self._history_len + 5
+        self._joint_pos_history: deque = deque(maxlen=self._max_history)
+        self._joint_vel_history: deque = deque(maxlen=self._max_history)
+        self._action_history: deque = deque(maxlen=self._max_history)
+        self._angular_vel_history: deque = deque(maxlen=self._max_history)
+        self._gravity_history: deque = deque(maxlen=self._max_history)
         self._last_token_state = np.zeros(64, dtype=np.float32)
         self._step = 0
 
@@ -331,18 +333,6 @@ class GearSonicPolicy(Policy):
         self._gravity_history.append(np.array([0, 0, -1], dtype=np.float32))
         # Default angular velocity
         self._angular_vel_history.append(np.zeros(3, dtype=np.float32))
-
-        # Trim to history length
-        max_h = self._history_len + 5
-        for buf in [
-            self._joint_pos_history,
-            self._joint_vel_history,
-            self._action_history,
-            self._angular_vel_history,
-            self._gravity_history,
-        ]:
-            while len(buf) > max_h:
-                buf.pop(0)
 
     async def get_actions(
         self,
