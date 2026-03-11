@@ -73,14 +73,14 @@ def _get_zenoh_session(host: str, zenoh_port: int = 7447):
         with _SESSIONS_LOCK:
             _SESSIONS[key] = session
 
-        logger.info(f"Zenoh session opened: {key}")
+        logger.info("Zenoh session opened: %s", key)
         return session
 
     except ImportError:
         logger.warning("eclipse-zenoh not installed")
         return None
     except Exception as e:
-        logger.error(f"Zenoh connect failed ({key}): {e}")
+        logger.error("Zenoh connect failed (%s): %s", key, e)
         return None
 
 
@@ -737,5 +737,5 @@ def reachy_mini(
             }
 
     except Exception as e:
-        logger.error(f"reachy_mini @ {host}: {e}")
+        logger.error("reachy_mini @ %s: %s", host, e)
         return {"status": "error", "content": [{"text": f"Error: {e}"}]}

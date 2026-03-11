@@ -349,7 +349,7 @@ class IsaacLabTrainer:
                 ],
             }
         except Exception as e:
-            logger.error(f"RSL-RL training failed: {e}")
+            logger.error("RSL-RL training failed: %s", e)
             return {
                 "status": "error",
                 "content": [{"text": f"❌ Training failed: {e}"}],
@@ -440,7 +440,7 @@ class IsaacLabTrainer:
 
             # Train
             start_time = time.time()
-            logger.info(f"🏋️ SB3 {algo_name} training: {self._task_id}")
+            logger.info("🏋️ SB3 %s training: %s", algo_name, self._task_id)
 
             agent.learn(
                 total_timesteps=self.config.total_timesteps,
@@ -486,7 +486,7 @@ class IsaacLabTrainer:
                 ],
             }
         except Exception as e:
-            logger.error(f"SB3 training failed: {e}")
+            logger.error("SB3 training failed: %s", e)
             return {
                 "status": "error",
                 "content": [{"text": f"❌ Training failed: {e}"}],
@@ -665,7 +665,7 @@ class IsaacLabTrainer:
             log_dir = os.path.join(self.config.output_dir, self.config.experiment_name)
             os.makedirs(log_dir, exist_ok=True)
 
-            logger.info(f"🏋️ RL-Games training: {self._task_id}")
+            logger.info("🏋️ RL-Games training: %s", self._task_id)
 
             # RL-Games requires a YAML config — we build one programmatically
             _rl_games_cfg = {  # noqa: F841 — config template for reference

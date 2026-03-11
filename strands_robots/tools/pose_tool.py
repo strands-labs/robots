@@ -75,9 +75,9 @@ class PoseManager:
                         name: RobotPose.from_dict(pose_data)
                         for name, pose_data in data.items()
                     }
-                logger.info(f"Loaded {len(self.poses)} poses for robot {self.robot_id}")
+                logger.info("Loaded %s poses for robot %s", len(self.poses), self.robot_id)
             except Exception as e:
-                logger.error(f"Failed to load poses: {e}")
+                logger.error("Failed to load poses: %s", e)
                 self.poses = {}
 
     def _save_poses(self) -> None:
@@ -86,9 +86,9 @@ class PoseManager:
             data = {name: pose.to_dict() for name, pose in self.poses.items()}
             with open(self.pose_file, "w") as f:
                 json.dump(data, f, indent=2)
-            logger.info(f"Saved {len(self.poses)} poses for robot {self.robot_id}")
+            logger.info("Saved %s poses for robot %s", len(self.poses), self.robot_id)
         except Exception as e:
-            logger.error(f"Failed to save poses: {e}")
+            logger.error("Failed to save poses: %s", e)
 
     def store_pose(
         self,
@@ -242,7 +242,7 @@ class MotorController:
             self.serial_conn.write(packet)
             return True
         except Exception as e:
-            logger.error(f"Failed to move motor {motor_name}: {e}")
+            logger.error("Failed to move motor %s: %s", motor_name, e)
             return False
 
     def read_motor_position(self, motor_name: str) -> Optional[float]:
@@ -265,7 +265,7 @@ class MotorController:
                 position = response[5] | (response[6] << 8)
                 return self.position_to_degrees(motor_name, position)
         except Exception as e:
-            logger.error(f"Failed to read motor {motor_name}: {e}")
+            logger.error("Failed to read motor %s: %s", motor_name, e)
 
         return None
 
@@ -789,5 +789,5 @@ def pose_tool(
             }
 
     except Exception as e:
-        logger.error(f"Pose tool error: {e}")
+        logger.error("Pose tool error: %s", e)
         return {"status": "error", "content": [{"text": f"❌ Error: {str(e)}"}]}

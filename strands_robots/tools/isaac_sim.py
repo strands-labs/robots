@@ -733,5 +733,5 @@ def isaac_sim(
             }
 
     except Exception as e:
-        logger.error(f"isaac_sim error: {e}", exc_info=True)
+        logger.error("isaac_sim error: %s", e, exc_info=True)
         return {"status": "error", "content": [{"text": f"❌ Error: {str(e)}"}]}

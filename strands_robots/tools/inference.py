@@ -128,7 +128,7 @@ def _download_hf(model_id: str) -> str:
     )
     if os.path.isdir(cache) and os.listdir(cache):
         return cache
-    logger.info(f"Downloading {model_id} → {cache}")
+    logger.info("Downloading %s → %s", model_id, cache)
     subprocess.run(
         [
             "huggingface-cli",
@@ -271,7 +271,7 @@ class H(BaseHTTPRequestHandler):
     def log_message(self, fmt, *a): logger.info(fmt % a)
 
 if __name__ == "__main__":
-    logger.info(f"Starting {MODEL} on {HOST}:{PORT}")
+    logger.info("Starting %s on %s:%s", MODEL, HOST, PORT)
     HTTPServer((HOST, PORT), H).serve_forever()
 '''
 
@@ -574,7 +574,7 @@ def inference(
             dit_dtype="fp8",
         )
 
-        logger.info(f"Starting {provider} on :{port} ({num_gpus} GPU)")
+        logger.info("Starting %s on :%s (%s GPU)", provider, port, num_gpus)
         try:
             result = _start_provider(
                 provider, checkpoint, port, host, num_gpus, gpu_str, kwargs

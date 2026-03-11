@@ -135,7 +135,7 @@ class RecordSession:
         self._action_processor = None
         self._observation_processor = None
 
-        logger.info(f"RecordSession: {repo_id} @ {fps}fps, task='{task}'")
+        logger.info("RecordSession: %s @ %sfps, task='%s'", repo_id, fps, task)
 
     def connect(self):
         """Connect robot and teleop devices."""
@@ -145,12 +145,12 @@ class RecordSession:
         # Connect robot
         if not self.robot.is_connected:
             self.robot.connect()
-            logger.info(f"Robot connected: {self.robot}")
+            logger.info("Robot connected: %s", self.robot)
 
         # Connect teleop if provided
         if self.teleop and not self.teleop.is_connected:
             self.teleop.connect()
-            logger.info(f"Teleoperator connected: {self.teleop}")
+            logger.info("Teleoperator connected: %s", self.teleop)
 
         # Initialize processors if available
         if self.use_processor:
@@ -181,7 +181,7 @@ class RecordSession:
         except ImportError:
             logger.debug("LeRobot processor not available, using raw obs/action")
         except Exception as e:
-            logger.debug(f"Processor init failed: {e}, using raw obs/action")
+            logger.debug("Processor init failed: %s, using raw obs/action", e)
 
     def _create_dataset(self):
         """Create LeRobotDataset for recording."""
@@ -237,10 +237,10 @@ class RecordSession:
                 image_writer_threads=self.image_writer_threads,
                 vcodec=self.vcodec,
             )
-            logger.info(f"Dataset created: {self.repo_id} ({len(features)} features)")
+            logger.info("Dataset created: %s (%s features)", self.repo_id, len(features))
 
         except Exception as e:
-            logger.error(f"Dataset creation failed: {e}")
+            logger.error("Dataset creation failed: %s", e)
             raise
 
     def record_episode(
@@ -345,7 +345,7 @@ class RecordSession:
                         frame = self._build_dataset_frame(obs, action, task)
                         self._dataset.add_frame(frame)
                     except Exception as e:
-                        logger.debug(f"Frame write failed: {e}")
+                        logger.debug("Frame write failed: %s", e)
 
                 # Callback
                 if on_frame:
@@ -365,7 +365,7 @@ class RecordSession:
         except KeyboardInterrupt:
             logger.info("Episode interrupted by user")
         except Exception as e:
-            logger.error(f"Episode recording error: {e}")
+            logger.error("Episode recording error: %s", e)
 
         # Finalize episode stats
         self._recording = False
@@ -384,7 +384,7 @@ class RecordSession:
                     f"{stats.duration_s:.1f}s"
                 )
             except Exception as e:
-                logger.error(f"Episode save failed: {e}")
+                logger.error("Episode save failed: %s", e)
                 stats.discarded = True
 
         self._episodes.append(stats)
@@ -497,17 +497,17 @@ class RecordSession:
                     str(self._dataset.root) if hasattr(self._dataset, "root") else None
                 )
             except Exception as e:
-                logger.error(f"Dataset consolidation failed: {e}")
+                logger.error("Dataset consolidation failed: %s", e)
 
             if self.push_to_hub:
                 try:
                     self._dataset.push_to_hub(tags=["strands-robots"])
                     result["pushed"] = True
-                    logger.info(f"Dataset pushed to Hub: {self.repo_id}")
+                    logger.info("Dataset pushed to Hub: %s", self.repo_id)
                 except Exception as e:
                     result["pushed"] = False
                     result["push_error"] = str(e)
-                    logger.error(f"Hub push failed: {e}")
+                    logger.error("Hub push failed: %s", e)
 
         return result
 

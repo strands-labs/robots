@@ -446,5 +446,5 @@ def use_lerobot(
             return {"status": "error", "content": [{"text": f"❌ TypeError: {e}"}]}
 
     except Exception as e:
-        logger.error(f"use_lerobot({module}.{method}) failed: {e}", exc_info=True)
+        logger.error("use_lerobot(%s.%s) failed: %s", module, method, e, exc_info=True)
         return {"status": "error", "content": [{"text": f"❌ {type(e).__name__}: {e}"}]}

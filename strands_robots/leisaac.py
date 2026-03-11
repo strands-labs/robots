@@ -277,7 +277,7 @@ class LeIsaacEnv:
             from strands_robots.policies._utils import check_trust_remote_code
 
             check_trust_remote_code(self.env_script)
-            logger.info(f"Loading from EnvHub: {self.env_script}")
+            logger.info("Loading from EnvHub: %s", self.env_script)
             envs_dict = make_env(
                 self.env_script,
                 n_envs=self.n_envs,
@@ -297,7 +297,7 @@ class LeIsaacEnv:
                 self._raw_env.initialize()
 
             self._loaded = True
-            logger.info(f"✅ LeIsaac environment loaded: {self.task_name}")
+            logger.info("✅ LeIsaac environment loaded: %s", self.task_name)
             return True
 
         except ImportError as e:
@@ -307,7 +307,7 @@ class LeIsaacEnv:
             )
             return False
         except Exception as e:
-            logger.error(f"❌ Failed to load LeIsaac env: {e}")
+            logger.error("❌ Failed to load LeIsaac env: %s", e)
             return False
 
     def reset(self) -> Tuple[Any, Dict]:
@@ -739,7 +739,7 @@ try:
                 }
 
         except Exception as e:
-            logger.error(f"LeIsaac tool error: {e}")
+            logger.error("LeIsaac tool error: %s", e)
             return {"status": "error", "content": [{"text": f"❌ Error: {str(e)}"}]}
 
 except ImportError:

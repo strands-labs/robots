@@ -348,7 +348,7 @@ def lerobot_dataset(
                 ds = None
                 try:
                     ds = LeRobotDataset(repo_id=repo_id, root=ds_root)
-                    logger.info(f"Loaded existing dataset: {repo_id}")
+                    logger.info("Loaded existing dataset: %s", repo_id)
                 except Exception:
                     # LeRobot v3 requires features at create time
                     ds_features = features or _build_default_features(
@@ -361,7 +361,7 @@ def lerobot_dataset(
                         features=ds_features,
                         robot_type=robot_type,
                     )
-                    logger.info(f"Created new dataset: {repo_id}")
+                    logger.info("Created new dataset: %s", repo_id)
 
                 with _RECORDING_LOCK:
                     _ACTIVE_RECORDINGS[recording_id]["dataset"] = ds
@@ -442,7 +442,7 @@ def lerobot_dataset(
                         try:
                             ds.add_frame(frame_data)
                         except Exception as e:
-                            logger.warning(f"Frame add error: {e}")
+                            logger.warning("Frame add error: %s", e)
 
                         ep_frames += 1
 
@@ -462,7 +462,7 @@ def lerobot_dataset(
                     try:
                         ds.save_episode()
                     except Exception as e:
-                        logger.warning(f"Episode save error: {e}")
+                        logger.warning("Episode save error: %s", e)
 
                     with _RECORDING_LOCK:
                         if recording_id in _ACTIVE_RECORDINGS:
@@ -481,14 +481,14 @@ def lerobot_dataset(
                 try:
                     ds.finalize()
                 except Exception as e:
-                    logger.warning(f"Dataset finalize warning: {e}")
+                    logger.warning("Dataset finalize warning: %s", e)
 
                 # Push to hub if requested
                 if push_to_hub:
                     try:
                         ds.push_to_hub(tags=tags)
                     except Exception as e:
-                        logger.warning(f"Push to hub failed: {e}")
+                        logger.warning("Push to hub failed: %s", e)
 
                 with _RECORDING_LOCK:
                     rec_info = _ACTIVE_RECORDINGS.pop(recording_id, {})
@@ -660,7 +660,7 @@ def lerobot_dataset(
                         break
 
             except Exception as e:
-                logger.warning(f"Replay extraction error: {e}")
+                logger.warning("Replay extraction error: %s", e)
 
             return {
                 "status": "success",
@@ -730,5 +730,5 @@ def lerobot_dataset(
             ],
         }
     except Exception as e:
-        logger.error(f"Dataset error: {e}", exc_info=True)
+        logger.error("Dataset error: %s", e, exc_info=True)
         return {"status": "error", "content": [{"text": f"Error: {str(e)}"}]}

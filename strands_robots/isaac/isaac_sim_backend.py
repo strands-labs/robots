@@ -63,7 +63,7 @@ def _ensure_isaac():
         logger.info("✅ Isaac Lab loaded successfully")
         return True
     except ImportError as e:
-        logger.warning(f"Isaac Lab not available: {e}")
+        logger.warning("Isaac Lab not available: %s", e)
         return False
 
 
@@ -97,7 +97,7 @@ def _ensure_isaacsim():
     python_pkgs = os.path.join(isaac_path, "python_packages")
     if os.path.isdir(python_pkgs) and python_pkgs not in sys.path:
         sys.path.insert(0, python_pkgs)
-        logger.info(f"Added Isaac Sim python_packages to sys.path: {python_pkgs}")
+        logger.info("Added Isaac Sim python_packages to sys.path: %s", python_pkgs)
 
     # Also add Isaac Lab source if available alongside Isaac Sim
     for lab_candidate in [
@@ -107,7 +107,7 @@ def _ensure_isaacsim():
     ]:
         if os.path.isdir(lab_candidate) and lab_candidate not in sys.path:
             sys.path.insert(0, lab_candidate)
-            logger.info(f"Added Isaac Lab to sys.path: {lab_candidate}")
+            logger.info("Added Isaac Lab to sys.path: %s", lab_candidate)
             break
 
     try:
@@ -142,7 +142,7 @@ def _setup_nucleus():
             am.NVIDIA_NUCLEUS_DIR = f"{root}/NVIDIA"
             am.ISAAC_NUCLEUS_DIR = f"{root}/Isaac"
             am.ISAACLAB_NUCLEUS_DIR = f"{root}/Isaac/IsaacLab"
-            logger.info(f"Nucleus configured: {root}")
+            logger.info("Nucleus configured: %s", root)
         except ImportError:
             pass
 
@@ -309,7 +309,7 @@ class IsaacSimBackend:
             }
 
         except Exception as e:
-            logger.error(f"Failed to create Isaac world: {e}")
+            logger.error("Failed to create Isaac world: %s", e)
             return {"status": "error", "content": [{"text": f"❌ Failed: {e}"}]}
 
     def add_robot(
@@ -387,7 +387,7 @@ class IsaacSimBackend:
             }
 
         except Exception as e:
-            logger.error(f"Failed to add robot: {e}")
+            logger.error("Failed to add robot: %s", e)
             return {"status": "error", "content": [{"text": f"❌ Failed: {e}"}]}
 
     def step(self, actions=None) -> Dict[str, Any]:
@@ -775,7 +775,7 @@ class IsaacSimBackend:
             }
 
         except Exception as e:
-            logger.error(f"Failed to add object: {e}")
+            logger.error("Failed to add object: %s", e)
             return {"status": "error", "content": [{"text": f"❌ Failed: {e}"}]}
 
     def add_terrain(

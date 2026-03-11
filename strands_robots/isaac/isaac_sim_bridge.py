@@ -158,13 +158,13 @@ class IsaacSimBridgeServer:
         socket = ctx.socket(zmq.REP)
         endpoint = f"{self.bind_address}:{self.port}"
         socket.bind(endpoint)
-        logger.info(f"Isaac Sim bridge server listening on {endpoint}")
+        logger.info("Isaac Sim bridge server listening on %s", endpoint)
 
         self._running = True
 
         # Handle SIGTERM/SIGINT gracefully
         def _signal_handler(signum, frame):
-            logger.info(f"Received signal {signum}, shutting down...")
+            logger.info("Received signal %s, shutting down...", signum)
             self._running = False
 
         signal.signal(signal.SIGTERM, _signal_handler)
@@ -198,7 +198,7 @@ class IsaacSimBridgeServer:
 
         except zmq.ZMQError as e:
             if self._running:
-                logger.error(f"ZMQ error: {e}")
+                logger.error("ZMQ error: %s", e)
         finally:
             socket.close()
             ctx.term()
@@ -380,7 +380,7 @@ class IsaacSimBridgeClient:
 
         endpoint = f"tcp://{self.host}:{self.port}"
         self._socket.connect(endpoint)
-        logger.info(f"Connecting to Isaac Sim bridge at {endpoint}...")
+        logger.info("Connecting to Isaac Sim bridge at %s...", endpoint)
 
         # Wait for server to be ready
         deadline = time.monotonic() + self.connect_timeout
@@ -395,7 +395,7 @@ class IsaacSimBridgeClient:
                 logger.debug("Connection attempt failed, retrying...", exc_info=True)
                 time.sleep(1.0)
 
-        logger.error(f"Failed to connect within {self.connect_timeout}s")
+        logger.error("Failed to connect within %ss", self.connect_timeout)
         return False
 
     def call(
@@ -533,7 +533,7 @@ class IsaacSimBridgeClient:
             str(self.port),
         ]
 
-        logger.info(f"Spawning Isaac Sim bridge server: {' '.join(cmd)}")
+        logger.info("Spawning Isaac Sim bridge server: %s", ' '.join(cmd))
 
         self._server_process = subprocess.Popen(
             cmd,

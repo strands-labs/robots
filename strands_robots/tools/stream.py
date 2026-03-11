@@ -110,7 +110,7 @@ def stream(
                 ],
             }
     except Exception as e:
-        logger.error(f"stream error: {e}")
+        logger.error("stream error: %s", e)
         return {"status": "error", "content": [{"text": f"Error: {e}"}]}
 
 

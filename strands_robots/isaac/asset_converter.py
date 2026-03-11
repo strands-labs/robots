@@ -111,7 +111,7 @@ def _preconvert_obj_to_stl(mjcf_path: str) -> Optional[str]:
     if not obj_meshes:
         return None  # No OBJ files, no conversion needed
 
-    logger.info(f"Found {len(obj_meshes)} OBJ meshes to pre-convert to STL")
+    logger.info("Found %s OBJ meshes to pre-convert to STL", len(obj_meshes))
 
     # Create a temp directory for converted files
     tmp_dir = tempfile.mkdtemp(prefix="strands_obj2stl_")
@@ -129,16 +129,16 @@ def _preconvert_obj_to_stl(mjcf_path: str) -> Optional[str]:
         stl_path = os.path.join(tmp_mesh_dir, stl_file)
 
         if not os.path.exists(obj_path):
-            logger.warning(f"OBJ file not found: {obj_path}")
+            logger.warning("OBJ file not found: %s", obj_path)
             continue
 
         try:
             _convert_single_obj_to_stl(obj_path, stl_path)
             mesh_elem.set("file", stl_file)
             converted += 1
-            logger.debug(f"Converted: {mesh_file} → {stl_file}")
+            logger.debug("Converted: %s → %s", mesh_file, stl_file)
         except Exception as e:
-            logger.warning(f"Failed to convert {mesh_file}: {e}")
+            logger.warning("Failed to convert %s: %s", mesh_file, e)
 
     if converted == 0:
         shutil.rmtree(tmp_dir, ignore_errors=True)
@@ -506,7 +506,7 @@ def convert_mjcf_to_usd(
             effective_mjcf = mjcf_path
             tmp_mjcf = _preconvert_obj_to_stl(mjcf_path)
             if tmp_mjcf:
-                logger.info(f"Using OBJ→STL pre-converted MJCF: {tmp_mjcf}")
+                logger.info("Using OBJ→STL pre-converted MJCF: %s", tmp_mjcf)
                 effective_mjcf = tmp_mjcf
 
             cfg = MjcfConverterCfg(
@@ -524,7 +524,7 @@ def convert_mjcf_to_usd(
             if tmp_mjcf:
                 method += " (with OBJ→STL pre-conversion)"
 
-            logger.info(f"✅ Converted MJCF → USD via {method}: {usd_path}")
+            logger.info("✅ Converted MJCF → USD via %s: %s", method, usd_path)
             return {
                 "status": "success",
                 "content": [
@@ -567,7 +567,7 @@ def convert_mjcf_to_usd(
                 output_usd_path=output_path,
             )
 
-            logger.info(f"✅ Converted via Isaac Sim converter: {output_path}")
+            logger.info("✅ Converted via Isaac Sim converter: %s", output_path)
             return {
                 "status": "success",
                 "content": [
@@ -589,7 +589,7 @@ def convert_mjcf_to_usd(
         return _manual_mjcf_to_usd(mjcf_path, output_path)
 
     except Exception as e:
-        logger.error(f"MJCF → USD conversion failed: {e}")
+        logger.error("MJCF → USD conversion failed: %s", e)
         return {"status": "error", "content": [{"text": f"❌ Conversion failed: {e}"}]}
 
     finally:
@@ -683,7 +683,7 @@ def convert_usd_to_mjcf(
             }
 
     except Exception as e:
-        logger.error(f"USD → MJCF conversion failed: {e}")
+        logger.error("USD → MJCF conversion failed: %s", e)
         return {"status": "error", "content": [{"text": f"❌ Conversion failed: {e}"}]}
 
 
@@ -932,7 +932,7 @@ def _manual_mjcf_to_usd(mjcf_path: str, output_path: str) -> Dict[str, Any]:
                 stats["geoms"] += 1
 
             else:
-                logger.debug(f"Skipping geom type {geom_type} ({safe_geom})")
+                logger.debug("Skipping geom type %s (%s)", geom_type, safe_geom)
                 continue
 
         # ── Add joints ──
@@ -992,7 +992,7 @@ def _manual_mjcf_to_usd(mjcf_path: str, output_path: str) -> Dict[str, Any]:
 
             elif jnt_type == 0:  # free joint
                 # Free joints don't need USD representation (floating base)
-                logger.debug(f"Skipping free joint {safe_jnt}")
+                logger.debug("Skipping free joint %s", safe_jnt)
 
             elif jnt_type == 1:  # ball joint (spherical)
                 jnt_prim = UsdPhysics.SphericalJoint.Define(stage, jnt_path)
@@ -1068,7 +1068,7 @@ def _manual_mjcf_to_usd(mjcf_path: str, output_path: str) -> Dict[str, Any]:
             ],
         }
     except Exception as e:
-        logger.error(f"MuJoCo+pxr conversion failed: {e}", exc_info=True)
+        logger.error("MuJoCo+pxr conversion failed: %s", e, exc_info=True)
         return {
             "status": "error",
             "content": [{"text": f"❌ Manual conversion failed: {e}"}],
@@ -1166,7 +1166,7 @@ def _create_usd_mesh_from_mujoco(
     face_num = int(model.mesh_facenum[mesh_id])
 
     if vert_num == 0 or face_num == 0:
-        logger.warning(f"Empty mesh data for mesh_id={mesh_id}")
+        logger.warning("Empty mesh data for mesh_id=%s", mesh_id)
         return
 
     # Slice out this mesh's vertices and faces
@@ -1468,7 +1468,7 @@ def convert_all_robots_to_usd(
         if skip_existing and os.path.exists(usd_output):
             results[name] = {"status": "skipped", "usd_path": usd_output}
             summary["skipped"] += 1
-            logger.info(f"⏭️ Skipping {name} (already exists)")
+            logger.info("⏭️ Skipping %s (already exists)", name)
             continue
 
         mjcf_path = resolve_model_path(name)
@@ -1489,15 +1489,15 @@ def convert_all_robots_to_usd(
 
             if result.get("status") == "success":
                 summary["success"] += 1
-                logger.info(f"✅ {name}: {result.get('method', 'unknown')}")
+                logger.info("✅ %s: %s", name, result.get('method', 'unknown'))
             else:
                 summary["failed"] += 1
-                logger.warning(f"❌ {name}: {result}")
+                logger.warning("❌ %s: %s", name, result)
 
         except Exception as e:
             results[name] = {"status": "error", "reason": str(e)}
             summary["failed"] += 1
-            logger.error(f"❌ {name}: {e}")
+            logger.error("❌ %s: %s", name, e)
 
     return {
         "status": "success",

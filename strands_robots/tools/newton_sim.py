@@ -531,5 +531,5 @@ def newton_sim(
             }
 
     except Exception as e:
-        logger.error(f"newton_sim error: {e}", exc_info=True)
+        logger.error("newton_sim error: %s", e, exc_info=True)
         return {"status": "error", "content": [{"text": f"❌ Error: {str(e)}"}]}

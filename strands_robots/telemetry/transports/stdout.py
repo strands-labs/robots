@@ -85,7 +85,7 @@ class StdoutTransport:
             return True
 
         except Exception as e:
-            logger.error(f"Stdout transport error: {e}")
+            logger.error("Stdout transport error: %s", e)
             return True  # Never fail
 
     def get_stats(self) -> Dict[str, Any]:

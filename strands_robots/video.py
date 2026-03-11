@@ -114,7 +114,7 @@ class VideoEncoder:
             elif self._backend == "imageio":
                 self._writer.close()
         except Exception as e:
-            logger.warning(f"Error closing video: {e}")
+            logger.warning("Error closing video: %s", e)
 
         self._writer = None
         logger.info(
@@ -131,16 +131,16 @@ class VideoEncoder:
             try:
                 self._init_pyav(width, height)
                 self._backend = "pyav"
-                logger.info(f"Video encoder: PyAV ({self.codec}, {width}x{height})")
+                logger.info("Video encoder: PyAV (%s, %sx%s)", self.codec, width, height)
                 return
             except Exception as e:
-                logger.warning(f"PyAV init failed: {e}, falling back to imageio")
+                logger.warning("PyAV init failed: %s, falling back to imageio", e)
 
         # Fallback to imageio
         if _check_imageio():
             self._init_imageio(width, height)
             self._backend = "imageio"
-            logger.info(f"Video encoder: imageio ({width}x{height})")
+            logger.info("Video encoder: imageio (%sx%s)", width, height)
             return
 
         raise RuntimeError(

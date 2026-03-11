@@ -106,7 +106,7 @@ class LeRobotCalibrationManager:
             with open(calib_path) as f:
                 return json.load(f)
         except Exception as e:
-            logger.error(f"Error loading calibration {calib_path}: {e}")
+            logger.error("Error loading calibration %s: %s", calib_path, e)
             return None
 
     def save_calibration(
@@ -123,7 +123,7 @@ class LeRobotCalibrationManager:
                 json.dump(data, f, indent=2)
             return True
         except Exception as e:
-            logger.error(f"Error saving calibration {calib_path}: {e}")
+            logger.error("Error saving calibration %s: %s", calib_path, e)
             return False
 
     def delete_calibration(
@@ -139,7 +139,7 @@ class LeRobotCalibrationManager:
             calib_path.unlink()
             return True
         except Exception as e:
-            logger.error(f"Error deleting calibration {calib_path}: {e}")
+            logger.error("Error deleting calibration %s: %s", calib_path, e)
             return False
 
     def get_calibration_info(
@@ -172,7 +172,7 @@ class LeRobotCalibrationManager:
             return info
 
         except Exception as e:
-            logger.error(f"Error getting calibration info {calib_path}: {e}")
+            logger.error("Error getting calibration info %s: %s", calib_path, e)
             return None
 
     def search_calibrations(
@@ -264,7 +264,7 @@ class LeRobotCalibrationManager:
             return True, str(output_dir), copied_count
 
         except Exception as e:
-            logger.error(f"Backup failed: {e}")
+            logger.error("Backup failed: %s", e)
             return False, str(e), copied_count
 
     def restore_calibrations(
@@ -307,7 +307,7 @@ class LeRobotCalibrationManager:
             )
 
         except Exception as e:
-            logger.error(f"Restore failed: {e}")
+            logger.error("Restore failed: %s", e)
             return False, str(e), restored_count
 
 
@@ -816,7 +816,7 @@ def lerobot_calibrate(
             }
 
     except Exception as e:
-        logger.error(f"LeRobot calibrate tool error: {e}")
+        logger.error("LeRobot calibrate tool error: %s", e)
         return {
             "status": "error",
             "content": [{"text": f"❌ **Tool execution failed:** {str(e)}"}],

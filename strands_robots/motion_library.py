@@ -122,7 +122,7 @@ class MotionLibrary:
             Number of motions loaded
         """
         if repo_id in self._loaded_repos:
-            logger.info(f"Already loaded: {repo_id}")
+            logger.info("Already loaded: %s", repo_id)
             return 0
 
         try:
@@ -131,13 +131,13 @@ class MotionLibrary:
             local_path = snapshot_download(repo_id, repo_type=repo_type)
             count = self.load_directory(local_path, source=repo_id)
             self._loaded_repos.add(repo_id)
-            logger.info(f"Loaded {count} motions from {repo_id}")
+            logger.info("Loaded %s motions from %s", count, repo_id)
             return count
         except ImportError:
             logger.warning("huggingface_hub not installed — can't download motions")
             return 0
         except Exception as e:
-            logger.warning(f"Failed to load motions from {repo_id}: {e}")
+            logger.warning("Failed to load motions from %s: %s", repo_id, e)
             return 0
 
     def load_directory(self, path: str, source: str = "") -> int:
@@ -175,7 +175,7 @@ class MotionLibrary:
                                 )
                                 count += 1
             except Exception as e:
-                logger.debug(f"Could not load {json_file}: {e}")
+                logger.debug("Could not load %s: %s", json_file, e)
 
         return count
 
@@ -190,7 +190,7 @@ class MotionLibrary:
             self._motions[motion_name] = motion
             return motion
         except Exception as e:
-            logger.warning(f"Failed to load motion from {path}: {e}")
+            logger.warning("Failed to load motion from %s: %s", path, e)
             return None
 
     def register(self, name: str, data: Dict[str, Any]) -> Motion:

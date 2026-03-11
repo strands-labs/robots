@@ -278,7 +278,7 @@ class PlacoKinematics(Kinematics):
             )
 
         self._urdf_path = urdf_path
-        logger.info(f"PlacoKinematics: urdf='{urdf_path}', frame='{target_frame}'")
+        logger.info("PlacoKinematics: urdf='%s', frame='%s'", urdf_path, target_frame)
 
     @property
     def joint_names(self) -> List[str]:
@@ -344,7 +344,7 @@ class ONNXKinematics(Kinematics):
         self._fk_path = fk_model_path
         self._ik_path = ik_model_path
 
-        logger.info(f"ONNXKinematics: fk={fk_model_path}, ik={ik_model_path}")
+        logger.info("ONNXKinematics: fk=%s, ik=%s", fk_model_path, ik_model_path)
 
     @property
     def joint_names(self) -> List[str]:

@@ -193,7 +193,7 @@ def _run_teleop_loop(robot, teleop, fps: int = 60, duration: float = None):
             _ACTIVE_SESSION["stats"]["steps"] = step
             _ACTIVE_SESSION["stats"]["duration"] = time.time() - start
         except Exception as e:
-            logger.error(f"Teleop step error: {e}")
+            logger.error("Teleop step error: %s", e)
             break
 
         elapsed = time.time() - step_start
@@ -201,7 +201,7 @@ def _run_teleop_loop(robot, teleop, fps: int = 60, duration: float = None):
             time.sleep(frame_interval - elapsed)
 
     _ACTIVE_SESSION["running"] = False
-    logger.info(f"Teleop loop ended: {step} steps")
+    logger.info("Teleop loop ended: %s steps", step)
 
 
 def _run_record_loop(robot, teleop, record_session, num_episodes: int):
@@ -212,7 +212,7 @@ def _run_record_loop(robot, teleop, record_session, num_episodes: int):
         if not _ACTIVE_SESSION["running"]:
             break
 
-        logger.info(f"Recording episode {ep + 1}/{num_episodes}")
+        logger.info("Recording episode %s/%s", ep + 1, num_episodes)
         _ACTIVE_SESSION["stats"]["current_episode"] = ep + 1
 
         record_session.record_episode(mode=RecordMode.TELEOP)
@@ -225,7 +225,7 @@ def _run_record_loop(robot, teleop, record_session, num_episodes: int):
     result = record_session.save_and_push()
     _ACTIVE_SESSION["stats"]["final_result"] = result
     _ACTIVE_SESSION["running"] = False
-    logger.info(f"Recording complete: {result}")
+    logger.info("Recording complete: %s", result)
 
 
 @tool
@@ -433,7 +433,7 @@ def teleoperator(
                     _ACTIVE_SESSION["record_session"].stop()
                     final_result = _ACTIVE_SESSION["record_session"].save_and_push()
                 except Exception as e:
-                    logger.error(f"Recording finalization error: {e}")
+                    logger.error("Recording finalization error: %s", e)
 
             # Disconnect
             try:
@@ -442,7 +442,7 @@ def teleoperator(
                 if _ACTIVE_SESSION["robot"]:
                     _ACTIVE_SESSION["robot"].disconnect()
             except Exception as e:
-                logger.error(f"Disconnect error: {e}")
+                logger.error("Disconnect error: %s", e)
 
             stats = _ACTIVE_SESSION["stats"]
             mode = _ACTIVE_SESSION["mode"]
@@ -518,5 +518,5 @@ def teleoperator(
             }
 
     except Exception as e:
-        logger.error(f"Teleoperator tool error: {e}")
+        logger.error("Teleoperator tool error: %s", e)
         return {"status": "error", "content": [{"text": f"❌ Error: {e}"}]}

@@ -83,7 +83,7 @@ class OTelTransport:
             return True
 
         except Exception as e:
-            logger.error(f"OTel transport error: {e}")
+            logger.error("OTel transport error: %s", e)
             return False
 
     def _emit_span(self, event: Dict[str, Any]) -> None:

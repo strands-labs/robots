@@ -89,7 +89,7 @@ class LocalWALTransport:
             return True
 
         except Exception as e:
-            logger.error(f"WAL write error: {e}")
+            logger.error("WAL write error: %s", e)
             return False
 
     def _write_line(self, line_bytes: bytes) -> None:
@@ -123,7 +123,7 @@ class LocalWALTransport:
                             f_out.write(f_in.read())
                     self._current_path.unlink()
                 except Exception as e:
-                    logger.warning(f"Failed to compress {self._current_path}: {e}")
+                    logger.warning("Failed to compress %s: %s", self._current_path, e)
 
         # Clean up old files if over limit
         self._cleanup_old_files()
@@ -152,7 +152,7 @@ class LocalWALTransport:
             oldest = files.pop(0)
             try:
                 oldest.unlink()
-                logger.debug(f"Deleted old WAL file: {oldest}")
+                logger.debug("Deleted old WAL file: %s", oldest)
             except OSError:
                 pass
 

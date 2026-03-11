@@ -670,7 +670,7 @@ class SB3Trainer(RLTrainer):
             )
             return self._create_mujoco_env()
         except Exception as e:
-            logger.warning(f"Newton env creation failed ({e}), falling back to MuJoCo")
+            logger.warning("Newton env creation failed (%s), falling back to MuJoCo", e)
             return self._create_mujoco_env()
 
     def _get_reward_fn(self) -> Optional[Callable]:

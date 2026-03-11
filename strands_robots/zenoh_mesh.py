@@ -128,7 +128,7 @@ def _get_session():
                 cfg_try.insert_json5("connect/endpoints", json.dumps([MESH_EP]))
                 _SESSION = zenoh.open(cfg_try)
                 _SESSION_REFS = 1
-                logger.info(f"Zenoh mesh session opened (listener on {MESH_EP})")
+                logger.info("Zenoh mesh session opened (listener on %s)", MESH_EP)
                 return _SESSION
             except Exception:
                 pass  # Port taken — someone else is listening
@@ -168,7 +168,7 @@ def _put(key: str, data: dict):
         try:
             _SESSION.put(key, json.dumps(data).encode())
         except Exception as e:
-            logger.debug(f"Zenoh put error: {e}")
+            logger.debug("Zenoh put error: %s", e)
 
 
 def _update_peer(peer_id: str, peer_type: str, hostname: str, caps: dict):
@@ -197,7 +197,7 @@ def _prune_peers():
         for pid in stale:
             del _PEERS[pid]
             _PEERS_VERSION += 1
-            logger.info(f"Mesh: peer {pid} timed out")
+            logger.info("Mesh: peer %s timed out", pid)
 
 
 def get_peers() -> List[dict]:
@@ -247,7 +247,7 @@ class Mesh:
 
         session = _get_session()
         if session is None:
-            logger.debug(f"{self.peer_id}: zenoh unavailable, mesh off")
+            logger.debug("%s: zenoh unavailable, mesh off", self.peer_id)
             return
 
         self._has_session_ref = True
@@ -272,7 +272,7 @@ class Mesh:
         threading.Thread(target=self._heartbeat_loop, daemon=True).start()
         threading.Thread(target=self._state_loop, daemon=True).start()
 
-        logger.info(f"🔗 {self.peer_id} on mesh ({self.peer_type})")
+        logger.info("🔗 %s on mesh (%s)", self.peer_id, self.peer_type)
 
     def stop(self):
         """Stop mesh (called from Robot.cleanup)."""
@@ -290,7 +290,7 @@ class Mesh:
         if self._has_session_ref:
             _release_session()
             self._has_session_ref = False
-        logger.info(f"🔌 {self.peer_id} off mesh")
+        logger.info("🔌 %s off mesh", self.peer_id)
 
     @property
     def alive(self) -> bool:
@@ -344,7 +344,7 @@ class Mesh:
                 pid, d.get("robot_type", "robot"), d.get("hostname", ""), d
             )
             if is_new:
-                logger.info(f"🤖 New peer: {pid} ({d.get('robot_type','?')})")
+                logger.info("🤖 New peer: %s (%s)", pid, d.get('robot_type','?'))
         except Exception:
             pass
 
@@ -576,12 +576,12 @@ class Mesh:
                     if len(self.inbox[sub_name]) > 1000:
                         self.inbox[sub_name] = self.inbox[sub_name][-500:]
             except Exception as e:
-                logger.debug(f"Subscribe handler error on {topic}: {e}")
+                logger.debug("Subscribe handler error on %s: %s", topic, e)
 
         sub = _SESSION.declare_subscriber(topic, handler)
         self._subs.append(sub)
         self._user_subs[sub_name] = sub
-        logger.info(f"📡 {self.peer_id} subscribed to: {topic}")
+        logger.info("📡 %s subscribed to: %s", self.peer_id, topic)
         return sub_name
 
     def unsubscribe(self, name: str):

@@ -220,7 +220,7 @@ class IsaacLabEnv:
         self._action_dim = 0
         self._episode_count = 0
 
-        logger.info(f"Creating Isaac Lab env: {self.config.task_name}")
+        logger.info("Creating Isaac Lab env: %s", self.config.task_name)
         self._create_env()
 
     def _create_env(self):
@@ -266,7 +266,7 @@ class IsaacLabEnv:
             )
 
         except Exception as e:
-            logger.error(f"Failed to create Isaac Lab env: {e}")
+            logger.error("Failed to create Isaac Lab env: %s", e)
             raise
 
     def reset(self) -> Dict[str, Any]:
