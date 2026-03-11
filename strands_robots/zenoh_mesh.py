@@ -320,10 +320,10 @@ class Mesh:
             if hasattr(r, "_action_features"):
                 p["action_keys"] = list(r._action_features.keys())
             # Simulation
-            if hasattr(r, "_robots"):
-                p["sim_robots"] = list(r._robots.keys())
             if hasattr(r, "_world") and r._world is not None:
                 p["world"] = True
+                if hasattr(r._world, "robots"):
+                    p["sim_robots"] = list(r._world.robots.keys())
         except Exception:
             pass
         return p

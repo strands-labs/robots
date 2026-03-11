@@ -1589,7 +1589,13 @@ class Simulation(AgentTool):
                     if jid >= 0:
                         robot.joint_ids.append(jid)
                 for i in range(new_model.nu):
-                    robot.actuator_ids.append(i)
+                    jnt_id = new_model.actuator_trnid[i, 0]
+                    if jnt_id in robot.joint_ids:
+                        robot.actuator_ids.append(i)
+                # Fallback: if no actuators matched by joint, assign all (single-robot scene)
+                if not robot.actuator_ids:
+                    for i in range(new_model.nu):
+                        robot.actuator_ids.append(i)
 
             # Clean up temp directory
             try:
@@ -3525,13 +3531,16 @@ class Simulation(AgentTool):
 
         # Robots
         elif action == "add_robot":
-            return self.add_robot(
-                name=d.get("robot_name", d.get("name", "robot_0")),
-                urdf_path=d.get("urdf_path"),
-                data_config=d.get("data_config"),
-                position=d.get("position"),
-                orientation=d.get("orientation"),
-            )
+            ar_kwargs = {"name": d.get("robot_name", d.get("name", "robot_0"))}
+            if d.get("urdf_path") is not None:
+                ar_kwargs["urdf_path"] = d["urdf_path"]
+            if d.get("data_config") is not None:
+                ar_kwargs["data_config"] = d["data_config"]
+            if d.get("position") is not None:
+                ar_kwargs["position"] = d["position"]
+            if d.get("orientation") is not None:
+                ar_kwargs["orientation"] = d["orientation"]
+            return self.add_robot(**ar_kwargs)
         elif action == "remove_robot":
             return self.remove_robot(d.get("robot_name", d.get("name", "")))
         elif action == "list_robots":

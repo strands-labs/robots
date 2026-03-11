@@ -65,6 +65,7 @@ class DreamzeroPolicy(Policy):
         session_id: Optional[str] = None,
         image_resize: Optional[tuple] = None,
         action_horizon: int = 24,
+        recv_timeout: float = 120.0,
         **kwargs,
     ):
         """Initialize DreamZero policy client.
@@ -76,6 +77,7 @@ class DreamzeroPolicy(Policy):
             session_id: Session ID for tracking (auto-generated if None)
             image_resize: Override image resize (default: use server config)
             action_horizon: Expected action horizon from server
+            recv_timeout: Timeout in seconds for WebSocket recv calls
         """
         self._host = host
         self._port = port
@@ -83,6 +85,7 @@ class DreamzeroPolicy(Policy):
         self._session_id = session_id or str(uuid.uuid4())
         self._image_resize = image_resize
         self._action_horizon = action_horizon
+        self._recv_timeout = recv_timeout
         self._robot_state_keys: List[str] = []
 
         # Connection state (lazy connect)
@@ -134,11 +137,11 @@ class DreamzeroPolicy(Policy):
                 compression=None,
                 max_size=None,
                 ping_interval=60,
-                ping_timeout=600,
+                ping_timeout=120,
             )
 
             # Server sends config on connect
-            raw_config = self._ws.recv()
+            raw_config = self._ws.recv(timeout=self._recv_timeout)
             self._server_config = msgpack_numpy.unpackb(raw_config)
             self._packer = msgpack_numpy.Packer()
             self._connected = True
@@ -161,9 +164,9 @@ class DreamzeroPolicy(Policy):
                     compression=None,
                     max_size=None,
                     ping_interval=60,
-                    ping_timeout=600,
+                    ping_timeout=120,
                 )
-                raw_config = self._ws.recv()
+                raw_config = self._ws.recv(timeout=self._recv_timeout)
                 self._server_config = msgpack_numpy.unpackb(raw_config)
                 self._packer = msgpack_numpy.Packer()
                 self._connected = True
@@ -332,7 +335,7 @@ class DreamzeroPolicy(Policy):
         data = self._packer.pack(obs)
         self._ws.send(data)
 
-        response = self._ws.recv()
+        response = self._ws.recv(timeout=self._recv_timeout)
         if isinstance(response, str):
             raise RuntimeError(f"DreamZero server error:\n{response}")
 
@@ -392,7 +395,7 @@ class DreamzeroPolicy(Policy):
 
         reset_msg = {"endpoint": "reset"}
         self._ws.send(self._packer.pack(reset_msg))
-        self._ws.recv()  # "reset successful"
+        self._ws.recv(timeout=self._recv_timeout)  # "reset successful"
 
         # New session
         self._session_id = str(uuid.uuid4())

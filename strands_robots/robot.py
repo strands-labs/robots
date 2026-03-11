@@ -416,17 +416,8 @@ class Robot(AgentTool):
                 # This is expected and fine - robot is already connected
                 logger.info(f"✅ {self.robot} was already connected")
 
-            except Exception as e:
-                # Check if it's the string version of "already connected" error
-                error_str = str(e).lower()
-                if (
-                    "already connected" in error_str
-                    or "is already connected" in error_str
-                ):
-                    logger.info(f"✅ {self.robot} connection already established")
-                else:
-                    # Re-raise if it's a different error
-                    raise e
+            except Exception:
+                raise
 
             # Final connection check
             if not self.robot.is_connected:

@@ -239,7 +239,11 @@ def create_policy(provider: str, **kwargs) -> Policy:
     if _needs_resolution:
         try:
             resolved_provider, resolved_kwargs = resolve_policy_string(provider, **kwargs)
-        except Exception:
+        except ImportError:
+            resolved_provider = None
+            resolved_kwargs = {}
+        except Exception as e:
+            logger.warning(f"Policy resolution failed for '{provider}': {e}")
             resolved_provider = None
             resolved_kwargs = {}
 

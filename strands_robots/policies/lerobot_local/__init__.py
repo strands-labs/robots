@@ -129,6 +129,8 @@ class LerobotLocalPolicy(Policy):
         self._output_features = {}
         self._loaded = False
         self._processor_bridge = None
+        self._consecutive_failures = 0
+        self._max_consecutive_failures = 5
 
         if pretrained_name_or_path:
             self._load_model()
@@ -297,9 +299,18 @@ class LerobotLocalPolicy(Policy):
             if self._processor_bridge and self._processor_bridge.has_postprocessor:
                 action_tensor = self._processor_bridge.postprocess(action_tensor)
 
+            self._consecutive_failures = 0
             return self._tensor_to_action_dicts(action_tensor)
         except Exception as e:
-            logger.error(f"Inference error: {e}")
+            self._consecutive_failures += 1
+            logger.error(
+                f"Inference error ({self._consecutive_failures}/{self._max_consecutive_failures}): {e}"
+            )
+            if self._consecutive_failures >= self._max_consecutive_failures:
+                raise RuntimeError(
+                    f"LeRobot policy failed {self._consecutive_failures} consecutive times, "
+                    f"last error: {e}"
+                ) from e
             return self._zero_actions()
 
     def select_action_sync(self, observation_dict: Dict[str, Any]) -> np.ndarray:
@@ -345,26 +356,33 @@ class LerobotLocalPolicy(Policy):
         has_lerobot_keys = any(k.startswith("observation.") for k in observation_dict)
         if has_lerobot_keys:
             for k, v in observation_dict.items():
+                # Detect image-like data by shape or key name
+                is_image = "image" in k or k in self._input_features and hasattr(
+                    self._input_features.get(k), "shape"
+                ) and len(getattr(self._input_features.get(k), "shape", ())) >= 2
+
                 if isinstance(v, torch.Tensor):
                     t = v
-                    # Ensure images are CHW format
-                    if "image" in k and t.dim() == 3 and t.shape[-1] in (1, 3, 4):
+                    # Detect image by shape: 3D with channel-like last dim
+                    if not is_image and t.dim() == 3 and t.shape[-1] in (1, 3, 4):
+                        is_image = True
+                    if is_image and t.dim() == 3 and t.shape[-1] in (1, 3, 4):
                         t = t.permute(2, 0, 1)
-                    # Add batch dimension if needed
-                    if "image" in k and t.dim() == 3:
+                    if is_image and t.dim() == 3:
                         t = t.unsqueeze(0)
-                    elif t.dim() < 2 and "image" not in k:
+                    elif t.dim() < 2 and not is_image:
                         t = t.unsqueeze(0)
                     batch[k] = t.to(self._device)
                 elif isinstance(v, np.ndarray):
                     if v.ndim >= 2:
+                        if not is_image and v.ndim == 3 and v.shape[-1] in (1, 3, 4):
+                            is_image = True
                         t = torch.from_numpy(v.copy()).float()
-                        if t.dim() == 3 and t.shape[-1] in (1, 3, 4):
+                        if is_image and t.dim() == 3 and t.shape[-1] in (1, 3, 4):
                             t = t.permute(2, 0, 1)
-                        # Normalize based on source dtype, not value range
-                        if "image" in k and v.dtype == np.uint8:
+                        if is_image and v.dtype == np.uint8:
                             t = t / 255.0
-                        if "image" in k and t.dim() == 3:
+                        if is_image and t.dim() == 3:
                             t = t.unsqueeze(0)
                         elif t.dim() < 2:
                             t = t.unsqueeze(0)
@@ -392,11 +410,11 @@ class LerobotLocalPolicy(Policy):
                         continue
                     if arr.ndim >= 2:
                         t = torch.from_numpy(arr).float()
-                        if t.dim() == 3 and t.shape[-1] in (1, 3, 4):
+                        if is_image and t.dim() == 3 and t.shape[-1] in (1, 3, 4):
                             t = t.permute(2, 0, 1)
-                        if "image" in k and arr.dtype == np.uint8:
+                        if is_image and arr.dtype == np.uint8:
                             t = t / 255.0
-                        if "image" in k and t.dim() == 3:
+                        if is_image and t.dim() == 3:
                             t = t.unsqueeze(0)
                         batch[k] = t.to(self._device)
                     else:
