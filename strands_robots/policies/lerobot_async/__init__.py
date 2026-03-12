@@ -44,35 +44,47 @@ logger = logging.getLogger(__name__)
 
 
 def _validate_policy_type(policy_type: str) -> None:
-    """Validate policy type against LeRobot's own factory.
+    """Validate policy type against LeRobot's policy registry.
 
-    No hardcoding — uses LeRobot's get_policy_class() which knows
-    all registered policies (including third-party plugins).
+    lerobot ≥0.5: Uses direct module import check or PreTrainedConfig registry.
     Skips validation if LeRobot isn't installed (let the server handle it).
     """
     try:
-        from lerobot.policies.factory import get_policy_class
+        import importlib
+        # Try direct module import (lerobot ≥0.5 convention)
+        importlib.import_module(f"lerobot.policies.{policy_type}")
+        return  # Valid
+    except ImportError:
+        pass
 
-        get_policy_class(policy_type)  # Raises ValueError if invalid
+    try:
+        # Try PreTrainedConfig registry
+        from lerobot.configs.policies import PreTrainedConfig
+        known = PreTrainedConfig.get_known_choices()
+        if known and policy_type in known:
+            return  # Valid
     except (ImportError, RuntimeError):
         logger.debug(
             "LeRobot not installed locally or has import issues, skipping policy type validation"
         )
-    except ValueError:
-        # Re-raise with a cleaner message
-        try:
-            # Try to list what IS available for the error message
-            from lerobot.configs.policies import PreTrainedConfig
-            from lerobot.policies.factory import get_policy_class
+        return  # Can't validate — let the server handle it
 
-            known = PreTrainedConfig.get_known_choices()
-            available = sorted(known) if known else "check LeRobot docs"
-        except Exception:
-            available = "check LeRobot docs"
-        raise ValueError(
-            f"Unsupported policy type: '{policy_type}'. "
-            f"LeRobot supports: {available}"
-        )
+    # Collect available types for error message
+    available = []
+    try:
+        import pkgutil
+
+        import lerobot.policies as lp
+        for _, modname, _ in pkgutil.iter_modules(lp.__path__):
+            if modname not in ("factory", "pretrained", "utils"):
+                available.append(modname)
+    except Exception:
+        available = ["check LeRobot docs"]
+
+    raise ValueError(
+        f"Unsupported policy type: '{policy_type}'. "
+        f"LeRobot supports: {sorted(available)}"
+    )
 
 
 def _validate_deserialized_actions(obj: Any) -> None:
@@ -192,14 +204,32 @@ class LerobotAsyncPolicy(Policy):
         logger.info("🔧 LeRobot async state keys: %s", self.robot_state_keys)
 
     def _ensure_connected(self):
-        """Ensure gRPC connection is established."""
+        """Ensure gRPC connection is established.
+
+        lerobot ≥0.5: services_pb2_grpc requires the `grpc` package.
+        Install with: pip install lerobot[async] or pip install grpcio
+        """
         if self._connected:
             return
 
         try:
             import grpc
-            from lerobot.transport import services_pb2, services_pb2_grpc
+        except ImportError as e:
+            raise ImportError(
+                "gRPC is required for LeRobot async inference. "
+                "Install with: pip install grpcio grpcio-tools"
+            ) from e
 
+        try:
+            # services_pb2_grpc requires grpc at import time
+            from lerobot.transport import services_pb2, services_pb2_grpc
+        except ImportError as e:
+            raise ImportError(
+                f"LeRobot async inference transport not available: {e}. "
+                f"Install with: pip install lerobot grpcio grpcio-tools"
+            ) from e
+
+        try:
             if self._use_tls:
                 # Secure TLS channel
                 if self._tls_root_cert:
@@ -244,17 +274,12 @@ class LerobotAsyncPolicy(Policy):
 
             config_bytes = pickle.dumps(remote_config)
             self._stub.SendPolicyInstructions(
-                services_pb2.PolicyInstructions(data=config_bytes)
+                services_pb2.PolicySetup(data=config_bytes)
             )
 
             self._connected = True
             logger.info("✅ Connected to LeRobot server at %s", self.server_address)
 
-        except ImportError as e:
-            raise ImportError(
-                f"LeRobot async inference dependencies not available: {e}. "
-                f"Install: pip install lerobot[async]"
-            ) from e
         except Exception as e:
             logger.error("❌ Failed to connect to LeRobot server: %s", e)
             raise

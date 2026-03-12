@@ -22,31 +22,46 @@ logger = logging.getLogger(__name__)
 
 
 def _resolve_policy_class_from_hub(pretrained_name_or_path: str):
-    """Resolve the LeRobot policy class by reading config.json from HuggingFace.
+    """Resolve the LeRobot policy class from a pretrained path or HF repo.
 
-    Zero hardcoding — uses LeRobot's own factory + HF config metadata.
+    Zero hardcoding — uses LeRobot 0.5's PreTrainedPolicy.from_pretrained()
+    which handles config resolution, class lookup, and weight loading
+    internally via the draccus config registry.
 
-    Flow:
-        1. Download config.json from HF hub (or local path)
-        2. Read the "type" field (e.g. "act", "pi0", "smolvla", ...)
-        3. Pass to LeRobot's get_policy_class() which handles dynamic import
+    Flow (lerobot ≥0.5):
+        1. PreTrainedConfig.from_pretrained() loads config.json from HF/local
+        2. Config's draccus type field resolves to the correct PolicyClass
+        3. PreTrainedPolicy.from_pretrained() loads weights into that class
 
-    This means any new policy added to LeRobot automatically works here.
+    Falls back to reading config.json manually + class name matching if
+    the draccus path fails (e.g. third-party policies not in registry).
     """
     import json
     from pathlib import Path
 
-    policy_type = None
+    # Strategy 1 (lerobot ≥0.5): Use PreTrainedConfig draccus resolution
+    try:
+        from lerobot.configs.policies import PreTrainedConfig
 
-    # 1. Try reading config.json
+        config = PreTrainedConfig.from_pretrained(pretrained_name_or_path)
+        policy_type = getattr(config, "type", type(config).__name__.replace("Config", "").lower())
+        logger.info(
+            f"Auto-resolved via PreTrainedConfig: '{pretrained_name_or_path}' -> type='{policy_type}'"
+        )
+        # Return the config's associated policy class
+        from lerobot.policies.pretrained import PreTrainedPolicy
+        return PreTrainedPolicy, policy_type
+    except Exception as e:
+        logger.debug("PreTrainedConfig resolution failed, trying manual: %s", e)
+
+    # Strategy 2: Manual config.json reading (fallback for custom/third-party)
+    policy_type = None
     local_path = Path(pretrained_name_or_path)
     if local_path.is_dir() and (local_path / "config.json").exists():
-        # Local checkpoint
         with open(local_path / "config.json") as f:
             config = json.load(f)
         policy_type = config.get("type")
     else:
-        # HuggingFace Hub
         try:
             from huggingface_hub import hf_hub_download
 
@@ -64,11 +79,7 @@ def _resolve_policy_class_from_hub(pretrained_name_or_path: str):
             f"Pass policy_type= explicitly."
         )
 
-    # 2. Use LeRobot's own factory — handles all dynamic imports
-    from lerobot.policies.factory import get_policy_class
-
-    PolicyClass = get_policy_class(policy_type)
-
+    PolicyClass = _resolve_policy_class_by_name(policy_type)
     logger.info(
         f"Auto-resolved: '{pretrained_name_or_path}' -> type='{policy_type}' -> {PolicyClass.__name__}"
     )
@@ -76,14 +87,42 @@ def _resolve_policy_class_from_hub(pretrained_name_or_path: str):
 
 
 def _resolve_policy_class_by_name(policy_type: str):
-    """Resolve policy class from an explicit type string using LeRobot's factory."""
+    """Resolve policy class from an explicit type string.
+
+    lerobot ≥0.5: Uses PreTrainedConfig.get_known_choices() + make_policy()
+    or direct module import from lerobot.policies.{policy_type}.
+    Falls back to legacy get_policy_class() for older lerobot versions.
+    """
+    # Strategy 1 (lerobot ≥0.5): Direct module import
+    try:
+        import importlib
+        mod = importlib.import_module(f"lerobot.policies.{policy_type}")
+        # Find the Policy class (convention: {Type}Policy)
+        for attr_name in dir(mod):
+            obj = getattr(mod, attr_name)
+            if (isinstance(obj, type)
+                and attr_name.endswith("Policy")
+                and attr_name != "PreTrainedPolicy"
+                and hasattr(obj, "from_pretrained")):
+                return obj
+    except ImportError:
+        pass
+
+    # Strategy 2: PreTrainedPolicy (generic loader)
+    try:
+        from lerobot.policies.pretrained import PreTrainedPolicy
+        return PreTrainedPolicy
+    except ImportError:
+        pass
+
+    # Strategy 3: Legacy get_policy_class (lerobot <0.5)
     try:
         from lerobot.policies.factory import get_policy_class
-
         return get_policy_class(policy_type)
-    except (RuntimeError, ImportError) as e:
+    except (ImportError, AttributeError, RuntimeError) as e:
         raise ImportError(
-            f"LeRobot policy factory import failed (likely CUDA/flash_attn issue): {e}"
+            f"Could not resolve LeRobot policy class for type '{policy_type}': {e}. "
+            f"Ensure lerobot>=0.5.0 is installed."
         ) from e
 
 

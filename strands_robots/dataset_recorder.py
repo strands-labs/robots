@@ -125,6 +125,7 @@ class DatasetRecorder:
         vcodec: str = "libsvtav1",
         streaming_encoding: bool = True,
         image_writer_threads: int = 4,
+        video_backend: str = "auto",
     ) -> "DatasetRecorder":
         """Create a new DatasetRecorder with auto-detected features.
 
@@ -143,6 +144,7 @@ class DatasetRecorder:
             vcodec: Video codec (h264, hevc, libsvtav1)
             streaming_encoding: Stream-encode video during capture
             image_writer_threads: Threads for writing image frames
+            video_backend: Video backend for encoding ("auto" for HW encoder auto-detect, LeRobot v0.5.0+)
         """
         # Lazy import — this is where we actually need lerobot
         LeRobotDatasetCls = _get_lerobot_dataset_class()
@@ -178,6 +180,8 @@ class DatasetRecorder:
         create_sig = inspect.signature(LeRobotDatasetCls.create)
         if "streaming_encoding" in create_sig.parameters:
             create_kwargs["streaming_encoding"] = streaming_encoding
+        if "video_backend" in create_sig.parameters:
+            create_kwargs["video_backend"] = video_backend
         dataset = LeRobotDatasetCls.create(**create_kwargs)
 
         recorder = cls(dataset=dataset, task=task)

@@ -1,4 +1,4 @@
-"""LeRobot policy training (ACT, Pi0, SmolVLA, Diffusion, etc.)."""
+"""LeRobot policy training (ACT, Pi0, Pi0-FAST, SmolVLA, Wall-X, X-VLA, SARM, Diffusion, etc.)."""
 
 import logging
 from typing import Any, Dict, Optional
@@ -9,13 +9,19 @@ logger = logging.getLogger(__name__)
 
 
 class LerobotTrainer(Trainer):
-    """Train LeRobot policies (ACT, Pi0, SmolVLA, Diffusion, etc.).
+    """Train LeRobot policies (ACT, Pi0, Pi0-FAST, SmolVLA, Wall-X, X-VLA, SARM, Diffusion, etc.).
 
     Supports two modes:
     1. **In-process** (default): Uses LeRobot's training internals directly.
        Full access to model, optimizer, dataloader — supports callbacks,
        custom eval, and programmatic checkpointing.
     2. **Subprocess**: Wraps `lerobot_train` CLI for isolation.
+
+    LeRobot v0.5.0+ features:
+    - PEFT/LoRA support: --policy.peft_config.use_peft=true
+    - Real-Time Chunking (RTC): --policy.rtc_config.enabled=true
+    - EnvHub environments: --env.type=hub --env.hub_path=username/env
+    - 3rd-party policy plugins: pip install lerobot_policy_mypolicy
 
     Example:
         trainer = LerobotTrainer(
@@ -70,13 +76,13 @@ class LerobotTrainer(Trainer):
     def _build_train_config(self) -> Any:
         """Build a LeRobot TrainPipelineConfig from our TrainConfig.
 
-        Bridges strands-robots TrainConfig → LeRobot TrainPipelineConfig.
+        lerobot ≥0.5: Uses lerobot.configs.train.TrainPipelineConfig directly
+        with DatasetConfig and WandBConfig from lerobot.configs.default.
         """
         try:
             from pathlib import Path
 
             from lerobot.configs.default import DatasetConfig, WandBConfig
-            from lerobot.configs.policies import PreTrainedConfig
             from lerobot.configs.train import TrainPipelineConfig
 
             # Build dataset config
@@ -85,29 +91,46 @@ class LerobotTrainer(Trainer):
             # Build policy config (from pretrained or type)
             policy_cfg = None
             if self.pretrained_name_or_path:
-                policy_cfg = PreTrainedConfig.from_pretrained(
-                    self.pretrained_name_or_path
-                )
-                policy_cfg.pretrained_path = Path(self.pretrained_name_or_path)
+                try:
+                    from lerobot.configs.policies import PreTrainedConfig
+                    policy_cfg = PreTrainedConfig.from_pretrained(
+                        self.pretrained_name_or_path
+                    )
+                except Exception as e:
+                    logger.warning("Could not load pretrained config: %s", e)
 
             # Build wandb config
             wandb_cfg = WandBConfig(enable=self.config.use_wandb)
 
-            # Construct full training config
-            train_cfg = TrainPipelineConfig(
-                dataset=dataset_cfg,
-                policy=policy_cfg,
-                output_dir=Path(self.config.output_dir),
-                seed=self.config.seed,
-                batch_size=self.config.batch_size,
-                steps=self.config.max_steps,
-                num_workers=self.config.dataloader_num_workers,
-                eval_freq=self.eval_freq,
-                save_freq=self.save_freq,
-                log_freq=self.log_freq,
-                wandb=wandb_cfg,
-                rename_map=self.rename_map,
-            )
+            # Build training config kwargs — only pass params that exist
+            import inspect
+            train_sig = inspect.signature(TrainPipelineConfig)
+            train_kwargs = {
+                "dataset": dataset_cfg,
+                "policy": policy_cfg,
+                "seed": self.config.seed,
+                "batch_size": self.config.batch_size,
+                "steps": self.config.max_steps,
+                "num_workers": self.config.dataloader_num_workers,
+                "eval_freq": self.eval_freq,
+                "save_freq": self.save_freq,
+                "log_freq": self.log_freq,
+                "wandb": wandb_cfg,
+            }
+
+            # output_dir needs Path
+            if "output_dir" in train_sig.parameters:
+                train_kwargs["output_dir"] = Path(self.config.output_dir)
+
+            # rename_map (lerobot ≥0.5)
+            if "rename_map" in train_sig.parameters and self.rename_map:
+                train_kwargs["rename_map"] = self.rename_map
+
+            # Filter to only valid params
+            valid_params = set(train_sig.parameters.keys())
+            train_kwargs = {k: v for k, v in train_kwargs.items() if k in valid_params}
+
+            train_cfg = TrainPipelineConfig(**train_kwargs)
 
             self._train_config = train_cfg
             return train_cfg
@@ -136,8 +159,7 @@ class LerobotTrainer(Trainer):
     def _train_in_process(self, **kwargs) -> Dict[str, Any]:
         """Run training using LeRobot's internal training loop.
 
-        Uses lerobot.scripts.lerobot_train.train() directly.
-        Provides full access to the training loop, model, optimizer, etc.
+        lerobot ≥0.5: train(cfg, accelerator) — accelerator is optional.
         """
         try:
             from lerobot.scripts.lerobot_train import train as lerobot_train_fn
@@ -158,7 +180,7 @@ class LerobotTrainer(Trainer):
         )
         logger.info("   Output: %s", self.config.output_dir)
 
-        # Run the actual LeRobot training function
+        # lerobot ≥0.5: train() accepts optional Accelerator
         try:
             lerobot_train_fn(train_cfg)
             return {
