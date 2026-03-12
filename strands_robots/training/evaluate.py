@@ -26,7 +26,8 @@ def _create_env(backend, robot_name, task, max_steps_per_episode, render, kwargs
 
     if backend == "newton":
         try:
-            from strands_robots.newton import NewtonConfig, NewtonGymEnv
+            from strands_robots.newton import NewtonConfig
+            from strands_robots.newton.newton_gym_env import NewtonGymEnv
 
             newton_kwargs = {}
             if "newton_config" in kwargs:

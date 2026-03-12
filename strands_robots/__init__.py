@@ -280,7 +280,7 @@ except (ImportError, AttributeError, OSError):
 
 # Newton Gymnasium wrapper (GPU-parallel RL environments)
 try:
-    from strands_robots.newton import NewtonGymEnv
+    from strands_robots.newton.newton_gym_env import NewtonGymEnv
 
     __all__.append("NewtonGymEnv")
 except (ImportError, AttributeError, OSError):
