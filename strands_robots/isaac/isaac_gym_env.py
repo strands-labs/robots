@@ -4,7 +4,7 @@ Bridges IsaacSimBackend's GPU-parallel API into the standard gym.Env interface
 so that Stable Baselines 3, CleanRL, LeRobot, and other RL libraries work
 directly with the Isaac Sim backend.
 
-Follows the same pattern as NewtonGymEnv (strands_robots/newton/newton_gym_env.py)
+Follows the same pattern as NewtonGymEnv (strands_robots/newton/_gym_env.py)
 but wraps IsaacSimBackend instead of NewtonBackend.
 
 For single-env cases, implements gym.Env.

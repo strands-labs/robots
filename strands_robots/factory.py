@@ -117,7 +117,7 @@ def Robot(
             return isaac_backend
 
         elif backend == "newton":
-            from strands_robots.newton.newton_backend import NewtonBackend, NewtonConfig
+            from strands_robots.newton import NewtonBackend, NewtonConfig
             solver = kwargs.pop("solver", "mujoco")
             config = NewtonConfig(
                 num_envs=num_envs,

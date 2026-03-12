@@ -636,8 +636,7 @@ class SB3Trainer(RLTrainer):
         Uses NewtonGymEnv which wraps NewtonBackend in a gym.Env interface.
         """
         try:
-            from strands_robots.newton import NewtonConfig
-            from strands_robots.newton.newton_gym_env import NewtonGymEnv
+            from strands_robots.newton import NewtonConfig, NewtonGymEnv
 
             newton_config = NewtonConfig(
                 num_envs=self.config.num_envs,

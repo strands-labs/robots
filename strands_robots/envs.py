@@ -127,8 +127,7 @@ if HAS_GYM:
                 return
             elif backend == "newton":
                 super().__init__()
-                from strands_robots.newton.newton_backend import NewtonConfig
-                from strands_robots.newton.newton_gym_env import NewtonGymEnv
+                from strands_robots.newton import NewtonConfig, NewtonGymEnv
 
                 self._delegate = NewtonGymEnv(
                     robot_name=robot_name,

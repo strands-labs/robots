@@ -27,6 +27,8 @@ Requirements:
     - warp-lang >= 1.11.0
 """
 
+from ._types import BROAD_PHASE_OPTIONS, RENDER_BACKENDS, SOLVER_MAP, NewtonConfig
+
 __all__ = [
     "NewtonBackend",
     "NewtonConfig",
@@ -40,27 +42,11 @@ __all__ = [
 def __getattr__(name):
     """Lazy imports to avoid hard dependency on Newton / Warp."""
     if name == "NewtonBackend":
-        from .newton_backend import NewtonBackend
+        from ._core import NewtonBackend
 
         return NewtonBackend
-    if name == "NewtonConfig":
-        from .newton_backend import NewtonConfig
-
-        return NewtonConfig
     if name == "NewtonGymEnv":
-        from .newton_gym_env import NewtonGymEnv
+        from ._gym_env import NewtonGymEnv
 
         return NewtonGymEnv
-    if name == "SOLVER_MAP":
-        from .newton_backend import SOLVER_MAP
-
-        return SOLVER_MAP
-    if name == "RENDER_BACKENDS":
-        from .newton_backend import RENDER_BACKENDS
-
-        return RENDER_BACKENDS
-    if name == "BROAD_PHASE_OPTIONS":
-        from .newton_backend import BROAD_PHASE_OPTIONS
-
-        return BROAD_PHASE_OPTIONS
     raise AttributeError(f"module 'strands_robots.newton' has no attribute {name!r}")

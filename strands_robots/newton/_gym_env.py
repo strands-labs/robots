@@ -8,8 +8,7 @@ For multi-env (num_envs > 1), implements gym.vector.VectorEnv for proper
 batched obs/actions — which is what SB3 expects for GPU-parallel training.
 
 Usage:
-    from strands_robots.newton import NewtonConfig
-    from strands_robots.newton.newton_gym_env import NewtonGymEnv
+    from strands_robots.newton import NewtonConfig, NewtonGymEnv
 
     # Single env
     env = NewtonGymEnv(
