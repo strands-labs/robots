@@ -21,6 +21,7 @@ from typing import get_type_hints
 
 import pytest
 
+
 # ---------------------------------------------------------------------------
 # Discover every module under strands_robots
 # ---------------------------------------------------------------------------
@@ -73,7 +74,8 @@ class TestModuleImports:
                 "grpc", "realsense", "unitree", "isaacgym", "isaaclab",
                 "isaacsim", "omni", "pxr", "nvidia", "nemo", "cosmos",
                 "serial", "reachy", "zenoh", "otel", "opentelemetry",
-                "cv2", "open3d", "pyrealsense", "robomimic",
+                "cv2", "open3d", "pyrealsense", "robomimic", "lerobot",
+                "LeRobot",
             ]):
                 pytest.skip(f"Optional dep: {e}")
             raise
@@ -270,7 +272,7 @@ class TestCodeQuality:
             except SyntaxError as e:
                 failures.append(f"{py_file}: {e}")
 
-        assert not failures, "Syntax errors:\n" + "\n".join(failures)
+        assert not failures, f"Syntax errors:\n" + "\n".join(failures)
 
     def test_no_bare_except(self):
         """No bare 'except:' clauses (should use 'except Exception:')."""
@@ -302,4 +304,4 @@ class TestCodeQuality:
                 if not init.exists() and dir_path.name != "__pycache__":
                     missing.append(str(dir_path))
 
-        assert not missing, "Missing __init__.py:\n" + "\n".join(missing)
+        assert not missing, f"Missing __init__.py:\n" + "\n".join(missing)
