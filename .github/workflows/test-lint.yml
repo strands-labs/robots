@@ -33,5 +33,14 @@ jobs:
       - name: Run lint
         run: hatch run lint
 
-      - name: Run tests
-        run: hatch run test
+      - name: Run tests with coverage
+        run: |
+          hatch run test --cov-report=xml:coverage.xml --cov-report=term-missing
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage.xml
+          retention-days: 30
