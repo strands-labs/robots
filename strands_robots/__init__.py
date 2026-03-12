@@ -110,11 +110,11 @@ del _name
 
 # --- Tier 4: Optional heavy integrations ---
 
-# MujocoBackend (MuJoCo — optional dependency)
+# Simulation (MuJoCo — optional dependency)
 try:
-    from strands_robots.mujoco import MujocoBackend
+    from strands_robots.simulation import Simulation
 
-    __all__.append("MujocoBackend")
+    __all__.append("Simulation")
 except (ImportError, AttributeError, OSError):
     pass
 

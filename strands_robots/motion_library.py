@@ -235,7 +235,7 @@ class MotionLibrary:
         """Play a motion in the simulation.
 
         Args:
-            simulation: Simulation backend instance (MujocoBackend, etc.)
+            simulation: Simulation instance
             robot_name: Name of the robot in the sim
             motion_name: Name of the motion to play
             speed: Playback speed multiplier

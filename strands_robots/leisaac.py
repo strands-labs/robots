@@ -1,7 +1,7 @@
 """LeIsaac × LeRobot EnvHub Integration for strands-robots.
 
 Bridges Lightwheel AI's LeIsaac (IsaacLab-based environments) into
-strands-robots' Policy ABC and simulation toolchain.
+strands-robots' Policy ABC and Simulation toolchain.
 
 LeIsaac provides photorealistic IsaacSim environments with everyday
 manipulation tasks. This module enables:

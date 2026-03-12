@@ -1,7 +1,7 @@
 """LeRobotDataset recorder bridge for strands-robots.
 
 Wraps LeRobotDataset so that both robot.py (real hardware) and
-MujocoBackend can produce training-ready datasets with
+simulation.py (MuJoCo) can produce training-ready datasets with
 a single add_frame() call per control step.
 
 Usage:
@@ -95,7 +95,7 @@ class DatasetRecorder:
     3. save_episode() — finalize episode (encodes video, writes parquet)
     4. push_to_hub() — upload to HuggingFace
 
-    Works for both real hardware (robot.py) and simulation backends.
+    Works for both real hardware (robot.py) and simulation (simulation.py).
     """
 
     def __init__(self, dataset, task: str = ""):

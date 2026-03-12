@@ -1,4 +1,4 @@
-"""Zenoh Mesh — Native peer-to-peer layer for every Robot and simulation backend.
+"""Zenoh Mesh — Native peer-to-peer layer for every Robot and Simulation.
 
 Every Robot() is a peer by default. No join_mesh(), no opt-in.
 Constructed → on mesh. Destroyed → off mesh. That simple.
@@ -214,14 +214,14 @@ def get_peer(peer_id: str) -> Optional[dict]:
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Mesh — the mixin that gets embedded into Robot / simulation backends
+# Mesh — the mixin that gets embedded into Robot/Simulation
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 
 class Mesh:
-    """Peer-to-peer mesh for a single Robot or simulation backend instance.
+    """Peer-to-peer mesh for a single Robot or Simulation instance.
 
-    Created automatically inside Robot.__init__() and simulation backend __init__().
+    Created automatically inside Robot.__init__() / Simulation.__init__().
     Handles presence, state publishing, and command dispatch.
 
     This is NOT a wrapper — it's a component, like _task_state or _executor.
@@ -229,7 +229,7 @@ class Mesh:
     """
 
     def __init__(self, robot, peer_id: str, peer_type: str = "robot"):
-        self.robot = robot  # back-reference (Robot or simulation backend)
+        self.robot = robot  # back-reference (Robot or Simulation)
         self.peer_id = peer_id
         self.peer_type = peer_type
         self._running = False
@@ -731,20 +731,20 @@ class Mesh:
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# init_mesh() — called from Robot.__init__ and MujocoBackend.__init__
+# init_mesh() — called from Robot.__init__ and Simulation.__init__
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 
 def init_mesh(
     robot, peer_id: str = None, peer_type: str = "robot", mesh: bool = True
 ) -> Optional[Mesh]:
-    """Initialize mesh for a Robot or simulation backend.
+    """Initialize mesh for a Robot/Simulation.
 
     Called inside __init__(). Returns the Mesh instance (or None if disabled).
     The caller stores it as self.mesh.
 
     Args:
-        robot: The Robot or simulation backend instance (self)
+        robot: The Robot or Simulation instance (self)
         peer_id: Explicit peer ID. Default: tool_name_str
         peer_type: "robot" or "sim"
         mesh: False to disable entirely

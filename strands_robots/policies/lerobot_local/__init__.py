@@ -527,7 +527,7 @@ class LerobotLocalPolicy(Policy):
                 elif isinstance(v, (int, float)):
                     batch[k] = torch.tensor([v], dtype=torch.float32).unsqueeze(0).to(self._device)
                 elif isinstance(v, (list, tuple)):
-                    # Simulation backends may return lists for observation.state — convert to tensors
+                    # Simulation may return lists for observation.state — convert to tensors
                     # Convert list/tuple to tensor (handles 1D state vectors and nested lists)
                     try:
                         arr = np.array(v, dtype=np.float32)
