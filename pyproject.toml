@@ -90,15 +90,6 @@ cosmos-predict = [
     # cosmos-predict2 installed from source: github.com/nvidia-cosmos/cosmos-predict2.5
     # Also requires: transformer-engine[pytorch], flash-attn (build from source with CUDA toolkit)
 ]
-marble = [
-    "requests>=2.28.0",
-    "trimesh>=4.0.0",
-    "plyfile>=1.0.0",
-    # Optional: usd-core>=24.0 for USD scene composition (heavy dep)
-    # Optional: open3d>=0.18.0 for 3D visualization
-    # 3DGrut installed from source: github.com/nv-tlabs/3dgrut (PLY→USDZ Gaussian splat conversion)
-    # Marble API access: marble.worldlabs.ai (requires API key — set WLT_API_KEY)
-]
 zenoh = [
     "eclipse-zenoh>=1.0.0",
 ]
@@ -123,7 +114,6 @@ all = [
     "strands-robots[newton]",
     "strands-robots[cosmos-transfer]",
     "strands-robots[cosmos-predict]",
-    "strands-robots[marble]",
     "strands-robots[zenoh]",
 ]
 dev = [

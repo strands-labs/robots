@@ -81,7 +81,6 @@ _TOOL_IMPORTS = {
     "teleoperator": ("strands_robots.tools.teleoperator", "teleoperator"),
     "lerobot_dataset": ("strands_robots.tools.lerobot_dataset", "lerobot_dataset"),
     "newton_sim": ("strands_robots.tools.newton_sim", "newton_sim"),
-    "marble_tool": ("strands_robots.tools.marble_tool", "marble_tool"),
     "stream": ("strands_robots.tools.stream", "stream"),
     "stereo_depth": ("strands_robots.tools.stereo_depth", "stereo_depth"),
 }
@@ -308,19 +307,6 @@ try:
     )
 
     __all__.extend(["CosmosTransferPipeline", "CosmosTransferConfig"])
-except (ImportError, AttributeError, OSError):
-    pass
-
-# Marble 3D World Generation (World Labs — diverse training environments)
-try:
-    from strands_robots.marble import (
-        MARBLE_PRESETS,
-        MarbleConfig,
-        MarblePipeline,
-        MarbleScene,
-    )
-
-    __all__.extend(["MarblePipeline", "MarbleConfig", "MarbleScene", "MARBLE_PRESETS"])
 except (ImportError, AttributeError, OSError):
     pass
 

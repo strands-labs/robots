@@ -24,7 +24,6 @@ _LAZY_IMPORTS: dict[str, str] = {
     "reachy_mini": ".reachy_mini_tool",
     "newton_sim": ".newton_sim",
     "isaac_sim": ".isaac_sim",
-    "marble_tool": ".marble_tool",
     "stream": ".stream",
     "use_lerobot": ".use_lerobot",
     "use_unitree": ".use_unitree",

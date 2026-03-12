@@ -680,7 +680,7 @@ class SB3Trainer(RLTrainer):
         tasks detected via the task string, returns a
         :class:`PickAndPlaceReward` instance (callable with per-episode
         ``reset()``).  The 4-phase reward (Reach→Grasp→Transport→Place) is
-        crucial for the Marble 3D → Isaac Sim training pipeline (#124).
+        crucial for the training pipeline (#124).
         """
         task_lower = self.config.task.lower()
 

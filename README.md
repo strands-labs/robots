@@ -362,20 +362,6 @@ from strands_robots.policies import register_policy
 register_policy("my_vla", lambda: MyPolicy, aliases=["custom"])
 ```
 
-## 3D World Generation (Marble)
-
-Generate photorealistic 3D environments from text, images, or video using the [World Labs Marble API](https://worldlabs.ai):
-
-```python
-from strands_robots import MarblePipeline
-
-pipeline = MarblePipeline(api_key="wlt-...")
-scene = pipeline.generate(prompt="a robotics workshop with metal shelving and tools")
-# → SPZ Gaussian splats + GLB mesh + panorama + thumbnail + AI caption
-```
-
-8 built-in presets: `kitchen`, `office_desk`, `workshop`, `living_room`, `warehouse`, `lab_bench`, `outdoor_garden`, `restaurant`.
-
 ## Sim→Real (Cosmos Transfer)
 
 Convert simulation recordings into photorealistic video using [NVIDIA Cosmos Transfer 2.5](https://github.com/NVIDIA/Cosmos-Transfer2):
