@@ -1,5 +1,6 @@
 """LeRobot policy training (ACT, Pi0, Pi0-FAST, SmolVLA, Wall-X, X-VLA, SARM, Diffusion, etc.)."""
 
+import inspect
 import logging
 from typing import Any, Dict, Optional
 
@@ -17,7 +18,7 @@ class LerobotTrainer(Trainer):
        custom eval, and programmatic checkpointing.
     2. **Subprocess**: Wraps `lerobot_train` CLI for isolation.
 
-    LeRobot v0.5.0+ features:
+    Features:
     - PEFT/LoRA support: --policy.peft_config.use_peft=true
     - Real-Time Chunking (RTC): --policy.rtc_config.enabled=true
     - EnvHub environments: --env.type=hub --env.hub_path=username/env
@@ -64,9 +65,7 @@ class LerobotTrainer(Trainer):
         self._dataset = None
         self._optimizer = None
 
-        logger.info(
-            f"🤗 LeRobot Trainer: {policy_type} ({'in-process' if in_process else 'subprocess'})"
-        )
+        logger.info(f"🤗 LeRobot Trainer: {policy_type} ({'in-process' if in_process else 'subprocess'})")
         logger.info("📁 Dataset: %s", dataset_repo_id)
 
     @property
@@ -76,7 +75,7 @@ class LerobotTrainer(Trainer):
     def _build_train_config(self) -> Any:
         """Build a LeRobot TrainPipelineConfig from our TrainConfig.
 
-        lerobot ≥0.5: Uses lerobot.configs.train.TrainPipelineConfig directly
+        Uses lerobot.configs.train.TrainPipelineConfig directly
         with DatasetConfig and WandBConfig from lerobot.configs.default.
         """
         try:
@@ -93,9 +92,8 @@ class LerobotTrainer(Trainer):
             if self.pretrained_name_or_path:
                 try:
                     from lerobot.configs.policies import PreTrainedConfig
-                    policy_cfg = PreTrainedConfig.from_pretrained(
-                        self.pretrained_name_or_path
-                    )
+
+                    policy_cfg = PreTrainedConfig.from_pretrained(self.pretrained_name_or_path)
                 except Exception as e:
                     logger.warning("Could not load pretrained config: %s", e)
 
@@ -103,7 +101,6 @@ class LerobotTrainer(Trainer):
             wandb_cfg = WandBConfig(enable=self.config.use_wandb)
 
             # Build training config kwargs — only pass params that exist
-            import inspect
             train_sig = inspect.signature(TrainPipelineConfig)
             train_kwargs = {
                 "dataset": dataset_cfg,
@@ -122,7 +119,7 @@ class LerobotTrainer(Trainer):
             if "output_dir" in train_sig.parameters:
                 train_kwargs["output_dir"] = Path(self.config.output_dir)
 
-            # rename_map (lerobot ≥0.5)
+            # rename_map support
             if "rename_map" in train_sig.parameters and self.rename_map:
                 train_kwargs["rename_map"] = self.rename_map
 
@@ -149,25 +146,17 @@ class LerobotTrainer(Trainer):
             try:
                 return self._train_in_process(**kwargs)
             except Exception as e:
-                logger.warning(
-                    f"In-process training failed: {e}, falling back to subprocess"
-                )
+                logger.warning(f"In-process training failed: {e}, falling back to subprocess")
                 return self._train_subprocess(**kwargs)
         else:
             return self._train_subprocess(**kwargs)
 
     def _train_in_process(self, **kwargs) -> Dict[str, Any]:
-        """Run training using LeRobot's internal training loop.
-
-        lerobot ≥0.5: train(cfg, accelerator) — accelerator is optional.
-        """
+        """Run training using LeRobot's internal training loop."""
         try:
             from lerobot.scripts.lerobot_train import train as lerobot_train_fn
         except ImportError:
-            raise ImportError(
-                "LeRobot training script not available. "
-                "Install with: pip install lerobot"
-            )
+            raise ImportError("LeRobot training script not available. Install with: pip install lerobot")
 
         # Build the training config
         train_cfg = self._build_train_config()
@@ -175,12 +164,9 @@ class LerobotTrainer(Trainer):
             raise RuntimeError("Failed to build LeRobot training config")
 
         logger.info("🚀 Starting in-process LeRobot training: %s", self.policy_type)
-        logger.info(
-            f"   Steps: {self.config.max_steps}, Batch: {self.config.batch_size}"
-        )
+        logger.info(f"   Steps: {self.config.max_steps}, Batch: {self.config.batch_size}")
         logger.info("   Output: %s", self.config.output_dir)
 
-        # lerobot ≥0.5: train() accepts optional Accelerator
         try:
             lerobot_train_fn(train_cfg)
             return {
@@ -230,9 +216,7 @@ class LerobotTrainer(Trainer):
         if self.config.resume:
             cmd.append("--resume=true")
 
-        logger.info(
-            f"🚀 Launching LeRobot training (subprocess): {self.policy_type}..."
-        )
+        logger.info(f"🚀 Launching LeRobot training (subprocess): {self.policy_type}...")
 
         result = subprocess.run(cmd, capture_output=False)
         return {

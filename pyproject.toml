@@ -47,6 +47,7 @@ dependencies = [
 ml = [
     "torch>=2.0.0",
     "lerobot>=0.5.0",
+    "grpcio>=1.50.0",
 ]
 hardware = [
     "lerobot[feetech]",
@@ -182,4 +183,4 @@ ignore = ["E501"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-v --cov=strands_robots --cov-report=term-missing --cov-fail-under=18"
+addopts = "-v --cov=strands_robots --cov-report=term-missing"

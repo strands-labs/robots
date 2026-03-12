@@ -24,11 +24,11 @@ logger = logging.getLogger(__name__)
 def _resolve_policy_class_from_hub(pretrained_name_or_path: str):
     """Resolve the LeRobot policy class from a pretrained path or HF repo.
 
-    Zero hardcoding — uses LeRobot 0.5's PreTrainedPolicy.from_pretrained()
+    Zero hardcoding — uses PreTrainedPolicy.from_pretrained()
     which handles config resolution, class lookup, and weight loading
     internally via the draccus config registry.
 
-    Flow (lerobot ≥0.5):
+    Flow:
         1. PreTrainedConfig.from_pretrained() loads config.json from HF/local
         2. Config's draccus type field resolves to the correct PolicyClass
         3. PreTrainedPolicy.from_pretrained() loads weights into that class
@@ -39,17 +39,16 @@ def _resolve_policy_class_from_hub(pretrained_name_or_path: str):
     import json
     from pathlib import Path
 
-    # Strategy 1 (lerobot ≥0.5): Use PreTrainedConfig draccus resolution
+    # Strategy 1: Use PreTrainedConfig draccus resolution
     try:
         from lerobot.configs.policies import PreTrainedConfig
 
         config = PreTrainedConfig.from_pretrained(pretrained_name_or_path)
         policy_type = getattr(config, "type", type(config).__name__.replace("Config", "").lower())
-        logger.info(
-            f"Auto-resolved via PreTrainedConfig: '{pretrained_name_or_path}' -> type='{policy_type}'"
-        )
+        logger.info(f"Auto-resolved via PreTrainedConfig: '{pretrained_name_or_path}' -> type='{policy_type}'")
         # Return the config's associated policy class
         from lerobot.policies.pretrained import PreTrainedPolicy
+
         return PreTrainedPolicy, policy_type
     except Exception as e:
         logger.debug("PreTrainedConfig resolution failed, trying manual: %s", e)
@@ -80,30 +79,31 @@ def _resolve_policy_class_from_hub(pretrained_name_or_path: str):
         )
 
     PolicyClass = _resolve_policy_class_by_name(policy_type)
-    logger.info(
-        f"Auto-resolved: '{pretrained_name_or_path}' -> type='{policy_type}' -> {PolicyClass.__name__}"
-    )
+    logger.info(f"Auto-resolved: '{pretrained_name_or_path}' -> type='{policy_type}' -> {PolicyClass.__name__}")
     return PolicyClass, policy_type
 
 
 def _resolve_policy_class_by_name(policy_type: str):
     """Resolve policy class from an explicit type string.
 
-    lerobot ≥0.5: Uses PreTrainedConfig.get_known_choices() + make_policy()
+    Uses PreTrainedConfig.get_known_choices() + make_policy()
     or direct module import from lerobot.policies.{policy_type}.
     Falls back to legacy get_policy_class() for older lerobot versions.
     """
-    # Strategy 1 (lerobot ≥0.5): Direct module import
+    # Strategy 1: Direct module import
     try:
         import importlib
+
         mod = importlib.import_module(f"lerobot.policies.{policy_type}")
         # Find the Policy class (convention: {Type}Policy)
         for attr_name in dir(mod):
             obj = getattr(mod, attr_name)
-            if (isinstance(obj, type)
+            if (
+                isinstance(obj, type)
                 and attr_name.endswith("Policy")
                 and attr_name != "PreTrainedPolicy"
-                and hasattr(obj, "from_pretrained")):
+                and hasattr(obj, "from_pretrained")
+            ):
                 return obj
     except ImportError:
         pass
@@ -111,18 +111,19 @@ def _resolve_policy_class_by_name(policy_type: str):
     # Strategy 2: PreTrainedPolicy (generic loader)
     try:
         from lerobot.policies.pretrained import PreTrainedPolicy
+
         return PreTrainedPolicy
     except ImportError:
         pass
 
-    # Strategy 3: Legacy get_policy_class (lerobot <0.5)
+    # Strategy 3: Legacy get_policy_class
     try:
         from lerobot.policies.factory import get_policy_class
+
         return get_policy_class(policy_type)
     except (ImportError, AttributeError, RuntimeError) as e:
         raise ImportError(
-            f"Could not resolve LeRobot policy class for type '{policy_type}': {e}. "
-            f"Ensure lerobot>=0.5.0 is installed."
+            f"Could not resolve LeRobot policy class for type '{policy_type}': {e}. Ensure lerobot is installed."
         ) from e
 
 
@@ -360,9 +361,7 @@ class LerobotLocalPolicy(Policy):
             PolicyClass = _resolve_policy_class_by_name(self.policy_type)
         else:
             # Auto-detect from HF config.json
-            PolicyClass, self.policy_type = _resolve_policy_class_from_hub(
-                self.pretrained_name_or_path
-            )
+            PolicyClass, self.policy_type = _resolve_policy_class_from_hub(self.pretrained_name_or_path)
 
         self._policy = PolicyClass.from_pretrained(self.pretrained_name_or_path)
         self._policy.eval()
@@ -376,10 +375,7 @@ class LerobotLocalPolicy(Policy):
                 self._output_features = cfg.output_features
 
         elapsed = time.time() - start
-        logger.info(
-            f"Loaded {PolicyClass.__name__} (type='{self.policy_type}') "
-            f"in {elapsed:.1f}s on {self._device}"
-        )
+        logger.info(f"Loaded {PolicyClass.__name__} (type='{self.policy_type}') in {elapsed:.1f}s on {self._device}")
         self._loaded = True
 
         # Auto-detect robot_state_keys from model config if not set
@@ -390,7 +386,7 @@ class LerobotLocalPolicy(Policy):
                 self.robot_state_keys = [f"joint_{i}" for i in range(action_dim)]
                 logger.warning(
                     f"robot_state_keys not set — auto-generated {action_dim} generic keys "
-                    f"(joint_0..joint_{action_dim-1}). Set explicit keys with "
+                    f"(joint_0..joint_{action_dim - 1}). Set explicit keys with "
                     f"set_robot_state_keys() for meaningful joint names."
                 )
 
@@ -408,16 +404,12 @@ class LerobotLocalPolicy(Policy):
                     logger.info("Processor bridge loaded: %s", self._processor_bridge)
                 else:
                     self._processor_bridge = None
-                    logger.debug(
-                        "No processor configs found, using raw obs/action flow"
-                    )
+                    logger.debug("No processor configs found, using raw obs/action flow")
             except Exception as e:
                 logger.debug("Processor bridge not loaded: %s", e)
                 self._processor_bridge = None
 
-    async def get_actions(
-        self, observation_dict: Dict[str, Any], instruction: str, **kwargs
-    ) -> List[Dict[str, Any]]:
+    async def get_actions(self, observation_dict: Dict[str, Any], instruction: str, **kwargs) -> List[Dict[str, Any]]:
         if not self._loaded:
             if self.pretrained_name_or_path:
                 self._load_model()
@@ -448,13 +440,10 @@ class LerobotLocalPolicy(Policy):
             return self._tensor_to_action_dicts(action_tensor)
         except Exception as e:
             self._consecutive_failures += 1
-            logger.error(
-                f"Inference error ({self._consecutive_failures}/{self._max_consecutive_failures}): {e}"
-            )
+            logger.error(f"Inference error ({self._consecutive_failures}/{self._max_consecutive_failures}): {e}")
             if self._consecutive_failures >= self._max_consecutive_failures:
                 raise RuntimeError(
-                    f"LeRobot policy failed {self._consecutive_failures} consecutive times, "
-                    f"last error: {e}"
+                    f"LeRobot policy failed {self._consecutive_failures} consecutive times, last error: {e}"
                 ) from e
             return self._zero_actions()
 
@@ -490,9 +479,7 @@ class LerobotLocalPolicy(Policy):
             return action_tensor.cpu().numpy()
         return np.asarray(action_tensor)
 
-    def _build_observation_batch(
-        self, observation_dict: Dict[str, Any], instruction: str
-    ) -> Dict[str, Any]:
+    def _build_observation_batch(self, observation_dict: Dict[str, Any], instruction: str) -> Dict[str, Any]:
         import torch
 
         batch = {}
@@ -502,9 +489,12 @@ class LerobotLocalPolicy(Policy):
         if has_lerobot_keys:
             for k, v in observation_dict.items():
                 # Detect image-like data by shape or key name
-                is_image = "image" in k or k in self._input_features and hasattr(
-                    self._input_features.get(k), "shape"
-                ) and len(getattr(self._input_features.get(k), "shape", ())) >= 2
+                is_image = (
+                    "image" in k
+                    or k in self._input_features
+                    and hasattr(self._input_features.get(k), "shape")
+                    and len(getattr(self._input_features.get(k), "shape", ())) >= 2
+                )
 
                 if isinstance(v, torch.Tensor):
                     t = v
@@ -533,18 +523,9 @@ class LerobotLocalPolicy(Policy):
                             t = t.unsqueeze(0)
                         batch[k] = t.to(self._device)
                     else:
-                        batch[k] = (
-                            torch.from_numpy(v.copy())
-                            .float()
-                            .unsqueeze(0)
-                            .to(self._device)
-                        )
+                        batch[k] = torch.from_numpy(v.copy()).float().unsqueeze(0).to(self._device)
                 elif isinstance(v, (int, float)):
-                    batch[k] = (
-                        torch.tensor([v], dtype=torch.float32)
-                        .unsqueeze(0)
-                        .to(self._device)
-                    )
+                    batch[k] = torch.tensor([v], dtype=torch.float32).unsqueeze(0).to(self._device)
                 elif isinstance(v, (list, tuple)):
                     # Simulation backends may return lists for observation.state — convert to tensors
                     # Convert list/tuple to tensor (handles 1D state vectors and nested lists)
@@ -563,9 +544,7 @@ class LerobotLocalPolicy(Policy):
                             t = t.unsqueeze(0)
                         batch[k] = t.to(self._device)
                     else:
-                        batch[k] = (
-                            torch.from_numpy(arr).float().unsqueeze(0).to(self._device)
-                        )
+                        batch[k] = torch.from_numpy(arr).float().unsqueeze(0).to(self._device)
                 # Pass through non-tensor types (e.g. already-batched int64 tokens)
                 # This handles observation.language.tokens from the preprocessor
 
@@ -606,19 +585,11 @@ class LerobotLocalPolicy(Policy):
         if state_values:
             state_feature = self._input_features.get("observation.state")
             if state_feature:
-                expected_dim = (
-                    state_feature.shape[0]
-                    if hasattr(state_feature, "shape")
-                    else len(state_values)
-                )
+                expected_dim = state_feature.shape[0] if hasattr(state_feature, "shape") else len(state_values)
                 while len(state_values) < expected_dim:
                     state_values.append(0.0)
                 state_values = state_values[:expected_dim]
-            batch["observation.state"] = (
-                torch.tensor(state_values, dtype=torch.float32)
-                .unsqueeze(0)
-                .to(self._device)
-            )
+            batch["observation.state"] = torch.tensor(state_values, dtype=torch.float32).unsqueeze(0).to(self._device)
 
         # Camera images
         for key, value in observation_dict.items():
@@ -639,13 +610,8 @@ class LerobotLocalPolicy(Policy):
         # VLA language token injection for models that need observation.language.tokens
         # (xvla, smolvla, etc.) — auto-resolved from tokenizer_name or vlm_model_name
         if instruction:
-            needs_language = (
-                "observation.language.tokens" not in batch
-                and self._needs_language_tokens()
-            )
-            needs_task = (
-                any("task" in k for k in self._input_features) and "task" not in batch
-            )
+            needs_language = "observation.language.tokens" not in batch and self._needs_language_tokens()
+            needs_task = any("task" in k for k in self._input_features) and "task" not in batch
 
             if needs_language:
                 try:
@@ -671,9 +637,7 @@ class LerobotLocalPolicy(Policy):
         # Fill missing image features with zeros
         for feat_name, feat_info in self._input_features.items():
             if feat_name not in batch and "image" in feat_name:
-                shape = (
-                    feat_info.shape if hasattr(feat_info, "shape") else (3, 480, 640)
-                )
+                shape = feat_info.shape if hasattr(feat_info, "shape") else (3, 480, 640)
                 batch[feat_name] = torch.zeros(1, *shape, device=self._device)
 
         return batch
@@ -684,14 +648,9 @@ class LerobotLocalPolicy(Policy):
         if action_np.ndim == 1:
             actions_list = [action_np]
         elif action_np.ndim == 2:
-            actions_list = [
-                action_np[i] for i in range(min(len(action_np), self.actions_per_step))
-            ]
+            actions_list = [action_np[i] for i in range(min(len(action_np), self.actions_per_step))]
         elif action_np.ndim == 3:
-            actions_list = [
-                action_np[0, i]
-                for i in range(min(action_np.shape[1], self.actions_per_step))
-            ]
+            actions_list = [action_np[0, i] for i in range(min(action_np.shape[1], self.actions_per_step))]
         else:
             actions_list = [action_np.flatten()]
 
@@ -720,12 +679,10 @@ class LerobotLocalPolicy(Policy):
         }
         if self._loaded:
             info["input_features"] = {
-                k: str(v.shape) if hasattr(v, "shape") else str(v)
-                for k, v in self._input_features.items()
+                k: str(v.shape) if hasattr(v, "shape") else str(v) for k, v in self._input_features.items()
             }
             info["output_features"] = {
-                k: str(v.shape) if hasattr(v, "shape") else str(v)
-                for k, v in self._output_features.items()
+                k: str(v.shape) if hasattr(v, "shape") else str(v) for k, v in self._output_features.items()
             }
             info["policy_class"] = type(self._policy).__name__
             info["n_parameters"] = sum(p.numel() for p in self._policy.parameters())

@@ -69,8 +69,7 @@ def _get_lerobot_dataset_class():
         return LeRobotDataset
     except (ImportError, ValueError, RuntimeError) as exc:
         raise ImportError(
-            f"lerobot not available ({exc}). Install with: pip install lerobot\n"
-            "Required for LeRobotDataset recording."
+            f"lerobot not available ({exc}). Install with: pip install lerobot\nRequired for LeRobotDataset recording."
         ) from exc
 
 
@@ -144,7 +143,7 @@ class DatasetRecorder:
             vcodec: Video codec (h264, hevc, libsvtav1)
             streaming_encoding: Stream-encode video during capture
             image_writer_threads: Threads for writing image frames
-            video_backend: Video backend for encoding ("auto" for HW encoder auto-detect, LeRobot v0.5.0+)
+            video_backend: Video backend for encoding ("auto" for HW encoder auto-detect)
         """
         # Lazy import — this is where we actually need lerobot
         LeRobotDatasetCls = _get_lerobot_dataset_class()
@@ -158,10 +157,7 @@ class DatasetRecorder:
             use_videos=use_videos,
         )
 
-        logger.info(
-            f"Creating LeRobotDataset: {repo_id} @ {fps}fps, "
-            f"{len(features)} features, robot_type={robot_type}"
-        )
+        logger.info(f"Creating LeRobotDataset: {repo_id} @ {fps}fps, {len(features)} features, robot_type={robot_type}")
 
         # Build kwargs, skip unsupported params for this LeRobot version
         create_kwargs = dict(
@@ -300,11 +296,7 @@ class DatasetRecorder:
 
         # --- Detect camera vs state keys ---
         if camera_keys is None:
-            camera_keys = [
-                k
-                for k, v in observation.items()
-                if isinstance(v, np.ndarray) and v.ndim >= 2
-            ]
+            camera_keys = [k for k, v in observation.items() if isinstance(v, np.ndarray) and v.ndim >= 2]
 
         state_keys = [k for k in observation.keys() if k not in camera_keys]
 
@@ -323,11 +315,7 @@ class DatasetRecorder:
             state_vals = []
             if self._cached_state_keys is None:
                 feat = self.dataset.features.get("observation.state", {})
-                state_names = (
-                    feat.get("names", [])
-                    if isinstance(feat, dict)
-                    else getattr(feat, "names", [])
-                )
+                state_names = feat.get("names", []) if isinstance(feat, dict) else getattr(feat, "names", [])
                 self._cached_state_keys = state_names if state_names else sorted(state_keys)
 
             for k in self._cached_state_keys:
@@ -350,11 +338,7 @@ class DatasetRecorder:
             action_vals = []
             if self._cached_action_keys is None:
                 feat = self.dataset.features.get("action", {})
-                action_names = (
-                    feat.get("names", [])
-                    if isinstance(feat, dict)
-                    else getattr(feat, "names", [])
-                )
+                action_names = feat.get("names", []) if isinstance(feat, dict) else getattr(feat, "names", [])
                 self._cached_action_keys = action_names if action_names else sorted(action.keys())
 
             for k in self._cached_action_keys:
@@ -398,9 +382,7 @@ class DatasetRecorder:
             self.dataset.save_episode()
             self.episode_count += 1
             ep_frames = self.frame_count  # Total frames so far
-            logger.info(
-                f"Episode {self.episode_count} saved: " f"{ep_frames} total frames"
-            )
+            logger.info(f"Episode {self.episode_count} saved: {ep_frames} total frames")
             return {
                 "status": "success",
                 "episode": self.episode_count,
@@ -456,10 +438,7 @@ class DatasetRecorder:
         return str(self.dataset.root)
 
     def __repr__(self) -> str:
-        return (
-            f"DatasetRecorder(repo_id={self.repo_id}, "
-            f"episodes={self.episode_count}, frames={self.frame_count})"
-        )
+        return f"DatasetRecorder(repo_id={self.repo_id}, episodes={self.episode_count}, frames={self.frame_count})"
 
 
 # ── Shared replay-episode helpers ────────────────────────────────────
@@ -479,11 +458,7 @@ def load_lerobot_episode(repo_id: str, episode: int = 0, root: Optional[str] = N
 
     ds = LeRobotDataset(repo_id=repo_id, root=root)
 
-    num_episodes = (
-        ds.meta.total_episodes
-        if hasattr(ds.meta, "total_episodes")
-        else len(ds.meta.episodes)
-    )
+    num_episodes = ds.meta.total_episodes if hasattr(ds.meta, "total_episodes") else len(ds.meta.episodes)
     if episode >= num_episodes:
         raise ValueError(f"Episode {episode} out of range (0-{num_episodes - 1})")
 

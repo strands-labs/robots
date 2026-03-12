@@ -46,12 +46,13 @@ logger = logging.getLogger(__name__)
 def _validate_policy_type(policy_type: str) -> None:
     """Validate policy type against LeRobot's policy registry.
 
-    lerobot ≥0.5: Uses direct module import check or PreTrainedConfig registry.
+    Uses direct module import check or PreTrainedConfig registry.
     Skips validation if LeRobot isn't installed (let the server handle it).
     """
     try:
         import importlib
-        # Try direct module import (lerobot ≥0.5 convention)
+
+        # Try direct module import
         importlib.import_module(f"lerobot.policies.{policy_type}")
         return  # Valid
     except ImportError:
@@ -60,13 +61,12 @@ def _validate_policy_type(policy_type: str) -> None:
     try:
         # Try PreTrainedConfig registry
         from lerobot.configs.policies import PreTrainedConfig
+
         known = PreTrainedConfig.get_known_choices()
         if known and policy_type in known:
             return  # Valid
     except (ImportError, RuntimeError):
-        logger.debug(
-            "LeRobot not installed locally or has import issues, skipping policy type validation"
-        )
+        logger.debug("LeRobot not installed locally or has import issues, skipping policy type validation")
         return  # Can't validate — let the server handle it
 
     # Collect available types for error message
@@ -75,16 +75,14 @@ def _validate_policy_type(policy_type: str) -> None:
         import pkgutil
 
         import lerobot.policies as lp
+
         for _, modname, _ in pkgutil.iter_modules(lp.__path__):
             if modname not in ("factory", "pretrained", "utils"):
                 available.append(modname)
     except Exception:
         available = ["check LeRobot docs"]
 
-    raise ValueError(
-        f"Unsupported policy type: '{policy_type}'. "
-        f"LeRobot supports: {sorted(available)}"
-    )
+    raise ValueError(f"Unsupported policy type: '{policy_type}'. LeRobot supports: {sorted(available)}")
 
 
 def _validate_deserialized_actions(obj: Any) -> None:
@@ -104,8 +102,7 @@ def _validate_deserialized_actions(obj: Any) -> None:
 
     if not isinstance(obj, (list, tuple)):
         raise TypeError(
-            f"Expected list of TimedAction objects from server, "
-            f"got {type(obj).__name__}. Is the server trusted?"
+            f"Expected list of TimedAction objects from server, got {type(obj).__name__}. Is the server trusted?"
         )
 
     for i, item in enumerate(obj):
@@ -190,7 +187,7 @@ class LerobotAsyncPolicy(Policy):
         self._timestep = 0
 
         logger.info("🤖 LeRobot Async Policy: %s", policy_type)
-        logger.info("📡 Server: %s (TLS: %s)", server_address, 'yes' if use_tls else 'no')
+        logger.info("📡 Server: %s (TLS: %s)", server_address, "yes" if use_tls else "no")
         logger.info("🧠 Model: %s", pretrained_name_or_path)
         logger.info("⚡ Actions/chunk: %s", actions_per_chunk)
 
@@ -206,8 +203,8 @@ class LerobotAsyncPolicy(Policy):
     def _ensure_connected(self):
         """Ensure gRPC connection is established.
 
-        lerobot ≥0.5: services_pb2_grpc requires the `grpc` package.
-        Install with: pip install lerobot[async] or pip install grpcio
+        services_pb2_grpc requires the `grpc` package.
+        Install with: pip install strands-robots[ml] or pip install grpcio
         """
         if self._connected:
             return
@@ -216,8 +213,7 @@ class LerobotAsyncPolicy(Policy):
             import grpc
         except ImportError as e:
             raise ImportError(
-                "gRPC is required for LeRobot async inference. "
-                "Install with: pip install grpcio grpcio-tools"
+                "gRPC is required for LeRobot async inference. Install with: pip install grpcio grpcio-tools"
             ) from e
 
         try:
@@ -235,9 +231,7 @@ class LerobotAsyncPolicy(Policy):
                 if self._tls_root_cert:
                     with open(self._tls_root_cert, "rb") as f:
                         root_cert = f.read()
-                    credentials = grpc.ssl_channel_credentials(
-                        root_certificates=root_cert
-                    )
+                    credentials = grpc.ssl_channel_credentials(root_certificates=root_cert)
                 else:
                     # Use system default root certificates
                     credentials = grpc.ssl_channel_credentials()
@@ -245,9 +239,7 @@ class LerobotAsyncPolicy(Policy):
                 logger.info("🔒 TLS channel to %s", self.server_address)
             else:
                 # Insecure channel — acceptable for localhost, warn for remote
-                if not self.server_address.startswith(
-                    ("localhost", "127.0.0.1", "[::1]")
-                ):
+                if not self.server_address.startswith(("localhost", "127.0.0.1", "[::1]")):
                     logger.warning(
                         f"⚠️  Using insecure gRPC channel to remote server {self.server_address}. "
                         f"Consider use_tls=True for non-localhost connections — pickle data "
@@ -273,9 +265,7 @@ class LerobotAsyncPolicy(Policy):
             )
 
             config_bytes = pickle.dumps(remote_config)
-            self._stub.SendPolicyInstructions(
-                services_pb2.PolicySetup(data=config_bytes)
-            )
+            self._stub.SendPolicyInstructions(services_pb2.PolicySetup(data=config_bytes))
 
             self._connected = True
             logger.info("✅ Connected to LeRobot server at %s", self.server_address)
@@ -284,9 +274,7 @@ class LerobotAsyncPolicy(Policy):
             logger.error("❌ Failed to connect to LeRobot server: %s", e)
             raise
 
-    async def get_actions(
-        self, observation_dict: Dict[str, Any], instruction: str, **kwargs
-    ) -> List[Dict[str, Any]]:
+    async def get_actions(self, observation_dict: Dict[str, Any], instruction: str, **kwargs) -> List[Dict[str, Any]]:
         """Get actions from LeRobot async inference server.
 
         Args:
@@ -347,9 +335,7 @@ class LerobotAsyncPolicy(Policy):
             logger.error("❌ LeRobot async inference error: %s", e)
             return self._generate_zero_actions()
 
-    def _build_raw_observation(
-        self, observation_dict: Dict[str, Any], instruction: str
-    ) -> Dict[str, Any]:
+    def _build_raw_observation(self, observation_dict: Dict[str, Any], instruction: str) -> Dict[str, Any]:
         """Convert strands-robots observation to LeRobot raw observation format."""
         raw_obs = {}
 
@@ -376,11 +362,7 @@ class LerobotAsyncPolicy(Policy):
 
         for timed_action in timed_actions:
             action_tensor = timed_action.get_action()
-            action_array = (
-                action_tensor.numpy()
-                if hasattr(action_tensor, "numpy")
-                else np.array(action_tensor)
-            )
+            action_array = action_tensor.numpy() if hasattr(action_tensor, "numpy") else np.array(action_tensor)
 
             action_dict = {}
             for j, key in enumerate(self.robot_state_keys):
@@ -395,10 +377,7 @@ class LerobotAsyncPolicy(Policy):
 
     def _generate_zero_actions(self) -> List[Dict[str, Any]]:
         """Generate zero actions as fallback."""
-        return [
-            {key: 0.0 for key in self.robot_state_keys}
-            for _ in range(self.actions_per_chunk)
-        ]
+        return [{key: 0.0 for key in self.robot_state_keys} for _ in range(self.actions_per_chunk)]
 
     def disconnect(self):
         """Disconnect from gRPC server."""
