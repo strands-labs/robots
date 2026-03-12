@@ -182,4 +182,4 @@ ignore = ["E501"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-v --cov=strands_robots --cov-report=term-missing --cov-fail-under=14"
+addopts = "-v --cov=strands_robots --cov-report=term-missing --cov-fail-under=18"
