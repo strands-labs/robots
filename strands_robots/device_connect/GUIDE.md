@@ -74,7 +74,7 @@ No Docker needed. No env vars. Devices discover each other directly on the LAN v
 Create a virtual environment and install dependencies:
 
 ```bash
-python3 -m venv .venv
+python3.12 -m venv .venv              # Python 3.12 recommended (MuJoCo has no 3.14 wheels)
 source .venv/bin/activate
 
 pip install -e ".[sim]"                # install from source; sim = MuJoCo, Device Connect SDK is a core dep
