@@ -14,10 +14,10 @@ from typing import Any, Dict, List, Optional, Union
 import numpy as np
 
 from .. import Policy
-from .data_config import DATA_CONFIG_MAP, BaseDataConfig, load_data_config
+from .data_config import DATA_CONFIG_MAP, DataConfig, load_data_config
 
 # Convenience aliases for common import patterns
-Gr00tDataConfig = BaseDataConfig
+Gr00tDataConfig = DataConfig
 
 
 def _get_client_class():
@@ -71,7 +71,7 @@ class Gr00tPolicy(Policy):
     """GR00T policy supporting N1.5, N1.6, service mode, and local inference.
 
     Args:
-        data_config:      String name (e.g. "so100_dualcam") or BaseDataConfig object.
+        data_config:      String name (e.g. "so100_dualcam") or DataConfig object.
         host/port:        For service (ZMQ) mode — connects to running inference server.
         model_path:       For local mode — loads model on GPU directly.
         embodiment_tag:   Embodiment tag (N1.5: string, N1.6: EmbodimentTag enum).
@@ -99,7 +99,7 @@ class Gr00tPolicy(Policy):
 
     def __init__(
         self,
-        data_config: Union[str, BaseDataConfig] = "so100_dualcam",
+        data_config: Union[str, DataConfig] = "so100_dualcam",
         host: str = "localhost",
         port: int = 5555,
         model_path: Optional[str] = None,
@@ -478,4 +478,4 @@ class Gr00tPolicy(Policy):
         return robot_actions
 
 
-__all__ = ["Gr00tPolicy", "Gr00tDataConfig", "BaseDataConfig"]
+__all__ = ["Gr00tPolicy", "Gr00tDataConfig", "DataConfig"]
