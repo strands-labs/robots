@@ -517,6 +517,10 @@ class IsaacSimBackend:
         policy_provider: str = "mock",
         instruction: str = "",
         duration: float = 10.0,
+        record_video: str = None,
+        video_fps: int = 30,
+        video_width: int = 640,
+        video_height: int = 480,
         **policy_kwargs,
     ) -> Dict[str, Any]:
         """Run a strands-robots Policy on the Isaac Sim backend.
@@ -532,6 +536,16 @@ class IsaacSimBackend:
 
         joint_names = self._robot.joint_names if self._robot and hasattr(self._robot, "joint_names") else []
         policy.set_robot_state_keys(joint_names)
+
+        # Video recording setup
+        writer = None
+        frame_count = 0
+        if record_video:
+            import imageio
+
+            os.makedirs(os.path.dirname(os.path.abspath(record_video)), exist_ok=True)
+            writer = imageio.get_writer(record_video, fps=video_fps, quality=8)
+            frame_interval = max(1, int(1.0 / (self.config.physics_dt * video_fps)))
 
         start_time = time.time()
         steps = 0
@@ -565,20 +579,38 @@ class IsaacSimBackend:
             self._sim.step()
             steps += 1
 
+            if writer and steps % frame_interval == 0:
+                render_result = self.render(width=video_width, height=video_height)
+                if render_result.get("status") == "success":
+                    for content in render_result.get("content", []):
+                        if "image" in content:
+                            import io
+
+                            from PIL import Image
+
+                            img_bytes = content["image"]["source"]["bytes"]
+                            img = Image.open(io.BytesIO(img_bytes))
+                            writer.append_data(np.array(img))
+                            frame_count += 1
+
         elapsed = time.time() - start_time
-        return {
-            "status": "success",
-            "content": [
-                {
-                    "text": (
-                        f"✅ Policy complete on Isaac Sim '{robot_name}'\n"
-                        f"🧠 {policy_provider} | 🎯 {instruction}\n"
-                        f"⏱️ {elapsed:.1f}s | 📊 {steps} steps | "
-                        f"🔢 {self.config.num_envs} parallel envs"
-                    )
-                }
-            ],
-        }
+
+        result_text = (
+            f"✅ Policy complete on Isaac Sim '{robot_name}'\n"
+            f"🧠 {policy_provider} | 🎯 {instruction}\n"
+            f"⏱️ {elapsed:.1f}s | 📊 {steps} steps | "
+            f"🔢 {self.config.num_envs} parallel envs"
+        )
+
+        if writer:
+            writer.close()
+            size_kb = os.path.getsize(record_video) / 1024 if os.path.exists(record_video) else 0
+            result_text += (
+                f"\n🎬 Video: {record_video}\n"
+                f"📹 {frame_count} frames, {video_fps}fps, {video_width}x{video_height} | 💾 {size_kb:.0f} KB"
+            )
+
+        return {"status": "success", "content": [{"text": result_text}]}
 
     def destroy(self) -> Dict[str, Any]:
         """Destroy the simulation and release GPU resources."""
@@ -994,85 +1026,3 @@ class IsaacSimBackend:
         except Exception as e:
             return {"status": "error", "content": [{"text": f"❌ Reset failed: {e}"}]}
 
-    def record_video(
-        self,
-        output_path: str = "/tmp/isaac_sim_recording.mp4",
-        duration: float = 5.0,
-        fps: int = 30,
-        width: int = 640,
-        height: int = 480,
-    ) -> Dict[str, Any]:
-        """Record a video of the simulation.
-
-        Args:
-            output_path: Output MP4 file path
-            duration: Recording duration in seconds
-            fps: Frames per second
-            width: Video width
-            height: Video height
-
-        Returns:
-            Dict with status and output path
-        """
-        if self._sim is None:
-            return {"status": "error", "content": [{"text": "❌ No simulation"}]}
-
-        try:
-            from strands_robots.video import VideoEncoder
-
-            encoder = VideoEncoder(output_path, fps=fps)
-            n_frames = int(duration * fps)
-            physics_steps_per_frame = max(1, int(1.0 / (self.config.physics_dt * fps)))
-
-            for frame_idx in range(n_frames):
-                # Step physics
-                for _ in range(physics_steps_per_frame):
-                    self._sim.step()
-
-                # Render frame
-                render_result = self.render(width=width, height=height)
-                if render_result.get("status") == "success":
-                    for content in render_result.get("content", []):
-                        if "image" in content:
-                            img_bytes = content["image"]["source"]["bytes"]
-                            import io
-
-                            from PIL import Image
-
-                            img = Image.open(io.BytesIO(img_bytes))
-                            frame = np.array(img)
-                            encoder.add_frame(frame)
-
-            encoder.close()
-
-            import os
-
-            size_kb = os.path.getsize(output_path) / 1024
-
-            return {
-                "status": "success",
-                "content": [
-                    {
-                        "text": (
-                            f"🎬 Video recorded!\n"
-                            f"  Output: {output_path}\n"
-                            f"  Frames: {n_frames} @ {fps}fps\n"
-                            f"  Duration: {duration:.1f}s\n"
-                            f"  Resolution: {width}×{height}\n"
-                            f"  Size: {size_kb:.1f} KB"
-                        )
-                    }
-                ],
-                "video_path": output_path,
-            }
-
-        except ImportError as e:
-            return {
-                "status": "error",
-                "content": [{"text": f"❌ Video recording requires: {e}"}],
-            }
-        except Exception as e:
-            return {
-                "status": "error",
-                "content": [{"text": f"❌ Recording failed: {e}"}],
-            }

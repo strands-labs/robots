@@ -44,7 +44,6 @@ from __future__ import annotations
 import logging
 import math
 import os
-import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -1791,6 +1790,10 @@ class NewtonBackend:
         policy_provider: str = "mock",
         instruction: str = "",
         duration: float = 10.0,
+        record_video: Optional[str] = None,
+        video_fps: int = 30,
+        video_width: int = 1024,
+        video_height: int = 768,
         **kwargs: Any,
     ) -> Dict[str, Any]:
         """Run a policy loop for the given robot."""
@@ -1803,6 +1806,16 @@ class NewtonBackend:
         policy = self._create_policy(robot_name, policy_provider, instruction, **kwargs)
         dt = self._config.physics_dt * self._config.substeps
         num_steps = int(math.ceil(duration / dt))
+
+        # Video recording setup
+        writer = None
+        frame_count = 0
+        if record_video:
+            import imageio
+
+            os.makedirs(os.path.dirname(record_video) or ".", exist_ok=True)
+            writer = imageio.get_writer(record_video, fps=video_fps, quality=8)
+            frame_interval = max(1, int(1.0 / (video_fps * dt)))
 
         trajectory = []
         errors = []
@@ -1818,7 +1831,15 @@ class NewtonBackend:
             except Exception as exc:
                 errors.append(str(exc))
 
+            if writer and i % frame_interval == 0:
+                r = self.render(width=video_width, height=video_height)
+                img = r.get("image")
+                if img is not None:
+                    writer.append_data(img)
+                    frame_count += 1
+
         wall_time = time.perf_counter() - t0
+
         result = {
             "success": True,
             "steps_executed": self._step_count,
@@ -1828,6 +1849,17 @@ class NewtonBackend:
             "trajectory": trajectory,
             "errors": errors,
         }
+
+        if writer:
+            writer.close()
+            size_kb = os.path.getsize(record_video) // 1024 if os.path.exists(record_video) else 0
+            result["video"] = {
+                "path": record_video,
+                "frames": frame_count,
+                "fps": video_fps,
+                "size_kb": size_kb,
+            }
+
         return result
 
     def _create_policy(
@@ -1975,95 +2007,6 @@ class NewtonBackend:
             "steps_executed": final_step,
             "sim_time": final_time,
         }
-
-    # ------------------------------------------------------------------
-    # Video recording
-    # ------------------------------------------------------------------
-
-    def record_video(
-        self,
-        robot_name: str = "",
-        policy_provider: str = "mock",
-        instruction: str = "",
-        duration: float = 1.0,
-        fps: int = 30,
-        width: int = 1024,
-        height: int = 768,
-        output_path: Optional[str] = None,
-        cosmos_transfer: bool = False,
-        cosmos_prompt: Optional[str] = None,
-        cosmos_control: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        """Run policy and record video."""
-        if not self._world_created:
-            return {"status": "error", "content": [{"text": "World not created"}]}
-
-        if output_path is None:
-            output_path = os.path.join(tempfile.gettempdir(), "newton_video.mp4")
-        os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
-
-        total_frames = int(duration * fps)
-        dt = self._config.physics_dt
-        frames = []
-
-        t0 = time.time()
-        for _ in range(total_frames):
-            substeps = max(1, int(1.0 / (fps * dt)))
-            for _ in range(substeps):
-                self.step()
-
-            r = self.render(width=width, height=height)
-            img = r.get("image")
-            if img is not None:
-                frames.append(img)
-
-        elapsed = time.time() - t0
-
-        # Save video
-        try:
-            import imageio
-
-            writer = imageio.get_writer(output_path, fps=fps, quality=8)
-            for f in frames:
-                writer.append_data(f)
-            writer.close()
-        except ImportError:
-            # Save as npz fallback
-            output_path = output_path.replace(".mp4", ".npz")
-            np.savez_compressed(output_path, frames=np.array(frames))
-
-        # Get file size
-        size_kb = 0
-        if os.path.exists(output_path):
-            size_kb = os.path.getsize(output_path) // 1024
-
-        # Optional Cosmos transfer
-        cosmos_out = None
-        if cosmos_transfer and output_path.endswith(".mp4"):
-            try:
-                from strands_robots.cosmos_transfer import (
-                    CosmosTransferConfig,
-                    CosmosTransferPipeline,
-                )
-
-                cfg = CosmosTransferConfig()
-                pipe = CosmosTransferPipeline(cfg)
-                cosmos_out = pipe.transfer_video(
-                    input_path=output_path,
-                    prompt=cosmos_prompt or instruction,
-                    control=cosmos_control,
-                )
-            except Exception as exc:
-                logger.warning("Cosmos transfer failed: %s", exc)
-
-        text = (
-            f"Recorded {len(frames)} frames in {elapsed:.1f}s → {output_path} ({size_kb}KB)\n"
-            f"Solver: {self._config.solver}, Envs: {self._config.num_envs}"
-        )
-        if cosmos_out:
-            text += f"\nCosmos transfer: {cosmos_out}"
-
-        return {"status": "success", "content": [{"text": text}]}
 
     # ------------------------------------------------------------------
     # Dunder methods
