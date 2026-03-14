@@ -77,9 +77,9 @@ Create a virtual environment and install dependencies:
 python3 -m venv .venv
 source .venv/bin/activate
 
-pip install strands-robots              # includes Device Connect SDK + agent tools
+pip install -e ".[sim]"                # install from source; sim = MuJoCo, Device Connect SDK is a core dep
 
-export PYTHONPATH="$PWD:$PYTHONPATH"   # makes `import strands_robots` work
+export PYTHONPATH="$PWD:$PYTHONPATH"   # only needed when running from source checkout
 ```
 
 **Start a robot (keep running in a separate terminal):**
@@ -120,7 +120,7 @@ Expected output:
 ```
 Discovered 1 device(s):
   [robot] so100-lab-1 — idle
-    Functions: execute, getFeatures, getState, getStatus, stop
+    Functions: execute, getFeatures, getStatus, reset, step, stop
 ```
 
 **Tell a robot to execute an instruction:**
@@ -137,7 +137,7 @@ Expected output:
 
 ```
 -> so100-lab-1: pick up the cube
-  {"status": "accepted"}
+  {"status": "success", "content": [...]}
 ```
 
 **Emergency stop all devices:**
@@ -163,7 +163,7 @@ from device_connect_agent_tools import connect, discover_devices, invoke_device
 
 connect()
 
-devices = discover_devices(device_type='strands_robot')
+devices = discover_devices()
 print(f'Found {len(devices)} robot(s):')
 for d in devices:
     print(f'  {d[\"device_id\"]} — {d.get(\"status\", {}).get(\"availability\", \"?\")}')
@@ -185,8 +185,8 @@ Expected output:
 ```
 Found 1 robot(s):
   so100-lab-1 — idle
-Execute result: {'success': True, 'result': {'status': 'accepted'}}
-Status: {'success': True, 'result': {'status': 'idle'}}
+Execute result: {'success': True, 'result': {'status': 'success', 'content': [...]}}
+Status: {'success': True, 'result': {...}}  # full sim state dict
 ```
 
 #### Full Infrastructure (Optional)
@@ -229,6 +229,8 @@ All the options above (A–B) work identically with full infrastructure — the 
 #### Running the Tests
 
 ```bash
+pip install pytest pytest-cov          # if not already installed
+
 # Unit tests (no Docker needed)
 python3 -m pytest tests/test_device_connect_drivers.py -v
 
