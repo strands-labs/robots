@@ -1,6 +1,6 @@
 # Device Connect Integration
 
-Strands Robots can use [Device Connect](https://github.com/arm/device-connect), a **device-aware runtime** by Arm — to handle discovery, presence, structured RPC, event routing, and safety — so you can focus on building cross-device experiences instead of re-implementing infrastructure.
+Strands Robots uses [Device Connect](https://github.com/arm/device-connect), a **device-aware runtime** by Arm — to handle discovery, presence, structured RPC, event routing, and safety — so you can focus on building cross-device experiences instead of re-implementing infrastructure.
 
 > **Fallback behavior:** If `device-connect-sdk` is not installed, Strands Robots automatically falls back to a built-in Zenoh P2P mesh (`zenoh_mesh.py`) for basic peer discovery and coordination. Device Connect is the recommended and primary networking layer.
 
@@ -9,10 +9,20 @@ Strands Robots can use [Device Connect](https://github.com/arm/device-connect), 
 ```python
 from strands_robots import Robot
 
-robot = Robot("so100")
+r = Robot("so100")
+r.run()  # starts listening for commands. Ctrl+C to stop.
 ```
 
-That's it. If `device-connect-sdk` is installed, the robot automatically initialises Device Connect with D2D defaults (Zenoh multicast scouting, no broker, no env vars) and becomes discoverable on the LAN. You can optionally pass `peer_id="so100-lab-1"` for a stable address; otherwise one is auto-generated (e.g. `so100_sim-a3f1b2`).
+`Robot()` creates the robot. `.run()` starts Device Connect with D2D defaults (Zenoh multicast scouting, no broker, no env vars) and blocks — the robot becomes discoverable on the LAN and listens for commands. Without `.run()`, the script exits and the robot is removed from the network.
+
+You can optionally pass `peer_id="so100-lab-1"` for a stable address; otherwise one is auto-generated (e.g. `so100-a3f1b2`).
+
+**Robot lifecycle:**
+
+| Pattern | Behavior |
+|---|---|
+| `r = Robot("so100"); r.run()` | **Option A — Foreground server.** Process stays alive, listens for commands. Ctrl+C to stop. |
+| `r = Robot("so100")` | **Option B — Scripting.** Script runs, does its thing, exits. Robot is not on the network. |
 
 From another process, discover and invoke:
 
@@ -72,20 +82,24 @@ pip install strands-robots              # includes Device Connect SDK + agent to
 export PYTHONPATH="$PWD:$PYTHONPATH"   # makes `import strands_robots` work
 ```
 
-**Start a mock robot as a Device Connect device (keep running in a separate terminal):**
+**Start a robot (keep running in a separate terminal):**
 
 ```python
-python -c "from strands_robots import Robot; Robot('so100')"
+python -c "
+from strands_robots import Robot
+r = Robot('so100')
+r.run()
+"
 ```
 
 Expected output:
 
 ```
-Simulation 'so100_sim' running — discoverable as 'so100_sim-a3f1b2' via Device Connect. Ctrl+C to stop.
-device_connect_sdk.device.so100_sim-a3f1b2 - INFO - Using ZENOH messaging backend
-device_connect_sdk.device.so100_sim-a3f1b2 - INFO - Connected to ZENOH broker: []
-device_connect_sdk.device.so100_sim-a3f1b2 - INFO - Driver connected: strands_sim
-device_connect_sdk.device.so100_sim-a3f1b2 - INFO - Subscribed to commands on device-connect.default.so100_sim-a3f1b2.cmd
+device_connect_sdk.device.so100-a3f1b2 - INFO - Using ZENOH messaging backend
+device_connect_sdk.device.so100-a3f1b2 - INFO - Connected to ZENOH broker: []
+device_connect_sdk.device.so100-a3f1b2 - INFO - Driver connected: strands_sim
+device_connect_sdk.device.so100-a3f1b2 - INFO - Subscribed to commands on device-connect.default.so100-a3f1b2.cmd
+🤖 so100-a3f1b2 is online. Ctrl+C to stop.
 ```
 
 #### Option A: Using the `robot_mesh` Strands tool
@@ -175,33 +189,6 @@ Execute result: {'success': True, 'result': {'status': 'accepted'}}
 Status: {'success': True, 'result': {'status': 'idle'}}
 ```
 
-#### Option C: Real Robot (hardware or MuJoCo sim)
-
-> Requires `pip install strands-robots[sim]` (MuJoCo) or physical robot hardware.
-
-```python
-python -c "
-import asyncio
-from strands_robots import Robot
-from strands_robots.device_connect import init_device_connect
-
-robot = Robot('so100', mesh=False)
-
-async def run():
-    runtime = await init_device_connect(robot, peer_id='so100-lab-1')
-    print('Robot registered on Device Connect — Ctrl+C to stop')
-    await asyncio.Event().wait()
-
-asyncio.run(run())
-"
-```
-
-Expected output:
-
-```
-Robot registered on Device Connect — Ctrl+C to stop
-```
-
 #### Full Infrastructure (Optional)
 
 For production deployments, you can add Docker infrastructure for persistent registry, distributed state, cross-network routing, and authentication.
@@ -231,7 +218,7 @@ export ZENOH_CONNECT=tcp/localhost:7447
 export DEVICE_CONNECT_ALLOW_INSECURE=true
 ```
 
-All the options above (A-C) work identically with full infrastructure — the only difference is that devices register in etcd and discovery goes through the registry service instead of multicast scouting.
+All the options above (A–B) work identically with full infrastructure — the only difference is that devices register in etcd and discovery goes through the registry service instead of multicast scouting.
 
 > **What infrastructure adds over D2D:**
 > - **Persistent device registry** — devices register with TTL-based leases; stale devices are auto-cleaned. Agents can discover devices by type, location, or capability via `discover_devices()`.

@@ -15,22 +15,6 @@ from strands_robots.registry import list_robots as _registry_list_robots
 logger = logging.getLogger(__name__)
 
 
-def _init_device_connect_if_available(instance, canonical: str, mode: str, peer_id=None):
-    """Try to init Device Connect; fall back to Zenoh mesh if unavailable."""
-    try:
-        from strands_robots.device_connect import init_device_connect_sync
-        pid = peer_id or f"{canonical}-{os.urandom(3).hex()}"
-        peer_type = "sim" if mode == "sim" else "robot"
-        instance._device_connect_runtime = init_device_connect_sync(
-            instance, peer_id=pid, peer_type=peer_type,
-        )
-        logger.info("Device Connect ready: %s (non-blocking)", pid)
-    except Exception:
-        logger.debug("device-connect-sdk not available — falling back to Zenoh mesh")
-        if hasattr(instance, "_init_mesh_fallback"):
-            instance._init_mesh_fallback()
-
-
 def _auto_detect_mode(canonical: str) -> str:
     """Auto-detect sim vs real mode.
 
@@ -189,9 +173,61 @@ def Robot(
             **kwargs,
         )
 
-    # ── Device Connect init (non-blocking, optional) ──
-    _init_device_connect_if_available(instance, canonical, mode, peer_id=peer_id)
+    # Store metadata for .run()
+    instance._peer_id = peer_id or f"{canonical}-{os.urandom(3).hex()}"
+    instance._peer_type = "sim" if mode == "sim" else "robot"
+    instance._device_connect_runtime = None
+
+    # Attach .run() method for foreground server mode
+    instance.run = lambda: _run_foreground(instance)
+
     return instance
+
+
+def _run_foreground(instance):
+    """Start Device Connect and block — robot listens for commands.
+
+    Call this to keep the process alive as a server. Ctrl+C to stop.
+
+    Usage:
+        r = Robot("so100")
+        r.run()  # blocks here, listening for commands
+    """
+    import signal
+    import threading
+
+    peer_id = getattr(instance, "_peer_id", "robot")
+    peer_type = getattr(instance, "_peer_type", "robot")
+
+    # Init Device Connect
+    try:
+        from strands_robots.device_connect import init_device_connect_sync
+
+        instance._device_connect_runtime = init_device_connect_sync(
+            instance, peer_id=peer_id, peer_type=peer_type,
+        )
+    except Exception as e:
+        logger.warning("Device Connect init failed: %s", e)
+        if hasattr(instance, "_init_mesh_fallback"):
+            instance._init_mesh_fallback()
+
+    stop = threading.Event()
+
+    def _shutdown(sig, frame):
+        print(f"\n🛑 Shutting down {peer_id}...")
+        stop.set()
+
+    signal.signal(signal.SIGINT, _shutdown)
+    signal.signal(signal.SIGTERM, _shutdown)
+
+    print(f"🤖 {peer_id} is online. Ctrl+C to stop.")
+    stop.wait()
+
+    # Cleanup
+    rt = getattr(instance, "_device_connect_runtime", None)
+    if rt and hasattr(rt, "_loop"):
+        rt._loop.call_soon_threadsafe(rt._loop.stop)
+    print(f"👋 {peer_id} stopped.")
 
 
 def list_robots(mode: str = "all") -> List[Dict[str, Any]]:
