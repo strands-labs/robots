@@ -106,12 +106,13 @@ def _create_env(backend, robot_name, task, max_steps_per_episode, render, kwargs
 def evaluate(
     policy,
     task: str,
-    robot_name: str,
+    robot_name: str = "",
     num_episodes: int = 50,
     max_steps_per_episode: int = 1000,
     backend: str = "mujoco",
     render: bool = False,
     seed: int = 42,
+    env=None,
     **kwargs,
 ) -> Dict[str, Any]:
     """Standalone evaluation harness for any policy on any task.
@@ -129,6 +130,8 @@ def evaluate(
         backend: Simulation backend — "mujoco" (default), "newton", or "isaac".
         render: Whether to render frames during evaluation.
         seed: Random seed for reproducibility.
+        env: Pre-created gymnasium environment. If provided, ``backend``,
+            ``robot_name``, and env-related kwargs are ignored.
         **kwargs: Additional kwargs passed to the environment.
 
     Returns:
@@ -148,9 +151,11 @@ def evaluate(
     successes = 0
     total_reward = 0.0
 
-    env = _create_env(backend, robot_name, task, max_steps_per_episode, render, kwargs)
-    if isinstance(env, dict):
-        return env
+    owns_env = env is None
+    if owns_env:
+        env = _create_env(backend, robot_name, task, max_steps_per_episode, render, kwargs)
+        if isinstance(env, dict):
+            return env
 
     _async_loop = None
     if inspect.iscoroutinefunction(getattr(policy, "get_actions", None)):
@@ -220,7 +225,8 @@ def evaluate(
     finally:
         if _async_loop is not None:
             _async_loop.close()
-        env.close()
+        if owns_env:
+            env.close()
 
     success_rate = (successes / num_episodes * 100) if num_episodes > 0 else 0.0
     mean_reward = total_reward / num_episodes if num_episodes > 0 else 0.0

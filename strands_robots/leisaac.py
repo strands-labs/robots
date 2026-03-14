@@ -77,7 +77,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
@@ -348,6 +347,9 @@ class LeIsaacEnv:
     ) -> RolloutResult:
         """Run a policy for multiple episodes and collect metrics.
 
+        Delegates to :func:`strands_robots.training.evaluate.evaluate` for the
+        actual episode loop, then converts the result to a :class:`RolloutResult`.
+
         Args:
             policy: A strands-robots Policy instance
             instruction: Natural language instruction for the task
@@ -361,57 +363,33 @@ class LeIsaacEnv:
         if not instruction:
             instruction = self.task_info.get("default_instruction", "")
 
-        # Set up policy with joint names
         joint_names = self.get_joint_names()
         policy.set_robot_state_keys(joint_names)
 
-        result = RolloutResult()
-        start_time = time.time()
+        if not self._loaded:
+            if not self.load():
+                raise RuntimeError("Failed to load LeIsaac environment")
 
-        for ep in range(n_episodes):
-            obs, info = self.reset()
-            ep_reward = 0.0
-            ep_steps = 0
-            success = False
+        from strands_robots.training.evaluate import evaluate
 
-            for step_idx in range(max_steps):
-                # Convert obs to policy format
-                obs_dict = self._obs_to_dict(obs)
+        eval_result = evaluate(
+            policy=policy,
+            task=instruction,
+            num_episodes=n_episodes,
+            max_steps_per_episode=max_steps,
+            render=render,
+            env=self._raw_env,
+        )
 
-                # Get action from policy
-                actions = asyncio.run(policy.get_actions(obs_dict, instruction))
-
-                if actions:
-                    action = self._dict_to_action(actions[0])
-                else:
-                    action = np.zeros(self._raw_env.action_space.shape)
-
-                obs, reward, terminated, truncated, info = self.step(action)
-                ep_reward += reward
-                ep_steps += 1
-
-                if terminated:
-                    success = info.get("is_success", True)
-                    break
-                if truncated:
-                    break
-
-            result.episodes.append(
-                {
-                    "episode": ep,
-                    "steps": ep_steps,
-                    "reward": float(ep_reward),
-                    "success": success,
-                }
-            )
-            if success:
-                result.n_successes += 1
-
-        result.n_episodes = n_episodes
+        result = RolloutResult(
+            n_episodes=eval_result["num_episodes"],
+            n_successes=sum(1 for e in eval_result["episodes"] if e["success"]),
+            avg_steps=sum(e["steps"] for e in eval_result["episodes"]) / max(n_episodes, 1),
+            avg_reward=eval_result["mean_reward"],
+            total_time=0.0,
+            episodes=eval_result["episodes"],
+        )
         result.success_rate = result.n_successes / max(n_episodes, 1)
-        result.avg_steps = sum(e["steps"] for e in result.episodes) / max(n_episodes, 1)
-        result.avg_reward = sum(e["reward"] for e in result.episodes) / max(n_episodes, 1)
-        result.total_time = time.time() - start_time
 
         logger.info(
             f"📊 Rollout: {result.n_successes}/{n_episodes} success "

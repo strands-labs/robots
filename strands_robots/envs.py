@@ -7,19 +7,13 @@ Provides standard Gymnasium step/reset/render interface for RL training.
 """
 
 import logging
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Optional
 
 import numpy as np
 
+from strands_robots.gym_env import HAS_GYM
+
 logger = logging.getLogger(__name__)
-
-try:
-    import gymnasium as gym
-    from gymnasium import spaces
-
-    HAS_GYM = True
-except (ImportError, AttributeError, OSError):
-    HAS_GYM = False
 
 try:
     import mujoco
@@ -30,10 +24,10 @@ except (ImportError, AttributeError, OSError):
 
 
 if HAS_GYM:
+    from strands_robots.gym_env import BaseGymEnv
 
-    class StrandsSimEnv(gym.Env):
-        """
-        Gymnasium wrapper for strands_robots.Simulation.
+    class StrandsSimEnv(BaseGymEnv):
+        """Gymnasium wrapper for strands_robots.Simulation.
 
         Converts the action-based Simulation API into the standard
         Gym step()/reset()/render() interface.
@@ -81,172 +75,99 @@ if HAS_GYM:
             cameras: Optional[list] = None,
             reward_fn: Optional[callable] = None,
             success_fn: Optional[callable] = None,
-            backend: str = "mujoco",
-            num_envs: int = 1,
-            device: str = "cuda:0",
         ):
-            """
+            """Create a MuJoCo-backed Gymnasium environment.
+
+            For GPU-accelerated backends, use :class:`NewtonGymEnv` or
+            :class:`IsaacGymEnv` directly.
+
             Args:
                 robot_name: Robot model name (str) or a Simulation instance.
-                    If a Simulation object is passed, it will be used directly
-                    instead of creating a new one. Note: when passing an existing
-                    Simulation, any ``objects`` and ``cameras`` configs will still
-                    be added to it — ensure the passed sim does not already have
-                    them configured to avoid duplicates.
-                data_config: Optional data config name for joint mapping
-                task: Task description (for VLA policies)
-                render_mode: "rgb_array" or "human"
-                render_width: Render width in pixels
-                render_height: Render height in pixels
-                max_episode_steps: Max steps per episode
-                physics_dt: Physics timestep
-                control_dt: Control timestep (actions applied at this rate)
-                objects: List of objects to add: [{"name": "cube", "shape": "box", ...}]
-                cameras: List of cameras to add: [{"name": "front", "pos": [...], ...}]
-                reward_fn: Custom reward function(obs, action, next_obs) -> float
-                success_fn: Custom success function(obs) -> bool
-                backend: Simulation backend — "mujoco" (default), "isaac", or "newton"
-                num_envs: Number of parallel GPU envs (for isaac/newton backends)
-                device: CUDA device for GPU backends (e.g. "cuda:0")
+                data_config: Optional data config name for joint mapping.
+                task: Task description (for VLA policies).
+                render_mode: "rgb_array" or "human".
+                render_width: Render width in pixels.
+                render_height: Render height in pixels.
+                max_episode_steps: Max steps per episode.
+                physics_dt: Physics timestep.
+                control_dt: Control timestep (actions applied at this rate).
+                objects: List of objects to add.
+                cameras: List of cameras to add.
+                reward_fn: Custom reward function(obs, action) -> float.
+                success_fn: Custom success function(obs) -> bool.
             """
-            # For non-MuJoCo backends, delegate to the appropriate Gym env
-            if backend == "isaac":
-                super().__init__()
-                from strands_robots.isaac.isaac_gym_env import IsaacGymEnv
-
-                self._delegate = IsaacGymEnv(
-                    robot_name=robot_name,
-                    task=task,
-                    num_envs=num_envs,
-                    device=device,
-                    render_mode=render_mode,
-                    max_episode_steps=max_episode_steps,
-                    physics_dt=physics_dt,
-                    reward_fn=reward_fn,
-                    success_fn=success_fn,
-                )
-                # Copy spaces from delegate
-                self.observation_space = self._delegate.observation_space
-                self.action_space = self._delegate.action_space
-                self._backend = backend
-                return
-            elif backend == "newton":
-                super().__init__()
-                from strands_robots.newton.newton_backend import NewtonConfig
-                from strands_robots.newton.newton_gym_env import NewtonGymEnv
-
-                self._delegate = NewtonGymEnv(
-                    robot_name=robot_name,
-                    task=task,
-                    config=NewtonConfig(num_envs=num_envs, device=device),
-                    render_mode=render_mode,
-                    max_episode_steps=max_episode_steps,
-                    reward_fn=reward_fn,
-                    success_fn=success_fn,
-                )
-                self.observation_space = self._delegate.observation_space
-                self.action_space = self._delegate.action_space
-                self._backend = backend
-                return
-
-            super().__init__()
-            self._delegate = None
-            self._backend = "mujoco"
-
             assert HAS_MUJOCO, "mujoco required: pip install mujoco"
 
             # Support passing a Simulation object directly
             from strands_robots.simulation import Simulation
 
-            _passed_sim = None
+            self._passed_sim = None
             if not isinstance(robot_name, str):
                 if isinstance(robot_name, Simulation):
-                    _passed_sim = robot_name
+                    self._passed_sim = robot_name
                 else:
                     raise TypeError(
                         f"robot_name must be a string or Simulation instance, got {type(robot_name).__name__}"
                     )
-                # Derive robot_name string from the sim's first robot
-                _robots = _passed_sim._world.robots if hasattr(_passed_sim, "_world") else {}
+                _robots = self._passed_sim._world.robots if hasattr(self._passed_sim, "_world") else {}
                 robot_name = next(iter(_robots), "robot")
 
-            self.robot_name = robot_name
             self.data_config = data_config or robot_name
-            self.task = task
-            self.render_mode = render_mode
             self.render_width = render_width
             self.render_height = render_height
-            self.max_episode_steps = max_episode_steps
             self.physics_dt = physics_dt
             self.control_dt = control_dt
             self.n_substeps = max(1, int(control_dt / physics_dt))
             self.objects_config = objects or []
             self.cameras_config = cameras or []
-            self.reward_fn = reward_fn
-            self.success_fn = success_fn
+            self._sim = None
+            self._include_pixels = False
+            self._viewer = None
 
-            # Will be initialized in reset()
-            self._sim = _passed_sim  # None if user passed a string
-            self._step_count = 0
-            self._initialized = _passed_sim is not None
+            super().__init__(
+                robot_name=robot_name,
+                task=task,
+                num_envs=1,
+                render_mode=render_mode,
+                max_episode_steps=max_episode_steps,
+                reward_fn=reward_fn,
+                success_fn=success_fn,
+            )
 
-            # Initialize sim to get spaces
-            self._init_sim()
+            self._init_backend()
 
-        def _init_sim(self):
-            """Initialize the simulation to determine observation/action spaces.
-
-            When a Simulation instance was passed to __init__, world creation and
-            robot addition are skipped, but ``objects`` and ``cameras`` configs are
-            still applied. Callers passing a pre-configured sim should leave those
-            lists empty to avoid duplicates.
-            """
+        def _init_backend(self) -> None:
             from strands_robots.simulation import Simulation
 
-            if self._sim is None:
-                self._sim = Simulation(
-                    tool_name="gym_sim",
-                    default_timestep=self.physics_dt,
-                )
-
-                # Create world
+            if self._passed_sim is not None:
+                self._sim = self._passed_sim
+                self._passed_sim = None
+            else:
+                self._sim = Simulation(tool_name="gym_sim", default_timestep=self.physics_dt)
                 self._sim._dispatch_action("create_world", {})
+                self._sim._dispatch_action("add_robot", {"data_config": self._robot_name, "name": "robot"})
 
-                # Add robot
-                self._sim._dispatch_action(
-                    "add_robot",
-                    {
-                        "data_config": self.robot_name,
-                        "name": "robot",
-                    },
-                )
-
-            # Add objects (also applied when a Simulation is passed directly —
-            # skip if no objects configured to avoid duplicating existing ones)
             for obj in self.objects_config:
                 self._sim._dispatch_action("add_object", obj)
-
-            # Add cameras (same caveat as objects above)
             for cam in self.cameras_config:
                 self._sim._dispatch_action("add_camera", cam)
 
-            # Determine spaces from sim state
             model = self._sim._world._model
-
             n_qpos = model.nq
             n_qvel = model.nv
             n_ctrl = model.nu
 
-            # Action space: joint actuator controls
+            # Action space with actuator limits
             act_low = np.full(n_ctrl, -1.0, dtype=np.float32)
             act_high = np.full(n_ctrl, 1.0, dtype=np.float32)
-            # Use actuator limits if available
             for i in range(n_ctrl):
                 if model.actuator_ctrllimited[i]:
                     act_low[i] = float(model.actuator_ctrlrange[i, 0])
                     act_high[i] = float(model.actuator_ctrlrange[i, 1])
 
-            self.action_space = spaces.Box(low=act_low, high=act_high, dtype=np.float32)
+            from gymnasium import spaces as sp
+
+            self.action_space = sp.Box(low=act_low, high=act_high, dtype=np.float32)
 
             # Observation space: qpos + qvel + (optional) image
             obs_dim = n_qpos + n_qvel
@@ -254,134 +175,59 @@ if HAS_GYM:
             obs_high = np.full(obs_dim, np.inf, dtype=np.float32)
 
             if self.render_mode == "rgb_array" or self.cameras_config:
-                # Include image in observation
-                self.observation_space = spaces.Dict(
-                    {
-                        "state": spaces.Box(low=obs_low, high=obs_high, dtype=np.float32),
-                        "pixels": spaces.Box(
-                            low=0,
-                            high=255,
-                            shape=(self.render_height, self.render_width, 3),
-                            dtype=np.uint8,
-                        ),
-                    }
-                )
+                self.observation_space = sp.Dict({
+                    "state": sp.Box(low=obs_low, high=obs_high, dtype=np.float32),
+                    "pixels": sp.Box(low=0, high=255, shape=(self.render_height, self.render_width, 3), dtype=np.uint8),
+                })
                 self._include_pixels = True
             else:
-                self.observation_space = spaces.Box(low=obs_low, high=obs_high, dtype=np.float32)
+                self.observation_space = sp.Box(low=obs_low, high=obs_high, dtype=np.float32)
                 self._include_pixels = False
 
-            self._initialized = True
+            self._n_joints = n_ctrl
+
+        def _reset_backend(self, options=None) -> None:
+            if self._sim is not None:
+                self._sim._dispatch_action("reset", {})
+            else:
+                self._init_backend()
 
         def _get_obs(self) -> Any:
-            """Get current observation from sim."""
             data = self._sim._world._data
-
-            state = np.concatenate(
-                [
-                    data.qpos.astype(np.float32),
-                    data.qvel.astype(np.float32),
-                ]
-            )
+            state = np.concatenate([data.qpos.astype(np.float32), data.qvel.astype(np.float32)])
 
             if self._include_pixels:
-                # Render image
                 renderer = mujoco.Renderer(self._sim._world._model, self.render_height, self.render_width)
                 renderer.update_scene(data)
                 pixels = renderer.render().copy()
-                # mujoco 3.x Renderer has no close() — it's garbage-collected
                 del renderer
+                return {"state": state, "pixels": pixels}
+            return state
 
-                return {
-                    "state": state,
-                    "pixels": pixels,
-                }
-            else:
-                return state
-
-        def reset(self, seed=None, options=None) -> Tuple[Any, Dict]:
-            """Reset environment to initial state."""
-            if hasattr(self, "_delegate") and self._delegate is not None:
-                return self._delegate.reset(seed=seed, options=options)
-
-            super().reset(seed=seed)
-
-            if self._sim is not None:
-                # Reset simulation
-                self._sim._dispatch_action("reset", {})
-            else:
-                self._init_sim()
-
-            self._step_count = 0
-            obs = self._get_obs()
-
-            return obs, {"task": self.task}
-
-        def step(self, action: np.ndarray) -> Tuple[Any, float, bool, bool, Dict]:
-            """Take a step in the environment."""
-            if hasattr(self, "_delegate") and self._delegate is not None:
-                return self._delegate.step(action)
-
+        def _step_physics(self, action: np.ndarray) -> dict:
             data = self._sim._world._data
-
-            # Apply action to actuators
             np.copyto(data.ctrl[: len(action)], action)
-
-            # Step physics
             for _ in range(self.n_substeps):
                 mujoco.mj_step(self._sim._world._model, data)
+            return {}
 
-            self._step_count += 1
-
-            # Get observation
-            obs = self._get_obs()
-
-            # Compute reward
-            if self.reward_fn is not None:
-                reward = float(self.reward_fn(obs, action))
-            else:
-                reward = 0.0
-
-            # Check termination
-            terminated = False
-            if self.success_fn is not None:
-                terminated = bool(self.success_fn(obs))
-
-            # Check truncation (max steps)
-            truncated = self._step_count >= self.max_episode_steps
-
-            info = {
-                "step": self._step_count,
-                "task": self.task,
-                "is_success": terminated,
-            }
-
-            return obs, reward, terminated, truncated, info
+        def _render_frame(self) -> Optional[np.ndarray]:
+            renderer = mujoco.Renderer(self._sim._world._model, self.render_height, self.render_width)
+            renderer.update_scene(self._sim._world._data)
+            frame = renderer.render().copy()
+            del renderer
+            return frame
 
         def render(self) -> Optional[np.ndarray]:
-            """Render the environment."""
-            if hasattr(self, "_delegate") and self._delegate is not None:
-                return self._delegate.render()
-
             if self.render_mode == "rgb_array":
-                renderer = mujoco.Renderer(self._sim._world._model, self.render_height, self.render_width)
-                renderer.update_scene(self._sim._world._data)
-                frame = renderer.render().copy()
-                # mujoco 3.x Renderer has no close() — it's garbage-collected
-                del renderer
-                return frame
+                return self._render_frame()
             elif self.render_mode == "human":
-                # Use MuJoCo viewer
                 if not hasattr(self, "_viewer") or self._viewer is None:
                     self._viewer = mujoco.viewer.launch_passive(self._sim._world._model, self._sim._world._data)
                 self._viewer.sync()
-                return None
+            return None
 
-        def close(self):
-            """Clean up resources."""
-            if hasattr(self, "_delegate") and self._delegate is not None:
-                return self._delegate.close()
-
+        def _destroy_backend(self) -> None:
             if hasattr(self, "_viewer") and self._viewer is not None:
                 self._viewer.close()
                 self._viewer = None
@@ -396,15 +242,14 @@ if HAS_GYM:
 
     # Register the environment with Gymnasium
     try:
-        gym.register(
-            id="StrandsSim-v0",
-            entry_point="strands_robots.envs:StrandsSimEnv",
-        )
+        import gymnasium as gym
+
+        gym.register(id="StrandsSim-v0", entry_point="strands_robots.envs:StrandsSimEnv")
     except Exception:
-        pass  # Already registered or gym not available
+        pass
 
 else:
-    # Stub when gymnasium not installed
+
     class StrandsSimEnv:
         def __init__(self, *args, **kwargs):
             raise ImportError("gymnasium required: pip install gymnasium")
