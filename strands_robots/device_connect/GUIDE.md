@@ -22,7 +22,7 @@ You can optionally pass `peer_id="so100-lab-1"` for a stable address; otherwise 
 | Pattern | Behavior |
 |---|---|
 | `r = Robot("so100"); r.run()` | **Option A — Foreground server.** Process stays alive, listens for commands. Ctrl+C to stop. |
-| `r = Robot("so100")` | **Option B — Scripting.** Script runs, does its thing, exits. Robot is not on the network. |
+| `r = Robot("so100")` | **Option B — Agent-controlled.** A Strands Agent discovers the robot via `robot_mesh` or `discover_devices()` and invokes commands remotely. |
 
 From another process, discover and invoke:
 
