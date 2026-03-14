@@ -330,7 +330,14 @@ invoke_device("reachy-mini-1", "nod")
 
 ### E2E Demo
 
-> Requires a Reachy Mini robot on the network.
+> Requires a Reachy Mini robot.
+
+**Setup depends on your hardware variant:**
+
+| Variant | Connection | Setup |
+|---|---|---|
+| **Reachy Mini** (wireless) | Wi-Fi, onboard Pi | `host='reachy-mini.local'` — no extra install needed |
+| **Reachy Mini Lite** (USB) | USB, no Pi | `pip install reachy-mini` then run `reachy-mini` daemon locally. Use `host='localhost'` |
 
 **Start the Reachy Mini driver:**
 
@@ -340,6 +347,8 @@ import asyncio
 from strands_robots.device_connect import ReachyMiniDriver
 from device_connect_sdk import DeviceRuntime
 
+# For Lite (USB): host='localhost' (requires reachy-mini daemon running)
+# For Wireless:  host='reachy-mini.local'
 driver = ReachyMiniDriver(host='reachy-mini.local')
 runtime = DeviceRuntime(
     driver=driver,
@@ -357,7 +366,7 @@ Expected output:
 ```
 Reachy Mini driver connected: reachy-mini.local
 device_connect_sdk.device.reachy-mini-1 - INFO - Device registered
-device_connect_sdk.device.reachy-mini-1 - INFO - Subscribed to commands on fabric.default.reachy-mini-1.cmd
+device_connect_sdk.device.reachy-mini-1 - INFO - Subscribed to commands on device-connect.default.reachy-mini-1.cmd
 ```
 
 **In another terminal, invoke RPCs:**
