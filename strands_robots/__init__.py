@@ -366,6 +366,27 @@ try:
 except (ImportError, AttributeError, OSError):
     pass
 
+# Device Connect integration (optional — wraps robots as DC devices)
+try:
+    from strands_robots.device_connect import (
+        ReachyMiniDriver,
+        RobotDeviceDriver,
+        SimulationDeviceDriver,
+        init_device_connect,
+    )
+
+    __all__.extend(
+        ["init_device_connect", "RobotDeviceDriver", "SimulationDeviceDriver", "ReachyMiniDriver"]
+    )
+    try:
+        from device_connect_agent_tools.adapters.strands import discover_devices, invoke_device
+
+        __all__.extend(["discover_devices", "invoke_device"])
+    except ImportError:
+        pass
+except (ImportError, AttributeError, OSError):
+    pass
+
 # Zenoh Robot Mesh (peer-to-peer — every Robot is a peer by default)
 try:
     from strands_robots.tools.robot_mesh import robot_mesh

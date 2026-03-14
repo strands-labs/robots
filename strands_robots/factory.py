@@ -15,6 +15,22 @@ from strands_robots.registry import list_robots as _registry_list_robots
 logger = logging.getLogger(__name__)
 
 
+def _init_device_connect_if_available(instance, canonical: str, mode: str, peer_id=None):
+    """Try to init Device Connect; fall back to Zenoh mesh if unavailable."""
+    try:
+        from strands_robots.device_connect import init_device_connect_sync
+        pid = peer_id or f"{canonical}-{os.urandom(3).hex()}"
+        peer_type = "sim" if mode == "sim" else "robot"
+        instance._device_connect_runtime = init_device_connect_sync(
+            instance, peer_id=pid, peer_type=peer_type,
+        )
+        logger.info("Device Connect ready: %s (non-blocking)", pid)
+    except Exception:
+        logger.debug("device-connect-sdk not available — falling back to Zenoh mesh")
+        if hasattr(instance, "_init_mesh_fallback"):
+            instance._init_mesh_fallback()
+
+
 def _auto_detect_mode(canonical: str) -> str:
     """Auto-detect sim vs real mode.
 
@@ -94,6 +110,7 @@ def Robot(
         mode = _auto_detect_mode(canonical)
 
     # ── Simulation backends ──
+    instance = None
     if mode == "sim":
         if backend == "isaac":
             from strands_robots.isaac.isaac_sim_backend import (
@@ -105,16 +122,15 @@ def Robot(
                 num_envs=num_envs,
                 device=kwargs.pop("device", "cuda:0"),
             )
-            isaac_backend = IsaacSimBackend(config=config)
-            isaac_backend.create_world()
-            result = isaac_backend.add_robot(
+            instance = IsaacSimBackend(config=config)
+            instance.create_world()
+            result = instance.add_robot(
                 name=canonical,
                 data_config=canonical,
                 position=position or [0.0, 0.0, 0.0],
             )
             if result.get("status") == "error":
                 raise RuntimeError(f"Failed to create Isaac robot '{canonical}': {result}")
-            return isaac_backend
 
         elif backend == "newton":
             from strands_robots.newton.newton_backend import NewtonBackend, NewtonConfig
@@ -130,9 +146,9 @@ def Robot(
                 substeps=kwargs.pop("substeps", 1),
                 physics_dt=kwargs.pop("physics_dt", 1.0 / 200.0),
             )
-            newton_backend = NewtonBackend(config=config)
-            newton_backend.create_world()
-            result = newton_backend.add_robot(
+            instance = NewtonBackend(config=config)
+            instance.create_world()
+            result = instance.add_robot(
                 name=canonical,
                 data_config=canonical,
                 position=tuple(position) if position else (0.0, 0.0, 0.0),
@@ -140,34 +156,31 @@ def Robot(
             if result.get("status") == "error":
                 raise RuntimeError(f"Failed to create Newton robot '{canonical}': {result.get('message', result)}")
             if num_envs > 1:
-                newton_backend.replicate(num_envs=num_envs)
-            return newton_backend
+                instance.replicate(num_envs=num_envs)
 
         else:
             # MuJoCo CPU backend (default)
             from strands_robots.simulation import Simulation
 
             sim_name = canonical
-            sim = Simulation(tool_name=f"{canonical}_sim", mesh=mesh, peer_id=peer_id, **kwargs)
-            sim._dispatch_action("create_world", {})
-            result = sim._dispatch_action(
-                "add_robot",
-                {
-                    "robot_name": canonical,
-                    "data_config": sim_name,
-                    "position": position or [0.0, 0.0, 0.0],
-                },
+            instance = Simulation(
+                tool_name=f"{canonical}_sim", mesh=mesh, peer_id=peer_id, **kwargs
             )
+            instance._dispatch_action("create_world", {})
+            result = instance._dispatch_action("add_robot", {
+                "robot_name": canonical,
+                "data_config": sim_name,
+                "position": position or [0.0, 0.0, 0.0],
+            })
             if result.get("status") == "error":
                 raise RuntimeError(f"Failed to create sim robot '{canonical}': {result}")
-            return sim
 
     # ── Real hardware ──
     else:
         from strands_robots.robot import Robot as HardwareRobot
 
         real_type = get_hardware_type(canonical) or canonical
-        return HardwareRobot(
+        instance = HardwareRobot(
             tool_name=canonical,
             robot=real_type,
             cameras=cameras,
@@ -175,6 +188,10 @@ def Robot(
             peer_id=peer_id,
             **kwargs,
         )
+
+    # ── Device Connect init (non-blocking, optional) ──
+    _init_device_connect_if_available(instance, canonical, mode, peer_id=peer_id)
+    return instance
 
 
 def list_robots(mode: str = "all") -> List[Dict[str, Any]]:

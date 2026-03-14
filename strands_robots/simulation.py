@@ -904,6 +904,20 @@ class Simulation(AgentTool):
 
         self._apply_sim_action(robot_name, action, n_substeps=n_substeps)
 
+    def apply_action(
+        self, action, robot_name: str = None, n_substeps: int = 1
+    ) -> None:
+        """Apply action(s) to simulation — accepts a dict or list of dicts.
+
+        Convenience wrapper over ``send_action`` that also handles the list
+        format returned by ``Policy.get_actions()``.
+        """
+        if isinstance(action, list):
+            for a in action:
+                self.send_action(a, robot_name=robot_name, n_substeps=n_substeps)
+        else:
+            self.send_action(action, robot_name=robot_name, n_substeps=n_substeps)
+
     # -------------------------------------------------------------------
     # World Management
     # -------------------------------------------------------------------

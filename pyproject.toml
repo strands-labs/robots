@@ -41,6 +41,8 @@ dependencies = [
     "Pillow>=8.0.0",
     "msgpack>=1.0.0",
     "pyzmq>=27.0.0",
+    "device-connect-sdk>=0.1.0",
+    "device-connect-agent-tools>=0.1.0",
 ]
 
 [project.optional-dependencies]
@@ -93,6 +95,10 @@ cosmos-predict = [
 zenoh = [
     "eclipse-zenoh>=1.0.0",
 ]
+device-connect = [
+    "device-connect-sdk",
+    "device-connect-agent-tools",
+]
 vla = [
     "transformers>=5.0.0",
     "sentencepiece>=0.1.99",
@@ -116,6 +122,7 @@ all = [
     "strands-robots[cosmos-transfer]",
     "strands-robots[cosmos-predict]",
     "strands-robots[zenoh]",
+    "strands-robots[device-connect]",
 ]
 dev = [
     "pytest>=6.0",

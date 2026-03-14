@@ -1,0 +1,315 @@
+"""ReachyMiniDriver — Device Connect DeviceDriver for Pollen Reachy Mini robots.
+
+Uses Device Connect's managed messaging session (via self.transport) to
+communicate with the Reachy Mini's native Zenoh topics.  REST API
+calls go through reachy_transport.api() for daemon/move operations.
+"""
+
+import asyncio
+import json
+import logging
+import math
+from typing import Optional
+
+from device_connect_sdk.drivers import DeviceDriver, emit, on, rpc
+from device_connect_sdk.types import DeviceIdentity, DeviceStatus
+
+from strands_robots.device_connect.reachy_transport import (
+    api,
+    identity_pose,
+    rpy_to_pose,
+)
+
+logger = logging.getLogger(__name__)
+
+
+class ReachyMiniDriver(DeviceDriver):
+    """Device Connect device driver for a Pollen Reachy Mini robot.
+
+    Real-time joints/IMU/commands use Device Connect's transport (Zenoh session).
+    Daemon and move operations use the REST API.
+    """
+
+    device_type = "reachy_mini"
+
+    def __init__(
+        self,
+        host: str = "reachy-mini.local",
+        prefix: str = "reachy_mini",
+        api_port: int = 8000,
+    ):
+        super().__init__()
+        self._host = host
+        self._prefix = prefix
+        self._api_port = api_port
+        self._latest_joints: Optional[dict] = None
+        self._latest_imu: Optional[dict] = None
+
+    @property
+    def identity(self) -> DeviceIdentity:
+        return DeviceIdentity(
+            device_type="reachy_mini",
+            manufacturer="Pollen Robotics",
+            model=f"Reachy Mini @ {self._host}",
+            description="Pollen Reachy Mini expressive robot head with antennas",
+        )
+
+    @property
+    def status(self) -> DeviceStatus:
+        return DeviceStatus(availability="idle")
+
+    async def connect(self) -> None:
+        """Subscribe to joint and IMU topics via Device Connect transport."""
+        prefix = self._prefix
+
+        async def _on_joints(data: bytes, _reply=None):
+            try:
+                self._latest_joints = json.loads(data.decode())
+            except Exception:
+                pass
+
+        async def _on_imu(data: bytes, _reply=None):
+            try:
+                self._latest_imu = json.loads(data.decode())
+            except Exception:
+                pass
+
+        await self.transport.subscribe(f"{prefix}/joint_positions", _on_joints)
+        await self.transport.subscribe(f"{prefix}/imu_data", _on_imu)
+        logger.info("Connected to Reachy Mini at %s (via Device Connect transport)", self._host)
+
+    async def disconnect(self) -> None:
+        """Transport teardown is handled by DeviceRuntime shutdown."""
+        pass
+
+    # ── Helpers ────────────────────────────────────────────────
+
+    async def _send_cmd(self, cmd: dict) -> None:
+        """Publish a command to the Reachy Mini's native Zenoh topic."""
+        await self.transport.publish(
+            f"{self._prefix}/command", json.dumps(cmd).encode()
+        )
+
+    # ── Movement RPCs (Zenoh via transport) ────────────────────
+
+    @rpc()
+    async def look(
+        self,
+        pitch: float = 0,
+        roll: float = 0,
+        yaw: float = 0,
+        x: float = 0,
+        y: float = 0,
+        z: float = 0,
+    ) -> dict:
+        """Set head pose instantly.
+
+        Args:
+            pitch: Pitch angle in degrees
+            roll: Roll angle in degrees
+            yaw: Yaw angle in degrees
+            x: X offset in mm
+            y: Y offset in mm
+            z: Z offset in mm
+        """
+        await self._send_cmd({"head_pose": rpy_to_pose(pitch, roll, yaw, x, y, z)})
+        return {"status": "success", "pitch": pitch, "roll": roll, "yaw": yaw}
+
+    @rpc()
+    async def antennas(self, left: float = 0, right: float = 0) -> dict:
+        """Set antenna angles.
+
+        Args:
+            left: Left antenna angle in degrees
+            right: Right antenna angle in degrees
+        """
+        await self._send_cmd(
+            {"antennas_joint_positions": [math.radians(left), math.radians(right)]}
+        )
+        return {"status": "success", "left": left, "right": right}
+
+    @rpc()
+    async def body(self, yaw: float = 0) -> dict:
+        """Set body yaw angle.
+
+        Args:
+            yaw: Body yaw angle in degrees
+        """
+        await self._send_cmd({"body_yaw": math.radians(yaw)})
+        return {"status": "success", "yaw": yaw}
+
+    # ── Sensor RPCs (cached from transport subscription) ───────
+
+    @rpc()
+    async def getJoints(self) -> dict:
+        """Get current joint positions (head + antennas)."""
+        d = self._latest_joints
+        if d is not None:
+            head = d.get("head_joint_positions", [])
+            ant = d.get("antennas_joint_positions", [])
+            return {
+                "status": "success",
+                "head": [math.degrees(j) for j in head],
+                "antennas": [math.degrees(j) for j in ant],
+            }
+        return {"status": "error", "reason": "no joint data"}
+
+    @rpc()
+    async def getImu(self) -> dict:
+        """Get IMU data (accelerometer, gyroscope, quaternion, temperature)."""
+        d = self._latest_imu
+        if d is not None:
+            return {
+                "status": "success",
+                "accelerometer": d.get("accelerometer"),
+                "gyroscope": d.get("gyroscope"),
+                "quaternion": d.get("quaternion"),
+                "temperature": d.get("temperature"),
+            }
+        return {"status": "error", "reason": "no IMU data"}
+
+    # ── Motor RPCs (Zenoh via transport) ───────────────────────
+
+    @rpc()
+    async def enableMotors(self, motor_ids: str = "") -> dict:
+        """Enable motors (torque on).
+
+        Args:
+            motor_ids: Comma-separated motor IDs (empty = all)
+        """
+        ids = [s.strip() for s in motor_ids.split(",") if s.strip()] or None
+        await self._send_cmd({"torque": True, "ids": ids})
+        return {"status": "success", "enabled": motor_ids or "all"}
+
+    @rpc()
+    async def disableMotors(self, motor_ids: str = "") -> dict:
+        """Disable motors (torque off).
+
+        Args:
+            motor_ids: Comma-separated motor IDs (empty = all)
+        """
+        ids = [s.strip() for s in motor_ids.split(",") if s.strip()] or None
+        await self._send_cmd({"torque": False, "ids": ids})
+        return {"status": "success", "disabled": motor_ids or "all"}
+
+    # ── Move RPCs (REST) ──────────────────────────────────────
+
+    @rpc()
+    async def playMove(self, move_name: str, library: str = "emotions") -> dict:
+        """Play a recorded move from the HuggingFace library.
+
+        Args:
+            move_name: Name of the move to play
+            library: Move library (emotions or dance)
+        """
+        ds = f"pollen-robotics/reachy-mini-{'emotions' if library == 'emotions' else 'dances'}-library"
+        result = await asyncio.to_thread(
+            api, self._host, self._api_port,
+            f"/api/move/play/recorded-move-dataset/{ds}/{move_name}", "POST",
+        )
+        return {"status": "success", "move": move_name, "result": result}
+
+    @rpc()
+    async def listMoves(self, library: str = "emotions") -> dict:
+        """List available recorded moves.
+
+        Args:
+            library: Move library (emotions or dance)
+        """
+        ds = f"pollen-robotics/reachy-mini-{'emotions' if library == 'emotions' else 'dances'}-library"
+        result = await asyncio.to_thread(
+            api, self._host, self._api_port,
+            f"/api/move/recorded-move-datasets/list/{ds}",
+        )
+        return {"status": "success", "moves": result}
+
+    # ── Expression RPCs (Zenoh animations via transport) ───────
+
+    @rpc()
+    async def nod(self) -> dict:
+        """Nod the head (yes gesture)."""
+        for _ in range(3):
+            await self._send_cmd({"head_pose": rpy_to_pose(15, 0, 0)})
+            await asyncio.sleep(0.25)
+            await self._send_cmd({"head_pose": rpy_to_pose(-10, 0, 0)})
+            await asyncio.sleep(0.25)
+        await self._send_cmd({"head_pose": identity_pose()})
+        return {"status": "success", "expression": "nod"}
+
+    @rpc()
+    async def shake(self) -> dict:
+        """Shake the head (no gesture)."""
+        for _ in range(3):
+            await self._send_cmd({"head_pose": rpy_to_pose(0, 0, 25)})
+            await asyncio.sleep(0.2)
+            await self._send_cmd({"head_pose": rpy_to_pose(0, 0, -25)})
+            await asyncio.sleep(0.2)
+        await self._send_cmd({"head_pose": identity_pose()})
+        return {"status": "success", "expression": "shake"}
+
+    @rpc()
+    async def happy(self) -> dict:
+        """Happy antenna wiggle expression."""
+        for _ in range(4):
+            await self._send_cmd(
+                {"antennas_joint_positions": [math.radians(60), math.radians(-60)]}
+            )
+            await asyncio.sleep(0.2)
+            await self._send_cmd(
+                {"antennas_joint_positions": [math.radians(-60), math.radians(60)]}
+            )
+            await asyncio.sleep(0.2)
+        await self._send_cmd({"antennas_joint_positions": [0, 0]})
+        return {"status": "success", "expression": "happy"}
+
+    # ── Lifecycle RPCs (REST) ─────────────────────────────────
+
+    @rpc()
+    async def wakeUp(self) -> dict:
+        """Wake up the robot (enable motors + play wake animation)."""
+        result = await asyncio.to_thread(
+            api, self._host, self._api_port, "/api/move/play/wake_up", "POST",
+        )
+        return {"status": "success", "result": result}
+
+    @rpc()
+    async def sleep(self) -> dict:
+        """Put robot to sleep (play sleep animation + disable motors)."""
+        result = await asyncio.to_thread(
+            api, self._host, self._api_port, "/api/move/play/goto_sleep", "POST",
+        )
+        return {"status": "success", "result": result}
+
+    @rpc()
+    async def stopMotion(self) -> dict:
+        """Stop all current motion."""
+        result = await asyncio.to_thread(
+            api, self._host, self._api_port, "/api/move/stop", "POST",
+        )
+        return {"status": "success", "result": result}
+
+    @rpc()
+    async def getDaemonStatus(self) -> dict:
+        """Get daemon status, motor state, and control frequency."""
+        result = await asyncio.to_thread(
+            api, self._host, self._api_port, "/api/daemon/status",
+        )
+        return {"status": "success", **result}
+
+    # ── Events ────────────────────────────────────────────────
+
+    @emit()
+    async def emergencyStop(self, reason: str = ""):
+        """Emitted when this device triggers an emergency stop.
+
+        Args:
+            reason: Why the emergency stop was triggered
+        """
+        pass
+
+    @on(event_name="emergencyStop")
+    async def onEmergencyStop(self, device_id: str, event_name: str, payload: dict):
+        """React to emergencyStop — disable motors and stop motion."""
+        logger.warning("Emergency stop received from %s — disabling motors", device_id)
+        await self.stopMotion()
+        await self.disableMotors()
