@@ -1,6 +1,6 @@
 # Device Connect Integration
 
-Strands Robots can use [Device Connect](https://github.com/arm/device-connect), a **device-aware runtime** by Arm — to handle discovery, presence, structured RPC, event routing, and safety — so you can focus on building cross-device experiences instead of re-implementing infrastructure.
+Strands Robots uses [Device Connect](https://github.com/arm/device-connect), a **device-aware runtime** by Arm — to handle discovery, presence, structured RPC, event routing, and safety — so you can focus on building cross-device experiences instead of re-implementing infrastructure.
 
 > **Fallback behavior:** If `device-connect-sdk` is not installed, Strands Robots automatically falls back to a built-in Zenoh P2P mesh (`zenoh_mesh.py`) for basic peer discovery and coordination. Device Connect is the recommended and primary networking layer.
 
@@ -9,10 +9,20 @@ Strands Robots can use [Device Connect](https://github.com/arm/device-connect), 
 ```python
 from strands_robots import Robot
 
-robot = Robot("so100")
+r = Robot("so100")
+r.run()  # starts listening for commands. Ctrl+C to stop.
 ```
 
-That's it. If `device-connect-sdk` is installed, the robot automatically initialises Device Connect with D2D defaults (Zenoh multicast scouting, no broker, no env vars) and becomes discoverable on the LAN. You can optionally pass `peer_id="so100-lab-1"` for a stable address; otherwise one is auto-generated (e.g. `so100_sim-a3f1b2`).
+`Robot()` creates the robot. `.run()` starts Device Connect with D2D defaults (Zenoh multicast scouting, no broker, no env vars) and blocks — the robot becomes discoverable on the LAN and listens for commands. Without `.run()`, the script exits and the robot is removed from the network.
+
+You can optionally pass `peer_id="so100-lab-1"` for a stable address; otherwise one is auto-generated (e.g. `so100-a3f1b2`).
+
+**Robot lifecycle:**
+
+| Pattern | Behavior |
+|---|---|
+| `r = Robot("so100"); r.run()` | **Option A — Foreground server.** Process stays alive, listens for commands. Ctrl+C to stop. |
+| `r = Robot("so100")` | **Option B — Agent-controlled.** A Strands Agent discovers the robot via `robot_mesh` or `discover_devices()` and invokes commands remotely. |
 
 From another process, discover and invoke:
 
@@ -64,28 +74,32 @@ No Docker needed. No env vars. Devices discover each other directly on the LAN v
 Create a virtual environment and install dependencies:
 
 ```bash
-python3 -m venv .venv
+python3.12 -m venv .venv              # Python 3.12 recommended (MuJoCo has no 3.14 wheels)
 source .venv/bin/activate
 
-pip install strands-robots              # includes Device Connect SDK + agent tools
+pip install -e ".[sim]"                # install from source; sim = MuJoCo, Device Connect SDK is a core dep
 
-export PYTHONPATH="$PWD:$PYTHONPATH"   # makes `import strands_robots` work
+export PYTHONPATH="$PWD:$PYTHONPATH"   # only needed when running from source checkout
 ```
 
-**Start a mock robot as a Device Connect device (keep running in a separate terminal):**
+**Start a robot (keep running in a separate terminal):**
 
 ```python
-python -c "from strands_robots import Robot; Robot('so100')"
+python -c "
+from strands_robots import Robot
+r = Robot('so100')
+r.run()
+"
 ```
 
 Expected output:
 
 ```
-Simulation 'so100_sim' running — discoverable as 'so100_sim-a3f1b2' via Device Connect. Ctrl+C to stop.
-device_connect_sdk.device.so100_sim-a3f1b2 - INFO - Using ZENOH messaging backend
-device_connect_sdk.device.so100_sim-a3f1b2 - INFO - Connected to ZENOH broker: []
-device_connect_sdk.device.so100_sim-a3f1b2 - INFO - Driver connected: strands_sim
-device_connect_sdk.device.so100_sim-a3f1b2 - INFO - Subscribed to commands on device-connect.default.so100_sim-a3f1b2.cmd
+device_connect_sdk.device.so100-a3f1b2 - INFO - Using ZENOH messaging backend
+device_connect_sdk.device.so100-a3f1b2 - INFO - Connected to ZENOH broker: []
+device_connect_sdk.device.so100-a3f1b2 - INFO - Driver connected: strands_sim
+device_connect_sdk.device.so100-a3f1b2 - INFO - Subscribed to commands on device-connect.default.so100-a3f1b2.cmd
+🤖 so100-a3f1b2 is online. Ctrl+C to stop.
 ```
 
 #### Option A: Using the `robot_mesh` Strands tool
@@ -106,7 +120,7 @@ Expected output:
 ```
 Discovered 1 device(s):
   [robot] so100-lab-1 — idle
-    Functions: execute, getFeatures, getState, getStatus, stop
+    Functions: execute, getFeatures, getStatus, reset, step, stop
 ```
 
 **Tell a robot to execute an instruction:**
@@ -123,7 +137,7 @@ Expected output:
 
 ```
 -> so100-lab-1: pick up the cube
-  {"status": "accepted"}
+  {"status": "success", "content": [...]}
 ```
 
 **Emergency stop all devices:**
@@ -149,7 +163,7 @@ from device_connect_agent_tools import connect, discover_devices, invoke_device
 
 connect()
 
-devices = discover_devices(device_type='strands_robot')
+devices = discover_devices()
 print(f'Found {len(devices)} robot(s):')
 for d in devices:
     print(f'  {d[\"device_id\"]} — {d.get(\"status\", {}).get(\"availability\", \"?\")}')
@@ -171,35 +185,8 @@ Expected output:
 ```
 Found 1 robot(s):
   so100-lab-1 — idle
-Execute result: {'success': True, 'result': {'status': 'accepted'}}
-Status: {'success': True, 'result': {'status': 'idle'}}
-```
-
-#### Option C: Real Robot (hardware or MuJoCo sim)
-
-> Requires `pip install strands-robots[sim]` (MuJoCo) or physical robot hardware.
-
-```python
-python -c "
-import asyncio
-from strands_robots import Robot
-from strands_robots.device_connect import init_device_connect
-
-robot = Robot('so100', mesh=False)
-
-async def run():
-    runtime = await init_device_connect(robot, peer_id='so100-lab-1')
-    print('Robot registered on Device Connect — Ctrl+C to stop')
-    await asyncio.Event().wait()
-
-asyncio.run(run())
-"
-```
-
-Expected output:
-
-```
-Robot registered on Device Connect — Ctrl+C to stop
+Execute result: {'success': True, 'result': {'status': 'success', 'content': [...]}}
+Status: {'success': True, 'result': {...}}  # full sim state dict
 ```
 
 #### Full Infrastructure (Optional)
@@ -231,7 +218,7 @@ export ZENOH_CONNECT=tcp/localhost:7447
 export DEVICE_CONNECT_ALLOW_INSECURE=true
 ```
 
-All the options above (A-C) work identically with full infrastructure — the only difference is that devices register in etcd and discovery goes through the registry service instead of multicast scouting.
+All the options above (A–B) work identically with full infrastructure — the only difference is that devices register in etcd and discovery goes through the registry service instead of multicast scouting.
 
 > **What infrastructure adds over D2D:**
 > - **Persistent device registry** — devices register with TTL-based leases; stale devices are auto-cleaned. Agents can discover devices by type, location, or capability via `discover_devices()`.
@@ -242,6 +229,8 @@ All the options above (A-C) work identically with full infrastructure — the on
 #### Running the Tests
 
 ```bash
+pip install pytest pytest-cov          # if not already installed
+
 # Unit tests (no Docker needed)
 python3 -m pytest tests/test_device_connect_drivers.py -v
 
@@ -341,7 +330,14 @@ invoke_device("reachy-mini-1", "nod")
 
 ### E2E Demo
 
-> Requires a Reachy Mini robot on the network.
+> Requires a Reachy Mini robot.
+
+**Setup depends on your hardware variant:**
+
+| Variant | Connection | Setup |
+|---|---|---|
+| **Reachy Mini** (wireless) | Wi-Fi, onboard Pi | `host='reachy-mini.local'` — no extra install needed |
+| **Reachy Mini Lite** (USB) | USB, no Pi | `pip install reachy-mini` then run `reachy-mini` daemon locally. Use `host='localhost'` |
 
 **Start the Reachy Mini driver:**
 
@@ -351,6 +347,8 @@ import asyncio
 from strands_robots.device_connect import ReachyMiniDriver
 from device_connect_sdk import DeviceRuntime
 
+# For Lite (USB): host='localhost' (requires reachy-mini daemon running)
+# For Wireless:  host='reachy-mini.local'
 driver = ReachyMiniDriver(host='reachy-mini.local')
 runtime = DeviceRuntime(
     driver=driver,
@@ -368,7 +366,7 @@ Expected output:
 ```
 Reachy Mini driver connected: reachy-mini.local
 device_connect_sdk.device.reachy-mini-1 - INFO - Device registered
-device_connect_sdk.device.reachy-mini-1 - INFO - Subscribed to commands on fabric.default.reachy-mini-1.cmd
+device_connect_sdk.device.reachy-mini-1 - INFO - Subscribed to commands on device-connect.default.reachy-mini-1.cmd
 ```
 
 **In another terminal, invoke RPCs:**
