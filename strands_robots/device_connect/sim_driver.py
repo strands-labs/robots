@@ -79,6 +79,7 @@ class SimulationDeviceDriver(DeviceDriver):
             else:
                 return {"status": "error", "reason": "no robots in simulation"}
 
+        logger.info("▶ Executing policy '%s' on %s: %s", policy_provider, name, instruction)
         return self._sim.start_policy(
             robot_name=name,
             policy_provider=policy_provider,
@@ -89,6 +90,7 @@ class SimulationDeviceDriver(DeviceDriver):
     @rpc()
     async def stop(self) -> dict:
         """Stop all running policies."""
+        logger.info("⏹ Stop command received — stopping all policies")
         world = getattr(self._sim, "_world", None)
         if world:
             for robot in world.robots.values():
@@ -157,7 +159,7 @@ class SimulationDeviceDriver(DeviceDriver):
     @on(event_name="emergencyStop")
     async def onEmergencyStop(self, device_id: str, event_name: str, payload: dict):
         """React to emergencyStop from ANY device on the network."""
-        logger.warning("Emergency stop received from %s — stopping all policies", device_id)
+        logger.warning("🛑 Emergency stop received from %s — stopping all policies", device_id)
         world = getattr(self._sim, "_world", None)
         if world:
             for robot in world.robots.values():
