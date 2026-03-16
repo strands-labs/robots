@@ -103,12 +103,14 @@ r.run()
 Expected output:
 
 ```
-device_connect_sdk.device.so100-a3f1b2 - INFO - Using ZENOH messaging backend
-device_connect_sdk.device.so100-a3f1b2 - INFO - Connected to ZENOH broker: []
-device_connect_sdk.device.so100-a3f1b2 - INFO - Driver connected: strands_sim
-device_connect_sdk.device.so100-a3f1b2 - INFO - Subscribed to commands on device-connect.default.so100-a3f1b2.cmd
-🤖 so100-a3f1b2 is online. Ctrl+C to stop.
+device_connect_sdk.device.<PEER_ID> - INFO - Using ZENOH messaging backend
+device_connect_sdk.device.<PEER_ID> - INFO - Connected to ZENOH broker: []
+device_connect_sdk.device.<PEER_ID> - INFO - Driver connected: strands_sim
+device_connect_sdk.device.<PEER_ID> - INFO - Subscribed to commands on device-connect.default.<PEER_ID>.cmd
+🤖 <PEER_ID> is online. Ctrl+C to stop.
 ```
+
+> `<PEER_ID>` is auto-generated (e.g. `so100-a3f1b2`) unless you pass `peer_id="so100-lab-1"` to `Robot()` for a stable, deterministic name.
 
 #### Option A: Using the `robot_mesh` Strands tool
 
@@ -127,16 +129,18 @@ Expected output:
 
 ```
 Discovered 1 device(s):
-  [robot] so100-lab-1 — idle
+  [sim] <PEER_ID> — idle
     Functions: execute, getFeatures, getStatus, reset, step, stop
 ```
 
 **Tell a robot to execute an instruction:**
 
+Use the `<PEER_ID>` from the discover step above as the `target`:
+
 ```python
 python -c "
 from strands_robots.tools.robot_mesh import robot_mesh
-print(robot_mesh(action='tell', target='so100-lab-1',
+print(robot_mesh(action='tell', target='<PEER_ID>',
     instruction='pick up the cube', policy_provider='mock'))
 "
 ```
@@ -144,7 +148,7 @@ print(robot_mesh(action='tell', target='so100-lab-1',
 Expected output:
 
 ```
--> so100-lab-1: pick up the cube
+-> <PEER_ID>: pick up the cube
   {"status": "success", "content": [...]}
 ```
 
@@ -192,7 +196,7 @@ Expected output:
 
 ```
 Found 1 robot(s):
-  so100-lab-1 — idle
+  <PEER_ID> — idle
 Execute result: {'success': True, 'result': {'status': 'success', 'content': [...]}}
 Status: {'success': True, 'result': {...}}  # full sim state dict
 ```
