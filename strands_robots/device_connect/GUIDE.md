@@ -71,9 +71,17 @@ No Docker needed. No env vars. Devices discover each other directly on the LAN v
 
 #### Setup
 
-Create a virtual environment and install dependencies:
+Clone the repo and create a virtual environment:
 
 ```bash
+git clone --branch feat/device-connect-integration-draft https://github.com/atsyplikhin/robots.git
+cd robots
+
+python3.12 --version                  # verify Python 3.12 is installed
+# If not installed, see https://www.python.org/downloads/ or use your package manager:
+#   macOS:  brew install python@3.12
+#   Ubuntu: sudo apt install python3.12 python3.12-venv
+
 python3.12 -m venv .venv              # Python 3.12 recommended (MuJoCo has no 3.14 wheels)
 source .venv/bin/activate
 
