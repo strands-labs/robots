@@ -110,7 +110,10 @@ device_connect_sdk.device.<PEER_ID> - INFO - Subscribed to commands on device-co
 🤖 <PEER_ID> is online. Ctrl+C to stop.
 ```
 
-> `<PEER_ID>` is auto-generated (e.g. `so100-a3f1b2`) unless you pass `peer_id="so100-lab-1"` to `Robot()` for a stable, deterministic name.
+> `<PEER_ID>` is auto-generated (e.g. `so100-a3f1b2`) unless you pass a fixed peer ID:
+> ```python
+> r = Robot('so100', peer_id='so100-lab-1')
+> ```
 
 #### Option A: Using the `robot_mesh` Strands tool
 
