@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -157,14 +158,31 @@ class Robot(AgentTool):
         if data_config:
             logger.info("⚙️ Data config: %s", data_config)
 
-        # Zenoh mesh — every Robot is a peer by default
+        # Device Connect / mesh init is deferred to the factory
+        self._device_connect_runtime = None
+        self._peer_id = peer_id
+        self._mesh_enabled = mesh
+        self.mesh = None
+
+    def _init_mesh_fallback(self):
+        """Fallback: init Zenoh mesh when device-connect-sdk is not installed."""
         try:
             from strands_robots.zenoh_mesh import init_mesh
 
-            self.mesh = init_mesh(self, peer_id=peer_id, peer_type="robot", mesh=mesh)
+            self.mesh = init_mesh(self, peer_id=self._peer_id, peer_type="robot", mesh=self._mesh_enabled)
         except Exception as e:
             logger.debug("Mesh init skipped: %s", e)
-            self.mesh = None
+
+    async def _serve(self):
+        """Initialize Device Connect and block — keeps robot discoverable."""
+        from strands_robots.device_connect import init_device_connect
+
+        peer_id = self._peer_id or f"{self.tool_name_str}-{os.urandom(3).hex()}"
+        self._device_connect_runtime = await init_device_connect(
+            self, peer_id=peer_id, peer_type="robot"
+        )
+        print(f"Robot '{self.tool_name_str}' running — discoverable as '{peer_id}' via Device Connect.")
+        await self._device_connect_runtime._background_task
 
     def _initialize_robot(
         self,
@@ -1358,6 +1376,13 @@ class Robot(AgentTool):
     def cleanup(self):
         """Cleanup resources and stop any running tasks."""
         try:
+            # Stop Device Connect runtime
+            if hasattr(self, "_device_connect_runtime") and self._device_connect_runtime:
+                try:
+                    self._device_connect_runtime.stop()
+                except Exception:
+                    pass
+
             # Stop mesh
             if hasattr(self, "mesh") and self.mesh:
                 self.mesh.stop()

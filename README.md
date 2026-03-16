@@ -162,6 +162,23 @@ trainer = create_trainer("groot",
 trainer.train()
 ```
 
+### Networking: Device Connect
+
+Strands Robots uses [Device Connect](https://github.com/arm/device-connect) by Arm as its primary networking layer — registry-based discovery, structured RPC schemas, device-to-device events, and policy enforcement. Every `Robot()` automatically registers as a Device Connect device when `device-connect-sdk` is installed (zero configuration in D2D mode).
+
+If `device-connect-sdk` is not installed, robots fall back to a built-in Zenoh P2P mesh for basic peer discovery and coordination.
+
+```python
+from strands_robots.tools.robot_mesh import robot_mesh
+
+robot_mesh(action="peers")                           # discover devices
+robot_mesh(action="tell", target="so100-lab-1",      # invoke
+           instruction="pick up the cube")
+robot_mesh(action="emergency_stop")                   # e-stop all
+```
+
+See the [Device Connect guide](strands_robots/device_connect/GUIDE.md) for architecture, E2E demos, and production deployment.
+
 ## Simulation
 
 Three backends. Same `Robot()` interface.
