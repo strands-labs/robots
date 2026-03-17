@@ -7,6 +7,7 @@ Provides:
 
 import logging
 import os
+import time
 from typing import Any, Dict, List, Optional
 
 from strands_robots.registry import get_hardware_type, has_hardware, resolve_name
@@ -211,23 +212,14 @@ def _run_foreground(instance):
         if hasattr(instance, "_init_mesh_fallback"):
             instance._init_mesh_fallback()
 
-    stop = threading.Event()
-
-    def _shutdown(sig, frame):
-        print(f"\n🛑 Shutting down {peer_id}...")
-        stop.set()
-
-    signal.signal(signal.SIGINT, _shutdown)
-    signal.signal(signal.SIGTERM, _shutdown)
-
     print(f"🤖 {peer_id} is online. Ctrl+C to stop.")
-    stop.wait()
-
-    # Cleanup
-    rt = getattr(instance, "_device_connect_runtime", None)
-    if rt and hasattr(rt, "_loop"):
-        rt._loop.call_soon_threadsafe(rt._loop.stop)
-    print(f"👋 {peer_id} stopped.")
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print(f"\n🛑 Shutting down {peer_id}...", flush=True)
+        print(f"👋 {peer_id} stopped.", flush=True)
+        os._exit(0)
 
 
 def list_robots(mode: str = "all") -> List[Dict[str, Any]]:
