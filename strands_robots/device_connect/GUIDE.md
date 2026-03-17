@@ -71,33 +71,29 @@ No Docker needed. No env vars. Devices discover each other directly on the LAN v
 
 #### Setup
 
-Clone the repo and create a virtual environment:
+##### 1. Install
 
 ```bash
 git clone --branch feat/device-connect-integration-draft https://github.com/atsyplikhin/robots.git
 cd robots
-
-python3.12 --version                  # verify Python 3.12 is installed
-# If not installed, see https://www.python.org/downloads/ or use your package manager:
-#   macOS:  brew install python@3.12
-#   Ubuntu: sudo apt install python3.12 python3.12-venv
-
-python3.12 -m venv .venv              # Python 3.12 recommended (MuJoCo has no 3.14 wheels)
+bash strands_robots/device_connect/setup.sh
 source .venv/bin/activate
-
-pip install -e ".[sim]"                # install from source; sim = MuJoCo, Device Connect SDK is a core dep
-
-export PYTHONPATH="$PWD:$PYTHONPATH"   # only needed when running from source checkout
 ```
 
-**Start a robot (keep running in a separate terminal):**
+This installs `uv`, Python 3.12, creates a venv, and installs all dependencies.
 
-```python
+##### 2. Start a robot
+
+```bash
+screen -S robot                        # start a persistent session
 python -c "
 from strands_robots import Robot
 r = Robot('so100')
 r.run()
 "
+# once online, Ctrl+a then d to detach
+# screen -ls to list sessions
+# screen -r robot to reattach
 ```
 
 Expected output:
