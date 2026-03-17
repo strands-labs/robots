@@ -2,7 +2,7 @@
 # setup.sh — one-command environment setup for Strands Robots + Device Connect
 #
 # Usage:
-#   bash strands_robots/device_connect/setup.sh
+#   ./strands_robots/device_connect/setup.sh
 #
 set -euo pipefail
 

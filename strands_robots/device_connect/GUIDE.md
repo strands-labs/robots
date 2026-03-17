@@ -76,7 +76,7 @@ No Docker needed. No env vars. Devices discover each other directly on the LAN v
 ```bash
 git clone --branch feat/device-connect-integration-draft https://github.com/atsyplikhin/robots.git
 cd robots
-bash strands_robots/device_connect/setup.sh
+./strands_robots/device_connect/setup.sh
 source .venv/bin/activate
 ```
 
