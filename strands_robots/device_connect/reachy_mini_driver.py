@@ -1,8 +1,10 @@
 """ReachyMiniDriver — Device Connect DeviceDriver for Pollen Reachy Mini robots.
 
-Uses Device Connect's managed messaging session (via self.transport) to
-communicate with the Reachy Mini's native Zenoh topics.  REST API
-calls go through reachy_transport.api() for daemon/move operations.
+Auto-detects hardware variant via the daemon's ``wireless_version`` flag:
+- **Wireless** (has onboard Pi): uses Zenoh transport for real-time I/O.
+- **Lite** (USB-only, no Pi): uses WebSocket to the daemon directly.
+
+REST API calls go through reachy_transport.api() for daemon/move operations.
 """
 
 import asyncio
@@ -16,18 +18,20 @@ from device_connect_sdk.types import DeviceIdentity, DeviceStatus
 
 from strands_robots.device_connect.reachy_transport import (
     api,
-    identity_pose,
     rpy_to_pose,
+    identity_pose,
+    ZenohLink,
+    WebSocketLink,
 )
 
 logger = logging.getLogger(__name__)
 
 
 class ReachyMiniDriver(DeviceDriver):
-    """Device Connect device driver for a Pollen Reachy Mini robot.
+    """Device Connect driver for Pollen Reachy Mini.
 
-    Real-time joints/IMU/commands use Device Connect's transport (Zenoh session).
-    Daemon and move operations use the REST API.
+    Auto-detects Wireless (Zenoh) vs Lite (WebSocket) via the daemon's
+    ``wireless_version`` flag. REST API calls work the same for both.
     """
 
     device_type = "reachy_mini"
@@ -44,6 +48,7 @@ class ReachyMiniDriver(DeviceDriver):
         self._api_port = api_port
         self._latest_joints: Optional[dict] = None
         self._latest_imu: Optional[dict] = None
+        self._hw = None
 
     @property
     def identity(self) -> DeviceIdentity:
@@ -59,36 +64,37 @@ class ReachyMiniDriver(DeviceDriver):
         return DeviceStatus(availability="idle")
 
     async def connect(self) -> None:
-        """Subscribe to joint and IMU topics via Device Connect transport."""
-        prefix = self._prefix
+        """Connect to the Reachy Mini, auto-detecting Wireless vs Lite."""
+        try:
+            status = await asyncio.to_thread(
+                api, self._host, self._api_port, "/api/daemon/status"
+            )
+            is_lite = not status.get("wireless_version", True)
+        except Exception:
+            is_lite = False
 
-        async def _on_joints(data: bytes, _reply=None):
-            try:
-                self._latest_joints = json.loads(data.decode())
-            except Exception:
-                pass
+        if is_lite:
+            self._hw = WebSocketLink(self._host, self._api_port)
+            logger.info("Connected to Reachy Mini Lite at %s (WebSocket)", self._host)
+        else:
+            self._hw = ZenohLink(self.transport, self._prefix)
+            logger.info("Connected to Reachy Mini at %s (Zenoh)", self._host)
 
-        async def _on_imu(data: bytes, _reply=None):
-            try:
-                self._latest_imu = json.loads(data.decode())
-            except Exception:
-                pass
-
-        await self.transport.subscribe(f"{prefix}/joint_positions", _on_joints)
-        await self.transport.subscribe(f"{prefix}/imu_data", _on_imu)
-        logger.info("Connected to Reachy Mini at %s (via Device Connect transport)", self._host)
+        await self._hw.start(
+            on_joints=lambda d: setattr(self, "_latest_joints", d),
+            on_imu=lambda d: setattr(self, "_latest_imu", d),
+        )
 
     async def disconnect(self) -> None:
-        """Transport teardown is handled by DeviceRuntime shutdown."""
-        pass
+        """Tear down the hardware link."""
+        if self._hw:
+            await self._hw.stop()
 
     # ── Helpers ────────────────────────────────────────────────
 
     async def _send_cmd(self, cmd: dict) -> None:
-        """Publish a command to the Reachy Mini's native Zenoh topic."""
-        await self.transport.publish(
-            f"{self._prefix}/command", json.dumps(cmd).encode()
-        )
+        """Send a real-time command via the active hardware link."""
+        await self._hw.send_cmd(cmd)
 
     # ── Movement RPCs (Zenoh via transport) ────────────────────
 

@@ -388,11 +388,14 @@ class TestSimulationDeviceDriver(unittest.TestCase):
 class TestReachyMiniDriver(unittest.TestCase):
 
     def setUp(self):
-        # Mock reachy_transport module (only api, rpy_to_pose, identity_pose remain)
+        # Mock reachy_transport module but keep real ZenohLink/WebSocketLink
+        from strands_robots.device_connect.reachy_transport import ZenohLink, WebSocketLink
         self.mock_transport_mod = MagicMock()
         self.mock_transport_mod.api.return_value = {"status": "ok"}
         self.mock_transport_mod.rpy_to_pose.side_effect = lambda *args, **kwargs: [[1,0,0,0],[0,1,0,0],[0,0,1,0],[0,0,0,1]]
         self.mock_transport_mod.identity_pose.return_value = [[1,0,0,0],[0,1,0,0],[0,0,1,0],[0,0,0,1]]
+        self.mock_transport_mod.ZenohLink = ZenohLink
+        self.mock_transport_mod.WebSocketLink = WebSocketLink
 
         self.transport_patcher = patch.dict(sys.modules, {
             "strands_robots.device_connect.reachy_transport": self.mock_transport_mod,
@@ -409,12 +412,26 @@ class TestReachyMiniDriver(unittest.TestCase):
         self.transport_patcher.stop()
 
     def _make_driver(self, **kwargs):
-        """Create a driver with a mocked Device Connect transport."""
+        """Create a driver with a mocked Device Connect transport and ZenohLink-like _hw."""
         driver = self.ReachyMiniDriver(**kwargs)
         mock_transport = AsyncMock()
         mock_transport.publish = AsyncMock()
         mock_transport.subscribe = AsyncMock()
         driver._transport = mock_transport
+
+        # Create a HW link that delegates to mock_transport (like ZenohLink does)
+        prefix = driver._prefix
+        class _MockZenohLink:
+            async def send_cmd(self, cmd):
+                await mock_transport.publish(
+                    f"{prefix}/command", json.dumps(cmd).encode()
+                )
+            async def start(self, on_joints, on_imu):
+                await mock_transport.subscribe(f"{prefix}/joint_positions", on_joints)
+                await mock_transport.subscribe(f"{prefix}/imu_data", on_imu)
+            async def stop(self):
+                pass
+        driver._hw = _MockZenohLink()
         return driver
 
     def test_identity(self):
@@ -547,19 +564,25 @@ class TestReachyMiniDriver(unittest.TestCase):
         self.assertEqual(result["status"], "success")
         self.assertEqual(result["state"], "ready")
 
-    def test_connect_subscribes(self):
-        driver = self._make_driver()
+    @patch("strands_robots.device_connect.reachy_mini_driver.api")
+    def test_connect_subscribes(self, mock_api):
+        # Simulate wireless variant (wireless_version=True)
+        mock_api.return_value = {"wireless_version": True}
+        driver = self.ReachyMiniDriver()
+        mock_transport = AsyncMock()
+        mock_transport.publish = AsyncMock()
+        mock_transport.subscribe = AsyncMock()
+        driver._transport = mock_transport
+        # connect() creates ZenohLink and subscribes via transport
         asyncio.run(driver.connect())
-        # connect() subscribes to joint_positions and imu_data
-        self.assertEqual(driver._transport.subscribe.await_count, 2)
-        topics = [call[0][0] for call in driver._transport.subscribe.call_args_list]
+        self.assertEqual(mock_transport.subscribe.await_count, 2)
+        topics = [call[0][0] for call in mock_transport.subscribe.call_args_list]
         self.assertIn("reachy_mini/joint_positions", topics)
         self.assertIn("reachy_mini/imu_data", topics)
 
     def test_disconnect(self):
         driver = self._make_driver()
         asyncio.run(driver.disconnect())
-        # disconnect is a no-op (transport teardown handled by DeviceRuntime)
 
     def test_emergency_stop_handler(self):
         driver = self._make_driver()
