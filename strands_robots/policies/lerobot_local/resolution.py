@@ -18,6 +18,7 @@ import inspect
 import json
 import logging
 from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +56,7 @@ def _ensure_policy_configs_registered() -> None:
         logger.debug("Unexpected error during policy config registration: %s", exc)
 
 
-def resolve_policy_class_from_hub(pretrained_name_or_path: str) -> tuple[type, str]:
+def resolve_policy_class_from_hub(pretrained_name_or_path: str) -> tuple[type[Any], str]:
     """Resolve the LeRobot policy class from a pretrained path or HF repo.
 
     Uses PreTrainedConfig.from_pretrained() which handles config resolution,
@@ -164,7 +165,7 @@ def _ensure_lerobot_policies_importable() -> None:
         logger.debug("Could not install lerobot.policies stub: %s", exc)
 
 
-def resolve_policy_class_by_name(policy_type: str) -> type:
+def resolve_policy_class_by_name(policy_type: str) -> type[Any]:
     """Resolve policy class from an explicit type string.
 
     Resolution strategies (in order):
