@@ -16,7 +16,7 @@ import signal
 import subprocess
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import psutil
 from strands import tool
@@ -36,13 +36,13 @@ class SessionManager:
     def __init__(self):
         self.sessions_file = SESSION_DIR / "active_sessions.json"
 
-    def _load_sessions(self) -> Dict[str, Any]:
+    def _load_sessions(self) -> dict[str, Any]:
         """Load active sessions from disk."""
         if not self.sessions_file.exists():
             return {}
 
         try:
-            with open(self.sessions_file, "r") as f:
+            with open(self.sessions_file) as f:
                 sessions = json.load(f)
 
             # Check if processes are still running and clean up dead sessions
@@ -63,19 +63,19 @@ class SessionManager:
 
             return active_sessions
 
-        except (json.JSONDecodeError, IOError) as e:
+        except (OSError, json.JSONDecodeError) as e:
             logger.error(f"Error loading sessions: {e}")
             return {}
 
-    def _save_sessions(self, sessions: Dict[str, Any]):
+    def _save_sessions(self, sessions: dict[str, Any]):
         """Save sessions to disk."""
         try:
             with open(self.sessions_file, "w") as f:
                 json.dump(sessions, f, indent=2)
-        except IOError as e:
+        except OSError as e:
             logger.error(f"Error saving sessions: {e}")
 
-    def add_session(self, name: str, info: Dict[str, Any]):
+    def add_session(self, name: str, info: dict[str, Any]):
         """Add a new session."""
         sessions = self._load_sessions()
         sessions[name] = info
@@ -88,12 +88,12 @@ class SessionManager:
             del sessions[name]
             self._save_sessions(sessions)
 
-    def get_session(self, name: str) -> Optional[Dict[str, Any]]:
+    def get_session(self, name: str) -> dict[str, Any] | None:
         """Get session info."""
         sessions = self._load_sessions()
         return sessions.get(name)
 
-    def list_sessions(self) -> Dict[str, Any]:
+    def list_sessions(self) -> dict[str, Any]:
         """List all active sessions."""
         return self._load_sessions()
 
@@ -101,32 +101,32 @@ class SessionManager:
 def build_lerobot_command(
     action: str,
     robot_type: str,
-    robot_port: Optional[str] = None,
-    robot_id: Optional[str] = None,
-    robot_cameras: Optional[Dict[str, Any]] = None,
-    robot_left_arm_port: Optional[str] = None,
-    robot_right_arm_port: Optional[str] = None,
-    teleop_type: Optional[str] = None,
-    teleop_port: Optional[str] = None,
-    teleop_id: Optional[str] = None,
-    teleop_left_arm_port: Optional[str] = None,
-    teleop_right_arm_port: Optional[str] = None,
-    dataset_repo_id: Optional[str] = None,
-    dataset_single_task: Optional[str] = None,
+    robot_port: str | None = None,
+    robot_id: str | None = None,
+    robot_cameras: dict[str, Any] | None = None,
+    robot_left_arm_port: str | None = None,
+    robot_right_arm_port: str | None = None,
+    teleop_type: str | None = None,
+    teleop_port: str | None = None,
+    teleop_id: str | None = None,
+    teleop_left_arm_port: str | None = None,
+    teleop_right_arm_port: str | None = None,
+    dataset_repo_id: str | None = None,
+    dataset_single_task: str | None = None,
     dataset_num_episodes: int = 50,
     dataset_fps: int = 30,
     dataset_episode_time_s: int = 60,
     dataset_reset_time_s: int = 60,
-    dataset_root: Optional[str] = None,
+    dataset_root: str | None = None,
     dataset_video: bool = True,
     dataset_push_to_hub: bool = False,
     replay_episode: int = 0,
     display_data: bool = False,
     fps: int = 60,
-    teleop_time_s: Optional[float] = None,
+    teleop_time_s: float | None = None,
     play_sounds: bool = True,
     **kwargs,
-) -> List[str]:
+) -> list[str]:
     """Build the lerobot command based on action and parameters."""
 
     if action == "replay":
@@ -242,29 +242,29 @@ def build_lerobot_command(
 @tool
 def lerobot_teleoperate(
     action: str = "start",
-    session_name: Optional[str] = None,
+    session_name: str | None = None,
     background: bool = True,
     # Robot configuration
     robot_type: str = "so101_follower",
-    robot_port: Optional[str] = "/dev/ttyACM0",
-    robot_id: Optional[str] = None,
-    robot_cameras: Optional[Dict[str, Any]] = None,
-    robot_left_arm_port: Optional[str] = None,
-    robot_right_arm_port: Optional[str] = None,
+    robot_port: str | None = "/dev/ttyACM0",
+    robot_id: str | None = None,
+    robot_cameras: dict[str, Any] | None = None,
+    robot_left_arm_port: str | None = None,
+    robot_right_arm_port: str | None = None,
     # Teleoperator configuration
-    teleop_type: Optional[str] = "so101_leader",
-    teleop_port: Optional[str] = "/dev/ttyACM1",
-    teleop_id: Optional[str] = None,
-    teleop_left_arm_port: Optional[str] = None,
-    teleop_right_arm_port: Optional[str] = None,
+    teleop_type: str | None = "so101_leader",
+    teleop_port: str | None = "/dev/ttyACM1",
+    teleop_id: str | None = None,
+    teleop_left_arm_port: str | None = None,
+    teleop_right_arm_port: str | None = None,
     # Dataset configuration (for recording)
-    dataset_repo_id: Optional[str] = None,
-    dataset_single_task: Optional[str] = None,
+    dataset_repo_id: str | None = None,
+    dataset_single_task: str | None = None,
     dataset_num_episodes: int = 50,
     dataset_fps: int = 30,
     dataset_episode_time_s: int = 60,
     dataset_reset_time_s: int = 60,
-    dataset_root: Optional[str] = None,
+    dataset_root: str | None = None,
     dataset_video: bool = True,
     dataset_push_to_hub: bool = False,
     # Replay configuration
@@ -272,10 +272,10 @@ def lerobot_teleoperate(
     # Common options
     display_data: bool = False,
     fps: int = 60,
-    teleop_time_s: Optional[float] = None,
+    teleop_time_s: float | None = None,
     play_sounds: bool = True,
     auto_accept_calibration: bool = True,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Advanced LeRobot teleoperation tool with recording capabilities for robot training data collection.
 
@@ -693,7 +693,7 @@ def lerobot_teleoperate(
                 content_lines.append(f"📋 Log file: `{log_file_path}`")
 
                 try:
-                    with open(str(log_file_path), "r") as f:
+                    with open(str(log_file_path)) as f:
                         lines = f.readlines()
                         if lines:
                             tail_lines = lines[-10:]  # Last 10 lines

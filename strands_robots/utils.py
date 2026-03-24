@@ -2,19 +2,18 @@
 
 import importlib
 import logging
-from typing import Dict, Optional
 
 logger = logging.getLogger(__name__)
 
 # Cache of lazy-loaded modules
-_lazy_modules: Dict[str, object] = {}
+_lazy_modules: dict[str, object] = {}
 
 
 def require_optional(
     module_name: str,
     *,
-    pip_install: Optional[str] = None,
-    extra: Optional[str] = None,
+    pip_install: str | None = None,
+    extra: str | None = None,
     purpose: str = "",
 ) -> object:
     """Import an optional dependency, raising a clear error if missing.

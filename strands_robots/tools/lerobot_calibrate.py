@@ -24,7 +24,7 @@ import logging
 import shutil
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from strands import tool
 
@@ -50,7 +50,7 @@ BACKUP_DIR.mkdir(parents=True, exist_ok=True)
 class LeRobotCalibrationManager:
     """Independent LeRobot calibration management class"""
 
-    def __init__(self, base_path: Optional[Path] = None):
+    def __init__(self, base_path: Path | None = None):
         self.base_path = Path(base_path) if base_path else HF_LEROBOT_CALIBRATION
         self.teleop_path = self.base_path / "teleoperators"
         self.robot_path = self.base_path / "robots"
@@ -60,9 +60,9 @@ class LeRobotCalibrationManager:
         self.teleop_path.mkdir(parents=True, exist_ok=True)
         self.robot_path.mkdir(parents=True, exist_ok=True)
 
-    def get_calibration_structure(self) -> Dict[str, Dict[str, List[str]]]:
+    def get_calibration_structure(self) -> dict[str, dict[str, list[str]]]:
         """Get the complete structure of calibration files"""
-        structure: Dict[str, Dict[str, List[str]]] = {"teleoperators": {}, "robots": {}}
+        structure: dict[str, dict[str, list[str]]] = {"teleoperators": {}, "robots": {}}
 
         for device_type in ["teleoperators", "robots"]:
             device_path = self.base_path / device_type
@@ -87,7 +87,7 @@ class LeRobotCalibrationManager:
         """Check if a calibration file exists"""
         return self.get_calibration_path(device_type, device_model, device_id).exists()
 
-    def load_calibration(self, device_type: str, device_model: str, device_id: str) -> Optional[Dict[str, Any]]:
+    def load_calibration(self, device_type: str, device_model: str, device_id: str) -> dict[str, Any] | None:
         """Load calibration data from file"""
         calib_path = self.get_calibration_path(device_type, device_model, device_id)
 
@@ -101,7 +101,7 @@ class LeRobotCalibrationManager:
             logger.error(f"Error loading calibration {calib_path}: {e}")
             return None
 
-    def save_calibration(self, device_type: str, device_model: str, device_id: str, data: Dict[str, Any]) -> bool:
+    def save_calibration(self, device_type: str, device_model: str, device_id: str, data: dict[str, Any]) -> bool:
         """Save calibration data to file"""
         calib_path = self.get_calibration_path(device_type, device_model, device_id)
 
@@ -130,7 +130,7 @@ class LeRobotCalibrationManager:
             logger.error(f"Error deleting calibration {calib_path}: {e}")
             return False
 
-    def get_calibration_info(self, device_type: str, device_model: str, device_id: str) -> Optional[Dict[str, Any]]:
+    def get_calibration_info(self, device_type: str, device_model: str, device_id: str) -> dict[str, Any] | None:
         """Get detailed information about a calibration file"""
         calib_path = self.get_calibration_path(device_type, device_model, device_id)
 
@@ -162,8 +162,8 @@ class LeRobotCalibrationManager:
             return None
 
     def search_calibrations(
-        self, query: str = "", device_type: Optional[str] = None, device_model: Optional[str] = None
-    ) -> List[Dict[str, Any]]:
+        self, query: str = "", device_type: str | None = None, device_model: str | None = None
+    ) -> list[dict[str, Any]]:
         """Search calibrations by various criteria"""
         results = []
         structure = self.get_calibration_structure()
@@ -191,11 +191,11 @@ class LeRobotCalibrationManager:
 
     def backup_calibrations(
         self,
-        output_dir: Optional[Path] = None,
-        device_type: Optional[str] = None,
-        device_model: Optional[str] = None,
-        device_id: Optional[str] = None,
-    ) -> Tuple[bool, str, int]:
+        output_dir: Path | None = None,
+        device_type: str | None = None,
+        device_model: str | None = None,
+        device_id: str | None = None,
+    ) -> tuple[bool, str, int]:
         """Backup calibration files"""
         if output_dir is None:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -248,7 +248,7 @@ class LeRobotCalibrationManager:
             logger.error(f"Backup failed: {e}")
             return False, str(e), copied_count
 
-    def restore_calibrations(self, backup_dir: Path, overwrite: bool = False) -> Tuple[bool, str, int]:
+    def restore_calibrations(self, backup_dir: Path, overwrite: bool = False) -> tuple[bool, str, int]:
         """Restore calibrations from backup"""
         backup_dir = Path(backup_dir)
 
@@ -287,16 +287,16 @@ class LeRobotCalibrationManager:
 @tool
 def lerobot_calibrate(
     action: str = "list",
-    device_type: Optional[str] = None,
-    device_model: Optional[str] = None,
-    device_id: Optional[str] = None,
-    query: Optional[str] = None,
-    output_dir: Optional[str] = None,
-    backup_dir: Optional[str] = None,
+    device_type: str | None = None,
+    device_model: str | None = None,
+    device_id: str | None = None,
+    query: str | None = None,
+    output_dir: str | None = None,
+    backup_dir: str | None = None,
     overwrite: bool = False,
-    base_path: Optional[str] = None,
+    base_path: str | None = None,
     format_output: str = "rich",
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Advanced LeRobot calibration management tool.
 
@@ -392,9 +392,7 @@ def lerobot_calibrate(
                     "status": "success",
                     "content": [
                         {
-                            "text": "ℹ️ **No calibration files found.**\n\nCalibrations are stored in: `{}`".format(
-                                manager.base_path
-                            )
+                            "text": f"ℹ️ **No calibration files found.**\n\nCalibrations are stored in: `{manager.base_path}`"
                         }
                     ],
                     "calibrations": structure,
@@ -459,7 +457,7 @@ def lerobot_calibrate(
                 f"🔧 **Calibration Details: `{device_type}/{device_model}/{device_id}`**",
                 f"📍 **Path:** `{info['path']}`",
                 f"📅 **Modified:** {info['modified_time'].strftime('%Y-%m-%d %H:%M:%S')}",
-                f"📏 **Size:** {info['size_bytes']} bytes ({info['size_bytes']/1024:.1f} KB)",
+                f"📏 **Size:** {info['size_bytes']} bytes ({info['size_bytes'] / 1024:.1f} KB)",
                 "",
             ]
 

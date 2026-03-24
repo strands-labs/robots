@@ -3,7 +3,7 @@
 import asyncio
 import concurrent.futures
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List
+from typing import Any
 
 
 class Policy(ABC):
@@ -15,8 +15,8 @@ class Policy(ABC):
 
     @abstractmethod
     async def get_actions(
-        self, observation_dict: Dict[str, Any], instruction: str, **kwargs: Any
-    ) -> List[Dict[str, Any]]:
+        self, observation_dict: dict[str, Any], instruction: str, **kwargs: Any
+    ) -> list[dict[str, Any]]:
         """Get actions from policy given observation and instruction.
 
         Args:
@@ -29,8 +29,8 @@ class Policy(ABC):
         pass
 
     def get_actions_sync(
-        self, observation_dict: Dict[str, Any], instruction: str, **kwargs: Any
-    ) -> List[Dict[str, Any]]:
+        self, observation_dict: dict[str, Any], instruction: str, **kwargs: Any
+    ) -> list[dict[str, Any]]:
         """Synchronous convenience wrapper around get_actions().
 
         Safe to call from sync code, event loops, or notebooks.
@@ -50,7 +50,7 @@ class Policy(ABC):
             return asyncio.run(self.get_actions(observation_dict, instruction, **kwargs))
 
     @abstractmethod
-    def set_robot_state_keys(self, robot_state_keys: List[str]) -> None:
+    def set_robot_state_keys(self, robot_state_keys: list[str]) -> None:
         """Configure the policy with robot state keys."""
         pass
 

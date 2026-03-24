@@ -10,7 +10,7 @@ import os
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Union
+from typing import Any
 
 import numpy as np
 
@@ -41,7 +41,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-def _frame_to_image_content(frame: np.ndarray, format: str = "jpg") -> Dict[str, Any]:
+def _frame_to_image_content(frame: np.ndarray, format: str = "jpg") -> dict[str, Any]:
     """Convert a numpy frame to image content format for Converse API."""
     try:
         # Convert RGB to BGR for OpenCV encoding
@@ -78,10 +78,10 @@ def _frame_to_image_content(frame: np.ndarray, format: str = "jpg") -> Dict[str,
 def lerobot_camera(
     action: str = "list",
     camera_type: str = "opencv",
-    camera_id: Optional[Union[int, str]] = None,
+    camera_id: int | str | None = None,
     save_path: str = "./lerobot_captures",
-    filename: Optional[str] = None,
-    camera_ids: Optional[List[Union[int, str]]] = None,
+    filename: str | None = None,
+    camera_ids: list[int | str] | None = None,
     width: int = 640,
     height: int = 480,
     fps: int = 30,
@@ -94,7 +94,7 @@ def lerobot_camera(
     timeout_ms: float = 1000,
     warmup: bool = True,
     save_config: bool = False,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Advanced LeRobot-based camera tool for professional camera management.
 
     Args:
@@ -261,7 +261,7 @@ def lerobot_camera(
         }
 
 
-def _discover_cameras() -> Dict[str, Any]:
+def _discover_cameras() -> dict[str, Any]:
     """Discover all available cameras using LeRobot's detection methods."""
     try:
         # Discover OpenCV cameras
@@ -321,7 +321,7 @@ def _discover_cameras() -> Dict[str, Any]:
         }
 
 
-def _list_camera_details(camera_type: str, camera_id: Optional[Union[int, str]] = None) -> Dict[str, Any]:
+def _list_camera_details(camera_type: str, camera_id: int | str | None = None) -> dict[str, Any]:
     """List detailed camera information and configurations."""
     try:
         details = []
@@ -380,7 +380,7 @@ def _list_camera_details(camera_type: str, camera_id: Optional[Union[int, str]] 
 
 def _capture_single_image(
     camera_type: str,
-    camera_id: Union[int, str],
+    camera_id: int | str,
     save_path: str,
     filename: str,
     width: int,
@@ -392,7 +392,7 @@ def _capture_single_image(
     async_mode: bool,
     timeout_ms: float,
     warmup: bool,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Capture a single image using LeRobot camera system."""
     try:
         # Create save directory
@@ -465,7 +465,7 @@ def _capture_single_image(
 
 def _capture_batch_images(
     camera_type: str,
-    camera_ids: List[Union[int, str]],
+    camera_ids: list[int | str],
     save_path: str,
     filename: str,
     width: int,
@@ -477,7 +477,7 @@ def _capture_batch_images(
     async_mode: bool,
     timeout_ms: float,
     warmup: bool,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Capture images from multiple cameras simultaneously."""
     try:
         os.makedirs(save_path, exist_ok=True)
@@ -593,7 +593,7 @@ def _capture_batch_images(
 
 def _record_video_sequence(
     camera_type: str,
-    camera_id: Union[int, str],
+    camera_id: int | str,
     save_path: str,
     filename: str,
     width: int,
@@ -604,7 +604,7 @@ def _record_video_sequence(
     capture_duration: float,
     async_mode: bool,
     warmup: bool,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Record a video sequence from camera."""
     try:
         os.makedirs(save_path, exist_ok=True)
@@ -677,7 +677,7 @@ def _record_video_sequence(
 
 def _preview_camera_live(
     camera_type: str,
-    camera_id: Union[int, str],
+    camera_id: int | str,
     width: int,
     height: int,
     fps: int,
@@ -687,7 +687,7 @@ def _preview_camera_live(
     async_mode: bool,
     timeout_ms: float,
     warmup: bool,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Show live preview from camera."""
     try:
         camera = _create_camera(camera_type, camera_id, width, height, fps, color_mode, rotation)
@@ -777,7 +777,7 @@ def _preview_camera_live(
 
 def _test_camera_performance(
     camera_type: str,
-    camera_id: Union[int, str],
+    camera_id: int | str,
     width: int,
     height: int,
     fps: int,
@@ -786,7 +786,7 @@ def _test_camera_performance(
     async_mode: bool,
     timeout_ms: float,
     warmup: bool,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Test camera performance and capabilities."""
     try:
         test_results = []
@@ -816,7 +816,7 @@ def _test_camera_performance(
         test_results.append(f"   - Average: {avg_sync_time:.3f}s")
         test_results.append(f"   - Min: {min_sync_time:.3f}s")
         test_results.append(f"   - Max: {max_sync_time:.3f}s")
-        test_results.append(f"   - Est. FPS: {1/avg_sync_time:.1f}")
+        test_results.append(f"   - Est. FPS: {1 / avg_sync_time:.1f}")
 
         # Frame capture test (async)
         if async_mode:
@@ -835,8 +835,8 @@ def _test_camera_performance(
             test_results.append(f"   - Average: {avg_async_time:.3f}s")
             test_results.append(f"   - Min: {min_async_time:.3f}s")
             test_results.append(f"   - Max: {max_async_time:.3f}s")
-            test_results.append(f"   - Est. FPS: {1/avg_async_time:.1f}")
-            test_results.append(f"   - Speedup: {avg_sync_time/avg_async_time:.2f}x")
+            test_results.append(f"   - Est. FPS: {1 / avg_async_time:.1f}")
+            test_results.append(f"   - Speedup: {avg_sync_time / avg_async_time:.2f}x")
 
         # Frame properties test
         test_results.append("📊 **Frame Properties**:")
@@ -877,7 +877,7 @@ def _test_camera_performance(
 
 def _configure_camera_settings(
     camera_type: str,
-    camera_id: Union[int, str],
+    camera_id: int | str,
     width: int,
     height: int,
     fps: int,
@@ -886,7 +886,7 @@ def _configure_camera_settings(
     save_path: str,
     save_config: bool,
     warmup: bool,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Configure camera settings and optionally save configuration."""
     try:
         camera = _create_camera(camera_type, camera_id, width, height, fps, color_mode, rotation)
@@ -950,7 +950,7 @@ def _configure_camera_settings(
 
 def _create_camera(
     camera_type: str,
-    camera_id: Union[int, str],
+    camera_id: int | str,
     width: int,
     height: int,
     fps: int,

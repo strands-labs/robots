@@ -15,7 +15,7 @@ import logging
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 import serial
 import serial.tools.list_ports
@@ -29,17 +29,17 @@ class RobotPose:
     """Represents a robot pose with metadata."""
 
     name: str
-    positions: Dict[str, float]  # motor_name -> position
+    positions: dict[str, float]  # motor_name -> position
     timestamp: float
-    description: Optional[str] = None
-    safety_bounds: Optional[Dict[str, Tuple[float, float]]] = None
+    description: str | None = None
+    safety_bounds: dict[str, tuple[float, float]] | None = None
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "RobotPose":
+    def from_dict(cls, data: dict[str, Any]) -> "RobotPose":
         """Create from dictionary."""
         return cls(**data)
 
@@ -47,19 +47,19 @@ class RobotPose:
 class PoseManager:
     """Manages robot poses with persistence and safety."""
 
-    def __init__(self, robot_id: str, storage_dir: Optional[Path] = None):
+    def __init__(self, robot_id: str, storage_dir: Path | None = None):
         self.robot_id = robot_id
         self.storage_dir = Path(storage_dir) if storage_dir else Path.cwd() / ".strands_robots" / "poses"
         self.storage_dir.mkdir(parents=True, exist_ok=True)
         self.pose_file = self.storage_dir / f"{robot_id}_poses.json"
-        self.poses: Dict[str, RobotPose] = {}
+        self.poses: dict[str, RobotPose] = {}
         self._load_poses()
 
     def _load_poses(self) -> None:
         """Load poses from storage."""
         if self.pose_file.exists():
             try:
-                with open(self.pose_file, "r") as f:
+                with open(self.pose_file) as f:
                     data = json.load(f)
                     self.poses = {name: RobotPose.from_dict(pose_data) for name, pose_data in data.items()}
                 logger.info(f"Loaded {len(self.poses)} poses for robot {self.robot_id}")
@@ -80,9 +80,9 @@ class PoseManager:
     def store_pose(
         self,
         name: str,
-        positions: Dict[str, float],
-        description: Optional[str] = None,
-        safety_bounds: Optional[Dict[str, Tuple[float, float]]] = None,
+        positions: dict[str, float],
+        description: str | None = None,
+        safety_bounds: dict[str, tuple[float, float]] | None = None,
     ) -> RobotPose:
         """Store a new pose."""
         pose = RobotPose(
@@ -96,11 +96,11 @@ class PoseManager:
         self._save_poses()
         return pose
 
-    def get_pose(self, name: str) -> Optional[RobotPose]:
+    def get_pose(self, name: str) -> RobotPose | None:
         """Get a stored pose."""
         return self.poses.get(name)
 
-    def list_poses(self) -> List[str]:
+    def list_poses(self) -> list[str]:
         """List all pose names."""
         return list(self.poses.keys())
 
@@ -112,7 +112,7 @@ class PoseManager:
             return True
         return False
 
-    def validate_pose(self, pose: RobotPose) -> Tuple[bool, str]:
+    def validate_pose(self, pose: RobotPose) -> tuple[bool, str]:
         """Validate pose is within safety bounds."""
         if not pose.safety_bounds:
             return True, "No safety bounds defined"
@@ -132,10 +132,10 @@ class MotorController:
     def __init__(self, port: str, baudrate: int = 1000000):
         self.port = port
         self.baudrate = baudrate
-        self.serial_conn: Optional[serial.Serial] = None
+        self.serial_conn: serial.Serial | None = None
 
         # Default motor configurations for SO-101
-        self.motor_configs: Dict[str, Dict[str, Any]] = {
+        self.motor_configs: dict[str, dict[str, Any]] = {
             "shoulder_pan": {"id": 1, "range": (-180, 180), "resolution": 4095},
             "shoulder_lift": {"id": 2, "range": (-90, 90), "resolution": 4095},
             "elbow_flex": {"id": 3, "range": (-150, 150), "resolution": 4095},
@@ -144,7 +144,7 @@ class MotorController:
             "gripper": {"id": 6, "range": (0, 100), "resolution": 4095},
         }
 
-    def connect(self) -> Tuple[bool, str]:
+    def connect(self) -> tuple[bool, str]:
         """Connect to robot.
 
         Returns:
@@ -163,7 +163,7 @@ class MotorController:
         if self.serial_conn and self.serial_conn.is_open:
             self.serial_conn.close()
 
-    def build_feetech_packet(self, motor_id: int, instruction: int, params: List[int]) -> bytes:
+    def build_feetech_packet(self, motor_id: int, instruction: int, params: list[int]) -> bytes:
         """Build Feetech servo protocol packet."""
         packet = [0xFF, 0xFF, motor_id, len(params) + 2, instruction] + params
         checksum = ~sum(packet[2:]) & 0xFF
@@ -222,7 +222,7 @@ class MotorController:
             logger.error(f"Failed to move motor {motor_name}: {e}")
             return False
 
-    def read_motor_position(self, motor_name: str) -> Optional[float]:
+    def read_motor_position(self, motor_name: str) -> float | None:
         """Read current motor position in degrees."""
         if not self.serial_conn or not self.serial_conn.is_open:
             return None
@@ -246,7 +246,7 @@ class MotorController:
 
         return None
 
-    def read_all_positions(self) -> Dict[str, float]:
+    def read_all_positions(self) -> dict[str, float]:
         """Read all motor positions."""
         positions = {}
         for motor_name in self.motor_configs:
@@ -255,7 +255,7 @@ class MotorController:
                 positions[motor_name] = pos
         return positions
 
-    def move_multiple_motors(self, positions: Dict[str, float], smooth: bool = True) -> bool:
+    def move_multiple_motors(self, positions: dict[str, float], smooth: bool = True) -> bool:
         """Move multiple motors simultaneously."""
         if smooth:
             return self._smooth_move(positions)
@@ -266,7 +266,7 @@ class MotorController:
                     success = False
             return success
 
-    def _smooth_move(self, target_positions: Dict[str, float], steps: int = 20, step_delay: float = 0.05) -> bool:
+    def _smooth_move(self, target_positions: dict[str, float], steps: int = 20, step_delay: float = 0.05) -> bool:
         """Smoothly move to target positions."""
         current_positions = self.read_all_positions()
 
@@ -303,17 +303,17 @@ class MotorController:
 def pose_tool(
     action: str,
     robot_id: str = "so101_follower",
-    port: Optional[str] = "/dev/ttyACM0",
-    pose_name: Optional[str] = None,
-    motor_name: Optional[str] = None,
-    position: Optional[float] = None,
-    delta: Optional[float] = None,
-    positions: Optional[Dict[str, float]] = None,
-    description: Optional[str] = None,
+    port: str | None = "/dev/ttyACM0",
+    pose_name: str | None = None,
+    motor_name: str | None = None,
+    position: float | None = None,
+    delta: float | None = None,
+    positions: dict[str, float] | None = None,
+    description: str | None = None,
     smooth: bool = True,
     steps: int = 20,
     step_delay: float = 0.05,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Advanced robot pose management tool with fine motor control.
 

@@ -1,7 +1,7 @@
 """Policy factory — create_policy() and runtime registration."""
 
 import logging
-from typing import Callable, Dict, List, Optional, Type
+from collections.abc import Callable
 
 from strands_robots.policies.base import Policy
 from strands_robots.registry import import_policy_class, list_policy_providers, resolve_policy
@@ -12,14 +12,14 @@ logger = logging.getLogger(__name__)
 # Runtime registration (for user-defined providers not in JSON)
 # ─────────────────────────────────────────────────────────────────────
 
-_runtime_registry: Dict[str, Callable[[], Type[Policy]]] = {}
-_runtime_aliases: Dict[str, str] = {}
+_runtime_registry: dict[str, Callable[[], type[Policy]]] = {}
+_runtime_aliases: dict[str, str] = {}
 
 
 def register_policy(
     name: str,
-    loader: Callable[[], Type[Policy]],
-    aliases: Optional[List[str]] = None,
+    loader: Callable[[], type[Policy]],
+    aliases: list[str] | None = None,
 ):
     """Register a custom policy provider at runtime.
 
@@ -38,7 +38,7 @@ def register_policy(
             _runtime_aliases[alias] = name
 
 
-def list_providers() -> List[str]:
+def list_providers() -> list[str]:
     """List all available policy provider names (JSON + runtime)."""
     names = list_policy_providers()
     names.extend(_runtime_registry.keys())

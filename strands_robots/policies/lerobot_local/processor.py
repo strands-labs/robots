@@ -15,7 +15,7 @@ Architecture:
 """
 
 import logging
-from typing import Any, Dict, Optional
+from typing import Any
 
 from ...utils import require_optional
 
@@ -26,7 +26,7 @@ PREPROCESSOR_CONFIG = "policy_preprocessor.json"
 POSTPROCESSOR_CONFIG = "policy_postprocessor.json"
 
 
-def _try_import_processor() -> Optional[Any]:
+def _try_import_processor() -> Any | None:
     """Import LeRobot processor pipeline class.
 
     Uses require_optional for consistent dependency management. Returns
@@ -70,9 +70,9 @@ class ProcessorBridge:
 
     def __init__(
         self,
-        preprocessor: Optional[Any] = None,
-        postprocessor: Optional[Any] = None,
-        device: Optional[str] = None,
+        preprocessor: Any | None = None,
+        postprocessor: Any | None = None,
+        device: str | None = None,
     ):
         """Initialize with optional pre/post processor pipelines.
 
@@ -89,10 +89,10 @@ class ProcessorBridge:
     def from_pretrained(
         cls,
         pretrained_name_or_path: str,
-        device: Optional[str] = None,
+        device: str | None = None,
         preprocessor_config: str = PREPROCESSOR_CONFIG,
         postprocessor_config: str = POSTPROCESSOR_CONFIG,
-        overrides: Optional[Dict[str, Any]] = None,
+        overrides: dict[str, Any] | None = None,
     ) -> "ProcessorBridge":
         """Load processor pipelines from a pretrained model.
 
@@ -163,7 +163,7 @@ class ProcessorBridge:
         """Whether any processing pipeline is active."""
         return self.has_preprocessor or self.has_postprocessor
 
-    def preprocess(self, observation: Dict[str, Any], instruction: Optional[str] = None) -> Dict[str, Any]:
+    def preprocess(self, observation: dict[str, Any], instruction: str | None = None) -> dict[str, Any]:
         """Preprocess a raw observation dict through the pipeline.
 
         If no preprocessor is loaded, returns observation unchanged.
@@ -192,7 +192,7 @@ class ProcessorBridge:
             from lerobot.processor.converters import create_transition
             from lerobot.processor.core import TransitionKey
 
-            complementary: Dict[str, Any] = {}
+            complementary: dict[str, Any] = {}
             if instruction:
                 complementary["task"] = instruction
 
@@ -239,7 +239,7 @@ class ProcessorBridge:
         post = f"post={len(self._postprocessor)}steps" if self._postprocessor else "post=None"
         return f"ProcessorBridge({pre}, {post})"
 
-    def get_info(self) -> Dict[str, Any]:
+    def get_info(self) -> dict[str, Any]:
         """Return a summary dict describing the processor bridge state.
 
         Useful for diagnostics and integration tests.

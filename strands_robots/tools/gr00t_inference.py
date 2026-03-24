@@ -10,7 +10,7 @@ import os
 import socket
 import subprocess
 import time
-from typing import Any, Dict, Optional
+from typing import Any
 
 from strands import tool
 
@@ -18,14 +18,14 @@ from strands import tool
 @tool
 def gr00t_inference(
     action: str,
-    checkpoint_path: Optional[str] = None,
-    policy_name: Optional[str] = None,
+    checkpoint_path: str | None = None,
+    policy_name: str | None = None,
     port: int = 5555,
     data_config: str = "fourier_gr1_arms_only",
     embodiment_tag: str = "gr1",
     denoising_steps: int = 4,
     host: str = "0.0.0.0",
-    container_name: Optional[str] = None,
+    container_name: str | None = None,
     timeout: int = 60,
     use_tensorrt: bool = False,
     trt_engine_path: str = "gr00t_engine",
@@ -33,8 +33,8 @@ def gr00t_inference(
     llm_dtype: str = "nvfp4",
     dit_dtype: str = "fp8",
     http_server: bool = False,
-    api_token: Optional[str] = None,
-) -> Dict[str, Any]:
+    api_token: str | None = None,
+) -> dict[str, Any]:
     """
     Manage GR00T inference services in Docker containers using Isaac-GR00T native scripts.
 
@@ -130,7 +130,7 @@ def gr00t_inference(
         return {"status": "error", "message": f"Unknown action: {action}"}
 
 
-def _find_gr00t_containers() -> Dict[str, Any]:
+def _find_gr00t_containers() -> dict[str, Any]:
     """Find available Isaac-GR00T containers."""
     try:
         result = subprocess.run(
@@ -161,7 +161,7 @@ def _find_gr00t_containers() -> Dict[str, Any]:
         return {"status": "error", "message": f"Failed to find containers: {e}"}
 
 
-def _list_running_services() -> Dict[str, Any]:
+def _list_running_services() -> dict[str, Any]:
     """List all running GR00T inference services by checking common ports."""
     try:
         services = []
@@ -190,7 +190,7 @@ def _is_service_running(port: int) -> bool:
         return False
 
 
-def _check_service_status(port: int) -> Dict[str, Any]:
+def _check_service_status(port: int) -> dict[str, Any]:
     """Check status of service on specific port."""
     if _is_service_running(port):
         protocol = "HTTP" if port >= 8000 else "ZMQ"
@@ -204,7 +204,7 @@ def _check_service_status(port: int) -> Dict[str, Any]:
         }
 
 
-def _stop_service(port: int) -> Dict[str, Any]:
+def _stop_service(port: int) -> dict[str, Any]:
     """Stop GR00T inference service running on specific port."""
     try:
         containers_result = _find_gr00t_containers()
@@ -286,8 +286,8 @@ def _start_service(
     embodiment_tag: str,
     denoising_steps: int,
     host: str,
-    container_name: Optional[str],
-    policy_name: Optional[str],
+    container_name: str | None,
+    policy_name: str | None,
     timeout: int,
     use_tensorrt: bool,
     trt_engine_path: str,
@@ -295,8 +295,8 @@ def _start_service(
     llm_dtype: str,
     dit_dtype: str,
     http_server: bool,
-    api_token: Optional[str],
-) -> Dict[str, Any]:
+    api_token: str | None,
+) -> dict[str, Any]:
     """Start GR00T inference service using Isaac-GR00T's native inference service."""
     try:
         # Find container if not specified

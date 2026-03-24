@@ -8,13 +8,12 @@ aliases, shorthands, and URL patterns on every reload.
 import json
 import logging
 from pathlib import Path
-from typing import Dict
 
 logger = logging.getLogger(__name__)
 
 _REGISTRY_DIR = Path(__file__).parent
-_cache: Dict[str, dict] = {}
-_mtimes: Dict[str, float] = {}
+_cache: dict[str, dict] = {}
+_mtimes: dict[str, float] = {}
 
 
 def _load(name: str) -> dict:
@@ -58,7 +57,7 @@ def _validate(name: str, data: dict) -> None:
 
 def _validate_robots(data: dict) -> None:
     """Ensure no two robots share the same alias."""
-    seen_aliases: Dict[str, str] = {}
+    seen_aliases: dict[str, str] = {}
     for robot_name, info in data.get("robots", {}).items():
         for alias in info.get("aliases", []):
             if alias in seen_aliases:
@@ -72,8 +71,8 @@ def _validate_robots(data: dict) -> None:
 
 def _validate_policies(data: dict) -> None:
     """Ensure no two providers share the same alias, shorthand, or URL pattern."""
-    seen_aliases: Dict[str, str] = {}
-    seen_url_patterns: Dict[str, str] = {}
+    seen_aliases: dict[str, str] = {}
+    seen_url_patterns: dict[str, str] = {}
 
     for provider_name, info in data.get("providers", {}).items():
         for alias in info.get("aliases", []):

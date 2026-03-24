@@ -11,7 +11,6 @@ import json
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Union
 
 logger = logging.getLogger(__name__)
 
@@ -20,8 +19,8 @@ logger = logging.getLogger(__name__)
 class ModalityConfig:
     """Configuration for a single modality (cameras, state, actions, language)."""
 
-    delta_indices: List[int]
-    modality_keys: List[str]
+    delta_indices: list[int]
+    modality_keys: list[str]
 
     def model_dump_json(self) -> str:
         """Serialize to JSON string (used by :class:`MsgSerializer`)."""
@@ -43,14 +42,14 @@ class Gr00tDataConfig:
     """
 
     name: str = ""
-    video_keys: List[str] = field(default_factory=list)
-    state_keys: List[str] = field(default_factory=list)
-    action_keys: List[str] = field(default_factory=list)
-    language_keys: List[str] = field(default_factory=list)
-    observation_indices: List[int] = field(default_factory=list)
-    action_indices: List[int] = field(default_factory=list)
+    video_keys: list[str] = field(default_factory=list)
+    state_keys: list[str] = field(default_factory=list)
+    action_keys: list[str] = field(default_factory=list)
+    language_keys: list[str] = field(default_factory=list)
+    observation_indices: list[int] = field(default_factory=list)
+    action_indices: list[int] = field(default_factory=list)
 
-    def modality_config(self) -> Dict[str, ModalityConfig]:
+    def modality_config(self) -> dict[str, ModalityConfig]:
         """Build per-modality config dict (used by Isaac-GR00T loaders)."""
         return {
             "video": ModalityConfig(delta_indices=self.observation_indices, modality_keys=self.video_keys),
@@ -104,7 +103,7 @@ def _load_config_defs() -> tuple:
 
 
 # Pre-resolve all configs at import time
-DATA_CONFIG_MAP: Dict[str, Gr00tDataConfig] = {}
+DATA_CONFIG_MAP: dict[str, Gr00tDataConfig] = {}
 _defs, _aliases = _load_config_defs()
 for _config_name in _defs:
     DATA_CONFIG_MAP[_config_name] = _resolve_config(_config_name, _defs)
@@ -113,7 +112,7 @@ for _alias_name, _target_name in _aliases.items():
 del _defs, _aliases
 
 
-def load_data_config(data_config: Union[str, Gr00tDataConfig]) -> Gr00tDataConfig:
+def load_data_config(data_config: str | Gr00tDataConfig) -> Gr00tDataConfig:
     """Load a data configuration by name or pass through an existing instance.
 
     Args:
@@ -137,12 +136,12 @@ def load_data_config(data_config: Union[str, Gr00tDataConfig]) -> Gr00tDataConfi
 
 def create_custom_data_config(
     name: str,
-    video_keys: List[str],
-    state_keys: List[str],
-    action_keys: List[str],
-    language_keys: Optional[List[str]] = None,
-    observation_indices: Optional[List[int]] = None,
-    action_indices: Optional[List[int]] = None,
+    video_keys: list[str],
+    state_keys: list[str],
+    action_keys: list[str],
+    language_keys: list[str] | None = None,
+    observation_indices: list[int] | None = None,
+    action_indices: list[int] | None = None,
 ) -> Gr00tDataConfig:
     """Create and register a custom data config at runtime.
 

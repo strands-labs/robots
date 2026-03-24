@@ -1,5 +1,0 @@
-[flake8]
-max-line-length = 120
-# W503: line break before binary operator — conflicts with black formatter
-# E203: whitespace before ':' — conflicts with black slice formatting
-extend-ignore = W503, E203

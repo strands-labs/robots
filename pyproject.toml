@@ -57,9 +57,7 @@ all = [
 dev = [
     "pytest>=6.0,<9.0.0",
     "pytest-cov>=4.0.0,<6.0.0",
-    "black>=23.0.0,<25.0.0",
-    "isort>=5.12.0,<6.0.0",
-    "flake8>=6.0.0,<8.0.0",
+    "ruff>=0.4.0,<1.0.0",
     "mypy>=1.0.0,<2.0.0",
     "pytest-timeout>=2.0.0,<3.0.0",
 ]
@@ -81,9 +79,7 @@ packages = ["strands_robots"]
 dependencies = [
     "pytest>=6.0,<9.0.0",
     "pytest-cov>=4.0.0,<6.0.0",
-    "black>=23.0.0,<25.0.0",
-    "isort>=5.12.0,<6.0.0",
-    "flake8>=6.0.0,<8.0.0",
+    "ruff>=0.4.0,<1.0.0",
     "mypy>=1.0.0,<2.0.0",
     "Pillow>=8.0.0,<12.0.0",
     "requests>=2.28.0,<3.0.0",
@@ -94,13 +90,31 @@ dependencies = [
 [tool.hatch.envs.default.scripts]
 test = "pytest {args:tests}"
 test-integ = "pytest tests_integ/ -v --timeout=300 {args}"
-lint = ["black --check strands_robots tests tests_integ", "isort --check-only strands_robots tests tests_integ", "flake8 strands_robots tests tests_integ", "mypy strands_robots tests tests_integ"]
-format = ["black strands_robots tests tests_integ", "isort strands_robots tests tests_integ"]
+lint = ["ruff check strands_robots tests tests_integ", "ruff format --check strands_robots tests tests_integ", "mypy strands_robots tests tests_integ"]
+format = ["ruff check --fix strands_robots tests tests_integ", "ruff format strands_robots tests tests_integ"]
 
-[tool.black]
+[tool.ruff]
 line-length = 120
-target-version = ['py310']
-include = '\.pyi?$'
+target-version = "py310"
+
+[tool.ruff.lint]
+select = [
+    "E",     # pycodestyle errors
+    "W",     # pycodestyle warnings
+    "F",     # pyflakes
+    "I",     # isort
+    "UP",    # pyupgrade
+]
+ignore = [
+    "E501",  # line too long — handled by formatter
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["strands_robots"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
 
 [tool.mypy]
 python_version = "3.10"
@@ -149,11 +163,6 @@ disallow_untyped_defs = false
 module = ["tests.*", "tests_integ.*"]
 disallow_untyped_defs = false
 warn_return_any = false
-
-[tool.isort]
-profile = "black"
-line_length = 120
-multi_line_output = 3
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

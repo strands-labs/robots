@@ -2,7 +2,7 @@
 
 import logging
 import math
-from typing import Any, Dict, List
+from typing import Any
 
 from strands_robots.policies.base import Policy
 
@@ -13,7 +13,7 @@ class MockPolicy(Policy):
     """Mock policy for testing — generates smooth sinusoidal trajectories."""
 
     def __init__(self, **kwargs: Any) -> None:
-        self.robot_state_keys: List[str] = []
+        self.robot_state_keys: list[str] = []
         self._step = 0
         logger.info("Mock Policy initialized")
 
@@ -21,12 +21,12 @@ class MockPolicy(Policy):
     def provider_name(self) -> str:
         return "mock"
 
-    def set_robot_state_keys(self, robot_state_keys: List[str]) -> None:
+    def set_robot_state_keys(self, robot_state_keys: list[str]) -> None:
         self.robot_state_keys = robot_state_keys
 
     async def get_actions(
-        self, observation_dict: Dict[str, Any], instruction: str, **kwargs: Any
-    ) -> List[Dict[str, Any]]:
+        self, observation_dict: dict[str, Any], instruction: str, **kwargs: Any
+    ) -> list[dict[str, Any]]:
         """Return smooth sinusoidal actions."""
         if not self.robot_state_keys:
             if "observation.state" in observation_dict:

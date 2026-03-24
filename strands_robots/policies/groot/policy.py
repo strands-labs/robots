@@ -21,7 +21,7 @@ mappings.  No positional guessing.  One step in, one step out.
 import importlib.util
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Union
+from typing import Any
 
 import numpy as np
 
@@ -36,10 +36,10 @@ logger = logging.getLogger(__name__)
 # Isaac-GR00T version detection
 # ---------------------------------------------------------------------------
 
-_GROOT_VERSION: Optional[str] = None  # "n1.5", "n1.6", or None
+_GROOT_VERSION: str | None = None  # "n1.5", "n1.6", or None
 
 
-def _detect_groot_version(*, force: bool = False) -> Optional[str]:
+def _detect_groot_version(*, force: bool = False) -> str | None:
     """Auto-detect which Isaac-GR00T version (if any) is installed.
 
     Args:
@@ -86,8 +86,8 @@ class ObservationMapping:
         language_key: Model's language key (e.g. ``"task"``).
     """
 
-    video: Dict[str, str] = field(default_factory=dict)
-    state: Dict[str, str] = field(default_factory=dict)
+    video: dict[str, str] = field(default_factory=dict)
+    state: dict[str, str] = field(default_factory=dict)
     language_key: str = "task"
 
     def validate(self, modality_configs: dict) -> None:
@@ -111,7 +111,7 @@ class ObservationMapping:
         model_lang = set(modality_configs["language"].modality_keys)
         if self.language_key not in model_lang:
             raise ValueError(
-                f"Observation mapping: language_key '{self.language_key}' " f"not in model: {sorted(model_lang)}"
+                f"Observation mapping: language_key '{self.language_key}' not in model: {sorted(model_lang)}"
             )
 
 
@@ -123,14 +123,14 @@ class ActionMapping:
         actions: ``{model_action_key: robot_actuator}`` — bare, no prefix.
     """
 
-    actions: Dict[str, str] = field(default_factory=dict)
+    actions: dict[str, str] = field(default_factory=dict)
 
     def validate(self, modality_configs: dict) -> None:
         """Validate all mapped model action keys exist in the model config."""
         model_action = set(modality_configs["action"].modality_keys)
         for model_key in self.actions:
             if model_key not in model_action:
-                raise ValueError(f"Action mapping: model key '{model_key}' " f"not in model: {sorted(model_action)}")
+                raise ValueError(f"Action mapping: model key '{model_key}' not in model: {sorted(model_action)}")
 
 
 # ---------------------------------------------------------------------------
@@ -164,7 +164,7 @@ def _auto_infer_action_mapping(
     model = list(modality_configs["action"].modality_keys)
     model_set = set(model)
 
-    actions: Dict[str, str] = {}
+    actions: dict[str, str] = {}
     used: set = set()
     for k in ours:
         if k in model_set:
@@ -178,10 +178,10 @@ def _auto_infer_action_mapping(
     return ActionMapping(actions=actions)
 
 
-def _match_keys(ours: List[str], model: List[str], label: str) -> Dict[str, str]:
+def _match_keys(ours: list[str], model: list[str], label: str) -> dict[str, str]:
     """Match our keys to model keys: exact first, positional fallback."""
     model_set = set(model)
-    mapping: Dict[str, str] = {}
+    mapping: dict[str, str] = {}
     used: set = set()
     for k in ours:
         if k in model_set:
@@ -201,12 +201,12 @@ def _match_keys(ours: List[str], model: List[str], label: str) -> Dict[str, str]
 
 
 def _parse_observation_mapping(
-    flat: Dict[str, str],
-    modality_configs: Optional[dict] = None,
+    flat: dict[str, str],
+    modality_configs: dict | None = None,
 ) -> ObservationMapping:
     """Parse ``{robot_key: "video.X" | "state.X"}`` → ObservationMapping."""
-    video: Dict[str, str] = {}
-    state: Dict[str, str] = {}
+    video: dict[str, str] = {}
+    state: dict[str, str] = {}
 
     for robot_key, model_key in flat.items():
         if model_key.startswith("video."):
@@ -214,9 +214,7 @@ def _parse_observation_mapping(
         elif model_key.startswith("state."):
             state[robot_key] = model_key.removeprefix("state.")
         else:
-            raise ValueError(
-                f"Mapping value must start with 'video.' or 'state.', " f"got '{model_key}' for '{robot_key}'"
-            )
+            raise ValueError(f"Mapping value must start with 'video.' or 'state.', got '{model_key}' for '{robot_key}'")
 
     lang = "task"
     if modality_configs is not None:
@@ -225,7 +223,7 @@ def _parse_observation_mapping(
     return ObservationMapping(video=video, state=state, language_key=lang)
 
 
-def _parse_action_mapping(flat: Dict[str, str]) -> ActionMapping:
+def _parse_action_mapping(flat: dict[str, str]) -> ActionMapping:
     """Parse ``{"action.X": "robot_key"}`` → ActionMapping."""
     return ActionMapping(actions={k.removeprefix("action."): v for k, v in flat.items()})
 
@@ -278,30 +276,30 @@ class Gr00tPolicy(Policy):
 
     def __init__(
         self,
-        data_config: Union[str, Gr00tDataConfig] = "so100_dualcam",
+        data_config: str | Gr00tDataConfig = "so100_dualcam",
         host: str = "localhost",
         port: int = 5555,
-        model_path: Optional[str] = None,
+        model_path: str | None = None,
         embodiment_tag: str = "NEW_EMBODIMENT",
         device: str = "cuda",
-        groot_version: Optional[str] = None,
+        groot_version: str | None = None,
         strict: bool = False,
-        api_token: Optional[str] = None,
-        observation_mapping: Optional[Dict[str, str]] = None,
-        action_mapping: Optional[Dict[str, str]] = None,
-        language_key: Optional[str] = None,
+        api_token: str | None = None,
+        observation_mapping: dict[str, str] | None = None,
+        action_mapping: dict[str, str] | None = None,
+        language_key: str | None = None,
         **kwargs,
     ):
         self.data_config = load_data_config(data_config)
         self.data_config_name = data_config if isinstance(data_config, str) else type(data_config).__name__
 
         self._local_policy: Any = None
-        self._client: Optional[Gr00tInferenceClient] = None
+        self._client: Gr00tInferenceClient | None = None
         self._groot_version = groot_version or _detect_groot_version()
         self._strict = strict
 
         # DOF per model state key — discovered from model at load time
-        self._model_state_dof: Dict[str, int] = {}
+        self._model_state_dof: dict[str, int] = {}
 
         # Raw user mappings (parsed after model load)
         self._raw_obs_mapping = observation_mapping
@@ -309,8 +307,8 @@ class Gr00tPolicy(Policy):
         self._language_key_override = language_key
 
         # Resolved mappings
-        self._obs_mapping: Optional[ObservationMapping] = None
-        self._action_mapping: Optional[ActionMapping] = None
+        self._obs_mapping: ObservationMapping | None = None
+        self._action_mapping: ActionMapping | None = None
 
         if model_path is not None:
             self._mode = "local"
@@ -375,7 +373,7 @@ class Gr00tPolicy(Policy):
             self._action_mapping.actions,
         )
 
-    def _get_modality_configs(self) -> Optional[dict]:
+    def _get_modality_configs(self) -> dict | None:
         """Get the model's per-embodiment modality configs."""
         try:
             if self._groot_version == "n1.6":
@@ -439,7 +437,7 @@ class Gr00tPolicy(Policy):
         missing = all_keys - discovered
         if missing:
             logger.warning(
-                "Could not discover DOF for state keys: %s — " "these will not be zero-filled if unmapped",
+                "Could not discover DOF for state keys: %s — these will not be zero-filled if unmapped",
                 sorted(missing),
             )
 
@@ -499,10 +497,10 @@ class Gr00tPolicy(Policy):
     def provider_name(self) -> str:
         return "groot"
 
-    def set_robot_state_keys(self, robot_state_keys: List[str]) -> None:
+    def set_robot_state_keys(self, robot_state_keys: list[str]) -> None:
         """No-op.  Mappings handle key translation."""
 
-    async def get_actions(self, observation_dict: Dict[str, Any], instruction: str, **kwargs) -> List[Dict[str, Any]]:
+    async def get_actions(self, observation_dict: dict[str, Any], instruction: str, **kwargs) -> list[dict[str, Any]]:
         if self._mode == "local":
             return self._local_get_actions(observation_dict, instruction)
         return self._service_get_actions(observation_dict, instruction)
@@ -511,7 +509,7 @@ class Gr00tPolicy(Policy):
     # Local inference — talks model's native nested-dict format
     # ------------------------------------------------------------------
 
-    def _local_get_actions(self, robot_obs: Dict[str, Any], instruction: str) -> List[Dict[str, Any]]:
+    def _local_get_actions(self, robot_obs: dict[str, Any], instruction: str) -> list[dict[str, Any]]:
         """Local: prepare nested obs → infer → unpack actions."""
         nested_obs = self._prepare_observation(robot_obs, instruction)
 
@@ -524,7 +522,7 @@ class Gr00tPolicy(Policy):
 
         return self._unpack_actions(actions_raw)
 
-    def _prepare_observation(self, robot_obs: Dict[str, Any], instruction: str) -> dict:
+    def _prepare_observation(self, robot_obs: dict[str, Any], instruction: str) -> dict:
         """Build the model's native nested-dict observation.
 
         Isaac-GR00T expects::
@@ -537,8 +535,8 @@ class Gr00tPolicy(Policy):
         """
         mmc = self._get_modality_configs()
 
-        video_dict: Dict[str, np.ndarray] = {}
-        state_dict: Dict[str, np.ndarray] = {}
+        video_dict: dict[str, np.ndarray] = {}
+        state_dict: dict[str, np.ndarray] = {}
 
         assert self._obs_mapping is not None, "Observation mapping not initialized"
 
@@ -586,9 +584,9 @@ class Gr00tPolicy(Policy):
             "language": language_dict,
         }
 
-    def _unpack_actions(self, raw_actions: dict) -> List[Dict[str, Any]]:
+    def _unpack_actions(self, raw_actions: dict) -> list[dict[str, Any]]:
         """Unpack model output → per-timestep robot actuator dicts."""
-        squeezed: Dict[str, np.ndarray] = {}
+        squeezed: dict[str, np.ndarray] = {}
         for key, value in raw_actions.items():
             bare = key.removeprefix("action.")
             arr = np.asarray(value)
@@ -603,9 +601,9 @@ class Gr00tPolicy(Policy):
         horizon = next(iter(squeezed.values())).shape[0]
         mapped_keys = set(self._action_mapping.actions.keys())
 
-        actions: List[Dict[str, Any]] = []
+        actions: list[dict[str, Any]] = []
         for t in range(horizon):
-            step: Dict[str, Any] = {}
+            step: dict[str, Any] = {}
             for model_key, robot_key in self._action_mapping.actions.items():
                 if model_key in squeezed:
                     step[robot_key] = squeezed[model_key][t]
@@ -620,7 +618,7 @@ class Gr00tPolicy(Policy):
     # Service inference
     # ------------------------------------------------------------------
 
-    def _service_get_actions(self, robot_obs: Dict[str, Any], instruction: str) -> List[Dict[str, Any]]:
+    def _service_get_actions(self, robot_obs: dict[str, Any], instruction: str) -> list[dict[str, Any]]:
         """Service mode: build observation, call server, unpack."""
         assert self._client is not None, "Service client not initialized"
         if self._obs_mapping is not None:
@@ -632,7 +630,7 @@ class Gr00tPolicy(Policy):
 
         return self._unpack_service_actions(action_chunk)
 
-    def _build_service_observation(self, robot_obs: Dict[str, Any], instruction: str) -> dict:
+    def _build_service_observation(self, robot_obs: dict[str, Any], instruction: str) -> dict:
         """Build flat-key observation for legacy service servers."""
         obs: dict = {}
         for vk in self.data_config.video_keys:
@@ -652,7 +650,7 @@ class Gr00tPolicy(Policy):
                 obs[k] = [obs[k]]
         return obs
 
-    def _unpack_service_actions(self, action_chunk: dict) -> List[Dict[str, Any]]:
+    def _unpack_service_actions(self, action_chunk: dict) -> list[dict[str, Any]]:
         """Unpack service response into per-timestep dicts.
 
         Applies ``_action_mapping`` if available (consistent with local mode),
@@ -674,9 +672,9 @@ class Gr00tPolicy(Policy):
         # If we have action mappings, use them for consistent key translation
         if self._action_mapping and self._action_mapping.actions:
             mapped_keys = set(self._action_mapping.actions.keys())
-            actions: List[Dict[str, Any]] = []
+            actions: list[dict[str, Any]] = []
             for t in range(horizon):
-                step: Dict[str, Any] = {}
+                step: dict[str, Any] = {}
                 for model_key, robot_key in self._action_mapping.actions.items():
                     if model_key in normalized:
                         row = normalized[model_key][t]
@@ -725,8 +723,8 @@ def _to_state_batch(value) -> np.ndarray:
 
 
 def _reference_video_shape(
-    robot_obs: Dict[str, Any],
-    video_keys: Optional[set] = None,
+    robot_obs: dict[str, Any],
+    video_keys: set | None = None,
 ) -> tuple:
     """Get reference video shape from mapped video observations.
 

@@ -7,7 +7,7 @@ using msgpack with custom encode/decode hooks.
 import io
 import json
 import logging
-from typing import Any, Dict, Optional
+from typing import Any
 
 import numpy as np
 
@@ -85,7 +85,7 @@ class Gr00tInferenceClient:
         host: str = "localhost",
         port: int = 5555,
         timeout_ms: int = 15000,
-        api_token: Optional[str] = None,
+        api_token: str | None = None,
     ):
         self._zmq = _load_zmq()
         self.context = self._zmq.Context()
@@ -135,7 +135,7 @@ class Gr00tInferenceClient:
             logger.debug("Ping failed: %s", exc)
             return False
 
-    def call_endpoint(self, endpoint: str, data: Optional[dict] = None) -> dict:
+    def call_endpoint(self, endpoint: str, data: dict | None = None) -> dict:
         """Send a request to the server and return the parsed response.
 
         Args:
@@ -160,7 +160,7 @@ class Gr00tInferenceClient:
             raise RuntimeError(f"Server error: {response['error']}")
         return response
 
-    def get_action(self, observations: Dict[str, Any]) -> Dict[str, Any]:
+    def get_action(self, observations: dict[str, Any]) -> dict[str, Any]:
         """Send observations and receive an action chunk."""
         return self.call_endpoint("get_action", observations)
 

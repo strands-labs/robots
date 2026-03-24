@@ -1,5 +1,5 @@
 import time
-from typing import Any, Dict, List, Optional, Union
+from typing import Any
 
 import serial
 import serial.tools.list_ports
@@ -9,16 +9,16 @@ from strands import tool
 @tool
 def serial_tool(
     action: str,
-    port: Optional[str] = None,
+    port: str | None = None,
     baudrate: int = 9600,
     timeout: float = 1.0,
-    data: Optional[str] = None,
-    hex_data: Optional[str] = None,
-    motor_id: Optional[int] = None,
-    position: Optional[int] = None,
-    velocity: Optional[int] = None,
+    data: str | None = None,
+    hex_data: str | None = None,
+    motor_id: int | None = None,
+    position: int | None = None,
+    velocity: int | None = None,
     read_bytes: int = 1024,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Advanced serial communication tool for robot control and device communication.
 
     Actions:
@@ -47,7 +47,7 @@ def serial_tool(
         Dict containing status and response content
     """
 
-    def list_serial_ports() -> List[Dict]:
+    def list_serial_ports() -> list[dict]:
         """List all available serial ports."""
         ports = []
         for port_info in serial.tools.list_ports.comports():
@@ -64,14 +64,14 @@ def serial_tool(
             )
         return ports
 
-    def build_feetech_packet(motor_id: int, instruction: int, params: List[int]) -> bytes:
+    def build_feetech_packet(motor_id: int, instruction: int, params: list[int]) -> bytes:
         """Build Feetech servo protocol packet."""
         packet = [0xFF, 0xFF, motor_id, len(params) + 2, instruction] + params
         checksum = ~sum(packet[2:]) & 0xFF
         packet.append(checksum)
         return bytes(packet)
 
-    def send_serial_data(ser: serial.Serial, data_to_send: Union[str, bytes]) -> None:
+    def send_serial_data(ser: serial.Serial, data_to_send: str | bytes) -> None:
         """Send data over serial connection."""
         if isinstance(data_to_send, str):
             ser.write(data_to_send.encode())
@@ -170,7 +170,9 @@ def serial_tool(
 
             return {
                 "status": "success",
-                "content": [{"text": f"🤖 Feetech Motor {motor_id} → Position {position} ({position/4095*360:.1f}°)"}],
+                "content": [
+                    {"text": f"🤖 Feetech Motor {motor_id} → Position {position} ({position / 4095 * 360:.1f}°)"}
+                ],
             }
 
         elif action == "feetech_velocity":

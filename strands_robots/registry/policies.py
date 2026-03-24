@@ -8,17 +8,17 @@ classes, and building provider-specific kwargs.
 import importlib
 import logging
 import re
-from typing import Any, Dict, List, Optional, Tuple, Type
+from typing import Any
 
 from .loader import _load
 
 logger = logging.getLogger(__name__)
 
 
-def _build_alias_map() -> Dict[str, str]:
+def _build_alias_map() -> dict[str, str]:
     """Build alias/shorthand → canonical provider mapping from provider entries."""
     reg = _load("policies")
-    alias_map: Dict[str, str] = {}
+    alias_map: dict[str, str] = {}
     for name, info in reg.get("providers", {}).items():
         for alias in info.get("aliases", []):
             alias_map[alias] = name
@@ -27,7 +27,7 @@ def _build_alias_map() -> Dict[str, str]:
     return alias_map
 
 
-def get_policy_provider(name: str) -> Optional[Dict[str, Any]]:
+def get_policy_provider(name: str) -> dict[str, Any] | None:
     """Get policy provider config by name or alias.
 
     Args:
@@ -43,13 +43,13 @@ def get_policy_provider(name: str) -> Optional[Dict[str, Any]]:
     return reg.get("providers", {}).get(canonical)
 
 
-def list_policy_providers() -> List[str]:
+def list_policy_providers() -> list[str]:
     """List all registered policy provider names (canonical only)."""
     reg = _load("policies")
     return sorted(reg.get("providers", {}).keys())
 
 
-def resolve_policy(policy: str, **extra_kwargs) -> Tuple[str, Dict[str, Any]]:
+def resolve_policy(policy: str, **extra_kwargs) -> tuple[str, dict[str, Any]]:
     """Resolve a smart policy string to (provider_name, kwargs).
 
     Accepts HuggingFace model IDs, server URLs, or shorthand names
@@ -82,7 +82,7 @@ def resolve_policy(policy: str, **extra_kwargs) -> Tuple[str, Dict[str, Any]]:
     reg = _load("policies")
     providers = reg.get("providers", {})
     policy = policy.strip()
-    kwargs: Dict[str, Any] = {}
+    kwargs: dict[str, Any] = {}
 
     # 1. URL pattern matching — check each provider's url_patterns
     for prov_name, prov_info in providers.items():
@@ -153,7 +153,7 @@ def resolve_policy(policy: str, **extra_kwargs) -> Tuple[str, Dict[str, Any]]:
     return "lerobot_local", kwargs
 
 
-def import_policy_class(provider: str) -> Type:
+def import_policy_class(provider: str) -> type:
     """Dynamically import and return the Policy class for a provider.
 
     Uses the module + class paths from policies.json.  Falls back to
@@ -200,14 +200,14 @@ def import_policy_class(provider: str) -> Type:
 
 def build_policy_kwargs(
     provider: str,
-    policy_port: Optional[int] = None,
+    policy_port: int | None = None,
     policy_host: str = "localhost",
-    model_path: Optional[str] = None,
-    server_address: Optional[str] = None,
-    policy_type: Optional[str] = None,
+    model_path: str | None = None,
+    server_address: str | None = None,
+    policy_type: str | None = None,
     data_config: Any = None,
     **extra,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Build provider-specific kwargs from generic parameters.
 
     Maps generic parameter names (policy_port, model_path, ...) to
@@ -229,7 +229,7 @@ def build_policy_kwargs(
     config = get_policy_provider(provider) or {}
     allowed_keys = set(config.get("config_keys", []))
     defaults = dict(config.get("defaults", {}))
-    kwargs: Dict[str, Any] = {}
+    kwargs: dict[str, Any] = {}
 
     param_map = {
         "port": policy_port,

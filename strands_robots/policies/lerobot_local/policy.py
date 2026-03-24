@@ -14,7 +14,7 @@ Architecture:
 import logging
 import time
 from collections import deque
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 import numpy as np
 import torch
@@ -61,16 +61,16 @@ class LerobotLocalPolicy(Policy):
     def __init__(
         self,
         pretrained_name_or_path: str = "",
-        policy_type: Optional[str] = None,
-        device: Optional[str] = None,
+        policy_type: str | None = None,
+        device: str | None = None,
         actions_per_step: int = 1,
         use_processor: bool = True,
-        processor_overrides: Optional[dict] = None,
+        processor_overrides: dict | None = None,
         tokenizer_max_length: int = 48,
         tokenizer_padding_side: str = "right",
-        rtc_enabled: Optional[bool] = None,
-        rtc_execution_horizon: Optional[int] = None,
-        rtc_max_guidance_weight: Optional[float] = None,
+        rtc_enabled: bool | None = None,
+        rtc_execution_horizon: int | None = None,
+        rtc_max_guidance_weight: float | None = None,
         **kwargs,
     ):
         self.pretrained_name_or_path = pretrained_name_or_path
@@ -79,14 +79,14 @@ class LerobotLocalPolicy(Policy):
         self.actions_per_step = actions_per_step
         self.use_processor = use_processor
         self.processor_overrides = processor_overrides
-        self.robot_state_keys: List[str] = []
+        self.robot_state_keys: list[str] = []
 
-        self._policy: Optional[Any] = None
-        self._device: Optional[torch.device] = None
-        self._input_features: Dict[str, Any] = {}
-        self._output_features: Dict[str, Any] = {}
+        self._policy: Any | None = None
+        self._device: torch.device | None = None
+        self._input_features: dict[str, Any] = {}
+        self._output_features: dict[str, Any] = {}
         self._loaded = False
-        self._processor_bridge: Optional[ProcessorBridge] = None
+        self._processor_bridge: ProcessorBridge | None = None
         self._tokenizer: Any = None
         self._tokenizer_max_length: int = tokenizer_max_length
         self._tokenizer_padding_side: str = tokenizer_padding_side
@@ -96,7 +96,7 @@ class LerobotLocalPolicy(Policy):
         self._rtc_enabled = False
         self._rtc_execution_horizon = rtc_execution_horizon
         self._rtc_max_guidance_weight = rtc_max_guidance_weight
-        self._rtc_prev_chunk: Optional[torch.Tensor] = None
+        self._rtc_prev_chunk: torch.Tensor | None = None
         self._rtc_action_queue: deque = deque()
         self._rtc_latency_history: deque = deque(maxlen=100)
         self._rtc_last_inference_time: float = 0.0
@@ -132,7 +132,7 @@ class LerobotLocalPolicy(Policy):
         self._rtc_last_inference_time = 0.0
         self._rtc_last_log_time = 0.0
 
-    def set_robot_state_keys(self, robot_state_keys: List[str]) -> None:
+    def set_robot_state_keys(self, robot_state_keys: list[str]) -> None:
         """Set robot state keys for observation→tensor mapping.
 
         Args:
@@ -190,7 +190,7 @@ class LerobotLocalPolicy(Policy):
     # Tokenizer resolution (VLA language token injection)
     # ------------------------------------------------------------------
 
-    def _resolve_tokenizer(self) -> Optional[Any]:
+    def _resolve_tokenizer(self) -> Any | None:
         """Resolve and cache the tokenizer for VLA language token injection.
 
         Resolution order:
@@ -243,7 +243,7 @@ class LerobotLocalPolicy(Policy):
 
         return None
 
-    def _tokenize_instruction(self, instruction: str) -> Optional[Tuple[torch.Tensor, Optional[torch.Tensor]]]:
+    def _tokenize_instruction(self, instruction: str) -> tuple[torch.Tensor, torch.Tensor | None] | None:
         """Tokenize an instruction into (input_ids, attention_mask) tensors.
 
         Args:
@@ -497,7 +497,7 @@ class LerobotLocalPolicy(Policy):
         delay = int(p95_latency * fps)
         return max(0, delay)
 
-    def _predict_with_rtc(self, batch: Dict[str, Any]) -> torch.Tensor:
+    def _predict_with_rtc(self, batch: dict[str, Any]) -> torch.Tensor:
         """Run inference using predict_action_chunk with RTC kwargs.
 
         This replaces select_action() for RTC-enabled policies. It:
@@ -515,7 +515,7 @@ class LerobotLocalPolicy(Policy):
         inference_start = time.time()
 
         # Build RTC kwargs for flow-matching denoiser
-        rtc_kwargs: Dict[str, Any] = {}
+        rtc_kwargs: dict[str, Any] = {}
         if self._rtc_prev_chunk is not None:
             rtc_kwargs["prev_chunk_left_over"] = self._rtc_prev_chunk
         if self._rtc_execution_horizon is not None:
@@ -570,7 +570,7 @@ class LerobotLocalPolicy(Policy):
     # Inference
     # ------------------------------------------------------------------
 
-    async def get_actions(self, observation_dict: Dict[str, Any], instruction: str, **kwargs) -> List[Dict[str, Any]]:
+    async def get_actions(self, observation_dict: dict[str, Any], instruction: str, **kwargs) -> list[dict[str, Any]]:
         """Get actions from policy given observation and instruction.
 
         Args:
@@ -588,7 +588,7 @@ class LerobotLocalPolicy(Policy):
                 self._load_model()
             else:
                 raise RuntimeError(
-                    "No model loaded and no pretrained_name_or_path set. " "Create the policy with a model path."
+                    "No model loaded and no pretrained_name_or_path set. Create the policy with a model path."
                 )
 
         observation = dict(observation_dict)
@@ -641,7 +641,7 @@ class LerobotLocalPolicy(Policy):
     # Observation batch building
     # ------------------------------------------------------------------
 
-    def _fixup_preprocessed_batch(self, batch: Dict[str, Any]) -> Dict[str, Any]:
+    def _fixup_preprocessed_batch(self, batch: dict[str, Any]) -> dict[str, Any]:
         """Fix up a preprocessor-produced batch so every value is a proper batched tensor.
 
         The LeRobot DataProcessorPipeline may leave some entries in their
@@ -663,7 +663,7 @@ class LerobotLocalPolicy(Policy):
         import torch
 
         device = self._device or "cpu"
-        fixed: Dict[str, Any] = {}
+        fixed: dict[str, Any] = {}
 
         for key, val in batch.items():
             # --- numpy arrays → torch tensors ---
@@ -701,7 +701,7 @@ class LerobotLocalPolicy(Policy):
 
         return fixed
 
-    def _build_observation_batch(self, observation_dict: Dict[str, Any], instruction: str) -> Dict[str, Any]:
+    def _build_observation_batch(self, observation_dict: dict[str, Any], instruction: str) -> dict[str, Any]:
         """Convert observation dict to LeRobot-compatible batch tensors.
 
         Handles two observation formats:
@@ -718,7 +718,7 @@ class LerobotLocalPolicy(Policy):
         Returns:
             Dict of tensors ready for LeRobot policy.select_action().
         """
-        batch: Dict[str, Any] = {}
+        batch: dict[str, Any] = {}
 
         has_lerobot_keys = any(key.startswith("observation.") for key in observation_dict)
         if has_lerobot_keys:
@@ -762,8 +762,8 @@ class LerobotLocalPolicy(Policy):
         return batch
 
     def _build_batch_from_lerobot_format(
-        self, observation_dict: Dict[str, Any], batch: Dict[str, Any]
-    ) -> Dict[str, Any]:
+        self, observation_dict: dict[str, Any], batch: dict[str, Any]
+    ) -> dict[str, Any]:
         """Build batch from observation dict already in LeRobot format (observation.* keys).
 
         Converts each value to the appropriate tensor format:
@@ -847,8 +847,8 @@ class LerobotLocalPolicy(Policy):
         return batch
 
     def _build_batch_from_strands_format(
-        self, observation_dict: Dict[str, Any], batch: Dict[str, Any]
-    ) -> Dict[str, Any]:
+        self, observation_dict: dict[str, Any], batch: dict[str, Any]
+    ) -> dict[str, Any]:
         """Build batch from strands-robots native observation format.
 
         Maps individual joint keys (e.g. {"shoulder": 0.5, "elbow": -0.3}) to
@@ -926,7 +926,7 @@ class LerobotLocalPolicy(Policy):
     # Action conversion
     # ------------------------------------------------------------------
 
-    def _tensor_to_action_dicts(self, action_tensor: torch.Tensor) -> List[Dict[str, Any]]:
+    def _tensor_to_action_dicts(self, action_tensor: torch.Tensor) -> list[dict[str, Any]]:
         """Convert action tensor to list of robot action dicts.
 
         Maps tensor values to robot_state_keys by index. Handles:

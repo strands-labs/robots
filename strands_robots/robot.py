@@ -19,10 +19,11 @@ import asyncio
 import logging
 import threading
 import time
+from collections.abc import AsyncGenerator
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from enum import Enum
-from typing import TYPE_CHECKING, Any, AsyncGenerator, Dict, Optional, Union, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from strands.tools.tools import AgentTool
 from strands.types._events import ToolResultEvent
@@ -58,7 +59,7 @@ class RobotTaskState:
     duration: float = 0.0
     step_count: int = 0
     error_message: str = ""
-    task_future: Optional[Future] = None
+    task_future: Future | None = None
 
 
 class Robot(AgentTool):
@@ -67,10 +68,10 @@ class Robot(AgentTool):
     def __init__(
         self,
         tool_name: str,
-        robot: Union[LeRobotRobot, RobotConfig, str],
-        cameras: Optional[Dict[str, Dict[str, Any]]] = None,
+        robot: LeRobotRobot | RobotConfig | str,
+        cameras: dict[str, dict[str, Any]] | None = None,
         action_horizon: int = 8,
-        data_config: Union[str, Any, None] = None,
+        data_config: str | Any | None = None,
         control_frequency: float = 50.0,
         **kwargs,
     ):
@@ -104,7 +105,7 @@ class Robot(AgentTool):
 
         logger.info(f"🤖 {tool_name} initialized with async capabilities")
         logger.info(f"📱 Robot: {self.robot.name} (type: {getattr(self.robot, 'robot_type', 'unknown')})")
-        logger.info(f"⏱️ Control frequency: {control_frequency}Hz ({self.action_sleep_time*1000:.1f}ms per action)")
+        logger.info(f"⏱️ Control frequency: {control_frequency}Hz ({self.action_sleep_time * 1000:.1f}ms per action)")
 
         # Get camera info if available
         if hasattr(self.robot, "config") and hasattr(self.robot.config, "cameras"):
@@ -115,7 +116,7 @@ class Robot(AgentTool):
             logger.info(f"⚙️ Data config: {data_config}")
 
     def _initialize_robot(
-        self, robot: Union[LeRobotRobot, RobotConfig, str], cameras: Optional[Dict[str, Dict[str, Any]]], **kwargs
+        self, robot: LeRobotRobot | RobotConfig | str, cameras: dict[str, dict[str, Any]] | None, **kwargs
     ) -> LeRobotRobot:
         """Initialize LeRobot robot instance using native lerobot patterns."""
         from lerobot.robots.config import RobotConfig
@@ -142,7 +143,7 @@ class Robot(AgentTool):
             )
 
     def _create_minimal_config(
-        self, robot_type: str, cameras: Optional[Dict[str, Dict[str, Any]]], **kwargs
+        self, robot_type: str, cameras: dict[str, dict[str, Any]] | None, **kwargs
     ) -> RobotConfig:
         """Create minimal robot config using specific robot config classes."""
         from lerobot.cameras.opencv.configuration_opencv import OpenCVCameraConfig
@@ -174,9 +175,7 @@ class Robot(AgentTool):
         }
 
         if robot_type not in config_mapping:
-            raise ValueError(
-                f"Unsupported robot type: {robot_type}. " f"Supported types: {list(config_mapping.keys())}"
-            )
+            raise ValueError(f"Unsupported robot type: {robot_type}. Supported types: {list(config_mapping.keys())}")
 
         # Import specific config class dynamically
         module_name, class_name = config_mapping[robot_type]
@@ -207,12 +206,10 @@ class Robot(AgentTool):
         try:
             return ConfigClass(**config_data)
         except Exception as e:
-            raise ValueError(
-                f"Failed to create {class_name} for robot type '{robot_type}': {e}. " f"Config: {config_data}"
-            )
+            raise ValueError(f"Failed to create {class_name} for robot type '{robot_type}': {e}. Config: {config_data}")
 
     async def _get_policy(
-        self, policy_port: Optional[int] = None, policy_host: str = "localhost", policy_provider: str = "groot"
+        self, policy_port: int | None = None, policy_host: str = "localhost", policy_provider: str = "groot"
     ) -> Policy:
         """Create policy on-the-fly from invocation parameters."""
         from .policies import create_policy
@@ -309,7 +306,7 @@ class Robot(AgentTool):
     async def _execute_task_async(
         self,
         instruction: str,
-        policy_port: Optional[int] = None,
+        policy_port: int | None = None,
         policy_host: str = "localhost",
         policy_provider: str = "groot",
         duration: float = 30.0,
@@ -350,7 +347,6 @@ class Robot(AgentTool):
                 and self._task_state.status == TaskStatus.RUNNING
                 and not self._shutdown_event.is_set()
             ):
-
                 # Get observation from robot
                 observation = await asyncio.to_thread(self.robot.get_observation)
 
@@ -386,11 +382,11 @@ class Robot(AgentTool):
     def _execute_task_sync(
         self,
         instruction: str,
-        policy_port: Optional[int] = None,
+        policy_port: int | None = None,
         policy_host: str = "localhost",
         policy_provider: str = "groot",
         duration: float = 30.0,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Execute task synchronously in thread - no new event loop."""
 
         # Import here to avoid conflicts
@@ -432,11 +428,11 @@ class Robot(AgentTool):
     def start_task(
         self,
         instruction: str,
-        policy_port: Optional[int] = None,
+        policy_port: int | None = None,
         policy_host: str = "localhost",
         policy_provider: str = "groot",
         duration: float = 30.0,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Start robot task asynchronously and return immediately."""
 
         # Check if task is already running
@@ -463,7 +459,7 @@ class Robot(AgentTool):
             ],
         }
 
-    def get_task_status(self) -> Dict[str, Any]:
+    def get_task_status(self) -> dict[str, Any]:
         """Get current task execution status."""
 
         # Update duration for running tasks
@@ -490,7 +486,7 @@ class Robot(AgentTool):
             "content": [{"text": status_text}],
         }
 
-    def stop_task(self) -> Dict[str, Any]:
+    def stop_task(self) -> dict[str, Any]:
         """Stop currently running task."""
 
         if self._task_state.status != TaskStatus.RUNNING:
@@ -576,7 +572,7 @@ class Robot(AgentTool):
         }
 
     @staticmethod
-    def _make_tool_result(tool_use_id: str, result: Dict[str, Any]) -> ToolResult:
+    def _make_tool_result(tool_use_id: str, result: dict[str, Any]) -> ToolResult:
         """Create a ToolResult dict with the given tool_use_id merged into result."""
         return cast(ToolResult, {"toolUseId": tool_use_id, **result})
 
@@ -699,7 +695,7 @@ class Robot(AgentTool):
         except Exception:
             pass  # Ignore errors in destructor
 
-    async def get_status(self) -> Dict[str, Any]:
+    async def get_status(self) -> dict[str, Any]:
         """Get robot status including connection and task state."""
         try:
             # Get robot connection status
