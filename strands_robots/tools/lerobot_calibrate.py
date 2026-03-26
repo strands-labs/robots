@@ -45,6 +45,10 @@ except ImportError:
 # Session storage for backups
 BACKUP_DIR = Path.cwd() / ".strands_robots/.calibration_backups"
 BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+# Type aliases for calibration data structures.
+# Calibration JSON: {motor_name: {id, drive_mode, homing_offset, range_min, range_max}}
+CalibrationMotorData = dict[str, int]
+CalibrationData = dict[str, CalibrationMotorData]
 
 
 class LeRobotCalibrationManager:
@@ -87,7 +91,7 @@ class LeRobotCalibrationManager:
         """Check if a calibration file exists"""
         return self.get_calibration_path(device_type, device_model, device_id).exists()
 
-    def load_calibration(self, device_type: str, device_model: str, device_id: str) -> dict[str, Any] | None:
+    def load_calibration(self, device_type: str, device_model: str, device_id: str) -> CalibrationData | None:
         """Load calibration data from file"""
         calib_path = self.get_calibration_path(device_type, device_model, device_id)
 
@@ -101,7 +105,7 @@ class LeRobotCalibrationManager:
             logger.error(f"Error loading calibration {calib_path}: {e}")
             return None
 
-    def save_calibration(self, device_type: str, device_model: str, device_id: str, data: dict[str, Any]) -> bool:
+    def save_calibration(self, device_type: str, device_model: str, device_id: str, data: CalibrationData) -> bool:
         """Save calibration data to file"""
         calib_path = self.get_calibration_path(device_type, device_model, device_id)
 

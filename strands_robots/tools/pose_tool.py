@@ -15,7 +15,7 @@ import logging
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict
 
 import serial
 import serial.tools.list_ports
@@ -126,6 +126,14 @@ class PoseManager:
         return True, "Pose is valid"
 
 
+class MotorConfig(TypedDict):
+    """Configuration for a single servo motor."""
+
+    id: int
+    range: tuple[int, int]
+    resolution: int
+
+
 class MotorController:
     """Low-level motor control for fine movements."""
 
@@ -135,7 +143,7 @@ class MotorController:
         self.serial_conn: serial.Serial | None = None
 
         # Default motor configurations for SO-101
-        self.motor_configs: dict[str, dict[str, Any]] = {
+        self.motor_configs: dict[str, MotorConfig] = {
             "shoulder_pan": {"id": 1, "range": (-180, 180), "resolution": 4095},
             "shoulder_lift": {"id": 2, "range": (-90, 90), "resolution": 4095},
             "elbow_flex": {"id": 3, "range": (-150, 150), "resolution": 4095},
