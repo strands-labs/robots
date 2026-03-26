@@ -59,13 +59,13 @@ hatch run test              # unit tests
 hatch run test-integ        # integration tests (needs GPU + model weights)
 
 # Lint & format
-hatch run lint              # black --check, isort --check, flake8, mypy
-hatch run format            # auto-fix formatting
+hatch run lint              # ruff check, ruff format --check, mypy
+hatch run format            # ruff check --fix, ruff format
 ```
 
 ## Key Conventions
 
-1. **Python 3.10+** — `requires-python = ">=3.10,<3.14"` (lerobot extras require 3.12+)
+1. **Python 3.10+** — `requires-python = ">=3.10"` (lerobot extras require 3.12+)
 2. **Dependency bounds** — `>=1.0` deps: cap major. `<1.0` deps: cap minor. E.g. `lerobot>=0.5.0,<0.6.0`
 3. **`__init__.py` must be thin** — exports only, no logic
 4. **Imports at file top** — unless lazy-loading heavy deps with documented reason
