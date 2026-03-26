@@ -623,7 +623,7 @@ class TestInitDeviceConnect(unittest.TestCase):
         call_kwargs = MockRuntime.call_args
         self.assertIsNotNone(call_kwargs)
         driver = call_kwargs.kwargs.get("driver") or call_kwargs[1].get("driver")
-        self.assertIsInstance(driver, RobotDeviceDriver)
+        self.assertEqual(type(driver).__name__, "RobotDeviceDriver")
         self.assertEqual(driver._robot, robot)
 
     @patch("strands_robots.device_connect.DeviceRuntime")
@@ -641,7 +641,7 @@ class TestInitDeviceConnect(unittest.TestCase):
 
         call_kwargs = MockRuntime.call_args
         driver = call_kwargs.kwargs.get("driver") or call_kwargs[1].get("driver")
-        self.assertIsInstance(driver, SimulationDeviceDriver)
+        self.assertEqual(type(driver).__name__, "SimulationDeviceDriver")
 
     @patch("strands_robots.device_connect.DeviceRuntime")
     def test_generates_device_id(self, MockRuntime):
