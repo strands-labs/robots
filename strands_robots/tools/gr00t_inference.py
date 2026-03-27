@@ -35,36 +35,146 @@ def gr00t_inference(
     http_server: bool = False,
     api_token: str | None = None,
 ) -> dict[str, Any]:
-    """
-    Manage GR00T inference services in Docker containers using Isaac-GR00T native scripts.
+    """Manage GR00T N1 inference services in Docker containers.
+
+    Starts, stops, and monitors Isaac-GR00T inference services running inside
+    Docker containers. Supports both ZMQ (low-latency) and HTTP (REST API)
+    protocols, with optional TensorRT acceleration.
+
+    Prerequisites:
+        - Docker installed and running
+        - An Isaac-GR00T container pulled and started (e.g., ``nvcr.io/nvidia/isaac-gr00t``)
+        - A GR00T N1 checkpoint (fine-tuned or pre-trained)
+        - NVIDIA GPU with sufficient VRAM (8GB+ recommended)
+
+    Actions:
+        - ``start``: Launch an inference service with a checkpoint. Requires ``checkpoint_path``.
+        - ``stop``: Terminate a running service on the specified ``port``.
+        - ``status``: Check whether a service is running on the specified ``port``.
+        - ``list``: Discover all running services across common ports (5555-5558, 8000-8003).
+        - ``restart``: Stop and re-start a service (e.g., to swap checkpoints). Requires ``checkpoint_path``.
+        - ``find_containers``: List available Isaac-GR00T Docker containers.
+
+    Protocol selection:
+        - **ZMQ** (default, ``http_server=False``): Low-latency binary protocol on port 5555.
+          Best for real-time robot control loops.
+        - **HTTP** (``http_server=True``): REST API on port 8000 (auto-switched from 5555).
+          Best for remote access, debugging, or multi-client scenarios.
+          Endpoint: ``http://<host>:<port>/act``
+
+    Data configs:
+        The ``data_config`` parameter selects the embodiment-specific observation/action schema.
+        Available configs (defined in ``data_configs.json``):
+
+        **SO-100/101 arms:**
+          ``so100``, ``so100_dualcam``, ``so100_4cam``,
+          ``so101``, ``so101_dualcam``, ``so101_tricam``
+
+        **Fourier GR1 humanoid:**
+          ``fourier_gr1_arms_only``, ``fourier_gr1_arms_waist``,
+          ``fourier_gr1_full_upper_body``
+
+        **Unitree G1 humanoid:**
+          ``unitree_g1``, ``unitree_g1_full_body``, ``unitree_g1_locomanip``
+
+        **Franka Panda manipulators:**
+          ``single_panda_gripper``, ``bimanual_panda_gripper``, ``bimanual_panda_hand``
+
+        **Open X-Embodiment:**
+          ``oxe_droid``, ``oxe_google``, ``oxe_widowx``
+
+        **Simulation:**
+          ``libero_panda``
+
+        **AgiBOT:**
+          ``agibot_genie1``, ``agibot_dual_arm_gripper`` (alias: ``agibot_dual_arm``),
+          ``agibot_dual_arm_dexhand``, ``agibot_dual_arm_full``
+
+        **Galaxea:**
+          ``galaxea_r1_pro``
+
+    TensorRT acceleration:
+        Set ``use_tensorrt=True`` to enable TensorRT inference. This compiles the model
+        into an optimized engine on first run (may take several minutes). Subsequent runs
+        load from ``trt_engine_path``. Dtype flags (``vit_dtype``, ``llm_dtype``, ``dit_dtype``)
+        control precision—lower precision (fp8/nvfp4) trades accuracy for speed.
+
+    Authentication:
+        The ``api_token`` parameter authenticates with the inference service. If omitted,
+        falls back to the ``GROOT_API_TOKEN`` environment variable.
 
     Args:
-        action: Action to perform
-            - "start": Start inference service with checkpoint
-            - "stop": Stop inference service on port
-            - "status": Check status of service on port
-            - "list": List all running services
-            - "restart": Restart service with new checkpoint
-            - "find_containers": Find available isaac-gr00t containers
-        checkpoint_path: Path to model checkpoint (for start/restart)
-        policy_name: Name for the policy service (for registration)
-        port: Port for inference service (default: 5555). Auto-switches to 8000 when http_server=True.
-        data_config: GR00T data config (so100_dualcam, so100, fourier_gr1_arms_only, etc.)
-        embodiment_tag: Embodiment tag for model
-        denoising_steps: Number of denoising steps
-        host: Host to bind service to
-        container_name: Specific container name
-        timeout: Timeout for operations
-        use_tensorrt: Whether to use TensorRT for accelerated inference
-        trt_engine_path: Path to TensorRT engine directory (default: gr00t_engine)
-        vit_dtype: ViT model dtype - "fp16" or "fp8" (default: fp8, only with TensorRT)
-        llm_dtype: LLM model dtype - "fp16", "nvfp4", or "fp8" (default: nvfp4, only with TensorRT)
-        dit_dtype: DiT model dtype - "fp16" or "fp8" (default: fp8, only with TensorRT)
-        http_server: Use HTTP server instead of ZMQ (default: False)
-        api_token: API token for authentication. Falls back to GROOT_API_TOKEN env var if not provided.
+        action: Action to perform (see Actions above).
+        checkpoint_path: Path to model checkpoint directory (required for ``start``/``restart``).
+        policy_name: Optional name for the policy service (for registration/tracking).
+        port: Port for the inference service. Defaults to 5555 (ZMQ) or auto-switches
+            to 8000 when ``http_server=True``.
+        data_config: Embodiment data config name (see Data configs above).
+        embodiment_tag: Embodiment tag for the model (e.g., ``gr1``, ``so100``).
+        denoising_steps: Number of denoising steps for action generation (default: 4).
+        host: Host address to bind the service to (default: ``0.0.0.0``).
+        container_name: Specific Docker container name. Auto-detected if omitted.
+        timeout: Seconds to wait for service startup (default: 60).
+        use_tensorrt: Enable TensorRT acceleration (default: False).
+        trt_engine_path: Directory for TensorRT engine cache (default: ``gr00t_engine``).
+        vit_dtype: ViT precision with TensorRT—``fp16`` or ``fp8`` (default: ``fp8``).
+        llm_dtype: LLM precision with TensorRT—``fp16``, ``nvfp4``, or ``fp8`` (default: ``nvfp4``).
+        dit_dtype: DiT precision with TensorRT—``fp16`` or ``fp8`` (default: ``fp8``).
+        http_server: Use HTTP REST API instead of ZMQ (default: False).
+        api_token: API token for authentication. Falls back to ``GROOT_API_TOKEN`` env var.
 
     Returns:
-        Dict with status and information about the operation
+        Dict with operation results. Common fields:
+
+        - ``status``: ``"success"`` or ``"error"``
+        - ``message``: Human-readable description
+
+        For ``start``/``restart``:
+          ``port``, ``checkpoint_path``, ``container_name``, ``protocol``,
+          ``data_config``, ``embodiment_tag``, ``denoising_steps``,
+          ``endpoint`` (HTTP only), ``tensorrt`` (if enabled)
+
+        For ``status``:
+          ``port``, ``service_status`` (``"running"`` or ``"not_running"``), ``protocol``
+
+        For ``list``:
+          ``services`` (list of ``{port, protocol, status}``)
+
+        For ``find_containers``:
+          ``containers`` (list of ``{name, image, status, ports}``)
+
+    Examples:
+        Start a ZMQ service for SO-100 dual-camera setup::
+
+            gr00t_inference(
+                action="start",
+                checkpoint_path="/data/checkpoints/so100_model",
+                data_config="so100_dualcam",
+                embodiment_tag="so100",
+            )
+
+        Start an HTTP service with TensorRT::
+
+            gr00t_inference(
+                action="start",
+                checkpoint_path="/data/checkpoints/gr1_model",
+                http_server=True,
+                use_tensorrt=True,
+                data_config="fourier_gr1_arms_only",
+            )
+
+        Check service status and list running services::
+
+            gr00t_inference(action="status", port=5555)
+            gr00t_inference(action="list")
+
+        Restart with a different checkpoint::
+
+            gr00t_inference(
+                action="restart",
+                checkpoint_path="/data/checkpoints/gr1_model_v2",
+                port=5555,
+            )
     """
     # Resolve api_token from env var if not provided as parameter
     if api_token is None:
@@ -107,7 +217,7 @@ def gr00t_inference(
             return {"status": "error", "message": "Checkpoint path required for restart"}
         # Stop existing service and start new one
         _stop_service(port)
-        time.sleep(2)  # Brief pause
+        time.sleep(2)  # Brief pause to allow port release before rebind
         return _start_service(
             checkpoint_path=checkpoint_path,
             port=port,
