@@ -2,7 +2,7 @@
 
 Strands Robots uses [Device Connect](https://github.com/arm/device-connect), a **device-aware runtime** by Arm — to handle discovery, presence, structured RPC, event routing, and safety — so you can focus on building cross-device experiences instead of re-implementing infrastructure.
 
-> **Fallback behavior:** If `device-connect-sdk` is not installed, Strands Robots automatically falls back to a built-in Zenoh P2P mesh (`zenoh_mesh.py`) for basic peer discovery and coordination. Device Connect is the recommended and primary networking layer.
+> **Fallback behavior:** If `device-connect-edge` is not installed, Strands Robots automatically falls back to a built-in Zenoh P2P mesh (`zenoh_mesh.py`) for basic peer discovery and coordination. Device Connect is the recommended and primary networking layer.
 
 ### Quick Start
 
@@ -99,10 +99,10 @@ r.run()
 Expected output:
 
 ```
-device_connect_sdk.device.<PEER_ID> - INFO - Using ZENOH messaging backend
-device_connect_sdk.device.<PEER_ID> - INFO - Connected to ZENOH broker: []
-device_connect_sdk.device.<PEER_ID> - INFO - Driver connected: strands_sim
-device_connect_sdk.device.<PEER_ID> - INFO - Subscribed to commands on device-connect.default.<PEER_ID>.cmd
+device_connect_edge.device.<PEER_ID> - INFO - Using ZENOH messaging backend
+device_connect_edge.device.<PEER_ID> - INFO - Connected to ZENOH broker: []
+device_connect_edge.device.<PEER_ID> - INFO - Driver connected: strands_sim
+device_connect_edge.device.<PEER_ID> - INFO - Subscribed to commands on device-connect.default.<PEER_ID>.cmd
 🤖 <PEER_ID> is online. Ctrl+C to stop.
 ```
 
@@ -323,7 +323,7 @@ Wrap Reachy Mini with `ReachyMiniDriver` to expose it as a structured Device Con
 
 ```python
 from strands_robots.device_connect import ReachyMiniDriver
-from device_connect_sdk import DeviceRuntime
+from device_connect_edge import DeviceRuntime
 
 driver = ReachyMiniDriver(host="reachy-mini.local")
 runtime = DeviceRuntime(
@@ -356,7 +356,7 @@ invoke_device("reachy-mini-1", "nod")
 python -c "
 import asyncio
 from strands_robots.device_connect import ReachyMiniDriver
-from device_connect_sdk import DeviceRuntime
+from device_connect_edge import DeviceRuntime
 
 # For Lite (USB): host='localhost' (requires reachy-mini daemon running)
 # For Wireless:  host='reachy-mini.local'
@@ -376,8 +376,8 @@ Expected output:
 
 ```
 Reachy Mini driver connected: reachy-mini.local
-device_connect_sdk.device.reachy-mini-1 - INFO - Device registered
-device_connect_sdk.device.reachy-mini-1 - INFO - Subscribed to commands on device-connect.default.reachy-mini-1.cmd
+device_connect_edge.device.reachy-mini-1 - INFO - Device registered
+device_connect_edge.device.reachy-mini-1 - INFO - Subscribed to commands on device-connect.default.reachy-mini-1.cmd
 ```
 
 **In another terminal, invoke RPCs:**

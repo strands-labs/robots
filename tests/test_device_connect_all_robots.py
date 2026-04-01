@@ -5,7 +5,7 @@ with every robot's specific configuration (joint counts, observation shapes,
 identity, status, RPC delegation). Also tests multi-robot simulation scenarios,
 edge cases, and robot_mesh dispatch with diverse device types.
 
-All external dependencies (Zenoh, LeRobot, device_connect_sdk, strands) are mocked.
+All external dependencies (Zenoh, LeRobot, device_connect_edge, strands) are mocked.
 No Docker, GPU, or hardware required.
 """
 
@@ -21,7 +21,7 @@ import pytest
 
 # ── Mock heavy dependencies before importing ──────────────────────
 
-mock_device_connect_sdk = MagicMock()
+mock_device_connect_edge = MagicMock()
 mock_drivers = MagicMock()
 
 
@@ -89,29 +89,29 @@ mock_types.DeviceStatus = FakeDeviceStatus
 
 _saved_modules = {}
 _mock_keys = (
-    "device_connect_sdk",
-    "device_connect_sdk.drivers",
-    "device_connect_sdk.types",
-    "device_connect_sdk.device",
+    "device_connect_edge",
+    "device_connect_edge.drivers",
+    "device_connect_edge.types",
+    "device_connect_edge.device",
 )
 _strands_dc_keys = [k for k in sys.modules if k.startswith("strands_robots.device_connect")]
 for _key in list(_mock_keys) + _strands_dc_keys:
     _saved_modules[_key] = sys.modules.get(_key)
 
-sys.modules["device_connect_sdk"] = mock_device_connect_sdk
-sys.modules["device_connect_sdk.drivers"] = mock_drivers
-sys.modules["device_connect_sdk.types"] = mock_types
-sys.modules["device_connect_sdk.device"] = MagicMock()
+sys.modules["device_connect_edge"] = mock_device_connect_edge
+sys.modules["device_connect_edge.drivers"] = mock_drivers
+sys.modules["device_connect_edge.types"] = mock_types
+sys.modules["device_connect_edge.device"] = MagicMock()
 
 mock_device_runtime = MagicMock()
-mock_device_connect_sdk.DeviceRuntime = mock_device_runtime
+mock_device_connect_edge.DeviceRuntime = mock_device_runtime
 
 from strands_robots.device_connect.robot_driver import RobotDeviceDriver  # noqa: E402
 from strands_robots.device_connect.sim_driver import SimulationDeviceDriver  # noqa: E402
 
 
 def teardown_module():
-    """Restore real device_connect_sdk modules."""
+    """Restore real device_connect_edge modules."""
     for key, original in _saved_modules.items():
         if original is None:
             sys.modules.pop(key, None)

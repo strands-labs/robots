@@ -165,7 +165,7 @@ class Robot(AgentTool):
         self.mesh = None
 
     def _init_mesh_fallback(self):
-        """Fallback: init Zenoh mesh when device-connect-sdk is not installed."""
+        """Fallback: init Zenoh mesh when device-connect-edge is not installed."""
         try:
             from strands_robots.zenoh_mesh import init_mesh
 

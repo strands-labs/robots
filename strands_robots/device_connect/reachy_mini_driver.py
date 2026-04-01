@@ -13,8 +13,8 @@ import logging
 import math
 from typing import Optional
 
-from device_connect_sdk.drivers import DeviceDriver, emit, on, rpc
-from device_connect_sdk.types import DeviceIdentity, DeviceStatus
+from device_connect_edge.drivers import DeviceDriver, emit, on, rpc
+from device_connect_edge.types import DeviceIdentity, DeviceStatus
 
 from strands_robots.device_connect.reachy_transport import (
     api,

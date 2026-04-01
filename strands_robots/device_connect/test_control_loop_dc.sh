@@ -28,8 +28,8 @@ cleanup() {
 trap cleanup EXIT
 
 # ── 1. Install dependencies ────────────────────────────────────────────
-echo "==> Installing device-connect-sdk..."
-pip install -e "$WORKSPACE_ROOT/device-connect/packages/device-connect-sdk" -q
+echo "==> Installing device-connect-edge..."
+pip install -e "$WORKSPACE_ROOT/device-connect/packages/device-connect-edge" -q
 
 echo "==> Installing device-connect-agent-tools..."
 pip install -e "$WORKSPACE_ROOT/device-connect/packages/device-connect-agent-tools[strands]" -q

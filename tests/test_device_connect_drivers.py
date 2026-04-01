@@ -3,7 +3,7 @@
 Tests RobotDeviceDriver, SimulationDeviceDriver, ReachyMiniDriver,
 init_device_connect(), and the updated robot_mesh tool.
 
-All external dependencies (Zenoh, LeRobot, device_connect_sdk, strands) are mocked.
+All external dependencies (Zenoh, LeRobot, device_connect_edge, strands) are mocked.
 """
 
 import asyncio
@@ -18,8 +18,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 # ── Mock heavy dependencies before importing ──────────────────────
 
-# Mock device_connect_sdk
-mock_device_connect_sdk = MagicMock()
+# Mock device_connect_edge
+mock_device_connect_edge = MagicMock()
 mock_drivers = MagicMock()
 
 
@@ -86,8 +86,8 @@ mock_types.DeviceStatus = FakeDeviceStatus
 
 # Save originals so we can restore after this module's tests run
 _saved_modules = {}
-_mock_keys = ("device_connect_sdk", "device_connect_sdk.drivers",
-              "device_connect_sdk.types", "device_connect_sdk.device")
+_mock_keys = ("device_connect_edge", "device_connect_edge.drivers",
+              "device_connect_edge.types", "device_connect_edge.device")
 # Also track strands_robots.device_connect submodules that will be imported
 # with the mocked base class — they need to be purged so later tests re-import
 # with the real base class.
@@ -95,14 +95,14 @@ _strands_dc_keys = [k for k in sys.modules if k.startswith("strands_robots.devic
 for _key in list(_mock_keys) + _strands_dc_keys:
     _saved_modules[_key] = sys.modules.get(_key)
 
-sys.modules["device_connect_sdk"] = mock_device_connect_sdk
-sys.modules["device_connect_sdk.drivers"] = mock_drivers
-sys.modules["device_connect_sdk.types"] = mock_types
-sys.modules["device_connect_sdk.device"] = MagicMock()
+sys.modules["device_connect_edge"] = mock_device_connect_edge
+sys.modules["device_connect_edge.drivers"] = mock_drivers
+sys.modules["device_connect_edge.types"] = mock_types
+sys.modules["device_connect_edge.device"] = MagicMock()
 
 # Mock DeviceRuntime
 mock_device_runtime = MagicMock()
-mock_device_connect_sdk.DeviceRuntime = mock_device_runtime
+mock_device_connect_edge.DeviceRuntime = mock_device_runtime
 
 # Now import our modules
 from strands_robots.device_connect.robot_driver import RobotDeviceDriver
@@ -110,12 +110,12 @@ from strands_robots.device_connect.sim_driver import SimulationDeviceDriver
 
 
 def teardown_module():
-    """Restore real device_connect_sdk modules so other test files are not affected.
+    """Restore real device_connect_edge modules so other test files are not affected.
 
     Also purge cached strands_robots.device_connect submodules that were imported
     with the mock base class, so later test files get fresh imports with the real base.
     """
-    # Restore device_connect_sdk modules
+    # Restore device_connect_edge modules
     for key, original in _saved_modules.items():
         if original is None:
             sys.modules.pop(key, None)
