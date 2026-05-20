@@ -1,0 +1,38 @@
+version: 2
+updates:
+  # Python dependencies — heavy ML stack pulls in long transitive trees.
+  # Grouped so the torch / lerobot / transformers cluster doesn't generate
+  # a separate PR per package.
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      ml-stack:
+        patterns:
+          - "torch*"
+          - "lerobot*"
+          - "transformers*"
+          - "huggingface-hub*"
+      sim-stack:
+        patterns:
+          - "mujoco*"
+          - "imageio*"
+          - "robot_descriptions*"
+      dev-tools:
+        patterns:
+          - "ruff"
+          - "mypy"
+          - "pytest*"
+
+  # GitHub Actions — keeps SHA pins fresh automatically. Without this entry,
+  # SHA pinning becomes manual maintenance. With it, every action update
+  # arrives as a pre-pinned PR.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5

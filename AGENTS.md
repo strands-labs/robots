@@ -194,3 +194,48 @@ Corrections from code review that apply to all future contributions:
 - **Resolve threads as you fix them** - leaving 14 unresolved threads on a PR with all fixes pushed makes re-review painful. Mark threads resolved when the commit lands; reviewers can re-open if not satisfied.
 - **Reference commits in resolution comments** - "Fixed in `376376b`" + the suggested code block is dramatically faster to re-review than "fixed".
 - **Force-push invalidates approvals** - after a rebase, prior `APPROVED` reviews drop to `DISMISSED` automatically. Mention it in the PR comment so reviewers know to re-approve, not re-review the whole diff.
+
+## Review Learnings (PR #92 - CI Security Baseline)
+
+Corrections from code review that apply to all future contributions:
+
+### LLM Input Safety
+- **Validate before subprocess interpolation** — every parameter on an agent-callable
+  tool (`@tool` decorated function, `AgentTool.stream` dispatch handler) that flows
+  into `subprocess.run`, `subprocess.Popen`, MJCF / XML interpolation, or filesystem
+  path construction MUST be validated up front via regex allowlist, enum match, or
+  range check. Argv-style subprocess does not exempt you — defense-in-depth.
+- **Centralise validation in one function** — pattern: a `validate_inputs(...)` helper
+  at the top of the tool module that takes every user-supplied param as a keyword arg
+  and raises `ValueError` with a clear message on any rejection. Single entry-point
+  is independently testable. PR #90's `gr00t_inference.validate_inputs()` is the
+  canonical example.
+- **Allowlist enumerable values** — `data_config`, `embodiment_tag`, dtype strings,
+  container names: all match `^[a-z][a-z0-9_]+$` or an explicit `{"fp16", "fp8", ...}`
+  set. Never accept arbitrary strings into enumerable surfaces.
+- **Reject shell metacharacters in paths** — `;`, `|`, `$`, backticks, `>`, `<`,
+  `\n`, `\r`, `\x00`. Also reject `..` path traversal components. Apply even when
+  using argv-style subprocess.
+- **Bind to `127.0.0.1` by default**, not `0.0.0.0`. Users explicitly opt into
+  network exposure.
+
+### CI Security Baseline
+- **CodeQL findings are not PR-blocking but ARE actionable** — check the Security
+  tab after pushing to a branch. False-positives get dismissed with a reason;
+  real findings get fixed.
+- **Dependency Review hard-fails on high/critical CVEs in new deps.** If a PR
+  needs a dep with a known critical CVE, the conversation is "do we need this
+  dep" not "let's bypass the check."
+- **The LLM-input-safety workflow is a hint, not a gate.** Inline annotations
+  on `subprocess + f-string` and `name-into-XML` patterns flag code that needs
+  validation review. Confirm validation is present, then ignore the annotation
+  in review.
+
+### Action Pinning
+- **All `uses:` references in workflows pin to a full 40-character commit SHA**,
+  with the version tag preserved as a trailing comment: `uses: actions/checkout@<sha>  # v4.2.2`.
+- **Dependabot keeps these fresh** via the `github-actions` ecosystem entry.
+  Do not manually bump tags; merge the Dependabot PR.
+- **Especially `pypa/gh-action-pypi-publish`** — it uses a moving `release/v1`
+  branch, which is exactly the supply-chain pattern that the `tj-actions/changed-files`
+  incident exploited. This pin is non-negotiable.

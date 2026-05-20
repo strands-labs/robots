@@ -1,0 +1,29 @@
+name: Dependency Review
+
+on:
+  pull_request:
+    branches: [main, dev]
+
+permissions:
+  contents: read
+  pull-requests: write   # so the action can comment summary on failure
+
+jobs:
+  dependency-review:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Dependency Review
+        uses: actions/dependency-review-action@da24556b548a50705dd671f47852072ea4c105d9  # v4.7.1
+        with:
+          # Hard fail: a new dependency with a known high or critical CVE.
+          # This is the only thing in the security baseline that blocks PRs.
+          fail-on-severity: high
+          # License changes are surfaced but do not block. Apache-2.0 is the
+          # project license; if a transitive flips to GPL we want eyes on it,
+          # not an auto-block.
+          comment-summary-in-pr: on-failure
