@@ -422,3 +422,73 @@ class TestF14OverCapStillEngagesLockout:
         )
         # Cache slot was NOT consumed (cap held)
         assert len(m._estop_replay_cache) == cache_size_before, "cap-exceeded envelope should not consume a cache slot"
+
+
+def test_per_issuer_cap_exceeded_still_engages_lockout(monkeypatch):
+    """An issuer that exceeds the per-issuer cache cap still engages lockout.
+
+    Regression for issue #263: when issuer_slots >= per_issuer_cap the
+    cache slot is refused (resource fairness) but the lockout primitive
+    must still engage so a legitimate operator's safety event is honored.
+    """
+    monkeypatch.setenv("STRANDS_MESH_RESUME_REPLAY_CACHE_MAX", "4")
+    mesh = _stub_mesh()
+    mesh.publish_safety_event = lambda **kwargs: None  # type: ignore[method-assign]
+
+    # per_issuer_cap == max(1, 4 // 4) == 1. Pre-fill the issuer's single
+    # slot at an older-but-still-fresh t so the new estop exceeds the cap.
+    now = time.time()
+    mesh._estop_replay_cache[float(now - 0.001)] = ("issuer", time.monotonic(), None)
+
+    assert not mesh._estop_lockout.is_set()
+    mesh._on_safety_estop(_envelope(t=now, peer_id="issuer"))
+
+    assert mesh._estop_lockout.is_set(), (
+        "lockout must engage even when the per-issuer cache cap is exceeded"
+    )
+    # The cache slot for the new t was refused (fairness preserved).
+    assert float(now) not in mesh._estop_replay_cache
+
+
+def test_low_cache_max_does_not_deny_safety(monkeypatch):
+    """With RESUME_REPLAY_CACHE_MAX=4 a second estop from the same issuer
+    still engages lockout (issue #263 embedded-peer scenario)."""
+    monkeypatch.setenv("STRANDS_MESH_RESUME_REPLAY_CACHE_MAX", "4")
+    mesh = _stub_mesh()
+    mesh.publish_safety_event = lambda **kwargs: None  # type: ignore[method-assign]
+
+    base = time.time()
+    # First estop populates the single per-issuer slot and engages lockout.
+    mesh._on_safety_estop(_envelope(t=base, peer_id="issuer"))
+    assert mesh._estop_lockout.is_set()
+    mesh._estop_lockout.clear()  # isolate the second-estop assertion
+
+    # Second estop from the same issuer at a fresh t exceeds cap==1 but
+    # must still re-engage the lockout rather than be silently denied.
+    mesh._on_safety_estop(_envelope(t=base + 0.001, peer_id="issuer"))
+    assert mesh._estop_lockout.is_set(), (
+        "a tight cache_max must not deny a legitimate issuer's safety primitive"
+    )
+
+
+def test_cap_exceeded_audit_plus_lockout(monkeypatch):
+    """Both the estop_per_issuer_cap_exceeded audit AND the lockout are
+    produced when the cap is exceeded -- not one or the other (issue #263)."""
+    monkeypatch.setenv("STRANDS_MESH_RESUME_REPLAY_CACHE_MAX", "4")
+    mesh = _stub_mesh()
+    audit_calls = []
+    mesh.publish_safety_event = lambda **kwargs: audit_calls.append(kwargs)  # type: ignore[method-assign]
+
+    now = time.time()
+    mesh._estop_replay_cache[float(now - 0.001)] = ("issuer", time.monotonic(), None)
+
+    mesh._on_safety_estop(_envelope(t=now, peer_id="issuer"))
+
+    event_types = [c["event_type"] for c in audit_calls]
+    assert "estop_per_issuer_cap_exceeded" in event_types, (
+        f"expected cap-exceeded audit, got {event_types}"
+    )
+    assert "remote_estop_engaged" in event_types, (
+        f"expected lockout-engaged audit alongside cap audit, got {event_types}"
+    )
+    assert mesh._estop_lockout.is_set()
