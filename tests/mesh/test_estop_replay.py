@@ -443,9 +443,7 @@ def test_per_issuer_cap_exceeded_still_engages_lockout(monkeypatch):
     assert not mesh._estop_lockout.is_set()
     mesh._on_safety_estop(_envelope(t=now, peer_id="issuer"))
 
-    assert mesh._estop_lockout.is_set(), (
-        "lockout must engage even when the per-issuer cache cap is exceeded"
-    )
+    assert mesh._estop_lockout.is_set(), "lockout must engage even when the per-issuer cache cap is exceeded"
     # The cache slot for the new t was refused (fairness preserved).
     assert float(now) not in mesh._estop_replay_cache
 
@@ -466,9 +464,7 @@ def test_low_cache_max_does_not_deny_safety(monkeypatch):
     # Second estop from the same issuer at a fresh t exceeds cap==1 but
     # must still re-engage the lockout rather than be silently denied.
     mesh._on_safety_estop(_envelope(t=base + 0.001, peer_id="issuer"))
-    assert mesh._estop_lockout.is_set(), (
-        "a tight cache_max must not deny a legitimate issuer's safety primitive"
-    )
+    assert mesh._estop_lockout.is_set(), "a tight cache_max must not deny a legitimate issuer's safety primitive"
 
 
 def test_cap_exceeded_audit_plus_lockout(monkeypatch):
@@ -485,9 +481,7 @@ def test_cap_exceeded_audit_plus_lockout(monkeypatch):
     mesh._on_safety_estop(_envelope(t=now, peer_id="issuer"))
 
     event_types = [c["event_type"] for c in audit_calls]
-    assert "estop_per_issuer_cap_exceeded" in event_types, (
-        f"expected cap-exceeded audit, got {event_types}"
-    )
+    assert "estop_per_issuer_cap_exceeded" in event_types, f"expected cap-exceeded audit, got {event_types}"
     assert "remote_estop_engaged" in event_types, (
         f"expected lockout-engaged audit alongside cap audit, got {event_types}"
     )
