@@ -167,9 +167,35 @@ class TestACLFileLoader:
         path = tmp_path / "blacklist.json"
         path.write_text(json.dumps(bad))
         monkeypatch.setenv("STRANDS_MESH_ACL_FILE", str(path))
+        # B-08 / F-14: an allow+rules blacklist ACL now hard-refuses unless
+        # the operator acknowledges the posture. Ack so we can still observe
+        # the (first-line) warning this test pins.
+        monkeypatch.setenv("STRANDS_MESH_ACCEPT_PERMISSIVE_ACL", "1")
+        ac._clear_acl_cache_for_test()
         with caplog.at_level("WARNING"):
             ac.resolve_acl("strands")
         assert any("blacklist" in rec.message for rec in caplog.records)
+
+    def test_default_allow_with_rules_refuses_without_ack(self, monkeypatch, tmp_path):
+        """B-08 / F-14: allow+rules ACL refuses to load without explicit ack."""
+        bad = self._good_acl_dict()
+        bad["default_permission"] = "allow"
+        bad["rules"] = [
+            {
+                "id": "blacklisted",
+                "key_exprs": ["strands/secret/**"],
+                "messages": ["put"],
+                "flows": ["ingress"],
+                "permission": "deny",
+            }
+        ]
+        path = tmp_path / "blacklist.json"
+        path.write_text(json.dumps(bad))
+        monkeypatch.setenv("STRANDS_MESH_ACL_FILE", str(path))
+        monkeypatch.delenv("STRANDS_MESH_ACCEPT_PERMISSIVE_ACL", raising=False)
+        ac._clear_acl_cache_for_test()
+        with pytest.raises(ac.PermissiveACLError):
+            ac.resolve_acl("strands")
 
 
 # --- JSON5 preprocessor tests ------------------------------------------

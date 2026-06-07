@@ -3,6 +3,25 @@
 All notable behavioural changes to `strands-robots` are logged here. Follows
 [Keep a Changelog](https://keepachangelog.com/) conventions.
 
+## Unreleased - #320 (MuJoCo robot-scene ground-plane z-fighting)
+
+### Fixed: broken floor render when a robot asset ships its own ground plane
+
+Robots whose asset MJCF includes its own ground/floor plane (e.g.
+``franka_emika_panda/scene.xml`` ships ``<geom name="floor" type="plane"/>``)
+produced a **severely broken floor** - a flickering checkerboard/triangle mess
+- when added to a world created with ``ground_plane=True`` (the default). Two
+coplanar infinite ground planes at z=0 with different checker materials
+(``grid_mat`` vs the robot's ``groundplane``) caused depth-buffer Z-fighting.
+The artifact corrupted rendered videos, camera observations fed to policies,
+and demos, with no error raised.
+
+``SpecBuilder.attach_robot`` now strips plane geoms from the robot scene MJCF
+before attaching it, so exactly one world-owned ``ground`` plane survives. The
+world ``ground`` plane (configurable via ``create_world(ground_plane=...)``)
+is the single source of truth; robots contribute only their own
+bodies/joints/actuators/sensors.
+
 ## Unreleased - #228 (AWS IoT provisioning hardening)
 
 ### Changed: default presigned-URL TTL for camera offload
@@ -39,8 +58,7 @@ Applies to ``strands_robots.mesh.iot.provision`` and
   ``re.fullmatch``) applied symmetrically across ``provision_robot``,
   ``provision_operator``, and ``teardown_thing``. Rejects path
   separators, dots, spaces, NUL, non-ASCII, and trailing
-  ``
-``/````/``	``. Pre-existing AWS IoT Things containing ``:``
+  ``\n``/``\r``/``\t``. Pre-existing AWS IoT Things containing ``:``
   must be renamed (we deliberately reject ``:`` due to NTFS / classic
   Mac filesystem semantics).
 - **IoT policy scope** — robot/operator policies use explicit

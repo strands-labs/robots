@@ -287,3 +287,49 @@ class TestSubHandleIdempotence:
         h = _BridgeSubHandle(a, None)
         h.undeclare()
         a.undeclare.assert_called_once()
+
+
+class TestDefaultBridgeSuffixesPinned:
+    def test_default_bridge_suffixes_pinned_to_documented_set(self):
+        """Pin DEFAULT_BRIDGE_SUFFIXES against the documented bridge-by-default set.
+
+        These suffixes are documented in the module header and the mesh env-var
+        matrix as the unset-default for STRANDS_MESH_BRIDGE_TOPICS. A future edit
+        that adds or removes a suffix here must update that documentation in the
+        same diff or this test fails.
+        """
+        assert DEFAULT_BRIDGE_SUFFIXES == frozenset(
+            {
+                "presence",
+                "health",
+                "safety/event",
+                "safety/estop",
+                "safety/resume",
+                "cmd",
+                "response",
+                "broadcast",
+            }
+        )
+
+    def test_high_volume_telemetry_not_bridged_by_default(self):
+        """Pin the documented high-volume-telemetry not-bridged list.
+
+        state/pose/imu/odom/lidar are high volume and camera/input/hand are
+        LAN-only by definition. All are documented as not bridged by default;
+        if one leaks into DEFAULT_BRIDGE_SUFFIXES the documentation regresses.
+        """
+        not_bridged = (
+            "state",
+            "pose",
+            "imu",
+            "odom",
+            "lidar",
+            "camera",
+            "input",
+            "hand",
+        )
+        for suffix in not_bridged:
+            assert suffix not in DEFAULT_BRIDGE_SUFFIXES, (
+                f"{suffix!r} is documented as not bridged by default but is in "
+                f"DEFAULT_BRIDGE_SUFFIXES; remove it or update the documentation."
+            )

@@ -58,3 +58,35 @@ def _default_mesh_auth_mode_none(monkeypatch, request):
         monkeypatch.setenv("STRANDS_MESH_AUTH_MODE", "none")
         # B2: auth_mode=none requires explicit second-factor opt-in.
         monkeypatch.setenv("STRANDS_MESH_I_KNOW_THIS_IS_INSECURE", "1")
+
+
+@pytest.fixture(autouse=True)
+def _restore_real_zenoh_module():
+    """Neutralise a leaked ``zenoh`` MagicMock in ``sys.modules``.
+
+    Several mesh tests install a mock Zenoh via
+    ``patch.dict("sys.modules", {"zenoh": MagicMock()})``. ``patch.dict``
+    restores correctly on its own, but under some full-suite collection
+    orderings a real ``zenoh`` reference can still be displaced by a
+    ``unittest.mock.MagicMock`` that outlives its intended scope. When that
+    happens, :func:`strands_robots.mesh.session._build_config` does a fresh
+    ``import zenoh`` and gets the mock — ``zenoh.Config().get_json(...)``
+    then returns a ``MagicMock`` and ``json.loads(...)`` raises
+    ``TypeError: the JSON object must be str, bytes or bytearray, not
+    MagicMock``.
+
+    This autouse fixture asserts a clean baseline: if ``sys.modules["zenoh"]``
+    is a mock object, drop it so the next ``import zenoh`` re-binds the real
+    wheel (or cleanly raises ImportError where it is genuinely absent).
+    """
+    import sys
+    from unittest.mock import NonCallableMock
+
+    mod = sys.modules.get("zenoh")
+    # Only act on an unambiguous mock: a ``unittest.mock`` instance. Real
+    # ``zenoh`` (an extension module) is never from that package, so this
+    # cannot evict the genuine wheel. Dropping the mock lets the next
+    # ``import zenoh`` re-bind the real module (or cleanly ImportError).
+    if mod is not None and (isinstance(mod, NonCallableMock) or type(mod).__module__ == "unittest.mock"):
+        del sys.modules["zenoh"]
+    yield

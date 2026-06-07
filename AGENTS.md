@@ -239,3 +239,16 @@ Corrections from code review that apply to all future contributions:
 - **Especially `pypa/gh-action-pypi-publish`** — it uses a moving `release/v1`
   branch, which is exactly the supply-chain pattern that the `tj-actions/changed-files`
   incident exploited. This pin is non-negotiable.
+
+### Operational Runbooks for Security Pins
+- **A static security pin must ship with a rotation runbook, not just a recompute
+  command.** A docstring one-liner that recomputes a pin is necessary but not
+  sufficient; on-call at 3 AM needs a documented grace-period strategy. For the
+  Amazon Root CA1 pin (`provision._AMAZON_ROOT_CA1_PINS`) the runbook lives in
+  README.md > "CA Pin Rotation Runbook": dual-pin tuple during the overlap, ship
+  the new pin first, drop the old pin in a follow-up release after fleet uptake,
+  and use `STRANDS_MESH_CA_PINS` only as an emergency out-of-band override.
+- **Make the accepted-pin set a collection, never a scalar.** `_resolve_ca_pins()`
+  returns a `frozenset` so the dual-pin grace period is expressible. Any future
+  pinned fingerprint (other roots, signing keys) should follow the same
+  multi-value shape so rotation never requires a flag-day deploy.

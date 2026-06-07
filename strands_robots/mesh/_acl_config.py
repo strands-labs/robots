@@ -41,6 +41,22 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+
+class PermissiveACLError(RuntimeError):
+    """Raised when an operator-supplied ACL uses the blacklist footgun
+    (``default_permission='allow'`` with explicit rules) without opting
+    in via ``STRANDS_MESH_ACCEPT_PERMISSIVE_ACL``. Pentest B-08 / F-14.
+
+    The built-in permissive default (allow + EMPTY rules) is exempt --
+    it is gated separately by the ``Mesh.start`` refuse-to-start path
+    (:meth:`Mesh._refuse_under_permissive_default_acl`) which fires under
+    mTLS. This error closes the *operator-file blacklist* footgun: a
+    hand-written ``allow + rules`` ACL is an explicit, load-bearing
+    anti-pattern that should fail loud rather than silently expose any
+    rule gap.
+    """
+
+
 #: Maximum bytes of an ACL file we will load. Anything larger is almost
 #: certainly an attacker probing for an OOM.
 ACL_FILE_MAX_BYTES: int = 256 * 1024
@@ -202,6 +218,29 @@ def _load_acl_file(path: Path) -> dict[str, Any]:
                 path,
                 len(data["rules"]),
             )
+            # B-08 / F-14: the warning above is the first-line signal; this
+            # is the hard gate. An operator-supplied blacklist ACL
+            # (allow + explicit rules) is a load-bearing anti-pattern --
+            # any gap in the rule set exposes the mesh. Refuse to load it
+            # unless the operator has explicitly acknowledged the posture
+            # via STRANDS_MESH_ACCEPT_PERMISSIVE_ACL. The built-in default
+            # (allow + EMPTY rules) does not reach this branch and stays
+            # gated by Mesh.start's refuse-to-start path.
+            accept = os.getenv("STRANDS_MESH_ACCEPT_PERMISSIVE_ACL", "").strip().lower() in (
+                "1",
+                "true",
+                "yes",
+            )
+            if not accept:
+                raise PermissiveACLError(
+                    f"ACL file {path} uses default_permission='allow' with "
+                    f"{len(data['rules'])} rule(s) -- a blacklist policy where any "
+                    "rule gap exposes the mesh. Refusing to load. Remediate one of:\n"
+                    "  1. Rewrite the ACL with default_permission='deny' and "
+                    "explicit allow rules (see examples/mesh_acl_example.json5).\n"
+                    "  2. Set STRANDS_MESH_ACCEPT_PERMISSIVE_ACL=1 to acknowledge "
+                    "the dev/lab posture."
+                )
     _validate_acl_shape(data, path)
     return data
 

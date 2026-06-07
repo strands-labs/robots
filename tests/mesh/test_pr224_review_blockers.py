@@ -354,7 +354,9 @@ def test_blacklist_warning_only_fires_with_rules(tmp_path: Path, caplog: pytest.
     )
 
 
-def test_blacklist_warning_fires_with_rules(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+def test_blacklist_warning_fires_with_rules(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Thread #28: ``allow + non-empty rules`` DOES trigger the
     blacklist warning -- this is the actual anti-pattern."""
     import json as _json
@@ -382,6 +384,9 @@ def test_blacklist_warning_fires_with_rules(tmp_path: Path, caplog: pytest.LogCa
             }
         )
     )
+    # B-08 / F-14: allow+rules now hard-refuses without an explicit ack.
+    # This test pins the (first-line) WARNING, so opt in to reach it.
+    monkeypatch.setenv("STRANDS_MESH_ACCEPT_PERMISSIVE_ACL", "1")
     with caplog.at_level(logging.WARNING, logger="strands_robots.mesh._acl_config"):
         _acl_config._load_acl_file(p)
     assert any("blacklist" in m and "1 rule(s)" in m for m in caplog.messages), (

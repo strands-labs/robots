@@ -118,6 +118,28 @@ MAX_PASSTHROUGH_LEN: int = 128
 #: string.
 MAX_OVERRIDE_CODE_LEN: int = 256
 
+#: Maximum number of joint/motor keys accepted in a single teleop input
+#: frame. A leader arm streams a fixed small set of motor positions
+#: (typically 6-16); 64 leaves generous headroom while bounding a peer
+#: that floods ``_on_input`` with a giant dict to exhaust CPU/memory in
+#: the apply path. See pentest finding B-04 / F-02.
+MAX_INPUT_FRAME_KEYS: int = 64
+
+#: Absolute bound on any single joint/motor value in a teleop frame.
+#: Real normalized actions live in small ranges (radians, [-1, 1]
+#: normalized, or degrees); this clamp-or-reject bound stops a peer from
+#: driving a joint to 1e308 / inf / nan and slamming hardware or the sim
+#: integrator. Applied symmetrically.
+MAX_INPUT_VALUE_ABS: float = 1.0e6
+
+#: Charset for teleop input-frame keys (motor/joint names like
+#: ``"motor.pos"``, ``"shoulder_pan"``, ``"j0"``). Printable, no
+#: whitespace, no shell metacharacters, no path separators.
+_INPUT_KEY_RE = re.compile(r"^[A-Za-z0-9_.\-]+$")
+
+#: Maximum length of a single input-frame key name.
+MAX_INPUT_KEY_LEN: int = 64
+
 #: Bound on the number of joints accepted in a sim ``execute`` /
 #: ``start`` payload's ``target_joints`` dict (issue #300 well-known
 #: kwarg). 256 is well above any real humanoid (Asimov-V0 has ~30) and
@@ -963,11 +985,81 @@ def validate_command(cmd: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def validate_input_frame(action: Any) -> dict[str, float]:
+    """Validate and sanitise a teleop input frame, returning a clean copy.
+
+    A teleop input frame is the flat ``{motor_name: float}`` payload
+    streamed by :class:`~strands_robots.mesh.input.InputPublisher` at up
+    to 50 Hz and applied by
+    :class:`~strands_robots.mesh.input.InputReceiver` via
+    ``robot.send_action()``. Unlike :func:`validate_command`, this is not
+    a dispatch envelope -- it is raw actuator data -- so it gets its own
+    bounded validator.
+
+    Pentest finding **B-04 / F-02**: ``InputReceiver._on_input`` applied
+    frames straight to ``send_action()`` with no validation, so any
+    LAN-adjacent peer that discovered a source peer_id could drive the
+    follower's joints directly, bypassing the action allowlist + rate
+    limit that guard the command path.
+
+    Performed checks:
+
+    * Frame must be a ``dict``.
+    * At most :data:`MAX_INPUT_FRAME_KEYS` keys (DoS bound).
+    * Each key: ``str``, ``<= MAX_INPUT_KEY_LEN`` chars, matching
+      :data:`_INPUT_KEY_RE` (no control bytes / path separators / shell
+      metacharacters).
+    * Each value: coercible to ``float``, **finite** (no ``nan`` /
+      ``inf``), and within ``+/- MAX_INPUT_VALUE_ABS``.
+
+    Returns a sanitised ``dict[str, float]`` containing only validated
+    entries. Raises :class:`ValidationError` on any violation.
+    """
+    if not isinstance(action, dict):
+        raise ValidationError(f"input frame must be a dict (got {type(action).__name__})")
+    if len(action) > MAX_INPUT_FRAME_KEYS:
+        raise ValidationError(f"input frame has too many keys: {len(action)} > {MAX_INPUT_FRAME_KEYS}")
+
+    out: dict[str, float] = {}
+    for key, value in action.items():
+        if not isinstance(key, str):
+            raise ValidationError(f"input frame key must be a string (got {type(key).__name__})")
+        if not key or len(key) > MAX_INPUT_KEY_LEN:
+            raise ValidationError(f"input frame key length out of range: {key!r}")
+        if not _INPUT_KEY_RE.fullmatch(key):
+            raise ValidationError(f"input frame key has illegal characters: {key!r}")
+
+        # Coerce to float with a finite check. bool is an int subclass;
+        # reject it explicitly so a stray True/False can't masquerade as
+        # a 1.0/0.0 actuator command.
+        if isinstance(value, bool):
+            raise ValidationError(f"input frame value for {key!r} must be numeric, not bool")
+        if hasattr(value, "item"):
+            # numpy scalar / 0-d array -> python scalar
+            try:
+                value = value.item()
+            except Exception as exc:  # pragma: no cover - defensive
+                raise ValidationError(f"input frame value for {key!r} is not a scalar") from exc
+        if not isinstance(value, (int, float)):
+            raise ValidationError(f"input frame value for {key!r} must be numeric (got {type(value).__name__})")
+        fval = float(value)
+        if not math.isfinite(fval):
+            raise ValidationError(f"input frame value for {key!r} must be finite, got {fval}")
+        if abs(fval) > MAX_INPUT_VALUE_ABS:
+            raise ValidationError(f"input frame value for {key!r} out of range: |{fval}| > {MAX_INPUT_VALUE_ABS}")
+        out[key] = fval
+
+    return out
+
+
 __all__ = [
     "ALLOWED_ACTIONS",
     "MAX_DURATION_S",
     "MAX_INSTRUCTION_LEN",
     "MAX_MODEL_PATH_LEN",
+    "MAX_INPUT_FRAME_KEYS",
+    "MAX_INPUT_KEY_LEN",
+    "MAX_INPUT_VALUE_ABS",
     "MAX_OVERRIDE_CODE_LEN",
     "MAX_PASSTHROUGH_LEN",
     "MAX_PEER_ID_LEN",
@@ -982,5 +1074,6 @@ __all__ = [
     "is_safe_policy_type",
     "is_safe_server_address",
     "validate_command",
+    "validate_input_frame",
     "LockoutError",
 ]

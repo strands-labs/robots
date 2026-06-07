@@ -413,6 +413,17 @@ class SpecBuilder:
 
         robot_spec = mujoco.MjSpec.from_file(str(robot_file_path))
 
+        # Strip the robot scene's own ground/floor plane(s) before attaching.
+        # Many menagerie scenes (e.g. franka_emika_panda/scene.xml) ship a
+        # ``floor`` plane at z=0; merged in alongside the world's own ``ground``
+        # plane (also z=0) it produces two coplanar infinite planes with
+        # different checker materials -> depth-buffer Z-fighting and a broken
+        # floor render. The world ``ground`` plane (configurable via
+        # ``create_world(ground_plane=...)``) is the single source of truth;
+        # robots contribute only their own bodies/joints/actuators. See #320.
+        for plane in [g for g in robot_spec.geoms if g.type == mujoco.mjtGeom.mjGEOM_PLANE]:
+            robot_spec.delete(plane)
+
         # Collect source joint names BEFORE attach - attach mutates the child
         # spec in-place (the child gets reparented).
         source_joint_names: list[str] = []

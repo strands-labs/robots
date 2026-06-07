@@ -25,6 +25,7 @@ import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
+from strands_robots.mesh.security import ValidationError, validate_input_frame
 from strands_robots.mesh.session import put
 
 if TYPE_CHECKING:
@@ -202,6 +203,7 @@ class InputReceiver:
         self._error_count = 0
         self._last_seq = -1
         self._drops = 0
+        self._rejected = 0
         self._start_time = 0.0
 
     def __repr__(self) -> str:
@@ -222,6 +224,7 @@ class InputReceiver:
             "frames_received": self._frame_count,
             "errors": self._error_count,
             "drops": self._drops,
+            "rejected": self._rejected,
             "hz_actual": self._frame_count / elapsed if elapsed > 0 else 0,
         }
 
@@ -271,7 +274,25 @@ class InputReceiver:
             if self._last_seq >= 0 and seq > self._last_seq + 1:
                 self._drops += seq - self._last_seq - 1
             self._last_seq = seq
-            self._apply_fn(self.robot, action)
+            # B-04 / F-02: validate the teleop frame before it reaches
+            # send_action(). A LAN-adjacent peer that discovers this
+            # source peer_id could otherwise drive the follower's joints
+            # directly with unbounded / non-finite values. validate_input_frame
+            # bounds key count, key charset, and clamps each value to a
+            # finite magnitude. Rejected frames are counted + logged and
+            # dropped (never applied) rather than crashing the receiver.
+            try:
+                safe_action = validate_input_frame(action)
+            except ValidationError as verr:
+                self._rejected = getattr(self, "_rejected", 0) + 1
+                if self._rejected <= 5:
+                    logger.warning(
+                        "[mesh] input frame rejected from %s: %s",
+                        self.source_peer_id,
+                        verr,
+                    )
+                return
+            self._apply_fn(self.robot, safe_action)
             self._frame_count += 1
         except Exception as exc:
             self._error_count += 1

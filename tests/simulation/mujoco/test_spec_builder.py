@@ -353,6 +353,66 @@ class TestAttachRobot:
         # (simpler: compile works at all - spec.attach validates positions)
         assert bid >= 0
 
+    def test_attach_robot_strips_robot_scene_ground_plane(self, tmp_path):
+        """A robot scene that ships its own ``floor`` plane must not add a
+        second coplanar ground plane (issue #320).
+
+        Many menagerie scenes (e.g. franka_emika_panda/scene.xml) include a
+        ``floor`` plane at z=0. Attached alongside the world's own ``ground``
+        plane (also z=0) it caused two coplanar infinite planes with different
+        materials -> depth-buffer Z-fighting / broken floor render.
+        ``attach_robot`` now strips plane geoms from the robot scene so exactly
+        one world-owned ``ground`` plane survives.
+        """
+        robot_with_floor = """
+        <mujoco model="arm_with_floor">
+          <compiler angle="radian"/>
+          <worldbody>
+            <geom name="floor" size="0 0 0.05" type="plane"/>
+            <body name="base" pos="0 0 0.1">
+              <joint name="pan" type="hinge" axis="0 0 1"/>
+              <geom type="cylinder" size="0.05 0.05"/>
+            </body>
+          </worldbody>
+          <actuator>
+            <position name="pan_act" joint="pan" kp="50"/>
+          </actuator>
+        </mujoco>
+        """
+        path = tmp_path / "arm_with_floor.xml"
+        path.write_text(robot_with_floor)
+
+        scene = SpecBuilder.build(SimWorld())  # ground_plane=True by default
+        robot = SimRobot(name="arm1", urdf_path=str(path), position=[0.0, 0.0, 0.0])
+        SpecBuilder.attach_robot(scene, robot, str(path))
+
+        model = scene.compile()
+        plane_labels = [
+            mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, g)
+            for g in range(model.ngeom)
+            if model.geom_type[g] == mujoco.mjtGeom.mjGEOM_PLANE
+        ]
+        assert len(plane_labels) == 1, f"expected exactly one ground plane, got {plane_labels}"
+        assert plane_labels == ["ground"], f"the surviving plane must be the world ground, got {plane_labels}"
+
+        # The robot's own body/joint/actuator must still be present.
+        assert mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "arm1/pan") >= 0
+        assert mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, "arm1/pan_act") >= 0
+
+    def test_attach_robot_without_floor_is_unchanged(self, arm_path):
+        """A robot scene with no plane geom attaches normally - the strip is a
+        no-op and the single world ``ground`` plane survives."""
+        scene = SpecBuilder.build(SimWorld())
+        robot = SimRobot(name="arm1", urdf_path=arm_path, position=[0.0, 0.0, 0.0])
+        SpecBuilder.attach_robot(scene, robot, arm_path)
+        model = scene.compile()
+        planes = [
+            mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, g)
+            for g in range(model.ngeom)
+            if model.geom_type[g] == mujoco.mjtGeom.mjGEOM_PLANE
+        ]
+        assert planes == ["ground"]
+
 
 # from_mjcf_string / from_file
 

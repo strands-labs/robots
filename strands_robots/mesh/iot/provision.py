@@ -164,28 +164,25 @@ _ROBOT_POLICY_DOC: dict[str, Any] = {
             ],
         },
         {
-            # This wildcard middle segment is the OPERATOR'S thing-name
-            # (the recipient of the response). The robot legitimately
-            # needs to publish to the operator's own response inbox to
-            # complete the request/response RPC pattern. Scoping
-            # tighter (e.g. ``${iot:Connection.Thing.ThingName}/...``)
-            # would force the operator to know each robot's name to
-            # route responses, breaking the topic contract.
+            # F-15 / B-09: the response topic is
+            # ``strands/{operator}/response/{robot_thingname}/{turn}``.
+            # The first wildcard is the OPERATOR'S thing-name (the
+            # recipient inbox the robot must reach to complete the RPC).
+            # The ``${iot:Connection.Thing.ThingName}`` segment pins the
+            # RESPONDER to its own identity -- so robot-A can no longer
+            # forge a response that claims to come from robot-B. The
+            # trailing ``/*`` is the per-turn UUID.
             #
-            # The trailing ``/*`` is the per-turn id (UUID per
-            # call). The middle wildcard is the only legitimate broadening.
-            #
-            # Defence-in-depth: the operator-side ACL (``AllowOwnSubscriptions``
-            # at line 187) restricts each operator to subscribing only to
-            # ``strands/${ThingName}/...``, so a robot publishing to
-            # ``strands/<other-operator>/response/<turn>`` lands on a
-            # topic nobody is authorised to subscribe to (the message
-            # is silently dropped by the broker per the IoT Core contract).
+            # Defence-in-depth: the operator-side ACL
+            # (``OperatorReceiveResponses`` / ``AllowOwnSubscriptions``)
+            # already restricts each operator to its own response prefix;
+            # this statement closes the responder-identity surface on the
+            # publish side that the pentest (F-15) proved exploitable.
             "Sid": "AllowResponseToAnyOperator",
             "Effect": "Allow",
             "Action": "iot:Publish",
             "Resource": [
-                "arn:aws:iot:*:*:topic/strands/*/response/*",
+                "arn:aws:iot:*:*:topic/strands/*/response/${iot:Connection.Thing.ThingName}/*",
             ],
         },
         {
@@ -197,6 +194,17 @@ _ROBOT_POLICY_DOC: dict[str, Any] = {
             ],
         },
         {
+            # Design note: Subscribe is intentionally broader than Receive.
+            # ``AllowOwnSubscriptions`` permits a robot to Subscribe to any of
+            # its own ``${ThingName}/*`` topics (e.g. health, state,
+            # safety/event), but ``AllowReceiveScoped`` below does NOT grant
+            # Receive on those. The broker therefore silently drops inbound
+            # messages on them. This is deliberate: health/state/safety-event
+            # are publish-only at the robot (the operator consumes them), so
+            # the robot never needs to Receive its own copy. Do NOT widen
+            # ``AllowReceiveScoped`` back to ``${ThingName}/*`` to "fix" this
+            # asymmetry -- that re-opens the fleet-eavesdrop surface the narrow
+            # Receive list closes. See issue #253 / PR #228 R5.
             "Sid": "AllowOwnSubscriptions",
             "Effect": "Allow",
             "Action": "iot:Subscribe",
@@ -275,8 +283,13 @@ _OPERATOR_POLICY_DOC: dict[str, Any] = {
             "Effect": "Allow",
             "Action": ["iot:Subscribe", "iot:Receive"],
             "Resource": [
+                # F-15: response topic gained a ``{robot_thingname}``
+                # segment (strands/{op}/response/{robot}/{turn}); the
+                # multi-level ``#`` filter covers both the old and new
+                # depth so the operator still receives every response
+                # addressed to it.
                 "arn:aws:iot:*:*:topic/strands/${iot:Connection.Thing.ThingName}/response/*",
-                "arn:aws:iot:*:*:topicfilter/strands/${iot:Connection.Thing.ThingName}/response/*",
+                "arn:aws:iot:*:*:topicfilter/strands/${iot:Connection.Thing.ThingName}/response/#",
             ],
         },
         {
@@ -302,10 +315,20 @@ _OPERATOR_POLICY_DOC: dict[str, Any] = {
             ],
         },
         {
+            # F-20 / B-14: scope shadow access to strands-managed Things
+            # only. The bare ``thing/*`` resource let an operator cert
+            # GetThingShadow / UpdateThingShadow on EVERY Thing in the
+            # account (the attribute Condition does not restrict shadow
+            # APIs by resource name -- the pentest wrote shadow.reported
+            # on non-strands Things). AWS does not apply the attribute
+            # condition to the shadow data-plane resource, so the practical
+            # fix is a resource-name prefix: strands robots are provisioned
+            # with ``strands-`` ThingName prefixes (see PROVISIONING
+            # template + _validate_thing_name).
             "Sid": "OperatorShadow",
             "Effect": "Allow",
             "Action": ["iot:GetThingShadow", "iot:UpdateThingShadow"],
-            "Resource": ["arn:aws:iot:*:*:thing/*"],
+            "Resource": ["arn:aws:iot:*:*:thing/strands-*"],
             "Condition": {
                 "StringEquals": {
                     "iot:Connection.Thing.Attributes.strands-mesh-role": "robot",

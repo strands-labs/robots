@@ -58,6 +58,30 @@ class TestRobotPolicy:
         assert "/strands/safety/estop" in joined
         assert "/strands/+/presence" in joined
 
+    def test_own_health_subscribable_but_not_receivable(self):
+        """Issue #253: Subscribe permits own ${ThingName}/* (incl. health)
+        while Receive deliberately omits it, so the broker drops inbound
+        copies. Pins the asymmetry against a future Receive-widening."""
+        sids = _statements_by_sid(_ROBOT_POLICY_DOC)
+        sub = sids["AllowOwnSubscriptions"]
+        recv = sids["AllowReceiveScoped"]
+        sub_actions = sub["Action"]
+        if isinstance(sub_actions, str):
+            sub_actions = [sub_actions]
+        assert "iot:Subscribe" in sub_actions
+        # Subscribe covers the broad own-thing wildcard.
+        assert any(r.endswith("topicfilter/strands/${iot:Connection.Thing.ThingName}/*") for r in sub["Resource"]), (
+            "Subscribe should cover own ${ThingName}/* wildcard"
+        )
+        # Receive must NOT grant the broad own-thing wildcard nor health/state.
+        recv_joined = "\n".join(recv["Resource"])
+        assert "${iot:Connection.Thing.ThingName}/*" not in recv_joined, (
+            "Receive must not widen to own ${ThingName}/* (issue #253)"
+        )
+        assert "${iot:Connection.Thing.ThingName}/health" not in recv_joined
+        assert "${iot:Connection.Thing.ThingName}/state" not in recv_joined
+        assert "${iot:Connection.Thing.ThingName}/safety/event" not in recv_joined
+
     def test_publish_still_scoped_to_own_thing(self):
         """Sanity: publish remains scoped to the robot's own topics."""
         sids = _statements_by_sid(_ROBOT_POLICY_DOC)

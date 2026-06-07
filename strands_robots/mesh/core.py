@@ -1042,7 +1042,14 @@ class Mesh(SensorLoopsMixin):
         # {"action":"execute",...}. Outgoing send/broadcast/tell still accept
         # the ergonomic dict-or-string forms because tell() wraps internally.
         #
-        rkey = f"strands/{sender}/response/{turn}" if sender else None
+        # F-15 / B-09: include the responder's own peer_id as a topic
+        # segment so the IoT robot policy can scope publish to
+        # ``strands/+/response/${ThingName}/*`` -- a robot can only
+        # publish responses tagged with its OWN ThingName, closing the
+        # cross-robot response-spoof surface. The requester subscribes
+        # with ``response/**`` so the extra segment matches. Operator
+        # prefix (``{sender}``) is unchanged so routing is preserved.
+        rkey = f"strands/{sender}/response/{self.peer_id}/{turn}" if sender else None
         if cmd is None or not isinstance(cmd, dict):
             # route non-dict envelope rejection
             # through the same audit + wire-response path as

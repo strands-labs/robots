@@ -131,3 +131,47 @@ def test_publish_cameras_once_handles_missing_frame(fake_robot_with_camera):
     with patch("strands_robots.mesh.core.put") as mock_put:
         m._publish_cameras_once()
     assert not mock_put.called
+
+
+def test_publish_cameras_once_kill_switch_blocks_publish(fake_robot_with_camera, monkeypatch):
+    """STRANDS_MESH_CAMERA_DISABLED=true short-circuits before any publish.
+
+    Pins the privacy kill-switch gate at the top of _publish_cameras_once:
+    when the env var is truthy, no frame is collected and put() is never
+    called, even though the inner robot is connected and has a camera.
+    """
+    from strands_robots.mesh import Mesh
+
+    monkeypatch.setenv("STRANDS_MESH_CAMERA_DISABLED", "true")
+    m = Mesh(fake_robot_with_camera, peer_id="test-cam-killswitch")
+    with patch("strands_robots.mesh.core.put") as mock_put:
+        m._publish_cameras_once()
+    assert not mock_put.called
+    assert not fake_robot_with_camera.robot.get_observation.called
+
+
+def test_publish_cameras_once_publishes_when_kill_switch_unset(fake_robot_with_camera, monkeypatch):
+    """With the kill-switch unset, the camera frame is published normally.
+
+    Companion to test_publish_cameras_once_kill_switch_blocks_publish: proves
+    the gate is the reason for the no-op above, not an unrelated short-circuit.
+    """
+    from strands_robots.mesh import Mesh
+
+    monkeypatch.delenv("STRANDS_MESH_CAMERA_DISABLED", raising=False)
+    m = Mesh(fake_robot_with_camera, peer_id="test-cam-killswitch-off")
+    with patch("strands_robots.mesh.core.put") as mock_put:
+        m._publish_cameras_once()
+    assert mock_put.called
+
+
+def test_publish_cameras_once_kill_switch_lenient_truthy(fake_robot_with_camera, monkeypatch):
+    """Lenient truthy values (on/1/yes) also engage the kill-switch."""
+    from strands_robots.mesh import Mesh
+
+    for raw in ("on", "1", "YES", "True"):
+        monkeypatch.setenv("STRANDS_MESH_CAMERA_DISABLED", raw)
+        m = Mesh(fake_robot_with_camera, peer_id="test-cam-killswitch-lenient")
+        with patch("strands_robots.mesh.core.put") as mock_put:
+            m._publish_cameras_once()
+        assert not mock_put.called, f"value {raw!r} should disable publishing"
