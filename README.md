@@ -506,6 +506,12 @@ sim.add_robot(name="arm", data_config="so100")
 sim.add_object(name="cube", shape="box", position=[0.3, 0, 0.05])
 sim.add_camera(name="topdown", position=[0, 0, 1.5], target=[0, 0, 0])
 
+# Wrist camera: mount ON the gripper body so it tracks the arm like the real
+# SO101/SO100 hardware cam. position/target are in the body's LOCAL frame.
+# Body names are namespaced "<robot>/<body>" (e.g. "arm/gripper").
+sim.add_camera(name="wrist", position=[0, -0.05, 0], target=[0, -0.15, 0],
+               parent_body="arm/gripper")
+
 sim.run_policy(robot_name="arm", policy_provider="mock", n_steps=200,
                control_frequency=50.0)
 
@@ -547,6 +553,10 @@ frame = sim.render(camera_name="topdown")   # {status, content:[text, image]}
   `is_static=True`; passing `is_static=False` is a hard error.
 - **Aim cameras.** Pass `target=[x,y,z]` to look at a point; `target == position`
   errors.
+- **Wrist cameras mount on a body.** Pass `parent_body="<robot>/gripper"` to
+  `add_camera` so the camera rides with the arm (realistic SO101/SO100 wrist
+  cam). In that mode `position`/`target` are in the body's LOCAL frame, not
+  world coordinates. Omit `parent_body` for a world-fixed camera.
 - **MP4 vs dataset recording.** `start_cameras_recording` writes plain MP4
   (`[sim-mujoco]` only). `start_recording` writes a LeRobotDataset (parquet +
   MP4 + schema) and needs the `[lerobot]` extra.

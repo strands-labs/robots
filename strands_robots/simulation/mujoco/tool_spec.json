@@ -153,6 +153,10 @@
       },
       "description": "Camera target point"
     },
+    "parent_body": {
+      "type": "string",
+      "description": "Optional body name to mount the camera ON (e.g. 'so101/gripper' for a wrist cam). When set, position/target are in that body's LOCAL frame and the camera tracks the body as it moves. Empty/omitted = world-fixed camera."
+    },
     "fov": {
       "type": "number",
       "description": "Camera field of view"

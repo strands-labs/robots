@@ -201,6 +201,23 @@ class SpecBuilder:
         spec.visual.global_.offheight = 960
         spec.visual.quality.shadowsize = 4096
 
+        # Headlight. MuJoCo's default headlight is a camera-tracking light
+        # that is ALWAYS on (active=1, diffuse 0.4, specular 0.5). It stacks
+        # additively on top of our ``main_light`` (1.0) + ``fill_light`` (0.5)
+        # below, so the scene renders washed-out / over-bright and flat (the
+        # head-on fill kills the shadow contrast that makes geometry legible).
+        # Real robot camera footage is NOT lit by a head-mounted light, so a
+        # bright headlight also makes sim renders look unlike the real data we
+        # want to collect. Dim it to a low, shadow-free ambient term and let
+        # the explicit scene lights do the directional work -- this mirrors
+        # the upstream SO-ARM ``scene.xml`` (headlight diffuse 0.6, the only
+        # other light a single directional). We go slightly lower (0.2)
+        # because we ship TWO explicit lights, not one.
+        spec.visual.headlight.active = 1
+        spec.visual.headlight.ambient = [0.3, 0.3, 0.3]
+        spec.visual.headlight.diffuse = [0.2, 0.2, 0.2]
+        spec.visual.headlight.specular = [0.0, 0.0, 0.0]
+
         # Ground texture + material - MuJoCo's built-in checkerboard.
         grid_tex = spec.add_texture(
             name="grid_tex",
@@ -327,8 +344,22 @@ class SpecBuilder:
     # camera add
     @staticmethod
     def add_camera(spec: Any, cam: SimCamera) -> None:
-        """Add a world-fixed camera. If ``cam.target`` is set, converts the
-        look-at direction to a quaternion via :func:`_target_quat`.
+        """Add a camera to the scene.
+
+        Two modes:
+
+        * **World-fixed** (default): the camera is added under ``worldbody``
+          at ``cam.position`` looking at ``cam.target`` (both in world
+          coordinates).
+        * **Body-mounted** (``cam.parent_body`` set): the camera is added as
+          a child of that body, so ``cam.position``/``cam.target`` are in the
+          body's LOCAL frame and the camera tracks the body as it moves. This
+          is how a realistic wrist/gripper camera is modelled -- it rides
+          along with the gripper exactly like the physical camera on a real
+          SO101/SO100.
+
+        If ``cam.target`` is set, the look-at direction is converted to a
+        quaternion via :func:`_target_quat`.
         """
         mujoco = _ensure_mujoco()
         pos = list(cam.position)
@@ -343,7 +374,31 @@ class SpecBuilder:
             quat = _target_quat(pos, list(target))
             if quat is not None:
                 kwargs["quat"] = quat
-        spec.worldbody.add_camera(**kwargs)
+
+        parent_name = getattr(cam, "parent_body", "") or ""
+        if parent_name:
+            # Mount on the named body. spec.body() only resolves bodies that
+            # existed at the last compile; robot bodies introduced via
+            # spec.attach() may not be visible that way, so fall back to a
+            # full scan (mirrors scene_ops._find_body's robustness).
+            parent = None
+            try:
+                parent = spec.body(parent_name)
+            except (KeyError, ValueError):
+                parent = None
+            if parent is None:
+                for body in spec.bodies:
+                    if body.name == parent_name:
+                        parent = body
+                        break
+            if parent is None:
+                raise ValueError(
+                    f"add_camera: parent_body {parent_name!r} not found in scene. "
+                    "Pass the fully-qualified body name (e.g. 'so101/gripper')."
+                )
+            parent.add_camera(**kwargs)
+        else:
+            spec.worldbody.add_camera(**kwargs)
 
     # body remove
     @staticmethod

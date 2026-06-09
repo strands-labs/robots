@@ -104,6 +104,11 @@ class SimCamera:
     height: int = 480
     camera_id: int = -1
     origin_robot: str = ""
+    #: Optional body name to mount the camera ON (e.g. a robot's gripper for
+    #: a wrist cam). When set, ``position``/``target`` are interpreted in that
+    #: body's LOCAL frame and the camera tracks the body as it moves --
+    #: matching a real wrist-mounted camera. Empty = world-fixed camera.
+    parent_body: str = ""
 
 
 @dataclass

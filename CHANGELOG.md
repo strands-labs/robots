@@ -35,6 +35,22 @@ Eight first-run paper cuts found during a fresh-clone SO101 customer workflow:
   `create_world()` again), fixed the callable usage example, and documented
   the new mesh env vars in the Configuration table.
 
+### Fixed: realistic sim rendering + wrist cameras (GH #373 follow-up)
+
+- **Dimmed the MuJoCo headlight.** The default camera-tracking headlight
+  (diffuse 0.4, specular 0.5, always on) stacked additively on the two
+  explicit scene lights, washing out renders and flattening shadow contrast --
+  and looking nothing like real camera footage. `SpecBuilder.build` now sets
+  the headlight to a low, shadow-free term (diffuse 0.2, specular 0) so the
+  explicit directional lights do the work. More realistic sim data.
+- **Body-mounted (wrist/gripper) cameras.** `add_camera` gained a
+  `parent_body` parameter: pass a body name (e.g. `"so101/gripper"`) and the
+  camera mounts ON that body and tracks it as the arm moves -- matching the
+  physical wrist camera on a real SO101/SO100. `position`/`target` are then
+  interpreted in the body's local frame. Omitting `parent_body` keeps the
+  prior world-fixed behaviour. An unknown `parent_body` returns a structured
+  error listing the available (namespaced) body names.
+
 
 ### Changed (breaking): ``panda`` embodiment split into joint-space vs EEF
 

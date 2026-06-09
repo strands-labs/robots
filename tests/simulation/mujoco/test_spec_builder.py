@@ -198,6 +198,28 @@ class TestBuild:
         gid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "ground")
         assert gid < 0
 
+    def test_headlight_is_dimmed(self):
+        """GH #373 (renderings too bright): MuJoCo's default headlight
+        (diffuse 0.4, specular 0.5, active) stacks additively on our two
+        explicit scene lights, washing out the scene. build() must dim it
+        to a low, shadow-free term."""
+        model = SpecBuilder.build(SimWorld()).compile()
+        hl = model.vis.headlight
+        # Specular off entirely (no head-on glare hotspots).
+        assert np.allclose(hl.specular, [0.0, 0.0, 0.0])
+        # Diffuse pulled well below the 0.4 default so explicit lights
+        # provide the directional illumination.
+        assert float(hl.diffuse[0]) <= 0.25
+        assert np.allclose(hl.diffuse, [hl.diffuse[0]] * 3)
+
+    def test_explicit_scene_lights_present(self):
+        """The two explicit directional lights survive build() — the dimmed
+        headlight relies on them for the actual scene illumination."""
+        model = SpecBuilder.build(SimWorld()).compile()
+        assert model.nlight >= 2
+        names = {mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_LIGHT, i) for i in range(model.nlight)}
+        assert {"main_light", "fill_light"} <= names
+
 
 # Mutation helpers
 
@@ -268,6 +290,47 @@ class TestMutation:
         )
         new_model, _ = spec.recompile(model, data)
         assert mujoco.mj_name2id(new_model, mujoco.mjtObj.mjOBJ_CAMERA, "top") >= 0
+
+    def test_add_camera_mounted_on_body(self):
+        """GH #373 (SO101 wrist cam): a camera with parent_body set must be
+        attached to that body so it tracks the body's motion (realistic
+        wrist/gripper camera), not fixed in the world."""
+        # Build a world with a single movable body to mount onto.
+        w = SimWorld()
+        w.objects["holder"] = SimObject(
+            name="holder", shape="box", position=[0.2, 0.0, 0.3], size=[0.05, 0.05, 0.05], mass=0.2
+        )
+        spec = SpecBuilder.build(w)
+        model = spec.compile()
+        data = mujoco.MjData(model)
+
+        SpecBuilder.add_camera(
+            spec,
+            SimCamera(
+                name="wrist",
+                position=[0.0, 0.0, 0.1],
+                target=[0.0, 0.0, 0.0],
+                fov=60,
+                width=320,
+                height=240,
+                parent_body="holder",
+            ),
+        )
+        new_model, _ = spec.recompile(model, data)
+        cam_id = mujoco.mj_name2id(new_model, mujoco.mjtObj.mjOBJ_CAMERA, "wrist")
+        assert cam_id >= 0
+        # The camera's parent body must be 'holder', not worldbody (id 0).
+        body_id = int(new_model.cam_bodyid[cam_id])
+        assert mujoco.mj_id2name(new_model, mujoco.mjtObj.mjOBJ_BODY, body_id) == "holder"
+
+    def test_add_camera_unknown_parent_body_raises(self):
+        w = SimWorld()
+        spec = SpecBuilder.build(w)
+        with pytest.raises(ValueError, match="parent_body"):
+            SpecBuilder.add_camera(
+                spec,
+                SimCamera(name="wrist", position=[0, 0, 0.1], target=[0, 0, 0], parent_body="does_not_exist"),
+            )
 
     def test_remove_camera(self):
         w = SimWorld()
