@@ -30,6 +30,8 @@ def _clean_env(monkeypatch):
         "STRANDS_MESH_TLS_CA",
         "STRANDS_MESH_TLS_CERT",
         "STRANDS_MESH_TLS_KEY",
+        "STRANDS_MESH_LOCAL_DEV",
+        "STRANDS_MESH_I_KNOW_THIS_IS_INSECURE",
     ]:
         monkeypatch.delenv(key, raising=False)
 
@@ -95,6 +97,54 @@ class TestAuthMode:
     def test_typo_rejected(self, monkeypatch):
         monkeypatch.setenv("STRANDS_MESH_AUTH_MODE", "mtsl")
         with pytest.raises(ValueError, match="not supported"):
+            zc.resolve_auth_mode()
+
+
+class TestLocalDevPreset:
+    """GH #373 friction #7: STRANDS_MESH_LOCAL_DEV one-var localhost preset."""
+
+    def test_local_dev_defaults_to_none_without_second_factor(self, monkeypatch):
+        # LOCAL_DEV alone defaults auth to 'none' AND is its own second factor:
+        # no STRANDS_MESH_I_KNOW_THIS_IS_INSECURE required.
+        monkeypatch.setenv("STRANDS_MESH_LOCAL_DEV", "1")
+        monkeypatch.delenv("STRANDS_MESH_AUTH_MODE", raising=False)
+        monkeypatch.delenv("STRANDS_MESH_I_KNOW_THIS_IS_INSECURE", raising=False)
+        assert zc.resolve_auth_mode() == "none"
+
+    def test_local_dev_accepts_truthy_strings(self, monkeypatch):
+        monkeypatch.delenv("STRANDS_MESH_AUTH_MODE", raising=False)
+        monkeypatch.delenv("STRANDS_MESH_I_KNOW_THIS_IS_INSECURE", raising=False)
+        for val in ("1", "true", "TRUE", "yes", "Yes"):
+            monkeypatch.setenv("STRANDS_MESH_LOCAL_DEV", val)
+            assert zc.resolve_auth_mode() == "none"
+
+    def test_local_dev_falsy_does_not_engage(self, monkeypatch):
+        # A falsy LOCAL_DEV must NOT lower the default below mtls.
+        monkeypatch.delenv("STRANDS_MESH_AUTH_MODE", raising=False)
+        for val in ("0", "false", "no", ""):
+            monkeypatch.setenv("STRANDS_MESH_LOCAL_DEV", val)
+            assert zc.resolve_auth_mode() == "mtls"
+
+    def test_explicit_mtls_overrides_local_dev(self, monkeypatch):
+        # An explicit AUTH_MODE=mtls wins even under LOCAL_DEV.
+        monkeypatch.setenv("STRANDS_MESH_LOCAL_DEV", "1")
+        monkeypatch.setenv("STRANDS_MESH_AUTH_MODE", "mtls")
+        assert zc.resolve_auth_mode() == "mtls"
+
+    def test_explicit_none_under_local_dev_needs_no_second_factor(self, monkeypatch):
+        # AUTH_MODE=none + LOCAL_DEV is fine without _I_KNOW_THIS_IS_INSECURE,
+        # because LOCAL_DEV is the acknowledgement.
+        monkeypatch.setenv("STRANDS_MESH_LOCAL_DEV", "1")
+        monkeypatch.setenv("STRANDS_MESH_AUTH_MODE", "none")
+        monkeypatch.delenv("STRANDS_MESH_I_KNOW_THIS_IS_INSECURE", raising=False)
+        assert zc.resolve_auth_mode() == "none"
+
+    def test_none_without_local_dev_still_needs_second_factor(self, monkeypatch):
+        # Regression guard: turning LOCAL_DEV off restores the strict gate.
+        monkeypatch.delenv("STRANDS_MESH_LOCAL_DEV", raising=False)
+        monkeypatch.setenv("STRANDS_MESH_AUTH_MODE", "none")
+        monkeypatch.delenv("STRANDS_MESH_I_KNOW_THIS_IS_INSECURE", raising=False)
+        with pytest.raises(ValueError, match="STRANDS_MESH_I_KNOW_THIS_IS_INSECURE"):
             zc.resolve_auth_mode()
 
 

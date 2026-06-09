@@ -141,8 +141,16 @@ agent("Wave the arm using the mock policy for 200 steps, then render a top-down 
 ```
 
 `Robot("so100")` returns a `Simulation` instance — the full 64-action
-simulation AgentTool. Drive it in natural language, or call its methods
-directly (see [Simulation](#simulation-mujoco)).
+simulation AgentTool. Drive it in natural language through an `Agent`, call its
+methods directly (`robot.render(camera_name="topdown")`), or dispatch an action
+by calling it (`robot(action="render", camera_name="topdown")`). See
+[Simulation](#simulation-mujoco).
+
+> **Note:** `Robot("so100")` already creates the world **and** adds the robot
+> for you. Do **not** call `create_world()` again on the returned instance —
+> it will error with *"World already exists."* The `create_world()` /
+> `add_robot()` sequence shown in [Simulation (MuJoCo)](#simulation-mujoco) is
+> for the low-level `Simulation(...)` constructor, which starts empty.
 
 ### Real hardware + GR00T
 
@@ -568,7 +576,9 @@ from strands_robots import Robot
 
 a = Robot("so100")              # auto-joins the mesh
 b = Robot("so100")              # second peer (another process)
-print(a.mesh.peers)             # discovers b
+print(a.mesh.peers)             # list[dict] — discovers b
+print(a.mesh.peers_by_id[b.peer_id])   # dict[peer_id -> info] for O(1) lookup
+info = a.mesh.get_peer(b.peer_id)      # None-safe single lookup
 
 a.mesh.tell(b.peer_id, "pick up the cube")
 a.mesh.emergency_stop()         # broadcast E-STOP, audited to disk
@@ -595,6 +605,13 @@ Expose the mesh to an agent with the `robot_mesh` tool (`peers`, `status`,
 `inbox`). Disable globally with `STRANDS_MESH=false` or per-robot with
 `Robot("so100", mesh=False)`. Install with `pip install "strands-robots[mesh]"`.
 
+For frictionless single-machine experiments, set `STRANDS_MESH_LOCAL_DEV=1` —
+one env var that runs the mesh without mTLS/ACL on localhost. It defaults the
+auth mode to `none` **and** satisfies the insecure-acknowledgement second
+factor by itself, so you don't also need `STRANDS_MESH_I_KNOW_THIS_IS_INSECURE=1`.
+An explicit `STRANDS_MESH_AUTH_MODE=mtls` still wins. **Never** set
+`STRANDS_MESH_LOCAL_DEV` on a shared or production network.
+
 ### AWS IoT Core transport (fleets)
 
 For robots across networks, bridge the mesh to AWS IoT Core over MQTT5/mTLS,
@@ -616,6 +633,9 @@ Install with `pip install "strands-robots[mesh-iot]"`. See the
 | `MUJOCO_GL` | MuJoCo GL backend (`egl`, `osmesa`, `glfw`) | auto |
 | `GROOT_API_TOKEN` | API token for the GR00T inference service | unset |
 | `STRANDS_MESH` | Set `false` to disable Zenoh mesh globally | `true` |
+| `STRANDS_MESH_LOCAL_DEV` | Set `1` for a one-var localhost preset (auth `none`, no second factor needed) | unset |
+| `STRANDS_MESH_AUTH_MODE` | Wire auth: `mtls` or `none` (`none` needs a second factor) | `mtls` |
+| `STRANDS_MESH_I_KNOW_THIS_IS_INSECURE` | Second factor required to bring up `AUTH_MODE=none` | unset |
 | `STRANDS_MESH_PORT` | TCP port for the local Zenoh router | `7447` |
 | `ZENOH_CONNECT` | Comma-separated remote Zenoh endpoints to connect to | unset |
 | `ZENOH_LISTEN` | Comma-separated endpoints for the local Zenoh listener | unset |

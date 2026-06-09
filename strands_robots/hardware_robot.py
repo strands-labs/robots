@@ -21,12 +21,14 @@ import functools
 import importlib
 import logging
 import pkgutil
+import shutil
 import threading
 import time
 from collections.abc import AsyncGenerator
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 from strands.tools.tools import AgentTool
@@ -245,6 +247,17 @@ class Robot(AgentTool):
         # Initialize robot using lerobot's abstraction
         self.robot = self._initialize_robot(robot, cameras, **kwargs)
 
+        # lerobot 0.5.1 unified the SO-family calibration directory from
+        # per-variant subdirs (``so100_follower/``, ``so101_follower/``) to a
+        # single shared ``so_follower/``. Customers who calibrated on a
+        # pre-0.5 lerobot have their JSON at the OLD path; the new
+        # ``calibration_fpath`` resolves to the NEW path, finds nothing, and
+        # reports ``is_calibrated=False`` -- which only surfaces as a confusing
+        # RuntimeError on the first ``get_observation()``, not on ``connect()``.
+        # Migrate (copy, never move -- old lerobot installs may still read it)
+        # so a fresh customer's existing calibration Just Works.
+        self._migrate_legacy_calibration()
+
         logger.info("%s initialized with async capabilities", tool_name)
         logger.info("Robot: %s (type: %s)", self.robot.name, getattr(self.robot, "robot_type", "unknown"))
         logger.info("Control frequency: %sHz (%.1fms per action)", control_frequency, self.action_sleep_time * 1000)
@@ -283,6 +296,69 @@ class Robot(AgentTool):
                 f"Unsupported robot type: {type(robot)}. "
                 f"Expected LeRobot Robot instance, RobotConfig, or robot type string."
             )
+
+    def _migrate_legacy_calibration(self) -> None:
+        """Copy a pre-0.5 SO-family calibration file to the new shared path.
+
+        lerobot 0.5.1 unified ``so100_follower/`` + ``so101_follower/`` (and
+        the leader variants) into a single ``so_follower/`` /
+        ``so_leader/`` directory under ``HF_LEROBOT_CALIBRATION``. The robot's
+        ``calibration_fpath`` now points at the NEW location; an existing
+        customer's JSON sits at the OLD location and is never found, so
+        ``is_calibrated`` is ``False`` and the first ``get_observation()``
+        raises.
+
+        This best-effort migration copies (never moves -- a still-installed
+        old lerobot may read the original) the legacy file into place when:
+          * the robot exposes a ``calibration_fpath`` (lerobot >=0.5), and
+          * the NEW path does not already exist, and
+          * exactly one matching legacy file is found.
+
+        Any failure is logged and swallowed -- a calibration that can't be
+        migrated simply leaves the robot in its pre-existing (uncalibrated)
+        state, which the connect path already reports clearly.
+        """
+        try:
+            new_path = getattr(self.robot, "calibration_fpath", None)
+            if new_path is None:
+                return
+            new_path = Path(new_path)
+            if new_path.is_file():
+                return  # already calibrated at the new path; nothing to do
+
+            # The shared dir is the parent (e.g. ``.../so_follower``); the
+            # legacy dirs are siblings named after the concrete variant.
+            shared_dir = new_path.parent  # so_follower / so_leader
+            calib_root = shared_dir.parent  # HF_LEROBOT_CALIBRATION/robots
+            shared_name = shared_dir.name  # "so_follower"
+            file_name = new_path.name  # "<id>.json"
+
+            # Only the SO-family was renamed; restrict to *_follower / *_leader
+            # subdirs sharing the same role suffix so we don't pull an
+            # unrelated robot's file.
+            if shared_name not in ("so_follower", "so_leader"):
+                return
+            role = shared_name.split("_", 1)[1]  # "follower" | "leader"
+
+            candidates = [
+                p for p in calib_root.glob(f"*_{role}/{file_name}") if p.is_file() and p.parent.name != shared_name
+            ]
+            if len(candidates) != 1:
+                # Zero -> nothing to migrate. >1 -> ambiguous, refuse to guess.
+                if len(candidates) > 1:
+                    logger.warning(
+                        "Multiple legacy calibration files found for %s; skipping auto-migration to avoid guessing: %s",
+                        file_name,
+                        [str(c) for c in candidates],
+                    )
+                return
+
+            old_path = candidates[0]
+            new_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(old_path, new_path)
+            logger.info("Migrated calibration file: %s -> %s", old_path, new_path)
+        except OSError as exc:
+            logger.warning("Calibration auto-migration failed (%s); leaving as-is", exc)
 
     def _create_minimal_config(
         self, robot_type: str, cameras: dict[str, dict[str, Any]] | None, **kwargs: Any

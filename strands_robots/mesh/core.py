@@ -664,6 +664,28 @@ class Mesh(SensorLoopsMixin):
     def peers(self) -> list[dict[str, Any]]:
         return [p for p in _session_get_peers() if p.get("peer_id") != self.peer_id]
 
+    @property
+    def peers_by_id(self) -> dict[str, dict[str, Any]]:
+        """Peers keyed by ``peer_id`` for dict-style lookup.
+
+        Complements :attr:`peers` (a ``list[dict]``). README pseudo-code used
+        ``mesh.peers[peer_id]`` expecting dict access; on the list that raises
+        ``TypeError`` (GH #373 friction #8). Use this for O(1) lookup::
+
+            info = robot.mesh.peers_by_id[other.peer_id]
+
+        or the :meth:`get_peer` helper for a ``None``-safe single lookup.
+        """
+        return {p["peer_id"]: p for p in self.peers if "peer_id" in p}
+
+    def get_peer(self, peer_id: str) -> dict[str, Any] | None:
+        """Return a single peer's info dict by ``peer_id``, or ``None``.
+
+        ``None``-safe counterpart to ``peers_by_id[peer_id]`` -- prefer this
+        when the peer may not be present yet (discovery is asynchronous).
+        """
+        return self.peers_by_id.get(peer_id)
+
     # Presence — outgoing
     def _build_presence(self) -> dict[str, Any]:
         r = self.robot

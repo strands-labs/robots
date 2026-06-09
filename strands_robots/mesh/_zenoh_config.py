@@ -108,6 +108,16 @@ Configuration env vars
     before the wire comes up. Never set this on a network you do not
     fully trust.
 
+``STRANDS_MESH_LOCAL_DEV``
+    Set to ``1`` / ``true`` / ``yes`` for a one-variable localhost
+    developer preset. Defaults ``AUTH_MODE`` to ``none`` AND satisfies
+    the ``_I_KNOW_THIS_IS_INSECURE`` second factor by itself, so a
+    fresh ``Robot()`` joins the mesh with zero security setup -- the
+    "no setup" promise from the README. An explicit
+    ``STRANDS_MESH_AUTH_MODE`` still overrides (force ``mtls`` even in
+    local dev). Intended for single-machine experiments only; never
+    set on a shared or production network.
+
 ``STRANDS_MESH_FILTER_INTERFACES``
     Comma-separated allowlist of network interface names (e.g.
     ``eth0,wlan0``) used by ``low_pass_filter`` when enumerating NICs
@@ -212,6 +222,21 @@ def resolve_namespace() -> str:
     return raw or DEFAULT_NAMESPACE
 
 
+def _local_dev_enabled() -> bool:
+    """True when ``STRANDS_MESH_LOCAL_DEV`` is set to a truthy value.
+
+    The localhost-only developer preset (GH #373 friction #7). When on, the
+    mesh runs without mTLS/ACL for frictionless single-machine experiments,
+    and ``LOCAL_DEV`` itself acts as the explicit "I accept insecure" second
+    factor -- so the operator does not ALSO need
+    ``STRANDS_MESH_I_KNOW_THIS_IS_INSECURE=1``. Truthy: ``1``, ``true``,
+    ``yes`` (case-insensitive). This is intentionally a *separate* knob from
+    ``STRANDS_MESH_AUTH_MODE`` so production code paths that read auth mode
+    directly never accidentally inherit a dev default.
+    """
+    return os.getenv("STRANDS_MESH_LOCAL_DEV", "").strip().lower() in ("1", "true", "yes")
+
+
 def resolve_auth_mode() -> str:
     """Return the configured auth mode.
 
@@ -228,11 +253,22 @@ def resolve_auth_mode() -> str:
     second factor, ``"none"`` raises ``ValueError`` at config-build
     time -- the burden of proof lives with the operator who is turning
     auth off.
+
+    **Local-dev shortcut** (GH #373 friction #7): setting
+    ``STRANDS_MESH_LOCAL_DEV=1`` defaults the auth mode to ``"none"`` AND
+    satisfies the insecure-acknowledgement second factor on its own -- one
+    env var, not two, to run a frictionless localhost mesh. An explicit
+    ``STRANDS_MESH_AUTH_MODE`` still wins (so you can force ``mtls`` even in
+    local dev), and an explicit ``AUTH_MODE=none`` under ``LOCAL_DEV`` no
+    longer needs the ``_I_KNOW_THIS_IS_INSECURE`` factor because ``LOCAL_DEV``
+    is the acknowledgement.
     """
-    raw = os.getenv("STRANDS_MESH_AUTH_MODE", "mtls").strip().lower()
+    local_dev = _local_dev_enabled()
+    default_mode = "none" if local_dev else "mtls"
+    raw = os.getenv("STRANDS_MESH_AUTH_MODE", default_mode).strip().lower()
     if raw not in ("mtls", "none"):
         raise ValueError(f"STRANDS_MESH_AUTH_MODE={raw!r} not supported (expected 'mtls' or 'none')")
-    if raw == "none":
+    if raw == "none" and not local_dev:
         ack = os.getenv("STRANDS_MESH_I_KNOW_THIS_IS_INSECURE", "").strip().lower()
         if ack not in ("1", "true", "yes"):
             raise ValueError(
