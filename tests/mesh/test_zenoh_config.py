@@ -100,8 +100,12 @@ class TestAuthMode:
             zc.resolve_auth_mode()
 
 
-class TestLocalDevPreset:
-    """GH #373 friction #7: STRANDS_MESH_LOCAL_DEV one-var localhost preset."""
+class TestLocalDevAuthPreset:
+    """STRANDS_MESH_LOCAL_DEV selects the one-variable localhost auth preset.
+
+    Setting it alone defaults the mesh auth mode to ``none`` and acts as its
+    own insecure-acknowledgement second factor; an explicit AUTH_MODE still wins.
+    """
 
     def test_local_dev_defaults_to_none_without_second_factor(self, monkeypatch):
         # LOCAL_DEV alone defaults auth to 'none' AND is its own second factor:

@@ -1,19 +1,16 @@
-"""Regression tests for GH #373 customer-mode E2E friction points.
+"""Regression tests for the fresh-clone SO101/SO100 customer workflow.
 
-Each test pins a specific fix from the "8 friction points" issue so a future
-refactor can't silently reintroduce the paper cut. Friction points covered
-here:
+Each test pins a behavior that a first-run customer relies on, so a future
+refactor can't silently reintroduce a setup paper cut. Behaviors covered:
 
-* #2 — ``Robot("so100")`` / ``MuJoCoSimEngine`` must be callable as
-  ``sim(action="...")`` (README contract).
-* #5 — README param-name aliases (``camera_names=`` / ``joint_positions=``)
-  must be accepted by the action dispatcher.
-* #8 — ``mesh.peers_by_id`` dict + ``mesh.get_peer()`` helper for dict-style
-  peer lookup.
+* The Feetech servo SDK ships with the ``[lerobot]`` extra.
+* ``Robot("so100")`` is callable and dispatches actions (README contract).
+* Pre-0.5 SO-family calibration files auto-migrate to the new path.
+* README parameter names work as action-dispatch aliases.
+* The mesh exposes dict-style peer lookup, not just a list.
 
-(#1 lerobot[feetech], #3 calibration migration, #4/#6 docs, #7 LOCAL_DEV are
-pinned elsewhere: #1 in ``test_pyproject``-style checks below, #7 in
-``tests/mesh/test_zenoh_config.py::TestLocalDevPreset``.)
+The localhost mesh dev preset (``STRANDS_MESH_LOCAL_DEV``) is covered in
+``tests/mesh/test_zenoh_config.py::TestLocalDevAuthPreset``.
 """
 
 from __future__ import annotations
@@ -53,8 +50,8 @@ def _build_sim(tmp_path):
     return Robot("so100", mode="sim", backend="mujoco", urdf_path=str(mjcf_path), mesh=False)
 
 
-class TestFriction1FeetechExtra:
-    """#1: ``[lerobot]`` extra must pull ``lerobot[feetech]`` for SO/Koch arms."""
+class TestLerobotExtraIncludesFeetech:
+    """The ``[lerobot]`` extra must pull ``lerobot[feetech]`` for SO/Koch arms."""
 
     def test_lerobot_extra_includes_feetech(self):
         with open(_REPO_ROOT / "pyproject.toml", "rb") as f:
@@ -66,8 +63,8 @@ class TestFriction1FeetechExtra:
         assert "lerobot[feetech]" in joined, f"[lerobot] extra must request lerobot[feetech]; got {lerobot_extra!r}"
 
 
-class TestFriction2SimCallable:
-    """#2: the Simulation returned by ``Robot()`` must be callable."""
+class TestSimulationIsCallable:
+    """The Simulation returned by ``Robot()`` must be callable and dispatch actions."""
 
     def test_sim_is_callable(self, tmp_path):
         pytest.importorskip("mujoco")
@@ -110,8 +107,8 @@ class TestFriction2SimCallable:
             sim.destroy()
 
 
-class TestFriction5ParamAliases:
-    """#5: README param names must work as dispatcher field aliases."""
+class TestReadmeParamAliases:
+    """README parameter names must work as action-dispatch field aliases."""
 
     def test_joint_positions_alias(self, tmp_path):
         pytest.importorskip("mujoco")
@@ -141,8 +138,8 @@ class TestFriction5ParamAliases:
             sim.destroy()
 
 
-class TestFriction3CalibrationMigration:
-    """#3: pre-0.5 SO-family calibration files auto-migrate to the new path."""
+class TestCalibrationAutoMigration:
+    """Pre-0.5 SO-family calibration files must auto-migrate to the new path."""
 
     def _hw_stub(self, calibration_fpath):
         """A HardwareRobot instance with only what the migration needs."""
@@ -217,8 +214,8 @@ class TestFriction3CalibrationMigration:
         assert not new.is_file()
 
 
-class TestFriction8PeersById:
-    """#8: mesh exposes dict-style peer lookup, not just a list."""
+class TestMeshPeerDictLookup:
+    """The mesh must expose dict-style peer lookup, not just a list."""
 
     def _make_mesh(self):
         from strands_robots.mesh.core import Mesh
