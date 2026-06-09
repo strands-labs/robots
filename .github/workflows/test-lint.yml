@@ -32,14 +32,28 @@ jobs:
           sudo apt-get install -y libosmesa6-dev ffmpeg
 
       - name: Install dependencies
+        env:
+          UV_TORCH_BACKEND: cpu
         run: |
           pip install --no-cache-dir hatch
           pip install --no-cache-dir -e ".[all,dev]"
 
       - name: Run lint
+        env:
+          UV_TORCH_BACKEND: cpu
         run: hatch run lint
 
       - name: Run tests
         env:
           MUJOCO_GL: osmesa
-        run: hatch run test -x --strict-markers
+          # x86 CI is CPU-only. Pin the PyTorch backend to CPU so uv does not
+          # auto-detect a CUDA driver stub (libcuda1 ships with the ffmpeg apt
+          # deps) and resolve a CUDA torch wheel that cannot import on this
+          # GPU-less runner -- which would silently trigger the numpy torch
+          # mock in tests/conftest.py and break torch-dependent tests.
+          UV_TORCH_BACKEND: cpu
+        run: |
+          # Diagnose the torch the hatch test env actually resolved BEFORE
+          # running the suite, so a mock fallback is obvious in the log.
+          hatch run python -c "import torch, sys; print('TORCH_DIAG file=%s version=%s mock=%s' % (getattr(torch,'__file__','?'), getattr(torch,'__version__','MOCK-NO-VERSION'), not hasattr(torch,'__version__')), file=sys.stderr)" || true
+          hatch run test -x --strict-markers

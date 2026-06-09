@@ -293,8 +293,34 @@ def install_torch_mock():
 
         logger.info("Real torch is available (version=%s) - mock not installed", torch.__version__)
         return  # Real torch available - nothing to do
-    except ImportError:
-        pass
+    except Exception as exc:  # noqa: BLE001 - diagnostics: any import failure means we mock
+        # IMPORTANT: print to stderr (not just logging.info, which pytest captures
+        # and hides) so CI logs ALWAYS show WHY the mock was installed. A silent
+        # fallback here previously masked an env-resolution bug (a CUDA torch
+        # wheel that failed to import) for hours of log-archaeology.
+        _msg = (
+            f"[torch_mock] real torch import FAILED ({type(exc).__name__}: {exc}); "
+            "installing numpy mock. If this is unexpected, the torch wheel in this "
+            "env is broken/unimportable (e.g. wrong CUDA build)."
+        )
+        # pytest captures stdout/stderr, so ALSO write to a sentinel file that
+        # CI can cat unconditionally -- this is what makes the diagnosis a
+        # one-line grep instead of log-archaeology.
+        print(_msg, file=sys.stderr)
+        try:
+            import os as _os
+
+            with open(
+                _os.environ.get("TORCH_MOCK_SENTINEL", "/tmp/torch_mock_active.txt"),
+                "w",
+            ) as _fh:
+                _fh.write(_msg + "\n")
+        except OSError:
+            # Sentinel-file write is best-effort diagnostics only (read-only or
+            # full /tmp, restricted CI sandbox, etc.). The stderr message above
+            # already conveys why the mock was installed, so a failed write must
+            # never abort mock installation or fail the test run.
+            pass
 
     logger.info("Installing torch mock (real torch not available)")
 

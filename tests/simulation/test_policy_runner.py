@@ -587,3 +587,65 @@ class TestDispatcherFoldsFlatVideoKeys:
             },
         )
         assert captured["video"] == explicit_video
+
+
+class _SubstepRecordingSim(FakeSim):
+    """FakeSim that reports a fixed physics timestep and records the
+    ``n_substeps`` PolicyRunner passes to each ``send_action`` call."""
+
+    def __init__(self, dt: float = 0.002, joint_names=("j0", "j1", "j2")):
+        super().__init__(joint_names=joint_names)
+        self._dt = dt
+        self.substeps_seen: list[int] = []
+
+    def physics_timestep(self):  # noqa: D102 - see SimEngine.physics_timestep
+        return self._dt
+
+    def send_action(self, action, robot_name=None, n_substeps=1):
+        self.substeps_seen.append(n_substeps)
+        super().send_action(action, robot_name=robot_name, n_substeps=n_substeps)
+
+
+def test_runner_substeps_at_control_rate():
+    """Runner converts control_frequency + physics dt into substeps so a
+    position-servo arm gets a full control period of physics per action.
+
+    15 Hz control with a 2 ms physics dt => round((1/15)/0.002) = 33 substeps.
+    """
+    sim = _SubstepRecordingSim(dt=0.002)
+    policy = MockPolicy()
+    policy.set_robot_state_keys(sim.robot_joint_names("fake_robot"))
+
+    res = PolicyRunner(sim).run("fake_robot", policy, duration=4 / 15, control_frequency=15.0, fast_mode=True)
+    assert res["status"] == "success"
+    assert sim.substeps_seen, "no send_action calls recorded"
+    assert all(s == 33 for s in sim.substeps_seen), sim.substeps_seen
+
+
+def test_runner_control_substeps_override():
+    """Explicit ``control_substeps`` wins over the auto-derived value."""
+    sim = _SubstepRecordingSim(dt=0.002)
+    policy = MockPolicy()
+    policy.set_robot_state_keys(sim.robot_joint_names("fake_robot"))
+
+    PolicyRunner(sim).run(
+        "fake_robot",
+        policy,
+        duration=0.2,
+        control_frequency=15.0,
+        fast_mode=True,
+        control_substeps=7,
+    )
+    assert all(s == 7 for s in sim.substeps_seen), sim.substeps_seen
+
+
+def test_runner_falls_back_to_one_substep_when_dt_unknown():
+    """A backend that returns ``None`` from physics_timestep => 1 substep
+    (preserves the legacy single-step behaviour)."""
+    sim = _SubstepRecordingSim(dt=0.002)
+    sim.physics_timestep = lambda: None  # type: ignore[assignment]
+    policy = MockPolicy()
+    policy.set_robot_state_keys(sim.robot_joint_names("fake_robot"))
+
+    PolicyRunner(sim).run("fake_robot", policy, duration=0.2, control_frequency=15.0, fast_mode=True)
+    assert all(s == 1 for s in sim.substeps_seen), sim.substeps_seen

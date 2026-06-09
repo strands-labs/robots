@@ -32,6 +32,7 @@ from strands_robots.policies.groot.policy import (  # noqa: E402
 # Helpers
 # (section)
 
+
 _KNOWN_DOF = {
     "single_arm": 5,
     "gripper": 1,

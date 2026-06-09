@@ -130,7 +130,68 @@ dependencies = [
     "requests>=2.28.0,<3.0.0",
     "msgpack>=1.0.0,<2.0.0",
     "pyzmq>=27.0.0,<28.0.0",
+    # torchvision 0.26 (from the aarch64 torch>=2.11 override below) removed
+    # torchvision.io.VideoReader, which lerobot 0.5.1's pyav fallback still calls,
+    # crashing dataset video read-back. lerobot's torchcodec dep marker EXCLUDES
+    # aarch64, so add torchcodec explicitly on linux+aarch64 -> lerobot uses its
+    # preferred (working) torchcodec decoder instead of the removed VideoReader.
+    "torchcodec>=0.7; platform_machine == 'aarch64' and sys_platform == 'linux'",
 ]
+
+# ---------------------------------------------------------------------------
+# torch 2.11 override for NVIDIA Thor / Jetson (linux + aarch64).
+#
+# The PyPI torch 2.10.0 aarch64 build has a bug in its sm_110 (Thor, compute
+# capability 11.0) cuBLAS call path: every cublasSgemm returns
+# CUBLAS_STATUS_INVALID_VALUE, so real policy inference crashes even though
+# torch.cuda.is_available() is True. This is fixed in torch 2.11 (verified on
+# NVIDIA Thor: native cuBLAS matmul + lerobot ACTPolicy inference both work).
+#
+# lerobot 0.5.1 declares torch<2.11 / torchvision<0.26, but that cap is
+# conservative -- lerobot 0.5.1 imports and runs ACTPolicy fine on torch 2.11
+# (empirically verified). We override the cap ONLY on linux+aarch64 so x86_64
+# and macOS keep lerobot's resolved versions untouched.
+#
+# Paired with UV_TORCH_BACKEND=auto above, a Thor `hatch env` resolves
+# torch==2.11.x+cu130 / torchvision==0.26.x+cu130 and inference runs on GPU
+# with no shim or LD_PRELOAD workaround.
+[tool.uv]
+override-dependencies = [
+    # On NVIDIA Thor/Jetson (linux+aarch64) bump torch past lerobot's <2.11 cap
+    # (2.11 fixes the sm_110 cuBLAS bug). On every OTHER platform, mirror
+    # lerobot's own bound so x86/macOS resolve the same torch they would
+    # WITHOUT this override. NOTE: a uv override-dependency for `torch` with
+    # ONLY an aarch64 marker REMOVES torch from non-aarch64 resolutions
+    # entirely (proven: x86 resolved no torch -> tests/conftest.py installed
+    # the numpy mock -> bfloat16 failures). The complementary marker is
+    # mandatory, not cosmetic.
+    "torch>=2.11,<2.12; platform_machine == 'aarch64' and sys_platform == 'linux'",
+    "torch>=2.2,<2.11; platform_machine != 'aarch64' or sys_platform != 'linux'",
+    "torchvision>=0.26,<0.27; platform_machine == 'aarch64' and sys_platform == 'linux'",
+    "torchvision<0.26; platform_machine != 'aarch64' or sys_platform != 'linux'",
+]
+
+# Auto-select the right PyTorch wheel for the host accelerator. On NVIDIA
+# Thor / Jetson (linux + aarch64) the plain-PyPI torch wheel is CPU-ONLY, so
+# torch.cuda.is_available() is False and all inference silently runs on CPU.
+# "auto" makes uv probe the local driver/SoC and resolve the matching build
+# (e.g. +cu130 on Thor) WITHOUT changing the pinned version.
+#
+# IMPORTANT: uv's "auto" detection is HOST-based, not target-platform based.
+# If "auto" is hardcoded here it contaminates EVERY resolution -- including
+# x86 CI -- with the build host's CUDA variant. On a Thor that means x86 CI
+# resolves +cu130 wheels (proven: `uv pip compile --python-platform
+# x86_64-unknown-linux-gnu` yields torchcodec==0.10.0+cu130), which cannot
+# import on the GPU-less runner, so tests/conftest.py silently falls back to
+# the numpy torch mock and torch-dependent tests break.
+#
+# So we INHERIT the value from the process env and only DEFAULT to "auto":
+#   - Thor/Jetson dev: nothing set -> "auto" -> GPU wheels.
+#   - x86 CI: workflow exports UV_TORCH_BACKEND=cpu -> CPU wheels, importable.
+# A hatch pyproject env-var normally OVERRIDES the process env; the
+# {env:VAR:default} form is what lets the process value win.
+[tool.hatch.envs.default.env-vars]
+UV_TORCH_BACKEND = "{env:UV_TORCH_BACKEND:auto}"
 
 [tool.hatch.envs.default.scripts]
 test = "pytest {args:tests}"

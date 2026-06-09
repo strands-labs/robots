@@ -258,6 +258,7 @@ class PolicyRunner:
         video: VideoConfig | None = None,
         on_frame: OnFrame | None = None,
         max_onframe_failures: int | None = None,
+        control_substeps: int | None = None,
     ) -> dict[str, Any]:
         """Run ``policy`` on ``robot_name`` for ``duration`` seconds.
 
@@ -359,6 +360,32 @@ class PolicyRunner:
             total_steps = int(duration * control_frequency)
             action_sleep = 1.0 / control_frequency
 
+            # Control-rate substepping: a position-servo robot needs the physics
+            # to advance for the FULL control period (1/control_frequency) after
+            # each action so the joints actually track the commanded target
+            # before the next action overwrites ``ctrl``. With the default
+            # 1 substep/action, the arm only integrates one physics dt (~2 ms)
+            # per action and barely moves — the policy looks like a no-op even
+            # though it is sending valid targets. Derive substeps from the
+            # backend's physics timestep; fall back to 1 when unknown.
+            if control_substeps is not None:
+                n_substeps = max(1, int(control_substeps))
+            else:
+                _dt = None
+                try:
+                    _dt = self.sim.physics_timestep()
+                except Exception:  # noqa: BLE001 - never fail the run on a probe
+                    _dt = None
+                if _dt and _dt > 0 and control_frequency > 0:
+                    n_substeps = max(1, round((1.0 / control_frequency) / _dt))
+                else:
+                    n_substeps = 1
+            logger.info(
+                "PolicyRunner: control_frequency=%.1f Hz, physics substeps/action=%d",
+                control_frequency,
+                n_substeps,
+            )
+
             onframe_failure_limit = (
                 max_onframe_failures if max_onframe_failures is not None else _MAX_CONSECUTIVE_ONFRAME_FAILURES
             )
@@ -373,7 +400,7 @@ class PolicyRunner:
                     if step_count >= total_steps:
                         break
 
-                    self.sim.send_action(action_dict, robot_name=robot_name)
+                    self.sim.send_action(action_dict, robot_name=robot_name, n_substeps=n_substeps)
 
                     if on_frame is not None:
                         try:

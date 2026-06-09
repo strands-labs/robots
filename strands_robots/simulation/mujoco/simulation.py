@@ -276,6 +276,16 @@ class MuJoCoSimEngine(
         with self._lock:
             self._apply_sim_action(robot_name, action, n_substeps=n_substeps)
 
+    def physics_timestep(self) -> float | None:
+        """Physics integration timestep (seconds) of the active world.
+
+        Lets :class:`PolicyRunner` substep at the control rate so position-
+        servo arms track each action. Returns ``None`` when no world exists.
+        """
+        if self._world is None:
+            return None
+        return float(self._world.timestep)
+
     # World Management
 
     def _cheap_robot_count(self) -> int:
@@ -1969,6 +1979,7 @@ class MuJoCoSimEngine(
         n_steps: int | None = None,
         max_steps: int | None = None,
         max_onframe_failures: int | None = None,
+        control_substeps: int | None = None,
     ) -> dict[str, Any]:
         """MuJoCo ``run_policy`` override: pre-flight world check + graceful stop.
 
@@ -1998,6 +2009,7 @@ class MuJoCoSimEngine(
                 n_steps=n_steps,
                 max_steps=max_steps,
                 max_onframe_failures=max_onframe_failures,
+                control_substeps=control_substeps,
             )
         finally:
             if self._world is not None and robot_name in self._world.robots:

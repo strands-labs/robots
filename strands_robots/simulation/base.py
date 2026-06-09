@@ -233,6 +233,18 @@ class SimEngine(ABC):
         """
         ...
 
+    def physics_timestep(self) -> float | None:
+        """Return the physics integration timestep in seconds, or ``None``.
+
+        Used by :class:`PolicyRunner` to convert a policy's ``control_frequency``
+        into the number of physics substeps per control step
+        (``round(1 / control_frequency / physics_timestep)``) so a
+        position-servo robot actually tracks each action's target before the
+        next action overwrites ``ctrl``. Backends that cannot report a fixed
+        timestep return ``None`` and the runner falls back to ``n_substeps=1``.
+        """
+        return None
+
     # Rendering
 
     @abstractmethod
@@ -264,6 +276,7 @@ class SimEngine(ABC):
         n_steps: int | None = None,
         max_steps: int | None = None,
         max_onframe_failures: int | None = None,
+        control_substeps: int | None = None,
     ) -> dict[str, Any]:
         """Run a policy loop in the simulation (blocking).
 
@@ -348,6 +361,7 @@ class SimEngine(ABC):
             video=VideoConfig.from_dict(video),
             on_frame=on_frame,
             max_onframe_failures=max_onframe_failures,
+            control_substeps=control_substeps,
         )
 
     def start_policy(
