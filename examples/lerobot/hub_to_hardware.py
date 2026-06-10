@@ -16,13 +16,11 @@ The script:
 Quick start (no hardware, no GPU, no Hub credentials needed):
 
     # Dev/lab mesh posture
-    export STRANDS_MESH_ACCEPT_PERMISSIVE_ACL=1
-    export STRANDS_MESH_AUTH_MODE=none
+    export STRANDS_MESH_LOCAL_DEV=1
 
     python hub_to_hardware.py
 
-(Once the paper-cut PR lands you can replace both with STRANDS_MESH_LOCAL_DEV=1.
-For sim-only runs you can also disable the mesh entirely: STRANDS_MESH=0.)
+(For sim-only runs you can disable the mesh entirely with STRANDS_MESH=0.)
 
 Push the recorded dataset to the Hub (requires HF_TOKEN with write scope):
 
@@ -31,9 +29,11 @@ Push the recorded dataset to the Hub (requires HF_TOKEN with write scope):
 
 Override the LLM (verify exact Bedrock ID in your AWS console):
 
-    python hub_to_hardware.py \\
-        --model-id us.anthropic.claude-sonnet-4-6 \\
-        --aws-region us-west-2
+    python hub_to_hardware.py --model-id us.anthropic.claude-sonnet-4-6
+
+The AWS region resolves from your AWS environment (AWS_REGION /
+AWS_DEFAULT_REGION env vars, ~/.aws/config, or instance metadata). To
+override per-run, pass --aws-region <region>.
 
 Run with the GR00T container as the policy (requires Docker + NVIDIA GPU):
 
@@ -95,7 +95,9 @@ diag_logger = logging.getLogger("hub_to_hardware.diag")
 # your region. Override at runtime via --model-id or STRANDS_BEDROCK_MODEL_ID
 # without editing this file.
 DEFAULT_MODEL_ID = "us.anthropic.claude-opus-4-8"  # ← verify in AWS console
-DEFAULT_AWS_REGION = "us-west-2"
+# Region is intentionally not defaulted in code. It resolves from the
+# --aws-region CLI flag, then AWS_REGION / AWS_DEFAULT_REGION env vars,
+# then boto3's standard chain (~/.aws/config, instance metadata).
 
 
 # ---------------------------------------------------------------------------
@@ -246,12 +248,15 @@ def _log_prompt(label: str, prompt: str) -> None:
 # Agent construction
 # ---------------------------------------------------------------------------
 
-def _build_bedrock_model(model_id: str, region: str) -> Any | None:
+def _build_bedrock_model(model_id: str, region: str | None) -> Any | None:
     """Construct a Strands BedrockModel client.
 
     Returns the model on success, None on any failure (import error, auth
     error, model-not-enabled). The caller falls back to Strands' default
     model on None — the workflow still runs, just on whatever Strands picks.
+
+    ``region`` may be None, in which case boto3's standard resolution chain
+    (env vars, ~/.aws/config, instance metadata) decides the region.
     """
     try:
         from strands.models import BedrockModel
@@ -263,15 +268,22 @@ def _build_bedrock_model(model_id: str, region: str) -> Any | None:
         return None
 
     try:
-        model = BedrockModel(model_id=model_id, region_name=region)
-        logger.info("Using Bedrock model: %s (region %s)", model_id, region)
+        kwargs: dict[str, Any] = {"model_id": model_id}
+        if region:
+            kwargs["region_name"] = region
+        model = BedrockModel(**kwargs)
+        logger.info(
+            "Using Bedrock model: %s (region %s)",
+            model_id,
+            region or "<resolved from AWS environment>",
+        )
         return model
     except Exception as exc:  # noqa: BLE001
         logger.warning(
             "BedrockModel(%s, region=%s) init failed: %s. Falling back to "
             "Strands' default. Common causes: model not enabled in this AWS "
             "account, wrong region, or stale model ID — check the Bedrock console.",
-            model_id, region, exc,
+            model_id, region or "<unset>", exc,
         )
         return None
 
@@ -291,12 +303,8 @@ def build_agent(
         Robot,
         lerobot_teleoperate,
         lerobot_calibrate,
+        robot_mesh,
     )
-    # ``robot_mesh`` isn't exported from strands_robots.__init__ in current
-    # SDK builds. The README documents ``from strands_robots import robot_mesh``
-    # but __init__'s _LAZY_IMPORTS doesn't list it. Import from the submodule
-    # directly; remove this workaround once the export gap closes.
-    from strands_robots.tools.robot_mesh import robot_mesh
 
     tools: list[Any] = [lerobot_teleoperate, lerobot_calibrate, robot_mesh]
 
@@ -339,7 +347,6 @@ def build_agent(
         aws_region
         or os.environ.get("AWS_REGION")
         or os.environ.get("AWS_DEFAULT_REGION")
-        or DEFAULT_AWS_REGION
     )
     model = _build_bedrock_model(resolved_model_id, resolved_region)
 
@@ -542,8 +549,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument(
         "--aws-region",
         default=None,
-        help=f"AWS region for Bedrock. Default: {DEFAULT_AWS_REGION} (or "
-             f"AWS_REGION / AWS_DEFAULT_REGION env vars).",
+        help="AWS region for Bedrock. If unset, resolves from AWS_REGION / "
+             "AWS_DEFAULT_REGION env vars or ~/.aws/config (boto3's standard chain).",
     )
 
     # Hardware knobs

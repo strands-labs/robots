@@ -2,11 +2,11 @@
 
 Runnable companion to *From Hugging Face Hub to robot hardware with Strands Agents and LeRobot*. Demonstrates the full loop: build a Strands agent over the LeRobot AgentTools, record a `LeRobotDataset` in simulation, run a policy on the same robot, optionally deploy the same agent code to a physical SO-101, and broadcast across the Zenoh mesh.
 
-|File                                              |What it is                                                       |
-|--------------------------------------------------|-----------------------------------------------------------------|
-|[`hub_to_hardware.py`](./hub_to_hardware.py)      |CLI script with argparse flags. The runnable artefact.           |
-|[`hub_to_hardware.ipynb`](./hub_to_hardware.ipynb)|Notebook walkthrough with the same workflow, cell by cell.       |
-|`README.md` (this file)                           |Quick start, configuration, troubleshooting, production patterns.|
+| File | What it is |
+|------|------------|
+| [`hub_to_hardware.py`](./hub_to_hardware.py)   | CLI script with argparse flags. The runnable artefact. |
+| [`hub_to_hardware.ipynb`](./hub_to_hardware.ipynb) | Notebook walkthrough with the same workflow, cell by cell. |
+| `README.md` (this file) | Quick start, configuration, troubleshooting, production patterns. |
 
 ## Quick start
 
@@ -14,8 +14,7 @@ Runnable companion to *From Hugging Face Hub to robot hardware with Strands Agen
 pip install "strands-robots[sim-mujoco,lerobot,mesh]" strands-agents
 
 # Dev/lab mesh posture so Step 5 has a mesh to talk to
-export STRANDS_MESH_ACCEPT_PERMISSIVE_ACL=1
-export STRANDS_MESH_AUTH_MODE=none
+export STRANDS_MESH_LOCAL_DEV=1
 
 python examples/lerobot/hub_to_hardware.py
 ```
@@ -46,7 +45,7 @@ The dataset lands at `https://huggingface.co/datasets/<your_hf_username>/strands
 
 ### LLM
 
-Defaults to **Claude Opus 4.8 on Bedrock** (`us.anthropic.claude-opus-4-8`, region `us-west-2`). Opus 4.8 orchestrates the LeRobot tool surface in 8–13 tool calls per recording phase; lower-tier models work but issue more defensive state-querying calls.
+Defaults to **Claude Opus 4.8 on Bedrock** (`us.anthropic.claude-opus-4-8`). The AWS region resolves from your environment (`AWS_REGION` / `AWS_DEFAULT_REGION`, then `~/.aws/config`). Opus 4.8 orchestrates the LeRobot tool surface in 8–13 tool calls per recording phase; lower-tier models work but issue more defensive state-querying calls.
 
 Override per-run:
 
@@ -59,20 +58,20 @@ python hub_to_hardware.py --aws-region us-east-1
 
 # Both via env vars
 export STRANDS_BEDROCK_MODEL_ID=us.anthropic.claude-opus-4-8
-export AWS_REGION=us-west-2
+export AWS_REGION=<your-region>     # e.g., us-east-1, us-west-2, eu-central-1
 ```
 
 Verify the exact model ID in your AWS Bedrock console (Model catalog → Anthropic). Cross-region inference profile IDs are prefixed with `us.`, `eu.`, etc.
 
-If `BedrockModel` init fails (model not enabled in your account, wrong region, stale ID), the script logs a warning and falls back to Strands’ default model — the workflow still runs.
+If `BedrockModel` init fails (model not enabled in your account, wrong region, stale ID), the script logs a warning and falls back to Strands' default model — the workflow still runs.
 
 ### Policy provider
 
-|Flag                                           |Requirements                       |When to use                                                                   |
-|-----------------------------------------------|-----------------------------------|------------------------------------------------------------------------------|
-|`--policy mock` *(default)*                    |None                               |Workflow sanity-check. Random/placeholder actions — no real grasp behaviour.  |
-|`--policy groot --checkpoint <hf_repo>`        |Docker + NVIDIA GPU                |NVIDIA GR00T container; brings up a ZMQ inference service alongside the agent.|
-|`--policy lerobot_local --checkpoint <hf_repo>`|GPU + `STRANDS_TRUST_REMOTE_CODE=1`|In-process LeRobot policy (ACT, Pi0, SmolVLA, Diffusion).                     |
+| Flag | Requirements | When to use |
+|------|--------------|-------------|
+| `--policy mock` *(default)* | None | Workflow sanity-check. Random/placeholder actions — no real grasp behaviour. |
+| `--policy groot --checkpoint <hf_repo>` | Docker + NVIDIA GPU | NVIDIA GR00T container; brings up a ZMQ inference service alongside the agent. |
+| `--policy lerobot_local --checkpoint <hf_repo>` | GPU + `STRANDS_TRUST_REMOTE_CODE=1` | In-process LeRobot policy (ACT, Pi0, SmolVLA, Diffusion). |
 
 Example with GR00T:
 
@@ -96,17 +95,14 @@ python hub_to_hardware.py \
 By default the Zenoh mesh refuses to start without TLS certificates *and* an ACL file. Two dev/lab shortcuts:
 
 ```bash
-# Permissive ACL + no auth (mesh runs, peers don't need certs)
-export STRANDS_MESH_ACCEPT_PERMISSIVE_ACL=1
-export STRANDS_MESH_AUTH_MODE=none
+# One-var dev preset: permissive ACL + no auth, mesh runs without certs
+export STRANDS_MESH_LOCAL_DEV=1
 ```
 
 ```bash
 # Or skip the mesh entirely (Step 5 becomes a no-op)
 export STRANDS_MESH=0
 ```
-
-Once the `STRANDS_MESH_LOCAL_DEV=1` paper-cut PR lands, that one variable replaces the two-var dev posture.
 
 ### Hardware
 
@@ -199,29 +195,26 @@ for episode_idx in range(50):
 agent("Stop recording and push the dataset to the Hub.")
 ```
 
-The split — agent for setup and finalization, Python loop for the per-episode boundary — pairs the agent’s strength (free-form composition) with the determinism a multi-step loop needs.
+The split — agent for setup and finalization, Python loop for the per-episode boundary — pairs the agent's strength (free-form composition) with the determinism a multi-step loop needs.
 
 ## Troubleshooting
 
-**`ImportError: cannot import name 'robot_mesh' from 'strands_robots'`**  
-The README documents `from strands_robots import robot_mesh` but the package `__init__` doesn’t currently export it. The example works around this by importing from `strands_robots.tools.robot_mesh` directly. Track the export gap upstream.
-
 **`Failed to initialise mesh ... STRANDS_MESH_AUTH_MODE=mtls requires ...`**  
-The mesh subsystem tries mTLS by default. Set `STRANDS_MESH_AUTH_MODE=none` alongside `STRANDS_MESH_ACCEPT_PERMISSIVE_ACL=1`, or set `STRANDS_MESH=0` to disable the mesh entirely for sim-only runs.
+The mesh subsystem tries mTLS by default. Set `STRANDS_MESH_LOCAL_DEV=1` to use the dev/lab posture, or `STRANDS_MESH=0` to disable the mesh entirely for sim-only runs.
 
 **`BedrockModel(...) init failed`**  
-Common causes: the model isn’t enabled in your AWS account, the region doesn’t have the model, or the model ID is stale. Check the AWS Bedrock console (Model catalog → Anthropic). The script falls back to Strands’ default model and continues, but you’ll see degraded tool-orchestration quality.
+Common causes: the model isn't enabled in your AWS account, the region doesn't have the model, or the model ID is stale. Check the AWS Bedrock console (Model catalog → Anthropic). The script falls back to Strands' default model and continues, but you'll see degraded tool-orchestration quality.
 
 **`resume() requires an explicit 'root' directory`**  
-A prior run’s dataset cache is on disk. Pass `--clean-cache` to wipe it, or pass a fresh `--dataset-name`.
+A prior run's dataset cache is on disk. Pass `--clean-cache` to wipe it, or pass a fresh `--dataset-name`.
 
 **SVT-AV1 encoder output spam**  
-The `Svt[info]:` lines come from the video codec inside LeRobot’s `dataset_recorder` and aren’t a Python logger we can silence cleanly. They’re harmless — one block per camera per encoder init.
+The `Svt[info]:` lines come from the video codec inside LeRobot's `dataset_recorder` and aren't a Python logger we can silence cleanly. They're harmless — one block per camera per encoder init.
 
-**Agent’s narration claims things that don’t match the tool calls**  
+**Agent's narration claims things that don't match the tool calls**  
 LLMs sometimes confabulate in narration. The dataset on disk is the ground truth — load it through `LeRobotDataset(...)` to check episode and frame counts. Pass `--verbose` to see the actual tool calls the agent made.
 
-## What’s next
+## What's next
 
 - **Train a policy** on the recorded dataset using upstream LeRobot.
 - **Swap the Mock policy** for a real one — `groot` for the NVIDIA container, `lerobot_local` for ACT/Pi0/SmolVLA/Diffusion checkpoints.
@@ -230,6 +223,6 @@ LLMs sometimes confabulate in narration. The dataset on disk is the ground truth
 
 ## Repository
 
-Strands Robots: <https://github.com/strands-labs/robots>  
-Heavy simulation backends (Isaac Sim, Newton): <https://github.com/strands-labs/robots-sim>  
-Upstream LeRobot: <https://github.com/huggingface/lerobot>
+Strands Robots: https://github.com/strands-labs/robots  
+Heavy simulation backends (Isaac Sim, Newton): https://github.com/strands-labs/robots-sim  
+Upstream LeRobot: https://github.com/huggingface/lerobot
