@@ -48,6 +48,7 @@ if TYPE_CHECKING:
     from strands_robots.tools.lerobot_camera import lerobot_camera
     from strands_robots.tools.lerobot_teleoperate import lerobot_teleoperate
     from strands_robots.tools.pose_tool import pose_tool
+    from strands_robots.tools.robot_mesh import robot_mesh
     from strands_robots.tools.serial_tool import serial_tool
 
 # ------------------------------------------------------------------
@@ -81,6 +82,7 @@ _LAZY_IMPORTS: dict[str, tuple[str, str]] = {
     "lerobot_teleoperate": ("strands_robots.tools.lerobot_teleoperate", "lerobot_teleoperate"),
     "pose_tool": ("strands_robots.tools.pose_tool", "pose_tool"),
     "serial_tool": ("strands_robots.tools.serial_tool", "serial_tool"),
+    "robot_mesh": ("strands_robots.tools.robot_mesh", "robot_mesh"),
 }
 
 __all__ = [
@@ -106,6 +108,7 @@ __all__ = [
     "lerobot_calibrate",
     "serial_tool",
     "pose_tool",
+    "robot_mesh",
 ]
 
 
