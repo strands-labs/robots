@@ -48,8 +48,8 @@ if TYPE_CHECKING:
     from strands_robots.tools.lerobot_camera import lerobot_camera
     from strands_robots.tools.lerobot_teleoperate import lerobot_teleoperate
     from strands_robots.tools.pose_tool import pose_tool
-    from strands_robots.tools.serial_tool import serial_tool
     from strands_robots.tools.robot_mesh import robot_mesh
+    from strands_robots.tools.serial_tool import serial_tool
 
 # ------------------------------------------------------------------
 # Light-weight imports — no torch / lerobot / mujoco dependency
