@@ -293,8 +293,34 @@ def install_torch_mock():
 
         logger.info("Real torch is available (version=%s) - mock not installed", torch.__version__)
         return  # Real torch available - nothing to do
-    except ImportError:
-        pass
+    except Exception as exc:  # noqa: BLE001 - diagnostics: any import failure means we mock
+        # IMPORTANT: print to stderr (not just logging.info, which pytest captures
+        # and hides) so CI logs ALWAYS show WHY the mock was installed. A silent
+        # fallback here previously masked an env-resolution bug (a CUDA torch
+        # wheel that failed to import) for hours of log-archaeology.
+        _msg = (
+            f"[torch_mock] real torch import FAILED ({type(exc).__name__}: {exc}); "
+            "installing numpy mock. If this is unexpected, the torch wheel in this "
+            "env is broken/unimportable (e.g. wrong CUDA build)."
+        )
+        # pytest captures stdout/stderr, so ALSO write to a sentinel file that
+        # CI can cat unconditionally -- this is what makes the diagnosis a
+        # one-line grep instead of log-archaeology.
+        print(_msg, file=sys.stderr)
+        try:
+            import os as _os
+
+            with open(
+                _os.environ.get("TORCH_MOCK_SENTINEL", "/tmp/torch_mock_active.txt"),
+                "w",
+            ) as _fh:
+                _fh.write(_msg + "\n")
+        except OSError:
+            # Sentinel-file write is best-effort diagnostics only (read-only or
+            # full /tmp, restricted CI sandbox, etc.). The stderr message above
+            # already conveys why the mock was installed, so a failed write must
+            # never abort mock installation or fail the test run.
+            pass
 
     logger.info("Installing torch mock (real torch not available)")
 
@@ -322,6 +348,7 @@ def install_torch_mock():
 
     torch_mock.no_grad = _NoGrad
     torch_mock.inference_mode = _NoGrad
+    torch_mock.manual_seed = lambda seed: None
 
     # torch.nn
     nn_mock = types.ModuleType("torch.nn")
@@ -336,6 +363,7 @@ def install_torch_mock():
     cuda_mock = types.ModuleType("torch.cuda")
     cuda_mock.is_available = lambda: False
     cuda_mock.device_count = lambda: 0
+    cuda_mock.manual_seed_all = lambda seed: None
     torch_mock.cuda = cuda_mock
 
     # torch.backends
@@ -343,6 +371,10 @@ def install_torch_mock():
     mps_mock = types.ModuleType("torch.backends.mps")
     mps_mock.is_available = lambda: False
     backends_mock.mps = mps_mock
+    cudnn_mock = types.ModuleType("torch.backends.cudnn")
+    cudnn_mock.deterministic = False
+    cudnn_mock.benchmark = True
+    backends_mock.cudnn = cudnn_mock
     torch_mock.backends = backends_mock
 
     # torch.amp
@@ -357,6 +389,7 @@ def install_torch_mock():
     sys.modules["torch.cuda"] = cuda_mock
     sys.modules["torch.backends"] = backends_mock
     sys.modules["torch.backends.mps"] = mps_mock
+    sys.modules["torch.backends.cudnn"] = cudnn_mock
     sys.modules["torch.amp"] = amp_mock
 
     # torchvision

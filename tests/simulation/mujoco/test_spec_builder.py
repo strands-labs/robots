@@ -198,6 +198,28 @@ class TestBuild:
         gid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "ground")
         assert gid < 0
 
+    def test_headlight_is_dimmed(self):
+        """GH #373 (renderings too bright): MuJoCo's default headlight
+        (diffuse 0.4, specular 0.5, active) stacks additively on our two
+        explicit scene lights, washing out the scene. build() must dim it
+        to a low, shadow-free term."""
+        model = SpecBuilder.build(SimWorld()).compile()
+        hl = model.vis.headlight
+        # Specular off entirely (no head-on glare hotspots).
+        assert np.allclose(hl.specular, [0.0, 0.0, 0.0])
+        # Diffuse pulled well below the 0.4 default so explicit lights
+        # provide the directional illumination.
+        assert float(hl.diffuse[0]) <= 0.25
+        assert np.allclose(hl.diffuse, [hl.diffuse[0]] * 3)
+
+    def test_explicit_scene_lights_present(self):
+        """The two explicit directional lights survive build() — the dimmed
+        headlight relies on them for the actual scene illumination."""
+        model = SpecBuilder.build(SimWorld()).compile()
+        assert model.nlight >= 2
+        names = {mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_LIGHT, i) for i in range(model.nlight)}
+        assert {"main_light", "fill_light"} <= names
+
 
 # Mutation helpers
 
@@ -268,6 +290,47 @@ class TestMutation:
         )
         new_model, _ = spec.recompile(model, data)
         assert mujoco.mj_name2id(new_model, mujoco.mjtObj.mjOBJ_CAMERA, "top") >= 0
+
+    def test_add_camera_mounted_on_body(self):
+        """GH #373 (SO101 wrist cam): a camera with parent_body set must be
+        attached to that body so it tracks the body's motion (realistic
+        wrist/gripper camera), not fixed in the world."""
+        # Build a world with a single movable body to mount onto.
+        w = SimWorld()
+        w.objects["holder"] = SimObject(
+            name="holder", shape="box", position=[0.2, 0.0, 0.3], size=[0.05, 0.05, 0.05], mass=0.2
+        )
+        spec = SpecBuilder.build(w)
+        model = spec.compile()
+        data = mujoco.MjData(model)
+
+        SpecBuilder.add_camera(
+            spec,
+            SimCamera(
+                name="wrist",
+                position=[0.0, 0.0, 0.1],
+                target=[0.0, 0.0, 0.0],
+                fov=60,
+                width=320,
+                height=240,
+                parent_body="holder",
+            ),
+        )
+        new_model, _ = spec.recompile(model, data)
+        cam_id = mujoco.mj_name2id(new_model, mujoco.mjtObj.mjOBJ_CAMERA, "wrist")
+        assert cam_id >= 0
+        # The camera's parent body must be 'holder', not worldbody (id 0).
+        body_id = int(new_model.cam_bodyid[cam_id])
+        assert mujoco.mj_id2name(new_model, mujoco.mjtObj.mjOBJ_BODY, body_id) == "holder"
+
+    def test_add_camera_unknown_parent_body_raises(self):
+        w = SimWorld()
+        spec = SpecBuilder.build(w)
+        with pytest.raises(ValueError, match="parent_body"):
+            SpecBuilder.add_camera(
+                spec,
+                SimCamera(name="wrist", position=[0, 0, 0.1], target=[0, 0, 0], parent_body="does_not_exist"),
+            )
 
     def test_remove_camera(self):
         w = SimWorld()
@@ -352,6 +415,66 @@ class TestAttachRobot:
         # Walk up the body tree to verify the frame is offset
         # (simpler: compile works at all - spec.attach validates positions)
         assert bid >= 0
+
+    def test_attach_robot_strips_robot_scene_ground_plane(self, tmp_path):
+        """A robot scene that ships its own ``floor`` plane must not add a
+        second coplanar ground plane (issue #320).
+
+        Many menagerie scenes (e.g. franka_emika_panda/scene.xml) include a
+        ``floor`` plane at z=0. Attached alongside the world's own ``ground``
+        plane (also z=0) it caused two coplanar infinite planes with different
+        materials -> depth-buffer Z-fighting / broken floor render.
+        ``attach_robot`` now strips plane geoms from the robot scene so exactly
+        one world-owned ``ground`` plane survives.
+        """
+        robot_with_floor = """
+        <mujoco model="arm_with_floor">
+          <compiler angle="radian"/>
+          <worldbody>
+            <geom name="floor" size="0 0 0.05" type="plane"/>
+            <body name="base" pos="0 0 0.1">
+              <joint name="pan" type="hinge" axis="0 0 1"/>
+              <geom type="cylinder" size="0.05 0.05"/>
+            </body>
+          </worldbody>
+          <actuator>
+            <position name="pan_act" joint="pan" kp="50"/>
+          </actuator>
+        </mujoco>
+        """
+        path = tmp_path / "arm_with_floor.xml"
+        path.write_text(robot_with_floor)
+
+        scene = SpecBuilder.build(SimWorld())  # ground_plane=True by default
+        robot = SimRobot(name="arm1", urdf_path=str(path), position=[0.0, 0.0, 0.0])
+        SpecBuilder.attach_robot(scene, robot, str(path))
+
+        model = scene.compile()
+        plane_labels = [
+            mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, g)
+            for g in range(model.ngeom)
+            if model.geom_type[g] == mujoco.mjtGeom.mjGEOM_PLANE
+        ]
+        assert len(plane_labels) == 1, f"expected exactly one ground plane, got {plane_labels}"
+        assert plane_labels == ["ground"], f"the surviving plane must be the world ground, got {plane_labels}"
+
+        # The robot's own body/joint/actuator must still be present.
+        assert mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "arm1/pan") >= 0
+        assert mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, "arm1/pan_act") >= 0
+
+    def test_attach_robot_without_floor_is_unchanged(self, arm_path):
+        """A robot scene with no plane geom attaches normally - the strip is a
+        no-op and the single world ``ground`` plane survives."""
+        scene = SpecBuilder.build(SimWorld())
+        robot = SimRobot(name="arm1", urdf_path=arm_path, position=[0.0, 0.0, 0.0])
+        SpecBuilder.attach_robot(scene, robot, arm_path)
+        model = scene.compile()
+        planes = [
+            mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, g)
+            for g in range(model.ngeom)
+            if model.geom_type[g] == mujoco.mjtGeom.mjGEOM_PLANE
+        ]
+        assert planes == ["ground"]
 
 
 # from_mjcf_string / from_file

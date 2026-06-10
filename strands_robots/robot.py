@@ -178,6 +178,8 @@ def Robot(  # noqa: N802 — uppercase by design (factory mimicking a class cons
     cameras: dict[str, dict[str, Any]] | None = None,
     position: list[float] | None = None,
     data_config: str | None = None,
+    mesh: bool = True,
+    peer_id: str | None = None,
     **kwargs: Any,
 ) -> Simulation | HardwareRobot:
     """Create a robot — returns a Simulation or HardwareRobot instance.
@@ -309,6 +311,24 @@ def Robot(  # noqa: N802 — uppercase by design (factory mimicking a class cons
                 sim.destroy()
             raise
 
+        # Attach a Zenoh mesh so the Simulation auto-discovers other peers.
+        # Failure to start the mesh must NOT bring down the sim — the user
+        # explicitly asked for a Simulation, mesh is an enrichment.
+        try:
+            from strands_robots.mesh import init_mesh
+
+            sim_mesh = init_mesh(
+                sim,
+                peer_id=peer_id,
+                peer_type="sim",
+                mesh=mesh,
+            )
+            if sim_mesh is not None:
+                sim.mesh = sim_mesh
+                sim.peer_id = sim_mesh.peer_id
+        except Exception as exc:  # noqa: BLE001 — mesh enrichment is best-effort
+            logger.warning("Failed to initialise mesh for %r: %s", canonical, exc)
+
         return sim
 
     # --- Real hardware (explicit opt-in) ---
@@ -322,12 +342,31 @@ def Robot(  # noqa: N802 — uppercase by design (factory mimicking a class cons
         from strands_robots.hardware_robot import Robot as HardwareRobotCls
 
         real_type = get_hardware_type(canonical) or canonical
-        return HardwareRobotCls(
+        hw = HardwareRobotCls(
             tool_name=canonical,
             robot=real_type,
             cameras=cameras,
             **kwargs,
         )
+
+        # Attach a Zenoh mesh so the hardware Robot auto-discovers peers.
+        # Best-effort: a mesh failure must not kill a working hardware robot.
+        try:
+            from strands_robots.mesh import init_mesh
+
+            hw_mesh = init_mesh(
+                hw,
+                peer_id=peer_id,
+                peer_type="robot",
+                mesh=mesh,
+            )
+            if hw_mesh is not None:
+                hw.mesh = hw_mesh
+                hw.peer_id = hw_mesh.peer_id
+        except Exception as exc:  # noqa: BLE001 — mesh enrichment is best-effort
+            logger.warning("Failed to initialise mesh for %r: %s", canonical, exc)
+
+        return hw
 
     else:
         raise ValueError(f"Invalid mode {mode!r}. Choose 'sim', 'real', or 'auto' (case-insensitive).")

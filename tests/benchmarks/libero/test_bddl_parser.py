@@ -317,8 +317,9 @@ class TestCompileGoal:
         problem = parse_bddl(text)
         fn = compile_goal(problem.goal)  # type: ignore[arg-type]
 
-        # Real positions captured from STRANDS_LIBERO_PREDICATE_LOG=1 at
-        # the env-success step on libero-10/SCENE5 seed=42 ep 0.
+        # Real positions captured at the env-success step on
+        # libero-10/SCENE5 seed=42 ep 0 (via the #170 BDDL ↔
+        # ``env.check_success`` diagnostic, since removed in #178).
         success_state = _BodyStateSim(
             {
                 "porcelain_mug_1": {"position": [-0.003, -0.311, 0.443]},

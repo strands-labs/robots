@@ -16,13 +16,19 @@ Features:
 from __future__ import annotations
 
 import asyncio
+import dataclasses
+import functools
+import importlib
 import logging
+import pkgutil
+import shutil
 import threading
 import time
 from collections.abc import AsyncGenerator
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 from strands.tools.tools import AgentTool
@@ -36,6 +42,136 @@ if TYPE_CHECKING:
     from .policies import Policy
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Lazy lerobot RobotConfig registration helper.
+# ---------------------------------------------------------------------------
+#
+# lerobot's robot drivers register themselves with ``RobotConfig`` (a
+# draccus ``ChoiceRegistry``) via ``@RobotConfig.register_subclass(...)``
+# at module import time. Because ``lerobot.robots.__init__`` does not
+# eagerly import every subpackage, the registry is empty until something
+# triggers the import. ``_create_minimal_config`` calls this helper once
+# per process to populate it. ``@functools.cache`` makes the second call
+# a dict lookup, so the per-Robot() overhead amortises to ~0.
+
+
+# Cross-robot kwargs forwarded to lerobot config constructors.  Exposed
+# as a module-level constant so tests can import it (single source of
+# truth).
+#
+# Post-R5, the dual-gate semantics are:
+#   - kwargs in this allowlist BUT NOT on the resolved target dataclass
+#     are silently dropped (cross-robot polymorphism: passing ``kp=...``
+#     to so101 doesn't blow up just because ``kp`` is a unitree_g1
+#     kwarg).
+#   - kwargs declared on the resolved target dataclass are forwarded
+#     automatically, regardless of whether they appear in this list
+#     (so a future lerobot field like ``wifi_ssid`` Just Works without
+#     a strands_robots release).
+#   - kwargs unknown to BOTH are rejected at config-build time
+#     (typos like ``prot=``, kwargs from another subsystem entirely).
+#
+# So this allowlist's job is narrow: it's the set of kwargs whose
+# silent-drop on a non-matching robot we tolerate as a documented
+# polymorphism win.  It is not a forwarding gate -- ``valid_fields``
+# is.
+_FORWARDABLE_KWARGS = (
+    "port",  # serial robots (so100/so101, koch, openarm, ...)
+    "robot_ip",  # network robots (unitree_g1, lekiwi, reachy2, ...)
+    "kp",
+    "kd",  # PD-controlled robots (g1, h1, ...)
+    "default_positions",  # humanoids
+    "control_dt",  # humanoids / locomotion
+    "is_simulation",  # robots that share a sim/real driver
+    "gravity_compensation",  # arms with IK comp
+    "controller",  # locomotion controller selection
+    "calibration_dir",
+    "mock",
+    "use_degrees",
+    "max_relative_target",
+    "disable_torque_on_disconnect",
+)
+
+
+@functools.cache
+def _ensure_lerobot_robots_registered() -> None:
+    """Import every robot driver subpackage so RobotConfig is populated.
+
+    Walks ``lerobot.robots`` with ``pkgutil`` so we automatically pick up
+    every robot lerobot ships -- past, present, and future -- including
+    those whose ``robot_type`` doesn't match its subpackage name (e.g.
+    ``hope_jr_arm`` in ``hope_jr/``, ``lekiwi_client`` in ``lekiwi/``,
+    ``so100_follower`` and ``so101_follower`` both in ``so_follower/``).
+    Then invokes lerobot's third-party plugin loader so any installed
+    ``lerobot_robot_*`` distribution registers itself too.
+
+    Idempotent via ``@functools.cache`` -- the first call walks the tree,
+    subsequent calls are dict lookups.
+    """
+    try:
+        import lerobot.robots as _lr_robots
+    except ImportError as exc:
+        # Distinguish two failure modes so the log level matches signal
+        # value:
+        #   1. lerobot wholly absent -- expected on sim-only / CI-only
+        #      hosts that never reach hardware code; debug is enough.
+        #      Caller will get a clean ``Unsupported robot type`` at the
+        #      ChoiceRegistry lookup site.
+        #   2. lerobot present but ``lerobot.robots`` unimportable --
+        #      genuine partial-install signal worth a warning so the
+        #      operator can triage without ``--log-level=DEBUG``.
+        try:
+            import lerobot  # noqa: F401  (probe-only)
+        except ImportError:
+            logger.debug("lerobot not installed: %s", exc)
+        else:
+            logger.warning(
+                "lerobot is installed but lerobot.robots is not importable (partial install?): %s",
+                exc,
+            )
+        return
+
+    # Walk every immediate subpackage of ``lerobot.robots`` and import
+    # it. Each subpackage's ``__init__`` (or its ``config_*`` module)
+    # runs the ``@RobotConfig.register_subclass(...)`` decorator as a
+    # side effect.
+    for _, sub_name, is_pkg in pkgutil.iter_modules(_lr_robots.__path__):
+        if not is_pkg:
+            continue
+        full_name = f"{_lr_robots.__name__}.{sub_name}"
+        try:
+            importlib.import_module(full_name)
+        except (ImportError, OSError) as exc:
+            # Driver-specific runtime dep missing (e.g. ``unitree_sdk2py``,
+            # ``reachy2_sdk``) OR an OS-level probe failure inside a
+            # driver's ``__init__`` (USB enumeration in ``unitree_sdk2py``
+            # raising ``OSError``, ``FileNotFoundError`` on a missing SDK
+            # config, etc.). Robot simply won't appear in the choice
+            # registry -- that is the correct outcome: trying to construct
+            # it later will raise ``Unsupported robot type`` with the
+            # actual list of available types. Per AGENTS.md > Review
+            # Learnings (#86) > "Exception Clauses Must Be Narrow" the
+            # canonical pattern for hardware-probing imports is
+            # ``(ImportError, OSError)``; widening further would mask
+            # genuine bugs in driver registration code.
+            logger.debug("[hardware_robot] skip %s: %s", full_name, exc)
+
+    # Pick up third-party plugins (``lerobot_robot_*`` distributions) via
+    # lerobot's own loader if available -- lets external robot vendors
+    # expose drivers without any strands_robots involvement.
+    try:
+        from lerobot.utils.import_utils import register_third_party_plugins
+    except ImportError:
+        # ``register_third_party_plugins`` lives in modern lerobot only;
+        # older versions skip this opt-in step (built-ins still work).
+        logger.debug("[hardware_robot] register_third_party_plugins unavailable")
+    else:
+        try:
+            register_third_party_plugins()
+        except Exception as exc:  # noqa: BLE001 -- third-party plugin code is untrusted
+            logger.warning("[hardware_robot] third-party plugin registration failed: %s", exc)
 
 
 class TaskStatus(Enum):
@@ -100,8 +236,27 @@ class Robot(AgentTool):
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"{tool_name}_executor")
         self._shutdown_event = threading.Event()
 
+        # Mesh attributes — populated by the Robot() factory after init.
+        # Plain attributes (not properties) so test code can swap a fake mesh
+        # in without going through the factory.
+        # Set BEFORE _initialize_robot so cleanup()/__del__ never see an
+        # AttributeError if construction fails partway through.
+        self.mesh: Any = None
+        self.peer_id: str | None = None
+
         # Initialize robot using lerobot's abstraction
         self.robot = self._initialize_robot(robot, cameras, **kwargs)
+
+        # lerobot 0.5.1 unified the SO-family calibration directory from
+        # per-variant subdirs (``so100_follower/``, ``so101_follower/``) to a
+        # single shared ``so_follower/``. Customers who calibrated on a
+        # pre-0.5 lerobot have their JSON at the OLD path; the new
+        # ``calibration_fpath`` resolves to the NEW path, finds nothing, and
+        # reports ``is_calibrated=False`` -- which only surfaces as a confusing
+        # RuntimeError on the first ``get_observation()``, not on ``connect()``.
+        # Migrate (copy, never move -- old lerobot installs may still read it)
+        # so a fresh customer's existing calibration Just Works.
+        self._migrate_legacy_calibration()
 
         logger.info("%s initialized with async capabilities", tool_name)
         logger.info("Robot: %s (type: %s)", self.robot.name, getattr(self.robot, "robot_type", "unknown"))
@@ -142,17 +297,111 @@ class Robot(AgentTool):
                 f"Expected LeRobot Robot instance, RobotConfig, or robot type string."
             )
 
+    def _migrate_legacy_calibration(self) -> None:
+        """Copy a pre-0.5 SO-family calibration file to the new shared path.
+
+        lerobot 0.5.1 unified ``so100_follower/`` + ``so101_follower/`` (and
+        the leader variants) into a single ``so_follower/`` /
+        ``so_leader/`` directory under ``HF_LEROBOT_CALIBRATION``. The robot's
+        ``calibration_fpath`` now points at the NEW location; an existing
+        customer's JSON sits at the OLD location and is never found, so
+        ``is_calibrated`` is ``False`` and the first ``get_observation()``
+        raises.
+
+        This best-effort migration copies (never moves -- a still-installed
+        old lerobot may read the original) the legacy file into place when:
+          * the robot exposes a ``calibration_fpath`` (lerobot >=0.5), and
+          * the NEW path does not already exist, and
+          * exactly one matching legacy file is found.
+
+        Any failure is logged and swallowed -- a calibration that can't be
+        migrated simply leaves the robot in its pre-existing (uncalibrated)
+        state, which the connect path already reports clearly.
+        """
+        try:
+            new_path = getattr(self.robot, "calibration_fpath", None)
+            if new_path is None:
+                return
+            new_path = Path(new_path)
+            if new_path.is_file():
+                return  # already calibrated at the new path; nothing to do
+
+            # The shared dir is the parent (e.g. ``.../so_follower``); the
+            # legacy dirs are siblings named after the concrete variant.
+            shared_dir = new_path.parent  # so_follower / so_leader
+            calib_root = shared_dir.parent  # HF_LEROBOT_CALIBRATION/robots
+            shared_name = shared_dir.name  # "so_follower"
+            file_name = new_path.name  # "<id>.json"
+
+            # Only the SO-family was renamed; restrict to *_follower / *_leader
+            # subdirs sharing the same role suffix so we don't pull an
+            # unrelated robot's file.
+            if shared_name not in ("so_follower", "so_leader"):
+                return
+            role = shared_name.split("_", 1)[1]  # "follower" | "leader"
+
+            candidates = [
+                p for p in calib_root.glob(f"*_{role}/{file_name}") if p.is_file() and p.parent.name != shared_name
+            ]
+            if len(candidates) != 1:
+                # Zero -> nothing to migrate. >1 -> ambiguous, refuse to guess.
+                if len(candidates) > 1:
+                    logger.warning(
+                        "Multiple legacy calibration files found for %s; skipping auto-migration to avoid guessing: %s",
+                        file_name,
+                        [str(c) for c in candidates],
+                    )
+                return
+
+            old_path = candidates[0]
+            new_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(old_path, new_path)
+            logger.info("Migrated calibration file: %s -> %s", old_path, new_path)
+        except OSError as exc:
+            logger.warning("Calibration auto-migration failed (%s); leaving as-is", exc)
+
     def _create_minimal_config(
         self, robot_type: str, cameras: dict[str, dict[str, Any]] | None, **kwargs: Any
     ) -> RobotConfig:
-        """Create minimal robot config using specific robot config classes."""
-        from lerobot.cameras.opencv.configuration_opencv import OpenCVCameraConfig
+        """Create a minimal lerobot RobotConfig for ``robot_type``.
 
-        # Convert cameras to lerobot format
-        camera_configs = {}
+        Uses lerobot's draccus ``ChoiceRegistry`` to resolve the registered
+        config subclass. This is the same lookup ``make_robot_from_config``
+        performs internally and means we automatically support every robot
+        lerobot ships (so100/so101, koch, openarm, unitree_g1, aloha, ...)
+        without maintaining a hand-rolled mapping.
+
+        Robot-specific kwargs (``port``, ``robot_ip``, ``kp``, ``kd``,
+        ``default_positions``, ``calibration_dir``, ``mock``, ``use_degrees``,
+        ``is_simulation``, ``control_dt``, ``gravity_compensation``,
+        ``controller``, ``max_relative_target``, ``disable_torque_on_disconnect``)
+        are forwarded if and only if the resolved config dataclass declares
+        a matching field. This means kwargs that exist in the union-of-
+        robots allowlist but not on the current robot's dataclass are
+        dropped silently -- that is the deliberate cross-robot
+        polymorphism (``Robot('so101', kp=[...])`` won't fail just because
+        ``kp`` is a unitree_g1 thing).
+
+        A kwarg that is NOT in the allowlist at all is rejected with
+        ``ValueError`` rather than dropped, per AGENTS.md > Review
+        Learnings (#86) > "Reject silently-dropped kwargs". This catches
+        typos like ``prot=`` (instead of ``port=``) at config-build time
+        rather than as a delayed connection failure with no kwarg in
+        sight.
+        """
+        # ``lerobot`` is already a hard dep at this point (``_initialize_robot``
+        # imports it eagerly). Importing the camera + config modules here is
+        # cheap and the only reason it isn't at module top is that some
+        # downstream packagers tree-shake unused submodules.
+        from lerobot.cameras.opencv.configuration_opencv import OpenCVCameraConfig
+        from lerobot.robots.config import RobotConfig
+
+        # Convert cameras to lerobot format.
+        camera_configs: dict[str, Any] = {}
         if cameras:
             for name, config in cameras.items():
-                if config.get("type", "opencv") == "opencv":
+                cam_type = config.get("type", "opencv")
+                if cam_type == "opencv":
                     camera_configs[name] = OpenCVCameraConfig(
                         index_or_path=config["index_or_path"],
                         fps=config.get("fps", 30),
@@ -162,51 +411,113 @@ class Robot(AgentTool):
                         color_mode=config.get("color_mode", "rgb"),
                     )
                 else:
-                    raise ValueError(f"Unsupported camera type: {config.get('type')}")
+                    raise ValueError(f"Unsupported camera type: {cam_type}")
 
-        # Map robot type to specific config class
-        config_mapping = {
-            "so101_follower": ("lerobot.robots.so101_follower", "SO101FollowerConfig"),
-            "so100_follower": ("lerobot.robots.so100_follower", "SO100FollowerConfig"),
-            "bi_so100_follower": ("lerobot.robots.bi_so100_follower", "BiSO100FollowerConfig"),
-            "viperx": ("lerobot.robots.viperx", "ViperXConfig"),
-            "koch_follower": ("lerobot.robots.koch_follower", "KochFollowerConfig"),
-            # Add more as needed
-        }
+        # Trigger lerobot's lazy registration. Each robot driver registers
+        # its config via @RobotConfig.register_subclass at module-import
+        # time, but ``lerobot.robots.__init__`` does NOT eagerly import
+        # every driver subpackage (deliberate: keeps ``import lerobot``
+        # cheap when only one robot is needed, and avoids hard deps on
+        # robot-specific SDKs). The mapping ``robot_type → import path``
+        # is also non-trivial:
+        #
+        #     so101_follower  → lerobot.robots.so_follower (shared module)
+        #     hope_jr_arm     → lerobot.robots.hope_jr     (shared module)
+        #     lekiwi_client   → lerobot.robots.lekiwi      (shared module)
+        #
+        # so we cannot just ``import_module(f"lerobot.robots.{robot_type}")``.
+        # Instead we walk every subpackage of ``lerobot.robots`` once
+        # (filesystem-driven, future-proof) and use lerobot's own
+        # third-party plugin loader for ``lerobot_robot_*`` distributions.
+        # Both calls are cached after the first invocation so subsequent
+        # ``Robot()`` calls are essentially free.
+        _ensure_lerobot_robots_registered()
 
-        if robot_type not in config_mapping:
-            raise ValueError(f"Unsupported robot type: {robot_type}. Supported types: {list(config_mapping.keys())}")
-
-        # Import specific config class dynamically
-        module_name, class_name = config_mapping[robot_type]
+        # Resolve the config class via lerobot's draccus ChoiceRegistry —
+        # this is the source-of-truth lookup that ``make_robot_from_config``
+        # uses; staying on it means we track upstream renames automatically.
         try:
-            import importlib
+            ConfigClass = RobotConfig.get_choice_class(robot_type)
+        except KeyError:
+            available = sorted(RobotConfig.get_known_choices().keys())
+            # ``from None`` -- the KeyError is an internal detail of
+            # lerobot's draccus registry; suppress the chained traceback
+            # for a cleaner user-facing error.
+            raise ValueError(
+                f"Unsupported robot type: {robot_type!r}. Known lerobot robot types: {available}"
+            ) from None
 
-            module = importlib.import_module(module_name)
-            ConfigClass = getattr(module, class_name)
-        except Exception as e:
-            raise ValueError(f"Failed to import {class_name} from {module_name}: {e}")
+        # Build candidate field set so we only pass kwargs the dataclass
+        # actually accepts. ``RobotConfig.get_choice_class`` always returns
+        # a dataclass today (every ``@RobotConfig.register_subclass`` site
+        # is a ``@dataclass``-decorated class). If that contract ever
+        # breaks we want a loud error here, not a silent default that
+        # blindly forwards every kwarg downstream (per AGENTS.md > Key
+        # Conventions #6 -- "no silent defaults on error").
+        try:
+            valid_fields = {f.name for f in dataclasses.fields(ConfigClass)}
+        except TypeError as exc:
+            raise TypeError(
+                f"lerobot returned a non-dataclass config class "
+                f"{ConfigClass!r} for robot_type={robot_type!r}; strands_robots "
+                f"cannot filter kwargs safely. Please file an issue against "
+                f"lerobot or strands_robots."
+            ) from exc
 
-        # Create config with proper parameters
-        config_data = {
-            "id": self.tool_name_str,
-            "cameras": camera_configs,
-        }
+        config_data: dict[str, Any] = {}
 
-        # Filter kwargs to only include supported fields for this robot type
-        # Port is common for most serial robots
-        if "port" in kwargs:
-            config_data["port"] = kwargs["port"]
+        # ``id`` namespaces lerobot's calibration files. Users can override
+        # by passing ``id=...`` (e.g. when one calibration file is shared by
+        # multiple peer instances of the same robot type -- left_arm.json,
+        # right_arm.json). Default to the strands tool name otherwise.
+        if "id" in valid_fields:
+            config_data["id"] = kwargs.get("id", self.tool_name_str)
 
-        # Add other common fields as needed
-        for key in ["calibration_dir", "mock", "use_degrees"]:
-            if key in kwargs:
+        # Cameras are common to every lerobot Robot.
+        if "cameras" in valid_fields:
+            config_data["cameras"] = camera_configs
+
+        # Forward known robot-specific kwargs only if the target dataclass
+        # declares them. The full set is union-of-all known lerobot robot
+        # configs — adding new ones here is safe because we filter against
+        # ``valid_fields`` before constructing.
+        forwardable = _FORWARDABLE_KWARGS
+        for key in forwardable:
+            if key in kwargs and key in valid_fields:
                 config_data[key] = kwargs[key]
+
+        # Forward kwargs that are declared on the target dataclass but not
+        # in the cross-robot allowlist. This future-proofs new lerobot fields
+        # without requiring a strands_robots release to add them to forwardable.
+        for key in kwargs:
+            if key not in config_data and key not in {"id", "cameras"} and key in valid_fields:
+                config_data[key] = kwargs[key]
+
+        # Reject kwargs unknown to BOTH the cross-robot allowlist AND the
+        # resolved target dataclass. Per AGENTS.md > Review Learnings (#86)
+        # > "Reject silently-dropped kwargs", a typo like ``prot=`` must
+        # surface immediately -- but a genuinely new lerobot field that the
+        # target dataclass declares should Just Work without a strands_robots
+        # release. This keeps typo-rejection while preserving the "zero
+        # strands_robots changes for new robots" promise for new *kwargs* too.
+        always_allowed = {"id", "cameras"}
+        recognised = set(forwardable) | always_allowed | valid_fields
+        unknown = set(kwargs) - recognised
+        if unknown:
+            raise ValueError(
+                f"Unknown kwarg(s) for robot_type={robot_type!r}: "
+                f"{sorted(unknown)}. This robot's dataclass accepts: "
+                f"{sorted(valid_fields)}. The cross-robot allowlist is: "
+                f"{sorted(set(forwardable) | always_allowed)}. "
+                f"(If this is a typo, fix it.)"
+            )
 
         try:
             return ConfigClass(**config_data)
-        except Exception as e:
-            raise ValueError(f"Failed to create {class_name} for robot type '{robot_type}': {e}. Config: {config_data}")
+        except (TypeError, ValueError) as e:
+            raise ValueError(
+                f"Failed to construct {ConfigClass.__name__} for robot type {robot_type!r}: {e}. Config: {config_data}"
+            ) from e
 
     async def _get_policy(
         self, policy_port: int | None = None, policy_host: str = "localhost", policy_provider: str = "groot"
@@ -681,6 +992,21 @@ class Robot(AgentTool):
             # Shutdown executor
             self._executor.shutdown(wait=True)
 
+            # Tear down the Zenoh mesh component if one was attached.
+            # ``self.mesh`` is any object exposing ``.stop()``; falsy values
+            # (None — the construction-time default and what a hardware robot
+            # gets when ``mesh=False``) are skipped silently.
+            if self.mesh:
+                try:
+                    self.mesh.stop()
+                except Exception as mesh_exc:  # noqa: BLE001
+                    # Mesh teardown should never block hardware cleanup.
+                    logger.warning(
+                        "%s: mesh.stop() raised during cleanup: %s",
+                        self.tool_name_str,
+                        mesh_exc,
+                    )
+
             logger.info(f"{self.tool_name_str} cleanup completed")
 
         except Exception as e:
@@ -754,3 +1080,203 @@ class Robot(AgentTool):
 
         except Exception as e:
             logger.error(f"Error stopping robot: {e}")
+
+    # ------------------------------------------------------------------
+    # Teleoperation over mesh — input publishing and receiving
+    # ------------------------------------------------------------------
+
+    def start_teleop_publish(
+        self,
+        teleoperator: Any,
+        device_name: str = "leader",
+        method: str = "arm",
+        hz: float = 50.0,
+    ) -> dict[str, Any]:
+        """Start publishing teleoperator actions to the mesh.
+
+        This makes the robot a *teleop source*: another peer on the mesh
+        can call ``start_teleop_receive(source_peer_id=self.peer_id)`` to
+        have its hardware follow along.
+
+        Args:
+            teleoperator: Any object with a ``get_action() -> dict`` method.
+                Typically a lerobot Teleoperator (SOLeader, GamepadTeleop,
+                KeyboardTeleop, Phone).
+            device_name: Name for this input stream (e.g. "leader", "gamepad").
+            method: Input method label ("arm", "gamepad", "keyboard", "phone").
+            hz: Publishing frequency in Hz.
+
+        Returns:
+            Status dict with topic and peer_id for the receiver to use.
+        """
+        if not self.mesh or not self.mesh.alive:
+            return {"status": "error", "content": [{"text": "Mesh not active. Cannot publish input."}]}
+
+        from strands_robots.mesh import InputPublisher
+
+        # Store publisher on the robot instance
+        if not hasattr(self, "_input_publishers"):
+            self._input_publishers: dict[str, InputPublisher] = {}
+
+        if device_name in self._input_publishers:
+            # Stop existing publisher for this device
+            self._input_publishers[device_name].stop()
+
+        publisher = InputPublisher(
+            mesh=self.mesh,
+            teleoperator=teleoperator,
+            device_name=device_name,
+            method=method,
+            hz=hz,
+        )
+        publisher.start()
+        self._input_publishers[device_name] = publisher
+
+        return {
+            "status": "success",
+            "content": [
+                {
+                    "text": f"Input publisher started: {device_name} ({method} @ {hz}Hz)\n"
+                    f"Topic: {publisher.topic}\n"
+                    f"Peer ID: {self.peer_id}\n"
+                    f"Remote peers can receive with: start_teleop_receive(source_peer_id='{self.peer_id}')"
+                }
+            ],
+        }
+
+    def start_teleop_receive(
+        self,
+        source_peer_id: str,
+        device_name: str = "leader",
+        apply_fn: Any | None = None,
+    ) -> dict[str, Any]:
+        """Start receiving teleoperator actions from a remote peer and applying to hardware.
+
+        This makes the robot a *teleop follower*: it listens for input frames
+        published by the source peer and applies them to its own hardware via
+        ``self.robot.send_action(action)``.
+
+        Args:
+            source_peer_id: The peer ID of the publishing robot.
+            device_name: Name of the input stream to subscribe to.
+            apply_fn: Optional custom function ``(robot, action_dict) -> None``.
+                Defaults to calling ``robot.send_action(action)``.
+
+        Returns:
+            Status dict.
+        """
+        if not self.mesh or not self.mesh.alive:
+            return {"status": "error", "content": [{"text": "Mesh not active. Cannot receive input."}]}
+
+        from strands_robots.mesh import InputReceiver
+
+        if not hasattr(self, "_input_receivers"):
+            self._input_receivers: dict[str, InputReceiver] = {}
+
+        key = f"{source_peer_id}/{device_name}"
+        if key in self._input_receivers:
+            self._input_receivers[key].stop()
+
+        receiver = InputReceiver(
+            mesh=self.mesh,
+            robot=self.robot,
+            source_peer_id=source_peer_id,
+            device_name=device_name,
+            apply_fn=apply_fn,
+        )
+        receiver.start()
+        self._input_receivers[key] = receiver
+
+        return {
+            "status": "success",
+            "content": [
+                {
+                    "text": f"Input receiver started: listening to {source_peer_id}/{device_name}\n"
+                    f"Topic: {receiver.topic}\n"
+                    f"Actions will be applied to: {self.tool_name_str}"
+                }
+            ],
+        }
+
+    def stop_teleop(self, device_name: str | None = None) -> dict[str, Any]:
+        """Stop all or a specific teleop publisher/receiver.
+
+        Args:
+            device_name: If provided, stop only the named publisher/receiver.
+                If None, stop all.
+
+        Returns:
+            Stats from stopped sessions.
+        """
+        results = []
+
+        # Stop publishers
+        if hasattr(self, "_input_publishers"):
+            if device_name:
+                pub = self._input_publishers.pop(device_name, None)
+                if pub:
+                    results.append(pub.stop())
+            else:
+                for name, pub in list(self._input_publishers.items()):
+                    results.append(pub.stop())
+                self._input_publishers.clear()
+
+        # Stop receivers
+        if hasattr(self, "_input_receivers"):
+            if device_name:
+                # Match by device name suffix
+                to_remove = [k for k in self._input_receivers if k.endswith(f"/{device_name}")]
+                for k in to_remove:
+                    results.append(self._input_receivers.pop(k).stop())
+            else:
+                for key, rcv in list(self._input_receivers.items()):
+                    results.append(rcv.stop())
+                self._input_receivers.clear()
+
+        if not results:
+            return {"status": "success", "content": [{"text": "No active teleop sessions."}]}
+
+        stats_text = "\n".join(
+            f"  {r.get('device', r.get('source', '?'))}: "
+            f"{r.get('frames', r.get('frames_received', 0))} frames, "
+            f"{r.get('hz_actual', 0):.1f} Hz"
+            for r in results
+        )
+        return {
+            "status": "success",
+            "content": [{"text": f"Teleop stopped:\n{stats_text}"}],
+        }
+
+    def get_teleop_status(self) -> dict[str, Any]:
+        """Get status of all active teleop sessions."""
+        publishers = {}
+        receivers = {}
+
+        if hasattr(self, "_input_publishers"):
+            for name, pub in self._input_publishers.items():
+                publishers[name] = pub.stats
+
+        if hasattr(self, "_input_receivers"):
+            for key, rcv in self._input_receivers.items():
+                receivers[key] = rcv.stats
+
+        return {
+            "status": "success",
+            "publishers": publishers,
+            "receivers": receivers,
+            "content": [
+                {
+                    "text": f"Teleop status:\n"
+                    f"  Publishers: {len(publishers)} active\n"
+                    f"  Receivers: {len(receivers)} active\n"
+                    + "".join(
+                        f"  [pub] {n}: {s.get('frames', 0)} frames @ {s.get('hz_actual', 0):.1f}Hz\n"
+                        for n, s in publishers.items()
+                    )
+                    + "".join(
+                        f"  [rcv] {k}: {s.get('frames_received', 0)} frames @ {s.get('hz_actual', 0):.1f}Hz\n"
+                        for k, s in receivers.items()
+                    )
+                }
+            ],
+        }

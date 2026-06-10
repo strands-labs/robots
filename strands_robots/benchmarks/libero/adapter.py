@@ -513,30 +513,6 @@ class LiberoAdapter(BenchmarkProtocol):
             self._state_log_max = 50
         self._state_log_step: int = 0
 
-        # #170 — diagnostic gate for the BDDL predicate
-        # evaluator's disagreement with ``env.check_success`` discovered
-        # in PR #168. Set ``STRANDS_LIBERO_PREDICATE_LOG=1`` to
-        # emit a per-step log line when the two verdicts differ
-        # (capped at ``STRANDS_LIBERO_PREDICATE_LOG_MAX`` per episode,
-        # default 10). Only fires when the sim wraps an
-        # ``OffScreenRenderEnv`` (so we have ``env.check_success`` as
-        # ground truth); silent on backends without it.
-        self._predicate_log_enabled = os.environ.get("STRANDS_LIBERO_PREDICATE_LOG", "").strip().lower() in (
-            "1",
-            "true",
-            "yes",
-            "on",
-        )
-        try:
-            self._predicate_log_max = int(os.environ.get("STRANDS_LIBERO_PREDICATE_LOG_MAX", "10"))
-        except ValueError:
-            logger.warning(
-                "STRANDS_LIBERO_PREDICATE_LOG_MAX=%r is not an integer; defaulting to 10",
-                os.environ.get("STRANDS_LIBERO_PREDICATE_LOG_MAX"),
-            )
-            self._predicate_log_max = 10
-        self._predicate_log_count: int = 0
-
     # Construction helpers
 
     @classmethod
@@ -752,26 +728,7 @@ class LiberoAdapter(BenchmarkProtocol):
            for the user's own MJCF).
         7. ``_apply_init_jitter`` - per-episode RNG-seeded ±jitter to
            init-subject bodies, layered on top of canonical state.
-
-        #168 — :class:`LiberoOffScreenRenderEngine`
-        fast-path. When the engine implements
-        :meth:`setup_libero_task` (duck-typed check), the entire
-        scene-generation + canonical-state-apply + camera-install +
-        action-controller-install pipeline above is bypassed in favour
-        of upstream ``OffScreenRenderEnv`` semantics. The engine does
-        all that work itself via robosuite. We just hand it the BDDL
-        path and (optional) init_state and let it run. This is the
-        path that matches NVIDIA's reference eval (``success_rate=1.0``
-        in 54s for 5 eps on libero_10/SCENE5) byte-for-byte.
         """
-        # #168 — fast-path for the OffScreenRenderEnv-backed
-        # engine. When the engine has ``setup_libero_task``, it owns
-        # the entire physics+render lifecycle (via upstream's robosuite
-        # path); skip our auto-generated-scene + OSC controller path.
-        if hasattr(sim, "setup_libero_task"):
-            self._on_episode_start_offscreen(sim, rng)
-            return
-
         if self.scene_path is None and self._auto_generate_scene:
             try:
                 generated = self._generate_scene_from_bddl()
@@ -962,12 +919,11 @@ class LiberoAdapter(BenchmarkProtocol):
         # control step so the first observation handed to the policy is
         # at "init_state + 1 OSC step", matching upstream LIBERO's
         # ``OffScreenRenderEnv.reset`` which does
-        # ``set_init_state(...) + env.step(np.zeros(7))`` (see
-        # ``LiberoOffScreenRenderEngine.reset:213`` and NVIDIA's
+        # ``set_init_state(...) + env.step(np.zeros(7))`` (see NVIDIA's
         # ``libero_env.py:257``). Without this settle, the MuJoCoSimEngine
         # path's first observation is at the raw ``init_state[i]`` while
-        # the offscreen path's first observation is one control step
-        # ahead — the same training data was generated against the
+        # upstream's first observation is one control step ahead — the
+        # same training data was generated against the
         # post-step state, so feeding the raw init_state to a policy
         # trained on post-step inputs is OOD by a few mm / mrad.
         #
@@ -1004,9 +960,6 @@ class LiberoAdapter(BenchmarkProtocol):
         # #168 behaviour for ACTION_LOG via the controller's
         # reset() call inside _install_action_controller above).
         self._state_log_step = 0
-        # #170: reset per-episode disagreement counter so each
-        # episode logs its own first N divergences.
-        self._predicate_log_count = 0
 
     def prewarm(self, sim: SimEngine) -> None:
         """Idempotent setup that should run BEFORE ``sim.start_cameras_recording``.
@@ -1781,100 +1734,14 @@ class LiberoAdapter(BenchmarkProtocol):
     def is_success(self, sim: SimEngine) -> bool:
         """Check whether the LIBERO task goal is satisfied.
 
-        #168 — when the sim wraps an upstream
-        ``OffScreenRenderEnv`` (i.e. ``LiberoOffScreenRenderEngine``,
-        identified via ``hasattr(sim, '_env')`` + the env's
-        ``check_success`` method), delegate to robosuite's native
-        success check rather than walking our BDDL predicate tree.
-
-        WHY: #168 instrumentation found that our
-        :func:`compile_goal`-produced predicate tree disagrees with
-        the env's ``check_success`` for ``libero-10/SCENE5``: the
-        policy was actually solving the task (verified via
-        ``env.check_success() == True``) but our BDDL evaluator was
-        returning ``False``, so the rollout loop kept running until
-        ``max_steps`` truncation and the run ended with
-        ``success_rate = 0``. This was the FINAL bug after rounds
-        36-43 of structural fixes.
-
-        Switching to ``env.check_success`` boosted libero-10/SCENE5
-        from 0/5 to **5/5** (#168 verified eval, in-process
-        Gr00tPolicy, ``r44_inprocess_eval.py``). The BDDL evaluator
-        path remains as a fallback for backends without an
-        ``OffScreenRenderEnv`` (e.g. our ``MuJoCoSimEngine``); the
-        residual bug in the BDDL predicate evaluator is a separate
-        investigation track (see #170).
-
-        Best-effort: if any introspection step fails (the env
-        doesn't have ``check_success``, or ``check_success`` raises),
-        falls back to the BDDL predicate tree. This keeps
-        ``LiberoAdapter`` working on engines that don't have an
-        upstream env.
-
-        **Diagnostic mode (#170)**. Set
-        ``STRANDS_LIBERO_PREDICATE_LOG=1`` to log BOTH verdicts (env
-        and BDDL) for every step where they disagree. Used to bisect
-        which predicate / body lookup is wrong in the BDDL evaluator
-        without affecting the returned verdict (always uses the env
-        path when available, so eval correctness is preserved).
-        Diagnostics fire only on the first ``STRANDS_LIBERO_PREDICATE_LOG_MAX``
-        (default 10) disagreements per episode to keep logs tractable.
+        Walks the BDDL predicate tree compiled at construction time
+        (:func:`compile_goal`) against the current sim state. The
+        evaluator was hardened in #170 / #173 / #175 to match
+        upstream LIBERO's ``check_ontop`` / ``check_contact``
+        semantics byte-for-byte at the moment of contact (#171
+        sub-task 3e contact check, #175 round 46d body-name
+        ``_main`` suffix fallback).
         """
-        env = getattr(sim, "_env", None)
-        env_verdict: bool | None = None
-        if env is not None:
-            check = getattr(env, "check_success", None)
-            if callable(check):
-                try:
-                    env_verdict = bool(check())
-                except Exception as e:  # noqa: BLE001
-                    logger.debug(
-                        "LiberoAdapter.is_success: env.check_success raised %s; "
-                        "falling back to BDDL predicate evaluator",
-                        e,
-                    )
-
-        # #170 diagnostic: log both verdicts when:
-        # (a) env says success (env=True) — to verify BDDL agrees on the
-        #     success transition, and identify the divergent leaf if not, OR
-        # (b) they disagree at any point (env != bddl) — to capture
-        #     transient divergences.
-        # Gated on env var so production eval pays zero cost.
-        if self._predicate_log_enabled and env_verdict is not None:
-            try:
-                bddl_verdict = bool(self._success_fn(sim))
-            except Exception as e:  # noqa: BLE001
-                bddl_verdict = None
-                logger.debug("predicate_log: BDDL evaluator raised %s", e)
-            should_log = (
-                bddl_verdict is not None
-                and (env_verdict or env_verdict != bddl_verdict)
-                and self._predicate_log_count < self._predicate_log_max
-            )
-            if should_log:
-                # Walk the goal tree to find which sub-predicate
-                # diverges. Each leaf reports its own verdict so we
-                # can grep the divergent one.
-                logger.warning(
-                    "PREDICATE_LOG ep=%d log#%d: env=%s bddl=%s; goal=%r",
-                    self._episode_count,
-                    self._predicate_log_count,
-                    env_verdict,
-                    bddl_verdict,
-                    self.problem.goal,
-                )
-                # Per-leaf verdicts, recursive walk.
-                for leaf_repr, leaf_verdict in _walk_predicate_tree(self.problem.goal, sim):
-                    logger.warning(
-                        "PREDICATE_LOG ep=%d   leaf %s = %s",
-                        self._episode_count,
-                        leaf_repr,
-                        leaf_verdict,
-                    )
-                self._predicate_log_count += 1
-
-        if env_verdict is not None:
-            return env_verdict
         return bool(self._success_fn(sim))
 
     # Internals
@@ -2617,111 +2484,6 @@ class LiberoAdapter(BenchmarkProtocol):
             logger.debug("LiberoAdapter: model-side camera enumeration failed: %s", e)
         return names
 
-    def _on_episode_start_offscreen(self, sim: SimEngine, rng: random.Random) -> None:
-        """#168 — on_episode_start fast-path for
-        :class:`LiberoOffScreenRenderEngine`.
-
-        The OffScreenRenderEnv-backed engine owns scene loading,
-        physics, camera rendering, and action dispatch entirely via
-        upstream robosuite. We just need to:
-
-        1. Hand the engine the BDDL file path so it can construct the
-           ``OffScreenRenderEnv``.
-        2. Optionally pass ``init_states[i]`` for canonical-state apply.
-           When ``self._init_states`` is unset, the engine uses the
-           BDDL-default state (matching NVIDIA's
-           ``run_gr00t_sim_policy`` flow which gets ``success_rate=1.0``).
-        3. Reset the env so observation_spec produces a valid initial
-           observation for the policy's first ``get_action`` call.
-        4. Run super's compatibility check (Panda-only validation —
-           cheap on this engine since the Panda is implicit).
-
-        Skipped vs the MuJoCo-engine path: scene auto-generation,
-        ``_apply_canonical_state`` (engine handles via set_init_state),
-        ``_install_libero_cameras`` (cameras are MJCF-defined in
-        upstream), ``_install_render_options`` (upstream env owns its
-        viewer config), ``_install_action_controller`` (upstream env
-        wraps robosuite's controller internally), and
-        ``_apply_init_jitter`` (LIBERO eval doesn't use jitter when
-        ``init_jitter=0`` which is the default).
-        """
-        bddl_path = self._resolve_bddl_path()
-        if bddl_path is None:
-            raise RuntimeError(
-                "LiberoAdapter._on_episode_start_offscreen: cannot resolve BDDL "
-                "path. Construct the adapter via from_file() / from_text() so "
-                "bddl_path / bddl_source is set, or pass bddl_path= to the "
-                "constructor."
-            )
-
-        # Pick init_state per episode (RNG-seeded for determinism;
-        # episode 0 always uses idx 0). Falls through to None when
-        # init_states isn't provided, which matches NVIDIA's eval flow.
-        init_state = None
-        if self._init_states is not None and self._init_states.shape[0] > 0:
-            if self._episode_count == 0:
-                init_state = self._init_states[0]
-            else:
-                # rng-derived index (matches the legacy MuJoCo path's
-                # _apply_init_state_branch behaviour for ep ≥ 1).
-                idx = rng.randrange(self._init_states.shape[0])
-                init_state = self._init_states[idx]
-
-        setup_result = sim.setup_libero_task(bddl_path, init_state=init_state)  # type: ignore[attr-defined]
-        if isinstance(setup_result, dict) and setup_result.get("status") == "error":
-            msg = (setup_result.get("content") or [{}])[0].get("text", "")
-            raise RuntimeError(f"LiberoAdapter._on_episode_start_offscreen: setup_libero_task failed: {msg}")
-
-        # Reset the env so observation_spec returns a valid initial
-        # frame. The engine's reset() method re-applies init_state if
-        # one was provided to setup_libero_task.
-        reset_result = sim.reset()
-        if isinstance(reset_result, dict) and reset_result.get("status") == "error":
-            msg = (reset_result.get("content") or [{}])[0].get("text", "")
-            raise RuntimeError(f"LiberoAdapter._on_episode_start_offscreen: reset failed: {msg}")
-
-        # Compatibility check + register the default robot if needed.
-        # super().on_episode_start handles "no robots in sim" by
-        # auto-adding self.default_robot — that's a cheap no-op on the
-        # OffScreenRenderEnv engine since add_robot is a stub.
-        super().on_episode_start(sim, rng)
-
-        self._episode_count += 1
-
-    def _resolve_bddl_path(self) -> str | None:
-        """Return the BDDL file path used to construct this adapter.
-
-        Tries (in order):
-        1. ``self._bddl_path`` (set by ``from_file``).
-        2. Materialize ``self._bddl_source`` to a temp file (set by
-           ``from_text``). Cached for re-use across episodes.
-
-        Returns ``None`` when neither is available (e.g. caller
-        constructed via ``__init__`` directly without bddl plumbing).
-        """
-        if self._bddl_path is not None:
-            return self._bddl_path
-        if self._bddl_source is not None:
-            # Cache the materialized temp file across episodes.
-            cached = getattr(self, "_bddl_temp_path", None)
-            if cached is None or not os.path.exists(cached):
-                import tempfile
-
-                fd, tmp = tempfile.mkstemp(suffix=".bddl", prefix="libero_offscreen_", text=True)
-                try:
-                    with os.fdopen(fd, "w") as f:
-                        f.write(self._bddl_source)
-                except Exception:  # noqa: BLE001
-                    try:
-                        os.unlink(tmp)
-                    except OSError:
-                        pass
-                    raise
-                self._bddl_temp_path: str = tmp
-                cached = tmp
-            return cached
-        return None
-
     def _apply_canonical_state(self, sim: SimEngine, rng: random.Random | None = None) -> None:
         """Restore qpos / qvel to the scene's canonical home state.
 
@@ -3204,13 +2966,12 @@ def _extract_position(state: dict[str, Any]) -> list[float] | None:
 def _walk_predicate_tree(node: Any, sim: SimEngine) -> list[tuple[str, bool]]:
     """Walk a BDDL goal tree and return ``(repr, verdict)`` for every leaf.
 
-    #170 diagnostic helper. Used by
-    :meth:`LiberoAdapter.is_success` when
-    ``STRANDS_LIBERO_PREDICATE_LOG=1`` is set, so we can identify which
-    sub-predicate disagrees with ``env.check_success`` instead of just
-    knowing the top-level goal disagrees. Compiles each ``Pred`` leaf in
-    isolation via the existing ``compile_goal`` machinery and runs it
-    against the live ``sim``.
+    #170 diagnostic helper. Originally used by
+    :meth:`LiberoAdapter.is_success` to identify which sub-predicate
+    disagreed with the (now-removed, see #178) ``env.check_success``
+    delegation path. Kept for any future BDDL-evaluator debugging:
+    compiles each ``Pred`` leaf in isolation via the existing
+    ``compile_goal`` machinery and runs it against the live ``sim``.
 
     Each reported leaf string includes the actual body positions
     looked up via ``sim.get_body_state`` so we can see why a position-
@@ -3335,8 +3096,8 @@ def _quat_wxyz_to_rpy_xyz(quat_wxyz: list[float]) -> tuple[float, float, float]:
 
     Pure numpy / stdlib — **does not import scipy**, which is not a
     declared dependency of strands_robots. Equivalent to
-    ``LiberoOffScreenRenderEngine._quat_xyzw_to_rpy_xyz`` (which takes
-    xyzw input).
+    ``robosuite.utils.transform_utils.mat2euler(R, axes='sxyz')``
+    on the rotation matrix derived from ``q``.
 
     **#176 (sub-task 3d)** corrected three sign errors in the
     pre-46 derivation. The pre-46 formula was based on

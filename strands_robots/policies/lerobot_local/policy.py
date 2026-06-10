@@ -71,6 +71,11 @@ class LerobotLocalPolicy(Policy):
         rtc_enabled: bool | None = None,
         rtc_execution_horizon: int | None = None,
         rtc_max_guidance_weight: float | None = None,
+        inference_kwargs: dict | None = None,
+        embodiment: str | dict | Any | None = None,
+        norm_tag: str | None = None,
+        image_keys: list[str] | None = None,
+        inference_action_mode: str = "continuous",
         **kwargs,
     ):
         self.pretrained_name_or_path = pretrained_name_or_path
@@ -79,7 +84,28 @@ class LerobotLocalPolicy(Policy):
         self.actions_per_step = actions_per_step
         self.use_processor = use_processor
         self.processor_overrides = processor_overrides
+        # Extra keyword args forwarded verbatim to the underlying LeRobot
+        # policy's select_action()/predict_action_chunk() on every inference
+        # call. Required by policies that demand a runtime mode selector with
+        # no usable default — e.g. MolmoAct2 needs
+        # inference_kwargs={"inference_action_mode": "continuous"|"discrete"}
+        # (its select_action raises ValueError otherwise). RTC kwargs are
+        # handled separately and take precedence on the RTC path.
+        self.inference_kwargs: dict[str, Any] = dict(inference_kwargs or {})
+        # Declarative robot/sim -> model key mapping (SOLUTION.md). When set,
+        # observation/action remapping is configured ONCE into LeRobot's own
+        # processor pipeline at load time, and the per-step heuristic remap
+        # (_to_lerobot_observation / _fixup_preprocessed_batch) is bypassed.
+        self._embodiment_spec = embodiment
+        self._embodiment: Any | None = None
         self.robot_state_keys: list[str] = []
+        # MolmoAct2-specific knobs. MolmoAct2 SO-100/101 checkpoints are
+        # transformers-native (no lerobot draccus `type`), so they take a
+        # dedicated load path (see lerobot_local.molmoact2). These are inert
+        # for every other policy type.
+        self._molmoact2_norm_tag = norm_tag
+        self._molmoact2_image_keys = image_keys
+        self._molmoact2_inference_action_mode = inference_action_mode
 
         self._policy: Any | None = None
         self._device: torch.device | None = None
@@ -109,7 +135,7 @@ class LerobotLocalPolicy(Policy):
     def provider_name(self) -> str:
         return "lerobot_local"
 
-    def reset(self) -> None:
+    def reset(self, seed: int | None = None) -> None:
         """Reset policy state between episodes.
 
         **MUST** be called whenever the environment or task episode resets.
@@ -119,7 +145,16 @@ class LerobotLocalPolicy(Policy):
 
         Also clears RTC state (previous chunk leftover, action queue, latency
         history) to prevent cross-episode contamination.
+
+        Args:
+            seed: Per-episode master seed (added in #187 for the
+                ``Policy.reset(seed=...)`` contract). Currently
+                unused — LeRobot policies don't expose RNG state via a
+                seed kwarg, and reproducibility is handled by
+                ``set_eval_seed`` upstream of the call. Reserved for
+                future per-policy RNG plumbing.
         """
+        del seed  # explicit no-op, not silently ignored
         if self._policy is not None and hasattr(self._policy, "reset"):
             self._policy.reset()
             logger.debug("Policy internal state reset")
@@ -296,6 +331,17 @@ class LerobotLocalPolicy(Policy):
             ValueError: If model path is invalid or config cannot be parsed.
             RuntimeError: If model loading fails.
         """
+        # MolmoAct2 SO-100/101 checkpoints are transformers-native (config.json
+        # has model_type=molmoact2 and NO lerobot draccus `type`). The standard
+        # resolve→from_pretrained path raises ParsingError on them, so route to
+        # the dedicated wrapper that builds MolmoAct2Config(checkpoint_path=...)
+        # and the molmoact2 pre/post processor pipeline programmatically.
+        from . import molmoact2 as _molmoact2
+
+        if _molmoact2.is_molmoact2(self.pretrained_name_or_path, self.policy_type):
+            self._load_molmoact2_model()
+            return
+
         # XVLA compat: Florence2LanguageConfig.forced_bos_token_id missing
         # in transformers 5.x. Florence2 was originally built with an older
         # transformers that had this attribute. Without this patch, XVLA
@@ -370,9 +416,15 @@ class LerobotLocalPolicy(Policy):
                     self.pretrained_name_or_path,
                     device=str(self._device) if self._device else None,
                     overrides=self.processor_overrides or {},
+                    policy_type=self.policy_type,
                 )
                 if self._processor_bridge.is_active:
                     logger.info("Processor bridge loaded: %s", self._processor_bridge)
+                    # SOLUTION.md: configure the declarative embodiment map into
+                    # the pipeline ONCE (rename_map + pack-state step), validated
+                    # fail-fast against the model's declared features. After this,
+                    # the hot path feeds RAW obs straight to preprocess().
+                    self._configure_embodiment()
                 else:
                     self._processor_bridge = None
                     logger.debug("No processor configs found, using raw obs/action flow")
@@ -388,6 +440,141 @@ class LerobotLocalPolicy(Policy):
 
         # Initialize RTC if supported by this policy
         self._init_rtc()
+
+    def _load_molmoact2_model(self) -> None:
+        """Load a transformers-native MolmoAct2 checkpoint via the lerobot wrapper.
+
+        Unlike the generic path, MolmoAct2 needs ``MolmoAct2Config(checkpoint_path=...)``
+        built explicitly and its pre/post processors created programmatically
+        (the repo ships no ``policy_preprocessor.json``). The resulting
+        ``ProcessorBridge`` is wrapped around those pipelines so the normal
+        ``get_actions`` flow (preprocess → select_action → postprocess) works
+        unchanged. The embodiment map (e.g. ``so_real``) still configures camera
+        renames + state packing on the preprocessor via ``_configure_embodiment``.
+        """
+        from . import molmoact2 as _molmoact2
+        from .processor import ProcessorBridge
+
+        self.policy_type = _molmoact2.MOLMOACT2_TYPE
+
+        # State/action dims come from the embodiment when known (SO arms = 6),
+        # else default to 6 (the SO-100/101 convention this checkpoint targets).
+        state_dim = action_dim = 6
+        if self.robot_state_keys:
+            state_dim = action_dim = len(self.robot_state_keys)
+
+        logger.info("Loading MolmoAct2 (transformers-native) from %s...", self.pretrained_name_or_path)
+        start = time.time()
+
+        policy, preprocessor, postprocessor, cfg = _molmoact2.build_policy(
+            self.pretrained_name_or_path,
+            device=self.requested_device,
+            norm_tag=self._molmoact2_norm_tag,
+            inference_action_mode=self._molmoact2_inference_action_mode,
+            image_keys=self._molmoact2_image_keys,
+            embodiment_spec=self._embodiment_spec,
+            state_dim=state_dim,
+            action_dim=action_dim,
+        )
+
+        self._policy = policy
+        self._device = next(policy.parameters()).device
+        self._input_features = dict(getattr(cfg, "input_features", {}) or {})
+        self._output_features = dict(getattr(cfg, "output_features", {}) or {})
+
+        # MolmoAct2.select_action requires inference_action_mode every call.
+        self.inference_kwargs.setdefault("inference_action_mode", self._molmoact2_inference_action_mode)
+
+        elapsed = time.time() - start
+        logger.info(
+            "Loaded MolmoAct2Policy (type='molmoact2') in %.1fs on %s",
+            elapsed,
+            self._device,
+        )
+        self._loaded = True
+
+        # Auto-detect generic state keys from action dim if not set.
+        if not self.robot_state_keys and self._output_features:
+            action_feat = self._output_features.get("action")
+            if action_feat is not None and getattr(action_feat, "shape", None):
+                adim = action_feat.shape[0]
+                self.robot_state_keys = [f"joint_{i}" for i in range(adim)]
+
+        # Wrap the programmatic processors in a ProcessorBridge so the standard
+        # preprocess/postprocess flow applies, then configure the embodiment
+        # (camera rename + state packing) onto the preprocessor pipeline.
+        if self.use_processor:
+            self._processor_bridge = ProcessorBridge(
+                preprocessor=preprocessor,
+                postprocessor=postprocessor,
+                device=str(self._device) if self._device else None,
+            )
+            if self._processor_bridge.is_active:
+                logger.info("MolmoAct2 processor bridge ready: %s", self._processor_bridge)
+                self._configure_embodiment()
+            else:
+                self._processor_bridge = None
+
+        # RTC never applies to MolmoAct2 (no rtc_config); init is a safe no-op.
+        self._init_rtc()
+
+    # Embodiment configuration (declarative obs/action mapping)
+
+    def _configure_embodiment(self) -> None:
+        """Build, validate, and inject the declarative embodiment map (SOLUTION.md).
+
+        Called once at load time after the processor bridge is ready. It:
+
+        1. Resolves ``self._embodiment_spec`` (name / dict / EmbodimentMap), or
+           synthesises a trivial map from ``robot_state_keys`` for back-compat.
+        2. Validates the map against the model's declared input/output features
+           (fail-fast on dim or key mismatch).
+        3. Injects ``rename_map`` + a ``strands_pack_state`` step into the
+           preprocessor pipeline via :meth:`ProcessorBridge.apply_embodiment`.
+
+        If no embodiment is declared AND no ``robot_state_keys`` are set, this is
+        a no-op and the policy uses the legacy heuristic remap path.
+        """
+        from .embodiment import EmbodimentMap, load_embodiment
+
+        spec = self._embodiment_spec
+        if spec is None:
+            # Back-compat: synthesise a trivial embodiment from robot_state_keys
+            # so existing callers that only set joint names still get the clean
+            # pipeline path (state composition + action naming), without any
+            # camera renames (none are known in this case).
+            if self.robot_state_keys and not any(k.startswith("joint_") for k in self.robot_state_keys):
+                spec = EmbodimentMap(
+                    name="<from robot_state_keys>",
+                    obs_rename={},
+                    state_keys=list(self.robot_state_keys),
+                    action_keys=list(self.robot_state_keys),
+                    dim_policy="pad",
+                )
+            else:
+                # No usable declarative info — keep legacy heuristic path.
+                self._embodiment = None
+                return
+
+        try:
+            embodiment = load_embodiment(spec)
+        except ValueError as exc:
+            raise RuntimeError(f"Failed to load embodiment {spec!r}: {exc}") from exc
+
+        # Fail-fast validation against the model's declared features.
+        embodiment.validate(self._input_features, self._output_features)
+
+        # Inject into the pipeline (rename_map + pack-state step).
+        assert self._processor_bridge is not None
+        self._processor_bridge.apply_embodiment(embodiment, input_features=self._input_features)
+
+        self._embodiment = embodiment
+        # Action-side mapping: prefer the embodiment's declared action_keys so
+        # _tensor_to_action_dicts indexes by real actuator names, not generic
+        # joint_0..N. Keep robot_state_keys as a fallback.
+        if embodiment.action_keys:
+            self.robot_state_keys = list(embodiment.action_keys)
+        logger.info("Embodiment '%s' configured for %s", embodiment.name, type(self._policy).__name__)
 
     # Real-Time Chunking (RTC) support
 
@@ -592,10 +779,26 @@ class LerobotLocalPolicy(Policy):
         # that the pipeline did not convert (e.g. images left as HWC uint8
         # numpy, state tensors missing a batch dimension).
         if self._processor_bridge and self._processor_bridge.has_preprocessor:
-            batch = self._processor_bridge.preprocess(observation, instruction=instruction)
-            if not isinstance(batch, dict):
-                batch = {"observation.state": batch}
-            batch = self._fixup_preprocessed_batch(batch)
+            if self._embodiment is not None:
+                # SOLUTION.md bulletproof path: the embodiment map was injected
+                # into the pipeline at load time (rename_map + strands_pack_state
+                # step), so the pipeline itself renames cameras and composes
+                # observation.state. Feed RAW obs straight in — ZERO per-step
+                # strands-side remapping, no _fixup needed (AddBatchDimension +
+                # Device steps in the pipeline handle shape/device).
+                batch = self._processor_bridge.preprocess(observation, instruction=instruction)
+                if not isinstance(batch, dict):
+                    batch = {"observation.state": batch}
+            else:
+                # Legacy heuristic path (no embodiment declared). B12: remap
+                # strands-native obs (bare camera names + per-joint scalars) to
+                # the model's LeRobot feature names BEFORE preprocess, then fix up
+                # any arrays/tensors the pipeline left unconverted.
+                lerobot_obs = self._to_lerobot_observation(observation)
+                batch = self._processor_bridge.preprocess(lerobot_obs, instruction=instruction)
+                if not isinstance(batch, dict):
+                    batch = {"observation.state": batch}
+                batch = self._fixup_preprocessed_batch(batch)
         else:
             batch = self._build_observation_batch(observation, instruction)
 
@@ -614,7 +817,7 @@ class LerobotLocalPolicy(Policy):
                 # full action horizon, then slice in _tensor_to_action_dicts().
                 # select_action() uses an internal queue and returns only 1 action
                 # at a time, so it can't return multiple steps per call.
-                action_tensor = self._policy.predict_action_chunk(batch)
+                action_tensor = self._policy.predict_action_chunk(batch, **self.inference_kwargs)
             else:
                 # Default single-step path: delegates to LeRobot's select_action()
                 # which handles temporal ensemble smoothing
@@ -622,7 +825,9 @@ class LerobotLocalPolicy(Policy):
                 # (n_action_steps > 1) internally.
                 # We intentionally use select_action() rather than predict_action_chunk()
                 # here to preserve all upstream action scheduling logic.
-                action_tensor = self._policy.select_action(batch)
+                # inference_kwargs forwards policy-specific runtime selectors
+                # (e.g. MolmoAct2's required inference_action_mode).
+                action_tensor = self._policy.select_action(batch, **self.inference_kwargs)
 
         if self._processor_bridge and self._processor_bridge.has_postprocessor:
             action_tensor = self._processor_bridge.postprocess(action_tensor)
@@ -690,6 +895,107 @@ class LerobotLocalPolicy(Policy):
                 fixed[key] = val
 
         return fixed
+
+    def _to_lerobot_observation(self, observation_dict: dict[str, Any]) -> dict[str, Any]:
+        """Remap a strands-native observation to LeRobot feature keys.
+
+        The processor pipeline expects the model's declared feature names:
+        ``observation.images.<cam>`` for cameras and ``observation.state`` for
+        the joint vector. Robot/sim observations instead use bare camera names
+        (``image``, ``wrist_image``) and per-joint scalar keys. This bridges the
+        two so a preprocessor-backed VLA (MolmoAct2, etc.) gets the keys it needs.
+
+        Mapping rules:
+          * Keys already starting with ``observation.`` (and ``task``) pass through.
+          * ndarray values with ndim>=2 (images) are matched to the model's
+            declared ``observation.images.*`` features. An exact short-name match
+            (``image`` → ``observation.images.image``) is preferred; otherwise
+            images fill declared image slots in order.
+          * Remaining scalar joint values are collected (in ``robot_state_keys``
+            order when available, else insertion order) into ``observation.state``.
+
+        Idempotent: a fully LeRobot-formatted observation is returned unchanged.
+        """
+        # Already LeRobot-formatted? (any observation.* key) → pass through.
+        if any(k.startswith("observation.") for k in observation_dict):
+            return dict(observation_dict)
+
+        out: dict[str, Any] = {}
+
+        declared_img_feats = [f for f in self._input_features if "image" in f]
+
+        # 1) Map images. Prefer exact short-name match against declared features.
+        image_items = [(k, v) for k, v in observation_dict.items() if isinstance(v, np.ndarray) and v.ndim >= 2]
+        used_feats: set[str] = set()
+        unmatched_imgs = []
+        for k, v in image_items:
+            target = f"observation.images.{k}"
+            if target in self._input_features and target not in used_feats:
+                out[target] = v
+                used_feats.add(target)
+            else:
+                unmatched_imgs.append((k, v))
+        # Fill any remaining declared image slots, in declaration order.
+        free_feats = [f for f in declared_img_feats if f not in used_feats]
+        for (k, v), feat in zip(unmatched_imgs, free_feats):
+            out[feat] = v
+            used_feats.add(feat)
+
+        # 2) Collect scalar joint values into observation.state.
+        scalar_keys = [
+            k for k, v in observation_dict.items() if k != "task" and not (isinstance(v, np.ndarray) and v.ndim >= 2)
+        ]
+        # Prefer robot_state_keys ordering, but fall back to the actual scalar
+        # keys present in the observation. robot_state_keys is often auto-filled
+        # with generic names (joint_0..joint_N) from the model's action dim,
+        # which won't match a sim/robot using real joint names ('1'..'6',
+        # 'shoulder', ...). If none of robot_state_keys are present, use the
+        # observation's own scalar keys so we never silently drop the state.
+        order = self.robot_state_keys or scalar_keys
+        if self.robot_state_keys and not any(k in observation_dict for k in self.robot_state_keys):
+            order = scalar_keys
+        state_vals = []
+        for k in order:
+            if k in observation_dict:
+                v = observation_dict[k]
+                if isinstance(v, (int, float, np.floating, np.integer)):
+                    state_vals.append(float(v))
+                elif isinstance(v, np.ndarray) and v.ndim == 0:
+                    state_vals.append(float(v))
+        if state_vals:
+            # Adapt state dim to the model's declared observation.state shape.
+            # The preprocessor's normalizer does element-wise ops against fixed
+            # N-dim stats (e.g. LIBERO Franka = 8), so a 6-dof SO arm must be
+            # zero-padded (or truncated) to N BEFORE preprocessing or the
+            # pipeline raises a shape-mismatch. Mirrors the adaptation in
+            # _build_batch_from_strands_format.
+            state_feat = self._input_features.get("observation.state")
+            expected_dim = (
+                state_feat.shape[0]
+                if state_feat is not None and getattr(state_feat, "shape", None)
+                else len(state_vals)
+            )
+            if len(state_vals) > expected_dim:
+                logger.warning(
+                    "State dim %d > model expects %d - truncating (preprocess path).",
+                    len(state_vals),
+                    expected_dim,
+                )
+                state_vals = state_vals[:expected_dim]
+            elif len(state_vals) < expected_dim:
+                logger.warning(
+                    "State dim %d < model expects %d - zero-padding (preprocess path).",
+                    len(state_vals),
+                    expected_dim,
+                )
+                state_vals = state_vals + [0.0] * (expected_dim - len(state_vals))
+            out["observation.state"] = np.asarray(state_vals, dtype=np.float32)
+
+        # 3) Preserve task/instruction passthrough.
+        if "task" in observation_dict:
+            out["task"] = observation_dict["task"]
+
+        return out
 
     def _build_observation_batch(self, observation_dict: dict[str, Any], instruction: str) -> dict[str, Any]:
         """Convert observation dict to LeRobot-compatible batch tensors.

@@ -93,6 +93,15 @@ def resolve_policy(policy: str, **extra_kwargs) -> tuple[str, dict[str, Any]]:
                     if match:
                         kwargs["host"] = match.group(1)
                         kwargs["port"] = int(match.group(2) or 8000)
+                elif pattern.startswith("^cosmos3://"):
+                    # Cosmos 3 service-mode URL: cosmos3://[host[:port]] -> kwargs.
+                    # Without this branch the pattern matches but no parser
+                    # populates host/port, so create_policy("cosmos3://prod:9000")
+                    # silently falls back to the default localhost:8000 (#317 R3).
+                    match = re.match(r"cosmos3://([^:/]+):?(\d+)?", policy)
+                    if match:
+                        kwargs["host"] = match.group(1)
+                        kwargs["port"] = int(match.group(2) or 8000)
                 elif pattern.startswith("^zmq://"):
                     match = re.match(r"zmq://([^:]+):(\d+)", policy)
                     if match:

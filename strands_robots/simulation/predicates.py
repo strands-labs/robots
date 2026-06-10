@@ -377,9 +377,8 @@ def _body_on(
     check is skipped and only the geometric check fires. This
     preserves backwards compatibility — engines without contact
     support get the pre-#171 behaviour. LIBERO benchmarks running on
-    ``LiberoOffScreenRenderEngine`` or ``MuJoCoSimEngine`` (both
-    implement ``get_contacts``) get the strict upstream-matching
-    semantics.
+    ``MuJoCoSimEngine`` (which implements ``get_contacts``) get the
+    strict upstream-matching semantics.
 
     For full fidelity (MJCF geom size lookup + narrow-phase collision), write
     a scene-specific predicate and register it via :func:`register_predicate`.

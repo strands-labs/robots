@@ -1,4 +1,5 @@
 {
+  "_note": "Action keys in every config are by-name only. This schema deliberately omits the upstream Isaac-GR00T ActionConfig metadata (rep / type / format) attached per action key. Downstream consumers must NOT assume joint-angle semantics for action keys: some keys are learned latents (for example unitree_g1_sonic action.motion_token is a 64-dim SONIC latent decoded by the SONIC controller, not a joint angle). Map and consume action keys by name. See issue strands-labs/robots#211.",
   "configs": {
     "so100": {
       "video_keys": [
@@ -970,6 +971,74 @@
     },
     "oxe_droid_relative_eef_relative_joint": {
       "_extends": "oxe_droid"
+    },
+    "unitree_g1_sonic": {
+      "video_keys": [
+        "video.ego_view"
+      ],
+      "state_keys": [
+        "state.left_leg",
+        "state.right_leg",
+        "state.waist",
+        "state.left_arm",
+        "state.right_arm",
+        "state.left_hand",
+        "state.right_hand",
+        "state.projected_gravity"
+      ],
+      "action_keys": [
+        "action.motion_token",
+        "action.left_hand_joints",
+        "action.right_hand_joints"
+      ],
+      "language_keys": [
+        "annotation.human.task_description"
+      ],
+      "observation_indices": [
+        0
+      ],
+      "action_indices": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20,
+        21,
+        22,
+        23,
+        24,
+        25,
+        26,
+        27,
+        28,
+        29,
+        30,
+        31,
+        32,
+        33,
+        34,
+        35,
+        36,
+        37,
+        38,
+        39
+      ]
     }
   },
   "aliases": {

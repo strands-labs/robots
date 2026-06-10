@@ -1,0 +1,105 @@
+// strands-robots mesh ACL — operator template.
+//
+// Drop this at $STRANDS_MESH_ACL_FILE and edit the ENUMERATED_PEERS
+// list below to match the cert Common Names of every robot and
+// operator in your fleet.
+//
+// IMPORTANT — Zenoh 1.x quirks (verified against live sessions in
+// tests/mesh/test_zenoh_transport_security.py):
+//
+//  1. `enabled: true` is required. Without it the entire access_control
+//     block is a silent no-op.
+//
+//  2. `cert_common_names` matches LITERAL CNs only — `"robot-*"` and
+//     `"robot-.*"` both match nothing. Enumerate every peer by exact
+//     CN below; there is no glob fallback.
+//
+//  3. Subject `interfaces` is OPTIONAL per Zenoh's schema
+//     (Option<NEVec<...>>; an absent field maps to
+//     SubjectProperty::Wildcard, i.e. matches every link). We omit
+//     it below so this template works on any host regardless of NIC
+//     name (`eth0` / `enp0s3` / `cni0` / `wg0` / ...). Add an
+//     `interfaces: ["lo", "eth0", ...]` line under a subject if you
+//     want to additionally scope it to a NIC subset.
+//
+//  4. `key_exprs` see the user-side key (the Zenoh `namespace`
+//     prefix is stripped before matching). Use `**/cmd` style
+//     globs, NOT `<namespace>/*/cmd`.
+//
+//  5. `put` rules live in `ingress` (where the publishing peer's
+//     cert CN is known to the receiver). `declare_subscriber` lives
+//     in `egress` (the declare flows from subscriber to publisher).
+{
+  enabled: true,
+  default_permission: "deny",
+
+  rules: [
+    {
+      id: "robot_publish_telemetry",
+      messages: ["put"],
+      flows: ["ingress"],
+      permission: "allow",
+      key_exprs: [
+        "**/presence",
+        "**/state/**",
+        "**/health",
+        "**/pose",
+        "**/imu",
+        "**/odom",
+        "**/lidar/**",
+        "**/hand/**",
+        "**/camera/**",
+        "**/response/**",
+      ],
+    },
+    {
+      id: "operator_publish_cmds",
+      messages: ["put"],
+      flows: ["ingress"],
+      permission: "allow",
+      key_exprs: [
+        "**/cmd",
+        "**/broadcast",
+        "**/safety/**",
+      ],
+    },
+    {
+      id: "any_subscribe",
+      messages: ["declare_subscriber"],
+      flows: ["egress"],
+      permission: "allow",
+      key_exprs: ["**"],
+    },
+  ],
+
+  subjects: [
+    {
+      id: "robot_peer",
+      // ENUMERATE every robot's exact cert CN here.
+      cert_common_names: [
+        "robot-a",
+        "robot-b",
+        // Add more as you provision...
+      ],
+    },
+    {
+      id: "operator_peer",
+      cert_common_names: [
+        "op-1",
+        "op-2",
+        // Add more operators...
+      ],
+    },
+  ],
+
+  policies: [
+    {
+      rules: ["robot_publish_telemetry", "any_subscribe"],
+      subjects: ["robot_peer"],
+    },
+    {
+      rules: ["operator_publish_cmds", "any_subscribe"],
+      subjects: ["operator_peer"],
+    },
+  ],
+}

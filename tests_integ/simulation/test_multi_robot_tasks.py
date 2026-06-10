@@ -38,6 +38,10 @@ def dual_robot_world():
     sim.add_object("red_cube", shape="box", size=[0.025, 0.025, 0.025], position=[-0.15, 0.2, 0.05], rgba=[1, 0, 0, 1])
     sim.add_object("blue_ball", shape="sphere", size=[0.03, 0.03, 0.03], position=[0.15, 0.2, 0.05], rgba=[0, 0, 1, 1])
     sim.add_camera("top", position=[0, 0, 0.9], target=[0, 0.2, 0.05])
+    # Per-robot wrist cameras: the "/" namespace separator is normalised to
+    # "__" in recorded LeRobot feature names (observation.images.alice__wrist_cam).
+    sim.add_camera("alice/wrist_cam", position=[-0.25, 0.2, 0.4], target=[-0.15, 0.2, 0.05])
+    sim.add_camera("bob/wrist_cam", position=[0.25, 0.2, 0.4], target=[0.15, 0.2, 0.05])
     sim.step(n_steps=10)
     yield sim
     sim.destroy()

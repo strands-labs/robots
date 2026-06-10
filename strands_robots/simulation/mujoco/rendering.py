@@ -848,6 +848,11 @@ class RenderingMixin:
         buffers = {cam: [] for cam in names}
         paths = {cam: _os.path.join(out_dir, f"{tag}__{cam}.mp4") for cam in names}
 
+        # ``ready`` is set by the recorder thread once its GL context is warm
+        # and it has entered the capture loop. ``start`` blocks on it below so
+        # that "start returned success" guarantees frames are being captured —
+        # callers that stop after a short sleep (e.g. tests, brief clips) no
+        # longer race the ~0.5s fresh-thread EGL warmup and get an empty buffer.
         state = {
             "running": True,
             "name": tag,
@@ -862,6 +867,7 @@ class RenderingMixin:
             "started_at": _time.time(),
             "thread": None,
             "max_frames": max_frames_per_camera,
+            "ready": _threading.Event(),
         }
 
         def _loop():
@@ -952,6 +958,12 @@ class RenderingMixin:
                     cold,
                 )
 
+            # Warmup done (or capped) — capture loop is about to run. Unblock
+            # the caller waiting in start_cameras_recording so the success
+            # return coincides with the first captured frame, not the cold
+            # thread launch.
+            state["ready"].set()
+
             interval = 1.0 / fps
             while state["running"]:
                 t0 = _time.time()
@@ -978,6 +990,20 @@ class RenderingMixin:
         state["thread"].start()
         self._cams_rec_state = state
 
+        # Wait for the recorder thread to warm its GL context and enter the
+        # capture loop before reporting success. Worst case is the 30-attempt
+        # warmup cap (~1s/cam at 64x48, more for larger frames) plus a small
+        # margin; the common case is ~0.5s. If warmup somehow stalls we still
+        # return after the timeout rather than blocking forever — the thread
+        # keeps trying and ``get_cameras_recording_status`` exposes errors.
+        _ready_timeout = 5.0 + 1.0 * len(names)
+        if not state["ready"].wait(timeout=_ready_timeout):
+            logger.warning(
+                "camera recorder '%s' not ready after %.1fs; returning anyway (first frames may be delayed)",
+                tag,
+                _ready_timeout,
+            )
+
         msg = (
             f"🎬 Recording {len(names)} camera(s) @ {fps} FPS → {out_dir}\n"
             f"   tag: {tag}\n"
@@ -991,10 +1017,18 @@ class RenderingMixin:
         Runs ``imageio.get_writer``/``append_data``/``close`` here instead of
         the recording thread so the ffmpeg pipe doesn't race with policy
         timing jitter. Returns per-camera frame counts and paths.
-        """
-        import os as _os
-        import time as _time
 
+        Idempotent and safe whichever ``start_cameras_recording*`` variant
+        was used:
+
+        * Daemon-thread (``start_cameras_recording``) → flips
+          ``state["running"] = False``, joins the thread, then flushes.
+        * Synchronous (``start_cameras_recording_synchronous``) → no
+          thread to join; the ``finalize`` callable returned alongside
+          ``on_frame`` is the preferred entry point but
+          ``stop_cameras_recording`` works equivalently for callers that
+          don't keep the closure handle.
+        """
         state = getattr(self, "_cams_rec_state", None)
         if not state or not state.get("running"):
             # idempotent - 'already stopped' is a success, not an error.
@@ -1004,6 +1038,27 @@ class RenderingMixin:
         thread = state.get("thread")
         if thread is not None:
             thread.join(timeout=5.0)
+
+        result = self._flush_cameras_recording_state(state)
+        self._cams_rec_state = None
+        return result
+
+    def _flush_cameras_recording_state(self, state: dict) -> dict:
+        """Encode ``state["buffers"]`` to MP4 + return the standard result dict.
+
+        Shared by :meth:`stop_cameras_recording` (daemon-thread path) and
+        the ``finalize`` callable returned by
+        :meth:`start_cameras_recording_synchronous`. ``state`` is mutated
+        in place — ``running`` should already be ``False`` before this
+        runs, and the daemon thread (if any) already joined.
+
+        Best-effort: per-camera flush failures are reported in the result
+        dict's text + JSON (``frames`` / ``errors`` / ``size_kb``) but
+        never raise, so a partial encode still yields a structured
+        success response with the surviving artifacts.
+        """
+        import os as _os
+        import time as _time
 
         try:
             import imageio.v2 as imageio
@@ -1049,14 +1104,196 @@ class RenderingMixin:
                 }
             )
 
-        name = state["name"]
-        self._cams_rec_state = None
-
         return {
             "status": "success",
             "content": [
                 {"text": "\n".join(lines)},
-                {"json": {"recording": name, "artifacts": artifacts}},
+                {"json": {"recording": state["name"], "artifacts": artifacts}},
+            ],
+        }
+
+    def start_cameras_recording_synchronous(
+        self,
+        cameras=None,
+        output_dir=None,
+        fps=30,
+        width=None,
+        height=None,
+        name=None,
+        max_frames_per_camera=3000,
+    ):
+        """Synchronous-mode counterpart to :meth:`start_cameras_recording`.
+
+        Returns ``(on_frame, finalize)`` callables instead of spawning a
+        daemon thread. The eval driver wires ``on_frame`` into
+        :meth:`~strands_robots.simulation.SimEngine.evaluate_benchmark`'s
+        new ``on_frame=`` kwarg (#191), and rendering happens on the eval
+        thread — eliminating the cross-thread ``mjData`` race the daemon
+        recorder hits under multi-threaded eval (Strands ``Agent`` tool
+        dispatch under asyncio, where the eval runs on a worker thread
+        distinct from the script main).
+
+        Symptoms of the daemon-thread bug this fixes (#191):
+        ``run_mujoco_agent.py --policy=groot`` measured 2-3% frame
+        capture rate vs the programmatic single-thread driver, with
+        visible greenish GL clear-colour gradient frames at episode
+        boundaries. The synchronous mode trades the daemon thread for a
+        per-step render call; the eval thread already holds a warm GL
+        context (the renderer is per-thread; the policy loop drives
+        ``sim.render`` on its own thread for the policy obs), so no
+        warmup loop is needed.
+
+        Caller pattern::
+
+            on_frame, finalize = sim.start_cameras_recording_synchronous(
+                cameras=["image", "wrist_image"],
+                output_dir=video_dir,
+                name=rec_name,
+            )
+            try:
+                sim.evaluate_benchmark(
+                    benchmark_name=task,
+                    n_episodes=5,
+                    seed=42,
+                    policy_provider="groot",
+                    policy_config={...},
+                    on_frame=on_frame,
+                )
+            finally:
+                finalize()
+
+        Args:
+            cameras: list of camera names; ``None`` = every camera.
+            output_dir: where to write ``{tag}__{cam}.mp4``. Defaults to
+                ``$TMPDIR/strands_robots/recordings``.
+            fps: encoded MP4 frame rate (and target capture rate when
+                ``on_frame`` fires more often than ``fps``).
+            width, height: per-frame size; defaults to the renderer's
+                native resolution.
+            name: filename tag (auto-generated UUID prefix when ``None``).
+            max_frames_per_camera: safety cap on in-memory buffers.
+                Frames beyond the cap are silently dropped (status
+                visible via :meth:`get_cameras_recording_status`).
+
+        Returns:
+            On success: ``{"status": "success", "content": [{"text": ...},
+            {"json": {"on_frame": <callable>, "finalize": <callable>}}]}``.
+            The closures aren't natively JSON-serializable; consumers in
+            Python code unpack them via the JSON block. Tool-spec callers
+            that can't reach Python closures can use the daemon-thread
+            variant instead.
+
+            On error: ``{"status": "error", "content": [{"text": ...}]}``
+            (no world, already-recording, unresolved camera names, etc.).
+        """
+        import os as _os
+        import tempfile as _tempfile
+        import time as _time
+        import uuid as _uuid
+
+        if self._world is None or self._world._model is None or self._world._data is None:
+            return {"status": "error", "content": [{"text": "No world. Call create_world (or load_scene) first."}]}
+
+        if getattr(self, "_cams_rec_state", None) and self._cams_rec_state.get("running"):
+            cur = self._cams_rec_state["name"]
+            return {
+                "status": "error",
+                "content": [{"text": f"Already recording '{cur}'. Call stop_cameras_recording() first."}],
+            }
+
+        names, unresolved = self._active_camera_list(cameras)
+        if cameras is not None and unresolved:
+            return {
+                "status": "error",
+                "content": [{"text": (f"Camera(s) not found: {unresolved}. Available: {self._list_camera_names()}")}],
+            }
+        if not names:
+            return {"status": "error", "content": [{"text": "No cameras to record."}]}
+
+        out_dir = _os.path.abspath(output_dir or _os.path.join(_tempfile.gettempdir(), "strands_robots", "recordings"))
+        _os.makedirs(out_dir, exist_ok=True)
+        tag = name or f"rec_{_uuid.uuid4().hex[:8]}"
+
+        buffers: dict[str, list] = {cam: [] for cam in names}
+        paths = {cam: _os.path.join(out_dir, f"{tag}__{cam}.mp4") for cam in names}
+
+        state: dict[str, Any] = {
+            "running": True,
+            "name": tag,
+            "cameras": names,
+            "fps": fps,
+            "width": width,
+            "height": height,
+            "buffers": buffers,
+            "paths": paths,
+            "errors": dict.fromkeys(names, 0),
+            "output_dir": out_dir,
+            "started_at": _time.time(),
+            # No daemon thread in synchronous mode; left as None so
+            # ``stop_cameras_recording`` can detect this and skip the
+            # join.
+            "thread": None,
+            "max_frames": max_frames_per_camera,
+            # Sync mode is opt-in: the on_frame closure renders from the
+            # eval thread, no daemon thread is spawned. Tracked in state
+            # so introspection / status surfaces can distinguish the two.
+            "mode": "synchronous",
+        }
+        self._cams_rec_state = state
+
+        def _on_frame(_step: int, _observation: dict, _action: dict) -> None:
+            """Per-step capture: render each camera + append to the buffer.
+
+            Errors are absorbed into ``state["errors"][cam]`` so a single
+            bad frame doesn't abort the rollout (matches the daemon-thread
+            policy). Stops capturing once the per-camera cap is hit.
+            """
+            from strands_robots.simulation.policy_runner import _extract_frame_ndarray
+
+            if not state["running"]:
+                return
+            for cam in state["cameras"]:
+                if len(state["buffers"][cam]) >= state["max_frames"]:
+                    continue
+                try:
+                    r = self.render(camera_name=cam, width=width, height=height)
+                    arr = _extract_frame_ndarray(r)
+                    if arr is not None:
+                        state["buffers"][cam].append(arr)
+                    else:
+                        state["errors"][cam] += 1
+                except Exception as e:  # noqa: BLE001 - per-frame failures non-fatal
+                    state["errors"][cam] += 1
+                    logger.debug("synchronous recorder (%s) error: %s", cam, e)
+
+        def _finalize() -> dict:
+            """Flush buffers to MP4 + clear sim state. Idempotent.
+
+            Returns the same standard result dict as
+            :meth:`stop_cameras_recording` so callers can log artifacts
+            uniformly. Calling ``finalize()`` after the first call is a
+            no-op success ("Was not recording cameras.") — matching the
+            ``stop_cameras_recording`` idempotency contract.
+            """
+            current = getattr(self, "_cams_rec_state", None)
+            if current is not state or not state.get("running"):
+                return {"status": "success", "content": [{"text": "Was not recording cameras."}]}
+            state["running"] = False
+            result = self._flush_cameras_recording_state(state)
+            self._cams_rec_state = None
+            return result
+
+        msg = (
+            f"🎬 Recording {len(names)} camera(s) @ {fps} FPS → {out_dir} (synchronous mode)\n"
+            f"   tag: {tag}\n"
+            f"   cameras: {', '.join(names)}\n"
+            "   wire on_frame= into evaluate_benchmark / PolicyRunner.evaluate"
+        )
+        return {
+            "status": "success",
+            "content": [
+                {"text": msg},
+                {"json": {"on_frame": _on_frame, "finalize": _finalize, "name": tag, "output_dir": out_dir}},
             ],
         }
 

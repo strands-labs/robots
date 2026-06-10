@@ -1,0 +1,1194 @@
+{
+  "__doc__": "Declarative robot/sim -> LeRobot-model key maps for the local policy. state_keys/action_keys MUST match the keys the runtime observation actually emits. Two key conventions exist: (1) SIM entries use the bare MuJoCo joint names from each robot's XML (what _get_sim_observation returns); (2) *_real entries use LeRobot driver motor-feature names with the '.pos' suffix (robot._motors_ft, see lerobot/robots/*). obs_rename maps the runtime camera key -> the model's declared observation.images.* feature. dim_policy: strict|pad|truncate. Ground truth: lerobot-src/src/lerobot/robots + robot_descriptions MuJoCo XMLs.",
+  "configs": {
+    "panda_libero": {
+      "__note__": "EEF/task-space schema for LIBERO-trained VLAs (MolmoAct2-LIBERO etc.). NOT joint-space. action_keys are 7-dof delta-EEF consumed by LiberoAdapter's OSC controller.",
+      "obs_rename": {
+        "image": "observation.images.image",
+        "wrist_image": "observation.images.wrist_image"
+      },
+      "state_keys": [
+        "x",
+        "y",
+        "z",
+        "roll",
+        "pitch",
+        "yaw",
+        "gripper"
+      ],
+      "action_keys": [
+        "x",
+        "y",
+        "z",
+        "roll",
+        "pitch",
+        "yaw",
+        "gripper"
+      ],
+      "dim_policy": "strict"
+    },
+    "so101": {
+      "__note__": "SIM: robotstudio_so101/so101_new_calib.xml joints are bare numerics 1..6.",
+      "obs_rename": {
+        "front": "observation.images.image",
+        "wrist": "observation.images.wrist_image"
+      },
+      "state_keys": [
+        "1",
+        "2",
+        "3",
+        "4",
+        "5",
+        "6"
+      ],
+      "action_keys": [
+        "1",
+        "2",
+        "3",
+        "4",
+        "5",
+        "6"
+      ],
+      "dim_policy": "pad"
+    },
+    "so100": {
+      "__note__": "SIM: trs_so_arm100/so_arm100.xml uses capitalized named joints (NOT 1..6 like so101).",
+      "obs_rename": {
+        "front": "observation.images.image",
+        "wrist": "observation.images.wrist_image"
+      },
+      "state_keys": [
+        "Rotation",
+        "Pitch",
+        "Elbow",
+        "Wrist_Pitch",
+        "Wrist_Roll",
+        "Jaw"
+      ],
+      "action_keys": [
+        "Rotation",
+        "Pitch",
+        "Elbow",
+        "Wrist_Pitch",
+        "Wrist_Roll",
+        "Jaw"
+      ],
+      "dim_policy": "pad"
+    },
+    "so_real": {
+      "__note__": "REAL hardware: lerobot SOFollower (so100_follower/so101_follower). _motors_ft -> '<motor>.pos'. Applies to both so100 & so101 physical arms (identical motor set).",
+      "obs_rename": {
+        "front": "observation.images.image",
+        "wrist": "observation.images.wrist_image"
+      },
+      "state_keys": [
+        "shoulder_pan.pos",
+        "shoulder_lift.pos",
+        "elbow_flex.pos",
+        "wrist_flex.pos",
+        "wrist_roll.pos",
+        "gripper.pos"
+      ],
+      "action_keys": [
+        "shoulder_pan.pos",
+        "shoulder_lift.pos",
+        "elbow_flex.pos",
+        "wrist_flex.pos",
+        "wrist_roll.pos",
+        "gripper.pos"
+      ],
+      "dim_policy": "pad"
+    },
+    "koch": {
+      "__note__": "SIM: low_cost_robot_arm.xml joint names.",
+      "obs_rename": {
+        "front": "observation.images.image",
+        "wrist": "observation.images.wrist_image"
+      },
+      "state_keys": [
+        "base_rotation",
+        "pitch",
+        "elbow",
+        "wrist_pitch",
+        "wrist_roll",
+        "gripper"
+      ],
+      "action_keys": [
+        "base_rotation",
+        "pitch",
+        "elbow",
+        "wrist_pitch",
+        "wrist_roll",
+        "gripper"
+      ],
+      "dim_policy": "pad"
+    },
+    "koch_real": {
+      "__note__": "REAL hardware: lerobot KochFollower _motors_ft -> '<motor>.pos' (same 6-dof set as SO arms).",
+      "obs_rename": {
+        "front": "observation.images.image",
+        "wrist": "observation.images.wrist_image"
+      },
+      "state_keys": [
+        "shoulder_pan.pos",
+        "shoulder_lift.pos",
+        "elbow_flex.pos",
+        "wrist_flex.pos",
+        "wrist_roll.pos",
+        "gripper.pos"
+      ],
+      "action_keys": [
+        "shoulder_pan.pos",
+        "shoulder_lift.pos",
+        "elbow_flex.pos",
+        "wrist_flex.pos",
+        "wrist_roll.pos",
+        "gripper.pos"
+      ],
+      "dim_policy": "pad"
+    },
+    "lekiwi_real": {
+      "__note__": "REAL hardware: lerobot LeKiwi (mobile SO arm). _state_ft/action_features -> 6 arm '<motor>.pos' + body-frame base velocities x.vel/y.vel/theta.vel (LeKiwi converts wheel<->body internally; the model never sees wheel positions).",
+      "obs_rename": {
+        "front": "observation.images.image",
+        "wrist": "observation.images.wrist_image"
+      },
+      "state_keys": [
+        "arm_shoulder_pan.pos",
+        "arm_shoulder_lift.pos",
+        "arm_elbow_flex.pos",
+        "arm_wrist_flex.pos",
+        "arm_wrist_roll.pos",
+        "arm_gripper.pos",
+        "x.vel",
+        "y.vel",
+        "theta.vel"
+      ],
+      "action_keys": [
+        "arm_shoulder_pan.pos",
+        "arm_shoulder_lift.pos",
+        "arm_elbow_flex.pos",
+        "arm_wrist_flex.pos",
+        "arm_wrist_roll.pos",
+        "arm_gripper.pos",
+        "x.vel",
+        "y.vel",
+        "theta.vel"
+      ],
+      "dim_policy": "pad"
+    },
+    "panda": {
+      "__note__": "SIM: franka_emika_panda/panda.xml. 7 arm joints + 2 finger joints.",
+      "obs_rename": {
+        "image": "observation.images.image",
+        "wrist_image": "observation.images.wrist_image"
+      },
+      "state_keys": [
+        "joint1",
+        "joint2",
+        "joint3",
+        "joint4",
+        "joint5",
+        "joint6",
+        "joint7",
+        "finger_joint1",
+        "finger_joint2"
+      ],
+      "action_keys": [
+        "joint1",
+        "joint2",
+        "joint3",
+        "joint4",
+        "joint5",
+        "joint6",
+        "joint7",
+        "finger_joint1",
+        "finger_joint2"
+      ],
+      "dim_policy": "pad"
+    },
+    "fr3": {
+      "__note__": "SIM: franka_fr3/fr3.xml. 7 prefixed arm joints (no fingers in base xml).",
+      "obs_rename": {
+        "image": "observation.images.image",
+        "wrist_image": "observation.images.wrist_image"
+      },
+      "state_keys": [
+        "fr3_joint1",
+        "fr3_joint2",
+        "fr3_joint3",
+        "fr3_joint4",
+        "fr3_joint5",
+        "fr3_joint6",
+        "fr3_joint7"
+      ],
+      "action_keys": [
+        "fr3_joint1",
+        "fr3_joint2",
+        "fr3_joint3",
+        "fr3_joint4",
+        "fr3_joint5",
+        "fr3_joint6",
+        "fr3_joint7"
+      ],
+      "dim_policy": "pad"
+    },
+    "ur5e": {
+      "__note__": "SIM: universal_robots_ur5e/ur5e.xml. 6 named joints, no gripper in base xml.",
+      "obs_rename": {
+        "image": "observation.images.image",
+        "wrist_image": "observation.images.wrist_image"
+      },
+      "state_keys": [
+        "shoulder_pan_joint",
+        "shoulder_lift_joint",
+        "elbow_joint",
+        "wrist_1_joint",
+        "wrist_2_joint",
+        "wrist_3_joint"
+      ],
+      "action_keys": [
+        "shoulder_pan_joint",
+        "shoulder_lift_joint",
+        "elbow_joint",
+        "wrist_1_joint",
+        "wrist_2_joint",
+        "wrist_3_joint"
+      ],
+      "dim_policy": "pad"
+    },
+    "kinova_gen3": {
+      "__note__": "SIM: kinova_gen3/gen3.xml. 7 joints joint_1..joint_7.",
+      "obs_rename": {
+        "image": "observation.images.image",
+        "wrist_image": "observation.images.wrist_image"
+      },
+      "state_keys": [
+        "joint_1",
+        "joint_2",
+        "joint_3",
+        "joint_4",
+        "joint_5",
+        "joint_6",
+        "joint_7"
+      ],
+      "action_keys": [
+        "joint_1",
+        "joint_2",
+        "joint_3",
+        "joint_4",
+        "joint_5",
+        "joint_6",
+        "joint_7"
+      ],
+      "dim_policy": "pad"
+    },
+    "xarm7": {
+      "__note__": "SIM: ufactory_xarm7/xarm7.xml. 7 arm joints joint1..joint7 (gripper linkage joints omitted; pad covers model state dim).",
+      "obs_rename": {
+        "image": "observation.images.image",
+        "wrist_image": "observation.images.wrist_image"
+      },
+      "state_keys": [
+        "joint1",
+        "joint2",
+        "joint3",
+        "joint4",
+        "joint5",
+        "joint6",
+        "joint7"
+      ],
+      "action_keys": [
+        "joint1",
+        "joint2",
+        "joint3",
+        "joint4",
+        "joint5",
+        "joint6",
+        "joint7"
+      ],
+      "dim_policy": "pad"
+    },
+    "vx300s": {
+      "__note__": "SIM: trossen_vx300s/vx300s.xml. 6 arm joints + 2 fingers (ViperX 300s).",
+      "obs_rename": {
+        "image": "observation.images.image",
+        "wrist_image": "observation.images.wrist_image"
+      },
+      "state_keys": [
+        "waist",
+        "shoulder",
+        "elbow",
+        "forearm_roll",
+        "wrist_angle",
+        "wrist_rotate",
+        "left_finger",
+        "right_finger"
+      ],
+      "action_keys": [
+        "waist",
+        "shoulder",
+        "elbow",
+        "forearm_roll",
+        "wrist_angle",
+        "wrist_rotate",
+        "left_finger",
+        "right_finger"
+      ],
+      "dim_policy": "pad"
+    },
+    "wx250s": {
+      "__note__": "SIM: trossen_wx250s/wx250s.xml. Same joint topology as vx300s (WidowX 250s).",
+      "_extends": "vx300s"
+    },
+    "yam": {
+      "__note__": "SIM: i2rt_yam/yam.xml. 6 arm joints + 2 fingers.",
+      "obs_rename": {
+        "image": "observation.images.image",
+        "wrist_image": "observation.images.wrist_image"
+      },
+      "state_keys": [
+        "joint1",
+        "joint2",
+        "joint3",
+        "joint4",
+        "joint5",
+        "joint6",
+        "left_finger",
+        "right_finger"
+      ],
+      "action_keys": [
+        "joint1",
+        "joint2",
+        "joint3",
+        "joint4",
+        "joint5",
+        "joint6",
+        "left_finger",
+        "right_finger"
+      ],
+      "dim_policy": "pad"
+    },
+    "piper": {
+      "__note__": "SIM: agilex_piper/piper.xml. 6 arm joints + joint7/joint8 gripper fingers.",
+      "obs_rename": {
+        "image": "observation.images.image",
+        "wrist_image": "observation.images.wrist_image"
+      },
+      "state_keys": [
+        "joint1",
+        "joint2",
+        "joint3",
+        "joint4",
+        "joint5",
+        "joint6",
+        "joint7",
+        "joint8"
+      ],
+      "action_keys": [
+        "joint1",
+        "joint2",
+        "joint3",
+        "joint4",
+        "joint5",
+        "joint6",
+        "joint7",
+        "joint8"
+      ],
+      "dim_policy": "pad"
+    },
+    "aloha": {
+      "__note__": "SIM: mujoco_menagerie/aloha/aloha.xml. Bimanual: left/* + right/* (16 joints incl. 2 fingers/arm). Cameras vary by scene; default top cam mapped to observation.images.top. Previously this entry had EMPTY state_keys (no-op bug) - now fully populated.",
+      "obs_rename": {
+        "top": "observation.images.top"
+      },
+      "state_keys": [
+        "left/waist",
+        "left/shoulder",
+        "left/elbow",
+        "left/forearm_roll",
+        "left/wrist_angle",
+        "left/wrist_rotate",
+        "left/left_finger",
+        "left/right_finger",
+        "right/waist",
+        "right/shoulder",
+        "right/elbow",
+        "right/forearm_roll",
+        "right/wrist_angle",
+        "right/wrist_rotate",
+        "right/left_finger",
+        "right/right_finger"
+      ],
+      "action_keys": [
+        "left/waist",
+        "left/shoulder",
+        "left/elbow",
+        "left/forearm_roll",
+        "left/wrist_angle",
+        "left/wrist_rotate",
+        "left/left_finger",
+        "left/right_finger",
+        "right/waist",
+        "right/shoulder",
+        "right/elbow",
+        "right/forearm_roll",
+        "right/wrist_angle",
+        "right/wrist_rotate",
+        "right/left_finger",
+        "right/right_finger"
+      ],
+      "dim_policy": "pad"
+    },
+    "unitree_g1": {
+      "__note__": "SIM: mujoco_menagerie/unitree_g1/g1.xml. 29 actuated joints (12 leg + 3 waist + 14 arm), excludes floating_base_joint. Humanoid whole-body. obs_rename maps an ego camera if present (GR00T G1 uses ego_view).",
+      "obs_rename": {
+        "ego_view": "observation.images.ego_view"
+      },
+      "state_keys": [
+        "left_hip_pitch_joint",
+        "left_hip_roll_joint",
+        "left_hip_yaw_joint",
+        "left_knee_joint",
+        "left_ankle_pitch_joint",
+        "left_ankle_roll_joint",
+        "right_hip_pitch_joint",
+        "right_hip_roll_joint",
+        "right_hip_yaw_joint",
+        "right_knee_joint",
+        "right_ankle_pitch_joint",
+        "right_ankle_roll_joint",
+        "waist_yaw_joint",
+        "waist_roll_joint",
+        "waist_pitch_joint",
+        "left_shoulder_pitch_joint",
+        "left_shoulder_roll_joint",
+        "left_shoulder_yaw_joint",
+        "left_elbow_joint",
+        "left_wrist_roll_joint",
+        "left_wrist_pitch_joint",
+        "left_wrist_yaw_joint",
+        "right_shoulder_pitch_joint",
+        "right_shoulder_roll_joint",
+        "right_shoulder_yaw_joint",
+        "right_elbow_joint",
+        "right_wrist_roll_joint",
+        "right_wrist_pitch_joint",
+        "right_wrist_yaw_joint"
+      ],
+      "action_keys": [
+        "left_hip_pitch_joint",
+        "left_hip_roll_joint",
+        "left_hip_yaw_joint",
+        "left_knee_joint",
+        "left_ankle_pitch_joint",
+        "left_ankle_roll_joint",
+        "right_hip_pitch_joint",
+        "right_hip_roll_joint",
+        "right_hip_yaw_joint",
+        "right_knee_joint",
+        "right_ankle_pitch_joint",
+        "right_ankle_roll_joint",
+        "waist_yaw_joint",
+        "waist_roll_joint",
+        "waist_pitch_joint",
+        "left_shoulder_pitch_joint",
+        "left_shoulder_roll_joint",
+        "left_shoulder_yaw_joint",
+        "left_elbow_joint",
+        "left_wrist_roll_joint",
+        "left_wrist_pitch_joint",
+        "left_wrist_yaw_joint",
+        "right_shoulder_pitch_joint",
+        "right_shoulder_roll_joint",
+        "right_shoulder_yaw_joint",
+        "right_elbow_joint",
+        "right_wrist_roll_joint",
+        "right_wrist_pitch_joint",
+        "right_wrist_yaw_joint"
+      ],
+      "dim_policy": "pad"
+    },
+    "unitree_g1_arms": {
+      "__note__": "SIM: G1 ARM-ONLY (14 joints) \u2014 matches the lerobot G1 driver's default arm controller and GR00T unitree_g1 (left/right arm+hand). Use when the policy controls only the upper body.",
+      "obs_rename": {
+        "ego_view": "observation.images.ego_view"
+      },
+      "state_keys": [
+        "left_shoulder_pitch_joint",
+        "left_shoulder_roll_joint",
+        "left_shoulder_yaw_joint",
+        "left_elbow_joint",
+        "left_wrist_roll_joint",
+        "left_wrist_pitch_joint",
+        "left_wrist_yaw_joint",
+        "right_shoulder_pitch_joint",
+        "right_shoulder_roll_joint",
+        "right_shoulder_yaw_joint",
+        "right_elbow_joint",
+        "right_wrist_roll_joint",
+        "right_wrist_pitch_joint",
+        "right_wrist_yaw_joint"
+      ],
+      "action_keys": [
+        "left_shoulder_pitch_joint",
+        "left_shoulder_roll_joint",
+        "left_shoulder_yaw_joint",
+        "left_elbow_joint",
+        "left_wrist_roll_joint",
+        "left_wrist_pitch_joint",
+        "left_wrist_yaw_joint",
+        "right_shoulder_pitch_joint",
+        "right_shoulder_roll_joint",
+        "right_shoulder_yaw_joint",
+        "right_elbow_joint",
+        "right_wrist_roll_joint",
+        "right_wrist_pitch_joint",
+        "right_wrist_yaw_joint"
+      ],
+      "dim_policy": "pad"
+    },
+    "unitree_g1_real": {
+      "__note__": "REAL hardware: lerobot UnitreeG1 driver. _motors_ft keys are '<G1_29_JointIndex.name>.q' (e.g. kLeftShoulderPitch.q). Full 29-DoF body.",
+      "obs_rename": {
+        "ego_view": "observation.images.ego_view"
+      },
+      "state_keys": [
+        "kLeftHipPitch.q",
+        "kLeftHipRoll.q",
+        "kLeftHipYaw.q",
+        "kLeftKnee.q",
+        "kLeftAnklePitch.q",
+        "kLeftAnkleRoll.q",
+        "kRightHipPitch.q",
+        "kRightHipRoll.q",
+        "kRightHipYaw.q",
+        "kRightKnee.q",
+        "kRightAnklePitch.q",
+        "kRightAnkleRoll.q",
+        "kWaistYaw.q",
+        "kWaistRoll.q",
+        "kWaistPitch.q",
+        "kLeftShoulderPitch.q",
+        "kLeftShoulderRoll.q",
+        "kLeftShoulderYaw.q",
+        "kLeftElbow.q",
+        "kLeftWristRoll.q",
+        "kLeftWristPitch.q",
+        "kLeftWristYaw.q",
+        "kRightShoulderPitch.q",
+        "kRightShoulderRoll.q",
+        "kRightShoulderYaw.q",
+        "kRightElbow.q",
+        "kRightWristRoll.q",
+        "kRightWristPitch.q",
+        "kRightWristYaw.q"
+      ],
+      "action_keys": [
+        "kLeftHipPitch.q",
+        "kLeftHipRoll.q",
+        "kLeftHipYaw.q",
+        "kLeftKnee.q",
+        "kLeftAnklePitch.q",
+        "kLeftAnkleRoll.q",
+        "kRightHipPitch.q",
+        "kRightHipRoll.q",
+        "kRightHipYaw.q",
+        "kRightKnee.q",
+        "kRightAnklePitch.q",
+        "kRightAnkleRoll.q",
+        "kWaistYaw.q",
+        "kWaistRoll.q",
+        "kWaistPitch.q",
+        "kLeftShoulderPitch.q",
+        "kLeftShoulderRoll.q",
+        "kLeftShoulderYaw.q",
+        "kLeftElbow.q",
+        "kLeftWristRoll.q",
+        "kLeftWristPitch.q",
+        "kLeftWristYaw.q",
+        "kRightShoulderPitch.q",
+        "kRightShoulderRoll.q",
+        "kRightShoulderYaw.q",
+        "kRightElbow.q",
+        "kRightWristRoll.q",
+        "kRightWristPitch.q",
+        "kRightWristYaw.q"
+      ],
+      "dim_policy": "pad"
+    },
+    "unitree_g1_real_arms": {
+      "__note__": "REAL hardware: lerobot UnitreeG1 with arm controller \u2014 action_features default to the 14 arm joints (kLeft*/kRight*ShoulderPitch.q \u2026 WristYaw.q) plus remote axes. Arm-only '.q' subset.",
+      "obs_rename": {
+        "ego_view": "observation.images.ego_view"
+      },
+      "state_keys": [
+        "kLeftShoulderPitch.q",
+        "kLeftShoulderRoll.q",
+        "kLeftShoulderYaw.q",
+        "kLeftElbow.q",
+        "kLeftWristRoll.q",
+        "kLeftWristPitch.q",
+        "kLeftWristYaw.q",
+        "kRightShoulderPitch.q",
+        "kRightShoulderRoll.q",
+        "kRightShoulderYaw.q",
+        "kRightElbow.q",
+        "kRightWristRoll.q",
+        "kRightWristPitch.q",
+        "kRightWristYaw.q"
+      ],
+      "action_keys": [
+        "kLeftShoulderPitch.q",
+        "kLeftShoulderRoll.q",
+        "kLeftShoulderYaw.q",
+        "kLeftElbow.q",
+        "kLeftWristRoll.q",
+        "kLeftWristPitch.q",
+        "kLeftWristYaw.q",
+        "kRightShoulderPitch.q",
+        "kRightShoulderRoll.q",
+        "kRightShoulderYaw.q",
+        "kRightElbow.q",
+        "kRightWristRoll.q",
+        "kRightWristPitch.q",
+        "kRightWristYaw.q"
+      ],
+      "dim_policy": "pad"
+    },
+    "unitree_h1": {
+      "__note__": "SIM: mujoco_menagerie/unitree_h1/h1.xml. 19 actuated joints (10 leg + torso + 8 arm), short names (no _joint suffix, 'torso'). Excludes floating base.",
+      "obs_rename": {
+        "ego_view": "observation.images.ego_view"
+      },
+      "state_keys": [
+        "left_hip_yaw",
+        "left_hip_roll",
+        "left_hip_pitch",
+        "left_knee",
+        "left_ankle",
+        "right_hip_yaw",
+        "right_hip_roll",
+        "right_hip_pitch",
+        "right_knee",
+        "right_ankle",
+        "torso",
+        "left_shoulder_pitch",
+        "left_shoulder_roll",
+        "left_shoulder_yaw",
+        "left_elbow",
+        "right_shoulder_pitch",
+        "right_shoulder_roll",
+        "right_shoulder_yaw",
+        "right_elbow"
+      ],
+      "action_keys": [
+        "left_hip_yaw",
+        "left_hip_roll",
+        "left_hip_pitch",
+        "left_knee",
+        "left_ankle",
+        "right_hip_yaw",
+        "right_hip_roll",
+        "right_hip_pitch",
+        "right_knee",
+        "right_ankle",
+        "torso",
+        "left_shoulder_pitch",
+        "left_shoulder_roll",
+        "left_shoulder_yaw",
+        "left_elbow",
+        "right_shoulder_pitch",
+        "right_shoulder_roll",
+        "right_shoulder_yaw",
+        "right_elbow"
+      ],
+      "dim_policy": "pad"
+    },
+    "unitree_h1_2": {
+      "__note__": "SIM: h1_2_description/h1_2.xml. 51 actuated joints (12 leg + torso + 14 arm + 24 dexterous hand), excludes floating_base_joint. Full bimanual humanoid with hands.",
+      "obs_rename": {
+        "ego_view": "observation.images.ego_view"
+      },
+      "state_keys": [
+        "left_hip_yaw_joint",
+        "left_hip_pitch_joint",
+        "left_hip_roll_joint",
+        "left_knee_joint",
+        "left_ankle_pitch_joint",
+        "left_ankle_roll_joint",
+        "right_hip_yaw_joint",
+        "right_hip_pitch_joint",
+        "right_hip_roll_joint",
+        "right_knee_joint",
+        "right_ankle_pitch_joint",
+        "right_ankle_roll_joint",
+        "torso_joint",
+        "left_shoulder_pitch_joint",
+        "left_shoulder_roll_joint",
+        "left_shoulder_yaw_joint",
+        "left_elbow_joint",
+        "left_wrist_roll_joint",
+        "left_wrist_pitch_joint",
+        "left_wrist_yaw_joint",
+        "L_thumb_proximal_yaw_joint",
+        "L_thumb_proximal_pitch_joint",
+        "L_thumb_intermediate_joint",
+        "L_thumb_distal_joint",
+        "L_index_proximal_joint",
+        "L_index_intermediate_joint",
+        "L_middle_proximal_joint",
+        "L_middle_intermediate_joint",
+        "L_ring_proximal_joint",
+        "L_ring_intermediate_joint",
+        "L_pinky_proximal_joint",
+        "L_pinky_intermediate_joint",
+        "right_shoulder_pitch_joint",
+        "right_shoulder_roll_joint",
+        "right_shoulder_yaw_joint",
+        "right_elbow_joint",
+        "right_wrist_roll_joint",
+        "right_wrist_pitch_joint",
+        "right_wrist_yaw_joint",
+        "R_thumb_proximal_yaw_joint",
+        "R_thumb_proximal_pitch_joint",
+        "R_thumb_intermediate_joint",
+        "R_thumb_distal_joint",
+        "R_index_proximal_joint",
+        "R_index_intermediate_joint",
+        "R_middle_proximal_joint",
+        "R_middle_intermediate_joint",
+        "R_ring_proximal_joint",
+        "R_ring_intermediate_joint",
+        "R_pinky_proximal_joint",
+        "R_pinky_intermediate_joint"
+      ],
+      "action_keys": [
+        "left_hip_yaw_joint",
+        "left_hip_pitch_joint",
+        "left_hip_roll_joint",
+        "left_knee_joint",
+        "left_ankle_pitch_joint",
+        "left_ankle_roll_joint",
+        "right_hip_yaw_joint",
+        "right_hip_pitch_joint",
+        "right_hip_roll_joint",
+        "right_knee_joint",
+        "right_ankle_pitch_joint",
+        "right_ankle_roll_joint",
+        "torso_joint",
+        "left_shoulder_pitch_joint",
+        "left_shoulder_roll_joint",
+        "left_shoulder_yaw_joint",
+        "left_elbow_joint",
+        "left_wrist_roll_joint",
+        "left_wrist_pitch_joint",
+        "left_wrist_yaw_joint",
+        "L_thumb_proximal_yaw_joint",
+        "L_thumb_proximal_pitch_joint",
+        "L_thumb_intermediate_joint",
+        "L_thumb_distal_joint",
+        "L_index_proximal_joint",
+        "L_index_intermediate_joint",
+        "L_middle_proximal_joint",
+        "L_middle_intermediate_joint",
+        "L_ring_proximal_joint",
+        "L_ring_intermediate_joint",
+        "L_pinky_proximal_joint",
+        "L_pinky_intermediate_joint",
+        "right_shoulder_pitch_joint",
+        "right_shoulder_roll_joint",
+        "right_shoulder_yaw_joint",
+        "right_elbow_joint",
+        "right_wrist_roll_joint",
+        "right_wrist_pitch_joint",
+        "right_wrist_yaw_joint",
+        "R_thumb_proximal_yaw_joint",
+        "R_thumb_proximal_pitch_joint",
+        "R_thumb_intermediate_joint",
+        "R_thumb_distal_joint",
+        "R_index_proximal_joint",
+        "R_index_intermediate_joint",
+        "R_middle_proximal_joint",
+        "R_middle_intermediate_joint",
+        "R_ring_proximal_joint",
+        "R_ring_intermediate_joint",
+        "R_pinky_proximal_joint",
+        "R_pinky_intermediate_joint"
+      ],
+      "dim_policy": "pad"
+    },
+    "omx_real": {
+      "__note__": "REAL: lerobot OMXFollower (OpenManipulator-X). _motors_ft '<motor>.pos', same 6-dof set as SO/koch.",
+      "obs_rename": {
+        "front": "observation.images.image",
+        "wrist": "observation.images.wrist_image"
+      },
+      "state_keys": [
+        "shoulder_pan.pos",
+        "shoulder_lift.pos",
+        "elbow_flex.pos",
+        "wrist_flex.pos",
+        "wrist_roll.pos",
+        "gripper.pos"
+      ],
+      "action_keys": [
+        "shoulder_pan.pos",
+        "shoulder_lift.pos",
+        "elbow_flex.pos",
+        "wrist_flex.pos",
+        "wrist_roll.pos",
+        "gripper.pos"
+      ],
+      "dim_policy": "pad"
+    },
+    "bi_so_real": {
+      "__note__": "REAL: lerobot BiSOFollower (dual SO arm). _motors_ft prefixes left_/right_ -> 'left_<motor>.pos'+'right_<motor>.pos' (12).",
+      "obs_rename": {
+        "front": "observation.images.image",
+        "wrist": "observation.images.wrist_image"
+      },
+      "state_keys": [
+        "left_shoulder_pan.pos",
+        "left_shoulder_lift.pos",
+        "left_elbow_flex.pos",
+        "left_wrist_flex.pos",
+        "left_wrist_roll.pos",
+        "left_gripper.pos",
+        "right_shoulder_pan.pos",
+        "right_shoulder_lift.pos",
+        "right_elbow_flex.pos",
+        "right_wrist_flex.pos",
+        "right_wrist_roll.pos",
+        "right_gripper.pos"
+      ],
+      "action_keys": [
+        "left_shoulder_pan.pos",
+        "left_shoulder_lift.pos",
+        "left_elbow_flex.pos",
+        "left_wrist_flex.pos",
+        "left_wrist_roll.pos",
+        "left_gripper.pos",
+        "right_shoulder_pan.pos",
+        "right_shoulder_lift.pos",
+        "right_elbow_flex.pos",
+        "right_wrist_flex.pos",
+        "right_wrist_roll.pos",
+        "right_gripper.pos"
+      ],
+      "dim_policy": "pad"
+    },
+    "openarm_real": {
+      "__note__": "REAL: lerobot OpenArmFollower (7-dof + gripper, Damiao motors). _motors_ft '<motor>.pos' (joint_1..7,gripper).",
+      "obs_rename": {
+        "front": "observation.images.image",
+        "wrist": "observation.images.wrist_image"
+      },
+      "state_keys": [
+        "joint_1.pos",
+        "joint_2.pos",
+        "joint_3.pos",
+        "joint_4.pos",
+        "joint_5.pos",
+        "joint_6.pos",
+        "joint_7.pos",
+        "gripper.pos"
+      ],
+      "action_keys": [
+        "joint_1.pos",
+        "joint_2.pos",
+        "joint_3.pos",
+        "joint_4.pos",
+        "joint_5.pos",
+        "joint_6.pos",
+        "joint_7.pos",
+        "gripper.pos"
+      ],
+      "dim_policy": "pad"
+    },
+    "bi_openarm_real": {
+      "__note__": "REAL: lerobot BiOpenArmFollower. _motors_ft order is RIGHT then LEFT (matches OpenArmMini teleop + recorded datasets): right_<motor>.pos then left_<motor>.pos (16).",
+      "obs_rename": {
+        "front": "observation.images.image",
+        "wrist": "observation.images.wrist_image"
+      },
+      "state_keys": [
+        "right_joint_1.pos",
+        "right_joint_2.pos",
+        "right_joint_3.pos",
+        "right_joint_4.pos",
+        "right_joint_5.pos",
+        "right_joint_6.pos",
+        "right_joint_7.pos",
+        "right_gripper.pos",
+        "left_joint_1.pos",
+        "left_joint_2.pos",
+        "left_joint_3.pos",
+        "left_joint_4.pos",
+        "left_joint_5.pos",
+        "left_joint_6.pos",
+        "left_joint_7.pos",
+        "left_gripper.pos"
+      ],
+      "action_keys": [
+        "right_joint_1.pos",
+        "right_joint_2.pos",
+        "right_joint_3.pos",
+        "right_joint_4.pos",
+        "right_joint_5.pos",
+        "right_joint_6.pos",
+        "right_joint_7.pos",
+        "right_gripper.pos",
+        "left_joint_1.pos",
+        "left_joint_2.pos",
+        "left_joint_3.pos",
+        "left_joint_4.pos",
+        "left_joint_5.pos",
+        "left_joint_6.pos",
+        "left_joint_7.pos",
+        "left_gripper.pos"
+      ],
+      "dim_policy": "pad"
+    },
+    "rebot_b601_real": {
+      "__note__": "REAL: lerobot RebotB601Follower (7-dof arm incl wrist_yaw). _motors_ft '<motor>.pos'.",
+      "obs_rename": {
+        "front": "observation.images.image",
+        "wrist": "observation.images.wrist_image"
+      },
+      "state_keys": [
+        "shoulder_pan.pos",
+        "shoulder_lift.pos",
+        "elbow_flex.pos",
+        "wrist_flex.pos",
+        "wrist_yaw.pos",
+        "wrist_roll.pos",
+        "gripper.pos"
+      ],
+      "action_keys": [
+        "shoulder_pan.pos",
+        "shoulder_lift.pos",
+        "elbow_flex.pos",
+        "wrist_flex.pos",
+        "wrist_yaw.pos",
+        "wrist_roll.pos",
+        "gripper.pos"
+      ],
+      "dim_policy": "pad"
+    },
+    "bi_rebot_b601_real": {
+      "__note__": "REAL: lerobot BiRebotB601Follower (dual 7-dof). left_/right_ prefixed '<motor>.pos' (14).",
+      "obs_rename": {
+        "front": "observation.images.image",
+        "wrist": "observation.images.wrist_image"
+      },
+      "state_keys": [
+        "left_shoulder_pan.pos",
+        "left_shoulder_lift.pos",
+        "left_elbow_flex.pos",
+        "left_wrist_flex.pos",
+        "left_wrist_yaw.pos",
+        "left_wrist_roll.pos",
+        "left_gripper.pos",
+        "right_shoulder_pan.pos",
+        "right_shoulder_lift.pos",
+        "right_elbow_flex.pos",
+        "right_wrist_flex.pos",
+        "right_wrist_yaw.pos",
+        "right_wrist_roll.pos",
+        "right_gripper.pos"
+      ],
+      "action_keys": [
+        "left_shoulder_pan.pos",
+        "left_shoulder_lift.pos",
+        "left_elbow_flex.pos",
+        "left_wrist_flex.pos",
+        "left_wrist_yaw.pos",
+        "left_wrist_roll.pos",
+        "left_gripper.pos",
+        "right_shoulder_pan.pos",
+        "right_shoulder_lift.pos",
+        "right_elbow_flex.pos",
+        "right_wrist_flex.pos",
+        "right_wrist_yaw.pos",
+        "right_wrist_roll.pos",
+        "right_gripper.pos"
+      ],
+      "dim_policy": "pad"
+    },
+    "reachy2_real": {
+      "__note__": "REAL: lerobot Reachy2 (bimanual + head + antennas). motors_features key order mirrors _generate_joints_dict: neck(3) + l_arm(7+gripper) + r_arm(7+gripper) + antennas(2) = 21. Mobile-base variant adds REACHY2_VEL keys.",
+      "obs_rename": {
+        "head": "observation.images.image"
+      },
+      "state_keys": [
+        "neck_yaw.pos",
+        "neck_pitch.pos",
+        "neck_roll.pos",
+        "l_shoulder_pitch.pos",
+        "l_shoulder_roll.pos",
+        "l_elbow_yaw.pos",
+        "l_elbow_pitch.pos",
+        "l_wrist_roll.pos",
+        "l_wrist_pitch.pos",
+        "l_wrist_yaw.pos",
+        "l_gripper.pos",
+        "r_shoulder_pitch.pos",
+        "r_shoulder_roll.pos",
+        "r_elbow_yaw.pos",
+        "r_elbow_pitch.pos",
+        "r_wrist_roll.pos",
+        "r_wrist_pitch.pos",
+        "r_wrist_yaw.pos",
+        "r_gripper.pos",
+        "l_antenna.pos",
+        "r_antenna.pos"
+      ],
+      "action_keys": [
+        "neck_yaw.pos",
+        "neck_pitch.pos",
+        "neck_roll.pos",
+        "l_shoulder_pitch.pos",
+        "l_shoulder_roll.pos",
+        "l_elbow_yaw.pos",
+        "l_elbow_pitch.pos",
+        "l_wrist_roll.pos",
+        "l_wrist_pitch.pos",
+        "l_wrist_yaw.pos",
+        "l_gripper.pos",
+        "r_shoulder_pitch.pos",
+        "r_shoulder_roll.pos",
+        "r_elbow_yaw.pos",
+        "r_elbow_pitch.pos",
+        "r_wrist_roll.pos",
+        "r_wrist_pitch.pos",
+        "r_wrist_yaw.pos",
+        "r_gripper.pos",
+        "l_antenna.pos",
+        "r_antenna.pos"
+      ],
+      "dim_policy": "pad"
+    },
+    "hope_jr_arm_real": {
+      "__note__": "REAL: lerobot hope_jr_arm (7-dof anthropomorphic arm). _motors_ft '<motor>.pos'.",
+      "obs_rename": {
+        "front": "observation.images.image",
+        "wrist": "observation.images.wrist_image"
+      },
+      "state_keys": [
+        "shoulder_pitch.pos",
+        "shoulder_yaw.pos",
+        "shoulder_roll.pos",
+        "elbow_flex.pos",
+        "wrist_roll.pos",
+        "wrist_yaw.pos",
+        "wrist_pitch.pos"
+      ],
+      "action_keys": [
+        "shoulder_pitch.pos",
+        "shoulder_yaw.pos",
+        "shoulder_roll.pos",
+        "elbow_flex.pos",
+        "wrist_roll.pos",
+        "wrist_yaw.pos",
+        "wrist_pitch.pos"
+      ],
+      "dim_policy": "pad"
+    },
+    "hope_jr_hand_real": {
+      "__note__": "REAL: lerobot hope_jr_hand (16-dof dexterous hand). _motors_ft '<motor>.pos' (thumb/index/middle/ring/pinky).",
+      "obs_rename": {
+        "hand": "observation.images.image"
+      },
+      "state_keys": [
+        "thumb_cmc.pos",
+        "thumb_mcp.pos",
+        "thumb_pip.pos",
+        "thumb_dip.pos",
+        "index_radial_flexor.pos",
+        "index_ulnar_flexor.pos",
+        "index_pip_dip.pos",
+        "middle_radial_flexor.pos",
+        "middle_ulnar_flexor.pos",
+        "middle_pip_dip.pos",
+        "ring_radial_flexor.pos",
+        "ring_ulnar_flexor.pos",
+        "ring_pip_dip.pos",
+        "pinky_radial_flexor.pos",
+        "pinky_ulnar_flexor.pos",
+        "pinky_pip_dip.pos"
+      ],
+      "action_keys": [
+        "thumb_cmc.pos",
+        "thumb_mcp.pos",
+        "thumb_pip.pos",
+        "thumb_dip.pos",
+        "index_radial_flexor.pos",
+        "index_ulnar_flexor.pos",
+        "index_pip_dip.pos",
+        "middle_radial_flexor.pos",
+        "middle_ulnar_flexor.pos",
+        "middle_pip_dip.pos",
+        "ring_radial_flexor.pos",
+        "ring_ulnar_flexor.pos",
+        "ring_pip_dip.pos",
+        "pinky_radial_flexor.pos",
+        "pinky_ulnar_flexor.pos",
+        "pinky_pip_dip.pos"
+      ],
+      "dim_policy": "pad"
+    },
+    "earthrover_real": {
+      "__note__": "REAL: lerobot EarthRoverMiniPlus (mobile rover). action_features are VELOCITY commands (NOT joint .pos): linear_velocity, angular_velocity. Cameras front+rear.",
+      "obs_rename": {
+        "front": "observation.images.image",
+        "rear": "observation.images.image2"
+      },
+      "state_keys": [
+        "linear_velocity",
+        "angular_velocity"
+      ],
+      "action_keys": [
+        "linear_velocity",
+        "angular_velocity"
+      ],
+      "dim_policy": "pad"
+    }
+  },
+  "aliases": {
+    "franka_libero": "panda_libero",
+    "so100_real": "so_real",
+    "so101_real": "so_real",
+    "franka": "panda",
+    "franka_fr3": "fr3",
+    "gen3": "kinova_gen3",
+    "kinova": "kinova_gen3",
+    "viperx_300s": "vx300s",
+    "widowx_250s": "wx250s",
+    "lekiwi": "lekiwi_real",
+    "g1": "unitree_g1",
+    "g1_arms": "unitree_g1_arms",
+    "h1": "unitree_h1",
+    "h1_2": "unitree_h1_2",
+    "omx_follower": "omx_real",
+    "bi_so_follower": "bi_so_real",
+    "bi_so": "bi_so_real",
+    "openarm": "openarm_real",
+    "openarm_follower": "openarm_real",
+    "bi_openarm": "bi_openarm_real",
+    "bi_openarm_follower": "bi_openarm_real",
+    "rebot_b601": "rebot_b601_real",
+    "rebot_b601_follower": "rebot_b601_real",
+    "bi_rebot_b601": "bi_rebot_b601_real",
+    "bi_rebot_b601_follower": "bi_rebot_b601_real",
+    "reachy2": "reachy2_real",
+    "hope_jr_arm": "hope_jr_arm_real",
+    "hope_jr_hand": "hope_jr_hand_real",
+    "earthrover": "earthrover_real",
+    "earthrover_mini_plus": "earthrover_real",
+    "so100_follower": "so_real",
+    "so101_follower": "so_real",
+    "koch_follower": "koch_real",
+    "lekiwi_client": "lekiwi_real"
+  }
+}

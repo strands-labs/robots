@@ -89,6 +89,7 @@ class DatasetRecorder:
         self.dataset = dataset
         self.default_task = task
         self.frame_count = 0
+        self.episode_frame_count = 0  # frames in the CURRENT (unsaved) episode
         self.dropped_frame_count = 0
         self.strict = strict
         self.episode_count = 0
@@ -105,6 +106,7 @@ class DatasetRecorder:
         robot_features: dict[str, Any] | None = None,
         action_features: dict[str, Any] | None = None,
         camera_keys: list[str] | None = None,
+        camera_dims: dict[str, tuple[int, int]] | None = None,
         joint_names: list[str] | None = None,
         task: str = "",
         root: str | None = None,
@@ -143,6 +145,7 @@ class DatasetRecorder:
             robot_features=robot_features,
             action_features=action_features,
             camera_keys=camera_keys,
+            camera_dims=camera_dims,
             joint_names=joint_names,
             use_videos=use_videos,
             video_width=video_width,
@@ -151,7 +154,7 @@ class DatasetRecorder:
 
         logger.info(f"Creating LeRobotDataset: {repo_id} @ {fps}fps, {len(features)} features, robot_type={robot_type}")
 
-        # Build kwargs, skip unsupported params for this LeRobot version
+        # Build kwargs, skip unsupported params for this LeRobot version.
         create_kwargs = dict(
             repo_id=repo_id,
             fps=fps,
@@ -160,15 +163,34 @@ class DatasetRecorder:
             features=features,
             use_videos=use_videos,
             image_writer_threads=image_writer_threads,
-            vcodec=vcodec,
         )
-        # streaming_encoding only in newer LeRobot versions
         import inspect
 
         create_sig = inspect.signature(LeRobotDatasetCls.create)
-        if "streaming_encoding" in create_sig.parameters:
+        create_params = create_sig.parameters
+
+        # Video codec plumbing drifted across LeRobot versions:
+        #   * 0.5.0/0.5.1: create(..., vcodec="libsvtav1")
+        #   * 0.5.2+:      create(..., camera_encoder=VideoEncoderConfig(vcodec=...))
+        # The flat ``vcodec`` kwarg was removed in 0.5.2 (codec now lives inside
+        # VideoEncoderConfig). Detect which surface this LeRobot exposes and route
+        # accordingly so the recorder works on both old and new versions.
+        if "vcodec" in create_params:
+            create_kwargs["vcodec"] = vcodec
+        elif "camera_encoder" in create_params:
+            try:
+                from lerobot.configs.video import VideoEncoderConfig
+
+                create_kwargs["camera_encoder"] = VideoEncoderConfig(vcodec=vcodec)
+            except (ImportError, AttributeError, TypeError, ValueError) as exc:
+                # If VideoEncoderConfig can't be built (e.g. unknown codec on this
+                # platform), fall back to the codec default rather than crashing.
+                logger.warning("VideoEncoderConfig(vcodec=%r) unavailable (%s); using default encoder", vcodec, exc)
+
+        # streaming_encoding / video_backend only in newer LeRobot versions
+        if "streaming_encoding" in create_params:
             create_kwargs["streaming_encoding"] = streaming_encoding
-        if "video_backend" in create_sig.parameters:
+        if "video_backend" in create_params:
             create_kwargs["video_backend"] = video_backend
         dataset = LeRobotDatasetCls.create(**create_kwargs)
 
@@ -177,11 +199,99 @@ class DatasetRecorder:
         return recorder
 
     @classmethod
+    def resume(
+        cls,
+        repo_id: str,
+        root: str | None = None,
+        task: str = "",
+        vcodec: str = "libsvtav1",
+        streaming_encoding: bool = True,
+        image_writer_threads: int = 4,
+        video_backend: str = "auto",
+    ) -> "DatasetRecorder":
+        """Resume recording into an EXISTING LeRobotDataset (append episodes).
+
+        Unlike :meth:`create` (which calls ``LeRobotDataset.create`` and
+        hard-fails with ``FileExistsError`` if the dataset dir already
+        exists), this opens an on-disk dataset via ``LeRobotDataset.resume``
+        so further ``add_frame``/``save_episode`` calls append new episodes.
+
+        This is the multi-episode data-collection path: ``start_recording``
+        with ``overwrite=False`` on an existing dataset routes here instead of
+        crashing. The plain ``LeRobotDataset(repo_id, root=...)`` constructor
+        returns a READ-ONLY dataset (``add_frame`` raises), so ``resume()`` is
+        the only correct append entry point in LeRobot 0.5.2+.
+
+        Feature schema is inherited from the existing dataset on disk — the
+        caller's joint/camera layout must match what was originally recorded.
+
+        Args:
+            repo_id: HuggingFace dataset ID (same as the original recording).
+            root: Local dataset directory (same as the original recording).
+            task: Default task description for appended frames.
+            vcodec: Video codec (routed into ``camera_encoder`` on 0.5.2+).
+            streaming_encoding: Stream-encode video during capture.
+            image_writer_threads: Threads for writing image frames.
+            video_backend: Video backend for encoding.
+
+        Returns:
+            A DatasetRecorder wrapping the resumed dataset.
+        """
+        import inspect
+
+        LeRobotDatasetCls = _get_lerobot_dataset_class()
+
+        if not hasattr(LeRobotDatasetCls, "resume"):
+            # Older LeRobot (0.5.0/0.5.1) has no resume(); the append workflow
+            # is unsupported there. Surface a clear error rather than a cryptic
+            # read-only add_frame failure downstream.
+            raise RuntimeError(
+                "This LeRobot version has no LeRobotDataset.resume(); "
+                "multi-episode append requires lerobot>=0.5.2. "
+                "Use overwrite=True for a fresh single-session dataset."
+            )
+
+        resume_sig = inspect.signature(LeRobotDatasetCls.resume).parameters
+        resume_kwargs: dict[str, Any] = dict(repo_id=repo_id, root=root)
+        # Mirror create()'s version-tolerant codec routing.
+        if "vcodec" in resume_sig:
+            resume_kwargs["vcodec"] = vcodec
+        elif "camera_encoder" in resume_sig:
+            try:
+                from lerobot.configs.video import VideoEncoderConfig
+
+                resume_kwargs["camera_encoder"] = VideoEncoderConfig(vcodec=vcodec)
+            except (ImportError, AttributeError, TypeError, ValueError) as exc:
+                logger.warning("VideoEncoderConfig(vcodec=%r) unavailable on resume (%s)", vcodec, exc)
+        if "streaming_encoding" in resume_sig:
+            resume_kwargs["streaming_encoding"] = streaming_encoding
+        if "image_writer_threads" in resume_sig:
+            resume_kwargs["image_writer_threads"] = image_writer_threads
+        if "video_backend" in resume_sig:
+            resume_kwargs["video_backend"] = video_backend
+
+        dataset = LeRobotDatasetCls.resume(**resume_kwargs)
+        recorder = cls(dataset=dataset, task=task)
+        # Seed counters from the existing dataset so reporting reflects totals.
+        try:
+            recorder.episode_count = int(dataset.meta.total_episodes)
+            recorder.frame_count = int(dataset.meta.total_frames)
+        except Exception:  # noqa: BLE001 - counters are best-effort
+            pass
+        logger.info(
+            "DatasetRecorder resumed: %s (%d existing episodes)",
+            repo_id,
+            recorder.episode_count,
+        )
+        return recorder
+
+    @classmethod
     def _build_features(
         cls,
         robot_features: dict | None = None,
         action_features: dict | None = None,
         camera_keys: list[str] | None = None,
+        camera_dims: dict[str, tuple[int, int]] | None = None,
         joint_names: list[str] | None = None,
         use_videos: bool = True,
         video_height: int = 480,
@@ -202,12 +312,17 @@ class DatasetRecorder:
 
         # Observation: cameras → video/image features
         if camera_keys:
+            camera_dims = camera_dims or {}
             for cam_name in camera_keys:
                 key = f"observation.images.{cam_name}"
                 dtype = "video" if use_videos else "image"
+                # Per-camera (height, width). Falls back to the global
+                # video_height/width when a camera has no explicit dims, so
+                # callers that don't pass camera_dims keep the old behaviour.
+                cam_h, cam_w = camera_dims.get(cam_name, (video_height, video_width))
                 features[key] = {
                     "dtype": dtype,
-                    "shape": (3, video_height, video_width),
+                    "shape": (3, cam_h, cam_w),
                     "names": ["channels", "height", "width"],
                 }
 
@@ -373,6 +488,7 @@ class DatasetRecorder:
         try:
             self.dataset.add_frame(frame)
             self.frame_count += 1
+            self.episode_frame_count += 1
         except Exception as e:
             if self.strict:
                 raise  # Fail-fast per AGENTS.md convention #5
@@ -402,12 +518,23 @@ class DatasetRecorder:
         try:
             self.dataset.save_episode()
             self.episode_count += 1
-            ep_frames = self.frame_count  # Total frames so far
-            logger.info(f"Episode {self.episode_count} saved: {ep_frames} total frames")
+            # Report frames in THIS episode, not the cumulative total.
+            # frame_count is monotonic across all episodes; episode_frame_count
+            # is the count since the last save. Reset it after reporting.
+            ep_frames = self.episode_frame_count
+            total_frames = self.frame_count
+            self.episode_frame_count = 0
+            logger.info(
+                "Episode %d saved: %d frames (%d total across dataset)",
+                self.episode_count,
+                ep_frames,
+                total_frames,
+            )
             return {
                 "status": "success",
                 "episode": self.episode_count,
-                "total_frames": ep_frames,
+                "episode_frames": ep_frames,
+                "total_frames": total_frames,
             }
         except Exception as e:
             logger.error("save_episode failed: %s", e)
@@ -416,6 +543,52 @@ class DatasetRecorder:
             # would silently corrupt the dataset. Close to prevent drift.
             self._closed = True
             return {"status": "error", "message": f"save_episode failed (recorder closed): {e}"}
+
+    def clear_episode_buffer(self) -> bool:
+        """Discard frames buffered for the current (unsaved) episode.
+
+        After an aborted recording (e.g. a policy returned an empty action
+        chunk mid-loop) the open episode buffer still holds the frames written
+        so far. Without discarding them, the next ``add_frame`` appends to the
+        half-episode and the eventual ``save_episode`` flushes a Frankenstein
+        episode that mixes two runs. Call this to start the next episode at
+        frame 0.
+
+        LeRobot's buffer-reset surface drifted across 0.5.x, so this routes
+        version-tolerantly:
+          * ``LeRobotDataset.clear_episode_buffer()`` if exposed (preferred), else
+          * reset via ``create_episode_buffer()`` if exposed, else
+          * leave the buffer in place and warn (caller must ``stop_recording`` /
+            ``save_episode`` to drain it before recording again).
+
+        Returns:
+            True if the buffer was actively cleared; False if no clear surface
+            was available (a warning is logged in that case).
+        """
+        cleared = False
+        try:
+            if hasattr(self.dataset, "clear_episode_buffer"):
+                self.dataset.clear_episode_buffer()
+                cleared = True
+            elif hasattr(self.dataset, "create_episode_buffer"):
+                self.dataset.episode_buffer = self.dataset.create_episode_buffer()
+                cleared = True
+        except Exception as e:  # noqa: BLE001 - best-effort discard; never mask the original abort
+            logger.warning("clear_episode_buffer failed: %s", e)
+            cleared = False
+
+        # Reset the per-episode frame counter regardless: the next episode
+        # reports frames from 0. frame_count (cumulative) is left untouched
+        # since those frames were really written to disk only on save_episode.
+        self.episode_frame_count = 0
+
+        if not cleared:
+            logger.warning(
+                "Could not auto-discard the partial episode buffer on this "
+                "LeRobot version; call stop_recording()/save_episode() to drain "
+                "it before the next recording to avoid a mixed episode."
+            )
+        return cleared
 
     def finalize(self) -> None:
         """Finalize the dataset (close parquet writers, flush metadata)."""

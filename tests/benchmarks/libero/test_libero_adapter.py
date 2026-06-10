@@ -308,135 +308,18 @@ class TestIsSuccess:
         assert adapter.is_success(sim_gripped) is False
 
 
-class TestIsSuccessRound170Diagnostic:
-    """#170: when ``STRANDS_LIBERO_PREDICATE_LOG=1`` is set,
-    :meth:`LiberoAdapter.is_success` emits structured WARNING log lines
-    for every step where ``env.check_success() != self._success_fn(sim)``
-    OR where ``env.check_success() == True`` (so we can verify the BDDL
-    evaluator agrees on the success transition).
+class TestWalkPredicateTree:
+    """``_walk_predicate_tree`` reports each leaf's verdict with the
+    actual body positions so reviewers can see why a predicate returned
+    its verdict (e.g., body name didn't resolve = ``=NONE``; positions
+    present + verdict=False = threshold-rejection).
 
-    The diagnostic was used to bisect the round-44 silent counter bug:
-    ``_body_position`` returning ``None`` for every body (engine had no
-    ``get_body_state``) AND the ``_on_kwargs`` defaults rejecting the
-    actual success geometry (4 mm z gap, 1.2 cm xy off — too tight for
-    the loose 2 cm/15 cm defaults to fire).
-
-    These tests pin the diagnostic surface so future refactors can't
-    silently drop the per-step logging that #170 needed."""
-
-    def test_disabled_by_default(self, monkeypatch, caplog):
-        """No ``STRANDS_LIBERO_PREDICATE_LOG`` env var ⇒ no logs even
-        when env and BDDL disagree."""
-        import logging as _logging
-
-        monkeypatch.delenv("STRANDS_LIBERO_PREDICATE_LOG", raising=False)
-
-        adapter = LiberoAdapter.from_text(PICK_CUBE_BDDL)
-        # Force a disagreement: env says True via the wrapped env's
-        # check_success, but BDDL evaluates False on a fake-world that
-        # has the cube below the plate.
-        sim = FakeSim(
-            bodies={
-                "cube_1": {"position": [0, 0, 0.05]},
-                "plate_1": {"position": [0, 0, 0.10]},
-            }
-        )
-
-        class _StubEnv:
-            @staticmethod
-            def check_success() -> bool:
-                return True
-
-        sim._env = _StubEnv()  # type: ignore[attr-defined]
-
-        with caplog.at_level(_logging.WARNING, logger="strands_robots.benchmarks.libero.adapter"):
-            verdict = adapter.is_success(sim)
-
-        # Returned verdict still uses env path.
-        assert verdict is True
-        # No diagnostic logs.
-        assert not any("PREDICATE_LOG" in r.getMessage() for r in caplog.records)
-
-    def test_enabled_logs_disagreement(self, monkeypatch, caplog):
-        """With ``STRANDS_LIBERO_PREDICATE_LOG=1`` and env=True / BDDL=False
-        (the round-44 disagreement case), emit a structured log line
-        per disagreement, capped at ``STRANDS_LIBERO_PREDICATE_LOG_MAX``."""
-        import logging as _logging
-
-        monkeypatch.setenv("STRANDS_LIBERO_PREDICATE_LOG", "1")
-        monkeypatch.setenv("STRANDS_LIBERO_PREDICATE_LOG_MAX", "2")
-
-        adapter = LiberoAdapter.from_text(PICK_CUBE_BDDL)
-        sim = FakeSim(
-            bodies={
-                # Cube positioned so the BDDL evaluator can't decide
-                # "on plate_1" — z below plate.
-                "cube_1": {"position": [0, 0, 0.05]},
-                "plate_1": {"position": [0, 0, 0.10]},
-            }
-        )
-
-        class _StubEnv:
-            @staticmethod
-            def check_success() -> bool:
-                return True
-
-        sim._env = _StubEnv()  # type: ignore[attr-defined]
-
-        with caplog.at_level(_logging.WARNING, logger="strands_robots.benchmarks.libero.adapter"):
-            adapter.is_success(sim)
-
-        log_records = [r for r in caplog.records if "PREDICATE_LOG" in r.getMessage()]
-        # At least the top-level "log#0" line + per-leaf walk lines.
-        assert len(log_records) >= 1, "expected at least one PREDICATE_LOG line"
-        top_msg = next(r.getMessage() for r in log_records if "log#0" in r.getMessage())
-        assert "env=True" in top_msg
-        assert "bddl=False" in top_msg
-
-    def test_max_cap_applied(self, monkeypatch, caplog):
-        """``STRANDS_LIBERO_PREDICATE_LOG_MAX`` caps the number of
-        disagreement log lines per episode (avoids flooding the logs
-        on long rollouts)."""
-        import logging as _logging
-
-        monkeypatch.setenv("STRANDS_LIBERO_PREDICATE_LOG", "1")
-        monkeypatch.setenv("STRANDS_LIBERO_PREDICATE_LOG_MAX", "2")
-
-        adapter = LiberoAdapter.from_text(PICK_CUBE_BDDL)
-        sim = FakeSim(
-            bodies={
-                "cube_1": {"position": [0, 0, 0.05]},
-                "plate_1": {"position": [0, 0, 0.10]},
-            }
-        )
-
-        class _StubEnv:
-            @staticmethod
-            def check_success() -> bool:
-                return True
-
-        sim._env = _StubEnv()  # type: ignore[attr-defined]
-
-        # Call is_success 5 times — should only log 2 (the cap).
-        with caplog.at_level(_logging.WARNING, logger="strands_robots.benchmarks.libero.adapter"):
-            for _ in range(5):
-                adapter.is_success(sim)
-
-        # Count "log#0" / "log#1" lines (one per emission cycle).
-        emit_count = sum(1 for r in caplog.records if "log#" in r.getMessage())
-        assert emit_count == 2, f"expected 2 emissions (cap=2), got {emit_count}"
-
-    def test_counter_resets_on_episode_start(self, monkeypatch):
-        """Per-episode ``_predicate_log_count`` resets so each episode
-        emits its own first N disagreements."""
-        monkeypatch.setenv("STRANDS_LIBERO_PREDICATE_LOG", "1")
-
-        adapter = LiberoAdapter.from_text(PICK_CUBE_BDDL)
-        adapter._predicate_log_count = 7  # simulate prior episode
-
-        sim = FakeSim(data_config="panda")
-        adapter.on_episode_start(sim, random.Random(0))
-        assert adapter._predicate_log_count == 0, "on_episode_start must reset the per-episode predicate-log counter"
+    The walker was originally added for the #170 BDDL ↔ ``env.check_success``
+    diagnostic; that diagnostic was removed in #178 along with
+    ``LiberoOffScreenRenderEngine`` (no ``env.check_success`` to compare
+    against). The walker itself is still useful for any future
+    BDDL-evaluator debugging, so it stays.
+    """
 
     def test_walk_predicate_tree_reports_leaf_positions(self):
         """``_walk_predicate_tree`` reports each leaf's verdict with the

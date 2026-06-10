@@ -85,7 +85,9 @@ def _resolve_robot_descriptions_module(name: str, info: dict) -> str | None:
         f"{name}_description",
     ]
     for candidate in candidates:
-        if not re.match(r"^[a-z0-9_]+$", candidate):
+        # Allow '+' so robot_descriptions modules like 'tiago++_mj_description'
+        # are accepted (still no '/', '.', or whitespace -> no import traversal).
+        if not re.match(r"^[a-z0-9_+]+$", candidate):
             continue
         try:
             importlib.import_module(f"robot_descriptions.{candidate}")
@@ -210,7 +212,9 @@ def _download_via_robot_descriptions(robots: dict[str, dict], dest_dir: Path) ->
         if module_name is None:
             results[name] = "skipped: no robot_descriptions module found"
             continue
-        if not re.match(r"^[a-z0-9_]+$", module_name):
+        # Allow '+' so modules like 'tiago++_mj_description' pass (the upstream
+        # robot_descriptions package legitimately uses '++' in some names).
+        if not re.match(r"^[a-z0-9_+]+$", module_name):
             results[name] = f"skipped: invalid module name: {module_name}"
             continue
 

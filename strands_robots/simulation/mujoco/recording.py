@@ -88,14 +88,25 @@ class RecordingMixin:
         self._world._backend_state["trajectory"] = []
         self._world._backend_state["push_to_hub"] = push_to_hub
 
+        # Resolve the on-disk dataset dir (shared by overwrite + resume logic).
+        if root:
+            dataset_dir = Path(root)
+        elif "/" not in repo_id or repo_id.startswith("/") or repo_id.startswith("./"):
+            dataset_dir = Path(repo_id)
+        else:
+            dataset_dir = Path.home() / ".cache" / "huggingface" / "lerobot" / repo_id
+
+        # Multi-episode append: when NOT overwriting and a dataset already
+        # exists on disk, resume it (append new episodes) instead of calling
+        # create() — which hard-fails with FileExistsError (B12). resume() is
+        # the only correct append path in LeRobot 0.5.2+ (the plain constructor
+        # is read-only). When overwrite=True, wipe and recreate from scratch.
+        resume_existing = (
+            not overwrite and dataset_dir.exists() and dataset_dir.is_dir() and (dataset_dir / "meta").exists()
+        )
+
         try:
             if overwrite:
-                if root:
-                    dataset_dir = Path(root)
-                elif "/" not in repo_id or repo_id.startswith("/") or repo_id.startswith("./"):
-                    dataset_dir = Path(repo_id)
-                else:
-                    dataset_dir = Path.home() / ".cache" / "huggingface" / "lerobot" / repo_id
                 if dataset_dir.exists() and dataset_dir.is_dir():
                     shutil.rmtree(dataset_dir)
                     logger.info("Removed existing dataset dir: %s", dataset_dir)
@@ -117,6 +128,15 @@ class RecordingMixin:
                 robot_type = robot.data_config or rname
 
             mj = _ensure_mujoco()
+            # Declare each camera in the dataset schema at the SAME
+            # resolution it actually renders at. Cameras added via add_camera
+            # carry their own width/height (e.g. 256x256 for a LIBERO VLA),
+            # which can differ from the sim's default render size. Declaring
+            # everything at default_width/height made add_frame reject frames
+            # ("shape (256,256,3) != expected (3,480,640)") and, with strict
+            # recording, abort the whole episode. We map each safe camera name
+            # to its real (height, width) so _build_features sizes it correctly.
+            camera_dims: dict[str, tuple[int, int]] = {}
             for i in range(self._world._model.ncam):
                 cam_name = mj.mj_id2name(self._world._model, mj.mjtObj.mjOBJ_CAMERA, i)
                 if not cam_name:
@@ -127,20 +147,43 @@ class RecordingMixin:
                 # the separator to ``__`` for the dataset schema.
                 safe_name = cam_name.replace("/", "__")
                 camera_keys.append(safe_name)
+                cam_info = self._world.cameras.get(cam_name) or self._world.cameras.get(safe_name)
+                if cam_info is not None:
+                    camera_dims[safe_name] = (int(cam_info.height), int(cam_info.width))
+                else:
+                    camera_dims[safe_name] = (int(self.default_height), int(self.default_width))
 
             assert _DatasetRecorder is not None  # checked above
-            self._world._backend_state["dataset_recorder"] = _DatasetRecorder.create(
-                repo_id=repo_id,
-                fps=fps,
-                robot_type=robot_type,
-                joint_names=joint_names,
-                camera_keys=camera_keys,
-                task=task,
-                root=root,
-                vcodec=vcodec,
-                video_width=self.default_width,
-                video_height=self.default_height,
-            )
+            if resume_existing:
+                # Append to the existing dataset (schema inherited from disk).
+                logger.info("Resuming existing dataset for append: %s", dataset_dir)
+                resumed = _DatasetRecorder.resume(
+                    repo_id=repo_id,
+                    root=root,
+                    task=task,
+                    vcodec=vcodec,
+                )
+                # resume() inherits the feature schema from disk; it does NOT
+                # check it against the CURRENT scene. Adding a robot or swapping
+                # a camera resolution between episodes would otherwise yield a
+                # cryptic per-feature shape error on the next add_frame. Compare
+                # up front and raise a clear schema-diff instead.
+                self._verify_resume_schema(resumed, joint_names, camera_keys, camera_dims)
+                self._world._backend_state["dataset_recorder"] = resumed
+            else:
+                self._world._backend_state["dataset_recorder"] = _DatasetRecorder.create(
+                    repo_id=repo_id,
+                    fps=fps,
+                    robot_type=robot_type,
+                    joint_names=joint_names,
+                    camera_keys=camera_keys,
+                    camera_dims=camera_dims,
+                    task=task,
+                    root=root,
+                    vcodec=vcodec,
+                    video_width=self.default_width,
+                    video_height=self.default_height,
+                )
             return {
                 "status": "success",
                 "content": [
@@ -158,6 +201,75 @@ class RecordingMixin:
             self._world._backend_state["recording"] = False
             logger.error("Dataset recorder init failed: %s", e)
             return {"status": "error", "content": [{"text": f"Dataset init failed: {e}"}]}
+
+    def _verify_resume_schema(
+        self,
+        recorder: Any,
+        joint_names: list[str],
+        camera_keys: list[str],
+        camera_dims: dict[str, tuple[int, int]],
+    ) -> None:
+        """Verify the live scene matches the resumed dataset's on-disk schema.
+
+        ``DatasetRecorder.resume`` inherits the feature schema from disk; it does
+        not validate it against the current scene. If the caller added a robot,
+        renamed a joint, or changed a camera resolution between episodes, the
+        mismatch would only surface as a cryptic per-feature shape error on the
+        next ``add_frame``. Compare here and raise a clear schema diff instead.
+
+        Compares the expected ``observation.state`` joint names and each
+        ``observation.images.*`` camera (presence + height/width). Best-effort:
+        if the dataset does not expose ``features`` we skip silently rather than
+        block a valid resume on an unexpected LeRobot layout.
+
+        Args:
+            recorder: The resumed DatasetRecorder.
+            joint_names: Joint names the current scene will emit (namespaced for
+                multi-robot scenes).
+            camera_keys: Sanitized camera feature names the current scene emits.
+            camera_dims: Map of camera feature name -> (height, width).
+
+        Raises:
+            ValueError: If the live scene schema diverges from the on-disk one.
+        """
+        features = getattr(getattr(recorder, "dataset", None), "features", None)
+        if not isinstance(features, dict):
+            return
+
+        diffs: list[str] = []
+
+        state = features.get("observation.state")
+        if isinstance(state, dict):
+            disk_joints = list(state.get("names") or [])
+            if disk_joints and disk_joints != list(joint_names):
+                diffs.append(f"observation.state joints differ: on-disk={disk_joints} vs scene={list(joint_names)}")
+
+        for cam in camera_keys:
+            key = f"observation.images.{cam}"
+            disk_cam = features.get(key)
+            if not isinstance(disk_cam, dict):
+                diffs.append(f"camera '{cam}' is in the scene but not in the on-disk schema")
+                continue
+            shape = disk_cam.get("shape")
+            scene_dim = camera_dims.get(cam)
+            if shape and len(shape) == 3 and scene_dim is not None:
+                _, disk_h, disk_w = shape
+                scene_h, scene_w = scene_dim
+                if (int(disk_h), int(disk_w)) != (int(scene_h), int(scene_w)):
+                    diffs.append(
+                        f"camera '{cam}' resolution differs: on-disk={(disk_h, disk_w)} vs scene={(scene_h, scene_w)}"
+                    )
+
+        disk_cams = {k[len("observation.images.") :] for k in features if k.startswith("observation.images.")}
+        for cam in disk_cams - set(camera_keys):
+            diffs.append(f"camera '{cam}' is in the on-disk schema but not in the current scene")
+
+        if diffs:
+            raise ValueError(
+                "Cannot resume recording: the current scene does not match the existing dataset schema. "
+                "Use overwrite=True for a fresh dataset, or restore the original scene. Differences:\n  - "
+                + "\n  - ".join(diffs)
+            )
 
     def stop_recording(self, output_path: str | None = None) -> dict[str, Any]:
         """Stop recording and save episode to LeRobotDataset.

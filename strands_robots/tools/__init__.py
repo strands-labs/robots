@@ -18,6 +18,7 @@ _LAZY_IMPORTS: dict[str, tuple[str, str]] = {
     "lerobot_camera": (".lerobot_camera", "lerobot_camera"),
     "lerobot_teleoperate": (".lerobot_teleoperate", "lerobot_teleoperate"),
     "pose_tool": (".pose_tool", "pose_tool"),
+    "robot_mesh": (".robot_mesh", "robot_mesh"),
     "serial_tool": (".serial_tool", "serial_tool"),
 }
 

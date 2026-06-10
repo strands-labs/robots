@@ -911,3 +911,328 @@ class TestEvalSeeding:
             "per-episode seeding may have used a constant instead of "
             "the per-episode-derived seed"
         )
+
+
+class TestPolicyResetIntegration:
+    """#187: ``_evaluate_with_spec`` calls ``policy.reset(seed=episode_seed)``
+    at the top of every episode so SERVICE-mode policies (e.g. Gr00tPolicy
+    over ZMQ) can forward the seed to a remote inference server.
+
+    Without this hook the server's diffusion sampler RNG drifts across
+    calls and breaks reproducibility. The ``Policy.reset`` default is a
+    no-op so existing in-process policies (LocalLeRobot, MockPolicy) are
+    unaffected; concrete policies override to apply per-episode state
+    reset (RNG seeding, action-cache flush, server-side reset endpoint
+    call, etc.).
+    """
+
+    def test_reset_called_once_per_episode_with_episode_seed(self):
+        """``policy.reset(seed=N)`` is invoked exactly once per episode,
+        with ``N == episode_seed`` (the deterministic per-episode seed
+        derived from the master seed via ``master_rng.randint``)."""
+
+        # Build a MockPolicy with a recording reset spy. We attach the
+        # MagicMock to the bound instance method so the existing
+        # MockPolicy.get_actions path keeps working.
+        policy = MockPolicy()
+        policy.set_robot_state_keys(FakeSim().robot_joint_names("fake_robot"))
+        reset_calls: list[dict] = []
+
+        def _record_reset(seed: int | None = None) -> None:
+            reset_calls.append({"seed": seed})
+
+        policy.reset = _record_reset  # type: ignore[assignment]
+
+        sim = FakeSim()
+        spec = _CountingBenchmark()
+        PolicyRunner(sim).evaluate("fake_robot", policy, spec=spec, n_episodes=3, seed=42)
+
+        # Three episodes → three reset calls, one per episode.
+        assert len(reset_calls) == 3, f"expected 3 reset calls, got {len(reset_calls)}: {reset_calls}"
+
+        # Each reset receives an int seed (the per-episode seed). The
+        # actual seed value is deterministic given the master seed but
+        # opaque (derived via random.Random(42).randint(0, 2**31-1));
+        # we only assert it's a sane int and the three are distinct.
+        for c in reset_calls:
+            assert isinstance(c["seed"], int), f"reset seed must be int, got {type(c['seed']).__name__}: {c}"
+            assert 0 <= c["seed"] < 2**31, f"reset seed out of range: {c['seed']}"
+        assert len({c["seed"] for c in reset_calls}) == 3, (
+            f"per-episode seeds should be distinct, got dupes: {[c['seed'] for c in reset_calls]}"
+        )
+
+    def test_reset_seed_reproducible_across_runs(self):
+        """Same master seed → same per-episode reset seeds across re-runs.
+        Pin so the seed-forwarding contract is bit-stable: two runs of the
+        same eval will hit the server with identical seed sequences, which
+        is what makes reproducibility possible end-to-end."""
+        seeds_a: list[int] = []
+        seeds_b: list[int] = []
+
+        def _capture_a(seed: int | None = None) -> None:
+            seeds_a.append(int(seed) if seed is not None else -1)
+
+        def _capture_b(seed: int | None = None) -> None:
+            seeds_b.append(int(seed) if seed is not None else -1)
+
+        sim_a = FakeSim()
+        policy_a = MockPolicy()
+        policy_a.set_robot_state_keys(sim_a.robot_joint_names("fake_robot"))
+        policy_a.reset = _capture_a  # type: ignore[assignment]
+        PolicyRunner(sim_a).evaluate("fake_robot", policy_a, spec=_CountingBenchmark(), n_episodes=3, seed=42)
+
+        sim_b = FakeSim()
+        policy_b = MockPolicy()
+        policy_b.set_robot_state_keys(sim_b.robot_joint_names("fake_robot"))
+        policy_b.reset = _capture_b  # type: ignore[assignment]
+        PolicyRunner(sim_b).evaluate("fake_robot", policy_b, spec=_CountingBenchmark(), n_episodes=3, seed=42)
+
+        assert seeds_a == seeds_b, (
+            f"per-episode reset seeds must be reproducible across runs; got {seeds_a} vs {seeds_b}"
+        )
+
+    def test_reset_failure_is_swallowed(self, caplog):
+        """If ``policy.reset`` raises (e.g. server timeout, client lost
+        connection), the eval continues. The exception is logged as a
+        WARNING but the rollout proceeds — eval correctness is preserved
+        even if per-episode reseed fails."""
+        import logging as _logging
+
+        def _raising_reset(seed: int | None = None) -> None:
+            raise RuntimeError("server unreachable")
+
+        sim = FakeSim()
+        policy = MockPolicy()
+        policy.set_robot_state_keys(sim.robot_joint_names("fake_robot"))
+        policy.reset = _raising_reset  # type: ignore[assignment]
+
+        with caplog.at_level(_logging.WARNING, logger="strands_robots.simulation.policy_runner"):
+            result = PolicyRunner(sim).evaluate("fake_robot", policy, spec=_CountingBenchmark(), n_episodes=2, seed=42)
+
+        # Eval completed despite reset failures.
+        assert result["status"] == "success", f"eval should succeed even when reset fails; got {result}"
+        # We logged the failure (one per episode = two warnings).
+        warnings = [r for r in caplog.records if "policy.reset" in r.getMessage() and "raised" in r.getMessage()]
+        assert len(warnings) == 2, f"expected 2 reset warnings, got {len(warnings)}"
+
+
+class TestSpecInstructionFallback:
+    """#187: ``policy_runner._evaluate_with_spec`` falls back to
+    ``spec.instruction`` (default ``""``) when the user-supplied
+    ``instruction`` argument to ``evaluate_benchmark`` is empty.
+
+    Without this, language-conditioned policies (GR00T, OpenVLA) receive
+    an empty string as the task description and produce off-task actions.
+    GPU bisection on libero-10/SCENE5 confirmed this was the dominant
+    cause of the success_rate gap (0.40 ZMQ vs 1.00 in-process — same
+    model, same wire format, same engine, but `policy_obs[\"annotation.\"]`
+    was `[\"\"]` on the failing path because robots-sim passes
+    `instruction=\"\"` to evaluate_benchmark).
+    """
+
+    def test_user_instruction_wins_over_spec(self):
+        """When the caller passes ``instruction="explicit task"`` and the
+        spec also has a non-empty ``instruction`` property, the user value
+        wins. Pin so we don't silently override caller intent."""
+        captured: list[str] = []
+
+        class _LangPolicy(MockPolicy):
+            async def get_actions(self, observation_dict, instruction, **kwargs):
+                captured.append(instruction)
+                return [{}]
+
+        class _SpecWithInstruction(_CountingBenchmark):
+            @property
+            def instruction(self) -> str:
+                return "spec said do X"
+
+        sim = FakeSim()
+        policy = _LangPolicy()
+        policy.set_robot_state_keys(sim.robot_joint_names("fake_robot"))
+        PolicyRunner(sim).evaluate(
+            "fake_robot",
+            policy,
+            spec=_SpecWithInstruction(),
+            n_episodes=1,
+            seed=42,
+            instruction="user said do Y",
+        )
+        # Every call sees the user-supplied instruction.
+        assert captured, "expected at least one get_actions call"
+        assert all(c == "user said do Y" for c in captured), f"got {captured!r}"
+
+    def test_falls_back_to_spec_when_user_instruction_empty(self):
+        """Caller passes nothing (or ""), spec has non-empty instruction →
+        spec wins. This is the #187 fix."""
+        captured: list[str] = []
+
+        class _LangPolicy(MockPolicy):
+            async def get_actions(self, observation_dict, instruction, **kwargs):
+                captured.append(instruction)
+                return [{}]
+
+        class _SpecWithInstruction(_CountingBenchmark):
+            @property
+            def instruction(self) -> str:
+                return "put the white mug on the left plate"
+
+        sim = FakeSim()
+        policy = _LangPolicy()
+        policy.set_robot_state_keys(sim.robot_joint_names("fake_robot"))
+        # No instruction= argument — falls back to spec.instruction.
+        PolicyRunner(sim).evaluate("fake_robot", policy, spec=_SpecWithInstruction(), n_episodes=1, seed=42)
+        assert captured
+        assert all(c == "put the white mug on the left plate" for c in captured), f"got {captured!r}"
+
+    def test_warns_when_both_empty(self, caplog):
+        """If neither caller nor spec provides an instruction, log a
+        WARNING so the user knows the policy is running blind. Pin so a
+        future refactor doesn't silently drop the warning."""
+        import logging as _logging
+
+        sim = FakeSim()
+        policy = MockPolicy()
+        policy.set_robot_state_keys(sim.robot_joint_names("fake_robot"))
+        with caplog.at_level(_logging.WARNING, logger="strands_robots.simulation.policy_runner"):
+            PolicyRunner(sim).evaluate("fake_robot", policy, spec=_CountingBenchmark(), n_episodes=1, seed=42)
+
+        warnings = [r for r in caplog.records if "instruction is empty" in r.getMessage()]
+        assert warnings, "expected a warning about empty instruction"
+
+
+class TestOnFrameHookForSpec:
+    """#191: ``policy_runner._evaluate_with_spec`` invokes ``on_frame``
+    after each ``sim.send_action`` on the eval thread, before the spec's
+    ``on_step`` reward bookkeeping. Plumbed through from
+    ``Simulation.evaluate_benchmark`` and ``PolicyRunner.evaluate``.
+
+    Used by ``Simulation.start_cameras_recording_synchronous`` to capture
+    frames on the eval thread instead of a daemon thread, eliminating the
+    cross-thread ``mjData`` race that produced 2-3% frame-capture rates
+    under Strands ``Agent`` tool dispatch.
+    """
+
+    def test_on_frame_called_per_applied_step(self):
+        """``on_frame`` fires once per applied control step.
+
+        With ``max_steps=20`` and ``success_after=10**9`` (never succeeds),
+        the rollout runs to truncation: 20 steps per episode × 1 episode
+        = 20 invocations.
+        """
+        captured: list[tuple[int, dict, dict]] = []
+
+        def on_frame(step, obs, action):
+            captured.append(
+                (
+                    step,
+                    dict(obs) if isinstance(obs, dict) else obs,
+                    dict(action) if isinstance(action, dict) else action,
+                )
+            )
+
+        sim = FakeSim()
+        policy = MockPolicy()
+        policy.set_robot_state_keys(sim.robot_joint_names("fake_robot"))
+        spec = _CountingBenchmark()
+
+        result = PolicyRunner(sim).evaluate("fake_robot", policy, spec=spec, n_episodes=1, seed=42, on_frame=on_frame)
+
+        assert result["status"] == "success", result
+        assert len(captured) == 20, f"expected 20 on_frame calls (max_steps=20), got {len(captured)}"
+        # Step indices are monotonic global counter starting at 0.
+        steps = [c[0] for c in captured]
+        assert steps == list(range(20)), f"expected step counter 0..19, got {steps}"
+
+    def test_on_frame_global_counter_crosses_episode_boundaries(self):
+        """The counter is *global*, not per-episode. With 3 episodes ×
+        max_steps=20 = 60 calls, indices run 0..59.
+
+        Pinned so callers know they can't assume the counter resets per
+        episode — they must track ep boundaries via the per-episode
+        results dict if needed.
+        """
+        captured_steps: list[int] = []
+
+        def on_frame(step, obs, action):
+            captured_steps.append(step)
+
+        sim = FakeSim()
+        policy = MockPolicy()
+        policy.set_robot_state_keys(sim.robot_joint_names("fake_robot"))
+        spec = _CountingBenchmark()
+
+        result = PolicyRunner(sim).evaluate("fake_robot", policy, spec=spec, n_episodes=3, seed=42, on_frame=on_frame)
+
+        assert result["status"] == "success", result
+        assert len(captured_steps) == 60, f"expected 60 calls (3 ep × 20 steps), got {len(captured_steps)}"
+        assert captured_steps == list(range(60)), "global counter should be monotonic across episodes"
+
+    def test_on_frame_failures_logged_not_fatal(self, caplog):
+        """A raising ``on_frame`` is logged WARNING but the rollout
+        continues. The hook is opt-in telemetry — a broken recorder
+        shouldn't crash a 5-episode eval.
+
+        Pinned so a future refactor doesn't accidentally promote hook
+        failures to fatal errors.
+        """
+        import logging as _logging
+
+        def bad_on_frame(step, obs, action):
+            raise RuntimeError("camera offline")
+
+        sim = FakeSim()
+        policy = MockPolicy()
+        policy.set_robot_state_keys(sim.robot_joint_names("fake_robot"))
+        spec = _CountingBenchmark()
+
+        with caplog.at_level(_logging.WARNING, logger="strands_robots.simulation.policy_runner"):
+            result = PolicyRunner(sim).evaluate(
+                "fake_robot", policy, spec=spec, n_episodes=1, seed=42, on_frame=bad_on_frame
+            )
+
+        assert result["status"] == "success", f"hook failure must not fail the rollout: {result}"
+        warnings = [r for r in caplog.records if "on_frame hook failed" in r.getMessage()]
+        # 20 steps → 20 hook invocations → 20 warnings.
+        assert len(warnings) == 20, f"expected 20 warnings, got {len(warnings)}"
+
+    def test_on_frame_default_none_is_noop(self):
+        """The default ``on_frame=None`` doesn't change behaviour — the
+        eval loop runs identically without the hook. Pinned so the
+        plumbing addition is a strict superset.
+        """
+        sim = FakeSim()
+        policy = MockPolicy()
+        policy.set_robot_state_keys(sim.robot_joint_names("fake_robot"))
+        spec = _CountingBenchmark()
+
+        result = PolicyRunner(sim).evaluate("fake_robot", policy, spec=spec, n_episodes=1, seed=42)
+        assert result["status"] == "success"
+        assert spec.on_step_calls == 20, "spec hook count unchanged when on_frame is absent"
+
+    def test_evaluate_benchmark_forwards_on_frame(self):
+        """``Simulation.evaluate_benchmark`` plumbs ``on_frame`` to
+        ``PolicyRunner.evaluate``. End-to-end pin so the full chain
+        (Simulation → PolicyRunner.evaluate → _evaluate_with_spec → loop)
+        works without callers having to drop down to ``PolicyRunner``
+        directly.
+        """
+        from strands_robots.simulation.benchmark import register_benchmark
+
+        captured: list[int] = []
+
+        def on_frame(step, obs, action):
+            captured.append(step)
+
+        sim = FakeSim()
+        spec = _CountingBenchmark()
+        register_benchmark("on-frame-plumbing-eb", spec)
+        result = sim.evaluate_benchmark(
+            benchmark_name="on-frame-plumbing-eb",
+            robot_name="fake_robot",
+            policy_provider="mock",
+            n_episodes=1,
+            seed=42,
+            on_frame=on_frame,
+        )
+        assert result["status"] == "success", result
+        assert len(captured) == 20, f"expected 20 calls via evaluate_benchmark plumbing, got {len(captured)}"

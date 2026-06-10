@@ -1,0 +1,77 @@
+name: LLM Input Safety Check
+
+# Surfaces an annotation on PRs touching agent-callable code so reviewers
+# eyeball the validation. Intentionally warn-only: regex matching has FPs,
+# and this should not block agents from shipping. The signal is "review
+# this carefully", not "don't merge".
+
+on:
+  pull_request:
+    branches: [main, dev]
+    paths:
+      - 'strands_robots/tools/**.py'
+      - 'strands_robots/simulation/**.py'
+      - 'strands_robots/mesh/**.py'
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  scan:
+    name: Scan agent-callable code for unvalidated LLM input
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          persist-credentials: false
+          fetch-depth: 2  # need previous commit for diff context
+
+      - name: Find subprocess calls with f-strings in agent-callable code
+        run: |
+          set +e  # don't fail the workflow; we annotate instead
+
+          MATCHES=$(grep -rnE \
+            'subprocess\.(run|Popen|call|check_output|check_call)\([^)]*f["\047]' \
+            --include='*.py' \
+            strands_robots/tools/ \
+            strands_robots/simulation/ \
+            strands_robots/mesh/ 2>/dev/null || true)
+
+          if [ -n "$MATCHES" ]; then
+            echo "::warning::Found subprocess call(s) with f-string interpolation in agent-callable code. Verify inputs are validated via an allowlist or regex before interpolation — see AGENTS.md PR #85/#90 review learnings."
+            echo ""
+            echo "Locations:"
+            echo "$MATCHES" | while IFS= read -r line; do
+              file=$(echo "$line" | cut -d: -f1)
+              lineno=$(echo "$line" | cut -d: -f2)
+              echo "::warning file=${file},line=${lineno}::subprocess + f-string — confirm LLM input is validated"
+            done
+          fi
+
+      - name: Find string-concat into MJCF/XML in agent-callable code
+        run: |
+          set +e
+
+          # MJCF/XML built via f-string or % formatting that includes a name-like
+          # variable. Heuristic — not exhaustive. Match the patterns surfaced
+          # in PR #85 review.
+          MATCHES=$(grep -rnE \
+            '(\.format\([^)]*name|f["\047]<[a-z]+[^"]*\{[a-z_]*name)' \
+            --include='*.py' \
+            strands_robots/simulation/ 2>/dev/null || true)
+
+          if [ -n "$MATCHES" ]; then
+            echo "::warning::Found string interpolation of a name-like variable into XML/MJCF. Validate against ^[a-zA-Z0-9_-]+$ before interpolation — see AGENTS.md PR #85 review learning on sanitizing user inputs into XML."
+            echo "$MATCHES" | while IFS= read -r line; do
+              file=$(echo "$line" | cut -d: -f1)
+              lineno=$(echo "$line" | cut -d: -f2)
+              echo "::warning file=${file},line=${lineno}::name-like variable interpolated into XML — confirm sanitization"
+            done
+          fi
+
+      - name: Always pass
+        # This workflow does not fail PRs. Its purpose is reviewer attention
+        # via inline annotations. The check itself always succeeds so it
+        # appears green in the PR status list.
+        run: echo "LLM input safety scan complete — see annotations (if any)"

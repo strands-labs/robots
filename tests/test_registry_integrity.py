@@ -145,3 +145,24 @@ def test_hardware_only_robots_declare_lerobot_type(registry: dict) -> None:
         if not isinstance(lerobot_type, str) or not lerobot_type.strip():
             offenders.append(name)
     assert not offenders, "Hardware-only robots missing 'hardware.lerobot_type': " + ", ".join(offenders)
+
+
+def test_robot_descriptions_module_names_are_import_safe(registry: dict) -> None:
+    """Every ``robot_descriptions_module`` must match the import-safe pattern
+    the downloader enforces (``^[a-z0-9_+]+$``).
+
+    Regression: the downloader's validation regex originally was
+    ``^[a-z0-9_]+$``, which rejected the legitimate upstream module
+    ``tiago++_mj_description`` ("skipped: invalid module name") — so tiago_dual
+    never linked its assets. '+' is now allowed; this guards both the registry
+    entries and the regex staying in sync.
+    """
+    import re
+
+    pattern = re.compile(r"^[a-z0-9_+]+$")
+    offenders = []
+    for name, info in registry.items():
+        mod = info.get("asset", {}).get("robot_descriptions_module")
+        if mod and not pattern.match(mod):
+            offenders.append((name, mod))
+    assert not offenders, f"robot_descriptions_module names not import-safe: {offenders}"

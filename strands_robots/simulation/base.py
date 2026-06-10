@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -30,6 +31,15 @@ if TYPE_CHECKING:
 # policy_runner.py only imports `SimEngine` from base under TYPE_CHECKING so
 # the runtime cycle doesn't actually exist. Keep the imports at module level
 # to break the AST-visible cycle that static analysers flag.
+#
+# Note (#191): we deliberately do NOT import ``OnFrame`` here, even under
+# ``TYPE_CHECKING`` — CodeQL's ``py/unsafe-cyclic-import`` rule walks
+# ``TYPE_CHECKING`` blocks too and would flag the static cycle (
+# policy_runner.py imports SimEngine from base under TYPE_CHECKING,
+# so importing OnFrame from policy_runner here closes the loop in the
+# AST). Instead, we reference ``OnFrame`` in the ``evaluate_benchmark``
+# signature as a *string* annotation; ``from __future__ import
+# annotations`` (already in effect) makes that a no-op at runtime.
 from strands_robots.simulation.policy_runner import PolicyRunner, VideoConfig
 
 logger = logging.getLogger(__name__)
@@ -223,6 +233,18 @@ class SimEngine(ABC):
         """
         ...
 
+    def physics_timestep(self) -> float | None:
+        """Return the physics integration timestep in seconds, or ``None``.
+
+        Used by :class:`PolicyRunner` to convert a policy's ``control_frequency``
+        into the number of physics substeps per control step
+        (``round(1 / control_frequency / physics_timestep)``) so a
+        position-servo robot actually tracks each action's target before the
+        next action overwrites ``ctrl``. Backends that cannot report a fixed
+        timestep return ``None`` and the runner falls back to ``n_substeps=1``.
+        """
+        return None
+
     # Rendering
 
     @abstractmethod
@@ -254,6 +276,7 @@ class SimEngine(ABC):
         n_steps: int | None = None,
         max_steps: int | None = None,
         max_onframe_failures: int | None = None,
+        control_substeps: int | None = None,
     ) -> dict[str, Any]:
         """Run a policy loop in the simulation (blocking).
 
@@ -338,6 +361,7 @@ class SimEngine(ABC):
             video=VideoConfig.from_dict(video),
             on_frame=on_frame,
             max_onframe_failures=max_onframe_failures,
+            control_substeps=control_substeps,
         )
 
     def start_policy(
@@ -461,6 +485,7 @@ class SimEngine(ABC):
         n_episodes: int = 1,
         seed: int | None = None,
         action_horizon: int = 8,
+        on_frame: Callable[[int, dict[str, Any], dict[str, Any]], None] | None = None,
     ) -> dict[str, Any]:
         """Run a registered :class:`BenchmarkProtocol` against the current sim.
 
@@ -494,6 +519,19 @@ class SimEngine(ABC):
                 success/failure checks run after EACH applied action,
                 so per-step rewards and early termination work
                 correctly regardless of horizon.
+            on_frame: Optional ``(step, observation, action) -> None``
+                hook fired per applied control step on the eval thread,
+                immediately after ``sim.send_action``. Use this for
+                synchronous recording or telemetry when the eval is
+                dispatched from a thread distinct from the script main
+                (e.g. Strands ``Agent`` tool dispatch under asyncio) —
+                the daemon-thread recorder
+                (:meth:`~strands_robots.simulation.mujoco.simulation.Simulation.start_cameras_recording`)
+                races ``mjData`` mutations on the eval thread under that
+                pattern and produces 2-3% frame-capture rates with
+                greenish GL clear-colour artifacts. Pair with
+                :meth:`~strands_robots.simulation.mujoco.simulation.Simulation.start_cameras_recording_synchronous`
+                for the recorder side. See #191.
 
         Returns:
             Standard status dict. On success, carries per-episode cumulative
@@ -568,6 +606,7 @@ class SimEngine(ABC):
             spec=spec,
             seed=seed,
             action_horizon=action_horizon,
+            on_frame=on_frame,
         )
 
     def list_benchmarks(self) -> dict[str, Any]:

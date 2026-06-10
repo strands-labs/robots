@@ -1,2 +1,18 @@
 Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 
+This product includes software developed by third parties:
+
+--------------------------------------------------------------------------------
+strands_robots/policies/cosmos3/_msgpack_numpy.py
+
+Adapted from openpi-client (https://github.com/Physical-Intelligence/openpi)
+Original code by Physical Intelligence and contributors.
+Licensed under the Apache License, Version 2.0.
+
+The code is itself adapted from msgpack-numpy
+(https://github.com/lebedov/msgpack-numpy) by Lev E. Givon.
+Licensed under the BSD License.
+
+You may obtain a copy of the Apache License at:
+    http://www.apache.org/licenses/LICENSE-2.0
+--------------------------------------------------------------------------------

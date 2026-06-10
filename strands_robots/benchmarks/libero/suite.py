@@ -111,6 +111,17 @@ def _resolve_libero_root() -> Path:
 
     Lazily imports ``libero`` via :func:`require_optional` with a helpful
     install hint pointing at ``strands-robots[benchmark-libero]``.
+
+    Handles two install layouts:
+
+    1. Regular package — ``libero.__file__`` points at
+       ``.../site-packages/libero/__init__.py``; the parent directory is
+       the package root.
+    2. Namespace package (PEP 420) — ``libero.__file__`` is ``None``;
+       ``libero.__path__`` carries one or more directory entries (e.g.
+       NVIDIA's ``setup_libero.sh`` installs LIBERO this way: a
+       symlinked checkout where ``libero`` has no ``__init__.py``).
+       Fall back to the first path entry's parent.
     """
     libero = require_optional(
         "libero",
@@ -118,11 +129,23 @@ def _resolve_libero_root() -> Path:
         extra="benchmark-libero",
         purpose="LIBERO benchmark suite discovery",
     )
-    # __file__ lives inside the package; its parent is the package root.
     libero_file = getattr(libero, "__file__", None)
-    if not libero_file:
-        raise RuntimeError("libero package has no __file__ attribute; cannot locate BDDL tasks")
-    return Path(libero_file).resolve().parent.parent
+    if libero_file:
+        # Regular package: __file__ lives inside the package; its parent is the package root.
+        return Path(libero_file).resolve().parent.parent
+
+    # Namespace package: pull from __path__ (the canonical PEP 420 attribute).
+    libero_path = getattr(libero, "__path__", None)
+    if libero_path:
+        # __path__ is a (namespace) iterable of directory strings; first entry is enough.
+        first = next(iter(libero_path), None)
+        if first:
+            return Path(first).resolve().parent
+
+    raise RuntimeError(
+        "libero package has neither __file__ nor a non-empty __path__; cannot locate BDDL tasks. "
+        "Reinstall with `pip install strands-robots[benchmark-libero]` or check your install layout."
+    )
 
 
 def _load_init_states_by_bddl(suite: str) -> dict[str, np.ndarray]:

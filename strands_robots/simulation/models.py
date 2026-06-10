@@ -32,7 +32,15 @@ class SimStatus(Enum):
 
 @dataclass
 class SimRobot:
-    """A robot instance within the simulation."""
+    """A robot instance within the simulation.
+
+    ``mesh`` / ``peer_id`` (post-PR #101): when the parent ``Simulation`` is
+    itself attached to a Zenoh mesh, every robot added via ``add_robot``
+    auto-joins as its own peer so the agent can address it directly
+    (e.g. ``robot_mesh tell target=<peer_id>``) instead of having to talk to
+    the sim container and then route by robot name. Both fields stay
+    ``None`` / ``""`` for stand-alone sims that are not on a mesh.
+    """
 
     name: str
     urdf_path: str
@@ -47,6 +55,12 @@ class SimRobot:
     policy_running: bool = False
     policy_steps: int = 0
     policy_instruction: str = ""
+    # Per-robot mesh peer. Populated by ``Simulation.add_robot`` when the
+    # parent sim is on a mesh; ``None`` otherwise. Carried as ``Any`` to
+    # avoid a hard import dependency on ``strands_robots.mesh.Mesh`` from
+    # this backend-independent module.
+    mesh: Any = None
+    peer_id: str = ""
 
 
 @dataclass
@@ -90,6 +104,11 @@ class SimCamera:
     height: int = 480
     camera_id: int = -1
     origin_robot: str = ""
+    #: Optional body name to mount the camera ON (e.g. a robot's gripper for
+    #: a wrist cam). When set, ``position``/``target`` are interpreted in that
+    #: body's LOCAL frame and the camera tracks the body as it moves --
+    #: matching a real wrist-mounted camera. Empty = world-fixed camera.
+    parent_body: str = ""
 
 
 @dataclass

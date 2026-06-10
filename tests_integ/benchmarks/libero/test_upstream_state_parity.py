@@ -519,15 +519,14 @@ def test_osc_torque_parity_at_identical_state() -> None:
 
 @pytest.mark.timeout(300)
 def test_state_observation_byte_equivalent_at_canonical_init() -> None:
-    """Round 46 (#176 sub-task 3d) — pin every state channel to be
-    byte-equivalent (within float precision) between MuJoCoSimEngine
-    and LiberoOffScreenRenderEngine at canonical init_states[0] for
+    """#176 sub-task 3d — pin every state channel to be byte-equivalent
+    (within float precision) between ``MuJoCoSimEngine`` and upstream
+    ``OffScreenRenderEnv`` at canonical ``init_states[0]`` for
     libero-10/SCENE5.
 
     This is a stricter version of ``test_state_parity_at_canonical_init``
     that compares ALL state channels (x/y/z/roll/pitch/yaw/gripper)
-    side-by-side between engines, not just against upstream's raw obs.
-    Pre-46 had:
+    side-by-side. Pre-#176 fixes had:
       - 14.7 mm divergence on state.y (MJCF qpos defaults differ from
         upstream Robot.reset)
       - 114 mrad divergence on state.pitch + sign-flip on yaw
@@ -535,13 +534,23 @@ def test_state_observation_byte_equivalent_at_canonical_init() -> None:
       - 14 mm divergence on state.gripper (MuJoCo qpos=0 vs upstream
         ``PandaGripper.init_qpos = [0.0208, -0.0208]``)
 
-    Post-46 should bring all of these to within 1e-4 (state precision
-    of policy obs feed).
+    Post-#176 (rounds 46a-d): all channels match within 1 mrad / 1 mm
+    (mj_forward settling noise).
+
+    Pre-#178 this test compared ``MuJoCoSimEngine`` against the
+    intermediate ``LiberoOffScreenRenderEngine`` wrapper (now removed);
+    the rewrite drops that wrapper and compares directly against
+    upstream's ``OffScreenRenderEnv`` + the same ``_quat_wxyz_to_rpy_xyz``
+    helper used by ``LiberoAdapter.augment_observation``.
     """
     from libero.libero import benchmark as libero_benchmark
     from libero.libero import get_libero_path
+    from libero.libero.envs.env_wrapper import OffScreenRenderEnv
 
-    from strands_robots.benchmarks.libero.adapter import LiberoAdapter
+    from strands_robots.benchmarks.libero.adapter import (
+        LiberoAdapter,
+        _quat_wxyz_to_rpy_xyz,
+    )
     from strands_robots.simulation.factory import create_simulation
 
     bd = libero_benchmark.get_benchmark_dict()["libero_10"]()
@@ -559,55 +568,76 @@ def test_state_observation_byte_equivalent_at_canonical_init() -> None:
 
     import random as _random
 
-    # Offscreen path
-    adapter1 = LiberoAdapter.from_file(task_bddl, install_cameras=False, init_states=init_states)
-    sim1 = create_simulation("libero_offscreen_render")
-    sim1.create_world()
-    sim1.add_robot("robot")
-    adapter1.on_episode_start(sim1, _random.Random(42))
-    obs1 = sim1.get_observation()
+    # Upstream `OffScreenRenderEnv` — the ground truth.
+    upstream_env = OffScreenRenderEnv(
+        bddl_file_name=task_bddl,
+        camera_names=["agentview"],
+        camera_heights=128,
+        camera_widths=128,
+    )
+    upstream_env.reset()
+    upstream_env.set_init_state(init_states[0])
+    upstream_obs, *_ = upstream_env.step(np.zeros(7))
 
     # MuJoCo path
-    adapter2 = LiberoAdapter.from_file(task_bddl, install_cameras=True, init_states=init_states)
-    sim2 = create_simulation("mujoco", tool_name="libero_sim", mesh=False)
-    sim2.create_world()
-    sim2.add_robot("robot", data_config="panda")
-    adapter2.on_episode_start(sim2, _random.Random(42))
-    obs2_raw = sim2.get_observation()
-    obs2 = adapter2.augment_observation(sim2, obs2_raw)
+    adapter = LiberoAdapter.from_file(task_bddl, install_cameras=True, init_states=init_states)
+    sim = create_simulation("mujoco", tool_name="libero_sim", mesh=False)
+    sim.create_world()
+    sim.add_robot("robot", data_config="panda")
+    adapter.on_episode_start(sim, _random.Random(42))
+    obs_raw = sim.get_observation()
+    obs = adapter.augment_observation(sim, obs_raw)
 
     try:
-        # Per-channel scalar state must match within 1 mrad (1e-3).
-        # Pre-46 had 14 mm divergence on y, 114 mrad on pitch, sign
-        # flips on roll/pitch/yaw. Post-46 brings everything to within
-        # ~1e-4 m / ~1e-4 rad (mj_forward settling noise).
-        for k in ("x", "y", "z", "roll", "pitch", "yaw"):
-            v1 = obs1.get(k)
-            v2 = obs2.get(k)
-            assert v1 is not None, f"offscreen.{k} missing"
-            assert v2 is not None, f"mujoco.{k} missing"
-            assert abs(float(v2) - float(v1)) < 1e-3, (
-                f"state.{k} divergence: ours_mujoco={v2!r}, offscreen={v1!r}, "
-                f"diff={abs(float(v2) - float(v1)):.6e}. "
-                f"Round-46 fixes (home-pose write to data.qpos[arm], "
-                f"_quat_wxyz_to_rpy_xyz fix) may have regressed."
+        # Position channels: upstream returns ``robot0_eef_pos`` directly.
+        ups_pos = upstream_obs["robot0_eef_pos"]
+        for axis_idx, axis_name in enumerate(("x", "y", "z")):
+            ups_v = float(ups_pos[axis_idx])
+            ours_v = float(obs[axis_name])
+            assert abs(ours_v - ups_v) < 1e-3, (
+                f"state.{axis_name} divergence: ours_mujoco={ours_v!r}, upstream={ups_v!r}, "
+                f"diff={abs(ours_v - ups_v):.6e}. Round-46 fixes (home-pose write to "
+                f"data.qpos[arm], _quat_wxyz_to_rpy_xyz fix) may have regressed."
             )
 
-        # Gripper (2-element list).
-        g1 = obs1.get("gripper")
-        g2 = obs2.get("gripper")
-        assert g1 is not None and g2 is not None
-        assert len(g1) == 2 and len(g2) == 2
+        # Orientation channels: upstream returns ``robot0_eef_quat`` in
+        # xyzw; convert to wxyz so we can run our own ``_quat_wxyz_to_rpy_xyz``
+        # for an apples-to-apples comparison (matches what
+        # ``LiberoAdapter.augment_observation`` does).
+        ups_quat_xyzw = upstream_obs["robot0_eef_quat"]
+        ups_quat_wxyz = [
+            float(ups_quat_xyzw[3]),
+            float(ups_quat_xyzw[0]),
+            float(ups_quat_xyzw[1]),
+            float(ups_quat_xyzw[2]),
+        ]
+        ups_roll, ups_pitch, ups_yaw = _quat_wxyz_to_rpy_xyz(ups_quat_wxyz)
+        for axis_name, ups_v in (("roll", ups_roll), ("pitch", ups_pitch), ("yaw", ups_yaw)):
+            ours_v = float(obs[axis_name])
+            # Mod-2π comparison: roll near ±π is sign-ambiguous.
+            import math
+
+            diff_mod = ((ours_v - ups_v + math.pi) % (2 * math.pi)) - math.pi
+            assert abs(diff_mod) < 1e-3, (
+                f"state.{axis_name} divergence (mod 2π): ours_mujoco={ours_v!r}, "
+                f"upstream={ups_v!r}, diff_mod={abs(diff_mod):.6e}. "
+                f"Round-46 _quat_wxyz_to_rpy_xyz fix may have regressed."
+            )
+
+        # Gripper (2-element list): upstream returns ``robot0_gripper_qpos``.
+        ups_gripper = upstream_obs["robot0_gripper_qpos"]
+        ours_gripper = obs["gripper"]
+        assert len(ours_gripper) == 2
         for finger_idx in range(2):
-            diff = abs(float(g2[finger_idx]) - float(g1[finger_idx]))
+            diff = abs(float(ours_gripper[finger_idx]) - float(ups_gripper[finger_idx]))
             assert diff < 1e-3, (
-                f"state.gripper[{finger_idx}] divergence: ours={g2[finger_idx]!r}, "
-                f"offscreen={g1[finger_idx]!r}, diff={diff:.6e}. "
+                f"state.gripper[{finger_idx}] divergence: ours={ours_gripper[finger_idx]!r}, "
+                f"upstream={ups_gripper[finger_idx]!r}, diff={diff:.6e}. "
                 f"Round-46 PandaGripper.init_qpos write may have regressed."
             )
     finally:
-        sim1.destroy()
-        sim2.destroy()
+        sim.destroy()
+        upstream_env.close()
 
 
 @pytest.mark.timeout(900)

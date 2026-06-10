@@ -198,11 +198,9 @@ def _on_kwargs(args: list[str]) -> dict[str, Any]:
     # #171 sub-task 3e: also require physics contact via
     # ``sim.get_contacts``. Without this, transient
     # "mug-suspended-above-plate" placement states produce BDDL false
-    # positives (mug 5 cm above plate, xy-aligned, no contact yet) — on
-    # ``LiberoOffScreenRenderEngine`` this is masked by ``is_success``
-    # delegating to ``env.check_success``; on ``MuJoCoSimEngine`` it
-    # could over-report. Graceful degradation: engines without
-    # ``get_contacts`` skip the check (preserves pre-#171 behaviour).
+    # positives (mug 5 cm above plate, xy-aligned, no contact yet).
+    # Graceful degradation: engines without ``get_contacts`` skip the
+    # check (preserves pre-#171 behaviour).
     return {
         "body_a": args[0],
         "body_b": args[1],

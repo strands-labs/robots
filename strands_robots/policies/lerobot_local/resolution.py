@@ -13,47 +13,185 @@ Resolution strategies (in order):
 6. PreTrainedPolicy fallback (only if concrete, not abstract)
 """
 
+import functools
 import importlib
 import inspect
 import json
 import logging
+import pkgutil
 from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
-# Module-level flag: ensures we only attempt draccus registry bootstrap once.
-_CONFIGS_REGISTERED = False
 
-
+@functools.cache
 def _ensure_policy_configs_registered() -> None:
     """Ensure LeRobot policy config classes are registered in the draccus choice registry.
 
-    LeRobot 0.5+ uses lazy registration: config classes like ACTConfig are only
-    added to PreTrainedConfig's choice registry when their module is first imported.
-    Importing ANY one of them triggers registration of ALL policies because
-    each config module has module-level side effects that populate the registry.
+    LeRobot 0.5+ uses lazy registration: each policy config class
+    (``ACTConfig``, ``MolmoAct2Config``, ...) calls
+    ``@PreTrainedConfig.register_subclass(...)`` at module import time.
+    The previous strategy here was to import ONE known config (``act``)
+    on the assumption that lerobot's eager ``policies/__init__.py`` would
+    pull in every other policy as a side effect.
 
-    This function imports a single known config to bootstrap the entire registry.
-    It's safe to call multiple times - the import is idempotent.
+    That assumption is fragile:
+
+    1. ``_ensure_lerobot_policies_importable()`` (below) installs a
+       lightweight stub for ``lerobot.policies`` so we can resolve
+       individual subpackages without executing the heavy
+       ``__init__.py`` (which pulls in groot/transformers and can crash
+       on flash-attn ABI mismatches). With the stub in place, importing
+       a single ``configuration_*`` does NOT cascade -- only the one
+       policy gets registered.
+
+    2. Even WITHOUT the stub, the precedent is set: lerobot has
+       progressively made subsystems lazy (``lerobot.robots.__init__``
+       no longer imports its drivers eagerly). When the same lazy-init
+       hits ``lerobot.policies``, every brand-new policy lerobot ships
+       (e.g. ``molmoact2``, merged in lerobot PR #3604) becomes
+       invisible to ``PreTrainedConfig.from_pretrained`` until something
+       imports the matching subpackage by hand.
+
+    The fix is the same pattern as ``hardware_robot._ensure_lerobot_robots_registered``:
+    walk every subpackage of ``lerobot.policies`` with ``pkgutil`` and
+    import each one once. That triggers every
+    ``@PreTrainedConfig.register_subclass`` decorator unconditionally,
+    so the registry is complete regardless of how lazy
+    ``lerobot.policies.__init__`` becomes. A single ``act`` import shim
+    can never be "just one more new policy" away from breaking.
+
+    ``@functools.cache`` makes the second call a dict lookup -- the
+    full walk only happens once per process.
+
+    Caching contract for callers
+    ----------------------------
+    The cache is keyed on the empty argument tuple, so it is decoupled
+    from ``sys.modules`` state. If something later in the process
+    invalidates the lerobot import graph (a test reloads modules, a
+    multiprocess spawn that mutates module state, an explicit
+    ``importlib.reload(lerobot.policies)`` to pick up a freshly stubbed
+    layout), callers MUST invoke
+    ``_ensure_policy_configs_registered.cache_clear()`` before calling
+    this helper again -- otherwise the cache returns immediately and
+    the new ``sys.modules`` state is never re-walked. The
+    ``test_molmoact2_registered_after_stubbed_lerobot_policies``
+    regression test exercises exactly this contract.
+
+    Note: the ``ImportError`` early-return (lerobot not installed) is
+    also cached. In the rare case where lerobot becomes available later
+    in the same process (e.g. a notebook ``pip install``), callers must
+    ``cache_clear()`` before retrying. This is acceptable because the
+    realistic failure mode (no lerobot at all) is terminal.
     """
-    global _CONFIGS_REGISTERED
-    if _CONFIGS_REGISTERED:
-        return
+    # Make sure lerobot.policies is at least registered in sys.modules
+    # without executing its (potentially heavy) __init__.
+    _ensure_lerobot_policies_importable()
 
     try:
-        # Importing any policy config triggers registration of ALL policies.
-        # ACTConfig is the most common; if it doesn't exist, lerobot is too old
-        # for draccus-based config and the caller should fall through to manual resolution.
-        importlib.import_module("lerobot.policies.act.configuration_act")
-        _CONFIGS_REGISTERED = True
-        logger.debug("LeRobot policy configs registered in draccus choice registry")
-    except (ImportError, ModuleNotFoundError):
-        # Pre-0.5 lerobot or missing policy subpackage - that's OK,
-        # the caller will fall through to manual resolution.
-        logger.debug("Could not import lerobot policy configs for draccus registration")
-    except Exception as exc:
-        logger.debug("Unexpected error during policy config registration: %s", exc)
+        import lerobot.policies as _lr_policies
+    except ImportError:
+        # lerobot not installed at all -- caller will fall through to
+        # manual config.json resolution and produce a clean error.
+        logger.debug("lerobot not installed; skipping policy config registration")
+        return
+
+    # Enumerate every immediate subpackage of ``lerobot.policies`` and
+    # import its ``configuration_*`` module (or the package itself,
+    # which most subpackages re-export the configuration from). Each
+    # subpackage's config import runs
+    # ``@PreTrainedConfig.register_subclass(...)`` as a side effect.
+    #
+    # Two enumeration sources, unioned:
+    #
+    # 1. ``pkgutil.iter_modules`` -- yields regular packages (those with
+    #    ``__init__.py``). We filter with ``is_pkg=True`` so non-package
+    #    siblings (``factory.py``, ``utils.py``, ``pretrained.py``,
+    #    ``pi_gemma.py``) are excluded. Importing those as a package-level
+    #    fallback would pull in transformers/diffusers -- exactly the heavy
+    #    import graph the stub mechanism exists to avoid.
+    #
+    # 2. On-disk directory listing of every ``__path__`` entry. In lerobot
+    #    0.5.x several subpackages are PEP 420 *namespace packages* (no
+    #    ``__init__.py``) -- e.g. ``act/``, ``diffusion/``, ``smolvla/``,
+    #    ``tdmpc/``, ``vqbet/``. ``iter_modules`` skips these (or yields
+    #    them with ``is_pkg=False``), so the directory scan is the ground
+    #    truth for namespace-package coverage on the stub-active codepath.
+    #
+    # The union of both sources covers all subpackages regardless of layout.
+    # See issue #278 for the upstream lerobot layout that motivated this.
+    sub_names: set[str] = set()
+    for _, sub_name, _is_pkg in pkgutil.iter_modules(_lr_policies.__path__):
+        if _is_pkg:
+            sub_names.add(sub_name)
+    for path_entry in _lr_policies.__path__:
+        try:
+            for child in Path(path_entry).iterdir():
+                if not child.is_dir():
+                    continue
+                name = child.name
+                # Skip dunder dirs (``__pycache__``) and dot dirs.
+                if name.startswith("_") or name.startswith("."):
+                    continue
+                # Identifier check: only valid Python module names.
+                if not name.isidentifier():
+                    continue
+                sub_names.add(name)
+        except OSError as exc:
+            # ``__path__`` entry not enumerable (rare; e.g. zip-imported
+            # lerobot or a stale path). Fall through to whatever
+            # iter_modules already produced.
+            logger.debug("[policy resolution] cannot scan %s: %s", path_entry, exc)
+
+    for sub_name in sorted(sub_names):
+        # Try the canonical configuration_<name> module first because
+        # it skips importing modeling_* (which is the heavy-deps file
+        # that pulls in transformers/flash-attn). Fall back to the
+        # package itself if that fails.
+        for candidate in (
+            f"{_lr_policies.__name__}.{sub_name}.configuration_{sub_name}",
+            f"{_lr_policies.__name__}.{sub_name}",
+        ):
+            try:
+                importlib.import_module(candidate)
+                break  # one success per subpackage is enough
+            except ImportError as exc:
+                # Module simply not present (no ``configuration_<name>``
+                # in this subpackage): expected, fall through to the
+                # next candidate. Debug-level only -- this happens for
+                # most subpackages that re-export from the package init.
+                logger.debug("[policy resolution] skip %s: %s", candidate, exc)
+                continue
+            except (AttributeError, RuntimeError, TypeError) as exc:
+                # Decorator-time failures are real and observable but
+                # MUST NOT abort the walk -- otherwise one buggy
+                # subpackage poisons every later registration AND the
+                # @functools.cache freezes the half-populated state for
+                # the rest of the process. Concrete cases this catches:
+                #   * ``@PreTrainedConfig.register_subclass(...)``
+                #     re-registering an already-known key
+                #     (RuntimeError / TypeError depending on draccus
+                #     version)
+                #   * a ``configuration_*`` that imports cleanly but
+                #     references a renamed attribute on a sibling
+                #     module (AttributeError)
+                #   * a draccus version-check that raises RuntimeError
+                #     during module import
+                # We log at WARNING (not DEBUG) because, unlike a missing
+                # ``configuration_<name>`` shim, this signals a genuine
+                # bug in either lerobot or strands_robots and an operator
+                # would want to see it in normal log output.
+                logger.warning(
+                    "[policy resolution] %s raised %s during registration; "
+                    "skipping this subpackage and continuing the walk: %s",
+                    candidate,
+                    type(exc).__name__,
+                    exc,
+                )
+                # Try the next candidate for THIS subpackage; if both
+                # raise, we move on to the next subpackage.
+                continue
 
 
 def resolve_policy_class_from_hub(pretrained_name_or_path: str) -> tuple[type[Any], str]:

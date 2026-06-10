@@ -35,7 +35,12 @@ class Gr00tDataConfig:
         name: Config identifier (e.g. "so100_dualcam").
         video_keys: Camera observation keys (e.g. ["video.front", "video.wrist"]).
         state_keys: Robot state keys (e.g. ["state.single_arm", "state.gripper"]).
-        action_keys: Action output keys from the model.
+        action_keys: Action output keys from the model. Keys are by-name
+            only: this schema omits the upstream Isaac-GR00T ActionConfig
+            metadata (rep / type / format). Downstream code must not assume
+            joint-angle semantics for action keys -- some keys are learned
+            latents (for example unitree_g1_sonic action.motion_token is a
+            64-dim SONIC latent, not a joint angle). See issue #211.
         language_keys: Natural-language instruction keys.
         observation_indices: Temporal indices for observations.
         action_indices: Temporal indices for actions (horizon).

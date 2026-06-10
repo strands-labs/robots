@@ -233,8 +233,8 @@
       "joints": 9,
       "asset": {
         "dir": "robotstudio_so101",
-        "model_xml": "so101.xml",
-        "scene_xml": "scene_box.xml",
+        "model_xml": "so101_new_calib.xml",
+        "scene_xml": "scene.xml",
         "robot_descriptions_module": "so_arm101_mj_description"
       },
       "hardware": {
@@ -914,7 +914,7 @@
       "asset": {
         "dir": "pal_tiago_dual",
         "model_xml": "tiago_dual.xml",
-        "scene_xml": "scene.xml",
+        "scene_xml": "scene_position.xml",
         "robot_descriptions_module": "tiago++_mj_description"
       },
       "aliases": [
@@ -928,8 +928,8 @@
       "joints": 16,
       "asset": {
         "dir": "unitree_a1",
-        "model_xml": "a1.xml",
-        "scene_xml": "scene.xml",
+        "model_xml": "xml/a1.xml",
+        "scene_xml": "xml/a1.xml",
         "robot_descriptions_module": "a1_mj_description"
       },
       "aliases": [

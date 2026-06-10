@@ -338,6 +338,19 @@ class Gr00tPolicy(Policy):
             self.data_config_name,
         )
 
+        # #187 wire-payload diagnostic: per-instance call counter so
+        # ``_maybe_dump_wire_payload`` can cap dumps at
+        # ``STRANDS_GROOT_WIRE_LOG_MAX_CALLS`` (default 10) without
+        # filling the disk on long rollouts. Counter is shared across
+        # LOCAL and SERVICE modes; the dump filename includes the mode
+        # prefix so a single dir holds both paths' payloads side-by-side
+        # for offline diff.
+        self._wire_log_call_count: int = 0
+        # Track whether we've already logged a "diagnostic disabled"
+        # warning so we don't spam the eval log with one-warning-per-step
+        # if the dump dir is unwritable.
+        self._wire_log_disabled: bool = False
+
     # Mapping initialization
 
     def _init_mappings(self) -> None:
@@ -532,6 +545,87 @@ class Gr00tPolicy(Policy):
     def set_robot_state_keys(self, robot_state_keys: list[str]) -> None:
         """No-op.  Mappings handle key translation."""
 
+    def reset(self, seed: int | None = None) -> None:
+        """Per-episode reset.
+
+        In SERVICE mode, forwards a ``reset`` call to the GR00T inference
+        server so its per-episode RNG state (diffusion sampler noise,
+        cuDNN benchmark state, etc.) can be re-initialised. Without this
+        the server's RNG drifts across calls and produces different
+        action chunks for byte-identical inputs across re-runs of the
+        same eval — the #187 success-rate gap.
+
+        The standard ``gr00t.eval.run_gr00t_server`` registers a ``reset``
+        endpoint that maps to ``policy.reset(options=...)`` (see
+        ``server_client.py:94``). The default ``Gr00tPolicy.reset`` upstream
+        is a no-op; deployments that need per-episode RNG control should
+        either patch the server (see
+        ``examples/gr00t_server_deterministic_wrapper.py`` in robots-sim)
+        or use the ``Robot()`` factory which auto-mounts the wrapper.
+
+        In LOCAL mode, applies the same client-side reseed
+        ``set_eval_seed`` would (Python / NumPy / torch / cuDNN), which
+        is sufficient for reproducibility because the diffusion sampler
+        runs in the same process as the client.
+
+        Best-effort: any failure (server doesn't expose ``reset``,
+        endpoint raises, network timeout) is logged and swallowed —
+        ``reset`` is a soft hint to the policy, not a hard requirement.
+        Eval correctness is preserved even if reset is a no-op.
+
+        Args:
+            seed: Master seed for the per-episode reset. When ``None``,
+                no seed is forwarded (server uses its compiled-in default).
+        """
+        if self._mode == "service":
+            assert self._client is not None, "service mode requires a client"
+            try:
+                # `options` is the standard kwarg the server's `reset`
+                # endpoint maps to `policy.reset(options=options)`. We
+                # pass the seed there so the server-side patch can
+                # apply it.
+                payload: dict[str, Any] = {}
+                if seed is not None:
+                    payload = {"options": {"seed": int(seed)}}
+                self._client.call_endpoint("reset", payload if payload else None)
+                logger.debug("Gr00tPolicy.reset: forwarded to server (seed=%r)", seed)
+            except Exception as e:  # noqa: BLE001 - reset is best-effort
+                logger.info(
+                    "Gr00tPolicy.reset: server did not accept reset (seed=%r): %s; "
+                    "continuing without per-episode server-side reseed",
+                    seed,
+                    e,
+                )
+            return
+
+        # LOCAL mode: same reseed set_eval_seed would do.
+        if seed is None:
+            return
+        try:
+            import random as _random
+
+            _random.seed(seed)
+            np.random.seed(seed)
+            try:
+                import torch as _torch
+
+                _torch.manual_seed(seed)
+                if _torch.cuda.is_available():
+                    _torch.cuda.manual_seed_all(seed)
+                _torch.backends.cudnn.deterministic = True
+                _torch.backends.cudnn.benchmark = False
+            except ImportError:
+                # Torch is an optional dependency for `Gr00tPolicy`; minimal
+                # installs (e.g. ``policy_provider="mock"`` smoke tests, or
+                # SERVICE-only deployments without local model loading) won't
+                # have it. Silently skipping the reseed in that case is the
+                # right behaviour — there's no torch RNG state to seed when
+                # torch isn't even imported.
+                pass
+            logger.debug("Gr00tPolicy.reset: local-mode reseed applied (seed=%r)", seed)
+        except Exception as e:  # noqa: BLE001 - reset is best-effort
+            logger.info("Gr00tPolicy.reset: local-mode reseed failed: %s", e)
+
     async def get_actions(self, observation_dict: dict[str, Any], instruction: str, **kwargs) -> list[dict[str, Any]]:
         if self._mode == "local":
             return self._local_get_actions(observation_dict, instruction)
@@ -550,6 +644,11 @@ class Gr00tPolicy(Policy):
             actions_raw = self._local_policy.get_action(nested_obs)
         else:
             raise RuntimeError(f"Unknown GR00T version: {self._groot_version}")
+
+        # #187 wire-payload diagnostic: capture (nested_obs, actions_raw)
+        # for offline diff against the SERVICE path. Zero overhead when
+        # STRANDS_GROOT_WIRE_LOG is unset.
+        self._maybe_dump_wire_payload("local", nested_obs, actions_raw)
 
         return self._unpack_actions(actions_raw)
 
@@ -613,8 +712,7 @@ class Gr00tPolicy(Policy):
         # it (#169) - same rotation that ``_build_service_observation``
         # applies, kept consistent so LOCAL and SERVICE inference modes
         # see identical observations. Pre-#169 the rotation was service-
-        # only, which silently fed local-mode users (and the #168
-        # ``LiberoOffScreenRenderEngine`` LOCAL path) upside-down or
+        # only, which silently fed local-mode users upside-down or
         # reversed-direction images relative to training. The helper
         # operates on the 5D ``(1, 1, H, W, C)`` tensor directly via
         # negative-axis flips so the rotation always lands on H/W.
@@ -663,11 +761,18 @@ class Gr00tPolicy(Policy):
         """Service mode: build observation, call server, unpack."""
         assert self._client is not None, "Service client not initialized"
         if self._obs_mapping is not None:
-            nested_obs = self._prepare_observation(robot_obs, instruction)
-            action_chunk = self._client.get_action(nested_obs)
+            wire_obs = self._prepare_observation(robot_obs, instruction)
+            action_chunk = self._client.get_action(wire_obs)
         else:
-            obs = self._build_service_observation(robot_obs, instruction)
-            action_chunk = self._client.get_action(obs)
+            wire_obs = self._build_service_observation(robot_obs, instruction)
+            action_chunk = self._client.get_action(wire_obs)
+
+        # #187 wire-payload diagnostic: capture (wire_obs, action_chunk)
+        # for offline diff against the LOCAL path. Zero overhead when
+        # STRANDS_GROOT_WIRE_LOG is unset. Run an eval once with each
+        # mode into the same dump dir, then ``np.allclose`` matching
+        # ``call0`` files to bisect the divergence.
+        self._maybe_dump_wire_payload("service", wire_obs, action_chunk)
 
         return self._unpack_service_actions(action_chunk)
 
@@ -789,6 +894,150 @@ class Gr00tPolicy(Policy):
             actions.append(step)
         return actions
 
+    # Wire-payload diagnostic
+
+    def _maybe_dump_wire_payload(
+        self,
+        mode: str,
+        observation: dict[str, Any],
+        action_chunk: dict[str, Any],
+    ) -> None:
+        """Dump the pre-inference observation and post-inference action
+        chunk to disk for offline diff between LOCAL and SERVICE paths.
+
+        Gated on ``STRANDS_GROOT_WIRE_LOG=<dir>``. When unset, this is a
+        zero-overhead no-op (one ``os.environ.get`` per call). When set,
+        dumps a pickle file per call to ``<dir>/{mode}_call{N:04d}.pkl``
+        until ``STRANDS_GROOT_WIRE_LOG_MAX_CALLS`` (default 10) is hit.
+
+        Pickle file structure::
+
+            {
+                "mode": "local" | "service",
+                "call_index": int,
+                "observation": dict,    # nested for local, flat for service
+                "action_chunk": dict,   # raw model / server output (pre _unpack_*)
+                "groot_version": str | None,
+                "data_config_name": str,
+            }
+
+        Used by the #187 bisection plan to verify whether LOCAL and
+        SERVICE paths send byte-identical observations to the model.
+        Run an eval twice (once with each mode) into the same dump dir,
+        then ``pickle.load`` the matching ``call0`` files and ``np.allclose``
+        the per-key tensors. Any divergence at step 0 is the bug
+        (assuming wire format is identical, which the regression test
+        in this PR pins).
+
+        Best-effort: if the dump dir doesn't exist or isn't writable,
+        log ONE warning and disable further dumps for the rest of the
+        process. Diagnostic instrumentation must never crash production
+        eval. The user gets a one-line warning early; subsequent calls
+        are silent no-ops.
+
+        :param mode: ``"local"`` or ``"service"``. Becomes the filename prefix.
+        :param observation: The pre-inference observation dict. For LOCAL
+            this is the nested-dict format; for SERVICE this is the flat
+            wire format AFTER newaxis fanout (i.e. what would have been
+            msgpack-packed onto the wire).
+        :param action_chunk: The raw post-inference action chunk dict
+            (before ``_unpack_actions`` / ``_unpack_service_actions``
+            squashes axes for the per-step dispatch loop).
+        """
+        # Tolerate construction paths that bypass ``__init__`` (test
+        # fixtures that ``Gr00tPolicy.__new__(Gr00tPolicy)`` then stuff
+        # attributes manually). Diagnostic instrumentation must never
+        # crash production OR test paths.
+        if getattr(self, "_wire_log_disabled", False):
+            return
+        log_dir = _wire_log_dir()
+        if log_dir is None:
+            return
+        call_count = getattr(self, "_wire_log_call_count", 0)
+        if call_count >= _wire_log_max_calls():
+            return
+
+        import pickle
+
+        path = os.path.join(log_dir, f"{mode}_call{call_count:04d}.pkl")
+        payload = {
+            "mode": mode,
+            "call_index": call_count,
+            "observation": observation,
+            "action_chunk": action_chunk,
+            "groot_version": getattr(self, "_groot_version", None),
+            "data_config_name": getattr(self, "data_config_name", "unknown"),
+        }
+        try:
+            os.makedirs(log_dir, exist_ok=True)
+            with open(path, "wb") as f:
+                pickle.dump(payload, f, protocol=pickle.HIGHEST_PROTOCOL)
+        except (OSError, pickle.PicklingError) as e:
+            # Disk full / dir not writable / permission denied / un-picklable
+            # object in the payload (e.g. a thread-local). Log once and
+            # disable further dumps so the eval doesn't spam the log
+            # with one warning per step.
+            logger.warning(
+                "STRANDS_GROOT_WIRE_LOG=%r: failed to dump wire payload to %r (%s); "
+                "disabling diagnostic for this process",
+                log_dir,
+                path,
+                e,
+            )
+            self._wire_log_disabled = True
+            return
+
+        self._wire_log_call_count = call_count + 1
+        if self._wire_log_call_count == 1:
+            # First successful dump: log INFO so the user sees confirmation
+            # the diagnostic is active. Subsequent dumps are silent.
+            logger.info(
+                "STRANDS_GROOT_WIRE_LOG=%r: dumping wire payloads (mode=%s, max=%d). First file: %s",
+                log_dir,
+                mode,
+                _wire_log_max_calls(),
+                path,
+            )
+
+
+# Wire-payload diagnostic (#187) - dump pre-inference observation +
+# post-inference action chunk to disk for offline diff between LOCAL
+# and SERVICE paths.
+
+
+def _wire_log_dir() -> str | None:
+    """Return the directory where wire payloads should be dumped, or None.
+
+    Reads ``STRANDS_GROOT_WIRE_LOG``. Returns ``None`` when unset or empty,
+    in which case the dumper is a no-op (zero overhead in production eval).
+
+    Used by :meth:`Gr00tPolicy._maybe_dump_wire_payload` to gate the dump
+    so production paths pay no cost when the diagnostic is off.
+    """
+    path = os.environ.get("STRANDS_GROOT_WIRE_LOG", "").strip()
+    return path or None
+
+
+def _wire_log_max_calls() -> int:
+    """Return the cap on number of wire-payload dumps per process.
+
+    Reads ``STRANDS_GROOT_WIRE_LOG_MAX_CALLS``. Defaults to ``10`` so a
+    full LIBERO eval (5 episodes × 720 steps / 8 chunk = ~450 calls)
+    doesn't fill the disk with multi-GB pickle archives.
+
+    The user's bisection plan from #187 only needs the first few calls
+    to detect a divergence between LOCAL and SERVICE wire payloads.
+    """
+    raw = os.environ.get("STRANDS_GROOT_WIRE_LOG_MAX_CALLS", "10").strip()
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        logger.warning(
+            "STRANDS_GROOT_WIRE_LOG_MAX_CALLS=%r is not an integer; defaulting to 10",
+            raw,
+        )
+        return 10
+
 
 # Shape helpers - match Isaac-GR00T's expected formats exactly
 
@@ -805,8 +1054,7 @@ def _apply_image_rotation_180_inplace(obs: dict[str, Any], video_keys: list[str]
     rate collapses to 0 (#168 bug H, re-broken in service mode
     by #168, fixed by #169).
 
-    Producers (``LiberoAdapter.augment_observation``,
-    ``LiberoOffScreenRenderEngine.get_observation``) are expected to
+    Producers (``LiberoAdapter.augment_observation``) are expected to
     deliver images in OpenGL framebuffer convention (bottom-row-zero).
     This helper applies the second 180° to convert OpenGL → training
     convention, matching what NVIDIA's reference eval does.
@@ -825,10 +1073,9 @@ def _apply_image_rotation_180_inplace(obs: dict[str, Any], video_keys: list[str]
     Called from BOTH service-mode (``_build_service_observation``) and
     local-mode (``_prepare_observation``) paths so the rotation is
     applied consistently regardless of inference transport. Pre-#169 it
-    was service-only, which made the LOCAL+adapter path silently OOD
-    and the SERVICE+``LiberoOffScreenRenderEngine`` path silently OOD
-    in the opposite direction (engine bakes 180°, policy applies 180° →
-    net identity = OpenGL).
+    was service-only, which made the LOCAL path silently OOD relative
+    to training (engine outputs OpenGL convention, policy applies no
+    rotation → upside-down input).
     """
     for vk in video_keys:
         v = obs.get(vk)
@@ -849,8 +1096,22 @@ def _to_video_batch(value: np.ndarray) -> np.ndarray:
 
 
 def _to_state_batch(value) -> np.ndarray:
-    """Ensure state is (B=1, T=1, D) float32."""
+    """Ensure state is (B=1, T=1, D) float32.
+
+    Handles every shape pre-fanout:
+      * scalar / 0-D ndarray → (1, 1, 1)  (e.g. ``state.x = 0.123``)
+      * 1-D ndarray (D,)     → (1, 1, D)  (e.g. ``state.gripper = [0.02, -0.02]``)
+      * 2-D ndarray (T, D)   → (1, T, D)
+      * 3-D and beyond       → passthrough
+    """
     arr = np.asarray(value, dtype=np.float32)
+    if arr.ndim == 0:
+        # 0-D scalar: promote to (D=1,) then to (1, 1, 1) so the model
+        # sees a proper (B, T, D) shape. Without this, NVIDIA's
+        # _unbatch_observation crashes with `IndexError: too many indices
+        # for array: array is 0-dimensional` on every scalar state key
+        # (#187 LOCAL-mode regression I caught while bisecting).
+        return arr[np.newaxis, np.newaxis, np.newaxis]
     if arr.ndim == 1:
         return arr[np.newaxis, np.newaxis, ...]
     elif arr.ndim == 2:

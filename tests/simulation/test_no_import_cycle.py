@@ -41,6 +41,21 @@ def _is_in_type_checking(tree: ast.AST, target: ast.AST) -> bool:
     return False
 
 
+def _is_inside_function(tree: ast.Module, target: ast.AST) -> bool:
+    """True if target_node is inside a function or method body (lazy import).
+
+    Imports inside function/method bodies are deferred — they execute only
+    when the function is called, not at module import time. These cannot
+    cause import-time cycles and should not be flagged.
+    """
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            for child in ast.walk(node):
+                if child is target:
+                    return True
+    return False
+
+
 def _build_import_graph(root: Path) -> nx.DiGraph:
     G: nx.DiGraph = nx.DiGraph()
     for p in root.rglob("*.py"):
@@ -56,9 +71,13 @@ def _build_import_graph(root: Path) -> nx.DiGraph:
             if isinstance(n, ast.ImportFrom) and n.module and n.module.startswith("strands_robots"):
                 if _is_in_type_checking(tree, n):
                     continue
+                if _is_inside_function(tree, n):
+                    continue
                 G.add_edge(mod, n.module)
             elif isinstance(n, ast.Import):
                 if _is_in_type_checking(tree, n):
+                    continue
+                if _is_inside_function(tree, n):
                     continue
                 for alias in n.names:
                     if alias.name.startswith("strands_robots"):
@@ -67,7 +86,12 @@ def _build_import_graph(root: Path) -> nx.DiGraph:
 
 
 def test_no_runtime_import_cycles():
-    """Zero runtime cycles (TYPE_CHECKING imports are excluded)."""
+    """Zero runtime import-time cycles.
+
+    Only module-level imports are considered. Imports inside function/method
+    bodies (lazy imports) and TYPE_CHECKING blocks are excluded since they
+    cannot cause import-time circular dependency failures.
+    """
     G = _build_import_graph(PKG)
     cycles = list(nx.simple_cycles(G))
     assert cycles == [], "runtime cycles detected:\n" + "\n".join("  " + " -> ".join(c) + " -> " + c[0] for c in cycles)

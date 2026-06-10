@@ -182,6 +182,62 @@ class TestDataConfigMap:
         assert config.observation_indices == [-20, 0]
         assert config.action_indices == list(range(40))
 
+    def test_unitree_g1_sonic_schema(self):
+        """UNITREE_G1_SONIC -- whole-body controller with SONIC latent action space.
+
+        Uses motion_token + hand joints as action keys with 40-step horizon.
+        State includes projected_gravity for proprioception.
+        """
+        config = DATA_CONFIG_MAP["unitree_g1_sonic"]
+        # Video: single ego view
+        assert config.video_keys == ["video.ego_view"]
+        # Full body state (8 keys) with projected gravity
+        assert config.state_keys == [
+            "state.left_leg",
+            "state.right_leg",
+            "state.waist",
+            "state.left_arm",
+            "state.right_arm",
+            "state.left_hand",
+            "state.right_hand",
+            "state.projected_gravity",
+        ]
+        assert len(config.state_keys) == 8
+        # SONIC latent action space (motion tokens + hand joints)
+        assert config.action_keys == [
+            "action.motion_token",
+            "action.left_hand_joints",
+            "action.right_hand_joints",
+        ]
+        # Language key for task description
+        assert config.language_keys == ["annotation.human.task_description"]
+        # Single observation frame, 40-step action horizon
+        assert config.observation_indices == [0]
+        assert config.action_indices == list(range(40))
+
+    def test_gr00t_inference_docstring_flags_sonic_as_posttrain(self):
+        """Pin: docstring must warn that unitree_g1_sonic requires a finetuned checkpoint.
+
+        Without this note, users trying the base nvidia/GR00T-N1.7-3B model
+        with embodiment_tag="unitree_g1_sonic" get silent garbage actions.
+        """
+        import re as _re
+
+        from strands_robots.tools.gr00t_inference import gr00t_inference
+
+        doc = (gr00t_inference.__doc__ or "").replace("\n", " ")
+        assert "unitree_g1_sonic" in doc, "unitree_g1_sonic must be listed in the gr00t_inference docstring"
+        # Use regex to assert the disclaimer follows the tag mention without
+        # another ``<tag>`` entry in between -- position-independent, survives
+        # TOC additions or docstring reflow that would defeat doc.find() anchoring.
+        # Negative lookahead rejects matches that cross a ``tag_name`` boundary.
+        pattern = r"unitree_g1_sonic(?:(?!``[a-z_]+``).)*?finetuned checkpoint"
+        matches = _re.findall(pattern, doc)
+        assert matches, (
+            "unitree_g1_sonic must be followed by 'finetuned checkpoint' disclaimer "
+            "before the next double-backtick-quoted tag entry"
+        )
+
     def test_unitree_g1_real_alias(self):
         """The REAL_G1 embodiment tag value resolves to unitree_g1_real."""
         alias = DATA_CONFIG_MAP["real_g1_relative_eef_relative_joints"]
@@ -293,3 +349,33 @@ class TestCreateCustomDataConfig:
         second = load_data_config("overwrite_test")
         assert second.video_keys == ["v2"]
         assert first is not second
+
+
+# (section)
+# Schema documentation of ActionConfig metadata elision (issue #211)
+# (section)
+
+
+class TestActionConfigElisionDocumented:
+    """Issue #211: the schema drops upstream ActionConfig (rep/type/format)
+    metadata; this must stay explicitly documented so downstream code does
+    not assume joint-angle semantics for action keys."""
+
+    def test_data_configs_json_has_top_level_note_about_action_key_semantics(self):
+        note = _RAW.get("_note", "")
+        assert note, "data_configs.json must carry a top-level _note documenting the schema"
+        lowered = note.lower()
+        assert "motion_token" in lowered
+        assert "by-name" in lowered
+        assert "joint-angle" in lowered
+        assert "211" in note
+
+    def test_top_level_note_is_not_treated_as_a_config_entry(self):
+        assert "_note" not in DATA_CONFIG_MAP
+        assert "_note" not in _RAW_CONFIGS
+
+    def test_gr00t_data_config_docstring_warns_against_joint_angle_assumption(self):
+        doc = Gr00tDataConfig.__doc__ or ""
+        lowered = doc.lower()
+        assert "joint-angle" in lowered
+        assert "motion_token" in lowered

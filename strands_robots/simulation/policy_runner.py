@@ -258,6 +258,7 @@ class PolicyRunner:
         video: VideoConfig | None = None,
         on_frame: OnFrame | None = None,
         max_onframe_failures: int | None = None,
+        control_substeps: int | None = None,
     ) -> dict[str, Any]:
         """Run ``policy`` on ``robot_name`` for ``duration`` seconds.
 
@@ -359,6 +360,32 @@ class PolicyRunner:
             total_steps = int(duration * control_frequency)
             action_sleep = 1.0 / control_frequency
 
+            # Control-rate substepping: a position-servo robot needs the physics
+            # to advance for the FULL control period (1/control_frequency) after
+            # each action so the joints actually track the commanded target
+            # before the next action overwrites ``ctrl``. With the default
+            # 1 substep/action, the arm only integrates one physics dt (~2 ms)
+            # per action and barely moves — the policy looks like a no-op even
+            # though it is sending valid targets. Derive substeps from the
+            # backend's physics timestep; fall back to 1 when unknown.
+            if control_substeps is not None:
+                n_substeps = max(1, int(control_substeps))
+            else:
+                _dt = None
+                try:
+                    _dt = self.sim.physics_timestep()
+                except Exception:  # noqa: BLE001 - never fail the run on a probe
+                    _dt = None
+                if _dt and _dt > 0 and control_frequency > 0:
+                    n_substeps = max(1, round((1.0 / control_frequency) / _dt))
+                else:
+                    n_substeps = 1
+            logger.info(
+                "PolicyRunner: control_frequency=%.1f Hz, physics substeps/action=%d",
+                control_frequency,
+                n_substeps,
+            )
+
             onframe_failure_limit = (
                 max_onframe_failures if max_onframe_failures is not None else _MAX_CONSECUTIVE_ONFRAME_FAILURES
             )
@@ -373,7 +400,7 @@ class PolicyRunner:
                     if step_count >= total_steps:
                         break
 
-                    self.sim.send_action(action_dict, robot_name=robot_name)
+                    self.sim.send_action(action_dict, robot_name=robot_name, n_substeps=n_substeps)
 
                     if on_frame is not None:
                         try:
@@ -586,6 +613,7 @@ class PolicyRunner:
         spec: BenchmarkProtocol | None = None,
         seed: int | None = None,
         action_horizon: int = 8,
+        on_frame: OnFrame | None = None,
     ) -> dict[str, Any]:
         """Evaluate ``policy`` for ``n_episodes`` episodes.
 
@@ -616,6 +644,15 @@ class PolicyRunner:
             seed: Master RNG seed. Each episode derives a child RNG from it,
                 so evaluations are reproducible within a process. Only used
                 when ``spec`` is provided.
+            on_frame: Optional ``(step, observation, action) -> None`` hook
+                fired per applied control step on the eval thread, after
+                ``sim.send_action``. Currently only forwarded on the
+                ``spec=`` path (the legacy ``success_fn`` path doesn't
+                expose telemetry hooks). Use this for synchronous
+                recording when the eval runs on a thread distinct from
+                the script main (e.g. Strands ``Agent`` tool dispatch
+                under asyncio) — see #191 and
+                :meth:`~strands_robots.simulation.mujoco.simulation.Simulation.start_cameras_recording_synchronous`.
 
         Returns:
             Standard status dict. When ``spec`` is used, the JSON payload
@@ -644,6 +681,7 @@ class PolicyRunner:
                 n_episodes=n_episodes,
                 seed=seed,
                 action_horizon=action_horizon,
+                on_frame=on_frame,
             )
 
         try:
@@ -717,6 +755,7 @@ class PolicyRunner:
         n_episodes: int,
         seed: int | None,
         action_horizon: int = 8,
+        on_frame: OnFrame | None = None,
     ) -> dict[str, Any]:
         """Drive a :class:`BenchmarkProtocol` for ``n_episodes`` episodes.
 
@@ -729,6 +768,17 @@ class PolicyRunner:
         ``spec.supported_robots`` (non-empty), we return a structured error
         with the allowed list instead of silently running a mismatched
         evaluation.
+
+        ``on_frame`` (#191) fires per applied control step on the eval
+        thread, after ``sim.send_action`` and after the spec's per-step
+        bookkeeping (``on_step`` / success / failure checks). Use this
+        for synchronous recording or telemetry that needs to read sim
+        state on the eval thread to avoid the cross-thread ``mjData``
+        race the daemon-thread recorder hits under multi-threaded
+        eval (Strands ``Agent`` tool dispatch under asyncio). Failures
+        are logged WARNING; the rollout continues. The hook receives a
+        global step counter (across episodes), so callers that need
+        per-episode buckets should track episode boundaries themselves.
         """
         # Lazy import to avoid circular reference (benchmark module imports
         # `SimEngine` from base which imports this module under TYPE_CHECKING).
@@ -749,6 +799,36 @@ class PolicyRunner:
         spec_name = type(spec).__name__
         max_steps = spec.max_steps
         results: list[dict[str, Any]] = []
+
+        # #191 — global step counter passed to ``on_frame``. Crosses
+        # episode boundaries so consumers that don't track ep ↔ step
+        # mappings still get a monotonic index. Callers that need
+        # per-episode buckets can read ``info["steps"]`` from the
+        # returned per-episode results.
+        global_step = 0
+
+        # #187 — fall back to ``spec.instruction`` (default ``""``) when
+        # the user didn't pass an explicit instruction. Language-
+        # conditioned policies (GR00T, OpenVLA) need the task description
+        # or they produce off-task actions; LIBERO/Meta-World/etc. ship
+        # the per-task language with the benchmark, so the spec is the
+        # right source of truth. User-provided ``instruction`` still
+        # wins when non-empty, preserving back-compat.
+        spec_instruction = ""
+        try:
+            spec_instruction = spec.instruction or ""
+        except Exception as e:  # noqa: BLE001 - back-compat for specs without the property
+            logger.debug("spec.instruction lookup raised %s; defaulting to empty", e)
+        effective_instruction = instruction or spec_instruction
+        if not effective_instruction:
+            logger.warning(
+                "evaluate_benchmark: instruction is empty (user passed %r, spec.instruction=%r). "
+                "Language-conditioned policies (GR00T, OpenVLA, etc.) will receive an empty "
+                "string and may produce off-task actions. Pass instruction=... explicitly or "
+                "override BenchmarkProtocol.instruction on your spec.",
+                instruction,
+                spec_instruction,
+            )
 
         for ep in range(n_episodes):
             self.sim.reset()
@@ -771,6 +851,23 @@ class PolicyRunner:
             # 0.40-1.00 across runs; post-#179 the same eval is bit-stable
             # (same successes list every run).
             set_eval_seed(episode_seed)
+
+            # #187 — for SERVICE-mode policies (e.g. Gr00tPolicy over
+            # ZMQ), set_eval_seed only seeds the client process. The
+            # remote inference server has its own torch/CUDA RNG that
+            # drifts across calls. Forward the per-episode seed via
+            # policy.reset(seed=...) so server-side state can be
+            # re-initialised. Default Policy.reset is a no-op; concrete
+            # policies override (Gr00tPolicy forwards to the server's
+            # `reset` endpoint).
+            try:
+                policy.reset(seed=episode_seed)
+            except Exception as e:  # noqa: BLE001 - reset is best-effort
+                logger.warning(
+                    "policy.reset(seed=%d) raised %s; continuing without per-episode reset",
+                    episode_seed,
+                    e,
+                )
 
             try:
                 spec.on_episode_start(self.sim, episode_rng)
@@ -819,7 +916,7 @@ class PolicyRunner:
                         "status": "error",
                         "content": [{"text": f"augment_observation failed in {spec_name}: {e}"}],
                     }
-                coro_or_result = policy.get_actions(observation, instruction)
+                coro_or_result = policy.get_actions(observation, effective_instruction)
                 actions = _resolve_coroutine(coro_or_result)
 
                 # #168: consume up to ``action_horizon`` actions
@@ -845,7 +942,31 @@ class PolicyRunner:
                             break
                         action_applied = dict(action_in_chunk)
                         self.sim.send_action(action_applied, robot_name=robot_name)
+                        # #191 — synchronous on_frame hook fires on the
+                        # eval thread, after send_action + before
+                        # on_step's reward bookkeeping. Use this for
+                        # synchronous frame recording when the eval is
+                        # dispatched from a thread distinct from the
+                        # script main (e.g. Strands Agent worker thread
+                        # under asyncio); the daemon-thread recorder
+                        # races mjData mutations on the eval thread and
+                        # produces 2-3% frame-capture rates with greenish
+                        # GL clear-colour artifacts. See
+                        # ``Simulation.start_cameras_recording_synchronous``
+                        # for the recorder side of this contract.
+                        if on_frame is not None:
+                            try:
+                                on_frame(global_step, observation, action_applied)
+                            except Exception as e:  # noqa: BLE001 - hook is best-effort
+                                logger.warning(
+                                    "on_frame hook failed at global_step=%d (ep=%d, ep_step=%d): %s",
+                                    global_step,
+                                    ep,
+                                    steps,
+                                    e,
+                                )
                         steps += 1
+                        global_step += 1
                         try:
                             info = spec.on_step(self.sim, observation, action_applied)
                         except Exception as e:  # noqa: BLE001
@@ -874,6 +995,7 @@ class PolicyRunner:
                     # sim.step(n_steps=1); count it like an applied step
                     # so the outer loop terminates.
                     steps += 1
+                    global_step += 1
                     try:
                         info = spec.on_step(self.sim, observation, action_applied)
                     except Exception as e:  # noqa: BLE001

@@ -41,14 +41,6 @@ _BUILTIN_BACKENDS: dict[str, tuple[str, str]] = {
         "strands_robots.simulation.mujoco.simulation",
         "MuJoCoSimEngine",
     ),
-    # #168 — LIBERO-only backend that delegates physics +
-    # rendering to upstream ``libero.libero.envs.OffScreenRenderEnv``.
-    # Use this for GR00T-N1.7-LIBERO eval; use ``mujoco`` for general
-    # use. See the engine module docstring for the rationale.
-    "libero_offscreen_render": (
-        "strands_robots.simulation.libero_offscreen_render",
-        "LiberoOffScreenRenderEngine",
-    ),
     # Future:
     # "isaac": ("strands_robots.simulation.isaac.simulation", "IsaacSimulation"),
     # "newton": ("strands_robots.simulation.newton.simulation", "NewtonSimulation"),
@@ -58,8 +50,6 @@ _BUILTIN_ALIASES: dict[str, str] = {
     "mj": "mujoco",
     "mjc": "mujoco",
     "mjx": "mujoco",
-    "libero_offscreen": "libero_offscreen_render",
-    "libero_osr": "libero_offscreen_render",
     # "isaac_sim": "isaac",
     # "isaacsim": "isaac",
     # "nvidia": "isaac",

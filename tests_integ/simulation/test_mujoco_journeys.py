@@ -432,11 +432,14 @@ def test_j7_multicam_recording_concurrent_with_policy(sim, mock_policy, tmp_path
         assert Path(artifact["path"]).exists()
         assert Path(artifact["path"]).stat().st_size > 0
 
-    # Post-stop: status is idle, and double-stop is a clean error
+    # Post-stop: status is idle, and double-stop is an idempotent no-op.
+    # stop_cameras_recording is documented idempotent ("already stopped is a
+    # success, not an error"), so a second stop returns success with an
+    # informational "was not recording" message rather than erroring.
     status = sim.get_cameras_recording_status()
     assert "⚪" in _content_texts(status)
     double_stop = sim.stop_cameras_recording()
-    assert double_stop["status"] == "error"
+    assert double_stop["status"] == "success"
 
 
 # J8 · SINGLE-CAMERA RUN_POLICY VIDEO - the path that used to silently fail
@@ -559,7 +562,14 @@ def test_j10_empty_sim_methods_never_raise():
         # Most state-observing methods must error on an empty sim. Status queries
         # that have a meaningful "idle" response (camera recording, regular
         # recording) legitimately return success with an informational message.
-        STATUS_QUERIES_OK_ON_EMPTY = {"get_cameras_recording_status"}
+        # Idempotent stop/status queries legitimately return an informational
+        # success on an empty sim rather than erroring (e.g. "was not recording").
+        STATUS_QUERIES_OK_ON_EMPTY = {
+            "get_cameras_recording_status",
+            "stop_cameras_recording",
+            "stop_recording",
+            "get_recording_status",
+        }
         if (
             name.startswith(
                 (
@@ -581,8 +591,10 @@ def test_j10_empty_sim_methods_never_raise():
         ):
             assert result["status"] == "error", f"{name} on empty sim should error, got: {result}"
             txt = _content_texts(result)
-            # Every error message contains either error or the word "No"
-            assert "error" in txt or "No " in txt or "Not " in txt, f"{name}: {txt!r}"
+            # Every error message conveys failure: an explicit "error", a
+            # negation ("No "/"Not "), or a "not found" / "no ..." phrasing.
+            txt_l = txt.lower()
+            assert "error" in txt_l or "no " in txt_l or "not " in txt_l, f"{name}: {txt!r}"
 
     s.destroy()
 

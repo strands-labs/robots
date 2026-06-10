@@ -51,16 +51,55 @@
                 "pretrained_name_or_path",
                 "policy_type",
                 "device",
-                "actions_per_step"
+                "actions_per_step",
+                "norm_tag",
+                "image_keys",
+                "inference_action_mode",
+                "embodiment"
             ],
             "defaults": {},
             "aliases": [
                 "lerobot"
             ],
             "hf_orgs": [
-                "lerobot"
+                "lerobot",
+                "allenai"
             ],
             "is_hf_default": true
+        },
+        "cosmos3": {
+            "module": "strands_robots.policies.cosmos3",
+            "class": "Cosmos3Policy",
+            "description": "NVIDIA Cosmos 3 omnimodal VLA policy (DROID/UMI/AV/bridge) via Cosmos Framework",
+            "requires": [],
+            "config_keys": [
+                "embodiment",
+                "host",
+                "port",
+                "action_space",
+                "observation_mapping",
+                "action_mapping",
+                "robot",
+                "prompt",
+                "api_key"
+            ],
+            "defaults": {
+                "host": "localhost",
+                "port": 8000,
+                "embodiment": "droid"
+            },
+            "shorthands": [
+                "cosmos3",
+                "c3"
+            ],
+            "url_patterns": [
+                "^cosmos3://"
+            ],
+            "hf_orgs": [],
+            "model_id_overrides": [
+                "nvidia/cosmos3",
+                "nvidia/cosmos3-nano-policy"
+            ]
         }
     }
 }

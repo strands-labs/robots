@@ -136,7 +136,8 @@ def gr00t_inference(
 
         **Unitree G1 humanoid:**
           ``unitree_g1``, ``unitree_g1_full_body``, ``unitree_g1_locomanip``,
-          ``unitree_g1_real`` (N1.7 REAL_G1 embodiment - locomotion + bimanual manipulation)
+          ``unitree_g1_real`` (N1.7 REAL_G1 embodiment - locomotion + bimanual manipulation),
+          ``unitree_g1_sonic`` (SONIC whole-body controller - VLA action space is SONIC latents; requires a finetuned checkpoint, not the base nvidia/GR00T-N1.7-3B)
 
         **Franka Panda manipulators:**
           ``single_panda_gripper``, ``bimanual_panda_gripper``, ``bimanual_panda_hand``
