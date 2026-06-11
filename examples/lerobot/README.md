@@ -45,13 +45,13 @@ The dataset lands at `https://huggingface.co/datasets/<your_hf_username>/strands
 
 ### LLM
 
-Defaults to **Claude Opus 4.8 on Bedrock** (`us.anthropic.claude-opus-4-8`). The AWS region resolves from your environment (`AWS_REGION` / `AWS_DEFAULT_REGION`, then `~/.aws/config`). Opus 4.8 orchestrates the LeRobot tool surface in 8–13 tool calls per recording phase; lower-tier models work but issue more defensive state-querying calls.
+Defaults to **Claude Opus 4.8 on Bedrock** (`global.anthropic.claude-opus-4-8`). The AWS region resolves from your environment (`AWS_REGION` / `AWS_DEFAULT_REGION`, then `~/.aws/config`). Opus 4.8 orchestrates the LeRobot tool surface in 8–13 tool calls per recording phase; lower-tier models work but issue more defensive state-querying calls.
 
 Override per-run:
 
 ```bash
 # Different model
-python hub_to_hardware.py --model-id us.anthropic.claude-sonnet-4-6
+python hub_to_hardware.py --model-id global.anthropic.claude-sonnet-4-6
 
 # Different region
 python hub_to_hardware.py --aws-region us-east-1

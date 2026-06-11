@@ -29,7 +29,7 @@ Push the recorded dataset to the Hub (requires HF_TOKEN with write scope):
 
 Override the LLM (verify exact Bedrock ID in your AWS console):
 
-    python hub_to_hardware.py --model-id us.anthropic.claude-sonnet-4-6
+    python hub_to_hardware.py --model-id global.anthropic.claude-sonnet-4-6
 
 The AWS region resolves from your AWS environment (AWS_REGION /
 AWS_DEFAULT_REGION env vars, ~/.aws/config, or instance metadata). To
@@ -94,7 +94,7 @@ diag_logger = logging.getLogger("hub_to_hardware.diag")
 # profile IDs are prefixed by ``us.``, ``eu.``, etc. — pick the one for
 # your region. Override at runtime via --model-id or STRANDS_BEDROCK_MODEL_ID
 # without editing this file.
-DEFAULT_MODEL_ID = "us.anthropic.claude-opus-4-8"  # ← verify in AWS console
+DEFAULT_MODEL_ID = "global.anthropic.claude-opus-4-8"  # ← verify in AWS console
 # Region is intentionally not defaulted in code. It resolves from the
 # --aws-region CLI flag, then AWS_REGION / AWS_DEFAULT_REGION env vars,
 # then boto3's standard chain (~/.aws/config, instance metadata).
