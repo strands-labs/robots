@@ -7,8 +7,18 @@ structured RPCs and events via Device Connect's DeviceDriver interface.
 import asyncio
 import logging
 
-from device_connect_edge.drivers import DeviceDriver, emit, on, periodic, rpc
+from device_connect_edge.drivers import (
+    DeviceDriver,
+    emit,
+    get_rpc_source_device,
+    on,
+    periodic,
+    rpc,
+)
 from device_connect_edge.types import DeviceIdentity, DeviceStatus
+
+from strands_robots.device_connect._authz import authz_error, is_authorized_caller
+from strands_robots.mesh.security import is_safe_policy_provider
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +80,17 @@ class RobotDeviceDriver(DeviceDriver):
             duration: Maximum task duration in seconds
             policy_port: Policy server port (0 for default)
         """
+        # Security hardening: authorize the calling device before mutating
+        # physical robot state.
+        caller = get_rpc_source_device()
+        if not is_authorized_caller(caller, scope="rpc"):
+            return authz_error(caller, "execute")
+
+        # Security hardening: restrict policy_provider to the vetted allowlist
+        # so a caller cannot steer inference to an arbitrary network endpoint.
+        if not is_safe_policy_provider(policy_provider):
+            return {"status": "error", "reason": f"policy_provider not allowed: {policy_provider!r}"}
+
         return self._robot.start_task(
             instruction,
             policy_provider,
@@ -81,6 +102,9 @@ class RobotDeviceDriver(DeviceDriver):
     @rpc()
     async def stop(self) -> dict:
         """Stop the currently running task."""
+        caller = get_rpc_source_device()
+        if not is_authorized_caller(caller, scope="rpc"):
+            return authz_error(caller, "stop")
         return self._robot.stop_task()
 
     @rpc()
@@ -171,7 +195,15 @@ class RobotDeviceDriver(DeviceDriver):
 
     @on(event_name="emergencyStop")
     async def onEmergencyStop(self, device_id: str, event_name: str, payload: dict):
-        """React to emergencyStop from ANY device on the network."""
+        """React to emergencyStop from an authorized safety controller.
+
+        Security hardening: only act on emergency-stop events whose source is
+        in the emergency-stop allowlist, so a spoofed event from an arbitrary
+        device cannot interrupt operations.
+        """
+        if not is_authorized_caller(device_id, scope="estop"):
+            logger.warning("Ignoring emergencyStop from unauthorized source %s", device_id)
+            return
         logger.warning("Emergency stop received from %s — stopping task", device_id)
         self._robot.stop_task()
 

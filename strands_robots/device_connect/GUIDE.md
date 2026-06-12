@@ -13,7 +13,13 @@ r = Robot("so100")
 r.run()  # starts listening for commands. Ctrl+C to stop.
 ```
 
-`Robot()` creates the robot. `.run()` starts Device Connect with D2D defaults (Zenoh multicast scouting, no broker, no env vars) and blocks — the robot becomes discoverable on the LAN and listens for commands. Without `.run()`, the script exits and the robot is removed from the network.
+`Robot()` creates the robot. `.run()` starts Device Connect with D2D defaults (Zenoh multicast scouting, no broker) and blocks — the robot becomes discoverable on the LAN and listens for commands. Without `.run()`, the script exits and the robot is removed from the network.
+
+> **Secure by default:** Device Connect no longer enables unencrypted/unauthenticated transport implicitly. For a local, trusted-network D2D trial without a broker, explicitly opt in to insecure transport:
+> ```bash
+> export DEVICE_CONNECT_ALLOW_INSECURE=true   # ONLY on a trusted, isolated LAN
+> ```
+> A prominent warning is logged whenever insecure mode is active. For anything beyond a local trial, run the brokered/registry setup with mTLS (see *Full Infrastructure* below).
 
 You can optionally pass `peer_id="so100-lab-1"` for a stable address; otherwise one is auto-generated (e.g. `so100-a3f1b2`).
 
@@ -67,7 +73,12 @@ graph TD
 
 ### E2E Demo
 
-No Docker needed. No env vars. Devices discover each other directly on the LAN via Zenoh multicast scouting. `Robot()` and `robot_mesh()` auto-configure D2D mode when no broker URL is set.
+No Docker needed. Devices discover each other directly on the LAN via Zenoh multicast scouting. `Robot()` and `robot_mesh()` auto-configure D2D mode when no broker URL is set.
+
+> **Secure by default:** for this local D2D trial, opt into insecure transport on every terminal first (trusted/isolated LAN only):
+> ```bash
+> export DEVICE_CONNECT_ALLOW_INSECURE=true
+> ```
 
 #### Setup
 

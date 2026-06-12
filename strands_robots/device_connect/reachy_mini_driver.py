@@ -10,6 +10,7 @@ REST API calls go through reachy_transport.api() for daemon/move operations.
 import asyncio
 import logging
 import math
+import re
 from typing import Optional
 
 from device_connect_edge.drivers import DeviceDriver, emit, on, rpc
@@ -24,6 +25,11 @@ from strands_robots.device_connect.reachy_transport import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Security hardening: recorded-move names are interpolated into a REST URL
+# path, so restrict them to a safe charset to prevent path traversal and
+# query/parameter injection into the daemon API.
+_MOVE_NAME_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 
 
 class ReachyMiniDriver(DeviceDriver):
@@ -207,6 +213,8 @@ class ReachyMiniDriver(DeviceDriver):
             move_name: Name of the move to play
             library: Move library (emotions or dance)
         """
+        if not _MOVE_NAME_RE.fullmatch(move_name or ""):
+            return {"status": "error", "reason": f"invalid move_name: {move_name!r}"}
         ds = f"pollen-robotics/reachy-mini-{'emotions' if library == 'emotions' else 'dances'}-library"
         result = await asyncio.to_thread(
             api, self._host, self._api_port,

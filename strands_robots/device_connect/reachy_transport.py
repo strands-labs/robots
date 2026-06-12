@@ -8,6 +8,7 @@ import asyncio
 import json
 import logging
 import math
+import os
 import socket
 from abc import ABC, abstractmethod
 from typing import Callable, Optional
@@ -23,6 +24,34 @@ def resolve_host(host: str) -> str:
         return host
 
 
+def _daemon_auth_token() -> Optional[str]:
+    """Return the Reachy daemon auth token from the environment, if configured.
+
+    Security hardening: the daemon WebSocket/REST interfaces accept commands
+    that directly actuate the robot. When ``REACHY_DAEMON_TOKEN`` is set we
+    present it as a bearer credential so the daemon can authenticate the
+    caller. When it is absent we emit a one-time warning so operators are
+    aware the link is unauthenticated (and should be confined to a trusted
+    network or fronted by WSS/HTTPS with mutual TLS).
+    """
+    return os.environ.get("REACHY_DAEMON_TOKEN") or None
+
+
+_warned_no_auth = False
+
+
+def _warn_unauthenticated_once(kind: str) -> None:
+    global _warned_no_auth
+    if not _warned_no_auth and not _daemon_auth_token():
+        _warned_no_auth = True
+        logger.warning(
+            "Reachy daemon %s is unauthenticated (no REACHY_DAEMON_TOKEN set). "
+            "Anyone on the same network segment can issue robot commands. "
+            "Set REACHY_DAEMON_TOKEN and prefer WSS/HTTPS with mutual TLS.",
+            kind,
+        )
+
+
 # ── REST API ─────────────────────────────────────────────────────
 
 def api(host: str, port: int, path: str, method: str = "GET", data: Optional[dict] = None) -> dict:
@@ -32,6 +61,11 @@ def api(host: str, port: int, path: str, method: str = "GET", data: Optional[dic
     url = f"http://{host}:{port}{path}"
     req = urllib.request.Request(url, method=method)
     req.add_header("Content-Type", "application/json")
+    _token = _daemon_auth_token()
+    if _token:
+        req.add_header("Authorization", f"Bearer {_token}")
+    else:
+        _warn_unauthenticated_once("REST API")
     body = json.dumps(data).encode() if data else None
     try:
         with urllib.request.urlopen(req, body, timeout=10) as resp:
@@ -133,7 +167,25 @@ class WebSocketLink(HardwareLink):
     async def start(self, on_joints: Callable, on_imu: Callable) -> None:
         import websockets
 
-        self._ws = await websockets.connect(f"ws://{self._host}:{self._port}/ws/sdk")
+        # Security hardening: authenticate to the daemon when a token is
+        # configured; otherwise warn that the link is unauthenticated.
+        _token = _daemon_auth_token()
+        _extra_headers = {"Authorization": f"Bearer {_token}"} if _token else None
+        if not _token:
+            _warn_unauthenticated_once("WebSocket")
+        _connect_kwargs = {}
+        if _extra_headers:
+            # websockets >=12 uses additional_headers; older uses extra_headers.
+            try:
+                import inspect as _inspect
+                _sig = _inspect.signature(websockets.connect)
+                _hdr_kw = "additional_headers" if "additional_headers" in _sig.parameters else "extra_headers"
+                _connect_kwargs[_hdr_kw] = _extra_headers
+            except (ValueError, TypeError):
+                _connect_kwargs["extra_headers"] = _extra_headers
+        self._ws = await websockets.connect(
+            f"ws://{self._host}:{self._port}/ws/sdk", **_connect_kwargs
+        )
         self._read_task = asyncio.create_task(self._read_loop(on_joints, on_imu))
 
     async def _read_loop(self, on_joints: Callable, on_imu: Callable) -> None:

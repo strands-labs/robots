@@ -18,6 +18,8 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
         with:
           ref: ${{ inputs.ref }}
+          # Need history so we can diff the changed paths against the base.
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Set up Python
@@ -30,6 +32,46 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libosmesa6-dev ffmpeg
+
+      # The Device Connect integration (strands_robots/device_connect) can
+      # depend on changes in the device-connect-edge / agent-tools packages
+      # that are not yet on PyPI. When this PR touches the integration, install
+      # those packages from source (DEVICE_CONNECT_SOURCE_REF) so CI exercises
+      # the matching version instead of the published one.
+      - name: Detect Device Connect integration changes
+        id: dc_changed
+        run: |
+          BASE="origin/${{ github.base_ref || 'main' }}"
+          git fetch origin "${{ github.base_ref || 'main' }}" --depth=1 || true
+          if git diff --name-only "$BASE"...HEAD 2>/dev/null | grep -q '^strands_robots/device_connect/'; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "Device Connect integration changed -> will install device-connect from source"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "No Device Connect integration changes -> using published device-connect-edge"
+          fi
+
+      - name: Pin device-connect to source (integration changed)
+        if: steps.dc_changed.outputs.changed == 'true'
+        env:
+          # Source of truth for the device-connect packages while the
+          # corresponding device-connect PR is unreleased. Update the ref (or
+          # repo) here to point at the branch/tag that carries the matching
+          # changes; revert to the published wheel once it ships to PyPI.
+          DEVICE_CONNECT_REPO: ${{ vars.DEVICE_CONNECT_REPO || 'arm/device-connect' }}
+          DEVICE_CONNECT_SOURCE_REF: ${{ vars.DEVICE_CONNECT_SOURCE_REF || 'main' }}
+        run: |
+          # The hatch test env is an ISOLATED uv venv, so an outer `pip install`
+          # would not reach it. Instead we write a uv override file: uv MERGES
+          # UV_OVERRIDE entries with the pyproject [tool.uv] override-dependencies
+          # (torch pins), so this redirects ONLY the device-connect packages to
+          # source without disturbing anything else.
+          cat > "${GITHUB_WORKSPACE}/dc-source-override.txt" <<EOF
+          device-connect-edge @ git+https://github.com/${DEVICE_CONNECT_REPO}.git@${DEVICE_CONNECT_SOURCE_REF}#subdirectory=packages/device-connect-edge
+          device-connect-agent-tools @ git+https://github.com/${DEVICE_CONNECT_REPO}.git@${DEVICE_CONNECT_SOURCE_REF}#subdirectory=packages/device-connect-agent-tools
+          EOF
+          echo "UV_OVERRIDE=${GITHUB_WORKSPACE}/dc-source-override.txt" >> "$GITHUB_ENV"
+          echo "Pinned device-connect packages to ${DEVICE_CONNECT_REPO}@${DEVICE_CONNECT_SOURCE_REF}"
 
       - name: Install dependencies
         env:

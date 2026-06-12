@@ -66,7 +66,7 @@ _RATE_LOCK = threading.Lock()
 # parameter the interrupt response is delivered by the framework
 # out-of-band of the LLM's tool-argument flow, so an injected prompt
 # cannot smuggle approval.
-_INTERRUPT_REQUIRED: frozenset[str] = frozenset({"emergency_stop", "broadcast"})
+_INTERRUPT_REQUIRED: frozenset[str] = frozenset({"emergency_stop", "broadcast", "rpc"})
 
 # Affirmative responses accepted from the interrupt prompt. Anything else
 # (empty string, "n", "no", "cancel", whitespace) is treated as decline.
@@ -275,7 +275,16 @@ def _dc_ensure_connected() -> None:
     if _dc_state["connected"]:
         return
     os.environ.setdefault("MESSAGING_BACKEND", "zenoh")
-    os.environ.setdefault("DEVICE_CONNECT_ALLOW_INSECURE", "true")
+    # Security hardening: do NOT force insecure transport here. Previously this
+    # set DEVICE_CONNECT_ALLOW_INSECURE=true process-wide, silently downgrading
+    # every connection in the process. Insecure mode is now strictly opt-in by
+    # the operator. If they have opted in, surface a warning so it is visible.
+    if os.environ.get("DEVICE_CONNECT_ALLOW_INSECURE", "").lower() in ("true", "1", "yes"):
+        logger.warning(
+            "DEVICE_CONNECT_ALLOW_INSECURE is enabled — agent-side Device "
+            "Connect traffic is unencrypted and unauthenticated. Use only on "
+            "a trusted, isolated network."
+        )
     from device_connect_agent_tools.connection import connect, get_connection
 
     try:
@@ -295,6 +304,7 @@ def _try_device_connect(
     duration: float,
     timeout: float,
     function: str = "",
+    validated_command: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     """Dispatch *action* through Device Connect, or return None to fall back.
 
@@ -330,6 +340,7 @@ def _try_device_connect(
         duration,
         timeout,
         function,
+        validated_command,
     )
 
 
@@ -343,6 +354,7 @@ def _device_connect_dispatch(
     duration: float,
     timeout: float,
     function: str = "",
+    validated_command: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     """Render a robot_mesh action through Device Connect (dev-compatible API).
 
@@ -462,14 +474,15 @@ def _device_connect_dispatch(
             return _DCResult(_ok(f"E-STOP: {stopped}/{len(devices)} devices stopped"))
 
         if action == "broadcast":
-            # Command was already parsed + validated by robot_mesh() before the
-            # HITL gate fired, so re-parsing here is safe.
-            func = "getStatus"
-            params: dict[str, Any] = {}
-            if command:
-                cmd = json.loads(command)
-                func = cmd.pop("action", cmd.pop("function", "getStatus"))
-                params = cmd
+            # Security hardening: dispatch the *validated* command that the
+            # operator approved at the HITL gate — never re-parse the raw
+            # caller-supplied string here (that would allow a payload whose
+            # validated form differs from what actually executes).
+            if validated_command is None:
+                return _DCResult(_err("broadcast reached Device Connect dispatch without a validated command"))
+            cmd = dict(validated_command)
+            func = cmd.pop("action", cmd.pop("function", "getStatus"))
+            params = cmd
             results = conn.broadcast(func, params, timeout=timeout)
             _audit_tool_action(action, "*", True, f"action={func} responses={len(results)}")
             text = f"[broadcast] {len(results)} responses\n"
@@ -605,6 +618,9 @@ def robot_mesh(
                 reason={
                     "action": action,
                     "target": target if target else "*ALL_PEERS*",
+                    # Surface the device-native function name for rpc so the
+                    # operator approves the specific function being invoked.
+                    "function": function if action == "rpc" else "",
                     # R8-7: surface the validated command so the operator
                     # approves the post-validation form, not the raw LLM
                     # string. emergency_stop has no command body so we
@@ -668,6 +684,7 @@ def robot_mesh(
         duration,
         timeout,
         function,
+        validated_broadcast_cmd,
     )
     if _dc_result is not None:
         return _dc_result

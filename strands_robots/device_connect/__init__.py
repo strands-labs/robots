@@ -84,14 +84,26 @@ async def init_device_connect(
     if messaging_backend is None:
         messaging_backend = os.environ.get("MESSAGING_BACKEND", "zenoh")
 
-    # Resolve allow_insecure: env var > explicit arg > D2D default
+    # Resolve allow_insecure: explicit arg > env var > secure default.
+    # Security hardening: insecure (unencrypted, unauthenticated) transport is
+    # NO LONGER the default. It must be explicitly opted into — via the
+    # ``allow_insecure=True`` argument or ``DEVICE_CONNECT_ALLOW_INSECURE`` env
+    # var — and we log a prominent warning whenever it is active so an insecure
+    # deployment is never silent.
     if allow_insecure is None:
         env_val = os.environ.get("DEVICE_CONNECT_ALLOW_INSECURE")
         if env_val is not None:
             allow_insecure = env_val.lower() in ("true", "1", "yes")
-        elif urls is None:
-            # D2D mode — no broker, default insecure for dev convenience
-            allow_insecure = True
+        else:
+            allow_insecure = False
+
+    if allow_insecure:
+        logger.warning(
+            "Device Connect is running in INSECURE mode (unencrypted, "
+            "unauthenticated transport). Robot commands and state are exposed "
+            "to the local network. Only use this on a trusted, isolated "
+            "network; configure a broker / secure transport for production."
+        )
 
     runtime = DeviceRuntime(
         driver=driver,

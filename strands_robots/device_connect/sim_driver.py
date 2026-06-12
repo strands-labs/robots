@@ -6,8 +6,18 @@ state as structured RPCs and events via Device Connect's DeviceDriver interface.
 
 import logging
 
-from device_connect_edge.drivers import DeviceDriver, emit, on, periodic, rpc
+from device_connect_edge.drivers import (
+    DeviceDriver,
+    emit,
+    get_rpc_source_device,
+    on,
+    periodic,
+    rpc,
+)
 from device_connect_edge.types import DeviceIdentity, DeviceStatus
+
+from strands_robots.device_connect._authz import authz_error, is_authorized_caller
+from strands_robots.mesh.security import is_safe_policy_provider
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +80,12 @@ class SimulationDeviceDriver(DeviceDriver):
             duration: Maximum task duration in seconds
             robot_name: Target robot name (empty = first robot)
         """
+        # Security hardening: authorize the calling device before mutating
+        # simulation state.
+        caller = get_rpc_source_device()
+        if not is_authorized_caller(caller, scope="rpc"):
+            return authz_error(caller, "execute")
+
         # Determine robot name
         name = robot_name
         if not name:
@@ -78,6 +94,11 @@ class SimulationDeviceDriver(DeviceDriver):
                 name = next(iter(world.robots))
             else:
                 return {"status": "error", "reason": "no robots in simulation"}
+
+        # Security hardening: restrict policy_provider to the vetted allowlist
+        # so a caller cannot steer inference to an arbitrary network endpoint.
+        if not is_safe_policy_provider(policy_provider):
+            return {"status": "error", "reason": f"policy_provider not allowed: {policy_provider!r}"}
 
         print(f"▶ Executing policy '{policy_provider}' on {name}: {instruction}", flush=True)
         return self._sim.start_policy(
@@ -90,6 +111,9 @@ class SimulationDeviceDriver(DeviceDriver):
     @rpc()
     async def stop(self) -> dict:
         """Stop all running policies."""
+        caller = get_rpc_source_device()
+        if not is_authorized_caller(caller, scope="rpc"):
+            return authz_error(caller, "stop")
         print("⏹ Stop command received — stopping all policies", flush=True)
         world = getattr(self._sim, "_world", None)
         if world:
@@ -116,11 +140,17 @@ class SimulationDeviceDriver(DeviceDriver):
         Args:
             n_steps: Number of physics steps to take
         """
+        caller = get_rpc_source_device()
+        if not is_authorized_caller(caller, scope="rpc"):
+            return authz_error(caller, "step")
         return self._sim.step(n_steps)
 
     @rpc()
     async def reset(self) -> dict:
         """Reset simulation to initial state."""
+        caller = get_rpc_source_device()
+        if not is_authorized_caller(caller, scope="rpc"):
+            return authz_error(caller, "reset")
         return self._sim.reset()
 
     # ── Events ────────────────────────────────────────────────
@@ -158,7 +188,15 @@ class SimulationDeviceDriver(DeviceDriver):
 
     @on(event_name="emergencyStop")
     async def onEmergencyStop(self, device_id: str, event_name: str, payload: dict):
-        """React to emergencyStop from ANY device on the network."""
+        """React to emergencyStop from an authorized safety controller.
+
+        Security hardening: only act on emergency-stop events whose source is
+        in the emergency-stop allowlist, so a spoofed event from an arbitrary
+        device cannot interrupt operations.
+        """
+        if not is_authorized_caller(device_id, scope="estop"):
+            logger.warning("Ignoring emergencyStop from unauthorized source %s", device_id)
+            return
         print(f"🛑 Emergency stop received from {device_id} — stopping all policies", flush=True)
         world = getattr(self._sim, "_world", None)
         if world:
