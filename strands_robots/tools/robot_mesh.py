@@ -37,6 +37,7 @@ import functools
 import json
 import logging
 import os
+import re
 import threading
 import time
 from typing import Any
@@ -45,6 +46,16 @@ from strands import tool
 from strands.types.tools import ToolContext
 
 from strands_robots.mesh import security as _security
+
+# Literal peer-id pattern for watch(target=...). Peer ids are an enumerable
+# surface (per AGENTS.md > Review Learnings (PR #92) > "Allowlist enumerable
+# values"); rejecting Zenoh wildcards (`*`, `**`) and path separators here
+# prevents the agent from defeating per-peer scoping by interpolating a
+# wildcard segment into ``strands/<target>/stream`` even when an operator has
+# extended ``STRANDS_MESH_SUBSCRIBE_ALLOW`` with a wildcard pattern such as
+# ``strands/*/stream``. Allowed: alphanumerics, ``.``, ``_``, ``-``; first
+# char must be alphanumeric; max 64 chars (Zenoh peer-id practical limit).
+_PEER_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
 logger = logging.getLogger(__name__)
 
@@ -848,6 +859,25 @@ def robot_mesh(
         if not target:
             _audit_tool_action(action, target, False, "missing target")
             return _err("watch requires target (peer id)")
+        # Wildcard-bypass defence: ``target`` is interpolated into
+        # ``strands/{target}/stream`` and matched against the subscribe
+        # allowlist. If an operator extended the allowlist with a wildcard
+        # pattern (e.g. ``strands/*/stream`` per the README example), then
+        # ``target="*"`` / ``target="**"`` would pass the allowlist match by
+        # equality / trailing-`/**` and reach ``mesh.on_stream("*")`` —
+        # subscribing to every peer's stream (the cross-peer telemetry-leak
+        # this surface exists to close). Require a literal peer id BEFORE
+        # interpolating, mirroring the ``_REPO_TAG_RE`` shape-validation
+        # pattern in ``gr00t_inference.py`` for the same class of attack.
+        if not _PEER_ID_RE.match(target):
+            _audit_tool_action(action, target, False, "watch target not a literal peer id")
+            return _err(
+                f"watch target '{target}' is not a valid peer id "
+                f"(allowed: letters, digits, '._-'; max 64 chars; no wildcards "
+                "or path separators). Watch requires a literal peer id; "
+                "wildcards would subscribe to every peer's stream and defeat "
+                "per-peer scoping."
+            )
         # Telemetry-leak defence in depth: watch(target="peer-b") subscribes
         # to strands/<peer-b>/stream which carries observations + policy
         # actions -- the same cross-peer telemetry surface the subscribe
