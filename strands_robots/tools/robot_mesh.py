@@ -205,14 +205,19 @@ def _ke_matches(pattern: str, target: str) -> bool:
     """Conservative Zenoh-style key-expr match for the subscribe allowlist.
 
     We do NOT import a general glob engine: Zenoh's ``**`` (any number of
-    segments) and ``*`` (one segment) semantics differ from fnmatch, and a
-    mismatch here would either over- or under-block. We implement only the
-    shapes the allowlist actually uses:
+    segments, including zero) and ``*`` (one segment) semantics differ from
+    fnmatch, and a mismatch here would either over- or under-block. We
+    implement only the shapes the allowlist actually uses:
 
     * exact equality (``"**/presence" == "**/presence"``),
+    * a leading ``**/`` wildcard on the pattern, which matches zero or more
+      leading segments (``"**/presence"`` matches ``"presence"``,
+      ``"robot1/presence"``, and ``"a/b/c/presence"``),
     * a trailing ``/**`` wildcard on the pattern, which matches the prefix
-      plus any deeper segments (``"**/safety/**"`` matches
-      ``"**/safety/event"`` and ``"**/safety/estop"``), and
+      plus any deeper segments (``"a/safety/**"`` matches ``"a/safety"``,
+      ``"a/safety/event"``, ``"a/safety/estop"``),
+    * BOTH leading and trailing ``**`` (``"**/safety/**"`` matches
+      ``"a/safety"``, ``"a/b/safety/event"``, ``"safety/estop"``),
     * segment-level ``*`` wildcard (one segment): ``"strands/*/stream"``
       matches ``"strands/peer-b/stream"`` but not ``"strands/a/b/stream"``.
 
@@ -224,10 +229,37 @@ def _ke_matches(pattern: str, target: str) -> bool:
         return False
     if pattern == target:
         return True
-    if pattern.endswith("/**"):
+
+    leading_dstar = pattern.startswith("**/")
+    trailing_dstar = pattern.endswith("/**")
+
+    # Both ends double-star: pattern is "**/MIDDLE/**" or just "**/X/**"
+    if leading_dstar and trailing_dstar:
+        middle = pattern[3:-3]  # strip "**/" and "/**"
+        if not middle:
+            # pattern was "**/**" — match anything non-empty
+            return bool(target)
+        # match if target == middle, target ends with /middle, target starts
+        # with middle/, or target contains /middle/
+        return (
+            target == middle
+            or target.startswith(middle + "/")
+            or target.endswith("/" + middle)
+            or ("/" + middle + "/") in target
+        )
+
+    if leading_dstar:
+        suffix = pattern[3:]  # strip leading "**/"
+        # match suffix exactly (zero leading segments) OR any path ending
+        # in /suffix (one or more leading segments). Suffix may itself
+        # contain segment-level wildcards — keep it simple: literal compare.
+        return target == suffix or target.endswith("/" + suffix)
+
+    if trailing_dstar:
         prefix = pattern[:-3]  # strip trailing "/**"
         # Allow the prefix itself or anything one-or-more segments deeper.
         return target == prefix or target.startswith(prefix + "/")
+
     # Segment-level single-star: split both by "/" and match segment-wise.
     # A ``*`` segment matches exactly one non-empty segment in the target.
     if "*" in pattern:

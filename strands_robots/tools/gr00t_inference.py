@@ -100,13 +100,25 @@ def _image_allowlist() -> tuple[str, ...]:
     return _DEFAULT_IMAGE_ALLOW + extras
 
 
+# Image-name charset gate: docker image refs use [A-Za-z0-9._:/@-] only.
+# Anything outside that (whitespace, ``;$()`` `\`` etc.) is rejected before
+# the value reaches argv, defence in depth even though the container is
+# started with subprocess in argv-mode (no shell).
+_IMAGE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/@-]*$")
+
+
 def _is_allowed_image(image_name: str) -> bool:
     """True iff *image_name* matches an allowlist pattern.
 
     A pattern ending in ``*`` matches any image whose name starts with the
-    pattern prefix (tag wildcard). Other patterns match literally.
+    pattern prefix (tag wildcard). Other patterns match literally. The image
+    name itself must also pass a charset gate so shell metacharacters in the
+    tag (``gr00t:;rm``, ``gr00t:$(x)``) cannot ride through even if they
+    matched a wildcard prefix.
     """
     if not isinstance(image_name, str) or not image_name:
+        return False
+    if not _IMAGE_NAME_RE.match(image_name):
         return False
     for pattern in _image_allowlist():
         if pattern.endswith("*"):
@@ -204,11 +216,18 @@ def _resolve_build_source() -> tuple[str, str] | dict[str, Any]:
 
 
 def _normalize_host_path(host_path: str) -> str:
-    """Normalize a bind-mount host path for prefix comparison."""
-    # Expand ~ and collapse .. / . without touching the filesystem; the goal
-    # is to compare the INTENDED mount target against the blocklist, not to
-    # resolve symlinks (which could differ between check and docker run).
+    """Normalize a bind-mount host path for prefix comparison.
+
+    POSIX trap: ``os.path.normpath('//etc')`` returns ``'//etc'`` (preserves
+    a leading double slash, per POSIX § 4.13). The Linux kernel collapses
+    the leading ``//`` to ``/`` at path-lookup, so ``docker -v //etc:/x``
+    really mounts ``/etc``. We collapse runs of leading slashes ourselves
+    BEFORE normpath so the blocklist comparison matches reality.
+    """
     expanded = os.path.expanduser(host_path)
+    # Collapse any run of leading slashes to a single '/'
+    if expanded.startswith("/"):
+        expanded = "/" + expanded.lstrip("/")
     return os.path.normpath(expanded)
 
 
