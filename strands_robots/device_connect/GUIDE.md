@@ -255,7 +255,10 @@ Set environment variables (all terminals):
 ```bash
 export MESSAGING_BACKEND=zenoh
 export ZENOH_CONNECT=tcp/localhost:7447
-export DEVICE_CONNECT_ALLOW_INSECURE=true
+# NOTE: do NOT set DEVICE_CONNECT_ALLOW_INSECURE here. The whole point of the
+# brokered setup is authenticated, encrypted transport (mTLS). Enabling
+# insecure mode would disable that and contradict the security model below.
+# Insecure mode is only for the local, broker-less D2D trial.
 ```
 
 All the options above (A–B) work identically with full infrastructure — the only difference is that devices register in etcd and discovery goes through the registry service instead of multicast scouting.
@@ -265,6 +268,23 @@ All the options above (A–B) work identically with full infrastructure — the 
 > - **Distributed state & locks** — etcd-backed key-value store with atomic distributed locks for coordinating shared resources (e.g., preventing two agents from using the same robotic arm simultaneously).
 > - **Cross-network routing** — the Zenoh router (or NATS broker) enables communication across subnets and sites, not just the local LAN.
 > - **Authentication & authorization** — mTLS ensures only devices with certificates signed by the trusted CA can exchange data. Full authorization (per-device permissions, topic-level ACLs, certificate revocation) requires the router/registry infrastructure.
+
+> **Per-caller RPC allowlist (`DEVICE_CONNECT_RPC_ALLOW` / `DEVICE_CONNECT_ESTOP_ALLOW`).**
+> Devices can restrict which callers may invoke state-mutating RPCs (`execute` /
+> `stop` / `step` / `reset`) and `emergencyStop`, matched against the RPC's
+> authenticated `source_device` (trailing-`*` globs allowed, e.g. `safety-*`).
+> Two things to know:
+> - **Caller identity must be supplied.** A device-to-device caller carries its
+>   id automatically; an **agent** driving the robot via `robot_mesh` /
+>   `device-connect-agent-tools` is anonymous by default. Set
+>   `STRANDS_ROBOT_MESH_AGENT_ID=<id>` on the agent and add `<id>` to the
+>   device's allowlist — otherwise, with an allowlist set, the device
+>   (correctly) **denies the anonymous agent** (fail-closed).
+> - **It is only a hard boundary under authenticated transport.** Over insecure
+>   D2D (`DEVICE_CONNECT_ALLOW_INSECURE=true`) the `source_device` is
+>   self-asserted, so the allowlist is *advisory* (a one-time warning is logged).
+>   For a real authorization boundary, run the brokered setup with mTLS so the
+>   caller id is bound to the sender's certificate.
 
 #### Running the Tests
 

@@ -32,10 +32,33 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "init_device_connect",
     "init_device_connect_sync",
+    "resolve_allow_insecure",
     "RobotDeviceDriver",
     "SimulationDeviceDriver",
     "ReachyMiniDriver",
 ]
+
+_INSECURE_TRUE = ("true", "1", "yes")
+
+
+def resolve_allow_insecure(
+    explicit: Optional[bool] = None,
+    env_value: Optional[str] = None,
+) -> bool:
+    """Resolve the effective ``allow_insecure`` setting (secure by default).
+
+    Precedence: explicit arg > ``DEVICE_CONNECT_ALLOW_INSECURE`` env var >
+    secure default (``False``). Insecure transport is never implicit — it
+    must be opted into via the argument or the env var.
+
+    Extracted as a pure function so the secure-by-default posture is unit
+    testable without standing up a DeviceRuntime.
+    """
+    if explicit is not None:
+        return explicit
+    if env_value is not None:
+        return env_value.lower() in _INSECURE_TRUE
+    return False
 
 
 async def init_device_connect(
@@ -64,9 +87,11 @@ async def init_device_connect(
         messaging_backend: Messaging backend — "zenoh" or "nats".
             None = auto-detect from MESSAGING_BACKEND env var (default "zenoh").
         tenant: Device Connect tenant namespace.
-        allow_insecure: Allow insecure connections.  None = auto-detect:
-            respects DEVICE_CONNECT_ALLOW_INSECURE env var if set,
-            otherwise defaults to True in D2D mode (no broker URL).
+        allow_insecure: Allow insecure (unencrypted, unauthenticated)
+            transport. None = auto-detect: respects the
+            DEVICE_CONNECT_ALLOW_INSECURE env var if set, otherwise defaults
+            to False (secure). Insecure transport must be explicitly opted
+            into; a prominent warning is logged whenever it is active.
 
     Returns:
         The running DeviceRuntime instance.
@@ -90,12 +115,9 @@ async def init_device_connect(
     # ``allow_insecure=True`` argument or ``DEVICE_CONNECT_ALLOW_INSECURE`` env
     # var — and we log a prominent warning whenever it is active so an insecure
     # deployment is never silent.
-    if allow_insecure is None:
-        env_val = os.environ.get("DEVICE_CONNECT_ALLOW_INSECURE")
-        if env_val is not None:
-            allow_insecure = env_val.lower() in ("true", "1", "yes")
-        else:
-            allow_insecure = False
+    allow_insecure = resolve_allow_insecure(
+        allow_insecure, os.environ.get("DEVICE_CONNECT_ALLOW_INSECURE")
+    )
 
     if allow_insecure:
         logger.warning(

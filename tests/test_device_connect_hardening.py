@@ -118,9 +118,10 @@ def _clean_env(monkeypatch):
     for var in ("DEVICE_CONNECT_RPC_ALLOW", "DEVICE_CONNECT_ESTOP_ALLOW",
                 "DEVICE_CONNECT_ALLOW_INSECURE", "REACHY_DAEMON_TOKEN"):
         monkeypatch.delenv(var, raising=False)
-    # reset the one-time permissive-warning memo
+    # reset the one-time warning memos
     import strands_robots.device_connect._authz as az
     az._warned_permissive.clear()
+    az._warned_insecure_acl.clear()
     yield
 
 
@@ -191,6 +192,52 @@ def test_sim_step_reset_denied_for_unlisted_caller(monkeypatch):
     d = SimulationDeviceDriver(_FakeSim())
     assert _run(d.step(n_steps=3, source_device="rogue"))["status"] == "error"
     assert _run(d.reset(source_device="rogue"))["status"] == "error"
+
+
+def test_anonymous_caller_denied_when_allowlist_set(monkeypatch):
+    """The reachable agent-path state: a caller with NO source identity
+    (anonymous device-connect-agent-tools client => get_rpc_source_device()
+    returns None) must be denied once an allowlist is configured. This is the
+    end-to-end behaviour an operator sees when they lock the allowlist without
+    giving the agent an id."""
+    from strands_robots.device_connect.robot_driver import RobotDeviceDriver
+    monkeypatch.setenv("DEVICE_CONNECT_RPC_ALLOW", "trusted-controller")
+    robot = _FakeRobot()
+    d = RobotDeviceDriver(robot)
+    # No source_device kwarg => contextvar stays None, exactly like an
+    # anonymous agent invoking over D2D.
+    res = _run(d.execute("go", policy_provider="mock"))
+    assert res["status"] == "error"
+    assert "not authorized" in res["reason"]
+    assert res["caller"] == "unknown"
+    assert robot.started is None
+
+
+def test_insecure_acl_logs_advisory_once(monkeypatch, caplog):
+    """Under insecure transport, enforcing an allowlist against a self-asserted
+    id must log a one-time advisory."""
+    import logging
+    import strands_robots.device_connect._authz as az
+    monkeypatch.setenv("DEVICE_CONNECT_RPC_ALLOW", "ctrl")
+    monkeypatch.setenv("DEVICE_CONNECT_ALLOW_INSECURE", "true")
+    az._warned_insecure_acl.clear()
+    with caplog.at_level(logging.WARNING, logger="strands_robots.device_connect._authz"):
+        az.is_authorized_caller("ctrl", scope="rpc")
+        az.is_authorized_caller("ctrl", scope="rpc")  # second call must not re-warn
+    advisories = [r for r in caplog.records if "SELF-ASSERTED" in r.getMessage()]
+    assert len(advisories) == 1
+
+
+def test_secure_acl_no_insecure_advisory(monkeypatch, caplog):
+    """With secure transport the self-asserted advisory must NOT fire."""
+    import logging
+    import strands_robots.device_connect._authz as az
+    monkeypatch.setenv("DEVICE_CONNECT_RPC_ALLOW", "ctrl")
+    monkeypatch.delenv("DEVICE_CONNECT_ALLOW_INSECURE", raising=False)
+    az._warned_insecure_acl.clear()
+    with caplog.at_level(logging.WARNING, logger="strands_robots.device_connect._authz"):
+        az.is_authorized_caller("ctrl", scope="rpc")
+    assert not [r for r in caplog.records if "SELF-ASSERTED" in r.getMessage()]
 
 
 def test_permissive_when_no_allowlist(monkeypatch):
@@ -293,17 +340,49 @@ def test_token_helper_reads_env(monkeypatch):
 
 # ── secure-by-default resolution ──────────────────────────────
 
-def test_allow_insecure_defaults_false(monkeypatch):
-    # Verify the resolution logic: unset env + no explicit arg => secure.
-    monkeypatch.delenv("DEVICE_CONNECT_ALLOW_INSECURE", raising=False)
-    allow_insecure = None
-    if allow_insecure is None:
-        env_val = os.environ.get("DEVICE_CONNECT_ALLOW_INSECURE")
-        if env_val is not None:
-            allow_insecure = env_val.lower() in ("true", "1", "yes")
-        else:
-            allow_insecure = False
-    assert allow_insecure is False
+def test_allow_insecure_defaults_false():
+    # Exercise the REAL resolver (not a re-implementation): unset env + no
+    # explicit arg => secure.
+    from strands_robots.device_connect import resolve_allow_insecure
+    assert resolve_allow_insecure(None, None) is False
+
+
+def test_allow_insecure_resolution_precedence():
+    from strands_robots.device_connect import resolve_allow_insecure
+    # explicit arg wins over everything
+    assert resolve_allow_insecure(True, "false") is True
+    assert resolve_allow_insecure(False, "true") is False
+    # env var honoured when no explicit arg (truthy spellings)
+    assert resolve_allow_insecure(None, "true") is True
+    assert resolve_allow_insecure(None, "1") is True
+    assert resolve_allow_insecure(None, "yes") is True
+    # anything else is secure
+    assert resolve_allow_insecure(None, "false") is False
+    assert resolve_allow_insecure(None, "") is False
+
+
+def test_init_device_connect_uses_secure_default():
+    """The production entrypoint constructs the runtime secure-by-default when
+    neither the arg nor the env var opt into insecure transport."""
+    import strands_robots.device_connect as dc
+    from unittest.mock import patch
+
+    captured = {}
+
+    class _FakeRuntime:
+        def __init__(self, **kw):
+            captured.update(kw)
+        def set_heartbeat_provider(self, *_a, **_k):
+            pass
+        async def run(self):
+            return None
+
+    async def _go():
+        with patch.object(dc, "DeviceRuntime", _FakeRuntime):
+            await dc.init_device_connect(_FakeRobot(), peer_id="p1")
+
+    _run(_go())
+    assert captured["allow_insecure"] is False
 
 
 def test_no_forced_insecure_setdefault_in_source():
@@ -359,6 +438,47 @@ def test_broadcast_dispatch_without_validated_command_is_rejected(monkeypatch):
     )
     assert res["status"] == "error"
     conn.broadcast.assert_not_called()
+
+
+# ── agent caller-identity propagation (Layer 1) ───────────────
+
+def test_with_identity_noop_when_unset(monkeypatch):
+    import strands_robots.tools.robot_mesh as rm
+    monkeypatch.delenv("STRANDS_ROBOT_MESH_AGENT_ID", raising=False)
+    monkeypatch.delenv("DEVICE_CONNECT_CLIENT_ID", raising=False)
+    params = {"instruction": "go"}
+    out = rm._with_identity(params)
+    assert "_dc_meta" not in out  # anonymous caller, unchanged
+
+
+def test_with_identity_stamps_source_device(monkeypatch):
+    import strands_robots.tools.robot_mesh as rm
+    monkeypatch.setenv("STRANDS_ROBOT_MESH_AGENT_ID", "trusted-controller")
+    out = rm._with_identity({"instruction": "go"})
+    assert out["_dc_meta"]["source_device"] == "trusted-controller"
+    # does not clobber a caller-supplied _dc_meta source_device
+    out2 = rm._with_identity({"_dc_meta": {"source_device": "explicit"}})
+    assert out2["_dc_meta"]["source_device"] == "explicit"
+
+
+def test_tell_invoke_carries_identity(monkeypatch):
+    """End-to-end at the dispatch layer: a configured agent id rides along in
+    the DC command envelope so the device's allowlist can match it."""
+    import strands_robots.tools.robot_mesh as rm
+    from unittest.mock import MagicMock
+    monkeypatch.setenv("STRANDS_ROBOT_MESH_AGENT_ID", "trusted-controller")
+    conn = MagicMock(name="conn")
+    conn.invoke.return_value = {"result": {"status": "success"}}
+    monkeypatch.setattr(
+        "device_connect_agent_tools.connection.get_connection",
+        lambda: conn, raising=False,
+    )
+    rm._device_connect_dispatch(
+        "tell", "dev-1", "pick up the cube", "", "mock", 0, 30.0, 30.0, "", None
+    )
+    params = conn.invoke.call_args[0][2]
+    assert params["_dc_meta"]["source_device"] == "trusted-controller"
+    assert params["instruction"] == "pick up the cube"
 
 
 # ── device-native rpc action is HITL-gated ────────────────────

@@ -260,6 +260,43 @@ def _resolve_mesh(target: str) -> Any | None:
 _dc_state = {"connected": False}
 
 
+def _agent_identity() -> str:
+    """Return this agent's caller identity for Device Connect RPCs.
+
+    Sourced from ``STRANDS_ROBOT_MESH_AGENT_ID`` (falling back to the generic
+    ``DEVICE_CONNECT_CLIENT_ID``). Empty string when unset — in which case the
+    agent is an anonymous caller and a device with ``DEVICE_CONNECT_RPC_ALLOW``
+    set will (correctly) reject it.
+
+    SECURITY: this identity is *self-asserted*. It lets an operator who has
+    locked a device's RPC allowlist authorize this agent by id, but it is only
+    a trustworthy control when the transport authenticates the sender (mTLS).
+    On an insecure/trusted-LAN D2D link it is advisory — any peer can claim any
+    id, so do not rely on it as the sole authorization boundary there.
+    """
+    return (
+        os.environ.get("STRANDS_ROBOT_MESH_AGENT_ID")
+        or os.environ.get("DEVICE_CONNECT_CLIENT_ID")
+        or ""
+    )
+
+
+def _with_identity(params: dict[str, Any]) -> dict[str, Any]:
+    """Stamp the agent's caller identity into the DC command envelope.
+
+    The device side reads ``params["_dc_meta"]["source_device"]`` and exposes it
+    via ``get_rpc_source_device()`` for the driver's caller-authorization check.
+    Without this the device sees an anonymous caller (``None``). No-op when no
+    identity is configured, preserving the anonymous-caller behaviour.
+    """
+    identity = _agent_identity()
+    if not identity:
+        return params
+    meta = dict(params.get("_dc_meta", {}))
+    meta.setdefault("source_device", identity)
+    return {**params, "_dc_meta": meta}
+
+
 class _DCResult(dict):
     """Strands tool-response dict whose ``str()`` renders the text block cleanly."""
 
@@ -397,7 +434,7 @@ def _device_connect_dispatch(
             except _security.ValidationError as exc:
                 _audit_tool_action(action, target, False, f"validation: {exc}")
                 return _DCResult(_err(f"tell rejected: {exc}"))
-            result = conn.invoke(target, "execute", {"instruction": instruction, **kwargs}, timeout=timeout)
+            result = conn.invoke(target, "execute", _with_identity({"instruction": instruction, **kwargs}), timeout=timeout)
             r = result.get("result", result)
             _audit_tool_action(action, target, True, f"instruction={instruction[:200]}")
             return _DCResult(_ok(f"-> {target}: {instruction}\n  {json.dumps(r, default=str)}"))
@@ -419,7 +456,7 @@ def _device_connect_dispatch(
                 _audit_tool_action(action, target, False, f"validation: {exc}")
                 return _DCResult(_err(f"send rejected: {exc}"))
             func = cmd.pop("action", cmd.pop("function", "getStatus"))
-            result = conn.invoke(target, func, cmd, timeout=timeout)
+            result = conn.invoke(target, func, _with_identity(cmd), timeout=timeout)
             r = result.get("result", result)
             _audit_tool_action(action, target, True, f"action={func}")
             return _DCResult(_ok(f"{target}:\n{json.dumps(r, indent=2, default=str)[:2000]}"))
@@ -446,7 +483,7 @@ def _device_connect_dispatch(
             except _security.ValidationError as exc:
                 _audit_tool_action(action, target, False, f"validation: {exc}")
                 return _DCResult(_err(f"rpc rejected: {exc}"))
-            result = conn.invoke(target, func_name, rpc_params, timeout=timeout)
+            result = conn.invoke(target, func_name, _with_identity(rpc_params), timeout=timeout)
             r = result.get("result", result) if isinstance(result, dict) else result
             _audit_tool_action(action, target, True, f"function={func_name}")
             return _DCResult(
@@ -456,7 +493,7 @@ def _device_connect_dispatch(
         if action == "stop":
             if not target:
                 return _DCResult(_err("stop requires target"))
-            result = conn.invoke(target, "stop", timeout=min(timeout, 5.0))
+            result = conn.invoke(target, "stop", _with_identity({}), timeout=min(timeout, 5.0))
             r = result.get("result", result)
             _audit_tool_action(action, target, True, "")
             return _DCResult(_ok(f"Stop {target}: {json.dumps(r, default=str)}"))
@@ -466,7 +503,7 @@ def _device_connect_dispatch(
             stopped = 0
             for d in devices:
                 try:
-                    conn.invoke(d["device_id"], "stop", timeout=3.0)
+                    conn.invoke(d["device_id"], "stop", _with_identity({}), timeout=3.0)
                     stopped += 1
                 except Exception:  # noqa: BLE001 — best-effort fan-out
                     pass
@@ -482,7 +519,7 @@ def _device_connect_dispatch(
                 return _DCResult(_err("broadcast reached Device Connect dispatch without a validated command"))
             cmd = dict(validated_command)
             func = cmd.pop("action", cmd.pop("function", "getStatus"))
-            params = cmd
+            params = _with_identity(cmd)
             results = conn.broadcast(func, params, timeout=timeout)
             _audit_tool_action(action, "*", True, f"action={func} responses={len(results)}")
             text = f"[broadcast] {len(results)} responses\n"
