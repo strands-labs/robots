@@ -18,6 +18,21 @@ code changes:
   when unset.
 
 Matching supports trailing ``*`` glob prefixes (e.g. ``safety-*``).
+
+Caller-identity semantics (READ THIS before relying on the allowlist):
+
+* The caller id is whatever the messaging layer reported as the RPC's
+  ``source_device``. A device-to-device caller (another ``DeviceRuntime``) and
+  an agent that sets ``STRANDS_ROBOT_MESH_AGENT_ID`` both carry an id; an
+  anonymous client carries **none** (``caller=None``).
+* When an allowlist IS set, a missing/None caller cannot be authorized and is
+  denied (fail-closed). So setting ``DEVICE_CONNECT_RPC_ALLOW`` will reject
+  every anonymous caller — configure an id on the caller side to allow it.
+* The id is only as trustworthy as the transport. Under authenticated
+  transport (mTLS) it is bound to the sender's certificate. Under insecure
+  transport (``DEVICE_CONNECT_ALLOW_INSECURE``) it is **self-asserted** — any
+  peer can claim any id — so the allowlist is advisory there, not a
+  cryptographic boundary. A one-time warning is logged in that case.
 """
 
 from __future__ import annotations
@@ -33,6 +48,29 @@ _RPC_ALLOW_ENV = "DEVICE_CONNECT_RPC_ALLOW"
 _ESTOP_ALLOW_ENV = "DEVICE_CONNECT_ESTOP_ALLOW"
 
 _warned_permissive: set[str] = set()
+_warned_insecure_acl: set[str] = set()
+
+_INSECURE_ENV = "DEVICE_CONNECT_ALLOW_INSECURE"
+
+
+def _insecure_transport_active() -> bool:
+    return os.environ.get(_INSECURE_ENV, "").lower() in ("true", "1", "yes")
+
+
+def _warn_insecure_acl_once(scope: str) -> None:
+    """Warn (once per scope) that an allowlist is being enforced against a
+    self-asserted caller id because the transport is insecure."""
+    if scope in _warned_insecure_acl:
+        return
+    _warned_insecure_acl.add(scope)
+    logger.warning(
+        "Device Connect %s allowlist is enforced against a SELF-ASSERTED caller "
+        "identity: %s is set, so any peer can claim an allowed id. Treat the "
+        "allowlist as advisory here; use authenticated transport (mTLS) for a "
+        "cryptographic authorization boundary.",
+        scope,
+        _INSECURE_ENV,
+    )
 
 
 def _parse_allowlist(raw: Optional[str]) -> Optional[list[str]]:
@@ -81,6 +119,11 @@ def is_authorized_caller(caller: Optional[str], *, scope: str = "rpc") -> bool:
         # make the permissive posture loud so operators notice.
         _warn_permissive_once(env_scope)
         return True
+
+    # An allowlist is configured. If the transport is insecure the caller id is
+    # self-asserted, so the allowlist is advisory — say so once, loudly.
+    if _insecure_transport_active():
+        _warn_insecure_acl_once(env_scope)
 
     # Allowlist configured: a missing caller identity cannot be authorized.
     if not caller:
