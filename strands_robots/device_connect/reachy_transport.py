@@ -5,6 +5,7 @@ used by ReachyMiniDriver.
 """
 
 import asyncio
+import functools
 import json
 import logging
 import math
@@ -38,19 +39,26 @@ def _daemon_auth_token() -> str | None:
     return os.environ.get("REACHY_DAEMON_TOKEN") or None
 
 
-_warned_no_auth = False
+@functools.cache
+def _emit_unauthenticated_warning(kind: str) -> None:
+    """Log the unauthenticated-daemon warning once per transport kind.
+
+    Cached so a reconnect loop logs it only once; the per-kind key surfaces
+    each distinct transport (REST / WebSocket). Replaces a module-level
+    warn-once flag that CodeQL flagged as an unused global (the ``global``
+    rebind is not recognised as a use).
+    """
+    logger.warning(
+        "Reachy daemon %s is unauthenticated (no REACHY_DAEMON_TOKEN set). "
+        "Anyone on the same network segment can issue robot commands. "
+        "Set REACHY_DAEMON_TOKEN and prefer WSS/HTTPS with mutual TLS.",
+        kind,
+    )
 
 
 def _warn_unauthenticated_once(kind: str) -> None:
-    global _warned_no_auth
-    if not _warned_no_auth and not _daemon_auth_token():
-        _warned_no_auth = True
-        logger.warning(
-            "Reachy daemon %s is unauthenticated (no REACHY_DAEMON_TOKEN set). "
-            "Anyone on the same network segment can issue robot commands. "
-            "Set REACHY_DAEMON_TOKEN and prefer WSS/HTTPS with mutual TLS.",
-            kind,
-        )
+    if not _daemon_auth_token():
+        _emit_unauthenticated_warning(kind)
 
 
 # ── REST API ─────────────────────────────────────────────────────

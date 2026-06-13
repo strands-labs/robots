@@ -29,8 +29,6 @@ def _force_real_device_connect_edge():
     To run order-independently we reload the genuine modules from disk and
     drop any strands_robots.device_connect.* cached against the mocks.
     """
-    import importlib
-
     for key in (
         "device_connect_edge.drivers",
         "device_connect_edge.types",
@@ -409,7 +407,7 @@ def test_init_device_connect_uses_secure_default():
     neither the arg nor the env var opt into insecure transport."""
     from unittest.mock import patch
 
-    import strands_robots.device_connect as dc
+    from strands_robots.device_connect import init_device_connect
 
     captured = {}
 
@@ -424,8 +422,8 @@ def test_init_device_connect_uses_secure_default():
             return None
 
     async def _go():
-        with patch.object(dc, "DeviceRuntime", _FakeRuntime):
-            await dc.init_device_connect(_FakeRobot(), peer_id="p1")
+        with patch("strands_robots.device_connect.DeviceRuntime", _FakeRuntime):
+            await init_device_connect(_FakeRobot(), peer_id="p1")
 
     _run(_go())
     assert captured["allow_insecure"] is False
@@ -537,9 +535,9 @@ def test_tell_invoke_carries_identity(monkeypatch):
 
 
 def test_rpc_is_interrupt_required():
-    from strands_robots.tools.robot_mesh import _resolve_interrupt_actions
+    import strands_robots.tools.robot_mesh as rm
 
-    assert "rpc" in _resolve_interrupt_actions()
+    assert "rpc" in rm._resolve_interrupt_actions()
 
 
 def test_rpc_declined_by_operator_is_rejected(monkeypatch):
