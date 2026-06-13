@@ -61,6 +61,10 @@ class SimRobot:
     # this backend-independent module.
     mesh: Any = None
     peer_id: str = ""
+    # Back-reference to the parent SimWorld. Set by _attach_robot_to_mesh
+    # so the child Mesh's _read_state() can extract joint positions from
+    # the MuJoCo world data. None for off-mesh or standalone robots.
+    _world: Any = field(default=None, repr=False)
 
 
 @dataclass

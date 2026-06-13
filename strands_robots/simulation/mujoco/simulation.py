@@ -681,6 +681,11 @@ class MuJoCoSimEngine(
             if child_mesh is not None:
                 robot.mesh = child_mesh
                 robot.peer_id = child_mesh.peer_id
+                # Bridge: give the SimRobot a _world reference so the child
+                # Mesh's _read_state() can extract per-robot joint positions
+                # from the MuJoCo world data (without this, the child mesh
+                # publishes only presence heartbeats — no state topic).
+                robot._world = self._world
         except Exception as exc:  # noqa: BLE001 — mesh enrichment is best-effort
             logger.warning(
                 "Failed to attach robot %r to mesh (sim peer_id=%s): %s",

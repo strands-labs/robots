@@ -968,11 +968,36 @@ class Mesh(SensorLoopsMixin):
             world = getattr(r, "_world", None)
             if world is not None:
                 world_data = getattr(world, "_data", None)
+                world_model = getattr(world, "_model", None)
                 if world_data is not None and hasattr(world_data, "time"):
                     snapshot["sim_time"] = float(world_data.time)
                 world_robots = getattr(world, "robots", None)
                 if isinstance(world_robots, dict):
                     snapshot["robots"] = {name: {"active": True} for name in world_robots}
+                # Per-robot joint extraction for SimRobot children on the mesh.
+                # SimRobot has joint_names + namespace; read qpos/qvel from world.
+                joint_names = getattr(r, "joint_names", None)
+                if joint_names and world_model is not None and world_data is not None and "joints" not in snapshot:
+                    try:
+                        import mujoco as _mj_mod
+
+                        pfx = getattr(r, "namespace", "") or ""
+                        sim_joints: dict[str, Any] = {}
+                        for jnt_name in joint_names:
+                            jnt_id = -1
+                            if pfx:
+                                jnt_id = _mj_mod.mj_name2id(world_model, _mj_mod.mjtObj.mjOBJ_JOINT, pfx + jnt_name)
+                            if jnt_id < 0:
+                                jnt_id = _mj_mod.mj_name2id(world_model, _mj_mod.mjtObj.mjOBJ_JOINT, jnt_name)
+                            if jnt_id >= 0:
+                                sim_joints[jnt_name] = {
+                                    "position": float(world_data.qpos[world_model.jnt_qposadr[jnt_id]]),
+                                    "velocity": float(world_data.qvel[world_model.jnt_dofadr[jnt_id]]),
+                                }
+                        if sim_joints:
+                            snapshot["joints"] = sim_joints
+                    except Exception:
+                        pass
         except Exception:
             pass
 
