@@ -40,7 +40,6 @@ from __future__ import annotations
 import fnmatch
 import logging
 import os
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +72,7 @@ def _warn_insecure_acl_once(scope: str) -> None:
     )
 
 
-def _parse_allowlist(raw: Optional[str]) -> Optional[list[str]]:
+def _parse_allowlist(raw: str | None) -> list[str] | None:
     """Parse a comma-separated allowlist. Returns None when unset/empty."""
     if raw is None:
         return None
@@ -100,7 +99,7 @@ def _warn_permissive_once(scope: str) -> None:
         )
 
 
-def is_authorized_caller(caller: Optional[str], *, scope: str = "rpc") -> bool:
+def is_authorized_caller(caller: str | None, *, scope: str = "rpc") -> bool:
     """Return True iff *caller* is authorized for the given *scope*.
 
     scope="rpc"   -> state-mutating RPCs (execute/stop/step/reset)
@@ -131,11 +130,9 @@ def is_authorized_caller(caller: Optional[str], *, scope: str = "rpc") -> bool:
     return _matches(caller, patterns)
 
 
-def authz_error(caller: Optional[str], function: str) -> dict:
+def authz_error(caller: str | None, function: str) -> dict:
     """Standard structured rejection for an unauthorized RPC call."""
-    logger.warning(
-        "Rejected unauthorized Device Connect RPC %s from caller=%r", function, caller
-    )
+    logger.warning("Rejected unauthorized Device Connect RPC %s from caller=%r", function, caller)
     return {
         "status": "error",
         "reason": f"caller not authorized for {function!r}",

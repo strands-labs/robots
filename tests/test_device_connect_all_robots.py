@@ -266,9 +266,7 @@ class TestRobotDriverAllRobots:
     def test_execute_delegates(self, robot_name, robot_info):
         robot = _make_mock_robot(robot_name, robot_info)
         driver = RobotDeviceDriver(robot)
-        result = asyncio.run(
-            driver.execute("pick up cube", "groot", 30.0, 0)
-        )
+        result = asyncio.run(driver.execute("pick up cube", "groot", 30.0, 0))
         robot.start_task.assert_called_once_with("pick up cube", "groot", None, "localhost", 30.0)
         assert result["status"] == "success"
 
@@ -340,9 +338,7 @@ class TestSimDriverAllRobots:
     def test_execute_auto_detects_robot(self, robot_name, robot_info):
         sim = _make_mock_sim(robot_name, robot_info)
         driver = SimulationDeviceDriver(sim)
-        result = asyncio.run(
-            driver.execute("pick up cube", "mock", 30.0, "")
-        )
+        result = asyncio.run(driver.execute("pick up cube", "mock", 30.0, ""))
         sim.start_policy.assert_called_once_with(
             robot_name=robot_name, policy_provider="mock", instruction="pick up cube", duration=30.0
         )
@@ -397,9 +393,7 @@ class TestRealOnlyRobots:
     def test_execute_delegates(self, robot_name, robot_info):
         robot = _make_mock_robot(robot_name, robot_info)
         driver = RobotDeviceDriver(robot)
-        result = asyncio.run(
-            driver.execute("move forward", "mock", 10.0, 0)
-        )
+        result = asyncio.run(driver.execute("move forward", "mock", 10.0, 0))
         robot.start_task.assert_called_once()
         assert result["status"] == "success"
 
@@ -426,9 +420,7 @@ class TestMultiRobotSimulation:
         sim = _make_mock_sim("mixed", _REGISTRY["so100"], robots_in_world=robots_in_world)
         driver = SimulationDeviceDriver(sim)
         # Execute auto-detects first robot
-        asyncio.run(
-            driver.execute("test", "mock", 10.0, "")
-        )
+        asyncio.run(driver.execute("test", "mock", 10.0, ""))
         sim.start_policy.assert_called_once()
         call_kwargs = sim.start_policy.call_args
         assert call_kwargs[1]["robot_name"] in ("so100", "unitree_g1")
@@ -454,9 +446,7 @@ class TestMultiRobotSimulation:
         }
         sim = _make_mock_sim("multi", _REGISTRY["so100"], robots_in_world=robots_in_world)
         driver = SimulationDeviceDriver(sim)
-        asyncio.run(
-            driver.execute("walk forward", "mock", 30.0, "unitree_g1")
-        )
+        asyncio.run(driver.execute("walk forward", "mock", 30.0, "unitree_g1"))
         sim.start_policy.assert_called_once_with(
             robot_name="unitree_g1", policy_provider="mock", instruction="walk forward", duration=30.0
         )
@@ -465,9 +455,7 @@ class TestMultiRobotSimulation:
         """Returns error when no robots in simulation."""
         sim = _make_mock_sim("empty", _REGISTRY["so100"], robots_in_world={})
         driver = SimulationDeviceDriver(sim)
-        result = asyncio.run(
-            driver.execute("test", "mock", 10.0, "")
-        )
+        result = asyncio.run(driver.execute("test", "mock", 10.0, ""))
         assert result["status"] == "error"
 
 
@@ -641,13 +629,15 @@ _CATEGORY_REPRESENTATIVES = {
 
 DIVERSE_DEVICES = []
 for category, (robot_name, device_type) in _CATEGORY_REPRESENTATIVES.items():
-    DIVERSE_DEVICES.append({
-        "device_id": f"{robot_name}-{category}-1",
-        "device_type": device_type,
-        "status": {"availability": "idle"},
-        "functions": [{"name": "execute"}, {"name": "stop"}, {"name": "getStatus"}],
-        "events": ["taskStarted", "taskComplete"] if device_type == "strands_robot" else ["stateUpdate"],
-    })
+    DIVERSE_DEVICES.append(
+        {
+            "device_id": f"{robot_name}-{category}-1",
+            "device_type": device_type,
+            "status": {"availability": "idle"},
+            "functions": [{"name": "execute"}, {"name": "stop"}, {"name": "getStatus"}],
+            "events": ["taskStarted", "taskComplete"] if device_type == "strands_robot" else ["stateUpdate"],
+        }
+    )
 
 
 class TestRobotMeshDispatchAllTypes:
@@ -655,20 +645,36 @@ class TestRobotMeshDispatchAllTypes:
 
     def _get_dispatch(self):
         from strands_robots.tools.robot_mesh import _device_connect_dispatch
+
         return _device_connect_dispatch
 
     def _call(self, dispatch, conn, action, **kwargs):
         defaults = dict(
-            target="", instruction="", command="",
-            policy_provider="mock", policy_port=0,
-            duration=30.0, timeout=5.0,
+            target="",
+            instruction="",
+            command="",
+            policy_provider="mock",
+            policy_port=0,
+            duration=30.0,
+            timeout=5.0,
         )
         defaults.update(kwargs)
         with patch("device_connect_agent_tools.connection.get_connection", return_value=conn):
-            return dispatch(action, **{k: defaults[k] for k in [
-                "target", "instruction", "command",
-                "policy_provider", "policy_port", "duration", "timeout",
-            ]})
+            return dispatch(
+                action,
+                **{
+                    k: defaults[k]
+                    for k in [
+                        "target",
+                        "instruction",
+                        "command",
+                        "policy_provider",
+                        "policy_port",
+                        "duration",
+                        "timeout",
+                    ]
+                },
+            )
 
     def test_peers_lists_all_categories(self):
         conn = _FakeConnection(devices=DIVERSE_DEVICES)

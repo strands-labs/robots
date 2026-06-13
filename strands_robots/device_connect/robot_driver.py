@@ -44,11 +44,7 @@ class RobotDeviceDriver(DeviceDriver):
     @property
     def status(self) -> DeviceStatus:
         task = getattr(self._robot, "_task_state", None)
-        is_busy = (
-            task is not None
-            and hasattr(task, "status")
-            and getattr(task.status, "value", "idle") == "running"
-        )
+        is_busy = task is not None and hasattr(task, "status") and getattr(task.status, "value", "idle") == "running"
         return DeviceStatus(
             availability="busy" if is_busy else "idle",
             busy_score=1.0 if is_busy else 0.0,
@@ -140,11 +136,7 @@ class RobotDeviceDriver(DeviceDriver):
             try:
                 obs = await asyncio.to_thread(inner.get_observation)
                 # Filter out camera frames (numpy arrays) — only include scalars
-                result["joints"] = {
-                    k: float(v)
-                    for k, v in obs.items()
-                    if not hasattr(v, "shape")
-                }
+                result["joints"] = {k: float(v) for k, v in obs.items() if not hasattr(v, "shape")}
             except Exception as e:
                 logger.debug("Could not read observation: %s", e)
 

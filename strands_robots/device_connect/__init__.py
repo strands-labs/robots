@@ -19,7 +19,6 @@ import logging
 import os
 import threading
 import uuid
-from typing import Optional
 
 from device_connect_edge import DeviceRuntime
 
@@ -42,8 +41,8 @@ _INSECURE_TRUE = ("true", "1", "yes")
 
 
 def resolve_allow_insecure(
-    explicit: Optional[bool] = None,
-    env_value: Optional[str] = None,
+    explicit: bool | None = None,
+    env_value: str | None = None,
 ) -> bool:
     """Resolve the effective ``allow_insecure`` setting (secure by default).
 
@@ -63,12 +62,12 @@ def resolve_allow_insecure(
 
 async def init_device_connect(
     robot,
-    peer_id: Optional[str] = None,
+    peer_id: str | None = None,
     peer_type: str = "robot",
-    messaging_url: Optional[str] = None,
-    messaging_backend: Optional[str] = None,
+    messaging_url: str | None = None,
+    messaging_backend: str | None = None,
     tenant: str = "default",
-    allow_insecure: Optional[bool] = None,
+    allow_insecure: bool | None = None,
 ) -> DeviceRuntime:
     """Initialize Device Connect for a Robot or Simulation.
 
@@ -115,9 +114,7 @@ async def init_device_connect(
     # ``allow_insecure=True`` argument or ``DEVICE_CONNECT_ALLOW_INSECURE`` env
     # var — and we log a prominent warning whenever it is active so an insecure
     # deployment is never silent.
-    allow_insecure = resolve_allow_insecure(
-        allow_insecure, os.environ.get("DEVICE_CONNECT_ALLOW_INSECURE")
-    )
+    allow_insecure = resolve_allow_insecure(allow_insecure, os.environ.get("DEVICE_CONNECT_ALLOW_INSECURE"))
 
     if allow_insecure:
         logger.warning(
@@ -142,19 +139,20 @@ async def init_device_connect(
     # Start runtime in background task; store ref to prevent GC
     runtime._background_task = asyncio.create_task(runtime.run())
 
-    logger.info("Device Connect initialized: %s (%s, backend=%s, d2d=%s)",
-                device_id, peer_type, messaging_backend, urls is None)
+    logger.info(
+        "Device Connect initialized: %s (%s, backend=%s, d2d=%s)", device_id, peer_type, messaging_backend, urls is None
+    )
     return runtime
 
 
 def init_device_connect_sync(
     robot,
-    peer_id: Optional[str] = None,
+    peer_id: str | None = None,
     peer_type: str = "robot",
-    messaging_url: Optional[str] = None,
-    messaging_backend: Optional[str] = None,
+    messaging_url: str | None = None,
+    messaging_backend: str | None = None,
     tenant: str = "default",
-    allow_insecure: Optional[bool] = None,
+    allow_insecure: bool | None = None,
 ) -> "DeviceRuntime":
     """Non-blocking sync wrapper around init_device_connect().
 

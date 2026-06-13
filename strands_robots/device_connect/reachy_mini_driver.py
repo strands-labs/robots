@@ -11,17 +11,16 @@ import asyncio
 import logging
 import math
 import re
-from typing import Optional
 
 from device_connect_edge.drivers import DeviceDriver, emit, on, rpc
 from device_connect_edge.types import DeviceIdentity, DeviceStatus
 
 from strands_robots.device_connect.reachy_transport import (
-    api,
-    rpy_to_pose,
-    identity_pose,
-    ZenohLink,
     WebSocketLink,
+    ZenohLink,
+    api,
+    identity_pose,
+    rpy_to_pose,
 )
 
 logger = logging.getLogger(__name__)
@@ -51,8 +50,8 @@ class ReachyMiniDriver(DeviceDriver):
         self._host = host
         self._prefix = prefix
         self._api_port = api_port
-        self._latest_joints: Optional[dict] = None
-        self._latest_imu: Optional[dict] = None
+        self._latest_joints: dict | None = None
+        self._latest_imu: dict | None = None
         self._hw = None
 
     @property
@@ -71,9 +70,7 @@ class ReachyMiniDriver(DeviceDriver):
     async def connect(self) -> None:
         """Connect to the Reachy Mini, auto-detecting Wireless vs Lite."""
         try:
-            status = await asyncio.to_thread(
-                api, self._host, self._api_port, "/api/daemon/status"
-            )
+            status = await asyncio.to_thread(api, self._host, self._api_port, "/api/daemon/status")
             is_lite = not status.get("wireless_version", True)
         except Exception:
             is_lite = False
@@ -134,9 +131,7 @@ class ReachyMiniDriver(DeviceDriver):
             left: Left antenna angle in degrees
             right: Right antenna angle in degrees
         """
-        await self._send_cmd(
-            {"antennas_joint_positions": [math.radians(left), math.radians(right)]}
-        )
+        await self._send_cmd({"antennas_joint_positions": [math.radians(left), math.radians(right)]})
         return {"status": "success", "left": left, "right": right}
 
     @rpc()
@@ -217,8 +212,11 @@ class ReachyMiniDriver(DeviceDriver):
             return {"status": "error", "reason": f"invalid move_name: {move_name!r}"}
         ds = f"pollen-robotics/reachy-mini-{'emotions' if library == 'emotions' else 'dances'}-library"
         result = await asyncio.to_thread(
-            api, self._host, self._api_port,
-            f"/api/move/play/recorded-move-dataset/{ds}/{move_name}", "POST",
+            api,
+            self._host,
+            self._api_port,
+            f"/api/move/play/recorded-move-dataset/{ds}/{move_name}",
+            "POST",
         )
         return {"status": "success", "move": move_name, "result": result}
 
@@ -231,7 +229,9 @@ class ReachyMiniDriver(DeviceDriver):
         """
         ds = f"pollen-robotics/reachy-mini-{'emotions' if library == 'emotions' else 'dances'}-library"
         result = await asyncio.to_thread(
-            api, self._host, self._api_port,
+            api,
+            self._host,
+            self._api_port,
             f"/api/move/recorded-move-datasets/list/{ds}",
         )
         return {"status": "success", "moves": result}
@@ -264,13 +264,9 @@ class ReachyMiniDriver(DeviceDriver):
     async def happy(self) -> dict:
         """Happy antenna wiggle expression."""
         for _ in range(4):
-            await self._send_cmd(
-                {"antennas_joint_positions": [math.radians(60), math.radians(-60)]}
-            )
+            await self._send_cmd({"antennas_joint_positions": [math.radians(60), math.radians(-60)]})
             await asyncio.sleep(0.2)
-            await self._send_cmd(
-                {"antennas_joint_positions": [math.radians(-60), math.radians(60)]}
-            )
+            await self._send_cmd({"antennas_joint_positions": [math.radians(-60), math.radians(60)]})
             await asyncio.sleep(0.2)
         await self._send_cmd({"antennas_joint_positions": [0, 0]})
         return {"status": "success", "expression": "happy"}
@@ -281,7 +277,11 @@ class ReachyMiniDriver(DeviceDriver):
     async def wakeUp(self) -> dict:
         """Wake up the robot (enable motors + play wake animation)."""
         result = await asyncio.to_thread(
-            api, self._host, self._api_port, "/api/move/play/wake_up", "POST",
+            api,
+            self._host,
+            self._api_port,
+            "/api/move/play/wake_up",
+            "POST",
         )
         return {"status": "success", "result": result}
 
@@ -289,7 +289,11 @@ class ReachyMiniDriver(DeviceDriver):
     async def sleep(self) -> dict:
         """Put robot to sleep (play sleep animation + disable motors)."""
         result = await asyncio.to_thread(
-            api, self._host, self._api_port, "/api/move/play/goto_sleep", "POST",
+            api,
+            self._host,
+            self._api_port,
+            "/api/move/play/goto_sleep",
+            "POST",
         )
         return {"status": "success", "result": result}
 
@@ -297,7 +301,11 @@ class ReachyMiniDriver(DeviceDriver):
     async def stopMotion(self) -> dict:
         """Stop all current motion."""
         result = await asyncio.to_thread(
-            api, self._host, self._api_port, "/api/move/stop", "POST",
+            api,
+            self._host,
+            self._api_port,
+            "/api/move/stop",
+            "POST",
         )
         return {"status": "success", "result": result}
 
@@ -305,7 +313,10 @@ class ReachyMiniDriver(DeviceDriver):
     async def getDaemonStatus(self) -> dict:
         """Get daemon status, motor state, and control frequency."""
         result = await asyncio.to_thread(
-            api, self._host, self._api_port, "/api/daemon/status",
+            api,
+            self._host,
+            self._api_port,
+            "/api/daemon/status",
         )
         return {"status": "success", **result}
 

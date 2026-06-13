@@ -496,11 +496,7 @@ def _agent_identity() -> str:
     On an insecure/trusted-LAN D2D link it is advisory — any peer can claim any
     id, so do not rely on it as the sole authorization boundary there.
     """
-    return (
-        os.environ.get("STRANDS_ROBOT_MESH_AGENT_ID")
-        or os.environ.get("DEVICE_CONNECT_CLIENT_ID")
-        or ""
-    )
+    return os.environ.get("STRANDS_ROBOT_MESH_AGENT_ID") or os.environ.get("DEVICE_CONNECT_CLIENT_ID") or ""
 
 
 def _with_identity(params: dict[str, Any]) -> dict[str, Any]:
@@ -656,7 +652,9 @@ def _device_connect_dispatch(
             except _security.ValidationError as exc:
                 _audit_tool_action(action, target, False, f"validation: {exc}")
                 return _DCResult(_err(f"tell rejected: {exc}"))
-            result = conn.invoke(target, "execute", _with_identity({"instruction": instruction, **kwargs}), timeout=timeout)
+            result = conn.invoke(
+                target, "execute", _with_identity({"instruction": instruction, **kwargs}), timeout=timeout
+            )
             r = result.get("result", result)
             _audit_tool_action(action, target, True, f"instruction={instruction[:200]}")
             return _DCResult(_ok(f"-> {target}: {instruction}\n  {json.dumps(r, default=str)}"))

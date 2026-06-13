@@ -11,7 +11,7 @@ import math
 import os
 import socket
 from abc import ABC, abstractmethod
-from typing import Callable, Optional
+from collections.abc import Callable
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +24,7 @@ def resolve_host(host: str) -> str:
         return host
 
 
-def _daemon_auth_token() -> Optional[str]:
+def _daemon_auth_token() -> str | None:
     """Return the Reachy daemon auth token from the environment, if configured.
 
     Security hardening: the daemon WebSocket/REST interfaces accept commands
@@ -54,10 +54,12 @@ def _warn_unauthenticated_once(kind: str) -> None:
 
 # ── REST API ─────────────────────────────────────────────────────
 
-def api(host: str, port: int, path: str, method: str = "GET", data: Optional[dict] = None) -> dict:
+
+def api(host: str, port: int, path: str, method: str = "GET", data: dict | None = None) -> dict:
     """Call Reachy Mini daemon REST API."""
     import urllib.error
     import urllib.request
+
     url = f"http://{host}:{port}{path}"
     req = urllib.request.Request(url, method=method)
     req.add_header("Content-Type", "application/json")
@@ -78,18 +80,20 @@ def api(host: str, port: int, path: str, method: str = "GET", data: Optional[dic
 
 # ── Pose math ────────────────────────────────────────────────────
 
-def rpy_to_pose(pitch_deg: float, roll_deg: float, yaw_deg: float,
-                x_mm: float = 0, y_mm: float = 0, z_mm: float = 0) -> list:
+
+def rpy_to_pose(
+    pitch_deg: float, roll_deg: float, yaw_deg: float, x_mm: float = 0, y_mm: float = 0, z_mm: float = 0
+) -> list:
     """Convert RPY (degrees) + XYZ (mm) to 4x4 pose matrix."""
     p, r, y = math.radians(pitch_deg), math.radians(roll_deg), math.radians(yaw_deg)
     cr, sr = math.cos(r), math.sin(r)
     cp, sp = math.cos(p), math.sin(p)
     cy, sy = math.cos(y), math.sin(y)
     return [
-        [cy*cp, cy*sp*sr - sy*cr, cy*sp*cr + sy*sr, x_mm/1000],
-        [sy*cp, sy*sp*sr + cy*cr, sy*sp*cr - cy*sr, y_mm/1000],
-        [-sp,   cp*sr,            cp*cr,             z_mm/1000],
-        [0,     0,                0,                 1],
+        [cy * cp, cy * sp * sr - sy * cr, cy * sp * cr + sy * sr, x_mm / 1000],
+        [sy * cp, sy * sp * sr + cy * cr, sy * sp * cr - cy * sr, y_mm / 1000],
+        [-sp, cp * sr, cp * cr, z_mm / 1000],
+        [0, 0, 0, 1],
     ]
 
 
@@ -99,6 +103,7 @@ def identity_pose() -> list:
 
 
 # ── Hardware link abstraction ───────────────────────────────────
+
 
 class HardwareLink(ABC):
     """Abstract interface for real-time I/O with Reachy Mini hardware."""
@@ -143,9 +148,7 @@ class ZenohLink(HardwareLink):
         pass  # Transport teardown handled by DeviceRuntime
 
     async def send_cmd(self, cmd: dict) -> None:
-        await self._transport.publish(
-            f"{self._prefix}/command", json.dumps(cmd).encode()
-        )
+        await self._transport.publish(f"{self._prefix}/command", json.dumps(cmd).encode())
 
 
 class WebSocketLink(HardwareLink):
@@ -162,7 +165,7 @@ class WebSocketLink(HardwareLink):
         self._host = host
         self._port = port
         self._ws = None
-        self._read_task: Optional[asyncio.Task] = None
+        self._read_task: asyncio.Task | None = None
 
     async def start(self, on_joints: Callable, on_imu: Callable) -> None:
         import websockets
@@ -178,14 +181,13 @@ class WebSocketLink(HardwareLink):
             # websockets >=12 uses additional_headers; older uses extra_headers.
             try:
                 import inspect as _inspect
+
                 _sig = _inspect.signature(websockets.connect)
                 _hdr_kw = "additional_headers" if "additional_headers" in _sig.parameters else "extra_headers"
                 _connect_kwargs[_hdr_kw] = _extra_headers
             except (ValueError, TypeError):
                 _connect_kwargs["extra_headers"] = _extra_headers
-        self._ws = await websockets.connect(
-            f"ws://{self._host}:{self._port}/ws/sdk", **_connect_kwargs
-        )
+        self._ws = await websockets.connect(f"ws://{self._host}:{self._port}/ws/sdk", **_connect_kwargs)
         self._read_task = asyncio.create_task(self._read_loop(on_joints, on_imu))
 
     async def _read_loop(self, on_joints: Callable, on_imu: Callable) -> None:

@@ -15,7 +15,6 @@ These use the REAL device_connect_edge package (editable install) so the
 
 import asyncio
 import importlib
-import os
 import sys
 
 import pytest
@@ -31,8 +30,13 @@ def _force_real_device_connect_edge():
     drop any strands_robots.device_connect.* cached against the mocks.
     """
     import importlib
-    for key in ("device_connect_edge.drivers", "device_connect_edge.types",
-                "device_connect_edge.device", "device_connect_edge"):
+
+    for key in (
+        "device_connect_edge.drivers",
+        "device_connect_edge.types",
+        "device_connect_edge.device",
+        "device_connect_edge",
+    ):
         mod = sys.modules.get(key)
         # A real module has __file__; a MagicMock stand-in does not.
         if mod is not None and not hasattr(mod, "__file__"):
@@ -57,6 +61,7 @@ def _run(coro):
 
 # ── Fakes ─────────────────────────────────────────────────────────
 
+
 class _FakeRobot:
     tool_name_str = "so100"
 
@@ -66,8 +71,11 @@ class _FakeRobot:
 
     def start_task(self, instruction, policy_provider, policy_port, host, duration):
         self.started = dict(
-            instruction=instruction, policy_provider=policy_provider,
-            policy_port=policy_port, host=host, duration=duration,
+            instruction=instruction,
+            policy_provider=policy_provider,
+            policy_port=policy_port,
+            host=host,
+            duration=duration,
         )
         return {"status": "success", "instruction": instruction}
 
@@ -100,8 +108,10 @@ class _FakeSim:
 
     def start_policy(self, robot_name, policy_provider, instruction, duration):
         self.started = dict(
-            robot_name=robot_name, policy_provider=policy_provider,
-            instruction=instruction, duration=duration,
+            robot_name=robot_name,
+            policy_provider=policy_provider,
+            instruction=instruction,
+            duration=duration,
         )
         return {"status": "success"}
 
@@ -115,11 +125,16 @@ class _FakeSim:
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch):
     _force_real_device_connect_edge()
-    for var in ("DEVICE_CONNECT_RPC_ALLOW", "DEVICE_CONNECT_ESTOP_ALLOW",
-                "DEVICE_CONNECT_ALLOW_INSECURE", "REACHY_DAEMON_TOKEN"):
+    for var in (
+        "DEVICE_CONNECT_RPC_ALLOW",
+        "DEVICE_CONNECT_ESTOP_ALLOW",
+        "DEVICE_CONNECT_ALLOW_INSECURE",
+        "REACHY_DAEMON_TOKEN",
+    ):
         monkeypatch.delenv(var, raising=False)
     # reset the one-time warning memos
     import strands_robots.device_connect._authz as az
+
     az._warned_permissive.clear()
     az._warned_insecure_acl.clear()
     yield
@@ -127,17 +142,19 @@ def _clean_env(monkeypatch):
 
 # ── policy_provider allowlist (anti-SSRF) ─────────────────────
 
+
 def test_robot_execute_rejects_ssrf_policy_provider():
     from strands_robots.device_connect.robot_driver import RobotDeviceDriver
+
     d = RobotDeviceDriver(_FakeRobot())
-    res = _run(d.execute("test", policy_provider="grpc://attacker.evil:9000",
-                          source_device="op-1"))
+    res = _run(d.execute("test", policy_provider="grpc://attacker.evil:9000", source_device="op-1"))
     assert res["status"] == "error"
     assert "policy_provider" in res["reason"]
 
 
 def test_robot_execute_allows_vetted_provider():
     from strands_robots.device_connect.robot_driver import RobotDeviceDriver
+
     robot = _FakeRobot()
     d = RobotDeviceDriver(robot)
     res = _run(d.execute("pick cube", policy_provider="mock", source_device="op-1"))
@@ -147,6 +164,7 @@ def test_robot_execute_allows_vetted_provider():
 
 def test_sim_execute_rejects_ssrf_policy_provider():
     from strands_robots.device_connect.sim_driver import SimulationDeviceDriver
+
     d = SimulationDeviceDriver(_FakeSim())
     res = _run(d.execute("test", policy_provider="ws://attacker", source_device="op-1"))
     assert res["status"] == "error"
@@ -155,8 +173,10 @@ def test_sim_execute_rejects_ssrf_policy_provider():
 
 # ── caller authorization ──────────────────────────────────────
 
+
 def test_execute_denied_when_allowlist_set_and_caller_not_listed(monkeypatch):
     from strands_robots.device_connect.robot_driver import RobotDeviceDriver
+
     monkeypatch.setenv("DEVICE_CONNECT_RPC_ALLOW", "trusted-controller")
     d = RobotDeviceDriver(_FakeRobot())
     res = _run(d.execute("go", policy_provider="mock", source_device="rogue-sensor"))
@@ -166,6 +186,7 @@ def test_execute_denied_when_allowlist_set_and_caller_not_listed(monkeypatch):
 
 def test_execute_allowed_for_listed_caller(monkeypatch):
     from strands_robots.device_connect.robot_driver import RobotDeviceDriver
+
     monkeypatch.setenv("DEVICE_CONNECT_RPC_ALLOW", "trusted-controller,safety-*")
     robot = _FakeRobot()
     d = RobotDeviceDriver(robot)
@@ -178,6 +199,7 @@ def test_execute_allowed_for_listed_caller(monkeypatch):
 
 def test_stop_denied_for_unlisted_caller(monkeypatch):
     from strands_robots.device_connect.robot_driver import RobotDeviceDriver
+
     monkeypatch.setenv("DEVICE_CONNECT_RPC_ALLOW", "ctrl")
     robot = _FakeRobot()
     d = RobotDeviceDriver(robot)
@@ -188,6 +210,7 @@ def test_stop_denied_for_unlisted_caller(monkeypatch):
 
 def test_sim_step_reset_denied_for_unlisted_caller(monkeypatch):
     from strands_robots.device_connect.sim_driver import SimulationDeviceDriver
+
     monkeypatch.setenv("DEVICE_CONNECT_RPC_ALLOW", "ctrl")
     d = SimulationDeviceDriver(_FakeSim())
     assert _run(d.step(n_steps=3, source_device="rogue"))["status"] == "error"
@@ -201,6 +224,7 @@ def test_anonymous_caller_denied_when_allowlist_set(monkeypatch):
     end-to-end behaviour an operator sees when they lock the allowlist without
     giving the agent an id."""
     from strands_robots.device_connect.robot_driver import RobotDeviceDriver
+
     monkeypatch.setenv("DEVICE_CONNECT_RPC_ALLOW", "trusted-controller")
     robot = _FakeRobot()
     d = RobotDeviceDriver(robot)
@@ -217,7 +241,9 @@ def test_insecure_acl_logs_advisory_once(monkeypatch, caplog):
     """Under insecure transport, enforcing an allowlist against a self-asserted
     id must log a one-time advisory."""
     import logging
+
     import strands_robots.device_connect._authz as az
+
     monkeypatch.setenv("DEVICE_CONNECT_RPC_ALLOW", "ctrl")
     monkeypatch.setenv("DEVICE_CONNECT_ALLOW_INSECURE", "true")
     az._warned_insecure_acl.clear()
@@ -231,7 +257,9 @@ def test_insecure_acl_logs_advisory_once(monkeypatch, caplog):
 def test_secure_acl_no_insecure_advisory(monkeypatch, caplog):
     """With secure transport the self-asserted advisory must NOT fire."""
     import logging
+
     import strands_robots.device_connect._authz as az
+
     monkeypatch.setenv("DEVICE_CONNECT_RPC_ALLOW", "ctrl")
     monkeypatch.delenv("DEVICE_CONNECT_ALLOW_INSECURE", raising=False)
     az._warned_insecure_acl.clear()
@@ -243,6 +271,7 @@ def test_secure_acl_no_insecure_advisory(monkeypatch, caplog):
 def test_permissive_when_no_allowlist(monkeypatch):
     # Out-of-the-box: no allowlist => allowed (with a logged warning).
     from strands_robots.device_connect.robot_driver import RobotDeviceDriver
+
     robot = _FakeRobot()
     d = RobotDeviceDriver(robot)
     res = _run(d.execute("go", policy_provider="mock", source_device="anyone"))
@@ -251,6 +280,7 @@ def test_permissive_when_no_allowlist(monkeypatch):
 
 def test_emergencystop_ignores_unauthorized_source(monkeypatch):
     from strands_robots.device_connect.robot_driver import RobotDeviceDriver
+
     monkeypatch.setenv("DEVICE_CONNECT_ESTOP_ALLOW", "safety-controller")
     robot = _FakeRobot()
     d = RobotDeviceDriver(robot)
@@ -262,8 +292,10 @@ def test_emergencystop_ignores_unauthorized_source(monkeypatch):
 
 # ── playMove path traversal ───────────────────────────────────
 
+
 def _make_reachy():
     from strands_robots.device_connect import reachy_mini_driver as rmd
+
     drv = rmd.ReachyMiniDriver.__new__(rmd.ReachyMiniDriver)
     drv._host = "localhost"
     drv._api_port = 8000
@@ -306,16 +338,23 @@ def test_playmove_allows_clean_name():
 
 # ── Reachy daemon auth ────────────────────────────────────────
 
+
 def test_rest_api_adds_auth_header_when_token_set(monkeypatch):
     monkeypatch.setenv("REACHY_DAEMON_TOKEN", "s3cret")
     from strands_robots.device_connect import reachy_transport as rt
+
     importlib.reload(rt)
     captured = {}
 
     class _Resp:
-        def __enter__(self): return self
-        def __exit__(self, *a): return False
-        def read(self): return b"{}"
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return b"{}"
 
     def fake_urlopen(req, body, timeout):
         captured["auth"] = req.get_header("Authorization")
@@ -331,6 +370,7 @@ def test_rest_api_adds_auth_header_when_token_set(monkeypatch):
 
 def test_token_helper_reads_env(monkeypatch):
     from strands_robots.device_connect import reachy_transport as rt
+
     importlib.reload(rt)
     assert rt._daemon_auth_token() is None
     monkeypatch.setenv("REACHY_DAEMON_TOKEN", "abc")
@@ -340,15 +380,18 @@ def test_token_helper_reads_env(monkeypatch):
 
 # ── secure-by-default resolution ──────────────────────────────
 
+
 def test_allow_insecure_defaults_false():
     # Exercise the REAL resolver (not a re-implementation): unset env + no
     # explicit arg => secure.
     from strands_robots.device_connect import resolve_allow_insecure
+
     assert resolve_allow_insecure(None, None) is False
 
 
 def test_allow_insecure_resolution_precedence():
     from strands_robots.device_connect import resolve_allow_insecure
+
     # explicit arg wins over everything
     assert resolve_allow_insecure(True, "false") is True
     assert resolve_allow_insecure(False, "true") is False
@@ -364,16 +407,19 @@ def test_allow_insecure_resolution_precedence():
 def test_init_device_connect_uses_secure_default():
     """The production entrypoint constructs the runtime secure-by-default when
     neither the arg nor the env var opt into insecure transport."""
-    import strands_robots.device_connect as dc
     from unittest.mock import patch
+
+    import strands_robots.device_connect as dc
 
     captured = {}
 
     class _FakeRuntime:
         def __init__(self, **kw):
             captured.update(kw)
+
         def set_heartbeat_provider(self, *_a, **_k):
             pass
+
         async def run(self):
             return None
 
@@ -388,18 +434,21 @@ def test_init_device_connect_uses_secure_default():
 def test_no_forced_insecure_setdefault_in_source():
     # The agent-side connector must NOT force insecure mode process-wide.
     import strands_robots.tools.robot_mesh as rm
+
     src = __import__("inspect").getsource(rm._dc_ensure_connected)
     assert 'setdefault("DEVICE_CONNECT_ALLOW_INSECURE"' not in src
-    assert 'setdefault(\'DEVICE_CONNECT_ALLOW_INSECURE\'' not in src
+    assert "setdefault('DEVICE_CONNECT_ALLOW_INSECURE'" not in src
 
 
 # ── broadcast dispatches the validated command (no raw re-parse) ──
 
+
 def test_broadcast_dispatch_uses_validated_command(monkeypatch):
     """The DC broadcast branch must use the validated command, never re-parse
     the raw caller string (which could differ from what was approved)."""
-    import strands_robots.tools.robot_mesh as rm
     from unittest.mock import MagicMock
+
+    import strands_robots.tools.robot_mesh as rm
 
     conn = MagicMock(name="conn")
     conn.broadcast.return_value = [{"device_id": "d1", "result": {}}]
@@ -413,9 +462,7 @@ def test_broadcast_dispatch_uses_validated_command(monkeypatch):
     # operator approved) is a benign status. Dispatch MUST use the validated one.
     raw = '{"function": "factoryReset", "confirm": true}'
     validated = {"action": "status"}
-    res = rm._device_connect_dispatch(
-        "broadcast", "", "", raw, "mock", 0, 30.0, 30.0, "", validated
-    )
+    res = rm._device_connect_dispatch("broadcast", "", "", raw, "mock", 0, 30.0, 30.0, "", validated)
     assert res is not None
     # broadcast called with the validated action, not factoryReset
     called_func = conn.broadcast.call_args[0][0]
@@ -424,8 +471,9 @@ def test_broadcast_dispatch_uses_validated_command(monkeypatch):
 
 
 def test_broadcast_dispatch_without_validated_command_is_rejected(monkeypatch):
-    import strands_robots.tools.robot_mesh as rm
     from unittest.mock import MagicMock
+
+    import strands_robots.tools.robot_mesh as rm
 
     conn = MagicMock(name="conn")
     monkeypatch.setattr(
@@ -442,8 +490,10 @@ def test_broadcast_dispatch_without_validated_command_is_rejected(monkeypatch):
 
 # ── agent caller-identity propagation (Layer 1) ───────────────
 
+
 def test_with_identity_noop_when_unset(monkeypatch):
     import strands_robots.tools.robot_mesh as rm
+
     monkeypatch.delenv("STRANDS_ROBOT_MESH_AGENT_ID", raising=False)
     monkeypatch.delenv("DEVICE_CONNECT_CLIENT_ID", raising=False)
     params = {"instruction": "go"}
@@ -453,6 +503,7 @@ def test_with_identity_noop_when_unset(monkeypatch):
 
 def test_with_identity_stamps_source_device(monkeypatch):
     import strands_robots.tools.robot_mesh as rm
+
     monkeypatch.setenv("STRANDS_ROBOT_MESH_AGENT_ID", "trusted-controller")
     out = rm._with_identity({"instruction": "go"})
     assert out["_dc_meta"]["source_device"] == "trusted-controller"
@@ -464,18 +515,19 @@ def test_with_identity_stamps_source_device(monkeypatch):
 def test_tell_invoke_carries_identity(monkeypatch):
     """End-to-end at the dispatch layer: a configured agent id rides along in
     the DC command envelope so the device's allowlist can match it."""
-    import strands_robots.tools.robot_mesh as rm
     from unittest.mock import MagicMock
+
+    import strands_robots.tools.robot_mesh as rm
+
     monkeypatch.setenv("STRANDS_ROBOT_MESH_AGENT_ID", "trusted-controller")
     conn = MagicMock(name="conn")
     conn.invoke.return_value = {"result": {"status": "success"}}
     monkeypatch.setattr(
         "device_connect_agent_tools.connection.get_connection",
-        lambda: conn, raising=False,
+        lambda: conn,
+        raising=False,
     )
-    rm._device_connect_dispatch(
-        "tell", "dev-1", "pick up the cube", "", "mock", 0, 30.0, 30.0, "", None
-    )
+    rm._device_connect_dispatch("tell", "dev-1", "pick up the cube", "", "mock", 0, 30.0, 30.0, "", None)
     params = conn.invoke.call_args[0][2]
     assert params["_dc_meta"]["source_device"] == "trusted-controller"
     assert params["instruction"] == "pick up the cube"
@@ -483,31 +535,40 @@ def test_tell_invoke_carries_identity(monkeypatch):
 
 # ── device-native rpc action is HITL-gated ────────────────────
 
+
 def test_rpc_is_interrupt_required():
     from strands_robots.tools.robot_mesh import _INTERRUPT_REQUIRED
+
     assert "rpc" in _INTERRUPT_REQUIRED
 
 
 def test_rpc_declined_by_operator_is_rejected(monkeypatch):
     """With DC disabled, an rpc action must still raise the HITL interrupt and
     fail closed when the operator declines."""
-    import strands_robots.tools.robot_mesh as rm
     from unittest.mock import MagicMock
+
+    import strands_robots.tools.robot_mesh as rm
 
     monkeypatch.setenv("STRANDS_ROBOT_MESH_DC", "off")
     ctx = MagicMock(name="ToolContext")
     ctx.interrupt.return_value = "n"  # operator declines
 
     fn = getattr(rm.robot_mesh, "original", rm.robot_mesh)
-    res = fn(action="rpc", tool_context=ctx, target="device-1",
-             function="updateFirmware", command='{"url":"http://evil/x.bin"}')
+    res = fn(
+        action="rpc",
+        tool_context=ctx,
+        target="device-1",
+        function="updateFirmware",
+        command='{"url":"http://evil/x.bin"}',
+    )
     assert res["status"] == "error"
     assert ctx.interrupt.called
 
 
 def test_rpc_surfaces_function_in_interrupt(monkeypatch):
-    import strands_robots.tools.robot_mesh as rm
     from unittest.mock import MagicMock
+
+    import strands_robots.tools.robot_mesh as rm
 
     monkeypatch.setenv("STRANDS_ROBOT_MESH_DC", "off")
     ctx = MagicMock(name="ToolContext")

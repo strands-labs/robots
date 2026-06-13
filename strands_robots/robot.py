@@ -381,9 +381,7 @@ def _attach_device_connect(instance: Any, canonical: str, mode: str, peer_id: st
     ``Robot("so100").run()`` brings the device online as a Device Connect device
     (the primary networking layer), blocking until Ctrl+C.
     """
-    instance._peer_id = (
-        peer_id or getattr(instance, "peer_id", None) or f"{canonical}-{os.urandom(3).hex()}"
-    )
+    instance._peer_id = peer_id or getattr(instance, "peer_id", None) or f"{canonical}-{os.urandom(3).hex()}"
     instance._peer_type = "sim" if mode == "sim" else "robot"
     instance._device_connect_runtime = None
     instance.run = lambda: _run_device_connect_foreground(instance)
@@ -412,7 +410,9 @@ def _run_device_connect_foreground(instance: Any) -> None:
         from strands_robots.device_connect import init_device_connect_sync
 
         instance._device_connect_runtime = init_device_connect_sync(
-            instance, peer_id=peer_id, peer_type=peer_type,
+            instance,
+            peer_id=peer_id,
+            peer_type=peer_type,
         )
     except Exception as e:  # noqa: BLE001 — surface but keep the process alive
         logger.warning("Device Connect init failed: %s", e)

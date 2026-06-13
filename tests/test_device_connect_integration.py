@@ -110,6 +110,7 @@ class TestRobotDriverRegistration:
     async def test_robot_driver_registers(self):
         """Create RobotDeviceDriver + DeviceRuntime, verify device is discoverable."""
         from device_connect_edge import DeviceRuntime
+
         from strands_robots.device_connect.robot_driver import RobotDeviceDriver
 
         robot = _make_mock_robot()
@@ -126,6 +127,7 @@ class TestRobotDriverRegistration:
             await asyncio.sleep(3)
 
             from device_connect_agent_tools.connection import connect, disconnect, get_connection
+
             await asyncio.to_thread(connect)
             try:
                 conn = get_connection()
@@ -144,6 +146,7 @@ class TestRobotDriverRegistration:
     async def test_robot_execute_rpc(self):
         """Discover robot and invoke execute RPC."""
         from device_connect_edge import DeviceRuntime
+
         from strands_robots.device_connect.robot_driver import RobotDeviceDriver
 
         robot = _make_mock_robot()
@@ -159,12 +162,14 @@ class TestRobotDriverRegistration:
             await asyncio.sleep(3)
 
             from device_connect_agent_tools.connection import connect, disconnect, get_connection
+
             await asyncio.to_thread(connect)
             try:
                 conn = get_connection()
                 result = await asyncio.to_thread(
                     conn.invoke,
-                    "itest-robot-exec", "execute",
+                    "itest-robot-exec",
+                    "execute",
                     {"instruction": "test move", "policy_provider": "mock", "duration": 5.0},
                 )
                 assert "result" in result, f"Expected result in {result}"
@@ -181,6 +186,7 @@ class TestRobotDriverRegistration:
     async def test_robot_stop_rpc(self):
         """Invoke stop RPC on a registered robot."""
         from device_connect_edge import DeviceRuntime
+
         from strands_robots.device_connect.robot_driver import RobotDeviceDriver
 
         robot = _make_mock_robot()
@@ -196,6 +202,7 @@ class TestRobotDriverRegistration:
             await asyncio.sleep(3)
 
             from device_connect_agent_tools.connection import connect, disconnect, get_connection
+
             await asyncio.to_thread(connect)
             try:
                 conn = get_connection()
@@ -218,6 +225,7 @@ class TestSimDriverRegistration:
     async def test_sim_driver_registers(self):
         """Create SimulationDeviceDriver + DeviceRuntime, verify device is discoverable."""
         from device_connect_edge import DeviceRuntime
+
         from strands_robots.device_connect.sim_driver import SimulationDeviceDriver
 
         sim = _make_mock_sim()
@@ -233,6 +241,7 @@ class TestSimDriverRegistration:
             await asyncio.sleep(3)
 
             from device_connect_agent_tools.connection import connect, disconnect, get_connection
+
             await asyncio.to_thread(connect)
             try:
                 conn = get_connection()
@@ -251,6 +260,7 @@ class TestSimDriverRegistration:
     async def test_sim_step_rpc(self):
         """Invoke step RPC on a registered simulation."""
         from device_connect_edge import DeviceRuntime
+
         from strands_robots.device_connect.sim_driver import SimulationDeviceDriver
 
         sim = _make_mock_sim()
@@ -266,6 +276,7 @@ class TestSimDriverRegistration:
             await asyncio.sleep(3)
 
             from device_connect_agent_tools.connection import connect, disconnect, get_connection
+
             await asyncio.to_thread(connect)
             try:
                 conn = get_connection()
@@ -288,6 +299,7 @@ class TestMultipleDevices:
     async def test_multiple_devices_discoverable(self):
         """Register 3 devices and verify all are discoverable."""
         from device_connect_edge import DeviceRuntime
+
         from strands_robots.device_connect.robot_driver import RobotDeviceDriver
         from strands_robots.device_connect.sim_driver import SimulationDeviceDriver
 
@@ -315,6 +327,7 @@ class TestMultipleDevices:
             await asyncio.sleep(5)
 
             from device_connect_agent_tools.connection import connect, disconnect, get_connection
+
             await asyncio.to_thread(connect)
             try:
                 conn = get_connection()
@@ -346,6 +359,7 @@ class TestInitDeviceConnectE2E:
             await asyncio.sleep(3)
 
             from device_connect_agent_tools.connection import connect, disconnect, get_connection
+
             await asyncio.to_thread(connect)
             try:
                 conn = get_connection()
