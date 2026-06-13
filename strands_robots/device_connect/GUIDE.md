@@ -28,18 +28,24 @@ You can optionally pass `peer_id="so100-lab-1"` for a stable address; otherwise 
 | Pattern | Behavior |
 |---|---|
 | `r = Robot("so100"); r.run()` | **Option A — Foreground server.** Process stays alive, listens for commands. Ctrl+C to stop. |
-| `r = Robot("so100")` | **Option B — Agent-controlled.** A Strands Agent discovers the robot via `robot_mesh` or `discover_devices()` and invokes commands remotely. |
+| `r = Robot("so100")` | **Option B — Agent-controlled.** A Strands Agent discovers the robot via `robot_mesh` or `discover()` and invokes commands remotely. |
 
 From another process, discover and invoke:
 
 ```python
 from strands_robots.tools.robot_mesh import robot_mesh
 
-robot_mesh(action="peers")                           # discover devices
-robot_mesh(action="tell", target="so100-lab-1",      # invoke
+robot_mesh(action="peers")                           # discover (read-only)
+robot_mesh(action="tell", target="so100-lab-1",      # invoke (HITL-approved)
            instruction="pick up the cube")
 robot_mesh(action="emergency_stop")                   # e-stop all (HITL-approved)
 ```
+
+> **Heads up:** the actuation actions — `tell`, `send`, `stop`, `broadcast`,
+> `emergency_stop`, and `rpc` — are gated behind a human-in-the-loop approval, so
+> they run only from inside a Strands agent loop (where the operator approves).
+> Called from a bare script they **fail closed**. Read-only `peers` works
+> anywhere. The gated set is configurable via `STRANDS_MESH_HITL_ACTIONS`.
 
 ### Architecture
 
@@ -62,7 +68,7 @@ graph TD
 
     subgraph "Agent Process"
         AGENT["Strands Agent"]
-        TOOLS["discover_devices + invoke_device"]
+        TOOLS["discover + invoke"]
         AGENT --> TOOLS
         TOOLS --> ZENOH_R
     end
@@ -145,7 +151,9 @@ Discovered 1 device(s):
 
 **Tell a robot to execute an instruction:**
 
-Use the `<PEER_ID>` from the discover step above as the `target`:
+`tell` is a human-in-the-loop-gated action (see the safety note below), so it runs
+only from inside a Strands agent loop where the operator approves it. Use the
+`<PEER_ID>` from the discover step above as the `target`:
 
 ```python
 python -c "
@@ -155,23 +163,33 @@ print(robot_mesh(action='tell', target='<PEER_ID>',
 "
 ```
 
-Expected output:
+Inside an agent loop, on operator approval:
 
 ```
 -> <PEER_ID>: pick up the cube
   {"status": "success", "content": [...]}
 ```
 
+Run as a bare script (no operator to ask) it **fails closed**, exactly like
+`emergency_stop` below:
+
+```
+{'status': 'error', 'content': [{'text': "action 'tell' requires a
+human-in-the-loop interrupt, but no tool_context is available in this calling
+context."}]}
+```
+
 **Emergency stop all devices:**
 
-> **Safety — human-in-the-loop.** `emergency_stop` and `broadcast` are
-> fleet-wide actions gated behind an operator approval interrupt
-> (`tool_context.interrupt`), plus a per-action rate limit and an audit log.
-> They run only when invoked from inside a Strands agent loop, where the
-> operator approves the action out-of-band of the LLM's tool arguments (so
-> prompt-injection cannot smuggle approval). Device Connect dispatch is layered
-> *under* this gate, so DC inherits the same safety. Called as a bare script —
-> with no operator to ask — `emergency_stop` **fails closed**:
+> **Safety — human-in-the-loop.** Every physical-actuation action —
+> `emergency_stop`, `broadcast`, `tell`, `send`, `stop`, and `rpc` — is gated
+> behind an operator approval interrupt (`tool_context.interrupt`), plus a
+> per-action rate limit and an audit log. They run only when invoked from inside
+> a Strands agent loop, where the operator approves the action out-of-band of the
+> LLM's tool arguments (so prompt-injection cannot smuggle approval). The gated
+> set is configurable via `STRANDS_MESH_HITL_ACTIONS`. Device Connect dispatch is
+> layered *under* this gate, so DC inherits the same safety. Called as a bare
+> script — with no operator to ask — these actions **fail closed**:
 
 ```python
 python -c "
@@ -199,26 +217,33 @@ E-STOP: 1/1 devices stopped
 
 ```python
 python -c "
-from device_connect_agent_tools import connect, discover_devices, invoke_device
+from device_connect_agent_tools import connect, discover, invoke
 
 connect()
 
-devices = discover_devices()
-print(f'Found {len(devices)} robot(s):')
-for d in devices:
+# discover() takes a selector and returns {'matched': N, 'results': [...]}
+found = discover('device(*)')
+print(f'Found {found[\"matched\"]} robot(s):')
+for d in found['results']:
     print(f'  {d[\"device_id\"]} — {d.get(\"status\", {}).get(\"availability\", \"?\")}')
 
-if devices:
-    result = invoke_device(
-        devices[0]['device_id'], 'execute',
+if found['results']:
+    did = found['results'][0]['device_id']
+    result = invoke(
+        f'device({did}).function(execute)',
         {'instruction': 'pick up the cube', 'policy_provider': 'mock'},
     )
     print(f'Execute result: {result}')
 
-    status = invoke_device(devices[0]['device_id'], 'getStatus')
+    status = invoke(f'device({did}).function(getStatus)')
     print(f'Status: {status}')
 "
 ```
+
+> `device-connect-agent-tools` is the raw RPC layer, *below* the `robot_mesh`
+> tool, so it is not subject to `robot_mesh`'s human-in-the-loop gate — these
+> calls invoke the device directly (the device's own per-caller allowlist still
+> applies; see *Per-caller RPC allowlist* below).
 
 Expected output:
 
@@ -264,7 +289,7 @@ export ZENOH_CONNECT=tcp/localhost:7447
 All the options above (A–B) work identically with full infrastructure — the only difference is that devices register in etcd and discovery goes through the registry service instead of multicast scouting.
 
 > **What infrastructure adds over D2D:**
-> - **Persistent device registry** — devices register with TTL-based leases; stale devices are auto-cleaned. Agents can discover devices by type, location, or capability via `discover_devices()`.
+> - **Persistent device registry** — devices register with TTL-based leases; stale devices are auto-cleaned. Agents can discover devices by type, location, or capability via `discover()`.
 > - **Distributed state & locks** — etcd-backed key-value store with atomic distributed locks for coordinating shared resources (e.g., preventing two agents from using the same robotic arm simultaneously).
 > - **Cross-network routing** — the Zenoh router (or NATS broker) enables communication across subnets and sites, not just the local LAN.
 > - **Authentication & authorization** — mTLS ensures only devices with certificates signed by the trusted CA can exchange data. Full authorization (per-device permissions, topic-level ACLs, certificate revocation) requires the router/registry infrastructure.
@@ -358,7 +383,7 @@ graph TD
 
     subgraph "Agent Process"
         AGENT["Strands Agent"]
-        TOOLS["discover_devices + invoke_device"]
+        TOOLS["discover + invoke"]
         AGENT --> TOOLS
         TOOLS --> ZENOH
     end
@@ -384,8 +409,8 @@ runtime = DeviceRuntime(
 await runtime.run()
 
 # Now any agent can discover and control it:
-invoke_device("reachy-mini-1", "look", {"pitch": -15, "yaw": 30})
-invoke_device("reachy-mini-1", "nod")
+invoke('device(reachy-mini-1).function(look)', {"pitch": -15, "yaw": 30})
+invoke('device(reachy-mini-1).function(nod)')
 ```
 
 ### E2E Demo
@@ -433,9 +458,9 @@ device_connect_edge.device.reachy-mini-1 - INFO - Subscribed to commands on devi
 
 ```python
 python -c "
-from device_connect_agent_tools import connect, invoke_device
+from device_connect_agent_tools import connect, invoke
 connect()
-print(invoke_device('reachy-mini-1', 'look', {'pitch': -15, 'yaw': 30}))
-print(invoke_device('reachy-mini-1', 'nod'))
+print(invoke('device(reachy-mini-1).function(look)', {'pitch': -15, 'yaw': 30}))
+print(invoke('device(reachy-mini-1).function(nod)'))
 "
 ```
