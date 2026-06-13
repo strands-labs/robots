@@ -124,6 +124,9 @@ dev = [
     "pytest-timeout>=2.0.0,<3.0.0",
 ]
 
+[project.scripts]
+strands-robots = "strands_robots.__main__:main"
+
 [project.urls]
 Homepage = "https://github.com/strands-labs/robots"
 Documentation = "https://github.com/strands-labs/robots#readme"
