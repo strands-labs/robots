@@ -41,6 +41,7 @@ from .robots import (
     format_robot_table,
     get_hardware_type,
     get_robot,
+    get_robot_info,
     has_hardware,
     has_sim,
     list_aliases,
@@ -58,6 +59,7 @@ __all__ = [
     # Robot registry
     "resolve_name",
     "get_robot",
+    "get_robot_info",
     "has_sim",
     "has_hardware",
     "get_hardware_type",

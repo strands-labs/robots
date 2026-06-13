@@ -9,6 +9,7 @@ from strands_robots.registry.robots import (
     format_robot_table,
     get_hardware_type,
     get_robot,
+    get_robot_info,
     has_hardware,
     has_sim,
     list_aliases,
@@ -420,3 +421,34 @@ class TestRobotRegistry:
 
     def test_has_hardware_unknown_returns_false(self):
         assert has_hardware("nonexistent_xyz") is False
+
+    # #405 / AX-2: get_robot_info discovery alias.
+
+    def test_get_robot_info_is_get_robot_alias(self):
+        """registry.get_robot_info must be the same object as get_robot --
+        a thin discoverability alias, not a divergent reimplementation."""
+        assert get_robot_info is get_robot
+
+    def test_get_robot_info_importable_from_package(self):
+        """The alias must be reachable from the package root the way an
+        autonomous agent reaches for it (the import that used to ImportError)."""
+        from strands_robots.registry import get_robot_info as pkg_alias
+
+        assert pkg_alias is get_robot
+
+    def test_get_robot_info_returns_definition(self):
+        """The alias returns the same full definition as get_robot."""
+        assert get_robot_info("so100") == get_robot("so100")
+
+    def test_get_robot_info_via_alias_name(self):
+        """The alias resolves robot aliases identically to get_robot."""
+        assert get_robot_info("franka") == get_robot("panda")
+
+    def test_get_robot_info_unknown_returns_none(self):
+        assert get_robot_info("nonexistent_xyz") is None
+
+    def test_get_robot_info_in_public_all(self):
+        """The alias is exported from the registry package __all__."""
+        import strands_robots.registry as reg
+
+        assert "get_robot_info" in reg.__all__

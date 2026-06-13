@@ -74,6 +74,16 @@ def get_robot(name: str) -> dict[str, Any] | None:
     return result
 
 
+# Discoverability alias (#405 / AX-2): autonomous agents reach for
+# ``get_robot_info`` by analogy with ``get_robot_state`` and burn a call on
+# ``ImportError: cannot import name 'get_robot_info'`` before finding
+# ``get_robot``. Expose the intuitive name as a thin alias of ``get_robot`` so
+# both spellings resolve to the same definition lookup. (Distinct from
+# ``strands_robots.assets.get_robot_info``, which enriches the result with
+# resolved asset paths -- the registry alias is the pure definition lookup.)
+get_robot_info = get_robot
+
+
 def has_sim(name: str) -> bool:
     """Check if a robot has simulation assets (MJCF/URDF)."""
     info = get_robot(name)
