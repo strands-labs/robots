@@ -1,9 +1,25 @@
 #!/usr/bin/env python3
-"""Live SO101 pick-and-place driven by MolmoAct2 via the strands PR interface.
+"""SO101 pick-and-place driven by MolmoAct2 — strands_robots simplified API.
 
-Uses strands_robots.policies.create_policy() (the PR-integrated path) — NOT a
-bespoke Policy subclass. Demonstrates the molmoact2 transformers-native
-checkpoint running through LerobotLocalPolicy end-to-end on real hardware.
+Demonstrates how strands_robots.policies.create_policy() eliminates manual
+configuration that the raw lerobot path requires. The embodiment="so_real"
+parameter handles:
+  - Motor key mapping (shoulder_pan.pos, shoulder_lift.pos, ...)
+  - Camera observation rename (front -> observation.images.image)
+  - State/action dimensionality reconciliation (dim_policy="pad")
+  - MolmoAct2 transformers-native checkpoint detection
+  - Normalization tag auto-discovery from norm_stats.json
+  - Processor bridge construction (pre/post processing pipelines)
+
+Hardware requirements:
+  - SO101 follower arm on a serial port
+  - Front camera (OpenCV-compatible, index 0)
+  - CUDA GPU for inference (or cpu for testing)
+
+Usage:
+  export STRANDS_TRUST_REMOTE_CODE=1
+  python molmoact2_so101_pickplace.py --task "Pick up the pen"
+  python molmoact2_so101_pickplace.py --dry-run  # no motor commands
 """
 
 from __future__ import annotations
@@ -14,17 +30,9 @@ import logging
 import time
 
 logging.basicConfig(level=logging.INFO)
-log = logging.getLogger("molmoact2_so101_hw")
+log = logging.getLogger("molmoact2_so101")
 
 REPO = "allenai/MolmoAct2-SO100_101"
-SO101_MOTORS = [
-    "shoulder_pan.pos",
-    "shoulder_lift.pos",
-    "elbow_flex.pos",
-    "wrist_flex.pos",
-    "wrist_roll.pos",
-    "gripper.pos",
-]
 
 
 def main():
@@ -43,16 +51,19 @@ def main():
 
     from strands_robots.policies import create_policy
 
-    # 'front' matches the so_real embodiment's obs_rename -> observation.images.image
+    # Camera config: 'front' matches the so_real embodiment's obs_rename
     cam_cfg = {"front": OpenCVCameraConfig(index_or_path=args.camera, width=640, height=480, fps=30)}
     robot = SO101Follower(SO101FollowerConfig(port=args.port, id=args.cal, cameras=cam_cfg))
     log.info("Connecting SO101 @ %s (cal=%s)...", args.port, args.cal)
     robot.connect(calibrate=False)
     log.info("Connected. obs keys: %s", list(robot.get_observation().keys()))
 
-    # PR-integrated path: smart-string repo -> lerobot_local + molmoact2 detection.
+    # ONE call creates and configures the entire policy:
+    #   - Detects MolmoAct2 transformers-native checkpoint
+    #   - Loads 'so_real' embodiment (motor keys + camera renames)
+    #   - Builds MolmoAct2Config, norm_tag, processor bridge
+    #   - robot_state_keys auto-set from embodiment.action_keys
     policy = create_policy(REPO, embodiment="so_real", device="cuda")
-    policy.set_robot_state_keys(SO101_MOTORS)
     policy.reset()
 
     async def run():

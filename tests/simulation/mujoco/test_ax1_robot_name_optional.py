@@ -63,10 +63,13 @@ class TestGetRobotStateOptional:
         result = single_robot_sim.get_robot_state(robot_name="alice")
         assert result["status"] == "success"
 
-    def test_two_robots_no_arg_raises(self, two_robot_sim):
-        """Two-robot sim -> get_robot_state() raises ValueError listing both names."""
-        with pytest.raises(ValueError, match=".*alice.*bob.*|.*bob.*alice.*"):
-            two_robot_sim.get_robot_state()
+    def test_two_robots_no_arg_returns_error(self, two_robot_sim):
+        """Two-robot sim -> get_robot_state() returns structured error listing both names."""
+        result = two_robot_sim.get_robot_state()
+        assert result["status"] == "error"
+        text = result["content"][0]["text"]
+        assert "alice" in text
+        assert "bob" in text
 
     def test_two_robots_explicit_arg_works(self, two_robot_sim):
         """Two-robot sim -> get_robot_state(robot_name='alice') works fine."""
@@ -84,10 +87,13 @@ class TestRunPolicyOptional:
         result = single_robot_sim.run_policy(policy_provider="mock", duration=0.1, control_frequency=10.0)
         assert result["status"] == "success", f"Expected success, got: {result}"
 
-    def test_two_robots_no_arg_raises(self, two_robot_sim):
-        """Two robots -> run_policy() raises ValueError listing both names."""
-        with pytest.raises(ValueError, match=".*alice.*bob.*|.*bob.*alice.*"):
-            two_robot_sim.run_policy(policy_provider="mock", duration=0.1)
+    def test_two_robots_no_arg_returns_error(self, two_robot_sim):
+        """Two robots -> run_policy() returns structured error listing both names."""
+        result = two_robot_sim.run_policy(policy_provider="mock", duration=0.1)
+        assert result["status"] == "error"
+        text = result["content"][0]["text"]
+        assert "alice" in text
+        assert "bob" in text
 
 
 class TestStartPolicyOptional:
@@ -102,10 +108,13 @@ class TestStartPolicyOptional:
 
         time.sleep(0.5)
 
-    def test_two_robots_no_arg_raises(self, two_robot_sim):
-        """Two robots -> start_policy() raises ValueError listing both names."""
-        with pytest.raises(ValueError, match=".*alice.*bob.*|.*bob.*alice.*"):
-            two_robot_sim.start_policy(policy_provider="mock", duration=0.1)
+    def test_two_robots_no_arg_returns_error(self, two_robot_sim):
+        """Two robots -> start_policy() returns structured error listing both names."""
+        result = two_robot_sim.start_policy(policy_provider="mock", duration=0.1)
+        assert result["status"] == "error"
+        text = result["content"][0]["text"]
+        assert "alice" in text
+        assert "bob" in text
 
 
 class TestRobotFactoryEntryPoint:
