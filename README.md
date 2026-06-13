@@ -91,8 +91,10 @@ graph LR
 
 ## Installation
 
+Examples use [`uv`](https://docs.astral.sh/uv/) (`curl -LsSf https://astral.sh/uv/install.sh | sh`); plain `pip` works too.
+
 ```bash
-pip install strands-robots
+uv pip install strands-robots
 ```
 
 The base install is light (numpy, opencv-headless, Pillow). Pull in only the
@@ -111,13 +113,13 @@ extras you need:
 
 ```bash
 # Most users start here:
-pip install "strands-robots[sim-mujoco]"
+uv pip install "strands-robots[sim-mujoco]"
 
 # Real hardware + local policies:
-pip install "strands-robots[sim-mujoco,lerobot]"
+uv pip install "strands-robots[sim-mujoco,lerobot]"
 
 # Everything:
-pip install "strands-robots[all]"
+uv pip install "strands-robots[all]"
 ```
 
 From source:
@@ -125,7 +127,7 @@ From source:
 ```bash
 git clone https://github.com/strands-labs/robots
 cd robots
-pip install -e ".[all,dev]"
+uv pip install -e ".[all,dev]"
 ```
 
 ## Quick starts
@@ -407,8 +409,8 @@ curl http://localhost:8000/healthz   # -> 200 when ready (~4 min cold)
 + `websockets` — numpy-version agnostic):
 
 ```bash
-pip install -e '.[sim-mujoco]'
-pip install 'strands-robots[cosmos3-service]'
+uv pip install -e '.[sim-mujoco]'
+uv pip install 'strands-robots[cosmos3-service]'
 ```
 
 **3. Use it** (`cosmos3`, `c3`, `cosmos3://host:port`, or the HF model-id all
@@ -614,7 +616,7 @@ a.mesh.tell(
 Expose the mesh to an agent with the `robot_mesh` tool (`peers`, `status`,
 `tell`, `send`, `broadcast`, `stop`, `emergency_stop`, `subscribe`, `watch`,
 `inbox`). Disable globally with `STRANDS_MESH=false` or per-robot with
-`Robot("so100", mesh=False)`. Install with `pip install "strands-robots[mesh]"`.
+`Robot("so100", mesh=False)`. Install with `uv pip install "strands-robots[mesh]"`.
 
 For frictionless single-machine experiments, set `STRANDS_MESH_LOCAL_DEV=1` —
 one env var that runs the mesh without mTLS/ACL on localhost. It defaults the
@@ -629,7 +631,7 @@ For robots across networks, bridge the mesh to AWS IoT Core over MQTT5/mTLS,
 with Device Shadow mirroring, S3 camera offload, and account-wide Fleet
 Provisioning. Hardened with CA pinning, strict thing-name validation,
 deny-by-default IoT policy scoping, and a safety audit log.
-Install with `pip install "strands-robots[mesh-iot]"`. See the
+Install with `uv pip install "strands-robots[mesh-iot]"`. See the
 [Configuration](#configuration) matrix for the `STRANDS_MESH_*` knobs.
 
 ## Configuration
@@ -654,6 +656,22 @@ Install with `pip install "strands-robots[mesh-iot]"`. See the
 | `STRANDS_MESH_CA_PINS` | Additional SHA-256 CA pins (comma-separated 64-char hex) | unset |
 | `STRANDS_MESH_DISABLE_CA_PIN` | Skip CA pin check on download path (break-glass) | `false` |
 | `STRANDS_MESH_CAMERA_PRESIGN_TTL` | TTL (s) for S3 presigned camera URLs; capped at 3600 | `60` |
+| `STRANDS_MESH_ACL_FILE` | Path to a JSON5 Zenoh ACL file; unset = permissive default. See `examples/mesh_acl_example.json5` (role-scoped) and `examples/mesh_acl_strict_per_peer.json5` (per-peer) | unset |
+| `STRANDS_MESH_POLICY_HOST_ALLOW` | Comma-separated allowlist of VLA policy-server hosts/CIDRs for inference | loopback only |
+| `STRANDS_MESH_HITL_ACTIONS` | `robot_mesh` actions needing a human-in-the-loop interrupt: `all` / `none` / subset of `emergency_stop,broadcast,tell,send,stop,subscribe,watch` | actuation default |
+| `STRANDS_MESH_SUBSCRIBE_ALLOW` | Extra Zenoh key-expr patterns the `robot_mesh` `subscribe` action may target, beyond the built-in low-impact set | shared classes only |
+| `STRANDS_MESH_OVERRIDE_CODE` | Shared secret for e-stop resume HMAC proof; unset means no remote resume possible | unset |
+| `STRANDS_MESH_INPUT_VALUE_ABS` | Absolute value clamp for teleop joint commands (radians) | `12.566` (4pi) |
+| `STRANDS_MESH_INPUT_MAX_HZ` | Per-receiver teleop apply-rate ceiling (0 = unlimited) | `100` |
+| `STRANDS_MESH_MAX_PEERS` | Peer registry cap; evicts oldest on overflow | `1024` |
+| `STRANDS_MESH_RESUME_MAX_FAILS` | Failed resume attempts before cooldown engages | `5` |
+| `STRANDS_MESH_RESUME_BACKOFF_S` | Cooldown (seconds) after exceeding resume fail threshold | `30` |
+| `STRANDS_MESH_INPUT_AUDIT_EVERY` | Emit `input_stream_applied` audit event every N frames (0 = off) | `100` |
+| `STRANDS_ESTOP_DEDUP_TTL_S` | E-stop fan-out Lambda dedup window (seconds) | `30` |
+| `STRANDS_MESH_BRIDGE_TOPICS` | Comma-separated topic suffixes the Zenoh<->IoT bridge forwards (exact match). Unset = the safe default set (`presence,health,safety/event,safety/estop,safety/resume,cmd,response,broadcast`). High-volume topics (`state,pose,imu,odom,lidar`) and LAN-only topics (`camera,input,hand`) are deliberately NOT bridged | default set |
+| `STRANDS_MESH_BRIDGE_TOPICS_PREFIX` | Comma-separated topic suffixes the bridge matches as a path **prefix** (so `response` matches `response/<turn-id>`). Extend this (not `STRANDS_MESH_BRIDGE_TOPICS`) when adding an RPC-shape topic with a per-turn tail | `response` |
+| `STRANDS_GR00T_IMAGE` | Container image the `gr00t_inference` tool runs (must pass the image allowlist; agent cannot choose it) | `gr00t:latest` |
+| `STRANDS_GR00T_IMAGE_ALLOW` | Extra image-name patterns (trailing `*` = tag wildcard) added to the built-in allowlist (`gr00t:*`, `nvcr.io/nvidia/isaac-gr00t:*`) | built-in only |
 
 <details>
 <summary><b>Benchmark / diagnostic env vars (LIBERO, GR00T bisection)</b></summary>
@@ -686,7 +704,7 @@ benchmark integration on the MuJoCo backend — byte-equivalent to upstream
 LIBERO at the model level, reaching `success_rate >= 0.92` on libero-10/SCENE5.
 Register declarative benchmarks from file and evaluate policies via the
 `list_benchmarks`, `register_benchmark_from_file`, and `evaluate_benchmark`
-simulation actions. Install with `pip install "strands-robots[benchmark-libero]"`.
+simulation actions. Install with `uv pip install "strands-robots[benchmark-libero]"`.
 
 ## Project structure
 
@@ -715,7 +733,7 @@ strands_robots/
 ## Development
 
 ```bash
-pip install -e ".[all,dev]"
+uv pip install -e ".[all,dev]"
 
 hatch run test          # unit tests
 hatch run test-integ    # integration tests (GPU + model weights)

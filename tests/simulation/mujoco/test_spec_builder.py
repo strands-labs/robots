@@ -476,6 +476,101 @@ class TestAttachRobot:
         ]
         assert planes == ["ground"]
 
+    def test_attach_robot_keeps_floor_when_world_ground_disabled(self, tmp_path):
+        """#363 guard 1: under ``ground_plane=False`` the world owns no ground
+        plane, so the robot's own floor must NOT be stripped -- otherwise the
+        opt-out scene is left with zero ground planes."""
+        robot_with_floor = """
+        <mujoco model="arm_with_floor">
+          <compiler angle="radian"/>
+          <worldbody>
+            <geom name="floor" size="0 0 0.05" type="plane"/>
+            <body name="base" pos="0 0 0.1">
+              <joint name="pan" type="hinge" axis="0 0 1"/>
+              <geom type="cylinder" size="0.05 0.05"/>
+            </body>
+          </worldbody>
+        </mujoco>
+        """
+        path = tmp_path / "arm_with_floor.xml"
+        path.write_text(robot_with_floor)
+
+        scene = SpecBuilder.build(SimWorld(ground_plane=False))
+        robot = SimRobot(name="arm1", urdf_path=str(path), position=[0.0, 0.0, 0.0])
+        SpecBuilder.attach_robot(scene, robot, str(path))
+        model = scene.compile()
+        planes = [
+            mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, g)
+            for g in range(model.ngeom)
+            if model.geom_type[g] == mujoco.mjtGeom.mjGEOM_PLANE
+        ]
+        # The robot floor is the ONLY floor source -- it must survive.
+        assert len(planes) == 1, f"opt-out scene must keep the robot floor, got {planes}"
+
+    def test_attach_robot_logs_debug_on_strip(self, tmp_path, caplog):
+        """#363 guard 2: the plane strip emits a DEBUG record naming what was
+        removed so a disappearing floor is diagnosable."""
+        import logging
+
+        robot_with_floor = """
+        <mujoco model="arm_with_floor">
+          <compiler angle="radian"/>
+          <worldbody>
+            <geom name="floor" size="0 0 0.05" type="plane"/>
+            <body name="base" pos="0 0 0.1">
+              <joint name="pan" type="hinge" axis="0 0 1"/>
+              <geom type="cylinder" size="0.05 0.05"/>
+            </body>
+          </worldbody>
+        </mujoco>
+        """
+        path = tmp_path / "arm_with_floor.xml"
+        path.write_text(robot_with_floor)
+        scene = SpecBuilder.build(SimWorld())
+        robot = SimRobot(name="arm1", urdf_path=str(path), position=[0.0, 0.0, 0.0])
+        with caplog.at_level(logging.DEBUG, logger="strands_robots.simulation.mujoco.spec_builder"):
+            SpecBuilder.attach_robot(scene, robot, str(path))
+        msgs = [r.getMessage() for r in caplog.records if "stripped" in r.getMessage()]
+        assert msgs, f"expected a DEBUG record about the stripped plane; got {[r.getMessage() for r in caplog.records]}"
+
+    def test_attach_robot_keeps_non_z0_plane(self, tmp_path):
+        """#363 guard 3: a robot plane that is NOT z=0 axis-aligned (e.g. an
+        elevated/angled ramp modeled as a plane) must survive the strip; only
+        the z=0 ground floor is removed."""
+        robot_with_ramp = """
+        <mujoco model="arm_with_ramp">
+          <compiler angle="radian"/>
+          <worldbody>
+            <geom name="floor" size="0 0 0.05" type="plane"/>
+            <geom name="ramp" size="1 1 0.05" type="plane" pos="0 0 0.5"/>
+            <body name="base" pos="0 0 0.1">
+              <joint name="pan" type="hinge" axis="0 0 1"/>
+              <geom type="cylinder" size="0.05 0.05"/>
+            </body>
+          </worldbody>
+        </mujoco>
+        """
+        path = tmp_path / "arm_with_ramp.xml"
+        path.write_text(robot_with_ramp)
+        scene = SpecBuilder.build(SimWorld())
+        robot = SimRobot(name="arm1", urdf_path=str(path), position=[0.0, 0.0, 0.0])
+        SpecBuilder.attach_robot(scene, robot, str(path))
+        model = scene.compile()
+        plane_labels = [
+            mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, g)
+            for g in range(model.ngeom)
+            if model.geom_type[g] == mujoco.mjtGeom.mjGEOM_PLANE
+        ]
+        # World ground survives + the elevated ramp survives; the z=0 robot
+        # floor is the only plane stripped.
+        assert "ground" in plane_labels
+        assert any("ramp" in (lbl or "") for lbl in plane_labels), (
+            f"the non-z=0 ramp plane must survive the strip; got {plane_labels}"
+        )
+        assert not any(lbl and lbl.endswith("floor") for lbl in plane_labels), (
+            f"the z=0 robot floor should have been stripped; got {plane_labels}"
+        )
+
 
 # from_mjcf_string / from_file
 

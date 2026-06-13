@@ -17,6 +17,7 @@ import functools
 import importlib
 import inspect
 import json
+import keyword
 import logging
 import pkgutil
 from pathlib import Path
@@ -79,11 +80,19 @@ def _ensure_policy_configs_registered() -> None:
     ``test_molmoact2_registered_after_stubbed_lerobot_policies``
     regression test exercises exactly this contract.
 
-    Note: the ``ImportError`` early-return (lerobot not installed) is
-    also cached. In the rare case where lerobot becomes available later
-    in the same process (e.g. a notebook ``pip install``), callers must
-    ``cache_clear()`` before retrying. This is acceptable because the
-    realistic failure mode (no lerobot at all) is terminal.
+    ImportError early-return contract
+    ---------------------------------
+    The ``ImportError`` early-return below (lerobot not installed, or a
+    partial install / namespace conflict that survives
+    ``_ensure_lerobot_policies_importable``) is **also** memoised by
+    ``@functools.cache``. Once it returns, the no-op state is frozen for
+    the lifetime of the process: subsequent calls hit the cache *before*
+    the import is retried, so a lerobot that becomes importable later in
+    the same process (e.g. a Jupyter ``pip install``) is never re-walked.
+    Callers that recover from a missing/partial lerobot install MUST call
+    ``_ensure_policy_configs_registered.cache_clear()`` before retrying.
+    This is acceptable as a default because the realistic failure mode
+    (no lerobot at all) is terminal for the resolution path.
     """
     # Make sure lerobot.policies is at least registered in sys.modules
     # without executing its (potentially heavy) __init__.
@@ -135,7 +144,13 @@ def _ensure_policy_configs_registered() -> None:
                 if name.startswith("_") or name.startswith("."):
                     continue
                 # Identifier check: only valid Python module names.
-                if not name.isidentifier():
+                # ``str.isidentifier()`` accepts Python *keywords* (``class``,
+                # ``for``, ``is``, ...); a directory named after a keyword would
+                # pass this filter and then fail at ``import`` with a
+                # ``SyntaxError`` -- which is NOT a subclass of ``ImportError``,
+                # so it would escape the per-candidate catch and abort the walk.
+                # Mirror ``pkgutil``'s own filtering by also rejecting keywords.
+                if not name.isidentifier() or keyword.iskeyword(name):
                     continue
                 sub_names.add(name)
         except OSError as exc:

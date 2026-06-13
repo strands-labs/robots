@@ -118,13 +118,46 @@ class TestInterruptGate:
         assert r["status"] == "success"
         m.broadcast.assert_called_once()
 
-    def test_tell_does_not_raise_interrupt(self):
-        ctx = _make_ctx()
+    def test_tell_raises_interrupt_by_default(self):
+        """tell is a single-peer physical-actuation action and is in the
+        DEFAULT interrupt set -- a prompt-injected agent cannot drive a
+        robot without an out-of-band operator approval."""
+        ctx = _make_ctx(response="n")  # operator denies
+        m = _stub_mesh()
+        with patch("strands_robots.tools.robot_mesh._resolve_mesh", return_value=m):
+            r = _call("tell", target="peer-a", instruction="pick up cube", ctx=ctx)
+        assert r["status"] == "error"
+        assert "declined" in r["content"][0]["text"].lower()
+        m.tell.assert_not_called()
+        ctx.interrupt.assert_called_once()
+        args, kwargs = ctx.interrupt.call_args
+        assert args[0] == "robot_mesh-tell-approval"
+        assert kwargs["reason"]["action"] == "tell"
+
+    def test_tell_runs_when_operator_approves(self):
+        ctx = _make_ctx(response="y")
         m = _stub_mesh()
         with patch("strands_robots.tools.robot_mesh._resolve_mesh", return_value=m):
             r = _call("tell", target="peer-a", instruction="pick up cube", ctx=ctx)
         assert r["status"] == "success"
-        ctx.interrupt.assert_not_called()  # tell is not in INTERRUPT_REQUIRED
+        m.tell.assert_called_once()
+
+    def test_tell_not_gated_when_opted_out(self, monkeypatch):
+        """Consumers can narrow the gate via STRANDS_MESH_HITL_ACTIONS.
+        With 'none', tell dispatches without an interrupt (back-compat
+        escape hatch for trusted single-tenant deployments)."""
+        monkeypatch.setenv("STRANDS_MESH_HITL_ACTIONS", "none")
+        rmt._reset_interrupt_actions_cache()
+        try:
+            ctx = _make_ctx()
+            m = _stub_mesh()
+            with patch("strands_robots.tools.robot_mesh._resolve_mesh", return_value=m):
+                r = _call("tell", target="peer-a", instruction="pick up cube", ctx=ctx)
+            assert r["status"] == "success"
+            ctx.interrupt.assert_not_called()
+            m.tell.assert_called_once()
+        finally:
+            rmt._reset_interrupt_actions_cache()
 
     def test_interrupt_unavailable_fails_closed(self):
         """When the runtime can't deliver interrupts (e.g. direct
@@ -300,3 +333,24 @@ class TestRateLimitTOCTOU:
         assert rmt._rate_limit_check_and_record("broadcast") is not None
         # Verify no spurious extra slot was added.
         assert len(rmt._RATE_HISTORY["broadcast"]) == 1
+
+
+class TestDeclineSideChannel322:
+    """#322: a declined HITL response must not leak the operator's literal
+    reply back into the LLM context (the human-as-content-side-channel)."""
+
+    def test_declined_response_not_echoed_to_llm(self):
+        """The operator's literal interrupt reply must NOT appear in the
+        tool result returned to the model. A flat sentinel is returned; the
+        full reply is kept only in the local audit row."""
+        secret = "no-because-CEO-said-PROJECT-TITAN-ships-friday"
+        ctx = _make_ctx(response=secret)
+        m = _stub_mesh()
+        with patch("strands_robots.tools.robot_mesh._resolve_mesh", return_value=m):
+            r = _call("emergency_stop", ctx=ctx)
+        assert r["status"] == "error"
+        text = r["content"][0]["text"]
+        assert "declined" in text.lower()
+        # The operator's literal reply MUST NOT be echoed to the LLM.
+        assert secret not in text, "operator's literal decline reply leaked to the LLM result (#322 side-channel)"
+        m.emergency_stop.assert_not_called()

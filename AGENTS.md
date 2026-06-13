@@ -252,3 +252,63 @@ Corrections from code review that apply to all future contributions:
   returns a `frozenset` so the dual-pin grace period is expressible. Any future
   pinned fingerprint (other roots, signing keys) should follow the same
   multi-value shape so rotation never requires a flag-day deploy.
+
+## Review Learnings (PR-6 - mesh core safety hardening)
+
+Corrections from the mesh safety/audit hardening review trail (#221/#225). They
+apply to all future work on `strands_robots/mesh/{core,audit,security}.py`.
+
+### Safety-handler discipline
+- **Hoist env-var reads out of the hot path and the lock.** Safety handlers
+  (`_on_safety_estop` / `_on_safety_resume`) run per-envelope; resolve lazy env
+  vars (`_resume_forward_skew_s`, `_resume_freshness_window_s`) into locals at
+  handler entry, before taking the cache lock, so the lock holds for the minimum
+  window and a hot path never re-parses the environment per call.
+- **Lockout-engagement is decoupled from the per-issuer cache cap.** A bounded
+  replay cache that is full (flood, or a tiny operator override) must still let a
+  legitimate peer ENGAGE a lockout — the cap bounds memory, not safety. Pin both
+  directions: `*_per_issuer_cap_exceeded_still_engages_lockout` and
+  `*_low_cache_max_does_not_deny_safety`.
+- **Domain-tag trust-boundary cache keys.** A TLS-bound `wire_zid` and an
+  app-level `issuer_id` that happen to share a string must not collide into one
+  replay-cache slot. Prefix keys with a trust-domain tag (`("wire", …)` vs
+  `("body", …)`) so the two namespaces can never alias.
+
+### Audit poison-record symmetry
+- **Every degraded audit path writes a poison record, never a silent drop.** The
+  poison `sig` discriminators (`PSK_DEGRADED`, `SIGN_FAILED`, `SEQ_LOCK_DEGRADED`,
+  `NEXT_SEQ_DEGRADED`) let a `verify_audit_integrity` walker attribute a stream
+  gap to a specific failure class. When you add a new `_next_seq`/sign/persist
+  failure branch, add the matching poison `sig` instead of returning early.
+
+### Replay-cache eviction
+- **TTL purge runs unconditionally, not only when the cache is full.** On a
+  low-traffic mesh the cache may never reach `max_size`, but stale entries still
+  accumulate. `_evict_replay_cache` always runs the O(n) TTL pass first, then the
+  over-budget trim.
+
+## Review Learnings (PR-7 - robot_mesh HITL patterns)
+
+From the `robot_mesh` human-in-the-loop review trail (#227). Apply to the
+`robot_mesh` tool and any agent-facing tool that gates on an operator interrupt.
+
+### Operator responses are not an LLM channel
+- **Never echo the operator's literal interrupt response back to the LLM.**
+  Record the full response in the LOCAL audit row for forensics, but return a
+  flat, fixed sentinel to the model. Echoing the operator's typed reply turns the
+  human into a prompt-injection content side-channel (the agent could phrase the
+  approval reason so the operator's answer leaks data into the context).
+
+### Audit completeness
+- **Audit read-only/observation actions too, not just actuation.** `peers`,
+  `status`, `inbox`, and `unsubscribe` each leave a `_audit_tool_action(...)` row
+  so the audit log is a complete record of agent mesh access — operators get the
+  "agent read N frames from sub X at time T" trail that raw telemetry access
+  otherwise lacks.
+
+### Rate-limit safety semantics
+- **A declined HITL approval must NOT consume a rate-limit slot.** The slot is
+  recorded only after approval is granted (or atomically via
+  `_rate_limit_check_and_record` on the post-approval path). Otherwise nuisance
+  prompts an operator declines would lock the agent out of issuing a genuine
+  `emergency_stop` — the inverse of the intended safety property.

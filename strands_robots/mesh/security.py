@@ -122,15 +122,45 @@ MAX_OVERRIDE_CODE_LEN: int = 256
 #: frame. A leader arm streams a fixed small set of motor positions
 #: (typically 6-16); 64 leaves generous headroom while bounding a peer
 #: that floods ``_on_input`` with a giant dict to exhaust CPU/memory in
-#: the apply path. See pentest finding B-04 / F-02.
+#: the apply path.
 MAX_INPUT_FRAME_KEYS: int = 64
 
-#: Absolute bound on any single joint/motor value in a teleop frame.
-#: Real normalized actions live in small ranges (radians, [-1, 1]
-#: normalized, or degrees); this clamp-or-reject bound stops a peer from
-#: driving a joint to 1e308 / inf / nan and slamming hardware or the sim
-#: integrator. Applied symmetrically.
-MAX_INPUT_VALUE_ABS: float = 1.0e6
+
+def _env_pos_float(env_var: str, default: float) -> float:
+    """Parse a positive float from *env_var*, falling back to *default*.
+
+    Non-numeric / non-positive / NaN / inf values fall back to the default.
+    Local to security.py (the analogous helper in core.py is not importable
+    here without a cycle). Used for the teleop input safety bound (H-2).
+    """
+    raw = os.getenv(env_var)
+    if raw is None:
+        return default
+    try:
+        val = float(raw)
+    except (TypeError, ValueError):
+        return default
+    if not math.isfinite(val) or val <= 0:
+        return default
+    return val
+
+
+# Operators with degree-valued
+#: actuators or multi-turn joints can widen via
+#: ``STRANDS_MESH_INPUT_VALUE_ABS``. The module-level constant is captured
+#: at import for backward compat; the hot path calls
+#: :func:`_input_value_abs` so an operator-set env var takes effect
+#: without a process restart.
+DEFAULT_INPUT_VALUE_ABS: float = 12.566370614359172  # 4 * pi
+MAX_INPUT_VALUE_ABS: float = _env_pos_float("STRANDS_MESH_INPUT_VALUE_ABS", DEFAULT_INPUT_VALUE_ABS)
+
+
+def _input_value_abs() -> float:
+    """Lazy resolver for ``STRANDS_MESH_INPUT_VALUE_ABS`` (see
+    :data:`MAX_INPUT_VALUE_ABS`). Re-reads env on every call so operators
+    can tune the teleop safety envelope without a restart."""
+    return _env_pos_float("STRANDS_MESH_INPUT_VALUE_ABS", DEFAULT_INPUT_VALUE_ABS)
+
 
 #: Charset for teleop input-frame keys (motor/joint names like
 #: ``"motor.pos"``, ``"shoulder_pan"``, ``"j0"``). Printable, no
@@ -1080,7 +1110,7 @@ def validate_input_frame(action: Any) -> dict[str, float]:
     a dispatch envelope -- it is raw actuator data -- so it gets its own
     bounded validator.
 
-    Pentest finding **B-04 / F-02**: ``InputReceiver._on_input`` applied
+    ``InputReceiver._on_input`` applied
     frames straight to ``send_action()`` with no validation, so any
     LAN-adjacent peer that discovered a source peer_id could drive the
     follower's joints directly, bypassing the action allowlist + rate
@@ -1129,8 +1159,9 @@ def validate_input_frame(action: Any) -> dict[str, float]:
         fval = float(value)
         if not math.isfinite(fval):
             raise ValidationError(f"input frame value for {key!r} must be finite, got {fval}")
-        if abs(fval) > MAX_INPUT_VALUE_ABS:
-            raise ValidationError(f"input frame value for {key!r} out of range: |{fval}| > {MAX_INPUT_VALUE_ABS}")
+        _value_abs = _input_value_abs()
+        if abs(fval) > _value_abs:
+            raise ValidationError(f"input frame value for {key!r} out of range: |{fval}| > {_value_abs}")
         out[key] = fval
 
     return out

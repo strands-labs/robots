@@ -1,0 +1,3 @@
+# Docs build dependencies for the MkDocs Material site.
+# Pinned to the versions used to author/verify the site.
+mkdocs-material>=9.7,<10.0

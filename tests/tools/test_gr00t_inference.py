@@ -310,6 +310,7 @@ class TestSignatureBackCompat:
 from unittest.mock import MagicMock  # noqa: E402
 
 from strands_robots.tools.gr00t_inference import (  # noqa: E402
+    _DEFAULT_REPO_URL,
     _build_image,
     _container_state,
     _download_checkpoint,
@@ -371,6 +372,11 @@ class TestImageAndContainerProbes:
 
 
 class TestBuildImage:
+    # repo_url is operator-resolved + allowlisted; the canonical default is
+    # the only URL these tests may use. source_dir is gone -- the clone dest is
+    # fixed to _isaac_gr00t_dir(), patched here onto tmp_path.
+    _OK_URL = _DEFAULT_REPO_URL
+
     def test_skips_when_image_exists_and_not_force(self):
         """Idempotency: existing image short-circuits to success without
         touching git or docker."""
@@ -379,9 +385,8 @@ class TestBuildImage:
             return_value=True,
         ):
             result = _build_image(
-                repo_url="https://example/x",
+                repo_url=self._OK_URL,
                 repo_tag="n1.7-release",
-                source_dir=None,
                 image_name="gr00t:latest",
                 force=False,
             )
@@ -397,21 +402,21 @@ class TestBuildImage:
             runs.append(list(cmd))
             return MagicMock(stdout="", stderr="", returncode=0)
 
-        with patch("strands_robots.tools.gr00t_inference._image_exists", return_value=True):
-            with patch("strands_robots.tools.gr00t_inference.subprocess.run", side_effect=fake_run):
-                # The build script existence check uses real Path.is_file, so
-                # plant a fake build.sh in the source_dir.
-                src = tmp_path / "Isaac-GR00T"
-                (src / "docker").mkdir(parents=True)
-                (src / "docker" / "build.sh").write_text("#!/bin/bash\necho ok")
-                (src / ".git").mkdir()  # so the update branch is taken
-                _build_image(
-                    repo_url="https://example/x",
-                    repo_tag="n1.7-release",
-                    source_dir=str(src),
-                    image_name="gr00t:latest",
-                    force=True,
-                )
+        src = tmp_path / "Isaac-GR00T"
+        (src / "docker").mkdir(parents=True)
+        (src / "docker" / "build.sh").write_text("#!/bin/bash\necho ok")
+        (src / ".git").mkdir()  # so the update branch is taken
+        with (
+            patch("strands_robots.tools.gr00t_inference._image_exists", return_value=True),
+            patch("strands_robots.tools.gr00t_inference._isaac_gr00t_dir", return_value=src),
+            patch("strands_robots.tools.gr00t_inference.subprocess.run", side_effect=fake_run),
+        ):
+            _build_image(
+                repo_url=self._OK_URL,
+                repo_tag="n1.7-release",
+                image_name="gr00t:latest",
+                force=True,
+            )
 
         # Verify a build.sh invocation was attempted.
         assert any("bash" in cmd[0] and "build.sh" in cmd[1] for cmd in runs)
@@ -431,15 +436,17 @@ class TestBuildImage:
             return MagicMock(stdout="", stderr="", returncode=0)
 
         src = tmp_path / "fresh-clone"
-        with patch("strands_robots.tools.gr00t_inference._image_exists", return_value=False):
-            with patch("strands_robots.tools.gr00t_inference.subprocess.run", side_effect=fake_run):
-                result = _build_image(
-                    repo_url="https://example/x",
-                    repo_tag="n1.7-release",
-                    source_dir=str(src),
-                    image_name="gr00t:latest",
-                    force=False,
-                )
+        with (
+            patch("strands_robots.tools.gr00t_inference._image_exists", return_value=False),
+            patch("strands_robots.tools.gr00t_inference._isaac_gr00t_dir", return_value=src),
+            patch("strands_robots.tools.gr00t_inference.subprocess.run", side_effect=fake_run),
+        ):
+            result = _build_image(
+                repo_url=self._OK_URL,
+                repo_tag="n1.7-release",
+                image_name="gr00t:latest",
+                force=False,
+            )
         assert result["status"] == "success"
         # Must include a `git clone --depth 1 --branch <tag>` invocation.
         assert any("clone" in cmd and "--branch" in cmd and "n1.7-release" in cmd for cmd in runs)
@@ -455,15 +462,17 @@ class TestBuildImage:
                 raise subprocess.CalledProcessError(1, cmd, stderr="boom")
             return MagicMock(stdout="", stderr="", returncode=0)
 
-        with patch("strands_robots.tools.gr00t_inference._image_exists", return_value=False):
-            with patch("strands_robots.tools.gr00t_inference.subprocess.run", side_effect=fake_run):
-                result = _build_image(
-                    repo_url="https://example/x",
-                    repo_tag="n1.7-release",
-                    source_dir=str(src),
-                    image_name="gr00t:latest",
-                    force=False,
-                )
+        with (
+            patch("strands_robots.tools.gr00t_inference._image_exists", return_value=False),
+            patch("strands_robots.tools.gr00t_inference._isaac_gr00t_dir", return_value=src),
+            patch("strands_robots.tools.gr00t_inference.subprocess.run", side_effect=fake_run),
+        ):
+            result = _build_image(
+                repo_url=self._OK_URL,
+                repo_tag="n1.7-release",
+                image_name="gr00t:latest",
+                force=False,
+            )
         assert result["status"] == "error"
         assert "boom" in result["message"]
 
@@ -865,9 +874,8 @@ class TestLifecycle:
 def _lifecycle_default_kwargs() -> dict[str, Any]:
     """Minimal kwargs to invoke _lifecycle in tests."""
     return {
-        "repo_url": "https://example/x",
+        "repo_url": _DEFAULT_REPO_URL,
         "repo_tag": "n1.7-release",
-        "source_dir": None,
         "image_name": "gr00t:latest",
         "hf_repo": "nvidia/foo",
         "hf_subfolder": None,
@@ -909,7 +917,9 @@ class TestActionDispatch:
             "strands_robots.tools.gr00t_inference._build_image",
             return_value={"status": "success", "skipped": True, "message": "ok"},
         ) as mock:
-            result = gr00t_inference(action="build_image", image_name="gr00t:test")
+            # image_name is no longer an agent parameter; the default
+            # operator image (gr00t:latest) is allowlisted.
+            result = gr00t_inference(action="build_image")
         assert result["status"] == "success"
         mock.assert_called_once()
 

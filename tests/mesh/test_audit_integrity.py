@@ -315,10 +315,16 @@ def test_missing_sig_does_not_advance_cursor_when_psk_present(tmp_path, monkeypa
 
 
 def test_log_safety_event_does_not_propagate_seq_errors(monkeypatch, tmp_path, caplog):
-    """log_safety_event's docstring says 'Raises: Nothing'
-    but _next_seq used to be invoked outside the try/except. Verify the fix:
-    even when _next_seq raises, log_safety_event swallows and logs a WARNING.
+    """log_safety_event's docstring says 'Raises: Nothing'. Even when
+    _next_seq raises, log_safety_event must swallow the error (not propagate
+    into the safety code path).
+
+    #324 update: instead of dropping the record silently, a non-symlink
+    _next_seq failure now writes a NEXT_SEQ_DEGRADED poison record (seq=0) so
+    a verifier can attribute the gap. The no-propagate contract is unchanged;
+    the silent-drop is replaced by an attributable poison record.
     """
+    import json as _json
 
     monkeypatch.setenv("STRANDS_MESH_AUDIT_DIR", str(tmp_path))
     monkeypatch.delenv("STRANDS_MESH_AUDIT_PSK", raising=False)
@@ -329,19 +335,23 @@ def test_log_safety_event_does_not_propagate_seq_errors(monkeypatch, tmp_path, c
 
     monkeypatch.setattr(audit, "_next_seq", boom)
 
-    with caplog.at_level(logging.WARNING, logger="strands_robots.mesh.audit"):
+    with caplog.at_level(logging.ERROR, logger="strands_robots.mesh.audit"):
         # Must NOT raise.
         audit.log_safety_event("test_event", "peer-x", {"k": "v"})
 
-    # Warning was emitted.
-    assert any("_next_seq failed" in record.message for record in caplog.records), (
-        f"expected _next_seq failure WARNING in {[r.message for r in caplog.records]}"
+    # #324: a NEXT_SEQ_DEGRADED diagnostic is emitted (ERROR level).
+    assert any("NEXT_SEQ_DEGRADED" in record.message for record in caplog.records), (
+        f"expected NEXT_SEQ_DEGRADED diagnostic in {[r.message for r in caplog.records]}"
     )
 
-    # No record was written.
+    # #324: a poison record IS written now (not a silent drop), tagged so a
+    # verifier flags the seq gap.
     log_path = audit.audit_log_path()
-    if log_path.exists():
-        assert log_path.read_text().strip() == "", "record was written despite _next_seq failure"
+    assert log_path.exists(), "a poison record must be written, not dropped"
+    records = [_json.loads(line) for line in log_path.read_text().splitlines() if line.strip()]
+    assert any(r.get("sig") == "NEXT_SEQ_DEGRADED" and r.get("seq") == 0 for r in records), (
+        f"expected a NEXT_SEQ_DEGRADED poison record with seq=0; got {records}"
+    )
 
 
 def test_psk_degrade_drops_record(monkeypatch, tmp_path, caplog):

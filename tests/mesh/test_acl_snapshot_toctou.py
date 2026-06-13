@@ -1,4 +1,6 @@
-"""Issue #218: ACL TOCTOU window between is_default_acl_in_use and resolve_acl.
+"""ACL snapshot single-read TOCTOU fix.
+
+Issue #218: closes the TOCTOU window between is_default_acl_in_use and resolve_acl.
 
 The fix introduces ``snapshot_acl(namespace)`` which atomically returns
 ``(is_permissive, resolved_dict)`` from a single file read, plus

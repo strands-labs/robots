@@ -975,3 +975,63 @@ class TestRealModeConfigDiscovery:
         cfg = hw._create_minimal_config("so101_follower", cameras={}, **{target_field: "test_value"})
         # The field should have been forwarded to the config
         assert hasattr(cfg, target_field)
+
+
+class TestHardwareConfigV040Followups:
+    """v0.4.0 hardware_robot follow-up bundle (#389) — PR #276 review trail."""
+
+    def test_cross_robot_kwarg_drop_emits_debug_signal(self, caplog):
+        """#294/#297: dropping a forwardable kwarg the target dataclass does
+        not declare is tolerated (polymorphism), but must now emit a DEBUG
+        signal naming the kwarg so operators can audit why it had no effect."""
+        import logging
+
+        pytest.importorskip("lerobot.robots.so_follower")
+        from strands_robots.hardware_robot import Robot as HwRobot
+
+        hw = HwRobot.__new__(HwRobot)
+        hw.tool_name_str = "so101_drop_signal"
+
+        with caplog.at_level(logging.DEBUG, logger="strands_robots.hardware_robot"):
+            cfg = hw._create_minimal_config(
+                "so101_follower",
+                cameras={},
+                port="/dev/null",
+                kp=[1.0] * 29,  # forwardable, not on so101 dataclass -> dropped
+            )
+        assert not hasattr(cfg, "kp")
+        drop_msgs = [r.getMessage() for r in caplog.records if "dropping cross-robot kwarg" in r.getMessage()]
+        assert any("'kp'" in m for m in drop_msgs), (
+            f"expected a DEBUG signal naming the dropped 'kp' kwarg; got {drop_msgs}"
+        )
+
+    def test_register_third_party_plugins_exception_is_narrow(self):
+        """#291: the register_third_party_plugins() guard must NOT be a bare
+        except Exception. Pin the narrowed (ImportError, AttributeError,
+        OSError) tuple by source inspection so the BLE001 pattern cannot
+        silently return."""
+        import inspect
+
+        from strands_robots import hardware_robot
+
+        src = inspect.getsource(hardware_robot._ensure_lerobot_robots_registered)
+        assert "except (ImportError, AttributeError, OSError)" in src, (
+            "register_third_party_plugins must be guarded by a narrow exception tuple (#291)"
+        )
+        assert "except Exception as exc:  # noqa: BLE001 -- third-party plugin" not in src, (
+            "the bare except Exception on plugin registration must be gone (#291)"
+        )
+
+    def test_lerobot_extra_pins_torchcodec_on_aarch64(self):
+        """#378: the public [lerobot] extra must carry the aarch64 torchcodec
+        pin so a `pip install strands-robots[lerobot]` on Thor/Jetson gets a
+        working video decoder (not just the hatch dev env)."""
+        import tomllib
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[1]
+        data = tomllib.load(open(root / "pyproject.toml", "rb"))
+        lerobot_extra = data["project"]["optional-dependencies"]["lerobot"]
+        assert any("torchcodec" in dep and "aarch64" in dep for dep in lerobot_extra), (
+            f"[lerobot] extra must pin torchcodec on linux+aarch64 (#378); got {lerobot_extra}"
+        )

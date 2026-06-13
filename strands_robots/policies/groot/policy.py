@@ -598,33 +598,14 @@ class Gr00tPolicy(Policy):
                 )
             return
 
-        # LOCAL mode: same reseed set_eval_seed would do.
+        # LOCAL mode: same reseed set_eval_seed would do. #331: delegate to the
+        # shared helper so Gr00tPolicy and Cosmos3Policy reseed identically.
         if seed is None:
             return
-        try:
-            import random as _random
+        from strands_robots.policies._rng import reseed_client_rngs
 
-            _random.seed(seed)
-            np.random.seed(seed)
-            try:
-                import torch as _torch
-
-                _torch.manual_seed(seed)
-                if _torch.cuda.is_available():
-                    _torch.cuda.manual_seed_all(seed)
-                _torch.backends.cudnn.deterministic = True
-                _torch.backends.cudnn.benchmark = False
-            except ImportError:
-                # Torch is an optional dependency for `Gr00tPolicy`; minimal
-                # installs (e.g. ``policy_provider="mock"`` smoke tests, or
-                # SERVICE-only deployments without local model loading) won't
-                # have it. Silently skipping the reseed in that case is the
-                # right behaviour — there's no torch RNG state to seed when
-                # torch isn't even imported.
-                pass
-            logger.debug("Gr00tPolicy.reset: local-mode reseed applied (seed=%r)", seed)
-        except Exception as e:  # noqa: BLE001 - reset is best-effort
-            logger.info("Gr00tPolicy.reset: local-mode reseed failed: %s", e)
+        reseed_client_rngs(seed)
+        logger.debug("Gr00tPolicy.reset: local-mode reseed applied (seed=%r)", seed)
 
     async def get_actions(self, observation_dict: dict[str, Any], instruction: str, **kwargs) -> list[dict[str, Any]]:
         if self._mode == "local":

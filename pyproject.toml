@@ -59,6 +59,18 @@ cosmos3-service = [
 ]
 lerobot = [
     "lerobot[feetech]>=0.5.0,<0.6.0",
+    # #378: lerobot 0.5.1's pyav video fallback calls torchvision.io.VideoReader,
+    # which torchvision 0.26 (resolved on linux+aarch64 via the torch 2.11 Thor
+    # override below) removed -- crashing dataset video read-back. lerobot's own
+    # torchcodec dependency marker EXCLUDES aarch64, so a `pip install
+    # strands-robots[lerobot]` on Thor/Jetson gets no decoder. Add torchcodec
+    # explicitly on linux+aarch64 so lerobot uses its preferred (working)
+    # torchcodec decoder instead of the removed VideoReader. (The hatch dev env
+    # carries the same pin; this makes the public extra self-sufficient too.)
+    # NOTE: torchcodec ships as +cuXXX wheels resolved by UV_TORCH_BACKEND; a
+    # plain `pip install` on Thor may need the matching CUDA index -- see the
+    # README Installation section for the Thor/Jetson caveat.
+    "torchcodec>=0.7; platform_machine == 'aarch64' and sys_platform == 'linux'",
 ]
 sim = [
     "robot_descriptions>=1.11.0,<2.0.0",

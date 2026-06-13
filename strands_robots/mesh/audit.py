@@ -1018,6 +1018,7 @@ def log_safety_event(event_type: str, peer_id: str, payload: dict[str, Any]) -> 
         path that called this function.
     """
     seq_lock_degraded_reason: str | None = None
+    next_seq_degraded_reason: str | None = None
     try:
         seq = _next_seq(peer_id)
     except SeqLockSymlinkError as exc:
@@ -1035,12 +1036,21 @@ def log_safety_event(event_type: str, peer_id: str, payload: dict[str, Any]) -> 
         seq = 0
         seq_lock_degraded_reason = str(exc)
     except Exception as exc:  # noqa: BLE001 -- audit log failures MUST be soft per contract
-        logger.warning(
-            "[audit] _next_seq failed for peer_id=%r: %s -- record dropped (no seq)",
+        # #324: a non-symlink _next_seq failure (e.g. OSError on the seq
+        # sidecar, a corrupt counter file, a permissions flip) previously
+        # dropped the record silently -- leaving a gap on this peer's stream
+        # that no verifier could attribute. Mirror the SEQ_LOCK_DEGRADED /
+        # PSK_DEGRADED / SIGN_FAILED poison-record discipline: emit a
+        # NEXT_SEQ_DEGRADED poison record with seq=0 so verify_audit_integrity
+        # walkers see (and can classify) the seq-counter integrity gap instead
+        # of a silent hole.
+        logger.error(
+            "[audit] NEXT_SEQ_DEGRADED for peer_id=%r: %s -- writing poison record",
             peer_id,
             exc,
         )
-        return
+        seq = 0
+        next_seq_degraded_reason = str(exc)
     record: dict[str, Any] = {
         "ts": time.time(),
         "event": event_type,
@@ -1048,14 +1058,18 @@ def log_safety_event(event_type: str, peer_id: str, payload: dict[str, Any]) -> 
         "payload": payload,
         "seq": seq,
     }
-    if seq_lock_degraded_reason is not None:
+    if next_seq_degraded_reason is not None:
+        # #324: non-symlink _next_seq failure -- poison the record so the gap
+        # is attributable on this peer's stream (symmetry with SEQ_LOCK_DEGRADED).
+        record["sig"] = "NEXT_SEQ_DEGRADED"
+    elif seq_lock_degraded_reason is not None:
         # Poison-record discipline: signal SEQ_LOCK_DEGRADED so a
         # verifier flags the seq-counter integrity gap. Mirrors the
         # PSK_DEGRADED / SIGN_FAILED poison patterns below.
         record["sig"] = "SEQ_LOCK_DEGRADED"
         record["seq_lock_degraded"] = seq_lock_degraded_reason
     sig: str | None = None
-    if seq_lock_degraded_reason is None:
+    if seq_lock_degraded_reason is None and next_seq_degraded_reason is None:
         try:
             sig = _sign_record(record)
         except AuditPSKDegradedError as exc:

@@ -343,10 +343,16 @@ class TestPolicyConfigDiscovery:
                                 mod = types.ModuleType(name)
                                 mod.__file__ = str(module_file)
                                 mod.__package__ = ".".join(parts[:3])
+                                # #280: record the ATTEMPT before exec. The
+                                # broken_policy configuration raises at exec
+                                # time; appending after exec would mean the
+                                # assertion only matched the package-level
+                                # fallback candidate, not the configuration
+                                # module that actually triggered the trap.
+                                imported_modules.append(name)
                                 # Execute the source -- this is where broken_policy raises
                                 exec(compile(source, str(module_file), "exec"), mod.__dict__)  # noqa: S102
                                 sys.modules[name] = mod
-                                imported_modules.append(name)
                                 return mod
                             raise ImportError(f"No module named '{name}'")
                 # Fall through to real import for anything not in our tree
@@ -378,10 +384,14 @@ class TestPolicyConfigDiscovery:
         with caplog.at_level(logging.WARNING):
             resolution._ensure_policy_configs_registered()
 
-        # The booby-trapped subpackage MUST have been attempted --
-        # no silent skip possible since we control the directory.
-        broken_attempted = any("broken_policy" in m for m in imported_modules)
-        assert broken_attempted, f"The walker never attempted to import broken_policy; imported: {imported_modules}"
+        # #280: the booby-trapped CONFIGURATION module specifically MUST
+        # have been attempted -- not merely the package-level fallback.
+        # Asserting on ``configuration_broken_policy`` uniquely pins the
+        # R1-1 contract (non-ImportError in a configuration_* import does
+        # not abort the walk) and stays correct even if the candidate
+        # tuple is later reordered package-first.
+        config_attempted = any(m.endswith("configuration_broken_policy") for m in imported_modules)
+        assert config_attempted, f"The walker never attempted configuration_broken_policy; imported: {imported_modules}"
 
         # The walk surfaced the failure at WARNING level.
         warning_texts = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
@@ -489,6 +499,174 @@ def test_iter_modules_non_package_siblings_excluded(tmp_path):
         )
     finally:
         # Purge any lerobot modules that were added during the test
+        _purge_lerobot_modules(_snapshot_lerobot_modules())
+        sys.modules.update(snapshot)
+        resolution._ensure_policy_configs_registered.cache_clear()
+
+
+def test_walk_continues_after_subpackage_decorator_failure_layout_independent(tmp_path, monkeypatch, caplog):
+    """Layout-independent pin for the R1-1 walk-continues contract (#279).
+
+    The companion ``test_walk_continues_after_subpackage_decorator_failure``
+    exercises regular packages (with ``__init__.py``). This variant builds a
+    PEP 420 *namespace-package* tree (no ``__init__.py`` in the subpackages)
+    so the contract is pinned for the exact layout shape that motivated the
+    directory-scan branch (``act``/``diffusion``/``smolvla`` in lerobot 0.5.x).
+
+    A booby-trapped namespace subpackage whose ``configuration_*`` raises a
+    non-ImportError MUST NOT abort the walk; a clean namespace subpackage that
+    sorts after it MUST still be reached. No coupling to upstream lerobot.
+    """
+    import importlib
+    import logging
+    import sys
+    import types
+
+    from strands_robots.policies.lerobot_local import resolution
+
+    # Namespace-package subpackages: NO __init__.py in either dir.
+    (tmp_path / "trap").mkdir()
+    (tmp_path / "trap" / "configuration_trap.py").write_text(
+        "raise RuntimeError('simulated decorator-time re-registration collision')\n"
+    )
+    (tmp_path / "zclean").mkdir()  # sorts AFTER 'trap'
+    (tmp_path / "zclean" / "configuration_zclean.py").write_text("REGISTERED = True\n")
+
+    fake_policies = types.ModuleType("lerobot.policies")
+    fake_policies.__path__ = [str(tmp_path)]
+    fake_policies.__package__ = "lerobot.policies"
+    fake_policies.__name__ = "lerobot.policies"
+
+    attempted: list[str] = []
+    original_import = importlib.import_module
+
+    def tracking_import(name, *args, **kwargs):
+        if name.startswith("lerobot.policies."):
+            parts = name.split(".")
+            if len(parts) == 4:
+                sub_name, module_name = parts[2], parts[3]
+                module_file = tmp_path / sub_name / f"{module_name}.py"
+                if module_file.exists():
+                    mod = types.ModuleType(name)
+                    mod.__file__ = str(module_file)
+                    mod.__package__ = ".".join(parts[:3])
+                    attempted.append(name)  # record attempt before exec (#280 discipline)
+                    exec(compile(module_file.read_text(), str(module_file), "exec"), mod.__dict__)  # noqa: S102
+                    sys.modules[name] = mod
+                    return mod
+            raise ImportError(f"No module named '{name}'")
+        return original_import(name, *args, **kwargs)
+
+    snapshot = _snapshot_lerobot_modules()
+    _purge_lerobot_modules(snapshot)
+    monkeypatch.setattr(importlib, "import_module", tracking_import)
+    monkeypatch.setitem(sys.modules, "lerobot.policies", fake_policies)
+    try:
+        import lerobot as _real_lerobot
+
+        monkeypatch.setattr(_real_lerobot, "policies", fake_policies, raising=False)
+    except ImportError:
+        # lerobot is an optional dependency; when it is not installed there is
+        # no real package to patch and the fake module in sys.modules suffices.
+        pass
+
+    resolution._ensure_policy_configs_registered.cache_clear()
+    try:
+        with caplog.at_level(logging.WARNING):
+            resolution._ensure_policy_configs_registered()
+
+        assert any(m.endswith("configuration_trap") for m in attempted), (
+            f"walker never attempted the booby-trapped namespace config; attempted: {attempted}"
+        )
+        assert any(m.endswith("configuration_zclean") for m in attempted), (
+            f"walk aborted on the trap; clean namespace subpackage never reached; attempted: {attempted}"
+        )
+        trap_warnings = [
+            r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING and "trap" in r.getMessage()
+        ]
+        assert trap_warnings, "expected a WARNING surfacing the booby-trapped namespace subpackage"
+    finally:
+        _purge_lerobot_modules(_snapshot_lerobot_modules())
+        sys.modules.update(snapshot)
+        resolution._ensure_policy_configs_registered.cache_clear()
+
+
+def test_directory_scan_rejects_python_keyword_dirnames(tmp_path, monkeypatch):
+    """#295: a subdirectory named after a Python keyword (``class``, ``for``,
+    ``is``, ...) must be rejected by the directory-scan filter.
+
+    ``str.isidentifier()`` returns True for keywords, but
+    ``import lerobot.policies.class`` raises ``SyntaxError`` -- which is NOT an
+    ``ImportError`` and would escape the per-candidate catch and abort the
+    whole walk. The filter must mirror ``pkgutil`` and also reject keywords.
+
+    Pre-fix (``if not name.isidentifier():`` only): ``class`` enters the
+    candidate loop and the walker attempts to import it. Post-fix
+    (``or keyword.iskeyword(name)``): ``class`` never reaches the loop.
+    """
+    import importlib
+    import sys
+    import types
+
+    from strands_robots.policies.lerobot_local import resolution
+
+    # A keyword-named dir with a configuration module, plus a valid one.
+    (tmp_path / "class").mkdir()
+    (tmp_path / "class" / "configuration_class.py").write_text("REGISTERED = True\n")
+    (tmp_path / "valid").mkdir()
+    (tmp_path / "valid" / "configuration_valid.py").write_text("REGISTERED = True\n")
+
+    fake_policies = types.ModuleType("lerobot.policies")
+    fake_policies.__path__ = [str(tmp_path)]
+    fake_policies.__package__ = "lerobot.policies"
+    fake_policies.__name__ = "lerobot.policies"
+
+    attempted: list[str] = []
+    original_import = importlib.import_module
+
+    def tracking_import(name, *args, **kwargs):
+        attempted.append(name)
+        if name.startswith("lerobot.policies."):
+            parts = name.split(".")
+            if len(parts) == 4:
+                module_file = tmp_path / parts[2] / f"{parts[3]}.py"
+                if module_file.exists():
+                    mod = types.ModuleType(name)
+                    mod.__file__ = str(module_file)
+                    exec(compile(module_file.read_text(), str(module_file), "exec"), mod.__dict__)  # noqa: S102
+                    sys.modules[name] = mod
+                    return mod
+            raise ImportError(f"No module named '{name}'")
+        return original_import(name, *args, **kwargs)
+
+    snapshot = _snapshot_lerobot_modules()
+    _purge_lerobot_modules(snapshot)
+    monkeypatch.setattr(importlib, "import_module", tracking_import)
+    monkeypatch.setitem(sys.modules, "lerobot.policies", fake_policies)
+    try:
+        import lerobot as _real_lerobot
+
+        monkeypatch.setattr(_real_lerobot, "policies", fake_policies, raising=False)
+    except ImportError:
+        # lerobot is an optional dependency; when it is not installed there is
+        # no real package to patch and the fake module in sys.modules suffices.
+        pass
+
+    resolution._ensure_policy_configs_registered.cache_clear()
+    try:
+        # Must not raise (pre-fix, the keyword dir is walked; depending on the
+        # import machinery the bare ``import lerobot.policies.class`` raises
+        # SyntaxError and aborts). Post-fix the keyword dir is filtered out.
+        resolution._ensure_policy_configs_registered()
+
+        assert not any("policies.class" in c for c in attempted), (
+            "keyword-named dir 'class' reached the candidate loop; the "
+            f"keyword.iskeyword filter is missing. Attempted: {attempted}"
+        )
+        assert any("policies.valid" in c for c in attempted), (
+            f"valid subpackage should still be walked; attempted: {attempted}"
+        )
+    finally:
         _purge_lerobot_modules(_snapshot_lerobot_modules())
         sys.modules.update(snapshot)
         resolution._ensure_policy_configs_registered.cache_clear()

@@ -1,4 +1,6 @@
-"""R7 review-feedback regression pins (timing oracle).
+"""Safety timing-oracle + estop/resume replay-defense pins.
+
+Origin: PR-6 (#225) R7 review feedback.
 
 Each test here pins an invariant flagged in PR-6 review threads. Keep
 this file thin and citation-heavy: each test docstring should name the

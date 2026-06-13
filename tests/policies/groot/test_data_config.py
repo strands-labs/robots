@@ -238,6 +238,49 @@ class TestDataConfigMap:
             "before the next double-backtick-quoted tag entry"
         )
 
+    # The upstream POSTTRAIN_TAGS set (Isaac-GR00T gr00t/data/embodiment_tags.py).
+    # Every posttrain embodiment exposed in the gr00t_inference docstring MUST
+    # carry a posttrain marker so a user does not point the base checkpoint at
+    # one and get silent garbage actions. Pinned here so a future addition of a
+    # posttrain tag to the docstring fails CI until it is marked (#213).
+    _POSTTRAIN_TAGS = [
+        "unitree_g1",
+        "unitree_g1_sonic",
+        "libero_panda",
+        "libero_sim",
+        "simpler_env_google",
+        "simpler_env_widowx",
+    ]
+
+    @pytest.mark.parametrize("tag", _POSTTRAIN_TAGS)
+    def test_gr00t_inference_docstring_marks_posttrain_tags(self, tag):
+        """Every POSTTRAIN_TAGS embodiment in the docstring is flagged posttrain.
+
+        The docstring carries a ``[posttrain]`` marker per entry plus a footnote
+        defining what it means (requires a finetuned checkpoint, not the base
+        model). This pin enumerates the upstream posttrain set so a new addition
+        cannot land unmarked.
+        """
+        from strands_robots.tools.gr00t_inference import gr00t_inference
+
+        doc = gr00t_inference.__doc__ or ""
+        assert tag in doc, f"posttrain tag {tag!r} missing from the gr00t_inference docstring"
+        # The docstring must define the posttrain contract once (footnote).
+        assert "[posttrain]" in doc, "docstring must mark posttrain entries with a [posttrain] tag"
+        assert "POSTTRAIN_TAGS" in doc, "docstring footnote must reference upstream POSTTRAIN_TAGS"
+        assert "finetuned checkpoint" in doc, "docstring must state posttrain tags require a finetuned checkpoint"
+
+    def test_gr00t_inference_docstring_sonic_decoder_disclaimer(self):
+        """The SONIC entry must warn that the action stream is motion-token
+        latents needing the GR00T-WholeBodyControl decoder (#213, PR #128 R7)."""
+        from strands_robots.tools.gr00t_inference import gr00t_inference
+
+        doc = (gr00t_inference.__doc__ or "").replace("\n", " ")
+        assert "GR00T-WholeBodyControl" in doc, "SONIC entry must name the GR00T-WholeBodyControl decoder runtime"
+        assert "motion-token" in doc or "motion_token" in doc or "motion token" in doc, (
+            "SONIC entry must call out that the action stream is motion-token latents"
+        )
+
     def test_unitree_g1_real_alias(self):
         """The REAL_G1 embodiment tag value resolves to unitree_g1_real."""
         alias = DATA_CONFIG_MAP["real_g1_relative_eef_relative_joints"]

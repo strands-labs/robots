@@ -1,0 +1,423 @@
+/* Strands Robots — Minimal with glassmorphic dark mode */
+
+/* ---- Light mode ---- */
+[data-md-color-scheme="default"] {
+    --bg: #fafafa;
+    --bg-surface: #f5f5f5;
+    --bg-elevated: #eeeeee;
+    --fg: #333333;
+    --fg-muted: #888888;
+    --fg-heading: #111111;
+    --border: rgba(0, 0, 0, 0.08);
+    --accent: #555555;
+    --link-underline: rgba(0, 0, 0, 0.15);
+    --link-underline-hover: rgba(0, 0, 0, 0.5);
+    --header-bg: rgba(250, 250, 250, 0.85);
+    --sidebar-bg: rgba(250, 250, 250, 0.6);
+    --glass-bg: rgba(245, 245, 245, 0.7);
+    --glass-border: rgba(0, 0, 0, 0.06);
+    --glass-blur: blur(12px);
+    --scrollbar-thumb: rgba(0, 0, 0, 0.1);
+    --scrollbar-hover: rgba(0, 0, 0, 0.2);
+    --mermaid-node-fill: #ffffff;
+    --mermaid-stroke: #cccccc;
+    --mermaid-edge: #bbbbbb;
+    --code-fg: #444;
+}
+
+/* ---- Dark mode — true black + glass ---- */
+[data-md-color-scheme="slate"] {
+    --bg: #0a0a0a;
+    --bg-surface: rgba(255, 255, 255, 0.04);
+    --bg-elevated: rgba(255, 255, 255, 0.06);
+    --fg: #c8c8c8;
+    --fg-muted: #666666;
+    --fg-heading: #f0f0f0;
+    --border: rgba(255, 255, 255, 0.06);
+    --accent: #00FF77;
+    --link-underline: rgba(255, 255, 255, 0.1);
+    --link-underline-hover: rgba(0, 255, 119, 0.4);
+    --header-bg: rgba(10, 10, 10, 0.75);
+    --sidebar-bg: rgba(10, 10, 10, 0.5);
+    --glass-bg: rgba(255, 255, 255, 0.03);
+    --glass-border: rgba(255, 255, 255, 0.06);
+    --glass-blur: blur(20px);
+    --scrollbar-thumb: rgba(255, 255, 255, 0.08);
+    --scrollbar-hover: rgba(255, 255, 255, 0.15);
+    --mermaid-node-fill: rgba(255, 255, 255, 0.04);
+    --mermaid-stroke: rgba(255, 255, 255, 0.1);
+    --mermaid-edge: rgba(255, 255, 255, 0.12);
+    --code-fg: #b8b8b8;
+
+    --md-default-bg-color: #0a0a0a;
+    --md-default-fg-color: #c8c8c8;
+    --md-default-fg-color--light: #888888;
+    --md-default-fg-color--lighter: #555555;
+    --md-default-fg-color--lightest: #333333;
+    --md-primary-fg-color: #f0f0f0;
+    --md-primary-bg-color: #0a0a0a;
+    --md-accent-fg-color: #00FF77;
+    --md-code-bg-color: rgba(255, 255, 255, 0.04);
+    --md-code-fg-color: #b8b8b8;
+    --md-code-hl-color: rgba(0, 255, 119, 0.1);
+    --md-typeset-a-color: #f0f0f0;
+}
+
+/* ---- Base ---- */
+body {
+    background: var(--bg) !important;
+    color: var(--fg) !important;
+    font-feature-settings: "kern" 1;
+    -webkit-font-smoothing: antialiased;
+}
+
+/* ---- Typography ---- */
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+    color: var(--fg-heading) !important;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    text-shadow: none !important;
+}
+
+h1 {
+    font-weight: 700;
+}
+
+.md-content {
+    color: var(--fg) !important;
+}
+
+.md-typeset p {
+    color: var(--fg) !important;
+    line-height: 1.7;
+}
+
+.md-typeset li {
+    color: var(--fg) !important;
+    line-height: 1.7;
+}
+
+/* ---- Links ---- */
+.md-typeset a {
+    color: var(--fg-heading) !important;
+    text-decoration: underline;
+    text-decoration-color: var(--link-underline);
+    text-underline-offset: 2px;
+    transition: text-decoration-color 0.2s;
+}
+
+.md-typeset a:hover {
+    text-decoration-color: var(--link-underline-hover);
+}
+
+/* ---- Header — glass ---- */
+.md-header {
+    background: var(--header-bg) !important;
+    backdrop-filter: var(--glass-blur);
+    -webkit-backdrop-filter: var(--glass-blur);
+    border-bottom: 1px solid var(--glass-border);
+    box-shadow: none !important;
+    color: var(--fg-heading) !important;
+}
+
+.md-header__title {
+    color: var(--fg-heading) !important;
+}
+
+.md-header .md-icon {
+    color: var(--fg) !important;
+}
+
+/* ---- Sidebar — glass ---- */
+.md-sidebar {
+    background: var(--sidebar-bg) !important;
+    backdrop-filter: var(--glass-blur);
+    -webkit-backdrop-filter: var(--glass-blur);
+}
+
+.md-nav__link {
+    color: var(--fg-muted) !important;
+    font-size: 0.82rem;
+}
+
+.md-nav__link:hover {
+    color: var(--fg-heading) !important;
+}
+
+.md-nav__link--active {
+    color: var(--fg-heading) !important;
+    font-weight: 600;
+}
+
+/* ---- Code — glass card ---- */
+.md-typeset pre {
+    background: var(--glass-bg) !important;
+    backdrop-filter: var(--glass-blur);
+    -webkit-backdrop-filter: var(--glass-blur);
+    border: 1px solid var(--glass-border) !important;
+    border-radius: 8px;
+}
+
+.md-typeset code {
+    background: var(--bg-surface) !important;
+    color: var(--code-fg) !important;
+    border-radius: 4px;
+    font-size: 0.85em;
+}
+
+/* ---- Admonitions — glass card ---- */
+.md-typeset .admonition,
+.md-typeset details {
+    background: var(--glass-bg) !important;
+    backdrop-filter: var(--glass-blur);
+    -webkit-backdrop-filter: var(--glass-blur);
+    border: 1px solid var(--glass-border) !important;
+    border-radius: 8px;
+    box-shadow: none !important;
+}
+
+/* ---- Tables — glass ---- */
+.md-typeset table:not([class]) {
+    background: var(--glass-bg);
+    border: 1px solid var(--glass-border);
+    border-radius: 8px;
+    overflow: hidden;
+}
+
+.md-typeset table:not([class]) th {
+    background: var(--bg-elevated);
+    color: var(--fg-heading);
+    font-weight: 600;
+}
+
+.md-typeset table:not([class]) td {
+    border-color: var(--glass-border);
+    color: var(--fg);
+}
+
+/* ---- Blockquotes ---- */
+.md-typeset blockquote {
+    border-left: 3px solid var(--glass-border);
+    background: transparent;
+    color: var(--fg-muted) !important;
+}
+
+/* ---- Buttons — glass ---- */
+.md-button {
+    background: var(--glass-bg) !important;
+    backdrop-filter: var(--glass-blur);
+    -webkit-backdrop-filter: var(--glass-blur);
+    border: 1px solid var(--glass-border) !important;
+    color: var(--fg-heading) !important;
+    border-radius: 6px;
+    transition: border-color 0.2s, background 0.2s;
+}
+
+.md-button:hover {
+    border-color: var(--accent) !important;
+    background: var(--bg-elevated) !important;
+}
+
+/* ---- Search — glass ---- */
+.md-search__input {
+    background: var(--glass-bg) !important;
+    backdrop-filter: var(--glass-blur);
+    -webkit-backdrop-filter: var(--glass-blur);
+    border: 1px solid var(--glass-border) !important;
+    color: var(--fg) !important;
+}
+
+.md-search__input::placeholder {
+    color: var(--fg-muted) !important;
+}
+
+/* ---- TOC ---- */
+.md-nav--secondary {
+    border-left: 1px solid var(--glass-border);
+}
+
+/* ---- Tabs ---- */
+.md-typeset .tabbed-set>input:checked+label {
+    border-color: var(--fg-heading);
+    color: var(--fg-heading);
+}
+
+.md-typeset .tabbed-set>label {
+    color: var(--fg-muted);
+}
+
+.md-typeset .tabbed-set>label:hover {
+    color: var(--fg);
+}
+
+/* ---- Content tabs — glass ---- */
+.md-typeset .tabbed-content {
+    background: var(--glass-bg);
+    border: 1px solid var(--glass-border);
+    border-radius: 0 0 8px 8px;
+}
+
+/* ---- Scrollbar ---- */
+::-webkit-scrollbar {
+    width: 6px;
+}
+
+::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+    background: var(--scrollbar-thumb);
+    border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: var(--scrollbar-hover);
+}
+
+/* ---- Footer: hidden ---- */
+.md-footer {
+    display: none !important;
+}
+
+/* ---- Grid cards (dark mode glass) ---- */
+[data-md-color-scheme="slate"] .md-typeset .grid.cards>ul>li,
+[data-md-color-scheme="slate"] .md-typeset .grid.cards>ol>li {
+    background: rgba(255, 255, 255, 0.03) !important;
+    border: 1px solid rgba(255, 255, 255, 0.06) !important;
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    border-radius: 10px;
+}
+
+/* ---- Mermaid ---- */
+.mermaid {
+    border: 1px solid var(--glass-border);
+    border-radius: 8px;
+    padding: 1rem;
+    background: var(--glass-bg);
+    backdrop-filter: var(--glass-blur);
+    -webkit-backdrop-filter: var(--glass-blur);
+}
+
+.mermaid .node rect,
+.mermaid .node circle,
+.mermaid .node ellipse,
+.mermaid .node polygon,
+.mermaid .node path {
+    fill: var(--mermaid-node-fill) !important;
+    stroke: var(--mermaid-stroke) !important;
+    stroke-width: 1px !important;
+}
+
+.mermaid .node .label,
+.mermaid .nodeLabel,
+.mermaid .node text,
+.mermaid text {
+    fill: var(--fg) !important;
+    color: var(--fg) !important;
+}
+
+.mermaid .edgePath .path,
+.mermaid .flowchart-link,
+.mermaid path.path {
+    stroke: var(--mermaid-edge) !important;
+    stroke-width: 1px !important;
+}
+
+.mermaid .edgeLabel,
+.mermaid .edgeLabel rect {
+    background-color: var(--bg) !important;
+    fill: var(--bg) !important;
+}
+
+.mermaid .edgeLabel text,
+.mermaid .edgeLabel span {
+    fill: var(--fg-muted) !important;
+    color: var(--fg-muted) !important;
+}
+
+.mermaid .marker,
+.mermaid marker path {
+    fill: var(--mermaid-edge) !important;
+    stroke: var(--mermaid-edge) !important;
+}
+
+.mermaid .cluster rect {
+    fill: rgba(128, 128, 128, 0.05) !important;
+    stroke: var(--glass-border) !important;
+    stroke-width: 1px !important;
+    rx: 8px !important;
+}
+
+.mermaid .cluster text,
+.mermaid .cluster span {
+    fill: var(--fg-muted) !important;
+    color: var(--fg-muted) !important;
+}
+
+.mermaid .actor {
+    fill: var(--mermaid-node-fill) !important;
+    stroke: var(--mermaid-stroke) !important;
+}
+
+.mermaid .actor text {
+    fill: var(--fg) !important;
+}
+
+.mermaid .messageLine0,
+.mermaid .messageLine1 {
+    stroke: var(--mermaid-edge) !important;
+}
+
+.mermaid .messageText {
+    fill: var(--fg) !important;
+}
+
+.mermaid .task {
+    fill: var(--glass-bg) !important;
+    stroke: var(--mermaid-stroke) !important;
+}
+
+.mermaid .taskText {
+    fill: var(--fg) !important;
+}
+
+/* ---- Mobile nav drawer — dark mode fix ---- */
+[data-md-color-scheme="slate"] .md-nav__title {
+    color: var(--fg-heading) !important;
+    background: var(--bg) !important;
+}
+
+[data-md-color-scheme="slate"] .md-nav__title .md-nav__button {
+    color: var(--fg) !important;
+}
+
+[data-md-color-scheme="slate"] .md-nav--primary .md-nav__title {
+    background: var(--bg) !important;
+    color: var(--fg-heading) !important;
+}
+
+[data-md-color-scheme="slate"] .md-nav--primary .md-nav__title[for="__drawer"] {
+    background: var(--bg) !important;
+    color: var(--fg-heading) !important;
+}
+
+[data-md-color-scheme="slate"] .md-nav--primary>.md-nav__title {
+    background: var(--bg) !important;
+    color: var(--fg-heading) !important;
+}
+
+/* Mobile drawer background */
+[data-md-color-scheme="slate"] .md-sidebar--primary {
+    background: var(--bg) !important;
+}
+
+[data-md-color-scheme="slate"] .md-overlay {
+    background: rgba(0, 0, 0, 0.7) !important;
+}

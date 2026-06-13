@@ -229,7 +229,11 @@ class TestJSON5EndToEnd:
         rule_ids = {r["id"] for r in parsed["rules"]}
         assert "robot_publish_telemetry" in rule_ids
         assert "operator_publish_cmds" in rule_ids
-        assert "any_subscribe" in rule_ids
+        # Subscribe is now role-scoped: robots get a narrow rule, operators
+        # keep the broad observe rule. The prior single ``any_subscribe``
+        # rule that granted ``**`` to every role was replaced.
+        assert "robot_subscribe_scoped" in rule_ids
+        assert "operator_subscribe_all" in rule_ids
 
         # Verify subjects parsed
         subject_ids = {s["id"] for s in parsed["subjects"]}

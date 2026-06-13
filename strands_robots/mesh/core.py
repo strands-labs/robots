@@ -166,6 +166,18 @@ def _resume_replay_cache_max() -> int:
     return _parse_positive_int_env("STRANDS_MESH_RESUME_REPLAY_CACHE_MAX", "4096")
 
 
+def _resume_max_fails() -> int:
+    """Consecutive failed-resume attempts before the throttle engages.
+    Lazy (restart-free). Defaults to 5; bad input falls back to 5."""
+    return _parse_positive_int_env("STRANDS_MESH_RESUME_MAX_FAILS", "5")
+
+
+def _resume_backoff_s() -> float:
+    """Cooldown (seconds) the resume path is refused after the
+    fail threshold is hit. Lazy. Defaults to 30s; bad input -> 30."""
+    return _parse_positive_float_env("STRANDS_MESH_RESUME_BACKOFF_S", "30")
+
+
 def _evict_replay_cache[K](
     cache: dict[K, float],
     *,
@@ -358,6 +370,31 @@ class Mesh(SensorLoopsMixin):
         # that can drift after eviction.
         self._estop_replay_cache: dict[float, tuple[str, float, str | None]] = {}
         self._estop_replay_lock = threading.Lock()
+        # Command-replay dedup. The CMD path (_exec_cmd ->
+        # _dispatch) previously had NO turn_id dedup: an attacker who captured
+        # one valid command envelope on the wire could replay it indefinitely
+        # and each copy would dispatch + actuate (confirmed: sim_time
+        # 1->2->3->4->5 on the same turn_id). We cache (sender_id, turn_id)
+        # keys we have already executed and reject duplicates within a bounded
+        # TTL window. Mirrors the _resume_replay_cache / _estop_replay_cache
+        # shape and reuses _evict_replay_cache for bounding. Key shape:
+        # ((sender_id, turn_id)) -> monotonic insert ts.
+        self._cmd_replay_cache: dict[tuple[str, str], float] = {}
+        self._cmd_replay_lock = threading.Lock()
+        # M-1: resume override-code brute-force throttle. The crypto
+        # oracles (timing / content / length) are all closed, but the resume
+        # action had NO rate limit -- a 4-digit numeric override code is
+        # crackable in seconds at network speed (measured 295K attempts/s).
+        # We track consecutive FAILED bad-code attempts and, after a
+        # threshold, refuse further resume attempts for a cooldown window.
+        # A successful resume resets the counter. The throttle is keyed on
+        # attempt COUNT (not code content) so it adds no new content/timing
+        # oracle beyond "you are being rate-limited", which an attacker can
+        # already observe. Operator-tunable via STRANDS_MESH_RESUME_MAX_FAILS
+        # and STRANDS_MESH_RESUME_BACKOFF_S.
+        self._resume_fail_count: int = 0
+        self._resume_locked_until_mono: float = 0.0
+        self._resume_bruteforce_lock = threading.Lock()
 
         # Safety topic publishers. Held lazily so the receiver path
         # ``_publish_safety_envelope`` can attach a Zenoh
@@ -471,6 +508,28 @@ class Mesh(SensorLoopsMixin):
         with self._lifecycle_lock:
             if self._running:
                 return
+
+            # H-1: permanent-fleet-lockout footgun warning.
+            # STRANDS_MESH_OVERRIDE_CODE is optional and defaults to empty.
+            # When it is unset, _resume_lockout can NEVER succeed (no code
+            # matches the empty/sentinel digest), so a SINGLE e-stop broadcast
+            # permanently locks every robot until a physical restart of each
+            # one -- a fleet-wide DoS from one message. We cannot safely
+            # auto-generate a code (every peer must agree on it), so we emit a
+            # loud startup WARNING describing the consequence + the fix. This
+            # turns a silent operational landmine into an explicit, logged
+            # decision. Operators who genuinely want no remote-resume posture
+            # (e.g. physical-only recovery) see the warning and accept it.
+            if not os.getenv("STRANDS_MESH_OVERRIDE_CODE", "").strip():
+                logger.warning(
+                    "[safety] %s: STRANDS_MESH_OVERRIDE_CODE is not set -- the "
+                    "emergency-stop lockout will be UNRECOVERABLE over the mesh. "
+                    "A single estop broadcast will lock this robot until a "
+                    "physical restart (fleet-wide DoS risk). Set "
+                    "STRANDS_MESH_OVERRIDE_CODE to the same value on every peer "
+                    "to enable remote resume.",
+                    self.peer_id,
+                )
 
             # Issue #218 / R3: refuse-to-start gate when mtls is configured
             # but the ACL is permissive-by-shape (built-in default OR
@@ -815,6 +874,36 @@ class Mesh(SensorLoopsMixin):
         if not isinstance(peer_id, str) or peer_id == self.peer_id:
             return
 
+        # M-3: presence-freshness check. Presence heartbeats carry a
+        # ``timestamp`` (wall clock at publish). Previously _on_presence parsed
+        # and stored the peer with NO freshness validation, so a captured
+        # heartbeat with a 60s / 300s-old timestamp was accepted into the peer
+        # registry on replay -- letting an attacker resurrect a dead peer or
+        # inject phantoms with stale envelopes. Reject heartbeats whose
+        # timestamp is older than the freshness window or implausibly
+        # future-skewed. Heartbeats without a numeric timestamp are also
+        # rejected (the publisher always sets one; a missing/garbage value is
+        # either a malformed or hand-crafted replay envelope). Reuses the
+        # safety-replay freshness/skew env knobs so operators tune one set of
+        # clock-drift bounds for the whole mesh.
+        _ts = data.get("timestamp")
+        if not isinstance(_ts, (int, float)) or isinstance(_ts, bool):
+            logger.debug("[mesh] %s: presence from %s missing/invalid timestamp -- dropped", self.peer_id, peer_id)
+            return
+        _now = time.time()
+        _age = _now - float(_ts)
+        _fresh = _resume_freshness_window_s()
+        _skew = _resume_forward_skew_s()
+        if _age > _fresh or _age < -_skew:
+            logger.debug(
+                "[mesh] %s: stale/future presence from %s (age=%.1fs, window=%.0fs) -- dropped",
+                self.peer_id,
+                peer_id,
+                _age,
+                _fresh,
+            )
+            return
+
         is_new = update_peer(
             peer_id=peer_id,
             peer_type=str(data.get("robot_type", "robot")),
@@ -1147,6 +1236,63 @@ class Mesh(SensorLoopsMixin):
                 logger.debug("[mesh] %s: audit log unavailable: %s", self.peer_id, audit_exc)
             return
 
+        # H-3: reject replayed commands. Read-only actions (status / state /
+        # features) are idempotent and safe to repeat (operator polling), so
+        # we only dedup actuating actions. A duplicate (sender, turn_id) within
+        # the TTL window is dropped with a structured error + audit record,
+        # mirroring the LockoutError rejection path. turn_id defaults to a
+        # fresh uuid when absent, so a sender that omits it cannot benefit
+        # from dedup-bypass: each omitted-turn_id command gets a unique key
+        # and is treated as new (the wire contract expects callers to send a
+        # turn_id; the fallback exists only so a malformed envelope doesn't
+        # crash dispatch).
+        _action = cmd.get("action", "status") if isinstance(cmd, dict) else "status"
+        _READONLY = {"status", "state", "features"}
+        if _action not in _READONLY:
+            _now_mono = time.monotonic()
+            _key = (sender, turn)
+            _is_replay = False
+            with self._cmd_replay_lock:
+                _ttl = _resume_freshness_window_s() + _resume_forward_skew_s()
+                _evict_replay_cache(
+                    self._cmd_replay_cache,
+                    max_size=_resume_replay_cache_max(),
+                    ttl_s=_ttl,
+                    now_mono=_now_mono,
+                )
+                if _key in self._cmd_replay_cache:
+                    _is_replay = True
+                else:
+                    self._cmd_replay_cache[_key] = _now_mono
+            if _is_replay:
+                logger.warning(
+                    "[mesh] %s: rejected replayed cmd from %s (turn_id=%s, action=%s)",
+                    self.peer_id,
+                    sender,
+                    turn,
+                    _action,
+                )
+                if rkey is not None:
+                    self.publish(
+                        rkey,
+                        {
+                            "type": "error",
+                            "responder_id": self.peer_id,
+                            "turn_id": turn,
+                            "error": "duplicate command rejected (replay)",
+                            "timestamp": time.time(),
+                        },
+                    )
+                try:
+                    log_safety_event(
+                        "command_rejected_replay",
+                        self.peer_id,
+                        {"sender": sender, "turn_id": turn, "action": _action},
+                    )
+                except (TypeError, ValueError, OSError) as audit_exc:
+                    logger.debug("[mesh] %s: audit log unavailable: %s", self.peer_id, audit_exc)
+                return
+
         try:
             result = self._dispatch(cmd)
             if rkey is not None:
@@ -1160,6 +1306,25 @@ class Mesh(SensorLoopsMixin):
                         "timestamp": time.time(),
                     },
                 )
+            # M-5 ("Negative-Only Audit Logging"): record
+            # SUCCESSFUL command execution, not just rejections. Pre-fix the
+            # audit log only ever held *_rejected / *_denied events, so the 6
+            # exploit chains produced 0 combined audit records -- post-incident
+            # forensics and real-time detection were impossible (a successful
+            # actuation left no trace). We log only non-readonly actions to
+            # avoid flooding the audit log with operator ``status`` polls; the
+            # readonly set matches the H-3 dedup exemption. Best-effort: an
+            # audit failure must never break the dispatch path (same narrow
+            # except tuple as every other audit call site).
+            if _action not in _READONLY:
+                try:
+                    log_safety_event(
+                        "command_executed",
+                        self.peer_id,
+                        {"sender": sender, "turn_id": turn, "action": _action},
+                    )
+                except (TypeError, ValueError, OSError) as audit_exc:
+                    logger.debug("[mesh] %s: audit log unavailable: %s", self.peer_id, audit_exc)
         except _security.LockoutError as exc:
             # Lockout is the most operationally interesting rejection -- emit
             # a structured error on the response topic and audit it.
@@ -1288,6 +1453,20 @@ class Mesh(SensorLoopsMixin):
             policy_provider = cmd.get("policy_provider", "mock")
             policy_port = cmd.get("policy_port")
             policy_host = cmd.get("policy_host", "localhost")
+            # Defence in depth: the wire path reaches _dispatch via
+            # _exec_cmd -> validate_command, which already allowlist-checks
+            # policy_host. This re-check guards any current or future caller
+            # that reaches _dispatch without that upstream validation (a
+            # direct internal call, a refactor that reorders the pipeline,
+            # etc.). is_safe_policy_host is idempotent and cheap, so the
+            # double-check costs nothing and the surface stays closed even
+            # if the single upstream gate is ever bypassed.
+            if not _security.is_safe_policy_host(str(policy_host)):
+                return {
+                    "error": (
+                        f"policy_host={policy_host!r} not in allowlist. Set STRANDS_MESH_POLICY_HOST_ALLOW to extend."
+                    )
+                }
             duration = cmd.get("duration", 30.0)
             extra = {
                 k: cmd[k]
@@ -2599,6 +2778,22 @@ class Mesh(SensorLoopsMixin):
             _EXPECTED_HASH = hashlib.sha256(b"\x00" * 32).digest()
         compare_ok = hmac.compare_digest(_EXPECTED_HASH, _PROVIDED_HASH)
 
+        # M-1: brute-force throttle gate. If we are inside the cooldown window
+        # (armed by a prior run of failed attempts), refuse the resume
+        # regardless of whether the code is correct -- this bounds the
+        # attempt rate to (max_fails / backoff_s). A legitimate operator who
+        # fat-fingers the code N times waits out the (short) cooldown; an
+        # attacker is reduced from 295K/s to a handful per cooldown window.
+        # Lazily ensure brute-force state exists (defends against callers /
+        # test stubs that construct Mesh via __new__ and bypass __init__).
+        if not hasattr(self, "_resume_bruteforce_lock"):
+            self._resume_bruteforce_lock = threading.Lock()
+            self._resume_fail_count = 0
+            self._resume_locked_until_mono = 0.0
+        _now_mono_bf = time.monotonic()
+        with self._resume_bruteforce_lock:
+            _throttled = _now_mono_bf < self._resume_locked_until_mono
+
         # Issue #272: the structured ``reason`` field used to be published
         # via ``publish_safety_event`` which fans out to
         # ``strands/{peer_id}/safety/event`` -- any peer subscribed to
@@ -2638,6 +2833,10 @@ class Mesh(SensorLoopsMixin):
                     audit_exc,
                 )
 
+        if _throttled:
+            _emit_resume_denied("resume rate-limited (brute-force throttle)", "warning")
+            return _generic_error
+
         if not lockout_engaged:
             _emit_resume_denied("lockout not engaged", "info")
             return _generic_error
@@ -2647,11 +2846,28 @@ class Mesh(SensorLoopsMixin):
             return _generic_error
 
         if not compare_ok:
+            # M-1: count this consecutive failure and arm the cooldown once we
+            # cross the threshold. Done under the bruteforce lock so concurrent
+            # probe threads can't race past the limit.
+            with self._resume_bruteforce_lock:
+                self._resume_fail_count += 1
+                if self._resume_fail_count >= _resume_max_fails():
+                    self._resume_locked_until_mono = time.monotonic() + _resume_backoff_s()
+                    self._resume_fail_count = 0
+                    logger.warning(
+                        "[safety] %s: resume brute-force threshold hit -- throttling resume for %.0fs",
+                        self.peer_id,
+                        _resume_backoff_s(),
+                    )
             _emit_resume_denied("bad override code", "warning")
             return _generic_error
 
         elapsed = time.time() - self._last_estop_ts
         self._estop_lockout.clear()
+        # M-1: a correct code clears the brute-force counter + any cooldown.
+        with self._resume_bruteforce_lock:
+            self._resume_fail_count = 0
+            self._resume_locked_until_mono = 0.0
         self.publish_safety_event(
             event_type="resume_ok",
             severity="info",

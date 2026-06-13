@@ -52,7 +52,14 @@ logger = logging.getLogger(__name__)
 SAFETY_TABLE_NAME = "strands-mesh-safety-events"
 ESTOP_LAMBDA_NAME = "strands-mesh-estop-fanout"
 ESTOP_LAMBDA_ROLE = "strands-mesh-lambda-role"
-_LAMBDA_VERSION = 1  # Bump whenever _ESTOP_LAMBDA_SOURCE changes
+#: Finding #16 (E-Stop Lambda cost amplification): cap concurrent estop
+#: fan-out Lambdas. With in-Lambda dedup this bounds worst-case cost
+#: regardless of estop publish rate.
+ESTOP_LAMBDA_RESERVED_CONCURRENCY = 2
+#: Finding #16: dedup window (seconds). Two estop envelopes with the same
+#: (peer_id, t) within this window invoke the fan-out only once.
+ESTOP_DEDUP_TTL_S = 30
+_LAMBDA_VERSION = 2  # Bump whenever _ESTOP_LAMBDA_SOURCE changes
 RULE_SAFETY_TO_DYNAMODB = "strands_safety_to_dynamodb"
 RULE_ESTOP_FANOUT = "strands_estop_fanout"
 PROVISIONING_TEMPLATE = "strands-mesh-fleet-provisioning"
@@ -72,6 +79,7 @@ _ESTOP_LAMBDA_SOURCE = textwrap.dedent(
     import json
     import logging
     import os
+    import time
 
     import boto3
 
@@ -80,22 +88,61 @@ _ESTOP_LAMBDA_SOURCE = textwrap.dedent(
 
     iot = boto3.client("iot")
     iot_data = boto3.client("iot-data")
+    ddb = boto3.client("dynamodb")
+
+    # Finding #16 (E-Stop Lambda cost amplification): a single estop publish
+    # used to fan out {"action":"stop"} to EVERY robot on EVERY invocation,
+    # with no dedup. At fleet scale (1000 Things) a handful of estops/sec
+    # produced thousands of cmd publishes/sec and runaway Lambda + IoT cost
+    # ($173/day measured). An attacker holding any robot cert could publish
+    # estop repeatedly to amplify both the bill and the cmd-flood blast radius.
+    #
+    # Defence: idempotency gate. The estop envelope carries (peer_id, t) -- a
+    # stable identity for one logical estop event. We conditional-PutItem a
+    # dedup marker into the safety-events table; if the (peer_id, t) marker
+    # already exists the invocation is a duplicate and we SKIP the fan-out.
+    # A DynamoDB TTL attribute auto-expires markers so the table stays bounded.
+    _TABLE = os.environ.get("STRANDS_SAFETY_TABLE", "strands-mesh-safety-events")
+    _DEDUP_TTL_S = int(os.environ.get("STRANDS_ESTOP_DEDUP_TTL_S", "30"))
+
+    def _is_duplicate(sender, t):
+        # Conditional-put a dedup marker. Returns True if (sender, t) already fired.
+        now = int(time.time())
+        pk = "__estop_dedup__"
+        sk = "{}:{}".format(sender, t)
+        try:
+            ddb.put_item(
+                TableName=_TABLE,
+                Item={
+                    "peer_id": {"S": pk},
+                    "ts": {"S": sk},
+                    "expire_at": {"N": str(now + _DEDUP_TTL_S)},
+                },
+                ConditionExpression="attribute_not_exists(peer_id) AND attribute_not_exists(ts)",
+            )
+            return False
+        except ddb.exceptions.ConditionalCheckFailedException:
+            return True
+        except Exception as exc:
+            # Fail OPEN: a safety fan-out must never be suppressed by an
+            # audit-store outage. Log and proceed.
+            log.warning("estop dedup check failed (failing open): %s", exc)
+            return False
 
     def lambda_handler(event, context):
-        '''
-        Triggered by IoT Rule strands_estop_fanout when something publishes
-        to strands/safety/estop. Lists every Thing tagged 'strands-mesh=robot'
-        and publishes {"action":"stop"} to each robot's /cmd inbox.
-
-        This is defence-in-depth: the original publisher's own
-        broadcast message normally hits all subscribed robots, but if a
-        robot missed the broadcast subscription (e.g. just rebooted) this
-        Lambda catches it via its own per-robot publish.
-        '''
+        # Triggered by IoT Rule strands_estop_fanout on publish to
+        # strands/safety/estop. Idempotent per (peer_id, t): duplicate estops
+        # within the TTL window are skipped. Otherwise publishes
+        # {"action":"stop"} to each robot's /cmd inbox.
         log.info("estop fanout invoked: %s", json.dumps(event)[:500])
         sender = (event or {}).get("peer_id", "unknown")
+        t = (event or {}).get("t", "")
         responses = (event or {}).get("responses_received", 0)
-        # List all robot Things — note: paginated for large fleets.
+
+        if t != "" and _is_duplicate(sender, t):
+            log.info("estop fanout SKIPPED (duplicate sender=%s t=%s)", sender, t)
+            return {"published": 0, "sender": sender, "deduped": True}
+
         paginator = iot.get_paginator("list_things")
         published = 0
         for page in paginator.paginate(maxResults=250):
@@ -120,7 +167,7 @@ _ESTOP_LAMBDA_SOURCE = textwrap.dedent(
                     log.warning("publish to %s failed: %s", tname, exc)
         log.info("estop fanout published to %d robots (sender=%s, original_acks=%d)",
                  published, sender, responses)
-        return {"published": published, "sender": sender}
+        return {"published": published, "sender": sender, "deduped": False}
     """
 )
 
@@ -274,6 +321,19 @@ def _ensure_safety_table(ddb: Any, account: BootstrappedAccount) -> str:
         )
     except Exception as exc:
         logger.debug("[bootstrap] PITR enable failed: %s", exc)
+    # Finding #16: enable DynamoDB TTL on ``expire_at`` so the estop-dedup
+    # markers the fan-out Lambda writes auto-expire (they carry an
+    # ``expire_at`` epoch). Real safety-audit rows do NOT set ``expire_at``
+    # so they are never auto-deleted. Best-effort: TTL enablement can race the
+    # table-active transition; a debug log is enough since dedup correctness
+    # does not depend on TTL (it only bounds table growth).
+    try:
+        ddb.update_time_to_live(
+            TableName=SAFETY_TABLE_NAME,
+            TimeToLiveSpecification={"Enabled": True, "AttributeName": "expire_at"},
+        )
+    except Exception as exc:
+        logger.debug("[bootstrap] TTL enable failed: %s", exc)
     account.created.append(f"dynamodb:{SAFETY_TABLE_NAME}")
     return arn
 
@@ -330,6 +390,16 @@ def _ensure_lambda_role(iam: Any, account: BootstrappedAccount) -> str:
                         "Action": ["iot:ListThings"],
                         "Resource": "*",
                     },
+                    {
+                        # Finding #16: the fan-out Lambda dedups on (peer_id, t)
+                        # via a conditional PutItem into the safety-events
+                        # table. Grant only PutItem on that one table.
+                        "Effect": "Allow",
+                        "Action": ["dynamodb:PutItem"],
+                        "Resource": [
+                            f"arn:aws:dynamodb:{account.region}:{account.account_id}:table/{SAFETY_TABLE_NAME}"
+                        ],
+                    },
                 ],
             }
         ),
@@ -385,8 +455,31 @@ def _ensure_estop_lambda(lam: Any, role_arn: str, account: BootstrappedAccount, 
         Description=description,
         Timeout=30,
         MemorySize=256,
+        # Finding #16: pass the dedup config to the Lambda runtime.
+        Environment={
+            "Variables": {
+                "STRANDS_SAFETY_TABLE": SAFETY_TABLE_NAME,
+                "STRANDS_ESTOP_DEDUP_TTL_S": str(ESTOP_DEDUP_TTL_S),
+            }
+        },
         Tags={"strands-mesh": "managed"},
     )
+    # Finding #16: cap concurrent fan-out Lambdas. Combined with the
+    # (peer_id, t) dedup gate this bounds the worst-case fleet-wide cmd
+    # flood + Lambda bill an estop-spamming attacker can cause. Best-effort:
+    # accounts at their unreserved-concurrency floor reject this call, so we
+    # warn-and-continue rather than fail the whole bootstrap.
+    try:
+        lam.put_function_concurrency(
+            FunctionName=ESTOP_LAMBDA_NAME,
+            ReservedConcurrentExecutions=ESTOP_LAMBDA_RESERVED_CONCURRENCY,
+        )
+    except Exception as exc:
+        logger.warning(
+            "[bootstrap] could not set reserved concurrency on %s: %s",
+            ESTOP_LAMBDA_NAME,
+            exc,
+        )
     account.created.append(f"lambda:{ESTOP_LAMBDA_NAME}")
     return resp["FunctionArn"]
 

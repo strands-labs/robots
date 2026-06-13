@@ -1,4 +1,6 @@
-"""Pin tests for PR #223 R1 review feedback (yinsong1986).
+"""validate_command security contracts (address cap, policy_provider, policy_host casing).
+
+Origin: PR #223 R1 review feedback (yinsong1986).
 
 Each test fails on pre-fix code and passes on post-fix code, per
 AGENTS.md > Review Learnings (#85) > "Pin regression tests for reviewed

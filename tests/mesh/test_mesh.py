@@ -285,7 +285,9 @@ class TestOnPresence:
 
     def test_updates_peer_registry(self) -> None:
         m = Mesh(_FakeRobot(), peer_id="self")
-        m._on_presence(self._make_sample({"robot_id": "other", "robot_type": "sim", "hostname": "h"}))
+        m._on_presence(
+            self._make_sample({"robot_id": "other", "robot_type": "sim", "hostname": "h", "timestamp": time.time()})
+        )
         peers = mesh_session.get_peers()
         assert any(p["peer_id"] == "other" for p in peers)
 

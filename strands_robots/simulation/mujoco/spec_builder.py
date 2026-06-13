@@ -476,8 +476,45 @@ class SpecBuilder:
         # floor render. The world ``ground`` plane (configurable via
         # ``create_world(ground_plane=...)``) is the single source of truth;
         # robots contribute only their own bodies/joints/actuators. See #320.
-        for plane in [g for g in robot_spec.geoms if g.type == mujoco.mjtGeom.mjGEOM_PLANE]:
-            robot_spec.delete(plane)
+        #
+        # Three guards from the #360 review (#363):
+        #   1. Conditional strip -- only remove the robot's floor when the world
+        #      actually owns a ground plane to replace it. Under
+        #      ``create_world(ground_plane=False)`` the world has no ground, so
+        #      stripping the robot's plane would leave the scene floorless; in
+        #      that case we keep the robot's plane (it is the only floor source).
+        #   2. Narrow predicate -- only strip planes that are plausibly the z=0
+        #      axis-aligned ground (a robot MJCF may intentionally ship an
+        #      angled/elevated plane, e.g. a ramp or wall, which must survive).
+        #   3. Debug log -- record which geoms were stripped so a disappearing
+        #      (or surviving) robot floor is diagnosable.
+        world_has_ground = any(g.type == mujoco.mjtGeom.mjGEOM_PLANE for g in scene_spec.geoms)
+        stripped: list[str] = []
+        if world_has_ground:
+            for plane in [
+                g for g in robot_spec.geoms if g.type == mujoco.mjtGeom.mjGEOM_PLANE and _is_z0_ground_plane(g)
+            ]:
+                stripped.append(plane.name or "<unnamed>")
+                robot_spec.delete(plane)
+            if stripped:
+                logger.debug(
+                    "attach_robot: stripped %d robot-scene z=0 ground plane geom(s) "
+                    "for %r (world owns the ground plane): %r",
+                    len(stripped),
+                    robot.name,
+                    stripped,
+                )
+        else:
+            # ground_plane=False opt-out: keep the robot's own floor (if any) so
+            # the scene is not left without any ground.
+            kept = [g for g in robot_spec.geoms if g.type == mujoco.mjtGeom.mjGEOM_PLANE]
+            if kept:
+                logger.debug(
+                    "attach_robot: world has no ground plane (ground_plane=False); "
+                    "keeping %d robot-scene plane geom(s) for %r as the floor source",
+                    len(kept),
+                    robot.name,
+                )
 
         # Collect source joint names BEFORE attach - attach mutates the child
         # spec in-place (the child gets reparented).
@@ -503,8 +540,30 @@ class SpecBuilder:
         return source_joint_names
 
 
+def _is_z0_ground_plane(geom: Any) -> bool:
+    """True if a plane geom is plausibly the z=0 axis-aligned ground.
+
+    MuJoCo planes default to a +Z normal at the body origin. We treat a plane
+    as "ground" when its body-frame position z is ~0 and its orientation is
+    axis-aligned (quat ~ identity, so the normal stays +Z). A robot MJCF that
+    ships an intentional ramp/wall plane (rotated or elevated) is NOT matched
+    and survives the attach. See #363.
+    """
+    pos = getattr(geom, "pos", None)
+    if pos is not None and abs(float(pos[2])) > 1e-6:
+        return False
+    quat = getattr(geom, "quat", None)
+    if quat is not None:
+        # Identity quat is (1, 0, 0, 0); allow small FP noise.
+        w, x, y, z = (float(quat[0]), float(quat[1]), float(quat[2]), float(quat[3]))
+        if abs(w - 1.0) > 1e-6 or abs(x) > 1e-6 or abs(y) > 1e-6 or abs(z) > 1e-6:
+            return False
+    return True
+
+
 __all__ = [
     "SpecBuilder",
+    "_is_z0_ground_plane",
     "_geom_type",
     "_normalize_size",
     "_target_quat",

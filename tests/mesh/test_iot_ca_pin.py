@@ -334,3 +334,55 @@ class TestUnverifiedReuseWarning:
         assert warnings == [], (
             f"a canonically downloaded CA has no .unverified marker, so re-use must not WARN; got {warnings!r}"
         )
+
+
+class TestEnsureCaV040Followups:
+    """v0.4.0 mesh-iot follow-ups (#388) from the #228 review trail."""
+
+    def test_ensure_ca_rejects_symlinked_path_with_explicit_message(self, tmp_path):
+        """#312: a symlinked CA path must be rejected with an EXPLICIT 'SYMLINK'
+        message (mirrors verify_ca_pin), not folded into a generic OSError text."""
+        import os
+
+        real = tmp_path / "real_ca.pem"
+        real.write_bytes(_REAL_CA)
+        link = tmp_path / "ca.pem"
+        os.symlink(real, link)
+
+        with pytest.raises(RuntimeError, match="SYMLINK"):
+            provision._ensure_ca(link)
+
+    def test_breakglass_marker_written_atomically_with_0600(self, tmp_path):
+        """#311: the break-glass '.unverified' sidecar must be created with
+        mode 0o600 atomically (no create-then-chmod world-readable window)."""
+        import os
+        import stat
+
+        ca_path = tmp_path / "ca.pem"
+        with patch("strands_robots.mesh.iot.provision._download_with_per_socket_timeout", return_value=_REAL_CA):
+            with patch.dict(os.environ, {"STRANDS_MESH_DISABLE_CA_PIN": "true"}):
+                provision._ensure_ca(ca_path)
+
+        marker = ca_path.with_suffix(ca_path.suffix + ".unverified")
+        assert marker.exists(), "break-glass download must write the .unverified marker"
+        mode = stat.S_IMODE(marker.stat().st_mode)
+        assert mode == 0o600, f"marker must be 0o600 (owner-only), got {oct(mode)}"
+
+    def test_breakglass_marker_refuses_symlink(self, tmp_path):
+        """#311: O_NOFOLLOW on the marker write refuses to follow a pre-planted
+        symlink at the sidecar path (no write-through to an attacker target)."""
+        import os
+
+        ca_path = tmp_path / "ca.pem"
+        marker = ca_path.with_suffix(ca_path.suffix + ".unverified")
+        target = tmp_path / "attacker_target"
+        target.write_text("original")
+        os.symlink(target, marker)
+
+        with patch("strands_robots.mesh.iot.provision._download_with_per_socket_timeout", return_value=_REAL_CA):
+            with patch.dict(os.environ, {"STRANDS_MESH_DISABLE_CA_PIN": "true"}):
+                # Marker write is best-effort: an O_NOFOLLOW refusal is caught
+                # and logged, provisioning still succeeds. The attacker target
+                # must NOT be overwritten through the symlink.
+                provision._ensure_ca(ca_path)
+        assert target.read_text() == "original", "O_NOFOLLOW must prevent write-through the symlink"

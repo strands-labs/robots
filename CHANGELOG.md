@@ -3,6 +3,45 @@
 All notable behavioural changes to `strands-robots` are logged here. Follows
 [Keep a Changelog](https://keepachangelog.com/) conventions.
 
+## Unreleased - #385 (Mesh + IoT safety/control-surface hardening)
+
+### Added: mesh control-surface hardening
+
+Defence-in-depth for the Zenoh mesh teleop and command paths:
+
+- **Teleop lockout enforcement (C-1)** -- input frames are now dropped
+  while the e-stop lockout is engaged; previously the input path bypassed
+  the lockout.
+- **Startup warning (H-1)** -- loud warning when `STRANDS_MESH_OVERRIDE_CODE`
+  is unset (lockout becomes unrecoverable without it).
+- **Teleop value + rate bound (H-2)** -- joint value clamp tightened from
+  `1e6` to `4pi` (`STRANDS_MESH_INPUT_VALUE_ABS`); per-receiver apply-rate
+  ceiling added (`STRANDS_MESH_INPUT_MAX_HZ`, default 100 Hz).
+- **Command replay dedup (H-3)** -- `(sender, turn_id)` keyed dedup with
+  TTL; read-only actions exempt.
+- **Resume brute-force throttle (M-1)** -- count-keyed cooldown
+  (`STRANDS_MESH_RESUME_MAX_FAILS` / `STRANDS_MESH_RESUME_BACKOFF_S`).
+- **Peer registry bound (M-2)** -- `STRANDS_MESH_MAX_PEERS` (default 1024),
+  evict-oldest on overflow.
+- **Presence freshness validation (M-3)** -- stale/replayed heartbeats
+  rejected.
+- **Positive-path audit (M-5)** -- `command_executed` and sampled
+  `input_stream_applied` events (`STRANDS_MESH_INPUT_AUDIT_EVERY`).
+
+### Added: IoT provisioning hardening
+
+- **MQTT Last Will dead-man policy** -- `provision_robot(...,
+  allow_estop_publish=False)` creates a policy that drops the estop
+  Publish grant while retaining Subscribe + Receive.
+- **E-stop fan-out idempotency** -- Lambda dedup per `(peer_id, t)` via
+  DynamoDB conditional write, fails OPEN on store error.
+  `STRANDS_ESTOP_DEDUP_TTL_S` (default 30 s) controls the window.
+
+New env vars: `STRANDS_MESH_OVERRIDE_CODE`, `STRANDS_MESH_INPUT_VALUE_ABS`,
+`STRANDS_MESH_INPUT_MAX_HZ`, `STRANDS_MESH_MAX_PEERS`,
+`STRANDS_MESH_RESUME_MAX_FAILS`, `STRANDS_MESH_RESUME_BACKOFF_S`,
+`STRANDS_MESH_INPUT_AUDIT_EVERY`, `STRANDS_ESTOP_DEDUP_TTL_S`.
+
 ## Unreleased - LeRobot 0.5.2 recording + policy pipeline hardening
 
 ### Fixed: customer-mode E2E friction points (GH #373)

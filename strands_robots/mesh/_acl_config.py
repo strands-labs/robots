@@ -45,7 +45,7 @@ logger = logging.getLogger(__name__)
 class PermissiveACLError(RuntimeError):
     """Raised when an operator-supplied ACL uses the blacklist footgun
     (``default_permission='allow'`` with explicit rules) without opting
-    in via ``STRANDS_MESH_ACCEPT_PERMISSIVE_ACL``. Pentest B-08 / F-14.
+    in via ``STRANDS_MESH_ACCEPT_PERMISSIVE_ACL``.
 
     The built-in permissive default (allow + EMPTY rules) is exempt --
     it is gated separately by the ``Mesh.start`` refuse-to-start path
@@ -241,6 +241,27 @@ def _load_acl_file(path: Path) -> dict[str, Any]:
                     "  2. Set STRANDS_MESH_ACCEPT_PERMISSIVE_ACL=1 to acknowledge "
                     "the dev/lab posture."
                 )
+    elif data["default_permission"] == "deny":
+        # #308: symmetric footgun to the blacklist warning above. A file with
+        # ``deny`` + empty rules + empty subjects + empty policies passes shape
+        # validation but is wire-effective TOTAL DENY (every key denied for
+        # every peer) on first run. An operator copying the example template
+        # down to debug can land here with no signal. Warn (do not refuse --
+        # total-deny is a legitimate "firewall mesh off" posture) with an
+        # actionable remediation. We key the trigger on "no allow-permission
+        # rule exists" rather than "rules == []" so a deny file that only lists
+        # deny-rules (also total-deny in effect) is caught too.
+        has_allow_rule = any(isinstance(r, dict) and r.get("permission") == "allow" for r in (data.get("rules") or []))
+        if not has_allow_rule and not data.get("subjects") and not data.get("policies"):
+            logger.warning(
+                "[acl] %s uses default_permission='deny' with no allow-permission "
+                "rules and empty subjects/policies -- this is wire-effective TOTAL "
+                "DENY (every key denied for every peer). If intentional this is the "
+                "'firewall mesh off' posture; otherwise add at least one "
+                "allow-permission rule plus a matching policy/subject "
+                "(see examples/mesh_acl_example.json5).",
+                path,
+            )
     _validate_acl_shape(data, path)
     return data
 
@@ -532,7 +553,14 @@ def _clear_acl_cache_for_test() -> None:
 # mtime_ns delta). The thread-local stashes the gate's resolved dict
 # so ``_build_config`` reuses it verbatim, closing the TOCTOU window
 # regardless of cache state.
-_THREAD_SNAPSHOT: threading.local = threading.local()
+# #310: the thread-local snapshot value is ALWAYS either None or a 2-tuple
+# ``(resolved_acl_dict | None, auth_mode_str | None)``. Pinning the shape
+# with a type alias (and always storing a 2-tuple) prevents a future
+# caller that passes ``auth_mode=None`` from silently falling back to
+# bare-dict storage and dropping the auth_mode-snapshot symmetry that
+# closes the resolve_auth_mode() race at the _build_config boundaries.
+_Snapshot = tuple["dict[str, Any] | None", "str | None"]
+_THREAD_SNAPSHOT: threading.local = threading.local()  # stores: _Snapshot | None
 
 
 def _set_thread_snapshot(
@@ -552,7 +580,15 @@ def _set_thread_snapshot(
     "one snapshot per ``Mesh.start``" invariant the docstring
     promises.
     """
-    _THREAD_SNAPSHOT.value = (resolved, auth_mode) if auth_mode is not None else resolved
+    # #310: always store a 2-tuple, never a bare dict. ``auth_mode=None`` is a
+    # valid element (callers that do not know the mode at stash time store None;
+    # the accessor returns None and the consumer falls back -- same outcome,
+    # but the storage shape stays invariant). The local is annotated with
+    # ``_Snapshot`` so the pinned shape is enforced at the storage site (not
+    # only in a comment) -- a future edit that stores a bare dict here fails
+    # mypy against the alias.
+    snapshot: _Snapshot = (resolved, auth_mode)
+    _THREAD_SNAPSHOT.value = snapshot
 
 
 def _get_thread_snapshot() -> dict[str, Any] | None:

@@ -170,7 +170,17 @@ def _ensure_lerobot_robots_registered() -> None:
     else:
         try:
             register_third_party_plugins()
-        except Exception as exc:  # noqa: BLE001 -- third-party plugin code is untrusted
+        except (ImportError, AttributeError, OSError) as exc:
+            # #291: narrowed from bare ``except Exception`` per AGENTS.md
+            # Review Learnings (#86). Third-party plugin registration can fail
+            # for three benign, recoverable reasons: a plugin distribution
+            # whose import chain is broken (ImportError), a lerobot version
+            # whose loader entry-point shape differs (AttributeError), or an
+            # OS-level probe inside a plugin's registration (OSError). Any of
+            # these should degrade to "that plugin is absent from the registry"
+            # -- not crash hardware init. A genuinely unexpected exception
+            # (e.g. a plugin raising ValueError from buggy registration code)
+            # now propagates so it is not silently masked.
             logger.warning("[hardware_robot] third-party plugin registration failed: %s", exc)
 
 
@@ -472,6 +482,22 @@ class Robot(AgentTool):
         # right_arm.json). Default to the strands tool name otherwise.
         if "id" in valid_fields:
             config_data["id"] = kwargs.get("id", self.tool_name_str)
+        elif "id" in kwargs:
+            # #292: every lerobot RobotConfig declares ``id`` today, so an
+            # operator-supplied ``id=`` is normally consumed above. If a future
+            # RobotConfig subclass drops the field, silently discarding an
+            # explicit ``id=`` would namespace calibration files wrong with no
+            # signal. Surface it: the generic unknown-kwarg gate below would
+            # also catch it, but this names the specific regression so the
+            # diagnostic is actionable.
+            logger.warning(
+                "[hardware_robot] robot_type=%r config %s does not declare an 'id' "
+                "field; the explicit id=%r will not namespace calibration files. "
+                "This is unexpected for a lerobot RobotConfig -- please file an issue.",
+                robot_type,
+                ConfigClass.__name__,
+                kwargs["id"],
+            )
 
         # Cameras are common to every lerobot Robot.
         if "cameras" in valid_fields:
@@ -485,6 +511,22 @@ class Robot(AgentTool):
         for key in forwardable:
             if key in kwargs and key in valid_fields:
                 config_data[key] = kwargs[key]
+            elif key in kwargs:
+                # #294/#297: the kwarg is in the cross-robot allowlist but the
+                # resolved dataclass does not declare it -- the documented
+                # polymorphism carve-out (e.g. ``Robot('so101', kp=[...])``
+                # against a heterogeneous fleet). This is intentional, but a
+                # silent drop leaves operators with no way to audit why a kwarg
+                # they passed had no effect. Emit a debug signal naming the
+                # dropped kwarg and the robot type so the drop is observable
+                # without changing the tolerant behaviour.
+                logger.debug(
+                    "[hardware_robot] dropping cross-robot kwarg %r for robot_type=%r: "
+                    "not declared on %s (forwardable-allowlist polymorphism carve-out)",
+                    key,
+                    robot_type,
+                    ConfigClass.__name__,
+                )
 
         # Forward kwargs that are declared on the target dataclass but not
         # in the cross-robot allowlist. This future-proofs new lerobot fields

@@ -1,4 +1,6 @@
-"""Static regression pins for PR-224 R1 review feedback.
+"""Static (AST-based) invariants for the mesh wire-config modules.
+
+Origin: PR-224 R1 review feedback.
 
 Each test in this module pins a static-shape invariant of the mesh wire
 modules (``_acl_config.py``, ``_zenoh_config.py``, ``session.py``)

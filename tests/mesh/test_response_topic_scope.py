@@ -1,4 +1,4 @@
-"""Tests for response-topic responder scoping (pentest F-15 / B-09).
+"""Tests for response-topic responder scoping.
 
 The response topic is strands/{operator}/response/{responder}/{turn} so
 the IoT robot policy can pin a robot's response publishes to its OWN

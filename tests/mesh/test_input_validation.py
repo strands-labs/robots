@@ -1,4 +1,4 @@
-"""Tests for teleop input-frame validation (pentest B-04 / F-02).
+"""Tests for teleop input-frame validation.
 
 InputReceiver._on_input must validate frames via
 security.validate_input_frame before applying them to the robot, so a

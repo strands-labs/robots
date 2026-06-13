@@ -824,9 +824,19 @@ class TestInputPublisherReceiver:
         recv = InputReceiver(m, robot, source_peer_id="leader-1", device_name="leader")
         recv.start()
 
-        # Simulate incoming data
-        recv._on_input("strands/leader-1/input/leader", {"action": {"j0": 0.5, "j1": 0.3}, "seq": 0})
-        recv._on_input("strands/leader-1/input/leader", {"action": {"j0": 0.6, "j1": 0.4}, "seq": 1})
+        # Disable the apply-rate cap for this plumbing test: the two frames
+        # below are delivered synchronously microseconds apart, which the
+        # default 100Hz cap would (correctly) rate-limit. The cap has its own
+        # dedicated coverage; here we only assert send_action plumbing.
+        import os as _os
+
+        _os.environ["STRANDS_MESH_INPUT_MAX_HZ"] = "0"
+        try:
+            # Simulate incoming data
+            recv._on_input("strands/leader-1/input/leader", {"action": {"j0": 0.5, "j1": 0.3}, "seq": 0})
+            recv._on_input("strands/leader-1/input/leader", {"action": {"j0": 0.6, "j1": 0.4}, "seq": 1})
+        finally:
+            _os.environ.pop("STRANDS_MESH_INPUT_MAX_HZ", None)
 
         stats = recv.stop()
 

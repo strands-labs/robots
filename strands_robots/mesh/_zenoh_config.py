@@ -137,6 +137,7 @@ import logging
 import math
 import os
 import threading
+from collections import OrderedDict
 from pathlib import Path
 
 # One-shot flag for the non-POSIX TLS-mode warning. ``_resolve_tls_paths``
@@ -152,7 +153,11 @@ from pathlib import Path
 # silently muted even though the documented Windows-mode-skip
 # guarantee applies per-file. Bound at 16 entries to cap memory in
 # the rotation-loop attacker case.
-_NON_POSIX_TLS_WARNED_KEYS: set[tuple[str, int]] = set()
+# #307: use an insertion-ordered dict (acting as an ordered set) so eviction
+# is deterministic FIFO -- matching the _ACL_CACHE eviction order in
+# _acl_config.py (``pop(next(iter(...)))``). Both bounded mesh caches now
+# share one eviction discipline; see AGENTS.md cache-eviction note.
+_NON_POSIX_TLS_WARNED_KEYS: OrderedDict[tuple[str, int], None] = OrderedDict()
 _NON_POSIX_TLS_WARNED_LOCK = threading.Lock()
 _NON_POSIX_TLS_WARNED_MAX = 16
 
@@ -628,15 +633,14 @@ def _resolve_tls_paths() -> tuple[Path, Path, Path]:
         with _NON_POSIX_TLS_WARNED_LOCK:
             should_warn = _key_id not in _NON_POSIX_TLS_WARNED_KEYS
             if should_warn:
-                # Bound the set so a rogue caller looping over key files
-                # cannot inflate memory. Eviction is FIFO-ish (set
-                # iteration order is insertion order on CPython 3.7+,
-                # but we don't rely on that for correctness -- worst
-                # case re-emit the WARNING for an evicted key, which is
-                # fine).
+                # Bound the dict so a rogue caller looping over key files
+                # cannot inflate memory. Eviction is deterministic FIFO via
+                # ``popitem(last=False)`` -- the oldest-inserted key is evicted
+                # first, matching _ACL_CACHE. Worst case on eviction is a
+                # re-emitted WARNING for an evicted key, which is benign.
                 if len(_NON_POSIX_TLS_WARNED_KEYS) >= _NON_POSIX_TLS_WARNED_MAX:
-                    _NON_POSIX_TLS_WARNED_KEYS.pop()
-                _NON_POSIX_TLS_WARNED_KEYS.add(_key_id)
+                    _NON_POSIX_TLS_WARNED_KEYS.popitem(last=False)
+                _NON_POSIX_TLS_WARNED_KEYS[_key_id] = None
         if should_warn:
             logger.warning(
                 "[mesh] mTLS key mode (0o600) check is SKIPPED on non-POSIX "

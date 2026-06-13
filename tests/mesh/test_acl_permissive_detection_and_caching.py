@@ -1,4 +1,6 @@
-"""Pin tests for PR #224 review-blocker batch (2026-06-02 sweep).
+"""ACL permissive-shape detection + cache-isolation pins.
+
+Origin: PR #224 review-blocker batch (2026-06-02 sweep).
 
 Covers:
 
@@ -398,10 +400,14 @@ def test_tls_warn_set_keys_on_path_and_mtime() -> None:
     """Thread #29: the non-POSIX TLS warn-set keys on
     ``(key_path, mtime_ns)``, not a single boolean. Rotating
     ``STRANDS_MESH_TLS_KEY`` to a different file re-arms the warning."""
+    from collections import OrderedDict
+
     from strands_robots.mesh import _zenoh_config
 
-    # Module-level set exists and is bounded.
-    assert isinstance(_zenoh_config._NON_POSIX_TLS_WARNED_KEYS, set)
+    # Module-level bounded cache exists. As of #307 it is an insertion-ordered
+    # mapping (OrderedDict acting as an ordered set) so eviction is deterministic
+    # FIFO, matching _ACL_CACHE. It still keys on (key_path, mtime_ns).
+    assert isinstance(_zenoh_config._NON_POSIX_TLS_WARNED_KEYS, OrderedDict)
     assert _zenoh_config._NON_POSIX_TLS_WARNED_MAX > 0
 
 

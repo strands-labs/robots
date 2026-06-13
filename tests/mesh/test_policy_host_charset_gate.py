@@ -1,4 +1,6 @@
-"""Pin tests for PR #223 R7 review concerns.
+"""is_safe_policy_host standalone charset gate + override-code-len constant.
+
+Origin: PR #223 R7 review concerns.
 
 Two concerns addressed in R7:
 

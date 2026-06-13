@@ -1,21 +1,10 @@
 """Red-team adversarial tests against live Zenoh sessions.
 
-Each test boots one or more real ``zenoh.open()`` peers in process
-and exercises a vector from PENTEST.md. They skip cleanly when
-``eclipse-zenoh`` is unavailable.
-
-Vector IDs (from.autonomous/PLAN.md):
-
-* Z3 -- downsampling caps cmd publish rate.
-* Z4 -- low_pass_filter caps cmd payload bytes.
-* NS -- namespace isolates two fleets on the same TCP listener.
-* L2 -- validate_command rejects an attacker-controlled policy_host
+* downsampling caps cmd publish rate.
+* low_pass_filter caps cmd payload bytes.
+* namespace isolates two fleets on the same TCP listener.
+* validate_command rejects an attacker-controlled policy_host
   even if the wire reached the dispatcher (defence in depth).
-
-Tests intentionally do NOT spin up a full :class:`Mesh` -- the goal is
-to verify Zenoh's transport-layer behaviour under the configs
-emitted by :mod:`strands_robots.mesh._zenoh_config`. End-to-end Mesh
-tests live elsewhere (`test_deep_mesh.py`).
 """
 
 from __future__ import annotations

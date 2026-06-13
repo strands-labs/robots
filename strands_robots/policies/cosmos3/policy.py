@@ -243,9 +243,13 @@ class Cosmos3Policy(Policy):
             per-request seed (tracked as an upstream feature request).
         """
         self._client.reset()
-        # Local reseed only — np.random.seed(int) never raises, so no guard.
-        if seed is not None:
-            np.random.seed(seed)
+        # #331: reseed via the shared helper so Cosmos3Policy reaches RNG parity
+        # with Gr00tPolicy (Python random + NumPy + torch CPU/CUDA + cuDNN
+        # determinism), not just the global NumPy RNG. Same set_eval_seed
+        # behaviour across both providers for #187 reproducibility.
+        from strands_robots.policies._rng import reseed_client_rngs
+
+        reseed_client_rngs(seed)
 
     async def get_actions(
         self, observation_dict: dict[str, Any], instruction: str, **kwargs: Any

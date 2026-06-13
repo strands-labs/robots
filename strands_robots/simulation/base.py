@@ -88,6 +88,33 @@ class SimEngine(ABC):
         sim.destroy()
     """
 
+    def _resolve_single_robot(self, robot_name: str | None) -> str:
+        """Resolve an optional robot name to a concrete one.
+
+        None + exactly one robot -> that robot.
+        None + zero robots -> ValueError.
+        None + many robots -> ValueError listing the candidates so the
+        caller can recover in zero extra calls.
+
+        Args:
+            robot_name: Explicit robot name (returned unchanged) or None.
+
+        Returns:
+            Resolved robot name string.
+
+        Raises:
+            ValueError: When robot_name is None and the resolution is
+                ambiguous or impossible.
+        """
+        if robot_name is not None:
+            return robot_name
+        names = self.list_robots()
+        if len(names) == 1:
+            return names[0]
+        if len(names) == 0:
+            raise ValueError("No robots registered in the simulation. Add a robot first (add_robot or Robot factory).")
+        raise ValueError(f"Multiple robots registered; specify robot_name. Available: {names}")
+
     # World lifecycle
 
     @abstractmethod
@@ -263,7 +290,7 @@ class SimEngine(ABC):
 
     def run_policy(
         self,
-        robot_name: str,
+        robot_name: str | None = None,
         policy_provider: str = "mock",
         policy_config: dict[str, Any] | None = None,
         instruction: str = "",
@@ -314,6 +341,8 @@ class SimEngine(ABC):
             Standard status dict.
         """
         from strands_robots.policies import create_policy
+
+        robot_name = self._resolve_single_robot(robot_name)
 
         # accept n_steps (or legacy max_steps) as an alternate horizon
         # specification. duration = n_steps / control_frequency. If both
@@ -366,7 +395,7 @@ class SimEngine(ABC):
 
     def start_policy(
         self,
-        robot_name: str,
+        robot_name: str | None = None,
         policy_provider: str = "mock",
         policy_config: dict[str, Any] | None = None,
         instruction: str = "",
@@ -388,6 +417,7 @@ class SimEngine(ABC):
         accepts ``n_steps`` (primary) or legacy ``max_steps`` as an
         alternate to ``duration``. See ``run_policy`` for conversion rules.
         """
+        robot_name = self._resolve_single_robot(robot_name)
         return self.run_policy(
             robot_name,
             policy_provider=policy_provider,
@@ -724,6 +754,39 @@ class SimEngine(ABC):
     def get_contacts(self) -> dict[str, Any]:
         """Get contact information. Override per backend."""
         raise NotImplementedError("get_contacts not implemented by this backend")
+
+    # Discovery / introspection
+
+    def describe(self) -> dict[str, Any]:
+        """Return a machine-readable summary of this engine's live contract.
+
+        Agents should call this first to learn what robots exist, what cameras
+        are attached, and the signatures of the methods most commonly needed --
+        in a single call, instead of guessing method names.
+
+        Returns:
+            Plain dict with keys: robots, cameras, methods, note.
+        """
+        return {
+            "robots": self.list_robots(),
+            "cameras": [],  # backends override to list camera names
+            "methods": {
+                "get_robot_state": "(robot_name: str) -> dict",
+                "get_observation": "(robot_name: str | None = None, *, skip_images: bool = False) -> dict",
+                "send_action": "(action: dict, robot_name: str | None = None, n_substeps: int = 1) -> None",
+                "run_policy": "(robot_name: str, policy_provider='mock', ...) -> dict",
+                "start_policy": "(robot_name: str, policy_provider='mock', ...) -> dict",
+                "list_robots": "() -> list[str]",
+                "render": "(camera_name='default', width=None, height=None) -> dict",
+                "reset": "() -> dict",
+                "step": "(n_steps: int = 1) -> dict",
+            },
+            "note": (
+                "robot_name defaults to the sole robot when only one exists "
+                "for get_observation and send_action. For get_robot_state, "
+                "pass the robot name explicitly (from the 'robots' list)."
+            ),
+        }
 
     def cleanup(self) -> None:
         """Release all resources. Called on __del__ / context exit."""

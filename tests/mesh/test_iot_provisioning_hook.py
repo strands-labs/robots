@@ -1,4 +1,4 @@
-"""Tests for the Fleet Provisioning PreProvisioningHook (pentest F-19 / B-13).
+"""Tests for the Fleet Provisioning PreProvisioningHook.
 
 Without a PreProvisioningHook, any holder of the shared claim cert can
 register an arbitrary Thing. These tests pin the hook's deny-by-default

@@ -1,0 +1,154 @@
+// strands-robots mesh ACL — STRICT per-peer isolation template.
+//
+// Use this template when you need hard cross-peer subscribe denial
+// equivalent to the AWS IoT transport's per-Thing policy isolation
+// (provision.py AllowOwnSubscriptions / AllowReceiveScoped), where a
+// robot can observe ONLY its own topics plus the fleet-shared classes.
+//
+// HOW THIS DIFFERS FROM mesh_acl_example.json5
+// --------------------------------------------
+// Zenoh 1.x `key_exprs` cannot interpolate the connecting peer's cert
+// CN (no `${cn}` substitution), so the only way to express "robot-a may
+// subscribe to robot-a's own topics but NOT robot-b's" is to enumerate
+// one rule + one subject PER robot, hard-coding that robot's peer-id
+// prefix into the rule's key_exprs.
+//
+// The peer-id on the wire is the Zenoh key segment (e.g.
+// `<namespace>/robot-a/state/...`); after the namespace prefix is
+// stripped for ACL matching it appears as `robot-a/...`. Enumerate that
+// exact prefix below for each robot.
+//
+// MAINTENANCE COST
+// ----------------
+// This template grows by one rule + one subject + one policy per robot
+// you provision. For large fleets that is verbose but it is the only
+// shape that gives true per-peer subscribe isolation on the Zenoh
+// transport. For fleets that can tolerate topic-CLASS scoping (a robot
+// may see other robots' presence/broadcast/safety but not their
+// cmd/state/camera) use mesh_acl_example.json5 instead.
+//
+// Zenoh 1.x quirks: see mesh_acl_example.json5 header (enabled:true
+// required; literal-CN matching only; interfaces optional;
+// namespace-relative key_exprs; put=ingress / declare_subscriber=egress).
+//
+// Reference test tree: tests/mesh/test_zenoh_transport_security.py
+{
+  enabled: true,
+  default_permission: "deny",
+
+  rules: [
+    // ---- Shared fleet classes every robot may publish + subscribe ----
+    {
+      id: "shared_publish",
+      messages: ["put"],
+      flows: ["ingress"],
+      permission: "allow",
+      key_exprs: ["**/presence", "**/health", "**/safety/**"],
+    },
+    {
+      id: "shared_subscribe",
+      messages: ["declare_subscriber"],
+      flows: ["egress"],
+      permission: "allow",
+      key_exprs: ["**/presence", "**/broadcast", "**/safety/**"],
+    },
+
+    // ---- Per-robot OWN-topic grants (one block per robot CN) ----
+    {
+      // robot-a: publish + subscribe ONLY to robot-a's own topics.
+      id: "robot_a_own_publish",
+      messages: ["put"],
+      flows: ["ingress"],
+      permission: "allow",
+      key_exprs: [
+        "robot-a/state/**",
+        "robot-a/pose",
+        "robot-a/imu",
+        "robot-a/odom",
+        "robot-a/lidar/**",
+        "robot-a/hand/**",
+        "robot-a/camera/**",
+        "robot-a/response/**",
+      ],
+    },
+    {
+      id: "robot_a_own_subscribe",
+      messages: ["declare_subscriber"],
+      flows: ["egress"],
+      permission: "allow",
+      key_exprs: ["robot-a/cmd", "robot-a/response/**"],
+    },
+    {
+      // robot-b: publish + subscribe ONLY to robot-b's own topics.
+      id: "robot_b_own_publish",
+      messages: ["put"],
+      flows: ["ingress"],
+      permission: "allow",
+      key_exprs: [
+        "robot-b/state/**",
+        "robot-b/pose",
+        "robot-b/imu",
+        "robot-b/odom",
+        "robot-b/lidar/**",
+        "robot-b/hand/**",
+        "robot-b/camera/**",
+        "robot-b/response/**",
+      ],
+    },
+    {
+      id: "robot_b_own_subscribe",
+      messages: ["declare_subscriber"],
+      flows: ["egress"],
+      permission: "allow",
+      key_exprs: ["robot-b/cmd", "robot-b/response/**"],
+    },
+
+    // ---- Operator: publish commands + broad observe (intentional) ----
+    {
+      id: "operator_publish_cmds",
+      messages: ["put"],
+      flows: ["ingress"],
+      permission: "allow",
+      key_exprs: ["**/cmd", "**/broadcast", "**/safety/**"],
+    },
+    {
+      id: "operator_subscribe_all",
+      messages: ["declare_subscriber"],
+      flows: ["egress"],
+      permission: "allow",
+      key_exprs: ["**"],
+    },
+  ],
+
+  subjects: [
+    {
+      id: "robot_a",
+      cert_common_names: ["robot-a"],
+    },
+    {
+      id: "robot_b",
+      cert_common_names: ["robot-b"],
+    },
+    {
+      id: "operator_peer",
+      cert_common_names: ["op-1", "op-2"],
+    },
+  ],
+
+  policies: [
+    {
+      // robot-a sees ONLY its own topics + shared classes.
+      rules: ["shared_publish", "shared_subscribe", "robot_a_own_publish", "robot_a_own_subscribe"],
+      subjects: ["robot_a"],
+    },
+    {
+      // robot-b sees ONLY its own topics + shared classes.
+      rules: ["shared_publish", "shared_subscribe", "robot_b_own_publish", "robot_b_own_subscribe"],
+      subjects: ["robot_b"],
+    },
+    {
+      rules: ["operator_publish_cmds", "operator_subscribe_all"],
+      subjects: ["operator_peer"],
+    },
+  ],
+}

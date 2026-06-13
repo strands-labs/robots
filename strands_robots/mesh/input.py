@@ -28,12 +28,75 @@ from typing import TYPE_CHECKING, Any
 from strands_robots.mesh.security import ValidationError, validate_input_frame
 from strands_robots.mesh.session import put
 
+_log_safety_event: Callable[..., None] | None
+try:  # audit is best-effort; never let an import issue break teleop apply
+    from strands_robots.mesh.audit import log_safety_event as _log_safety_event
+except Exception:  # pragma: no cover - defensive
+    _log_safety_event = None
+
 if TYPE_CHECKING:
     from strands_robots.mesh.core import Mesh
 
 logger = logging.getLogger(__name__)
 
 INPUT_HZ_DEFAULT = 50.0
+
+#: Default ceiling on the rate at which an InputReceiver will
+#: APPLY inbound teleop frames to the robot. The publisher streams at
+#: INPUT_HZ_DEFAULT (50Hz); a malicious peer can stream far faster to slam
+#: the servos (overcurrent / thermal / gear-strip). Frames arriving faster
+#: than this cap are dropped-and-counted (``_rate_dropped``). Generous 2x
+#: headroom over the default publish rate so legitimate jitter is never
+#: rejected. Operator-tunable via ``STRANDS_MESH_INPUT_MAX_HZ`` (0 disables
+#: the cap for trusted closed networks).
+INPUT_MAX_HZ_DEFAULT = 100.0
+
+
+def _input_max_hz() -> float:
+    """Resolve ``STRANDS_MESH_INPUT_MAX_HZ`` (lazy, restart-free).
+
+    Bad / missing input falls back to the default ceiling; an explicit
+    non-positive value (0) disables the cap for trusted closed networks.
+    """
+    import os
+
+    raw = os.getenv("STRANDS_MESH_INPUT_MAX_HZ")
+    if raw is None:
+        return INPUT_MAX_HZ_DEFAULT
+    try:
+        val = float(raw)
+    except (TypeError, ValueError):
+        return INPUT_MAX_HZ_DEFAULT
+    if val < 0:
+        return INPUT_MAX_HZ_DEFAULT
+    return val  # 0 => disabled
+
+
+#: M-5: the teleop input path is high-rate (up to 50Hz),
+#: so we cannot audit every applied frame without flooding the log. Instead we
+#: record one ``input_stream_applied`` audit event every N applied frames (a
+#: heartbeat that proves the stream was live + actuating, for post-incident
+#: forensics of the "Invisible Puppeteer" chain). Operator-tunable via
+#: ``STRANDS_MESH_INPUT_AUDIT_EVERY`` (0 disables input audit entirely).
+INPUT_AUDIT_EVERY_DEFAULT = 100
+
+
+def _input_audit_every() -> int:
+    """Resolve ``STRANDS_MESH_INPUT_AUDIT_EVERY`` (lazy, restart-free).
+
+    Bad/missing input falls back to the default sampling interval; an
+    explicit non-positive value disables input-stream auditing.
+    """
+    import os
+
+    raw = os.getenv("STRANDS_MESH_INPUT_AUDIT_EVERY")
+    if raw is None:
+        return INPUT_AUDIT_EVERY_DEFAULT
+    try:
+        val = int(raw)
+    except (TypeError, ValueError):
+        return INPUT_AUDIT_EVERY_DEFAULT
+    return val if val > 0 else 0
 
 
 class InputPublisher:
@@ -204,6 +267,8 @@ class InputReceiver:
         self._last_seq = -1
         self._drops = 0
         self._rejected = 0
+        self._rate_dropped = 0
+        self._last_apply_mono = 0.0
         self._start_time = 0.0
 
     def __repr__(self) -> str:
@@ -225,6 +290,7 @@ class InputReceiver:
             "errors": self._error_count,
             "drops": self._drops,
             "rejected": self._rejected,
+            "rate_dropped": self._rate_dropped,
             "hz_actual": self._frame_count / elapsed if elapsed > 0 else 0,
         }
 
@@ -266,6 +332,24 @@ class InputReceiver:
     def _on_input(self, topic: str, data: dict[str, Any]) -> None:
         if not self._running:
             return
+        # E-stop lockout MUST gate the teleop input path the
+        # same way it gates the command path (see Mesh._dispatch). Without
+        # this check a LAN-adjacent peer could keep driving the follower's
+        # joints via send_action() while an operator believes the robot is
+        # safely locked out -- the "Safe Mode Illusion" / "Oscillation Kill"
+        # exploit chains. The CMD path raises LockoutError; the input path is
+        # a high-rate streaming loop, so we drop-and-count instead of raising
+        # to avoid log/exception spam at 50Hz. Rejected frames are surfaced
+        # via the ``rejected`` stat and a rate-limited warning.
+        lockout = getattr(self.mesh, "_estop_lockout", None)
+        if lockout is not None and lockout.is_set():
+            self._rejected = getattr(self, "_rejected", 0) + 1
+            if self._rejected <= 5:
+                logger.warning(
+                    "[mesh] input frame rejected during E-stop lockout from %s",
+                    self.source_peer_id,
+                )
+            return
         try:
             action = data.get("action")
             if action is None:
@@ -274,6 +358,27 @@ class InputReceiver:
             if self._last_seq >= 0 and seq > self._last_seq + 1:
                 self._drops += seq - self._last_seq - 1
             self._last_seq = seq
+
+            # Apply-rate ceiling. A peer streaming teleop far
+            # above the nominal publish rate can slam servos into overcurrent
+            # / thermal / gear damage. Enforce a minimum inter-apply interval
+            # using a monotonic clock (immune to wall-clock/NTP skew). Frames
+            # over the cap are dropped-and-counted (``_rate_dropped``) rather
+            # than raising -- this is a 50Hz+ hot loop. 0 disables the cap.
+            max_hz = _input_max_hz()
+            if max_hz > 0:
+                now_mono = time.perf_counter()
+                min_interval = 1.0 / max_hz
+                if self._last_apply_mono and (now_mono - self._last_apply_mono) < min_interval:
+                    self._rate_dropped = getattr(self, "_rate_dropped", 0) + 1
+                    if self._rate_dropped <= 5:
+                        logger.warning(
+                            "[mesh] input frame rate-limited from %s (> %.0fHz)",
+                            self.source_peer_id,
+                            max_hz,
+                        )
+                    return
+                self._last_apply_mono = now_mono
             # B-04 / F-02: validate the teleop frame before it reaches
             # send_action(). A LAN-adjacent peer that discovers this
             # source peer_id could otherwise drive the follower's joints
@@ -294,6 +399,22 @@ class InputReceiver:
                 return
             self._apply_fn(self.robot, safe_action)
             self._frame_count += 1
+            # M-5: sampled positive audit of the live teleop stream so a
+            # successful remote actuation is not invisible to forensics.
+            _audit_every = _input_audit_every()
+            if _log_safety_event is not None and _audit_every > 0 and self._frame_count % _audit_every == 0:
+                try:
+                    _log_safety_event(
+                        "input_stream_applied",
+                        getattr(self.mesh, "peer_id", "?"),
+                        {
+                            "source": self.source_peer_id,
+                            "device": self.device_name,
+                            "frames": self._frame_count,
+                        },
+                    )
+                except (TypeError, ValueError, OSError) as audit_exc:
+                    logger.debug("[mesh] input audit unavailable: %s", audit_exc)
         except Exception as exc:
             self._error_count += 1
             if self._error_count <= 5:

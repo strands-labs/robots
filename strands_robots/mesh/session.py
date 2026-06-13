@@ -67,6 +67,28 @@ CAMERA_HZ: float = 0.0
 
 #: Seconds without a heartbeat before a peer is considered dead.
 PEER_TIMEOUT: float = 10.0
+
+# Operator-tunable via ``STRANDS_MESH_MAX_PEERS``.
+# A real fleet is tens-to-low-hundreds of robots; 1024 leaves generous
+# headroom while bounding the flood.
+MAX_PEERS_DEFAULT: int = 1024
+
+
+def _max_peers() -> int:
+    """Resolve ``STRANDS_MESH_MAX_PEERS`` (lazy, restart-free).
+
+    Bad / missing / non-positive input falls back to the default cap.
+    """
+    raw = os.getenv("STRANDS_MESH_MAX_PEERS")
+    if raw is None:
+        return MAX_PEERS_DEFAULT
+    try:
+        val = int(raw)
+    except (TypeError, ValueError):
+        return MAX_PEERS_DEFAULT
+    return val if val > 0 else MAX_PEERS_DEFAULT
+
+
 #: Pose publishing frequency (Hz).  Publishes SE(3) pose when a pose
 #: provider (SLAM, odometry, VIO) is available on the robot.
 POSE_HZ: float = 10.0
@@ -167,6 +189,21 @@ def update_peer(peer_id: str, peer_type: str, hostname: str, caps: dict[str, Any
     global _PEERS_VERSION  # noqa: PLW0603 — module-level singleton by design
     with _PEERS_LOCK:
         is_new = peer_id not in _PEERS
+        # When a NEW peer would push us over the cap, evict the oldest
+        # peer (smallest last_seen) to make room. Updates to EXISTING peers
+        # never trigger eviction (they don't grow the dict). This bounds the
+        # phantom-peer flood DoS while still admitting genuine new robots.
+        if is_new:
+            cap = _max_peers()
+            while len(_PEERS) >= cap and _PEERS:
+                oldest_id = min(_PEERS, key=lambda pid: _PEERS[pid].last_seen)
+                del _PEERS[oldest_id]
+                _PEERS_VERSION += 1
+                logger.warning(
+                    "Mesh: peer registry at cap (%d); evicted oldest peer %s",
+                    cap,
+                    oldest_id,
+                )
         _PEERS[peer_id] = PeerInfo(
             peer_id=peer_id,
             peer_type=peer_type,
@@ -237,7 +274,14 @@ def clear_peers() -> None:
 # time. Validate the scheme up-front so the misconfig surfaces at the
 # same loud-on-misconfig boundary as ``_float_env`` / ``_load_acl_file``
 # / ``resolve_auth_mode``.
-_MTLS_OK_SCHEMES: tuple[str, ...] = ("tls", "quic")
+# #309: the predicate is "this scheme carries TLS bytes", so the constant is
+# named for that intent. Zenoh 1.x TLS-bearing transports are tls, quic,
+# wss (WebSocket-over-TLS, used in browser-bridge / ingress fleets) and
+# unixsock (local-only but TLS-bearing in the Zenoh transport taxonomy).
+# See https://zenoh.io/docs/manual/configuration/ (link protocols).
+_TLS_BEARING_SCHEMES: tuple[str, ...] = ("tls", "quic", "wss", "unixsock")
+# Backwards-compatible alias (the old name read as "valid under mtls").
+_MTLS_OK_SCHEMES: tuple[str, ...] = _TLS_BEARING_SCHEMES
 _NONE_OK_SCHEMES: tuple[str, ...] = ("tcp", "udp", "tls", "quic")
 
 
