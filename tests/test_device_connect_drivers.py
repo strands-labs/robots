@@ -62,24 +62,24 @@ mock_types = MagicMock()
 
 @dataclass
 class FakeDeviceIdentity:
-    device_type: str = None
-    manufacturer: str = None
-    model: str = None
-    description: str = None
-    serial_number: str = None
-    firmware_version: str = None
-    arch: str = None
-    commissioning_comment: str = None
+    device_type: str | None = None
+    manufacturer: str | None = None
+    model: str | None = None
+    description: str | None = None
+    serial_number: str | None = None
+    firmware_version: str | None = None
+    arch: str | None = None
+    commissioning_comment: str | None = None
 
 
 @dataclass
 class FakeDeviceStatus:
     availability: str = "idle"
     busy_score: float = 0.0
-    location: str = None
-    battery: int = None
+    location: str | None = None
+    battery: int | None = None
     online: bool = True
-    error_state: str = None
+    error_state: str | None = None
 
 
 mock_types.DeviceIdentity = FakeDeviceIdentity
@@ -805,7 +805,7 @@ class TestRobotMeshToolDeviceConnect(unittest.TestCase):
 
         result = _device_connect_dispatch("stop", "so100-lab-1", "", "", "mock", 0, 30.0, 30.0)
         self.assertEqual(result["status"], "success")
-        self.mock_conn.invoke.assert_called_once_with("so100-lab-1", "stop", timeout=5.0)
+        self.mock_conn.invoke.assert_called_once_with("so100-lab-1", "stop", {}, timeout=5.0)
 
     def test_emergency_stop(self):
         from strands_robots.tools.robot_mesh import _device_connect_dispatch

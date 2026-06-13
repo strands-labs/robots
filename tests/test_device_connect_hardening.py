@@ -537,9 +537,9 @@ def test_tell_invoke_carries_identity(monkeypatch):
 
 
 def test_rpc_is_interrupt_required():
-    from strands_robots.tools.robot_mesh import _INTERRUPT_REQUIRED
+    from strands_robots.tools.robot_mesh import _resolve_interrupt_actions
 
-    assert "rpc" in _INTERRUPT_REQUIRED
+    assert "rpc" in _resolve_interrupt_actions()
 
 
 def test_rpc_declined_by_operator_is_rejected(monkeypatch):

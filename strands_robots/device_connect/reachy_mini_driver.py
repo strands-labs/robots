@@ -52,7 +52,7 @@ class ReachyMiniDriver(DeviceDriver):
         self._api_port = api_port
         self._latest_joints: dict | None = None
         self._latest_imu: dict | None = None
-        self._hw = None
+        self._hw: WebSocketLink | ZenohLink | None = None
 
     @property
     def identity(self) -> DeviceIdentity:
@@ -96,6 +96,8 @@ class ReachyMiniDriver(DeviceDriver):
 
     async def _send_cmd(self, cmd: dict) -> None:
         """Send a real-time command via the active hardware link."""
+        if self._hw is None:
+            raise RuntimeError("Reachy Mini hardware link not connected")
         await self._hw.send_cmd(cmd)
 
     # ── Movement RPCs (Zenoh via transport) ────────────────────

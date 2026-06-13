@@ -12,6 +12,7 @@ import os
 import socket
 from abc import ABC, abstractmethod
 from collections.abc import Callable
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -164,7 +165,7 @@ class WebSocketLink(HardwareLink):
     def __init__(self, host: str, port: int):
         self._host = host
         self._port = port
-        self._ws = None
+        self._ws: Any = None
         self._read_task: asyncio.Task | None = None
 
     async def start(self, on_joints: Callable, on_imu: Callable) -> None:

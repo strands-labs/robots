@@ -243,7 +243,7 @@ class SimulationDeviceDriver(DeviceDriver):
                     logger.debug("observationUpdate skipped for %s: %s", name, e)
 
     @emit()
-    async def stateUpdate(self, sim_time: float = 0.0, step_count: int = 0, running_policies: dict = None):
+    async def stateUpdate(self, sim_time: float = 0.0, step_count: int = 0, running_policies: dict | None = None):
         """Periodic simulation state update.
 
         Args:
@@ -255,7 +255,7 @@ class SimulationDeviceDriver(DeviceDriver):
 
     @emit()
     async def observationUpdate(
-        self, robot_name: str = "", sim_time: float = 0.0, step_count: int = 0, joints: dict = None
+        self, robot_name: str = "", sim_time: float = 0.0, step_count: int = 0, joints: dict | None = None
     ):
         """Periodic per-robot observation with joint positions.
 
