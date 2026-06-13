@@ -1000,7 +1000,10 @@ class MuJoCoSimEngine(
         keep working, but new tool specs should document only robot_name."""
         if self._world is None or self._world._model is None or self._world._data is None:
             return {"status": "error", "content": [{"text": "No world. Call create_world (or load_scene) first."}]}
-        robot_name = self._resolve_single_robot(robot_name)
+        try:
+            robot_name = self._resolve_single_robot(robot_name)
+        except ValueError as e:
+            return {"status": "error", "content": [{"text": str(e)}]}
         if robot_name not in self._world.robots:
             return {"status": "error", "content": [{"text": f"Robot '{robot_name}' not found."}]}
 
@@ -1889,7 +1892,10 @@ class MuJoCoSimEngine(
         """
         if self._world is None or self._world._model is None or self._world._data is None:
             return {"status": "error", "content": [{"text": "No world. Call create_world (or load_scene) first."}]}
-        robot_name = self._resolve_single_robot(robot_name)
+        try:
+            robot_name = self._resolve_single_robot(robot_name)
+        except ValueError as e:
+            return {"status": "error", "content": [{"text": str(e)}]}
         if robot_name not in self._world.robots:
             return {"status": "error", "content": [{"text": f"Robot '{robot_name}' not found."}]}
 
@@ -2023,7 +2029,10 @@ class MuJoCoSimEngine(
         if self._world is None or self._world._model is None or self._world._data is None:
             return {"status": "error", "content": [{"text": "No world. Call create_world (or load_scene) first."}]}
 
-        robot_name = self._resolve_single_robot(robot_name)
+        try:
+            robot_name = self._resolve_single_robot(robot_name)
+        except ValueError as e:
+            return {"status": "error", "content": [{"text": str(e)}]}
 
         try:
             return super().run_policy(

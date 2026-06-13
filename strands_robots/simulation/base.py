@@ -783,8 +783,9 @@ class SimEngine(ABC):
             },
             "note": (
                 "robot_name defaults to the sole robot when only one exists "
-                "for get_observation and send_action. For get_robot_state, "
-                "pass the robot name explicitly (from the 'robots' list)."
+                "for get_observation, send_action, get_robot_state, run_policy, "
+                "and start_policy. With multiple robots, pass robot_name "
+                "explicitly (from the 'robots' list above)."
             ),
         }
 
