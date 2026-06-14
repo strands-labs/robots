@@ -6,6 +6,13 @@ description: Device Connect — the device-aware networking layer (discovery, RP
 
 [Device Connect](https://github.com/arm/device-connect) by Arm is the **recommended networking layer** for Strands Robots — a device-aware runtime that handles discovery, presence, structured RPC, event routing, and safety. `Robot("…").run()` brings a robot online as a Device Connect device, and the [`robot_mesh`](mesh.md#agent-driven-mesh) tool dispatches through it.
 
+<video controls playsinline width="100%">
+  <source src="../assets/device_connect_demo.mp4" type="video/mp4">
+  Your browser does not support the video tag.
+</video>
+
+<small>A Strands agent controlling both a **simulated and a real** robot — across the country — over Device Connect.</small>
+
 ## Install
 
 ```bash
