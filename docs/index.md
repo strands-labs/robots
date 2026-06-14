@@ -1,8 +1,3 @@
----
-hide:
-  - navigation
----
-
 # Strands Robots
 
 A robot library for [Strands agents](https://strandsagents.com). You name a robot, you get something you can drive - in simulation by default, or on real hardware when you ask for it.
