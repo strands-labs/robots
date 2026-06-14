@@ -4,7 +4,7 @@ description: Install strands-robots with uv — extras matrix, platform notes, h
 
 # Installation
 
-Requires **Python ≥ 3.12**. Examples use [`uv`](https://docs.astral.sh/uv/) (`curl -LsSf https://astral.sh/uv/install.sh | sh`); plain `pip install` works too.
+Requires **Python >= 3.12**. Examples use [`uv`](https://docs.astral.sh/uv/) (`curl -LsSf https://astral.sh/uv/install.sh | sh`); plain `pip install` works too.
 
 ## Extras matrix
 
@@ -41,11 +41,37 @@ sudo usermod -aG dialout $USER   # USB serial access; re-login after
 
 **Windows:** WSL2 + Ubuntu 22.04 (native Windows works for sim, not actively tested).
 
-**Jetson (JetPack):**
+**Jetson / aarch64 (JetPack):**
 ```bash
 uv pip install "numpy<2" "pandas==2.1.4"
 uv pip install "strands-robots[sim-mujoco,lerobot]"
 ```
+
+The `[lerobot]` extra includes `torchcodec` on aarch64 (required because
+torchvision 0.26 removed `VideoReader` and lerobot's own torchcodec marker
+excludes aarch64). If torch CUDA is needed on Jetson, ensure you install from
+NVIDIA's index or set `UV_TORCH_BACKEND=auto`:
+
+```bash
+export UV_TORCH_BACKEND=auto   # resolves +cu130 wheels for Thor/Jetson
+uv pip install "strands-robots[sim-mujoco,lerobot]"
+```
+
+### MolmoAct2 on Jetson (lerobot from source)
+
+MolmoAct2 checkpoints (e.g. `allenai/MolmoAct2-SO100_101`) require lerobot
+**from source** (git main) because `MolmoAct2Policy` was added after lerobot
+0.5.1 (the latest PyPI release). See
+[LeRobot Local: MolmoAct2](../policies/lerobot-local.md#molmoact2) for full
+instructions. Quick path:
+
+```bash
+# Install lerobot from source (skips pyav if it fails on aarch64):
+uv pip install "lerobot[feetech] @ git+https://github.com/huggingface/lerobot.git" --no-build-isolation
+uv pip install torchcodec>=0.7   # video decode backend for aarch64
+```
+
+This will be unnecessary once lerobot >= 0.5.2 is published to PyPI.
 
 ## Headless rendering
 

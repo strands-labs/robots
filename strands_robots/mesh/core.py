@@ -1042,8 +1042,13 @@ class Mesh(SensorLoopsMixin):
             return
         r = self.robot
         inner = getattr(r, "robot", None)
-        if inner is None or not getattr(inner, "is_connected", False):
-            return
+        if inner is not None and getattr(inner, "is_connected", False):
+            self._publish_hardware_cameras(inner)
+        else:
+            self._publish_sim_cameras()
+
+    def _publish_hardware_cameras(self, inner: Any) -> None:
+        """Publish camera frames from a hardware robot (lerobot Robot)."""
         cam_cfg = getattr(getattr(inner, "config", None), "cameras", None)
         if not isinstance(cam_cfg, dict) or not cam_cfg:
             return
@@ -1070,6 +1075,79 @@ class Mesh(SensorLoopsMixin):
             if not obs:
                 return
 
+        self._encode_and_publish_frames(obs, list(cam_cfg.keys()))
+
+    def _publish_sim_cameras(self) -> None:
+        """Publish camera frames from a sim robot (SimRobot with _world ref).
+
+        SimRobots get a _world back-reference when attached to the mesh
+        (set in Simulation._attach_robot_to_mesh). This method renders the
+        robot's cameras from the parent MuJoCo world and publishes JPEG-
+        encoded frames on the mesh camera topic.
+
+        Without this path, sim robot child peers on the mesh would never
+        publish camera frames -- hardware robots go through
+        _publish_hardware_cameras (via inner.get_observation()), but sim
+        robots have no inner lerobot Robot wrapper.
+        """
+        r = self.robot
+        world = getattr(r, "_world", None)
+        if world is None:
+            return
+        model = getattr(world, "_model", None)
+        data = getattr(world, "_data", None)
+        if model is None or data is None:
+            return
+
+        # Discover cameras owned by this robot (namespaced under robot.namespace)
+        robot_name = getattr(r, "name", None)
+        if not robot_name:
+            return
+        pfx = getattr(r, "namespace", "") or ""
+
+        try:
+            import mujoco as mj
+        except ImportError:
+            return
+
+        # Find cameras scoped to this robot (prefixed by namespace)
+        cam_frames: dict[str, Any] = {}
+        for i in range(model.ncam):
+            cam_name = mj.mj_id2name(model, mj.mjtObj.mjOBJ_CAMERA, i)
+            if not cam_name:
+                continue
+            # Only publish cameras belonging to this robot
+            if pfx and not cam_name.startswith(pfx):
+                continue
+            # Strip namespace prefix for the published topic name
+            short_name = cam_name[len(pfx) :] if pfx and cam_name.startswith(pfx) else cam_name
+            try:
+                # Render at a reasonable resolution for mesh streaming
+
+                renderer = mj.Renderer(model, height=480, width=640)
+                renderer.update_scene(data, camera=i)
+                frame = renderer.render().copy()
+                renderer.close()
+                if frame is not None and hasattr(frame, "shape") and len(frame.shape) >= 2:
+                    cam_frames[short_name] = frame
+            except (RuntimeError, ValueError) as exc:
+                logger.debug(
+                    "[mesh] %s: sim camera %s render failed: %s",
+                    self.peer_id,
+                    cam_name,
+                    exc,
+                )
+
+        if cam_frames:
+            self._encode_and_publish_frames(cam_frames, list(cam_frames.keys()))
+
+    def _encode_and_publish_frames(self, obs: dict[str, Any], cam_names: list[str]) -> None:
+        """JPEG-encode and publish camera frames on the mesh.
+
+        Shared by both hardware and sim camera paths. Encodes each frame
+        to JPEG (via cv2 when available, raw fallback otherwise) and
+        publishes on strands/<peer_id>/camera/<cam_name>.
+        """
         try:
             import cv2
 
@@ -1077,7 +1155,7 @@ class Mesh(SensorLoopsMixin):
         except Exception:
             have_cv2 = False
 
-        for cam_name in cam_cfg:
+        for cam_name in cam_names:
             try:
                 frame = obs.get(cam_name)
                 if frame is None:
@@ -1118,7 +1196,8 @@ class Mesh(SensorLoopsMixin):
             except Exception as exc:
                 logger.debug("[mesh] %s: camera %s publish failed: %s", self.peer_id, cam_name, exc)
 
-    # RPC — incoming
+        # RPC — incoming
+
     def _on_cmd(self, sample: Any) -> None:
         """Handle an inbound command sample.
 

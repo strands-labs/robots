@@ -11,6 +11,8 @@ description: Error → fix table for the most common gotchas across install, sim
 | `ModuleNotFoundError: mujoco` | Missing `[sim-mujoco]` | `uv pip install "strands-robots[sim-mujoco]"` |
 | `ModuleNotFoundError: lerobot` | Missing `[lerobot]` | `uv pip install "strands-robots[lerobot]"` |
 | `ImportError: cannot import name '...' from 'lerobot'` | LeRobot version skew | `uv pip install "lerobot>=0.5.0,<0.6"` |
+| `ImportError: cannot import name 'MolmoAct2Policy'` | MolmoAct2 not in PyPI lerobot (added post-0.5.1) | Install from source: `uv pip install "lerobot[feetech] @ git+https://github.com/huggingface/lerobot.git"` |
+| pyav build fails on Jetson/aarch64 | No prebuilt wheel for sm_110 | Use `--no-build-isolation` or install `torchcodec>=0.7` and skip pyav. See [installation](getting-started/installation.md#molmoact2-on-jetson-lerobot-from-source) |
 | numpy ABI mismatch on Jetson | System pandas vs pip numpy | `uv pip install "numpy<2" "pandas==2.1.4"` then reinstall |
 | `uv pip install -e .` errors | Wrong cwd | `cd` to repo root first |
 

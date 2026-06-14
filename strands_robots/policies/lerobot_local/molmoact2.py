@@ -226,7 +226,16 @@ def build_policy(
         Tuple ``(policy, preprocessor, postprocessor, config)``.
     """
     import torch
-    from lerobot.configs import FeatureType, PolicyFeature
+
+    try:
+        from lerobot.configs import FeatureType, PolicyFeature
+    except ImportError as exc:
+        raise ImportError(
+            "MolmoAct2 requires lerobot >= 0.5.2 (from source). The PyPI release "
+            "(0.5.1) does not include MolmoAct2Policy. Install from source:\n"
+            "  uv pip install 'lerobot[feetech] @ git+https://github.com/huggingface/lerobot.git'\n"
+            "On Jetson/aarch64, add --no-build-isolation if pyav fails to build."
+        ) from exc
 
     # Use lerobot's PUBLIC factory API rather than importing the molmoact2
     # config/processor classes directly:
@@ -241,11 +250,19 @@ def build_policy(
     # from_pretrained's _load_as_safetensor path fails -- direct construction is
     # exactly what lerobot's own make_policy() does in its from-scratch branch
     # (MolmoAct2Policy.__init__ loads the HF weights via checkpoint_path).
-    from lerobot.policies.factory import (
-        get_policy_class,
-        make_policy_config,
-        make_pre_post_processors,
-    )
+    try:
+        from lerobot.policies.factory import (
+            get_policy_class,
+            make_policy_config,
+            make_pre_post_processors,
+        )
+    except ImportError as exc:
+        raise ImportError(
+            "MolmoAct2 requires lerobot >= 0.5.2 (from source). The PyPI release "
+            "(0.5.1) does not include MolmoAct2Policy. Install from source:\n"
+            "  uv pip install 'lerobot[feetech] @ git+https://github.com/huggingface/lerobot.git'\n"
+            "On Jetson/aarch64, add --no-build-isolation if pyav fails to build."
+        ) from exc
 
     resolved_device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     resolved_tag = auto_norm_tag(pretrained_name_or_path, norm_tag)
