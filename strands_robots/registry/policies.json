@@ -100,6 +100,34 @@
                 "nvidia/cosmos3",
                 "nvidia/cosmos3-nano-policy"
             ]
+        },
+        "motionbricks": {
+            "module": "strands_robots.policies.motionbricks",
+            "class": "MotionBricksPolicy",
+            "description": "MotionBricks real-time generative locomotion (VQVAE + pose + root) for G1 humanoid",
+            "requires": [],
+            "config_keys": [
+                "checkpoint",
+                "style",
+                "speed_scale",
+                "device",
+                "generate_dt"
+            ],
+            "defaults": {
+                "style": "walk",
+                "device": "cuda",
+                "generate_dt": 2.0
+            },
+            "shorthands": [
+                "motionbricks",
+                "mb"
+            ],
+            "hf_orgs": [
+                "nvidia"
+            ],
+            "model_id_overrides": [
+                "nvidia/MotionBricks-G1"
+            ]
         }
     }
 }
