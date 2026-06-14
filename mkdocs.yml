@@ -26,6 +26,7 @@ nav:
   - Overview: simulation/overview.md
   - World Building: simulation/world-building.md
   - Domain Randomization: simulation/domain-randomization.md
+- Device Connect: device-connect.md
 - Multi-robot Mesh: mesh.md
 - Policy Providers:
   - Overview: policies/overview.md

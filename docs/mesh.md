@@ -6,6 +6,9 @@ description: Two Robot() instances coordinating over the Zenoh mesh - peer disco
 
 Every `Robot()` auto-joins a Zenoh mesh. Peers discover each other on the LAN and can query, command, and e-stop one another.
 
+!!! info "Device Connect is the recommended networking layer"
+    What's described here is the built-in **Zenoh mesh** — the automatic fallback. When the [`device-connect`](device-connect.md) extra is installed, `Robot().run()` and `robot_mesh()` use [**Device Connect**](device-connect.md) (structured RPC, presence, registry, safety) and fall back to this mesh only when it's unavailable. Both ride on Zenoh.
+
 ```python
 # process A
 from strands_robots import Robot
@@ -92,6 +95,7 @@ Mesh failures are non-fatal - `robot.mesh` becomes `None`; the sim/hardware inst
 
 ## See also
 
+- [Device Connect](device-connect.md) - the recommended networking layer this mesh backs.
 - [AI agents](agents.md) - drive the mesh with natural language.
 - [Architecture](architecture.md) - where the mesh sits in the module map.
 - [Mesh source](https://github.com/strands-labs/robots/tree/main/strands_robots/mesh) - `core.py`, `session.py`, `audit.py`, `sensors.py`, `input.py`.
