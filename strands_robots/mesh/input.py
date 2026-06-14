@@ -26,7 +26,6 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from strands_robots.mesh.security import ValidationError, validate_input_frame
-from strands_robots.mesh.session import put
 
 _log_safety_event: Callable[..., None] | None
 try:  # audit is best-effort; never let an import issue break teleop apply
@@ -207,7 +206,12 @@ class InputPublisher:
                     "action": action_dict,
                     "events": events,
                 }
-                put(self.topic, payload)
+                # Route through Mesh.publish() -- the documented single
+                # publish chokepoint -- so this teleop actuation stream is
+                # covered by any audit/telemetry/compression hook landing
+                # there, exactly like sensor/state/command publishers. The
+                # receiver side already goes through self.mesh.subscribe().
+                self.mesh.publish(self.topic, payload)
                 self._seq += 1
                 self._frame_count += 1
             except Exception as exc:
