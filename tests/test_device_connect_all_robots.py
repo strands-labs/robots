@@ -99,6 +99,18 @@ _strands_dc_keys = [k for k in sys.modules if k.startswith("strands_robots.devic
 for _key in list(_mock_keys) + _strands_dc_keys:
     _saved_modules[_key] = sys.modules.get(_key)
 
+# The robot_mesh dispatch tests below patch
+# ``device_connect_agent_tools.connection.get_connection``, which forces an
+# import of the real ``device_connect_agent_tools`` package (__init__ -> agent
+# -> connection -> ``device_connect_edge.messaging``). Import it now, while the
+# real ``device_connect_edge`` is still in sys.modules, so the module is cached
+# before the mock is installed below -- otherwise those tests only pass when a
+# sibling test imports it first (a hidden import-order dependency).
+try:
+    import device_connect_agent_tools.connection  # noqa: E402, F401
+except Exception:
+    pass
+
 sys.modules["device_connect_edge"] = mock_device_connect_edge
 sys.modules["device_connect_edge.drivers"] = mock_drivers
 sys.modules["device_connect_edge.types"] = mock_types
