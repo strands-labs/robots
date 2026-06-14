@@ -412,6 +412,9 @@ class RenderingMixin:
         #367: replaces the prior silent ``continue`` on unresolved action keys.
         De-duplicated via a per-world set so a 50Hz control loop does not spam
         the log -- the operator sees the missing key once and can act on it.
+
+        Includes the actual actuator/joint names from the model so the user
+        knows exactly which keys the scene accepts.
         """
         warned = getattr(self, "_warned_unresolved_keys", None)
         if warned is None:
@@ -421,14 +424,39 @@ class RenderingMixin:
         if dedup in warned:
             return
         warned.add(dedup)
+        # Surface the valid actuator/joint names from the loaded model so
+        # users can self-correct without inspecting the MJCF by hand.
+        valid_names = self._get_valid_action_keys(pfx)
+        hint = f" Valid keys for this robot: {valid_names}" if valid_names else ""
         logger.warning(
-            "[sim] action key %r (prefix=%r) could not be applied: %s. "
-            "The value was dropped. Check the action/joint naming against the "
-            "scene's actuators.",
+            "[sim] action key %r (prefix=%r) could not be applied: %s. The value was dropped.%s",
             key,
             pfx,
             reason,
+            hint,
         )
+
+    def _get_valid_action_keys(self, pfx: str) -> list[str]:
+        """Return actuator names available under the given namespace prefix.
+
+        When ``pfx`` is set (multi-robot), strips the prefix from returned
+        names so the caller sees the short form that ``send_action`` expects.
+        """
+        world = getattr(self, "_world", None)
+        if world is None or getattr(world, "_model", None) is None:
+            return []
+        mj = _ensure_mujoco()
+        model = world._model
+        names: list[str] = []
+        for i in range(model.nu):
+            raw = mj.mj_id2name(model, mj.mjtObj.mjOBJ_ACTUATOR, i)
+            if not raw:
+                continue
+            if pfx and raw.startswith(pfx):
+                names.append(raw[len(pfx) :])
+            elif not pfx:
+                names.append(raw)
+        return names
 
     @staticmethod
     def _actuator_for_joint(model: Any, jnt_id: int, mj: Any) -> int:

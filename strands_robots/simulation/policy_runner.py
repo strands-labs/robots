@@ -414,6 +414,7 @@ class PolicyRunner:
                 control_frequency,
                 n_substeps,
             )
+            _action_errors = 0  # count send_action failures (unresolved keys)
 
             onframe_failure_limit = (
                 max_onframe_failures if max_onframe_failures is not None else _MAX_CONSECUTIVE_ONFRAME_FAILURES
@@ -429,7 +430,9 @@ class PolicyRunner:
                     if step_count >= total_steps:
                         break
 
-                    self.sim.send_action(action_dict, robot_name=robot_name, n_substeps=n_substeps)
+                    _send_result = self.sim.send_action(action_dict, robot_name=robot_name, n_substeps=n_substeps)
+                    if isinstance(_send_result, dict) and _send_result.get("status") == "error":
+                        _action_errors += 1
 
                     if on_frame is not None:
                         try:
@@ -523,6 +526,17 @@ class PolicyRunner:
                     video_path,
                 )
                 text += f"\n⚠️ Video requested but 0 frames captured ({video_path})"
+        # If every send_action call failed (all keys unresolved), the robot
+        # never moved -- report this as an error rather than a false success.
+        if _action_errors > 0 and _action_errors >= step_count and step_count > 0:
+            text += (
+                f"\n\n⚠️ ALL {_action_errors} action steps had unresolved keys "
+                f"-- the robot did not move. Check that the policy's output keys "
+                f"match the robot's actuator names."
+            )
+            return {"status": "error", "content": [{"text": text}]}
+        if _action_errors > 0:
+            text += f"\n\n⚠️ {_action_errors}/{step_count} action steps had unresolved keys."
         return {"status": "success", "content": [{"text": text}]}
 
     # replay(): replay a LeRobotDataset episode

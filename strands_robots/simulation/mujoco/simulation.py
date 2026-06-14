@@ -286,6 +286,10 @@ class MuJoCoSimEngine(
             unresolved = self._unresolved_action_keys
         applied = [k for k in action if k not in unresolved]
         if unresolved:
+            # Surface the actual valid actuator names so the user can
+            # self-correct without inspecting the MJCF by hand.
+            valid_keys = self._get_valid_action_keys(self._world.robots[robot_name].namespace or "")
+            hint = f" Valid keys: {valid_keys}" if valid_keys else ""
             return {
                 "status": "error",
                 "content": [
@@ -294,7 +298,7 @@ class MuJoCoSimEngine(
                             f"Action partially applied: keys {unresolved} could not be "
                             f"resolved to actuators or joints on '{robot_name}'. "
                             f"Applied: {applied}. Use individual joint/actuator names "
-                            f"(e.g. 'shoulder_pan', 'elbow_flex') as dict keys."
+                            f"as dict keys.{hint}"
                         )
                     },
                     {"json": {"unresolved_keys": unresolved, "applied": applied}},
