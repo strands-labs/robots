@@ -464,3 +464,32 @@ print(invoke('device(reachy-mini-1).function(look)', {'pitch': -15, 'yaw': 30}))
 print(invoke('device(reachy-mini-1).function(nod)'))
 "
 ```
+
+### Securing the Daemon Link (Token + TLS)
+
+`ReachyMiniDriver` talks to the Reachy daemon over its REST API and (for the
+USB "Lite" variant) a WebSocket at `/ws/sdk`. Those daemon interfaces map
+commands straight onto the actuators, so the link must be both **authenticated**
+and **encrypted** outside a fully trusted network segment.
+
+Two independent, opt-in environment variables harden the link:
+
+| Variable | Effect |
+|---|---|
+| `REACHY_DAEMON_TOKEN` | Sends `Authorization: Bearer <token>` on every REST call and WebSocket handshake. When unset, a one-time warning is logged. |
+| `REACHY_DAEMON_TLS` | Upgrades the transport to `https://` / `wss://` so the token and all actuator commands are encrypted in transit (truthy: `1`, `true`, `yes`, `on`). |
+| `REACHY_DAEMON_TLS_INSECURE` | With TLS enabled, skips certificate verification for self-signed daemon certs (logs a one-time MITM warning). Leave unset to verify. |
+
+```bash
+# Authenticated + encrypted (recommended)
+export REACHY_DAEMON_TOKEN="$(cat /run/secrets/reachy_token)"
+export REACHY_DAEMON_TLS=true
+
+# Self-signed daemon cert during bring-up (encrypted, unverified)
+export REACHY_DAEMON_TLS_INSECURE=true
+```
+
+> A bearer token alone authenticates the caller but, over plaintext `ws://` /
+> `http://`, the token and commands can still be sniffed or replayed by anyone
+> on the segment. Enable `REACHY_DAEMON_TLS` for defense in depth, and prefer a
+> properly provisioned CA over `REACHY_DAEMON_TLS_INSECURE`.

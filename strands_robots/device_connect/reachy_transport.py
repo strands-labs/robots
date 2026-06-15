@@ -39,6 +39,57 @@ def _daemon_auth_token() -> str | None:
     return os.environ.get("REACHY_DAEMON_TOKEN") or None
 
 
+def _daemon_use_tls() -> bool:
+    """Return True when the daemon link should use TLS (WSS / HTTPS).
+
+    Security hardening: a bearer token (see :func:`_daemon_auth_token`) only
+    authenticates the caller -- over plaintext ``ws://`` / ``http://`` the token
+    and every actuator command still travel in cleartext and can be sniffed or
+    replayed by anyone on the network segment. Setting ``REACHY_DAEMON_TLS`` to
+    a truthy value upgrades the transport to ``wss://`` / ``https://`` so the
+    channel is encrypted end to end.
+
+    Recognised truthy spellings: ``1``, ``true``, ``yes``, ``on`` (any case).
+    """
+    return os.environ.get("REACHY_DAEMON_TLS", "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _daemon_verify_tls() -> bool:
+    """Return False to skip TLS certificate verification (default: verify).
+
+    Reachy daemons typically present a self-signed certificate. Operators who
+    have not yet provisioned a trusted CA can set ``REACHY_DAEMON_TLS_INSECURE``
+    to a truthy value to keep encryption-in-transit while skipping verification.
+    A one-time warning is emitted so the weakened posture stays visible.
+    """
+    return os.environ.get("REACHY_DAEMON_TLS_INSECURE", "").strip().lower() not in ("1", "true", "yes", "on")
+
+
+def _http_scheme() -> str:
+    return "https" if _daemon_use_tls() else "http"
+
+
+def _ws_scheme() -> str:
+    return "wss" if _daemon_use_tls() else "ws"
+
+
+def _build_ssl_context(kind: str):
+    """Build an ``ssl.SSLContext`` for an outbound TLS daemon connection.
+
+    Verifies the daemon certificate by default; honours
+    ``REACHY_DAEMON_TLS_INSECURE`` to skip verification (with a one-time
+    warning) for self-signed-certificate deployments.
+    """
+    import ssl
+
+    ctx = ssl.create_default_context()
+    if not _daemon_verify_tls():
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        _emit_insecure_tls_warning(kind)
+    return ctx
+
+
 @functools.cache
 def _emit_unauthenticated_warning(kind: str) -> None:
     """Log the unauthenticated-daemon warning once per transport kind.
@@ -61,6 +112,18 @@ def _warn_unauthenticated_once(kind: str) -> None:
         _emit_unauthenticated_warning(kind)
 
 
+@functools.cache
+def _emit_insecure_tls_warning(kind: str) -> None:
+    """Log the skip-verification warning once per transport kind."""
+    logger.warning(
+        "Reachy daemon %s TLS certificate verification is DISABLED "
+        "(REACHY_DAEMON_TLS_INSECURE set). The channel is encrypted but the "
+        "daemon's identity is not verified, leaving it open to "
+        "man-in-the-middle attacks. Provision a trusted CA and unset the flag.",
+        kind,
+    )
+
+
 # ── REST API ─────────────────────────────────────────────────────
 
 
@@ -69,7 +132,7 @@ def api(host: str, port: int, path: str, method: str = "GET", data: dict | None 
     import urllib.error
     import urllib.request
 
-    url = f"http://{host}:{port}{path}"
+    url = f"{_http_scheme()}://{host}:{port}{path}"
     req = urllib.request.Request(url, method=method)
     req.add_header("Content-Type", "application/json")
     _token = _daemon_auth_token()
@@ -78,8 +141,13 @@ def api(host: str, port: int, path: str, method: str = "GET", data: dict | None 
     else:
         _warn_unauthenticated_once("REST API")
     body = json.dumps(data).encode() if data else None
+    # Only pass an SSL context when TLS is active so plaintext callers (and
+    # their test doubles) keep the original urlopen signature.
+    _open_kwargs = {"timeout": 10}
+    if _daemon_use_tls():
+        _open_kwargs["context"] = _build_ssl_context("REST API")
     try:
-        with urllib.request.urlopen(req, body, timeout=10) as resp:
+        with urllib.request.urlopen(req, body, **_open_kwargs) as resp:
             return json.loads(resp.read().decode())
     except urllib.error.HTTPError as e:
         return {"error": e.read().decode(), "code": e.code}
@@ -196,7 +264,10 @@ class WebSocketLink(HardwareLink):
                 _connect_kwargs[_hdr_kw] = _extra_headers
             except (ValueError, TypeError):
                 _connect_kwargs["extra_headers"] = _extra_headers
-        self._ws = await websockets.connect(f"ws://{self._host}:{self._port}/ws/sdk", **_connect_kwargs)
+        if _daemon_use_tls():
+            _connect_kwargs["ssl"] = _build_ssl_context("WebSocket")
+        _url = f"{_ws_scheme()}://{self._host}:{self._port}/ws/sdk"
+        self._ws = await websockets.connect(_url, **_connect_kwargs)
         self._read_task = asyncio.create_task(self._read_loop(on_joints, on_imu))
 
     async def _read_loop(self, on_joints: Callable, on_imu: Callable) -> None:

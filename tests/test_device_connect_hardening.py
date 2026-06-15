@@ -376,6 +376,130 @@ def test_token_helper_reads_env(monkeypatch):
     monkeypatch.delenv("REACHY_DAEMON_TOKEN", raising=False)
 
 
+# ── Reachy daemon TLS (encryption in transit) ─────────────────
+
+
+def test_tls_disabled_by_default(monkeypatch):
+    monkeypatch.delenv("REACHY_DAEMON_TLS", raising=False)
+    from strands_robots.device_connect import reachy_transport as rt
+
+    importlib.reload(rt)
+    assert rt._daemon_use_tls() is False
+    assert rt._http_scheme() == "http"
+    assert rt._ws_scheme() == "ws"
+
+
+def test_tls_enables_secure_schemes(monkeypatch):
+    from strands_robots.device_connect import reachy_transport as rt
+
+    importlib.reload(rt)
+    for spelling in ("1", "true", "TRUE", "yes", "on"):
+        monkeypatch.setenv("REACHY_DAEMON_TLS", spelling)
+        assert rt._daemon_use_tls() is True, spelling
+        assert rt._http_scheme() == "https"
+        assert rt._ws_scheme() == "wss"
+    monkeypatch.delenv("REACHY_DAEMON_TLS", raising=False)
+
+
+def test_rest_api_uses_https_url_when_tls_enabled(monkeypatch):
+    monkeypatch.setenv("REACHY_DAEMON_TLS", "true")
+    from strands_robots.device_connect import reachy_transport as rt
+
+    importlib.reload(rt)
+    captured = {}
+
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return b"{}"
+
+    def fake_urlopen(req, body, timeout, context=None):
+        captured["url"] = req.full_url
+        captured["has_ctx"] = context is not None
+        return _Resp()
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    rt.api("localhost", 8000, "/api/x")
+    assert captured["url"].startswith("https://")
+    assert captured["has_ctx"] is True
+    monkeypatch.delenv("REACHY_DAEMON_TLS", raising=False)
+    importlib.reload(rt)
+
+
+def test_tls_verifies_certificate_by_default(monkeypatch):
+    import ssl
+
+    monkeypatch.setenv("REACHY_DAEMON_TLS", "true")
+    monkeypatch.delenv("REACHY_DAEMON_TLS_INSECURE", raising=False)
+    from strands_robots.device_connect import reachy_transport as rt
+
+    importlib.reload(rt)
+    assert rt._daemon_verify_tls() is True
+    ctx = rt._build_ssl_context("WebSocket")
+    assert ctx.verify_mode == ssl.CERT_REQUIRED
+    assert ctx.check_hostname is True
+    monkeypatch.delenv("REACHY_DAEMON_TLS", raising=False)
+
+
+def test_tls_insecure_skips_verification_with_warning(monkeypatch, caplog):
+    import logging
+    import ssl
+
+    monkeypatch.setenv("REACHY_DAEMON_TLS", "true")
+    monkeypatch.setenv("REACHY_DAEMON_TLS_INSECURE", "true")
+    from strands_robots.device_connect import reachy_transport as rt
+
+    importlib.reload(rt)  # clears the functools.cache warn-once memo
+    assert rt._daemon_verify_tls() is False
+    with caplog.at_level(logging.WARNING):
+        ctx = rt._build_ssl_context("WebSocket")
+    assert ctx.verify_mode == ssl.CERT_NONE
+    assert ctx.check_hostname is False
+    assert any("verification is DISABLED" in r.message for r in caplog.records)
+    monkeypatch.delenv("REACHY_DAEMON_TLS", raising=False)
+    monkeypatch.delenv("REACHY_DAEMON_TLS_INSECURE", raising=False)
+    importlib.reload(rt)
+
+
+def test_websocket_link_uses_wss_when_tls_enabled(monkeypatch):
+    monkeypatch.setenv("REACHY_DAEMON_TLS", "true")
+    from strands_robots.device_connect import reachy_transport as rt
+
+    importlib.reload(rt)
+    captured = {}
+
+    async def fake_connect(url, **kwargs):
+        captured["url"] = url
+        captured["kwargs"] = kwargs
+
+        class _WS:
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                raise StopAsyncIteration
+
+        return _WS()
+
+    import types
+
+    fake_ws_mod = types.ModuleType("websockets")
+    fake_ws_mod.connect = fake_connect
+    monkeypatch.setitem(sys.modules, "websockets", fake_ws_mod)
+
+    link = rt.WebSocketLink("reachy-mini.local", 8000)
+    _run(link.start(on_joints=lambda d: None, on_imu=lambda d: None))
+    assert captured["url"].startswith("wss://")
+    assert "ssl" in captured["kwargs"]
+    monkeypatch.delenv("REACHY_DAEMON_TLS", raising=False)
+    importlib.reload(rt)
+
+
 # ── secure-by-default resolution ──────────────────────────────
 
 
