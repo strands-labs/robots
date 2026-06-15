@@ -288,7 +288,7 @@ def _discover_cameras() -> dict[str, Any]:
             for i, cam in enumerate(opencv_cameras):
                 profile = cam.get("default_stream_profile", {})
                 discovery_info.append(
-                    f"  • **{cam.get('name', 'Unknown')}**\n"
+                    f"  - **{cam.get('name', 'Unknown')}**\n"
                     f"    - ID: `{cam.get('id', 'N/A')}`\n"
                     f"    - Backend: {cam.get('backend_api', 'N/A')}\n"
                     f"    - Resolution: {profile.get('width', '?')}x{profile.get('height', '?')}\n"
@@ -301,7 +301,7 @@ def _discover_cameras() -> dict[str, Any]:
             discovery_info.append(" **RealSense Cameras:**")
             for i, cam in enumerate(realsense_cameras):
                 discovery_info.append(
-                    f"  • **{cam.get('name', 'Unknown')}**\n"
+                    f"  - **{cam.get('name', 'Unknown')}**\n"
                     f"    - Serial: `{cam.get('serial_number', 'N/A')}`\n"
                     f"    - Type: {cam.get('type', 'N/A')}"
                 )
@@ -334,7 +334,7 @@ def _list_camera_details(camera_type: str, camera_id: int | str | None = None) -
             details.append(f"   - Backend: {_get_opencv_backend_name()}")
             details.append(f"   - Version: {cv2.__version__}")
             details.append("   - Available color modes: RGB, BGR")
-            details.append("   - Supported rotations: 0°, 90°, 180°, 270°")
+            details.append("   - Supported rotations: 0, 90, 180, 270 degrees")
             details.append("   - Async reading:  Supported")
             details.append("")
 
@@ -449,7 +449,7 @@ def _capture_single_image(
             f"File size: {file_size:,} bytes",
             f"Connect time: {connect_time:.3f}s",
             f"Capture time: {capture_time:.3f}s",
-            f"Async mode: {'' if async_mode else ''}",
+            f"Async mode: {'on' if async_mode else 'off'}",
             f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
         ]
 
@@ -578,7 +578,7 @@ def _capture_batch_images(
                 f"   - Success: {successful_captures}/{len(camera_ids)} cameras",
                 f"   - Total time: {total_time:.3f}s",
                 f"   - Save path: `{save_path}`",
-                f"   - Async mode: {'' if async_mode else ''}",
+                f"   - Async mode: {'on' if async_mode else 'off'}",
             ]
         )
 
@@ -666,10 +666,10 @@ def _record_video_sequence(
             f"Camera: {camera_type.upper()} @ {camera_id}",
             f"Saved: `{video_path}`",
             f"Resolution: {width}x{height}",
-            f"️  Frames: {frames_captured} @ {fps} FPS",
-            f"️  Duration: {actual_duration:.2f}s (target: {capture_duration:.2f}s)",
+            f"Frames: {frames_captured} @ {fps} FPS",
+            f"Duration: {actual_duration:.2f}s (target: {capture_duration:.2f}s)",
             f"File size: {file_size:,} bytes",
-            f"Async mode: {'' if async_mode else ''}",
+            f"Async mode: {'on' if async_mode else 'off'}",
             f"Completed: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
         ]
 
@@ -706,7 +706,7 @@ def _preview_camera_live(
         fps_frame_count = 0
 
         print(f"Starting live preview from {camera_type.upper()} camera {camera_id}")
-        print(f"️  Duration: {preview_duration}s | Press 'q' to quit early")
+        print(f"Duration: {preview_duration}s | Press 'q' to quit early")
 
         try:
             while time.time() - start_time < preview_duration:
@@ -766,11 +766,11 @@ def _preview_camera_live(
             " **Live Preview Complete!**",
             f"Camera: {camera_type.upper()} @ {camera_id}",
             f"Resolution: {width}x{height}",
-            f"️  Frames displayed: {frames_displayed}",
-            f"️  Duration: {actual_duration:.2f}s",
+            f"Frames displayed: {frames_displayed}",
+            f"Duration: {actual_duration:.2f}s",
             f"Average FPS: {avg_fps:.2f}",
             f"Target FPS: {fps}",
-            f"Async mode: {'' if async_mode else ''}",
+            f"Async mode: {'on' if async_mode else 'off'}",
         ]
 
         return {"status": "success", "content": [{"text": "\n".join(result_info)}]}
@@ -854,7 +854,7 @@ def _test_camera_performance(
 
         # Camera properties
         if hasattr(camera, "fps"):
-            test_results.append("️  **Camera Configuration**:")
+            test_results.append("**Camera Configuration**:")
             test_results.append(f"   - Configured FPS: {camera.fps}")
             test_results.append(f"   - Resolution: {camera.width}x{camera.height}")
             test_results.append(f"   - Color mode: {camera.color_mode.value}")
@@ -862,14 +862,13 @@ def _test_camera_performance(
         camera.disconnect()
 
         test_results.append("\n **Performance Summary**:")
-        test_results.append(f"   - Connection: {' Fast' if connect_time < 1.0 else '️ Slow'} ({connect_time:.3f}s)")
-        test_results.append(f"   - Sync capture: {' Good' if avg_sync_time < 0.1 else '️ Slow'} ({avg_sync_time:.3f}s)")
+        test_results.append(f"   - Connection: {'Fast' if connect_time < 1.0 else 'Slow'} ({connect_time:.3f}s)")
+        test_results.append(f"   - Sync capture: {'Good' if avg_sync_time < 0.1 else 'Slow'} ({avg_sync_time:.3f}s)")
         if async_mode:
             test_results.append(
-                f"   - Async capture: {' Better' if avg_async_time < avg_sync_time else ' Worse'}"
-                f"({avg_async_time:.3f}s)"
+                f"   - Async capture: {'Better' if avg_async_time < avg_sync_time else 'Worse'} ({avg_async_time:.3f}s)"
             )
-        test_results.append(f"   - Frame rate: {' Stable' if max_sync_time - min_sync_time < 0.05 else '️ Variable'}")
+        test_results.append(f"   - Frame rate: {'Stable' if max_sync_time - min_sync_time < 0.05 else 'Variable'}")
 
         return {"status": "success", "content": [{"text": "\n".join(test_results)}]}
 
@@ -913,13 +912,13 @@ def _configure_camera_settings(
             actual_config["rotation"] = rotation
 
         config_info = [
-            "️  **Camera Configuration**",
+            "**Camera Configuration**",
             f"Camera: {camera_type.upper()} @ {camera_id}",
             f"Resolution: {actual_config['width']}x{actual_config['height']}",
-            f"️  FPS: {actual_config['fps']}",
+            f"FPS: {actual_config['fps']}",
             f"Color mode: {actual_config['color_mode']}",
             f"Rotation: {actual_config.get('rotation', 'NO_ROTATION')}",
-            f"Warmup: {'' if warmup else ''}",
+            f"Warmup: {'on' if warmup else 'off'}",
         ]
 
         # Save configuration if requested
