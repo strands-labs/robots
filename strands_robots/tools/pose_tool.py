@@ -376,7 +376,7 @@ def pose_tool(
             if not poses:
                 return {
                     "status": "success",
-                    "content": [{"text": f"📋 No poses stored for robot {robot_id}"}],
+                    "content": [{"text": f"No poses stored for robot {robot_id}"}],
                     "poses": [],
                 }
 
@@ -396,12 +396,12 @@ def pose_tool(
                 )
 
             pose_list = "\n".join(
-                [f"• {p['name']} - {p['description']} ({p['motors']} motors) - {p['timestamp']}" for p in pose_details]
+                [f"- {p['name']} - {p['description']} ({p['motors']} motors) - {p['timestamp']}" for p in pose_details]
             )
 
             return {
                 "status": "success",
-                "content": [{"text": f"📋 Stored poses for {robot_id}:\n{pose_list}"}],
+                "content": [{"text": f"Stored poses for {robot_id}:\n{pose_list}"}],
                 "poses": pose_details,
             }
 
@@ -413,16 +413,16 @@ def pose_tool(
             if not pose:
                 return {"status": "error", "content": [{"text": f"Pose '{pose_name}' not found"}]}
 
-            motor_info = "\n".join([f"  • {motor}: {pos:.2f}°" for motor, pos in pose.positions.items()])
+            motor_info = "\n".join([f"  - {motor}: {pos:.2f} deg" for motor, pos in pose.positions.items()])
 
             return {
                 "status": "success",
                 "content": [
                     {
-                        "text": f"🤖 Pose: {pose.name}\n"
-                        f"📝 Description: {pose.description or 'None'}\n"
-                        f"📅 Created: {time.ctime(pose.timestamp)}\n"
-                        f"🔧 Motor Positions:\n{motor_info}"
+                        "text": f"Pose: {pose.name}\n"
+                        f"Description: {pose.description or 'None'}\n"
+                        f"Created: {time.ctime(pose.timestamp)}\n"
+                        f"Motor Positions:\n{motor_info}"
                     }
                 ],
                 "pose": pose.to_dict(),
@@ -462,10 +462,10 @@ def pose_tool(
             try:
                 position = controller.read_motor_position(motor_name)
                 if position is not None:
-                    unit = "%" if motor_name == "gripper" else "°"
+                    unit = "%" if motor_name == "gripper" else " deg"
                     return {
                         "status": "success",
-                        "content": [{"text": f"📍 {motor_name}: {position:.2f}{unit}"}],
+                        "content": [{"text": f"{motor_name}: {position:.2f}{unit}"}],
                         "position": position,
                     }
                 else:
@@ -483,13 +483,13 @@ def pose_tool(
                 if positions:
                     pos_text = "\n".join(
                         [
-                            f"  • {motor}: {pos:.2f}{'%' if motor == 'gripper' else '°'}"
+                            f"  - {motor}: {pos:.2f}{'%' if motor == 'gripper' else ' deg'}"
                             for motor, pos in positions.items()
                         ]
                     )
                     return {
                         "status": "success",
-                        "content": [{"text": f"📍 Current robot positions:\n{pos_text}"}],
+                        "content": [{"text": f"Current robot positions:\n{pos_text}"}],
                         "positions": positions,
                     }
                 else:
@@ -514,14 +514,14 @@ def pose_tool(
 
                 pos_text = "\n".join(
                     [
-                        f"  • {motor}: {pos:.2f}{'%' if motor == 'gripper' else '°'}"
+                        f"  - {motor}: {pos:.2f}{'%' if motor == 'gripper' else ' deg'}"
                         for motor, pos in current_positions.items()
                     ]
                 )
 
                 return {
                     "status": "success",
-                    "content": [{"text": f"💾 Stored pose '{pose_name}':\n{pos_text}"}],
+                    "content": [{"text": f"Stored pose '{pose_name}':\n{pos_text}"}],
                     "pose": pose.to_dict(),
                 }
             finally:
@@ -549,7 +549,7 @@ def pose_tool(
                 if success:
                     return {
                         "status": "success",
-                        "content": [{"text": f"🎯 Moved to pose '{pose_name}'"}],
+                        "content": [{"text": f"Moved to pose '{pose_name}'"}],
                         "target_positions": pose.positions,
                     }
                 else:
@@ -568,8 +568,8 @@ def pose_tool(
             try:
                 success = controller.move_motor(motor_name, position)
                 if success:
-                    unit = "%" if motor_name == "gripper" else "°"
-                    return {"status": "success", "content": [{"text": f"🎯 Moved {motor_name} to {position}{unit}"}]}
+                    unit = "%" if motor_name == "gripper" else " deg"
+                    return {"status": "success", "content": [{"text": f"Moved {motor_name} to {position}{unit}"}]}
                 else:
                     return {"status": "error", "content": [{"text": f"Failed to move {motor_name}"}]}
             finally:
@@ -588,11 +588,11 @@ def pose_tool(
                 if success:
                     pos_text = "\n".join(
                         [
-                            f"  • {motor}: {pos:.2f}{'%' if motor == 'gripper' else '°'}"
+                            f"  - {motor}: {pos:.2f}{'%' if motor == 'gripper' else ' deg'}"
                             for motor, pos in positions.items()
                         ]
                     )
-                    return {"status": "success", "content": [{"text": f"🎯 Moved multiple motors:\n{pos_text}"}]}
+                    return {"status": "success", "content": [{"text": f"Moved multiple motors:\n{pos_text}"}]}
                 else:
                     return {"status": "error", "content": [{"text": "Failed to move motors"}]}
             finally:
@@ -609,9 +609,9 @@ def pose_tool(
             try:
                 success = controller.incremental_move(motor_name, delta)
                 if success:
-                    unit = "%" if motor_name == "gripper" else "°"
+                    unit = "%" if motor_name == "gripper" else " deg"
                     sign = "+" if delta >= 0 else ""
-                    return {"status": "success", "content": [{"text": f"🔧 Moved {motor_name} by {sign}{delta}{unit}"}]}
+                    return {"status": "success", "content": [{"text": f"Moved {motor_name} by {sign}{delta}{unit}"}]}
                 else:
                     return {"status": "error", "content": [{"text": f"Failed to move {motor_name}"}]}
             finally:
@@ -637,7 +637,7 @@ def pose_tool(
                 if success:
                     return {
                         "status": "success",
-                        "content": [{"text": "🏠 Robot moved to home position"}],
+                        "content": [{"text": "Robot moved to home position"}],
                         "home_positions": home_positions,
                     }
                 else:
