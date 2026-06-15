@@ -143,11 +143,12 @@ def api(host: str, port: int, path: str, method: str = "GET", data: dict | None 
     body = json.dumps(data).encode() if data else None
     # Only pass an SSL context when TLS is active so plaintext callers (and
     # their test doubles) keep the original urlopen signature.
-    _open_kwargs = {"timeout": 10}
-    if _daemon_use_tls():
-        _open_kwargs["context"] = _build_ssl_context("REST API")
     try:
-        with urllib.request.urlopen(req, body, **_open_kwargs) as resp:
+        if _daemon_use_tls():
+            resp_cm = urllib.request.urlopen(req, body, timeout=10, context=_build_ssl_context("REST API"))
+        else:
+            resp_cm = urllib.request.urlopen(req, body, timeout=10)
+        with resp_cm as resp:
             return json.loads(resp.read().decode())
     except urllib.error.HTTPError as e:
         return {"error": e.read().decode(), "code": e.code}
