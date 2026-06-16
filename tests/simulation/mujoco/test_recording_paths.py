@@ -457,3 +457,47 @@ def test_run_multi_policy_discards_partial_episode_on_empty_chunk(sim_with_two_r
         f"partial episode not discarded: {recorder.episode_frame_count} frames left in the open buffer"
     )
     sim.stop_recording()
+
+
+def test_get_recording_status_text_is_ascii_no_world():
+    """``get_recording_status`` with no world emits ASCII-only text.
+
+    Previously the no-world branch returned a Unicode status-dot prefix
+    ("\\u26aa No world..."), violating the project ASCII-only output
+    contract. This needs no lerobot extra - it exercises the world-less
+    branch directly.
+    """
+    from strands_robots.simulation import Simulation
+
+    s = Simulation()
+    r = s.get_recording_status()
+    assert r["status"] == "success"
+    text = r["content"][0]["text"]
+    assert [ch for ch in text if ord(ch) > 127] == [], f"non-ASCII in text: {text!r}"
+    assert "[no world]" in text
+    s.destroy()
+
+
+def test_get_recording_status_text_is_ascii_idle_and_recording(sim_with_two_robots):
+    """``get_recording_status`` idle + active branches emit ASCII-only text.
+
+    Drives the ``_backend_state`` recording flag directly so the assertion
+    runs without the lerobot dataset stack. Both the idle and recording
+    branches previously carried emoji status dots.
+    """
+    sim = sim_with_two_robots
+
+    # Idle branch.
+    r = sim.get_recording_status()
+    text = r["content"][0]["text"]
+    assert [ch for ch in text if ord(ch) > 127] == [], f"non-ASCII in idle text: {text!r}"
+    assert "[idle]" in text
+
+    # Active branch - flip the flag + seed a trajectory buffer directly.
+    sim._world._backend_state["recording"] = True
+    sim._world._backend_state["trajectory"] = [object(), object(), object()]
+    r = sim.get_recording_status()
+    text = r["content"][0]["text"]
+    assert [ch for ch in text if ord(ch) > 127] == [], f"non-ASCII in recording text: {text!r}"
+    assert "[recording]" in text and "3 steps" in text
+    sim._world._backend_state["recording"] = False

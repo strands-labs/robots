@@ -1175,9 +1175,7 @@ class RenderingMixin:
             )
 
         msg = (
-            f"🎬 Recording {len(names)} camera(s) @ {fps} FPS → {out_dir}\n"
-            f"   tag: {tag}\n"
-            f"   cameras: {', '.join(names)}"
+            f"Recording {len(names)} camera(s) @ {fps} FPS -> {out_dir}\n   tag: {tag}\n   cameras: {', '.join(names)}"
         )
         return {"status": "success", "content": [{"text": msg}]}
 
@@ -1240,7 +1238,7 @@ class RenderingMixin:
 
         elapsed = _time.time() - state["started_at"]
         lines = [
-            f"🎬 Stopped '{state['name']}' after {elapsed:.1f}s",
+            f"Stopped '{state['name']}' after {elapsed:.1f}s",
             f"   output_dir: {state['output_dir']}",
         ]
         artifacts = []
@@ -1261,8 +1259,8 @@ class RenderingMixin:
                 if _os.path.exists(path):
                     size_kb = _os.path.getsize(path) / 1024
             lines.append(
-                f"   📹 {cam:20s} {frames_written:>5d} frames  {size_kb:>7.1f} KB  "
-                f"({errors} errors)  → {_os.path.basename(path)}"
+                f"   {cam:20s} {frames_written:>5d} frames  {size_kb:>7.1f} KB  "
+                f"({errors} errors)  -> {_os.path.basename(path)}"
             )
             artifacts.append(
                 {
@@ -1454,7 +1452,7 @@ class RenderingMixin:
             return result
 
         msg = (
-            f"🎬 Recording {len(names)} camera(s) @ {fps} FPS → {out_dir} (synchronous mode)\n"
+            f"Recording {len(names)} camera(s) @ {fps} FPS -> {out_dir} (synchronous mode)\n"
             f"   tag: {tag}\n"
             f"   cameras: {', '.join(names)}\n"
             "   wire on_frame= into evaluate_benchmark / PolicyRunner.evaluate"
@@ -1473,11 +1471,11 @@ class RenderingMixin:
 
         state = getattr(self, "_cams_rec_state", None)
         if not state or not state.get("running"):
-            return {"status": "success", "content": [{"text": "⚪ No active camera recording."}]}
+            return {"status": "success", "content": [{"text": "[idle] No active camera recording."}]}
 
         elapsed = _time.time() - state["started_at"]
-        lines = [f"🟢 Recording '{state['name']}' for {elapsed:.1f}s  @ {state['fps']} FPS"]
+        lines = [f"[recording] '{state['name']}' for {elapsed:.1f}s  @ {state['fps']} FPS"]
         for cam in state["cameras"]:
             frames = len(state["buffers"][cam])
-            lines.append(f"   📹 {cam:20s} {frames:>5d} frames  ({state['errors'][cam]} errors)")
+            lines.append(f"   {cam:20s} {frames:>5d} frames  ({state['errors'][cam]} errors)")
         return {"status": "success", "content": [{"text": "\n".join(lines)}]}

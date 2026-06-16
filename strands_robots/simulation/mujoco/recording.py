@@ -317,16 +317,16 @@ class RecordingMixin:
         if self._world is None:
             return {
                 "status": "success",
-                "content": [{"text": "⚪ No world - call create_world to start recording."}],
+                "content": [{"text": "[no world] Call create_world to start recording."}],
             }
 
         recording = self._world._backend_state.get("recording", False)
         steps = len(self._world._backend_state.get("trajectory", []))
 
         if recording:
-            text = f"🔴 Recording: {steps} steps captured"
+            text = f"[recording] {steps} steps captured"
         else:
-            text = f"⚪ Not recording (last episode: {steps} steps)"
+            text = f"[idle] Not recording (last episode: {steps} steps)"
 
         return {
             "status": "success",

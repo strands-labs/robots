@@ -357,3 +357,76 @@ class TestStartCamerasRecordingSynchronous:
             assert sim._cams_rec_state["thread"] is None
         finally:
             sim.destroy()
+
+
+def _all_text(result: dict[str, Any]) -> str:
+    """Concatenate every ``content[*]["text"]`` block in a tool result."""
+    return "\n".join(c["text"] for c in result.get("content", []) if "text" in c)
+
+
+def _non_ascii(text: str) -> list[str]:
+    """Return the list of non-ASCII characters in ``text`` (empty if clean)."""
+    return [ch for ch in text if ord(ch) > 127]
+
+
+class TestCamerasRecordingOutputIsAscii:
+    """The camera-recording lifecycle emits ASCII-only user-facing text.
+
+    ``start_cameras_recording*`` / ``stop_cameras_recording`` /
+    ``_flush_cameras_recording_state`` / ``get_cameras_recording_status``
+    previously decorated their ``content[*]["text"]`` with emoji (clapper,
+    video-camera, status dots) plus a Unicode right-arrow. Those render as
+    mojibake or stray glyphs in non-emoji terminals and log pipelines and
+    violate the project ASCII-only output contract. Each assertion below
+    fails against the pre-fix emoji output and passes after the strip.
+    """
+
+    def test_start_synchronous_text_is_ascii(self):
+        sim = _make_sim_with_fake_render()
+        try:
+            result = sim.start_cameras_recording_synchronous(cameras=["cam_a"], fps=15, name="ascii_sync")
+            text = _all_text(result)
+            assert _non_ascii(text) == [], f"non-ASCII in start text: {_non_ascii(text)}"
+            assert "Recording" in text and "->" in text
+        finally:
+            sim.destroy()
+
+    def test_finalize_text_is_ascii(self, tmp_path: Path):
+        sim = _make_sim_with_fake_render()
+        try:
+            result = sim.start_cameras_recording_synchronous(
+                cameras=["cam_a", "cam_b"], output_dir=str(tmp_path), fps=15, name="ascii_final"
+            )
+            json_block = next(c["json"] for c in result["content"] if "json" in c)
+            on_frame, finalize = json_block["on_frame"], json_block["finalize"]
+            for step in range(3):
+                on_frame(step, {}, {})
+            final = finalize()
+            text = _all_text(final)
+            assert _non_ascii(text) == [], f"non-ASCII in finalize text: {_non_ascii(text)}"
+            assert "Stopped" in text and "->" in text
+        finally:
+            sim.destroy()
+
+    def test_status_active_text_is_ascii(self):
+        sim = _make_sim_with_fake_render()
+        try:
+            result = sim.start_cameras_recording_synchronous(cameras=["cam_a", "cam_b"], fps=15, name="ascii_status")
+            on_frame = next(c["json"] for c in result["content"] if "json" in c)["on_frame"]
+            on_frame(0, {}, {})
+            status = sim.get_cameras_recording_status()
+            text = _all_text(status)
+            assert _non_ascii(text) == [], f"non-ASCII in active status text: {_non_ascii(text)}"
+            assert "[recording]" in text
+        finally:
+            sim.destroy()
+
+    def test_status_idle_text_is_ascii(self):
+        sim = _make_sim_with_fake_render()
+        try:
+            status = sim.get_cameras_recording_status()
+            text = _all_text(status)
+            assert _non_ascii(text) == [], f"non-ASCII in idle status text: {_non_ascii(text)}"
+            assert "[idle]" in text
+        finally:
+            sim.destroy()
