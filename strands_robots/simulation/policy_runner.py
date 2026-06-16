@@ -288,6 +288,7 @@ class PolicyRunner:
         on_frame: OnFrame | None = None,
         max_onframe_failures: int | None = None,
         control_substeps: int | None = None,
+        policy_kwargs: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Run ``policy`` on ``robot_name`` for ``duration`` seconds.
 
@@ -309,6 +310,16 @@ class PolicyRunner:
                 after every ``send_action``. Public extension point - backends
                 layer in recording / telemetry / graceful-stop via this hook
                 without subclassing the runner.
+            policy_kwargs: Optional per-call goal payload forwarded verbatim to
+                every ``policy.get_actions(obs, instruction, **policy_kwargs)``
+                call. This is the local-sim analogue of the mesh ``tell()``
+                #300 path: it carries the well-known goal keys
+                (``target_pose`` / ``target_joints`` / ``target_velocity`` /
+                ``world_update``) to non-VLA providers that read their goal
+                from kwargs rather than the instruction (cuRobo, MoveIt2, WBC).
+                VLA providers ignore unknown kwargs per the #300 contract, so
+                this is safe to forward unconditionally. ``None`` forwards no
+                extra kwargs (identical to the historical behaviour).
             max_onframe_failures: Maximum *consecutive* non-``CooperativeStop``
                 exceptions from the ``on_frame`` hook before the runner aborts
                 the episode. ``None`` (default) uses
@@ -382,6 +393,9 @@ class PolicyRunner:
         stopped_early = False
         # T26: skip camera rendering when the policy does not need images.
         _skip_images = not getattr(policy, "requires_images", True)
+        # Normalise the per-call goal payload once. Forwarded verbatim to every
+        # get_actions() call; an empty dict is the historical (no-kwargs) path.
+        _policy_kwargs = policy_kwargs or {}
         # Initialize BEFORE try so CooperativeStop never sees unbound names.
         start_time = time.time()
         step_count = 0
@@ -423,7 +437,7 @@ class PolicyRunner:
             while step_count < total_steps:
                 observation = self.sim.get_observation(robot_name=robot_name, skip_images=_skip_images)
 
-                coro_or_result = policy.get_actions(observation, instruction)
+                coro_or_result = policy.get_actions(observation, instruction, **_policy_kwargs)
                 actions = _resolve_coroutine(coro_or_result)
 
                 for action_dict in actions[:action_horizon]:

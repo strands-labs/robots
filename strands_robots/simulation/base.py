@@ -309,6 +309,7 @@ class SimEngine(ABC):
         max_steps: int | None = None,
         max_onframe_failures: int | None = None,
         control_substeps: int | None = None,
+        policy_kwargs: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Run a policy loop in the simulation (blocking).
 
@@ -341,6 +342,15 @@ class SimEngine(ABC):
                 dataset recording), backends plug into
                 ``PolicyRunner.run``'s ``on_frame`` hook via
                 :meth:`_make_run_policy_hook`.
+            policy_kwargs: Optional per-call goal payload forwarded verbatim to
+                every ``policy.get_actions(obs, instruction, **policy_kwargs)``
+                call. Carries the well-known #300 goal keys
+                (``target_pose`` / ``target_joints`` / ``target_velocity`` /
+                ``world_update``) to non-VLA providers (cuRobo, MoveIt2, WBC)
+                that read their goal from kwargs rather than the instruction.
+                This is the local-sim analogue of the mesh ``tell()`` path,
+                which already forwards these keys. VLA providers ignore unknown
+                kwargs per the #300 contract, so forwarding is always safe.
 
         Returns:
             Standard status dict.
@@ -396,6 +406,7 @@ class SimEngine(ABC):
             on_frame=on_frame,
             max_onframe_failures=max_onframe_failures,
             control_substeps=control_substeps,
+            policy_kwargs=policy_kwargs,
         )
 
     def start_policy(
@@ -412,6 +423,7 @@ class SimEngine(ABC):
         policy_object: Policy | None = None,
         n_steps: int | None = None,
         max_steps: int | None = None,
+        policy_kwargs: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Start policy execution in a background thread (non-blocking).
 
@@ -421,6 +433,8 @@ class SimEngine(ABC):
 
         accepts ``n_steps`` (primary) or legacy ``max_steps`` as an
         alternate to ``duration``. See ``run_policy`` for conversion rules.
+        ``policy_kwargs`` carries the per-call #300 goal payload through to
+        ``policy.get_actions`` (see :meth:`run_policy`).
         """
         robot_name = self._resolve_single_robot(robot_name)
         return self.run_policy(
@@ -436,6 +450,7 @@ class SimEngine(ABC):
             policy_object=policy_object,
             n_steps=n_steps,
             max_steps=max_steps,
+            policy_kwargs=policy_kwargs,
         )
 
     def replay_episode(
