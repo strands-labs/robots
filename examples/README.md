@@ -37,6 +37,7 @@ MUJOCO_GL=egl python examples/01_sim_hello_world.py
 |------|--------------|
 | [`molmoact2_so101_pickplace.py`](molmoact2_so101_pickplace.py) | Real hardware + MolmoAct2 VLA policy on SO-101 |
 | [`cosmos3_sim_rollout.py`](cosmos3_sim_rollout.py) | Cosmos 3 VLA in MuJoCo with WebSocket policy server |
+| [`wbc_g1_torque_deploy.py`](wbc_g1_torque_deploy.py) | GR00T-WBC (SONIC) locomotion on the Unitree G1 via the torque-control deploy loop |
 | [`lerobot/hub_to_hardware.py`](lerobot/hub_to_hardware.py) | Full agent-driven pipeline: record, train, deploy |
 
 ## Environment variables

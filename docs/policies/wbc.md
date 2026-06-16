@@ -145,6 +145,28 @@ set once at construction via `policy_config={"checkpoint": ..., "target_velocity
 [0.5, 0.0, 0.0]}` (the value forwarded to the policy constructor), which is how a
 command reaches the policy over the mesh `tell()` path.
 
+## Watching it walk (torque-control deploy)
+
+`sim.run_policy` writes the policy's joint-position **targets** to the sim's
+actuators. The default MuJoCo Menagerie G1 has *position-servo* actuators with
+their own gains, so a stable gait is not expected through that path. The real
+deploy loop (and the upstream reference) converts the targets to **torque** via
+the PD law on a *torque-actuated* model.
+
+[`examples/wbc_g1_torque_deploy.py`](https://github.com/strands-labs/robots/blob/main/examples/wbc_g1_torque_deploy.py)
+reproduces that loop - torque motors, `policy.compute_torques(...)` at
+`control_decimation=4`, whole-body observation with real joint velocities + base
+IMU - and is the right way to see the G1 actually locomote:
+
+```bash
+python examples/wbc_g1_torque_deploy.py --checkpoint /path/to/GEAR-SONIC \
+    --duration 5 --vx 0.5 --mp4 /tmp/g1_walk.mp4
+```
+
+With the real `GR00T-WholeBodyControl-{Balance,Walk}.onnx` weights this produces
+a stable forward walk (the base advances ~0.38 m/s for a 0.5 m/s command while
+holding height); a standing command (`--vx 0`) holds balance in place.
+
 ## See also
 
 - [Policy overview](overview.md)
