@@ -197,7 +197,9 @@ _HF_REPO_ENTRY_RE = re.compile(r"^[A-Za-z0-9_./\-]+$")
 _POLICY_TYPE_ENTRY_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 
 #: Built-in policy_type allowlist. Mirrors the LeRobot policy registry
-#: families plus the generic providers DevDuck ships with. Operators
+#: families plus the providers registered in registry/policies.json. Keep this
+#: in sync with the registry so a provider that ``create_policy`` can build can
+#: also be driven over the mesh ``tell()`` path and Device Connect. Operators
 #: extend via ``STRANDS_MESH_POLICY_TYPE_ALLOW`` (comma-separated).
 _DEFAULT_POLICY_TYPES: frozenset[str] = frozenset(
     {
@@ -213,6 +215,11 @@ _DEFAULT_POLICY_TYPES: frozenset[str] = frozenset(
         "pi0fast",
         "smolvla",
         "sac",
+        # GR00T Whole-Body-Control (SONIC) locomotion provider (registry: wbc,
+        # shorthand sonic). Without these, tell(..., policy_provider="wbc") and
+        # the Device Connect drivers reject WBC at the security gate.
+        "wbc",
+        "sonic",
     }
 )
 

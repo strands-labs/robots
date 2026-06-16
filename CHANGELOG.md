@@ -5,7 +5,43 @@ All notable behavioural changes to `strands-robots` are logged here. Follows
 
 ## [Unreleased]
 
-_Nothing yet._
+### Added: `WBCPolicy` provider (`wbc`, shorthand `sonic`) - GR00T Whole-Body-Control (SONIC)
+
+A new non-VLA policy provider wrapping NVIDIA's GR00T Whole-Body-Control
+(SONIC / decoupled-WBC) ONNX controllers for deploy-grade Unitree G1
+locomotion (closes #466). Clean-room against the upstream reference
+(`NVlabs/GR00T-WholeBodyControl` `decoupled_wbc/sim2mujoco`).
+
+- In-process ONNX (no torch, no sidecar) via the new `[wbc]` extra
+  (`onnxruntime` + `pyyaml` + `huggingface_hub`). No model weights bundled; the
+  real `GR00T-WholeBodyControl-{Balance,Walk}.onnx` are fetched/pointed-at at
+  runtime under the NVIDIA Open Model License.
+- `requires_images = False`; reads the locomotion goal from the well-known
+  kwargs (`target_velocity = [vx, vy, omega]`, optional `target_orientation`
+  for base RPY, optional `height`). Drives the 15 leg+waist DOFs; the 14 arm
+  joints are held at defaults (composing an upper-body policy on top is the job
+  of a future `CompositePolicy`, #468).
+- Faithful to the reference contract: 86-dim observation frame
+  (`command[7] + base_ang_vel[3] + projected_gravity[3] + qj[29] + dqj[29] +
+  prev_action[15]`) stacked over `obs_history_len=6` (network input 516);
+  whole-body qj/dqj (all 29 joints, not just the 15 controlled); two ONNX
+  sessions (main `policy` + `walk_policy`) selected by `norm(raw velocity) <=
+  0.05`; PD-to-torque law exposed via `WBCPolicy.compute_torques(...)`;
+  zero-warm-started history deque; quaternion math numerically identical to
+  upstream.
+- `WBCConfig` loads the upstream `g1_gear_wbc.yaml` directly (JSON or YAML;
+  flat `*_scale` keys normalised into `obs_scales`). Joints are resolved by
+  name (handles the G1's leading `floating_base_joint` + interleaved arms).
+- New per-call `policy_kwargs` channel on `SimEngine.run_policy` / `start_policy`
+  (and the MuJoCo overrides) forwarded verbatim to `policy.get_actions`, so the
+  #300 well-known goal kwargs reach non-VLA providers (WBC, cuRobo, MoveIt2)
+  through the local sim path, not just the mesh.
+- `wbc` / `sonic` added to the mesh + Device Connect policy-provider allowlist
+  so WBC can be driven over `tell()` / Device Connect.
+- Registered as `wbc` (shorthand `sonic`) in `registry/policies.json`; docs at
+  `docs/policies/wbc.md`; torque-control deploy harness +
+  `simulate_rollout` at `examples/wbc_g1_torque_deploy.py` (the real weights
+  produce a stable forward G1 walk).
 
 ## [0.4.0] - 2026-06-16
 

@@ -857,3 +857,36 @@ class TestUpstreamFidelity:
             q /= np.linalg.norm(q)
             v = rng.randn(3)
             assert np.allclose(quat_rotate_inverse(q, v), upstream(q, v), atol=1e-10)
+
+
+# ---------------------------------------------------------------------------
+# Mesh / Device Connect security allowlist
+# ---------------------------------------------------------------------------
+
+
+class TestMeshSecurityAllowlist:
+    """WBC must pass the mesh / Device Connect policy-provider allowlist, or it
+    can't be driven over tell() / Device Connect (validate_command and the DC
+    drivers reject an un-allowlisted provider). Regression for the gap where the
+    allowlist wasn't updated when the provider was added."""
+
+    def test_wbc_and_sonic_in_policy_provider_allowlist(self) -> None:
+        from strands_robots.mesh.security import is_safe_policy_provider
+
+        assert is_safe_policy_provider("wbc")
+        assert is_safe_policy_provider("sonic")
+        assert is_safe_policy_provider("WBC")  # case-insensitive
+
+    def test_mesh_validate_command_accepts_wbc_execute(self) -> None:
+        from strands_robots.mesh.security import validate_command
+
+        # A tell()-shaped execute command with policy_provider=wbc must validate
+        # (it previously failed the policy_provider allowlist check).
+        cmd = {
+            "action": "execute",
+            "instruction": "walk forward",
+            "policy_provider": "wbc",
+            "duration": 5.0,
+        }
+        out = validate_command(cmd)
+        assert out["policy_provider"] == "wbc"

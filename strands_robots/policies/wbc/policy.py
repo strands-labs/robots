@@ -846,4 +846,4 @@ class WBCPolicy(Policy):
         return arr
 
 
-__all__ = ["WBCPolicy", "WBC_G1_LEG_WAIST_JOINTS"]
+__all__ = ["WBCPolicy", "WBC_G1_LEG_WAIST_JOINTS", "WBC_G1_ALL_JOINTS"]

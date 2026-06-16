@@ -145,6 +145,13 @@ set once at construction via `policy_config={"checkpoint": ..., "target_velocity
 [0.5, 0.0, 0.0]}` (the value forwarded to the policy constructor), which is how a
 command reaches the policy over the mesh `tell()` path.
 
+> **Note:** `policy_kwargs` is wired on the control/deploy path
+> (`run_policy` / `start_policy` / mesh `tell()`), not the evaluation path.
+> `eval_policy` / `evaluate_benchmark` are instruction-driven (built for
+> task-success benchmarks); to evaluate WBC at a fixed velocity, set it once via
+> the constructor `target_velocity` (above). Per-episode velocity variation in
+> eval is out of scope for this provider.
+
 ## Watching it walk (torque-control deploy)
 
 `sim.run_policy` writes the policy's joint-position **targets** to the sim's

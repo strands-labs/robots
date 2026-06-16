@@ -1,22 +1,29 @@
 """Observation builder for the WBC policy.
 
 Reproduces the observation layout of NVIDIA's GR00T-WholeBodyControl reference
-controller. One observation *frame* is laid out as (for ``n = num_actions``,
-``c = command_dim``)::
+controller. One observation *frame* is laid out as (for ``no = n_obs_joints``,
+``na = num_actions``, ``c = command_dim``)::
 
-    [0       : c        ]  command  (vx, vy, omega, + gait/style fields)
-    [c       : c+3      ]  base angular velocity      (scaled by obs_scales.ang_vel)
-    [c+3     : c+6      ]  projected gravity          (orientation cue, unscaled)
-    [c+6     : c+6+n    ]  joint positions qj         (defaults subtracted, * dof_pos)
-    [c+6+n   : c+6+2n   ]  joint velocities dqj       (scaled by obs_scales.dof_vel)
-    [c+6+2n  : c+6+2n+n ]  previous action            (n-dim)
+    [0         : c          ]  command  [vx*s, vy*s, omega*s, height, roll, pitch, yaw]
+    [c         : c+3        ]  base angular velocity   (scaled by obs_scales.ang_vel)
+    [c+3       : c+6        ]  projected gravity        (orientation cue, unscaled)
+    [c+6       : c+6+no     ]  joint positions qj       (defaults subtracted, * dof_pos)
+    [c+6+no    : c+6+2no    ]  joint velocities dqj     (scaled by obs_scales.dof_vel)
+    [c+6+2no   : c+6+2no+na ]  previous action          (na-dim, the controlled set)
 
-With the upstream GEAR-SONIC defaults (c=7, n=15) that is
-7 + 3 + 3 + 15 + 15 + 15 = 58 populated values; the remaining width up to
-``single_obs_dim`` (86) is zero-padded so a checkpoint trained with extra
-command/style channels loads without code changes. The frame is then stacked
-over ``obs_history_len`` via a ``deque`` to form the ``num_obs``-wide network
-input (oldest frame first).
+CRITICAL: the qj/dqj blocks observe ALL the robot's joints (upstream
+``n_joints`` = nq-7 = 29 for the G1: legs + waist + arms), NOT just the
+``num_actions`` (15) controlled joints. The action block is the 15 leg+waist
+outputs. With the upstream GEAR-SONIC defaults (c=7, no=29, na=15) the populated
+width is 7 + 3 + 3 + 29 + 29 + 15 = 86 = ``single_obs_dim`` exactly (no padding).
+Using 15 for qj/dqj would populate only 58 and misplace the data - the network
+would see a malformed observation even though the 516 total still loads.
+
+``default_angles`` (length ``num_actions`` = 15) is zero-padded to ``no`` for
+the qj subtraction (arms have a zero nominal offset), matching upstream
+``padded_defaults``. The frame is stacked over ``obs_history_len`` via a
+``deque`` (zero-warm-started) to form the ``num_obs``-wide network input,
+oldest frame first.
 
 Pure NumPy - no torch / onnxruntime - so the layout is unit-testable on any
 machine (issue #466: "observation builder produces the exact 86-dim layout").
@@ -124,7 +131,9 @@ def build_single_frame(
     frame[c + 6 : c + 6 + no] = (qj - defaults) * dof_pos_scale
     frame[c + 6 + no : c + 6 + 2 * no] = dqj * dof_vel_scale
     frame[c + 6 + 2 * no : c + 6 + 2 * no + na] = prev_action
-    # Indices [end:single_obs_dim] remain zero (reserved clock/gait slot).
+    # For the default G1 config end == single_obs_dim (86), so no tail remains.
+    # If a config sets single_obs_dim > end, indices [end:single_obs_dim] stay
+    # zero (a reserved clock/gait slot the shipped checkpoint does not use).
     return frame
 
 

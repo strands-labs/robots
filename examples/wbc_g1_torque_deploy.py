@@ -50,9 +50,9 @@ import numpy as np
 def _build_torque_g1() -> tuple:
     """Load the Menagerie G1 and convert its actuators to pure-torque motors.
 
-    Returns ``(mujoco_module, model, data, joint_names, leg_waist_idx)`` where
-    ``joint_names`` is the 29-DOF order (qpos[7:] / qvel[6:]) and
-    ``leg_waist_idx`` are the first 15 actuator indices (the controlled set).
+    Returns ``(mujoco_module, model, data, joint_names)`` where ``joint_names``
+    is the 29-DOF actuated-joint order (qpos[7:] / qvel[6:]); the first 15 are
+    the controlled leg+waist set, the rest are the held arms.
     """
     import mujoco
     from robot_descriptions import g1_mj_description
