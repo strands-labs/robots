@@ -549,12 +549,12 @@ def lerobot_teleoperate(
                     "status": "success",
                     "content": [
                         {
-                            "text": f"🚀 **Teleoperation Session Started**\n"
-                            f"📝 Session: `{session_name}`\n"
-                            f"🆔 Process ID: {proc.pid}\n"
-                            f"📁 Command: `{' '.join(cmd)}`\n"
-                            f"📋 Log file: `{log_file}`\n"
-                            f"🔄 Running in background"
+                            "text": f"**Teleoperation Session Started**\n"
+                            f"Session: `{session_name}`\n"
+                            f"Process ID: {proc.pid}\n"
+                            f"Command: `{' '.join(cmd)}`\n"
+                            f"Log file: `{log_file}`\n"
+                            f"Running in background"
                         }
                     ],
                     "session_name": session_name,
@@ -571,11 +571,11 @@ def lerobot_teleoperate(
                     "status": "success" if result.returncode == 0 else "error",
                     "content": [
                         {
-                            "text": f"🖥️ **Foreground Execution Complete**\n"
-                            f"↩️ Return code: {result.returncode}\n"
-                            f"📁 Command: `{' '.join(cmd)}`\n\n"
-                            f"📤 **Output:**\n```\n{result.stdout}\n```\n\n"
-                            f"⚠️ **Errors:**\n```\n{result.stderr}\n```"
+                            "text": f"**Foreground Execution Complete**\n"
+                            f"Return code: {result.returncode}\n"
+                            f"Command: `{' '.join(cmd)}`\n\n"
+                            f"**Output:**\n```\n{result.stdout}\n```\n\n"
+                            f"**Errors:**\n```\n{result.stderr}\n```"
                         }
                     ],
                     "command": " ".join(cmd),
@@ -610,7 +610,7 @@ def lerobot_teleoperate(
 
                 return {
                     "status": "success",
-                    "content": [{"text": f"**Session Stopped**\n📝 Session: `{session_name}`\n🆔 PID: {pid}"}],
+                    "content": [{"text": f"**Session Stopped**\nSession: `{session_name}`\nPID: {pid}"}],
                     "session_name": session_name,
                     "session_info": session_info,
                 }
@@ -632,7 +632,7 @@ def lerobot_teleoperate(
         elif action == "list":
             sessions = session_manager.list_sessions()
 
-            content_lines = [f"📋 **Active Teleoperation Sessions** ({len(sessions)})", ""]
+            content_lines = [f"**Active Teleoperation Sessions** ({len(sessions)})", ""]
 
             if sessions:
                 for name, info in sessions.items():
@@ -643,18 +643,18 @@ def lerobot_teleoperate(
 
                     content_lines.extend(
                         [
-                            f"🎮 **{name}**",
+                            f"**{name}**",
                             f"   - Action: {info.get('action', 'Unknown')}",
                             f"   - PID: {pid}",
                             f"   - Uptime: {uptime_min:.1f} min",
-                            f"   - Status: {'🟢 Running' if is_running else '🔴 Stopped'}",
+                            f"   - Status: {'Running' if is_running else 'Stopped'}",
                             f"   - Robot: {info.get('robot_type', 'Unknown')}",
                             f"   - Teleop: {info.get('teleop_type', 'Unknown')}",
                             "",
                         ]
                     )
             else:
-                content_lines.append("✨ No active sessions")
+                content_lines.append("No active sessions")
 
             return {
                 "status": "success",
@@ -678,19 +678,19 @@ def lerobot_teleoperate(
             is_running = pid and psutil.pid_exists(int(pid))
 
             content_lines = [
-                f"📊 **Session Status: `{session_name}`**",
-                f"🆔 PID: {pid}",
-                f"🔧 Action: {session_info.get('action', 'Unknown')}",
-                f"⏱️ Uptime: {uptime_min:.1f} min",
-                f"📈 Status: {'🟢 Running' if is_running else '🔴 Stopped'}",
-                f"🤖 Robot: {session_info.get('robot_type', 'Unknown')}",
-                f"🕹️ Teleop: {session_info.get('teleop_type', 'Unknown')}",
+                f"**Session Status: `{session_name}`**",
+                f"PID: {pid}",
+                f"Action: {session_info.get('action', 'Unknown')}",
+                f"Uptime: {uptime_min:.1f} min",
+                f"Status: {'Running' if is_running else 'Stopped'}",
+                f"Robot: {session_info.get('robot_type', 'Unknown')}",
+                f"Teleop: {session_info.get('teleop_type', 'Unknown')}",
             ]
 
             # Add log tail if available
             log_file_path = session_info.get("log_file")
             if log_file_path and Path(str(log_file_path)).exists():
-                content_lines.append(f"📋 Log file: `{log_file_path}`")
+                content_lines.append(f"Log file: `{log_file_path}`")
 
                 try:
                     with open(str(log_file_path)) as f:
@@ -698,10 +698,10 @@ def lerobot_teleoperate(
                         if lines:
                             tail_lines = lines[-10:]  # Last 10 lines
                             content_lines.extend(
-                                ["", "📖 **Recent Log Output:**", "```", "".join(tail_lines).strip(), "```"]
+                                ["", "**Recent Log Output:**", "```", "".join(tail_lines).strip(), "```"]
                             )
                 except Exception as e:
-                    content_lines.append(f"⚠️ Error reading log: {str(e)}")
+                    content_lines.append(f"Error reading log: {str(e)}")
 
             return {
                 "status": "success",
@@ -736,16 +736,16 @@ def lerobot_teleoperate(
             result = subprocess.run(cmd, capture_output=True, text=True)
 
             content_lines = [
-                "🔄 **Episode Replay Complete**",
-                f"↩️ Return code: {result.returncode}",
-                f"📁 Command: `{' '.join(cmd)}`",
+                "**Episode Replay Complete**",
+                f"Return code: {result.returncode}",
+                f"Command: `{' '.join(cmd)}`",
             ]
 
             if result.stdout:
-                content_lines.extend(["", "📤 **Output:**", "```", result.stdout, "```"])
+                content_lines.extend(["", "**Output:**", "```", result.stdout, "```"])
 
             if result.stderr:
-                content_lines.extend(["", "⚠️ **Errors:**", "```", result.stderr, "```"])
+                content_lines.extend(["", "**Errors:**", "```", result.stderr, "```"])
 
             return {
                 "status": "success" if result.returncode == 0 else "error",
