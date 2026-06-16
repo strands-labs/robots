@@ -19,6 +19,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from strands_robots.utils import require_optional
+
 # Upstream defaults from the GR00T-WholeBodyControl reference controller
 # (decoupled_wbc/sim2mujoco: run_mujoco_gear_wbc.py + resources/robots/g1/
 # g1_gear_wbc.yaml). The ``single_obs_dim`` is fixed by the controller's
@@ -130,6 +132,16 @@ class WBCConfig:
                     "they must match (or leave the field empty to use defaults)."
                 )
 
+        # cmd_scale scales the [vx, vy, omega] velocity command, so it must have
+        # exactly 3 entries when provided (upstream cmd_scale = [2.0, 2.0, 0.5]).
+        # A wrong length is rejected rather than silently tolerated, matching the
+        # per-joint vectors above.
+        if self.cmd_scale and len(self.cmd_scale) != 3:
+            raise ValueError(
+                f"WBCConfig.cmd_scale must have exactly 3 entries [vx, vy, omega] scale, "
+                f"got {len(self.cmd_scale)}: {self.cmd_scale}."
+            )
+
     @property
     def num_obs(self) -> int:
         """Total network input width = ``single_obs_dim * obs_history_len``."""
@@ -140,33 +152,71 @@ class WBCConfig:
         """Build a :class:`WBCConfig` from a plain dict.
 
         Only recognised keys are consumed; unknown keys are ignored (forward
-        compatibility with richer upstream config files). ``policy_path`` is
-        required.
+        compatibility with the richer upstream config, which also carries
+        ``simulation_dt`` / ``control_decimation`` / ``cmd_init`` / ``freq_cmd``
+        / ``xml_path`` etc.). ``policy_path`` is required.
+
+        The upstream ``g1_gear_wbc.yaml`` specifies the observation scales as
+        FLAT keys (``ang_vel_scale`` / ``dof_pos_scale`` / ``dof_vel_scale``)
+        rather than a nested ``obs_scales`` map. Those flat keys are normalised
+        into ``obs_scales`` here so the upstream config loads unchanged. An
+        explicit ``obs_scales`` map, if present, takes precedence.
         """
         if "policy_path" not in data:
             raise ValueError("WBCConfig requires a 'policy_path' entry")
+
+        data = dict(data)  # shallow copy - don't mutate the caller's dict
+
+        # Normalise upstream flat scale keys into the nested obs_scales map.
+        _flat_scale_keys = {"ang_vel": "ang_vel_scale", "dof_pos": "dof_pos_scale", "dof_vel": "dof_vel_scale"}
+        flat_scales = {
+            short: float(data[flat]) for short, flat in _flat_scale_keys.items() if data.get(flat) is not None
+        }
+        if flat_scales:
+            merged = dict(flat_scales)
+            # An explicit obs_scales map wins over the flat keys it overlaps.
+            if isinstance(data.get("obs_scales"), dict):
+                merged.update(data["obs_scales"])
+            data["obs_scales"] = merged
+
         known = {f.name for f in cls.__dataclass_fields__.values()}  # type: ignore[attr-defined]
         kwargs = {k: v for k, v in data.items() if k in known}
         return cls(**kwargs)
 
     @classmethod
     def from_file(cls, path: str | Path) -> WBCConfig:
-        """Load a :class:`WBCConfig` from a JSON file.
+        """Load a :class:`WBCConfig` from a JSON or YAML file.
+
+        ``.json`` parses with the stdlib; ``.yaml`` / ``.yml`` parse with
+        ``pyyaml`` (optional - install ``strands-robots[wbc]`` or ``pyyaml``).
+        YAML support lets the policy consume the upstream ``g1_gear_wbc.yaml``
+        directly. The upstream YAML uses flat scale keys
+        (``ang_vel_scale`` / ``dof_pos_scale`` / ``dof_vel_scale``) rather than a
+        nested ``obs_scales`` map; :meth:`from_dict` normalises those.
 
         Raises:
             FileNotFoundError: If ``path`` does not exist.
-            ValueError: If the file is not valid JSON or is missing
-                ``policy_path``.
+            ValueError: If the file is not valid JSON/YAML, has an unsupported
+                extension, or is missing ``policy_path``.
+            ImportError: If a YAML file is given but ``pyyaml`` is not installed.
         """
         p = Path(path).expanduser()
         if not p.is_file():
             raise FileNotFoundError(f"WBCConfig file not found: {p}")
-        try:
-            data = json.loads(p.read_text())
-        except json.JSONDecodeError as e:
-            raise ValueError(f"WBCConfig file {p} is not valid JSON: {e}") from e
+        text = p.read_text()
+        suffix = p.suffix.lower()
+        if suffix == ".json":
+            try:
+                data = json.loads(text)
+            except json.JSONDecodeError as e:
+                raise ValueError(f"WBCConfig file {p} is not valid JSON: {e}") from e
+        elif suffix in (".yaml", ".yml"):
+            yaml = require_optional("yaml", pip_install="pyyaml", extra="wbc", purpose="WBCConfig YAML loading")
+            data = yaml.safe_load(text)  # type: ignore[attr-defined]
+        else:
+            raise ValueError(f"WBCConfig file {p} has unsupported extension {suffix!r}; use .json, .yaml, or .yml.")
         if not isinstance(data, dict):
-            raise ValueError(f"WBCConfig file {p} must contain a JSON object, got {type(data).__name__}")
+            raise ValueError(f"WBCConfig file {p} must contain a mapping, got {type(data).__name__}")
         return cls.from_dict(data)
 
 

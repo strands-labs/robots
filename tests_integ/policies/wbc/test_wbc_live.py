@@ -73,13 +73,25 @@ def test_wbc_policy_loads_real_onnx() -> None:
     assert policy.policy_session is not None, "main ONNX session must load from the checkpoint"
 
 
+@pytest.mark.skipif(
+    os.environ.get("WBC_GAIT_CHECK", "").lower() not in ("1", "true", "yes"),
+    reason=(
+        "Gait-quality check needs the full deploy-fidelity loop, not just real weights. "
+        "WBCPolicy emits joint-POSITION targets; the upstream reference converts them to "
+        "TORQUE via its PD law (compute_torques) on a torque-actuator G1 model "
+        "(g1_gear_wbc.xml) at control_decimation=4. The default MuJoCo Menagerie G1 uses "
+        "position-servo actuators with their own gains, so a stable gait is not expected "
+        "without replicating the torque-control loop. Set WBC_GAIT_CHECK=1 (with a "
+        "torque-driven deploy harness) to run this. See compute_torques() for the bridge."
+    ),
+)
 def test_wbc_forward_walk_translates_base_without_falling(g1_sim) -> None:  # type: ignore[no-untyped-def]
-    """Drive the G1 forward with WBC and assert the base moves forward + stays up.
+    """Deploy-fidelity gait check: drive the G1 forward and assert it advances
+    without falling. Requires a torque-control deploy harness (see skip reason);
+    this is NOT a WBCPolicy I/O-contract test (those run unconditionally above).
 
-    This is the deploy-stage end-to-end check: a real ONNX controller stepping
-    the real MuJoCo G1. We command a modest forward velocity and verify the
-    base translates in +x by at least ``WBC_MIN_FORWARD_M`` while its height
-    does not collapse (a fall would drop z well below the standing height).
+    We command a modest forward velocity and verify the base translates in +x by
+    at least ``WBC_MIN_FORWARD_M`` while its height does not collapse.
     """
     sim = g1_sim
     policy = create_policy("wbc", checkpoint=CHECKPOINT, walk=True)
@@ -139,3 +151,25 @@ def test_wbc_action_shape_is_15dim_on_real_model(g1_sim) -> None:  # type: ignor
     assert len(actions) == 1
     assert set(actions[0].keys()) == set(WBC_G1_LEG_WAIST_JOINTS)
     assert all(np.isfinite(v) for v in actions[0].values())
+
+
+def test_real_onnx_io_dims_match_config() -> None:
+    """The real ONNX sessions' input/output dims must match the resolved config.
+
+    Pins the single most important real-weights fact: the shipped GR00T-WBC
+    ONNX (e.g. GR00T-WholeBodyControl-Balance.onnx) has input ``[batch, num_obs]``
+    (516 for the default obs_history_len=6) and output ``[batch, num_actions]``
+    (15). A config whose num_obs disagrees with the checkpoint would feed the
+    model a wrong-width observation - this catches that mismatch up front."""
+    policy = create_policy("wbc", checkpoint=CHECKPOINT, walk=True)
+    sess = policy.policy_session
+    in_shape = sess.get_inputs()[0].shape  # e.g. ['batch_size', 516]
+    out_shape = sess.get_outputs()[0].shape  # e.g. ['batch_size', 15]
+    assert in_shape[-1] == policy.config.num_obs, (
+        f"ONNX input width {in_shape[-1]} != config.num_obs {policy.config.num_obs}; "
+        "the checkpoint and config disagree on the observation dimension "
+        "(check obs_history_len / single_obs_dim)."
+    )
+    assert out_shape[-1] == policy.config.num_actions, (
+        f"ONNX output width {out_shape[-1]} != config.num_actions {policy.config.num_actions}."
+    )

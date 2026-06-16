@@ -14,6 +14,16 @@ joints (16..n) are held at their nominal defaults. Layering an upper-body
 manipulation policy on top is the job of a future ``CompositePolicy`` (#468),
 deliberately out of scope here.
 
+Scope: this targets the **non-gait** reference (``run_mujoco_gear_wbc.py`` +
+``g1_gear_wbc.yaml``): single_obs_dim 86, a 7-wide command block, two policies
+(main ``policy`` + ``walk_policy``) selected by velocity. The upstream repo also
+ships a *gait-clock* variant (``run_mujoco_gear_wbc_gait.py``: single_obs_dim 95,
+an 8-wide command with ``freq_cmd`` + a 2-dim clock signal + torso slots, single
+policy) - that layout is a separate embodiment and is **not** implemented here.
+The shipped weights this matches are ``GR00T-WholeBodyControl-Balance.onnx``
+(main) and ``-Walk.onnx`` (walk), whose ONNX input is ``[batch, 516]`` (86 x 6)
+and output ``[batch, 15]``.
+
 Control contract (reproduced from the reference runner):
 
 * **Two ONNX sessions** - a main ``policy_path`` and an optional

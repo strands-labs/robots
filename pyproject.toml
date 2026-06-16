@@ -129,6 +129,9 @@ curobo = []
 # (e.g. nvidia/GEAR-SONIC). See policies/wbc/ and issue #466.
 wbc = [
     "onnxruntime>=1.17.0,<2.0.0",
+    # The upstream GR00T-WBC checkpoint config (g1_gear_wbc.yaml) is YAML;
+    # WBCConfig.from_file reads it via pyyaml. JSON configs work without it.
+    "pyyaml>=5.1,<7.0.0",
 ]
 lerobot = [
     "lerobot[feetech]>=0.5.0,<0.6.0",

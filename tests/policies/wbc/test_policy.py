@@ -212,35 +212,50 @@ class TestObservationLayout:
                 prev_action=np.zeros(_N),
             )
 
-    def test_history_warm_start_and_width(self) -> None:
+    def test_history_zero_warm_start_and_width(self) -> None:
+        """Upstream warm-start: the deque is pre-filled with ZERO frames, so the
+        first push yields [zeros .. zeros, frame] (oldest-first), NOT copies of
+        the first frame. Matches run_mujoco_gear_wbc.py:47-50."""
         cfg = _make_config(obs_history_len=3)
         assert cfg.num_obs == 86 * 3
         hist = ObservationHistory(cfg)
-        frame = np.arange(86, dtype=np.float64)
+        # Buffer is always full (zero-warm-started) even before any push.
+        assert len(hist) == 3
+        frame = np.arange(1.0, 87.0, dtype=np.float64)  # all-nonzero, distinct
         stacked = hist.push(frame)
         assert stacked.shape == (258,)
-        assert len(hist) == 3  # warm-filled with copies of the first frame
-        assert np.allclose(stacked[:86], stacked[86:172])
+        assert len(hist) == 3
+        # Oldest two blocks are the zero warm-start; newest block is `frame`.
+        assert np.allclose(stacked[0:86], 0.0)
+        assert np.allclose(stacked[86:172], 0.0)
+        assert np.allclose(stacked[172:258], frame)
 
-    def test_history_reset_clears(self) -> None:
+    def test_history_reset_restores_zero_warm_start(self) -> None:
         hist = ObservationHistory(_make_config(obs_history_len=2))
-        hist.push(np.zeros(86))
+        # Always full (zero-warm-started) - never empties.
+        assert len(hist) == 2
+        hist.push(np.full(86, 5.0))
         assert len(hist) == 2
         hist.reset()
-        assert len(hist) == 0
+        assert len(hist) == 2  # re-seeded with zero frames, not emptied
+        # After reset, a push again yields [zeros, frame].
+        frame = np.arange(1.0, 87.0, dtype=np.float64)
+        stacked = hist.push(frame)
+        assert np.allclose(stacked[0:86], 0.0)
+        assert np.allclose(stacked[86:172], frame)
 
-    def test_history_len3_rolling_window_newest_last_across_ticks(self) -> None:
-        """End-to-end: with obs_history_len=3, each tick's fed observation is a
-        258-wide stack whose blocks are [oldest .. newest] over a rolling window
-        of the last 3 frames (warm-filled at tick 0). Guards the cross-tick
-        determinism of the deque stacking through get_actions."""
+    def test_history_len3_zero_warm_start_then_rolling_window(self) -> None:
+        """End-to-end: with obs_history_len=3, the network input is a 258-wide
+        stack [oldest .. newest]. The deque is ZERO-warm-started (upstream), so
+        early ticks show zeros in the older slots - NOT copies of the first
+        frame. Distinguishes the two by using a NONZERO tick-0 qj."""
         # Zero default_angles so the frame's qj block equals the raw qj (no
-        # offset), isolating the rolling-window behaviour from default subtraction.
+        # offset), isolating the warm-start/rolling-window from default subtraction.
         p = _make_policy(walk=False, obs_history_len=3, default_angles=[0.0] * _N)
         obs = {k: 0.0 for k in _g1_keys()}
         for t in range(4):
             for nm in WBC_G1_LEG_WAIST_JOINTS:
-                obs[nm] = float(t)  # distinct qj per tick
+                obs[nm] = float(t + 1)  # tick0 qj=1 (NONZERO, so != zero warm-start)
             asyncio.run(p.get_actions(obs, "", target_velocity=[0.0, 0.0, 0.0]))
         fed = [c[0] for c in p.policy_session.calls]
         assert all(f.shape[0] == 86 * 3 for f in fed)
@@ -249,10 +264,11 @@ class TestObservationLayout:
             # qj[0] sits at index 13 within each 86-wide block (c=7 + angvel3 + grav3).
             return float(frame[block * 86 + 13])
 
-        # tick 0: warm-fill -> all three blocks hold the first frame (qj=0).
-        assert [qj0(fed[0], b) for b in range(3)] == [0.0, 0.0, 0.0]
-        # tick 3: rolling window of the last 3 frames -> oldest=1, mid=2, newest=3.
-        assert [qj0(fed[3], b) for b in range(3)] == [1.0, 2.0, 3.0]
+        # tick 0: ZERO warm-start in the two older blocks; newest is the tick-0
+        # frame (qj=1). If warm-fill copied the first frame, all three would be 1.
+        assert [qj0(fed[0], b) for b in range(3)] == [0.0, 0.0, 1.0]
+        # tick 3: rolling window of the last 3 frames -> oldest=2, mid=3, newest=4.
+        assert [qj0(fed[3], b) for b in range(3)] == [2.0, 3.0, 4.0]
 
 
 # ---------------------------------------------------------------------------
@@ -285,6 +301,52 @@ class TestWBCConfig:
     def test_command_dim_floor(self) -> None:
         with pytest.raises(ValueError, match="command_dim must be >= 3"):
             WBCConfig(policy_path="p.onnx", command_dim=2)
+
+    def test_from_file_yaml_with_flat_scale_keys(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """The upstream g1_gear_wbc.yaml uses flat ang_vel_scale/dof_pos_scale/
+        dof_vel_scale keys and YAML format. WBCConfig.from_file must load it and
+        normalise the flat scales into obs_scales."""
+        pytest.importorskip("yaml", reason="pyyaml not installed")
+        y = tmp_path / "g1_gear_wbc.yaml"
+        y.write_text(
+            "policy_path: policy/ft92.onnx\n"
+            "walk_policy_path: policy/ft109.onnx\n"
+            "num_actions: 15\n"
+            "num_obs: 516\n"
+            "obs_history_len: 6\n"
+            "action_scale: 0.25\n"
+            "ang_vel_scale: 0.5\n"
+            "dof_pos_scale: 1.0\n"
+            "dof_vel_scale: 0.05\n"
+            "cmd_scale: [2.0, 2.0, 0.5]\n"
+            "height_cmd: 0.74\n"
+            "default_angles: [-0.1, 0, 0, 0.3, -0.2, 0, -0.1, 0, 0, 0.3, -0.2, 0, 0, 0, 0]\n"
+            "kps: [150,150,150,200,40,40,150,150,150,200,40,40,250,250,250]\n"
+            "kds: [2,2,2,4,2,2,2,2,2,4,2,2,5,5,5]\n"
+            "simulation_dt: 0.005\n"  # an unknown key the loader must ignore
+            "cmd_init: [0.0, 0.0, 0.0]\n"  # another unknown key
+        )
+        cfg = WBCConfig.from_file(str(y))
+        assert cfg.num_obs == 516 and cfg.obs_history_len == 6
+        assert cfg.obs_scales == {"ang_vel": 0.5, "dof_pos": 1.0, "dof_vel": 0.05}
+        assert cfg.cmd_scale == [2.0, 2.0, 0.5] and cfg.height_cmd == 0.74
+        assert len(cfg.default_angles) == 15 and len(cfg.kps) == 15 and len(cfg.kds) == 15
+
+    def test_from_file_unsupported_extension_raises(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        p = tmp_path / "config.txt"
+        p.write_text("policy_path: x")
+        with pytest.raises(ValueError, match="unsupported extension"):
+            WBCConfig.from_file(str(p))
+
+    def test_explicit_obs_scales_wins_over_flat_keys(self) -> None:
+        c = WBCConfig.from_dict(
+            {"policy_path": "x", "ang_vel_scale": 0.5, "obs_scales": {"ang_vel": 0.9, "dof_pos": 1.0, "dof_vel": 0.05}}
+        )
+        assert c.obs_scales["ang_vel"] == 0.9  # explicit map overrides the flat key
+
+    def test_cmd_scale_wrong_length_rejected(self) -> None:
+        with pytest.raises(ValueError, match="cmd_scale must have exactly 3"):
+            WBCConfig(policy_path="p.onnx", cmd_scale=[2.0, 2.0])
 
 
 # ---------------------------------------------------------------------------
@@ -353,7 +415,14 @@ class TestWBCPolicy:
         assert not np.allclose(p._prev_action, 0.0)
         p.reset()
         assert np.allclose(p._prev_action, 0.0)
-        assert len(p._history) == 0
+        # History is re-seeded to the zero warm-start (always full = maxlen), and
+        # the next push must yield the zero warm-start transient again.
+        assert len(p._history) == p.config.obs_history_len
+        if p.config.obs_history_len == 1:
+            # With history_len=1 the single slot is the live frame; verify the
+            # zero warm-start by checking a fresh push after reset starts clean.
+            stacked = p._history.push(np.full(p.config.single_obs_dim, 7.0))
+            assert np.allclose(stacked, 7.0)
 
     def test_prev_action_feeds_back(self) -> None:
         """The previous raw action lands in the next frame's prev-action slot."""

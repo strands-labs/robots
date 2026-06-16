@@ -114,10 +114,13 @@ def _require_len(vec: NDArray[np.float64], n: int, name: str) -> NDArray[np.floa
 class ObservationHistory:
     """Fixed-length history of observation frames, stacked into the network input.
 
-    Wraps a ``deque(maxlen=obs_history_len)``. On the first push the buffer is
-    pre-filled with copies of the first frame so the network always sees a
-    full-width input (no zero-frames at episode start, matching the upstream
-    controller's warm-start). The stacked vector is oldest-frame-first.
+    Wraps a ``deque(maxlen=obs_history_len)`` warm-started with ZERO frames,
+    matching the upstream reference exactly (run_mujoco_gear_wbc.py:47-50 inits
+    the deque with ``[np.zeros(single_obs_dim)] * obs_history_len`` then appends
+    the live frame each tick). So for the first ``obs_history_len - 1`` ticks the
+    older history slots hold zeros, not copies of the first frame - the network
+    sees the same warm-start transient the reference controller was validated
+    with. The stacked vector is oldest-frame-first.
     """
 
     def __init__(self, config: WBCConfig) -> None:
@@ -125,25 +128,36 @@ class ObservationHistory:
         self._single_dim = config.single_obs_dim
         self._num_obs = config.num_obs
         self._buffer: deque[NDArray[np.float64]] = deque(maxlen=self._maxlen)
+        self._fill_zeros()
+
+    def _fill_zeros(self) -> None:
+        """Pre-fill the deque with ``obs_history_len`` zero-frames (upstream warm-start)."""
+        zero = np.zeros(self._single_dim, dtype=np.float64)
+        for _ in range(self._maxlen):
+            self._buffer.append(zero.copy())
 
     def reset(self) -> None:
-        """Clear the history (call at episode boundaries)."""
+        """Reset the history to the zero warm-start (call at episode boundaries).
+
+        Matches a fresh controller: the deque is re-seeded with zero-frames so
+        the next ``obs_history_len - 1`` pushes reproduce the upstream
+        zero-warm-start transient (not a stale rolling window from the prior
+        episode).
+        """
         self._buffer.clear()
+        self._fill_zeros()
 
     def push(self, frame: NDArray[np.float64]) -> NDArray[np.float64]:
-        """Append ``frame`` and return the stacked ``(num_obs,)`` network input.
+        """Append ``frame`` (evicting the oldest) and return the stacked input.
 
-        On the first push the buffer is filled with ``obs_history_len`` copies
-        of ``frame`` so the output is immediately full-width.
+        The buffer is always full (zero-warm-started), so the returned vector is
+        immediately ``num_obs`` wide. Oldest frame first; on early ticks the
+        older slots are still the zero warm-start frames.
         """
         frame = np.asarray(frame, dtype=np.float64).ravel()
         if frame.shape[0] != self._single_dim:
             raise ValueError(f"frame must have length single_obs_dim={self._single_dim}, got {frame.shape[0]}")
-        if not self._buffer:
-            for _ in range(self._maxlen):
-                self._buffer.append(frame.copy())
-        else:
-            self._buffer.append(frame)
+        self._buffer.append(frame)
         stacked = np.concatenate(list(self._buffer))
         if stacked.shape[0] != self._num_obs:
             raise ValueError(f"stacked obs width {stacked.shape[0]} != num_obs {self._num_obs}")
