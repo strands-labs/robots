@@ -566,6 +566,27 @@ class TestRegressionFixes:
         with pytest.raises(ValueError, match="exceeds the 15-entry"):
             WBCPolicy(config=cfg, allow_missing_models=True)
 
+    def test_flat_state_used_without_set_robot_state_keys(self) -> None:
+        """REGRESSION (review #1): a provided observation.state must be USED even
+        when set_robot_state_keys was never called - not silently zeroed. Matches
+        the positional observation.state contract of cuRobo / MoveIt2."""
+        p = WBCPolicy(config=_make_config(), allow_missing_models=True)  # no set_robot_state_keys
+        state = [0.1 * (i + 1) for i in range(15)]
+        qj = p._read_joint_vector({"observation.state": state}, "position", 15)
+        assert np.allclose(qj, state), "flat observation.state must be consumed positionally without keys"
+
+    def test_flat_state_name_resolved_first_occurrence_wins(self) -> None:
+        """REGRESSION (review #8): a duplicated joint name in the key list must
+        not shift the resolved slot - first occurrence wins."""
+        p = WBCPolicy(config=_make_config(), allow_missing_models=True)
+        # floating_base first, then the 15 WBC joints, then a DUP of the first
+        # WBC joint at the end (which must NOT win the slot).
+        keys = ["floating_base_joint", *WBC_G1_LEG_WAIST_JOINTS, "left_hip_pitch_joint"]
+        p.set_robot_state_keys(keys)
+        arr = [float(i) for i in range(len(keys))]  # value at index i == i
+        qj = p._read_joint_vector({"observation.state": arr}, "position", 15)
+        assert qj[0] == 1.0, "left_hip_pitch_joint must resolve to its FIRST occurrence (index 1), not the dup"
+
 
 # ---------------------------------------------------------------------------
 # Factory / registry resolution

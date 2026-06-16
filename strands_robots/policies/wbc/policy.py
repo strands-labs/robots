@@ -486,18 +486,33 @@ class WBCPolicy(Policy):
         """
         names = self._wbc_joint_names[:n]
 
-        # Flat-vector form: index into the flat array by each joint's position
-        # in the robot's key list (name-resolved), never a positional slice.
+        # Flat-vector form: index into the flat array by each joint's position.
         flat_key = "observation.state" if kind == "position" else "observation.velocity"
         flat = obs.get(flat_key)
-        if flat is not None and hasattr(flat, "__len__") and self._robot_state_keys:
+        if flat is not None and hasattr(flat, "__len__"):
             arr = np.asarray(flat if not hasattr(flat, "tolist") else flat.tolist(), dtype=np.float64).ravel()
-            index_of = {name: i for i, name in enumerate(self._robot_state_keys)}
+            if self._robot_state_keys:
+                # Name-resolved indexing: map each WBC joint to its slot in the
+                # robot's key list (handles a free-base/arm-interleaved layout).
+                # First occurrence wins so a duplicated name can't shift the slot.
+                index_of: dict[str, int] = {}
+                for i, name in enumerate(self._robot_state_keys):
+                    index_of.setdefault(name, i)
+                out = np.zeros(n, dtype=np.float64)
+                for i, name in enumerate(names):
+                    j = index_of.get(name)
+                    if j is not None and j < arr.shape[0]:
+                        out[i] = arr[j]
+                return out
+            # No key mapping was provided (direct-API / replay caller). Treat the
+            # flat vector as already in WBC leg+waist order - the same positional
+            # contract cuRobo / MoveIt2 use for observation.state - so a provided
+            # state is USED, not silently dropped. Consume the first n entries.
+            if arr.shape[0] >= n:
+                return arr[:n].copy()
+            # Shorter than expected: take what's there, zero-pad the rest.
             out = np.zeros(n, dtype=np.float64)
-            for i, name in enumerate(names):
-                j = index_of.get(name)
-                if j is not None and j < arr.shape[0]:
-                    out[i] = arr[j]
+            out[: arr.shape[0]] = arr
             return out
 
         # Per-joint scalar form (the unified sim observation).
