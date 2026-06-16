@@ -74,7 +74,9 @@ def test_start_stop_cameras_recording_writes_one_mp4_per_camera(tmp_path: Path) 
 
     status = sim.get_cameras_recording_status()
     assert status["status"] == "success"
-    assert "🟢" in status["content"][0]["text"]
+    # ASCII-only output contract: active recording is flagged with the
+    # "[recording]" marker, never an emoji.
+    assert "[recording]" in status["content"][0]["text"]
 
     stop = sim.stop_cameras_recording()
     assert stop["status"] == "success"
@@ -113,7 +115,9 @@ def test_status_when_idle_is_success() -> None:
     sim.create_world()
     r = sim.get_cameras_recording_status()
     assert r["status"] == "success"
-    assert "⚪" in r["content"][0]["text"]
+    # ASCII-only output contract: the idle state is flagged with the
+    # "[idle]" marker, never an emoji.
+    assert "[idle]" in r["content"][0]["text"]
 
 
 # Render-time scene_option pass-through (#168 round 9 bug E)
