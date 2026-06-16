@@ -59,3 +59,28 @@ optional runtime dependencies and are not redistributed with this package.
 You may obtain a copy of the Apache License at:
     http://www.apache.org/licenses/LICENSE-2.0
 --------------------------------------------------------------------------------
+
+--------------------------------------------------------------------------------
+Optional WBC locomotion policy (strands_robots/policies/wbc/)
+
+The optional WBCPolicy ([wbc] extra) is a clean-room implementation of the
+control loop described by NVIDIA's GR00T Whole-Body-Control reference:
+
+  * GR00T-WholeBodyControl (https://github.com/NVlabs/GR00T-WholeBodyControl)
+    Apache License, Version 2.0. The observation layout, PD-control law, and
+    SONIC controller contract reproduced in strands_robots/policies/wbc/ are
+    derived from the upstream reference runner
+    (decoupled_wbc/sim2mujoco/scripts/run_mujoco_gear_wbc.py). No upstream code
+    is vendored.
+
+  * ONNX Runtime (https://github.com/microsoft/onnxruntime)
+    MIT License. Runs the controller's ONNX sessions in-process.
+
+NVIDIA GR00T-WBC model weights (e.g. nvidia/GEAR-SONIC) are distributed by
+NVIDIA under the NVIDIA Open Model License; consult the model card for terms.
+These are optional runtime dependencies and are not redistributed with this
+package.
+
+You may obtain a copy of the Apache License at:
+    http://www.apache.org/licenses/LICENSE-2.0
+--------------------------------------------------------------------------------

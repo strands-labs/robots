@@ -151,6 +151,26 @@
             "aliases": [
                 "cumotion"
             ]
+        },
+        "wbc": {
+            "module": "strands_robots.policies.wbc",
+            "class": "WBCPolicy",
+            "description": "NVIDIA GR00T Whole-Body-Control (SONIC) humanoid locomotion (in-process, ONNX)",
+            "requires": [],
+            "config_keys": [
+                "checkpoint",
+                "config",
+                "walk",
+                "target_velocity",
+                "allow_missing_models"
+            ],
+            "defaults": {
+                "walk": true
+            },
+            "shorthands": [
+                "wbc",
+                "sonic"
+            ]
         }
     }
 }

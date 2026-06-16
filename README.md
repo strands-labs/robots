@@ -110,6 +110,7 @@ extras you need:
 | `lerobot` | LeRobot | Real hardware, local VLA inference, dataset recording |
 | `groot-service` | pyzmq, msgpack | NVIDIA GR00T inference client |
 | `curobo` | _(empty; install cuRobo from source)_ | In-process collision-aware motion planning (CUDA GPU) |
+| `wbc` | onnxruntime | GR00T Whole-Body-Control (SONIC) humanoid locomotion - in-process ONNX, no GPU |
 | `mesh` | eclipse-zenoh, json5 | Peer-to-peer robot mesh |
 | `mesh-iot` | awsiotsdk, awscrt, boto3 | AWS IoT Core mesh transport for fleets |
 | `device-connect` | device-connect-edge, device-connect-agent-tools | Device-aware networking - discovery, RPC, events, safety (falls back to the built-in mesh if absent) |
@@ -588,6 +589,45 @@ The LLM-agent demo path (`Robot.start_task(..., policy_provider="curobo",
 target_pose=[...])`) flows the same `target_pose` / `target_joints` kwargs
 through `start_task`'s `**policy_kwargs` so agents share one goal vocabulary
 across VLA and planner providers.
+
+#### `WBCPolicy` (GR00T Whole-Body-Control / SONIC, in-process ONNX)
+
+[`WBCPolicy`](./strands_robots/policies/wbc/policy.py) wraps NVIDIA's
+[GR00T-WholeBodyControl](https://github.com/NVlabs/GR00T-WholeBodyControl)
+(SONIC) ONNX controllers for deploy-grade humanoid locomotion on the Unitree
+G1. Like cuRobo it runs **in-process** (ONNX Runtime), but needs no GPU - the
+sessions run on CPU. It is non-VLA (`requires_images = False`) and reads its
+goal from the locomotion kwarg `target_velocity = [vx, vy, omega]`. It drives
+the **15 leg+waist DOFs**; arm joints are held at their defaults (layering an
+upper-body policy is a future `CompositePolicy`).
+
+```bash
+pip install "strands-robots[wbc]"   # onnxruntime only - light, no torch/GPU
+```
+
+No weights are bundled; download a SONIC checkpoint under the NVIDIA Open Model
+License (e.g. `nvidia/GEAR-SONIC`) into a dir with `policy.onnx`.
+
+```python
+from strands_robots import Robot
+
+sim = Robot("unitree_g1")             # sim-by-default; CPU ONNX, no GPU
+sim.run_policy(
+    robot_name="unitree_g1",
+    policy_provider="wbc",            # shorthand: "sonic"
+    policy_config={"checkpoint": "/path/to/GEAR-SONIC", "walk": True},
+    policy_kwargs={"target_velocity": [0.5, 0.0, 0.0]},
+    duration=10.0,
+    control_frequency=50.0,
+    action_horizon=1,                 # WBC is closed-loop per tick
+)
+```
+
+The per-call locomotion command rides through `run_policy`'s `policy_kwargs`
+to `policy.get_actions(..., target_velocity=[...])`. WBC output index `i`
+drives an explicit `unitree_g1` leg+waist actuator (no positional guessing);
+a model whose joint order disagrees raises rather than actuating wrong joints.
+See the [WBC policy docs](https://strands-labs.github.io/robots/policies/wbc/).
 
 ## Simulation (MuJoCo)
 

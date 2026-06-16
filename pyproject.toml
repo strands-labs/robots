@@ -122,6 +122,14 @@ moveit2 = [
 # silently-broken install of the squatter package. Tracked in the
 # follow-up issue linked from PR #306.
 curobo = []
+# GR00T Whole-Body-Control (SONIC) locomotion policy. Runs the ONNX
+# controllers in-process via onnxruntime (no torch, no sidecar) - a light
+# extra, like the client side of moveit2. Model weights are NOT bundled;
+# they are fetched at runtime under the NVIDIA Open Model License
+# (e.g. nvidia/GEAR-SONIC). See policies/wbc/ and issue #466.
+wbc = [
+    "onnxruntime>=1.17.0,<2.0.0",
+]
 lerobot = [
     "lerobot[feetech]>=0.5.0,<0.6.0",
     # #378: lerobot 0.5.1's pyav video fallback calls torchvision.io.VideoReader,
@@ -181,6 +189,7 @@ all = [
     "strands-robots[mesh]",
     "strands-robots[mesh-iot]",
     "strands-robots[device-connect]",
+    "strands-robots[wbc]",
 ]
 dev = [
     "pytest>=6.0,<9.0.0",
@@ -326,7 +335,7 @@ ignore_missing_imports = false
 
 # Third-party libs without type stubs
 [[tool.mypy.overrides]]
-module = ["lerobot.*", "gr00t.*", "draccus.*", "msgpack.*", "websockets", "websockets.*", "zmq.*", "huggingface_hub.*", "serial.*", "psutil.*", "torch.*", "torchvision.*", "transformers.*", "einops.*", "robot_descriptions.*", "mujoco.*", "imageio.*", "libero.*", "zenoh.*", "boto3", "boto3.*", "awscrt", "awscrt.*", "awsiot", "awsiot.*", "botocore.*", "strands_robots.policies.cosmos3._msgpack_numpy", "diffusers", "diffusers.*", "accelerate", "accelerate.*", "openpi_client", "openpi_client.*", "openpi_server", "openpi_server.*", "openpi", "openpi.*", "device_connect_edge", "device_connect_edge.*", "device_connect_agent_tools", "device_connect_agent_tools.*", "rclpy", "rclpy.*", "moveit", "moveit.*", "moveit_configs_utils", "moveit_configs_utils.*", "geometry_msgs", "geometry_msgs.*", "mink", "mink.*", "qpsolvers", "qpsolvers.*"]
+module = ["lerobot.*", "gr00t.*", "draccus.*", "msgpack.*", "websockets", "websockets.*", "zmq.*", "huggingface_hub.*", "serial.*", "psutil.*", "torch.*", "torchvision.*", "transformers.*", "einops.*", "robot_descriptions.*", "mujoco.*", "imageio.*", "libero.*", "zenoh.*", "boto3", "boto3.*", "awscrt", "awscrt.*", "awsiot", "awsiot.*", "botocore.*", "strands_robots.policies.cosmos3._msgpack_numpy", "diffusers", "diffusers.*", "accelerate", "accelerate.*", "openpi_client", "openpi_client.*", "openpi_server", "openpi_server.*", "openpi", "openpi.*", "device_connect_edge", "device_connect_edge.*", "device_connect_agent_tools", "device_connect_agent_tools.*", "rclpy", "rclpy.*", "moveit", "moveit.*", "moveit_configs_utils", "moveit_configs_utils.*", "geometry_msgs", "geometry_msgs.*", "mink", "mink.*", "qpsolvers", "qpsolvers.*", "onnxruntime", "onnxruntime.*"]
 ignore_missing_imports = true
 
 # Device Connect drivers - thin wrappers over the untyped device_connect_edge
@@ -404,4 +413,5 @@ markers = [
     "integration: requires live Device Connect infra (Zenoh router + etcd via Docker); skipped unless DEVICE_CONNECT_ALLOW_INSECURE is set (deselect with: pytest -m 'not integration')",
     "moveit2: requires a running MoveIt2 sidecar (ROS 2 / moveit_py). Run with: pytest -m moveit2",
     "curobo: requires NVIDIA cuRobo + a CUDA-capable GPU. Run with: pytest -m curobo (set CUROBO_LIVE=1)",
+    "wbc: requires onnxruntime + a downloaded GR00T-WBC (SONIC) checkpoint + mujoco. Run with: pytest -m wbc (set WBC_LIVE=1)",
 ]
