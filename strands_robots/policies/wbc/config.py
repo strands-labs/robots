@@ -25,11 +25,15 @@ from strands_robots.utils import require_optional
 # (decoupled_wbc/sim2mujoco: run_mujoco_gear_wbc.py + resources/robots/g1/
 # g1_gear_wbc.yaml). The ``single_obs_dim`` is fixed by the controller's
 # observation layout (compute_observation, single_obs_dim = 86):
-#   command(7) + base_ang_vel(3) + projected_gravity(3) + qj(n) + dqj(n) + action(15)
-# For n = 15 that is 7+3+3+15+15+15 = 58 populated values; indices [58:86] are
-# reserved (the reference leaves them zero - a clock/gait slot the shipped
-# checkpoint does not use). The exact width is taken from the config rather
-# than recomputed so a checkpoint with a different command width still loads.
+#   command(7) + base_ang_vel(3) + projected_gravity(3)
+#     + qj(n_obs_joints) + dqj(n_obs_joints) + action(num_actions)
+# CRITICAL: qj/dqj observe ALL the robot's joints (upstream ``n_joints`` =
+# nq - 7 = 29 for the G1), NOT just the 15 controlled leg+waist joints. The
+# action block is the num_actions (15) leg+waist outputs. So:
+#   7 + 3 + 3 + 29 + 29 + 15 = 86.  (Using 15 for qj/dqj would give 58 and put
+# the data in the wrong slots - the network would see a malformed observation
+# even though the total 516 width still loads.)
+_DEFAULT_N_OBS_JOINTS = 29
 #
 # The command block (7) is NOT just zero-padded velocity - per
 # compute_observation it is:
@@ -89,6 +93,11 @@ class WBCConfig:
         num_actions: Number of controllable joints (legs + waist). Default 15.
         command_dim: Width of the command sub-vector at the head of the
             observation. Default 7 (velocity[3] + height[1] + rpy[3]).
+        n_obs_joints: Number of joints OBSERVED in the qj/dqj blocks - the
+            robot's full joint count (upstream ``n_joints`` = nq - 7 = 29 for
+            the G1), NOT ``num_actions``. The controller observes the whole body
+            (legs + waist + arms) but only drives the first ``num_actions`` (15)
+            leg+waist joints. Default 29.
     """
 
     policy_path: str
@@ -105,6 +114,7 @@ class WBCConfig:
     single_obs_dim: int = _DEFAULT_SINGLE_OBS_DIM
     obs_history_len: int = _DEFAULT_OBS_HISTORY_LEN
     num_actions: int = _DEFAULT_NUM_ACTIONS
+    n_obs_joints: int = _DEFAULT_N_OBS_JOINTS
     command_dim: int = _DEFAULT_COMMAND_DIM
 
     def __post_init__(self) -> None:
@@ -119,6 +129,13 @@ class WBCConfig:
         if self.command_dim < 3:
             # Need at least [vx, vy, omega].
             raise ValueError(f"WBCConfig.command_dim must be >= 3 (vx, vy, omega), got {self.command_dim}")
+        if self.n_obs_joints < self.num_actions:
+            # The controller observes all joints (legs+waist+arms) but drives the
+            # first num_actions; observing fewer than it drives is impossible.
+            raise ValueError(
+                f"WBCConfig.n_obs_joints ({self.n_obs_joints}) must be >= num_actions ({self.num_actions}); "
+                "qj/dqj observe the whole body, action drives the leg+waist subset."
+            )
 
         # Per-joint vectors, when provided, must match num_actions. They are
         # allowed to be empty (the policy then falls back to zeros / unit gains

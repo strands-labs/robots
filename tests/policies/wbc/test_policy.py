@@ -28,7 +28,7 @@ import numpy as np
 import pytest
 
 from strands_robots.policies import Policy, create_policy, list_providers
-from strands_robots.policies.wbc import WBC_G1_LEG_WAIST_JOINTS, WBCConfig, WBCPolicy
+from strands_robots.policies.wbc import WBC_G1_ALL_JOINTS, WBC_G1_LEG_WAIST_JOINTS, WBCConfig, WBCPolicy
 from strands_robots.policies.wbc.control import (
     compute_targets,
     pd_control,
@@ -41,7 +41,8 @@ from strands_robots.policies.wbc.observation import ObservationHistory, build_si
 # Stub ONNX session
 # ---------------------------------------------------------------------------
 
-_N = 15  # leg + waist DOFs
+_N = 15  # leg + waist DOFs (controlled / action dim)
+_NO = 29  # observed joints (legs + waist + arms) - the qj/dqj block width
 
 
 class _StubInput:
@@ -75,18 +76,21 @@ def _g1_keys() -> list[str]:
 
     Verified against the actual robot_descriptions ``g1_mj_description`` model:
     MuJoCo prepends the free/floating-base joint, so the list is
-    ``["floating_base_joint", <15 leg+waist>, <14 arm>]`` - the leg+waist joints
-    are at indices [1:16], NOT [0:15]. Using the real layout here is what
-    exercises WBCPolicy's name-based joint resolution (a fixture that put the
-    leg+waist joints first would hide the floating-base ordering bug).
+    ``["floating_base_joint", <15 leg+waist>, <14 arm>]`` (the real arm joint
+    NAMES, since set_robot_state_keys now resolves the whole-body observed set
+    by name). The leg+waist joints are at indices [1:16], NOT [0:15].
     """
-    return ["floating_base_joint", *WBC_G1_LEG_WAIST_JOINTS, *[f"arm_{i}" for i in range(14)]]
+    return ["floating_base_joint", *WBC_G1_ALL_JOINTS]
 
 
 def _make_config(**overrides) -> WBCConfig:  # type: ignore[no-untyped-def]
+    # Default to the real G1 layout: 29 observed joints, 15 controlled, 86-wide
+    # frame (7 cmd + 3 omega + 3 grav + 29 qj + 29 dqj + 15 action). Tests that
+    # want a faster/smaller layout override n_obs_joints + single_obs_dim.
     base = dict(
         policy_path="policy.onnx",
         num_actions=_N,
+        n_obs_joints=_NO,
         command_dim=7,
         single_obs_dim=86,
         obs_history_len=1,
@@ -172,32 +176,35 @@ class TestControlMath:
 
 class TestObservationLayout:
     def test_exact_86_dim_layout(self) -> None:
-        cfg = _make_config()
+        cfg = _make_config()  # n_obs_joints=29, num_actions=15
         frame = build_single_frame(
             cfg,
             command=np.array([0.5, 0.0, 0.0]),  # short -> zero-padded to 7
             base_ang_vel=np.array([1.0, 2.0, 3.0]),
             proj_gravity=np.array([0.0, 0.0, -1.0]),
-            qj=np.array([0.2] * _N),
-            dqj=np.array([0.0] * _N),
-            prev_action=np.array([0.0] * _N),
+            qj=np.array([0.2] * _NO),  # 29 observed joints
+            dqj=np.array([0.0] * _NO),
+            prev_action=np.array([0.0] * _N),  # 15 controlled
         )
         assert frame.shape == (86,)
         # build_single_frame zero-pads a short command: vx at 0, slots 3..7 zero.
-        # (The policy normally supplies the full 7-wide [vel*scale, height, rpy]
-        # command; build_single_frame still accepts and pads a short one.)
         assert frame[0] == 0.5
         assert np.allclose(frame[3:7], 0.0)
         # base ang vel scaled by obs_scales.ang_vel (upstream 0.5): index 7 = 1.0*0.5
         assert np.isclose(frame[7], 1.0 * cfg.obs_scales["ang_vel"])
-        assert np.isclose(frame[7], 0.5)  # pin the corrected upstream value
+        assert np.isclose(frame[7], 0.5)
         # projected gravity unscaled at [10:13]
         assert np.allclose(frame[10:13], [0.0, 0.0, -1.0])
-        # qj - defaults scaled by dof_pos (1.0): (0.2-0.1) at index 13
+        # qj block at [13 : 13+29]; default_angles only covers the first 15
+        # (legs+waist), arms get zero default. qj[0]=(0.2-0.1)=0.1 at index 13;
+        # qj[15] (first arm) = (0.2-0.0)=0.2 at index 13+15=28.
         assert np.isclose(frame[13], 0.1)
-        # populated end = command(7) + angvel(3) + grav(3) + qj(15) + dqj(15)
-        # + action(15) = 58; indices [58:86] are the reserved (zero) tail.
-        assert np.allclose(frame[58:], 0.0)
+        assert np.isclose(frame[28], 0.2)
+        # dqj block at [13+29 : 13+58] = [42:71]; action block at [71:86].
+        assert np.allclose(frame[42:71], 0.0)  # dqj all zero here
+        assert np.allclose(frame[71:86], 0.0)  # prev_action all zero
+        # populated end = 7 + 3 + 3 + 29 + 29 + 15 = 86; no reserved tail remains.
+        assert frame.shape[0] == 86
 
     def test_command_overflow_raises(self) -> None:
         cfg = _make_config(command_dim=3)
@@ -431,10 +438,11 @@ class TestWBCPolicy:
         asyncio.run(p.get_actions(obs, "", target_velocity=[0.0, 0.0, 0.0]))
         # second call: the frame's prev-action block should equal the stub's
         # raw output (0.04), proving feedback. The block sits at
-        # [c+6+2n : c+6+3n] = [7+6+30 : 7+6+45] = [43:58] for c=7, n=15.
+        # [c+6+2*no : c+6+2*no+na] = [7+6+58 : 7+6+58+15] = [71:86] for c=7,
+        # no=29, na=15.
         asyncio.run(p.get_actions(obs, "", target_velocity=[0.0, 0.0, 0.0]))
         fed = p.policy_session.calls[1][0]  # (num_obs,)
-        prev_block = fed[43 : 43 + 15]
+        prev_block = fed[71 : 71 + 15]
         assert np.allclose(prev_block, 0.04)
 
     def test_no_session_raises_not_silent_zeros(self) -> None:
@@ -477,22 +485,31 @@ class TestActuatorMapping:
         with pytest.raises(ValueError, match="missing expected G1"):
             p.set_robot_state_keys(list(WBC_G1_LEG_WAIST_JOINTS[:10]))
 
-    def test_exact_15_keys_accepted(self) -> None:
+    def test_all_29_joints_accepted(self) -> None:
+        # The default config observes 29 joints, so the whole-body set is required.
         p = WBCPolicy(config=_make_config(), allow_missing_models=True)
-        p.set_robot_state_keys(list(WBC_G1_LEG_WAIST_JOINTS))  # exactly the 15, any surrounding order
+        p.set_robot_state_keys(list(WBC_G1_ALL_JOINTS))  # exactly the 29, any surrounding order
+
+    def test_missing_arm_joints_raises_for_observed_set(self) -> None:
+        # Only the 15 leg+waist joints (no arms) is insufficient when n_obs_joints=29.
+        p = WBCPolicy(config=_make_config(), allow_missing_models=True)
+        with pytest.raises(ValueError, match="missing observed G1 joints"):
+            p.set_robot_state_keys(list(WBC_G1_LEG_WAIST_JOINTS))
 
     def test_reads_state_by_name_not_position(self) -> None:
         """qj is read from the named joints even when a free-base joint precedes
-        them in the observation (so a positional [:15] slice would be wrong)."""
+        them in the observation (so a positional slice would be wrong). qj spans
+        the 29 observed joints in WBC_G1_ALL_JOINTS order."""
         p = _make_policy()  # uses _g1_keys() ordering with floating_base first
         obs = {k: 0.0 for k in _g1_keys()}
-        # Give each leg+waist joint a distinct, recognisable value; give the
-        # floating_base and arms a sentinel that must NOT appear in qj.
-        for i, name in enumerate(WBC_G1_LEG_WAIST_JOINTS):
+        # Give each observed joint a distinct value; floating_base gets a
+        # sentinel that must NOT appear in qj.
+        for i, name in enumerate(WBC_G1_ALL_JOINTS):
             obs[name] = 0.1 * (i + 1)
         obs["floating_base_joint"] = 99.0
-        qj = p._read_joint_vector(obs, "position", 15)
-        assert np.allclose(qj, [0.1 * (i + 1) for i in range(15)])
+        qj = p._read_joint_vector(obs, "position", p._obs_joint_names)
+        assert qj.shape[0] == 29
+        assert np.allclose(qj, [0.1 * (i + 1) for i in range(29)])
         assert 99.0 not in qj  # the free-base value never leaks in
 
 
@@ -647,13 +664,15 @@ class TestRegressionFixes:
         assert not [r for r in caplog.records if "no joint velocities" in r.message]
 
     def test_per_joint_velocity_read_by_name(self) -> None:
-        """When the observation DOES expose '<name>.vel' keys, dqj reads them."""
+        """When the observation DOES expose '<name>.vel' keys, dqj reads them
+        for all 29 observed joints in WBC_G1_ALL_JOINTS order."""
         p = _make_policy(walk=False)
         obs = {k: 0.0 for k in _g1_keys()}
-        for i, name in enumerate(WBC_G1_LEG_WAIST_JOINTS):
+        for i, name in enumerate(WBC_G1_ALL_JOINTS):
             obs[f"{name}.vel"] = 0.01 * (i + 1)
-        dqj = p._read_joint_vector(obs, "velocity", 15)
-        assert np.allclose(dqj, [0.01 * (i + 1) for i in range(15)])
+        dqj = p._read_joint_vector(obs, "velocity", p._obs_joint_names)
+        assert dqj.shape[0] == 29
+        assert np.allclose(dqj, [0.01 * (i + 1) for i in range(29)])
 
     def test_num_actions_exceeding_mapping_table_rejected(self) -> None:
         """REGRESSION #8: num_actions > 15 silently truncated the 15-entry
@@ -667,22 +686,23 @@ class TestRegressionFixes:
     def test_flat_state_used_without_set_robot_state_keys(self) -> None:
         """REGRESSION (review #1): a provided observation.state must be USED even
         when set_robot_state_keys was never called - not silently zeroed. Matches
-        the positional observation.state contract of cuRobo / MoveIt2."""
+        the positional observation.state contract of cuRobo / MoveIt2. Consumed
+        in the observed-joint order (29 entries by default)."""
         p = WBCPolicy(config=_make_config(), allow_missing_models=True)  # no set_robot_state_keys
-        state = [0.1 * (i + 1) for i in range(15)]
-        qj = p._read_joint_vector({"observation.state": state}, "position", 15)
+        state = [0.1 * (i + 1) for i in range(29)]
+        qj = p._read_joint_vector({"observation.state": state}, "position", p._obs_joint_names)
         assert np.allclose(qj, state), "flat observation.state must be consumed positionally without keys"
 
     def test_flat_state_name_resolved_first_occurrence_wins(self) -> None:
         """REGRESSION (review #8): a duplicated joint name in the key list must
         not shift the resolved slot - first occurrence wins."""
         p = WBCPolicy(config=_make_config(), allow_missing_models=True)
-        # floating_base first, then the 15 WBC joints, then a DUP of the first
-        # WBC joint at the end (which must NOT win the slot).
-        keys = ["floating_base_joint", *WBC_G1_LEG_WAIST_JOINTS, "left_hip_pitch_joint"]
+        # floating_base first, then all 29 observed joints, then a DUP of the
+        # first joint at the end (which must NOT win the slot).
+        keys = ["floating_base_joint", *WBC_G1_ALL_JOINTS, "left_hip_pitch_joint"]
         p.set_robot_state_keys(keys)
         arr = [float(i) for i in range(len(keys))]  # value at index i == i
-        qj = p._read_joint_vector({"observation.state": arr}, "position", 15)
+        qj = p._read_joint_vector({"observation.state": arr}, "position", p._obs_joint_names)
         assert qj[0] == 1.0, "left_hip_pitch_joint must resolve to its FIRST occurrence (index 1), not the dup"
 
 
@@ -742,11 +762,31 @@ class TestUpstreamFidelity:
         assert c.obs_history_len == 6  # g1_gear_wbc.yaml
         assert c.num_obs == 516  # 86 * 6
         assert c.num_actions == 15
+        assert c.n_obs_joints == 29  # qj/dqj observe the whole body, not just 15
         assert c.command_dim == 7
         assert c.action_scale == 0.25
         assert c.obs_scales == {"ang_vel": 0.5, "dof_pos": 1.0, "dof_vel": 0.05}
         assert c.cmd_scale == [2.0, 2.0, 0.5]
         assert c.height_cmd == 0.74
+
+    def test_obs_layout_observes_29_joints_not_15(self) -> None:
+        """CRITICAL pin: qj/dqj blocks are n_obs_joints (29) wide, NOT num_actions
+        (15). 7+3+3+29+29+15 = 86 = single_obs_dim. A 15-wide qj/dqj would only
+        populate 58 and misplace the data - the network would see garbage even
+        though the 516 total still loads. Verified against upstream
+        compute_observation (qj=qpos[7:7+n_joints], n_joints=29) and the real
+        GR00T-WholeBodyControl-Balance.onnx (input width 516)."""
+        c = WBCConfig(policy_path="p.onnx")
+        populated = c.command_dim + 3 + 3 + 2 * c.n_obs_joints + c.num_actions
+        assert populated == c.single_obs_dim == 86
+        # The whole-body mapping must be long enough for n_obs_joints, and its
+        # first num_actions names must be exactly the controlled leg+waist set.
+        assert len(WBC_G1_ALL_JOINTS) >= c.n_obs_joints
+        assert WBC_G1_ALL_JOINTS[: c.num_actions] == WBC_G1_LEG_WAIST_JOINTS
+
+    def test_n_obs_joints_below_num_actions_rejected(self) -> None:
+        with pytest.raises(ValueError, match="n_obs_joints .* must be >= num_actions"):
+            WBCConfig(policy_path="p.onnx", n_obs_joints=10, num_actions=15)
 
     def test_command_layout_matches_compute_observation(self) -> None:
         """command[0:3] = vel*cmd_scale; command[3] = height; command[4:7] = rpy."""

@@ -94,6 +94,28 @@ WBC_G1_LEG_WAIST_JOINTS: tuple[str, ...] = (
     "waist_pitch_joint",
 )
 
+# Full Unitree G1 29-DOF joint order (legs + waist + arms), matching the model's
+# qpos[7:] layout and the upstream G1_29DOF_JOINT_NAMES. The OBSERVATION reads
+# qj/dqj for ALL of these (n_obs_joints); the controller only DRIVES the first
+# 15 (WBC_G1_LEG_WAIST_JOINTS). The two share the leg+waist prefix exactly.
+WBC_G1_ALL_JOINTS: tuple[str, ...] = (
+    *WBC_G1_LEG_WAIST_JOINTS,
+    "left_shoulder_pitch_joint",
+    "left_shoulder_roll_joint",
+    "left_shoulder_yaw_joint",
+    "left_elbow_joint",
+    "left_wrist_roll_joint",
+    "left_wrist_pitch_joint",
+    "left_wrist_yaw_joint",
+    "right_shoulder_pitch_joint",
+    "right_shoulder_roll_joint",
+    "right_shoulder_yaw_joint",
+    "right_elbow_joint",
+    "right_wrist_roll_joint",
+    "right_wrist_pitch_joint",
+    "right_wrist_yaw_joint",
+)
+
 # The HF repo the checkpoint is fetched from when ``checkpoint`` is a bare
 # model id rather than a local path. No weights are bundled; they are fetched
 # at runtime under the NVIDIA Open Model License.
@@ -213,6 +235,17 @@ class WBCPolicy(Policy):
                 "G1 lower body; a different embodiment needs its own joint mapping table."
             )
 
+        # The whole-body joints the qj/dqj observation blocks read (legs+waist+
+        # arms), in WBC_G1_ALL_JOINTS order. set_robot_state_keys resolves these
+        # by name; default to the canonical table until then.
+        no = self._config.n_obs_joints
+        if no > len(WBC_G1_ALL_JOINTS):
+            raise ValueError(
+                f"WBCConfig.n_obs_joints={no} exceeds the {len(WBC_G1_ALL_JOINTS)}-entry "
+                "G1 whole-body joint mapping (WBC_G1_ALL_JOINTS)."
+            )
+        self._obs_joint_names: list[str] = list(WBC_G1_ALL_JOINTS[:no])
+
         # Pre-compute NumPy views of the per-joint vectors (once, not per tick).
         self._default_angles = (
             np.asarray(self._config.default_angles, dtype=np.float64)
@@ -287,8 +320,10 @@ class WBCPolicy(Policy):
                 the wrong joints. The error lists the missing names.
         """
         keys = list(robot_state_keys)
-        expected = WBC_G1_LEG_WAIST_JOINTS[: self._config.num_actions]
         key_set = set(keys)
+
+        # Controlled joints: the num_actions leg+waist joints WBC drives.
+        expected = WBC_G1_LEG_WAIST_JOINTS[: self._config.num_actions]
         missing = [name for name in expected if name not in key_set]
         if missing:
             raise ValueError(
@@ -299,11 +334,26 @@ class WBCPolicy(Policy):
                 "WBC drives these named joints; load the full unitree_g1 model "
                 "(its leg+waist joints carry these exact names)."
             )
-        # Store the controllable joints in WBC order (the names we read state
-        # from and emit targets for). The free/base joint and arm joints are
-        # deliberately excluded - WBC neither observes nor drives them here.
+
+        # Observed joints: the n_obs_joints whole-body joints the qj/dqj blocks
+        # read (legs+waist+arms). The controller observes the whole body even
+        # though it only drives the leg+waist subset. Resolve these by name too
+        # (in WBC_G1_ALL_JOINTS order), so the observation matches the model's
+        # qpos[7:] layout regardless of how the sim orders / namespaces joints.
+        obs_expected = WBC_G1_ALL_JOINTS[: self._config.n_obs_joints]
+        obs_missing = [name for name in obs_expected if name not in key_set]
+        if obs_missing:
+            raise ValueError(
+                "WBCPolicy: the robot's joint list is missing observed G1 joints "
+                f"(qj/dqj read the whole body, n_obs_joints={self._config.n_obs_joints}): {obs_missing}.\n"
+                f"  expected (observe order): {list(obs_expected)}\n"
+                f"  robot provided:           {keys}\n"
+                "Load the full unitree_g1 (29-DOF) model."
+            )
+
         self._robot_state_keys = list(keys)
-        self._wbc_joint_names = list(expected)
+        self._wbc_joint_names = list(expected)  # the num_actions controlled joints
+        self._obs_joint_names = list(obs_expected)  # the n_obs_joints observed joints
 
     def reset(self, seed: int | None = None) -> None:
         """Clear the observation history and previous-action feedback.
@@ -441,10 +491,13 @@ class WBCPolicy(Policy):
     def _extract_state(self, observation_dict: dict[str, Any]) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """Pull (qj, dqj, base_ang_vel, base_quat) out of the observation dict.
 
-        ``qj`` / ``dqj`` are the leg+waist joint positions / velocities, read by
-        name via :meth:`_read_joint_vector`. Base angular velocity and
-        orientation come from well-known keys, defaulting to a level, still base
-        when absent (an upright stance cue) rather than fabricating motion.
+        ``qj`` / ``dqj`` are the WHOLE-BODY joint positions / velocities
+        (``n_obs_joints`` = 29: legs+waist+arms), read by name via
+        :meth:`_read_joint_vector` in :data:`WBC_G1_ALL_JOINTS` order - matching
+        the upstream ``qpos[7:7+n_joints]`` observation, which spans all joints,
+        not just the 15 controlled ones. Base angular velocity and orientation
+        come from well-known keys, defaulting to a level, still base when absent
+        (an upright stance cue) rather than fabricating motion.
 
         Velocity availability: WBC is a velocity-feedback balance controller, so
         ``dqj`` and ``base_ang_vel`` are genuine inputs - not optional. The
@@ -458,9 +511,10 @@ class WBCPolicy(Policy):
         ``observation.velocity`` + ``base_ang_vel``), e.g. a teleop/IMU bridge
         or a future backend velocity field.
         """
-        n = self._config.num_actions
-        qj = self._read_joint_vector(observation_dict, "position", n)
-        dqj = self._read_joint_vector(observation_dict, "velocity", n)
+        # qj/dqj observe the whole body (n_obs_joints), in WBC_G1_ALL_JOINTS order.
+        obs_names = self._obs_joint_names
+        qj = self._read_joint_vector(observation_dict, "position", obs_names)
+        dqj = self._read_joint_vector(observation_dict, "velocity", obs_names)
 
         base_ang_vel = self._read_vec(observation_dict, ("base_ang_vel", "observation.base_ang_vel"), 3)
         if base_ang_vel is None:
@@ -488,34 +542,33 @@ class WBCPolicy(Policy):
             return True
         if float(np.linalg.norm(base_ang_vel)) > 0.0:
             return True
-        return any(f"{name}.vel" in obs for name in self._wbc_joint_names)
+        return any(f"{name}.vel" in obs for name in self._obs_joint_names)
 
-    def _read_joint_vector(self, obs: dict[str, Any], kind: str, n: int) -> np.ndarray:
-        """Read the ``n`` leg+waist joint positions/velocities from the observation.
+    def _read_joint_vector(self, obs: dict[str, Any], kind: str, names: list[str]) -> np.ndarray:
+        """Read positions/velocities for ``names`` (in order) from the observation.
 
-        Always reads BY NAME using the resolved WBC joint names
-        (:attr:`_wbc_joint_names`, in WBC output order) so index ``i`` is the
-        joint WBC output ``i`` drives - regardless of where the sim places the
-        joint or how many other (free-base, arm) joints surround it.
+        Reads BY NAME so each output index corresponds to ``names[i]`` -
+        regardless of where the sim places the joint or how many other
+        (free-base, other) joints surround it. ``names`` is the whole-body
+        observed-joint list (:attr:`_obs_joint_names`) for the qj/dqj blocks.
 
         Two observation shapes are supported:
 
         * Per-joint scalars keyed by joint name (the unified sim observation):
           ``position`` reads ``obs[name]``; ``velocity`` reads ``obs[name + ".vel"]``.
         * A flat ``observation.state`` / ``observation.velocity`` vector paired
-          with ``self._robot_state_keys`` for the index lookup. The flat vector
-          is indexed at each WBC joint's position in ``_robot_state_keys`` (NOT
-          sliced ``[:n]`` - that would grab the free-base/arm joints when they
-          precede or interleave the leg+waist joints).
+          with ``self._robot_state_keys`` for the index lookup (each name's slot
+          in the robot's key list, NOT a positional slice). Without keys, the
+          flat vector is consumed positionally (the cuRobo / MoveIt2 contract).
 
-        Missing values default to zero (a still, nominal stance). This is a
+        Missing values default to zero (a still, nominal stance) - a
         *measured-state* default, distinct from the forbidden zero-*torque*
         fallback. NOTE: if the sim exposes no joint velocities (the current
         MuJoCo backend's unified observation is positions only, with no
         ``<name>.vel`` keys), ``dqj`` reads as zeros - see :meth:`_extract_state`
         for the consequence and the recommended teleop/IMU velocity source.
         """
-        names = self._wbc_joint_names[:n]
+        m = len(names)
 
         # Flat-vector form: index into the flat array by each joint's position.
         flat_key = "observation.state" if kind == "position" else "observation.velocity"
@@ -523,31 +576,29 @@ class WBCPolicy(Policy):
         if flat is not None and hasattr(flat, "__len__"):
             arr = np.asarray(flat if not hasattr(flat, "tolist") else flat.tolist(), dtype=np.float64).ravel()
             if self._robot_state_keys:
-                # Name-resolved indexing: map each WBC joint to its slot in the
-                # robot's key list (handles a free-base/arm-interleaved layout).
+                # Name-resolved indexing: map each observed joint to its slot in
+                # the robot's key list (handles a free-base/interleaved layout).
                 # First occurrence wins so a duplicated name can't shift the slot.
                 index_of: dict[str, int] = {}
                 for i, name in enumerate(self._robot_state_keys):
                     index_of.setdefault(name, i)
-                out = np.zeros(n, dtype=np.float64)
+                out = np.zeros(m, dtype=np.float64)
                 for i, name in enumerate(names):
                     j = index_of.get(name)
                     if j is not None and j < arr.shape[0]:
                         out[i] = arr[j]
                 return out
-            # No key mapping was provided (direct-API / replay caller). Treat the
-            # flat vector as already in WBC leg+waist order - the same positional
-            # contract cuRobo / MoveIt2 use for observation.state - so a provided
-            # state is USED, not silently dropped. Consume the first n entries.
-            if arr.shape[0] >= n:
-                return arr[:n].copy()
-            # Shorter than expected: take what's there, zero-pad the rest.
-            out = np.zeros(n, dtype=np.float64)
+            # No key mapping (direct-API / replay caller). Treat the flat vector
+            # as already in `names` order - the same positional contract cuRobo /
+            # MoveIt2 use for observation.state - so a provided state is USED.
+            if arr.shape[0] >= m:
+                return arr[:m].copy()
+            out = np.zeros(m, dtype=np.float64)
             out[: arr.shape[0]] = arr
             return out
 
         # Per-joint scalar form (the unified sim observation).
-        out = np.zeros(n, dtype=np.float64)
+        out = np.zeros(m, dtype=np.float64)
         for i, k in enumerate(names):
             v = obs.get(k) if kind == "position" else obs.get(f"{k}.vel")
             if v is not None:

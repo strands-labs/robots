@@ -48,14 +48,30 @@ def build_single_frame(
     from ``qj``, and writes each sub-vector at its fixed offset, zero-padding
     any remaining width.
 
+    Layout (matching upstream compute_observation, with ``no = n_obs_joints``,
+    ``na = num_actions``, ``c = command_dim``)::
+
+        [0 : c        ]  command
+        [c : c+3      ]  base angular velocity * ang_vel_scale
+        [c+3 : c+6    ]  projected gravity (UNSCALED)
+        [c+6 : c+6+no ]  (qj - default_angles) * dof_pos_scale   # ALL joints
+        [c+6+no : c+6+2no]  dqj * dof_vel_scale                  # ALL joints
+        [c+6+2no : c+6+2no+na]  previous action                 # controlled subset
+        [...remaining...]  reserved (zero)
+
+    For the G1 defaults (c=7, no=29, na=15) the populated width is
+    7+3+3+29+29+15 = 86 = single_obs_dim.
+
     Args:
         config: The policy config (dims, scales, default angles).
         command: Locomotion command, length ``command_dim``. Shorter inputs
             (e.g. just ``[vx, vy, omega]``) are zero-padded to ``command_dim``.
         base_ang_vel: Base angular velocity (rad/s), length 3.
         proj_gravity: Gravity direction in the body frame, length 3.
-        qj: Measured joint positions, length ``num_actions``.
-        dqj: Measured joint velocities, length ``num_actions``.
+        qj: Measured joint positions for ALL observed joints, length
+            ``n_obs_joints`` (29 for the G1 - legs+waist+arms, not just the
+            controlled subset).
+        dqj: Measured joint velocities, length ``n_obs_joints``.
         prev_action: Previous network action, length ``num_actions``.
 
     Returns:
@@ -65,7 +81,8 @@ def build_single_frame(
         ValueError: If any sub-vector has the wrong length, or the assembled
             frame would overflow ``single_obs_dim``.
     """
-    n = config.num_actions
+    no = config.n_obs_joints
+    na = config.num_actions
     c = config.command_dim
 
     command = np.asarray(command, dtype=np.float64).ravel()
@@ -77,30 +94,37 @@ def build_single_frame(
 
     base_ang_vel = _require_len(base_ang_vel, 3, "base_ang_vel")
     proj_gravity = _require_len(proj_gravity, 3, "proj_gravity")
-    qj = _require_len(qj, n, "qj")
-    dqj = _require_len(dqj, n, "dqj")
-    prev_action = _require_len(prev_action, n, "prev_action")
+    qj = _require_len(qj, no, "qj")
+    dqj = _require_len(dqj, no, "dqj")
+    prev_action = _require_len(prev_action, na, "prev_action")
 
-    defaults = np.asarray(config.default_angles, dtype=np.float64) if config.default_angles else np.zeros(n)
+    # default_angles is the controlled-joint nominal pose (length num_actions);
+    # the qj block spans all n_obs_joints, so pad defaults with zeros for the
+    # uncontrolled (arm) joints exactly as upstream does (padded_defaults).
+    defaults = np.zeros(no, dtype=np.float64)
+    if config.default_angles:
+        da = np.asarray(config.default_angles, dtype=np.float64)
+        limit = min(da.shape[0], no)
+        defaults[:limit] = da[:limit]
     ang_vel_scale = config.obs_scales.get("ang_vel", 1.0)
     dof_pos_scale = config.obs_scales.get("dof_pos", 1.0)
     dof_vel_scale = config.obs_scales.get("dof_vel", 1.0)
 
     frame = np.zeros(config.single_obs_dim, dtype=np.float64)
-    end = c + 6 + 3 * n
+    end = c + 6 + 2 * no + na
     if end > config.single_obs_dim:
         raise ValueError(
-            f"observation layout needs {end} values (command_dim={c}, num_actions={n}) "
-            f"but single_obs_dim={config.single_obs_dim}; raise single_obs_dim or check the config."
+            f"observation layout needs {end} values (command_dim={c}, n_obs_joints={no}, "
+            f"num_actions={na}) but single_obs_dim={config.single_obs_dim}; check the config."
         )
 
     frame[0:c] = command
     frame[c : c + 3] = base_ang_vel * ang_vel_scale
     frame[c + 3 : c + 6] = proj_gravity
-    frame[c + 6 : c + 6 + n] = (qj - defaults) * dof_pos_scale
-    frame[c + 6 + n : c + 6 + 2 * n] = dqj * dof_vel_scale
-    frame[c + 6 + 2 * n : c + 6 + 3 * n] = prev_action
-    # Indices [end:single_obs_dim] remain zero (gait/style padding).
+    frame[c + 6 : c + 6 + no] = (qj - defaults) * dof_pos_scale
+    frame[c + 6 + no : c + 6 + 2 * no] = dqj * dof_vel_scale
+    frame[c + 6 + 2 * no : c + 6 + 2 * no + na] = prev_action
+    # Indices [end:single_obs_dim] remain zero (reserved clock/gait slot).
     return frame
 
 
