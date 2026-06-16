@@ -368,6 +368,10 @@ def test_run_multi_policy_raises_on_empty_action_chunk(sim_with_two_robots, tmp_
     on failure): pre-fix, an empty deque popleft fell back to ``{}`` -> all-zero
     ctrl -> dead frames in the dataset with no error.
     """
+    from strands_robots.dataset_recorder import has_lerobot_dataset
+
+    if not has_lerobot_dataset():
+        pytest.skip("lerobot not installed")
     from strands_robots.policies.base import Policy
 
     class _EmptyChunkPolicy(Policy):
