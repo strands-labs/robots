@@ -225,6 +225,31 @@ class TestObservationLayout:
         hist.reset()
         assert len(hist) == 0
 
+    def test_history_len3_rolling_window_newest_last_across_ticks(self) -> None:
+        """End-to-end: with obs_history_len=3, each tick's fed observation is a
+        258-wide stack whose blocks are [oldest .. newest] over a rolling window
+        of the last 3 frames (warm-filled at tick 0). Guards the cross-tick
+        determinism of the deque stacking through get_actions."""
+        # Zero default_angles so the frame's qj block equals the raw qj (no
+        # offset), isolating the rolling-window behaviour from default subtraction.
+        p = _make_policy(walk=False, obs_history_len=3, default_angles=[0.0] * _N)
+        obs = {k: 0.0 for k in _g1_keys()}
+        for t in range(4):
+            for nm in WBC_G1_LEG_WAIST_JOINTS:
+                obs[nm] = float(t)  # distinct qj per tick
+            asyncio.run(p.get_actions(obs, "", target_velocity=[0.0, 0.0, 0.0]))
+        fed = [c[0] for c in p.policy_session.calls]
+        assert all(f.shape[0] == 86 * 3 for f in fed)
+
+        def qj0(frame: np.ndarray, block: int) -> float:
+            # qj[0] sits at index 13 within each 86-wide block (c=7 + angvel3 + grav3).
+            return float(frame[block * 86 + 13])
+
+        # tick 0: warm-fill -> all three blocks hold the first frame (qj=0).
+        assert [qj0(fed[0], b) for b in range(3)] == [0.0, 0.0, 0.0]
+        # tick 3: rolling window of the last 3 frames -> oldest=1, mid=2, newest=3.
+        assert [qj0(fed[3], b) for b in range(3)] == [1.0, 2.0, 3.0]
+
 
 # ---------------------------------------------------------------------------
 # WBCConfig
@@ -609,3 +634,19 @@ class TestFactoryResolution:
     def test_requires_images_false_via_factory(self) -> None:
         p = create_policy("wbc", config=_make_config(), allow_missing_models=True)
         assert p.requires_images is False
+
+    def test_policy_config_path_sets_static_walk_command(self) -> None:
+        """The mesh tell() / policy_config path forwards constructor kwargs to
+        create_policy(provider, **policy_config). A target_velocity supplied that
+        way becomes the static-walk default command (used when no per-call kwarg
+        is given). This is how a command reaches WBC without policy_kwargs."""
+        p = create_policy(
+            "wbc",
+            config=_make_config(),
+            walk=True,
+            target_velocity=[0.4, 0.0, 0.0],
+            allow_missing_models=True,
+        )
+        assert isinstance(p, WBCPolicy)
+        assert p._default_command is not None
+        assert np.allclose(p._default_command, [0.4, 0.0, 0.0])
