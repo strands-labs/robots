@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import logging
 import math
+import re
 from pathlib import Path
 from typing import Any
 
@@ -93,6 +94,28 @@ _MAIN_POLICY_FILENAME = "policy.onnx"
 _WALK_POLICY_FILENAME = "walk_policy.onnx"
 _CONFIG_FILENAME = "config.json"
 
+# HuggingFace repo id: "<org>/<repo>", each segment letters/digits/._- only.
+# Used to decide whether a non-existent checkpoint string is an HF id worth
+# downloading vs. a local path that should surface a clean not-found error.
+_HF_REPO_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+
+def _looks_like_hf_repo_id(value: str) -> bool:
+    """True if ``value`` is shaped like a HuggingFace ``org/repo`` model id.
+
+    Rejects anything path-like - absolute paths, ``./`` or ``../`` prefixes,
+    backslashes, ``.onnx`` files, ``..`` traversal, or more than one ``/`` -
+    so a non-existent *local* path is never mistaken for a remote repo and sent
+    to the network. A plain ``org/repo`` (the only ambiguous case vs. a relative
+    dir) is treated as an id; the caller logs before downloading so that choice
+    is visible.
+    """
+    if value.endswith(".onnx") or "\\" in value or ".." in value:
+        return False
+    if value.startswith((".", "/", "~")):
+        return False
+    return bool(_HF_REPO_ID_RE.match(value))
+
 
 class WBCPolicy(Policy):
     """ONNX whole-body-control locomotion policy for the Unitree G1.
@@ -139,6 +162,7 @@ class WBCPolicy(Policy):
     ) -> None:
         self._walk = bool(walk)
         self._robot_state_keys: list[str] = []
+        self._warned_no_velocity = False
         self._default_command = self._validate_velocity(target_velocity) if target_velocity is not None else None
 
         # Default to the canonical SONIC checkpoint when none is given, so
@@ -152,6 +176,27 @@ class WBCPolicy(Policy):
         # Resolve the config first - it tells us dims + default file layout.
         self._config = self._resolve_config(config, checkpoint)
         n = self._config.num_actions
+
+        # The leg+waist joint names WBC reads/writes, in WBC output order.
+        # set_robot_state_keys resolves these by name within the robot's joint
+        # list; until then, default to the canonical mapping table so direct
+        # get_actions calls (without set_robot_state_keys) still emit the right
+        # keys. WBC_G1_LEG_WAIST_JOINTS has exactly 15 names, so n must not
+        # exceed that (validated below).
+        self._wbc_joint_names: list[str] = list(WBC_G1_LEG_WAIST_JOINTS[:n])
+
+        # The G1 actuator-name mapping has exactly len(WBC_G1_LEG_WAIST_JOINTS)
+        # entries. A config with more actions than the table can name would
+        # silently truncate everywhere (state read, action keys, validation) and
+        # fail late with a confusing zip/length error. Reject it at construction
+        # (AGENTS.md #5: fail fast on a fatal config) - a different humanoid with
+        # a different DOF count needs its own mapping table, not a silent slice.
+        if n > len(WBC_G1_LEG_WAIST_JOINTS):
+            raise ValueError(
+                f"WBCConfig.num_actions={n} exceeds the {len(WBC_G1_LEG_WAIST_JOINTS)}-entry "
+                "G1 leg+waist actuator mapping (WBC_G1_LEG_WAIST_JOINTS). WBCPolicy targets the "
+                "G1 lower body; a different embodiment needs its own joint mapping table."
+            )
 
         # Pre-compute NumPy views of the per-joint vectors (once, not per tick).
         self._default_angles = (
@@ -204,32 +249,46 @@ class WBCPolicy(Policy):
         return self._config
 
     def set_robot_state_keys(self, robot_state_keys: list[str]) -> None:
-        """Record the robot's joint order and validate the leg+waist layout.
+        """Resolve the G1 leg+waist joints BY NAME within the robot's key list.
 
-        The first ``num_actions`` keys MUST match the expected G1 leg+waist
-        ordering (:data:`WBC_G1_LEG_WAIST_JOINTS`) so WBC output index ``i``
-        drives the correct actuator. A mismatch raises rather than silently
-        actuating the wrong joints (#466: explicit mapping, no positional
-        guessing).
+        WBC output index ``i`` drives :data:`WBC_G1_LEG_WAIST_JOINTS`\\ ``[i]``.
+        We locate each of those names inside ``robot_state_keys`` rather than
+        assuming a fixed position, because the sim's joint list is not just the
+        15 controllable joints in WBC order:
+
+        * MuJoCo prepends the robot's free/floating-base joint (the G1 model
+          names it ``floating_base_joint``), so the leg+waist joints are NOT
+          at indices ``[0:15]``.
+        * The full 29-DOF model also carries 14 arm joints interleaved after
+          the waist.
+
+        Resolving by name (#466: explicit mapping, no positional guessing)
+        means the policy reads and writes exactly the right joints regardless
+        of where the sim places them or what the free joint is called.
+
+        Raises:
+            ValueError: If any expected leg+waist joint name is absent from
+                ``robot_state_keys`` - a mismatch that would otherwise actuate
+                the wrong joints. The error lists the missing names.
         """
         keys = list(robot_state_keys)
-        n = self._config.num_actions
-        if len(keys) < n:
+        expected = WBC_G1_LEG_WAIST_JOINTS[: self._config.num_actions]
+        key_set = set(keys)
+        missing = [name for name in expected if name not in key_set]
+        if missing:
             raise ValueError(
-                f"WBCPolicy expects at least {n} robot state keys (leg+waist), got {len(keys)}: {keys}. "
-                "WBC drives the G1 lower body; load the full unitree_g1 (29-DOF) model."
+                "WBCPolicy: the robot's joint list is missing expected G1 "
+                f"leg+waist joints: {missing}.\n"
+                f"  expected (WBC order): {list(expected)}\n"
+                f"  robot provided:       {keys}\n"
+                "WBC drives these named joints; load the full unitree_g1 model "
+                "(its leg+waist joints carry these exact names)."
             )
-        expected = WBC_G1_LEG_WAIST_JOINTS[:n]
-        actual = tuple(keys[:n])
-        if actual != expected:
-            raise ValueError(
-                "WBCPolicy: first "
-                f"{n} robot state keys do not match the expected G1 leg+waist order.\n"
-                f"  expected: {list(expected)}\n"
-                f"  actual:   {list(actual)}\n"
-                "WBC output index i drives expected[i]; a mismatch would actuate the wrong joints."
-            )
-        self._robot_state_keys = keys
+        # Store the controllable joints in WBC order (the names we read state
+        # from and emit targets for). The free/base joint and arm joints are
+        # deliberately excluded - WBC neither observes nor drives them here.
+        self._robot_state_keys = list(keys)
+        self._wbc_joint_names = list(expected)
 
     def reset(self, seed: int | None = None) -> None:
         """Clear the observation history and previous-action feedback.
@@ -305,12 +364,21 @@ class WBCPolicy(Policy):
     # ------------------------------------------------------------------
 
     def _resolve_command(self, kwargs: dict[str, Any]) -> np.ndarray:
-        """Pick the locomotion command for this tick.
+        """Pick the locomotion command for this tick, fitted to ``command_dim``.
 
         Priority: per-call ``target_velocity`` kwarg > constructor default >
         zeros (stand in place). ``target_orientation`` is accepted and appended
-        as additional command channels when present (the network's command
-        block carries gait/style fields beyond the first three).
+        as additional command/style channels after ``[vx, vy, omega]`` (the
+        network's command block carries gait/style fields beyond the first
+        three).
+
+        The returned command is always exactly ``command_dim`` wide:
+        - shorter (e.g. just ``[vx, vy, omega]``) is zero-padded by the frame
+          builder;
+        - longer (velocity + a large ``target_orientation``) is truncated to
+          ``command_dim`` with a debug log, rather than overflowing the
+          observation frame and raising on every tick. A documented kwarg must
+          never crash the controller.
         """
         tv = kwargs.get("target_velocity")
         if tv is not None:
@@ -325,16 +393,39 @@ class WBCPolicy(Policy):
         if target_orientation is not None:
             extra = np.asarray(target_orientation, dtype=np.float64).ravel()
             command = np.concatenate([command, extra])
+
+        # Fit to command_dim: truncate an over-long command so the observation
+        # frame (which reserves exactly command_dim slots) never overflows.
+        c = self._config.command_dim
+        if command.shape[0] > c:
+            logger.debug(
+                "WBCPolicy: command width %d exceeds command_dim %d; truncating "
+                "(target_orientation channels beyond the command block are dropped).",
+                command.shape[0],
+                c,
+            )
+            command = command[:c]
         return command
 
     def _extract_state(self, observation_dict: dict[str, Any]) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """Pull (qj, dqj, base_ang_vel, base_quat) out of the observation dict.
 
-        ``qj`` / ``dqj`` are the first ``num_actions`` joint position / velocity
-        values. Accepts the unified sim observation (per-joint scalars keyed by
-        name) or a flat ``observation.state`` vector. Base angular velocity and
+        ``qj`` / ``dqj`` are the leg+waist joint positions / velocities, read by
+        name via :meth:`_read_joint_vector`. Base angular velocity and
         orientation come from well-known keys, defaulting to a level, still base
         when absent (an upright stance cue) rather than fabricating motion.
+
+        Velocity availability: WBC is a velocity-feedback balance controller, so
+        ``dqj`` and ``base_ang_vel`` are genuine inputs - not optional. The
+        current MuJoCo backend's unified observation exposes joint *positions*
+        only (no ``<name>.vel`` keys, no ``observation.velocity``), so a plain
+        ``sim.run_policy`` rollout feeds WBC zero joint velocities. We emit a
+        one-time warning when that happens (a dead velocity channel can
+        destabilise the gait) rather than silently pretending the controller is
+        fully observed. To supply real velocities, drive the policy from an
+        observation that includes ``<name>.vel`` per-joint keys (or
+        ``observation.velocity`` + ``base_ang_vel``), e.g. a teleop/IMU bridge
+        or a future backend velocity field.
         """
         n = self._config.num_actions
         qj = self._read_joint_vector(observation_dict, "position", n)
@@ -344,35 +435,74 @@ class WBCPolicy(Policy):
         if base_ang_vel is None:
             base_ang_vel = np.zeros(3, dtype=np.float64)
 
+        # Warn once if BOTH velocity channels are absent - WBC is then running
+        # open-loop on velocity, which the operator should know about.
+        if not self._warned_no_velocity and not self._observation_has_velocity(observation_dict, base_ang_vel):
+            self._warned_no_velocity = True
+            logger.warning(
+                "WBCPolicy: observation exposes no joint velocities or base angular "
+                "velocity; feeding the balance controller zeros for dqj/base_ang_vel. "
+                "Gait stability may degrade. Supply per-joint '<name>.vel' keys, "
+                "'observation.velocity', and/or 'base_ang_vel' to close the loop."
+            )
+
         quat = self._read_vec(observation_dict, ("base_quat", "observation.base_quat"), 4)
         if quat is None:
             quat = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)  # upright (w=1)
         return qj, dqj, base_ang_vel, quat
 
-    def _read_joint_vector(self, obs: dict[str, Any], kind: str, n: int) -> np.ndarray:
-        """Read the first ``n`` joint positions/velocities from the observation.
+    def _observation_has_velocity(self, obs: dict[str, Any], base_ang_vel: np.ndarray) -> bool:
+        """True if the observation carries any joint or base velocity signal."""
+        if obs.get("observation.velocity") is not None:
+            return True
+        if float(np.linalg.norm(base_ang_vel)) > 0.0:
+            return True
+        return any(f"{name}.vel" in obs for name in self._wbc_joint_names)
 
-        Tries, in order: a flat ``observation.state`` / ``observation.velocity``
-        vector, then per-joint scalars keyed by the recorded actuator names.
-        Missing values default to zero (a still, nominal stance) rather than
-        raising mid-rollout - but this is a *measured-state* default, distinct
-        from the forbidden zero-*torque* fallback.
+    def _read_joint_vector(self, obs: dict[str, Any], kind: str, n: int) -> np.ndarray:
+        """Read the ``n`` leg+waist joint positions/velocities from the observation.
+
+        Always reads BY NAME using the resolved WBC joint names
+        (:attr:`_wbc_joint_names`, in WBC output order) so index ``i`` is the
+        joint WBC output ``i`` drives - regardless of where the sim places the
+        joint or how many other (free-base, arm) joints surround it.
+
+        Two observation shapes are supported:
+
+        * Per-joint scalars keyed by joint name (the unified sim observation):
+          ``position`` reads ``obs[name]``; ``velocity`` reads ``obs[name + ".vel"]``.
+        * A flat ``observation.state`` / ``observation.velocity`` vector paired
+          with ``self._robot_state_keys`` for the index lookup. The flat vector
+          is indexed at each WBC joint's position in ``_robot_state_keys`` (NOT
+          sliced ``[:n]`` - that would grab the free-base/arm joints when they
+          precede or interleave the leg+waist joints).
+
+        Missing values default to zero (a still, nominal stance). This is a
+        *measured-state* default, distinct from the forbidden zero-*torque*
+        fallback. NOTE: if the sim exposes no joint velocities (the current
+        MuJoCo backend's unified observation is positions only, with no
+        ``<name>.vel`` keys), ``dqj`` reads as zeros - see :meth:`_extract_state`
+        for the consequence and the recommended teleop/IMU velocity source.
         """
+        names = self._wbc_joint_names[:n]
+
+        # Flat-vector form: index into the flat array by each joint's position
+        # in the robot's key list (name-resolved), never a positional slice.
         flat_key = "observation.state" if kind == "position" else "observation.velocity"
         flat = obs.get(flat_key)
-        if flat is not None and hasattr(flat, "__len__") and len(flat) >= n:
+        if flat is not None and hasattr(flat, "__len__") and self._robot_state_keys:
             arr = np.asarray(flat if not hasattr(flat, "tolist") else flat.tolist(), dtype=np.float64).ravel()
-            return arr[:n]
+            index_of = {name: i for i, name in enumerate(self._robot_state_keys)}
+            out = np.zeros(n, dtype=np.float64)
+            for i, name in enumerate(names):
+                j = index_of.get(name)
+                if j is not None and j < arr.shape[0]:
+                    out[i] = arr[j]
+            return out
 
-        # Per-joint scalar form (the unified sim observation). Use the recorded
-        # leg+waist key order so index i is the same joint WBC output i drives.
-        keys = self._robot_state_keys[:n] if self._robot_state_keys else list(WBC_G1_LEG_WAIST_JOINTS[:n])
+        # Per-joint scalar form (the unified sim observation).
         out = np.zeros(n, dtype=np.float64)
-        # Velocity is only available as per-joint when the sim exposes a
-        # "<joint>.vel" style key; the unified observation is positions only,
-        # so velocity falls back to zeros (position-hold), which is correct for
-        # the first tick and converges as the loop runs.
-        for i, k in enumerate(keys):
+        for i, k in enumerate(names):
             v = obs.get(k) if kind == "position" else obs.get(f"{k}.vel")
             if v is not None:
                 try:
@@ -433,11 +563,14 @@ class WBCPolicy(Policy):
         return str(getattr(session, "input_name", "obs"))
 
     def _resolve_action_keys(self) -> list[str]:
-        """The 15 leg+waist actuator names this policy emits, in WBC order."""
-        n = self._config.num_actions
-        if self._robot_state_keys:
-            return list(self._robot_state_keys[:n])
-        return list(WBC_G1_LEG_WAIST_JOINTS[:n])
+        """The leg+waist actuator names this policy emits, in WBC output order.
+
+        Always the name-resolved WBC joint set (:attr:`_wbc_joint_names`), never
+        a positional slice of the robot's full joint list - so the emitted
+        targets are keyed by the actual leg+waist actuators even when the sim's
+        joint list leads with a free-base joint or interleaves arm joints.
+        """
+        return list(self._wbc_joint_names[: self._config.num_actions])
 
     def _resolve_config(self, config: str | dict[str, Any] | WBCConfig | None, checkpoint: str | None) -> WBCConfig:
         if isinstance(config, WBCConfig):
@@ -538,11 +671,12 @@ class WBCPolicy(Policy):
         p = Path(checkpoint).expanduser()
         if p.exists():
             return checkpoint  # local path/dir - use as-is
-        # Heuristic for an HF model id: exactly "<org>/<repo>", no extra slashes,
-        # no path separators beyond the single one, and not an .onnx file path.
-        is_hf_id = checkpoint.count("/") == 1 and not checkpoint.endswith(".onnx") and "\\" not in checkpoint
-        if not is_hf_id:
-            return checkpoint  # let the path resolver surface a clear not-found error
+        if not _looks_like_hf_repo_id(checkpoint):
+            # Not HF-id-shaped (absolute path, ./ or ../ prefix, backslash,
+            # extra slashes, an .onnx file, or non-HF charset). Return as-is so
+            # the path resolver surfaces a clear "checkpoint not found" error
+            # rather than attempting a confusing network download.
+            return checkpoint
         try:
             hub = require_optional(
                 "huggingface_hub",
@@ -553,8 +687,16 @@ class WBCPolicy(Policy):
         except ImportError as e:
             raise RuntimeError(
                 f"WBCPolicy checkpoint {checkpoint!r} looks like a HuggingFace model id, "
-                f"but huggingface_hub is not installed to download it.\n{e}"
+                f"but huggingface_hub is not installed to download it. If you meant a local "
+                f"path, pass an existing directory or .onnx file.\n{e}"
             ) from e
+        # Log BEFORE the network call so an unexpected download (e.g. a bare
+        # create_policy("wbc") defaulting to nvidia/GEAR-SONIC, or a mistyped
+        # local path that happens to be org/repo-shaped) is visible, not silent.
+        logger.info(
+            "WBCPolicy resolving checkpoint %r as a HuggingFace model id; downloading (cached after first use)...",
+            checkpoint,
+        )
         try:
             local_dir = hub.snapshot_download(  # type: ignore[attr-defined]
                 repo_id=checkpoint, allow_patterns=["*.onnx", "*.json"]
@@ -562,7 +704,8 @@ class WBCPolicy(Policy):
         except Exception as e:  # noqa: BLE001 - surface any hub failure as actionable RuntimeError
             raise RuntimeError(
                 f"WBCPolicy failed to download checkpoint {checkpoint!r} from HuggingFace: {e}. "
-                "Pass a local checkpoint directory instead, or check network / model-license access."
+                "If you meant a local checkpoint, pass an existing directory or .onnx path; "
+                "otherwise check network / model-license access."
             ) from e
         logger.info("WBCPolicy downloaded checkpoint %r -> %s", checkpoint, local_dir)
         return str(local_dir)

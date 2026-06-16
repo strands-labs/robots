@@ -84,17 +84,26 @@ def test_wbc_forward_walk_translates_base_without_falling(g1_sim) -> None:  # ty
     sim = g1_sim
     policy = create_policy("wbc", checkpoint=CHECKPOINT, walk=True)
 
-    # Confirm the sim's joint order matches the WBC mapping before stepping
-    # (set_robot_state_keys would raise otherwise - here we assert explicitly
-    # for a clearer integration-failure message).
+    # Confirm the sim exposes every WBC leg+waist joint BY NAME before stepping
+    # (set_robot_state_keys resolves by name, not position - the real sim list
+    # leads with 'floating_base_joint' and interleaves arm joints, so a
+    # positional [:15] check would be wrong). Asserting here gives a clearer
+    # integration-failure message than a deep stack trace.
     joint_names = sim.robot_joint_names("unitree_g1")
-    assert tuple(joint_names[:15]) == WBC_G1_LEG_WAIST_JOINTS, (
-        f"unitree_g1 sim joint order does not match the WBC leg+waist mapping; first 15 = {joint_names[:15]}"
-    )
+    missing = [j for j in WBC_G1_LEG_WAIST_JOINTS if j not in joint_names]
+    assert not missing, f"unitree_g1 sim is missing WBC leg+waist joints by name: {missing}"
 
     def _base_xz() -> tuple[float, float]:
         state = sim.get_body_state("unitree_g1/pelvis")
-        pos = state["content"][0]["json"]["position"] if "content" in state else state["position"]
+        # get_body_state returns {"status","content":[{text},{json:{position,...}}]}.
+        # Find the json block (it is not necessarily first - a human-readable
+        # text block precedes it).
+        pos = None
+        for blk in state.get("content", []):
+            if "json" in blk and "position" in blk["json"]:
+                pos = blk["json"]["position"]
+                break
+        assert pos is not None, f"get_body_state returned no position json block: {state}"
         return float(pos[0]), float(pos[2])
 
     x0, z0 = _base_xz()

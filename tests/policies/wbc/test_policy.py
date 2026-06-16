@@ -71,8 +71,16 @@ class _StubSession:
 
 
 def _g1_keys() -> list[str]:
-    """Full 29-DOF G1 key order: 15 leg+waist then 14 arm joints."""
-    return list(WBC_G1_LEG_WAIST_JOINTS) + [f"arm_{i}" for i in range(14)]
+    """Real MuJoCo G1 joint key order, as ``robot_joint_names`` returns it.
+
+    Verified against the actual robot_descriptions ``g1_mj_description`` model:
+    MuJoCo prepends the free/floating-base joint, so the list is
+    ``["floating_base_joint", <15 leg+waist>, <14 arm>]`` - the leg+waist joints
+    are at indices [1:16], NOT [0:15]. Using the real layout here is what
+    exercises WBCPolicy's name-based joint resolution (a fixture that put the
+    leg+waist joints first would hide the floating-base ordering bug).
+    """
+    return ["floating_base_joint", *WBC_G1_LEG_WAIST_JOINTS, *[f"arm_{i}" for i in range(14)]]
 
 
 def _make_config(**overrides) -> WBCConfig:  # type: ignore[no-untyped-def]
@@ -350,19 +358,44 @@ class TestActuatorMapping:
         assert WBC_G1_LEG_WAIST_JOINTS[0] == "left_hip_pitch_joint"
         assert WBC_G1_LEG_WAIST_JOINTS[12:] == ("waist_yaw_joint", "waist_roll_joint", "waist_pitch_joint")
 
-    def test_bad_ordering_raises(self) -> None:
+    def test_resolves_leg_waist_by_name_with_floating_base_prefix(self) -> None:
+        """REGRESSION: the real sim joint list leads with 'floating_base_joint',
+        so the leg+waist joints are at [1:16], not [0:15]. set_robot_state_keys
+        must resolve them by name and still accept the list."""
         p = WBCPolicy(config=_make_config(), allow_missing_models=True)
-        with pytest.raises(ValueError, match="expected G1 leg\\+waist order"):
+        p.set_robot_state_keys(_g1_keys())  # ["floating_base_joint", <15>, <14 arm>]
+        assert tuple(p._wbc_joint_names) == WBC_G1_LEG_WAIST_JOINTS
+        # The free-base joint and arm joints are excluded from what WBC drives.
+        assert "floating_base_joint" not in p._wbc_joint_names
+
+    def test_missing_joint_raises_listing_missing(self) -> None:
+        p = WBCPolicy(config=_make_config(), allow_missing_models=True)
+        with pytest.raises(ValueError, match="missing expected G1"):
             p.set_robot_state_keys([f"wrong_{i}" for i in range(20)])
 
-    def test_too_few_keys_raises(self) -> None:
+    def test_partial_leg_waist_raises(self) -> None:
+        # Only the first 10 leg+waist joints present -> the other 5 are reported.
         p = WBCPolicy(config=_make_config(), allow_missing_models=True)
-        with pytest.raises(ValueError, match="at least 15"):
+        with pytest.raises(ValueError, match="missing expected G1"):
             p.set_robot_state_keys(list(WBC_G1_LEG_WAIST_JOINTS[:10]))
 
     def test_exact_15_keys_accepted(self) -> None:
         p = WBCPolicy(config=_make_config(), allow_missing_models=True)
-        p.set_robot_state_keys(list(WBC_G1_LEG_WAIST_JOINTS))  # exactly 15 is fine
+        p.set_robot_state_keys(list(WBC_G1_LEG_WAIST_JOINTS))  # exactly the 15, any surrounding order
+
+    def test_reads_state_by_name_not_position(self) -> None:
+        """qj is read from the named joints even when a free-base joint precedes
+        them in the observation (so a positional [:15] slice would be wrong)."""
+        p = _make_policy()  # uses _g1_keys() ordering with floating_base first
+        obs = {k: 0.0 for k in _g1_keys()}
+        # Give each leg+waist joint a distinct, recognisable value; give the
+        # floating_base and arms a sentinel that must NOT appear in qj.
+        for i, name in enumerate(WBC_G1_LEG_WAIST_JOINTS):
+            obs[name] = 0.1 * (i + 1)
+        obs["floating_base_joint"] = 99.0
+        qj = p._read_joint_vector(obs, "position", 15)
+        assert np.allclose(qj, [0.1 * (i + 1) for i in range(15)])
+        assert 99.0 not in qj  # the free-base value never leaks in
 
 
 # ---------------------------------------------------------------------------
@@ -436,6 +469,102 @@ class TestCheckpointResolution:
         monkeypatch.setattr(wbc_policy, "require_optional", _boom)
         with pytest.raises(RuntimeError, match="HuggingFace model id"):
             WBCPolicy._maybe_download_checkpoint("nvidia/GEAR-SONIC")
+
+    def test_hf_id_heuristic_accepts_org_repo(self) -> None:
+        from strands_robots.policies.wbc.policy import _looks_like_hf_repo_id
+
+        assert _looks_like_hf_repo_id("nvidia/GEAR-SONIC")
+        assert _looks_like_hf_repo_id("org-name/repo.name_1")
+
+    def test_hf_id_heuristic_rejects_path_like(self) -> None:
+        from strands_robots.policies.wbc.policy import _looks_like_hf_repo_id
+
+        # Path-like strings must NOT be treated as HF ids (no surprise downloads).
+        assert not _looks_like_hf_repo_id("./models/policy")
+        assert not _looks_like_hf_repo_id("../ckpt/sonic")
+        assert not _looks_like_hf_repo_id("/abs/path/sonic")
+        assert not _looks_like_hf_repo_id("~/sonic")
+        assert not _looks_like_hf_repo_id("a/b/c")  # more than one slash
+        assert not _looks_like_hf_repo_id("dir/policy.onnx")  # .onnx file
+        assert not _looks_like_hf_repo_id("win\\path")  # backslash
+
+
+# ---------------------------------------------------------------------------
+# Regression tests for bugs found in exhaustive review (against real deps)
+# ---------------------------------------------------------------------------
+
+
+class TestRegressionFixes:
+    def test_target_orientation_does_not_crash_get_actions(self) -> None:
+        """REGRESSION #1: a long target_orientation overflowed the 7-wide
+        command block and raised on every tick. The command is now truncated
+        to command_dim instead of crashing."""
+        p = _make_policy(walk=False)
+        obs = {k: 0.0 for k in _g1_keys()}
+        # velocity(3) + orientation(6) = 9 > command_dim(7): previously crashed.
+        actions = asyncio.run(
+            p.get_actions(
+                obs,
+                "",
+                target_velocity=[0.5, 0.0, 0.0],
+                target_orientation=[1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            )
+        )
+        assert len(actions[0]) == 15
+        # The fed observation's command block is exactly command_dim wide.
+        fed = p.policy_session.calls[0][0]
+        assert fed.shape[0] == 86  # single frame, history_len=1
+
+    def test_target_orientation_fits_within_command_dim(self) -> None:
+        """A velocity(3) + orientation(4) = 7 command fits exactly and is used."""
+        p = _make_policy(walk=False)
+        obs = {k: 0.0 for k in _g1_keys()}
+        actions = asyncio.run(
+            p.get_actions(obs, "", target_velocity=[0.5, 0.0, 0.0], target_orientation=[0.0, 0.0, 0.0, 1.0])
+        )
+        assert len(actions[0]) == 15
+
+    def test_warns_once_when_no_velocity_in_observation(self, caplog) -> None:  # type: ignore[no-untyped-def]
+        """REGRESSION #4: the real sim observation has no joint/base velocity,
+        so WBC runs open-loop on velocity. The policy must WARN (once), not
+        silently pretend dqj converges."""
+        import logging
+
+        p = _make_policy(walk=False)
+        obs = {k: 0.0 for k in _g1_keys()}  # positions only, no .vel / base_ang_vel
+        with caplog.at_level(logging.WARNING):
+            asyncio.run(p.get_actions(obs, "", target_velocity=[0.0, 0.0, 0.0]))
+            asyncio.run(p.get_actions(obs, "", target_velocity=[0.0, 0.0, 0.0]))
+        warnings = [r for r in caplog.records if "no joint velocities" in r.message]
+        assert len(warnings) == 1, "velocity-absent warning should fire exactly once"
+
+    def test_no_velocity_warning_when_base_ang_vel_present(self, caplog) -> None:  # type: ignore[no-untyped-def]
+        import logging
+
+        p = _make_policy(walk=False)
+        obs = {k: 0.0 for k in _g1_keys()}
+        obs["base_ang_vel"] = [0.0, 0.0, 0.1]  # a real velocity signal
+        with caplog.at_level(logging.WARNING):
+            asyncio.run(p.get_actions(obs, "", target_velocity=[0.0, 0.0, 0.0]))
+        assert not [r for r in caplog.records if "no joint velocities" in r.message]
+
+    def test_per_joint_velocity_read_by_name(self) -> None:
+        """When the observation DOES expose '<name>.vel' keys, dqj reads them."""
+        p = _make_policy(walk=False)
+        obs = {k: 0.0 for k in _g1_keys()}
+        for i, name in enumerate(WBC_G1_LEG_WAIST_JOINTS):
+            obs[f"{name}.vel"] = 0.01 * (i + 1)
+        dqj = p._read_joint_vector(obs, "velocity", 15)
+        assert np.allclose(dqj, [0.01 * (i + 1) for i in range(15)])
+
+    def test_num_actions_exceeding_mapping_table_rejected(self) -> None:
+        """REGRESSION #8: num_actions > 15 silently truncated the 15-entry
+        mapping table everywhere and failed late. Now rejected at construction."""
+        cfg = _make_config(
+            num_actions=20, single_obs_dim=200, default_angles=[0.0] * 20, kps=[1.0] * 20, kds=[0.0] * 20
+        )
+        with pytest.raises(ValueError, match="exceeds the 15-entry"):
+            WBCPolicy(config=cfg, allow_missing_models=True)
 
 
 # ---------------------------------------------------------------------------
