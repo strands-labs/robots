@@ -19,19 +19,30 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-# Upstream defaults from the GR00T-WholeBodyControl reference controller.
-# ``single_obs_dim`` is fixed by the controller's observation layout
-# (see strands_robots.policies.wbc.observation.build_wbc_observation):
-#   7 command + 3 base ang-vel + 3 projected-gravity + n qj + n dqj + 15 prev-action
-# For the 15-DOF leg+waist controller (n = 15) this is 7+3+3+15+15+15 = 58 ...
-# but the reference stacks additional gait/style fields into the command block
-# to reach single_obs_dim = 86. The exact width is therefore taken from the
-# config (``single_obs_dim``) rather than recomputed, so a checkpoint trained
-# with a different command width loads without code changes.
+# Upstream defaults from the GR00T-WholeBodyControl reference controller
+# (decoupled_wbc/sim2mujoco: run_mujoco_gear_wbc.py + resources/robots/g1/
+# g1_gear_wbc.yaml). The ``single_obs_dim`` is fixed by the controller's
+# observation layout (compute_observation, single_obs_dim = 86):
+#   command(7) + base_ang_vel(3) + projected_gravity(3) + qj(n) + dqj(n) + action(15)
+# For n = 15 that is 7+3+3+15+15+15 = 58 populated values; indices [58:86] are
+# reserved (the reference leaves them zero - a clock/gait slot the shipped
+# checkpoint does not use). The exact width is taken from the config rather
+# than recomputed so a checkpoint with a different command width still loads.
+#
+# The command block (7) is NOT just zero-padded velocity - per
+# compute_observation it is:
+#   command[0:3] = loco_cmd[:3] * cmd_scale      (velocity, scaled)
+#   command[3]   = height_cmd                    (target base height)
+#   command[4:7] = rpy_cmd                       (target roll/pitch/yaw)
 _DEFAULT_SINGLE_OBS_DIM = 86
 _DEFAULT_NUM_ACTIONS = 15
-_DEFAULT_OBS_HISTORY_LEN = 1
+# Upstream g1_gear_wbc.yaml: obs_history_len=6 (num_obs = 86*6 = 516).
+_DEFAULT_OBS_HISTORY_LEN = 6
 _DEFAULT_COMMAND_DIM = 7
+# Upstream cmd_scale applied to [vx, vy, omega] and the default base-height
+# command, from g1_gear_wbc.yaml.
+_DEFAULT_CMD_SCALE = (2.0, 2.0, 0.5)
+_DEFAULT_HEIGHT_CMD = 0.74
 
 
 @dataclass(frozen=True)
@@ -57,13 +68,25 @@ class WBCConfig:
         action_scale: Scale applied to the raw ONNX output before it becomes a
             joint-position offset (upstream ``action_scale``).
         obs_scales: Named scale factors applied to observation sub-vectors
-            (``ang_vel`` / ``dof_pos`` / ``dof_vel``). Defaults match upstream.
+            (``ang_vel`` / ``dof_pos`` / ``dof_vel``). Defaults match upstream
+            g1_gear_wbc.yaml (ang_vel_scale=0.5, dof_pos_scale=1.0,
+            dof_vel_scale=0.05).
+        cmd_scale: Scale applied to the ``[vx, vy, omega]`` velocity command
+            before it enters the observation's command block (upstream
+            ``cmd_scale = [2.0, 2.0, 0.5]``).
+        height_cmd: Default target base height written to command slot [3]
+            (upstream ``height_cmd = 0.74``). Overridable per call via the
+            ``height`` kwarg.
+        rpy_cmd: Default target roll/pitch/yaw written to command slots [4:7]
+            (upstream ``rpy_cmd = [0, 0, 0]``). Overridable per call via the
+            ``target_orientation`` kwarg.
         single_obs_dim: Width of one observation frame (before history
             stacking). Default 86 (upstream GEAR-SONIC).
         obs_history_len: Number of frames stacked into the network input.
+            Default 6 (upstream num_obs = 86 * 6 = 516).
         num_actions: Number of controllable joints (legs + waist). Default 15.
         command_dim: Width of the command sub-vector at the head of the
-            observation. Default 7 (vx, vy, omega + 4 gait/style fields).
+            observation. Default 7 (velocity[3] + height[1] + rpy[3]).
     """
 
     policy_path: str
@@ -73,7 +96,10 @@ class WBCConfig:
     kps: list[float] = field(default_factory=list)
     kds: list[float] = field(default_factory=list)
     action_scale: float = 0.25
-    obs_scales: dict[str, float] = field(default_factory=lambda: {"ang_vel": 0.25, "dof_pos": 1.0, "dof_vel": 0.05})
+    obs_scales: dict[str, float] = field(default_factory=lambda: {"ang_vel": 0.5, "dof_pos": 1.0, "dof_vel": 0.05})
+    cmd_scale: list[float] = field(default_factory=lambda: list(_DEFAULT_CMD_SCALE))
+    height_cmd: float = _DEFAULT_HEIGHT_CMD
+    rpy_cmd: list[float] = field(default_factory=lambda: [0.0, 0.0, 0.0])
     single_obs_dim: int = _DEFAULT_SINGLE_OBS_DIM
     obs_history_len: int = _DEFAULT_OBS_HISTORY_LEN
     num_actions: int = _DEFAULT_NUM_ACTIONS

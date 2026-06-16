@@ -183,16 +183,20 @@ class TestObservationLayout:
             prev_action=np.array([0.0] * _N),
         )
         assert frame.shape == (86,)
-        # command head: vx at 0, padded zeros at 3..7
+        # build_single_frame zero-pads a short command: vx at 0, slots 3..7 zero.
+        # (The policy normally supplies the full 7-wide [vel*scale, height, rpy]
+        # command; build_single_frame still accepts and pads a short one.)
         assert frame[0] == 0.5
         assert np.allclose(frame[3:7], 0.0)
-        # base ang vel scaled by obs_scales.ang_vel (0.25): index 7 = 1.0*0.25
-        assert np.isclose(frame[7], 0.25)
+        # base ang vel scaled by obs_scales.ang_vel (upstream 0.5): index 7 = 1.0*0.5
+        assert np.isclose(frame[7], 1.0 * cfg.obs_scales["ang_vel"])
+        assert np.isclose(frame[7], 0.5)  # pin the corrected upstream value
         # projected gravity unscaled at [10:13]
         assert np.allclose(frame[10:13], [0.0, 0.0, -1.0])
         # qj - defaults scaled by dof_pos (1.0): (0.2-0.1) at index 13
         assert np.isclose(frame[13], 0.1)
-        # tail padding (gait/style) is zero: end = 7+6+45 = 58
+        # populated end = command(7) + angvel(3) + grav(3) + qj(15) + dqj(15)
+        # + action(15) = 58; indices [58:86] are the reserved (zero) tail.
         assert np.allclose(frame[58:], 0.0)
 
     def test_command_overflow_raises(self) -> None:
@@ -650,3 +654,97 @@ class TestFactoryResolution:
         assert isinstance(p, WBCPolicy)
         assert p._default_command is not None
         assert np.allclose(p._default_command, [0.4, 0.0, 0.0])
+
+
+# ---------------------------------------------------------------------------
+# Upstream-fidelity pins (verified against NVlabs/GR00T-WholeBodyControl
+# decoupled_wbc/sim2mujoco: run_mujoco_gear_wbc.py + g1_gear_wbc.yaml)
+# ---------------------------------------------------------------------------
+
+
+class TestUpstreamFidelity:
+    """Pin the exact contract of the upstream reference runner so a refactor
+    can't silently drift from it. Values are transcribed from g1_gear_wbc.yaml
+    and compute_observation()/run() in run_mujoco_gear_wbc.py."""
+
+    def test_default_config_matches_upstream_yaml(self) -> None:
+        c = WBCConfig(policy_path="p.onnx")  # defaults only
+        assert c.single_obs_dim == 86
+        assert c.obs_history_len == 6  # g1_gear_wbc.yaml
+        assert c.num_obs == 516  # 86 * 6
+        assert c.num_actions == 15
+        assert c.command_dim == 7
+        assert c.action_scale == 0.25
+        assert c.obs_scales == {"ang_vel": 0.5, "dof_pos": 1.0, "dof_vel": 0.05}
+        assert c.cmd_scale == [2.0, 2.0, 0.5]
+        assert c.height_cmd == 0.74
+
+    def test_command_layout_matches_compute_observation(self) -> None:
+        """command[0:3] = vel*cmd_scale; command[3] = height; command[4:7] = rpy."""
+        p = WBCPolicy(config=_make_config(), allow_missing_models=True)
+        cmd, raw_vel = p._resolve_command(
+            {"target_velocity": [0.5, -0.25, 2.0], "target_orientation": [0.1, 0.2, 0.3], "height": 0.8}
+        )
+        # cmd_scale default [2,2,0.5]: [0.5*2, -0.25*2, 2.0*0.5] = [1.0, -0.5, 1.0]
+        assert np.allclose(cmd[:3], [1.0, -0.5, 1.0])
+        assert np.isclose(cmd[3], 0.8)  # per-call height overrides config
+        assert np.allclose(cmd[4:7], [0.1, 0.2, 0.3])
+        # raw velocity is UNSCALED (used for walk selection)
+        assert np.allclose(raw_vel, [0.5, -0.25, 2.0])
+
+    def test_height_defaults_to_config_when_not_supplied(self) -> None:
+        p = WBCPolicy(config=_make_config(), allow_missing_models=True)
+        cmd, _ = p._resolve_command({"target_velocity": [0.0, 0.0, 0.0]})
+        assert np.isclose(cmd[3], 0.74)  # upstream default height_cmd
+
+    def test_walk_threshold_is_0_05_on_raw_velocity(self) -> None:
+        """Upstream: norm(loco_cmd) <= 0.05 -> main (standing) policy; above -> walk.
+        The threshold is tested on the RAW (unscaled) velocity, not the
+        cmd_scale'd command block."""
+        obs = {k: 0.0 for k in _g1_keys()}
+        # vel norm 0.04 < 0.05 -> main policy (standing)
+        p1 = _make_policy(walk=True)
+        asyncio.run(p1.get_actions(obs, "", target_velocity=[0.04, 0.0, 0.0]))
+        assert p1.policy_session.calls and not p1.walk_session.calls
+        # vel norm 0.06 > 0.05 -> walk policy
+        p2 = _make_policy(walk=True)
+        asyncio.run(p2.get_actions(obs, "", target_velocity=[0.06, 0.0, 0.0]))
+        assert p2.walk_session.calls and not p2.policy_session.calls
+
+    def test_walk_selection_uses_raw_not_scaled_velocity(self) -> None:
+        """A velocity of 0.03 scales to 0.06 under cmd_scale=2.0, but the walk
+        decision must use the RAW 0.03 (< 0.05 -> standing), not the scaled 0.06.
+        Guards against regressing to testing the scaled command block."""
+        p = _make_policy(walk=True)
+        obs = {k: 0.0 for k in _g1_keys()}
+        asyncio.run(p.get_actions(obs, "", target_velocity=[0.03, 0.0, 0.0]))
+        assert p.policy_session.calls, "raw 0.03 < 0.05 -> standing/main, despite scaling to 0.06"
+        assert not p.walk_session.calls
+
+    def test_quat_rotate_inverse_matches_upstream_formula(self) -> None:
+        """My quat helper must be numerically identical to the upstream
+        conjugate-based quat_rotate_inverse (run_mujoco_gear_wbc.py:126-141)."""
+
+        def upstream(q: np.ndarray, v: np.ndarray) -> np.ndarray:
+            w, x, y, z = q
+            qc = np.array([w, -x, -y, -z])
+            return np.array(
+                [
+                    v[0] * (qc[0] ** 2 + qc[1] ** 2 - qc[2] ** 2 - qc[3] ** 2)
+                    + v[1] * 2 * (qc[1] * qc[2] - qc[0] * qc[3])
+                    + v[2] * 2 * (qc[1] * qc[3] + qc[0] * qc[2]),
+                    v[0] * 2 * (qc[1] * qc[2] + qc[0] * qc[3])
+                    + v[1] * (qc[0] ** 2 - qc[1] ** 2 + qc[2] ** 2 - qc[3] ** 2)
+                    + v[2] * 2 * (qc[2] * qc[3] - qc[0] * qc[1]),
+                    v[0] * 2 * (qc[1] * qc[3] - qc[0] * qc[2])
+                    + v[1] * 2 * (qc[2] * qc[3] + qc[0] * qc[1])
+                    + v[2] * (qc[0] ** 2 - qc[1] ** 2 - qc[2] ** 2 + qc[3] ** 2),
+                ]
+            )
+
+        rng = np.random.RandomState(0)
+        for _ in range(200):
+            q = rng.randn(4)
+            q /= np.linalg.norm(q)
+            v = rng.randn(3)
+            assert np.allclose(quat_rotate_inverse(q, v), upstream(q, v), atol=1e-10)

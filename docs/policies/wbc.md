@@ -76,22 +76,31 @@ coupling to a backend:
 
 | Key | Type | Meaning |
 |-----|------|---------|
-| `target_velocity` | `list[float]` | Locomotion command `[vx, vy, omega]` (m/s, m/s, rad/s) |
-| `target_orientation` | `list[float]` | Optional extra command/style channels appended after `[vx, vy, omega]` |
+| `target_velocity` | `list[float]` | Locomotion command `[vx, vy, omega]` (m/s, m/s, rad/s). Scaled by `cmd_scale` (`[2.0, 2.0, 0.5]`) into the observation's command block. |
+| `target_orientation` | `list[float]` | Target base `[roll, pitch, yaw]` (rad), written to command slots `[4:7]`. Defaults to the config `rpy_cmd` (`[0,0,0]`). |
+| `height` | `float` | Target base height (m), written to command slot `[3]`. Defaults to the config `height_cmd` (`0.74`). |
 
 A per-call `target_velocity` overrides the constructor-time default. With no
-command at all the controller holds a standing balance (zero velocity).
+command at all the controller holds a standing balance (zero velocity, default
+height + level orientation).
 
 ## Control contract
 
-WBC reproduces the upstream `GearWbcController` loop:
+WBC reproduces the upstream `GearWbcController` loop (NVlabs/GR00T-WholeBodyControl
+`decoupled_wbc/sim2mujoco`, `run_mujoco_gear_wbc.py` + `g1_gear_wbc.yaml`):
 
 - **Two ONNX sessions** - a main `policy.onnx` and an optional `walk_policy.onnx`,
-  loaded once at construction. The walk policy is selected when `walk=True` and
-  the command requests motion; otherwise the main (balance) policy runs.
-- **Observation** - an 86-dim frame (command + base angular velocity +
-  projected gravity + scaled joint positions/velocities + previous action),
-  stacked over `obs_history_len` via a deque.
+  loaded once at construction. Selection matches upstream: when the **raw**
+  velocity-command norm is `<= 0.05` the robot is "standing" and the main policy
+  runs; above that the walk policy runs (when `walk=True`).
+- **Observation** - an 86-dim frame stacked over `obs_history_len` (default 6,
+  so the network input is `86 * 6 = 516`):
+  - command `[0:7]` = `[vx*2.0, vy*2.0, omega*0.5, height, roll, pitch, yaw]`
+  - base angular velocity `[7:10]` (scaled by `ang_vel_scale=0.5`)
+  - projected gravity `[10:13]`
+  - joint positions `[13:28]` (minus `default_angles`, scaled by `dof_pos_scale`)
+  - joint velocities `[28:43]` (scaled by `dof_vel_scale=0.05`)
+  - previous action `[43:58]`; indices `[58:86]` are a reserved (zero) tail.
 - **Action** - the network emits a 15-dim joint-position *offset*; the policy
   forms absolute targets `target_q = default_angles + action_scale * raw` and
   returns them keyed by actuator name. For torque-actuated MuJoCo, convert with

@@ -94,6 +94,11 @@ _MAIN_POLICY_FILENAME = "policy.onnx"
 _WALK_POLICY_FILENAME = "walk_policy.onnx"
 _CONFIG_FILENAME = "config.json"
 
+# Raw-velocity-norm threshold for walk-vs-main policy selection, matching the
+# upstream reference (run_mujoco_gear_wbc.py: norm(loco_cmd) <= 0.05 -> main
+# "standing" policy; above -> walk_policy).
+_WALK_VELOCITY_THRESHOLD = 0.05
+
 # HuggingFace repo id: "<org>/<repo>", each segment letters/digits/._- only.
 # Used to decide whether a non-existent checkpoint string is an HF id worth
 # downloading vs. a local path that should surface a clean not-found error.
@@ -306,15 +311,16 @@ class WBCPolicy(Policy):
         """Run one WBC inference step and return the 15-dim target joint positions.
 
         Reads the locomotion command from the well-known kwargs
-        (``target_velocity = [vx, vy, omega]``, optional ``target_orientation``);
-        ``instruction`` is ignored. Builds the stacked observation, runs the
-        ONNX policy, converts the raw offset to absolute joint targets, and
-        returns a single per-step action dict keyed by actuator name.
+        (``target_velocity = [vx, vy, omega]``, optional ``target_orientation``
+        for roll/pitch/yaw, optional ``height``); ``instruction`` is ignored.
+        Builds the stacked observation, runs the ONNX policy, converts the raw
+        offset to absolute joint targets, and returns a single per-step action
+        dict keyed by actuator name.
 
         Returns a one-element list (WBC is a closed-loop per-tick controller,
         not a chunked planner): the runner re-queries every control step.
         """
-        command = self._resolve_command(kwargs)
+        command, raw_velocity = self._resolve_command(kwargs)
 
         qj, dqj, base_ang_vel, quat = self._extract_state(observation_dict)
         proj_grav = projected_gravity(quat)
@@ -330,7 +336,9 @@ class WBCPolicy(Policy):
         )
         obs = self._history.push(frame)
 
-        raw_action = self._run_session(obs, command)
+        # Walk-selection uses the RAW (unscaled) velocity norm, matching the
+        # upstream reference (run_mujoco_gear_wbc.py: norm(loco_cmd) <= 0.05).
+        raw_action = self._run_session(obs, raw_velocity)
         self._prev_action = raw_action
 
         target_q = compute_targets(self._default_angles, raw_action, self._config.action_scale)
@@ -363,49 +371,62 @@ class WBCPolicy(Policy):
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _resolve_command(self, kwargs: dict[str, Any]) -> np.ndarray:
-        """Pick the locomotion command for this tick, fitted to ``command_dim``.
+    def _resolve_command(self, kwargs: dict[str, Any]) -> tuple[np.ndarray, np.ndarray]:
+        """Build the 7-dim command block for this tick.
 
-        Priority: per-call ``target_velocity`` kwarg > constructor default >
-        zeros (stand in place). ``target_orientation`` is accepted and appended
-        as additional command/style channels after ``[vx, vy, omega]`` (the
-        network's command block carries gait/style fields beyond the first
-        three).
+        Faithful to the upstream ``compute_observation`` layout
+        (run_mujoco_gear_wbc.py)::
 
-        The returned command is always exactly ``command_dim`` wide:
-        - shorter (e.g. just ``[vx, vy, omega]``) is zero-padded by the frame
-          builder;
-        - longer (velocity + a large ``target_orientation``) is truncated to
-          ``command_dim`` with a debug log, rather than overflowing the
-          observation frame and raising on every tick. A documented kwarg must
-          never crash the controller.
+            command[0:3] = loco_cmd[:3] * cmd_scale   # velocity, scaled
+            command[3]   = height_cmd                  # target base height
+            command[4:7] = rpy_cmd                     # target roll/pitch/yaw
+
+        Goal sources (per-call kwarg > constructor default > config default):
+        - ``target_velocity = [vx, vy, omega]`` -> the raw velocity triple.
+        - ``target_orientation = [roll, pitch, yaw]`` -> rpy command slots.
+        - ``height`` -> the height command slot.
+
+        Returns:
+            ``(command, raw_velocity)`` where ``command`` is the ``command_dim``-
+            wide (default 7) observation block with ``cmd_scale`` already applied
+            to the velocity, and ``raw_velocity`` is the UNSCALED ``[vx, vy,
+            omega]`` triple used for walk-vs-main policy selection (matching the
+            upstream ``norm(loco_cmd) <= 0.05`` test on the raw command).
         """
         tv = kwargs.get("target_velocity")
         if tv is not None:
-            command = self._validate_velocity(tv)
+            vel_full = self._validate_velocity(tv)
         elif self._default_command is not None:
-            command = self._default_command.copy()
+            vel_full = self._default_command.copy()
         else:
-            command = np.zeros(3, dtype=np.float64)
+            vel_full = np.zeros(3, dtype=np.float64)
+        # The raw velocity is the first three entries (vx, vy, omega); any extra
+        # entries a caller packed in are ignored for the scaled command block.
+        raw_velocity = vel_full[:3].copy()
 
-        # Optional orientation/style channels appended after [vx, vy, omega].
-        target_orientation = kwargs.get("target_orientation")
-        if target_orientation is not None:
-            extra = np.asarray(target_orientation, dtype=np.float64).ravel()
-            command = np.concatenate([command, extra])
-
-        # Fit to command_dim: truncate an over-long command so the observation
-        # frame (which reserves exactly command_dim slots) never overflows.
         c = self._config.command_dim
-        if command.shape[0] > c:
-            logger.debug(
-                "WBCPolicy: command width %d exceeds command_dim %d; truncating "
-                "(target_orientation channels beyond the command block are dropped).",
-                command.shape[0],
-                c,
-            )
-            command = command[:c]
-        return command
+        command = np.zeros(c, dtype=np.float64)
+
+        # Slots [0:3]: velocity * cmd_scale (clamp the slice to whatever fits).
+        cmd_scale = np.asarray(self._config.cmd_scale, dtype=np.float64).ravel()
+        n_vel = min(3, c)
+        scale = cmd_scale[:n_vel] if cmd_scale.shape[0] >= n_vel else np.ones(n_vel)
+        command[:n_vel] = raw_velocity[:n_vel] * scale
+
+        # Slot [3]: target base height (per-call ``height`` overrides the config).
+        if c > 3:
+            height = kwargs.get("height")
+            command[3] = float(height) if height is not None else float(self._config.height_cmd)
+
+        # Slots [4:7]: target roll/pitch/yaw (per-call ``target_orientation``
+        # overrides the config ``rpy_cmd``).
+        if c > 4:
+            rpy_src = kwargs.get("target_orientation")
+            rpy = np.asarray(rpy_src if rpy_src is not None else self._config.rpy_cmd, dtype=np.float64).ravel()
+            n_rpy = min(c - 4, rpy.shape[0])
+            command[4 : 4 + n_rpy] = rpy[:n_rpy]
+
+        return command, raw_velocity
 
     def _extract_state(self, observation_dict: dict[str, Any]) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """Pull (qj, dqj, base_ang_vel, base_quat) out of the observation dict.
@@ -534,16 +555,21 @@ class WBCPolicy(Policy):
                 return np.asarray(v if not hasattr(v, "tolist") else v.tolist(), dtype=np.float64).ravel()
         return None
 
-    def _run_session(self, obs: np.ndarray, command: np.ndarray) -> np.ndarray:
+    def _run_session(self, obs: np.ndarray, raw_velocity: np.ndarray) -> np.ndarray:
         """Run the (walk or main) ONNX session and return the 15-dim raw action.
 
-        Selects the walk session when ``walk=True``, a walk session is loaded,
-        and the command requests forward/lateral/yaw motion; otherwise the main
-        policy. The ONNX input is the stacked observation as a 1xN float32
-        batch; the output is squeezed to a 1-D ``num_actions`` vector.
+        Session selection matches the upstream reference
+        (run_mujoco_gear_wbc.py): when the RAW (unscaled) velocity command norm
+        is ``<= WALK_VELOCITY_THRESHOLD`` (0.05) the robot is "standing" and the
+        main ``policy`` runs; above that the ``walk_policy`` runs. When
+        ``walk=False`` or no walk session is loaded, the main policy always runs.
+
+        The ONNX input is the stacked observation as a 1xN float32 batch; the
+        output is squeezed to a 1-D ``num_actions`` vector.
         """
         session = self.policy_session
-        if self._walk and self.walk_session is not None and float(np.linalg.norm(command[:3])) > 1e-6:
+        moving = float(np.linalg.norm(raw_velocity[:3])) > _WALK_VELOCITY_THRESHOLD
+        if self._walk and self.walk_session is not None and moving:
             session = self.walk_session
         if session is None:
             # Defensive: reachable only via the allow_missing_models test seam
