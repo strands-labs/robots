@@ -33,7 +33,7 @@ Usage::
     # config.json). The real weights live in the upstream GR00T-WBC repo under
     # decoupled_wbc/sim2mujoco/resources/robots/g1/policy/.
     python examples/wbc_g1_torque_deploy.py --checkpoint /path/to/GEAR-SONIC \
-        --duration 5 --vx 0.5 [--mp4 /tmp/g1_walk.mp4] [--viewer]
+        --duration 5 --vx 0.5 [--mp4 /tmp/g1_walk.mp4]
 
 It prints per-second base x/z and a final verdict (advanced / fell / stayed put),
 and exits non-zero on a hard error so it can gate CI behind real weights.
@@ -105,17 +105,48 @@ def _set_standing_pose(mujoco, model, data, default_angles: np.ndarray, height: 
     mujoco.mj_forward(model, data)
 
 
-def run(args: argparse.Namespace) -> int:
-    from strands_robots.policies import create_policy
-    from strands_robots.policies.wbc import WBC_G1_ALL_JOINTS, WBCPolicy
+def simulate_rollout(
+    policy,  # type: ignore[no-untyped-def]
+    *,
+    vx: float = 0.5,
+    vy: float = 0.0,
+    omega: float = 0.0,
+    duration: float = 5.0,
+    physics_dt: float = 0.005,
+    control_decimation: int = 4,
+    height: float | None = None,
+    on_step=None,  # type: ignore[no-untyped-def]
+    renderer_dims: tuple[int, int] | None = None,
+    fps: int = 30,
+) -> dict:
+    """Run the upstream torque-control loop and return rollout metrics.
+
+    Pure / importable so the CLI AND the test suite drive the identical loop.
+    The robot is a torque-actuated G1 (built in :func:`_build_torque_g1`); each
+    physics tick applies ``policy.compute_torques`` to the 15 controlled joints
+    (PD -> torque), holds the arms with a stiff PD, and every
+    ``control_decimation`` ticks re-queries ``policy.get_actions_sync`` for new
+    position targets.
+
+    Args:
+        policy: A constructed WBCPolicy (real or stubbed). ``set_robot_state_keys``
+            is called here against the model's joint order.
+        vx, vy, omega: Locomotion command.
+        duration: Wall-clock seconds (n_steps = duration / physics_dt).
+        height: Initial base height; defaults to ``policy.config.height_cmd``.
+        on_step: Optional ``(step:int, data) -> None`` hook (per physics tick).
+        renderer_dims: ``(width, height)`` to capture RGB frames, else no render.
+        fps: Frame-capture rate when rendering.
+
+    Returns:
+        Dict with ``x0/z0/x1/z1/forward/fell/steps/frames`` (frames is a list of
+        HxWx3 uint8 arrays, empty unless ``renderer_dims`` is set).
+    """
+    from strands_robots.policies.wbc import WBC_G1_ALL_JOINTS
 
     mujoco, model, data, joint_names = _build_torque_g1()
     n_joints = data.qpos.shape[0] - 7
-
-    policy = create_policy("wbc", checkpoint=args.checkpoint, walk=not args.no_walk)
-    assert isinstance(policy, WBCPolicy)
     cfg = policy.config
-    # Resolve the policy's joint mapping against the model's joint order.
     policy.set_robot_state_keys(joint_names)
 
     default_angles = np.zeros(n_joints, dtype=np.float64)
@@ -123,42 +154,40 @@ def run(args: argparse.Namespace) -> int:
     default_angles[: min(len(da), n_joints)] = da[: min(len(da), n_joints)]
 
     na = cfg.num_actions
-    # The leg+waist PD gains (kps/kds) live in the policy config; the upstream
-    # PD law is applied via policy.compute_torques(...), which reads them.
-
-    # Arm-hold PD (upstream uses kp=100, kd=0.5 to zero target for joints > 15).
+    # The leg+waist PD gains live in the policy config and are applied via
+    # policy.compute_torques(...). Arms held with a stiff PD (upstream kp=100,
+    # kd=0.5 to the default pose for joints beyond the controlled set).
     arm_kp, arm_kd = 100.0, 0.5
 
-    physics_dt = float(args.physics_dt)
     model.opt.timestep = physics_dt
-    decim = int(args.control_decimation)
-
-    _set_standing_pose(mujoco, model, data, default_angles, cfg.height_cmd)
+    decim = int(control_decimation)
+    base_height = float(height) if height is not None else float(cfg.height_cmd)
+    _set_standing_pose(mujoco, model, data, default_angles, base_height)
     x0, z0 = float(data.qpos[0]), float(data.qpos[2])
 
-    # WBC emits joint-POSITION targets; seed with the nominal stance.
-    target_dof_pos = default_angles.copy()
-    command = {"target_velocity": [args.vx, args.vy, args.omega]}
+    target_dof_pos = default_angles.copy()  # WBC emits position targets
+    command = {"target_velocity": [vx, vy, omega]}
 
-    n_steps = int(args.duration / physics_dt)
+    n_steps = int(duration / physics_dt)
     frames: list[np.ndarray] = []
     renderer = None
-    if args.mp4:
-        renderer = mujoco.Renderer(model, height=480, width=640)
+    if renderer_dims is not None:
+        renderer = mujoco.Renderer(model, height=renderer_dims[1], width=renderer_dims[0])
+    render_every = max(1, int(1.0 / (physics_dt * fps)))
 
     fell = False
+    steps_done = 0
     for step in range(n_steps):
+        steps_done = step + 1
         # --- per physics tick: PD -> torque on the controlled 15 ---
         q_lw = data.qpos[7 : 7 + na].copy()
         dq_lw = data.qvel[6 : 6 + na].copy()
-        leg_tau = policy.compute_torques(target_dof_pos[:na], q_lw, dq_lw)
-        data.ctrl[:na] = leg_tau
-        # Hold the arms (joints na..n_joints) at default with a stiff PD.
+        data.ctrl[:na] = policy.compute_torques(target_dof_pos[:na], q_lw, dq_lw)
+        # Hold the arms at default with a stiff PD.
         if n_joints > na:
             q_arm = data.qpos[7 + na : 7 + n_joints].copy()
             dq_arm = data.qvel[6 + na : 6 + n_joints].copy()
-            arm_target = default_angles[na:n_joints]
-            data.ctrl[na:n_joints] = (arm_target - q_arm) * arm_kp + (0.0 - dq_arm) * arm_kd
+            data.ctrl[na:n_joints] = (default_angles[na:n_joints] - q_arm) * arm_kp + (0.0 - dq_arm) * arm_kd
 
         mujoco.mj_step(model, data)
 
@@ -166,32 +195,68 @@ def run(args: argparse.Namespace) -> int:
         if step % decim == 0:
             obs = _model_observation(data, joint_names, n_joints)
             actions = policy.get_actions_sync(obs, "", **command)
-            raw = np.array([actions[0][name] for name in WBC_G1_ALL_JOINTS[:na]], dtype=np.float64)
-            # actions are already absolute targets (default + action_scale*raw);
-            # WBCPolicy.get_actions returns target_q directly.
-            target_dof_pos[:na] = raw
+            # WBCPolicy.get_actions returns absolute targets keyed by joint name.
+            target_dof_pos[:na] = np.array([actions[0][name] for name in WBC_G1_ALL_JOINTS[:na]], dtype=np.float64)
 
-        if renderer is not None and step % max(1, int(1.0 / (physics_dt * args.mp4_fps))) == 0:
+        if renderer is not None and step % render_every == 0:
             renderer.update_scene(data, camera=-1)
             frames.append(renderer.render())
 
-        z = float(data.qpos[2])
-        if z < 0.4 * z0:
+        if on_step is not None:
+            on_step(step, data)
+
+        if float(data.qpos[2]) < 0.4 * z0:
             fell = True
-            print(f"[step {step} t={step * physics_dt:.2f}s] base height {z:.3f} m < 0.4*{z0:.3f} - FELL")
             break
 
+    if renderer is not None:
+        renderer.close()
+    x1, z1 = float(data.qpos[0]), float(data.qpos[2])
+    return {
+        "x0": x0,
+        "z0": z0,
+        "x1": x1,
+        "z1": z1,
+        "forward": x1 - x0,
+        "fell": fell,
+        "steps": steps_done,
+        "frames": frames,
+    }
+
+
+def run(args: argparse.Namespace) -> int:
+    from strands_robots.policies import create_policy
+    from strands_robots.policies.wbc import WBCPolicy
+
+    policy = create_policy("wbc", checkpoint=args.checkpoint, walk=not args.no_walk)
+    assert isinstance(policy, WBCPolicy)
+
+    physics_dt = float(args.physics_dt)
+
+    def _progress(step: int, data) -> None:  # type: ignore[no-untyped-def]
         if step % int(1.0 / physics_dt) == 0:  # ~once per second
             print(f"[t={step * physics_dt:.1f}s] base x={data.qpos[0]:+.3f} z={data.qpos[2]:.3f}")
 
-    x1, z1 = float(data.qpos[0]), float(data.qpos[2])
-    forward = x1 - x0
+    result = simulate_rollout(
+        policy,
+        vx=args.vx,
+        vy=args.vy,
+        omega=args.omega,
+        duration=args.duration,
+        physics_dt=physics_dt,
+        control_decimation=args.control_decimation,
+        on_step=_progress,
+        renderer_dims=(640, 480) if args.mp4 else None,
+        fps=args.mp4_fps,
+    )
+
+    forward, z0, z1 = result["forward"], result["z0"], result["z1"]
     print("\n=== WBC G1 torque-deploy result ===")
     print(f"  duration: {args.duration:.1f}s | command vx={args.vx} vy={args.vy} omega={args.omega}")
-    print(f"  base x: {x0:+.3f} -> {x1:+.3f}  (forward {forward:+.3f} m)")
+    print(f"  base x: {result['x0']:+.3f} -> {result['x1']:+.3f}  (forward {forward:+.3f} m)")
     print(f"  base z: {z0:.3f} -> {z1:.3f} m")
-    if fell:
-        print("  VERDICT: FELL (height collapsed)")
+    if result["fell"]:
+        print(f"  VERDICT: FELL (height collapsed at step {result['steps']})")
     elif forward >= 0.10:
         print(f"  VERDICT: WALKED FORWARD ({forward:.2f} m)")
     elif abs(forward) < 0.05 and z1 > 0.7 * z0:
@@ -199,18 +264,11 @@ def run(args: argparse.Namespace) -> int:
     else:
         print("  VERDICT: MOVED but inconclusive")
 
-    if renderer is not None and frames:
+    if args.mp4 and result["frames"]:
         import imageio
 
-        imageio.mimsave(args.mp4, frames, fps=args.mp4_fps)
-        print(f"  video: {args.mp4} ({len(frames)} frames)")
-        renderer.close()
-
-    if args.viewer:
-        import mujoco.viewer
-
-        print("\n  launching interactive viewer (Ctrl+C to exit)...")
-        mujoco.viewer.launch(model, data)
+        imageio.mimsave(args.mp4, result["frames"], fps=args.mp4_fps)
+        print(f"  video: {args.mp4} ({len(result['frames'])} frames)")
     return 0
 
 
@@ -240,7 +298,6 @@ def main() -> None:
     p.add_argument("--no-walk", action="store_true", help="load only the main (balance) policy")
     p.add_argument("--mp4", default="", help="write an MP4 of the rollout to this path")
     p.add_argument("--mp4-fps", type=int, default=30)
-    p.add_argument("--viewer", action="store_true", help="launch the interactive MuJoCo viewer at the end")
     args = p.parse_args()
     sys.exit(run(args))
 

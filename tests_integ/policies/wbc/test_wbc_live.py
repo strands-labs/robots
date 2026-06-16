@@ -73,70 +73,61 @@ def test_wbc_policy_loads_real_onnx() -> None:
     assert policy.policy_session is not None, "main ONNX session must load from the checkpoint"
 
 
+def _load_harness():  # type: ignore[no-untyped-def]
+    """Import the torque-deploy harness (examples/ is not an installed package)."""
+    import importlib.util
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parents[3] / "examples" / "wbc_g1_torque_deploy.py"
+    spec = importlib.util.spec_from_file_location("wbc_g1_torque_deploy", path)
+    assert spec and spec.loader
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
 @pytest.mark.skipif(
     os.environ.get("WBC_GAIT_CHECK", "").lower() not in ("1", "true", "yes"),
     reason=(
-        "Gait-quality check needs the full deploy-fidelity loop, not just real weights. "
-        "WBCPolicy emits joint-POSITION targets; the upstream reference converts them to "
-        "TORQUE via its PD law (compute_torques) on a torque-actuator G1 model "
-        "(g1_gear_wbc.xml) at control_decimation=4. The default MuJoCo Menagerie G1 uses "
-        "position-servo actuators with their own gains, so a stable gait is not expected "
-        "without replicating the torque-control loop. Set WBC_GAIT_CHECK=1 (with a "
-        "torque-driven deploy harness) to run this. See compute_torques() for the bridge."
+        "Gait-quality check runs the full torque-control deploy loop (PD->torque via "
+        "compute_torques on a torque-actuator G1 at control_decimation=4) with the real "
+        "SONIC weights - the deploy path, not sim.run_policy's position-servo path. It is "
+        "compute-heavy and needs the real checkpoint, so it is opt-in. Set WBC_GAIT_CHECK=1 "
+        "(with WBC_CHECKPOINT) to run it. The harness lives at examples/wbc_g1_torque_deploy.py."
     ),
 )
-def test_wbc_forward_walk_translates_base_without_falling(g1_sim) -> None:  # type: ignore[no-untyped-def]
-    """Deploy-fidelity gait check: drive the G1 forward and assert it advances
-    without falling. Requires a torque-control deploy harness (see skip reason);
-    this is NOT a WBCPolicy I/O-contract test (those run unconditionally above).
+def test_wbc_forward_walk_translates_base_without_falling() -> None:
+    """Deploy-fidelity gait check via the torque-control harness: with the real
+    weights the G1 must walk forward without falling.
 
-    We command a modest forward velocity and verify the base translates in +x by
-    at least ``WBC_MIN_FORWARD_M`` while its height does not collapse.
+    Drives the SAME ``simulate_rollout`` loop the example/CLI uses (torque PD on
+    the 15 controlled joints, arms held, whole-body observation with real joint
+    velocities + base IMU). Asserts the base advances >= WBC_MIN_FORWARD_M in +x
+    while its height does not collapse.
     """
-    sim = g1_sim
+    harness = _load_harness()
     policy = create_policy("wbc", checkpoint=CHECKPOINT, walk=True)
+    assert isinstance(policy, WBCPolicy)
 
-    # Confirm the sim exposes every WBC leg+waist joint BY NAME before stepping
-    # (set_robot_state_keys resolves by name, not position - the real sim list
-    # leads with 'floating_base_joint' and interleaves arm joints, so a
-    # positional [:15] check would be wrong). Asserting here gives a clearer
-    # integration-failure message than a deep stack trace.
-    joint_names = sim.robot_joint_names("unitree_g1")
-    missing = [j for j in WBC_G1_LEG_WAIST_JOINTS if j not in joint_names]
-    assert not missing, f"unitree_g1 sim is missing WBC leg+waist joints by name: {missing}"
+    result = harness.simulate_rollout(policy, vx=0.5, vy=0.0, omega=0.0, duration=4.0)
 
-    def _base_xz() -> tuple[float, float]:
-        state = sim.get_body_state("unitree_g1/pelvis")
-        # get_body_state returns {"status","content":[{text},{json:{position,...}}]}.
-        # Find the json block (it is not necessarily first - a human-readable
-        # text block precedes it).
-        pos = None
-        for blk in state.get("content", []):
-            if "json" in blk and "position" in blk["json"]:
-                pos = blk["json"]["position"]
-                break
-        assert pos is not None, f"get_body_state returned no position json block: {state}"
-        return float(pos[0]), float(pos[2])
-
-    x0, z0 = _base_xz()
-
-    result = sim.run_policy(
-        robot_name="unitree_g1",
-        policy_object=policy,
-        instruction="walk forward",
-        policy_kwargs={"target_velocity": [0.5, 0.0, 0.0]},
-        duration=4.0,
-        control_frequency=50.0,
-        action_horizon=1,  # WBC is closed-loop per tick
-        fast_mode=True,
+    assert not result["fell"], f"robot fell (z {result['z0']:.3f} -> {result['z1']:.3f} m) during the rollout"
+    assert result["z1"] > 0.5 * result["z0"], f"base height collapsed from {result['z0']:.3f} to {result['z1']:.3f} m"
+    assert result["forward"] >= MIN_FORWARD_M, (
+        f"base advanced only {result['forward']:.3f} m (< {MIN_FORWARD_M} m); gait may be unstable"
     )
-    assert result["status"] == "success", result
 
-    x1, z1 = _base_xz()
-    forward = x1 - x0
-    assert forward >= MIN_FORWARD_M, f"base advanced only {forward:.3f} m (< {MIN_FORWARD_M} m); gait may be unstable"
-    # A fall drops the pelvis far below its standing height; allow a small dip.
-    assert z1 > 0.5 * z0, f"base height collapsed from {z0:.3f} to {z1:.3f} m - robot likely fell"
+
+def test_wbc_standing_balance_holds_in_place() -> None:
+    """With a zero command the real policy should HOLD BALANCE (height steady,
+    little drift) - a balance check distinct from the forward-walk one."""
+    if os.environ.get("WBC_GAIT_CHECK", "").lower() not in ("1", "true", "yes"):
+        pytest.skip("opt-in gait/balance check; set WBC_GAIT_CHECK=1")
+    harness = _load_harness()
+    policy = create_policy("wbc", checkpoint=CHECKPOINT, walk=True)
+    result = harness.simulate_rollout(policy, vx=0.0, vy=0.0, omega=0.0, duration=3.0)
+    assert not result["fell"], "robot fell while standing"
+    assert result["z1"] > 0.7 * result["z0"], f"standing height collapsed: {result['z0']:.3f} -> {result['z1']:.3f}"
 
 
 def test_wbc_action_shape_is_15dim_on_real_model(g1_sim) -> None:  # type: ignore[no-untyped-def]
