@@ -317,7 +317,7 @@ class RecordingMixin:
         if self._world is None:
             return {
                 "status": "success",
-                "content": [{"text": "[no world] Call create_world to start recording."}],
+                "content": [{"text": "No world. Call create_world to start recording."}],
             }
 
         recording = self._world._backend_state.get("recording", False)

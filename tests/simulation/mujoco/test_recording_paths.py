@@ -474,7 +474,8 @@ def test_get_recording_status_text_is_ascii_no_world():
     assert r["status"] == "success"
     text = r["content"][0]["text"]
     assert [ch for ch in text if ord(ch) > 127] == [], f"non-ASCII in text: {text!r}"
-    assert "[no world]" in text
+    # Uses the canonical world-less message shared by every action.
+    assert "No world" in text
     s.destroy()
 
 
