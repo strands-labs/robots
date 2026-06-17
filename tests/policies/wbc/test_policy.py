@@ -29,6 +29,7 @@ import pytest
 
 from strands_robots.policies import Policy, create_policy, list_providers
 from strands_robots.policies.wbc import WBC_G1_ALL_JOINTS, WBC_G1_LEG_WAIST_JOINTS, WBCConfig, WBCPolicy
+from strands_robots.policies.wbc import policy as wbc_policy
 from strands_robots.policies.wbc.control import (
     compute_targets,
     pd_control,
@@ -576,8 +577,6 @@ class TestCheckpointResolution:
     def test_hf_id_without_hub_raises_runtime_error(self, monkeypatch) -> None:  # type: ignore[no-untyped-def]
         # An org/repo id with huggingface_hub absent must raise RuntimeError
         # (not silently proceed). Simulate the missing dep via require_optional.
-        import strands_robots.policies.wbc.policy as wbc_policy
-
         def _boom(*a, **k):  # type: ignore[no-untyped-def]
             raise ImportError("no huggingface_hub")
 
@@ -586,22 +585,18 @@ class TestCheckpointResolution:
             WBCPolicy._maybe_download_checkpoint("nvidia/GEAR-SONIC")
 
     def test_hf_id_heuristic_accepts_org_repo(self) -> None:
-        from strands_robots.policies.wbc.policy import _looks_like_hf_repo_id
-
-        assert _looks_like_hf_repo_id("nvidia/GEAR-SONIC")
-        assert _looks_like_hf_repo_id("org-name/repo.name_1")
+        assert wbc_policy._looks_like_hf_repo_id("nvidia/GEAR-SONIC")
+        assert wbc_policy._looks_like_hf_repo_id("org-name/repo.name_1")
 
     def test_hf_id_heuristic_rejects_path_like(self) -> None:
-        from strands_robots.policies.wbc.policy import _looks_like_hf_repo_id
-
         # Path-like strings must NOT be treated as HF ids (no surprise downloads).
-        assert not _looks_like_hf_repo_id("./models/policy")
-        assert not _looks_like_hf_repo_id("../ckpt/sonic")
-        assert not _looks_like_hf_repo_id("/abs/path/sonic")
-        assert not _looks_like_hf_repo_id("~/sonic")
-        assert not _looks_like_hf_repo_id("a/b/c")  # more than one slash
-        assert not _looks_like_hf_repo_id("dir/policy.onnx")  # .onnx file
-        assert not _looks_like_hf_repo_id("win\\path")  # backslash
+        assert not wbc_policy._looks_like_hf_repo_id("./models/policy")
+        assert not wbc_policy._looks_like_hf_repo_id("../ckpt/sonic")
+        assert not wbc_policy._looks_like_hf_repo_id("/abs/path/sonic")
+        assert not wbc_policy._looks_like_hf_repo_id("~/sonic")
+        assert not wbc_policy._looks_like_hf_repo_id("a/b/c")  # more than one slash
+        assert not wbc_policy._looks_like_hf_repo_id("dir/policy.onnx")  # .onnx file
+        assert not wbc_policy._looks_like_hf_repo_id("win\\path")  # backslash
 
 
 # ---------------------------------------------------------------------------

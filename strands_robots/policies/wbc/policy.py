@@ -605,6 +605,11 @@ class WBCPolicy(Policy):
                 try:
                     out[i] = float(v)
                 except (TypeError, ValueError):
+                    # Non-numeric observation entry for this joint: leave the
+                    # pre-zeroed default in place. The full per-joint qj/dqj
+                    # block is validated downstream, so a single unparseable
+                    # key degrades to its neutral value rather than aborting
+                    # the whole observation build.
                     pass
         return out
 
