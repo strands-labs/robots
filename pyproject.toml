@@ -137,7 +137,10 @@ wbc = [
     # Required so create_policy("wbc") with no local checkpoint works out of the
     # box - WBCPolicy._maybe_download_checkpoint raises RuntimeError naming the
     # [wbc] extra when it is absent.
-    "huggingface_hub>=0.20.0,<1.0.0",
+    # Cap the MAJOR only (<2.0.0): a <1.0.0 cap conflicts with lerobot, which
+    # requires huggingface-hub>=1.0.0 - and [wbc] is pulled into [all] alongside
+    # lerobot, so the two must co-resolve.
+    "huggingface_hub>=0.20.0,<2.0.0",
 ]
 lerobot = [
     "lerobot[feetech]>=0.5.0,<0.6.0",
