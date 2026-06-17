@@ -153,6 +153,7 @@ def test_real_onnx_io_dims_match_config() -> None:
     (15). A config whose num_obs disagrees with the checkpoint would feed the
     model a wrong-width observation - this catches that mismatch up front."""
     policy = create_policy("wbc", checkpoint=CHECKPOINT, walk=True)
+    assert isinstance(policy, WBCPolicy)
     sess = policy.policy_session
     in_shape = sess.get_inputs()[0].shape  # e.g. ['batch_size', 516]
     out_shape = sess.get_outputs()[0].shape  # e.g. ['batch_size', 15]

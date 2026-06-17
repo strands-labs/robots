@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import json
 import math
+from typing import Any
 
 import numpy as np
 import pytest
@@ -652,7 +653,7 @@ class TestRegressionFixes:
         import logging
 
         p = _make_policy(walk=False)
-        obs = {k: 0.0 for k in _g1_keys()}
+        obs: dict[str, Any] = {k: 0.0 for k in _g1_keys()}
         obs["base_ang_vel"] = [0.0, 0.0, 0.1]  # a real velocity signal
         with caplog.at_level(logging.WARNING):
             asyncio.run(p.get_actions(obs, "", target_velocity=[0.0, 0.0, 0.0]))
