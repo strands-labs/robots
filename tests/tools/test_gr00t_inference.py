@@ -1093,6 +1093,102 @@ class TestServiceDiscovery:
         assert result["status"] == "success"
         assert "No service running on port 5555" in result["message"]
 
+    def test_stop_escalates_to_sigkill_when_container_process_survives_term(self):
+        """A container PID that survives SIGTERM is force-killed with SIGKILL.
+
+        The stop sequence is graceful-then-forceful: send TERM, wait, and if the
+        inference process is still alive (the second ``pgrep`` still reports it),
+        escalate to KILL so a wedged service cannot leak the port. This pins that
+        escalation - dropping it would silently leave a hung server holding the
+        port after ``stop`` reports success.
+        """
+        containers = {
+            "status": "success",
+            "containers": [{"name": "groot", "image": "isaac-gr00t", "status": "Up 3 hours", "ports": ""}],
+        }
+        calls: list[list[str]] = []
+
+        def fake_run(cmd, *args, **kwargs):
+            calls.append(cmd)
+            if "pgrep" in cmd:
+                # The process stays alive across both probes -> TERM did not
+                # reap it, so the KILL escalation branch must run.
+                return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="4242\n", stderr="")
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+
+        with (
+            patch("strands_robots.tools.gr00t_inference._find_gr00t_containers", return_value=containers),
+            patch("strands_robots.tools.gr00t_inference.subprocess.run", side_effect=fake_run),
+            patch("strands_robots.tools.gr00t_inference.time.sleep"),
+        ):
+            result = gr00t_inference(action="stop", port=5555)
+        assert result["status"] == "success"
+        assert result["container"] == "groot"
+        # Both signals were delivered to the surviving PID, in order.
+        assert any("kill" in c and "-TERM" in c and "4242" in c for c in calls)
+        assert any("kill" in c and "-KILL" in c and "4242" in c for c in calls)
+
+    def test_stop_skips_container_whose_exec_errors_and_falls_back_to_host(self):
+        """A container whose ``docker exec`` raises is skipped, not fatal.
+
+        When probing/killing inside one Up container raises
+        ``CalledProcessError`` (e.g. the container died mid-exec), stop must
+        ``continue`` past it rather than abort, then fall back to the host
+        ``lsof`` path. This guards the multi-container resilience contract.
+        """
+        containers = {
+            "status": "success",
+            "containers": [{"name": "broken", "image": "isaac-gr00t", "status": "Up 1 hour", "ports": ""}],
+        }
+
+        def fake_run(cmd, *args, **kwargs):
+            if "pgrep" in cmd:
+                raise subprocess.CalledProcessError(1, cmd)
+            if "lsof" in cmd:
+                # No host listener either -> idempotent "nothing running".
+                return subprocess.CompletedProcess(args=cmd, returncode=1, stdout="", stderr="")
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+
+        with (
+            patch("strands_robots.tools.gr00t_inference._find_gr00t_containers", return_value=containers),
+            patch("strands_robots.tools.gr00t_inference.subprocess.run", side_effect=fake_run),
+            patch("strands_robots.tools.gr00t_inference.time.sleep"),
+        ):
+            result = gr00t_inference(action="stop", port=5555)
+        # The exec error was swallowed (continue), the host fallback ran, and the
+        # call still returns a clean idempotent success.
+        assert result["status"] == "success"
+        assert "No service running on port 5555" in result["message"]
+
+    def test_stop_escalates_to_sigkill_on_host_when_process_survives_term(self):
+        """A host PID that survives SIGTERM is force-killed via ``lsof`` + KILL.
+
+        Mirror of the container escalation for the no-container host fallback:
+        if the second ``lsof`` still lists the PID after TERM, stop must send
+        KILL before reporting success.
+        """
+        containers = {"status": "success", "containers": []}
+        calls: list[list[str]] = []
+
+        def fake_run(cmd, *args, **kwargs):
+            calls.append(cmd)
+            if "lsof" in cmd:
+                # Process is listed on both lsof probes -> survives TERM.
+                return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="9999\n", stderr="")
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+
+        with (
+            patch("strands_robots.tools.gr00t_inference._find_gr00t_containers", return_value=containers),
+            patch("strands_robots.tools.gr00t_inference.subprocess.run", side_effect=fake_run),
+            patch("strands_robots.tools.gr00t_inference.time.sleep"),
+        ):
+            result = gr00t_inference(action="stop", port=5555)
+        assert result["status"] == "success"
+        assert "Service on port 5555 stopped" in result["message"]
+        # Both host signals were delivered to the surviving PID.
+        assert any(c[:2] == ["kill", "-TERM"] and "9999" in c for c in calls)
+        assert any(c[:2] == ["kill", "-KILL"] and "9999" in c for c in calls)
+
 
 class TestStartRestartDispatch:
     """Cover the ``start`` / ``restart`` / unknown-action branches of the tool.
