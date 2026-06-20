@@ -89,6 +89,67 @@ def test_build_replay_command_requires_dataset_repo_id() -> None:
         build_lerobot_command(action="replay", robot_type="so101_follower")
 
 
+def test_build_replay_command_routes_bimanual_arm_ports() -> None:
+    """Replay on a bimanual (ALOHA-class) robot must forward both arm ports.
+
+    Single-arm SO-100/SO-101 robots use ``--robot-port``; bimanual robots have
+    no single port and instead pass ``--robot-left-arm-port`` /
+    ``--robot-right-arm-port``. The replay builder must emit the per-arm flags
+    (and may omit ``--robot-port`` entirely) so the lerobot CLI binds each arm.
+    """
+    cmd = build_lerobot_command(
+        action="replay",
+        robot_type="aloha",
+        dataset_repo_id="user/bimanual_pick",
+        replay_episode=2,
+        robot_left_arm_port="/dev/ttyACM0",
+        robot_right_arm_port="/dev/ttyACM1",
+    )
+    assert cmd[:3] == ["python", "-m", "lerobot.scripts.lerobot_replay"]
+    assert cmd[cmd.index("--robot-left-arm-port") + 1] == "/dev/ttyACM0"
+    assert cmd[cmd.index("--robot-right-arm-port") + 1] == "/dev/ttyACM1"
+    # No single robot_port was given, so the single-arm flag must be absent.
+    assert "--robot-port" not in cmd
+
+
+def test_build_start_teleop_command_routes_bimanual_ports_ids_and_root() -> None:
+    """A bimanual teleop start must forward per-arm ports, ids, root + display.
+
+    Exercises the option branches a leader->follower ALOHA recording session
+    needs: robot/teleop ``--*.id`` namespacing, the left/right arm ports for
+    both the follower (robot) and leader (teleop), a dataset ``--root`` for the
+    on-disk recording location, and the ``--display_data`` viewer flag. Each
+    must map to its lerobot CLI argument with the supplied value.
+    """
+    cmd = build_lerobot_command(
+        action="start",
+        robot_type="aloha",
+        robot_id="follower_arm",
+        robot_left_arm_port="/dev/ttyACM0",
+        robot_right_arm_port="/dev/ttyACM1",
+        teleop_type="aloha_leader",
+        teleop_id="leader_arm",
+        teleop_left_arm_port="/dev/ttyACM2",
+        teleop_right_arm_port="/dev/ttyACM3",
+        dataset_repo_id="user/bimanual_pick",
+        dataset_root="/data/lerobot/bimanual_pick",
+        display_data=True,
+    )
+    # Recording mode (dataset given) -> lerobot_record entrypoint.
+    assert "lerobot.scripts.lerobot_record" in cmd
+    assert cmd[cmd.index("--root") + 1] == "/data/lerobot/bimanual_pick"
+    # Robot (follower) per-arm config.
+    assert cmd[cmd.index("--robot.id") + 1] == "follower_arm"
+    assert cmd[cmd.index("--robot.left_arm_port") + 1] == "/dev/ttyACM0"
+    assert cmd[cmd.index("--robot.right_arm_port") + 1] == "/dev/ttyACM1"
+    # Teleop (leader) per-arm config.
+    assert cmd[cmd.index("--teleop.id") + 1] == "leader_arm"
+    assert cmd[cmd.index("--teleop.left_arm_port") + 1] == "/dev/ttyACM2"
+    assert cmd[cmd.index("--teleop.right_arm_port") + 1] == "/dev/ttyACM3"
+    # Viewer flag is emitted as the explicit "true" value form.
+    assert cmd[cmd.index("--display_data") + 1] == "true"
+
+
 def test_build_start_record_command_when_dataset_given() -> None:
     cmd = build_lerobot_command(
         action="start",
