@@ -83,6 +83,21 @@ DEFAULT_TASK = "Pick up the red cube and place it on the plate"
 # Scene setup (shared by collect + run)
 # ---------------------------------------------------------------------------
 
+def _must(sim: Any, action: str, params: dict[str, Any]) -> dict[str, Any]:
+    """Dispatch a sim action and fail loud on error.
+
+    The dispatch router returns ``{"status": "error", ...}`` for bad params
+    (e.g. an unknown kwarg) rather than raising. Swallowing that result would
+    let scene setup silently no-op - a camera that never gets added means the
+    recorded dataset has no frames and inference sees no images. Per AGENTS.md
+    ("no silent defaults on error"), surface it immediately.
+    """
+    result = sim._dispatch_action(action, params)
+    if isinstance(result, dict) and result.get("status") == "error":
+        raise RuntimeError(f"sim action {action!r} failed: {result.get('content', result)}")
+    return result
+
+
 def _build_scene(sim: Any) -> None:
     """Compose the pick-and-place scene: two cameras, a red cube, a plate.
 
@@ -92,14 +107,20 @@ def _build_scene(sim: Any) -> None:
     checkpoint. We add two cameras so the recorded dataset and the inference
     observations match what the model expects.
 
+    Note: ``add_camera`` takes ``name`` (not ``camera_name``); the dispatch
+    router rejects unknown kwargs. ``render`` is the action that takes
+    ``camera_name``. Every call is routed through ``_must`` so a schema
+    mismatch fails loud instead of silently producing a camera-less scene.
+
     Kept deterministic so the recorded dataset has a stable feature schema;
     per-episode variety comes from ``randomize`` in the collection loop.
     """
     # Top-down-ish view.
-    sim._dispatch_action(
+    _must(
+        sim,
         "add_camera",
         {
-            "camera_name": "image",
+            "name": "image",
             "position": [0.3, 0.0, 0.7],
             "target": [0.1, 0.0, 0.05],
             "width": 640,
@@ -107,17 +128,19 @@ def _build_scene(sim: Any) -> None:
         },
     )
     # Side view.
-    sim._dispatch_action(
+    _must(
+        sim,
         "add_camera",
         {
-            "camera_name": "wrist_image",
+            "name": "wrist_image",
             "position": [0.5, -0.4, 0.4],
             "target": [0.1, 0.0, 0.1],
             "width": 640,
             "height": 480,
         },
     )
-    sim._dispatch_action(
+    _must(
+        sim,
         "add_object",
         {
             "name": "red_cube",
@@ -128,7 +151,8 @@ def _build_scene(sim: Any) -> None:
             "mass": 0.05,
         },
     )
-    sim._dispatch_action(
+    _must(
+        sim,
         "add_object",
         {
             "name": "plate",
