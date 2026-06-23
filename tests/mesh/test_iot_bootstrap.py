@@ -690,3 +690,84 @@ class TestTeardownAccount:
         # Must complete without raising despite every call failing.
         boot_mod.teardown_account()
         ddb.delete_table.assert_called_once()
+
+
+class TestEnsureEstopRule:
+    """The E-stop fan-out IoT Rule (`_ensure_estop_rule`).
+
+    This rule wires the ``strands/safety/estop`` MQTT topic to the E-stop
+    fan-out Lambda. It is the WAN-side path that broadcasts an emergency stop
+    to every robot in the fleet, so both its create-path (correct SQL + Lambda
+    action) and its idempotent skip-path (an existing rule is not recreated)
+    are pinned here.
+    """
+
+    def _iot_with_missing_rule(self):
+        """A mocked IoT client whose ``get_topic_rule`` reports 'not found'."""
+
+        class _NotFound(Exception):
+            pass
+
+        iot = MagicMock()
+        iot.exceptions = MagicMock()
+        iot.exceptions.ResourceNotFoundException = _NotFound
+        iot.exceptions.UnauthorizedException = type("UE", (Exception,), {})
+        iot.get_topic_rule.side_effect = _NotFound()
+        iot.create_topic_rule.return_value = None
+        return iot
+
+    def test_creates_rule_with_estop_topic_and_lambda_action(self):
+        iot = self._iot_with_missing_rule()
+        a = BootstrappedAccount(region="us-west-2", account_id="123456789012")
+
+        arn = boot_mod._ensure_estop_rule(iot, "arn:aws:lambda:us-west-2:123456789012:function:estop", a)
+
+        # ARN points at the well-known E-stop rule in the caller's account/region.
+        assert arn == f"arn:aws:iot:us-west-2:123456789012:rule/{RULE_ESTOP_FANOUT}"
+        iot.create_topic_rule.assert_called_once()
+        kw = iot.create_topic_rule.call_args.kwargs
+        assert kw["ruleName"] == RULE_ESTOP_FANOUT
+        payload = kw["topicRulePayload"]
+        # SQL must select from the safety/estop topic, and the rule stays enabled.
+        assert "strands/safety/estop" in payload["sql"]
+        assert payload["ruleDisabled"] is False
+        # The only action is a Lambda invocation of the supplied function ARN.
+        actions = payload["actions"]
+        assert len(actions) == 1
+        assert actions[0]["lambda"]["functionArn"] == ("arn:aws:lambda:us-west-2:123456789012:function:estop")
+        # Creation is recorded for the bootstrap summary.
+        assert f"iot-rule:{RULE_ESTOP_FANOUT}" in a.created
+
+    def test_skips_when_rule_already_present(self):
+        iot = MagicMock()
+        iot.get_topic_rule.return_value = {"ruleArn": "arn:aws:iot:us-west-2:123456789012:rule/x"}
+        a = BootstrappedAccount(region="us-west-2", account_id="123456789012")
+
+        arn = boot_mod._ensure_estop_rule(iot, "arn:lambda:estop", a)
+
+        # Idempotent: no creation, ARN derived from account/region, skip recorded.
+        iot.create_topic_rule.assert_not_called()
+        assert arn == f"arn:aws:iot:us-west-2:123456789012:rule/{RULE_ESTOP_FANOUT}"
+        assert f"iot-rule:{RULE_ESTOP_FANOUT}" in a.skipped
+
+    def test_creates_when_get_raises_unauthorised(self):
+        """IoT returns UnauthorizedException (not NotFound) for an absent rule."""
+
+        class _NotFound(Exception):
+            pass
+
+        class _Unauthorized(Exception):
+            pass
+
+        iot = MagicMock()
+        iot.exceptions = MagicMock()
+        iot.exceptions.ResourceNotFoundException = _NotFound
+        iot.exceptions.UnauthorizedException = _Unauthorized
+        iot.get_topic_rule.side_effect = _Unauthorized("denied")
+        a = BootstrappedAccount(region="eu-west-1", account_id="210987654321")
+
+        arn = boot_mod._ensure_estop_rule(iot, "arn:lambda:estop", a)
+
+        # UnauthorizedException is treated as "missing" -> the rule is created.
+        iot.create_topic_rule.assert_called_once()
+        assert arn == f"arn:aws:iot:eu-west-1:210987654321:rule/{RULE_ESTOP_FANOUT}"
