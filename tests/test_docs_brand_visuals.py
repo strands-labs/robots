@@ -7,9 +7,9 @@ cyan ``#22D3EE``):
 * ``hero_loop.svg`` - the perceive/reason/act/world control loop, on the docs
   home page and at the top of the README.
 * ``architecture_flow.svg`` - the four-layer stack with action/observation
-  signal flow, on the architecture page.
+  signal flow, on the architecture page and the README "How it works" section.
 * ``mesh_network.svg`` - peer coordination over the Zenoh mesh, on the mesh
-  page.
+  page and the README "Mesh networking" section.
 
 Each is surfaced through the ``brand-figure``/``brand-svg`` CSS treatment in
 ``docs/stylesheets/extra.css``. This guard fails fast if an asset is deleted,
@@ -59,11 +59,17 @@ def test_docs_pages_embed_their_brand_svg() -> None:
         assert "brand-svg" in text, f"{page.name} dropped the brand-svg CSS hook"
 
 
-def test_readme_embeds_hero() -> None:
-    """The README opens with the hero loop banner."""
-    assert "docs/assets/hero_loop.svg" in README.read_text(encoding="utf-8"), (
-        "README no longer embeds the hero_loop.svg banner"
-    )
+def test_readme_embeds_all_brand_svgs() -> None:
+    """The README surfaces all three animated brand SVGs.
+
+    ``hero_loop.svg`` opens the README; ``architecture_flow.svg`` illustrates
+    the "How it works" section and ``mesh_network.svg`` the "Mesh networking"
+    section - matching the docs pages that embed the same assets. Each is
+    referenced by its ``docs/assets/`` repo-relative path so GitHub renders it.
+    """
+    text = README.read_text(encoding="utf-8")
+    for name in BRAND_SVGS:
+        assert f"docs/assets/{name}" in text, f"README no longer embeds {name}"
 
 
 def test_extra_css_defines_brand_figure() -> None:

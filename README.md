@@ -73,6 +73,10 @@ robot = Robot("so100", mode="real", port="/dev/ttyACM0")
 
 ## How it works
 
+<p align="center">
+  <img src="docs/assets/architecture_flow.svg" alt="Strands Robots architecture - four-layer stack (Agent, Policies, Backends, Robots) with action signals flowing down and observation signals flowing back up" width="100%">
+</p>
+
 ```mermaid
 graph LR
     A[Natural Language<br/>'Pick up the red block'] --> B[Strands Agent]
@@ -720,6 +724,10 @@ requires parameter Y."*, and vectors/dtypes are validated before MuJoCo sees
 them - so the agent learns the contract without crashing the process.
 
 ## Mesh networking
+
+<p align="center">
+  <img src="docs/assets/mesh_network.svg" alt="Strands Robots mesh - robot peers discovering and coordinating over the Zenoh mesh" width="100%">
+</p>
 
 Every `Robot()` and `Simulation()` is automatically a peer on a local Zenoh
 mesh - no setup. Peers on the same LAN discover each other via multicast
