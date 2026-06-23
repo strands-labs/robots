@@ -5,6 +5,31 @@ All notable behavioural changes to `strands-robots` are logged here. Follows
 
 ## [Unreleased]
 
+### Fixed: unified "no world" guard contract across the simulation facade
+
+Every world-touching method on the MuJoCo `Simulation` facade returns a
+structured error when called before `create_world` (or after a failed
+`load_scene`), but the wording had drifted into three different strings -
+`"No world. Call create_world first."`, `"No world. Use action='create_world'
+first."`, and `"No world. Call create_world (or load_scene) first."` - so an
+agent that learned the message from one action did not recognise it from
+another. Worse, four methods (`send_action`, `replace_scene_mjcf`,
+`patch_scene_mjcf`, `add_robot`) guarded only on `self._world is None` (or
+`_model` alone) and so accepted the *partial* world state that `load_scene`
+leaves behind when its spec compile fails (`_world` set, `_model`/`_data` still
+`None`), then either crashed on a `None` dereference or silently recovered.
+
+- A single module-level `_NO_WORLD_MSG` constant is now the source of truth for
+  the guard text. All 19 inline guards and the `_require_world()` helper (whose
+  docstring already promised a unified message) return that exact string.
+- The four weak guards now check the full `world + _model + _data` predicate,
+  matching every other method, so the partial-world state is reported as the
+  standard no-world error instead of slipping through.
+- Regression tests parametrize all guarded methods over both the no-world and
+  partial-world states and assert the exact unified message; the message-drift
+  and partial-world-slip both fail on pre-fix code.
+
+
 ### Fixed: simulation render output is ASCII-only (no emoji)
 
 The MuJoCo rendering tool methods embedded emoji and non-ASCII symbols in their

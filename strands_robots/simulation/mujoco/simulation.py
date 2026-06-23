@@ -90,6 +90,12 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Single source of truth for the "no live world" guard message. Every
+# world-touching facade method checks the same condition (world + compiled
+# model + data all present) and returns this exact text, so an agent that
+# learns the string from one action recognises it from all of them.
+_NO_WORLD_MSG = "No world. Call create_world (or load_scene) first."
+
 _TOOL_SPEC_PATH = Path(__file__).parent / "tool_spec.json"
 
 # Tool schema is 357 lines of JSON. `tool_spec` property is on the LLM hot path
@@ -272,8 +278,8 @@ class MuJoCoSimEngine(
             ``unresolved_keys`` list (and ``applied``) so callers can
             self-correct instead of silently losing commands.
         """
-        if self._world is None or self._world._model is None:
-            return {"status": "error", "content": [{"text": "No world. Call create_world first."}]}
+        if self._world is None or self._world._model is None or self._world._data is None:
+            return {"status": "error", "content": [{"text": _NO_WORLD_MSG}]}
         if robot_name is None:
             if not self._world.robots:
                 return {"status": "error", "content": [{"text": "No robots in the world."}]}
@@ -474,8 +480,8 @@ class MuJoCoSimEngine(
         vocabulary is insufficient. For additive changes, prefer those
         methods - they keep the registry in sync.
         """
-        if self._world is None:
-            return {"status": "error", "content": [{"text": "No world. Use action='create_world' first."}]}
+        if self._world is None or self._world._model is None or self._world._data is None:
+            return {"status": "error", "content": [{"text": _NO_WORLD_MSG}]}
         if err := self._require_no_running_policy("replace_scene_mjcf"):
             return err
 
@@ -517,8 +523,8 @@ class MuJoCoSimEngine(
         edits; use ``replace_scene_mjcf`` when you need to express MJCF
         elements not covered by the supported op vocabulary.
         """
-        if self._world is None:
-            return {"status": "error", "content": [{"text": "No world. Use action='create_world' first."}]}
+        if self._world is None or self._world._model is None or self._world._data is None:
+            return {"status": "error", "content": [{"text": _NO_WORLD_MSG}]}
         if err := self._require_no_running_policy("patch_scene_mjcf"):
             return err
 
@@ -757,8 +763,8 @@ class MuJoCoSimEngine(
         XML.  This preserves previously-created world state (gravity, objects,
         cameras, other robots).
         """
-        if self._world is None:
-            return {"status": "error", "content": [{"text": "No world. Use action='create_world' first."}]}
+        if self._world is None or self._world._model is None or self._world._data is None:
+            return {"status": "error", "content": [{"text": _NO_WORLD_MSG}]}
         if err := self._require_no_running_policy("add_robot"):
             return err
         if name in self._world.robots:
@@ -995,7 +1001,7 @@ class MuJoCoSimEngine(
         response for user display.
         """
         if self._world is None or self._world._model is None or self._world._data is None:
-            return {"status": "error", "content": [{"text": "No world. Call create_world (or load_scene) first."}]}
+            return {"status": "error", "content": [{"text": _NO_WORLD_MSG}]}
         if not self._world.robots:
             return {"status": "success", "content": [{"text": "No robots. Use action='add_robot'."}]}
 
@@ -1041,7 +1047,7 @@ class MuJoCoSimEngine(
         accepts ``name`` as an alias (bidirectional) so legacy LLM calls
         keep working, but new tool specs should document only robot_name."""
         if self._world is None or self._world._model is None or self._world._data is None:
-            return {"status": "error", "content": [{"text": "No world. Call create_world (or load_scene) first."}]}
+            return {"status": "error", "content": [{"text": _NO_WORLD_MSG}]}
         try:
             robot_name = self._resolve_single_robot(robot_name)
         except ValueError as e:
@@ -1091,7 +1097,7 @@ class MuJoCoSimEngine(
     ) -> dict[str, Any]:
         """Add an object to the simulation."""
         if self._world is None or self._world._model is None or self._world._data is None:
-            return {"status": "error", "content": [{"text": "No world. Call create_world (or load_scene) first."}]}
+            return {"status": "error", "content": [{"text": _NO_WORLD_MSG}]}
         if err := self._require_no_running_policy("add_object"):
             return err
         if name in self._world.objects:
@@ -1169,7 +1175,7 @@ class MuJoCoSimEngine(
         self, name: str, position: list[float] | None = None, orientation: list[float] | None = None
     ) -> dict[str, Any]:
         if self._world is None or self._world._model is None or self._world._data is None:
-            return {"status": "error", "content": [{"text": "No world. Call create_world (or load_scene) first."}]}
+            return {"status": "error", "content": [{"text": _NO_WORLD_MSG}]}
         if name not in self._world.objects:
             return {"status": "error", "content": [{"text": f"Object '{name}' not found."}]}
         # Guard: move_object writes qpos + calls mj_forward, racing a running policy.
@@ -1194,7 +1200,7 @@ class MuJoCoSimEngine(
 
     def list_objects(self) -> dict[str, Any]:
         if self._world is None or self._world._model is None or self._world._data is None:
-            return {"status": "error", "content": [{"text": "No world. Call create_world (or load_scene) first."}]}
+            return {"status": "error", "content": [{"text": _NO_WORLD_MSG}]}
         if not self._world.objects:
             return {"status": "success", "content": [{"text": "No objects."}]}
 
@@ -1235,7 +1241,7 @@ class MuJoCoSimEngine(
         bodies are namespaced ``<robot>/<body>``.
         """
         if self._world is None or self._world._model is None or self._world._data is None:
-            return {"status": "error", "content": [{"text": "No world. Call create_world (or load_scene) first."}]}
+            return {"status": "error", "content": [{"text": _NO_WORLD_MSG}]}
         if err := self._require_no_running_policy("add_camera"):
             return err
 
@@ -1365,7 +1371,7 @@ class MuJoCoSimEngine(
 
     def step(self, n_steps: int = 1) -> dict[str, Any]:
         if self._world is None or self._world._model is None or self._world._data is None:
-            return {"status": "error", "content": [{"text": "No world. Call create_world (or load_scene) first."}]}
+            return {"status": "error", "content": [{"text": _NO_WORLD_MSG}]}
         # reject negative, accept zero as no-op
         if not isinstance(n_steps, int):
             try:
@@ -1412,7 +1418,7 @@ class MuJoCoSimEngine(
 
     def reset(self) -> dict[str, Any]:
         if self._world is None or self._world._model is None or self._world._data is None:
-            return {"status": "error", "content": [{"text": "No world. Call create_world (or load_scene) first."}]}
+            return {"status": "error", "content": [{"text": _NO_WORLD_MSG}]}
         # reset during a running policy races mj_step -> SEGFAULT risk
         if err := self._require_no_running_policy("reset"):
             return err
@@ -1431,7 +1437,7 @@ class MuJoCoSimEngine(
 
     def get_state(self) -> dict[str, Any]:
         if self._world is None or self._world._model is None or self._world._data is None:
-            return {"status": "error", "content": [{"text": "No world. Call create_world (or load_scene) first."}]}
+            return {"status": "error", "content": [{"text": _NO_WORLD_MSG}]}
         lines = [
             "Simulation State",
             f"t={self._world.sim_time:.4f}s (step {self._world.step_count})",
@@ -1483,7 +1489,7 @@ class MuJoCoSimEngine(
 
     def set_gravity(self, gravity: list[float] | float | int) -> dict[str, Any]:
         if self._world is None or self._world._model is None or self._world._data is None:
-            return {"status": "error", "content": [{"text": "No world. Call create_world (or load_scene) first."}]}
+            return {"status": "error", "content": [{"text": _NO_WORLD_MSG}]}
         # set_gravity during a running policy races the worker thread
         if err := self._require_no_running_policy("set_gravity"):
             return err
@@ -1516,7 +1522,7 @@ class MuJoCoSimEngine(
 
     def set_timestep(self, timestep: float) -> dict[str, Any]:
         if self._world is None or self._world._model is None or self._world._data is None:
-            return {"status": "error", "content": [{"text": "No world. Call create_world (or load_scene) first."}]}
+            return {"status": "error", "content": [{"text": _NO_WORLD_MSG}]}
         if err := self._require_no_running_policy("set_timestep"):
             return err
         # reject non-positive; warn on huge values
@@ -1625,7 +1631,7 @@ class MuJoCoSimEngine(
         ``robots`` map is also filtered to just that entry.
         """
         if self._world is None or self._world._model is None or self._world._data is None:
-            return {"status": "error", "content": [{"text": "No world. Call create_world (or load_scene) first."}]}
+            return {"status": "error", "content": [{"text": _NO_WORLD_MSG}]}
 
         mj = self._mj
         model = self._world._model
@@ -1756,17 +1762,18 @@ class MuJoCoSimEngine(
         return "simulation"
 
     def _require_world(self) -> dict[str, Any] | None:
-        """Return unified 'no world' error or None if world is live.
+        """Return the unified 'no world' error, or None if the world is live.
 
-        Replaces scattered ``"No simulation."`` / ``"No world."`` strings. Every
-        action that touches ``self._world`` / ``self._world._model`` /
-        ``self._world._data`` should call this first.
+        The "world is live" predicate is ``self._world`` plus a compiled
+        ``_model`` and allocated ``_data`` - the partial state ``load_scene``
+        leaves behind on a compile failure (``_world`` set, model/data still
+        ``None``) counts as *not* live. Methods that touch model/data inline the
+        same condition for mypy narrowing, but every guard - inline or via this
+        helper - returns the single :data:`_NO_WORLD_MSG` string so the contract
+        reads identically across the facade.
         """
         if self._world is None or self._world._model is None or self._world._data is None:
-            return {
-                "status": "error",
-                "content": [{"text": ("No world. Call create_world (or load_scene) first.")}],
-            }
+            return {"status": "error", "content": [{"text": _NO_WORLD_MSG}]}
         return None
 
     def _prune_done_futures(self) -> None:
@@ -1931,7 +1938,7 @@ class MuJoCoSimEngine(
         alternate horizon specification; run_policy converts to duration.
         """
         if self._world is None or self._world._model is None or self._world._data is None:
-            return {"status": "error", "content": [{"text": "No world. Call create_world (or load_scene) first."}]}
+            return {"status": "error", "content": [{"text": _NO_WORLD_MSG}]}
         try:
             robot_name = self._resolve_single_robot(robot_name)
         except ValueError as e:
@@ -2080,7 +2087,7 @@ class MuJoCoSimEngine(
         can specify horizon in steps rather than wall-clock seconds.
         """
         if self._world is None or self._world._model is None or self._world._data is None:
-            return {"status": "error", "content": [{"text": "No world. Call create_world (or load_scene) first."}]}
+            return {"status": "error", "content": [{"text": _NO_WORLD_MSG}]}
 
         try:
             robot_name = self._resolve_single_robot(robot_name)
@@ -2169,7 +2176,7 @@ class MuJoCoSimEngine(
         from strands_robots._async_utils import _resolve_coroutine
 
         if self._world is None or self._world._model is None or self._world._data is None:
-            return {"status": "error", "content": [{"text": "No world. Call create_world first."}]}
+            return {"status": "error", "content": [{"text": _NO_WORLD_MSG}]}
         if not policies:
             return {"status": "error", "content": [{"text": "run_multi_policy: 'policies' is empty."}]}
 
