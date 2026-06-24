@@ -369,3 +369,72 @@ def test_attached_teleop_dataclass():
     att = AttachedTeleop(device=dev, name="x", method="arm", map_fn=None)
     assert att.device is dev
     assert att.method == "arm"
+
+
+# ---------------------------------------------------------------------------
+# background-loop resilience: conflict warning, send_action errors, device
+# exceptions. These pin the hot-loop defensive branches so a misbehaving
+# device or robot never crashes teleoperation - it is counted and rate-limited.
+# ---------------------------------------------------------------------------
+
+
+class ErrorHost(FakeHost):
+    """Host whose send_action always reports a structured error."""
+
+    def send_action(self, action: dict, robot_name: str | None = None, n_substeps: int = 1):  # noqa: ARG002
+        with self._send_lock:
+            self.sent.append((dict(action), robot_name))
+        return {"status": "error", "content": [{"text": "actuator fault"}]}
+
+
+class RaisingTeleop(FakeTeleop):
+    """Teleop whose get_action() raises - simulates a flaky device read."""
+
+    def get_action(self) -> dict[str, float]:
+        self.get_action_calls += 1
+        raise RuntimeError("device read failed")
+
+
+def test_teleoperate_conflicting_keys_last_wins_and_counts_frames():
+    """Two devices writing the same key: last-attached wins, loop keeps running."""
+    host = FakeHost()
+    # Both devices set 'gripper.pos'; merge order follows attach order, last wins.
+    first = FakeTeleop({"gripper.pos": 1.0}, name="first")
+    second = FakeTeleop({"gripper.pos": 2.0}, name="second")
+    host.attach_teleop(first, name="first").attach_teleop(second, name="second")
+    host.teleoperate(hz=200)
+    try:
+        assert _spin_until(lambda: len(host.sent) > 0)
+        action, _ = host.sent[-1]
+        assert action == {"gripper.pos": 2.0}  # last-attached device wins
+    finally:
+        host.stop_teleoperate()
+
+
+def test_teleoperate_send_action_error_increments_error_count():
+    """A robot that rejects actions is counted as an error, loop survives."""
+    host = ErrorHost()
+    host.attach_teleop(FakeTeleop({"a.pos": 1.0}), name="leader")
+    host.teleoperate(hz=200)
+    try:
+        # Frames advance last in the loop body, so once a frame lands the error
+        # from the rejected send_action has already been counted.
+        assert _spin_until(lambda: host._teleop_frames > 0)
+        assert host._teleop_errors > 0
+        assert host._teleop_running is True
+    finally:
+        host.stop_teleoperate()
+
+
+def test_teleoperate_device_read_exception_counted_not_fatal():
+    """A device whose get_action() raises is counted; teleop keeps spinning."""
+    host = FakeHost()
+    host.attach_teleop(RaisingTeleop({"a.pos": 1.0}), name="flaky")
+    host.teleoperate(hz=200)
+    try:
+        assert _spin_until(lambda: host._teleop_errors > 0)
+        # The exception path short-circuits before send_action, so nothing sent.
+        assert host.sent == []
+        assert host._teleop_running is True
+    finally:
+        host.stop_teleoperate()
