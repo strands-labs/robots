@@ -60,7 +60,7 @@ _IMAGE_MAX_DIM = 4096  # arrays larger than this on H or W are still treated as 
 # the LLM.  These modules contain filesystem-write, network-push, or
 # subprocess-spawn operations that could be weaponised via prompt injection.
 _BLOCKED_MODULE_PREFIXES: tuple[str, ...] = (
-    "lerobot.scripts",           # training scripts that spawn subprocesses
+    "lerobot.scripts",  # training scripts that spawn subprocesses
     "lerobot.common.datasets.push",  # HuggingFace Hub push / upload
 )
 
