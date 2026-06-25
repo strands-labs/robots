@@ -44,6 +44,7 @@ nav:
   - Tools: hardware/tools.md
 - Training:
   - Overview: training/overview.md
+  - VLA-on-G1 Workflow: training/vla_workflow.md
 - Recording & Datasets: recording.md
 - Examples:
   - Overview: examples/overview.md
