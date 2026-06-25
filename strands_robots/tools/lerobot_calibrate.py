@@ -21,6 +21,7 @@ Based on LeRobot's calibration system:
 
 import json
 import logging
+import re
 import shutil
 from datetime import datetime
 from pathlib import Path
@@ -57,6 +58,8 @@ class LeRobotCalibrationManager:
     """Independent LeRobot calibration management class"""
 
     def __init__(self, base_path: Path | None = None):
+        if base_path is not None:
+            validate_save_path(str(base_path), label="base_path")
         self.base_path = Path(base_path) if base_path else HF_LEROBOT_CALIBRATION
         self.teleop_path = self.base_path / "teleoperators"
         self.robot_path = self.base_path / "robots"
@@ -86,7 +89,16 @@ class LeRobotCalibrationManager:
         return structure
 
     def get_calibration_path(self, device_type: str, device_model: str, device_id: str) -> Path:
-        """Get the full path to a calibration file"""
+        """Get the full path to a calibration file."""
+        # Security hardening: restrict path components to prevent traversal.
+        _SAFE_COMPONENT = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*$")
+        _VALID_DEVICE_TYPES = {"teleoperators", "robots"}
+        if device_type not in _VALID_DEVICE_TYPES:
+            raise ValueError(f"device_type must be one of {_VALID_DEVICE_TYPES}, got {device_type!r}")
+        if not _SAFE_COMPONENT.fullmatch(device_model):
+            raise ValueError(f"device_model contains invalid characters: {device_model!r}")
+        if not _SAFE_COMPONENT.fullmatch(device_id):
+            raise ValueError(f"device_id contains invalid characters: {device_id!r}")
         return self.base_path / device_type / device_model / f"{device_id}.json"
 
     def calibration_exists(self, device_type: str, device_model: str, device_id: str) -> bool:

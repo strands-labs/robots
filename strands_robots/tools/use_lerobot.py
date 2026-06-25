@@ -56,6 +56,22 @@ _MAX_LIST_ITEMS = 1_000  # max items rendered from a list/tuple
 _MAX_DICT_ITEMS = 1_000  # max keys rendered from a dict
 _IMAGE_MAX_DIM = 4096  # arrays larger than this on H or W are still treated as images
 
+# Security hardening: module prefixes whose callables must not be invoked by
+# the LLM.  These modules contain filesystem-write, network-push, or
+# subprocess-spawn operations that could be weaponised via prompt injection.
+_BLOCKED_MODULE_PREFIXES: tuple[str, ...] = (
+    "lerobot.scripts",           # training scripts that spawn subprocesses
+    "lerobot.common.datasets.push",  # HuggingFace Hub push / upload
+)
+
+# Methods on otherwise-safe modules that have dangerous side effects.
+_BLOCKED_METHODS: set[str] = {
+    "push_to_hub",
+    "push_to_hub_revision",
+    "upload_folder",
+    "save_to_disk",
+}
+
 
 # Import resolution
 class LeRobotResolveError(Exception):
@@ -599,6 +615,20 @@ def use_lerobot(
         # If target is not callable, just return its value
         if not callable(target):
             return {"status": "success", "content": [{"text": f"{module}.{method} = {_serialize_result(target)}"}]}
+
+        # Security hardening: block callables in denied modules or methods.
+        full_path = f"lerobot.{module}" if not module.startswith("lerobot.") else module
+        for prefix in _BLOCKED_MODULE_PREFIXES:
+            if full_path.startswith(prefix):
+                return {
+                    "status": "error",
+                    "content": [{"text": f"Blocked: {full_path} is in a restricted module namespace"}],
+                }
+        if method in _BLOCKED_METHODS:
+            return {
+                "status": "error",
+                "content": [{"text": f"Blocked: method '{method}' is not permitted via use_lerobot"}],
+            }
 
         # Call it
         if label:

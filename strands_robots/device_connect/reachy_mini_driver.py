@@ -13,9 +13,10 @@ import math
 import re
 from typing import Any
 
-from device_connect_edge.drivers import DeviceDriver, emit, on, rpc
+from device_connect_edge.drivers import DeviceDriver, emit, get_rpc_source_device, on, rpc
 from device_connect_edge.types import DeviceIdentity, DeviceStatus
 
+from strands_robots.device_connect._authz import authz_error, is_authorized_caller
 from strands_robots.device_connect.reachy_transport import (
     WebSocketLink,
     ZenohLink,
@@ -123,6 +124,9 @@ class ReachyMiniDriver(DeviceDriver):
             y: Y offset in mm
             z: Z offset in mm
         """
+        caller = get_rpc_source_device()
+        if not is_authorized_caller(caller, scope="rpc"):
+            return authz_error(caller, "look")
         await self._send_cmd({"head_pose": rpy_to_pose(pitch, roll, yaw, x, y, z)})
         return {"status": "success", "pitch": pitch, "roll": roll, "yaw": yaw}
 
@@ -134,6 +138,9 @@ class ReachyMiniDriver(DeviceDriver):
             left: Left antenna angle in degrees
             right: Right antenna angle in degrees
         """
+        caller = get_rpc_source_device()
+        if not is_authorized_caller(caller, scope="rpc"):
+            return authz_error(caller, "antennas")
         await self._send_cmd({"antennas_joint_positions": [math.radians(left), math.radians(right)]})
         return {"status": "success", "left": left, "right": right}
 
@@ -144,6 +151,9 @@ class ReachyMiniDriver(DeviceDriver):
         Args:
             yaw: Body yaw angle in degrees
         """
+        caller = get_rpc_source_device()
+        if not is_authorized_caller(caller, scope="rpc"):
+            return authz_error(caller, "body")
         await self._send_cmd({"body_yaw": math.radians(yaw)})
         return {"status": "success", "yaw": yaw}
 
@@ -186,6 +196,9 @@ class ReachyMiniDriver(DeviceDriver):
         Args:
             motor_ids: Comma-separated motor IDs (empty = all)
         """
+        caller = get_rpc_source_device()
+        if not is_authorized_caller(caller, scope="rpc"):
+            return authz_error(caller, "enableMotors")
         ids = [s.strip() for s in motor_ids.split(",") if s.strip()] or None
         await self._send_cmd({"torque": True, "ids": ids})
         return {"status": "success", "enabled": motor_ids or "all"}
@@ -197,6 +210,9 @@ class ReachyMiniDriver(DeviceDriver):
         Args:
             motor_ids: Comma-separated motor IDs (empty = all)
         """
+        caller = get_rpc_source_device()
+        if not is_authorized_caller(caller, scope="rpc"):
+            return authz_error(caller, "disableMotors")
         ids = [s.strip() for s in motor_ids.split(",") if s.strip()] or None
         await self._send_cmd({"torque": False, "ids": ids})
         return {"status": "success", "disabled": motor_ids or "all"}
@@ -211,6 +227,9 @@ class ReachyMiniDriver(DeviceDriver):
             move_name: Name of the move to play
             library: Move library (emotions or dance)
         """
+        caller = get_rpc_source_device()
+        if not is_authorized_caller(caller, scope="rpc"):
+            return authz_error(caller, "playMove")
         if not _MOVE_NAME_RE.fullmatch(move_name or ""):
             return {"status": "error", "reason": f"invalid move_name: {move_name!r}"}
         ds = f"pollen-robotics/reachy-mini-{'emotions' if library == 'emotions' else 'dances'}-library"
@@ -244,6 +263,9 @@ class ReachyMiniDriver(DeviceDriver):
     @rpc()
     async def nod(self) -> dict[str, Any]:
         """Nod the head (yes gesture)."""
+        caller = get_rpc_source_device()
+        if not is_authorized_caller(caller, scope="rpc"):
+            return authz_error(caller, "nod")
         for _ in range(3):
             await self._send_cmd({"head_pose": rpy_to_pose(15, 0, 0)})
             await asyncio.sleep(0.25)
@@ -255,6 +277,9 @@ class ReachyMiniDriver(DeviceDriver):
     @rpc()
     async def shake(self) -> dict[str, Any]:
         """Shake the head (no gesture)."""
+        caller = get_rpc_source_device()
+        if not is_authorized_caller(caller, scope="rpc"):
+            return authz_error(caller, "shake")
         for _ in range(3):
             await self._send_cmd({"head_pose": rpy_to_pose(0, 0, 25)})
             await asyncio.sleep(0.2)
@@ -266,6 +291,9 @@ class ReachyMiniDriver(DeviceDriver):
     @rpc()
     async def happy(self) -> dict[str, Any]:
         """Happy antenna wiggle expression."""
+        caller = get_rpc_source_device()
+        if not is_authorized_caller(caller, scope="rpc"):
+            return authz_error(caller, "happy")
         for _ in range(4):
             await self._send_cmd({"antennas_joint_positions": [math.radians(60), math.radians(-60)]})
             await asyncio.sleep(0.2)
@@ -279,6 +307,9 @@ class ReachyMiniDriver(DeviceDriver):
     @rpc()
     async def wakeUp(self) -> dict[str, Any]:
         """Wake up the robot (enable motors + play wake animation)."""
+        caller = get_rpc_source_device()
+        if not is_authorized_caller(caller, scope="rpc"):
+            return authz_error(caller, "wakeUp")
         result = await asyncio.to_thread(
             api,
             self._host,
@@ -291,6 +322,9 @@ class ReachyMiniDriver(DeviceDriver):
     @rpc()
     async def sleep(self) -> dict[str, Any]:
         """Put robot to sleep (play sleep animation + disable motors)."""
+        caller = get_rpc_source_device()
+        if not is_authorized_caller(caller, scope="rpc"):
+            return authz_error(caller, "sleep")
         result = await asyncio.to_thread(
             api,
             self._host,
@@ -303,6 +337,9 @@ class ReachyMiniDriver(DeviceDriver):
     @rpc()
     async def stopMotion(self) -> dict[str, Any]:
         """Stop all current motion."""
+        caller = get_rpc_source_device()
+        if not is_authorized_caller(caller, scope="rpc"):
+            return authz_error(caller, "stopMotion")
         result = await asyncio.to_thread(
             api,
             self._host,
@@ -336,7 +373,15 @@ class ReachyMiniDriver(DeviceDriver):
 
     @on(event_name="emergencyStop")
     async def onEmergencyStop(self, device_id: str, event_name: str, payload: dict[str, Any]) -> None:
-        """React to emergencyStop - disable motors and stop motion."""
+        """React to emergencyStop from an authorized safety controller.
+
+        Security hardening: only act on emergency-stop events whose source is
+        in the emergency-stop allowlist, so a spoofed event from an arbitrary
+        device cannot interrupt operations.
+        """
+        if not is_authorized_caller(device_id, scope="estop"):
+            logger.warning("Ignoring emergencyStop from unauthorized source %s", device_id)
+            return
         logger.warning("Emergency stop received from %s - disabling motors", device_id)
         await self.stopMotion()
         await self.disableMotors()
