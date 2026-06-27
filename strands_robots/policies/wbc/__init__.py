@@ -20,10 +20,13 @@ Requires the ``[wbc]`` extra (``onnxruntime``); no model weights are bundled
 
 from strands_robots.policies.wbc.config import WBCConfig
 from strands_robots.policies.wbc.policy import WBC_G1_ALL_JOINTS, WBC_G1_LEG_WAIST_JOINTS, WBCPolicy
+from strands_robots.policies.wbc.sim_control import WBCTorqueController, install_wbc_torque_control
 
 __all__ = [
     "WBCPolicy",
     "WBCConfig",
     "WBC_G1_LEG_WAIST_JOINTS",
     "WBC_G1_ALL_JOINTS",
+    "WBCTorqueController",
+    "install_wbc_torque_control",
 ]

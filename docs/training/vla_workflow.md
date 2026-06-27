@@ -32,10 +32,24 @@ Drive the G1 (in sim or on real hardware via LeRobot teleop) and capture a
 [`03_record_dataset.py`](https://github.com/strands-labs/robots/blob/main/examples/03_record_dataset.py)
 hero example demonstrates  - adapted for the 29-DOF humanoid:
 
+Drive the G1 with **WBC** (the merged SONIC whole-body controller) so the
+captured dataset is genuine walking motion:
+
 ```python
-from strands_robots import Robot, MockPolicy
+from strands_robots import Robot
+from strands_robots.policies import create_policy
+from strands_robots.policies.wbc import install_wbc_torque_control
 
 sim = Robot("unitree_g1", mesh=False)
+policy = create_policy("wbc", checkpoint="/path/to/GEAR-SONIC", walk=True)
+
+# WBC emits joint-POSITION targets, but the G1 scene's actuators are
+# position-servos (uniform kp=500) that override SONIC's tuned per-joint PD -
+# so writing the targets directly makes the robot fall. install_wbc_torque_control
+# flips the G1's actuators to torque mode and applies the SONIC PD law at the
+# correct decimation, so the G1 actually WALKS. Pair it with control_frequency=50.
+install_wbc_torque_control(sim, policy, "unitree_g1")
+
 sim.start_recording(
     repo_id="local/g1_locomotion",
     root="/tmp/g1_dataset",
@@ -43,28 +57,34 @@ sim.start_recording(
 )
 sim.run_policy(
     robot_name="unitree_g1",
-    policy_object=MockPolicy(),   # or a teleop/VR controller
+    policy_object=policy,
     instruction="walk forward",
+    policy_kwargs={"target_velocity": [0.5, 0.0, 0.0]},  # [vx, vy, omega]
+    action_horizon=1,
+    control_frequency=50.0,
     n_steps=200,
 )
 sim.stop_recording()
 ```
 
-For real teleop data collection, substitute a LeRobot teleop driver or a VR
-controller for the `MockPolicy`. The dataset format is identical either way.
-
-The example can also drive the record stage with **WBC itself** when a SONIC
-checkpoint is available, so the captured dataset contains genuine walking motion
-rather than synthetic poses:
+The `vla_g1_workflow.py` example wires exactly this up behind a flag:
 
 ```bash
 python examples/vla_g1_workflow.py --record-checkpoint /path/to/GEAR-SONIC
 ```
 
-This works because the MuJoCo backend's observation now surfaces the joint
-velocities and base IMU signals (`<joint>.vel`, `base_quat`, `base_ang_vel`)
-that WBC's balance controller consumes - so WBC closes its control loop through
-`sim.run_policy` with no manual observation wiring.
+Two ingredients make WBC close its loop through `sim.run_policy`:
+
+1. The MuJoCo backend's observation surfaces the joint velocities and base IMU
+   signals (`<joint>.vel`, `base_quat`, `base_ang_vel`) that WBC's balance
+   controller consumes - no manual observation wiring.
+2. `install_wbc_torque_control` converts WBC's position targets into joint
+   torques via the SONIC PD law on torque-mode actuators (the standard scene
+   ships stiff position-servos that the gait cannot drive).
+
+For data collection from a different source, swap the WBC policy for a LeRobot
+teleop driver, a VR controller, or `MockPolicy` (synthetic, runs with no weights
+or hardware - the quick-demo default). The dataset format is identical either way.
 
 ### 2. Fine-tune  - post-train Isaac-GR00T N1.7
 

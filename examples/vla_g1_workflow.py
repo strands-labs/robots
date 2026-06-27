@@ -80,9 +80,21 @@ def stage_record(dataset_root: str, n_episodes: int, steps_per_episode: int, che
     record_kwargs: dict = {}
     if checkpoint and os.path.isdir(checkpoint):
         from strands_robots.policies import create_policy
+        from strands_robots.policies.wbc import install_wbc_torque_control
 
         policy = create_policy("wbc", checkpoint=checkpoint, walk=True)
-        record_kwargs = {"policy_kwargs": {"target_velocity": [0.5, 0.0, 0.0]}, "action_horizon": 1}
+        # WBC emits joint-POSITION targets; the G1 scene's position-servo
+        # actuators (uniform kp=500) override SONIC's tuned PD and the robot
+        # falls. Installing the torque controller flips those actuators to
+        # torque mode and applies the SONIC PD law at the right decimation, so
+        # the G1 actually WALKS through run_policy. Pair with control_frequency
+        # =50 Hz (the controller's dt=0.005 x decimation 4).
+        install_wbc_torque_control(sim, policy, "unitree_g1")
+        record_kwargs = {
+            "policy_kwargs": {"target_velocity": [0.5, 0.0, 0.0]},
+            "action_horizon": 1,
+            "control_frequency": 50.0,
+        }
         print(f"  Data source: WBCPolicy (real locomotion) from {checkpoint}")
     else:
         policy = MockPolicy()

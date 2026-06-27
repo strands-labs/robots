@@ -52,6 +52,7 @@ Usage through the sim backend::
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import math
 import re
@@ -115,6 +116,18 @@ WBC_G1_ALL_JOINTS: tuple[str, ...] = (
     "right_wrist_pitch_joint",
     "right_wrist_yaw_joint",
 )
+
+# Per-joint SONIC PD gains + nominal stance for the G1's 15 leg+waist DOFs,
+# verbatim from upstream g1_gear_wbc.yaml (NVlabs/GR00T-WholeBodyControl,
+# decoupled_wbc/sim2mujoco/resources/robots/g1/g1_gear_wbc.yaml). Order matches
+# WBC_G1_LEG_WAIST_JOINTS. A real gait needs these exact values; the config's
+# generic empty-vector fallback (unit kp, zero kd, zero stance) cannot balance.
+# Used as the G1 default when a checkpoint ships only ONNX weights (no config),
+# so create_policy("wbc", checkpoint=<onnx-only dir>) walks without a separate
+# config.json. Only applied when num_actions == 15 (the G1 leg+waist count).
+_G1_SONIC_KPS = (150.0, 150.0, 150.0, 200.0, 40.0, 40.0, 150.0, 150.0, 150.0, 200.0, 40.0, 40.0, 250.0, 250.0, 250.0)
+_G1_SONIC_KDS = (2.0, 2.0, 2.0, 4.0, 2.0, 2.0, 2.0, 2.0, 2.0, 4.0, 2.0, 2.0, 5.0, 5.0, 5.0)
+_G1_SONIC_DEFAULT_ANGLES = (-0.1, 0.0, 0.0, 0.3, -0.2, 0.0, -0.1, 0.0, 0.0, 0.3, -0.2, 0.0, 0.0, 0.0, 0.0)
 
 # The HF repo the checkpoint is fetched from when ``checkpoint`` is a bare
 # model id rather than a local path. No weights are bundled; they are fetched
@@ -212,6 +225,14 @@ class WBCPolicy(Policy):
 
         # Resolve the config first - it tells us dims + default file layout.
         self._config = self._resolve_config(config, checkpoint)
+        # Fill the per-joint SONIC defaults for the 15-DOF G1 when the checkpoint
+        # ships no config (empty kps/kds/default_angles). Done on the config
+        # itself (not just the policy) so the observation builder - which reads
+        # config.default_angles for the qj offset - and the controller see the
+        # same values. Without this, an ONNX-only checkpoint runs with no qj
+        # offset + unit gains and the gait degrades. Only the G1 (num_actions
+        # == 15) gets these embodiment-specific values.
+        self._config = self._fill_g1_defaults(self._config)
         n = self._config.num_actions
 
         # The leg+waist joint names WBC reads/writes, in WBC output order.
@@ -247,6 +268,10 @@ class WBCPolicy(Policy):
         self._obs_joint_names: list[str] = list(WBC_G1_ALL_JOINTS[:no])
 
         # Pre-compute NumPy views of the per-joint vectors (once, not per tick).
+        # The config has already been normalised (G1 SONIC defaults filled when
+        # the checkpoint shipped none), so these are non-empty for the G1; the
+        # generic empty-vector fallback (unit kp / zero kd / zero stance) only
+        # applies to a non-G1 config that genuinely omitted them.
         self._default_angles = (
             np.asarray(self._config.default_angles, dtype=np.float64)
             if self._config.default_angles
@@ -295,6 +320,16 @@ class WBCPolicy(Policy):
     @property
     def config(self) -> WBCConfig:
         return self._config
+
+    @property
+    def default_angles(self) -> np.ndarray:
+        """Resolved nominal stance (``num_actions``-vector), config or G1 fallback.
+
+        Unlike ``config.default_angles`` (which is empty when the checkpoint
+        ships no config), this is the value the controller actually uses: the
+        configured angles, or the upstream G1 SONIC stance for the 15-DOF G1.
+        """
+        return self._default_angles
 
     def set_robot_state_keys(self, robot_state_keys: list[str]) -> None:
         """Resolve the G1 leg+waist joints BY NAME within the robot's key list.
@@ -678,6 +713,35 @@ class WBCPolicy(Policy):
         joint list leads with a free-base joint or interleaves arm joints.
         """
         return list(self._wbc_joint_names[: self._config.num_actions])
+
+    @staticmethod
+    def _fill_g1_defaults(config: WBCConfig) -> WBCConfig:
+        """Fill upstream G1 SONIC PD gains + stance when the config omits them.
+
+        A SONIC checkpoint that ships only the ONNX weights (no ``config.json``)
+        resolves to a config with empty ``kps`` / ``kds`` / ``default_angles``.
+        For the 15-DOF G1 those are the well-known upstream values
+        (``g1_gear_wbc.yaml``), so fill them here - a real gait needs them, and
+        filling on the config (not just the policy) keeps the observation builder
+        (which reads ``config.default_angles`` for the qj offset) consistent with
+        the PD law. Non-G1 configs (``num_actions != 15``) are returned unchanged;
+        their embodiment-specific gains must come from their own config.
+
+        Any field the config DID provide is preserved (an explicit value wins).
+        """
+        if config.num_actions != len(_G1_SONIC_KPS):
+            return config
+        updates: dict[str, Any] = {}
+        if not config.kps:
+            updates["kps"] = list(_G1_SONIC_KPS)
+        if not config.kds:
+            updates["kds"] = list(_G1_SONIC_KDS)
+        if not config.default_angles:
+            updates["default_angles"] = list(_G1_SONIC_DEFAULT_ANGLES)
+        if not updates:
+            return config
+        logger.info("WBCPolicy: filled G1 SONIC defaults for %s (checkpoint shipped no config).", sorted(updates))
+        return dataclasses.replace(config, **updates)
 
     def _resolve_config(self, config: str | dict[str, Any] | WBCConfig | None, checkpoint: str | None) -> WBCConfig:
         if isinstance(config, WBCConfig):
