@@ -20,7 +20,7 @@ from strands_robots.tools import (
 |------|-------------|------|
 | `lerobot_calibrate` | `"list"`, `"info"`, `"search"`, `"compare"`, `"backup"` | Manage existing calibration JSONs under `~/.cache/huggingface/lerobot/calibration/` (this tool inspects/organizes - actual calibration is run via the LeRobot CLI) |
 | `lerobot_camera` | `"list"`, `"test"`, `"stream"` | Enumerate, test, stream connected cameras |
-| `lerobot_teleoperate` | `"start"`, `"stop"`, `"status"` | Leader-follower teleop session |
+| `lerobot_teleoperate` | `"start"`, `"stop"`, `"status"`, `"replay"`, `"dagger"` | Leader-follower teleop session, episode replay, and DAgger correction collection |
 | `lerobot_train` | `"start"`, `"status"`, `"stop"`, `"list"` | Fine-tune a policy on a local dataset via `lerobot-train` |
 | `pose_tool` | `"fk"`, `"ik"`, `"set_gripper"` | Forward/inverse kinematics, gripper control |
 | `serial_tool` | `"list"`, `"send"` | Enumerate serial ports, send raw commands |
@@ -39,6 +39,19 @@ print(result["content"][0]["text"])
 result = lerobot_calibrate(action="list", device_type="robots")
 result = lerobot_camera(action="list", camera_type="opencv")
 result = pose_tool(action="fk", robot_id="so101_follower", port="/dev/ttyACM0")
+
+# DAgger / teleop takeover: a policy drives the follower while the leader can
+# pre-empt to record corrections (appended to the dataset as new episodes).
+# Drives lerobot-rollout with --strategy.type=dagger.
+result = lerobot_teleoperate(
+    action="dagger",
+    robot_type="so101_follower", robot_port="/dev/ttyACM0",
+    teleop_type="so101_leader", teleop_port="/dev/ttyACM1",
+    policy_path="user/act_fold",            # policy to roll out
+    dataset_repo_id="user/fold_corrections",
+    dataset_single_task="fold the towel",
+    dagger_num_episodes=10,                  # cap collected corrections
+)
 ```
 
 ## Use with an agent

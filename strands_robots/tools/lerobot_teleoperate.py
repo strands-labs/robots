@@ -203,9 +203,14 @@ def build_lerobot_command(
     fps: int = 60,
     teleop_time_s: float | None = None,
     play_sounds: bool = True,
+    # DAgger / teleop-takeover (lerobot-rollout --strategy.type=dagger)
+    policy_path: str | None = None,
+    dagger_record_autonomous: bool = False,
+    dagger_input_device: str = "keyboard",
+    dagger_num_episodes: int | None = None,
     **kwargs,
 ) -> list[str]:
-    """Build the lerobot CLI argv for a teleoperate/record/replay action.
+    """Build the lerobot CLI argv for a teleoperate/record/replay/dagger action.
 
     Emits the lerobot 0.5 draccus-nested schema (``--robot.* / --teleop.* /
     --dataset.*``). The pre-0.5 flat flags (``--robot-path``, ``--repo-id``,
@@ -279,6 +284,49 @@ def build_lerobot_command(
             cmd.extend(["--display_data", "true"])
         return cmd
 
+    if action == "dagger":
+        # Human-in-the-loop correction (DAgger): a policy drives the follower
+        # while the leader can pre-empt to record corrections, appended to the
+        # dataset as new episodes. lerobot 0.5 implements this natively in
+        # lerobot-rollout with --strategy.type=dagger (RolloutConfig +
+        # DAggerStrategyConfig); the pre-0.5 "record with a policy" path was
+        # removed from lerobot_record, which now refuses a policy and points
+        # callers here.
+        if not policy_path:
+            raise ValueError("policy_path is required for dagger action (the policy to roll out)")
+        if not dataset_repo_id:
+            raise ValueError("dataset_repo_id is required for dagger action (corrections are recorded)")
+        if dagger_input_device not in ("keyboard", "pedal"):
+            raise ValueError(f"dagger_input_device must be 'keyboard' or 'pedal', got '{dagger_input_device}'")
+
+        cmd = ["python", "-m", "lerobot.scripts.lerobot_rollout"]
+        cmd.extend(
+            _robot_args(robot_type, robot_port, robot_id, robot_left_arm_port, robot_right_arm_port, robot_cameras)
+        )
+        cmd.extend(_teleop_args(teleop_type, teleop_port, teleop_id, teleop_left_arm_port, teleop_right_arm_port))
+        cmd.extend(["--policy.path", policy_path])
+        cmd.extend(["--strategy.type", "dagger"])
+        cmd.extend(["--strategy.input_device", dagger_input_device])
+        if dagger_record_autonomous:
+            cmd.extend(["--strategy.record_autonomous", "true"])
+        if dagger_num_episodes is not None:
+            cmd.extend(["--strategy.num_episodes", str(dagger_num_episodes)])
+        cmd.extend(["--dataset.repo_id", dataset_repo_id])
+        if dataset_single_task:
+            cmd.extend(["--dataset.single_task", dataset_single_task])
+        cmd.extend(["--dataset.num_episodes", str(dataset_num_episodes)])
+        cmd.extend(["--dataset.fps", str(dataset_fps)])
+        if dataset_root:
+            cmd.extend(["--dataset.root", dataset_root])
+        # push_to_hub defaults to True in lerobot's DatasetRecordConfig; make it
+        # explicit so an unattended correction run never uploads by surprise.
+        cmd.extend(["--dataset.push_to_hub", "true" if dataset_push_to_hub else "false"])
+        cmd.extend(["--dataset.video", "true" if dataset_video else "false"])
+        cmd.extend(["--fps", str(fps)])
+        if display_data:
+            cmd.extend(["--display_data", "true"])
+        return cmd
+
     raise ValueError(f"Unknown action: {action}")
 
 
@@ -318,6 +366,11 @@ def lerobot_teleoperate(
     teleop_time_s: float | None = None,
     play_sounds: bool = True,
     auto_accept_calibration: bool = True,
+    # DAgger / teleop-takeover (action="dagger")
+    policy_path: str | None = None,
+    dagger_record_autonomous: bool = False,
+    dagger_input_device: str = "keyboard",
+    dagger_num_episodes: int | None = None,
 ) -> dict[str, Any]:
     """
     Advanced LeRobot teleoperation tool with recording capabilities for robot training data collection.
@@ -352,6 +405,15 @@ def lerobot_teleoperate(
 
         replay: Replay a recorded episode on the robot
             - Requires dataset_repo_id and replay_episode
+
+        dagger: Human-in-the-loop correction (DAgger / teleop takeover)
+            - A policy drives the follower; the leader can pre-empt to record
+              corrections, appended to the dataset as new episodes.
+            - Requires policy_path (policy to roll out) and dataset_repo_id.
+            - Drives lerobot-rollout with --strategy.type=dagger. Toggle the
+              correction window with the keyboard/pedal (dagger_input_device);
+              set dagger_record_autonomous=True to also record the autonomous
+              phase, dagger_num_episodes to cap collected corrections.
 
     Robot Types:
         - so101_follower: Single-arm SO-101 robot
@@ -492,7 +554,7 @@ def lerobot_teleoperate(
     session_manager = SessionManager()
 
     try:
-        if action == "start":
+        if action in ("start", "dagger"):
             # Generate session name if not provided
             if not session_name:
                 session_name = f"teleop_{int(time.time())}"
@@ -530,6 +592,10 @@ def lerobot_teleoperate(
                     fps=fps,
                     teleop_time_s=teleop_time_s,
                     play_sounds=play_sounds,
+                    policy_path=policy_path,
+                    dagger_record_autonomous=dagger_record_autonomous,
+                    dagger_input_device=dagger_input_device,
+                    dagger_num_episodes=dagger_num_episodes,
                 )
             except Exception as e:
                 return {"status": "error", "content": [{"text": f"Command build failed: {str(e)}"}]}

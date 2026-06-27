@@ -607,3 +607,135 @@ def test_start_foreground_nonzero_return_code_is_error(monkeypatch: pytest.Monke
     assert result["status"] == "error"
     assert result["return_code"] == 2
     _assert_ascii(_texts(result))
+
+
+# ---------------------------------------------------------------------------
+# DAgger / teleop-takeover action (lerobot-rollout --strategy.type=dagger)
+# ---------------------------------------------------------------------------
+def _dagger_cmd(**overrides: Any) -> list[str]:
+    kwargs: dict[str, Any] = dict(
+        action="dagger",
+        robot_type="so101_follower",
+        robot_port="/dev/ttyACM0",
+        robot_id="follower",
+        teleop_type="so101_leader",
+        teleop_port="/dev/ttyACM1",
+        teleop_id="leader",
+        policy_path="user/act_fold",
+        dataset_repo_id="user/fold_corrections",
+        dataset_single_task="fold the towel",
+        dagger_num_episodes=10,
+        fps=30,
+    )
+    kwargs.update(overrides)
+    return build_lerobot_command(**kwargs)
+
+
+def test_build_dagger_command_uses_rollout_with_dagger_strategy() -> None:
+    cmd = _dagger_cmd()
+    assert cmd[:3] == ["python", "-m", "lerobot.scripts.lerobot_rollout"]
+    assert "--robot.type" in cmd and "so101_follower" in cmd
+    assert "--teleop.type" in cmd and "so101_leader" in cmd
+    assert "--policy.path" in cmd and "user/act_fold" in cmd
+    assert "--strategy.type" in cmd and "dagger" in cmd
+    assert "--dataset.repo_id" in cmd and "user/fold_corrections" in cmd
+    # No stale pre-0.5 flat flags.
+    assert "--robot-path" not in cmd
+    assert "--repo-id" not in cmd
+
+
+def test_build_dagger_command_requires_policy_path() -> None:
+    with pytest.raises(ValueError, match="policy_path is required"):
+        _dagger_cmd(policy_path=None)
+
+
+def test_build_dagger_command_requires_dataset_repo_id() -> None:
+    with pytest.raises(ValueError, match="dataset_repo_id is required"):
+        _dagger_cmd(dataset_repo_id=None)
+
+
+def test_build_dagger_command_rejects_bad_input_device() -> None:
+    with pytest.raises(ValueError, match="dagger_input_device"):
+        _dagger_cmd(dagger_input_device="joystick")
+
+
+def test_build_dagger_command_push_to_hub_is_explicit_and_defaults_false() -> None:
+    # lerobot's DatasetRecordConfig defaults push_to_hub=True; the builder must
+    # make it explicit so an unattended correction run never auto-uploads.
+    cmd = _dagger_cmd()
+    idx = cmd.index("--dataset.push_to_hub")
+    assert cmd[idx + 1] == "false"
+    cmd_hub = _dagger_cmd(dataset_push_to_hub=True)
+    assert cmd_hub[cmd_hub.index("--dataset.push_to_hub") + 1] == "true"
+
+
+def test_build_dagger_command_record_autonomous_and_num_episodes() -> None:
+    cmd = _dagger_cmd(dagger_record_autonomous=True, dagger_num_episodes=5)
+    assert "--strategy.record_autonomous" in cmd
+    idx = cmd.index("--strategy.num_episodes")
+    assert cmd[idx + 1] == "5"
+
+
+def test_build_dagger_argv_matches_lerobot_rollout_fields() -> None:
+    """Cross-check every emitted --strategy/dataset/robot/teleop/top-level flag
+    against the real lerobot RolloutConfig / DAggerStrategyConfig /
+    DatasetRecordConfig dataclasses, so field drift is caught.
+
+    Skipped when lerobot is not importable (it is in the [all] test env).
+    """
+    pytest.importorskip("lerobot.scripts.lerobot_rollout")
+    import dataclasses
+    import typing
+
+    from lerobot.rollout.configs import DAggerStrategyConfig
+    from lerobot.scripts.lerobot_rollout import RolloutConfig
+
+    # Resolve the dataset config from RolloutConfig's own annotations rather than
+    # hardcoding a module path (lerobot relocates these between releases).
+    rollout_hints = typing.get_type_hints(RolloutConfig)
+    dataset_type = rollout_hints["dataset"]
+    dataset_cls = typing.get_args(dataset_type)[0] if typing.get_args(dataset_type) else dataset_type
+
+    rollout_fields = {f.name for f in dataclasses.fields(RolloutConfig)}
+    dagger_fields = {f.name for f in dataclasses.fields(DAggerStrategyConfig)} | {"type"}
+    dataset_fields = {f.name for f in dataclasses.fields(dataset_cls)}
+    robot_fields = {"type", "port", "id", "cameras", "left_arm_port", "right_arm_port"}
+    teleop_fields = {"type", "port", "id", "left_arm_port", "right_arm_port"}
+
+    cmd = _dagger_cmd(
+        dagger_record_autonomous=True,
+        robot_cameras={"front": {"type": "opencv", "index_or_path": 0}},
+        display_data=True,
+    )
+    flags = [tok[2:].split("=", 1)[0] for tok in cmd if tok.startswith("--")]
+    for flag in flags:
+        if flag.startswith("strategy."):
+            assert flag.split(".", 1)[1] in dagger_fields, f"{flag} not a DAggerStrategyConfig field"
+        elif flag.startswith("dataset."):
+            assert flag.split(".", 1)[1] in dataset_fields, f"{flag} not a DatasetRecordConfig field"
+        elif flag.startswith("robot."):
+            assert flag.split(".", 1)[1] in robot_fields, f"{flag} not a robot config field"
+        elif flag.startswith("teleop."):
+            assert flag.split(".", 1)[1] in teleop_fields, f"{flag} not a teleop config field"
+        elif flag.startswith("policy."):
+            assert flag.split(".", 1)[1] == "path", f"{flag} not the policy path arg"
+        else:
+            assert flag in rollout_fields, f"{flag} not a RolloutConfig field"
+
+
+def test_dagger_dispatch_starts_session(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(tele_mod.subprocess, "Popen", lambda *a, **k: _FakeProc(pid=os.getpid()))
+    result = lerobot_teleoperate(
+        action="dagger",
+        session_name="dagger_test",
+        robot_type="so101_follower",
+        teleop_type="so101_leader",
+        policy_path="user/act_fold",
+        dataset_repo_id="user/fold_corrections",
+        dataset_single_task="fold the towel",
+        auto_accept_calibration=False,
+    )
+    assert result["status"] == "success"
+    _assert_ascii(_texts(result))
+    listed = lerobot_teleoperate(action="list")
+    assert "dagger_test" in listed["sessions"]
