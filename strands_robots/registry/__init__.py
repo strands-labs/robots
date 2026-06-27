@@ -29,6 +29,12 @@ Architecture:
         policies.json    ← policy providers (shorthands/urls inside each entry)
 """
 
+from .discovery import (
+    descriptions_module,
+    discover_robot,
+    is_discoverable,
+    list_discoverable,
+)
 from .loader import invalidate_cache, reload
 from .policies import (
     build_policy_kwargs,
@@ -65,6 +71,11 @@ __all__ = [
     "list_robots_by_category",
     "list_aliases",
     "format_robot_table",
+    # robot_descriptions auto-discovery (long tail)
+    "descriptions_module",
+    "is_discoverable",
+    "list_discoverable",
+    "discover_robot",
     # Policy registry
     "get_policy_provider",
     "list_policy_providers",

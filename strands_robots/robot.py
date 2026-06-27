@@ -43,6 +43,7 @@ from strands_robots.registry import (
     get_robot,
     has_hardware,
     has_sim,
+    is_discoverable,
     resolve_name,
 )
 
@@ -124,10 +125,16 @@ def _validate_known_robot(canonical: str, original: str, urdf_path: str | None) 
         raise ValueError(
             f"Invalid robot name {original!r}. Pass a registered name (see ``list_robots()``) or supply ``urdf_path=``."
         )
-    if get_robot(canonical) is None and not (has_sim(canonical) or has_hardware(canonical)):
+    if (
+        get_robot(canonical) is None
+        and not (has_sim(canonical) or has_hardware(canonical))
+        and not is_discoverable(canonical)
+    ):
         raise ValueError(
             f"Unknown robot {original!r} (resolved to {canonical!r}). "
-            "Pass a registered name (see ``list_robots()``) or supply ``urdf_path=``."
+            "Pass a registered name (see ``list_robots()``), one of the "
+            "``robot_descriptions`` robots (see ``list_discoverable()``), "
+            "or supply ``urdf_path=``."
         )
 
 

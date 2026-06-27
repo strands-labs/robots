@@ -405,6 +405,40 @@ first use. List them at runtime with `from strands_robots import list_robots; li
 `so101`, `koch`, `omx`, `hope_jr`, `aloha`, `bi_openarm`, `reachy2`,
 `unitree_g1`, `lekiwi`, `earthrover`. All are simulatable.
 
+### Adding a robot
+
+There are two paths, depending on whether the robot needs project-specific
+metadata:
+
+1. **Standard `robot_descriptions` robot (zero config).** Any MJCF robot shipped
+   by [robot_descriptions](https://github.com/robot-descriptions/robot_descriptions.py)
+   resolves automatically without a `robots.json` entry - the asset is
+   discovered and downloaded on first use:
+
+   ```python
+   from strands_robots import Robot, list_discoverable
+
+   sim = Robot("iiwa14")          # discovered, not in robots.json
+   print(list_discoverable())     # the MJCF long tail you can load directly
+   ```
+
+   A curated `robots.json` entry always wins over discovery, so overriding a
+   discovered robot later is non-breaking.
+
+2. **Custom or metadata-rich robot.** If the robot needs a non-default joint
+   count, hardware port, aliases, scene tweaks, or local mesh overrides, add a
+   curated entry. For a robot that belongs in the shipped catalog, add it to
+   [`registry/robots.json`](strands_robots/registry/robots.json) and open a PR.
+   For a machine-local robot, register it at runtime instead of editing the
+   package:
+
+   ```python
+   from strands_robots.registry import register_robot
+
+   register_robot(name="my_arm", model_xml="my_arm.xml",
+                  asset_dir="~/robots/my_arm", joints=7, category="arm")
+   ```
+
 ## Tools reference
 
 Import any of these and pass to `Agent(tools=[...])`. Each is a Strands

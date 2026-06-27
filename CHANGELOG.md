@@ -5,6 +5,30 @@ All notable behavioural changes to `strands-robots` are logged here. Follows
 
 ## [Unreleased]
 
+### Feature: zero-config robot discovery from `robot_descriptions` (`registry`)
+
+`Robot("iiwa14", mode="sim")` (and every other MJCF robot shipped by
+`robot_descriptions`) now resolves without a hand-written `robots.json` entry.
+Previously a standard Menagerie robot had to be re-declared in the curated
+registry before the MuJoCo backend could load it, even though `robot_descriptions`
+already resolves its assets canonically - so the long tail (`iiwa14`, `gen3`,
+`viper`, `widow`, `so_arm101`, ...) was unreachable without a registry edit.
+
+- New `strands_robots.registry.discovery` module. `discover_robot(name)`
+  synthesizes a registry-shaped entry for any MJCF-capable `robot_descriptions`
+  robot by reading the module's `MJCF_PATH` / `PACKAGE_PATH`, so the existing
+  asset-download + resolution pipeline handles it unchanged. `descriptions_module`,
+  `is_discoverable`, and `list_discoverable` are cheap lookups (no import, no
+  network) for probing the long tail; `discover_robot` is consulted only by the
+  download-capable asset resolver.
+- The curated `robots.json` always wins: discovery fills the gap only for names
+  unknown to the curated registry, so existing robots, joint maps, hardware
+  ports, and aliases are unaffected. `robots.json` stays the place for any robot
+  that needs project-specific metadata.
+- `is_discoverable` / `list_discoverable` are re-exported from the top-level
+  `strands_robots` package and from `strands_robots.registry`. The `Robot()`
+  factory accepts a discoverable name instead of raising "Unknown robot".
+
 ### Feature: SARM reward-model training + the RA-BC production loop (`training`)
 
 Closes the *producing* half of Reward-Aligned Behavior Cloning: `strands-robots`

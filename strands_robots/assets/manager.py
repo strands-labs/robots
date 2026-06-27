@@ -32,6 +32,25 @@ except ImportError:
     _auto_download_robot_impl = None  # type: ignore[assignment]
 
 
+def _lookup(name: str) -> dict | None:
+    """Resolve a registry entry for *name*, with ``robot_descriptions`` fallback.
+
+    A curated ``robots.json`` entry always wins. When a name is unknown to the
+    curated registry, fall back to :func:`strands_robots.registry.discovery`,
+    which synthesizes an entry for any MJCF-capable ``robot_descriptions`` robot
+    (the long tail: ``go2``, ``spot``, ``h1``, ...). Discovery imports the
+    description module, which can trigger an asset download on first use, so
+    this helper is used only by download-capable resolvers - never by the
+    side-effect-free presence check.
+    """
+    info = get_robot(name)
+    if info is not None:
+        return info
+    from strands_robots.registry.discovery import discover_robot
+
+    return discover_robot(name)
+
+
 #
 # Model path resolution (delegates to registry)
 #
@@ -179,7 +198,7 @@ def resolve_model_path(
         resolve_model_path("so100", prefer_scene=True)  # → .../trs_so_arm100/scene.xml
         resolve_model_path("franka")            # → .../franka_emika_panda/panda.xml
     """
-    info = get_robot(name)
+    info = _lookup(name)
     if not info or "asset" not in info:
         # DEBUG, not WARNING: resolve_model() probes several candidate names
         # (incl. suffix-stripped variants) and handles a None return cleanly,
@@ -258,7 +277,7 @@ def resolve_model_dir(name: str) -> Path | None:
     Returns:
         Path to the robot's asset directory, or None if not found.
     """
-    info = get_robot(name)
+    info = _lookup(name)
     if not info or "asset" not in info:
         return None
 
@@ -283,7 +302,7 @@ def get_robot_info(name: str) -> dict | None:
     Returns:
         Dict with description, category, joints, asset info, etc.
     """
-    info = get_robot(name)
+    info = _lookup(name)
     if info is None:
         return None
     result = dict(info)

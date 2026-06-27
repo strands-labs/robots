@@ -38,7 +38,12 @@ if TYPE_CHECKING:
         init_device_connect_sync,
     )
     from strands_robots.policies.groot import Gr00tPolicy
-    from strands_robots.registry import get_robot, list_robots
+    from strands_robots.registry import (
+        get_robot,
+        is_discoverable,
+        list_discoverable,
+        list_robots,
+    )
     from strands_robots.robot import Robot
     from strands_robots.simulation import (
         SimCamera,
@@ -76,6 +81,8 @@ _LAZY_IMPORTS: dict[str, tuple[str, str]] = {
     "Teleoperator": ("strands_robots.teleoperator", "Teleoperator"),
     "list_robots": ("strands_robots.registry", "list_robots"),
     "get_robot": ("strands_robots.registry", "get_robot"),
+    "list_discoverable": ("strands_robots.registry", "list_discoverable"),
+    "is_discoverable": ("strands_robots.registry", "is_discoverable"),
     # Policies
     "Gr00tPolicy": ("strands_robots.policies.groot", "Gr00tPolicy"),
     # Simulation (MuJoCo)
@@ -122,6 +129,8 @@ __all__ = [
     "SimCamera",
     "list_robots",
     "get_robot",
+    "list_discoverable",
+    "is_discoverable",
     "create_simulation",
     "list_backends",
     "register_backend",
