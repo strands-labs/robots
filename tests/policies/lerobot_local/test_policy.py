@@ -1998,3 +1998,54 @@ class TestRtcInferenceDelay:
         warnings = [r for r in caplog.records if "control_frequency unknown" in r.message]
         assert len(warnings) == 1, "fallback must warn exactly once per policy"
         assert policy._rtc_freq_warned is True
+
+
+class TestCanonicalizeObsImages:
+    """_canonicalize_obs_images normalizes camera frames to CHW float32 [0,1]
+    BEFORE the preprocessor's normalizer runs.
+
+    Regression: direct get_actions() callers pass HWC uint8 frames (the natural
+    OpenCV/renderer format). Feeding those raw made lerobot's normalizer broadcast
+    a 3-vector against the 480 height ("size of tensor a (480) must match b (3)")
+    or overflow uint8. The fix converts to CHW float32 up front; these pin every
+    input layout the helper must accept.
+    """
+
+    def _policy(self):
+        with patch.object(LerobotLocalPolicy, "_load_model"):
+            return LerobotLocalPolicy(pretrained_name_or_path="test/model")
+
+    def test_hwc_uint8_to_chw_float01(self):
+        p = self._policy()
+        img = np.ones((480, 640, 3), dtype=np.uint8) * 255
+        out = p._canonicalize_obs_images({"observation.images.top": img})["observation.images.top"]
+        assert tuple(out.shape) == (3, 480, 640)  # HWC -> CHW
+        assert out.dtype == torch.float32
+        assert float(out.max()) <= 1.0 and float(out.min()) >= 0.0  # uint8 [0,255] -> [0,1]
+
+    def test_hwc_float_to_chw(self):
+        p = self._policy()
+        img = np.random.rand(480, 640, 3).astype(np.float32)
+        out = p._canonicalize_obs_images({"observation.images.top": img})["observation.images.top"]
+        assert tuple(out.shape) == (3, 480, 640)
+        assert out.dtype == torch.float32
+
+    def test_chw_float_passthrough_layout(self):
+        p = self._policy()
+        img = np.random.rand(3, 480, 640).astype(np.float32)
+        out = p._canonicalize_obs_images({"observation.images.top": img})["observation.images.top"]
+        assert tuple(out.shape) == (3, 480, 640)  # already CHW -> unchanged layout
+
+    def test_chw_uint8_torch_normalized(self):
+        p = self._policy()
+        img = (torch.rand(3, 480, 640) * 255).to(torch.uint8)
+        out = p._canonicalize_obs_images({"observation.images.top": img})["observation.images.top"]
+        assert tuple(out.shape) == (3, 480, 640)
+        assert out.dtype == torch.float32 and float(out.max()) <= 1.0
+
+    def test_non_image_keys_pass_through(self):
+        p = self._policy()
+        obs = {"observation.state": [0.0] * 6, "task": "pick up the cube"}
+        out = p._canonicalize_obs_images(obs)
+        assert out["observation.state"] == [0.0] * 6
+        assert out["task"] == "pick up the cube"

@@ -1116,6 +1116,7 @@ class LerobotLocalPolicy(Policy):
                 # observation.state. Feed RAW obs straight in - ZERO per-step
                 # strands-side remapping, no _fixup needed (AddBatchDimension +
                 # Device steps in the pipeline handle shape/device).
+                observation = self._canonicalize_obs_images(observation)
                 batch = self._processor_bridge.preprocess(observation, instruction=instruction)
                 if not isinstance(batch, dict):
                     batch = {"observation.state": batch}
@@ -1125,6 +1126,7 @@ class LerobotLocalPolicy(Policy):
                 # the model's LeRobot feature names BEFORE preprocess, then fix up
                 # any arrays/tensors the pipeline left unconverted.
                 lerobot_obs = self._to_lerobot_observation(observation)
+                lerobot_obs = self._canonicalize_obs_images(lerobot_obs)
                 batch = self._processor_bridge.preprocess(lerobot_obs, instruction=instruction)
                 if not isinstance(batch, dict):
                     batch = {"observation.state": batch}
@@ -1171,6 +1173,44 @@ class LerobotLocalPolicy(Policy):
         return self._tensor_to_action_dicts(action_tensor)
 
     # Observation batch building
+
+    def _canonicalize_obs_images(self, observation: dict[str, Any]) -> dict[str, Any]:
+        """Normalize image-array layout BEFORE the preprocessor runs.
+
+        LeRobot's normalizer step inside ``preprocess()`` expects images as
+        channel-first ``(C, H, W)`` (or batched ``(B, C, H, W)``) tensors so its
+        per-channel mean/std broadcast correctly. Direct ``get_actions`` callers
+        commonly pass camera frames as HWC numpy arrays (the natural format from
+        OpenCV / a renderer), and uint8 frames in [0, 255]. Feeding those raw
+        makes the normalizer either broadcast a 3-vector against the 480 height
+        (``size of tensor a (480) must match b (3)``) or overflow uint8.
+
+        This converts every ``observation.images.*`` entry to CHW ``float32`` in
+        [0, 1] up front, so HWC-uint8, HWC-float, CHW-float, and torch/np inputs
+        all work. Non-image entries pass through untouched. Runs before BOTH the
+        embodiment and legacy preprocess paths; ``_fixup_preprocessed_batch``
+        still adds the batch dimension afterwards.
+        """
+        out = dict(observation)
+        for key, val in observation.items():
+            if "image" not in key or val is None:
+                continue
+            if isinstance(val, np.ndarray):
+                img = torch.from_numpy(val)
+            elif isinstance(val, torch.Tensor):
+                img = val
+            else:
+                continue  # leave exotic types for the pipeline to handle
+            # uint8 [0,255] -> float32 [0,1]; other ints/floats just cast.
+            if img.dtype == torch.uint8:
+                img = img.float() / 255.0
+            else:
+                img = img.float()
+            # HWC -> CHW (a trailing channel dim of 1/3/4 is the giveaway).
+            if img.ndim == 3 and img.shape[-1] in (1, 3, 4) and img.shape[0] not in (1, 3, 4):
+                img = img.permute(2, 0, 1)
+            out[key] = img
+        return out
 
     def _fixup_preprocessed_batch(self, batch: dict[str, Any]) -> dict[str, Any]:
         """Fix up a preprocessor-produced batch so every value is a proper batched tensor.
