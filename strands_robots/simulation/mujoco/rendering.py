@@ -181,7 +181,8 @@ class RenderingMixin:
         robot = self._world.robots[robot_name]
         pfx = robot.namespace or ""
 
-        obs = {}
+        obs: dict[str, Any] = {}
+        free_jnt_id = -1  # the robot's floating-base free joint, if any
         for jnt_name in robot.joint_names:
             # Try namespaced name first (multi-robot), fall back to raw.
             lookup = pfx + jnt_name if pfx else jnt_name
@@ -190,6 +191,30 @@ class RenderingMixin:
                 jnt_id = mj.mj_name2id(model, mj.mjtObj.mjOBJ_JOINT, jnt_name)
             if jnt_id >= 0:
                 obs[jnt_name] = float(data.qpos[model.jnt_qposadr[jnt_id]])
+                # A FREE joint (6-DoF floating base) has no single hinge/slide
+                # position; its qpos is [xyz(3) + quat(4)] and qvel is
+                # [linvel(3) + angvel(3)]. Record its id so we can surface the
+                # base orientation + angular velocity below, and skip the
+                # scalar ``.vel`` for it (it isn't a 1-DoF joint).
+                if model.jnt_type[jnt_id] == mj.mjtJoint.mjJNT_FREE:
+                    free_jnt_id = jnt_id
+                    continue
+                # Per-joint velocity (hinge/slide): dof index addresses qvel.
+                # Additive key (``<name>.vel``) - existing position-only
+                # consumers (dataset recording, arm policies) are unaffected;
+                # velocity-feedback controllers (WBC) read it to close the loop.
+                obs[f"{jnt_name}.vel"] = float(data.qvel[model.jnt_dofadr[jnt_id]])
+
+        # Floating-base IMU-style signals from the free joint, when present.
+        # WBC and other locomotion controllers consume ``base_quat`` (the base
+        # orientation, w,x,y,z) and ``base_ang_vel`` (rad/s). Both are additive
+        # and absent for fixed-base robots (arms), so non-locomotion callers
+        # never see them.
+        if free_jnt_id >= 0:
+            qadr = model.jnt_qposadr[free_jnt_id]
+            vadr = model.jnt_dofadr[free_jnt_id]
+            obs["base_quat"] = [float(v) for v in data.qpos[qadr + 3 : qadr + 7]]
+            obs["base_ang_vel"] = [float(v) for v in data.qvel[vadr + 3 : vadr + 6]]
 
         if skip_images:
             return obs

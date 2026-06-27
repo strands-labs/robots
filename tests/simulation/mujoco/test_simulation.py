@@ -61,12 +61,68 @@ ROBOT_XML = """
 """
 
 
+# Free-base (floating) robot - a 1-DoF "leg" on a free joint, like the G1's
+# floating base. Used to test that get_observation surfaces base_quat /
+# base_ang_vel for locomotion controllers (WBC).
+FREE_BASE_XML = """
+<mujoco model="test_floating">
+  <compiler angle="radian" autolimits="true"/>
+  <option timestep="0.002"/>
+  <worldbody>
+    <light name="main" pos="0 0 3" dir="0 0 -1"/>
+    <geom name="ground" type="plane" size="5 5 0.01" rgba="0.9 0.9 0.9 1"/>
+    <body name="torso" pos="0 0 0.5">
+      <freejoint name="floating_base_joint"/>
+      <geom type="box" size="0.1 0.1 0.1" rgba="0.3 0.3 0.8 1"/>
+      <body name="leg" pos="0 0 -0.1">
+        <geom type="capsule" size="0.03" fromto="0 0 0 0 0 -0.2" rgba="0.8 0.3 0.3 1"/>
+        <joint name="hip" type="hinge" axis="0 1 0" range="-1.57 1.57"/>
+      </body>
+    </body>
+  </worldbody>
+  <actuator>
+    <motor name="hip_act" joint="hip"/>
+  </actuator>
+</mujoco>
+"""
+
+
 @pytest.fixture
 def sim():
     """Create a fresh Simulation instance."""
     s = Simulation(tool_name="test_sim", mesh=False)
     yield s
     s.cleanup()
+
+
+@pytest.fixture
+def free_base_robot_xml_path():
+    """Write the free-base (floating) robot XML to a temp file."""
+    tmpdir = tempfile.mkdtemp()
+    path = os.path.join(tmpdir, "test_floating.xml")
+    with open(path, "w") as f:
+        f.write(FREE_BASE_XML)
+    yield path
+    shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def test_get_observation_free_base_has_base_imu(sim_with_world, free_base_robot_xml_path):
+    """A floating-base robot surfaces base_quat (w,x,y,z) + base_ang_vel (rad/s)
+    from its free joint, and per-joint .vel for the hinge joints - the inputs a
+    locomotion controller (WBC) needs to close the loop. The free joint itself
+    gets no scalar .vel (it is 6-DoF, not a 1-DoF hinge/slide)."""
+    sim_with_world.add_robot("floater", urdf_path=free_base_robot_xml_path)
+    obs = sim_with_world.get_observation(robot_name="floater", skip_images=True)
+
+    assert "base_quat" in obs, "floating-base robot must surface base_quat"
+    assert len(obs["base_quat"]) == 4
+    assert all(isinstance(x, float) for x in obs["base_quat"])
+    assert "base_ang_vel" in obs, "floating-base robot must surface base_ang_vel"
+    assert len(obs["base_ang_vel"]) == 3
+
+    # The hinge joint has a scalar .vel; the free joint does not.
+    assert "hip.vel" in obs and isinstance(obs["hip.vel"], float)
+    assert "floating_base_joint.vel" not in obs
 
 
 @pytest.fixture
@@ -370,20 +426,50 @@ class TestRobotManagement:
         sim_with_robot.add_camera("wrist", position=[0.2, -0.2, 0.3], target=[0, 0, 0])
         obs = sim_with_robot.get_observation(robot_name="arm1")
 
-        # Joint entries: keyed by *short* names, values are floats.
+        # Joint POSITION entries: keyed by *short* names, values are floats.
         joint_names = set(sim_with_robot._world.robots["arm1"].joint_names)
         joint_entries = {k: v for k, v in obs.items() if k in joint_names}
         assert joint_entries, "expected at least one joint in observation"
         for name, value in joint_entries.items():
             assert isinstance(value, float), f"joint {name} must be float, got {type(value).__name__}"
 
-        # Camera entries: any non-joint key must be an RGB uint8 ndarray.
-        camera_entries = {k: v for k, v in obs.items() if k not in joint_names}
+        # Per-joint VELOCITY entries (`<joint>.vel`, float) - additive, for
+        # velocity-feedback controllers (WBC). Each must correspond to a joint.
+        vel_entries = {k: v for k, v in obs.items() if k.endswith(".vel")}
+        for name, value in vel_entries.items():
+            assert name[:-4] in joint_names, f"{name} has no matching joint"
+            assert isinstance(value, float), f"{name} must be float, got {type(value).__name__}"
+
+        # Base IMU entries (floating-base robots only): base_quat / base_ang_vel
+        # are lists of floats. A fixed-base arm has neither.
+        base_keys = {"base_quat", "base_ang_vel"}
+        for name in base_keys & set(obs):
+            assert isinstance(obs[name], list) and all(isinstance(x, float) for x in obs[name])
+
+        # Camera entries: any remaining non-joint, non-vel, non-base key is an
+        # RGB uint8 ndarray.
+        camera_entries = {
+            k: v for k, v in obs.items() if k not in joint_names and not k.endswith(".vel") and k not in base_keys
+        }
         assert "wrist" in camera_entries, "user-added camera must appear in observation"
         for name, frame in camera_entries.items():
             assert isinstance(frame, np.ndarray), f"camera {name} must be ndarray"
             assert frame.ndim == 3 and frame.shape[2] == 3, f"camera {name} must be HxWx3, got shape {frame.shape}"
             assert frame.dtype == np.uint8, f"camera {name} must be uint8, got {frame.dtype}"
+
+    def test_get_observation_fixed_base_has_vel_but_no_base_imu(self, sim_with_robot):
+        """A fixed-base arm gets per-joint `.vel` keys (velocity-feedback
+        controllers consume them) but NO base_quat / base_ang_vel - it has no
+        floating-base free joint."""
+        obs = sim_with_robot.get_observation(robot_name="arm1", skip_images=True)
+        joint_names = set(sim_with_robot._world.robots["arm1"].joint_names)
+        vel_keys = [k for k in obs if k.endswith(".vel")]
+        assert vel_keys, "expected per-joint .vel keys"
+        for k in vel_keys:
+            assert k[:-4] in joint_names and isinstance(obs[k], float)
+        # Fixed-base arm: no floating-base IMU signals.
+        assert "base_quat" not in obs
+        assert "base_ang_vel" not in obs
 
     def test_get_observation_signature_has_no_camera_name(self):
         """Regression: get_observation must not accept a camera_name param.

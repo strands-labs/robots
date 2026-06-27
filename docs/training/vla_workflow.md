@@ -53,6 +53,19 @@ sim.stop_recording()
 For real teleop data collection, substitute a LeRobot teleop driver or a VR
 controller for the `MockPolicy`. The dataset format is identical either way.
 
+The example can also drive the record stage with **WBC itself** when a SONIC
+checkpoint is available, so the captured dataset contains genuine walking motion
+rather than synthetic poses:
+
+```bash
+python examples/vla_g1_workflow.py --record-checkpoint /path/to/GEAR-SONIC
+```
+
+This works because the MuJoCo backend's observation now surfaces the joint
+velocities and base IMU signals (`<joint>.vel`, `base_quat`, `base_ang_vel`)
+that WBC's balance controller consumes - so WBC closes its control loop through
+`sim.run_policy` with no manual observation wiring.
+
 ### 2. Fine-tune  - post-train Isaac-GR00T N1.7
 
 Use the [`Trainer` abstraction](overview.md) with the `"groot"` provider to
