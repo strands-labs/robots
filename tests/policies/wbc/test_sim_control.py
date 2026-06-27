@@ -17,13 +17,10 @@ weights and lives in the gated integration suite.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, cast
+from typing import cast
 
 import numpy as np
 import pytest
-
-if TYPE_CHECKING:
-    from strands_robots.simulation.base import SimEngine
 
 from strands_robots.policies.wbc import WBCConfig, WBCPolicy
 from strands_robots.policies.wbc.policy import (
@@ -31,6 +28,7 @@ from strands_robots.policies.wbc.policy import (
     _G1_SONIC_KDS,
     _G1_SONIC_KPS,
 )
+from strands_robots.simulation.base import SimEngine
 
 
 class _StubSession:
@@ -146,7 +144,7 @@ class TestWBCTorqueController:
 
         # Pre-install: the stock scene uses position-servo actuators (biastype
         # AFFINE). Capture one driven actuator's original gains.
-        ctrl = install_wbc_torque_control(cast("SimEngine", sim), policy, "unitree_g1")
+        ctrl = install_wbc_torque_control(cast(SimEngine, sim), policy, "unitree_g1")
         assert isinstance(ctrl, WBCTorqueController)
         assert ctrl.owns_stepping is True
         assert len(ctrl.leg_waist_actuator_ids) == policy.config.num_actions
@@ -171,7 +169,7 @@ class TestWBCTorqueController:
         ns = _namespace_for(model)
         sim = _FakeSim(_FakeWorld(model, data, ns))
         policy = _g1_policy()
-        ctrl = install_wbc_torque_control(cast("SimEngine", sim), policy, "unitree_g1")
+        ctrl = install_wbc_torque_control(cast(SimEngine, sim), policy, "unitree_g1")
 
         t0 = float(data.time)
         # Action dict keyed by the WBC joint names (bare), holding the stance.

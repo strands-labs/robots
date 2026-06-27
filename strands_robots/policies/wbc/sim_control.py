@@ -283,7 +283,10 @@ class WBCTorqueController:
                 try:
                     self._target_q[i] = float(v)
                 except (TypeError, ValueError):
-                    pass
+                    # Non-numeric action value for this joint: keep the previous
+                    # target rather than aborting the whole control step (one bad
+                    # key degrades to a hold, the rest of the action still applies).
+                    continue
 
         leg_q_adr = np.asarray(self.leg_waist_qpos_addrs, dtype=int)
         leg_d_adr = np.asarray(self.leg_waist_dof_addrs, dtype=int)
