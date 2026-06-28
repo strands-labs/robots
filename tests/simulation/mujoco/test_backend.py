@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import builtins
 import importlib.util
+import io
 import os
 import subprocess
 import sys
@@ -347,3 +348,61 @@ class TestMujocoNoiseFilter:
         os.close(r_fd)
         assert "Attach conflict" not in output
         assert "FATAL: actuator index out of range" in output
+
+    def test_passthrough_when_stderr_has_no_dupable_fileno(self, monkeypatch):
+        """Replaced stderr without a real fd degrades to a transparent passthrough.
+
+        Under pytest capsys, Jupyter, or any wrapper that swaps ``sys.stderr``
+        for an object without a dup-able file descriptor, the fd-2 capture
+        cannot run. The filter must still yield and never raise; with no fd
+        capture there is nothing to scrub, so every line reaches the
+        replacement stream unfiltered.
+        """
+        monkeypatch.delenv("STRANDS_ROBOTS_VERBOSE_MUJOCO", raising=False)
+        buf = io.StringIO()  # .fileno() raises io.UnsupportedOperation
+        monkeypatch.setattr(sys, "stderr", buf)
+
+        with backend_mod.filter_mujoco_attach_noise():
+            print("Attach conflict when attaching scene", file=sys.stderr)
+            print("FATAL: real error", file=sys.stderr)
+
+        out = buf.getvalue()
+        assert "Attach conflict" in out
+        assert "FATAL: real error" in out
+
+    def test_detached_stderr_on_teardown_does_not_mask_body(self, monkeypatch):
+        """A stderr whose flush/write fail during teardown is swallowed.
+
+        The fd-2 capture path runs (the stream exposes a real fileno), but by
+        the time the captured output is replayed the stream is detached, so its
+        ``flush`` and ``write`` raise. The filter must absorb those failures
+        rather than let a dead stderr propagate out of and mask the protected
+        body.
+        """
+        monkeypatch.delenv("STRANDS_ROBOTS_VERBOSE_MUJOCO", raising=False)
+        r_fd, w_fd = os.pipe()
+
+        class _DetachedStderr:
+            """Real fileno (capture runs) but flush/write fail (detached)."""
+
+            def fileno(self):
+                return w_fd
+
+            def flush(self):
+                raise ValueError("stderr detached")
+
+            def write(self, _s):
+                raise ValueError("stderr detached")
+
+        saved_stderr = sys.stderr
+        monkeypatch.setattr(sys, "stderr", _DetachedStderr())
+        try:
+            # Must not raise even though every flush/write on stderr fails.
+            with backend_mod.filter_mujoco_attach_noise():
+                # Emit a real (kept) line on fd 2 so the replay path attempts a
+                # write to the detached stderr.
+                os.write(w_fd, b"FATAL: actuator index out of range\n")
+        finally:
+            monkeypatch.setattr(sys, "stderr", saved_stderr)
+            os.close(r_fd)
+            os.close(w_fd)
