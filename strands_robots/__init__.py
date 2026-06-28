@@ -77,7 +77,13 @@ if TYPE_CHECKING:
 # ------------------------------------------------------------------
 # Light-weight imports - no torch / lerobot / mujoco dependency
 # ------------------------------------------------------------------
-from strands_robots.policies import MockPolicy, Policy, create_policy  # noqa: F401
+from strands_robots.policies import (  # noqa: F401
+    MockPolicy,
+    Policy,
+    create_policy,
+    list_providers,
+    register_policy,
+)
 
 # ------------------------------------------------------------------
 # Lazy-loaded heavy symbols
@@ -134,6 +140,8 @@ __all__ = [
     "Policy",
     "MockPolicy",
     "create_policy",
+    "list_providers",
+    "register_policy",
     # Lazy-loaded
     "Robot",
     "HardwareRosBridge",

@@ -174,3 +174,39 @@ class TestToolsReexportedAtTopLevel:
         for name in tools_pkg.__all__:
             submodule = importlib.import_module(f"strands_robots.tools.{name}")
             assert getattr(strands_robots, name) is getattr(submodule, name), name
+
+
+class TestPolicyFactorySymbolsReexported:
+    """The policy factory's constructor *and* its discovery/registration peers
+    are all re-exported at the package root.
+
+    ``create_policy`` is the eager top-level entry point, but an agent that
+    reaches it also needs the two calls that make it usable blind:
+    ``list_providers()`` (what can I pass to ``create_policy``?) and
+    ``register_policy()`` (add my own). All three live in the light-weight
+    ``strands_robots.policies.factory`` module (no torch/lerobot), so they
+    import eagerly alongside ``create_policy`` rather than lazily. This pins
+    that the discovery counterparts sit next to the constructor instead of
+    forcing a reach into the ``strands_robots.policies`` subpackage.
+    """
+
+    def test_discovery_symbols_in_top_level_all(self):
+        for name in ("create_policy", "list_providers", "register_policy"):
+            assert name in strands_robots.__all__
+
+    def test_discovery_symbols_are_eager_not_lazy(self):
+        # Same provenance as create_policy: light imports, never lazy entries.
+        for name in ("list_providers", "register_policy"):
+            assert name not in strands_robots._LAZY_IMPORTS
+
+    def test_discovery_symbols_resolve_to_policies_objects(self):
+        import strands_robots.policies as policies_pkg
+
+        for name in ("create_policy", "list_providers", "register_policy"):
+            assert getattr(strands_robots, name) is getattr(policies_pkg, name), name
+
+    def test_list_providers_callable_from_top_level(self):
+        # The whole point: call it straight off the package root.
+        providers = strands_robots.list_providers()
+        assert isinstance(providers, (list, tuple, set))
+        assert "mock" in providers
