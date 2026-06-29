@@ -15,6 +15,7 @@ hardware, no GPU, no Hugging Face credentials.
 | [`01_getting_started.ipynb`](https://github.com/strands-labs/robots/blob/main/examples/notebooks/01_getting_started.ipynb) | `Robot("so100")`, run a policy, read joint state, `create_policy()`. |
 | [`02_record_and_stream.ipynb`](https://github.com/strands-labs/robots/blob/main/examples/notebooks/02_record_and_stream.ipynb) | Record a LeRobotDataset, then stream it back with `stream_dataset()`. |
 | [`03_record_train_deploy.ipynb`](https://github.com/strands-labs/robots/blob/main/examples/notebooks/03_record_train_deploy.ipynb) | The full loop: record, train an ACT policy on CPU, export, and load it back. |
+| [`04_discover_lerobot.ipynb`](https://github.com/strands-labs/robots/blob/main/examples/notebooks/04_discover_lerobot.ipynb) | Discover the LeRobot API with `use_lerobot`: list robots, policies, teleoperators, cameras, and inspect any class. |
 
 ```bash
 uv pip install "strands-robots[sim-mujoco,lerobot]" jupyterlab
