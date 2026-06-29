@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """SO101 pick-and-place in MuJoCo simulation - same policy, sim robot.
 
-Identical to ``molmoact2_so101_pickplace.py`` but swaps the robot to sim mode.
-This demonstrates that the abstraction works: one line changes from real to sim,
-everything else (policy, inference loop, observation keys) stays the same.
+Mirrors ``molmoact2_so101_pickplace.py`` but swaps the robot to sim mode. Two
+things change versus the hardware example: ``mode="sim"`` (the default) and the
+policy ``embodiment``. Sim uses ``embodiment="so101"`` (bare-numeric MuJoCo
+joint keys "1".."6"); the hardware example uses ``embodiment="so_real"`` (the
+SOFollower driver's ".pos" joint keys). The policy, inference loop, and action
+plumbing are otherwise identical.
 
 Usage:
   export STRANDS_TRUST_REMOTE_CODE=1
@@ -54,8 +57,13 @@ def main():
         },
     )
 
-    # Same create_policy call - the abstraction is identical.
-    policy = create_policy(REPO, embodiment="so_real", device=args.device)
+    # For MuJoCo sim use embodiment="so101". The "so_real" variant is for
+    # physical SO-100/101 hardware ONLY: it declares ".pos" joint keys
+    # (shoulder_pan.pos, ...) that match the lerobot SOFollower driver, whereas
+    # the MuJoCo SO-101 model exposes bare-numeric joint names "1".."6". Using
+    # "so_real" here leaves observation.state empty and MolmoAct2 raises
+    # "requires observation.state". See docs/policies/molmoact2.md.
+    policy = create_policy(REPO, embodiment="so101", device=args.device)
     policy.reset()
 
     # Retrieve initial sim state to verify observation keys.

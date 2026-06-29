@@ -112,6 +112,26 @@ policy = create_policy(
 )
 ```
 
+### Sim vs hardware embodiment
+
+The embodiment string is **not** interchangeable between MuJoCo and a physical
+arm - they declare different `state_keys`/`action_keys`, so the wrong one yields
+an empty `observation.state` and the policy fails with
+`MolmoAct2 requires observation.state for discrete state prompting`:
+
+| Context | Robot | Embodiment | `state_keys` |
+| --- | --- | --- | --- |
+| MuJoCo sim | `Robot("so101")` (`mode="sim"`, default) | `"so101"` | `["1", "2", "3", "4", "5", "6"]` (bare-numeric MJCF joints) |
+| MuJoCo sim | `Robot("so100")` | `"so100"` | `["Rotation", "Pitch", "Elbow", "Wrist_Pitch", "Wrist_Roll", "Jaw"]` |
+| Hardware | `Robot("so101", mode="real", ...)` | `"so_real"` | `["shoulder_pan.pos", ..., "gripper.pos"]` (SOFollower driver) |
+
+The `so101`/`so100` keys match the MuJoCo model's joint names; `so_real` (and
+its `so101_real`/`so100_follower` aliases) match the lerobot SOFollower driver's
+`<motor>.pos` keys reported over the serial bus. Pick the embodiment for the
+robot you actually instantiate: `embodiment="so101"` for the sim examples,
+`embodiment="so_real"` for the hardware example
+(`examples/molmoact2_so101_pickplace.py`).
+
 ## Debugging "runs but does not move"
 
 The provider surfaces two previously-silent failure modes as `WARNING` logs from
