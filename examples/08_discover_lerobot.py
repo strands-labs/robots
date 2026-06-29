@@ -15,8 +15,10 @@ the same tool is selected by natural language ("which policies can I use?").
 
 from strands_robots.tools import use_lerobot
 
-# use_lerobot is a Strands @tool; call its underlying function directly here.
-call = use_lerobot.func if hasattr(use_lerobot, "func") else use_lerobot
+# use_lerobot is a Strands @tool. ``__wrapped__`` is the original undecorated
+# function (preserved by functools.wraps), which we call directly so the example
+# is self-contained. In an agent, the same tool is selected by natural language.
+call = use_lerobot.__wrapped__
 
 
 def text(result: dict) -> str:
