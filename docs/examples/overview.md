@@ -4,6 +4,25 @@ description: Runnable example scripts - links to the repo's examples/ directory.
 
 # Examples
 
+## Getting-started notebooks
+
+New to Strands Robots? The [`examples/notebooks/`](https://github.com/strands-labs/robots/tree/main/examples/notebooks)
+folder is a click-and-run series that runs end-to-end in simulation - no
+hardware, no GPU, no Hugging Face credentials.
+
+| Notebook | What it shows |
+|----------|---------------|
+| [`01_getting_started.ipynb`](https://github.com/strands-labs/robots/blob/main/examples/notebooks/01_getting_started.ipynb) | `Robot("so100")`, run a policy, read joint state, `create_policy()`. |
+| [`02_record_and_stream.ipynb`](https://github.com/strands-labs/robots/blob/main/examples/notebooks/02_record_and_stream.ipynb) | Record a LeRobotDataset, then stream it back with `stream_dataset()`. |
+| [`03_record_train_deploy.ipynb`](https://github.com/strands-labs/robots/blob/main/examples/notebooks/03_record_train_deploy.ipynb) | The full loop: record, train an ACT policy on CPU, export, and load it back. |
+
+```bash
+uv pip install "strands-robots[sim-mujoco,lerobot]" jupyterlab
+jupyter lab   # open examples/notebooks/
+```
+
+## Scripts
+
 Browse [`examples/`](https://github.com/strands-labs/robots/tree/main/examples):
 
 | File | What it does |
