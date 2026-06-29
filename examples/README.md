@@ -13,6 +13,10 @@ MUJOCO_GL=egl python examples/01_sim_hello_world.py
 
 ## Index
 
+Prefer a click-and-run walkthrough? The [`notebooks/`](notebooks/) folder has the
+getting-started series (`Robot()` basics, record + stream, and the full
+record→train→deploy loop) as Jupyter notebooks - all CPU-only, no hardware or GPU.
+
 | # | File | Primitive | Hardware | GPU |
 |---|------|-----------|----------|-----|
 | 01 | [`01_sim_hello_world.py`](01_sim_hello_world.py) | `Robot()` + `Simulation` | No | No |
