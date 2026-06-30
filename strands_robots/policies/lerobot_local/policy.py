@@ -1513,7 +1513,9 @@ class LerobotLocalPolicy(Policy):
                 # observation.state. Feed RAW obs straight in - ZERO per-step
                 # strands-side remapping, no _fixup needed (AddBatchDimension +
                 # Device steps in the pipeline handle shape/device).
-                observation = self._canonicalize_obs_images(observation)
+                observation = self._canonicalize_obs_images(
+                    observation, image_source_keys=self._embodiment_image_source_keys()
+                )
                 batch = self._processor_bridge.preprocess(observation, instruction=instruction)
                 if not isinstance(batch, dict):
                     batch = {"observation.state": batch}
@@ -1571,7 +1573,9 @@ class LerobotLocalPolicy(Policy):
 
     # Observation batch building
 
-    def _canonicalize_obs_images(self, observation: dict[str, Any]) -> dict[str, Any]:
+    def _canonicalize_obs_images(
+        self, observation: dict[str, Any], image_source_keys: set[str] | None = None
+    ) -> dict[str, Any]:
         """Normalize image-array layout BEFORE the preprocessor runs.
 
         LeRobot's normalizer step inside ``preprocess()`` expects images as
@@ -1587,10 +1591,29 @@ class LerobotLocalPolicy(Policy):
         all work. Non-image entries pass through untouched. Runs before BOTH the
         embodiment and legacy preprocess paths; ``_fixup_preprocessed_batch``
         still adds the batch dimension afterwards.
+
+        In the declarative embodiment path the camera rename
+        (``front`` -> ``observation.images.front``) happens INSIDE the pipeline,
+        so the observation handed here still carries the bare source key, which
+        lacks the ``"image"`` substring and would be skipped -- leaving the frame
+        as raw HWC uint8 for the normalizer to overflow on. ``image_source_keys``
+        (the embodiment ``obs_rename`` sources that target a declared image
+        feature; see :meth:`_embodiment_image_source_keys`) names those bare keys
+        so they are canonicalized too.
+
+        Args:
+            observation: Raw observation dict (bare or LeRobot-keyed).
+            image_source_keys: Extra non-``image`` keys to treat as camera
+                frames (the embodiment's image rename sources). ``None`` keeps
+                the legacy ``"image"``-substring-only behavior.
+
+        Returns:
+            A new dict with every recognized camera frame as CHW ``float32``.
         """
         out = dict(observation)
         for key, val in observation.items():
-            if "image" not in key or val is None:
+            is_image = "image" in key or (image_source_keys is not None and key in image_source_keys)
+            if not is_image or val is None:
                 continue
             if isinstance(val, np.ndarray):
                 img = torch.from_numpy(val)
@@ -1608,6 +1631,27 @@ class LerobotLocalPolicy(Policy):
                 img = img.permute(2, 0, 1)
             out[key] = img
         return out
+
+    def _embodiment_image_source_keys(self) -> set[str]:
+        """Bare observation keys the embodiment renames onto a declared image feature.
+
+        In the declarative path the camera rename runs INSIDE the preprocessor
+        pipeline, so the observation reaching :meth:`_canonicalize_obs_images`
+        still uses the robot-native source key (e.g. ``front``), not the model
+        feature name (``observation.images.front``). Returning those source
+        keys lets canonicalization recognize them as camera frames even though
+        they lack the ``"image"`` substring.
+
+        Returns:
+            The set of ``obs_rename`` sources whose target is a declared image
+            (VISUAL) input feature. Empty when no embodiment is configured.
+        """
+        emb = self._embodiment
+        if emb is None:
+            return set()
+        return {
+            src for src, dst in emb.obs_rename.items() if _declared_feature_is_image(dst, self._input_features.get(dst))
+        }
 
     def _fixup_preprocessed_batch(self, batch: dict[str, Any]) -> dict[str, Any]:
         """Fix up a preprocessor-produced batch so every value is a proper batched tensor.

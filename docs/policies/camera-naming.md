@@ -70,6 +70,18 @@ camera names the runtime observation must contain.
    )
    ```
 
+## Bare camera keys are canonicalized on the declarative path
+
+On the declarative `embodiment` path the camera rename
+(`front` -> `observation.images.front`) happens INSIDE the preprocessor
+pipeline, so the observation still carries the bare source key when the
+frame is normalized to channel-first `float32`. Frames keyed by a bare
+name whose embodiment `obs_rename` target is an image feature are now
+recognized and canonicalized, so a single-camera checkpoint (e.g. an ACT
+policy declaring only `observation.images.front`) driven via an embodiment
+is handled the same as the legacy (no-embodiment) path. You do not need to
+name your camera with an `image` substring for this to work.
+
 ## See also
 
 - [LeRobot Local](lerobot-local.md) - camera routing, the pre-flight check, `obs_rename_override`.
