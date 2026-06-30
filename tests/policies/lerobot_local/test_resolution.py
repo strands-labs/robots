@@ -965,6 +965,59 @@ class TestReadPolicyTypeFromConfig:
             pytest.skip("HF Hub unreachable; cannot exercise live repo")
         assert result == "molmoact2"
 
+    def test_hub_download_success_resolves_type(self, tmp_path, monkeypatch):
+        """When the path is not a local dir, the reader downloads ``config.json``
+        from the Hub and resolves its type.
+
+        This is the production path for a bare HF repo id (the common case);
+        the only other coverage of it is a network-gated live-repo test that is
+        skipped offline. Mock just the ``hf_hub_download`` boundary so the Hub
+        branch runs deterministically, and assert the revision is forwarded."""
+        import json
+
+        from strands_robots.policies.lerobot_local import resolution
+
+        downloaded = tmp_path / "config.json"
+        downloaded.write_text(json.dumps({"type": "smolvla"}))
+        captured: dict[str, object] = {}
+
+        def _fake_download(repo_id, filename, revision=None, **_kwargs):
+            captured["repo_id"] = repo_id
+            captured["filename"] = filename
+            captured["revision"] = revision
+            return str(downloaded)
+
+        monkeypatch.setattr("huggingface_hub.hf_hub_download", _fake_download)
+
+        result = resolution._read_policy_type_from_config("acme/remote-policy", revision="v2")
+
+        assert result == "smolvla"
+        assert captured == {"repo_id": "acme/remote-policy", "filename": "config.json", "revision": "v2"}
+
+    def test_auto_map_skips_non_string_values(self, tmp_path):
+        """``auto_map`` values that are not strings are skipped without crashing.
+
+        Some transformers configs use list-valued ``auto_map`` entries
+        (``{"AutoModel": ["modeling_x.Cfg", "modeling_x.Model"]}``). The reader
+        must step over those rather than calling ``str`` methods on a list, and
+        still resolve a later recognized string entry."""
+        import json
+
+        from strands_robots.policies.lerobot_local import resolution
+
+        (tmp_path / "config.json").write_text(
+            json.dumps(
+                {
+                    "auto_map": {
+                        "AutoModel": ["modeling_molmoact2.A", "modeling_molmoact2.B"],
+                        "AutoModelForImageTextToText": "modeling_molmoact2.MolmoAct2ForConditionalGeneration",
+                    }
+                }
+            )
+        )
+
+        assert resolution._read_policy_type_from_config(str(tmp_path)) == "molmoact2"
+
 
 class TestResolvePolicyClassByNameFallbackLadder:
     """Behavioral tests for the resolution ladder in

@@ -90,3 +90,26 @@ def test_list_policy_types_empty_when_lerobot_config_unimportable(monkeypatch) -
     """
     monkeypatch.setitem(sys.modules, "lerobot.configs.policies", None)
     assert list_policy_types() == []
+
+
+def test_list_policy_types_falls_back_to_choice_registry_on_old_draccus(monkeypatch) -> None:
+    """Older draccus lacks the public ``get_known_choices()`` accessor.
+
+    The discovery surface must degrade to the private ``_choice_registry`` dict
+    that accessor wraps so enumeration still works on those installs, instead of
+    raising ``AttributeError``. A fake ``PreTrainedConfig`` (no
+    ``get_known_choices``, only ``_choice_registry``) is injected so the
+    fallback runs without depending on the installed draccus version.
+    """
+    import types
+
+    from strands_robots.policies.lerobot_local import resolution
+
+    class _OldDraccusConfig:
+        _choice_registry = {"diffusion": object, "act": object}
+
+    fake_module = types.ModuleType("lerobot.configs.policies")
+    setattr(fake_module, "PreTrainedConfig", _OldDraccusConfig)
+    monkeypatch.setitem(sys.modules, "lerobot.configs.policies", fake_module)
+
+    assert resolution.list_policy_types() == ["act", "diffusion"]
