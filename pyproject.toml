@@ -282,12 +282,14 @@ device-connect = [
 ros2 = [
     "cyclonedds>=0.10.2,<1.0.0",
 ]
-vera = [
-    "vera @ git+https://github.com/sizhe-li/VERA.git",
-    "websockets>=14",
-    "msgpack>=1",
-    "numpy>=1.24",
-]
+# NOTE: There is intentionally no `vera` extra. VERA is only distributed as a
+# git repository (https://github.com/sizhe-li/VERA) and PyPI rejects any package
+# whose metadata contains a direct URL/VCS reference (HTTP 400 on upload). The
+# VERA provider launches the git-installed `vera` package as a subprocess
+# (`python -m vera.server...`), so install it directly alongside strands-robots:
+#     pip install "strands-robots[vera-sim]" websockets msgpack "numpy>=1.24"
+#     pip install "vera @ git+https://github.com/sizhe-li/VERA.git"
+# See README (VERA row) and strands_robots/policies/vera/__init__.py.
 vera-sim = [
     "gymnasium==0.29.1",
     "gym-pusht==0.1.5",
@@ -332,9 +334,6 @@ Documentation = "https://github.com/strands-labs/robots#readme"
 Repository = "https://github.com/strands-labs/robots.git"
 Issues = "https://github.com/strands-labs/robots/issues"
 Changelog = "https://github.com/strands-labs/robots/releases"
-
-[tool.hatch.metadata]
-allow-direct-references = true  # VERA is a git-only dependency (see the 'vera' extra)
 
 [tool.hatch.version]
 source = "vcs"
@@ -566,7 +565,7 @@ warn_return_any = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-v --cov=strands_robots --cov-report=term-missing --strict-markers --timeout=120"
+addopts = "-v --cov=strands_robots --cov-report=term-missing --cov-fail-under=80 --strict-markers --timeout=120"
 markers = [
     "gpu: requires CUDA GPU and real model weights (run with: pytest -m gpu)",
     "slow: long-running test (deselect with: pytest -m 'not slow')",

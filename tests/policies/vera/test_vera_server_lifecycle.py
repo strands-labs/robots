@@ -104,6 +104,41 @@ class _FakeCompleted:
 
 
 # --------------------------------------------------------------------------- #
+# _require_vera_installed — git-only install gate (PR #950 regression)
+# --------------------------------------------------------------------------- #
+class TestRequireVeraInstalled:
+    """VERA is git-only (not a PyPI extra); the runner must gate on it clearly.
+
+    Pins the fix for the v0.4.1 PyPI-upload failure: the `vera` extra carried a
+    `git+https` direct reference that PyPI rejects. With the extra removed, a
+    missing `vera` must raise an actionable ImportError *before* we spawn the
+    server (previously it surfaced as an opaque "exited early (code 1)").
+    """
+
+    def test_raises_importerror_with_git_hint_when_vera_absent(self, monkeypatch):
+        # Probe subprocess reports non-zero -> `import vera` failed.
+        monkeypatch.setattr(sr.subprocess, "run", lambda *a, **k: _FakeCompleted(returncode=1))
+        with pytest.raises(ImportError, match="git\\+https://github.com/sizhe-li/VERA"):
+            sr._require_vera_installed("python3")
+
+    def test_passes_silently_when_vera_importable(self, monkeypatch):
+        # Probe subprocess reports success -> `import vera` worked.
+        monkeypatch.setattr(sr.subprocess, "run", lambda *a, **k: _FakeCompleted(returncode=0))
+        sr._require_vera_installed("python3")  # must not raise
+
+    def test_probes_the_target_interpreter(self, monkeypatch):
+        seen: dict[str, object] = {}
+
+        def _capture(cmd, **kwargs):
+            seen["cmd"] = cmd
+            return _FakeCompleted(returncode=0)
+
+        monkeypatch.setattr(sr.subprocess, "run", _capture)
+        sr._require_vera_installed("/custom/python")
+        assert seen["cmd"] == ["/custom/python", "-c", "import vera"]
+
+
+# --------------------------------------------------------------------------- #
 # VeraServerRunner lifecycle
 # --------------------------------------------------------------------------- #
 class TestVeraServerRunnerStart:
@@ -120,6 +155,8 @@ class TestVeraServerRunnerStart:
         assert runner.is_running() is False
 
     def test_launches_and_returns_once_ready(self, monkeypatch):
+        # Bypass the git-only vera install gate; this test covers supervision.
+        monkeypatch.setattr(sr, "_require_vera_installed", lambda *a, **k: None)
         # First probe (reuse check) -> down; second probe (ready poll) -> up.
         probes = iter([False, True])
         monkeypatch.setattr(sr, "_port_open", lambda *a, **k: next(probes))
@@ -137,6 +174,7 @@ class TestVeraServerRunnerStart:
         assert "vera.server.start_vera_server" in captured["cmd"]
 
     def test_raises_when_server_exits_before_ready(self, monkeypatch):
+        monkeypatch.setattr(sr, "_require_vera_installed", lambda *a, **k: None)
         monkeypatch.setattr(sr, "_port_open", lambda *a, **k: False)
         # poll() reports an exit code -> process died during startup.
         monkeypatch.setattr(sr.subprocess, "Popen", lambda *a, **k: _FakeProc(poll_values=[1], stdout=None))
@@ -145,6 +183,7 @@ class TestVeraServerRunnerStart:
             runner.start()
 
     def test_times_out_when_never_ready(self, monkeypatch):
+        monkeypatch.setattr(sr, "_require_vera_installed", lambda *a, **k: None)
         monkeypatch.setattr(sr, "_port_open", lambda *a, **k: False)
         proc = _FakeProc(poll_values=[None], stdout=None)
         monkeypatch.setattr(sr.subprocess, "Popen", lambda *a, **k: proc)

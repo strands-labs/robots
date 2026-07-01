@@ -412,3 +412,80 @@ class TestMujocoNoiseFilter:
             monkeypatch.setattr(sys, "stderr", saved_stderr)
             os.close(r_fd)
             os.close(w_fd)
+
+
+class TestCaptureStderrFd:
+    """Contract for ``capture_stderr_fd`` - the fd-2 stderr capture helper.
+
+    ``capture_stderr_fd`` redirects the underlying file descriptor 2 (not just
+    ``sys.stderr`` the Python object) so writes from C extensions such as
+    MuJoCo's OpenGL backend land in the yielded box. Rendering exercises it on
+    a GPU host, but the utility's contract - real capture, and a transparent
+    passthrough when there is no dup-able fd - must hold on any host, GPU or
+    not. These tests pin that contract without requiring a renderer.
+    """
+
+    def test_captures_c_level_fd2_writes(self):
+        """A raw ``os.write`` to fd 2 inside the block lands in the box.
+
+        Uses a real OS pipe as stderr so the fd-dup capture path actually runs
+        (capsys/StringIO have no dup-able fileno and hit the passthrough branch
+        instead). After the block the box holds exactly what was written at the
+        C level, proving the descriptor - not just ``sys.stderr`` - was
+        redirected.
+        """
+        r_fd, w_fd = os.pipe()
+        saved_stderr = sys.stderr
+        sys.stderr = os.fdopen(w_fd, "w")
+        try:
+            with backend_mod.capture_stderr_fd() as box:
+                os.write(sys.stderr.fileno(), b"ARB_clip_control unavailable\n")
+        finally:
+            sys.stderr.close()
+            sys.stderr = saved_stderr
+            os.close(r_fd)
+        assert box[0] == "ARB_clip_control unavailable\n"
+
+    def test_passthrough_when_stderr_has_no_dupable_fileno(self, monkeypatch):
+        """No dup-able fd (capsys/Jupyter) degrades to a transparent passthrough.
+
+        When ``sys.stderr`` is an object without a real file descriptor the
+        capture cannot run. The helper must still yield a box, never raise, and
+        leave the box empty; writes reach the replacement stream unfiltered.
+        """
+        buf = io.StringIO()  # .fileno() raises io.UnsupportedOperation
+        monkeypatch.setattr(sys, "stderr", buf)
+
+        with backend_mod.capture_stderr_fd() as box:
+            print("passthrough line", file=sys.stderr)
+
+        assert box == [""]
+        assert "passthrough line" in buf.getvalue()
+
+    def test_flush_failure_on_teardown_does_not_mask_body(self, monkeypatch):
+        """A stderr whose ``flush`` fails during teardown is swallowed.
+
+        The capture path runs (the stream exposes a real fileno), but by
+        teardown the stream is detached so ``flush`` raises. The helper must
+        absorb that failure and still restore fd 2 and expose the captured
+        text, rather than let a dead stderr propagate out of the block.
+        """
+        r_fd, w_fd = os.pipe()
+
+        class _FlushFailsStderr:
+            def fileno(self):
+                return w_fd
+
+            def flush(self):
+                raise ValueError("stderr detached")
+
+        saved_stderr = sys.stderr
+        monkeypatch.setattr(sys, "stderr", _FlushFailsStderr())
+        try:
+            with backend_mod.capture_stderr_fd() as box:
+                os.write(w_fd, b"captured despite flush failure\n")
+        finally:
+            monkeypatch.setattr(sys, "stderr", saved_stderr)
+            os.close(r_fd)
+            os.close(w_fd)
+        assert box[0] == "captured despite flush failure\n"

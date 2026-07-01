@@ -1385,3 +1385,32 @@ class TestCodecRouting:
         # silently reverting to the default codec.
         with pytest.raises(ValueError):
             _codec_create_kwargs({"rgb_encoder": None}, "not_a_codec")
+
+    def test_rgb_encoder_falls_back_when_config_class_missing(self, monkeypatch, caplog):
+        """A LeRobot exposing ``rgb_encoder=`` but whose ``RGBEncoderConfig`` is
+        unimportable must warn and route no codec surface (falling back to the
+        default) rather than crash dataset setup.
+
+        This mirrors the ``camera_encoder`` fallback contract: the two encoder-
+        config surfaces are equivalent version-drift shims, so a build that
+        renamed/moved ``RGBEncoderConfig`` should degrade identically to one that
+        dropped ``VideoEncoderConfig`` - a warning, an empty routing dict, and no
+        exception.
+        """
+        import sys
+
+        from strands_robots.dataset_recorder import _codec_create_kwargs
+
+        # Setting the import target to None makes
+        # ``from lerobot.configs.video import RGBEncoderConfig`` raise
+        # ImportError, exercising the fallback branch without needing a LeRobot
+        # build that actually lacks the class.
+        monkeypatch.setitem(sys.modules, "lerobot.configs.video", None)
+
+        with caplog.at_level("WARNING"):
+            out = _codec_create_kwargs({"rgb_encoder": None}, "libsvtav1", context="create")
+
+        # No codec surface routed -> recorder uses the LeRobot default codec.
+        assert out == {}
+        # The warning names the missing config class so the cause is actionable.
+        assert any("RGBEncoderConfig" in rec.message for rec in caplog.records)
