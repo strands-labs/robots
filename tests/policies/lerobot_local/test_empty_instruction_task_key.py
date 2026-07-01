@@ -18,7 +18,7 @@ import pytest
 
 pytest.importorskip("lerobot.processor.pipeline")
 
-from lerobot.configs import PipelineFeatureType, PolicyFeature  # noqa: E402
+from lerobot.configs.types import PipelineFeatureType, PolicyFeature  # noqa: E402
 from lerobot.processor.pipeline import (  # noqa: E402
     ComplementaryDataProcessorStep,
     DataProcessorPipeline,
