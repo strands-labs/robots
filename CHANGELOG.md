@@ -5,6 +5,156 @@ All notable behavioural changes to `strands-robots` are logged here. Follows
 
 ## [Unreleased]
 
+### Security: Removed the unregistered `mimicgen` dependency (dependency-confusion RCE, CVE-pending)
+
+The `vera-sim` extra pinned `mimicgen==1.0.0`, but NVlabs MimicGen has never
+been published to PyPI -- the `mimicgen` name on PyPI is an unaffiliated
+third-party package uploaded 2026-06-27. Installing `strands-robots[vera-sim]`
+would therefore fetch and execute an attacker-controllable distribution at
+install time, before any project code runs. The dependency was dead weight from
+the source's perspective (`grep -rn "import mimicgen" src/` returns nothing);
+the `mimicgen` VERA embodiment is only a config string and needs no package. The
+pin is removed and replaced with a comment documenting that NVlabs MimicGen is
+git-only (`pip install "mimicgen @ git+https://github.com/NVlabs/mimicgen.git"`).
+A stdlib-only `scripts/audit_deps.py` supply-chain checker (denylist plus an
+optional `--check-pypi` 404 gate for unregistered/typosquat names) and a
+`tests/test_dependency_audit.py` regression guard block any re-introduction. The
+`[all]` extra never referenced `vera-sim`, so `pip install 'strands-robots[all]'`
+was not affected; exposure was limited to `[vera-sim]`. Anyone who installed
+`[vera-sim]` since 2026-06-27 should `pip uninstall -y mimicgen` and reinstall
+into a clean environment.
+
+### Added: RL parity -- `staged_reward`, a gym adapter, and vectorized PPO
+
+The from-scratch RL lane reaches parity with the reference stacks: a
+`staged_reward` composition, a gymnasium-compatible environment adapter, and a
+vectorized PPO collection loop that drives `VecSimEnv` for N-trajectory-per-step
+rollouts. The trainer's `render(output_path=...)` honors the sandboxed
+output-path contract, and the env union is tightened so the trainer accepts only
+the precise observation/action spec it can consume. Selected through the same
+factory path as the imitation trainers.
+
+### Added: from-scratch RL trainers -- on-policy PPO (`create_trainer("ppo")`) and off-policy FastSAC (`create_trainer("fast_sac")`)
+
+`strands_robots/training/` previously shipped only imitation / post-tuning
+trainers (`lerobot`, `groot`, `cosmos3`, `mock`) -- there was no policy-gradient
+loop. Two from-scratch reinforcement-learning trainers now land as providers on
+the existing `create_trainer` factory: `PpoTrainer` (`create_trainer("ppo")`),
+an on-policy Proximal Policy Optimization backend, and `FastSacTrainer`
+(`create_trainer("fast_sac")`), an off-policy soft actor-critic. Both subclass
+`BaseRLAlgo` and are registered through lazy loaders (the training package stays
+torch-free until an RL provider is resolved on first use), so they honor the
+existing `validate -> prepare -> train -> export` lifecycle with no new
+abstraction. They pair with `VecSimEnv` for parallel trajectory collection and
+`BaseRLAlgo.evaluate()` for deterministic scoring.
+
+### Added: auto-register the NVIDIA EGL vendor ICD so `MUJOCO_GL=egl` renders on the GPU
+
+Complements the software-rasterizer warning by removing the misconfiguration
+instead of only reporting it. When the effective GL backend is `egl` and
+`libEGL_nvidia` is installed but no NVIDIA vendor ICD is registered,
+`_configure_gl_backend` now stages a vendor ICD JSON in the user-writable
+strands-robots base dir and points glvnd at it via the documented
+`__EGL_VENDOR_LIBRARY_FILENAMES` override (NVIDIA first, system ICDs as
+fallback) before `import mujoco`. No root required. It is a strict no-op when an
+explicit vendor override is set, an NVIDIA ICD is already registered
+system-wide, no NVIDIA EGL library is installed (Mesa is correct there), or off
+Linux. On a headless NVIDIA host with the system ICD absent, the staged path
+renders on the GPU (~0.69 ms/frame) byte-identical to the default GPU render,
+versus hundreds of ms/frame on the Mesa `llvmpipe` fallback it removes.
+
+### Added: warn when MuJoCo EGL silently falls back to a CPU software rasterizer
+
+`_can_render()` probes render availability by creating a `mujoco.Renderer`, but
+EGL can load and still route to Mesa `llvmpipe` (CPU software rasterization) when
+no GPU EGL vendor ICD is registered -- common on NVIDIA hosts/containers missing
+`10_nvidia.json`. Offscreen rendering then still works but runs roughly two
+orders of magnitude slower (measured ~268 ms/frame on `llvmpipe` vs ~0.67
+ms/frame on an NVIDIA L40S for the same 256x256 scene), silently throttling every
+policy observation, rollout video, and dataset recording with no signal. The
+render probe now also reports the active `GL_RENDERER` (best-effort, fully
+wrapped so it can never change the probe's pass/fail), and a one-time
+`logger.warning` fires when a software rasterizer (`llvmpipe` / `softpipe` /
+`swrast` / `kms_swrast`) is active, naming the concrete fix. Purely diagnostic:
+no change to rendered output or render availability.
+
+### Added: `add_object` material / texture / reflectance for MuJoCo scenes
+
+`Simulation.add_object()` exposed only `rgba`, so every object compiled with no
+material assigned and rendered as flat, glossy plastic -- an obviously-synthetic
+input for a VLM/VLA policy trained on real-camera footage. An optional `material`
+spec now attaches a real MuJoCo material (`reflectance` / `specular` /
+`shininess` / `texrepeat`) and, optionally, a texture: an image file or a
+procedural builtin (`checker` / `gradient` / `flat` with `rgb1` / `rgb2` /
+`texdim`). The geom keeps its `rgba`, which tints a textured or solid material.
+Additive and backward-compatible: gated on `material is not None`, so the
+rgba-only path is byte-for-byte unchanged (`matid == -1`). The material is built
+before the body is added to the spec, so an invalid material (missing texture
+file, unknown builtin, or both `texture` and `builtin` set) raises `ValueError`
+before any spec mutation -- no silent fallback to flat plastic and no orphan
+body left behind. The Newton backend rejects a non-`None` `material` loudly. The
+schema is documented in `describe()`, the agent tool schema, and the
+world-building docs.
+
+### Added: MotionBricks generative-motion provider for the Unitree G1
+
+A `motionbricks` policy provider that generates G1 locomotion motion. It
+consumes `locomotion_style` from `policy_kwargs` (a plain-string contract, never
+a planner import) to steer the gait, owning the accepted style vocabulary as
+`LOCOMOTION_STYLES` and the clip mapping.
+
+### Added: `WBCGaitPolicy` -- gait-clock variant of the whole-body-control policy
+
+A gait-clock variant of `WBCPolicy` for the Unitree G1: a 95-dim observation
+with an explicit bipedal phase clock, alongside the base SONIC whole-body-control
+provider.
+
+### Added: `CompositePolicy` -- stack locomotion and manipulation on one robot
+
+A `CompositePolicy` provider that stacks policies across DOF groups, so a single
+robot can run a locomotion policy and a manipulation policy composed together
+(for example a walking humanoid that also drives its arms).
+
+### Added: reBot B601-DM single + bimanual hardware registry entries
+
+LeRobot registers the Seeed Studio reBot B601-DM follower as
+`rebot_b601_follower` and its bimanual variant as `bi_rebot_b601_follower`, but
+the strands registry had no entry mapping a canonical name to those types, so
+`Robot("rebot_b601", mode="real")` failed even though the `lerobot_local`
+embodiment configs already shipped. Two hardware-only entries (no sim asset,
+matching the `omx` / `bi_openarm` pattern) now map `rebot_b601` and
+`bi_rebot_b601` (a 6-DOF arm + gripper driven by Damiao CAN motors). Both carry
+`requires_lerobot_from_source: true` because the LeRobot types are not yet in a
+PyPI release within the pinned `lerobot>=0.5.0,<0.6.0` range; the conformance
+guard skips from-source entries so CI stays green, and removing the flag
+re-enables full checking once lerobot publishes.
+
+### Added: DAgger correction-collection action for `lerobot_teleoperate`
+
+`lerobot_teleoperate` could teleoperate or roll out a policy, but had no
+intervention / takeover path -- no way to run a policy on the follower, let the
+leader pre-empt mid-episode, and record the human correction as new dataset
+episodes (DAgger), the data-collection loop behind correction-driven fine-tuning.
+A `dagger` action now builds the correct nested `lerobot-rollout` CLI
+(lerobot 0.5 split policy rollout out of `lerobot_record` into `lerobot-rollout`
+with a native DAgger strategy) and runs it through the existing session
+machinery. New params: `policy_path`, `dagger_record_autonomous`,
+`dagger_input_device` (keyboard | pedal), `dagger_num_episodes`.
+`--dataset.push_to_hub` is emitted explicitly (lerobot defaults it to `True`) so
+an unattended correction run never auto-uploads; `policy_path` and
+`dataset_repo_id` are required and the input device is enum-checked.
+
+### Added: end-to-end VLA-on-G1 workflow example
+
+`examples/vla_g1_workflow.py` chains record (LeRobotDataset), fine-tune
+(Isaac-GR00T N1.7 via the GR00T trainer), and deploy (SONIC whole-body control
+via `WBCPolicy`) on the Unitree G1 humanoid, with a `docs/training/vla_workflow.md`
+page covering prerequisites and per-stage references. The default path runs in
+~10s on CPU with no external services (mock policy + stub ONNX session), proving
+the three components compose; `--tune` enables real fine-tuning (Docker + GPU)
+and `--checkpoint` deploys an existing SONIC checkpoint directly. Closes #471.
+
+
 ### Fixed: `add_object` rejects unknown keyword arguments instead of silently dropping them
 
 `Simulation.add_object` declared `**kwargs` on both the MuJoCo and Newton
