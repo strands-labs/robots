@@ -566,7 +566,7 @@ warn_return_any = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-v --cov=strands_robots --cov-report=term-missing --strict-markers --timeout=120"
+addopts = "-v --cov=strands_robots --cov-report=term-missing --cov-fail-under=80 --strict-markers --timeout=120"
 markers = [
     "gpu: requires CUDA GPU and real model weights (run with: pytest -m gpu)",
     "slow: long-running test (deselect with: pytest -m 'not slow')",
