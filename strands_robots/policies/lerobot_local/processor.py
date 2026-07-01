@@ -501,13 +501,20 @@ class ProcessorBridge:
             from lerobot.processor import TransitionKey
             from lerobot.processor.converters import create_transition
 
-            complementary: dict[str, Any] = {}
-            if instruction:
-                complementary["task"] = instruction
-
+            # Always include the "task" key so language-conditioned VLA
+            # pipelines (LeRobot's TokenizerProcessorStep) can find it. An
+            # empty or None instruction is a valid EMPTY task string (""),
+            # which LeRobot tokenizes without complaint. Omitting the key
+            # entirely (the old `if instruction:` guard) makes the tokenizer
+            # step raise a cryptic `KeyError: 'task'` -- the exact failure
+            # this transition-based path exists to avoid, per this method's
+            # docstring. run_policy's own default is `instruction=""`, so the
+            # guard broke the documented default for every language VLA.
+            # Non-language pipelines (ACT, diffusion) have no task-consuming
+            # step and simply ignore the extra complementary key.
             transition = create_transition(
                 observation=observation,
-                complementary_data=complementary if complementary else None,
+                complementary_data={"task": instruction or ""},
             )
             processed = self._preprocessor._forward(transition)
 
