@@ -129,7 +129,7 @@ sim.step(100)   # publishes /so101/joint_states + camera image_raw on the ROS 2 
 graph LR
     A[Natural Language<br/>'Pick up the red block'] --> B[Strands Agent]
     B --> C[Robot<br/>sim or real]
-    C --> D[Policy Provider<br/>GR00T / LeRobot / planner / mock]
+    C --> D[Policy Provider<br/>GR00T / Cosmos 3 / LeRobot / planner / mock]
     D --> E[Action Chunk]
     E --> F[MuJoCo Sim<br/>or Hardware]
     F -->|observation| C
@@ -163,6 +163,7 @@ extras you need:
 | `lerobot` | LeRobot | Real hardware, local VLA inference, dataset recording |
 | `molmoact2` | LeRobot + transformers, peft, scipy | MolmoAct2 transformers-native VLA (needs lerobot from source until PyPI >= 0.5.2) |
 | `groot-service` | pyzmq, msgpack | NVIDIA GR00T inference client |
+| `cosmos3-service` | websockets, msgpack | NVIDIA Cosmos 3 policy-server client |
 | `curobo` | _(empty; install cuRobo from source)_ | In-process collision-aware motion planning (CUDA GPU) |
 | `wbc` | onnxruntime | GR00T Whole-Body-Control (SONIC) humanoid locomotion - in-process ONNX, no GPU |
 | `motionbricks` | torch + vector-quantize-pytorch, pytorch-lightning, hydra-core (install `motionbricks` from source) | NVIDIA MotionBricks generative kinematic motion for the G1 - in-process torch, composes with `wbc` |
@@ -545,6 +546,7 @@ from strands_robots import create_policy
 create_policy("mock")                                  # sinusoidal test actions
 create_policy("groot", port=5555)                      # NVIDIA GR00T via ZMQ
 create_policy("zmq://localhost:5555")                  # same, by URL
+create_policy("cosmos3", embodiment="droid", port=8000)  # NVIDIA Cosmos 3 via WebSocket
 create_policy("lerobot/act_aloha_sim_transfer_cube")   # local HF inference
 ```
 
@@ -552,6 +554,7 @@ create_policy("lerobot/act_aloha_sim_transfer_cube")   # local HF inference
 |----------|---------|-------|
 | `mock` | none | Sinusoidal trajectories; `requires_images=False` (~10x faster) |
 | `groot` | NVIDIA GR00T N1.5/N1.6/N1.7 | Service mode (ZMQ to a Docker container) or local in-process (`model_path=`) |
+| `cosmos3` | NVIDIA Cosmos 3 omnimodal VLA | Service mode (WebSocket to a Cosmos Framework RoboLab policy server); embodiments: `droid`, `umi`, `av`, `bridge` |
 | `lerobot_local` | HuggingFace | Direct ACT / Pi0 / SmolVLA / Diffusion inference, no server |
 | `vera` | MIT VERA (DFoT/WAN planner + Jacobian IDM) | Two-stage video-to-action over a WebSocket GPU server (Docker); PushT + MimicGen, IK for eef-delta arms. **Git-only** (not on PyPI, no extra): `pip install 'vera @ git+https://github.com/sizhe-li/VERA.git'` plus `websockets msgpack numpy` |
 
@@ -566,10 +569,12 @@ classDiagram
         +provider_name
     }
     class Gr00tPolicy
+    class Cosmos3Policy
     class LerobotLocalPolicy
     class MockPolicy
     class YourPolicy
     Policy <|-- Gr00tPolicy
+    Policy <|-- Cosmos3Policy
     Policy <|-- LerobotLocalPolicy
     Policy <|-- MockPolicy
     Policy <|-- YourPolicy
