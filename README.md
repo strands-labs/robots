@@ -772,6 +772,42 @@ same `target_pose` / `target_joints` / `world_update` kwargs through.
 </details>
 
 
+## Training providers
+
+`create_trainer` is the training-side peer of `create_policy`: the provider
+name is the same one used for inference, so `create_policy("groot")` and
+`create_trainer("groot")` refer to one provider. It returns a `Trainer` you
+drive with a `TrainSpec`, and the `train_policy` tool wraps this same factory
+for agent-callable post-tuning.
+
+```python
+from strands_robots.training import create_trainer, TrainSpec
+
+# Imitation / post-tuning on a recorded LeRobotDataset:
+trainer = create_trainer("lerobot_local")
+trainer.train(TrainSpec(dataset_root="/tmp/pick", base_model="lerobot/smolvla_base",
+                        output_dir="/tmp/pick_ckpt", method="lora", steps=20000))
+
+# From-scratch reinforcement learning in sim (no dataset):
+ppo = create_trainer("ppo")   # or create_trainer("fast_sac")
+```
+
+| Provider | Kind | Notes |
+|----------|------|-------|
+| `lerobot_local` | Imitation / post-tuning | LeRobot fine-tune (full or LoRA) on a LeRobotDataset |
+| `groot` | Imitation / post-tuning | NVIDIA GR00T fine-tune; needs an `embodiment` tag |
+| `cosmos3` | Imitation / post-tuning | NVIDIA Cosmos 3 fine-tune (multi-node HSDP capable) |
+| `mock` | Imitation (test) | No-op trainer for tests and dry runs |
+| `ppo` | Reinforcement learning | On-policy PPO; pairs with `VecSimEnv` for parallel rollouts |
+| `fast_sac` | Reinforcement learning | Off-policy Soft Actor-Critic |
+
+The RL trainers (`ppo`, `fast_sac`) subclass `BaseRLAlgo` and share the same
+`validate -> prepare -> train -> export` lifecycle as the imitation trainers.
+They collect trajectories through `VecSimEnv` (N independent `SimEnv` as one
+batched env) and score with `BaseRLAlgo.evaluate()`. The training package stays
+torch-free until an RL provider is resolved on first use.
+
+
 ## Simulation (MuJoCo)
 
 `Robot("so100")` (sim mode) returns a `Simulation` - a MuJoCo-backed AgentTool
