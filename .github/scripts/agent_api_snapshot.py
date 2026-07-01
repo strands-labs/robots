@@ -87,15 +87,20 @@ def render_markdown(breaking: list[str], info: list[str]) -> str:
     if not breaking and not info:
         return (
             "## No AgentTool API Changes Detected\n\n"
-            "No changes to the dispatched action contract in this PR."
+            + "No changes to the dispatched action contract in this PR."
         )
     lines: list[str] = []
     if breaking:
+        # Built as a single explicit expression (not two adjacent literals in a
+        # list) so it does not read as a missing-comma bug.
+        summary_line = (
+            f"Found **{len(breaking)}** potential breaking change(s) in the "
+            + "dispatched action contract (the actions and parameters agents call):"
+        )
         lines += [
             "## AgentTool Breaking Change Warning",
             "",
-            f"Found **{len(breaking)}** potential breaking change(s) in the "
-            "dispatched action contract (the actions and parameters agents call):",
+            summary_line,
             "",
         ]
         lines += [f"- {b}" for b in breaking]
@@ -105,13 +110,12 @@ def render_markdown(breaking: list[str], info: list[str]) -> str:
         lines += ["", "<details><summary>Backward-compatible additions</summary>", ""]
         lines += [f"- {i}" for i in info]
         lines += ["", "</details>"]
-    lines += [
-        "",
-        "---",
+    footer = (
         "> Automated static check of the AgentTool action contract. Removed or "
-        "renamed actions/parameters break agent code that calls them. If a change "
-        "is intentional, add a `CHANGELOG.md` entry or a deprecation notice.",
-    ]
+        + "renamed actions/parameters break agent code that calls them. If a change "
+        + "is intentional, add a `CHANGELOG.md` entry or a deprecation notice."
+    )
+    lines += ["", "---", footer]
     return "\n".join(lines)
 
 

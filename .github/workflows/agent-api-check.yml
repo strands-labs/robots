@@ -112,7 +112,27 @@ jobs:
             "The base branch contract could not be snapshotted (usually because this check is new on the base). It will run normally once merged." \
             > /tmp/agent-api-changes.md
 
-      - name: Post or update PR comment
+      # Always write the report to the job summary. This needs no token
+      # permissions and works on fork PRs (where GITHUB_TOKEN is read-only), so
+      # the signal is never lost even if the PR comment cannot be posted.
+      - name: Write job summary
+        if: always()
+        run: |
+          if [ -f /tmp/agent-api-changes.md ]; then
+            cat /tmp/agent-api-changes.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            printf '%s\n' "## AgentTool API Check" "" "No report produced." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      # Posting a PR comment needs issues:write, which GitHub forces to
+      # read-only for pull_request events from forks. This step is therefore
+      # best-effort: a 403 is logged as a notice and does not fail the job. The
+      # authoritative report is the job summary above. We do NOT switch to
+      # pull_request_target, which would run untrusted PR code (this workflow
+      # installs and imports the branch) with a write token.
+      - name: Post or update PR comment (best-effort)
+        if: always()
+        continue-on-error: true
         uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b  # v7.1.0
         env:
           DIFF_EXIT: ${{ steps.diff.outputs.exit_code }}
@@ -128,23 +148,29 @@ jobs:
             const marker = '<!-- agent-api-check -->';
             const fullBody = `${marker}\n${body}`;
 
-            const { data: comments } = await github.rest.issues.listComments({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.payload.pull_request.number,
-            });
-            const existing = comments.find(c => c.body.includes(marker));
-            if (existing) {
-              await github.rest.issues.updateComment({
-                owner: context.repo.owner, repo: context.repo.repo,
-                comment_id: existing.id, body: fullBody,
+            try {
+              const { data: comments } = await github.rest.issues.listComments({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.payload.pull_request.number,
               });
-            } else {
-              await github.rest.issues.createComment({
-                owner: context.repo.owner, repo: context.repo.repo,
-                issue_number: context.payload.pull_request.number, body: fullBody,
-              });
+              const existing = comments.find(c => c.body.includes(marker));
+              if (existing) {
+                await github.rest.issues.updateComment({
+                  owner: context.repo.owner, repo: context.repo.repo,
+                  comment_id: existing.id, body: fullBody,
+                });
+              } else {
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner, repo: context.repo.repo,
+                  issue_number: context.payload.pull_request.number, body: fullBody,
+                });
+              }
+            } catch (e) {
+              // Expected on fork PRs: GITHUB_TOKEN is read-only, so commenting
+              // returns 403. The job summary carries the report; do not fail.
+              core.notice(`Could not post PR comment (${e.status || 'error'}); see the job summary for the AgentTool API report.`);
             }
             if (process.env.DIFF_EXIT === '1') {
-              core.warning('AgentTool breaking changes detected - see PR comment.');
+              core.warning('AgentTool breaking changes detected - see the job summary / PR comment.');
             }
