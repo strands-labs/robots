@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Supply-chain audit for the project's declared dependencies.
 
-Guards against two classes of packaging defect:
+Guards against three classes of packaging defect:
 
 1. Dependency confusion / name hijacking -- a dependency whose distribution
    name is known to be unaffiliated with the upstream it claims to be (for
@@ -13,6 +13,13 @@ Guards against two classes of packaging defect:
    not resolve on PyPI at all. Catching these early stops a typo from becoming
    a future confusion target. This check hits the network and is only run when
    ``--check-pypi`` is passed.
+
+3. Direct references -- a PEP 508 ``name @ <url>`` requirement (git/URL/file).
+   Such a dependency lets the wheel build locally and pass ``twine check``, but
+   the PyPI upload endpoint hard-rejects any distribution whose metadata carries
+   a direct reference, so it silently breaks the release at the final upload
+   step. A git-only dependency must be documented as a manual install, never
+   declared as a dependency or extra of a distribution that ships to PyPI.
 
 Git-sourced dependencies (``pkg @ git+https://...``) and self-references
 (``strands-robots[...]``) are intentionally excluded: they never resolve from
@@ -122,10 +129,44 @@ def check_pypi_existence(deps: dict[str, str]) -> list[str]:
     return findings
 
 
+def collect_all_requirements(pyproject_path: Path) -> list[str]:
+    """Return every declared requirement string (core deps + all extras)."""
+    data = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
+    project = data.get("project", {})
+    requirements: list[str] = list(project.get("dependencies", []))
+    for deps in project.get("optional-dependencies", {}).values():
+        requirements.extend(deps)
+    return requirements
+
+
+def check_direct_references(pyproject_path: Path) -> list[str]:
+    """Return failure messages for any direct-reference (URL/VCS/file) dependency.
+
+    A PEP 508 direct reference (``name @ <url>``, e.g. ``pkg @ git+https://...``)
+    is the only place ``@`` may appear in a requirement string -- version
+    specifiers never use it -- so its presence unambiguously marks a direct
+    reference. PyPI rejects any uploaded distribution whose metadata carries one,
+    which is why declaring such a dependency (even behind ``allow-direct-references``)
+    breaks the publish at the upload step while passing ``twine check``.
+    """
+    findings = []
+    for req in collect_all_requirements(pyproject_path):
+        stripped = req.strip()
+        if "@" in stripped:
+            findings.append(
+                f"DIRECT REFERENCE '{stripped}': PyPI rejects distributions whose "
+                "metadata carries a VCS/URL reference, so this breaks the publish "
+                "at the upload step. Document a manual git install instead of "
+                "declaring it as a dependency or extra."
+            )
+    return findings
+
+
 def audit(pyproject_path: Path, check_pypi: bool = False) -> list[str]:
     """Run all enabled checks and return the combined findings list."""
     deps = collect_pypi_dependencies(pyproject_path)
     findings = check_denylist(deps)
+    findings.extend(check_direct_references(pyproject_path))
     if check_pypi:
         findings.extend(check_pypi_existence(deps))
     return findings

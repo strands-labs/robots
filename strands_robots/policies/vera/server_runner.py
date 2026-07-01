@@ -21,6 +21,38 @@ import threading
 import time
 from typing import TYPE_CHECKING
 
+
+def _require_vera_installed(python_executable: str) -> None:
+    """Verify the git-only ``vera`` package is importable, else raise clearly.
+
+    VERA (https://github.com/sizhe-li/VERA) is distributed only as a git
+    repository and cannot ship as a ``strands-robots`` extra, because PyPI
+    rejects any distribution whose metadata carries a direct VCS/URL reference.
+    The server is launched as ``python -m vera.server...`` in *python_executable*,
+    so that is the interpreter we probe.
+
+    Raises:
+        ImportError: with a git install instruction if ``vera`` is absent.
+    """
+    import subprocess
+
+    probe = subprocess.run(  # noqa: S603 - list args, no shell
+        [python_executable, "-c", "import vera"],
+        capture_output=True,
+        text=True,
+    )
+    if probe.returncode != 0:
+        raise ImportError(
+            "The 'vera' package is required to run the VERA policy server but is "
+            f"not importable in {python_executable}.\n"
+            "VERA is git-only (not on PyPI, and cannot be a strands-robots extra "
+            "because PyPI rejects direct VCS references). Install it directly:\n"
+            "  pip install 'vera @ git+https://github.com/sizhe-li/VERA.git'\n"
+            "  # plus the client deps: pip install websockets msgpack 'numpy>=1.24'\n"
+            "See strands_robots/policies/vera/__init__.py for the full quickstart."
+        )
+
+
 if TYPE_CHECKING:
     from .config import VeraConfig
 
@@ -97,6 +129,14 @@ class VeraServerRunner:
         if _port_open(cfg.host, int(cfg.server_port or 0)):
             logger.info("VERA server already listening on %s:%s; reusing", cfg.host, cfg.server_port)
             return
+
+        # Pre-flight: the git-only `vera` package must be importable in the
+        # target interpreter before we spawn `python -m vera.server...`. Without
+        # this check a missing install surfaces only as an opaque "server exited
+        # early (code 1)" RuntimeError several seconds later. VERA is NOT on PyPI
+        # (and cannot be a strands-robots extra: PyPI rejects direct VCS refs), so
+        # it must be installed directly from git.
+        _require_vera_installed(cfg.python_executable or sys.executable)
 
         cmd = self._build_command()
         env = {**os.environ, **cfg.server_env()}

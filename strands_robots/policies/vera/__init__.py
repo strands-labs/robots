@@ -17,7 +17,9 @@ Quickstart::
     #    export VERA_CKPT_ROOT=$PWD/vera-ckpts
     #
     # 2. Install VERA + extras (Python 3.11, torch 2.6 / CUDA 12.4):
-    #    pip install 'strands-robots[vera]'   # or: pip install -e 'VERA[idm,video]'
+    #    pip install 'vera @ git+https://github.com/sizhe-li/VERA.git'
+    #    pip install websockets msgpack 'numpy>=1.24'   # VERA websocket client deps
+    #    (VERA is git-only - not a strands-robots extra; PyPI rejects VCS refs)
 
     from strands_robots.policies import create_policy
 

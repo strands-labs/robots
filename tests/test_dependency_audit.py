@@ -89,3 +89,47 @@ def test_denylist_names_are_canonicalized(tmp_path):
     )
     findings = audit_deps.audit(pyproject, check_pypi=False)
     assert findings, "canonicalized denylist match should fire"
+
+
+def test_pyproject_has_no_direct_reference_dependency():
+    """The live pyproject must declare no PEP 508 direct-reference dependency.
+
+    A ``name @ <url>`` requirement (git/URL/file) makes the PyPI upload endpoint
+    reject the distribution even though the wheel builds and passes ``twine
+    check`` -- this is what failed the v0.4.1 publish. Git-only dependencies must
+    be documented as a manual install, never declared as a dependency or extra.
+    """
+    findings = audit_deps.check_direct_references(_PYPROJECT)
+    assert findings == [], f"direct-reference dependency found: {findings}"
+
+
+def test_audit_flags_direct_reference_dependency(tmp_path):
+    """A re-introduced ``git+`` dependency must make the audit fail."""
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text(
+        "[project]\n"
+        'name = "x"\n'
+        'version = "0"\n'
+        'dependencies = ["numpy>=1.24"]\n'
+        "[project.optional-dependencies]\n"
+        'vera = ["vera @ git+https://github.com/sizhe-li/VERA.git"]\n',
+        encoding="utf-8",
+    )
+    findings = audit_deps.audit(pyproject, check_pypi=False)
+    assert any("DIRECT REFERENCE" in f and "vera" in f for f in findings), findings
+
+
+def test_direct_reference_check_ignores_extras_specifiers_and_markers(tmp_path):
+    """Self-referencing extras, version specifiers and markers are not flagged."""
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text(
+        "[project]\n"
+        'name = "x"\n'
+        'version = "0"\n'
+        'dependencies = ["numpy>=1.24", "torch>=2.0; platform_machine == \'aarch64\'"]\n'
+        "[project.optional-dependencies]\n"
+        'all = ["x[dev]"]\n'
+        'dev = ["pytest>=8"]\n',
+        encoding="utf-8",
+    )
+    assert audit_deps.check_direct_references(pyproject) == []
