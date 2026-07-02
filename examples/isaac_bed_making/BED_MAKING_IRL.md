@@ -76,7 +76,7 @@ balances on its own two feet at the bedside and reaches onto the bed, no topple,
 *`reach_coarse` climbs 0.32 → 0.65 while mean episode length holds at ~393/400 — nearly no early
 terminations, i.e. it stays upright. (Mean reward is regularizer-dominated and misleading; the real
 signals are `reach_coarse` + ep-len + the rendered eval.)* Full clip:
-[`media/rl/g1edu/bed_reach_g1edu.mp4`](https://raw.githubusercontent.com/armwaheed/robots/bed-making-media/examples/isaac_bed_making/media/rl/g1edu/bed_reach_g1edu.mp4). Deployable policy at
+[`media/rl/g1edu/bed_reach_g1edu.mp4`](https://github.com/user-attachments/assets/c66bd224-0670-4815-8ea2-afadb14d40ab). Deployable policy at
 [`rl/policy_g1edu/`](rl/policy_g1edu/); env in [`rl/robot_cfg_g1edu.py`](rl/robot_cfg_g1edu.py) +
 [`rl/bed_reach_env_cfg_g1edu.py`](rl/bed_reach_env_cfg_g1edu.py).
 
@@ -362,7 +362,7 @@ actor and the critic **starved the value function**, and `reach_coarse` peaked a
 `base_lin_vel` (and other privileged terms) in a **critic-only** observation group while the **actor** drops it
 and stays deployable (82-D). Retrained ("v2"): `reach_coarse` climbed **monotonically to 0.59**, ep-len
 **394/400** (robust, barely topples), eye-verified upright + reaching at mid *and* end of the episode
-([`media/rl/g1edu/bed_reach_v2_critic.mp4`](https://raw.githubusercontent.com/armwaheed/robots/bed-making-media/examples/isaac_bed_making/media/rl/g1edu/bed_reach_v2_critic.mp4)). The deployable actor is **82-D**
+([`media/rl/g1edu/bed_reach_v2_critic.mp4`](https://github.com/user-attachments/assets/6e4ffb0b-fae3-4e8b-83bd-dabf148b87ff)). The deployable actor is **82-D**
 (no `base_lin_vel`); the deploy contract is dumped from the exact env by
 [`rl/dump_deploy_contract.py`](rl/dump_deploy_contract.py) → `rl/deploy_contract_v2.json`. Deferred: actuator
 **latency / motor-strength DR** (needs an actuator-model change — add only if hardware transfer is still marginal).

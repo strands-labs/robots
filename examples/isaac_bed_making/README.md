@@ -12,7 +12,7 @@ copy of the original from the [MuJoCo demo](../mujoco_bed_making/) — so it has
 
 ![Two G1s make a bed](https://raw.githubusercontent.com/armwaheed/robots/bed-making-media/examples/isaac_bed_making/media/rl/bedmaking_scene.webp)
 
-A full headless run renders an mp4 to **[`media/isaac_bed_making.mp4`](https://raw.githubusercontent.com/armwaheed/robots/bed-making-media/examples/isaac_bed_making/media/isaac_bed_making.mp4)**.
+A full headless run renders an mp4 to **[`media/isaac_bed_making.mp4`](https://github.com/user-attachments/assets/28eb7850-6f58-427f-bf28-631423ca1fa9)**.
 
 > **Benchmark (current):** both G1s walk in, hand off to the whole-body reach policy, lean/squat to the
 > draped sheet, grip it and draw it headward — **each balancing on its own two feet through the entire

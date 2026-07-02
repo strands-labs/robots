@@ -21,8 +21,8 @@ has to keep itself upright, exactly like the real hardware. The postures differ 
 solves the reach within each robot's own actuation envelope — RL does not impose human grace**; that
 asymmetry is learned, balanced behaviour, not a loss of balance.*
 
-**🎬 Benchmark video (full two-G1 demo, current):** [`media/isaac_bed_making.mp4`](https://raw.githubusercontent.com/armwaheed/robots/bed-making-media/examples/isaac_bed_making/media/isaac_bed_making.mp4)
-&nbsp;•&nbsp; **Single-policy isolation eval:** [`media/rl/bed_pull_policy.mp4`](https://raw.githubusercontent.com/armwaheed/robots/bed-making-media/examples/isaac_bed_making/media/rl/bed_pull_policy.mp4)
+**🎬 Benchmark video (full two-G1 demo, current):** [`media/isaac_bed_making.mp4`](https://github.com/user-attachments/assets/28eb7850-6f58-427f-bf28-631423ca1fa9)
+&nbsp;•&nbsp; **Single-policy isolation eval:** [`media/rl/bed_pull_policy.mp4`](https://github.com/user-attachments/assets/cff9d6b9-fb20-4e7b-9a8c-4ca308ceb283)
 &nbsp;•&nbsp; **Deployable policy (committed):** [`rl/policy/policy.onnx`](rl/policy/policy.onnx) · [`rl/policy/policy.pt`](rl/policy/policy.pt)
 
 > **Status — read this first.** **The two-G1 demo now runs end-to-end (iteration 4 — the benchmark).** Both
@@ -123,7 +123,7 @@ The first policy learned to **balance on a free base while reaching a hand targe
 forward-and-down cone (no bed in the scene). It worked: the G1 squats and leans to targets from chest
 height to near the floor and **never topples** — reach error converged **37 cm → ~12 cm**.
 
-![Free-space deep reach](https://raw.githubusercontent.com/armwaheed/robots/bed-making-media/examples/isaac_bed_making/media/rl/02_deep_reach.webp) &nbsp; *(full clip: [`media/rl/bed_reach_policy.mp4`](https://raw.githubusercontent.com/armwaheed/robots/bed-making-media/examples/isaac_bed_making/media/rl/bed_reach_policy.mp4))*
+![Free-space deep reach](https://raw.githubusercontent.com/armwaheed/robots/bed-making-media/examples/isaac_bed_making/media/rl/02_deep_reach.webp) &nbsp; *(full clip: [`media/rl/bed_reach_policy.mp4`](https://github.com/user-attachments/assets/9254d6b8-fbca-4a45-adf3-21aaf2879928))*
 
 **Why it was only a stepping stone.** It proved balance-while-reach is learnable — but it had **no
 incentive to keep its feet planted.** In free space it was free to *step* toward a target to stay
@@ -163,7 +163,9 @@ bed, no topple.**
 |---|---|
 | ![](https://raw.githubusercontent.com/armwaheed/robots/bed-making-media/examples/isaac_bed_making/media/rl/ambidextrous_reach.webp) | ![](https://raw.githubusercontent.com/armwaheed/robots/bed-making-media/examples/isaac_bed_making/media/rl/ambidextrous_lateral.webp) |
 
-🎬 **[`media/rl/ambidextrous_eval.mp4`](https://raw.githubusercontent.com/armwaheed/robots/bed-making-media/examples/isaac_bed_making/media/rl/ambidextrous_eval.mp4)** — both-handed, balanced, no topple.
+🎬 **Ambidextrous eval** — both-handed, balanced, no topple:
+
+https://github.com/user-attachments/assets/927fed0f-66d1-4c36-82c2-c323a24b0d7f
 
 In the **full demo** the robots **spawn ~1 m out and walk to the bedside with their arms at their
 sides** (the canonical Unitree stance — see [§6](#6-closing-the-real-to-sim-gap-with-robotics-connect)),
@@ -200,7 +202,9 @@ warm-start hit.
 |---|---|
 | ![](https://raw.githubusercontent.com/armwaheed/robots/bed-making-media/examples/isaac_bed_making/media/rl/benchmark_two_robot_reach.webp) | ![](https://raw.githubusercontent.com/armwaheed/robots/bed-making-media/examples/isaac_bed_making/media/rl/benchmark_two_robot_pull.webp) |
 
-🎬 **[`media/isaac_bed_making.mp4`](https://raw.githubusercontent.com/armwaheed/robots/bed-making-media/examples/isaac_bed_making/media/isaac_bed_making.mp4)** — the full two-G1 demo, 195 frames, both robots upright throughout.
+🎬 **Full two-G1 demo** — 195 frames, both robots upright throughout:
+
+https://github.com/user-attachments/assets/28eb7850-6f58-427f-bf28-631423ca1fa9
 
 ---
 
@@ -208,7 +212,7 @@ warm-start hit.
 
 **The benchmark — full two-G1 demo (iteration 4):** both robots walk in, hand off, reach, grip and draw the
 sheet headward, **each balancing on its own two feet, no topple, no kinematic cheats** — eye-verified across
-all 195 frames (frames above; full clip [`media/isaac_bed_making.mp4`](https://raw.githubusercontent.com/armwaheed/robots/bed-making-media/examples/isaac_bed_making/media/isaac_bed_making.mp4)).
+all 195 frames (frames above; full clip [`media/isaac_bed_making.mp4`](https://github.com/user-attachments/assets/28eb7850-6f58-427f-bf28-631423ca1fa9)).
 
 **The policy in isolation** reaches targets on and above the bed surface (forward **and** lateral — the
 headward drag direction), balancing and staying planted at the bedside the entire time:
@@ -217,7 +221,9 @@ headward drag direction), balancing and staying planted at the bedside the entir
 |---|---|
 | ![](https://raw.githubusercontent.com/armwaheed/robots/bed-making-media/examples/isaac_bed_making/media/rl/bed_pull_reach.webp) | ![](https://raw.githubusercontent.com/armwaheed/robots/bed-making-media/examples/isaac_bed_making/media/rl/bed_pull_lateral.webp) |
 
-🎬 **[`media/rl/bed_pull_policy.mp4`](https://raw.githubusercontent.com/armwaheed/robots/bed-making-media/examples/isaac_bed_making/media/rl/bed_pull_policy.mp4)** — single policy, 350 frames, no topple.
+🎬 **Single-policy bed-pull** — 350 frames, no topple:
+
+https://github.com/user-attachments/assets/cff9d6b9-fb20-4e7b-9a8c-4ca308ceb283
 
 **Convergence** (2048 parallel robots, ~30–45 min on one GB10): the iteration-4 from-scratch run climbs out
 of the early exploration dip (mean reward −8.6 → −2.6) as the coarse reach lands first and the fine reach
