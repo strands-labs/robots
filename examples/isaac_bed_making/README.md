@@ -56,11 +56,11 @@ config and reproduce steps are in **[`RL_WHOLE_BODY_REACH.md`](RL_WHOLE_BODY_REA
 | --- | --- |
 | ![ambidextrous reach](https://raw.githubusercontent.com/armwaheed/robots/bed-making-media/examples/isaac_bed_making/media/rl/ambidextrous_reach.webp) | ![walk in](https://raw.githubusercontent.com/armwaheed/robots/bed-making-media/examples/isaac_bed_making/media/rl/walk_in_arms_at_sides.webp) |
 
-## Real‑to‑sim sensing with robotics‑connect &nbsp;→&nbsp; [unitree/g1](https://github.com/armwaheed/robotics-connect/tree/main/unitree/g1)
+## Real‑to‑sim sensing with robotics‑connect &nbsp;→&nbsp; unitree/g1
 
 A simulator doesn't fully expose a real robot's **sensor and effector envelope** — the G1's sensors are
 tilted, range‑limited and occluded by its own body in ways Isaac Sim won't tell you. We close that gap
-with **[robotics‑connect](https://github.com/armwaheed/robotics-connect/tree/main/unitree/g1)**, Arm's
+with **robotics‑connect**, Arm's
 Unitree G1 EDU control stack, where each sensor is **characterized on the physical robot**:
 
 * the head **Intel RealSense** is calibrated to a **51.29° downward tilt** — it sees the floor and the

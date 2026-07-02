@@ -131,7 +131,7 @@ clear path — which is what the walk-to-bed step (§9) drives toward.
 ## 5. Voice OUT — the robot speaks (verified on hardware)
 
 The robot asks for help through its **own chest speaker**, via Unitree's `AudioClient` over the DDS
-`"voice"` service — built as [`robotics-connect/unitree/g1/voice`](https://github.com/armwaheed/robotics-connect/tree/g1-audio-module/unitree/g1/voice)
+`"voice"` service — built as `robotics-connect/unitree/g1/voice`
 and **verified live**: the G1 physically spoke "Hello. I am the bed-making robot…".
 
 Two findings worth recording for the next session:
@@ -174,7 +174,7 @@ closed process or intercepting the encrypted cloud stream — not something to d
 
 We filed the full reproduction (above) and took it to **Unitree engineering support** for the
 supported way to read the array from userspace. The mic findings are also documented in the voice
-module's [`README.md`](https://github.com/armwaheed/robotics-connect/tree/g1-audio-module/unitree/g1/voice).
+module's `README.md`.
 
 ### 6.1 Unitree engineering support's verdict — the question is now closed
 
@@ -331,13 +331,13 @@ the dashboard, the out-loud ask → headset answer → grounded reply verified o
 The robot **walked to the bed** under closed-loop measured odometry (`rt/odommodestate`), controller-abort
 armed, and made light contact with the wooden footboard while staying balanced (eye- + telemetry-verified:
 IMU level, not leaning). Two vendor-interface gotchas surfaced and are now baked into the
-[robotics-connect locomotion binding](https://github.com/armwaheed/robotics-connect): `LocoClient.BalanceStand`
+robotics-connect locomotion binding: `LocoClient.BalanceStand`
 needs a `balance_mode` argument on the current SDK (and only sets the mode — it does not stand the robot up),
 and `Move(...)` must use `continous_move=True` or the gait re-ramps every re-issue into a ~0.03 m/s shuffle
 that false-trips the stall guard (which is a *speed* check, not an obstacle sensor).
 
 **The whole-body RL deploy was staged as a de-risk ladder** (full rationale in robotics-connect
-[`SAFETY.md`](https://github.com/armwaheed/robotics-connect/blob/main/SAFETY.md)):
+`SAFETY.md`):
 
 | Rung | Runs | Fall risk | Result |
 |---|---|---|---|
@@ -352,8 +352,8 @@ last sample; on the G1 at sim gains, `kp` up to 150–200) with nothing left to 
 **spin-kicked on the floor and broke an office window.** The fix is architectural, now shipped: **never
 `kill -9` a low-level control process** — the safe stops are the hardware e-stop, the controller firmware-damp,
 or a clean `kp=0` damp; every motor-command process must wrap its loop in
-[`lib/safe_stop.py`](https://github.com/armwaheed/robotics-connect/blob/main/lib/safe_stop.py) (damps on
-return/exception/SIGINT/SIGTERM). See [`SAFETY.md` §0](https://github.com/armwaheed/robotics-connect/blob/main/SAFETY.md).
+`lib/safe_stop.py` (damps on
+return/exception/SIGINT/SIGTERM). See `SAFETY.md` §0.
 
 **Why the transfer failed, and the fix.** The first transfer-robust retrain dropped `base_lin_vel` from the
 observation (the real G1 can't observe its base linear velocity reliably) — but dropping it from **both** the
@@ -380,8 +380,8 @@ clock-vs-max before blaming a config change.**
 The on-hardware ladder above first ran through a bespoke `rl/deploy/g1_bedreach_deploy.py` that hardcoded an
 85-D observation concatenation and an inline gains table. Neither survives the v2 change — the actor dropped
 `base_lin_vel`, so the obs is now **82-D** — so the deploy is lifted onto the robot-agnostic harness in
-robotics-connect ([`lib/policy_deploy.py`](https://github.com/armwaheed/robotics-connect/blob/main/lib/policy_deploy.py)
-+ the [G1 `RobotIO` binding](https://github.com/armwaheed/robotics-connect/blob/main/unitree/g1/deploy/g1_robot_io.py)).
+robotics-connect (`lib/policy_deploy.py`
++ the G1 `RobotIO` binding).
 Everything is now driven by `rl/deploy_contract_v2.json`: the `ObsBuilder` is **term-major** — it concatenates
 exactly the terms the contract lists, in order — so the 82-D obs falls out of the contract with **no code change
 to robotics-connect**. The productized harness was already correct; the lift was entirely application-side.
@@ -488,7 +488,7 @@ move-to-default); the bare damped Develop state cannot stand, so the **tether be
   ~20 ms tick and runs the clean `kp=0` damp (`SafeStop`) — never hunt for a specific combo, just mash any button.
   Backstops if the process itself ever hangs: handheld **`L2+B`** firmware damp → hardware e-stop / battery.
   `SafeStop` also damps on return/exception/SIGINT/`kill -TERM`. **Never `kill -9`** — it latches the last
-  high-gain command (this broke a window once). See robotics-connect [`SAFETY.md`](https://github.com/armwaheed/robotics-connect/blob/main/SAFETY.md).
+  high-gain command (this broke a window once). See robotics-connect `SAFETY.md`.
 
 **Status:** code-complete and tested off-hardware + the SDK API verified read-only against the robot's own SDK; the
 reworked whole-body rung (Develop-mode verify, abort-live handshake, `rt/lowcmd` QoS, move-to-default startup) still
@@ -519,7 +519,7 @@ Because the arm overlay (`rt/arm_sdk`) *blends* with the running balancer (`exec
 weight ramped 0→1; unitree_sdk2_python#108) instead of fighting it, the bedside reach is **fall-safe, gantry-free,
 and self-gating** (the overlay is a no-op if the balancer isn't running). So the real-robot path is: keep the robot
 balancing in Regular/AI-Sport mode, **walk to the bed with the vendor `LocoClient.Move`** (the
-[robotics-connect locomotion layer](https://github.com/armwaheed/robotics-connect)), and **reach with the arm
+robotics-connect locomotion layer), and **reach with the arm
 overlay** — which is the rung we already eye-verified live (reach + smooth blended return). Whole-body `rt/lowcmd`
 (the v2 policy's own leg balancing) remains a **gantry-only, stand-only research path** behind the liveness gate; it
 is not the path to the task, because the task needs walking and `rt/lowcmd` cannot coexist with the AI walk. The
@@ -531,7 +531,7 @@ where full low-level takeover *is* the right call.
 With the factory balancer holding the legs (the only viable mode on the 23-DOF EDU), the robot **cannot squat** to
 reach a low sheet — so the bedside reach is fundamentally an **upper-body** task. The design follows from that
 (descriptor-driven, so robotics-connect stays universal across the 23- and 29-DOF variants —
-[`lib/task_gate.py`](https://github.com/armwaheed/robotics-connect/blob/main/lib/task_gate.py)):
+`lib/task_gate.py`):
 
 - **Bed high enough → upper-body reach (no RL, fall-safe).** If the sheet is within the robot's **balance-safe
   upper-body envelope**, reach it with a **deterministic arm trajectory** (IK via `unitree/g1/arm_fk` into safe joint

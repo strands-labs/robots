@@ -1,5 +1,5 @@
 """On-robot perception for the bed-making demo, mirroring the real Unitree G1 EDU sensor geometry
-from **robotics-connect** (github.com/armwaheed/robotics-connect — Arm's sanitized G1 control stack).
+from **robotics-connect** (robotics-connect (internal) — Arm's sanitized G1 control stack).
 
 Two complementary sensors live on the G1's ``torso_link``, exactly as on the EDU hardware:
 

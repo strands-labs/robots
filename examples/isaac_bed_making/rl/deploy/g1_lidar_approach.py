@@ -14,8 +14,16 @@ import sys, time, os, json, argparse
 import numpy as np
 sys.path.insert(0, "/home/unitree/robotics-connect-deploy/unitree/g1/locomotion")
 sys.path.insert(0, "/home/unitree/robotics-connect-deploy/unitree/g1/lidar_sight")
-from g1_locomotion import G1Locomotion
-from lidar_sight import LidarSight
+# G1Locomotion and LidarSight are provided by Arm's internal robotics-connect stack (private),
+# which runs on the physical G1 and is not part of this repo.
+try:
+    from g1_locomotion import G1Locomotion
+    from lidar_sight import LidarSight
+except ImportError as _e:
+    raise SystemExit(
+        "g1_lidar_approach.py runs on the physical G1 and requires Arm's internal robotics-connect "
+        "stack (g1_locomotion, lidar_sight), which is not included in this repository."
+    ) from _e
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--iface", default="eth0")

@@ -9,8 +9,16 @@ CAVEAT: odometry on this rig drifts/glitches, so the LiDAR-gated approach (g1_li
 preferred, odom-free path to the bed. This wrapper is kept for the rehearsal/abort-test workflow.
 """
 import math, sys, argparse, os
+# On-robot deploy script. G1Locomotion is provided by Arm's internal robotics-connect stack
+# (private), which runs on the physical G1 and is not part of this repo.
 sys.path.insert(0, "/home/unitree/robotics-connect-deploy/unitree/g1/locomotion")
-from g1_locomotion import G1Locomotion
+try:
+    from g1_locomotion import G1Locomotion
+except ImportError as _e:
+    raise SystemExit(
+        "g1_walk_to.py runs on the physical G1 and requires Arm's internal robotics-connect "
+        "stack (g1_locomotion), which is not included in this repository."
+    ) from _e
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--iface", default="eth0")

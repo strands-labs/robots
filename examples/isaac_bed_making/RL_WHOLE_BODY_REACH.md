@@ -275,7 +275,7 @@ hands you idealized cameras and ray-casts; the *actual* G1's sensors are tilted,
 **occluded by the robot's own body** in ways the sim will never tell you. Bridging that is **real-to-sim**:
 measure the hardware, then build the sim to match — the loop that *feeds* sim-to-real.
 
-We close it with **[robotics-connect](https://github.com/armwaheed/robotics-connect)** — Arm's Unitree G1
+We close it with **robotics-connect** — Arm's Unitree G1
 EDU control stack, where each sensor and effector is **characterized on the physical robot.** That
 on-hardware characterization is **calibration data an AI agent can build the simulator from**, and it pays
 off twice.
