@@ -21,6 +21,16 @@ new `scene_ops.reposition_body_in_scene` helper -- mirroring how `add_object` /
 path. A static-body recompile failure now reports `status="error"` rather than a
 misleading success.
 
+### Added: `[ollama]` extra -- the local-LLM agent path installs out of the box
+
+`strands.models.ollama.OllamaModel` does a top-level `import ollama`, but no
+strands-robots extra pulled the client, so the no-cloud agent path (the natural
+choice on an edge device) failed with `ModuleNotFoundError: No module named
+'ollama'` on a fresh install. The new `[ollama]` extra delegates to
+strands-agents' own `[ollama]` extra (bounded pin, `ollama>=0.4.8,<1.0.0`) to
+keep a single source of truth for the client version, and is included in
+`[all]`. Opt-in; the base install is unchanged.
+
 ### Security: Removed the unregistered `mimicgen` dependency (dependency-confusion RCE, CVE-pending)
 
 The `vera-sim` extra pinned `mimicgen==1.0.0`, but NVlabs MimicGen has never

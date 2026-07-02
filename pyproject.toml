@@ -305,6 +305,13 @@ vera-sim = [
     "mujoco>=3.5.0",
     "imageio",
 ]
+# Local-LLM agent path (no API key / no AWS -- the natural choice on an edge
+# device): strands.models.ollama.OllamaModel does a top-level `import ollama`.
+# Delegate to strands-agents' own [ollama] extra (bounded pin, ollama>=0.4.8,<1.0.0)
+# so the client version stays in sync with the code that imports it.
+ollama = [
+    "strands-agents[ollama]>=1.0.0,<2.0.0",
+]
 all = [
     "strands-robots[groot-service]",
     "strands-robots[moveit2]",
@@ -316,6 +323,7 @@ all = [
     "strands-robots[wbc]",
     "strands-robots[motionbricks]",
     "strands-robots[molmoact2]",
+    "strands-robots[ollama]",
 ]
 dev = [
     "pytest>=6.0,<10.0.0",
