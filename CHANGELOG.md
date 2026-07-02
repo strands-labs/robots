@@ -5,6 +5,14 @@ All notable behavioural changes to `strands-robots` are logged here. Follows
 
 ## [Unreleased]
 
+### Fixed: `examples/train_ppo_reach.py` aborted in its own `validate()` preflight
+
+The example shipped `rollout_steps=250` with `num_mini_batches=4`, but PPO spec
+validation requires `rollout_steps % num_mini_batches == 0` (a non-divisible
+split would silently drop samples), so the reference PPO entry point exited
+with `spec invalid` before training ever started. The example now uses
+`num_mini_batches=5` (`250 % 5 == 0`, 50 samples/mini-batch).
+
 ### Fixed: registry hot-reload ignored the user-overlay file's mtime
 
 The `robots` registry the read API serves (`get_robot` / `list_robots` /

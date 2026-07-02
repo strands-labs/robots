@@ -56,7 +56,7 @@ def main() -> None:
         output_dir=output_dir,
         total_timesteps=250 * 150,
         rollout_steps=250,
-        num_mini_batches=4,
+        num_mini_batches=5,
         num_learning_epochs=5,
         learning_rate=1e-3,
         init_noise_std=0.8,
