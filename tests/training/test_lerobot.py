@@ -963,3 +963,57 @@ class TestRewardModelTraining:
         spec = self._sarm_spec(dataset_root, tmp_path, image_key="-x")
         problems = LerobotTrainer().validate(spec)
         assert any("must not start with '-'" in p for p in problems)
+
+
+class TestBuilderEscapeHatchValidation:
+    """The builders re-validate ``extra`` escape-hatch types independently of validate().
+
+    ``build_config`` / ``build_command`` are public entry points a caller can
+    reach without first running :meth:`LerobotTrainer.validate` (for example a
+    programmatic caller that already trusts its inputs). Each escape hatch that
+    ``validate()`` guards - ``extra['reward_model']``, ``extra['sample_weighting']``,
+    and ``extra['relative_actions']`` - is therefore re-checked at build time so
+    a malformed value fails fast with an actionable ValueError instead of being
+    silently coerced into a stray flag or a config missing the intended wiring.
+    """
+
+    def test_build_config_rejects_non_dict_reward_model(self, dataset_root, tmp_path):
+        # build_config resolves the reward-model escape hatch itself (before any
+        # lerobot config is built), so a non-dict value must raise here too.
+        spec = TrainSpec(
+            dataset_root=dataset_root,
+            base_model="",
+            output_dir=str(tmp_path / "out"),
+            steps=200,
+            extra={"reward_model": "sarm"},  # str, not a dict of fields
+        )
+        with pytest.raises(ValueError, match="must be a dict"):
+            LerobotTrainer(device="cpu").build_config(spec)
+
+    def test_build_command_rejects_non_dict_sample_weighting(self, dataset_root, tmp_path):
+        # A non-dict sample_weighting must raise, never be flattened into stray
+        # --sample_weighting.* flags.
+        spec = TrainSpec(
+            dataset_root=dataset_root,
+            base_model="",
+            output_dir=str(tmp_path / "out"),
+            steps=200,
+            extra={"policy_type": "act", "sample_weighting": "rabc"},
+        )
+        with pytest.raises(ValueError, match="must be a dict"):
+            LerobotTrainer(device="cpu").build_command(spec)
+
+    def test_build_config_rejects_relative_actions_for_unsupported_policy(self, dataset_root, tmp_path):
+        # Only the pi0 family exposes use_relative_actions; build_config must
+        # fail fast for any other policy rather than drop the flag silently
+        # (which would train an ordinary absolute-action policy unnoticed).
+        pytest.importorskip("lerobot")
+        spec = TrainSpec(
+            dataset_root=dataset_root,
+            base_model="",
+            output_dir=str(tmp_path / "out"),
+            steps=200,
+            extra={"policy_type": "act", "relative_actions": True},
+        )
+        with pytest.raises(ValueError, match="use_relative_actions"):
+            LerobotTrainer(device="cpu").build_config(spec)
