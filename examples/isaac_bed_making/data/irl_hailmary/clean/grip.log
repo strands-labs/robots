@@ -1,0 +1,13 @@
+[grip] left_touch_ok=True  left_touch_force=[0, 15, 4, 0, 0]  left_proximity=[0, 0, 0, 0, 0]
+[grip] waiting for /tmp/arm_reached (arm to reach the sheet)…
+[grip] pre-positioning thumb → claw (thumb_aux=1.00), settling 0.6s
+[grip] fingers=0.00 thumb=0.00  force=[0, 15, 3, 0, 0]
+[grip] fingers=0.43 thumb=0.00  force=[0, 15, 3, 0, 0]
+[grip] fingers=0.88 thumb=0.00  force=[0, 16, 3, 0, 0]
+[grip] fingers=1.00 thumb=0.00  force=[3, 17, 3, 0, 0]
+[grip] fingers=1.00 thumb=0.37  force=[1, 17, 2, 0, 0]
+[grip] fingers=1.00 thumb=0.83  force=[0, 23, 0, 0, 0]
+[grip] close complete (fingers, then thumb clamp) — judging fabric-in-hand
+[grip] GRASP VERDICT: sustained_force_rise=[1080.5, 17.0, -3.0, 0.0, 0.0] (thr 4.0, fired [1]) peak_force_rise=[1224.0, 17.0, 0.0, 0.0, 0.0] sustained_prox_dev=[35729.0, 29532.5, 48073.0, 62522.0, 49518.0] (thr 150.0, fired []) [touch-only verdict]  ->  FABRIC in hand
+[grip] signaled /tmp/sheet_gripped — arm drawing. HOLDING + monitoring grip until /tmp/draw_done
+[grip] released (fingers open)

@@ -1,0 +1,3 @@
+# spike render outputs (frames + encoded mp4s) — regenerate with the spike scripts
+spikes/out/
+__pycache__/
