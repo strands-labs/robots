@@ -524,3 +524,70 @@ def test_bare_mixin_send_action_raises_not_implemented():
     mixin = TeleopMixin()
     with pytest.raises(NotImplementedError, match="send_action"):
         mixin.send_action({"a": 1.0})
+
+
+# ---------------------------------------------------------------------------
+# session-end status honesty: _teleop_stats derives status from the counters
+# (a dead teleop must not report "success"). Two failure modes with distinct
+# counter signatures: soft (send_action returns an error dict) advances errors
+# AND frames; hard (get_action() raises) advances errors only.
+# ---------------------------------------------------------------------------
+
+
+class FlakyHost(FakeHost):
+    """Host whose send_action alternates ok / structured error."""
+
+    def __init__(self, tool_name: str = "flaky_host"):
+        super().__init__(tool_name)
+        self._tick = 0
+
+    def send_action(self, action: dict, robot_name: str | None = None, n_substeps: int = 1):  # noqa: ARG002
+        with self._send_lock:
+            self.sent.append((dict(action), robot_name))
+        self._tick += 1
+        if self._tick % 2 == 0:
+            return {"status": "error", "content": [{"text": "dropped"}]}
+        return {"status": "success", "content": [{"text": "ok"}]}
+
+
+def test_stats_all_soft_errors_reports_error():
+    """Unpowered-follower mode: every send fails softly -> errors == frames -> error."""
+    host = ErrorHost()
+    host.attach_teleop(FakeTeleop({"a.pos": 1.0}), name="leader")
+    host.teleoperate(hz=200)
+    assert _spin_until(lambda: host._teleop_frames >= 3)
+    res = host.stop_teleoperate()
+    assert host._teleop_errors == host._teleop_frames  # soft-mode signature
+    assert res["status"] == "error"
+
+
+def test_stats_all_raises_reports_error():
+    """Dead-leader mode: get_action() raises every tick -> frames stays 0 -> error."""
+    host = FakeHost()
+    host.attach_teleop(RaisingTeleop({"a.pos": 1.0}), name="flaky")
+    host.teleoperate(hz=200)
+    assert _spin_until(lambda: host._teleop_errors >= 3)
+    res = host.stop_teleoperate()
+    assert host._teleop_frames == 0  # hard-mode signature: no frame ever produced
+    assert res["status"] == "error"
+
+
+def test_stats_mixed_reports_degraded():
+    """Some sends ok, some failing -> 0 < errors < frames -> degraded."""
+    host = FlakyHost()
+    host.attach_teleop(FakeTeleop({"a.pos": 1.0}), name="leader")
+    host.teleoperate(hz=200)
+    assert _spin_until(lambda: host._teleop_frames >= 4)
+    res = host.stop_teleoperate()
+    assert 0 < host._teleop_errors < host._teleop_frames  # genuinely mixed
+    assert res["status"] == "degraded"
+
+
+def test_stats_clean_run_reports_success():
+    """Regression: a healthy blocking session still reports success."""
+    host = FakeHost()
+    host.attach_teleop(FakeTeleop({"a.pos": 1.0}), name="leader")
+    res = host.teleoperate(hz=100, block=True, duration=0.2)
+    assert host._teleop_frames > 0
+    assert host._teleop_errors == 0
+    assert res["status"] == "success"

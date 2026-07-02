@@ -40,6 +40,34 @@ was not affected; exposure was limited to `[vera-sim]`. Anyone who installed
 `[vera-sim]` since 2026-06-27 should `pip uninstall -y mimicgen` and reinstall
 into a clean environment.
 
+### Fixed: `teleoperate()` reported `status="success"` even for a dead follower
+
+Running teleop with the follower unpowered still ended the session with
+`status: "success"` -- a dead teleop was indistinguishable from a healthy one
+by `status`. Two layers, both fixed:
+
+- `_teleop_stats` hardcoded `"status": "success"`. It now derives the
+  session-end status from the counters it already returns: `success` when
+  `errors == 0`, `error` when every attempt failed (`frames == 0 or errors >=
+  frames`, covering both the soft mode where `send_action` returns an error
+  dict and the hard mode where the leader's `get_action()` raises), and
+  `degraded` for a mixed session. `degraded` is a new value -- strict
+  `status == "success"` callers now treat a partially-failing session as
+  unhealthy, which is the point.
+- Hardware validation exposed why honest counters alone were not enough:
+  lerobot's `MotorsBus.connect()` opens the serial port *before* the motor
+  handshake, so a failed handshake left `is_connected` True and fire-and-forget
+  writes to the dead bus kept "succeeding" (a fully unpowered session counted 1
+  error in 142 frames). A failed connect now rolls back by closing the
+  half-open port -- skipping the default torque write, which would raise on
+  the unreachable bus and leave the port open again -- on both the lazy teleop
+  connect in `send_action` (every tick retries and keeps surfacing the
+  failure) and the explicit `_connect_robot` path (which would otherwise
+  short-circuit its next attempt on "already connected" and report success
+  against a dead bus).
+
+The live-status query `get_teleoperate_status` is unchanged.
+
 ### Added: RL parity -- `staged_reward`, a gym adapter, and vectorized PPO
 
 The from-scratch RL lane reaches parity with the reference stacks: a

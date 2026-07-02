@@ -520,8 +520,22 @@ class TeleopMixin:
         note = ""
         if publish_results:
             note = f"\nMesh publishers started: {len(publish_results)}"
+        # Derive the session-end status from the counters instead of hardcoding
+        # "success", so a dead teleop is not reported as healthy. Two failure
+        # modes with distinct counter signatures (see _teleop_loop):
+        #   soft: send_action returns {"status": "error"} -> errors += 1 AND
+        #         frames += 1 (an unpowered follower gives errors == frames)
+        #   hard: get_action()/send raises -> errors += 1 only, no frame that
+        #         tick (a dead leader gives frames == 0)
+        frames, errors = self._teleop_frames, self._teleop_errors
+        if errors == 0:
+            status = "success"  # clean run (or idle: no actions attempted)
+        elif frames == 0 or errors >= frames:
+            status = "error"  # every attempt failed, either mode
+        else:
+            status = "degraded"  # some ok, some failed
         return {
-            "status": "success",
+            "status": status,
             "content": [
                 {
                     "text": f"Teleoperation {'completed' if blocking else 'stopped'}: "

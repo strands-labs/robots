@@ -863,6 +863,24 @@ class Robot(TeleopMixin, AgentTool):
 
         return create_policy(policy_provider, **policy_config)
 
+    def _rollback_half_open_connect(self) -> None:
+        """Close the half-open port a failed connect can leave behind.
+
+        lerobot's ``MotorsBus.connect()`` opens the serial port *before* the
+        motor handshake, so a failed handshake (e.g. an unpowered bus) leaves
+        ``is_connected`` True while fire-and-forget writes to the dead bus
+        keep "succeeding". Closing the port makes the next attempt retry the
+        connect and keep surfacing the failure. ``disable_torque=False``: the
+        handshake already failed, so the default disconnect's torque write
+        would only raise again (before ``closePort``) and leave the port open.
+        """
+        bus = getattr(self.robot, "bus", None)
+        try:
+            if bus is not None and getattr(bus, "is_connected", False):
+                bus.disconnect(disable_torque=False)
+        except Exception:  # noqa: BLE001 - best-effort cleanup
+            logger.debug("%s post-connect-failure port close failed", self.tool_name_str)
+
     async def _connect_robot(self) -> tuple[bool, str]:
         """Connect to robot hardware with proper error handling.
 
@@ -919,6 +937,10 @@ class Robot(TeleopMixin, AgentTool):
         except Exception as e:
             error_msg = f"Robot connection failed: {e}. Ensure robot is calibrated and accessible on the specified port"
             logger.error(f"{error_msg}")
+            # Same rollback as the lazy teleop connect: without it a half-open
+            # port makes the NEXT _connect_robot short-circuit on
+            # "already connected" and report success against a dead bus.
+            self._rollback_half_open_connect()
             return False, error_msg
 
     async def _initialize_policy(self, policy: Policy) -> bool:
@@ -1470,7 +1492,11 @@ class Robot(TeleopMixin, AgentTool):
                 # Lazy connect on first action. calibrate=False: a teleop
                 # session assumes the follower is already calibrated (same
                 # contract as the policy-run path).
-                self.robot.connect(False)
+                try:
+                    self.robot.connect(False)
+                except Exception:
+                    self._rollback_half_open_connect()
+                    raise
             self.robot.send_action(action)
             return {"status": "success", "content": [{"text": "ok"}]}
         except Exception as e:  # noqa: BLE001 - surface as status, never kill the loop

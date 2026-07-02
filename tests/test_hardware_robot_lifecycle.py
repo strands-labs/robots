@@ -950,3 +950,67 @@ class TestEnsureLerobotRobotsRegistered:
         with caplog.at_level("WARNING"):
             hw._ensure_lerobot_robots_registered()
         assert any("third-party plugin registration failed" in r.message for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# lazy-connect rollback: a failed connect must not leave the port half-open
+# ---------------------------------------------------------------------------
+
+
+class _HalfOpenConnectLeRobot(_FakeLeRobot):
+    """connect() opens the port, then fails the handshake (mirrors lerobot's
+    MotorsBus.connect: openPort -> _handshake raises), leaving is_connected
+    True. Exposes itself as ``bus`` like the SO follower robots do."""
+
+    def __init__(self) -> None:
+        super().__init__(connected=False)
+        self.connect_attempts = 0
+        self.bus = self
+        self.bus_disconnect_calls: list[bool] = []
+
+    def connect(self, calibrate: bool = False) -> None:  # noqa: ARG002 - lerobot signature
+        self.connect_attempts += 1
+        self._connected = True  # port opened...
+        raise ConnectionError("motor handshake failed")  # ...handshake failed
+
+    def disconnect(self, disable_torque: bool = True) -> None:
+        self.bus_disconnect_calls.append(disable_torque)
+        self._connected = False
+
+
+def test_send_action_rolls_back_half_open_lazy_connect() -> None:
+    """A failed lazy connect must not leave the port half-open: every
+    send_action retries the connect and reports error (an unpowered follower
+    would otherwise report success forever via fire-and-forget writes)."""
+    fake = _HalfOpenConnectLeRobot()
+    hw = _make_robot(fake)
+
+    r1 = hw.send_action({"j0.pos": 0.1})
+    r2 = hw.send_action({"j0.pos": 0.2})
+
+    assert r1["status"] == "error"
+    assert r2["status"] == "error"
+    # rollback closed the port, so the second call retried the connect
+    assert fake.connect_attempts == 2
+    # port closed WITHOUT a torque write (it would raise on a dead bus)
+    assert fake.bus_disconnect_calls == [False, False]
+    # nothing was ever written to the dead bus
+    assert fake.sent_actions == []
+    hw.cleanup()
+
+
+def test_connect_robot_rolls_back_half_open_connect() -> None:
+    """The explicit connect path must roll back too: without it, a failed
+    connect leaves is_connected True and the NEXT _connect_robot short-circuits
+    on "already connected" -- reporting success against a dead bus."""
+    fake = _HalfOpenConnectLeRobot()
+    hw = _make_robot(fake)
+
+    ok1, err1 = asyncio.run(hw._connect_robot())
+    ok2, err2 = asyncio.run(hw._connect_robot())
+
+    assert ok1 is False and "handshake" in err1
+    assert ok2 is False and "handshake" in err2  # retried, not "already connected"
+    assert fake.connect_attempts == 2
+    assert fake.bus_disconnect_calls == [False, False]
+    hw.cleanup()
