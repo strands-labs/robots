@@ -400,6 +400,31 @@ class TestRuntimeModification:
         result = sim.set_geom_properties(geom_name="nonexistent", color=[1, 0, 0, 1])
         assert result["status"] == "error"
 
+    def test_set_geom_size_resizes_geom(self, sim):
+        """set_geom_properties(size=...) writes the new half-extents into the
+        live model so the next step / render sees the resized geom (no
+        recompile). Only the leading ``min(len(size), 3)`` entries are set,
+        matching MuJoCo's per-type geom_size layout."""
+        geom_id = mj.mj_name2id(sim._world._model, mj.mjtObj.mjOBJ_GEOM, "box_geom")
+        result = sim.set_geom_properties(geom_name="box_geom", size=[0.25, 0.3, 0.35])
+        assert result["status"] == "success"
+        assert "size" in result["content"][0]["text"]
+        new_size = sim._world._model.geom_size[geom_id]
+        assert new_size[0] == pytest.approx(0.25)
+        assert new_size[1] == pytest.approx(0.3)
+        assert new_size[2] == pytest.approx(0.35)
+
+    def test_set_geom_size_shorter_than_three_leaves_tail_untouched(self, sim):
+        """A partial size list updates only the entries provided and leaves the
+        remaining half-extents at their compiled value."""
+        geom_id = mj.mj_name2id(sim._world._model, mj.mjtObj.mjOBJ_GEOM, "box_geom")
+        original_tail = float(sim._world._model.geom_size[geom_id][2])
+        result = sim.set_geom_properties(geom_name="box_geom", size=[0.2])
+        assert result["status"] == "success"
+        new_size = sim._world._model.geom_size[geom_id]
+        assert new_size[0] == pytest.approx(0.2)
+        assert float(new_size[2]) == pytest.approx(original_tail)
+
 
 class TestContactForces:
     def test_get_contact_forces_after_settling(self, sim):
@@ -422,6 +447,26 @@ class TestForwardKinematics:
         assert "box1" in bodies
         assert "link1" in bodies
         assert len(bodies["box1"]["position"]) == 3
+
+    def test_forward_kinematics_single_body_filters_to_that_body(self, sim):
+        """forward_kinematics(body_name=X) returns only X's Cartesian pose
+        (position + quaternion), not the whole-scene ``bodies`` map."""
+        result = sim.forward_kinematics(body_name="box1")
+        assert result["status"] == "success"
+        payload = _extract_json_block(result, 1)
+        assert payload["body"] == "box1"
+        assert len(payload["position"]) == 3
+        assert len(payload["quaternion"]) == 4
+        # Filtered response must not carry the all-bodies map.
+        assert "bodies" not in payload
+
+    def test_forward_kinematics_single_body_reflects_moved_joint(self, sim):
+        """After driving a joint and re-running FK for one body, the reported
+        pose is the freshly recomputed kinematics, not a stale pre-move value."""
+        before = _extract_json_block(sim.forward_kinematics(body_name="link2"), 1)["position"]
+        sim.set_joint_positions(positions={"shoulder": 1.2})
+        after = _extract_json_block(sim.forward_kinematics(body_name="link2"), 1)["position"]
+        assert before != after
 
 
 class TestTotalMass:
