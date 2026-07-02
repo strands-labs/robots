@@ -171,8 +171,9 @@ class TelemetryStream:
         if self._flush_thread and self._flush_thread.is_alive():
             self._flush_thread.join(timeout=timeout)
 
-        # Final flush
-        self._flush_all()
+        # Final flush: force-drain every non-empty buffer, regardless of the
+        # count/age thresholds, so no buffered events are lost on shutdown.
+        self._flush_all(force=True)
         logger.info(f"TelemetryStream stopped for robot={self.robot_id} | stats={self.get_stats()}")
 
     def __enter__(self) -> TelemetryStream:
@@ -324,8 +325,8 @@ class TelemetryStream:
                     self._stats["errors"] += 1
             self._shutdown_event.wait(timeout=self._flush_interval)
 
-    def _flush_all(self) -> None:
-        """Check all tier buffers and flush if thresholds exceeded."""
+    def _flush_all(self, force: bool = False) -> None:
+        """Flush each tier buffer whose count/age trigger is met, or all of them when force=True."""
         for tier in StreamTier:
             config = self._batch_configs[tier]
             buf = self._buffers[tier]
@@ -333,19 +334,14 @@ class TelemetryStream:
             if not buf:
                 continue
 
-            # Check flush triggers (count OR size OR age)
             count = len(buf)
             age_ms = 0.0
             first_ts = self._buffer_first_ts[tier]
             if first_ts is not None:
                 age_ms = (time.time() - first_ts) * 1000.0
 
-            should_flush = (
-                count >= config.max_count or age_ms >= config.max_age_ms
-                # Size check is deferred — estimating without serializing
-            )
-
-            if should_flush:
+            # Triggers: count threshold, age threshold, or a forced (shutdown) drain.
+            if force or count >= config.max_count or age_ms >= config.max_age_ms:
                 self._drain_and_send(tier)
 
     def _drain_and_send(self, tier: StreamTier) -> None:

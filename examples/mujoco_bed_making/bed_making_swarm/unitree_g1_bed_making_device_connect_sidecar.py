@@ -85,7 +85,7 @@ class RobotSpec:
 
 
 def default_specs(repo_root: Optional[Path] = None) -> List["RobotSpec"]:
-    """Return the standard (control, worker) robot specs from repo creds."""
+    """Return the standard equal-peer robot specs from repo creds."""
 
     root = repo_root or REPO_ROOT
     specs: List[RobotSpec] = []
@@ -222,7 +222,7 @@ def _parse_args() -> argparse.Namespace:
         action="append",
         metavar="ROLE=PATH",
         help=(
-            "Register a robot under ROLE ('control' or 'worker') using the JWT "
+            "Register a robot under an equal-peer ROLE using the JWT "
             "credentials file at PATH. Can be passed multiple times. Defaults to "
             "the two repo-local credentials in `.credentials/`."
         ),

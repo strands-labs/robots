@@ -15,7 +15,7 @@ privileged-state targeting:
              short-range proximity sensor (bundled #2 sensor model) fires only
              within centimetres of actual cloth; the slide stops on the reading.
   CENTER     slide the remaining sensed distance so the hem is between the pads.
-  GRIP       the force-limited pinch closes (Inspire-ratio budget, ≈4.1× cover wt).
+  GRIP       the force-limited pinch closes (force-limited to ≈1.5× cover wt; ~4.1× is the Inspire hand's max spec).
   LIFT       up over the mattress edge (the flap drapes over the lower pad).
   DRAG A     the wrist hauls headward through a FULL 45 cm stroke. PASS = the
              cloth stays in the pinch (slip ≪ stroke), eye-verified in frames.

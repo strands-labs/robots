@@ -420,7 +420,7 @@ class BedMakingG1Driver(DeviceDriver):
             model="G1 EDU",
             description=(
                 f"Unitree G1 humanoid — swarm peer ({self._agent.state.role}) in the "
-                "Strands Robots two-humanoid MuJoCo bed-making demo. Goal: "
+                "Strands Robots two-humanoid Isaac Sim bed-making demo. Goal: "
                 f"{GOAL_STATE}."
             ),
         )

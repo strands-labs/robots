@@ -296,7 +296,11 @@ def main() -> None:
                 print("[grip] hold timeout — releasing")
                 break
             br.set_left(cmd(args.grip_max))                                  # keep holding the closed grip
-            held = max(gc.update(br.get())["force_rise"])        # strongest finger NOW vs the open-claw baseline
+            # Only the fabric-contact fingers count: the thumb pad self-contacts on the closed
+            # claw (~600) and would mask any real grip loss, which is exactly why
+            # GraspConfirmMonitor.fabric_indices excludes it.
+            _force_rise = gc.update(br.get())["force_rise"]
+            held = max(_force_rise[i] for i in gc.fabric_indices)  # strongest FABRIC finger vs open-claw baseline
             if held < args.draw_lost_rise:
                 lost_since = lost_since or time.time()
                 if time.time() - lost_since >= args.draw_lost_sustain:

@@ -16,10 +16,12 @@ Force budget — ratios, not absolute newtons. The VBD cm recipe runs at the mas
 scale of Newton's own cloth examples (see ``bedsheet.BedsheetParams``); what decides
 hold-vs-peel is the dimensionless ratio of grip authority to load. We therefore set
 
-    f_pinch_max = (20 N / 4.9 N) · sheet_weight ≈ 4.1 × sheet weight
-    f_carry_max = (80 N / 4.9 N) · sheet_weight ≈ 16  × sheet weight
+    f_pinch_max = pinch_to_weight · sheet_weight ≈ 1.5 × sheet weight
+    f_carry_max = carry_to_weight · sheet_weight ≈ 8   × sheet weight
 
-matching a real Inspire two-finger pinch (~20 N) against a real ~0.5 kg cover.
+These are the tuned working budgets (see ``PinchParams.pinch_to_weight`` / ``carry_to_weight``).
+The Inspire two-finger spec — ~20 N pinch / ~80 N carry against a ~4.9 N (~0.5 kg) cover, i.e.
+~4.1× / ~16× — is the hand's MAX ceiling, not the working point.
 
 (The commanded wrist trajectory plays the role of the robot arm; in the #2 demo that
 command comes from the whole-body reach policy, which balances the robot. This
@@ -104,13 +106,17 @@ class ForceLimitedPinch:
         # Newton kd convention (newton-physics#285): user kd is multiplied by ke
         # internally (Rayleigh) — working examples use ~1e-3..1e-2, NOT a ke fraction
         cfg.kd = 2.0e-3
+        # Density defines the plate's mass AND inertia. Do NOT also pass mass= to
+        # add_body: Newton accumulates the shape-from-density mass onto the body, so
+        # setting both double-counts the plate mass (~2x) and mistunes the gravity
+        # feed-forward and servo/orientation gains that are derived from plate_mass.
         cfg.density = self.plate_mass / (8 * self.p.plate_hx * self.p.plate_hy * self.p.plate_hz)
         self.bodies = []
         for k in (0, 1):
             b = builder.add_body(
                 xform=wp.transform(wp.vec3(spawn[0], spawn[1], spawn[2] - 20.0 * k),
                                    wp.quat_identity()),
-                mass=self.plate_mass, label=f"pinch_plate_{k}")
+                label=f"pinch_plate_{k}")
             builder.add_shape_box(b, hx=self.p.plate_hx, hy=self.p.plate_hy,
                                   hz=self.p.plate_hz, cfg=cfg)
             self.bodies.append(b)

@@ -63,8 +63,8 @@ class RobotBehaviour:
         self.active_corner: Optional[str] = None
         self.helping_corner: Optional[str] = None
         self.placed: List[str] = []    # sheet labels this robot has placed
-        self._announced_help_for: set = field(default_factory=set)
-        self._announced = set()
+        self._announced_help_for: set = set()
+        self._announced: set = set()
 
     # ── helpers ───────────────────────────────────────────────────────────
     def _arm_for(self, compass: str) -> str:

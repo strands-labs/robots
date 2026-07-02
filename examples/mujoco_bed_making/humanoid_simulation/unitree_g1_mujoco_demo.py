@@ -147,7 +147,7 @@ def _build_scene(sim) -> None:
     )
 
 
-def _run_sequence(sim, joint_names: List[str], args: argparse.Namespace, output_dir: Path) -> None:
+def _run_sequence(sim, joint_names: List[str], args: argparse.Namespace, output_dir: Path) -> str | None:
     stages: List[Tuple[str, int]] = [
         ("reach", 72),
         ("grasp", 48),
