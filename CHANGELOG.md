@@ -5,6 +5,7 @@ All notable behavioural changes to `strands-robots` are logged here. Follows
 
 ## [Unreleased]
 
+
 ### Fixed: `move_object` silently no-op'd on static objects
 
 `Simulation.move_object(name, position=...)` moves an object by writing its
@@ -30,6 +31,67 @@ choice on an edge device) failed with `ModuleNotFoundError: No module named
 strands-agents' own `[ollama]` extra (bounded pin, `ollama>=0.4.8,<1.0.0`) to
 keep a single source of truth for the client version, and is included in
 `[all]`. Opt-in; the base install is unchanged.
+
+### Fixed: `replay_episode` / `send_action` vector bound to joints, not actuators
+
+`PolicyRunner.replay` (`Simulation.replay_episode`) mapped a recorded
+`LeRobotDataset` action vector positionally onto `robot_joint_names`, and
+`SimEngine._coerce_action` bound a raw numeric action vector passed to
+`send_action` the same way. But the dataset recorder writes the `action`
+column in the robot's *actuator* order (`robot_action_keys`), and `send_action`
+resolves actuator keys -- these diverge from the joint names whenever a robot
+has passive/mimic joints with no driving actuator or a tendon-driven gripper
+(e.g. `aloha`: 14 actuators vs 16 joints; `xarm7`; dexterous hands).
+
+The result was a silent record->replay round-trip corruption: replaying a
+dataset recorded by `start_recording` shifted the action vector across the
+wrong DOFs and dropped the grippers (their names have no matching joint), while
+`replay_episode` still returned `status="success"`. This is the "success
+contract, no physical effect" failure mode the project forbids, and mirrors the
+policy-keying fix already applied to `run_policy`/`eval_policy`.
+
+Positional action-vector binding now uses `robot_action_keys` in both paths, so
+a self-recorded episode round-trips onto the actuators it was recorded from. For
+robots whose actuators mirror their joints (e.g. `so101`) behaviour is
+unchanged. Pass `action_key_map=` to `replay_episode` to override the ordering
+for third-party datasets.
+
+### Fixed: `eval_policy` no longer reports a silently-meaningless `success_rate`
+
+`eval_policy` / `PolicyRunner.evaluate` default `success_fn=None`. With no
+success criterion (and no benchmark spec) an episode can never be marked
+successful, so the loop reported a hard `success_rate: 0.0` for every episode
+regardless of what the policy did - a value indistinguishable from a policy
+that genuinely failed every episode, emitted with no warning. Callers
+comparing checkpoints saw `0.0` for all of them and (correctly) concluded
+nothing, while the number read like a real measurement.
+
+The no-criterion path now logs a warning, annotates the human-readable text
+(`... [no success criterion - not measured]`), and adds a `success_measured`
+boolean to the returned json (`False` on the legacy path with no `success_fn`,
+`True` on the `success_fn`/benchmark-spec paths). `success_rate` stays numeric
+(`0.0`) for backward compatibility; check `success_measured` before trusting
+it. This extends the entry-point guards that already reject other
+fabricated-success-rate configs (non-positive `n_episodes`/`max_steps`, empty
+goal payloads).
+
+### Fixed: `dataset_cameras` scoping crashed on the Newton backend
+
+`run_policy(dataset_cameras=[...])` scopes a recorded dataset to a chosen
+subset of cameras by forwarding `start_recording(cameras=...)`. Only the
+MuJoCo backend accepted that keyword; the Newton backend's `start_recording`
+had no `cameras` parameter, so a scoped rollout on a Newton-backed simulation
+raised an uncaught `TypeError: start_recording() got an unexpected keyword
+argument 'cameras'` out of the otherwise backend-agnostic `run_policy` tool.
+
+`NewtonSimEngine.start_recording` now accepts `cameras=` with the same
+semantics as the MuJoCo backend: `None` records every named scene camera,
+a subset scopes the dataset schema (and the per-step capture hook) to exactly
+those views, names may be given in raw or schema-safe (`/` -> `__`) form, and
+an unknown name fails loudly listing the available cameras. `dataset_cameras`
+now behaves identically on both engines.
+
+## [0.4.1] - 2026-07-01
 
 ### Security: Removed the unregistered `mimicgen` dependency (dependency-confusion RCE, CVE-pending)
 
@@ -288,44 +350,9 @@ base, 9 actuators). LeKiwi auto-downloads and compiles on first sim use, steps
 stably, and renders from its `front`/`wrist` cameras. The existing hardware mapping
 is unchanged.
 
-### Fixed: `eval_policy` no longer reports a silently-meaningless `success_rate`
-
-`eval_policy` / `PolicyRunner.evaluate` default `success_fn=None`. With no
-success criterion (and no benchmark spec) an episode can never be marked
-successful, so the loop reported a hard `success_rate: 0.0` for every episode
-regardless of what the policy did - a value indistinguishable from a policy
-that genuinely failed every episode, emitted with no warning. Callers
-comparing checkpoints saw `0.0` for all of them and (correctly) concluded
-nothing, while the number read like a real measurement.
-
-The no-criterion path now logs a warning, annotates the human-readable text
-(`... [no success criterion - not measured]`), and adds a `success_measured`
-boolean to the returned json (`False` on the legacy path with no `success_fn`,
-`True` on the `success_fn`/benchmark-spec paths). `success_rate` stays numeric
-(`0.0`) for backward compatibility; check `success_measured` before trusting
-it. This extends the entry-point guards that already reject other
-fabricated-success-rate configs (non-positive `n_episodes`/`max_steps`, empty
-goal payloads).
-
 ### Added: routing-degradation telemetry so a silently-degraded LeRobot rollout is machine-detectable
 
 `LerobotLocalPolicy`'s heuristic (non-declarative) remap path keeps a rollout alive even when it cannot bind the observation to the model's inputs by name: a camera whose name matches no declared image feature is routed to a free slot positionally, and `observation.state` is composed from the observation's own scalar keys when none of `robot_state_keys` match (the generic `joint_0..N` fallback). Either makes the robot move on meaningless inputs while `run_policy` / `eval_policy` still report `status="success"` with `success_rate ~ 0`, and the only trace was a log line (the positional fallback on the preprocessor path did not even warn). Both fallbacks now flip a flag on the policy (`positional_fallback_used` / `generic_state_keys_used`) and emit a WARNING, and `run_policy` / `eval_policy` surface both flags in their JSON result block alongside the existing `action_errors` / load telemetry. A `True` flag on an otherwise-successful run is the signature of a misconfigured camera/state binding. No behaviour change for correctly-named observations (both flags stay `False`); the remap itself is unchanged.
-
-### Fixed: `dataset_cameras` scoping crashed on the Newton backend
-
-`run_policy(dataset_cameras=[...])` scopes a recorded dataset to a chosen
-subset of cameras by forwarding `start_recording(cameras=...)`. Only the
-MuJoCo backend accepted that keyword; the Newton backend's `start_recording`
-had no `cameras` parameter, so a scoped rollout on a Newton-backed simulation
-raised an uncaught `TypeError: start_recording() got an unexpected keyword
-argument 'cameras'` out of the otherwise backend-agnostic `run_policy` tool.
-
-`NewtonSimEngine.start_recording` now accepts `cameras=` with the same
-semantics as the MuJoCo backend: `None` records every named scene camera,
-a subset scopes the dataset schema (and the per-step capture hook) to exactly
-those views, names may be given in raw or schema-safe (`/` -> `__`) form, and
-an unknown name fails loudly listing the available cameras. `dataset_cameras`
-now behaves identically on both engines.
 
 ### Fixed: LerobotLocalPolicy state-key mismatch is now loud instead of a silent zero/open-loop rollout
 
@@ -1079,30 +1106,6 @@ locomotion (closes #466). Clean-room against the upstream reference
   `docs/policies/wbc.md`; torque-control deploy harness +
   `simulate_rollout` at `examples/wbc_g1_torque_deploy.py` (the real weights
   produce a stable forward G1 walk).
-
-### Fixed: `replay_episode` / `send_action` vector bound to joints, not actuators
-
-`PolicyRunner.replay` (`Simulation.replay_episode`) mapped a recorded
-`LeRobotDataset` action vector positionally onto `robot_joint_names`, and
-`SimEngine._coerce_action` bound a raw numeric action vector passed to
-`send_action` the same way. But the dataset recorder writes the `action`
-column in the robot's *actuator* order (`robot_action_keys`), and `send_action`
-resolves actuator keys -- these diverge from the joint names whenever a robot
-has passive/mimic joints with no driving actuator or a tendon-driven gripper
-(e.g. `aloha`: 14 actuators vs 16 joints; `xarm7`; dexterous hands).
-
-The result was a silent record->replay round-trip corruption: replaying a
-dataset recorded by `start_recording` shifted the action vector across the
-wrong DOFs and dropped the grippers (their names have no matching joint), while
-`replay_episode` still returned `status="success"`. This is the "success
-contract, no physical effect" failure mode the project forbids, and mirrors the
-policy-keying fix already applied to `run_policy`/`eval_policy`.
-
-Positional action-vector binding now uses `robot_action_keys` in both paths, so
-a self-recorded episode round-trips onto the actuators it was recorded from. For
-robots whose actuators mirror their joints (e.g. `so101`) behaviour is
-unchanged. Pass `action_key_map=` to `replay_episode` to override the ordering
-for third-party datasets.
 
 ## [0.4.0] - 2026-06-16
 
