@@ -17,8 +17,9 @@ Runtime: ~30s on CPU (2 training steps - just enough to prove the loop).
 """
 
 import os
+import sys
 
-os.environ.setdefault("MUJOCO_GL", "cgl")  # macOS offscreen GL
+os.environ.setdefault("MUJOCO_GL", "cgl" if sys.platform == "darwin" else "egl")  # offscreen GL
 
 from strands_robots import MockPolicy, Robot, create_policy
 from strands_robots.training import TrainSpec, create_trainer

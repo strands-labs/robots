@@ -7,7 +7,7 @@ back with ``sim.stream_dataset(...)`` — no torchcodec/av plumbing in user code
 (it's a declared dependency of the ``[lerobot]`` extra).
 
 Run:
-    MUJOCO_GL=cgl python examples/06_agent_collect_and_stream.py
+    python examples/06_agent_collect_and_stream.py
 
 Dependencies:
     pip install "strands-robots[sim-mujoco,lerobot]" strands-agents
@@ -15,8 +15,9 @@ Dependencies:
 """
 
 import os
+import sys
 
-os.environ.setdefault("MUJOCO_GL", "cgl")  # macOS offscreen GL
+os.environ.setdefault("MUJOCO_GL", "cgl" if sys.platform == "darwin" else "egl")  # offscreen GL
 
 from strands import Agent
 

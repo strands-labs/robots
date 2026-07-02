@@ -5,6 +5,17 @@ All notable behavioural changes to `strands-robots` are logged here. Follows
 
 ## [Unreleased]
 
+### Fixed: examples defaulted `MUJOCO_GL` to the macOS-only `cgl` on every platform
+
+`07_post_tune_any_policy.py`, `06_agent_collect_and_stream.py`,
+`lerobot_hardware_catalog.py` and `vla_g1_workflow.py` ran
+`os.environ.setdefault("MUJOCO_GL", "cgl")`, a value only valid on macOS -- on a
+bare Linux box the first offscreen render died with `RuntimeError: invalid value
+for environment variable MUJOCO_GL: cgl`. The default is now platform-aware
+(`cgl` on macOS, headless-safe `egl` elsewhere, matching what
+`04_mesh_peer_discovery.py` and the cosmos3 examples already do); a
+user-exported `MUJOCO_GL` is still never overridden.
+
 ### Fixed: `move_object` silently no-op'd on static objects
 
 `Simulation.move_object(name, position=...)` moves an object by writing its

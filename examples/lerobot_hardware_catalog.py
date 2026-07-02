@@ -24,7 +24,7 @@ import argparse
 import os
 import sys
 
-os.environ.setdefault("MUJOCO_GL", "cgl")
+os.environ.setdefault("MUJOCO_GL", "cgl" if sys.platform == "darwin" else "egl")
 
 
 def show_catalog() -> int:
