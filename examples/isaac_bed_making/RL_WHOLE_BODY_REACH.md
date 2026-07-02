@@ -1,5 +1,10 @@
 # Whole-Body Loco-Manipulation RL for Bed-Making — Unitree G1 on NVIDIA DGX Spark
 
+> **Setup** — this repo targets **Python 3.12+**; run tooling/tests from a Python 3.12 venv
+> (`python3.12 -m venv .venv && source .venv/bin/activate && pip install -e "."`). Isaac Sim 5.1
+> bundles Python 3.11, so keep a separate 3.12 venv for anything that imports `strands_robots`
+> (full setup + Isaac caveat: [`README.md`](README.md#setup--python-version)).
+
 > Teaching two **free-standing Unitree G1 humanoids (Inspire 5-finger hands)** to **balance on their
 > own two feet while bending over a bed and pulling a sheet** — the loco-manipulation skill a walking
 > policy cannot hold. Trained end-to-end in **NVIDIA Isaac Lab** on a **DGX Spark (GB10, aarch64)**.

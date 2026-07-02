@@ -9,6 +9,19 @@ documentation — this file covers only the bed-making example.
 For the MuJoCo scene, meshes, cloth physics, and how to run the visualisation,
 see [`README.unitree-g1-bed-making-demo.md`](README.unitree-g1-bed-making-demo.md).
 
+## Setup
+
+This repo targets **Python 3.12+**. Run from a Python 3.12 venv, and add the Device Connect edge
+runtime the swarm driver needs (Isaac Sim 5.1 bundles Python 3.11, so a separate 3.12 venv avoids the
+version conflict):
+
+```bash
+python3.12 -m venv .venv
+source .venv/bin/activate
+pip install -e ".[sim-mujoco]"
+pip install device-connect-edge device-connect-agent-tools
+```
+
 ## Model: equal peers, no control/worker split
 
 Following the issue feedback, the two Unitree G1 humanoids are **equal swarm

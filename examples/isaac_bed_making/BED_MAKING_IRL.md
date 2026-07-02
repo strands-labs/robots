@@ -1,5 +1,10 @@
 # Bed-Making, In Real Life — Unitree G1 EDU (23-DOF) + a Human Partner
 
+> **Setup** — this repo targets **Python 3.12+**; run tooling/tests from a Python 3.12 venv
+> (`python3.12 -m venv .venv && source .venv/bin/activate && pip install -e "."`). Isaac Sim 5.1
+> bundles Python 3.11, so keep a separate 3.12 venv for anything that imports `strands_robots`
+> (full setup + Isaac caveat: [`README.md`](README.md#setup--python-version)).
+
 > The sibling of [`RL_WHOLE_BODY_REACH.md`](RL_WHOLE_BODY_REACH.md) (the **simulation**). That
 > document teaches two free-base G1s to balance-while-reaching in Isaac Sim. **This one takes the
 > demo to the *physical* robot** ([armwaheed/robots#3](https://github.com/armwaheed/robots/issues/3)):
