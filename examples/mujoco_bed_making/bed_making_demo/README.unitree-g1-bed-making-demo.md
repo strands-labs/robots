@@ -18,6 +18,23 @@ Connect functions.
 > **swarm coordination model** lives in the Device Connect driver and the
 > `unitree_g1_bed_making_swarm_demo.py` orchestration script described below.
 
+## Setup
+
+This repo targets **Python 3.12+** — `strands_robots` pins `requires-python >=3.12`. Run the example
+from a dedicated **Python 3.12 virtual environment** so it can't collide with a system or Isaac-bundled
+Python (Isaac Sim 5.1 ships 3.11):
+
+```bash
+python3.12 -m venv .venv
+source .venv/bin/activate
+pip install -e ".[sim-mujoco]"          # from the repo root
+# the peer-to-peer swarm driver additionally needs:  pip install device-connect-edge
+
+python examples/mujoco_bed_making/bed_making_demo/unitree_g1_bed_making_demo.py --no-viewer
+```
+
+(On macOS the interactive viewer needs `mjpython`; `--no-viewer` runs headless under plain `python`.)
+
 ## What It Builds
 
 - A 2.0 m x 1.8 m x 0.5 m bed centered in the scene.

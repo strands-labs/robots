@@ -15,6 +15,22 @@ grip held — with no attachment, no grab tabs, no kinematic pinning. PhysX (the
 [#2](https://github.com/armwaheed/robots/issues/2) demo runs on) cannot do this with either of
 its cloth models. Eye-verified; see [the discovery section](#the-discovery-newton-makes-fabric-grippable) below.*
 
+## Setup
+
+This repo targets **Python 3.12+**. Run the Newton cloth harness from a **Python 3.12 virtual
+environment** (Isaac Sim 5.1 bundles Python 3.11, so a separate venv avoids the version conflict):
+
+```bash
+python3.12 -m venv .venv
+source .venv/bin/activate
+pip install -e ".[sim-newton]"          # newton + warp-lang + mujoco-warp, from the repo root
+
+python examples/isaac_cloth_grasp/harness_grip_drag_peel.py
+```
+
+Warp auto-selects CUDA when a GPU is present and falls back to CPU otherwise — the harness runs on
+either (CPU is slower but needs no GPU).
+
 Two candidate representations were built and tested on the DGX Spark (aarch64 / GB10), with the
 same pinch-and-drag protocol so they compare apples-to-apples against the PhysX PBD particle
 cloth baseline (whose frictional-grasp failure is NVIDIA-documented-unsolved — forum 332704,

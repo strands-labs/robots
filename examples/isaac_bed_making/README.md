@@ -14,6 +14,28 @@ copy of the original from the [MuJoCo demo](../mujoco_bed_making/) — so it has
 
 A full headless run renders an mp4 to **[`media/isaac_bed_making.mp4`](https://github.com/user-attachments/assets/28eb7850-6f58-427f-bf28-631423ca1fa9)**.
 
+## Setup & Python version
+
+This repo targets **Python 3.12+** (`strands_robots` pins `requires-python >=3.12`), while **NVIDIA
+Isaac Sim 5.1 bundles Python 3.11**. Use a dedicated **virtual environment** to avoid the version
+conflict:
+
+- **Repo tooling, asset download, tests, and the MuJoCo/Newton examples** — a Python 3.12 venv:
+  ```bash
+  python3.12 -m venv .venv
+  source .venv/bin/activate
+  pip install -e "."
+  ```
+- **The Isaac Sim scene itself** runs under Isaac's own Python 3.11 via `<IsaacLab>/isaaclab.sh -p`.
+  It imports `strands_robots` for asset resolution, so install that into Isaac's env with
+  `pip install -e . --ignore-requires-python --no-deps`; note that the `strands-agents` chain does
+  **not** fully resolve on 3.11 (one dep enforces 3.12 at build time). **Known limitation** until
+  Isaac Sim ships Python 3.12 — keep the 3.12 venv for anything that imports `strands_robots`, and
+  launch the scene with Isaac's interpreter:
+  ```bash
+  <IsaacLab>/isaaclab.sh -p examples/isaac_bed_making/demo.py
+  ```
+
 > **Benchmark (current):** both G1s walk in, hand off to the whole-body reach policy, lean/squat to the
 > draped sheet, grip it and draw it headward — **each balancing on its own two feet through the entire
 > demo, no topple, no kinematic cheats** (eye-verified, 195 frames). The two robots adopt *different*
