@@ -296,6 +296,20 @@ derives its physics substeps from the dataset fps and steps a full control
 period per frame, so a recorded episode replays back to the pose it was recorded
 at. `speed` continues to scale only the wall-clock playback rate.
 
+### Docs: `action_horizon` is a lower bound, not a maximum
+
+The public `run_policy`/`eval_policy` (and `run_policy` tool) docstrings
+described `action_horizon` as the *maximum* actions consumed from each policy
+chunk before re-querying. The effective interval is actually
+`max(action_horizon, policy.execution_horizon)` (`resolve_chunk_length`): it is
+a *lower* bound, and RTC policies ignore it entirely. So for a chunk-emitting
+policy (e.g. a VLA with `execution_horizon=50`) any smaller `action_horizon`
+has no effect -- the full trained chunk is always consumed. In particular
+`eval_policy`'s "set to `1` for closed-loop control" advice holds only for
+single-action policies. The docstrings now state the clamp semantics so a
+caller does not silently get open-loop chunk execution when expecting a tighter
+re-query interval.
+
 ### Fixed: `set_body_properties(mass=...)` left the body's inertia stale
 
 Setting a body's mass at runtime updated `model.body_mass` but not

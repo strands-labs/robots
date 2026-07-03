@@ -16,6 +16,7 @@ Exposes the deep MuJoCo C API through clean Python methods:
 """
 
 import logging
+import math
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -234,6 +235,30 @@ class PhysicsMixin:
                         "status": "error",
                         "content": [{"text": f"apply_force: '{_name}' must be a list/tuple of 3 numbers"}],
                     }
+                # Every element must be a finite real number. Without this,
+                # non-numeric elements (e.g. ["a", "b", "c"]) raise ValueError
+                # inside np.array(dtype=float64) - escaping the structured-error
+                # contract - and nan/inf or nested lists slip silently into
+                # mj_applyFT, injecting bad state into the physics buffer.
+                # bool is intentionally accepted (subclass of int -> finite);
+                # rejecting it is out of scope for numeric-element validation.
+                for _elem in _vec:
+                    try:
+                        _f = float(_elem)
+                    except (TypeError, ValueError):
+                        return {
+                            "status": "error",
+                            "content": [{"text": f"apply_force: '{_name}' elements must be numbers, got {_vec!r}"}],
+                        }
+                    if not math.isfinite(_f):
+                        return {
+                            "status": "error",
+                            "content": [
+                                {
+                                    "text": f"apply_force: '{_name}' must contain finite numbers (no nan/inf), got {_vec!r}"
+                                }
+                            ],
+                        }
 
         mj = _ensure_mujoco()
         model, data = self._world._model, self._world._data

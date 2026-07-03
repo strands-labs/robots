@@ -151,6 +151,45 @@ class TestApplyForceValidation:
         assert res["status"] == "error"
         assert "3-element" in res["content"][0]["text"]
 
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            # non-numeric elements: pre-fix these raise ValueError inside
+            # np.array(dtype=float64), escaping the structured-error contract.
+            {"force": ["a", "b", "c"]},
+            {"torque": ["x", "y", "z"]},
+            {"force": [0.0, 0.0, 0.0], "point": ["p", "q", "r"]},
+            # nested lists are length-3 but not scalar numbers.
+            {"force": [[1], [2], [3]]},
+            # None element is neither a number nor iterable of length mismatch.
+            {"force": [1, None, 3]},
+        ],
+    )
+    def test_non_numeric_elements_error(self, sim_with_robot, kwargs):
+        """Regression: 3-element vectors with non-numeric entries must return a
+        structured error, not raise or silently coerce into the physics buffer."""
+        res = sim_with_robot.apply_force(body_name="link1", **kwargs)
+        assert res["status"] == "error"
+        assert "must be numbers" in res["content"][0]["text"]
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            # nan/inf pass the length check and, pre-fix, are silently applied to
+            # qfrc_applied - poisoning every subsequent mj_step.
+            {"force": [float("nan"), 0.0, 0.0]},
+            {"force": [float("inf"), 0.0, 0.0]},
+            {"torque": [0.0, float("-inf"), 0.0]},
+            {"force": [0.0, 0.0, 0.0], "point": [0.0, 0.0, float("nan")]},
+        ],
+    )
+    def test_non_finite_elements_error(self, sim_with_robot, kwargs):
+        """Regression: nan/inf in a force/torque/point vector must return a
+        structured error instead of injecting non-finite state into physics."""
+        res = sim_with_robot.apply_force(body_name="link1", **kwargs)
+        assert res["status"] == "error"
+        assert "finite numbers" in res["content"][0]["text"]
+
 
 # negative/invalid mass, timestep
 
