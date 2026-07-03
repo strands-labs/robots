@@ -43,7 +43,7 @@ APE_HANGER = {  # raise wide + up, elbow bent — hand hangs high, clear of the 
 }
 
 # Deterministic LEFT-arm HANDOFF_POSE (joint-space, rad): hand presented HIGH and clear of the bed,
-# forearm up, PALM UP (positive wrist roll — opposite of the palm-to-edge grasp roll), so a human can
+# forearm up, PALM UP (negative wrist roll, -1.74 rad — opposite of the palm-to-edge grasp roll), so a human can
 # lay the sheet edge across the open claw WITHOUT the robot fouling the mattress. Reached FROM
 # ape_hanger (above the bed), never by sweeping forward+down. Tune via --present-only / --present-wrist-roll.
 HANDOFF_POSE = {
@@ -208,7 +208,7 @@ def main() -> None:
     ap.add_argument("--contract", default="/home/unitree/bedreach_deploy/deploy_contract_v2.json")
     ap.add_argument("--present-only", action="store_true", help="present HANDOFF_POSE, hold, release")
     ap.add_argument("--present-wrist-roll", type=float, default=None,
-                    help="override the HANDOFF_POSE wrist roll (rad, ±1.9) — +ve = palm up. Tune the "
+                    help="override the HANDOFF_POSE wrist roll (rad, ±1.9) — -ve = palm up (the eye-verified -1.74). Tune the "
                          "receive orientation here.")
     ap.add_argument("--present-s", type=float, default=4.0, help="seconds to ramp into HANDOFF_POSE")
     ap.add_argument("--draw-s", type=float, default=4.0, help="seconds for the deterministic draw")

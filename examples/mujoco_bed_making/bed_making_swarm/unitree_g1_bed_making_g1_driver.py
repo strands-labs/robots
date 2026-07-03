@@ -12,9 +12,9 @@ Coordination happens two ways, both visible in the Device Connect dashboard:
    exposed as Device Connect functions so they show up as invocable buttons
    in the portal and can be driven by an AI Fabric orchestrator:
    ``askForHelp``, ``offerHelp``, ``pickUpBedSheet``, ``walkToNextCorner``
-   (counter-clockwise by default), ``putDownBedSheet``, plus read-only
-   ``getStatus`` / ``getGoalState`` / ``listPeers`` / ``getEventHistory`` /
-   ``getHelpHistory``.
+   (counter-clockwise by default), ``putDownBedSheet``, ``emergencyStopAll``,
+   plus read-only ``getStatus`` / ``getGoalState`` / ``listPeers`` /
+   ``getEventHistory`` / ``getHelpHistory``.
 
 2. **Broadcast events (``@emit`` / ``@on``).** When a peer claims, picks up,
    places, or releases a corner — or asks/offers help — it emits a Device

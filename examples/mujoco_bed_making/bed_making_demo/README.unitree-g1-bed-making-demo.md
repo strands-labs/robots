@@ -1,5 +1,11 @@
 # Unitree G1 Two-Humanoid Bed-Making Demo
 
+> **This MuJoCo demo is the runnable first pass.** It is verified end-to-end (headless, CPU) and is the
+> quickest way to see the scenario. The higher-fidelity successor is the **Isaac Sim version**
+> ([`examples/isaac_bed_making/`](../../isaac_bed_making/README.md)), which adds whole-body RL balance
+> and Inspire-hand grasping. This MuJoCo demo remains the reference for the cloth physics and the
+> peer-to-peer swarm coordination model.
+
 This demo implements the GitHub issue #2 scenario: a robotic system with two
 Unitree G1 humanoids, a bed object, and a bedsheet object.
 

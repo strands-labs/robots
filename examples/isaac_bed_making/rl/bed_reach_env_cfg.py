@@ -9,7 +9,10 @@ that would topple the robot must be handled by stepping / counter-leaning — li
 
 The reach target is sampled in the robot's BASE frame (UniformPoseCommand), so the policy is
 yaw-invariant; at deploy the behavior layer commands the bed-corner positions as base-frame
-targets. The hand tracked is the right `wrist_yaw_link` EE (left EE reserved for bimanual).
+targets. Tracking is same-side/ambidextrous: the reward follows whichever `wrist_yaw_link` EE
+is on the target's side (a +y target uses the LEFT hand, a −y target the RIGHT), so a sideways
+drag is a natural abduction rather than a cross-body sweep one hand can't hold (see HANDS and
+the `same_side_*` mdp terms this file wires up).
 """
 
 from __future__ import annotations

@@ -130,8 +130,9 @@ async def run_scenario(
 ) -> dict:
     """Drive the swarm to the goal state and exercise ask/offer-help.
 
-    ``invoke(driver, fn_name, **params)`` actually calls the function — over
-    the broker (canonical Device Connect invoke) or directly in loopback mode.
+    ``invoke(driver, fn_name, **params)`` actually calls the function. RPCs are
+    always in-process (both broker and loopback modes use
+    ``make_direct_invoker``); only Device Connect events traverse the broker.
     Returns a structured result dict for assertions/reporting.
     """
 

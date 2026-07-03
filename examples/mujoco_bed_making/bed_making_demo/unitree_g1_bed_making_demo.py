@@ -550,21 +550,6 @@ def blend_base(start: BasePose, target: BasePose, alpha: float) -> BasePose:
     )
 
 
-def crumpled_sheet_layout(seed: int) -> SheetLayout:
-    rng = random.Random(seed)
-    layout: SheetLayout = {}
-    for ix, iy, node in _sheet_nodes():
-        u = ix / (SHEET_GRID_X - 1)
-        v = iy / (SHEET_GRID_Y - 1)
-        fold_a = math.sin(5.0 * math.pi * u + 1.7 * math.sin(3.0 * math.pi * v))
-        fold_b = math.sin(4.0 * math.pi * v + 0.8 * math.cos(2.0 * math.pi * u))
-        x = SHEET_DROP_POS[0] - 0.55 + 0.65 * u + 0.08 * fold_b + rng.uniform(-0.018, 0.018)
-        y = -0.35 + 0.70 * v + 0.10 * fold_a + rng.uniform(-0.018, 0.018)
-        z = 0.45 + 0.20 * abs(fold_a) + 0.08 * abs(fold_b) + rng.uniform(-0.02, 0.035)
-        layout[node] = (x, y, z)
-    return layout
-
-
 def final_sheet_layout(seed: int) -> SheetLayout:
     rng = random.Random(seed + 31)
     origin = (1.02, 0.87, BED_HEIGHT_M + 0.045)
@@ -871,10 +856,6 @@ def _required(value: ET.Element | None, name: str) -> ET.Element:
 
 def _sheet_node_index(ix: int, iy: int) -> int:
     return ix * SHEET_GRID_Y + iy
-
-
-def _sheet_node_grid(node: int) -> Tuple[int, int]:
-    return divmod(node, SHEET_GRID_Y)
 
 
 def _sheet_nodes():
@@ -2123,16 +2104,6 @@ def _drive_make_bed(
         render_error = render_error or error
 
     return frame_state.saved_frame, render_error, planner.worker_assist_calls + drifted_total
-
-
-def _opposite_bed_corner(corner: str) -> str:
-    mapping = {
-        "bed_head_right": "bed_foot_left",
-        "bed_head_left": "bed_foot_right",
-        "bed_foot_right": "bed_head_left",
-        "bed_foot_left": "bed_head_right",
-    }
-    return mapping.get(corner, corner)
 
 
 def _sheet_to_bed_corner(sheet_corner: str) -> str:

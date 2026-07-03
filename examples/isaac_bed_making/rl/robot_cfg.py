@@ -44,9 +44,10 @@ ARM_JOINTS = [
 ]
 BODY_JOINTS = LEG_JOINTS + WAIST_JOINTS + ARM_JOINTS  # 12 + 3 + 14 = 29
 
-# End-effector body links (the reach target tracks the right hand by default; left is
-# available for a future bimanual reward). `*_wrist_yaw_link` is the EE convention used by
-# NVIDIA's own locomanipulation G1 env.
+# End-effector body links. The reward tracks whichever hand is on the target's side
+# (same-side/ambidextrous — see HANDS and the same_side_* terms in bed_reach_env_cfg), so
+# BOTH EEs are used. `*_wrist_yaw_link` is the EE convention used by NVIDIA's own
+# locomanipulation G1 env.
 RIGHT_EE_BODY = "right_wrist_yaw_link"
 LEFT_EE_BODY = "left_wrist_yaw_link"
 PELVIS_BODY = "pelvis"

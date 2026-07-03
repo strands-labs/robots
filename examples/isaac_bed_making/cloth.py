@@ -13,8 +13,10 @@ DGX Spark and baked in here:
 * On the **GPU pipeline the deformed particle positions never sync to the USD
   mesh / Fabric**, so a headless camera renders the flat authored mesh. Read the
   live positions from a PhysX *tensor cloth view* (:func:`make_cloth_view`,
-  :func:`view_positions`) and blit them into the mesh (:func:`sync_mesh_from_view`)
-  each frame; run with ``SimulationCfg(use_fabric=False)`` so the render reads USD.
+  :func:`view_positions`) and blit them into the render mesh each frame. The demo
+  runs ``SimulationCfg(use_fabric=True)`` (needed so the robot articulations render
+  their motion), so the blit goes through the **Fabric** path
+  (:func:`make_fabric_points` + :func:`sync_shell_fabric`), not USD.
 
 A :func:`grasp` auto-attachment helper is provided, but the demo grips the cloth
 by **friction** (rubberized hands) instead — see ``manipulation.apply_hand_friction``.
@@ -274,12 +276,6 @@ def grasp(stage, cloth_path: str, body_path: str, attach_path: str,
         pass
 
 
-def release(stage, attach_path: str) -> None:
-    """Remove a grasp attachment (let go of the cloth)."""
-    if stage.GetPrimAtPath(attach_path):
-        stage.RemovePrim(attach_path)
-
-
 def add_spring_grip(stage, joint_path: str, wrist_path: str, tab_path: str, local_pos0,
                     *, stiffness: float = 500.0, damping: float = 30.0,
                     break_force: float = 45.0, break_torque: float = 1.0e9) -> str:
@@ -476,8 +472,8 @@ def add_perimeter_grab_tabs(stage, sheet: "Bedsheet", prefix: str = "/World/Grab
 # the USD mesh (with Fabric on it isn't synced at all), so a headless camera
 # renders the stale, flat authored mesh. The cloth IS draping in the backend —
 # we read the live particle positions via the PhysX *tensor* cloth view and blit
-# them into the visual mesh ourselves. Requires SimulationCfg(use_fabric=False)
-# so the renderer reads USD.
+# them into the render mesh ourselves each frame (the demo runs use_fabric=True,
+# so the blit goes through the Fabric path below).
 def make_cloth_view(prim_path: str = "/World/Sheet", backend: str = "torch"):
     """Create a PhysX tensor view over a particle cloth (call after the first
     sim step so the cloth is registered in the physics scene)."""
@@ -499,22 +495,6 @@ def view_positions(view, idx: int = 0):
     return np.asarray(row, dtype=float).reshape(-1, 3)
 
 
-def sync_mesh_from_view(view, mesh, idx: int = 0):
-    """Blit live cloth positions into the visual mesh so the renderer shows the
-    real (deformed) cloth. Returns the (N,3) positions for any geometry logic."""
-    import numpy as np
-    from pxr import Gf, Vt
-
-    p = view_positions(view, idx)
-    # Positions are world-space; zero the mesh translate so they aren't
-    # double-transformed by the leftover build-time AddTranslateOp.
-    attr = mesh.GetPrim().GetAttribute("xformOp:translate")
-    if attr and tuple(attr.Get()) != (0.0, 0.0, 0.0):
-        attr.Set(Gf.Vec3d(0.0, 0.0, 0.0))
-    mesh.GetPointsAttr().Set(Vt.Vec3fArray.FromNumpy(p.astype(np.float32)))
-    return p
-
-
 # ── Fabric (use_fabric=True) rendering path ─────────────────────────────────
 # With use_fabric=True the RTX renderer reads geometry from Fabric, not USD, so a
 # USD points blit is ignored and the cloth renders flat. We must run fabric on for
@@ -533,7 +513,7 @@ def sync_mesh_from_view(view, mesh, idx: int = 0):
 # are — no resetXformStack or per-frame transform fixup needed.
 def make_fabric_points(prim_path: str = "/World/Sheet"):
     """Attach the Fabric/usdrt stage and return the cloth mesh's ``points``
-    attribute for in-place per-frame updates (use with :func:`sync_fabric_from_view`
+    attribute for in-place per-frame updates (use with :func:`sync_shell_fabric`
     when running ``SimulationCfg(use_fabric=True)``). Call after ``sim.reset()`` and
     the first sim step. Returns ``None`` if the prim isn't in Fabric yet."""
     import omni.usd
@@ -547,18 +527,6 @@ def make_fabric_points(prim_path: str = "/World/Sheet"):
     if attr and attr.IsValid():
         return attr
     return prim.CreateAttribute("points", usdrt.Sdf.ValueTypeNames.Point3fArray, True)
-
-
-def sync_fabric_from_view(view, fabric_points, idx: int = 0):
-    """Blit live deformed cloth positions into the Fabric mesh ``points`` so the
-    RTX renderer (``use_fabric=True``) shows the real cloth. Returns the (N,3)
-    positions. ``fabric_points`` comes from :func:`make_fabric_points`."""
-    import numpy as np
-    import usdrt
-
-    p = view_positions(view, idx)
-    fabric_points.Set(usdrt.Vt.Vec3fArray(np.ascontiguousarray(p, dtype=np.float32)))
-    return p
 
 
 def corner_world_positions(view, sheet: "Bedsheet"):
@@ -659,8 +627,8 @@ def build_shell_mesh(
     hide_membrane: bool = True,
 ) -> ShellMesh:
     """Create the closed double-layer visual slab for ``sheet`` and (by default)
-    hide the thin membrane. Topology is fixed; call :func:`sync_shell_fabric` (or
-    :func:`sync_shell_mesh`) each frame to push the live deformed points."""
+    hide the thin membrane. Topology is fixed; call :func:`sync_shell_fabric` each frame to push the live
+    deformed points."""
     nx, ny = sheet.nx, sheet.ny
     n_part = (nx + 1) * (ny + 1)
 
@@ -724,15 +692,4 @@ def sync_shell_fabric(view, fabric_points, shell: ShellMesh, idx: int = 0):
     p = view_positions(view, idx)
     sp = shell_points(p, shell.nx, shell.ny, shell.thickness, shell.bias)
     fabric_points.Set(usdrt.Vt.Vec3fArray(np.ascontiguousarray(sp, dtype=np.float32)))
-    return p
-
-
-def sync_shell_mesh(view, shell: ShellMesh, idx: int = 0):
-    """USD-path equivalent of :func:`sync_shell_fabric` (for ``use_fabric=False``)."""
-    import numpy as np
-    from pxr import Vt
-
-    p = view_positions(view, idx)
-    sp = shell_points(p, shell.nx, shell.ny, shell.thickness, shell.bias)
-    shell.mesh.GetPointsAttr().Set(Vt.Vec3fArray.FromNumpy(sp.astype(np.float32)))
     return p

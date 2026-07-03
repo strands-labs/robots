@@ -13,7 +13,6 @@ Modules:
 * :mod:`cloth`        — PhysX particle-cloth bedsheet + grasp attachment.
 * :mod:`perception`   — robotics-connect-calibrated LiDAR + head-camera sensing (real-to-sim).
 * :mod:`coordination` / :mod:`swarm_driver` — in-process Device Connect swarm of two G1 peers.
-* :mod:`behavior`     — per-robot autonomous state machine (non-scripted).
 * :mod:`manipulation` / :mod:`replay` — legacy ``--pink`` / ``--replay`` paths.
 * ``rl/``             — the bed-reach RL package (see ``RL_WHOLE_BODY_REACH.md``).
 * ``demo.py``         — entrypoint: ``isaaclab.sh -p examples/isaac_bed_making/demo.py``.

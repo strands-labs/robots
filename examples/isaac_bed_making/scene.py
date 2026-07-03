@@ -6,12 +6,13 @@ Layout (world frame, metres). The bed's long axis is **x**: the **head** is at
 * Bed (mattress): 2.0 (x) x 1.8 (y) x 0.66 (z) box, top at z=0.66.
 * Headboard: a board standing at the head (-x), rising above the mattress.
 * Two pillows: resting at the head, in place (the robots never touch them).
-* Bedsheet: a particle-cloth sheet that **starts flat, lying on the foot half of
-  the bed and draping off the foot** — as if it had been pulled down toward the
-  foot. The head half of the mattress is bare. The robots make the bed by grabbing
-  the two **forward (head-side) corners** and pulling them toward the head, drawing
-  the sheet up over the mattress. (This replaced an accordion fold-back start, which
-  was too hard for the simulated G1s to unfold — issue #2.)
+* Bedsheet: a particle-cloth sheet built **accordion-gathered toward the foot** of
+  the bed (``accordion=True``) — its head edge sits at ~mid-bed (foot of the pillows)
+  and the rest is pleated into a bunched ruffle of slack over the foot half, draping
+  off the foot; the head half of the mattress is bare. The robots make the bed by
+  grabbing the sheet's **head edge** and drawing it toward the head, and the foot
+  accordion unspools that slack as they pull — feeding the cover up instead of dragging
+  it taut (a taut sheet yanks the gripping hand and topples the balancing robot — issue #2).
 * Robot 0 starts ~0.5 m off the -y long side and **walks in** under a learned
   policy; robot 1 mirrors on the +y side. (They used to be planted in reach;
   now they step in — issue #2 item #4.)
@@ -28,7 +29,7 @@ from typing import Dict, Tuple
 
 def _envf(name: str, default: float) -> float:
     """Read a float tuning knob from the environment (default off → the code value).
-    DIAGNOSTIC: lets a run sweep geometry without re-editing; strip before a ship."""
+    A documented config knob: lets a run sweep geometry via env vars without re-editing."""
     v = os.environ.get(name)
     return float(v) if v not in (None, "") else default
 
@@ -143,9 +144,7 @@ SHEET_SIZE = (SHEET_LEN, SHEET_W)
 # MuJoCo recipe (issue #2, 2026-06-06): COARSE + FEATHERLIGHT + THICK is what made the
 # MuJoCo flex sheet look good and hang still — not "triangles". MuJoCo used 143 verts /
 # 0.18 kg / ~4.4 cm. Match it: a coarse grid (with cloth.py's light particle_mass this
-# totals ~0.2 kg) settles instead of sloshing. NOTE: the *physics* is thick, but the
-# RENDER is still a single-layer membrane (looks thin) — giving it visual thickness
-# needs a render-side shell (extrude / double-layer the mesh). That is the next task.
+# totals ~0.2 kg) settles instead of sloshing.
 SHEET_RES = (14, 12)                            # coarse like MuJoCo's 13×11 → stable drape
 SHEET_THICKNESS = 0.05                          # thick physics/collision profile
 # Visual thickness: the particle cloth is a single-layer membrane (renders thin), so
@@ -223,7 +222,7 @@ def build_scene_cfg(g1_cfg, spawn_at_manip: bool = False):
         # misconfiguration → falling). So set the EXACT trained gains on legs, feet, waist
         # and arms (from policies/g1_velocity_walk.deploy.yaml); only the Inspire "hands"
         # group is left as-is. (demo.py re-stiffens waist+arms at the plant for the firm
-        # manipulation lean — see run_bedmaking; the legs are kinematically frozen by then.)
+        # manipulation lean — see run_bedmaking; the legs are balanced by the velocity policy every step.)
         g.actuators = dict(g.actuators)
         g.actuators["legs"] = ImplicitActuatorCfg(
             joint_names_expr=[".*_hip_pitch_joint", ".*_hip_roll_joint",

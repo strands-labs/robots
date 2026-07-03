@@ -18,10 +18,8 @@ End to end, each G1:
 free-base articulations that stand, walk and reach entirely under their controllers,
 so every motion is one a real G1 could reproduce on hardware — **no base pinning, no
 teleporting, no joint freezing**. The bed-reach policy is documented in
-``RL_WHOLE_BODY_REACH.md``. (WIP: the walk→reach handoff is being finalized via a
-warm-start retrain so the reach policy's neutral matches the at-sides walk pose; the
-legacy velocity-walk + Pink-IK / dataset-replay paths remain under ``--pink`` /
-``--replay``.)
+``RL_WHOLE_BODY_REACH.md``. (The legacy velocity-walk + Pink-IK / dataset-replay paths
+remain under ``--pink`` / ``--replay``.)
 
 The bed has a **headboard + pillows** (static; never touched) and a
 **particle-cloth sheet** that starts **flat, gathered toward the foot** (head half
@@ -556,7 +554,7 @@ def run_bedmaking(manip, balance, coord, step, capture, diag, stage, cloth_view,
     finger-cage only — the closed fingers and rubberized palms hold the cloth."""
     TOP = scenemod.BED_TOP_Z
     sign = {0: -1.0, 1: 1.0}
-    HEAD_EDGE_X = scenemod.SHEET_ORIGIN[0] - scenemod.SHEET_SIZE[0] / 2.0  # ~0.10
+    HEAD_EDGE_X = scenemod.SHEET_ORIGIN[0] - scenemod.SHEET_SIZE[0] / 2.0  # ~0.15
     HEAD_PULL_X = scenemod.HEAD_X + 0.65  # = -0.35
     # The robots BALANCE on their own feet (no pin), so the reach must keep the centre of
     # mass over the feet — a deep lunge across the bed topples the walking balancer. So we
@@ -669,9 +667,8 @@ def run_bedmaking_rl(bedreach, coord, step, capture, diag, stage, cloth_view, sh
     for robot 0 (−y side) and base −y for robot 1 (+y side): so robot 0 leads with its LEFT hand
     and robot 1 with its RIGHT — a natural same-side abduction for both, not the cross-body sweep
     one hand can't balance."""
-    import numpy as np
 
-    def _envf(name, default):   # DIAGNOSTIC tuning knobs (default off → code values); strip before commit
+    def _envf(name, default):   # tuning knobs from env vars (default off → code values); documented config
         v = os.environ.get(name)
         return float(v) if v not in (None, "") else default
 

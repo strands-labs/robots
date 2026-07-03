@@ -1,21 +1,17 @@
-"""G1 arm manipulation: world-frame differential IK + cloth grasp.
+"""G1 arm manipulation: whole-arm + waist Pink (Pinocchio) IK + friction cloth grip.
 
-The G1 pelvis spawns rotated 90 deg about Z and 0.75 m up, so its root frame is
-neither the world frame nor the identity. Isaac Lab's ``DifferentialIKController``
-must therefore be driven **entirely in the world frame** — world EE pose, the
-world-frame PhysX Jacobian, and a world-frame target. (Running it in the root
-frame, as the stock ``run_diff_ik.py`` tutorial does, diverges for the G1
-because that tutorial's robots have their root at the world origin.) Verified on
-the DGX Spark: in-workspace targets converge to ~1 cm.
+:class:`PinkArmIK` is the established G1 manipulation IK from Isaac Lab's
+locomanipulation pick-place env: a weighted QP over one arm **and the 3-DOF waist**,
+driven with a world-frame wrist target, so the torso **leans into** a low reach the way
+a person bends to make a bed (and it respects joint limits and damps near singularities).
+On a FLOATING, policy-balanced base it re-reads the live pelvis frame each step, so it
+tracks correctly as the base leans — no base pin.
 
-On a FLOATING base (the walking G1 — issue #2 item #4) the PhysX jacobian gains 6
-leading root-DOF columns, so the arm-joint columns shift by +6 (``jac_cols``) and
-the end-effector body index is no longer offset by -1 (``ej``). With those two
-floating-base corrections the same world-frame controller converges to <1 mm on a
-pinned base and within a few cm while the locomotion policy actively balances.
-
-Grasping is a PhysX auto-attachment between the cloth and the hand's palm link;
-releasing deletes it.
+The hand grips the cloth by **friction**, not a kinematic attachment:
+:func:`apply_hand_friction` gives the hand colliders a high-friction ("rubberized")
+material and :class:`FingerGrip` curls the Inspire fingers into a fist, so the closed,
+high-friction hand cages and drags the sheet. (The alternative PhysX auto-attachment
+grasp — binding the cloth to a rigid body — lives in :mod:`cloth`.)
 """
 
 from __future__ import annotations
@@ -40,99 +36,6 @@ ARM_JOINTS = {
               "right_wrist_pitch_joint", "right_wrist_yaw_joint"],
 }
 EE_LINK = {"left": "left_wrist_yaw_link", "right": "right_wrist_yaw_link"}
-PALM_LINK = {"left": "left_hand_palm_link", "right": "right_hand_palm_link"}
-
-
-class ArmIK:
-    """World-frame differential-IK driver for one G1 arm."""
-
-    def __init__(self, robot, scene, side: str, device: str, max_step: float = 0.04):
-        import torch
-        from isaaclab.controllers import DifferentialIKController, DifferentialIKControllerCfg
-
-        self._torch = torch
-        self.robot = robot
-        self.side = side
-        self.device = device
-        # Max per-step joint change (rad). The arm eases toward the target instead
-        # of whipping; a whip on the policy-balanced FLOATING base jolts the body
-        # and makes it stagger (verified: unclamped IK walked the robot off its
-        # feet). Set to None to disable.
-        self.max_step = max_step
-        # Resolve joint/body indices directly off THIS robot's articulation rather
-        # than via SceneEntityCfg("robot"): the bed-making scene holds two robots
-        # ("robot_0"/"robot_1"), so there is no entity literally named "robot".
-        # find_joints(preserve_order=True) keeps ARM_JOINTS order, which the IK
-        # uses consistently for the Jacobian columns, joint_pos, and the target.
-        self.joint_ids, _ = robot.find_joints(ARM_JOINTS[side], preserve_order=True)
-        body_ids, _ = robot.find_bodies([EE_LINK[side]], preserve_order=True)
-        self.ee_body_id = int(body_ids[0])
-        self.ej = self.ee_body_id - 1 if robot.is_fixed_base else self.ee_body_id
-        # PhysX jacobian columns: a FLOATING base prepends 6 root DOFs, so the arm
-        # joint columns are shifted by 6 (a fixed base has no such prefix). Without
-        # this the IK drives the wrong columns and diverges.
-        self.jac_cols = (list(self.joint_ids) if robot.is_fixed_base
-                         else [j + 6 for j in self.joint_ids])
-        # Palm link name varies by hand (Dex3 vs Inspire); fall back to the wrist
-        # EE link if the named palm link isn't present.
-        try:
-            palm_ids, _ = robot.find_bodies([PALM_LINK[side]], preserve_order=True)
-        except Exception:
-            palm_ids = []
-        self.palm_body_id = int(palm_ids[0]) if palm_ids else self.ee_body_id
-        self.ik = DifferentialIKController(
-            DifferentialIKControllerCfg(command_type="position", use_relative_mode=False, ik_method="dls"),
-            num_envs=robot.num_instances if hasattr(robot, "num_instances") else 1,
-            device=device,
-        )
-        self.target = None
-
-    def _ee(self):
-        p = self.robot.data.body_pose_w[:, self.ee_body_id]
-        return p[:, 0:3], p[:, 3:7]
-
-    def set_target(self, pos_w) -> None:
-        """Command a world-frame EE position (orientation held free)."""
-        t = self._torch.tensor([list(pos_w)], device=self.device, dtype=self._torch.float32)
-        self.target = t
-        _, qw = self._ee()
-        self.ik.reset()
-        self.ik.set_command(t, ee_quat=qw)
-
-    def clear(self) -> None:
-        self.target = None
-
-    def tick(self) -> Optional[float]:
-        """Advance one IK step toward the target. Returns distance-to-target (m).
-
-        Reads the WORLD-frame jacobian columns for this arm's joints via
-        ``self.jac_cols``: on a FLOATING base the 6 root DOFs come first, so the arm
-        columns are offset by +6. Indexing with the raw ``joint_ids`` (as before)
-        drives the wrong columns and the arm diverges — verified on the bedside G1
-        (27-37 cm error vs <1 mm with the offset). The per-step joint change is then
-        clamped (:attr:`max_step`) so the arm eases in without whipping the base."""
-        if self.target is None:
-            return None
-        torch = self._torch
-        jac = self.robot.root_physx_view.get_jacobians()[:, self.ej, :, self.jac_cols]
-        pw, qw = self._ee()
-        cur = self.robot.data.joint_pos[:, self.joint_ids]
-        jpd = self.ik.compute(pw, qw, jac, cur)
-        if self.max_step is not None:
-            jpd = cur + torch.clamp(jpd - cur, -self.max_step, self.max_step)
-        self.robot.set_joint_position_target(jpd, joint_ids=self.joint_ids)
-        return float(torch.norm(pw[0] - self.target[0]).item())
-
-    def ee_pos(self) -> List[float]:
-        return [float(x) for x in self._ee()[0][0].tolist()]
-
-    def palm_pos(self) -> List[float]:
-        """World position of the hand palm link (where the cloth grasp binds)."""
-        p = self.robot.data.body_pose_w[:, self.palm_body_id]
-        return [float(x) for x in p[0, 0:3].tolist()]
-
-    def palm_path(self, robot_prim_path: str) -> str:
-        return f"{robot_prim_path}/{PALM_LINK[self.side]}"
 
 
 class PinkArmIK:
@@ -146,8 +49,8 @@ class PinkArmIK:
 
     Drop-in for :class:`ArmIK`: ``set_target(world_xyz)`` / ``tick()`` / ``ee_pos()``.
     Orientation is left near the wrist's current pose (position-dominant), which is
-    what the friction grasp needs. The base is held (pinned) during manipulation, so
-    the pelvis frame the IK solves against is stable.
+    what the friction grasp needs. The base is balanced (not pinned) during manipulation;
+    the IK re-reads the live pelvis frame each step, so it stays correct as the base leans.
 
     Requires ``eigenpy``/``pinocchio`` to be imported **before** the Isaac app (see
     demo.py) or Pinocchio's ``StdVec_StdString`` converter is shadowed and the
