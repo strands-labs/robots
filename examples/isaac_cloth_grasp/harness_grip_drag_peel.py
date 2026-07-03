@@ -295,7 +295,7 @@ def main() -> int:
                     print(f"[harness] t={t:.2f}s DRAG A done: {verdicts['drag_full_stroke']}",
                           flush=True)
                     inv = model.particle_inv_mass.numpy()
-                    nx, ny = sheet["dim"]
+                    _, ny = sheet["dim"]
                     far = [sheet["vid"](0, j) for j in range(0, ny + 1)]   # head-side edge
                     inv[far] = 0.0
                     model.particle_inv_mass.assign(inv)

@@ -17,12 +17,12 @@ import math
 from dataclasses import dataclass
 from typing import Optional, Sequence
 
+import numpy as np
+
 
 def _min_gap(hand_xyz: Sequence[float], cloth_pts) -> float:
     if cloth_pts is None or len(cloth_pts) == 0:
         return math.inf
-    import numpy as np
-
     h = np.asarray(hand_xyz, dtype=float)
     return float(np.min(np.linalg.norm(np.asarray(cloth_pts, dtype=float) - h, axis=1)))
 

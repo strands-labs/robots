@@ -584,7 +584,7 @@ def _apply_leg_pose(pose: Dict[str, float], prefix: str, phase: str) -> None:
         "place": (0.12, 0.22, -0.11),
         "hold": (0.10, 0.20, -0.10),
     }.get(phase, (0.0, 0.10, -0.05))
-    for side, sign in (("left", 1), ("right", -1)):
+    for side, _ in (("left", 1), ("right", -1)):
         pose[f"{prefix}{side}_hip_pitch_joint"] = hip
         pose[f"{prefix}{side}_hip_roll_joint"] = 0.0
         pose[f"{prefix}{side}_hip_yaw_joint"] = 0.0
@@ -604,7 +604,7 @@ def _apply_gait_pose(pose: Dict[str, float], prefix: str, gait_phase: float, int
 
     if intensity <= 0.0:
         return
-    for side, sign in (("left", 1), ("right", -1)):
+    for side, _ in (("left", 1), ("right", -1)):
         phase = gait_phase if side == "left" else gait_phase + math.pi
         swing = math.sin(phase)
         lift = max(0.0, swing)

@@ -23,7 +23,6 @@ import argparse
 import json
 import math
 import os
-import sys
 import time
 
 import numpy as np
@@ -81,9 +80,7 @@ def quat_rotate_inverse(q_wxyz, v):
     """Rotate vector v from world into body frame given body quaternion q (wxyz)."""
     w, x, y, z = q_wxyz
     # R^T @ v ; build rotation matrix from quaternion, transpose-apply.
-    vx, vy, vz = v
     # body = R^T world. Use the standard formula.
-    t0 = 2.0 * (w * w + x * x) - 1.0
     R = np.array([
         [1 - 2 * (y * y + z * z), 2 * (x * y - w * z),     2 * (x * z + w * y)],
         [2 * (x * y + w * z),     1 - 2 * (x * x + z * z), 2 * (y * z - w * x)],

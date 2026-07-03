@@ -19,9 +19,6 @@ import warp as wp
 
 import newton
 
-# 1 N expressed in this unit system (kg · cm / s²)
-N = 100.0
-
 
 @dataclass
 class BedsheetParams:

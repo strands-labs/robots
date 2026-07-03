@@ -70,7 +70,7 @@ def _save_frame(sim, frame_path: Path, width: int, height: int) -> None:
 
 def _side_factor(name: str) -> int:
     lower = name.lower()
-    if any(token in lower for token in ("left", "l_", "_l", "l_")):
+    if any(token in lower for token in ("left", "l_", "_l")):
         return 1
     if any(token in lower for token in ("right", "r_", "_r")):
         return -1

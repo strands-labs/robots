@@ -18,6 +18,8 @@ unchanged — the policy already sees the target. The idle arm is regularized to
 
 from __future__ import annotations
 
+import math
+
 import torch
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.utils.math import combine_frame_transforms
@@ -101,7 +103,7 @@ def randomize_ee_load(
     use_left = env.command_manager.get_command(command_name)[env_ids, 1] >= 0.0
     mag = torch.rand(n, device=env.device) * (force_range[1] - force_range[0]) + force_range[0]
     mag = torch.where(torch.rand(n, device=env.device) < slip_prob, torch.zeros_like(mag), mag)
-    theta = torch.rand(n, device=env.device) * 6.2831853
+    theta = torch.rand(n, device=env.device) * 2 * math.pi
     fx, fy = mag * torch.cos(theta), mag * torch.sin(theta)
     zero = torch.zeros_like(fx)
     forces = torch.zeros(n, 2, 3, device=env.device)  # body slot 0 = right, 1 = left
