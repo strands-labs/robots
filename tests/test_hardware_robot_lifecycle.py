@@ -373,6 +373,84 @@ class TestExecuteTaskAsync:
         hw.cleanup()
 
 
+@pytest.mark.timeout(30)
+class TestRunPolicyObject:
+    """``run_policy(policy_object=...)`` - sim-parity rollout for pre-built policies.
+
+    The hardware counterpart of ``Simulation.run_policy(policy_object=...)``:
+    the caller's own object must be initialized and driven through the same
+    control loop ``start_task`` uses, ``n_steps`` must bound the applied
+    actions deterministically (no wall-clock dependence), and the server-policy
+    construction path (``_get_policy``) must never run.
+    """
+
+    def test_drives_prebuilt_object_and_reports_json(self):
+        fake = _FakeLeRobot(connected=False)
+        hw = _make_robot(fake)
+        policy = _StubPolicy()
+
+        async def _boom(*a, **k):
+            raise AssertionError("_get_policy must not be called when policy_object is given")
+
+        hw._get_policy = _boom  # type: ignore[assignment]
+        result = hw.run_policy(policy_object=policy, instruction="pick", n_steps=4)
+
+        assert result["status"] == "success"
+        payload = tool_json(result)
+        assert payload["status"] == "completed"
+        assert payload["steps"] == 4
+        assert payload["policy"] == "_StubPolicy"
+        assert len(fake.sent_actions) == 4
+        # The caller's OWN object was initialized and driven (identity, not a
+        # rebuilt copy): state keys + the RTC control rate landed on it.
+        assert policy.state_keys == ["j0.pos", "j1.pos"]
+        assert policy.control_frequency_calls == [1000.0]
+        assert all(d == 0 for d in policy.observed_delays)
+        hw.cleanup()
+
+    def test_n_steps_stops_mid_chunk(self):
+        fake = _FakeLeRobot(connected=False)
+        hw = _make_robot(fake)
+
+        class _FiveChunk(_StubPolicy):
+            async def get_actions(self, observation, instruction):
+                return [{"j0.pos": 0.1 * i} for i in range(5)]
+
+        result = hw.run_policy(policy_object=_FiveChunk(), instruction="pick", n_steps=3)
+        assert result["status"] == "success"
+        assert tool_json(result)["steps"] == 3
+        assert len(fake.sent_actions) == 3  # stopped inside the 5-action chunk
+        hw.cleanup()
+
+    def test_requires_policy_object(self):
+        hw = _make_robot()
+        result = hw.run_policy(policy_object=None)  # type: ignore[arg-type]
+        assert result["status"] == "error"
+        assert "policy_object is required" in result["content"][0]["text"]
+        hw.cleanup()
+
+    def test_rejects_concurrent_task(self):
+        hw = _make_robot()
+        hw._task_state.status = TaskStatus.RUNNING
+        hw._task_state.instruction = "busy"
+        result = hw.run_policy(policy_object=_StubPolicy(), instruction="pick", n_steps=1)
+        assert result["status"] == "error"
+        assert "already running" in result["content"][0]["text"].lower()
+        hw._task_state.status = TaskStatus.IDLE
+        hw.cleanup()
+
+    def test_connect_failure_reports_error_payload(self):
+        fake = _FakeLeRobot(connected=False, calibrated=False)
+        hw = _make_robot(fake)
+        result = hw.run_policy(policy_object=_StubPolicy(), instruction="pick", n_steps=1)
+        assert result["status"] == "error"
+        payload = tool_json(result)
+        assert payload["status"] == "error"
+        assert "not calibrated" in payload["error"]
+        assert fake.sent_actions == []
+        hw.cleanup()
+
+
 class _RtcChunkPolicy(Policy):
     """RTC-capable policy: emits a 5-action chunk but owns a 2-step re-query.
 

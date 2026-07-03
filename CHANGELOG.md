@@ -5,6 +5,23 @@ All notable behavioural changes to `strands-robots` are logged here. Follows
 
 ## [Unreleased]
 
+### Added: `run_policy(policy_object=...)` on the hardware `Robot` -- sim parity for pre-built policies
+
+The simulation side has a one-call rollout for a policy constructed in-process
+(`Simulation.run_policy(policy_object=..., n_steps=...)`), but the hardware
+path's only control loop (`start_task`) builds its own server-backed policy
+from `policy_provider` + `policy_port` and accepts no policy object -- so
+deploying a local checkpoint on an edge device (in-process policy, no server
+on a port) meant hand-writing the connect -> observe -> get_actions ->
+send_action loop the library already contains. The hardware `Robot` now has
+`run_policy(policy_object=..., instruction=..., duration=..., n_steps=None)`
+(blocking): it drives the caller's object through the exact `start_task` loop
+(connect with half-open-port rollback, state-key initialization, the RTC
+control-frequency / observed-delay contract, `resolve_chunk_length` chunk
+consumption), stops at `duration` or after `n_steps` applied actions (the sim
+parameter), and returns a text + `{"json": ...}` result per the tool-result
+contract. `start_task` and the provider+port path are unchanged.
+
 ### Fixed: `TrainSpec.learning_rate` was silently ignored by the `lerobot_local` trainer
 
 `learning_rate` was the one universal `TrainSpec` field with zero references in
