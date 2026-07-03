@@ -17,6 +17,21 @@ wins), and the notebooks README no longer claims a headless-Linux fallback that
 carried the same unconditional `cgl` -- masked in CI (the workflows export
 `MUJOCO_GL=osmesa`) but erroring a bare-Linux local run -- and it now uses the
 same platform-aware default. No `cgl` default remains anywhere in the repo.
+### Fixed: `TrainSpec.learning_rate` was silently ignored by the `lerobot_local` trainer
+
+`learning_rate` was the one universal `TrainSpec` field with zero references in
+`training/lerobot.py`: `build_config()` never wired it into the typed config and
+`build_command()` emitted no `--policy.optimizer_lr` flag, so the policy's
+training preset always won and a caller-set value was silently dropped (every
+other backend honored it). The field is now opt-in like `seed` -- it defaults to
+`None` (use the backend's own default: the policy preset for LeRobot, the
+`FinetuneConfig` default for GR00T, the TOML default for Cosmos), and an
+explicit value is honored everywhere. For LeRobot it maps to
+`policy.optimizer_lr`; a policy with no such field (no Adam-style single LR)
+raises loudly instead of dropping the value. RL trainers (PPO/FastSAC) keep a
+concrete `1e-4` default on `RLTrainSpec`, since from-scratch RL has no preset to
+defer to. The `train_policy` tool's `learning_rate` parameter defaults to `None`
+to match.
 
 ### Added: ROS 2 action support in `use_ros` + goal-level `navigate_to` on `RosBridgedRobot`
 
@@ -275,6 +290,34 @@ and `status="success"` -- a silent record -> replay fidelity gap. Replay now
 derives its physics substeps from the dataset fps and steps a full control
 period per frame, so a recorded episode replays back to the pose it was recorded
 at. `speed` continues to scale only the wall-clock playback rate.
+
+### Docs: `action_horizon` is a lower bound, not a maximum
+
+The public `run_policy`/`eval_policy` (and `run_policy` tool) docstrings
+described `action_horizon` as the *maximum* actions consumed from each policy
+chunk before re-querying. The effective interval is actually
+`max(action_horizon, policy.execution_horizon)` (`resolve_chunk_length`): it is
+a *lower* bound, and RTC policies ignore it entirely. So for a chunk-emitting
+policy (e.g. a VLA with `execution_horizon=50`) any smaller `action_horizon`
+has no effect -- the full trained chunk is always consumed. In particular
+`eval_policy`'s "set to `1` for closed-loop control" advice holds only for
+single-action policies. The docstrings now state the clamp semantics so a
+caller does not silently get open-loop chunk execution when expecting a tighter
+re-query interval.
+
+### Fixed: `set_body_properties(mass=...)` left the body's inertia stale
+
+Setting a body's mass at runtime updated `model.body_mass` but not
+`model.body_inertia`, leaving a physically inconsistent body -- heavy in
+translation but retaining the old rotational resistance -- which silently
+corrupted the rotational dynamics. Since `mass` is the only settable property,
+the caller had no way to correct it. Because a rigid body's inertia tracks its
+mass at fixed geometry (a uniform density change scales `I = integral of r^2 dm`
+by the same factor), the inertia tensor is now scaled by `mass / old_mass`,
+matching `randomize(randomize_physics=True)` and the Newton backend. In a
+compound-pendulum check, a mass-only change wrongly shrank the swing period ~2x
+(0.87 s vs 1.76 s); with the fix the period stays mass-invariant as physics
+requires. Massless frames (mass 0) are guarded against division by zero.
 
 ## [0.4.1] - 2026-07-01
 

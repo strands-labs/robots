@@ -160,8 +160,11 @@ def run_policy(
         n_steps: Hard cap on control steps per episode. Forwarded to
             ``run_policy`` as ``n_steps``.
         control_frequency: Target Hz for policy queries.
-        action_horizon: Actions consumed per policy call before
-            re-querying.
+        action_horizon: Lower bound on actions consumed per policy call
+            before re-querying; the effective interval is
+            ``max(action_horizon, policy.execution_horizon)``, so a
+            chunk-emitting policy always consumes its full chunk and a
+            smaller value has no effect (see ``resolve_chunk_length``).
         fast_mode: Skip real-time sleep between steps (default True for
             rollouts - wall-clock pacing slows headless eval).
         dataset_root: When set, the tool drives the full recording

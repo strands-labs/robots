@@ -512,6 +512,46 @@ class TestRuntimeModification:
         body_id = mj.mj_name2id(sim._world._model, mj.mjtObj.mjOBJ_BODY, "box1")
         assert sim._world._model.body_mass[body_id] == pytest.approx(5.0)
 
+    def test_set_body_mass_scales_inertia_with_mass(self, sim):
+        """Setting mass scales the inertia tensor by the same ratio.
+
+        A rigid body's inertia tracks its mass at fixed geometry (a uniform
+        density change scales I = integral of r^2 dm by the same factor).
+        Updating body_mass alone leaves the body physically inconsistent -
+        heavy in translation but with the old rotational resistance - and the
+        caller has no way to fix it (mass is the only settable property).
+        """
+        model = sim._world._model
+        body_id = mj.mj_name2id(model, mj.mjtObj.mjOBJ_BODY, "box1")
+        old_mass = float(model.body_mass[body_id])
+        old_inertia = model.body_inertia[body_id].copy()
+        assert old_mass > 0 and (old_inertia > 0).all()
+
+        # Scale up by 5x.
+        assert sim.set_body_properties(body_name="box1", mass=5.0)["status"] == "success"
+        assert model.body_mass[body_id] == pytest.approx(5.0)
+        assert model.body_inertia[body_id] == pytest.approx(old_inertia * (5.0 / old_mass))
+
+        # And down again (0.5 kg): inertia tracks the new ratio, not stale.
+        cur_mass = float(model.body_mass[body_id])
+        cur_inertia = model.body_inertia[body_id].copy()
+        assert sim.set_body_properties(body_name="box1", mass=0.5)["status"] == "success"
+        assert model.body_inertia[body_id] == pytest.approx(cur_inertia * (0.5 / cur_mass))
+
+    def test_set_body_mass_massless_body_no_crash(self, sim):
+        """A massless frame (mass 0, inertia 0) is handled without dividing by zero.
+
+        There is no geometry-derived inertia to scale from a zero prior mass, so
+        the inertia stays zero; the mass update still succeeds.
+        """
+        model = sim._world._model
+        body_id = mj.mj_name2id(model, mj.mjtObj.mjOBJ_BODY, "arm_base")
+        assert float(model.body_mass[body_id]) == pytest.approx(0.0)
+        result = sim.set_body_properties(body_name="arm_base", mass=2.0)
+        assert result["status"] == "success"
+        assert model.body_mass[body_id] == pytest.approx(2.0)
+        assert model.body_inertia[body_id] == pytest.approx([0.0, 0.0, 0.0])
+
     def test_set_geom_color(self, sim):
         result = sim.set_geom_properties(geom_name="box_geom", color=[0, 1, 0, 1])
         assert result["status"] == "success"

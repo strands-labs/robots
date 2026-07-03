@@ -741,9 +741,16 @@ class SimEngine(ABC):
             control_frequency: Target Hz for policy queries. Must be a
                 positive number; a non-positive, non-numeric, or bool value
                 is reported as a structured caller error.
-            action_horizon: Max actions consumed from each policy chunk
-                before re-querying. Must be a positive integer (>= 1); a
-                non-positive or non-int value is reported as a caller error.
+            action_horizon: Lower bound on actions consumed from each
+                policy chunk before re-querying. The effective interval is
+                ``max(action_horizon, policy.execution_horizon)`` (see
+                ``strands_robots.policies.resolve_chunk_length``): a
+                chunk-emitting policy always keeps its full trained chunk, so
+                a value below that chunk length (e.g. a VLA whose
+                ``execution_horizon`` is 50) has no effect. RTC policies own
+                their own interval and ignore this entirely. Must be a
+                positive integer (>= 1); a non-positive or non-int value is
+                reported as a caller error.
             fast_mode: Skip real-time sleep between steps.
             video: Optional video-recording config dict. Accepted keys:
                 ``path`` (str, output MP4 - required to enable recording),
@@ -1622,7 +1629,11 @@ class SimEngine(ABC):
                 before re-observing, which is what GR00T-N1.7-LIBERO
                 checkpoints were trained against. Set to ``1`` for
                 closed-loop receding-horizon control (re-observe every
-                step; matches OpenVLA-style eval). Values < 1 are
+                step; matches OpenVLA-style eval) ONLY for single-action
+                policies: the interval is clamped up to the policy's
+                ``execution_horizon`` (``resolve_chunk_length``), so a
+                chunk-emitting policy (e.g. a VLA) still consumes its full
+                chunk open-loop regardless of this value. Values < 1 are
                 rejected with a structured error. ``on_step`` and
                 success/failure checks run after EACH applied action,
                 so per-step rewards and early termination work

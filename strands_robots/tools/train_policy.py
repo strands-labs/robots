@@ -56,7 +56,7 @@ def train_policy(
     embodiment: str | None = None,
     steps: int = 10000,
     batch_size: int = 32,
-    learning_rate: float = 1e-4,
+    learning_rate: float | None = None,
     save_freq: int = 1000,
     num_gpus: int = 1,
     num_nodes: int = 1,
@@ -107,7 +107,10 @@ def train_policy(
         embodiment: Embodiment tag (REQUIRED for GR00T; inferred by lerobot).
         steps: Total optimizer steps.
         batch_size: Global batch size (summed across GPUs).
-        learning_rate: Initial LR.
+        learning_rate: Optimizer learning rate. ``None`` (default) uses the
+            backend's own default (the policy training preset for lerobot,
+            GR00T's FinetuneConfig default, Cosmos's TOML default); an explicit
+            value is honored by every backend.
         save_freq: Checkpoint cadence in steps.
         num_gpus: GPUs on this node (``>1`` -> accelerate/torchrun multi-GPU).
         num_nodes: Nodes (Cosmos HSDP / torchrun ``--nnodes``).

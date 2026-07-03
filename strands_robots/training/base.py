@@ -79,7 +79,15 @@ class TrainSpec:
         steps: Total optimizer steps (maps to lerobot ``--steps`` /
             GR00T ``max_steps`` / Cosmos ``trainer.max_iter``).
         global_batch_size: Batch summed across GPUs before grad accumulation.
-        learning_rate: Initial LR.
+        learning_rate: Optimizer learning rate. ``None`` (default) uses the
+            backend's own default -- the policy training preset for LeRobot
+            (``policy.optimizer_lr``), GR00T's ``FinetuneConfig`` default, or
+            Cosmos's TOML default. An explicit value is honored by every
+            backend (same opt-in shape as :attr:`seed`); LeRobot maps it to
+            ``policy.optimizer_lr`` and rejects it loudly if the policy has no
+            such field. RL trainers (PPO/FastSAC) have no preset to defer to,
+            so :class:`~strands_robots.training.rl.base_algo.RLTrainSpec`
+            overrides this default with a concrete value.
         save_freq: Checkpoint cadence in steps.
         num_gpus: GPUs on this node. ``>1`` runs the backend under torch's
             in-process ``elastic_launch`` (the engine behind ``torchrun``).
@@ -118,7 +126,7 @@ class TrainSpec:
     embodiment: str | None = None
     steps: int = 10_000
     global_batch_size: int = 32
-    learning_rate: float = 1e-4
+    learning_rate: float | None = None
     save_freq: int = 1_000
     num_gpus: int = 1
     num_nodes: int = 1
