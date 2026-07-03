@@ -46,7 +46,7 @@ import time
 from typing import Any
 
 from strands_robots.training._inproc import call_callable, elastic_launch_callable
-from strands_robots.training.base import Trainer, TrainResult, TrainSpec
+from strands_robots.training.base import DEFAULT_LEARNING_RATE, Trainer, TrainResult, TrainSpec
 
 logger = logging.getLogger(__name__)
 
@@ -189,6 +189,7 @@ class Gr00tTrainer(Trainer):
         else:
             launcher = ["python", script]
 
+        lr = spec.learning_rate if spec.learning_rate is not None else DEFAULT_LEARNING_RATE
         cmd = [
             *launcher,
             f"--base_model_path={spec.base_model}",
@@ -197,7 +198,7 @@ class Gr00tTrainer(Trainer):
             f"--output_dir={spec.output_dir}",
             f"--max_steps={spec.steps}",
             f"--global_batch_size={spec.global_batch_size}",
-            f"--learning_rate={spec.learning_rate}",
+            f"--learning_rate={lr}",
             f"--save_steps={spec.save_freq}",
             f"--num_gpus={spec.num_gpus}",
         ]
@@ -243,6 +244,7 @@ class Gr00tTrainer(Trainer):
         import dataclasses
 
         tune = self._resolve_tune(spec)
+        lr = spec.learning_rate if spec.learning_rate is not None else DEFAULT_LEARNING_RATE
         kwargs: dict[str, Any] = {
             "base_model_path": spec.base_model,
             "dataset_path": spec.dataset_root,
@@ -250,7 +252,7 @@ class Gr00tTrainer(Trainer):
             "output_dir": spec.output_dir,
             "max_steps": spec.steps,
             "global_batch_size": spec.global_batch_size,
-            "learning_rate": spec.learning_rate,
+            "learning_rate": lr,
             "save_steps": spec.save_freq,
             "num_gpus": spec.num_gpus,
             "tune_llm": tune["llm"],

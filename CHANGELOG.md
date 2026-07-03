@@ -22,6 +22,21 @@ split would silently drop samples), so the reference PPO entry point exited
 with `spec invalid` before training ever started. The example now uses
 `num_mini_batches=5` (`250 % 5 == 0`, 50 samples/mini-batch).
 
+### Fixed: `TrainSpec.learning_rate` was silently ignored by the `lerobot_local` trainer
+
+Every other backend honors `TrainSpec.learning_rate` (PPO / FastSAC bind it to
+their optimizers, GR00T and Cosmos forward it), and the `train_policy` tool
+exposes it as a first-class parameter -- but the lerobot trainer never wired it
+into the config it builds, so the policy's training-preset LR (1e-5 for ACT)
+was always used and a user-set value was silently ignored (confirmed on a real
+base + post-tune ACT run: the logs show `lr:1.0e-05` regardless of the spec).
+An explicit `learning_rate` now reaches `policy.optimizer_lr` on both the
+typed-config and argv-parity paths, and fails loudly for a policy type without
+that field. Compat: the field's default changed from `1e-4` to `None` ("use
+the backend's default") -- behavior with an unset `learning_rate` is unchanged
+in every backend (RL / GR00T / Cosmos fall back to the previous `1e-4`
+default; lerobot keeps the policy preset).
+
 ### Fixed: registry hot-reload ignored the user-overlay file's mtime
 
 The `robots` registry the read API serves (`get_robot` / `list_robots` /

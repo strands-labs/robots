@@ -312,6 +312,28 @@ class TestBuildCommandResume:
         assert "--resume=true" not in cmd
 
 
+class TestLearningRateWiring:
+    """TrainSpec.learning_rate must reach lerobot; None must keep the preset LR."""
+
+    def test_explicit_learning_rate_reaches_policy_config_and_argv(self, spec):
+        pytest.importorskip("lerobot")
+        spec.learning_rate = 5e-5
+        cfg = LerobotTrainer(device="cpu").build_config(spec)
+        assert cfg.policy.optimizer_lr == 5e-5
+        cmd = LerobotTrainer(device="cpu").build_command(spec)
+        assert "--policy.optimizer_lr=5e-05" in cmd
+
+    def test_default_none_keeps_policy_preset_lr(self, spec):
+        pytest.importorskip("lerobot")
+        from lerobot.policies.factory import make_policy_config
+
+        assert spec.learning_rate is None  # the TrainSpec default
+        cfg = LerobotTrainer(device="cpu").build_config(spec)
+        assert cfg.policy.optimizer_lr == make_policy_config("act").optimizer_lr
+        cmd = LerobotTrainer(device="cpu").build_command(spec)
+        assert not any(t.startswith("--policy.optimizer_lr=") for t in cmd)
+
+
 class TestBuildConfigAdditionalBranches:
     def test_expert_only_sets_flag(self, spec):
         pytest.importorskip("lerobot")

@@ -29,7 +29,7 @@ import json
 import os
 from typing import TYPE_CHECKING, Any
 
-from strands_robots.training.base import TrainResult, TrainSpec
+from strands_robots.training.base import DEFAULT_LEARNING_RATE, TrainResult, TrainSpec
 from strands_robots.training.rl.base_algo import BaseRLAlgo, RLTrainSpec
 from strands_robots.utils import require_optional
 
@@ -183,8 +183,9 @@ class FastSacTrainer(BaseRLAlgo):
 
         actor_params = list(self.actor_critic.actor.parameters())
         critic_params = list(self.actor_critic.q1.parameters()) + list(self.actor_critic.q2.parameters())
-        self.actor_optimizer = torch.optim.Adam(actor_params, lr=spec.learning_rate)
-        self.critic_optimizer = torch.optim.Adam(critic_params, lr=spec.learning_rate)
+        lr = spec.learning_rate if spec.learning_rate is not None else DEFAULT_LEARNING_RATE
+        self.actor_optimizer = torch.optim.Adam(actor_params, lr=lr)
+        self.critic_optimizer = torch.optim.Adam(critic_params, lr=lr)
 
         # Automatic entropy temperature (alpha): optimize log_alpha against the
         # target entropy (default -num_actions, the SAC heuristic).

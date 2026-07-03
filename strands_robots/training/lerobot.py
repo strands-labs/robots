@@ -551,6 +551,8 @@ class LerobotTrainer(Trainer):
             cmd.append(f"--policy.type={ptype}")
             cmd.append(f"--policy.device={self.device}")
             cmd.append("--policy.push_to_hub=false")
+            if spec.learning_rate is not None:
+                cmd.append(f"--policy.optimizer_lr={spec.learning_rate}")
         cmd.extend(
             [
                 f"--output_dir={spec.output_dir}",
@@ -737,6 +739,15 @@ class LerobotTrainer(Trainer):
                     f"use_relative_actions field (supported: {sorted(_RELATIVE_ACTION_POLICY_TYPES)})"
                 )
             policy_cfg.use_relative_actions = True
+
+        if spec.learning_rate is not None:
+            if not hasattr(policy_cfg, "optimizer_lr"):
+                raise ValueError(
+                    f"TrainSpec.learning_rate is set but policy_type '{ptype}' exposes no "
+                    "optimizer_lr field; drop learning_rate or set the policy's own LR "
+                    "field via extra={'policy.<field>': ...}."
+                )
+            policy_cfg.optimizer_lr = spec.learning_rate
 
         peft_cfg = None
         if spec.method == "lora":

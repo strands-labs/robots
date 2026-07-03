@@ -38,7 +38,7 @@ import time
 from typing import Any
 
 from strands_robots.training._inproc import call_callable, elastic_launch_callable
-from strands_robots.training.base import Trainer, TrainResult, TrainSpec
+from strands_robots.training.base import DEFAULT_LEARNING_RATE, Trainer, TrainResult, TrainSpec
 
 logger = logging.getLogger(__name__)
 
@@ -221,10 +221,11 @@ class Cosmos3Trainer(Trainer):
         after the TOML so they win. Caller ``extra.*`` keys are gated by
         ``validate()``'s allowlist so a stray entry can't inject tokens.
         """
+        lr = spec.learning_rate if spec.learning_rate is not None else DEFAULT_LEARNING_RATE
         overrides = [
             f"trainer.max_iter={spec.steps}",
             f"checkpoint.save_iter={spec.save_freq}",
-            f"optimizer.lr={spec.learning_rate}",
+            f"optimizer.lr={lr}",
             f"checkpoint.load_path={self._dcp_path(spec)}",
             f"dataloader_train.max_samples_per_batch={spec.global_batch_size}",
         ]

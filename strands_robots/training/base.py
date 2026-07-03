@@ -39,6 +39,11 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any
 
+#: LR the RL (PPO / FastSAC), GR00T, and Cosmos backends apply when
+#: ``TrainSpec.learning_rate`` is None - the field's previous default.
+#: The lerobot backend instead keeps the policy's training-preset LR.
+DEFAULT_LEARNING_RATE: float = 1e-4
+
 
 @dataclass
 class TrainSpec:
@@ -79,7 +84,11 @@ class TrainSpec:
         steps: Total optimizer steps (maps to lerobot ``--steps`` /
             GR00T ``max_steps`` / Cosmos ``trainer.max_iter``).
         global_batch_size: Batch summed across GPUs before grad accumulation.
-        learning_rate: Initial LR.
+        learning_rate: Initial LR. ``None`` (the default) means "the
+            backend's own default": PPO / FastSAC / GR00T / Cosmos fall back
+            to :data:`DEFAULT_LEARNING_RATE` (``1e-4``, this field's previous
+            default) and lerobot keeps the policy's training-preset LR. An
+            explicit value is honored by every backend.
         save_freq: Checkpoint cadence in steps.
         num_gpus: GPUs on this node. ``>1`` runs the backend under torch's
             in-process ``elastic_launch`` (the engine behind ``torchrun``).
@@ -118,7 +127,7 @@ class TrainSpec:
     embodiment: str | None = None
     steps: int = 10_000
     global_batch_size: int = 32
-    learning_rate: float = 1e-4
+    learning_rate: float | None = None
     save_freq: int = 1_000
     num_gpus: int = 1
     num_nodes: int = 1

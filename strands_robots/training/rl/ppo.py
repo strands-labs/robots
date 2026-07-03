@@ -18,7 +18,7 @@ import json
 import os
 from typing import TYPE_CHECKING, Any
 
-from strands_robots.training.base import TrainSpec
+from strands_robots.training.base import DEFAULT_LEARNING_RATE, TrainSpec
 from strands_robots.training.rl.base_algo import BaseRLAlgo, RLTrainSpec
 from strands_robots.utils import require_optional
 
@@ -196,7 +196,8 @@ class PpoTrainer(BaseRLAlgo):
         self.actor_critic = _build_actor_critic(
             self.env.num_actor_obs, self.env.num_critic_obs, self.env.num_actions, spec
         ).to(self.device)
-        self.optimizer = torch.optim.Adam(self.actor_critic.parameters(), lr=spec.learning_rate)
+        lr = spec.learning_rate if spec.learning_rate is not None else DEFAULT_LEARNING_RATE
+        self.optimizer = torch.optim.Adam(self.actor_critic.parameters(), lr=lr)
 
         self.actor_norm = EmpiricalNormalization(self.env.num_actor_obs, self.device) if spec.normalize_obs else None
         self.critic_norm = EmpiricalNormalization(self.env.num_critic_obs, self.device) if spec.normalize_obs else None
