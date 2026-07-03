@@ -287,6 +287,18 @@ class TestCameraOffloaderTTLBounds:
         c = CameraOffloader(bucket="b")
         assert c.presign_ttl == 1
 
+    def test_ttl_non_integer_env_falls_back_to_default(self, monkeypatch, caplog):
+        """A non-integer TTL env is not fatal: warn and use the 60 s default."""
+        import logging
+
+        monkeypatch.setenv("STRANDS_MESH_CAMERA_PRESIGN_TTL", "not-an-int")
+        with caplog.at_level(logging.WARNING, logger="strands_robots.mesh.iot.camera_offload"):
+            c = CameraOffloader(bucket="b")
+        assert c.presign_ttl == 60
+        assert any("not an integer" in m for m in caplog.messages), (
+            f"expected WARNING about non-integer TTL; got {caplog.messages}"
+        )
+
 
 class TestCameraOffloaderClientLazy:
     """`_client()` is lazy and gracefully degrades when boto3 is missing."""
@@ -571,3 +583,146 @@ class TestNegativeKwargWarns:
         warns = [r for r in caplog.records if "presign_ttl" in r.message]
         assert len(warns) == 1
         assert "source=env" in warns[0].message
+
+
+def _wire_offload_mesh(monkeypatch, observation, *, bucket="b", cameras=("front",)):
+    """Build a Mesh stub + wired CameraOffloader for closure degradation tests.
+
+    Returns ``(mesh, offloader, transport)``. The inner robot is connected and
+    reports *observation* from ``get_observation()``; the transport is alive.
+    Callers trigger the patched hook via ``mesh._publish_cameras_once()``.
+    """
+    from strands_robots.mesh.transport import factory as fac
+
+    monkeypatch.setattr(fac, "current_backend", lambda: "iot")
+    monkeypatch.setenv("STRANDS_MESH_CAMERA_S3_BUCKET", bucket)
+
+    transport = MagicMock()
+    transport.is_alive.return_value = True
+    monkeypatch.setattr(fac, "current_transport", lambda: transport)
+
+    offloader = CameraOffloader(bucket=bucket)
+    offloader._s3 = MagicMock()
+    offloader._s3.generate_presigned_url.return_value = "https://example.com/signed"
+
+    mesh = MagicMock()
+    mesh.peer_id = "robot-x"
+    mesh.robot.robot.is_connected = True
+    mesh.robot.robot.config.cameras = {name: object() for name in cameras}
+    mesh.robot.robot.get_observation.return_value = observation
+    return mesh, offloader, transport
+
+
+def _ref_topics(transport):
+    return [c.args[0] for c in transport.put.call_args_list if "/ref" in c.args[0]]
+
+
+class TestUploadFrameClientUnavailable:
+    """``upload_frame`` returns None when the lazy S3 client cannot be built.
+
+    Pins the ``s3 is None`` guard so a boto3-less / credential-less host
+    degrades to "no offload" instead of dereferencing a null client.
+    """
+
+    def test_returns_none_when_client_is_none(self, monkeypatch):
+        off = CameraOffloader(bucket="b")
+        assert off.enabled  # bucket configured, so the disabled-guard is not what we hit
+        monkeypatch.setattr(off, "_client", lambda: None)
+        assert off.upload_frame("peer", "front", b"jpeg", 1.0) is None
+
+
+class TestClosureDegradation:
+    """The patched ``_publish_cameras_once_with_offload`` is best-effort: no
+    environment or per-frame failure may crash the camera loop or leak a
+    partial publish. Each test pins one documented degradation branch."""
+
+    def test_original_callback_failure_does_not_block_offload(self, monkeypatch):
+        """A raising user ``_publish_cameras_once`` is swallowed; offload still runs."""
+        frame = np.zeros((8, 8, 3), dtype=np.uint8)
+        mesh, off, transport = _wire_offload_mesh(monkeypatch, {"front": frame})
+
+        def _boom():
+            raise RuntimeError("user hook exploded")
+
+        mesh._publish_cameras_once = _boom
+        enable_for_mesh(mesh, offloader=off)
+        mesh._publish_cameras_once()  # must not raise despite the original blowing up
+        assert _ref_topics(transport) == ["strands/robot-x/camera/front/ref"]
+
+    def test_cv2_unavailable_skips_upload(self, monkeypatch):
+        """Without cv2 the closure returns before touching the transport."""
+        import sys
+
+        frame = np.zeros((8, 8, 3), dtype=np.uint8)
+        mesh, off, transport = _wire_offload_mesh(monkeypatch, {"front": frame})
+        # Poisoning sys.modules makes `import cv2` raise ImportError.
+        monkeypatch.setitem(sys.modules, "cv2", None)
+        enable_for_mesh(mesh, offloader=off)
+        mesh._publish_cameras_once()
+        assert _ref_topics(transport) == []
+
+    def test_frame_with_degenerate_shape_is_skipped(self, monkeypatch):
+        """A 1-D (non-image) frame fails the ``len(shape) < 2`` guard and is skipped."""
+        bad = np.zeros((5,), dtype=np.uint8)
+        mesh, off, transport = _wire_offload_mesh(monkeypatch, {"front": bad})
+        enable_for_mesh(mesh, offloader=off)
+        mesh._publish_cameras_once()
+        assert _ref_topics(transport) == []
+
+    def test_torch_style_tensor_frame_is_detached_and_encoded(self, monkeypatch):
+        """A frame exposing ``detach().cpu().numpy()`` is materialised before encode."""
+        array = np.zeros((8, 8, 3), dtype=np.uint8)
+
+        class _FakeTensor:
+            shape = (8, 8, 3)
+
+            def detach(self):
+                return self
+
+            def cpu(self):
+                return self
+
+            def numpy(self):
+                return array
+
+        mesh, off, transport = _wire_offload_mesh(monkeypatch, {"front": _FakeTensor()})
+        enable_for_mesh(mesh, offloader=off)
+        mesh._publish_cameras_once()
+        refs = _ref_topics(transport)
+        assert refs == ["strands/robot-x/camera/front/ref"]
+        # ``shape`` in the ref is taken from the original frame object, not the
+        # detached array, so the tensor path preserves the reported dimensions.
+        ref = next(c.args[1] for c in transport.put.call_args_list if "/ref" in c.args[0])
+        assert ref["shape"] == [8, 8, 3]
+
+    def test_unencodable_frame_is_skipped(self, monkeypatch):
+        """When cv2 reports encode failure (ok=False) the frame is dropped."""
+        import cv2
+
+        frame = np.zeros((8, 8, 3), dtype=np.uint8)
+        mesh, off, transport = _wire_offload_mesh(monkeypatch, {"front": frame})
+        monkeypatch.setattr(cv2, "imencode", lambda *a, **k: (False, None))
+        enable_for_mesh(mesh, offloader=off)
+        mesh._publish_cameras_once()
+        assert _ref_topics(transport) == []
+
+    def test_upload_returning_none_skips_ref_publish(self, monkeypatch):
+        """A failed S3 upload (None ref) must not publish a dangling ref topic."""
+        frame = np.zeros((8, 8, 3), dtype=np.uint8)
+        mesh, off, transport = _wire_offload_mesh(monkeypatch, {"front": frame})
+        monkeypatch.setattr(off, "upload_frame", lambda *a, **k: None)
+        enable_for_mesh(mesh, offloader=off)
+        mesh._publish_cameras_once()
+        assert _ref_topics(transport) == []
+
+    def test_per_frame_error_is_swallowed(self, monkeypatch, caplog):
+        """A raising transport.put on one frame is logged, not propagated."""
+        import logging
+
+        frame = np.zeros((8, 8, 3), dtype=np.uint8)
+        mesh, off, transport = _wire_offload_mesh(monkeypatch, {"front": frame})
+        transport.put.side_effect = RuntimeError("wire down")
+        enable_for_mesh(mesh, offloader=off)
+        with caplog.at_level(logging.DEBUG, logger="strands_robots.mesh.iot.camera_offload"):
+            mesh._publish_cameras_once()  # must not raise
+        assert any("offload failed" in r.getMessage() for r in caplog.records)

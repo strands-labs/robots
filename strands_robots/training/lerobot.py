@@ -551,6 +551,8 @@ class LerobotTrainer(Trainer):
             cmd.append(f"--policy.type={ptype}")
             cmd.append(f"--policy.device={self.device}")
             cmd.append("--policy.push_to_hub=false")
+            if spec.learning_rate is not None:
+                cmd.append(f"--policy.optimizer_lr={spec.learning_rate}")
         cmd.extend(
             [
                 f"--output_dir={spec.output_dir}",
@@ -730,6 +732,15 @@ class LerobotTrainer(Trainer):
             policy_cfg.pretrained_path = Path(spec.base_model)
         if spec.method == "expert_only" and hasattr(policy_cfg, "train_expert_only"):
             policy_cfg.train_expert_only = True
+        if spec.learning_rate is not None:
+            if not hasattr(policy_cfg, "optimizer_lr"):
+                raise ValueError(
+                    f"learning_rate={spec.learning_rate} was requested but policy_type "
+                    f"'{ptype}' has no 'optimizer_lr' field (its optimizer preset is not "
+                    "an Adam-style LR). Drop learning_rate to use the policy preset, or "
+                    "override the specific optimizer field via extra['policy.<field>']."
+                )
+            policy_cfg.optimizer_lr = spec.learning_rate
         if self._relative_actions(spec):
             if not hasattr(policy_cfg, "use_relative_actions"):
                 raise ValueError(

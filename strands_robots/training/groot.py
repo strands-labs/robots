@@ -197,10 +197,11 @@ class Gr00tTrainer(Trainer):
             f"--output_dir={spec.output_dir}",
             f"--max_steps={spec.steps}",
             f"--global_batch_size={spec.global_batch_size}",
-            f"--learning_rate={spec.learning_rate}",
             f"--save_steps={spec.save_freq}",
             f"--num_gpus={spec.num_gpus}",
         ]
+        if spec.learning_rate is not None:
+            cmd.append(f"--learning_rate={spec.learning_rate}")
 
         tune = self._resolve_tune(spec)
         cmd.append(f"--tune_llm={'true' if tune['llm'] else 'false'}")
@@ -250,7 +251,6 @@ class Gr00tTrainer(Trainer):
             "output_dir": spec.output_dir,
             "max_steps": spec.steps,
             "global_batch_size": spec.global_batch_size,
-            "learning_rate": spec.learning_rate,
             "save_steps": spec.save_freq,
             "num_gpus": spec.num_gpus,
             "tune_llm": tune["llm"],
@@ -259,6 +259,8 @@ class Gr00tTrainer(Trainer):
             "tune_diffusion_model": tune["diffusion"],
             "resume_from_checkpoint": spec.resume,
         }
+        if spec.learning_rate is not None:
+            kwargs["learning_rate"] = spec.learning_rate
         if spec.augmentation:
             if "random_rotation_angle" in spec.augmentation:
                 kwargs["random_rotation_angle"] = spec.augmentation["random_rotation_angle"]

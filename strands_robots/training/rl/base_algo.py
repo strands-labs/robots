@@ -90,6 +90,10 @@ class RLTrainSpec(TrainSpec):
             (the SAC heuristic).
     """
 
+    # RL builds fresh optimizers with no policy preset to defer to, so it
+    # pins a concrete default here (base TrainSpec.learning_rate defaults to
+    # None = "use the backend preset", which is meaningless for from-scratch RL).
+    learning_rate: float = 1e-4
     env_factory: Callable[[], SimEnv] | None = None
     total_timesteps: int = 100_000
     rollout_steps: int = 24

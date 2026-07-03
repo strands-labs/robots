@@ -34,34 +34,79 @@ def test_list_policy_types_is_sorted_and_includes_core_families() -> None:
         assert core in types, f"expected core policy type {core!r} in {types}"
 
 
-def test_core_types_actually_resolve() -> None:
-    """The stable core types resolve to concrete classes.
+def test_every_registered_type_resolves_or_raises_clean_importerror() -> None:
+    """Resolution is well-behaved for EVERY registered policy type.
 
-    The draccus choice registry may contain types from newer lerobot modules
-    that are not yet resolvable in the current install (e.g. ``wall_x`` is
-    registered but has no ``modeling_wall_x`` module on lerobot 0.5.x), or
-    types whose config triggers a ``TypeError`` at import time (GR00T N1.5
-    dataclass issue under transformers 5.x). Rather than asserting ALL listed
-    types resolve (which would couple this test to the full lerobot release
-    matrix), we assert the stable core always resolves and verify the
-    resolution function does not crash on any listed type.
+    ``resolve_policy_class_by_name`` deliberately catches every internal
+    failure mode of the underlying lerobot import (``ImportError`` from a
+    module absent in this install, plus the ``TypeError`` / ``AttributeError``
+    / ``RuntimeError`` / ``ValueError`` that a ``modeling_*`` / ``factory``
+    import can raise when an optional VLA dependency is missing or a config
+    dataclass is malformed under the installed transformers) and re-surfaces
+    the dead end as a single, actionable ``ImportError`` that names the valid
+    choices. That "never leak lerobot's internal exception type" contract is
+    the whole point of the module's hardening -- so this guard pins it: for
+    every type the installed lerobot registers, resolution must EITHER return
+    a concrete class OR raise ``ImportError``, and never propagate a raw
+    internal exception.
+
+    This is the forward-compat guard against lerobot drift: if a future
+    lerobot layout change makes strands' resolution leak a raw ``TypeError``
+    (etc.) for a registered type, this fails -- whereas a narrower test that
+    tolerated the leak (``except (ImportError, TypeError)``) would silently
+    pass and defeat the hardening. It couples to neither a specific lerobot
+    release nor which types happen to resolve in a given install (only that
+    resolution is well-behaved for all of them).
     """
     resolved_count = 0
     for policy_type in list_policy_types():
         try:
             cls = resolve_policy_class_by_name(policy_type)
-            assert isinstance(cls, type), f"{policy_type} resolved to {cls!r} which is not a type"
-            resolved_count += 1
-        except (ImportError, TypeError):
-            # ImportError: module not present in this lerobot version.
-            # TypeError: dataclass field-ordering issue (GR00T N1.5).
+        except ImportError:
+            # The one sanctioned failure: the type is registered in the
+            # draccus choice registry but its concrete class is not importable
+            # in this install (missing optional dep / trimmed install).
             continue
-    # At minimum the stable core (act, diffusion) must resolve.
+        except BaseException as exc:  # noqa: BLE001 - the point is to catch a leak
+            raise AssertionError(
+                f"resolve_policy_class_by_name({policy_type!r}) leaked a "
+                f"{type(exc).__name__} ({exc}); the contract is to return a "
+                f"class or raise a clean ImportError, never a raw internal error."
+            ) from exc
+        assert isinstance(cls, type), f"{policy_type} resolved to {cls!r} which is not a type"
+        resolved_count += 1
+    # At minimum the stable core (act, diffusion, shipped in every lerobot
+    # >= 0.4) must resolve to a concrete class.
     assert resolved_count >= 2, f"expected at least 2 types to resolve, got {resolved_count}"
-    # Verify the stable core specifically.
     for core in ("act", "diffusion"):
         cls = resolve_policy_class_by_name(core)
         assert isinstance(cls, type), f"core type {core!r} must resolve"
+
+
+def test_resolution_surfaces_clean_importerror_when_a_strategy_raises_internally(monkeypatch) -> None:
+    """An internal (non-ImportError) failure is re-surfaced as ImportError.
+
+    Regression teeth for the contract pinned above: the ``modeling_*`` and
+    package-level import strategies catch ``TypeError`` (a missing VLA dep
+    makes ``class Foo(None)`` raise ``TypeError`` at import) and fall through
+    to the clean, enumerated ``ImportError`` rather than leaking it. Forcing
+    ``importlib.import_module`` to raise ``TypeError`` inside those strategies
+    must therefore still produce an ``ImportError`` from the public function.
+    If the except-tuple that reclassifies internal errors is ever narrowed,
+    the raw ``TypeError`` leaks and this fails.
+    """
+    from strands_robots.policies.lerobot_local import resolution
+
+    def _boom(name: str, *args: object, **kwargs: object) -> object:
+        raise TypeError(f"simulated internal import failure for {name}")
+
+    # Only the module-import strategies route through importlib.import_module;
+    # the factory strategy uses a `from ... import`, so it still runs for real
+    # and cleanly rejects the unknown type. The final list-of-choices lookup
+    # is exception-guarded and unaffected.
+    monkeypatch.setattr(resolution.importlib, "import_module", _boom)
+    with pytest.raises(ImportError):
+        resolution.resolve_policy_class_by_name("totally_made_up_policy_xyz")
 
 
 def test_unknown_type_error_enumerates_available_types() -> None:

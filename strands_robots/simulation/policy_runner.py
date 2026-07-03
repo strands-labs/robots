@@ -1314,6 +1314,14 @@ class PolicyRunner:
     ) -> dict[str, Any]:
         """Replay a recorded LeRobotDataset episode through ``send_action``.
 
+        Each recorded frame is one control step taken at the dataset's fps, so
+        replay advances physics for a full control period per frame (derived
+        from the dataset fps and physics timestep, the same integration the
+        recording used) rather than a single physics dt. This lets a
+        position-servo robot track the recorded targets and reproduce the
+        recorded trajectory; ``speed`` scales only the wall-clock playback
+        rate, not the physics per frame.
+
         Args:
             repo_id: HuggingFace dataset id (e.g. ``lerobot/pusht``).
             robot_name: Target robot. Defaults to the first robot in the sim
@@ -1390,6 +1398,20 @@ class PolicyRunner:
 
         dataset_fps = getattr(ds, "fps", 30)
         frame_interval = 1.0 / (dataset_fps * speed)
+        # Step a FULL control period per recorded frame, not a single physics
+        # dt. The recorded control frequency IS the dataset fps, so derive the
+        # physics substeps from it (same convention as run() and evaluate()).
+        # Without this, replay fell through to ``send_action``'s default
+        # ``n_substeps=1`` - a single ~2 ms physics step per recorded frame -
+        # while the recording integrated a full ~1/fps control period per
+        # frame. A position-servo robot could not track the recorded targets in
+        # ~2 ms, so replay produced a heavily under-integrated, attenuated
+        # trajectory that did NOT reproduce the recording (the arm barely moved)
+        # while still reporting ``Frames: N/N`` and ``status="success"`` - a
+        # silent record -> replay fidelity gap. ``speed`` scales only the
+        # wall-clock playback rate (frame_interval), never the physics per
+        # frame, so it is deliberately excluded here.
+        n_substeps = self._control_substeps(dataset_fps)
         frames_applied = 0
         start_time = time.time()
 
@@ -1419,8 +1441,9 @@ class PolicyRunner:
 
             action_vals = frame.get("action") if isinstance(frame, dict) else None
             if action_vals is None:
-                # No action at this index - just advance physics one step.
-                self.sim.step(n_steps=1)
+                # No action at this index - advance physics one full control
+                # period so the frame still occupies its recorded time slice.
+                self.sim.step(n_steps=n_substeps)
                 frames_applied += 1
             else:
                 if hasattr(action_vals, "numpy"):
@@ -1434,7 +1457,7 @@ class PolicyRunner:
                         break
                     action_dict[action_keys[i]] = float(val)
 
-                self.sim.send_action(action_dict, robot_name=resolved_robot)
+                self.sim.send_action(action_dict, robot_name=resolved_robot, n_substeps=n_substeps)
                 frames_applied += 1
 
             sleep_time = frame_interval - (time.time() - step_start)

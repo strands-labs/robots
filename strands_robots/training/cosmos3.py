@@ -224,10 +224,11 @@ class Cosmos3Trainer(Trainer):
         overrides = [
             f"trainer.max_iter={spec.steps}",
             f"checkpoint.save_iter={spec.save_freq}",
-            f"optimizer.lr={spec.learning_rate}",
             f"checkpoint.load_path={self._dcp_path(spec)}",
             f"dataloader_train.max_samples_per_batch={spec.global_batch_size}",
         ]
+        if spec.learning_rate is not None:
+            overrides.append(f"optimizer.lr={spec.learning_rate}")
         if spec.num_nodes > 1:
             overrides.append(f"model.config.parallelism.data_parallel_replicate_degree={spec.num_nodes}")
         if spec.seed is not None:

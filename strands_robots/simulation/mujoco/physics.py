@@ -16,6 +16,7 @@ Exposes the deep MuJoCo C API through clean Python methods:
 """
 
 import logging
+import math
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -234,6 +235,30 @@ class PhysicsMixin:
                         "status": "error",
                         "content": [{"text": f"apply_force: '{_name}' must be a list/tuple of 3 numbers"}],
                     }
+                # Every element must be a finite real number. Without this,
+                # non-numeric elements (e.g. ["a", "b", "c"]) raise ValueError
+                # inside np.array(dtype=float64) - escaping the structured-error
+                # contract - and nan/inf or nested lists slip silently into
+                # mj_applyFT, injecting bad state into the physics buffer.
+                # bool is intentionally accepted (subclass of int -> finite);
+                # rejecting it is out of scope for numeric-element validation.
+                for _elem in _vec:
+                    try:
+                        _f = float(_elem)
+                    except (TypeError, ValueError):
+                        return {
+                            "status": "error",
+                            "content": [{"text": f"apply_force: '{_name}' elements must be numbers, got {_vec!r}"}],
+                        }
+                    if not math.isfinite(_f):
+                        return {
+                            "status": "error",
+                            "content": [
+                                {
+                                    "text": f"apply_force: '{_name}' must contain finite numbers (no nan/inf), got {_vec!r}"
+                                }
+                            ],
+                        }
 
         mj = _ensure_mujoco()
         model, data = self._world._model, self._world._data
@@ -926,7 +951,22 @@ class PhysicsMixin:
     ) -> dict[str, Any]:
         """Modify body properties at runtime (no recompile needed).
 
-        Changes take effect on the next mj_step.
+        Currently supports setting a body's ``mass``. Because a rigid body's
+        inertia tensor tracks its mass at fixed geometry (a uniform density
+        change), the body's ``body_inertia`` is scaled by the same ratio so the
+        translational and rotational dynamics stay physically consistent.
+
+        Changes take effect on the next ``mj_step``.
+
+        Args:
+            body_name: Name of the body to modify.
+            mass: New absolute mass (kg); must be ``> 0``. When set, the body's
+                inertia is scaled by ``mass / old_mass`` to preserve consistency.
+
+        Returns:
+            A tool-result dict; ``status="error"`` if the world is missing, a
+            policy is running, ``mass`` is not a positive number, or the body is
+            not found, otherwise ``status="success"`` summarizing the change.
         """
         if self._world is None or self._world._model is None or self._world._data is None:
             return {"status": "error", "content": [{"text": _NO_WORLD_MSG}]}
@@ -960,6 +1000,18 @@ class PhysicsMixin:
                 old_mass = float(model.body_mass[body_id])
                 model.body_mass[body_id] = mass
                 changes.append(f"mass: {old_mass:.3f} → {mass:.3f}")
+                # Inertia tracks mass for fixed geometry: setting a rigid body's
+                # mass to a new value at constant shape is a uniform density
+                # change, which scales its inertia tensor by the same factor
+                # (I = integral of r^2 dm). Updating body_mass alone leaves a
+                # physically inconsistent body - heavy in translation but with
+                # the old rotational resistance - which silently corrupts the
+                # rotational dynamics (and cannot be corrected by the caller,
+                # since mass is the only settable property). Scale body_inertia
+                # by the same ratio (matches randomize(randomize_physics=True)
+                # and the Newton backend, which scale both together).
+                if old_mass > 0:
+                    model.body_inertia[body_id] *= mass / old_mass
 
         return {
             "status": "success",

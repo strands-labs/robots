@@ -135,6 +135,59 @@ class TestMoveIt2InferenceClient:
         client.socket.send = MagicMock(side_effect=Exception("timeout"))
         assert client.ping() is False
 
+    def test_ping_returns_true_when_server_responds(self):
+        """ping() reports True when the round-trip call_endpoint succeeds."""
+        client = MoveIt2InferenceClient(host="127.0.0.1", port=9999)
+        client.socket.send = MagicMock()
+        client.socket.recv = MagicMock(return_value=MsgSerializer.to_bytes({"status": "ok"}))
+        assert client.ping() is True
+
+    def test_reconnect_closes_old_socket_and_connects_a_fresh_one(self):
+        """reconnect() closes the current socket and builds a new connected one.
+
+        A stale/timed-out REQ socket cannot be reused for another request, so
+        the client must be able to swap in a fresh socket. The replacement must
+        be a distinct object and must be re-connected to the same endpoint.
+        """
+        client = MoveIt2InferenceClient(host="127.0.0.1", port=9999)
+        old_socket = client.socket
+        old_socket.close = MagicMock()
+
+        client.reconnect()
+
+        old_socket.close.assert_called_once()
+        assert client.socket is not old_socket
+        # New socket is usable for a round-trip (send/recv wired by _init_socket).
+        client.socket.send = MagicMock()
+        client.socket.recv = MagicMock(return_value=MsgSerializer.to_bytes({"status": "ok"}))
+        assert client.ping() is True
+
+    def test_reconnect_ignores_errors_closing_a_broken_socket(self):
+        """A close() that raises must not stop reconnect from rebuilding.
+
+        On a dead connection the old socket's close() can raise; reconnect must
+        swallow it and still hand back a fresh, connected socket.
+        """
+        client = MoveIt2InferenceClient(host="127.0.0.1", port=9999)
+        old_socket = client.socket
+        old_socket.close = MagicMock(side_effect=RuntimeError("already dead"))
+
+        client.reconnect()  # must not propagate
+
+        assert client.socket is not old_socket
+
+    def test_teardown_swallows_socket_close_errors(self):
+        """_teardown() is best-effort: a raising close()/term() never propagates.
+
+        It runs from __del__ during interpreter shutdown, where a raised
+        exception would be swallowed silently and could mask a resource leak,
+        so the method itself must never raise.
+        """
+        client = MoveIt2InferenceClient(host="127.0.0.1", port=9999)
+        client.socket.close = MagicMock(side_effect=RuntimeError("boom"))
+        client.context.term = MagicMock(side_effect=RuntimeError("boom"))
+        client._teardown()  # must not raise
+
     def test_plan_helper_omits_optional_fields_when_unset(self):
         """plan() should not send ``target_pose`` / ``world_update`` keys when
         those are None — keeps the wire payload minimal and lets the

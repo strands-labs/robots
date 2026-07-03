@@ -5,6 +5,22 @@ All notable behavioural changes to `strands-robots` are logged here. Follows
 
 ## [Unreleased]
 
+### Fixed: `TrainSpec.learning_rate` was silently ignored by the `lerobot_local` trainer
+
+`learning_rate` was the one universal `TrainSpec` field with zero references in
+`training/lerobot.py`: `build_config()` never wired it into the typed config and
+`build_command()` emitted no `--policy.optimizer_lr` flag, so the policy's
+training preset always won and a caller-set value was silently dropped (every
+other backend honored it). The field is now opt-in like `seed` -- it defaults to
+`None` (use the backend's own default: the policy preset for LeRobot, the
+`FinetuneConfig` default for GR00T, the TOML default for Cosmos), and an
+explicit value is honored everywhere. For LeRobot it maps to
+`policy.optimizer_lr`; a policy with no such field (no Adam-style single LR)
+raises loudly instead of dropping the value. RL trainers (PPO/FastSAC) keep a
+concrete `1e-4` default on `RLTrainSpec`, since from-scratch RL has no preset to
+defer to. The `train_policy` tool's `learning_rate` parameter defaults to `None`
+to match.
+
 ### Added: ROS 2 action support in `use_ros` + goal-level `navigate_to` on `RosBridgedRobot`
 
 `use_ros` gains `list_actions` and `action_send_goal` (in-process `rclpy.action`,
@@ -245,6 +261,51 @@ pipeline (`mj_kinematics` + `mj_comPos`, matching `forward_kinematics`) and
 `get_body_state` runs a full `mj_forward` (matching `get_mass_matrix` /
 `inverse_dynamics` / `get_sensor_data`), so both always reflect the current
 `qpos`/`qvel`.
+
+### Fixed: `replay_episode` under-integrated physics (single dt/frame instead of a full control period)
+
+`PolicyRunner.replay` advanced physics by only a single `send_action` default
+`n_substeps=1` (~2 ms) per recorded frame, while each recorded frame represents
+one control step taken at the dataset's fps and the recording itself integrated
+a full `1/fps` control period per action (the substep convention `run()` and
+`evaluate()` already derive via `_control_substeps`). On a position-servo robot
+this meant replay got ~1/17 of the integration time per target at 30 Hz control
+(2 ms physics dt), so the servo could not track the recorded targets: replay
+produced a heavily under-integrated, attenuated trajectory (an SO-101 self-record
+diverged ~0.95 rad from its recording and its joint sweeps were attenuated up to
+11x) that did not reproduce the recording, while still reporting `Frames: N/N`
+and `status="success"` -- a silent record -> replay fidelity gap. Replay now
+derives its physics substeps from the dataset fps and steps a full control
+period per frame, so a recorded episode replays back to the pose it was recorded
+at. `speed` continues to scale only the wall-clock playback rate.
+
+### Docs: `action_horizon` is a lower bound, not a maximum
+
+The public `run_policy`/`eval_policy` (and `run_policy` tool) docstrings
+described `action_horizon` as the *maximum* actions consumed from each policy
+chunk before re-querying. The effective interval is actually
+`max(action_horizon, policy.execution_horizon)` (`resolve_chunk_length`): it is
+a *lower* bound, and RTC policies ignore it entirely. So for a chunk-emitting
+policy (e.g. a VLA with `execution_horizon=50`) any smaller `action_horizon`
+has no effect -- the full trained chunk is always consumed. In particular
+`eval_policy`'s "set to `1` for closed-loop control" advice holds only for
+single-action policies. The docstrings now state the clamp semantics so a
+caller does not silently get open-loop chunk execution when expecting a tighter
+re-query interval.
+
+### Fixed: `set_body_properties(mass=...)` left the body's inertia stale
+
+Setting a body's mass at runtime updated `model.body_mass` but not
+`model.body_inertia`, leaving a physically inconsistent body -- heavy in
+translation but retaining the old rotational resistance -- which silently
+corrupted the rotational dynamics. Since `mass` is the only settable property,
+the caller had no way to correct it. Because a rigid body's inertia tracks its
+mass at fixed geometry (a uniform density change scales `I = integral of r^2 dm`
+by the same factor), the inertia tensor is now scaled by `mass / old_mass`,
+matching `randomize(randomize_physics=True)` and the Newton backend. In a
+compound-pendulum check, a mass-only change wrongly shrank the swing period ~2x
+(0.87 s vs 1.76 s); with the fix the period stays mass-invariant as physics
+requires. Massless frames (mass 0) are guarded against division by zero.
 
 ## [0.4.1] - 2026-07-01
 

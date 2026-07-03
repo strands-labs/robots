@@ -21,8 +21,9 @@ objects:
 * :class:`NormStatsPostprocessorStep` unnormalizes ``action``.
 
 The numeric transform is a bit-for-bit port of the reference normalizer in
-``lerobot.policies.molmoact2.hf_model.modeling_molmoact2._FeatureNormalizer``
-(see ``configuration_molmoact2.py::apply_norm_tag_metadata``). For ``q01_q99``::
+``lerobot.policies.molmoact2.molmoact2_hf_model.modeling_molmoact2._FeatureNormalizer``
+(see the ``_RobotStats.normalize_state`` / ``.unnormalize_action`` norm-tag
+dispatch in the same module). For ``q01_q99``::
 
     x_norm   = clip(2 * (x - q01) / max(q99 - q01, eps) - 1, -1, 1)
     x_unnorm = (clip(x_norm, -1, 1) + 1) * (q99 - q01) / 2 + q01

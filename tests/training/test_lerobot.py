@@ -1017,3 +1017,94 @@ class TestBuilderEscapeHatchValidation:
         )
         with pytest.raises(ValueError, match="use_relative_actions"):
             LerobotTrainer(device="cpu").build_config(spec)
+
+
+class TestLearningRate:
+    """An explicit ``TrainSpec.learning_rate`` reaches lerobot's optimizer config.
+
+    Regression for the gap where ``learning_rate`` was the only universal spec
+    field with zero references in ``training/lerobot.py``: the policy training
+    preset was always used and a caller-set value was silently dropped. The
+    opt-in shape mirrors ``seed`` -- ``None`` keeps the policy preset, an
+    explicit value maps to ``policy.optimizer_lr``.
+    """
+
+    def test_explicit_lr_reaches_policy_optimizer_config(self, dataset_root, tmp_path):
+        # Pre-fix: cfg.policy.optimizer_lr stayed at the ACT preset (1e-5),
+        # silently ignoring the requested 5e-5.
+        pytest.importorskip("lerobot")
+        spec = TrainSpec(
+            dataset_root=dataset_root,
+            base_model="",
+            output_dir=str(tmp_path / "out"),
+            steps=200,
+            learning_rate=5e-5,
+            extra={"policy_type": "act"},
+        )
+        cfg = LerobotTrainer(device="cpu").build_config(spec)
+        assert cfg.policy.optimizer_lr == 5e-5
+
+    def test_default_lr_keeps_policy_preset(self, dataset_root, tmp_path):
+        # learning_rate defaults to None -> the ACT preset (1e-5) is untouched,
+        # so a plain run is unchanged by this feature.
+        pytest.importorskip("lerobot")
+        from lerobot.policies.factory import make_policy_config
+
+        preset_lr = make_policy_config("act").optimizer_lr
+        spec = TrainSpec(
+            dataset_root=dataset_root,
+            base_model="",
+            output_dir=str(tmp_path / "out"),
+            steps=200,
+            extra={"policy_type": "act"},
+        )
+        assert spec.learning_rate is None
+        cfg = LerobotTrainer(device="cpu").build_config(spec)
+        assert cfg.policy.optimizer_lr == preset_lr
+
+    def test_build_command_emits_optimizer_lr_when_set(self, dataset_root, tmp_path):
+        spec = TrainSpec(
+            dataset_root=dataset_root,
+            base_model="",
+            output_dir=str(tmp_path / "out"),
+            steps=200,
+            learning_rate=5e-5,
+            extra={"policy_type": "act"},
+        )
+        cmd = LerobotTrainer(device="cpu").build_command(spec)
+        assert "--policy.optimizer_lr=5e-05" in cmd
+
+    def test_build_command_omits_optimizer_lr_by_default(self, dataset_root, tmp_path):
+        spec = TrainSpec(
+            dataset_root=dataset_root,
+            base_model="",
+            output_dir=str(tmp_path / "out"),
+            steps=200,
+            extra={"policy_type": "act"},
+        )
+        cmd = LerobotTrainer(device="cpu").build_command(spec)
+        assert not any(c.startswith("--policy.optimizer_lr=") for c in cmd)
+
+    def test_explicit_lr_on_policy_without_optimizer_lr_raises(self, dataset_root, tmp_path, monkeypatch):
+        # A policy whose optimizer preset is not an Adam-style single LR has no
+        # optimizer_lr field; an explicit learning_rate must fail loudly rather
+        # than be dropped.
+        pytest.importorskip("lerobot")
+        import lerobot.policies.factory as factory
+
+        class _NoLrPolicyConfig:
+            type = "act"
+            device = "cpu"
+            push_to_hub = False
+
+        monkeypatch.setattr(factory, "make_policy_config", lambda ptype: _NoLrPolicyConfig())
+        spec = TrainSpec(
+            dataset_root=dataset_root,
+            base_model="",
+            output_dir=str(tmp_path / "out"),
+            steps=200,
+            learning_rate=5e-5,
+            extra={"policy_type": "act"},
+        )
+        with pytest.raises(ValueError, match="optimizer_lr"):
+            LerobotTrainer(device="cpu").build_config(spec)
