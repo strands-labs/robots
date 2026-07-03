@@ -6,6 +6,7 @@ from strands_robots.telemetry import (
     StreamTier,
     TelemetryStream,
 )
+from strands_robots.telemetry.stream import TransportConfig
 
 
 class TestEventCategory:
@@ -44,3 +45,35 @@ class TestTelemetryStream:
         stream.start()
         stream.emit(EventCategory.JOINT_STATE, {"q": [0.1, 0.2, 0.3]})
         stream.stop()
+
+
+class TestTelemetryDelivery:
+    """Exercise the emit -> buffer -> flush -> transport path end to end."""
+
+    @staticmethod
+    def _capturing_stream(**kwargs):
+        delivered: list = []
+
+        def handler(batch):
+            # Small batches arrive as list[dict]; large ones as gzip bytes.
+            if isinstance(batch, list):
+                delivered.extend(batch)
+            return True
+
+        stream = TelemetryStream(robot_id="test_robot", **kwargs)
+        stream.add_transport(TransportConfig(name="mem", tiers=list(StreamTier), handler=handler))
+        return stream, delivered
+
+    def test_stop_force_drains_sub_threshold_buffer(self):
+        # Regression for the shutdown data-loss bug: events below the count/age
+        # thresholds must still be delivered when stop() is called.
+        stream, delivered = self._capturing_stream(flush_interval_s=5.0)
+        stream.start()
+        for i in range(3):  # far below max_count, and well under max_age
+            stream.emit(EventCategory.JOINT_STATE, {"i": i})
+        stream.stop()  # must force-drain the 3 buffered events
+
+        assert len(delivered) == 3
+        assert {e["data"]["i"] for e in delivered} == {0, 1, 2}
+        assert all(e["robot_id"] == "test_robot" for e in delivered)
+        assert all(e["tier"] == "BATCH" for e in delivered)  # JOINT_STATE routes to BATCH

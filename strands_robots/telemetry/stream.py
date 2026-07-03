@@ -66,7 +66,7 @@ class TransportConfig:
 
     name: str
     tiers: list[StreamTier]
-    handler: Callable[[list[dict[str, Any]]], bool]
+    handler: Callable[[list[dict[str, Any]] | bytes], bool]
     retry_max: int = 3
     retry_base_ms: float = 100.0
 
@@ -359,11 +359,24 @@ class TelemetryStream:
         if not events:
             return
 
-        # Reset age tracking
+        # Reset age tracking. Lock-free/best-effort: an event appended by a concurrent
+        # emit() during the drain above may restart its age-timer here, so age-based
+        # flushing is approximate. Delivery is still guaranteed by the count trigger and
+        # the force-drain in stop() — no event is lost.
         self._buffer_first_ts[tier] = None
 
-        # Serialize batch
-        serialized = [self._serialize_event(e) for e in events]
+        # Serialize per-event so one un-serializable event can't lose the whole
+        # (already-drained) batch — drop the offender and keep the rest.
+        serialized = []
+        for e in events:
+            try:
+                serialized.append(self._serialize_event(e))
+            except Exception as exc:
+                logger.warning("Dropping un-serializable telemetry event: %s", exc)
+                with self._stats_lock:
+                    self._stats["dropped"] += 1
+        if not serialized:
+            return
         batch_json = json.dumps(serialized, separators=(",", ":")).encode("utf-8")
         raw_bytes = len(batch_json)
 

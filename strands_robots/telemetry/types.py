@@ -14,20 +14,11 @@ Patterns adopted:
 
 from __future__ import annotations
 
-import gzip
-import json
 import time
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Any
-
-try:
-    import numpy as np
-
-    HAS_NUMPY = True
-except ImportError:
-    HAS_NUMPY = False
 
 
 class StreamTier(Enum):
@@ -36,9 +27,13 @@ class StreamTier(Enum):
     Each tier maps to a different transport backend with different
     latency/throughput/cost characteristics.
 
-    - STREAM: Real-time, low-latency (<50ms). Safety events, e-stops.
-    - BATCH:  Buffered, moderate latency (<5s). Joint states at 50Hz.
-    - STORAGE: Best-effort, high-throughput. Camera frames, point clouds.
+    - STREAM: lowest-latency transport; flushed on the background flush interval
+      (small count/age thresholds). Safety events, e-stops.
+    - BATCH:  buffered, moderate latency. Joint states at 50Hz.
+    - STORAGE: best-effort, high-throughput. Camera frames, point clouds.
+
+    Note: delivery latency is bounded by the ``TelemetryStream`` flush interval,
+    not guaranteed sub-50ms; size the interval to your latency budget.
     """
 
     STREAM = auto()
@@ -56,7 +51,7 @@ class EventCategory(Enum):
     Format: (category_name, default_tier)
     """
 
-    # --- Safety (STREAM tier — never batch, never lose) ---
+    # --- Safety (STREAM tier — lowest-latency transport, flushed first) ---
     EMERGENCY_STOP = ("emergency_stop", StreamTier.STREAM)
     COLLISION = ("collision", StreamTier.STREAM)
     JOINT_LIMIT = ("joint_limit", StreamTier.STREAM)
@@ -100,12 +95,12 @@ class EventCategory(Enum):
 
 @dataclass
 class BatchConfig:
-    """Auto-batching thresholds (count + size + age).
+    """Auto-batching thresholds.
 
-    Flush triggers when ANY threshold is exceeded:
+    Flush triggers when the count or age threshold is exceeded:
     - max_count: Maximum events before flush
-    - max_bytes: Maximum serialized size before flush
     - max_age_ms: Maximum time since oldest event before flush
+    - max_bytes: advisory only — size-based flushing is not currently a trigger
     """
 
     max_count: int = 100
@@ -152,59 +147,5 @@ class TelemetryEvent:
         """Resolve tier: explicit override > category default."""
         return self.tier if self.tier is not None else self.category.default_tier
 
-    def serialize(self) -> bytes:
-        """Serialize to JSON bytes with numpy-aware encoding.
-
-        Every payload is serialized consistently for compression and transport.
-        """
-
-        def _encoder(obj: Any) -> Any:
-            if HAS_NUMPY:
-                if isinstance(obj, np.ndarray):
-                    return obj.tolist()
-                if isinstance(obj, (np.integer,)):
-                    return int(obj)
-                if isinstance(obj, (np.floating,)):
-                    return float(obj)
-            if isinstance(obj, bytes):
-                # Camera frames etc. — store length, not content
-                return f"<bytes:{len(obj)}>"
-            raise TypeError(f"Not serializable: {type(obj)}")
-
-        payload = {
-            "event_id": self.event_id,
-            "category": self.category.category_name,
-            "robot_id": self.robot_id,
-            "tier": self.effective_tier.name,
-            "sim_or_real": self.sim_or_real,
-            "frame_id": self.frame_id,
-            "timestamp_ms": self.timestamp_ms,
-            "correlation_id": self.correlation_id,
-            "data": self.data,
-        }
-        if self.metadata:
-            payload["metadata"] = self.metadata
-
-        return json.dumps(payload, default=_encoder, separators=(",", ":")).encode("utf-8")
-
-    def compress(self) -> bytes:
-        """Serialize + gzip compress."""
-        return gzip.compress(self.serialize())
-
-    def size_bytes(self) -> int:
-        """Estimate serialized size without full serialization."""
-        # Fast estimate: 200 bytes overhead + data key lengths
-        base = 200
-        for k, v in self.data.items():
-            base += len(k) + 20  # key + value estimate
-            if HAS_NUMPY and isinstance(v, np.ndarray):
-                base += v.nbytes
-            elif isinstance(v, (list, tuple)):
-                base += len(v) * 10
-            elif isinstance(v, bytes):
-                base += 20  # We store length ref, not content
-            elif isinstance(v, dict):
-                base += len(str(v))
-            else:
-                base += 20
-        return base
+    # (Serialization lives in TelemetryStream._serialize_event, the single path
+    # used on the flush hot-path; TelemetryEvent stays a plain data record.)

@@ -103,6 +103,7 @@ class OTelTransport:
                 "robot.frame_id": event.get("frame_id", 0),
                 "robot.sim_or_real": event.get("sim_or_real", ""),
                 "robot.correlation_id": event.get("correlation_id", "") or "",
+                "robot.timestamp_ms": event.get("timestamp_ms", 0),  # true event time (span is created at flush)
                 "service.name": self.service_name,
             },
         ) as span:

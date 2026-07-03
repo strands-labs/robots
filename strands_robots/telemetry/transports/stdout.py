@@ -73,12 +73,12 @@ class StdoutTransport:
                     corr_str = f" trace={corr}" if corr else ""
                     logger.log(
                         self.log_level,
-                        f"📡 [{cat}] robot={robot} frame={frame}{corr_str}",
+                        f"[{cat}] robot={robot} frame={frame}{corr_str}",
                     )
                 else:
                     logger.log(
                         self.log_level,
-                        f"📡 {json.dumps(event, indent=2)}",
+                        f"{json.dumps(event, indent=2)}",
                     )
 
             self._total_events += len(events)
