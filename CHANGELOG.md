@@ -5,6 +5,19 @@ All notable behavioural changes to `strands-robots` are logged here. Follows
 
 ## [Unreleased]
 
+### Fixed: notebooks and the lerobot e2e test fixture still defaulted `MUJOCO_GL` to the macOS-only `cgl`
+
+The `.py` examples were made platform-aware in #973, but the three notebooks
+under `examples/notebooks/` kept the unconditional
+`os.environ.setdefault("MUJOCO_GL", "cgl")` in their first cell -- on a bare
+Linux box the first offscreen render died. Their first cells now pick `cgl` on
+macOS and the headless-safe `egl` elsewhere (a user-exported `MUJOCO_GL` still
+wins), and the notebooks README no longer claims a headless-Linux fallback that
+`setdefault` never performed. The `tests/training/test_lerobot_e2e.py` fixture
+carried the same unconditional `cgl` -- masked in CI (the workflows export
+`MUJOCO_GL=osmesa`) but erroring a bare-Linux local run -- and it now uses the
+same platform-aware default. No `cgl` default remains anywhere in the repo.
+
 ### Added: ROS 2 action support in `use_ros` + goal-level `navigate_to` on `RosBridgedRobot`
 
 `use_ros` gains `list_actions` and `action_send_goal` (in-process `rclpy.action`,
