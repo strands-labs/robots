@@ -150,10 +150,18 @@ def inject_robot_into_scene(
 def inject_object_into_scene(world: SimWorld, obj: SimObject) -> bool:
     """Add a ``SimObject`` to the scene and recompile in place.
 
+    A ``shape="mesh"`` object references a mesh asset that must be registered
+    on the spec before the geom that names it can compile. The full-scene
+    ``SpecBuilder.build`` registers those assets in its own pass, but the
+    incremental path (``SpecBuilder.add_object``) does not, so this function
+    registers the mesh (``spec.add_mesh(name=f"mesh_{obj.name}", ...)``) itself
+    before adding the body. Without this, ``add_object(shape="mesh")`` at
+    runtime always failed to recompile even for a valid mesh file.
+
     ``SpecBuilder.add_object`` mutates the spec (adds the body + geom) before
     the recompile that validates it. If that recompile is refused - e.g. the
-    object references a mesh asset that was never registered - the orphan body
-    is deleted again before returning ``False`` so the spec stays compilable.
+    mesh file cannot be loaded - the just-added body AND its mesh asset are
+    deleted again before returning ``False`` so the spec stays compilable.
     Without the rollback the orphan lingers and every later scene mutation,
     including a corrected retry under the same name, keeps failing to recompile
     (``repeated name`` collisions), bricking the whole scene after one bad add.
@@ -164,16 +172,24 @@ def inject_object_into_scene(world: SimWorld, obj: SimObject) -> bool:
         return False
 
     try:
+        # Meshes need their asset registered before the geom references it.
+        # build() registers meshes in a separate pass, so add_object does not;
+        # the incremental path must register it here.
+        if obj.shape == "mesh" and obj.mesh_path:
+            spec.add_mesh(name=f"mesh_{obj.name}", file=obj.mesh_path)
         SpecBuilder.add_object(spec, obj)
     except (ValueError, RuntimeError) as e:
         logger.error("Object add failed for '%s': %s", obj.name, e)
+        SpecBuilder.remove_mesh(spec, f"mesh_{obj.name}")
         return False
 
     if not _recompile_preserving_state(world, spec):
-        # Roll the just-added body back out so the spec returns to its last
-        # good, compilable state (a worldbody body delete is safe - the
-        # attach/delete segfault only affects spec.attach() child specs).
+        # Roll the just-added body (and any mesh asset) back out so the spec
+        # returns to its last good, compilable state (a worldbody body delete
+        # is safe - the attach/delete segfault only affects spec.attach()
+        # child specs).
         SpecBuilder.remove_body(spec, obj.name)
+        SpecBuilder.remove_mesh(spec, f"mesh_{obj.name}")
         return False
     return True
 
@@ -217,6 +233,11 @@ def eject_body_from_scene(world: SimWorld, body_name: str) -> bool:
         # Matching legacy behaviour: return True so scene state stays consistent
         # (caller has already popped the Python-side dict entry).
         return True
+
+    # Objects added at runtime register a mesh asset named f"mesh_{name}".
+    # Delete it too so the name is fully reusable and unused assets do not
+    # accumulate across remove/re-add cycles (safe no-op for primitives).
+    SpecBuilder.remove_mesh(spec, f"mesh_{body_name}")
 
     return _recompile_preserving_state(world, spec)
 

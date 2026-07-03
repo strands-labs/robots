@@ -355,6 +355,11 @@ def fake_rosidl(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
 
     util.get_service = lambda type_str: _FakeSrv  # type: ignore[attr-defined]
 
+    class _FakeAction:
+        Goal = _FakeMsg
+
+    util.get_action = lambda type_str: _FakeAction  # type: ignore[attr-defined]
+
     convert = _types.ModuleType("rosidl_runtime_py.convert")
     convert.message_to_ordereddict = lambda msg: msg  # type: ignore[attr-defined]
 
@@ -643,3 +648,184 @@ def test_action_send_goal_rejection_surfaces_as_error(monkeypatch: pytest.Monkey
     )
     assert result["status"] == "error"
     assert "goal rejected" in _texts(result)
+
+
+# ---------------------------------------------------------------------------
+# Action helper internals (_get_action / _list_actions / _action_send_goal)
+#
+# The action tests above drive the `use_ros` dispatch with `_action_send_goal`
+# monkeypatched, so the helper body -- server discovery, goal acceptance,
+# feedback capping, terminal-status mapping, and the timeout-cancel fail-safe
+# -- never runs. The tests below exercise the helpers themselves against the
+# same node/rosidl doubles plus a fake `rclpy.action` module, so the real
+# goal-lifecycle logic runs with no ROS 2 installed. Behavior is asserted
+# through return values and the cancel/destroy side effects a caller can
+# observe, never internal state.
+# ---------------------------------------------------------------------------
+
+
+class _FakeFuture:
+    """rclpy Future double: fixed `done()` verdict and cached `result()`."""
+
+    def __init__(self, result: Any, done: bool = True) -> None:
+        self._result = result
+        self._done = done
+
+    def done(self) -> bool:
+        return self._done
+
+    def result(self) -> Any:
+        return self._result
+
+
+class _FakeGoalHandle:
+    """rclpy ClientGoalHandle double recording whether a cancel was requested."""
+
+    def __init__(self, accepted: bool, result_future: _FakeFuture) -> None:
+        self.accepted = accepted
+        self._result_future = result_future
+        self.cancel_requested = False
+
+    def get_result_async(self) -> _FakeFuture:
+        return self._result_future
+
+    def cancel_goal_async(self) -> _FakeFuture:
+        self.cancel_requested = True
+        return _FakeFuture(result=object(), done=True)
+
+
+@pytest.fixture
+def fake_action(monkeypatch: pytest.MonkeyPatch) -> Any:
+    """Inject a configurable `rclpy.action` module for the action helpers.
+
+    Returns a config namespace whose fields tune the fake server's behavior
+    (availability, acceptance, terminal status, feedback count, whether the
+    result future ever completes) and records the last constructed client so
+    tests can assert cleanup and cancellation.
+    """
+    cfg = _types.SimpleNamespace(
+        server_available=True,
+        accepted=True,
+        result_done=True,
+        send_done=True,
+        status=4,  # SUCCEEDED
+        result_msg={"total_elapsed_time": 12.0},
+        n_feedback=0,
+        actions=[("/navigate_to_pose", ["nav2_msgs/action/NavigateToPose"])],
+        last_client=None,
+    )
+
+    class _FakeActionClient:
+        def __init__(self, node: Any, action_cls: Any, action_name: str) -> None:
+            self.action_name = action_name
+            self.goal_handle: _FakeGoalHandle | None = None
+            self.destroyed = False
+            cfg.last_client = self
+
+        def wait_for_server(self, timeout_sec: float) -> bool:
+            return cfg.server_available
+
+        def send_goal_async(self, goal: Any, feedback_callback: Any) -> _FakeFuture:
+            for k in range(cfg.n_feedback):
+                feedback_callback(_types.SimpleNamespace(feedback={"i": k}))
+            wrapped = _types.SimpleNamespace(status=cfg.status, result=cfg.result_msg)
+            result_future = _FakeFuture(result=wrapped, done=cfg.result_done)
+            self.goal_handle = _FakeGoalHandle(accepted=cfg.accepted, result_future=result_future)
+            return _FakeFuture(result=self.goal_handle, done=cfg.send_done)
+
+        def destroy(self) -> None:
+            self.destroyed = True
+
+    action_mod = _types.ModuleType("rclpy.action")
+    action_mod.ActionClient = _FakeActionClient  # type: ignore[attr-defined]
+    action_mod.get_action_names_and_types = lambda node: list(cfg.actions)  # type: ignore[attr-defined]
+
+    parent = sys.modules.get("rclpy") or _types.ModuleType("rclpy")
+    monkeypatch.setitem(sys.modules, "rclpy", parent)
+    monkeypatch.setitem(sys.modules, "rclpy.action", action_mod)
+    return cfg
+
+
+def test_list_actions_formats_and_sorts(fake_node: _FakeNode, fake_action: Any) -> None:
+    fake_action.actions = [
+        ("/dock", ["opennav_docking_msgs/action/DockRobot"]),
+        ("/navigate_to_pose", ["nav2_msgs/action/NavigateToPose"]),
+    ]
+    listing = ros_mod._list_actions().splitlines()
+    # Sorted by name; "name [type]" formatting.
+    assert listing[0] == "/dock [opennav_docking_msgs/action/DockRobot]"
+    assert listing[1] == "/navigate_to_pose [nav2_msgs/action/NavigateToPose]"
+
+
+def test_action_send_goal_returns_outcome_and_caps_feedback(
+    fake_node: _FakeNode, fake_rosidl: dict[str, Any], fake_action: Any
+) -> None:
+    fake_action.n_feedback = 7  # exceeds _FEEDBACK_LIMIT (5)
+    result = ros_mod._action_send_goal(
+        "/navigate_to_pose",
+        "nav2_msgs/action/NavigateToPose",
+        {"pose": {"header": {"frame_id": "map"}}},
+        timeout=5.0,
+    )
+    assert result["goal_status"] == "SUCCEEDED"  # status code 4 mapped to name
+    assert result["result"] == {"total_elapsed_time": 12.0}
+    # Feedback is capped at _FEEDBACK_LIMIT keeping the earliest samples plus
+    # the most recent one, so the agent sees both start and current state.
+    assert result["feedback"] == [{"i": 0}, {"i": 1}, {"i": 2}, {"i": 3}, {"i": 6}]
+    # The goal fields reached set_message_fields as a real dict, types intact.
+    assert fake_rosidl["set_fields"] == [{"pose": {"header": {"frame_id": "map"}}}]
+    # The client is torn down after a successful goal.
+    assert fake_action.last_client.destroyed is True
+
+
+def test_action_send_goal_raises_when_server_absent(
+    fake_node: _FakeNode, fake_rosidl: dict[str, Any], fake_action: Any
+) -> None:
+    fake_action.server_available = False
+    with pytest.raises(TimeoutError, match="not available"):
+        ros_mod._action_send_goal("/navigate_to_pose", "nav2_msgs/action/NavigateToPose", {}, timeout=0.1)
+    assert fake_action.last_client.destroyed is True
+
+
+def test_action_send_goal_raises_when_goal_not_acknowledged(
+    fake_node: _FakeNode, fake_rosidl: dict[str, Any], fake_action: Any
+) -> None:
+    # The server is reachable but never acknowledges the goal (the send
+    # future never completes): the helper surfaces a timeout rather than
+    # dereferencing a goal handle that was never returned.
+    fake_action.send_done = False
+    with pytest.raises(TimeoutError, match="not acknowledged"):
+        ros_mod._action_send_goal("/navigate_to_pose", "nav2_msgs/action/NavigateToPose", {}, timeout=0.1)
+    assert fake_action.last_client.destroyed is True
+
+
+def test_action_send_goal_raises_when_goal_rejected(
+    fake_node: _FakeNode, fake_rosidl: dict[str, Any], fake_action: Any
+) -> None:
+    fake_action.accepted = False
+    with pytest.raises(ValueError, match="goal rejected"):
+        ros_mod._action_send_goal("/navigate_to_pose", "nav2_msgs/action/NavigateToPose", {}, timeout=1.0)
+    assert fake_action.last_client.destroyed is True
+
+
+def test_action_send_goal_cancels_when_result_times_out(
+    fake_node: _FakeNode, fake_rosidl: dict[str, Any], fake_action: Any
+) -> None:
+    # Goal is accepted but the result future never completes: the helper must
+    # request a cancel before surfacing the timeout so the robot stops pursuing
+    # an orphaned goal.
+    fake_action.result_done = False
+    with pytest.raises(TimeoutError, match="cancel requested"):
+        ros_mod._action_send_goal("/navigate_to_pose", "nav2_msgs/action/NavigateToPose", {}, timeout=0.1)
+    assert fake_action.last_client.goal_handle.cancel_requested is True
+    assert fake_action.last_client.destroyed is True
+
+
+def test_action_send_goal_maps_unknown_status_to_code(
+    fake_node: _FakeNode, fake_rosidl: dict[str, Any], fake_action: Any
+) -> None:
+    # A status integer outside the known GoalStatus table surfaces as its
+    # stringified code rather than raising a KeyError.
+    fake_action.status = 99
+    result = ros_mod._action_send_goal("/navigate_to_pose", "nav2_msgs/action/NavigateToPose", {}, timeout=1.0)
+    assert result["goal_status"] == "99"

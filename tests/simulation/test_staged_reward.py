@@ -185,3 +185,45 @@ def test_rejects_non_numeric_bonus() -> None:
     ]
     with pytest.raises(ValueError, match="bonus must be a number"):
         make_predicate("staged_reward", stages=bad)
+
+
+def test_rejects_non_dict_stage() -> None:
+    # A stage that is not a mapping cannot declare reward/advance_when, so the
+    # factory must reject it up front rather than raising a cryptic AttributeError
+    # deeper in compilation.
+    with pytest.raises(ValueError, match=r"stage\[0\] must be a dict, got str"):
+        make_predicate("staged_reward", stages=["reach then grasp"])
+
+
+def test_rejects_stage_with_missing_reward() -> None:
+    # ``reward`` is mandatory and must be a predicate-call dict. A stage that
+    # omits it (or supplies a non-dict) is malformed.
+    with pytest.raises(ValueError, match=r"stage\[0\]\.reward must be a predicate-call dict"):
+        make_predicate("staged_reward", stages=[{"advance_when": {"predicate": "contact_any"}}])
+
+
+def test_rejects_non_dict_reward_call() -> None:
+    with pytest.raises(ValueError, match=r"stage\[0\]\.reward must be a predicate-call dict"):
+        make_predicate("staged_reward", stages=[{"reward": "distance_neg"}])
+
+
+def test_rejects_non_dict_advance_when() -> None:
+    # When ``advance_when`` is present it must itself be a predicate-call dict;
+    # a bare string is not a valid gate.
+    bad = [
+        {"reward": {"predicate": "constant", "value": 1.0}, "advance_when": "contact_any"},
+        {"reward": {"predicate": "constant", "value": 1.0}},
+    ]
+    with pytest.raises(ValueError, match=r"stage\[0\]\.advance_when must be a predicate-call dict"):
+        make_predicate("staged_reward", stages=bad)
+
+
+def test_empty_compiled_stages_reward_is_zero() -> None:
+    # The factory rejects empty stages, but the compiled term itself must stay
+    # safe if ever handed an empty stage list directly: it scores 0.0 rather
+    # than indexing out of range.
+    from strands_robots.simulation.predicates import _StagedReward
+
+    term = _StagedReward([])
+    assert term(_ScriptedEngine()) == 0.0
+    assert term.phase == 0

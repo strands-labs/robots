@@ -40,6 +40,23 @@ for i in range(5):
     )
 ```
 
+## Mesh objects
+
+Beyond primitives, `add_object` can inject a triangle-mesh asset (STL/OBJ) into
+the live scene at runtime. Pass `shape="mesh"` with a `mesh_path` to the asset
+file; the extent is defined by the mesh's own units, so `size` is ignored.
+
+```python
+sim.add_object(name="bracket", shape="mesh", mesh_path="/abs/path/bracket.stl",
+               position=[0.3, 0.0, 0.1])
+```
+
+`mesh_path` is required for `shape="mesh"` - a mesh without a path is rejected
+with an actionable error rather than an opaque recompile failure. If the mesh
+file cannot be loaded the add is rejected and the scene is rolled back to its
+previous compilable state (including the mesh asset), so the object name stays
+reusable and one bad add never bricks later scene edits.
+
 ## Materials and textures
 
 By default an object renders with a flat `color` (rgba) - a glossy, obviously

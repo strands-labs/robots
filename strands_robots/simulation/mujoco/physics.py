@@ -401,7 +401,9 @@ class PhysicsMixin:
         The Jacobian maps joint velocities to Cartesian velocities:
             v = J @ dq
 
-        Returns both positional (3×nv) and rotational (3×nv) Jacobians.
+        Returns both positional (3×nv) and rotational (3×nv) Jacobians,
+        computed at the current ``qpos`` (the position pipeline is recomputed
+        first so the result is never a stale earlier configuration).
         """
         if self._world is None or self._world._model is None or self._world._data is None:
             return {"status": "error", "content": [{"text": _NO_WORLD_MSG}]}
@@ -413,6 +415,14 @@ class PhysicsMixin:
         jacr = np.zeros((3, model.nv))
 
         with self._lock:
+            # Reflect the CURRENT configuration. mj_jac* read data.xpos/site_xpos/
+            # geom_xpos, data.subtree_com and data.cdof, all of which are stale if
+            # qpos changed since the last forward (e.g. a direct data.qpos write or
+            # set_joint_velocities). Recompute the position pipeline first so the
+            # Jacobian is not silently that of an earlier pose. Matches
+            # forward_kinematics; cheaper than a full mj_forward.
+            mj.mj_kinematics(model, data)
+            mj.mj_comPos(model, data)
             if body_name:
                 obj_id = self._resolve_mj_name(mj.mjtObj.mjOBJ_BODY, body_name)
                 if obj_id < 0:
@@ -516,10 +526,22 @@ class PhysicsMixin:
     # Inverse Dynamics
 
     def inverse_dynamics(self) -> dict[str, Any]:
-        """Compute inverse dynamics: given qacc, what forces are needed?
+        """Compute the generalized forces required to hold the current state.
 
-        Runs mj_inverse to compute qfrc_inverse - the generalized forces
-        that would produce the current accelerations.
+        Runs ``mj_inverse`` for a target acceleration of zero, so the result
+        is the gravity- and velocity-bias (Coriolis/centrifugal) compensation
+        torques that keep the robot at its current ``qpos``/``qvel`` with zero
+        acceleration - the standard inverse-dynamics query for a manipulator
+        (at rest, pure gravity compensation).
+
+        ``mj_inverse`` reads ``data.qacc`` as the *desired* acceleration, so
+        this method runs ``mj_forward`` first (so the position/velocity
+        kinematics match the current ``qpos``/``qvel``, matching the defensive
+        forward in ``get_mass_matrix``) and zeroes ``qacc`` for the solve,
+        restoring the buffer afterwards. Without this it would use whatever
+        stale forward-dynamics acceleration was left in ``data.qacc`` and ask
+        ``mj_inverse`` to reproduce free-fall - returning ~0 forces regardless
+        of pose, never the compensation torques the query is for.
         """
         if self._world is None or self._world._model is None or self._world._data is None:
             return {"status": "error", "content": [{"text": _NO_WORLD_MSG}]}
@@ -528,14 +550,22 @@ class PhysicsMixin:
         model, data = self._world._model, self._world._data
 
         with self._lock:
-            mj.mj_inverse(model, data)
-            # Build named force mapping
-            forces = {}
-            for i in range(model.njnt):
-                name = mj.mj_id2name(model, mj.mjtObj.mjOBJ_JOINT, i)
-                if name:
-                    dof_adr = model.jnt_dofadr[i]
-                    forces[name] = float(data.qfrc_inverse[dof_adr])
+            # Establish consistent position/velocity kinematics for the current
+            # state, then solve inverse dynamics for zero desired acceleration.
+            mj.mj_forward(model, data)
+            saved_qacc = data.qacc.copy()
+            data.qacc[:] = 0.0
+            try:
+                mj.mj_inverse(model, data)
+                # Build named force mapping
+                forces = {}
+                for i in range(model.njnt):
+                    name = mj.mj_id2name(model, mj.mjtObj.mjOBJ_JOINT, i)
+                    if name:
+                        dof_adr = model.jnt_dofadr[i]
+                        forces[name] = float(data.qfrc_inverse[dof_adr])
+            finally:
+                data.qacc[:] = saved_qacc
 
         return {
             "status": "success",
@@ -553,7 +583,9 @@ class PhysicsMixin:
     ) -> dict[str, Any]:
         """Get the full state of a body: position, orientation, velocity, acceleration.
 
-        Returns Cartesian pose + 6D spatial velocity (linear + angular).
+        Returns Cartesian pose + 6D spatial velocity (linear + angular),
+        computed at the current ``qpos``/``qvel`` (the forward pipeline is run
+        first so pose and velocity are never a stale earlier state).
         """
         if self._world is None or self._world._model is None or self._world._data is None:
             return {"status": "error", "content": [{"text": _NO_WORLD_MSG}]}
@@ -566,6 +598,14 @@ class PhysicsMixin:
             return {"status": "error", "content": [{"text": f"Body '{body_name}' not found."}]}
 
         with self._lock:
+            # Reflect the CURRENT qpos/qvel. This reads data.xpos/xquat/xmat/xipos
+            # (position pipeline) and data.cvel via mj_objectVelocity (velocity
+            # pipeline); both are stale if state changed since the last forward
+            # (e.g. set_joint_velocities writes qvel without forwarding, or a
+            # direct data.qpos write). Run the full pipeline so pose AND 6D
+            # velocity are consistent with the current state. Matches
+            # get_mass_matrix / inverse_dynamics / get_sensor_data.
+            mj.mj_forward(model, data)
             # Position and orientation
             pos = data.xpos[body_id].tolist()
             quat = data.xquat[body_id].tolist()

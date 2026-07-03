@@ -99,7 +99,7 @@ Newton backend, so a rollout rig can be enumerated instead of guessed.
 | `apply_force` | `body_name`, `force`, `torque`, `point` |
 | `get_jacobian` | `body_name` *or* `site_name` *or* `geom_name` |
 | `get_mass_matrix` | - |
-| `inverse_dynamics` | - |
+| `inverse_dynamics` | - (compensation torques to hold the current `qpos`/`qvel`) |
 | `forward_kinematics` | `body_name` (optional) |
 | `save_state` / `load_state` | snapshot/restore full physics |
 | `get_energy` | - |

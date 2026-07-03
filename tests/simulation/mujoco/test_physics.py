@@ -144,6 +144,36 @@ class TestJacobians:
         result = sim.get_jacobian(body_name="nonexistent")
         assert result["status"] == "error"
 
+    def test_jacobian_reflects_current_configuration(self, sim):
+        """get_jacobian must be the Jacobian of the CURRENT qpos.
+
+        Regression: it read data.xpos/site_xpos/subtree_com/cdof left by an
+        earlier forward and never re-ran the position pipeline, so after a
+        qpos change that did not itself forward (here a direct data.qpos
+        write) it returned the OLD configuration's Jacobian while reporting
+        success.
+        """
+        model, data = sim._world._model, sim._world._data
+        j_rest = np.array(_extract_json_block(sim.get_jacobian(site_name="end_effector"), 1)["jacp"])
+
+        sh = model.jnt_qposadr[mj.mj_name2id(model, mj.mjtObj.mjOBJ_JOINT, "shoulder")]
+        el = model.jnt_qposadr[mj.mj_name2id(model, mj.mjtObj.mjOBJ_JOINT, "elbow")]
+        data.qpos[sh] = 0.9
+        data.qpos[el] = -0.7
+        j_after = np.array(_extract_json_block(sim.get_jacobian(site_name="end_effector"), 1)["jacp"])
+
+        # Independent ground truth for the new configuration.
+        mj.mj_kinematics(model, data)
+        mj.mj_comPos(model, data)
+        jacp = np.zeros((3, model.nv))
+        jacr = np.zeros((3, model.nv))
+        sid = mj.mj_name2id(model, mj.mjtObj.mjOBJ_SITE, "end_effector")
+        mj.mj_jacSite(model, data, jacp, jacr, sid)
+
+        # fails-before: j_after equalled the stale j_rest, not the new-config truth.
+        assert np.linalg.norm(j_after - jacp) < 1e-9
+        assert np.linalg.norm(j_after - j_rest) > 1e-3
+
 
 class TestEnergy:
     def test_get_energy(self, sim):
@@ -312,12 +342,67 @@ class TestStateCheckpointing:
 
 
 class TestInverseDynamics:
+    @staticmethod
+    def _gravity_compensation(model, data):
+        """Ground-truth compensation torques: mj_inverse for zero desired qacc."""
+        mj.mj_forward(model, data)
+        data.qacc[:] = 0.0
+        mj.mj_inverse(model, data)
+        return {
+            mj.mj_id2name(model, mj.mjtObj.mjOBJ_JOINT, i): float(data.qfrc_inverse[model.jnt_dofadr[i]])
+            for i in range(model.njnt)
+            if mj.mj_id2name(model, mj.mjtObj.mjOBJ_JOINT, i)
+        }
+
     def test_inverse_dynamics(self, sim):
-        mj.mj_forward(sim._world._model, sim._world._data)
         result = sim.inverse_dynamics()
         assert result["status"] == "success"
         forces = _extract_json_block(result, 1)["qfrc_inverse"]
         assert "shoulder" in forces or "elbow" in forces
+
+    def test_inverse_dynamics_returns_gravity_compensation(self, sim):
+        """inverse_dynamics reports the torques that HOLD the current pose.
+
+        Regression: previously it read the stale forward-dynamics ``qacc``
+        (the unforced/free-fall acceleration) as the desired acceleration and
+        asked ``mj_inverse`` to reproduce free-fall - which needs ~0 force. It
+        therefore reported near-zero torques regardless of pose instead of the
+        gravity-/bias-compensation torques the query is for.
+        """
+        model, data = sim._world._model, sim._world._data
+        # A gravity-loaded pose (arm tilted away from the vertical).
+        sim.set_joint_positions({"shoulder": 0.8, "elbow": -0.5})
+
+        forces = _extract_json_block(sim.inverse_dynamics(), 1)["qfrc_inverse"]
+
+        # Ground truth computed independently AFTER the call (the fixed method
+        # forwards + restores qacc, so state is unchanged for this compare).
+        expected = self._gravity_compensation(model, data)
+        for jn in ("shoulder", "elbow"):
+            assert forces[jn] == pytest.approx(expected[jn], abs=1e-9)
+
+        # The shoulder carries a real gravity load in this pose; the buggy
+        # free-fall path returned ~0 here, so this discriminates the fix.
+        assert abs(forces["shoulder"]) > 1e-2
+
+    def test_inverse_dynamics_ignores_stale_qacc(self, sim):
+        """The result must not depend on leftover free-fall qacc.
+
+        Stepping (or a prior forward) leaves ``data.qacc`` holding the
+        forward-dynamics acceleration. inverse_dynamics must zero it for the
+        solve, so back-to-back calls are identical and independent of that
+        buffer.
+        """
+        sim.set_joint_positions({"shoulder": 0.6, "elbow": 0.4})
+        first = _extract_json_block(sim.inverse_dynamics(), 1)["qfrc_inverse"]
+
+        # Perturb the leftover qacc buffer directly; the answer must not move.
+        sim._world._data.qacc[:] = 123.4
+        second = _extract_json_block(sim.inverse_dynamics(), 1)["qfrc_inverse"]
+
+        for jn in ("shoulder", "elbow"):
+            assert first[jn] == pytest.approx(second[jn], abs=1e-9)
+        assert abs(first["shoulder"]) > 1e-2
 
 
 class TestBodyState:
@@ -337,6 +422,47 @@ class TestBodyState:
     def test_body_state_invalid(self, sim):
         result = sim.get_body_state(body_name="nonexistent")
         assert result["status"] == "error"
+
+    def test_body_state_pose_reflects_current_qpos(self, sim):
+        """get_body_state pose must reflect the current qpos and agree with
+        forward_kinematics.
+
+        Regression: it read stale data.xpos without forwarding, so after a
+        qpos change (here a direct data.qpos write) it reported the OLD pose
+        while its sibling forward_kinematics reported the new one.
+        """
+        model, data = sim._world._model, sim._world._data
+        sh = model.jnt_qposadr[mj.mj_name2id(model, mj.mjtObj.mjOBJ_JOINT, "shoulder")]
+        data.qpos[sh] = 1.0
+
+        pos_bs = _extract_json_block(sim.get_body_state(body_name="link2"), 1)["position"]
+        pos_fk = _extract_json_block(sim.forward_kinematics(body_name="link2"), 1)["position"]
+        # fails-before: get_body_state stale pose != forward_kinematics fresh pose.
+        assert pos_bs == pytest.approx(pos_fk, abs=1e-9)
+
+    def test_body_state_velocity_reflects_current_qvel(self, sim):
+        """get_body_state 6D velocity must reflect the current qvel.
+
+        Regression: it read data.cvel via mj_objectVelocity without
+        forwarding, so a velocity written by set_joint_velocities (which sets
+        qvel but does not forward) was reported as the stale ~zero velocity
+        while the call reported success.
+        """
+        sim.set_joint_velocities(velocities={"shoulder": 2.0, "elbow": -1.5})
+        state = _extract_json_block(sim.get_body_state(body_name="link2"), 1)
+        got = np.array(state["linear_velocity"] + state["angular_velocity"])
+
+        # Independent ground truth (order matches get_body_state: linear then angular).
+        model, data = sim._world._model, sim._world._data
+        mj.mj_forward(model, data)
+        vel = np.zeros(6)
+        bid = mj.mj_name2id(model, mj.mjtObj.mjOBJ_BODY, "link2")
+        mj.mj_objectVelocity(model, data, mj.mjtObj.mjOBJ_BODY, bid, vel, 0)
+        truth = np.concatenate([vel[3:], vel[:3]])
+
+        assert np.linalg.norm(got - truth) < 1e-9
+        # fails-before: stale velocity was ~0 at the freshly-set qvel.
+        assert np.linalg.norm(got) > 1e-2
 
 
 class TestDirectJointControl:

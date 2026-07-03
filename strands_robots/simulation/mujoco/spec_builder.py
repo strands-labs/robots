@@ -610,6 +610,28 @@ class SpecBuilder:
                 return True
         return False
 
+    # mesh remove
+    @staticmethod
+    def remove_mesh(spec: Any, name: str) -> bool:
+        """Remove a mesh asset by name from the spec.
+
+        Objects added at runtime through ``inject_object_into_scene`` register
+        a mesh asset named ``f"mesh_{obj.name}"``. Removing the body alone
+        leaves that asset orphaned in the spec, so a later add under the same
+        name would collide on a duplicate mesh at recompile. This deletes the
+        asset so the name stays fully reusable. Returns ``True`` if the mesh
+        existed and was removed, ``False`` otherwise (safe no-op for
+        primitive-shape objects that never registered a mesh).
+        """
+        try:
+            mesh = spec.mesh(name)
+        except (KeyError, ValueError):
+            return False
+        if mesh is None:
+            return False
+        spec.delete(mesh)
+        return True
+
     # -attach
     @staticmethod
     def attach_robot(

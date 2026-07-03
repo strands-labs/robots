@@ -1480,8 +1480,8 @@ class MuJoCoSimEngine(
         Returns:
             Agent-tool status dict. ``{"status": "success", ...}`` on success;
             ``{"status": "error", ...}`` when no world exists, a policy is
-            running, the name is taken, ``size`` has a non-positive extent, or
-            the recompile fails.
+            running, the name is taken, ``size`` has a non-positive extent,
+            ``shape="mesh"`` is missing ``mesh_path``, or the recompile fails.
 
         Example:
             >>> sim.add_object("cube", shape="box", size=[0.05, 0.05, 0.05])  # 5 cm cube
@@ -1520,6 +1520,15 @@ class MuJoCoSimEngine(
             is_static = True
         elif is_static is None:
             is_static = False
+
+        # A mesh geom names an asset that must be loaded from a file; without a
+        # path there is nothing to register, so fail fast with an actionable
+        # message rather than letting the recompile refuse the unresolved geom.
+        if shape == "mesh" and not mesh_path:
+            return {
+                "status": "error",
+                "content": [{"text": "add_object: shape='mesh' requires mesh_path (path to an STL/OBJ asset)."}],
+            }
 
         # 'size' is the full extent in meters per the docstring; reject a
         # non-positive (degenerate) extent before mutating scene state so the
