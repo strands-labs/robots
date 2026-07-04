@@ -352,6 +352,52 @@ def test_extract_frame_ndarray_handles_render_shape() -> None:
     assert _extract_frame_ndarray({"content": [{"text": "no image here"}]}) is None
 
 
+def test_extract_frame_ndarray_skips_non_dict_blocks_and_recovers() -> None:
+    """A malformed ``content`` list (non-dict entries interleaved with the real
+    image block) must not abort extraction: the scanner skips the junk and still
+    returns the decodable frame. This pins the recorder's fail-soft contract -
+    a stray ``None``/string in the render response should never crash a rollout.
+    """
+    img = Image.new("RGB", (4, 6), color=(10, 20, 30))
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    png_bytes = buf.getvalue()
+
+    result = {
+        "status": "success",
+        "content": [
+            None,
+            "stray string block",
+            {"text": "cam0"},
+            {"image": {"format": "png", "source": {"bytes": png_bytes}}},
+        ],
+    }
+    arr = _extract_frame_ndarray(result)
+    assert isinstance(arr, np.ndarray)
+    assert arr.shape == (6, 4, 3)
+
+
+def test_extract_frame_ndarray_always_returns_three_channels() -> None:
+    """An RGBA (4-channel) PNG source is normalized to a fixed (H, W, 3) RGB
+    array - the alpha channel is dropped by ``PIL.Image.convert("RGB")``. This
+    pins the return-shape contract the video writer depends on (imageio expects
+    a stable channel count) so a future change to a 4-channel decode is caught.
+    """
+    rgba = Image.new("RGBA", (5, 7), color=(200, 100, 50, 128))
+    buf = io.BytesIO()
+    rgba.save(buf, format="PNG")
+
+    result = {
+        "content": [
+            {"image": {"format": "png", "source": {"bytes": buf.getvalue()}}},
+        ],
+    }
+    arr = _extract_frame_ndarray(result)
+    assert isinstance(arr, np.ndarray)
+    assert arr.shape == (7, 5, 3)
+    assert arr.dtype == np.uint8
+
+
 #
 # policy_object kwarg regression
 #

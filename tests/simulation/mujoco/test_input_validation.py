@@ -697,3 +697,29 @@ class TestAddCameraParamValidation:
         )
         assert res["status"] == "success"
         assert "good" in sim_with_world._world.cameras
+
+
+# send_action ordered-vector normalization
+
+
+class TestSendActionVectorValidation:
+    """Pin send_action's ordered-vector contract.
+
+    send_action accepts either a ``{name: value}`` mapping or an ordered numeric
+    vector aligned with ``robot_action_keys``. A vector with a non-numeric entry
+    (e.g. a stray string) must fail with a structured error naming the offending
+    conversion, not raise past the tool boundary or coerce garbage downstream.
+    """
+
+    def test_non_numeric_entry_returns_structured_error(self, sim_with_robot):
+        keys = sim_with_robot.robot_action_keys("panda")
+        assert len(keys) >= 2, keys
+        bad_vector = [0.0, "not_a_number", *([0.0] * (len(keys) - 2))]
+        res = sim_with_robot.send_action(bad_vector)
+        assert res["status"] == "error", res
+        assert "non-numeric entry" in res["content"][0]["text"]
+
+    def test_numeric_vector_still_applies(self, sim_with_robot):
+        keys = sim_with_robot.robot_action_keys("panda")
+        res = sim_with_robot.send_action([0.0] * len(keys))
+        assert res["status"] == "success", res["content"][0]["text"]

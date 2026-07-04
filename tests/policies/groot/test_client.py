@@ -268,3 +268,84 @@ class TestZmqDeps:
 
         msgpack = require_optional("msgpack")
         assert hasattr(msgpack, "packb")
+
+
+# (section)
+# Gr00tInferenceClient - reconnect & ping success
+# (section)
+
+
+class TestReconnect:
+    def test_reconnect_replaces_socket_and_reconnects(self):
+        """reconnect() closes the old socket and connects a fresh one.
+
+        The new socket is a distinct object bound to the same host/port, so a
+        client can recover from a broken connection without being reconstructed
+        (host/port/timeout are preserved).
+        """
+        client = Gr00tInferenceClient(host="localhost", port=9999)
+        old_socket = client.socket
+
+        client.reconnect()
+
+        assert old_socket.closed is True
+        assert client.socket is not old_socket
+        assert client.socket.closed is False
+        assert client.host == "localhost"
+        assert client.port == 9999
+        client.socket.close(linger=0)
+
+    def test_reconnect_tolerates_close_failure(self):
+        """A failing close() on the stale socket must not abort reconnect.
+
+        The socket may already be dead/closed; reconnect swallows the close
+        error and still creates a working replacement socket.
+        """
+        client = Gr00tInferenceClient(host="localhost", port=9999)
+        client.socket.close(linger=0)  # dispose the real socket before swapping in a stub
+        stale = MagicMock()
+        stale.close.side_effect = RuntimeError("already closed")
+        client.socket = stale
+
+        client.reconnect()
+
+        stale.close.assert_called_once()
+        assert client.socket is not stale
+        assert client.socket.closed is False
+        client.socket.close(linger=0)
+
+
+class TestPingSuccess:
+    def test_ping_returns_true_when_server_responds(self):
+        """ping() returns True when call_endpoint completes without error."""
+        client = Gr00tInferenceClient(host="localhost", port=9999)
+        client.socket.send = MagicMock()
+        client.socket.recv = MagicMock(return_value=MsgSerializer.to_bytes({"status": "ok"}))
+        assert client.ping() is True
+        client.socket.close(linger=0)
+
+
+# (section)
+# MsgSerializer - hook passthrough contract
+# (section)
+
+
+class TestMsgSerializerPassthrough:
+    def test_encode_unknown_type_is_left_for_msgpack_to_reject(self):
+        """_encode returns unknown objects unchanged so msgpack raises TypeError.
+
+        The ``default=`` hook only handles ModalityConfig and ndarray; any other
+        non-native type must pass straight through, letting msgpack surface an
+        explicit TypeError rather than silently corrupting the payload.
+        """
+        with pytest.raises(TypeError):
+            MsgSerializer.to_bytes({"bad": {1, 2, 3}})  # a set is not msgpack-native
+
+    def test_decode_passthrough_non_dict(self):
+        """_decode is a no-op for non-dict values (the object_hook contract).
+
+        msgpack only invokes the hook for map values, but the guard keeps the
+        serializer safe if fed a scalar or list directly.
+        """
+        assert MsgSerializer._decode(42) == 42
+        assert MsgSerializer._decode([1, 2, 3]) == [1, 2, 3]

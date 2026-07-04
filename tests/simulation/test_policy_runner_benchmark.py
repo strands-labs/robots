@@ -735,7 +735,7 @@ class TestActionHorizon:
 
 
 class TestEvalSeeding:
-    """Round 38 (#168): ``_evaluate_with_spec`` calls ``_set_eval_seed``
+    """Round 38 (#168): ``_evaluate_with_spec`` calls ``set_eval_seed``
     once before the episode loop to seed Python / NumPy / torch / cuDNN
     so policy stochastic ops (e.g. sampling, dropout) are reproducible
     across re-runs.
@@ -749,37 +749,37 @@ class TestEvalSeeding:
     """
 
     def test_set_eval_seed_seeds_python_random(self):
-        """Round 38 (#168): ``_set_eval_seed`` seeds the Python ``random``
+        """Round 38 (#168): ``set_eval_seed`` seeds the Python ``random``
         module so two calls with the same seed produce the same draw.
 
         Pin the basic contract in case future refactors move the seeding
         out of the helper."""
         import random as _stdlib_random
 
-        from strands_robots.simulation.policy_runner import _set_eval_seed
+        from strands_robots.simulation.policy_runner import set_eval_seed
 
-        _set_eval_seed(42)
+        set_eval_seed(42)
         first = [_stdlib_random.random() for _ in range(5)]
-        _set_eval_seed(42)
+        set_eval_seed(42)
         second = [_stdlib_random.random() for _ in range(5)]
         assert first == second
 
     def test_set_eval_seed_seeds_numpy(self):
-        """Round 38 (#168): ``_set_eval_seed`` seeds NumPy's legacy
+        """Round 38 (#168): ``set_eval_seed`` seeds NumPy's legacy
         global RNG (``np.random.seed``). Pin so policies that use
         ``np.random.rand`` etc. are reproducible across re-runs."""
         import numpy as np
 
-        from strands_robots.simulation.policy_runner import _set_eval_seed
+        from strands_robots.simulation.policy_runner import set_eval_seed
 
-        _set_eval_seed(42)
+        set_eval_seed(42)
         first = np.random.rand(5).tolist()
-        _set_eval_seed(42)
+        set_eval_seed(42)
         second = np.random.rand(5).tolist()
         assert first == second
 
     def test_set_eval_seed_tolerates_missing_torch(self, monkeypatch):
-        """Round 38 (#168): ``_set_eval_seed`` no-ops the torch branch
+        """Round 38 (#168): ``set_eval_seed`` no-ops the torch branch
         when torch isn't importable (mock-policy / minimal-CI installs).
 
         Pin so the function works on installs without torch - the
@@ -787,7 +787,7 @@ class TestEvalSeeding:
         import builtins
         import sys
 
-        from strands_robots.simulation.policy_runner import _set_eval_seed
+        from strands_robots.simulation.policy_runner import set_eval_seed
 
         real_import = builtins.__import__
 
@@ -797,14 +797,14 @@ class TestEvalSeeding:
             return real_import(name, *args, **kwargs)
 
         # Drop any cached torch modules so the lazy import inside
-        # _set_eval_seed actually goes through fake_import.
+        # set_eval_seed actually goes through fake_import.
         for mod in list(sys.modules):
             if mod == "torch" or mod.startswith("torch."):
                 monkeypatch.delitem(sys.modules, mod, raising=False)
         monkeypatch.setattr(builtins, "__import__", fake_import)
 
         # Should not raise.
-        _set_eval_seed(42)
+        set_eval_seed(42)
 
     def test_evaluate_benchmark_re_run_yields_same_episode_count(self):
         """Round 38 (#168): re-running ``evaluate_benchmark`` with the
@@ -844,29 +844,26 @@ class TestEvalSeeding:
         assert spec_a.on_step_calls == spec_b.on_step_calls
 
     def test_set_eval_seed_is_public(self):
-        """#179 - ``set_eval_seed`` is part of the public API surface
+        """``set_eval_seed`` is the single public RNG-seeding entry point
         (no leading underscore, exported via ``__all__``).
 
-        Pre-#179 the function was named ``_set_eval_seed`` and only
-        invoked from ``_evaluate_with_spec``. Standalone integration
-        tests in ``tests_integ/.../test_libero_10_scene5_mujoco_engine_success_rate``
-        bypass ``evaluate_benchmark`` and need to call this directly to
-        get reproducible policy rollouts. Pin both the public name and
-        the backward-compat alias so neither rename breaks consumers
-        silently.
+        #179 renamed the helper to the public ``set_eval_seed`` (standalone
+        integration tests such as
+        ``tests_integ/.../test_libero_10_scene5_mujoco_engine_success_rate``
+        call it directly for reproducible rollouts). A private
+        ``_set_eval_seed`` back-compat alias lingered afterwards; it is
+        now removed so the module exposes exactly one name. Pin that
+        single-name contract: the private alias must not reappear.
         """
         from strands_robots.simulation import policy_runner
-        from strands_robots.simulation.policy_runner import (
-            _set_eval_seed,
-            set_eval_seed,
-        )
+        from strands_robots.simulation.policy_runner import set_eval_seed
 
         # Public function exists.
         assert callable(set_eval_seed)
-        # Backward-compat alias points at the same function.
-        assert _set_eval_seed is set_eval_seed
         # Exposed in __all__.
         assert "set_eval_seed" in policy_runner.__all__
+        # The private back-compat alias is gone (single public name only).
+        assert not hasattr(policy_runner, "_set_eval_seed")
 
     def test_set_eval_seed_torch_reproducibility(self):
         """#179 - ``set_eval_seed`` seeds torch's CPU + CUDA RNGs and

@@ -1004,9 +1004,10 @@ class TestBuilderEscapeHatchValidation:
             LerobotTrainer(device="cpu").build_command(spec)
 
     def test_build_config_rejects_relative_actions_for_unsupported_policy(self, dataset_root, tmp_path):
-        # Only the pi0 family exposes use_relative_actions; build_config must
-        # fail fast for any other policy rather than drop the flag silently
-        # (which would train an ordinary absolute-action policy unnoticed).
+        # act does not expose use_relative_actions (only the pi0 family and
+        # groot do); build_config must fail fast for such a policy rather than
+        # drop the flag silently (which would train an ordinary absolute-action
+        # policy unnoticed).
         pytest.importorskip("lerobot")
         spec = TrainSpec(
             dataset_root=dataset_root,

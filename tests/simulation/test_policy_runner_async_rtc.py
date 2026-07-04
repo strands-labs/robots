@@ -308,6 +308,39 @@ def test_async_rtc_auto_disabled_for_single_step_policy() -> None:
     assert result["content"][1]["json"]["rtc_async_enabled"] is False
 
 
+def test_async_overlap_enabled_but_seam_not_blended_for_non_rtc_chunk_policy() -> None:
+    """Overlap auto-enable and RTC seam-blending are independent capabilities.
+
+    ``run_policy``'s docstring distinguishes two things that a reader can easily
+    conflate: the async OVERLAP (latency masking, auto-enabled for *any*
+    chunk-emitting policy via ``is_chunk_emitting()``) and RTC SEAM BLENDING (a
+    checkpoint-level property, ``supports_rtc``, that joins consecutive chunks
+    smoothly and requires an enabled ``rtc_config``). A chunk-emitting policy
+    that does NOT support RTC - the shape of the public ``lerobot/smolvla_base``
+    checkpoint (``rtc_config=None``), MolmoAct2 (no ``rtc_config``), ACT and
+    diffusion - must still get the overlap, but its seam is a plain chunk swap,
+    not a blended one. This pins that ``rtc_async_enabled`` can be ``True`` while
+    ``supports_rtc`` is ``False``, so the two never get collapsed back together.
+    """
+    sim = _CountingSim(exec_sleep=_EXEC_SLEEP)
+    policy = _ChunkPolicy(sim)
+    policy.set_robot_state_keys(sim.robot_joint_names("arm"))
+
+    # A plain chunk emitter declares no RTC support (no enabled rtc_config).
+    assert getattr(policy, "supports_rtc", False) is False
+    assert policy.is_chunk_emitting() is True
+
+    result = PolicyRunner(sim).run(
+        "arm", policy, duration=16 / 50.0, control_frequency=50.0, action_horizon=_CHUNK, fast_mode=True
+    )
+    assert result["status"] == "success"
+    telem = result["content"][1]["json"]
+    # Overlap auto-enabled (latency masking) ...
+    assert telem["rtc_async_enabled"] is True
+    # ... yet the policy still reports no internal RTC seam blending.
+    assert getattr(policy, "supports_rtc", False) is False
+
+
 # --- telemetry block ------------------------------------------------------
 
 _RTC_KEYS = {

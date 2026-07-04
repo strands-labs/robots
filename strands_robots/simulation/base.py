@@ -1610,6 +1610,9 @@ class SimEngine(ABC):
         action_horizon: int = 8,
         on_frame: Callable[[int, dict[str, Any], dict[str, Any]], None] | None = None,
         policy_kwargs: dict[str, Any] | None = None,
+        control_frequency: float = 50.0,
+        control_substeps: int | None = None,
+        policy_object: Policy | None = None,
     ) -> dict[str, Any]:
         """Run a registered :class:`BenchmarkProtocol` against the current sim.
 
@@ -1670,6 +1673,27 @@ class SimEngine(ABC):
                 (``target_velocity`` / ``target_pose`` / ``target_joints`` /
                 ``world_update``); a benchmark that drives such a policy must
                 pass them or the policy runs with an empty goal.
+            control_frequency: Target Hz for ``policy.get_actions`` calls, used
+                to derive the physics substeps executed per action
+                (``round(1 / control_frequency / physics_timestep)``) so the
+                benchmark loop steps a full control period per action. Must be
+                ``> 0``; a non-positive value is rejected with a structured
+                error. Defaults to ``50.0`` (same default as :meth:`eval_policy`).
+                Set it to the rate the policy was trained/evaluated at - a
+                benchmark's ``max_steps`` maps to a wall-clock episode length
+                that depends on this rate, so a mismatched frequency changes the
+                effective episode horizon.
+            control_substeps: Explicit physics substeps per action, overriding
+                the ``control_frequency``-derived value (mirrors
+                :meth:`eval_policy`). ``None`` (default) derives it from
+                ``control_frequency``.
+            policy_object: An already-built :class:`Policy` to evaluate,
+                skipping the ``create_policy`` round-trip (mirrors
+                :meth:`run_policy` / :meth:`eval_policy`). Use it to benchmark a
+                checkpoint you have already loaded - e.g. a multi-GB VLA - once
+                per process instead of reloading it on every benchmark call.
+                When ``None`` the policy is built from ``policy_provider`` /
+                ``policy_config``.
 
         Returns:
             Standard status dict. On success, carries per-episode cumulative
@@ -1682,6 +1706,8 @@ class SimEngine(ABC):
         if err := self._validate_action_horizon(action_horizon, "evaluate_benchmark"):
             return err
         if err := self._validate_positive_int(n_episodes, "n_episodes", "evaluate_benchmark"):
+            return err
+        if err := self._validate_positive_frequency(control_frequency, "evaluate_benchmark"):
             return err
 
         spec = get_benchmark(benchmark_name)
@@ -1730,7 +1756,13 @@ class SimEngine(ABC):
                 "content": [{"text": f"Robot '{resolved_robot}' not found. Loaded: {robots}"}],
             }
 
-        policy = create_policy(policy_provider, **(policy_config or {}))
+        if policy_object is None:
+            policy = create_policy(policy_provider, **(policy_config or {}))
+        else:
+            # Pre-built policy path - mirror run_policy / eval_policy. Lets a
+            # caller benchmark an already-loaded checkpoint (e.g. a multi-GB
+            # VLA) without a create_policy round-trip / redundant reload.
+            policy = policy_object
         policy.set_robot_state_keys(self.robot_action_keys(resolved_robot))
         self.bind_policy_sim_context(policy, resolved_robot)
 
@@ -1742,6 +1774,8 @@ class SimEngine(ABC):
             spec=spec,
             seed=seed,
             action_horizon=action_horizon,
+            control_frequency=control_frequency,
+            control_substeps=control_substeps,
             on_frame=on_frame,
             policy_kwargs=policy_kwargs,
         )

@@ -63,20 +63,19 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 
 logger = logging.getLogger(__name__)
 
-# LeRobot-native policy types (draccus --policy.type values / make_policy_config
-# keys). Mirrors the verified vla-ft POLICY_MAP; values pass straight through.
-_LEROBOT_POLICY_TYPES = {
-    "act",
-    "diffusion",
-    "vqbet",
-    "tdmpc",
-    "smolvla",
-    "pi0",
-    "pi05",
-    "pi0_fast",
-    "groot",
-    "xvla",
-}
+# LeRobot-native policy types. Parity with lerobot is DYNAMIC, not a hardcoded
+# list: the live set is read from lerobot's ``PreTrainedConfig`` draccus
+# ChoiceRegistry (see :func:`_lerobot_policy_types`) - the same zero-maintenance
+# discovery reward models / robots / teleops / cameras already use. Any policy
+# lerobot ships (act, smolvla, the pi0 family, groot, xvla, and newer additions
+# such as eo1, evo1, lingbot_va, molmoact2, wall_x, ...) or a plugin registers is
+# reachable with no change here. The static set below is the FALLBACK used ONLY
+# when lerobot's registry is unavailable (lerobot not importable), where training
+# cannot run anyway but ``validate()`` should still produce a useful offline
+# message.
+_LEROBOT_POLICY_TYPES_FALLBACK = frozenset(
+    {"act", "diffusion", "vqbet", "tdmpc", "smolvla", "pi0", "pi05", "pi0_fast", "groot", "xvla"}
+)
 
 _SUPPORTED_METHODS = {"full", "lora", "expert_only"}
 
@@ -84,8 +83,10 @@ _SUPPORTED_METHODS = {"full", "lora", "expert_only"}
 # relative-action processor pair: a RelativeActionsProcessorStep on the input
 # side and the matching AbsoluteActionsProcessorStep on the output side, both
 # built from ``config.use_relative_actions`` and saved into the checkpoint's
-# pre/post processors). Other policy types have no such field.
-_RELATIVE_ACTION_POLICY_TYPES = {"pi0", "pi05", "pi0_fast"}
+# pre/post processors). Discovered live per policy type off the config class
+# (see :func:`_policy_supports_relative_actions`); the static set is the offline
+# FALLBACK. Currently the pi0 family and groot expose the field.
+_RELATIVE_ACTION_POLICY_TYPES_FALLBACK = frozenset({"pi0", "pi05", "pi0_fast", "groot"})
 
 # RA-BC (Reward-Aligned Behavior Cloning) is surfaced to the agent through the
 # ``extra['sample_weighting']`` dict. lerobot >= 0.5.2 configures sample
@@ -123,6 +124,47 @@ _REWARD_MODEL_FIELDS_FALLBACK = frozenset({"annotation_mode", "image_key", "stat
 # SARM annotation modes (configuration_sarm.SARMConfig.annotation_mode):
 # ``single_stage`` needs NO annotations (linear progress over the episode).
 _SARM_ANNOTATION_MODES = {"single_stage", "dense_only", "dual"}
+
+
+def _policy_registry() -> dict[str, type] | None:
+    """Live ``PreTrainedConfig`` ChoiceRegistry (policy_type -> config class), or
+    ``None`` when lerobot is unavailable.
+
+    Importing ``lerobot.policies`` runs each config module's
+    ``@PreTrainedConfig.register_subclass`` decorator, which is what populates
+    the draccus ChoiceRegistry - querying it before that import yields an empty
+    mapping, so the import is the load-bearing step (mirrors
+    :func:`_reward_registry`). Returns ``None`` when lerobot is not importable.
+    """
+    try:
+        import lerobot.policies  # noqa: F401  (import for register_subclass side effect)
+        from lerobot.configs.policies import PreTrainedConfig
+    except ImportError:
+        return None
+    return dict(PreTrainedConfig.get_known_choices())
+
+
+def _lerobot_policy_types() -> set[str]:
+    """LeRobot-native ``policy.type`` names (live registry, else static fallback)."""
+    reg = _policy_registry()
+    if reg is None:
+        return set(_LEROBOT_POLICY_TYPES_FALLBACK)
+    return set(reg)
+
+
+def _policy_supports_relative_actions(ptype: str) -> bool:
+    """Whether ``ptype``'s lerobot config exposes ``use_relative_actions``.
+
+    Probed live off the registry's config *class* (a dataclass field lookup, no
+    instantiation - so no device warnings or construction cost), so any policy
+    lerobot adds with relative-action support is recognized with zero per-type
+    maintenance. Falls back to the documented static set when lerobot's registry
+    is unavailable offline.
+    """
+    reg = _policy_registry()
+    if reg is not None and ptype in reg:
+        return any(f.name == "use_relative_actions" for f in dataclasses.fields(reg[ptype]))
+    return ptype in _RELATIVE_ACTION_POLICY_TYPES_FALLBACK
 
 
 def _reward_registry() -> dict[str, type] | None:
@@ -339,9 +381,11 @@ class LerobotTrainer(Trainer):
         pipeline) restores the inverse decode automatically - no separate
         inference-side wiring is needed.
 
-        Only ``pi0`` / ``pi05`` / ``pi0_fast`` expose ``use_relative_actions``;
-        :meth:`validate` rejects the flag for any other policy type rather than
-        letting it become a silent no-op.
+        Only some policy configs expose ``use_relative_actions`` (currently the
+        ``pi0`` family and ``groot``); the supported set is discovered live from
+        lerobot's registry (:func:`_policy_supports_relative_actions`), and
+        :meth:`validate` rejects the flag for any policy type whose config lacks
+        the field rather than letting it become a silent no-op.
         """
         return bool(spec.extra.get("relative_actions", False))
 
@@ -443,9 +487,9 @@ class LerobotTrainer(Trainer):
         """Policy-training preflight (the default, ``cfg.policy`` path)."""
         problems: list[str] = []
         ptype = self._resolve_policy_type(spec)
-        if ptype not in _LEROBOT_POLICY_TYPES:
+        if ptype not in _lerobot_policy_types():
             problems.append(
-                f"policy_type '{ptype}' is not LeRobot-native (expected one of {sorted(_LEROBOT_POLICY_TYPES)})"
+                f"policy_type '{ptype}' is not LeRobot-native (expected one of {sorted(_lerobot_policy_types())})"
             )
 
         if spec.method not in _SUPPORTED_METHODS:
@@ -453,11 +497,12 @@ class LerobotTrainer(Trainer):
         if spec.method == "lora" and spec.tune.get("expert_only"):
             problems.append("lora and expert_only are mutually exclusive (both freeze the VLM)")
 
-        if self._relative_actions(spec) and ptype not in _RELATIVE_ACTION_POLICY_TYPES:
+        if self._relative_actions(spec) and not _policy_supports_relative_actions(ptype):
+            supported = sorted(t for t in _lerobot_policy_types() if _policy_supports_relative_actions(t))
             problems.append(
                 f"relative_actions is not supported by policy_type '{ptype}' "
-                f"(only {sorted(_RELATIVE_ACTION_POLICY_TYPES)} expose use_relative_actions); "
-                "drop extra['relative_actions'] or pick a pi0-family policy"
+                f"(only {supported} expose use_relative_actions); "
+                "drop extra['relative_actions'] or pick a supporting policy"
             )
 
         sw = spec.extra.get("sample_weighting")
@@ -743,9 +788,10 @@ class LerobotTrainer(Trainer):
             policy_cfg.optimizer_lr = spec.learning_rate
         if self._relative_actions(spec):
             if not hasattr(policy_cfg, "use_relative_actions"):
+                rel_supported = sorted(t for t in _lerobot_policy_types() if _policy_supports_relative_actions(t))
                 raise ValueError(
                     f"relative_actions requested but policy_type '{ptype}' has no "
-                    f"use_relative_actions field (supported: {sorted(_RELATIVE_ACTION_POLICY_TYPES)})"
+                    f"use_relative_actions field (supported: {rel_supported})"
                 )
             policy_cfg.use_relative_actions = True
 

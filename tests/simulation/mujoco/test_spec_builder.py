@@ -852,3 +852,129 @@ class TestFromSources:
         spec = SpecBuilder.from_file(str(p))
         model = spec.compile()
         assert mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "y") >= 0
+
+
+# MjSpec accessor-drift resilience (defensive branches)
+
+
+class _RecordingBody:
+    """A minimal ``MjsBody``-like stub that records ``add_camera`` calls.
+
+    Only the attributes ``SpecBuilder.add_camera`` touches are implemented:
+    a ``name`` and an ``add_camera(**kwargs)`` sink. This lets the fallback
+    body-scan branch be asserted by its observable effect (the camera landing
+    on the intended parent) rather than by inspecting internal state.
+    """
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+        self.added_cameras: list[dict] = []
+
+    def add_camera(self, **kwargs) -> None:
+        self.added_cameras.append(kwargs)
+
+
+class _StubSpec:
+    """A tiny ``MjSpec``-like stub with configurable accessor behaviour.
+
+    ``SpecBuilder``'s mutation helpers defensively handle two MjSpec API
+    shapes that differ across mujoco versions: a typed accessor
+    (``spec.body(name)`` / ``spec.mesh(name)``) that either returns ``None``
+    for a missing name OR raises ``KeyError``/``ValueError``. Current mujoco
+    returns ``None``, so the raising branch is never taken with a real spec;
+    this stub drives it deterministically.
+
+    Args:
+        bodies: bodies enumerable via ``spec.bodies`` (the fallback scan).
+        body_raises: if True, ``body()`` raises ``KeyError`` (drift shape).
+        body_hidden: if True, ``body()`` always returns ``None`` even for a
+            name present in ``bodies`` - mirrors a post-``spec.attach()`` body
+            that the typed accessor cannot resolve yet but which is enumerable.
+        mesh_raises: if True, ``mesh()`` raises ``ValueError`` (drift shape).
+        cameras: value returned for the ``cameras`` attribute (``None`` models
+            an MjSpec build that never exposes the camera list).
+    """
+
+    def __init__(
+        self,
+        *,
+        bodies=(),
+        body_raises: bool = False,
+        body_hidden: bool = False,
+        mesh_raises: bool = False,
+        cameras=(),
+    ) -> None:
+        self._bodies = list(bodies)
+        self._body_raises = body_raises
+        self._body_hidden = body_hidden
+        self._mesh_raises = mesh_raises
+        self.cameras = cameras
+        self.worldbody = _RecordingBody("world")
+        self.deleted: list = []
+
+    def body(self, name: str):
+        if self._body_raises:
+            raise KeyError(name)
+        if self._body_hidden:
+            return None
+        for b in self._bodies:
+            if b.name == name:
+                return b
+        return None
+
+    @property
+    def bodies(self):
+        return self._bodies
+
+    def mesh(self, name: str):
+        if self._mesh_raises:
+            raise ValueError(name)
+        return None
+
+    def delete(self, obj) -> None:  # pragma: no cover - not reached in these paths
+        self.deleted.append(obj)
+
+
+class TestSpecAccessorDriftResilience:
+    """SpecBuilder mutation helpers stay safe when the backing MjSpec accessor
+    raises ``KeyError``/``ValueError`` instead of returning ``None``, and mount
+    a camera on a body that only the enumeration (not the typed accessor)
+    can resolve. These defensive branches are dead on mujoco versions whose
+    accessors return ``None``, so they are pinned here to guard against a
+    well-meaning "remove the unreachable except" regression."""
+
+    def test_remove_body_returns_false_when_accessor_raises(self):
+        spec = _StubSpec(body_raises=True)
+        assert SpecBuilder.remove_body(spec, "anything") is False
+        assert spec.deleted == []
+
+    def test_remove_mesh_returns_false_when_accessor_raises(self):
+        spec = _StubSpec(mesh_raises=True)
+        assert SpecBuilder.remove_mesh(spec, "mesh_thing") is False
+        assert spec.deleted == []
+
+    def test_remove_camera_returns_false_when_camera_list_absent(self):
+        spec = _StubSpec(cameras=None)
+        assert SpecBuilder.remove_camera(spec, "cam") is False
+
+    def test_add_camera_raises_actionable_error_when_accessor_raises(self):
+        spec = _StubSpec(body_raises=True)
+        with pytest.raises(ValueError, match="parent_body"):
+            SpecBuilder.add_camera(
+                spec,
+                SimCamera(name="wrist", position=[0, 0, 0.1], target=[0, 0, 0], parent_body="ghost"),
+            )
+
+    def test_add_camera_mounts_on_body_found_only_by_fallback_scan(self):
+        gripper = _RecordingBody("so101/gripper")
+        # body_hidden: the typed accessor cannot resolve the parent (as with a
+        # freshly attached robot body) but it is present in ``spec.bodies``.
+        spec = _StubSpec(bodies=[gripper], body_hidden=True)
+        SpecBuilder.add_camera(
+            spec,
+            SimCamera(name="wrist", position=[0, 0, 0.1], target=[0, 0, 0], parent_body="so101/gripper"),
+        )
+        assert len(gripper.added_cameras) == 1
+        assert gripper.added_cameras[0]["name"] == "wrist"
+        # The camera went to the scanned parent, not the worldbody fallback.
+        assert spec.worldbody.added_cameras == []

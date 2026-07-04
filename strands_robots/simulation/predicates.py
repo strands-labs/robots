@@ -463,13 +463,39 @@ def _body_upright(body: str, tol: float = 0.15) -> BoolPredicate:
     return check
 
 
+def _geom_belongs_to_body(geom: str, body: str) -> bool:
+    """True when geom name ``geom`` is one of ``body``'s geoms.
+
+    Handles the geom-naming conventions across the supported scene sources:
+
+    - exact ``body`` (single-geom scenes whose geom is named after the body),
+    - ``<body>_geom`` (strands :meth:`add_object`), and
+    - ``<body>_g<idx>`` (LIBERO / robosuite multi-geom objects).
+
+    The ``<body>_g`` prefix subsumes both ``<body>_geom`` and ``<body>_g<idx>``;
+    it mirrors the prefix :func:`_body_contact` uses so contact-based
+    predicates agree on what counts as a body's geom. The ``_g`` boundary
+    keeps distinct names apart (``cube_1_g`` does not match ``cube_10_g0``).
+    """
+    return geom == body or geom.startswith(f"{body}_g")
+
+
 def _grasped(body: str, gripper_prefix: str) -> BoolPredicate:
     """True when ``body`` is in contact with any geom whose name starts with ``gripper_prefix``.
 
     Treats the gripper as a *set* of geoms (fingers, pads, tip sites) so
     the caller only has to specify the common prefix - e.g. ``"robot0_gripper"``
     for Panda covers both fingers. A body is "grasped" as long as any one
-    gripper geom is in contact with any geom matching the body name.
+    gripper geom is in contact with any geom belonging to ``body``.
+
+    Body-geom matching follows the same naming conventions as
+    :func:`_body_contact`, so ``grasped`` fires on real LIBERO/robosuite
+    scenes (where a BDDL object ``cube_1`` owns collision geoms
+    ``cube_1_g0`` / ``cube_1_g1`` ...) as well as on strands-native
+    ``add_object`` scenes (``<body>_geom``) and single-geom scenes whose
+    geom is named exactly after the body. Previously only the exact
+    ``body`` / ``<body>_geom`` names matched, so ``(grasped cube_1)`` BDDL
+    goals silently never fired on LIBERO scenes.
 
     Backends must implement ``get_contacts()`` returning the MuJoCo
     ``{"contacts": [{"geom1", "geom2", ...}]}`` shape. Other backends are
@@ -494,9 +520,15 @@ def _grasped(body: str, gripper_prefix: str) -> BoolPredicate:
                 continue
             g1 = c.get("geom1") or ""
             g2 = c.get("geom2") or ""
-            # One side must be the grasped body (bare name or "_geom" suffix);
-            # the other must start with the gripper prefix.
-            body_match = {g1, g2} & {body, f"{body}_geom"}
+            # One side must be a geom of the grasped body; the other must
+            # start with the gripper prefix. Match the body's geoms across
+            # the naming conventions in play: an exact ``body`` name, the
+            # strands ``add_object`` ``<body>_geom`` name, and the
+            # LIBERO/robosuite ``<body>_g<idx>`` multi-geom convention
+            # (``<body>_geom`` is itself covered by the ``<body>_g`` prefix).
+            # This mirrors :func:`_body_contact`'s prefix matching so a
+            # LIBERO ``(grasped cube_1)`` goal fires on ``cube_1_g0`` etc.
+            body_match = _geom_belongs_to_body(g1, body) or _geom_belongs_to_body(g2, body)
             gripper_match = any(isinstance(g, str) and g.startswith(gripper_prefix) for g in (g1, g2))
             if body_match and gripper_match:
                 return True

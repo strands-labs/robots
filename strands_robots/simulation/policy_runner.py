@@ -119,12 +119,6 @@ def set_eval_seed(seed: int) -> None:
         pass
 
 
-# Backward-compatibility alias for the pre-#179 private name. Internal
-# callers (this module's :class:`PolicyRunner`) still use it; the public
-# :func:`set_eval_seed` is the supported entry point.
-_set_eval_seed = set_eval_seed
-
-
 # Hook signature: called every control step after send_action.
 # on_frame(step_idx, observation, action) -> None
 OnFrame = Callable[[int, dict[str, Any], dict[str, Any]], None]
@@ -141,8 +135,12 @@ def _extract_frame_ndarray(render_result: dict) -> np.ndarray | None:
     ``{"image": {"format": "png", "source": {"bytes": <str|bytes>}}}``.
     The ``bytes`` field may contain raw bytes (legacy) or a base64-encoded
     string (current). This helper walks that structure, decodes the PNG,
-    and returns a (H, W, 3|4) numpy array. Returns ``None`` if no image is
-    found - the recorder then skips the frame rather than aborting the rollout.
+    and returns a contiguous (H, W, 3) RGB numpy array - the source is
+    always run through ``PIL.Image.convert("RGB")`` so any alpha channel
+    is dropped and the shape is a fixed 3-channel array. Returns ``None``
+    if no decodable image is found (missing/malformed content blocks, an
+    empty ``bytes`` field, or a PNG that fails to decode) - the recorder
+    then skips the frame rather than aborting the rollout.
     """
     if not isinstance(render_result, dict):
         return None
@@ -191,7 +189,10 @@ class VideoConfig:
             separators, shell metacharacters, or symlinked target) before a
             writer is opened; set ``STRANDS_ROBOTS_VIDEO_ROOT`` to confine it
             to a sandbox.
-        fps: Frames per second to write.
+        fps: Frames per second to write. Capped at ``control_frequency``
+            when it would exceed it, so the rollout always plays back at
+            real time (a rollout renders at most one frame per control
+            step and cannot be up-sampled).
         camera: Camera name to render from. ``None`` → backend default.
         width: Render width in pixels.
         height: Render height in pixels.
@@ -312,8 +313,30 @@ class _RolloutVideoWriter:
             purpose="video recording",
         )
         os.makedirs(os.path.dirname(os.path.abspath(resolved)), exist_ok=True)
+        # A rollout renders at most one frame per applied control step, so the
+        # video cannot carry more than ``control_frequency`` unique frames per
+        # second of sim time. When the requested ``fps`` exceeds
+        # ``control_frequency`` the capture cadence still grabs every step (it
+        # cannot up-sample), so writing the MP4 at the requested ``fps`` would
+        # play the rollout back FASTER than real time (by ``fps /
+        # control_frequency``). Cap the writer fps at ``control_frequency`` so
+        # the rollout always plays back at real time. When ``fps <=
+        # control_frequency`` the capture cadence down-samples and the video is
+        # already real time at the requested ``fps`` (unchanged).
+        write_fps = video.fps
+        if control_frequency > 0 and video.fps > control_frequency:
+            write_fps = max(1, round(control_frequency))
+            logger.warning(
+                "Video fps=%d exceeds control_frequency=%.1f Hz; a rollout can "
+                "render at most one frame per control step, so the MP4 is "
+                "written at %d fps to play back at real time (requesting a "
+                "higher fps would only speed the video up).",
+                video.fps,
+                control_frequency,
+                write_fps,
+            )
         writer = imageio.get_writer(  # type: ignore[attr-defined]
-            resolved, fps=video.fps, quality=8, macro_block_size=1
+            resolved, fps=write_fps, quality=8, macro_block_size=1
         )
         return cls(sim, video, writer, resolved, control_frequency), None
 
@@ -719,11 +742,18 @@ class PolicyRunner:
                 latency is at most the chunk's execution time then pays
                 (almost) zero visible stall at the chunk seam - the same way an
                 async real-time controller hides inference latency on real
-                hardware. RTC-capable policies (pi0, pi0.5, SmolVLA, MolmoAct2)
-                blend the seam internally through their own prev-chunk state
-                (``rtc_config.execution_horizon``); this flag only schedules the
-                overlap and never touches the policy's RTC machinery, so it is
-                provider-agnostic. ``False`` keeps the historical
+                hardware. Whether the chunk SEAM is additionally blended is a
+                separate, checkpoint-level property (``supports_rtc``): a policy
+                loaded from a checkpoint with an enabled ``rtc_config`` (e.g.
+                pi0 / pi0.5, or a SmolVLA checkpoint configured for RTC) carries
+                prev-chunk state across the seam and joins consecutive chunks
+                smoothly, whereas a chunk-emitting policy WITHOUT an
+                ``rtc_config`` - MolmoAct2, ACT, diffusion, and the public
+                ``lerobot/smolvla_base`` checkpoint - gets the overlap (latency
+                masking) but a plain chunk swap at the seam. This flag only
+                schedules the overlap; it never enables or touches the policy's
+                RTC machinery, so it is provider-agnostic. ``False`` keeps the
+                historical
                 synchronous chunk-then-drain loop, which is correct for
                 single-step policies and any policy whose ``get_actions`` reads
                 live sim state. ``None`` (default) auto-resolves the flag from
@@ -1996,7 +2026,7 @@ class PolicyRunner:
         # Per-episode reproducibility still flows through ``episode_rng``
         # below for the spec's per-episode RNG-driven init / jitter.
         if seed is not None:
-            _set_eval_seed(seed)
+            set_eval_seed(seed)
         master_rng = random.Random(seed)
         spec_name = type(spec).__name__
         max_steps = spec.max_steps

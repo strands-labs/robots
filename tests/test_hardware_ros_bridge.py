@@ -551,3 +551,17 @@ def test_inert_safety_config_without_bridge_is_rejected(fake_ros: dict[str, Any]
     hw = _make_robot({"j0.pos": 0.0})
     with pytest.raises(ValueError, match="require ros2_bridge=True"):
         hw._init_ros_bridge(ros2_bridge=False, joint_limits={"j0.pos": (-1.0, 1.0)})
+
+
+def test_init_ros_bridge_rejects_unknown_transport(fake_ros: dict[str, Any]) -> None:
+    """``_init_ros_bridge`` guards the transport itself, not just ``__init__``.
+
+    ``__init__`` validates the transport up front via ``_check_ros2_bridge_deps``,
+    but ``_init_ros_bridge`` is a public plain method the test doubles (and any
+    future re-init path) call directly. It must reject an unknown transport with
+    the documented message before it tries to import a bridge backend, rather
+    than fail later with an opaque ImportError.
+    """
+    hw = _make_robot({"j0.pos": 0.0})
+    with pytest.raises(ValueError, match="must be 'rclpy' or 'rtps'"):
+        hw._init_ros_bridge(ros2_bridge=True, ros2_transport="zenoh")

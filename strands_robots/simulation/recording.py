@@ -171,7 +171,7 @@ class DatasetRecordingMixin:
             bucket: If set (e.g. ``"my-org/robot-fave"``), sync the dataset into
                 a mutable HF Storage Bucket instead of/in addition to the dataset
                 repo - the Phase 1/2 collection target (Xet-deduped, overwrite in
-                place). See reports/STREAMING_DATA_LOOP_DEEP_DIVE.md §2.4 / App. A.
+                place).
             run_id: Optional subpath inside the bucket (defaults to dataset name).
         """
         if self._world is None or not self._world._backend_state.get("recording", False):
@@ -246,7 +246,7 @@ class DatasetRecordingMixin:
         root = recorder.root
 
         # Finalize FIRST so meta/ (stats/info) is written before any bucket sync
-        # - streaming/training downstream needs it (App. F.2).
+        # - streaming/training downstream needs it.
         recorder.finalize()
 
         # #708 - parquet-truth gate. The recorder's ``episode_count`` is the
@@ -445,7 +445,7 @@ class DatasetRecordingMixin:
         READS one back lazily for eval / replay / inspection (Phase 3 of the
         physical-AI data loop). Training scripts can instead use
         ``python -m lerobot.scripts.train dataset.streaming=true`` which uses
-        the same underlying StreamingLeRobotDataset (deep-dive Appendix D).
+        the same underlying StreamingLeRobotDataset.
 
         Args:
             repo_id: HF dataset id (e.g. ``"lerobot/svla_so100_pickplace"``) or

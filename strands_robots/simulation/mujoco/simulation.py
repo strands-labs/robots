@@ -1284,7 +1284,9 @@ class MuJoCoSimEngine(
         # instead of guessing method names.
         base["methods"]["start_recording"] = (
             "(repo_id='local/sim_recording', task='', fps=30, root=None, "
-            "push_to_hub=False, vcodec='h264', overwrite=False) -> dict"
+            "push_to_hub=False, vcodec='h264', overwrite=False, cameras=None) -> dict  "
+            "(cameras= scopes the recorded LeRobotDataset to a subset of the "
+            "scene's cameras; None records every camera)"
         )
         base["methods"]["save_episode"] = (
             "() -> dict  (flush current rollout as one episode; call once per "
@@ -1298,6 +1300,54 @@ class MuJoCoSimEngine(
             "(expected: int) -> dict  (after stop_recording, read the parquet "
             "and confirm the dataset holds exactly `expected` episodes; "
             "status=error on mismatch)"
+        )
+
+        # Physics-introspection / grounding surface. The discovery surface
+        # teaches how to build a scene, run a policy, and record a dataset, but
+        # previously gave no way to discover how to READ the physics result --
+        # so an agent that ran a rollout could not learn how to verify it (read
+        # a body's world pose, check whether the gripper is in contact, query a
+        # sensor) without guessing method names. These are public MuJoCo methods
+        # the tool spec + action dispatcher already expose; listing them here
+        # lets one describe() call reveal the read/verify surface alongside the
+        # act/record surface.
+        base["methods"]["get_body_state"] = (
+            "(body_name: str) -> dict  # world pose (xpos/xquat/xmat) + linear "
+            "and angular velocity of a body; ground grasp/lift/move claims on "
+            "this delta, not on a caption"
+        )
+        base["methods"]["forward_kinematics"] = (
+            "(body_name: str | None = None) -> dict  # world poses of every "
+            "body (or one) computed from the current qpos"
+        )
+        base["methods"]["get_contacts"] = (
+            "() -> dict  # active geom-geom contacts at the current step (verify a grasp / detect a collision)"
+        )
+        base["methods"]["get_contact_forces"] = "() -> dict  # per-contact normal + friction force magnitudes"
+        base["methods"]["get_sensor_data"] = (
+            "(sensor_name: str | None = None) -> dict  # MuJoCo sensor readouts "
+            "(jointpos/jointvel, accelerometer, gyro, force, torque, touch, "
+            "rangefinder, framequat, ...)"
+        )
+        base["methods"]["get_energy"] = "() -> dict  # kinetic + potential energy of the system"
+        base["methods"]["get_mass_matrix"] = "() -> dict  # joint-space inertia matrix M(q)"
+        base["methods"]["inverse_dynamics"] = (
+            "() -> dict  # gravity + Coriolis/bias compensation torques for the "
+            "current pose (mj_inverse at zero desired acceleration)"
+        )
+        base["methods"]["get_jacobian"] = (
+            "(body_name=None, site_name=None, geom_name=None) -> dict  # "
+            "translational + rotational Jacobian of a body/site/geom for IK/control"
+        )
+        base["methods"]["get_total_mass"] = "() -> dict  # total mass of the model"
+        base["methods"]["raycast"] = (
+            "(origin: list[float], direction: list[float], exclude_body=-1, "
+            "include_static=True) -> dict  # first geom hit along a world-frame "
+            "ray + hit distance"
+        )
+        base["methods"]["multi_raycast"] = (
+            "(origin: list[float], directions: list[list[float]], "
+            "exclude_body=-1) -> dict  # batch raycast from one origin (e.g. a lidar fan)"
         )
 
         if self._world is not None:

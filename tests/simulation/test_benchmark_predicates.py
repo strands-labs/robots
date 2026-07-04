@@ -455,6 +455,47 @@ class TestGrasped:
         pred = make_predicate("grasped", body="cube", gripper_prefix="robot0_gripper")
         assert pred(sim) is False
 
+    def test_detects_libero_multi_geom_object(self):
+        # LIBERO / robosuite name a BDDL object ``cube_1``'s collision
+        # geoms ``cube_1_g0`` / ``cube_1_g1`` ... (the same ``<body>_g<idx>``
+        # convention _body_contact matches). ``(grasped cube_1)`` must fire
+        # when a gripper geom touches such a geom - previously it silently
+        # returned False because only exact ``cube_1`` / ``cube_1_geom``
+        # names were matched.
+        sim = _ContactSim(
+            [
+                {"geom1": "robot0_gripper_finger_l", "geom2": "cube_1_g0"},
+            ]
+        )
+        pred = make_predicate("grasped", body="cube_1", gripper_prefix="robot0_gripper")
+        assert pred(sim) is True
+
+    def test_detects_libero_multi_geom_object_higher_index(self):
+        sim = _ContactSim(
+            [
+                {"geom1": "cube_1_g3", "geom2": "robot0_gripper_finger_r"},
+            ]
+        )
+        pred = make_predicate("grasped", body="cube_1", gripper_prefix="robot0_gripper")
+        assert pred(sim) is True
+
+    def test_detects_bare_body_geom_name(self):
+        # A single-geom scene whose geom is named exactly after the body.
+        sim = _ContactSim([{"geom1": "cube", "geom2": "robot0_gripper_pad"}])
+        pred = make_predicate("grasped", body="cube", gripper_prefix="robot0_gripper")
+        assert pred(sim) is True
+
+    def test_prefix_does_not_bleed_across_distinct_bodies(self):
+        # ``cube_1`` must not match ``cube_10``'s geoms - the ``_g`` boundary
+        # keeps distinct names apart.
+        sim = _ContactSim(
+            [
+                {"geom1": "robot0_gripper_finger_l", "geom2": "cube_10_g0"},
+            ]
+        )
+        pred = make_predicate("grasped", body="cube_1", gripper_prefix="robot0_gripper")
+        assert pred(sim) is False
+
 
 # Degradation / defensive contract
 #

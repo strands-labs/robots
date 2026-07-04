@@ -13,11 +13,13 @@ import pytest
 
 from strands_robots.mesh.transport.bridge_transport import (
     _DEFAULT_BRIDGE_PREFIX_SUFFIXES,
+    _DEFAULT_DEDUP_TTL_S,
     DEFAULT_BRIDGE_SUFFIXES,
     BridgeTransport,
     _BridgeSubHandle,
     _resolve_bridge_filter,
     _resolve_bridge_prefix_filter,
+    _resolve_dedup_ttl,
     _should_bridge,
     _topic_suffix,
 )
@@ -79,6 +81,58 @@ class TestEnvFilter:
     def test_unset_env_uses_default(self, monkeypatch):
         monkeypatch.delenv("STRANDS_MESH_BRIDGE_TOPICS", raising=False)
         assert _resolve_bridge_filter() == DEFAULT_BRIDGE_SUFFIXES
+
+    def test_whitespace_only_env_falls_back_to_default(self, monkeypatch):
+        """A comma/whitespace-only value yields no usable suffixes.
+
+        After splitting and stripping, ``parts`` is empty, so the reader
+        must fall back to the documented default rather than returning an
+        empty (bridge-nothing) suffix set. Covers the ``if not parts``
+        branch in ``_resolve_bridge_filter``.
+        """
+        monkeypatch.setenv("STRANDS_MESH_BRIDGE_TOPICS", "  ,  , ")
+        assert _resolve_bridge_filter() == DEFAULT_BRIDGE_SUFFIXES
+
+
+class TestDedupTtlEnv:
+    """Pin the STRANDS_MESH_DEDUP_TTL operator knob contract.
+
+    ``_resolve_dedup_ttl`` sets the TTL of the bridge command dedup cache.
+    The documented contract (bridge_transport.py) is: unset -> 120s default,
+    a positive float -> that value, and any non-positive or unparseable
+    value -> the default (a bad env value must never silently disable or
+    invert dedup, which would let duplicates through or over-suppress).
+    """
+
+    _HINT = (
+        "STRANDS_MESH_DEDUP_TTL reader drifted from its documented contract; "
+        "cross-check _resolve_dedup_ttl and _DEFAULT_DEDUP_TTL_S in "
+        "bridge_transport.py"
+    )
+
+    def test_unset_env_uses_default(self, monkeypatch):
+        monkeypatch.delenv("STRANDS_MESH_DEDUP_TTL", raising=False)
+        assert _resolve_dedup_ttl() == _DEFAULT_DEDUP_TTL_S, self._HINT
+
+    def test_positive_float_is_honored(self, monkeypatch):
+        monkeypatch.setenv("STRANDS_MESH_DEDUP_TTL", "45.5")
+        assert _resolve_dedup_ttl() == 45.5, self._HINT
+
+    @pytest.mark.parametrize("raw", ["0", "0.0", "-5", "-0.1"])
+    def test_non_positive_falls_back_to_default(self, monkeypatch, raw):
+        """Zero/negative TTL is meaningless for a cache window -> default.
+
+        Guards the ``v if v > 0 else default`` branch: a regression that
+        returned ``v`` directly would disable dedup (ttl<=0 expires every
+        entry immediately) and let cross-transport duplicates through.
+        """
+        monkeypatch.setenv("STRANDS_MESH_DEDUP_TTL", raw)
+        assert _resolve_dedup_ttl() == _DEFAULT_DEDUP_TTL_S, self._HINT
+
+    def test_unparseable_value_falls_back_to_default(self, monkeypatch):
+        """A non-numeric value degrades to the default (ValueError branch)."""
+        monkeypatch.setenv("STRANDS_MESH_DEDUP_TTL", "banana")
+        assert _resolve_dedup_ttl() == _DEFAULT_DEDUP_TTL_S, self._HINT
 
 
 class TestEnvPrefixFilter:

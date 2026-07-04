@@ -643,6 +643,45 @@ class TestStatusSurface:
         assert status["task_status"] == "idle"
         hw.cleanup()
 
+    def test_get_status_is_fail_soft_when_the_device_read_raises(self):
+        """A device read that raises must degrade to a structured error dict.
+
+        ``get_status`` is the operator's health probe; a raising serial/USB
+        backend must never propagate out of it and crash the caller. Instead
+        it reports ``task_status="error"`` with the failure text and a safe
+        ``is_connected=False``, so a supervising agent can react rather than
+        take an unhandled exception.
+        """
+
+        class _RaisingDevice:
+            name = "raising_arm"
+
+            @property
+            def is_connected(self) -> bool:
+                raise RuntimeError("serial bus fault")
+
+        hw = _make_robot()
+        hw.robot = _RaisingDevice()
+        status = asyncio.run(hw.get_status())
+        assert status["task_status"] == "error"
+        assert status["is_connected"] is False
+        assert status["robot_name"] == "test_arm"
+        assert "serial bus fault" in status["error"]
+        hw.cleanup()
+
+    def test_get_status_surfaces_task_error_message(self):
+        """A recorded task error is surfaced under ``task_error`` in the healthy
+        status dict, so an operator sees *why* the last run failed without a
+        separate call."""
+        fake = _FakeLeRobot(connected=True)
+        hw = _make_robot(fake)
+        hw._task_state.status = TaskStatus.ERROR
+        hw._task_state.error_message = "gripper stalled"
+        status = asyncio.run(hw.get_status())
+        assert status["task_status"] == "error"
+        assert status["task_error"] == "gripper stalled"
+        hw.cleanup()
+
     def test_tool_spec_advertises_actions(self):
         hw = _make_robot()
         spec = hw.tool_spec
@@ -651,6 +690,23 @@ class TestStatusSurface:
         assert set(enum) == {"execute", "start", "status", "stop"}
         assert hw.tool_type == "robot"
         assert hw.tool_name == "test_arm"
+        hw.cleanup()
+
+
+# ---------------------------------------------------------------------------
+# Robot construction: input validation
+# ---------------------------------------------------------------------------
+
+
+class TestInitializeRobotValidation:
+    def test_unsupported_robot_argument_is_rejected(self):
+        """``_initialize_robot`` accepts a lerobot Robot, a RobotConfig, or a
+        robot-type string; anything else is an operator mistake and must raise
+        rather than be silently coerced or ignored.
+        """
+        hw = _make_robot()
+        with pytest.raises(ValueError, match="Unsupported robot type"):
+            hw._initialize_robot(123, None)  # type: ignore[arg-type]
         hw.cleanup()
 
 

@@ -18,6 +18,22 @@ carried the same unconditional `cgl` -- masked in CI (the workflows export
 `MUJOCO_GL=osmesa`) but erroring a bare-Linux local run -- and it now uses the
 same platform-aware default. No `cgl` default remains anywhere in the repo.
 
+### Fixed: `get_energy` reported the energy of a stale pose after a direct `qpos`/`qvel` write
+
+`get_energy` called `mj_energyPos` / `mj_energyVel` on whatever derived state
+happened to be in `data`, without first recomputing the forward pipeline.
+Potential energy is a function of `data.xipos` (inertial body positions in the
+world frame) and kinetic energy of the config-dependent inertia `data.qM`, all
+of which are position-stage derived state that a bare `qpos`/`qvel` write does
+not refresh -- so after a direct `data.qpos` write (a planning/IK loop) or
+`set_joint_velocities`, `get_energy` silently returned the energy of the
+*previous* configuration. It now runs `mj_forward` under the sim lock before
+reading, matching the defensive forward already in `get_mass_matrix` and
+`inverse_dynamics`. The explicit `mj_energyPos`/`mj_energyVel` calls are kept
+because `mj_forward` only recomputes `data.energy` when `mjENBL_ENERGY` is
+enabled (it is not by default), whereas the explicit calls populate it
+unconditionally.
+
 ### Added: `run_policy(policy_object=...)` on the hardware `Robot` -- sim parity for pre-built policies
 
 The simulation side has a one-call rollout for a policy constructed in-process
@@ -386,6 +402,102 @@ clear error (use `run_policy` for a benchmark rollout video). The writer
 lifecycle (path validation, camera probe, fps-cadence frame capture) is now a
 single `_RolloutVideoWriter` helper shared by `run` and `evaluate` instead of two
 copies.
+
+### Fixed: LeRobot fine-tuning validation discovers policy types from lerobot's live registry
+
+`LerobotTrainer.validate` guarded `extra['policy_type']` against a hardcoded set
+of LeRobot-native types, and gated `relative_actions` against a hardcoded
+`{pi0, pi05, pi0_fast}` set. Both had drifted behind lerobot: the native-type set
+omitted policies lerobot already ships (e.g. `eo1`, `molmoact2`, `vla_jepa`,
+`wall_x`, and newer additions), so validation wrongly rejected them as "not
+LeRobot-native" even though `make_policy_config` builds them and the inference
+side resolves their classes; and `groot` now exposes `use_relative_actions`, so a
+valid `groot` + relative-actions run was wrongly rejected. Both gates now read
+lerobot's live `PreTrainedConfig` ChoiceRegistry (the relative-action check is
+probed off each config class), matching the zero-maintenance dynamic discovery
+the reward-model, robot, teleop, and camera surfaces already use. A static
+fallback is kept for the offline case (lerobot not importable). Genuinely unknown
+policy types are still rejected.
+
+### Added
+
+- `evaluate_benchmark(policy_object=..., control_frequency=..., control_substeps=...)`
+  brings the benchmark evaluation entry point to parity with `run_policy` /
+  `eval_policy`. It could previously neither evaluate a pre-built `Policy` (it
+  always ran `create_policy`, forcing a redundant reload of a multi-GB VLA
+  checkpoint) nor set the control-loop rate (physics stepped at a hardcoded
+  50 Hz). A benchmark's `max_steps` maps to a wall-clock episode length that
+  depends on the control frequency, so a policy trained/evaluated at a
+  different rate was scored over a mismatched horizon; `control_frequency`
+  now lets the benchmark run at the policy's rate. The shared
+  `PolicyRunner.evaluate` plumbing already supported these; only the facade
+  exposes them now. A non-positive `control_frequency` is rejected with a
+  structured error, and the `control_frequency` tool parameter is forwarded on
+  the agent-dispatch path.
+
+
+### Docs: `run_policy(async_rtc=...)` no longer claims SmolVLA/MolmoAct2 blend the chunk seam internally
+
+- The `PolicyRunner.run` `async_rtc` docstring stated that "RTC-capable
+  policies (pi0, pi0.5, SmolVLA, MolmoAct2) blend the seam internally through
+  their own prev-chunk state (`rtc_config.execution_horizon`)". That conflates
+  two independent things and is wrong for the checkpoints most users load.
+  The async OVERLAP (latency masking) auto-enables for *any* chunk-emitting
+  policy via `is_chunk_emitting()`; RTC SEAM BLENDING is a separate,
+  checkpoint-level property (`supports_rtc`) that requires an enabled
+  `rtc_config`. The public `lerobot/smolvla_base` checkpoint ships
+  `rtc_config=None` and MolmoAct2 has no `rtc_config` at all, so both report
+  `supports_rtc=False`: they get the overlap but a plain chunk swap at the
+  seam, not a blended one. Reading the old text, a user would deploy
+  `smolvla_base` expecting a smoothly-joined trajectory and instead get a
+  velocity discontinuity at every chunk boundary. The docstring now describes
+  overlap and seam-blending as the two distinct capabilities they are, and a
+  regression test pins that `rtc_async_enabled` can be `True` while
+  `supports_rtc` is `False`.
+
+### Fixed: `run_policy`/`eval_policy` rollout video plays back at real time when `fps > control_frequency`
+
+- The MP4 recorder (`video=...`) renders at most one frame per applied control
+  step, so it cannot carry more than `control_frequency` unique frames per
+  second of sim time. When the requested `fps` exceeded `control_frequency` the
+  capture cadence still grabbed every step (it cannot up-sample) but the writer
+  used the requested `fps`, so the video played back FASTER than real time by
+  `fps / control_frequency` (e.g. a 110-step rollout at `control_frequency=15`
+  with the default `fps=30` produced a 3.7 s MP4 for 7.3 s of sim - a silent 2x
+  speed-up). The writer already down-samples to preserve real time when
+  `control_frequency >= fps`; the `fps > control_frequency` case was unhandled.
+  The writer fps is now capped at `control_frequency` (with a warning) so the
+  rollout always plays back at real time; the common default
+  (`control_frequency=50`, `fps=30`) is unchanged.
+
+### Added: `describe()` advertises the physics-introspection / grounding surface
+
+- `MuJoCoSimEngine.describe()` -- the single-call discovery surface an agent
+  reads first to learn the engine's contract -- taught how to build a scene, run
+  a policy, and record a dataset, but listed no way to READ the physics result.
+  An agent that ran a rollout could not discover how to verify it (read a body's
+  world pose, check gripper-object contact, query a sensor) without guessing
+  method names, even though `get_body_state`, `forward_kinematics`,
+  `get_contacts`, `get_contact_forces`, `get_sensor_data`, `get_energy`,
+  `get_mass_matrix`, `inverse_dynamics`, `get_jacobian`, `get_total_mass`,
+  `raycast`, and `multi_raycast` are all public methods the tool spec and action
+  dispatcher already dispatch. `describe()` now advertises this read/verify
+  surface alongside the act/record surface, so one call reveals how to ground a
+  claim on a body-state delta (the documented way to verify a rollout) rather
+  than on a rendered caption. The `start_recording` signature in `describe()`
+  also now names its `cameras=` dataset-scope parameter, which was omitted.
+
+### Fixed
+
+- The `grasped` benchmark/DSL predicate now matches the grasped body's geoms
+  across the `<body>_g<idx>` LIBERO/robosuite multi-geom convention, not only
+  the exact `body` / `<body>_geom` names. LIBERO objects (a BDDL object
+  `cube_1` owns collision geoms `cube_1_g0` / `cube_1_g1` ...) were never
+  matched, so `(grasped cube_1)` BDDL goals silently resolved to `False` even
+  when the gripper was in contact - a successful grasp was scored as a failure.
+  Body-geom matching now mirrors `_body_contact`'s `<body>_g` prefix so the two
+  contact predicates agree on what counts as a body's geom; strands-native
+  `add_object` (`<body>_geom`) and single-geom scenes are unchanged.
 
 
 ## [0.4.1] - 2026-07-01

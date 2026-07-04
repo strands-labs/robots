@@ -544,7 +544,22 @@ class PhysicsMixin:
     # Energy
 
     def get_energy(self) -> dict[str, Any]:
-        """Compute potential and kinetic energy of the system."""
+        """Compute potential and kinetic energy of the system.
+
+        Reflects the CURRENT configuration. ``mj_energyPos`` reads the
+        position-stage derived state (``data.xipos`` for the gravitational
+        term, spring/tendon lengths) and ``mj_energyVel`` reads the
+        config-dependent inertia (``data.qM``, itself position-stage derived)
+        against ``data.qvel``. All of that is stale after a bare ``qpos``/
+        ``qvel`` write (e.g. a direct ``data.qpos`` write from a planning/IK
+        loop, or ``set_joint_velocities``), so the position pipeline is
+        recomputed first - otherwise the reported energy is silently that of
+        an earlier pose. Matches the defensive forward in ``get_mass_matrix``
+        / ``inverse_dynamics``. The explicit ``mj_energyPos``/``mj_energyVel``
+        calls are kept because ``mj_forward`` only recomputes ``data.energy``
+        when ``mjENBL_ENERGY`` is enabled (it is not, by default), whereas the
+        explicit calls populate ``data.energy`` unconditionally.
+        """
         if self._world is None or self._world._model is None or self._world._data is None:
             return {"status": "error", "content": [{"text": _NO_WORLD_MSG}]}
 
@@ -552,6 +567,7 @@ class PhysicsMixin:
         model, data = self._world._model, self._world._data
 
         with self._lock:
+            mj.mj_forward(model, data)
             mj.mj_energyPos(model, data)
             mj.mj_energyVel(model, data)
             potential = float(data.energy[0])

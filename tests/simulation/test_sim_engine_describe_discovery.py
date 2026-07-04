@@ -294,6 +294,69 @@ class TestDescribeMuJoCo:
         finally:
             sim.destroy()
 
+    def test_describe_lists_physics_introspection_methods(self):
+        """describe() advertises the read/verify surface, not just act/record.
+
+        The discovery surface teaches how to build a scene, run a policy, and
+        record a dataset, but previously listed no way to READ the physics
+        result -- so an agent that ran a rollout could not learn how to verify
+        it (read a body's world pose, check gripper-object contact, query a
+        sensor) from one describe() call. These are public MuJoCo methods the
+        tool spec + action dispatcher already expose; grounding a claim on a
+        body-state delta (rather than a rendered caption) is the documented way
+        to verify a rollout, so the primitives that produce that delta belong on
+        the discovery surface alongside run_policy / start_recording.
+        """
+        import os
+
+        os.environ.setdefault("MUJOCO_GL", "egl")
+        from strands_robots.simulation import Simulation
+
+        sim = Simulation()
+        try:
+            methods = sim.describe()["methods"]
+            for name in (
+                "get_body_state",
+                "forward_kinematics",
+                "get_contacts",
+                "get_contact_forces",
+                "get_sensor_data",
+                "get_energy",
+                "get_mass_matrix",
+                "inverse_dynamics",
+                "get_jacobian",
+                "get_total_mass",
+                "raycast",
+                "multi_raycast",
+            ):
+                assert name in methods, f"describe() omits physics-introspection method {name!r}"
+            # Advertised signatures name the real distinguishing parameters so a
+            # caller can invoke them without reading the source.
+            assert "body_name" in methods["get_body_state"]
+            assert "sensor_name" in methods["get_sensor_data"]
+            assert "origin" in methods["raycast"]
+        finally:
+            sim.destroy()
+
+    def test_describe_start_recording_signature_includes_camera_scope(self):
+        """describe()'s start_recording signature names the cameras= scope.
+
+        start_recording grew a ``cameras=`` parameter that scopes the recorded
+        LeRobotDataset to a subset of the scene's cameras, but the advertised
+        signature omitted it -- so an agent enumerating describe() could not
+        learn how to record a camera-scoped dataset without reading the source.
+        """
+        import os
+
+        os.environ.setdefault("MUJOCO_GL", "egl")
+        from strands_robots.simulation import Simulation
+
+        sim = Simulation()
+        try:
+            assert "cameras" in sim.describe()["methods"]["start_recording"]
+        finally:
+            sim.destroy()
+
     def test_describe_methods_resolve_to_real_attributes(self):
         """Every method MuJoCo describe() advertises must be a real callable.
 

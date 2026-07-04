@@ -239,7 +239,7 @@ def _evict_replay_cache[K](
 #: to reject obviously-bogus stand-ins (test ``MagicMock``,
 #: third-party transport shims) without paying the cost of importing
 #: zenoh just to ``isinstance`` check.
-_ZENOH_ZID_PATTERN = re.compile(r"^[0-9a-f]{1,32}$")
+_ZENOH_ZID_PATTERN = re.compile(r"^[0-9a-f]{1,32}\Z")
 
 
 def _extract_sample_source_zid(sample: Any) -> str | None:
@@ -3307,7 +3307,7 @@ def init_mesh(
 
     # Validate peer_id - reject reserved names and MQTT-unsafe characters.
     _RESERVED_PEER_IDS = {"broadcast", "safety"}
-    _PEER_ID_PATTERN = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._\-]{0,127}$")
+    _PEER_ID_PATTERN = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._\-]{0,127}\Z")
     if peer_id in _RESERVED_PEER_IDS:
         raise ValueError(
             f"peer_id={peer_id!r} is reserved for system use. Reserved names: {sorted(_RESERVED_PEER_IDS)}"

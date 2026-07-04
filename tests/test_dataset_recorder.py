@@ -1517,3 +1517,232 @@ def test_read_dataset_episode_indices_dedups_and_skips_columnless_parquet(tmp_pa
     assert result["frames_per_episode"] == [3, 5]  # first-seen length for ep 0
     assert result["total_frames"] == 8
     assert result["info_total_episodes"] is None  # no meta/info.json written
+
+
+class _FakeSyncDataset:
+    """Minimal fake dataset exposing the surface ``sync_to_bucket`` reads.
+
+    ``sync_to_bucket`` only touches ``dataset.root`` (to locate ``meta/``) and
+    ``dataset.repo_id`` (to derive a default ``run_id``); nothing else is
+    required, so no real LeRobotDataset is needed.
+    """
+
+    def __init__(self, root, repo_id="my-org/robot-fave"):
+        self.root = str(root)
+        self.repo_id = repo_id
+
+
+def _sync_recorder(root, repo_id="my-org/robot-fave") -> DatasetRecorder:
+    rec = DatasetRecorder(dataset=_FakeSyncDataset(root, repo_id))
+    rec.episode_count = 2
+    rec.frame_count = 40
+    return rec
+
+
+def _write_meta(root) -> None:
+    """Create the ``meta/`` directory that a finalized dataset must have."""
+    (root / "meta").mkdir(parents=True, exist_ok=True)
+
+
+def test_sync_to_bucket_missing_hf_cli_errors(tmp_path, monkeypatch):
+    """No ``hf`` CLI on PATH -> actionable error, never a subprocess call."""
+    import shutil
+    import subprocess
+
+    _write_meta(tmp_path)
+    monkeypatch.setattr(shutil, "which", lambda _name: None)
+
+    def _boom(*_a, **_k):
+        raise AssertionError("subprocess must not run when hf CLI is absent")
+
+    monkeypatch.setattr(subprocess, "run", _boom)
+
+    result = _sync_recorder(tmp_path).sync_to_bucket("my-org/robot-fave")
+
+    assert result["status"] == "error"
+    assert "hf" in result["message"]
+
+
+@pytest.mark.parametrize(
+    "bad_bucket",
+    [
+        "my-org/robot; rm -rf /",  # shell metacharacters
+        "my-org/../etc",  # path traversal
+        "org/name/extra",  # more than one path segment
+        "-leading-dash",  # must start alphanumeric
+        "org/ name",  # embedded space
+    ],
+)
+def test_sync_to_bucket_rejects_unsafe_bucket(tmp_path, monkeypatch, bad_bucket):
+    """Bucket names failing the allowlist are rejected before any subprocess.
+
+    This pins the injection-prevention contract: ``sync_to_bucket`` is reachable
+    from an agent tool (``stop_recording(bucket=...)``), so a weakened bucket
+    regex would let shell metacharacters / path traversal reach ``hf``.
+    """
+    import shutil
+    import subprocess
+
+    _write_meta(tmp_path)
+    monkeypatch.setattr(shutil, "which", lambda _name: "/usr/bin/hf")
+
+    def _boom(*_a, **_k):
+        raise AssertionError(f"subprocess must not run for unsafe bucket {bad_bucket!r}")
+
+    monkeypatch.setattr(subprocess, "run", _boom)
+
+    result = _sync_recorder(tmp_path).sync_to_bucket(bad_bucket)
+
+    assert result["status"] == "error"
+    assert "invalid bucket" in result["message"]
+
+
+def test_sync_to_bucket_requires_finalized_meta_dir(tmp_path, monkeypatch):
+    """A dataset with no ``meta/`` (never finalized) is refused."""
+    import shutil
+
+    monkeypatch.setattr(shutil, "which", lambda _name: "/usr/bin/hf")
+    # No _write_meta: meta/ is absent.
+
+    result = _sync_recorder(tmp_path).sync_to_bucket("my-org/robot-fave")
+
+    assert result["status"] == "error"
+    assert "meta/" in result["message"]
+    assert "finalize()" in result["message"]
+
+
+@pytest.mark.parametrize("bad_run_id", ["bad/id", "run;id", ".."])
+def test_sync_to_bucket_rejects_unsafe_run_id(tmp_path, monkeypatch, bad_run_id):
+    """run_id must be a single safe path segment (no '/', traversal, metachars)."""
+    import shutil
+    import subprocess
+
+    _write_meta(tmp_path)
+    monkeypatch.setattr(shutil, "which", lambda _name: "/usr/bin/hf")
+
+    def _boom(*_a, **_k):
+        raise AssertionError(f"subprocess must not run for unsafe run_id {bad_run_id!r}")
+
+    monkeypatch.setattr(subprocess, "run", _boom)
+
+    result = _sync_recorder(tmp_path).sync_to_bucket("my-org/robot-fave", run_id=bad_run_id)
+
+    assert result["status"] == "error"
+    assert "invalid run_id" in result["message"]
+
+
+def test_sync_to_bucket_success_creates_and_syncs(tmp_path, monkeypatch):
+    """Happy path: creates the bucket then syncs to the derived HF URI."""
+    import shutil
+    import subprocess
+
+    _write_meta(tmp_path)
+    monkeypatch.setattr(shutil, "which", lambda _name: "/usr/bin/hf")
+
+    calls: list[list[str]] = []
+
+    def _fake_run(cmd, *_a, **_k):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, stdout="ok", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+
+    result = _sync_recorder(tmp_path, repo_id="my-org/robot-fave").sync_to_bucket("my-org/robot-fave")
+
+    assert result["status"] == "success"
+    # run_id defaults to the dataset repo_id's last path segment.
+    assert result["bucket_uri"] == "hf://buckets/my-org/robot-fave/robot-fave"
+    assert result["episodes"] == 2
+    assert result["frames"] == 40
+    # First call creates the bucket, second syncs the local root to the URI.
+    assert calls[0][:3] == ["hf", "buckets", "create"]
+    assert calls[1][0] == "hf" and calls[1][1] == "sync"
+    assert calls[1][-1] == "hf://buckets/my-org/robot-fave/robot-fave"
+
+
+def test_sync_to_bucket_preexisting_bucket_is_not_an_error(tmp_path, monkeypatch):
+    """`hf buckets create` failing because the bucket already exists is tolerated."""
+    import shutil
+    import subprocess
+
+    _write_meta(tmp_path)
+    monkeypatch.setattr(shutil, "which", lambda _name: "/usr/bin/hf")
+
+    def _fake_run(cmd, *_a, **_k):
+        if cmd[:3] == ["hf", "buckets", "create"]:
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="bucket already exists")
+        return subprocess.CompletedProcess(cmd, 0, stdout="synced", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+
+    result = _sync_recorder(tmp_path).sync_to_bucket("my-org/robot-fave", run_id="nightly")
+
+    assert result["status"] == "success"
+    assert result["bucket_uri"] == "hf://buckets/my-org/robot-fave/nightly"
+
+
+def test_sync_to_bucket_create_failure_surfaced(tmp_path, monkeypatch):
+    """A genuine `hf buckets create` failure is surfaced, not swallowed."""
+    import shutil
+    import subprocess
+
+    _write_meta(tmp_path)
+    monkeypatch.setattr(shutil, "which", lambda _name: "/usr/bin/hf")
+
+    def _fake_run(cmd, *_a, **_k):
+        if cmd[:3] == ["hf", "buckets", "create"]:
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="permission denied")
+        raise AssertionError("sync must not run after a fatal create failure")
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+
+    result = _sync_recorder(tmp_path).sync_to_bucket("my-org/robot-fave")
+
+    assert result["status"] == "error"
+    assert "permission denied" in result["message"]
+
+
+def test_sync_to_bucket_sync_failure_surfaced(tmp_path, monkeypatch):
+    """A non-zero `hf sync` return code is surfaced with its stderr."""
+    import shutil
+    import subprocess
+
+    _write_meta(tmp_path)
+    monkeypatch.setattr(shutil, "which", lambda _name: "/usr/bin/hf")
+
+    def _fake_run(cmd, *_a, **_k):
+        if cmd[:3] == ["hf", "buckets", "create"]:
+            return subprocess.CompletedProcess(cmd, 0, stdout="created", stderr="")
+        return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="network unreachable")
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+
+    result = _sync_recorder(tmp_path).sync_to_bucket("my-org/robot-fave")
+
+    assert result["status"] == "error"
+    assert "network unreachable" in result["message"]
+
+
+def test_sync_to_bucket_delete_flag_forwards_to_sync(tmp_path, monkeypatch):
+    """delete=True appends --delete to the `hf sync` command (mirror semantics)."""
+    import shutil
+    import subprocess
+
+    _write_meta(tmp_path)
+    monkeypatch.setattr(shutil, "which", lambda _name: "/usr/bin/hf")
+
+    calls: list[list[str]] = []
+
+    def _fake_run(cmd, *_a, **_k):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, stdout="ok", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+
+    result = _sync_recorder(tmp_path).sync_to_bucket("my-org/robot-fave", run_id="nightly", create=False, delete=True)
+
+    assert result["status"] == "success"
+    # create=False -> only the sync call happens.
+    assert len(calls) == 1
+    assert calls[0][:2] == ["hf", "sync"]
+    assert "--delete" in calls[0]

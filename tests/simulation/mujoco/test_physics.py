@@ -195,6 +195,38 @@ class TestEnergy:
         # Kinetic energy should change (box falls)
         assert e1["kinetic"] != e2["kinetic"] or e1["potential"] != e2["potential"]
 
+    def test_energy_reflects_direct_qpos_write(self, sim):
+        """get_energy must recompute derived state for the CURRENT qpos.
+
+        mj_energyPos reads position-stage derived state (data.xipos for the
+        gravity term). A direct data.qpos write - e.g. a planning/IK loop -
+        does not refresh it, so without the defensive forward get_energy
+        reports the potential energy of the STALE pose. Regression pin for the
+        missing forward: fails-before because e_after equalled e_rest.
+        """
+        model, data = sim._world._model, sim._world._data
+        # box1 has a freejoint: qpos = [x, y, z, qw, qx, qy, qz]; index 2 is z.
+        z_adr = model.jnt_qposadr[mj.mj_name2id(model, mj.mjtObj.mjOBJ_JOINT, "box_free")] + 2
+
+        e_rest = _extract_json_block(sim.get_energy(), 1)
+
+        # Directly raise the box (no forward) - stale path.
+        new_z = float(data.qpos[z_adr]) + 1.5
+        data.qpos[z_adr] = new_z
+        e_after = _extract_json_block(sim.get_energy(), 1)
+
+        # Independent ground truth on a fresh MjData at the new configuration.
+        gt = mj.MjData(model)
+        gt.qpos[:] = data.qpos
+        gt.qvel[:] = data.qvel
+        mj.mj_forward(model, gt)
+        mj.mj_energyPos(model, gt)
+        truth_potential = float(gt.energy[0])
+
+        # fails-before: e_after["potential"] equalled the stale e_rest value.
+        assert abs(e_after["potential"] - truth_potential) < 1e-6
+        assert abs(e_after["potential"] - e_rest["potential"]) > 1e-3
+
 
 class TestExternalForces:
     def test_apply_force(self, sim):

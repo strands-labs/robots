@@ -1,7 +1,8 @@
 """LeRobotDataset recorder bridge for strands-robots.
 
-Wraps LeRobotDataset so that both robot.py (real hardware) and
-simulation.py (MuJoCo) can produce training-ready datasets with
+Wraps LeRobotDataset so that both real hardware (:mod:`strands_robots.robot`)
+and simulation (:mod:`strands_robots.simulation`) can produce training-ready
+datasets with
 a single add_frame() call per control step.
 
 Usage:
@@ -186,7 +187,8 @@ class DatasetRecorder:
     3. save_episode() - finalize episode (encodes video, writes parquet)
     4. push_to_hub() - upload to HuggingFace
 
-    Works for both real hardware (robot.py) and simulation (simulation.py).
+    Works for both real hardware (:mod:`strands_robots.robot`) and
+    simulation (:mod:`strands_robots.simulation`).
     """
 
     def __init__(
@@ -871,9 +873,8 @@ class DatasetRecorder:
         path is agent-reachable via ``stop_recording(bucket=, run_id=)``. A
         rejected value returns ``{"status": "error", ...}`` without running ``hf``.
 
-        See reports/STREAMING_DATA_LOOP_DEEP_DIVE.md Appendix A.1 (shard layout
-        is already Xet/bucket-friendly at the 100 MB default) and F.2 (meta/
-        MUST ship or downstream loses normalization stats).
+        The shard layout is already Xet/bucket-friendly at the 100 MB default,
+        and ``meta/`` MUST ship or downstream loses normalization stats.
         """
         import shutil
         import subprocess
@@ -893,7 +894,7 @@ class DatasetRecorder:
             }
 
         local_root = str(self.dataset.root)
-        # meta/ must ship or downstream loses normalization stats (App. F.2).
+        # meta/ must ship or downstream loses normalization stats.
         if not (Path(local_root) / "meta").exists():
             return {
                 "status": "error",

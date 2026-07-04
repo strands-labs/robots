@@ -365,6 +365,116 @@ class TestDeclarativeBenchmarkLifecycle:
         assert "load_scene" in str(exc.value)
 
 
+# Per-episode reward-term reset (stateful phase machines must not leak state)
+
+
+class TestDeclarativeBenchmarkRewardTermReset:
+    """Pin ``on_episode_start``'s per-episode reward-term reset contract.
+
+    A ``staged_reward`` compiles to a stateful phase machine whose current
+    stage advances monotonically as the episode progresses. Across a
+    multi-episode eval each episode must start from stage 0 -- otherwise a
+    later episode inherits the phase reached by an earlier one and the dense
+    reward signal is silently wrong. ``on_episode_start`` enforces this by
+    calling ``reset()`` on every reward term that exposes one; stateless
+    (plain-callable) terms have no ``reset`` and must be skipped without error.
+    """
+
+    class _BodyZSim:
+        """Minimal sim exposing the surface both predicate lookups and the
+        base ``on_episode_start`` compatibility check need.
+
+        ``get_body_state`` feeds ``body_above_z`` (the stage gate); a
+        non-empty ``list_robots`` keeps the base impl from trying to add a
+        default robot (there is no ``add_robot`` here on purpose).
+        """
+
+        def __init__(self, cube_z: float) -> None:
+            self._cube_z = cube_z
+
+        def get_body_state(self, body_name: str) -> dict[str, Any]:
+            return {
+                "status": "success",
+                "content": [
+                    {"text": body_name},
+                    {"json": {"position": [0.0, 0.0, self._cube_z]}},
+                ],
+            }
+
+        def list_robots(self) -> list[str]:
+            return ["robot"]
+
+    @staticmethod
+    def _staged_benchmark() -> DeclarativeBenchmark:
+        from strands_robots.simulation.predicates import make_predicate
+
+        staged = make_predicate(
+            "staged_reward",
+            stages=[
+                {
+                    "reward": {"predicate": "constant", "value": 1.0},
+                    "advance_when": {"predicate": "body_above_z", "body": "cube", "z": 0.5},
+                },
+                {"reward": {"predicate": "constant", "value": 2.0}},
+            ],
+        )
+        return DeclarativeBenchmark(
+            name="staged",
+            supported_robots=[],
+            default_robot="so100",
+            max_steps=10,
+            success_fn=lambda _sim: False,
+            failure_fn=lambda _sim: False,
+            reward_terms=[staged],
+            scene=None,
+        )
+
+    def test_stateful_reward_term_phase_reset_between_episodes(self):
+        """A staged reward driven into a later phase is reset to stage 0 when
+        the next episode starts, so phase state never leaks across episodes."""
+        bench = self._staged_benchmark()
+        (term,) = bench._reward_terms
+        sim = self._BodyZSim(cube_z=1.0)  # cube above the stage gate
+
+        # Drive the phase machine forward: the gate fires so it advances.
+        term(sim)
+        assert term.phase == 1
+
+        # Next episode: on_episode_start must reset the term back to stage 0.
+        bench.on_episode_start(sim, random.Random(0))  # type: ignore[arg-type]
+        assert term.phase == 0
+
+        # And the reset is per-episode: advance again, reset again.
+        term(sim)
+        assert term.phase == 1
+        bench.on_episode_start(sim, random.Random(1))  # type: ignore[arg-type]
+        assert term.phase == 0
+
+    def test_stateless_reward_terms_are_skipped_without_error(self):
+        """Plain-callable reward terms expose no ``reset`` and must be left
+        untouched by the reset loop -- on_episode_start still completes."""
+
+        def stateless_term(_sim: Any) -> float:
+            return 0.0
+
+        bench = DeclarativeBenchmark(
+            name="stateless",
+            supported_robots=[],
+            default_robot="so100",
+            max_steps=10,
+            success_fn=lambda _sim: False,
+            failure_fn=lambda _sim: False,
+            reward_terms=[stateless_term],
+            scene=None,
+        )
+        sim = self._BodyZSim(cube_z=0.0)
+
+        # No ``reset`` attribute on the term -> the loop must skip it silently.
+        bench.on_episode_start(sim, random.Random(0))  # type: ignore[arg-type]
+        assert bench._reward_terms == [stateless_term]
+        assert stateless_term(sim) == 0.0
+
+
 # Malformed-shape rejection (defensive validation paths)
 
 
