@@ -222,6 +222,126 @@ class VideoConfig:
         )
 
 
+class _RolloutVideoWriter:
+    """Optional per-rollout MP4 writer: validate the (LLM-supplied) output path,
+    probe the camera, open an imageio writer, append frames at the requested fps
+    cadence, and finalize on close.
+
+    Extracted from :meth:`PolicyRunner.run` so the multi-episode evaluation loop
+    (:meth:`PolicyRunner.evaluate`) records rollout video identically - one
+    source of truth for the security-sensitive path validation (see PR #930)
+    and the frame-capture cadence, rather than two copies that can drift.
+    """
+
+    def __init__(
+        self,
+        sim: Any,
+        video: VideoConfig,
+        writer: Any,
+        resolved_path: str,
+        control_frequency: float,
+    ) -> None:
+        self.sim = sim
+        self.video = video
+        self.path = resolved_path
+        self._writer = writer
+        self.frame_count = 0
+        self._frame_interval = control_frequency / max(video.fps, 1)
+        self._next_frame_step = 0.0
+
+    @classmethod
+    def open(
+        cls, sim: Any, video: VideoConfig | None, control_frequency: float
+    ) -> tuple[_RolloutVideoWriter | None, dict[str, Any] | None]:
+        """Return ``(writer, error)``.
+
+        ``(None, None)``   -> recording disabled (``video`` is falsy); proceed.
+        ``(None, error)``  -> setup failed; the caller returns ``error`` verbatim.
+        ``(writer, None)`` -> writer ready.
+        """
+        if video is None or not video.enabled:
+            return None, None
+        # video.enabled guarantees video.path is a non-empty str; narrow for mypy.
+        assert video.path is not None
+        # video.path is LLM-supplied: reject shell metacharacters, backslash
+        # separators, ".." traversal, and a symlinked target before we makedirs +
+        # open a writer on it. Absolute paths stay allowed (the historic
+        # contract); set STRANDS_ROBOTS_VIDEO_ROOT to sandbox them.
+        _sb_root, _allow_abs = video_sandbox_args()
+        try:
+            resolved = str(
+                validate_output_path(video.path, sandbox_root=_sb_root, allow_abs=_allow_abs, label="video path")
+            )
+        except ValueError as _e:
+            return None, {"status": "error", "content": [{"text": f"video recording: {_e}"}]}
+
+        # Pre-validate the camera name ONCE before the step loop. This surfaces
+        # "camera not found" as a clean up-front error rather than silently
+        # writing a 0-byte MP4 (sim.render() returns status=error, the rollout
+        # runs to completion, and the user gets an empty file with no hint).
+        probe_cam = video.camera or "default"
+        try:
+            _probe = sim.render(camera_name=probe_cam, width=video.width, height=video.height)
+        except Exception as e:
+            return None, {
+                "status": "error",
+                "content": [{"text": f"Video recording requested but render probe crashed: {e}"}],
+            }
+        if _probe.get("status") != "success":
+            probe_text = (_probe.get("content") or [{}])[0].get("text", "")
+            return None, {
+                "status": "error",
+                "content": [
+                    {
+                        "text": (
+                            f"Video recording requested but camera "
+                            f"'{probe_cam}' is not renderable.\n"
+                            f"{probe_text}\n"
+                            "Hint: robot cameras are namespaced, e.g. a "
+                            "camera named 'side' inside robot 'arm1' compiles "
+                            "as 'arm1/side'. Pass video={'camera': 'arm1/side', ...}."
+                        )
+                    }
+                ],
+            }
+
+        imageio = require_optional(
+            "imageio",
+            pip_install="imageio imageio-ffmpeg",
+            extra="sim-mujoco",
+            purpose="video recording",
+        )
+        os.makedirs(os.path.dirname(os.path.abspath(resolved)), exist_ok=True)
+        writer = imageio.get_writer(  # type: ignore[attr-defined]
+            resolved, fps=video.fps, quality=8, macro_block_size=1
+        )
+        return cls(sim, video, writer, resolved, control_frequency), None
+
+    def capture(self, step_count: int) -> None:
+        """Append one frame if the fps cadence is due at ``step_count``.
+
+        Call once per applied control step; the cadence (``control_frequency /
+        fps``) decides which steps actually render. A render/decode failure is
+        skipped silently rather than aborting the rollout (a renderer hiccup
+        must not kill training).
+        """
+        if step_count < self._next_frame_step:
+            return
+        frame = self.sim.render(
+            camera_name=self.video.camera or "default",
+            width=self.video.width,
+            height=self.video.height,
+        )
+        img_arr = _extract_frame_ndarray(frame)
+        if img_arr is not None:
+            self._writer.append_data(img_arr)
+            self.frame_count += 1
+        self._next_frame_step += self._frame_interval
+
+    def close(self) -> None:
+        self._writer.close()
+
+
 # on_frame hooks that raise are logged at WARN - user-provided telemetry is
 # not allowed to kill the rollout. BUT if the hook raises on every single step
 # (e.g. a recording hook with a typo'd observation key), we'd complete a 500-step
@@ -720,74 +840,11 @@ class PolicyRunner:
                 "rtc_max_inference_ms": round(max(inference_ms), 3) if _n else 0.0,
             }
 
-        # Lazy optional import - only imageio is optional.
-        writer = None
-        frame_count = 0
-        frame_interval = 0.0
-        next_frame_step = 0.0
-        video_path: str | None = None
-        if video is not None and video.enabled:
-            # video.enabled guarantees video.path is a non-empty str; narrow for mypy.
-            assert video.path is not None
-            # video.path is LLM-supplied: reject shell metacharacters, backslash
-            # separators, ".." traversal, and a symlinked target before we
-            # makedirs + open a writer on it. Absolute paths stay allowed (the
-            # historic contract); set STRANDS_ROBOTS_VIDEO_ROOT to sandbox them.
-            _sb_root, _allow_abs = video_sandbox_args()
-            try:
-                video_path = str(
-                    validate_output_path(video.path, sandbox_root=_sb_root, allow_abs=_allow_abs, label="video path")
-                )
-            except ValueError as _e:
-                return {"status": "error", "content": [{"text": f"video recording: {_e}"}]}
-
-            # Pre-validate the camera name ONCE before the step loop. This
-            # surfaces "camera not found" as a clean up-front error rather
-            # than silently writing a 0-byte MP4 (sim.render() returns
-            # status=error, _extract_frame_ndarray() returns None, the
-            # rollout runs to completion, writer.close() produces an empty
-            # file, and the user gets no hint in the result text).
-            probe_cam = video.camera or "default"
-            try:
-                _probe = self.sim.render(
-                    camera_name=probe_cam,
-                    width=video.width,
-                    height=video.height,
-                )
-            except Exception as e:
-                return {
-                    "status": "error",
-                    "content": [{"text": f"Video recording requested but render probe crashed: {e}"}],
-                }
-            if _probe.get("status") != "success":
-                probe_text = (_probe.get("content") or [{}])[0].get("text", "")
-                return {
-                    "status": "error",
-                    "content": [
-                        {
-                            "text": (
-                                f"Video recording requested but camera "
-                                f"'{probe_cam}' is not renderable.\n"
-                                f"{probe_text}\n"
-                                "Hint: robot cameras are namespaced, e.g. a "
-                                "camera named 'side' inside robot 'arm1' compiles "
-                                "as 'arm1/side'. Pass video={'camera': 'arm1/side', ...}."
-                            )
-                        }
-                    ],
-                }
-
-            imageio = require_optional(
-                "imageio",
-                pip_install="imageio imageio-ffmpeg",
-                extra="sim-mujoco",
-                purpose="video recording",
-            )
-            os.makedirs(os.path.dirname(os.path.abspath(video_path)), exist_ok=True)
-            writer = imageio.get_writer(  # type: ignore[attr-defined]
-                video_path, fps=video.fps, quality=8, macro_block_size=1
-            )
-            frame_interval = control_frequency / video.fps
+        # Video recording lifecycle (path validation + camera probe + writer)
+        # lives in _RolloutVideoWriter so run() and evaluate() record identically.
+        vwriter, _video_err = _RolloutVideoWriter.open(self.sim, video, control_frequency)
+        if _video_err is not None:
+            return _video_err
 
         stopped_early = False
         # T26: skip camera rendering when the policy does not need images.
@@ -876,7 +933,6 @@ class PolicyRunner:
             # the two paths.
             def _apply(observation: dict[str, Any], action_dict: dict[str, Any]) -> None:
                 nonlocal step_count, _action_errors, consecutive_onframe_failures
-                nonlocal frame_count, next_frame_step
                 nonlocal _total_failure_steps, _last_unresolved
 
                 _send_result = self.sim.send_action(action_dict, robot_name=robot_name, n_substeps=n_substeps)
@@ -968,22 +1024,8 @@ class PolicyRunner:
                         f"'{robot_name}')."
                     )
 
-                if writer is not None and step_count >= next_frame_step:
-                    assert video is not None  # for mypy: writer only set when video.enabled
-                    frame = self.sim.render(
-                        camera_name=video.camera or "default",
-                        width=video.width,
-                        height=video.height,
-                    )
-                    # sim.render() returns {status, content:[{text},{image:{source:{bytes}}}]}
-                    # Decode the PNG bytes from the content block and hand an ndarray
-                    # to imageio. Silently skips when the PNG decode fails rather than
-                    # aborting the whole rollout (renderer errors shouldn't kill training).
-                    img_arr = _extract_frame_ndarray(frame)
-                    if img_arr is not None:
-                        writer.append_data(img_arr)
-                        frame_count += 1
-                    next_frame_step += frame_interval
+                if vwriter is not None:
+                    vwriter.capture(step_count)
 
                 if not fast_mode:
                     time.sleep(action_sleep)
@@ -1168,8 +1210,8 @@ class PolicyRunner:
         except CooperativeStop:
             stopped_early = True
         except Exception as e:
-            if writer is not None:
-                writer.close()
+            if vwriter is not None:
+                vwriter.close()
             logger.exception("PolicyRunner.run failed")
             return {
                 "status": "error",
@@ -1185,9 +1227,11 @@ class PolicyRunner:
         )
         if sim_time is not None:
             text += f" | sim_t={sim_time:.3f}s"
-        if writer is not None:
-            assert video is not None and video_path is not None
-            writer.close()
+        if vwriter is not None:
+            assert video is not None
+            video_path = vwriter.path
+            frame_count = vwriter.frame_count
+            vwriter.close()
             if frame_count > 0 and os.path.exists(video_path):
                 file_kb = os.path.getsize(video_path) / 1024
                 text += (
@@ -1250,10 +1294,11 @@ class PolicyRunner:
         }
         if sim_time is not None:
             payload["sim_time_s"] = round(sim_time, 3)
-        if writer is not None and video is not None and video_path is not None:
-            wrote_video = frame_count > 0 and os.path.exists(video_path)
-            payload["video_path"] = video_path if wrote_video else None
-            payload["video_frames"] = frame_count
+        if vwriter is not None and video is not None:
+            _vp = vwriter.path
+            wrote_video = vwriter.frame_count > 0 and os.path.exists(_vp)
+            payload["video_path"] = _vp if wrote_video else None
+            payload["video_frames"] = vwriter.frame_count
         payload.update(_rtc_telemetry())
 
         # Per-actuator resolution stats (issue #165): the fraction of steps each
@@ -1508,6 +1553,7 @@ class PolicyRunner:
         async_rtc: bool = False,
         rtc_inference_timeout_s: float | None = None,
         policy_kwargs: dict[str, Any] | None = None,
+        video: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Evaluate ``policy`` for ``n_episodes`` episodes.
 
@@ -1572,6 +1618,14 @@ class PolicyRunner:
                 (WBC ``target_velocity``; cuRobo/MoveIt2 ``target_pose`` /
                 ``target_joints`` / ``world_update`` - the issue #300 keys) need
                 this to be evaluated against a goal at all.
+            video: Optional per-episode MP4 recording config (same dict schema
+                as :meth:`run` / ``run_policy``: ``path`` enables it, plus
+                ``fps`` / ``camera`` / ``width`` / ``height``). One file per
+                episode with ``_ep{i}`` inserted into the filename; the written
+                paths are returned in the result json ``video_paths``. Only the
+                ``success_fn`` path records - passing ``video`` with a ``spec``
+                is rejected (the benchmark path stays recording-free; use
+                :meth:`run` for a benchmark rollout video).
 
         Returns:
             Standard status dict. The JSON payload carries an RTC telemetry
@@ -1620,6 +1674,20 @@ class PolicyRunner:
                             "The spec/benchmark path stays synchronous for bit-stable "
                             "reproducibility; use run_policy(async_rtc=...) for "
                             "benchmark-style latency masking."
+                        )
+                    }
+                ],
+            }
+
+        if video and spec is not None:
+            return {
+                "status": "error",
+                "content": [
+                    {
+                        "text": (
+                            "video recording is only supported on the success_fn eval "
+                            "path (eval_policy). The spec/benchmark path does not record "
+                            "rollout video; use run_policy(video=...) for a benchmark rollout."
                         )
                     }
                 ],
@@ -1706,12 +1774,23 @@ class PolicyRunner:
         # episode boundaries, exactly like the spec eval path and ``run()``.
         global_step = 0
 
-        def _fire_on_frame(obs: dict[str, Any], action: dict[str, Any]) -> None:
+        # Optional per-episode rollout video (eval_policy video=). One MP4 per
+        # episode via the _ep{i} filename templating that run_policy's
+        # multi-episode loop already uses, so an eval can be watched to see WHY
+        # episodes fail - not just read as an aggregate success_rate. The writer
+        # is opened per episode below; _fire_on_frame appends a frame at the fps
+        # cadence on the same synchronous eval-thread point as the on_frame hook.
+        video_paths: list[str] = []
+        current_vwriter: _RolloutVideoWriter | None = None
+
+        def _fire_on_frame(obs: dict[str, Any], action: dict[str, Any], ep_step: int) -> None:
             # Fire AFTER ``send_action`` (post-action obs unavailable yet, so
             # pass the pre-action obs the chunk was queried with - matches
             # ``_evaluate_with_spec``). The hook is best-effort telemetry: a
             # failure is logged at WARN and never aborts the eval.
             nonlocal global_step
+            if current_vwriter is not None:
+                current_vwriter.capture(ep_step)
             if on_frame is not None:
                 try:
                     on_frame(global_step, obs, action)
@@ -1723,6 +1802,14 @@ class PolicyRunner:
             self.sim.reset()
             success = False
             steps = 0
+
+            # Per-episode MP4 (foo_ep{i}.mp4). Validation + camera probe happen
+            # here; a bad path/camera fails the eval up-front (on ep 0) instead
+            # of running N episodes and writing nothing.
+            ep_vcfg = self.sim._episode_video_config(video, ep)
+            current_vwriter, _video_err = _RolloutVideoWriter.open(self.sim, ep_vcfg, control_frequency)
+            if _video_err is not None:
+                return _video_err
 
             if async_rtc:
                 # Opt-in async overlap: a single background worker computes the
@@ -1743,7 +1830,7 @@ class PolicyRunner:
                         if steps >= max_steps:
                             break
                         self.sim.send_action(action_dict, robot_name=robot_name, n_substeps=n_substeps)
-                        _fire_on_frame(_observation, action_dict)
+                        _fire_on_frame(_observation, action_dict, steps)
                         steps += 1
                         # Check success against the LIVE post-action observation
                         # (mirrors the synchronous path / _evaluate_with_spec).
@@ -1775,7 +1862,7 @@ class PolicyRunner:
                         if steps >= max_steps:
                             break
                         self.sim.send_action(action_dict, robot_name=robot_name, n_substeps=n_substeps)
-                        _fire_on_frame(observation, action_dict)
+                        _fire_on_frame(observation, action_dict, steps)
                         steps += 1
                         # Check success against the LIVE post-action observation,
                         # not the stale pre-action obs. Checking the pre-action
@@ -1794,6 +1881,18 @@ class PolicyRunner:
             # dataset records per-episode boundaries rather than collapsing
             # every rollout into one mega-episode.
             self._finalize_recorder_episode()
+
+            if current_vwriter is not None:
+                current_vwriter.close()
+                if current_vwriter.frame_count > 0 and os.path.exists(current_vwriter.path):
+                    video_paths.append(current_vwriter.path)
+                else:
+                    logger.warning(
+                        "eval_policy episode %d: video requested but wrote 0 frames to %s",
+                        ep,
+                        current_vwriter.path,
+                    )
+                current_vwriter = None
 
         n_success = sum(1 for r in results if r["success"])
         success_rate = n_success / max(n_episodes, 1)
@@ -1836,6 +1935,7 @@ class PolicyRunner:
                         **rtc_telemetry,
                         "policy_resident_rss_mb": process_rss_mb(),
                         "episodes": results,
+                        "video_paths": video_paths,
                     }
                 },
             ],

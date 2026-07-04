@@ -872,6 +872,42 @@ class TestExecuteTaskSync:
         assert "boom" in result["content"][0]["text"]
         hw.cleanup()
 
+    def test_sync_runner_within_running_loop_offloads_to_thread(self):
+        """When called from inside a live event loop, _execute_task_sync must
+        offload to a worker thread instead of calling asyncio.run() on the
+        running loop (which raises "cannot be called from a running event
+        loop"). An async tool context drives this path, so it must complete
+        and report success rather than crash."""
+        fake = _FakeLeRobot(connected=True)
+        hw = _make_robot(fake)
+
+        loop_ids: list[int] = []
+
+        async def _ok_async(*a, **k):
+            # Records the loop the task actually ran on so we can assert it is
+            # a fresh worker-thread loop, not the caller's running loop.
+            loop_ids.append(id(asyncio.get_running_loop()))
+            hw._task_state.status = TaskStatus.COMPLETED
+            hw._task_state.duration = 0.5
+            hw._task_state.step_count = 3
+
+        hw._execute_task_async = _ok_async  # type: ignore[assignment]
+
+        async def _driver() -> dict:
+            caller_loop_id = id(asyncio.get_running_loop())
+            # Blocking call from within a running loop; exercises the
+            # ThreadPoolExecutor branch. Must not raise.
+            result = hw._execute_task_sync("pick", policy_port=5555, policy_provider="mock")
+            return {"result": result, "caller_loop_id": caller_loop_id}
+
+        out = asyncio.run(_driver())
+        assert out["result"]["status"] == "success"
+        assert "completed" in out["result"]["content"][0]["text"]
+        # The task ran on a distinct loop created in the worker thread, proving
+        # the running loop was not reused by asyncio.run().
+        assert loop_ids and loop_ids[0] != out["caller_loop_id"]
+        hw.cleanup()
+
 
 class TestStreamExecuteHappyPath:
     def test_execute_action_runs_task_and_returns_result(self):

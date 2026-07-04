@@ -296,6 +296,69 @@ def test_build_command_rejects_unknown_action() -> None:
         build_lerobot_command(action="bogus", robot_type="so101_follower")
 
 
+def test_build_replay_command_forwards_dataset_root() -> None:
+    """Replay must forward ``--dataset.root`` so it reads from the given cache dir.
+
+    ``dataset_root`` overrides lerobot's default ``~/.cache/huggingface/lerobot``
+    location. If the replay builder drops it, playback silently targets the wrong
+    (or a missing) on-disk dataset, so the flag/value pairing is pinned here.
+    """
+    cmd = build_lerobot_command(
+        action="replay",
+        robot_type="so101_follower",
+        robot_port="/dev/ttyACM0",
+        dataset_repo_id="user/fold",
+        replay_episode=3,
+        dataset_root="/data/lerobot/fold",
+    )
+    assert "lerobot.scripts.lerobot_replay" in cmd
+    assert cmd[cmd.index("--dataset.root") + 1] == "/data/lerobot/fold"
+
+
+def test_build_teleop_command_forwards_display_data() -> None:
+    """Plain teleop (no dataset) must emit ``--display_data true`` when requested.
+
+    The viewer flag lives on a different code path than record/dagger mode; a
+    teleoperation session with ``display_data=True`` must still open the rerun
+    viewer, so the explicit "true" value form is pinned for the teleop branch.
+    """
+    cmd = build_lerobot_command(
+        action="start",
+        robot_type="so101_follower",
+        robot_port="/dev/ttyACM0",
+        teleop_type="so101_leader",
+        teleop_port="/dev/ttyACM1",
+        display_data=True,
+    )
+    # No dataset given -> plain teleoperate entrypoint (not record).
+    assert "lerobot.scripts.lerobot_teleoperate" in cmd
+    assert cmd[cmd.index("--display_data") + 1] == "true"
+
+
+def test_build_dagger_command_forwards_dataset_root_and_display_data() -> None:
+    """DAgger correction runs must forward ``--dataset.root`` and ``--display_data``.
+
+    Corrections are appended to an existing dataset; ``dataset_root`` picks the
+    on-disk location and ``display_data`` opens the viewer during takeover. Both
+    optional flags share the dagger (lerobot-rollout) code path, so pin that they
+    map to their nested/top-level CLI arguments with the supplied values.
+    """
+    cmd = build_lerobot_command(
+        action="dagger",
+        robot_type="so101_follower",
+        robot_port="/dev/ttyACM0",
+        teleop_type="so101_leader",
+        teleop_port="/dev/ttyACM1",
+        policy_path="user/act_fold",
+        dataset_repo_id="user/fold_corrections",
+        dataset_root="/data/lerobot/fold_corrections",
+        display_data=True,
+    )
+    assert "lerobot.scripts.lerobot_rollout" in cmd
+    assert cmd[cmd.index("--dataset.root") + 1] == "/data/lerobot/fold_corrections"
+    assert cmd[cmd.index("--display_data") + 1] == "true"
+
+
 # ---------------------------------------------------------------------------
 # SessionManager - persisted store, dead-process pruning
 # ---------------------------------------------------------------------------

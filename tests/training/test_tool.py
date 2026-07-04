@@ -5,6 +5,8 @@ import json
 
 import pytest
 
+from strands_robots.training.base import TrainResult
+
 # ``from strands_robots.tools import train_policy`` resolves via the package's
 # lazy __getattr__ (tools/__init__.py) to the *tool object* (a
 # DecoratedFunctionTool), which CodeQL's points-to treats as a non-callable
@@ -281,3 +283,79 @@ class TestInputSafety:
             extra={"dataset.episodes": "1", "num_workers": "4"},
         )
         assert res["status"] == "success", _text(res)
+
+
+class TestTrainErrorBoundary:
+    """The ``action='train'`` error-path contract of the train_policy tool.
+
+    train_policy is an agent ``@tool`` boundary: every failure mode must be
+    reported as the canonical ``{"status": "error", "content": [...]}`` result,
+    the tool must never raise past dispatch, and a failure at any stage must
+    launch nothing further.
+    """
+
+    def test_train_reports_backend_validation_problems_and_launches_nothing(self, dataset_root, tmp_path):
+        """A valid data source + output_dir clear the early argument guard, so
+        the tool reaches the backend's own ``validate()``. A spec problem there
+        (``steps <= 0``) must be reported as a validation problem and launch
+        NOTHING -- no checkpoint may be written to disk."""
+        out = tmp_path / "out"
+        res = train_policy(
+            action="train",
+            provider="mock",
+            dataset_root=dataset_root,
+            base_model="m",
+            output_dir=str(out),
+            steps=0,
+        )
+        assert res["status"] == "error"
+        assert "validation problems (nothing launched)" in _text(res)
+        assert "steps must be > 0" in _text(res)
+        # "launches nothing" is the behavioural claim: no checkpoint stub exists.
+        assert not (out / "checkpoints" / "last").exists()
+
+    def test_train_surfaces_runtime_train_failure_as_error(self, monkeypatch, dataset_root, tmp_path):
+        """When ``validate()`` passes but the backend's ``train()`` fails at
+        RUNTIME (e.g. CUDA OOM) -- distinct from a config problem -- the tool
+        must surface it as a provider-tagged error, never as a success."""
+
+        class _RuntimeFailTrainer:
+            def validate(self, spec):
+                return []
+
+            def train(self, spec):
+                return TrainResult(status="error", job_id="", message="CUDA out of memory")
+
+        monkeypatch.setattr(_tp, "create_trainer", lambda provider: _RuntimeFailTrainer())
+        res = train_policy(
+            action="train",
+            provider="mock",
+            dataset_root=dataset_root,
+            base_model="m",
+            output_dir=str(tmp_path / "o"),
+            steps=10,
+        )
+        assert res["status"] == "error"
+        assert "training failed" in _text(res)
+        assert "CUDA out of memory" in _text(res)
+
+    def test_unexpected_internal_exception_is_caught_at_tool_boundary(self, monkeypatch, dataset_root, tmp_path):
+        """An unexpected internal error (here ``create_trainer`` raising) must be
+        caught and returned as a structured error -- an agent ``@tool`` must
+        never let an exception propagate past dispatch and crash the agent."""
+
+        def _boom(provider):
+            raise RuntimeError("unexpected boom")
+
+        monkeypatch.setattr(_tp, "create_trainer", _boom)
+        res = train_policy(
+            action="train",
+            provider="mock",
+            dataset_root=dataset_root,
+            base_model="m",
+            output_dir=str(tmp_path / "o"),
+            steps=10,
+        )
+        assert res["status"] == "error"
+        assert "train_policy error" in _text(res)
+        assert "unexpected boom" in _text(res)

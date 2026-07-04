@@ -369,6 +369,24 @@ poses with `mj_kinematics` (the minimal forward for `mj_ray`, cheaper than a ful
 once and holds the lock for the whole batch so all rays sample one consistent
 snapshot.
 
+### Added: `eval_policy(video=...)` records one rollout MP4 per episode
+
+`run_policy` could already record rollout video, but `eval_policy` -- the
+multi-episode, success-measuring path -- could not, so an evaluation could only
+be read as an aggregate `success_rate` and never *watched* to see WHY episodes
+failed. `eval_policy` (and `PolicyRunner.evaluate`) now accept the same
+`video={...}` config as `run_policy` (`path` enables it, plus `fps` / `camera` /
+`width` / `height`) and write one MP4 per episode with `_ep{i}` inserted into the
+filename (`eval.mp4` -> `eval_ep0.mp4`, `eval_ep1.mp4`, ...), returning the
+written files in the result json `video_paths`. The output path is validated and
+the camera probed up-front, so a bad camera fails the eval immediately rather
+than after N episodes of silent 0-frame MP4s. Recording is scoped to the
+`success_fn` path; passing `video` with a benchmark `spec` is rejected with a
+clear error (use `run_policy` for a benchmark rollout video). The writer
+lifecycle (path validation, camera probe, fps-cadence frame capture) is now a
+single `_RolloutVideoWriter` helper shared by `run` and `evaluate` instead of two
+copies.
+
 
 ## [0.4.1] - 2026-07-01
 

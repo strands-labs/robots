@@ -3161,8 +3161,8 @@ class MuJoCoSimEngine(
             if field_key in remapped and param_key not in remapped:
                 remapped[param_key] = remapped.pop(field_key)
 
-        # Fold flat video keys into `video` dict for run_policy/start_policy.
-        if action in ("run_policy", "start_policy") and "video" not in remapped:
+        # Fold flat video keys into `video` dict for run_policy/start_policy/eval_policy.
+        if action in ("run_policy", "start_policy", "eval_policy") and "video" not in remapped:
             _video_flat: dict[str, Any] = {}
             if "output_path" in remapped:
                 _video_flat["path"] = remapped.pop("output_path")

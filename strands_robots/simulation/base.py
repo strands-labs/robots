@@ -1464,6 +1464,7 @@ class SimEngine(ABC):
         rtc_inference_timeout_s: float | None = None,
         on_frame: Callable[[int, dict[str, Any], dict[str, Any]], None] | None = None,
         policy_kwargs: dict[str, Any] | None = None,
+        video: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Multi-episode policy evaluation via ``PolicyRunner.evaluate``.
 
@@ -1528,6 +1529,16 @@ class SimEngine(ABC):
         genuinely failed every episode. This case logs a warning and sets
         ``success_measured=false`` in the returned json; pass
         ``success_fn="contact"`` (or a callable) to measure real task success.
+
+        ``video`` optionally records one rollout MP4 PER EPISODE so an eval can
+        be watched to see WHY episodes fail, not just read as an aggregate
+        success rate. Same dict schema as :meth:`run_policy` (``path`` enables
+        it; ``fps`` / ``camera`` / ``width`` / ``height``); the path is
+        validated and the camera probed up-front. ``_ep{i}`` is inserted into
+        the filename per episode (``eval.mp4`` -> ``eval_ep0.mp4``,
+        ``eval_ep1.mp4``, ...) so episodes never overwrite each other, and the
+        written files are returned in the result json ``video_paths``. Recording
+        is unsupported on the benchmark (``evaluate_benchmark``) path.
         """
         robots = self.list_robots()
         if not robots:
@@ -1582,6 +1593,7 @@ class SimEngine(ABC):
             rtc_inference_timeout_s=rtc_inference_timeout_s,
             on_frame=on_frame,
             policy_kwargs=policy_kwargs,
+            video=video,
         )
 
     # Benchmark protocol facades
