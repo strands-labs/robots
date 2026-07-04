@@ -46,6 +46,18 @@ class TestRacePreventionLocks:
         assert "with self._lock" in src
         assert "contact_snapshot" in src
 
+    def test_raycast_holds_lock(self):
+        # mj_ray reads data.geom_xpos/geom_xmat (derived); the refresh + cast
+        # must be serialized against a policy thread's mj_step.
+        src = inspect.getsource(PhysicsMixin.raycast)
+        assert "with self._lock" in src, "raycast must acquire self._lock"
+        assert "mj_kinematics" in src, "raycast must refresh geom poses before mj_ray"
+
+    def test_multi_raycast_holds_lock(self):
+        src = inspect.getsource(PhysicsMixin.multi_raycast)
+        assert "with self._lock" in src, "multi_raycast must acquire self._lock"
+        assert "mj_kinematics" in src, "multi_raycast must refresh geom poses before mj_ray"
+
 
 class TestFunctionalCorrectnessUnderLock:
     """The lock addition must NOT change observable behaviour."""

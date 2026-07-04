@@ -17,6 +17,24 @@ wins), and the notebooks README no longer claims a headless-Linux fallback that
 carried the same unconditional `cgl` -- masked in CI (the workflows export
 `MUJOCO_GL=osmesa`) but erroring a bare-Linux local run -- and it now uses the
 same platform-aware default. No `cgl` default remains anywhere in the repo.
+
+### Added: `run_policy(policy_object=...)` on the hardware `Robot` -- sim parity for pre-built policies
+
+The simulation side has a one-call rollout for a policy constructed in-process
+(`Simulation.run_policy(policy_object=..., n_steps=...)`), but the hardware
+path's only control loop (`start_task`) builds its own server-backed policy
+from `policy_provider` + `policy_port` and accepts no policy object -- so
+deploying a local checkpoint on an edge device (in-process policy, no server
+on a port) meant hand-writing the connect -> observe -> get_actions ->
+send_action loop the library already contains. The hardware `Robot` now has
+`run_policy(policy_object=..., instruction=..., duration=..., n_steps=None)`
+(blocking): it drives the caller's object through the exact `start_task` loop
+(connect with half-open-port rollback, state-key initialization, the RTC
+control-frequency / observed-delay contract, `resolve_chunk_length` chunk
+consumption), stops at `duration` or after `n_steps` applied actions (the sim
+parameter), and returns a text + `{"json": ...}` result per the tool-result
+contract. `start_task` and the provider+port path are unchanged.
+
 ### Fixed: `TrainSpec.learning_rate` was silently ignored by the `lerobot_local` trainer
 
 `learning_rate` was the one universal `TrainSpec` field with zero references in
@@ -318,6 +336,39 @@ matching `randomize(randomize_physics=True)` and the Newton backend. In a
 compound-pendulum check, a mass-only change wrongly shrank the swing period ~2x
 (0.87 s vs 1.76 s); with the fix the period stays mass-invariant as physics
 requires. Massless frames (mass 0) are guarded against division by zero.
+
+### Fixed: `set_geom_properties(size=...)` left stale collision bounds so grown geoms were passed through
+
+Resizing a primitive geom at runtime wrote the new `geom_size` but never
+refreshed `geom_rbound` (the broadphase bounding-sphere radius) or `geom_aabb`
+(the mid-phase AABB), both of which are derived from `geom_size` at compile time
+and are not recomputed by `mj_forward`/`mj_step`. A geom grown past its original
+bounds was therefore silently culled from the broadphase, so other bodies passed
+straight through it while the call still reported `status="success"`. In a
+repro, a ball dropped onto a small platform grown into a wide table fell through
+to the floor (rest z 0.03) instead of landing on it (rest z 0.55). The bounds
+are now recomputed from `geom_type` + `geom_size` for the size-defined
+primitives (sphere/capsule/cylinder/ellipsoid/box) so a grown geom collides
+correctly, matching a fresh compile at the new size. Mesh/plane/height-field
+geoms take their extent from asset data, so a `size` write stays inert for them.
+
+### Fixed: `raycast`/`multi_raycast` intersected stale geom poses (no forward, no lock)
+
+`mj_ray` intersects a ray against `data.geom_xpos`/`geom_xmat` -- the world-frame
+geom poses, which are derived state populated by kinematics and NOT recomputed on
+a bare `qpos` write. Both `raycast` and `multi_raycast` called `mj_ray` directly
+without refreshing those poses and without holding the sim lock, unlike every
+other physics query (`get_jacobian`, `get_mass_matrix`, `get_body_state`,
+`inverse_dynamics`, `get_sensor_data`), which lock and forward before reading.
+As a result a cast issued after a direct pose change (a planning/IK loop that
+writes `qpos`) silently reported a hit against a geom's *previous* location while
+returning `status=success`, and a cast issued while a per-robot policy thread was
+stepping could tear the read mid-`mj_step`. Both methods now refresh geom world
+poses with `mj_kinematics` (the minimal forward for `mj_ray`, cheaper than a full
+`mj_forward`) and serialize the cast under the sim lock; `multi_raycast` refreshes
+once and holds the lock for the whole batch so all rays sample one consistent
+snapshot.
+
 
 ## [0.4.1] - 2026-07-01
 

@@ -591,6 +591,85 @@ class TestRuntimeModification:
         assert new_size[0] == pytest.approx(0.2)
         assert float(new_size[2]) == pytest.approx(original_tail)
 
+    def test_set_geom_size_grow_recomputes_rbound_and_aabb(self, sim):
+        """Growing a size-defined primitive refreshes its collision bounds.
+
+        ``geom_rbound`` (broadphase) and ``geom_aabb`` (mid-phase) are derived
+        from ``geom_size`` at compile time and are not refreshed by the solver.
+        A grown geom whose bounds are left stale is silently culled from
+        broadphase, so other bodies pass through it. The recompute must bring
+        both to the values a fresh compile at the new size would produce.
+        """
+        model = sim._world._model
+        gid = mj.mj_name2id(model, mj.mjtObj.mjOBJ_GEOM, "box_geom")
+        # box_geom compiles at half-extents 0.1 (rbound ~= 0.1732).
+        assert float(model.geom_rbound[gid]) == pytest.approx(np.linalg.norm([0.1, 0.1, 0.1]))
+
+        result = sim.set_geom_properties(geom_name="box_geom", size=[0.25, 0.25, 0.02])
+        assert result["status"] == "success"
+
+        expected_half = [0.25, 0.25, 0.02]
+        assert float(model.geom_rbound[gid]) == pytest.approx(np.linalg.norm(expected_half))
+        assert model.geom_aabb[gid][3:6].tolist() == pytest.approx(expected_half)
+
+    def test_set_geom_size_capsule_recomputes_rbound(self, sim):
+        """The recompute uses the correct per-type formula (capsule = r + halflen)."""
+        model = sim._world._model
+        gid = mj.mj_name2id(model, mj.mjtObj.mjOBJ_GEOM, "link1_geom")
+        result = sim.set_geom_properties(geom_name="link1_geom", size=[0.05, 0.2])
+        assert result["status"] == "success"
+        # capsule rbound = radius + half-length; aabb half = [r, r, r + halflen].
+        assert float(model.geom_rbound[gid]) == pytest.approx(0.25)
+        assert model.geom_aabb[gid][3:6].tolist() == pytest.approx([0.05, 0.05, 0.25])
+
+    def test_set_geom_size_grow_lets_object_rest_on_it(self, sim):
+        """Behavioral: a body rests on a grown static geom instead of falling through.
+
+        A small static platform is grown into a wide table via the public API,
+        then a ball offset well beyond the platform's original bounding radius
+        is dropped. With stale collision bounds the broadphase culls the pair
+        and the ball falls to the floor; after the recompute it lands on the
+        grown table.
+        """
+        from strands_robots.simulation.models import SimStatus, SimWorld
+
+        scene = """
+        <mujoco>
+          <option timestep="0.002" gravity="0 0 -9.81"/>
+          <worldbody>
+            <geom name="floor" type="plane" size="5 5 0.1"/>
+            <body name="plat" pos="0 0 0.5">
+              <geom name="platg" type="box" size="0.02 0.02 0.02"/>
+            </body>
+            <body name="ball" pos="0.15 0 0.6">
+              <freejoint/>
+              <geom name="ballg" type="sphere" size="0.03"/>
+            </body>
+          </worldbody>
+        </mujoco>
+        """
+        s = Simulation(tool_name="test_grow", mesh=False)
+        try:
+            s._world = SimWorld()
+            spec = mj.MjSpec.from_string(scene)
+            s._world._backend_state["spec"] = spec
+            s._world._model = spec.compile()
+            s._world._data = mj.MjData(s._world._model)
+            s._world.status = SimStatus.IDLE
+            mj.mj_forward(s._world._model, s._world._data)
+
+            result = s.set_geom_properties(geom_name="platg", size=[0.25, 0.25, 0.02])
+            assert result["status"] == "success"
+
+            model, data = s._world._model, s._world._data
+            for _ in range(2000):
+                mj.mj_step(model, data)
+            ball_z = float(data.body("ball").xpos[2])
+            # Table top is at z = 0.5 + 0.02 = 0.52; ball (r=0.03) rests ~0.55.
+            assert ball_z > 0.5, f"ball fell through the grown table (rest z={ball_z:.4f})"
+        finally:
+            s.cleanup()
+
 
 class TestContactForces:
     def test_get_contact_forces_after_settling(self, sim):
@@ -831,3 +910,50 @@ class TestMultiRaycast:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+class TestRaycastReflectsCurrentPose:
+    """raycast / multi_raycast must intersect the CURRENT geom poses.
+
+    ``mj_ray`` reads ``data.geom_xpos``/``geom_xmat`` (world-frame geom poses,
+    derived state). MuJoCo does not recompute those on a bare ``qpos`` write --
+    a planning/IK loop that pokes ``qpos`` (or a policy thread mid-``mj_step``)
+    leaves them stale. The query must refresh kinematics first, exactly like
+    ``get_jacobian``/``get_body_state`` do, or it silently reports a hit against
+    a geom's previous location while returning ``status=success``.
+    """
+
+    @staticmethod
+    def _move_box_far(sim):
+        """Translate the free box off the +z axis via a direct qpos write, no forward."""
+        model, data = sim._world._model, sim._world._data
+        jid = mj.mj_name2id(model, mj.mjtObj.mjOBJ_JOINT, "box_free")
+        adr = int(model.jnt_qposadr[jid])
+        data.qpos[adr : adr + 3] = [3.0, 0.0, 0.5]  # move box out of the downward ray at x=0
+        data.qpos[adr + 3 : adr + 7] = [1.0, 0.0, 0.0, 0.0]
+        # deliberately NO mj_forward / mj_kinematics here
+
+    def test_raycast_reflects_pose_change_without_forward(self, sim):
+        # Baseline: the downward ray hits the box (nearest) at its top face.
+        base = _extract_json_block(sim.raycast(origin=[0, 0, 2], direction=[0, 0, -1]), 1)
+        assert base["geom_name"] == "box_geom"
+        assert base["distance"] == pytest.approx(1.4, abs=1e-3)
+
+        self._move_box_far(sim)
+
+        # After moving the box (no forward), the downward ray at x=0 must miss
+        # the box and hit the ground plane at z=0 -> distance 2.0. Pre-fix this
+        # reads the stale geom_xpos and still reports box_geom at 1.4.
+        after = _extract_json_block(sim.raycast(origin=[0, 0, 2], direction=[0, 0, -1]), 1)
+        assert after["geom_name"] == "ground"
+        assert after["distance"] == pytest.approx(2.0, abs=1e-3)
+
+    def test_multi_raycast_reflects_pose_change_without_forward(self, sim):
+        dirs = [[0, 0, -1]]
+        base = _extract_json_block(sim.multi_raycast(origin=[0, 0, 2], directions=dirs), 1)["rays"]
+        assert base[0]["distance"] == pytest.approx(1.4, abs=1e-3)  # hits box top
+
+        self._move_box_far(sim)
+
+        after = _extract_json_block(sim.multi_raycast(origin=[0, 0, 2], directions=dirs), 1)["rays"]
+        assert after[0]["distance"] == pytest.approx(2.0, abs=1e-3)  # now hits ground

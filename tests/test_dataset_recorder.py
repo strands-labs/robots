@@ -1414,3 +1414,106 @@ class TestCodecRouting:
         assert out == {}
         # The warning names the missing config class so the cause is actionable.
         assert any("RGBEncoderConfig" in rec.message for rec in caplog.records)
+
+
+def test_add_frame_fills_missing_action_key_with_zero():
+    """An action key absent from the action dict contributes 0.0 at its slot.
+
+    ``add_frame`` flattens the action into feature-schema order. A control step
+    that does not populate every declared action key (e.g. a gripper channel the
+    policy left unset) must still emit a full-width action vector with the
+    missing slots zeroed - a short vector would silently misalign the recorded
+    ``action`` column against its declared names.
+    """
+    ds = _CapturingDataset(_state_action_features(["j1"], ["a", "b", "c"]))
+    rec = DatasetRecorder(dataset=ds)
+
+    # "b" is absent from the action dict entirely; the schema still has 3 slots.
+    rec.add_frame(observation={"j1": 1.0}, action={"a": 0.5, "c": 0.7}, task="t")
+
+    frame = ds.frames[0]
+    assert np.allclose(frame["action"], [0.5, 0.0, 0.7])
+    assert frame["action"].dtype == np.float32
+
+
+def test_finalize_swallows_dataset_error_and_still_closes(caplog):
+    """A dataset ``finalize()`` that raises is logged, not propagated.
+
+    Finalization runs at the end of a recording (often during teardown); a
+    writer that has already released its parquet handle must not turn a
+    best-effort flush into a crash. The recorder logs a warning, marks itself
+    closed, and a subsequent ``finalize()`` is a clean no-op.
+    """
+
+    class _FinalizeRaises(_CapturingDataset):
+        def finalize(self):
+            raise RuntimeError("parquet writer already gone")
+
+    ds = _FinalizeRaises(_state_action_features(["j1"], ["j1"]))
+    rec = DatasetRecorder(dataset=ds)
+
+    with caplog.at_level("WARNING"):
+        rec.finalize()  # must not raise
+
+    assert rec._closed is True
+    assert any("finalize warning" in rec_.message for rec_ in caplog.records)
+
+    # Idempotent after a failed finalize: the second call early-returns.
+    rec.finalize()
+
+
+def test_get_lerobot_dataset_class_raises_clean_importerror_when_unavailable(monkeypatch):
+    """``_get_lerobot_dataset_class`` surfaces a clean, actionable ImportError.
+
+    When lerobot's dataset module does not resolve and no test has injected a
+    mock class, the resolver must raise an ImportError that names the install
+    remedy rather than leaking the raw import failure to the caller.
+    """
+    import sys
+
+    from strands_robots import dataset_recorder as dr
+
+    # No test-injected mock class, and the real import target does not resolve.
+    monkeypatch.setattr(dr, "LeRobotDataset", None, raising=False)
+    monkeypatch.setitem(sys.modules, "lerobot.datasets.lerobot_dataset", None)
+
+    with pytest.raises(ImportError, match="pip install lerobot"):
+        dr._get_lerobot_dataset_class()
+
+
+def test_read_dataset_episode_indices_dedups_and_skips_columnless_parquet(tmp_path):
+    """Episode ground truth dedups repeated ``episode_index`` rows and skips a
+    shard carrying no ``episode_index`` column.
+
+    A finalized dataset can spread episodes over several parquet shards; a shard
+    may repeat an episode row (first length wins) or be a metadata-only shard
+    with no ``episode_index`` column at all. The reader must produce a single
+    deduplicated, ordered episode list regardless.
+    """
+    pa = pytest.importorskip("pyarrow")
+    pq = pytest.importorskip("pyarrow.parquet")
+
+    from strands_robots.dataset_recorder import read_dataset_episode_indices
+
+    ep_dir = tmp_path / "meta" / "episodes"
+    (ep_dir / "chunk-000").mkdir(parents=True)
+    (ep_dir / "chunk-001").mkdir(parents=True)
+
+    # Shard 0 (sorts first): episode 0 appears twice - first length (3) wins.
+    pq.write_table(
+        pa.table({"episode_index": [0, 0, 1], "length": [3, 99, 5]}),
+        ep_dir / "chunk-000" / "episodes_000.parquet",
+    )
+    # Shard 1: a metadata-only shard with no episode_index column is skipped.
+    pq.write_table(
+        pa.table({"some_other_stat": [1.0, 2.0]}),
+        ep_dir / "chunk-001" / "episodes_001.parquet",
+    )
+
+    result = read_dataset_episode_indices(tmp_path)
+
+    assert result["episode_indices"] == [0, 1]
+    assert result["total_episodes"] == 2
+    assert result["frames_per_episode"] == [3, 5]  # first-seen length for ep 0
+    assert result["total_frames"] == 8
+    assert result["info_total_episodes"] is None  # no meta/info.json written

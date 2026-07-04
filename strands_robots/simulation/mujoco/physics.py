@@ -76,6 +76,58 @@ def _full_mass_matrix(mj: Any, model: Any, data: Any) -> np.ndarray:
     return dst
 
 
+def _recompute_primitive_geom_bounds(mj: Any, model: Any, gid: int) -> bool:
+    """Recompute a geom's collision bounding volumes after a runtime size change.
+
+    ``geom_rbound`` (the broadphase bounding-sphere radius) and ``geom_aabb``
+    (the mid-phase axis-aligned bounding box) are derived from ``geom_size`` at
+    compile time and are NOT recomputed by ``mj_forward``/``mj_step``. Writing a
+    larger ``geom_size`` at runtime without refreshing them leaves the broadphase
+    culling against the old, smaller radius, so contacts with the grown surface
+    are silently dropped and other bodies pass straight through it.
+
+    Recompute both from ``geom_type`` + ``geom_size`` for the primitive types
+    whose extent is defined by ``geom_size`` (sphere, capsule, cylinder,
+    ellipsoid, box). Mesh/plane/height-field/SDF geoms derive their extent from
+    asset data, not ``geom_size``, so a size write is inert for them and their
+    bounds are left untouched.
+
+    Args:
+        mj: The imported ``mujoco`` module.
+        model: The live ``MjModel`` to update in place.
+        gid: The geom id whose ``geom_size`` was just changed.
+
+    Returns:
+        ``True`` if the bounds were recomputed (a size-defined primitive),
+        ``False`` for a type whose extent is not defined by ``geom_size``.
+    """
+    g = mj.mjtGeom
+    gtype = int(model.geom_type[gid])
+    s = [float(v) for v in model.geom_size[gid]]
+
+    # Per-type extent: (bounding-sphere radius, aabb half-extents). geom_size
+    # semantics differ by type, so both the rbound and the aabb are type-
+    # specific (they match a fresh compile at the new size).
+    if gtype == g.mjGEOM_SPHERE:
+        rbound, half = s[0], [s[0], s[0], s[0]]
+    elif gtype == g.mjGEOM_CAPSULE:
+        rbound, half = s[0] + s[1], [s[0], s[0], s[0] + s[1]]
+    elif gtype == g.mjGEOM_CYLINDER:
+        rbound, half = float(np.hypot(s[0], s[1])), [s[0], s[0], s[1]]
+    elif gtype == g.mjGEOM_ELLIPSOID:
+        rbound, half = max(s[0], s[1], s[2]), [s[0], s[1], s[2]]
+    elif gtype == g.mjGEOM_BOX:
+        rbound, half = float(np.linalg.norm(s[:3])), [s[0], s[1], s[2]]
+    else:
+        # mesh / plane / hfield / sdf: extent is not defined by geom_size.
+        return False
+
+    model.geom_rbound[gid] = float(rbound)
+    # geom_aabb layout is [center(3), half-extent(3)]; primitives are centered.
+    model.geom_aabb[gid, 3:6] = half
+    return True
+
+
 class PhysicsMixin:
     """Advanced MuJoCo physics capabilities mixed into ``Simulation``.
 
@@ -338,7 +390,10 @@ class PhysicsMixin:
     ) -> dict[str, Any]:
         """Cast a ray and find the first geom intersection.
 
-        Uses mj_ray for precise distance sensing / obstacle detection.
+        Uses mj_ray for precise distance sensing / obstacle detection. Geom
+        world poses are refreshed (``mj_kinematics``) under the sim lock before
+        the cast, so the result reflects the current ``qpos`` and cannot be torn
+        by a concurrent policy thread's ``mj_step``.
 
         Args:
             origin: [x, y, z] ray start point in world frame.
@@ -382,21 +437,30 @@ class PhysicsMixin:
         vec = vec / norm
 
         geomid = np.array([-1], dtype=np.int32)
-        dist = mj.mj_ray(
-            model,
-            data,
-            pnt,
-            vec,
-            None,  # geom group filter (None = all)
-            1 if include_static else 0,
-            exclude_body,
-            geomid,
-        )
-
-        hit = dist >= 0
-        geom_name = None
-        if hit and geomid[0] >= 0:
-            geom_name = mj.mj_id2name(model, mj.mjtObj.mjOBJ_GEOM, geomid[0])
+        # mj_ray intersects the ray against ``data.geom_xpos``/``geom_xmat``
+        # (world-frame geom poses -- derived state populated by kinematics, not
+        # recomputed on a bare ``qpos`` write). Refresh them under the lock so
+        # the cast reflects the current pose (e.g. after a direct ``qpos`` write
+        # from a planning/IK loop) and cannot be torn by a policy thread's
+        # ``mj_step``. ``mj_kinematics`` is the minimal forward that populates
+        # geom world poses -- cheaper than a full ``mj_forward`` and matching
+        # the defensive refresh the other query methods perform.
+        with self._lock:
+            mj.mj_kinematics(model, data)
+            dist = mj.mj_ray(
+                model,
+                data,
+                pnt,
+                vec,
+                None,  # geom group filter (None = all)
+                1 if include_static else 0,
+                exclude_body,
+                geomid,
+            )
+            hit = dist >= 0
+            geom_name = None
+            if hit and geomid[0] >= 0:
+                geom_name = mj.mj_id2name(model, mj.mjtObj.mjOBJ_GEOM, geomid[0])
 
         result = {
             "hit": hit,
@@ -1028,7 +1092,13 @@ class PhysicsMixin:
     ) -> dict[str, Any]:
         """Modify geom properties at runtime (no recompile needed).
 
-        Changes take effect immediately for rendering (color) or next step (friction, size).
+        Changes take effect immediately for rendering (``color``) or on the next
+        step (``friction``, ``size``). When ``size`` is changed on a size-defined
+        primitive (sphere/capsule/cylinder/ellipsoid/box), the geom's collision
+        bounding volumes (``geom_rbound`` for broadphase, ``geom_aabb`` for
+        mid-phase) are recomputed so a grown geom collides correctly instead of
+        letting other bodies pass through it. Mesh/plane/height-field geoms take
+        their extent from asset data, so a ``size`` write is inert for them.
         """
         if self._world is None or self._world._model is None or self._world._data is None:
             return {"status": "error", "content": [{"text": _NO_WORLD_MSG}]}
@@ -1064,6 +1134,12 @@ class PhysicsMixin:
             if size is not None:
                 n = min(len(size), 3)
                 model.geom_size[gid, :n] = size[:n]
+                # geom_rbound (broadphase) and geom_aabb (mid-phase) are derived
+                # from geom_size at compile time and are not refreshed by the
+                # solver; without recomputing them a grown geom keeps its old,
+                # smaller collision bounds and other bodies silently pass through
+                # it. Recompute both for size-defined primitives.
+                _recompute_primitive_geom_bounds(mj, model, gid)
                 changes.append(f"size → {model.geom_size[gid].tolist()}")
 
         return {
@@ -1132,7 +1208,10 @@ class PhysicsMixin:
     ) -> dict[str, Any]:
         """Cast multiple rays from a single origin (e.g., for LIDAR simulation).
 
-        Efficiently casts N rays using individual mj_ray calls.
+        Efficiently casts N rays using individual mj_ray calls. Geom world poses
+        are refreshed once (``mj_kinematics``) and the whole batch is cast under
+        the sim lock, so every ray samples one consistent, current snapshot of
+        the scene (see ``raycast``).
         Returns array of distances and hit geoms.
         """
         if self._world is None or self._world._model is None or self._world._data is None:
@@ -1154,36 +1233,45 @@ class PhysicsMixin:
         pnt = np.array(origin, dtype=np.float64)
         results: list[dict[str, Any]] = []
 
-        for idx, d in enumerate(directions):
-            try:
-                if len(d) != 3:
+        # Refresh geom world poses once, then serialize every mj_ray against a
+        # policy thread's mj_step (see ``raycast``). Held for the whole batch so
+        # all rays sample one consistent snapshot of the scene.
+        with self._lock:
+            mj.mj_kinematics(model, data)
+            for idx, d in enumerate(directions):
+                try:
+                    if len(d) != 3:
+                        results.append(
+                            {
+                                "distance": None,
+                                "geom_id": None,
+                                "error": f"ray[{idx}]: direction must have 3 elements, got {len(d)}",
+                            }
+                        )
+                        continue
+                except TypeError:
                     results.append(
                         {
                             "distance": None,
                             "geom_id": None,
-                            "error": f"ray[{idx}]: direction must have 3 elements, got {len(d)}",
+                            "error": f"ray[{idx}]: direction must be a list of 3 numbers",
                         }
                     )
                     continue
-            except TypeError:
+                vec = np.array(d, dtype=np.float64)
+                norm = np.linalg.norm(vec)
+                if norm < 1e-10:
+                    results.append({"distance": None, "geom_id": None, "error": f"ray[{idx}]: zero-length direction"})
+                    continue
+                vec /= norm
+                geomid = np.array([-1], dtype=np.int32)
+                dist = mj.mj_ray(model, data, pnt, vec, None, 1, exclude_body, geomid)
                 results.append(
-                    {"distance": None, "geom_id": None, "error": f"ray[{idx}]: direction must be a list of 3 numbers"}
+                    {
+                        "distance": float(dist) if dist >= 0 else None,
+                        "geom_id": int(geomid[0]) if dist >= 0 else None,
+                    }
                 )
-                continue
-            vec = np.array(d, dtype=np.float64)
-            norm = np.linalg.norm(vec)
-            if norm < 1e-10:
-                results.append({"distance": None, "geom_id": None, "error": f"ray[{idx}]: zero-length direction"})
-                continue
-            vec /= norm
-            geomid = np.array([-1], dtype=np.int32)
-            dist = mj.mj_ray(model, data, pnt, vec, None, 1, exclude_body, geomid)
-            results.append(
-                {
-                    "distance": float(dist) if dist >= 0 else None,
-                    "geom_id": int(geomid[0]) if dist >= 0 else None,
-                }
-            )
 
         hit_count = sum(1 for r in results if r["distance"] is not None)
         return {

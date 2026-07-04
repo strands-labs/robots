@@ -354,6 +354,70 @@ def test_path_action_base_paths(tmp_path: Path) -> None:
     assert tool_json(result)["robot_path"].endswith("robots")
 
 
+# --- get_calibration_path security contract (path-traversal guard) ---------
+
+
+def test_get_calibration_path_allows_valid_components(tmp_path: Path) -> None:
+    """A well-formed (type, model, id) triple maps to a path under base_path."""
+    mgr = LeRobotCalibrationManager(tmp_path)
+    path = mgr.get_calibration_path("teleoperators", "so101_leader", "blue_arm")
+    assert path == tmp_path / "teleoperators" / "so101_leader" / "blue_arm.json"
+
+
+def test_get_calibration_path_rejects_unknown_device_type(tmp_path: Path) -> None:
+    """device_type outside {teleoperators, robots} is refused, not silently used."""
+    mgr = LeRobotCalibrationManager(tmp_path)
+    with pytest.raises(ValueError, match="device_type must be one of"):
+        mgr.get_calibration_path("weapons", "so101", "arm")
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "..",  # parent-dir escape
+        "so101/../evil",  # embedded traversal
+        "a/b",  # path separator
+        ".hidden",  # leading dot (relative/hidden segment)
+        "arm id",  # whitespace
+        "arm;rm",  # shell metacharacter
+        "",  # empty component
+    ],
+)
+def test_get_calibration_path_rejects_unsafe_device_model(tmp_path: Path, bad: str) -> None:
+    """A device_model that could escape base_path is rejected with a clear error."""
+    mgr = LeRobotCalibrationManager(tmp_path)
+    with pytest.raises(ValueError, match="device_model contains invalid characters"):
+        mgr.get_calibration_path("robots", bad, "arm")
+
+
+@pytest.mark.parametrize("bad", ["..", "../evil", "a/b", ".hidden", "arm id", ""])
+def test_get_calibration_path_rejects_unsafe_device_id(tmp_path: Path, bad: str) -> None:
+    """A device_id that could escape base_path is rejected with a clear error."""
+    mgr = LeRobotCalibrationManager(tmp_path)
+    with pytest.raises(ValueError, match="device_id contains invalid characters"):
+        mgr.get_calibration_path("robots", "so101", bad)
+
+
+def test_get_calibration_path_keeps_resolved_path_inside_base(tmp_path: Path) -> None:
+    """Every accepted path stays within base_path (no traversal slips through)."""
+    mgr = LeRobotCalibrationManager(tmp_path)
+    path = mgr.get_calibration_path("robots", "so101_follower", "orange_arm")
+    assert tmp_path.resolve() in path.resolve().parents
+
+
+def test_path_action_surfaces_traversal_as_tool_error(tmp_path: Path) -> None:
+    """A traversal identifier reaches the tool as a clean error dict, not a crash."""
+    result = lerobot_calibrate(
+        action="path",
+        device_type="robots",
+        device_model="..",
+        device_id="arm",
+        base_path=str(tmp_path),
+    )
+    assert result["status"] == "error"
+    assert "invalid characters" in result["content"][0]["text"]
+
+
 def test_unknown_action_errors(tmp_path: Path) -> None:
     """An unrecognized action returns an error listing valid actions."""
     result = lerobot_calibrate(action="frobnicate", base_path=str(tmp_path))

@@ -468,3 +468,40 @@ def test_emergency_stop_dispatch_error_returns_error_dict_and_audits(fake_local_
     assert calls and calls[-1][0] == "emergency_stop"
     assert calls[-1][1] == "*"
     assert calls[-1][2] is False
+
+
+def test_tell_forwards_nonzero_policy_port_and_omits_default(fake_local_mesh):
+    """``policy_port`` reaches ``mesh.tell`` only when non-zero.
+
+    ``tell`` lets a caller pin the port the remote peer serves its policy on.
+    The default (``0``) means "let the mesh pick", so it must NOT be forwarded
+    as an explicit kwarg (which would override the peer's own default), while a
+    non-zero value must be passed through verbatim.
+    """
+    fake_local_mesh.tell.return_value = {"executed": "go"}
+
+    _strands_call(action="tell", target="peer-b", instruction="go")
+    assert "policy_port" not in fake_local_mesh.tell.call_args.kwargs
+
+    fake_local_mesh.tell.reset_mock()
+    out = _strands_call(action="tell", target="peer-b", instruction="go", policy_port=5556)
+    assert out["status"] == "success"
+    assert fake_local_mesh.tell.call_args.kwargs["policy_port"] == 5556
+
+
+def test_broadcast_summary_truncates_to_ten_responses(fake_local_mesh):
+    """A large fan-out is summarised with at most ten itemised responses.
+
+    ``broadcast`` can return one response per peer; itemising all of them would
+    bury the caller. The summary lists the first ten and reports the remainder
+    as ``... and N more`` while still stating the true total.
+    """
+    fake_local_mesh.broadcast.return_value = [{"i": n} for n in range(13)]
+
+    out = _strands_call(action="broadcast", command='{"action": "status"}')
+
+    assert out["status"] == "success"
+    text = out["content"][0]["text"]
+    assert "13 responses" in text
+    assert "... and 3 more" in text
+    assert text.count("  - ") == 10

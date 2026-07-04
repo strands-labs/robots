@@ -437,6 +437,64 @@ class TestMutation:
         new_model, _ = spec.recompile(model, data)
         assert mujoco.mj_name2id(new_model, mujoco.mjtObj.mjOBJ_CAMERA, "c") < 0
 
+    def test_remove_camera_missing_is_safe_no_op(self):
+        # Removing a camera that was never added is a documented safe no-op:
+        # return False without touching the (still compile-valid) spec.
+        w = SimWorld()
+        w.cameras["keep"] = SimCamera(
+            name="keep", position=[1, 0, 0.5], target=[0, 0, 0], fov=60, width=640, height=480
+        )
+        spec = SpecBuilder.build(w)
+
+        assert SpecBuilder.remove_camera(spec, "ghost") is False
+        # The pre-existing camera survives and the spec still compiles.
+        model = spec.compile()
+        assert mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, "keep") >= 0
+
+    def test_readd_object_after_remove_reuses_material_and_texture_names(self):
+        # Regression guard for the re-add-after-remove asset collision.
+        #
+        # remove_body() deletes only the body; a textured object's
+        # ``<name>_mat`` / ``<name>_tex`` assets are left behind (remove_body
+        # docstring: actuators/sensors/assets are cleaned up separately). If a
+        # later add_object reuses the same object name, MuJoCo would raise
+        # "repeated name" for the duplicate material/texture at compile unless
+        # add_object first drops the orphaned assets. This pins that cleanup.
+        def make_tile() -> SimObject:
+            return SimObject(
+                name="tile",
+                shape="box",
+                position=[0, 0, 0.1],
+                size=[0.1, 0.1, 0.1],
+                color=[1, 0, 0, 1],
+                is_static=False,
+                mass=0.1,
+                material={
+                    "builtin": "checker",
+                    "rgb1": [0.2, 0.2, 0.2],
+                    "rgb2": [0.8, 0.8, 0.8],
+                },
+            )
+
+        w = SimWorld()
+        w.objects["tile"] = make_tile()
+        spec = SpecBuilder.build(w)
+        spec.compile()
+
+        # remove_body drops the body but leaves the material/texture orphaned.
+        assert SpecBuilder.remove_body(spec, "tile") is True
+        assert "tile_mat" in [m.name for m in spec.materials]
+        assert "tile_tex" in [t.name for t in spec.textures]
+
+        # Re-adding the same-named object must drop the stale assets, not
+        # duplicate them, so the spec recompiles cleanly.
+        SpecBuilder.add_object(spec, make_tile())
+        assert [m.name for m in spec.materials].count("tile_mat") == 1
+        assert [t.name for t in spec.textures].count("tile_tex") == 1
+        model = spec.compile()
+        assert mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "tile") >= 0
+        assert mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_MATERIAL, "tile_mat") >= 0
+
 
 # Mesh-shaped objects + robot-owned camera skip
 
