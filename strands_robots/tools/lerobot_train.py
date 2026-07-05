@@ -37,6 +37,47 @@ SESSION_DIR.mkdir(parents=True, exist_ok=True)
 # accept ``--policy.train_expert_only``; emitting it elsewhere is a hard error in
 # lerobot, so callers that pass it on an unsupported policy should be told why.
 _EXPERT_ONLY_POLICIES = {"pi0", "pi05", "pi0_fast", "smolvla"}
+# Security: flags that must not be overridden via extra_flags passthrough.
+# These control file output paths, remote telemetry, and code-loading paths
+# that an LLM agent (or prompt injection) could abuse.
+_BLOCKED_EXTRA_FLAGS = frozenset({
+    'output_dir',
+    'config_path',
+    'wandb.enable',
+    'wandb.project',
+    'wandb.entity',
+    'wandb.api_key',
+    'dataset.root',
+    'policy.pretrained_path',
+    'push_to_hub',
+    'policy.push_to_hub',
+    'hub_repo_id',
+})
+
+_EXTRA_FLAGS_BLOCKLIST_ENV = 'STRANDS_TRAIN_EXTRA_FLAGS_BLOCKLIST'
+
+
+def _validate_extra_flags(extra_flags: dict[str, Any]) -> str | None:
+    """Return an error message if any blocked flag is present, else None."""
+    env_override = os.environ.get(_EXTRA_FLAGS_BLOCKLIST_ENV)
+    blocked = (
+        frozenset(f.strip() for f in env_override.split(',') if f.strip())
+        if env_override
+        else _BLOCKED_EXTRA_FLAGS
+    )
+    for key in extra_flags:
+        # Normalize: strip leading -- for comparison
+        normalized = key.lstrip('-')
+        if normalized in blocked:
+            return (
+                f"extra_flags key {key!r} is blocked for security reasons "
+                f"(controls output paths, telemetry, or code loading). "
+                f"Use the dedicated tool parameter instead, or set "
+                f"{_EXTRA_FLAGS_BLOCKLIST_ENV} to customize the blocklist."
+            )
+    return None
+
+
 
 
 class SessionManager:
@@ -251,6 +292,10 @@ def build_train_command(
         cmd.append(f"--dataset.episodes={episodes_arg}")
 
     if extra_flags:
+        # Validate against blocked flags before passthrough
+        err = _validate_extra_flags(extra_flags)
+        if err:
+            raise ValueError(err)
         for key, value in extra_flags.items():
             flag = key if key.startswith("--") else f"--{key}"
             cmd.append(f"{flag}={value}")
