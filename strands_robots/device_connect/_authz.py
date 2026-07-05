@@ -114,10 +114,20 @@ def is_authorized_caller(caller: str | None, *, scope: str = "rpc") -> bool:
 
     patterns = _parse_allowlist(raw)
     if patterns is None:
-        # No allowlist configured - preserve out-of-the-box dev usability but
-        # make the permissive posture loud so operators notice.
-        _warn_permissive_once(env_scope)
-        return True
+        # No allowlist configured. Deny by default to prevent unintentional
+        # open access. Operators must explicitly set an allowlist (use "*" for
+        # the old permit-all behavior during development).
+        if env_scope not in _warned_permissive:
+            _warned_permissive.add(env_scope)
+            logger.error(
+                "Device Connect %s DENIED: no %s allowlist configured. "
+                "Set %s="*" to permit all callers (dev/lab only), or list "
+                "specific device ids to restrict access.",
+                env_scope,
+                _RPC_ALLOW_ENV if env_scope == "rpc" else _ESTOP_ALLOW_ENV,
+                _RPC_ALLOW_ENV if env_scope == "rpc" else _ESTOP_ALLOW_ENV,
+            )
+        return False
 
     # An allowlist is configured. If the transport is insecure the caller id is
     # self-asserted, so the allowlist is advisory - say so once, loudly.
