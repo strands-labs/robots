@@ -1,9 +1,63 @@
+import os
 import time
 from typing import Any
 
 import serial
 import serial.tools.list_ports
 from strands import tool
+
+import re as _re
+
+# --- Security: port allowlist + velocity bounds ---
+# Configurable via environment. Default permits only standard serial device paths.
+_SERIAL_PORT_ALLOW_PATTERNS = [
+    r'^/dev/tty(USB|ACM|S|AMA)\d+$',    # Linux serial devices
+    r'^/dev/cu\.(usbserial|usbmodem)',    # macOS serial
+    r'^COM\d+$',                          # Windows COM ports
+]
+
+_SERIAL_PORT_ALLOW_ENV = 'STRANDS_SERIAL_PORT_ALLOW'
+
+# Feetech STS3215 safe velocity range (0 = stop, max rated ~2400 steps/s)
+_FEETECH_VELOCITY_MAX = int(os.environ.get('STRANDS_SERIAL_VELOCITY_MAX', '2400'))
+_FEETECH_MOTOR_ID_MAX = 253  # 254 = broadcast, disallowed by default
+
+
+def _validate_port(port: str) -> str | None:
+    """Return an error message if port is not in the allowlist, else None."""
+    # Check env override first (comma-separated regex patterns)
+    env_patterns = os.environ.get(_SERIAL_PORT_ALLOW_ENV)
+    patterns = (
+        [p.strip() for p in env_patterns.split(',') if p.strip()]
+        if env_patterns
+        else _SERIAL_PORT_ALLOW_PATTERNS
+    )
+    for pat in patterns:
+        if _re.match(pat, port):
+            return None
+    return (
+        f"Port {port!r} is not in the allowed serial port patterns. "
+        f"Permitted: {patterns}. Set {_SERIAL_PORT_ALLOW_ENV} to override."
+    )
+
+
+def _validate_velocity(velocity: int) -> str | None:
+    """Return an error message if velocity exceeds safe bounds."""
+    if velocity < 0 or velocity > _FEETECH_VELOCITY_MAX:
+        return (
+            f"Velocity {velocity} is outside safe range [0, {_FEETECH_VELOCITY_MAX}]. "
+            f"Set STRANDS_SERIAL_VELOCITY_MAX to adjust the limit."
+        )
+    return None
+
+
+def _validate_motor_id(motor_id: int) -> str | None:
+    """Return an error message if motor_id is invalid."""
+    if motor_id < 1 or motor_id > _FEETECH_MOTOR_ID_MAX:
+        return f"motor_id {motor_id} is outside valid range [1, {_FEETECH_MOTOR_ID_MAX}]."
+    return None
+
+
 
 
 @tool
@@ -88,6 +142,11 @@ def serial_tool(
         if not port:
             return {"status": "error", "content": [{"text": "Port parameter required for this action"}]}
 
+        # Validate port against allowlist
+        port_err = _validate_port(port)
+        if port_err:
+            return {"status": "error", "content": [{"text": port_err}]}
+
         # Open serial connection
         ser = serial.Serial(port, baudrate, timeout=timeout)
 
@@ -154,6 +213,15 @@ def serial_tool(
                 ser.close()
                 return {"status": "error", "content": [{"text": "motor_id and position required"}]}
 
+            # Validate motor_id and position bounds
+            mid_err = _validate_motor_id(motor_id)
+            if mid_err:
+                ser.close()
+                return {"status": "error", "content": [{"text": mid_err}]}
+            if position < 0 or position > 4095:
+                ser.close()
+                return {"status": "error", "content": [{"text": f"Position {position} outside valid range [0, 4095]"}]}
+
             # Feetech position command: INST_WRITE (0x03), Goal_Position address (0x2A)
             params = [0x2A, position & 0xFF, (position >> 8) & 0xFF]
             packet = build_feetech_packet(motor_id, 0x03, params)
@@ -171,6 +239,16 @@ def serial_tool(
             if motor_id is None or velocity is None:
                 ser.close()
                 return {"status": "error", "content": [{"text": "motor_id and velocity required"}]}
+
+            # Validate motor_id and velocity bounds
+            mid_err = _validate_motor_id(motor_id)
+            if mid_err:
+                ser.close()
+                return {"status": "error", "content": [{"text": mid_err}]}
+            vel_err = _validate_velocity(velocity)
+            if vel_err:
+                ser.close()
+                return {"status": "error", "content": [{"text": vel_err}]}
 
             # Feetech velocity command: Goal_Velocity address (0x2E)
             params = [0x2E, velocity & 0xFF, (velocity >> 8) & 0xFF]
