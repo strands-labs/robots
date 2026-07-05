@@ -66,8 +66,10 @@ def _validate_extra_flags(extra_flags: dict[str, Any]) -> str | None:
         else _BLOCKED_EXTRA_FLAGS
     )
     for key in extra_flags:
-        # Normalize: strip leading -- for comparison
-        normalized = key.lstrip('-')
+        # Normalize: strip Hydra prefixes (--key, +key, ~key, ++key) for comparison.
+        # Hydra allows +key (append), ~key (delete), ++key (force-add) in addition
+        # to --key and bare key forms.
+        normalized = key.lstrip('-+~')
         if normalized in blocked:
             return (
                 f"extra_flags key {key!r} is blocked for security reasons "
