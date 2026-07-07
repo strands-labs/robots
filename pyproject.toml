@@ -223,6 +223,22 @@ sim-newton = [
     "mujoco-warp>=3.8.0",
     "trimesh>=4.0.0,<5.0.0",
 ]
+# Isaac Sim GPU-native backend (NVIDIA Isaac Sim / Omniverse). Provides
+# photorealistic RTX rendering, synthetic-data generation, and GPU-batched
+# sensor simulation. IMPORTANT: Isaac Sim itself is NOT pip-installable - it
+# ships via the NVIDIA Omniverse Launcher, Isaac Lab, or the NGC docker image
+# (see strands_robots/simulation/isaac/_install.py for the pinned image tag).
+# This extra pulls ONLY the pip-installable Python helpers the backend uses
+# out-of-band from an Isaac Sim install: usd-core for USD prim / description
+# parsing (loaders.load_usd), imageio for rollout-video encoding, and the
+# shared sim base. All heavy omni/isaacsim imports stay lazy - installing this
+# extra never imports Isaac Sim.
+sim-isaac = [
+    "strands-robots[sim]",
+    "usd-core>=24.5",
+    "imageio>=2.28.0,<3.0.0",
+    "imageio-ffmpeg>=0.4.0,<1.0.0",
+]
 benchmark-libero = [
     "libero>=0.1.0,<1.0.0",
 ]
@@ -523,6 +539,19 @@ disallow_untyped_defs = false
 module = ["strands_robots.simulation.mujoco.*"]
 disallow_untyped_defs = false
 warn_return_any = false
+
+# Isaac Sim backend - same override-signature / cooperative-mixin patterns as
+# the MuJoCo backend. The subclass extends the SimEngine ABC with extra,
+# backend-specific params on add_robot (mjcf_path / usd_path) and add_object
+# (**kwargs escape hatch), and narrows send_action's action type to the
+# dict|ndarray the Isaac articulation API consumes -- all deliberate,
+# documented extensions. Heavy omni/isaacsim imports are untyped (no stubs).
+# override: add_robot / add_object / send_action extend the base signature.
+[[tool.mypy.overrides]]
+module = ["strands_robots.simulation.isaac.*"]
+disallow_untyped_defs = false
+warn_return_any = false
+disable_error_code = ["override"]
 
 # Async utils and dataset recorder - thin wrappers with dynamic types
 [[tool.mypy.overrides]]

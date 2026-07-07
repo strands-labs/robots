@@ -53,8 +53,10 @@ _BUILTIN_BACKENDS: dict[str, tuple[str, str]] = {
         "strands_robots.simulation.newton.simulation",
         "NewtonSimEngine",
     ),
-    # Future:
-    # "isaac": ("strands_robots.simulation.isaac.simulation", "IsaacSimulation"),
+    "isaac": (
+        "strands_robots.simulation.isaac.simulation",
+        "IsaacSimulation",
+    ),
 }
 
 _BUILTIN_ALIASES: dict[str, str] = {
@@ -62,9 +64,9 @@ _BUILTIN_ALIASES: dict[str, str] = {
     "mjc": "mujoco",
     "mjx": "mujoco",
     "nt": "newton",
-    # "isaac_sim": "isaac",
-    # "isaacsim": "isaac",
-    # "nvidia": "isaac",
+    "isaac_sim": "isaac",
+    "isaacsim": "isaac",
+    "nvidia": "isaac",
 }
 
 DEFAULT_BACKEND = "mujoco"
@@ -74,8 +76,7 @@ DEFAULT_BACKEND = "mujoco"
 # ``strands-robots-sim`` plugin package. Keyed by the entry-point name a
 # plugin is expected to register.
 _PLUGIN_INSTALL_HINTS: dict[str, str] = {
-    "isaac": "pip install 'strands-robots-sim[isaac]'",
-    "newton": "pip install 'strands-robots-sim[newton]'",
+    "newton": "pip install 'strands-robots[sim-newton]'",
     # The warp-lang based GPU-parallel MuJoCo path is the built-in ``newton``
     # backend; ``warp`` and ``mjwarp`` are common names users reach for, so map
     # both to the same actionable install hint instead of a bare "unknown
@@ -241,7 +242,7 @@ def _import_backend_class(name: str) -> type[SimEngine]:
             module = importlib.import_module(module_path)
         except ModuleNotFoundError as exc:
             # Map backend names to their pip extras (extras use "sim-" prefix)
-            _BACKEND_EXTRAS = {"mujoco": "sim-mujoco", "newton": "sim-newton"}
+            _BACKEND_EXTRAS = {"mujoco": "sim-mujoco", "newton": "sim-newton", "isaac": "sim-isaac"}
             extra = _BACKEND_EXTRAS.get(name, f"sim-{name}")
             raise ImportError(
                 f"Simulation backend {name!r} is declared in the built-in registry "

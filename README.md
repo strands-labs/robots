@@ -160,6 +160,7 @@ extras you need:
 |-------|----------|---------|
 | `sim-mujoco` | MuJoCo, robot_descriptions, imageio | Simulation (recommended starting point) |
 | `sim-newton` | Newton, Warp, MuJoCo-Warp, trimesh | GPU-native simulation (NVIDIA GPU; batched envs, headless ray-traced render) |
+| `sim-isaac` | usd-core, imageio (Isaac Sim installed out-of-band) | NVIDIA Isaac Sim backend - photorealistic RTX rendering, synthetic data, GPU-batched sensors. Isaac Sim itself is **not** pip-installable; install it via the Omniverse Launcher, Isaac Lab, or the NGC docker image. This extra pulls only the pip-installable Python helpers. |
 | `lerobot` | LeRobot | Real hardware, local VLA inference, dataset recording |
 | `molmoact2` | LeRobot + transformers, peft, scipy | MolmoAct2 transformers-native VLA (resolves from PyPI via lerobot >= 0.6) |
 | `groot-service` | pyzmq, msgpack | NVIDIA GR00T inference client |
@@ -897,19 +898,15 @@ requires parameter Y."*, and vectors/dtypes are validated before MuJoCo sees
 them - so the agent learns the contract without crashing the process.
 
 **Third-party backends.** `create_simulation(name)` discovers backends beyond
-the built-in `mujoco`/`newton` registry via Python
+the built-in `mujoco`/`newton`/`isaac` registry via Python
 [entry points](https://packaging.python.org/en/latest/specifications/entry-points/).
-A sibling package - e.g. [`strands-robots-sim`](https://github.com/strands-labs/robots-sim),
-which ships the heavy Isaac Sim and Newton backends out-of-tree - registers its
-`SimEngine` subclasses under the `strands_robots.backends` group in its
-`pyproject.toml`, and they become available on `pip install` without patching
-this package:
+A sibling package registers its `SimEngine` subclasses under the
+`strands_robots.backends` group in its `pyproject.toml`, and they become
+available on `pip install` without patching this package:
 
 ```toml
 [project.entry-points."strands_robots.backends"]
-isaac = "strands_robots_sim.isaac.simulation:IsaacSimulation"
-newton = "strands_robots_sim.newton.simulation:NewtonSimulation"
-warp = "strands_robots_sim.newton.simulation:NewtonSimulation"
+my_engine = "my_pkg.backend:MyEngine"
 ```
 
 Built-in backends always take precedence over plugins of the same name, plugin
@@ -1031,6 +1028,9 @@ touches ROS 2.
 | `STRANDS_TRUST_REMOTE_CODE` | Set `1` to allow HF `trust_remote_code` for `lerobot_local` | unset |
 | `STRANDS_ROBOTS_NO_DYLD_SHIM` | Set `1` to disable the macOS auto-fix that puts Homebrew ffmpeg on the dyld path for torchcodec video streaming (see [Recording & streaming datasets](#recording--streaming-datasets)) | unset |
 | `MUJOCO_GL` | MuJoCo GL backend (`egl`, `osmesa`, `glfw`) | auto |
+| `STRANDS_ISAAC_HEADLESS` | Isaac Sim backend: run without a GUI (`true`/`1`/`yes` = headless). Overrides `IsaacConfig(headless=...)` | unset (config default `true`) |
+| `STRANDS_ISAAC_RTX_PATHTRACING` | Isaac Sim backend: set `true`/`1`/`yes` to enable RTX path-tracing (photorealistic, slow) instead of the default render mode | unset |
+| `STRANDS_ISAAC_NUCLEUS_URL` | Isaac Sim backend: override the Omniverse Nucleus asset-server URL | unset (Isaac default) |
 | `GROOT_API_TOKEN` | API token for the GR00T inference service | unset |
 | `STRANDS_MESH` | Set `false` to disable Zenoh mesh globally | `true` |
 | `STRANDS_MESH_LOCAL_DEV` | Set `1` for a one-var localhost preset (auth `none`, no second factor needed) | unset |

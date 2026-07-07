@@ -284,12 +284,16 @@ class TestEntryPointDiscovery:
         assert "mujoco" in msg
         assert "plugin_sim" in msg
 
-    def test_unknown_known_plugin_name_suggests_install(self, monkeypatch):
-        """Known out-of-tree names surface a pip install hint when absent."""
+    def test_isaac_is_builtin_not_a_plugin(self, monkeypatch):
+        """Isaac is now a vendored built-in backend (#1145), not an out-of-tree
+        plugin. ``create_simulation("isaac")`` must resolve to the in-tree
+        ``IsaacSimulation`` class instead of dead-ending with a
+        ``strands-robots-sim`` install hint. Constructing it never needs Isaac
+        Sim installed - the heavy omni/isaacsim import is deferred to
+        ``create_world()``."""
         _patch_entry_points(monkeypatch, [])
-        with pytest.raises(ValueError, match="strands-robots-sim") as exc_info:
-            create_simulation("isaac")
-        assert "pip install" in str(exc_info.value)
+        sim = create_simulation("isaac", num_envs=1, headless=True)
+        assert type(sim).__name__ == "IsaacSimulation"
 
     def test_mjwarp_and_warp_names_suggest_newton_plugin(self, monkeypatch):
         """The GPU-parallel warp/MuJoCo path is the built-in ``newton`` backend.

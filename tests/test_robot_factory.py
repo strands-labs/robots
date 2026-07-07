@@ -135,16 +135,24 @@ class TestRobotFactory:
         assert sig.parameters["mode"].default == "sim"
 
     def test_isaac_backend_routes_to_factory_install_hint(self):
-        """A non-mujoco backend resolves through ``create_simulation`` rather
-        than a blanket ``NotImplementedError``. ``isaac`` ships in the
-        out-of-tree ``strands-robots-sim`` plugin, so when it is absent the
-        factory's actionable install hint surfaces (a ``ValueError`` listing
-        available backends + a ``pip install`` pointer), not a dead-end
-        "on the roadmap" message."""
-        with pytest.raises(ValueError, match="strands-robots-sim") as exc_info:
+        """``isaac`` is now a vendored built-in backend (#1145), resolved through
+        ``create_simulation`` like ``newton``. When Isaac Sim itself is not
+        installed (it ships out-of-band via Omniverse / Isaac Lab / the NGC
+        docker image, never via pip), constructing the sim succeeds but
+        ``create_world()`` surfaces the backend's own actionable install hint -
+        a ``RuntimeError`` naming Isaac Sim + its install paths - not a blanket
+        NotImplementedError or a dead-end "on the roadmap" message.
+
+        Skipped when Isaac Sim IS importable (a GPU box with Omniverse), where
+        world creation would actually proceed."""
+        from strands_robots.simulation.isaac.simulation import IsaacSimulation
+
+        ok, _ = IsaacSimulation.is_available()
+        if ok:
+            pytest.skip("Isaac Sim is installed; the not-available install-hint path is not exercised.")
+        with pytest.raises(RuntimeError, match="Isaac Sim") as exc_info:
             Robot("so100", mode="sim", backend="isaac")
         msg = str(exc_info.value)
-        assert "pip install" in msg
         # The misleading legacy framing must be gone.
         assert "not yet implemented" not in msg
         assert "roadmap" not in msg
