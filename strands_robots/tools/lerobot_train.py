@@ -25,6 +25,7 @@ from typing import Any
 
 import psutil
 from strands import tool
+from strands.types.tools import ToolContext
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -39,7 +40,9 @@ SESSION_DIR.mkdir(parents=True, exist_ok=True)
 _EXPERT_ONLY_POLICIES = {"pi0", "pi05", "pi0_fast", "smolvla"}
 # Security: flags that must not be overridden via extra_flags passthrough.
 # These control file output paths, remote telemetry, and code-loading paths
-# that an LLM agent (or prompt injection) could abuse.
+# that an LLM agent (or prompt injection) could abuse. Gated by a HIL
+# interrupt; operators can pre-approve individual flags via
+# STRANDS_TRAIN_EXTRA_FLAGS_ALLOW or bypass entirely with BYPASS_TOOL_CONSENT.
 _BLOCKED_EXTRA_FLAGS = frozenset({
     'output_dir',
     'config_path',
@@ -54,29 +57,105 @@ _BLOCKED_EXTRA_FLAGS = frozenset({
     'hub_repo_id',
 })
 
-_EXTRA_FLAGS_BLOCKLIST_ENV = 'STRANDS_TRAIN_EXTRA_FLAGS_BLOCKLIST'
+_EXTRA_FLAGS_ALLOW_ENV = 'STRANDS_TRAIN_EXTRA_FLAGS_ALLOW'
+_BYPASS_CONSENT_ENV = 'BYPASS_TOOL_CONSENT'
+
+_APPROVE_RESPONSES = frozenset({"y", "yes", "approve", "approved"})
 
 
-def _validate_extra_flags(extra_flags: dict[str, Any]) -> str | None:
-    """Return an error message if any blocked flag is present, else None."""
-    env_override = os.environ.get(_EXTRA_FLAGS_BLOCKLIST_ENV)
-    blocked = (
-        frozenset(f.strip() for f in env_override.split(',') if f.strip())
-        if env_override
-        else _BLOCKED_EXTRA_FLAGS
-    )
+def _approve_response(response: object) -> bool:
+    """Accept affirmative operator responses from the HIL interrupt."""
+    return isinstance(response, str) and response.strip().lower() in _APPROVE_RESPONSES
+
+
+def _normalize_hydra_key(key: str) -> str:
+    """Strip Hydra prefixes (--key, +key, ~key, ++key) for comparison."""
+    return key.lstrip('-+~')
+
+
+def _validate_extra_flags(extra_flags: dict[str, Any]) -> list[tuple[str, str]]:
+    """Return list of (raw_key, normalized_key) pairs that are blocked."""
+    blocked_pairs = []
     for key in extra_flags:
-        # Normalize: strip Hydra prefixes (--key, +key, ~key, ++key) for comparison.
-        # Hydra allows +key (append), ~key (delete), ++key (force-add) in addition
-        # to --key and bare key forms.
-        normalized = key.lstrip('-+~')
-        if normalized in blocked:
-            return (
-                f"extra_flags key {key!r} is blocked for security reasons "
-                f"(controls output paths, telemetry, or code loading). "
-                f"Use the dedicated tool parameter instead, or set "
-                f"{_EXTRA_FLAGS_BLOCKLIST_ENV} to customize the blocklist."
-            )
+        normalized = _normalize_hydra_key(key)
+        if normalized in _BLOCKED_EXTRA_FLAGS:
+            blocked_pairs.append((key, normalized))
+    return blocked_pairs
+
+
+def _gate_extra_flags(
+    extra_flags: dict[str, Any],
+    tool_context: ToolContext | None,
+) -> dict[str, Any] | None:
+    """HIL gate for blocked extra_flags.
+
+    Returns an error dict to halt the training, or None to proceed.
+    Three modes:
+    - STRANDS_TRAIN_EXTRA_FLAGS_ALLOW contains the flag -> allow silently
+    - BYPASS_TOOL_CONSENT=true -> allow with WARNING log
+    - Otherwise -> prompt the operator via tool_context.interrupt()
+    """
+    blocked = _validate_extra_flags(extra_flags)
+    if not blocked:
+        return None
+
+    allow_raw = os.environ.get(_EXTRA_FLAGS_ALLOW_ENV)
+    allowed = (
+        frozenset(f.strip() for f in allow_raw.split(',') if f.strip())
+        if allow_raw else frozenset()
+    )
+
+    needs_approval = [(raw, norm) for raw, norm in blocked if norm not in allowed]
+    if not needs_approval:
+        logger.debug("all blocked flags allowed via %s", _EXTRA_FLAGS_ALLOW_ENV)
+        return None
+
+    if os.environ.get(_BYPASS_CONSENT_ENV, "").lower() == "true":
+        flag_names = ", ".join(raw for raw, _ in needs_approval)
+        logger.warning("BYPASS_TOOL_CONSENT: allowing blocked extra_flags: %s", flag_names)
+        return None
+
+    flag_names = ", ".join(raw for raw, _ in needs_approval)
+    block_msg = (
+        f"extra_flags {flag_names} blocked for security reasons "
+        f"(controls output paths, telemetry, or code loading)."
+    )
+
+    if tool_context is None:
+        return {
+            "status": "error",
+            "content": [{"text": (
+                f"{block_msg} No tool_context available for operator approval. "
+                f"Set {_EXTRA_FLAGS_ALLOW_ENV} or {_BYPASS_CONSENT_ENV}=true "
+                f"to allow in headless mode."
+            )}],
+        }
+
+    try:
+        response = tool_context.interrupt(
+            "lerobot_train-extra_flags-approval",
+            reason={
+                "action": "train",
+                "blocked_flags": {raw: str(extra_flags[raw]) for raw, _ in needs_approval},
+                "warning": f"{block_msg} Reply 'y' to approve, anything else to deny.",
+            },
+        )
+    except RuntimeError as exc:
+        return {
+            "status": "error",
+            "content": [{"text": (
+                f"blocked extra_flags require operator approval, "
+                f"but interrupts are not available: {exc}"
+            )}],
+        }
+
+    if not _approve_response(response):
+        return {
+            "status": "error",
+            "content": [{"text": f"extra_flags {flag_names} declined by the operator."}],
+        }
+
+    logger.info("blocked extra_flags %s approved via operator interrupt", flag_names)
     return None
 
 
@@ -294,10 +373,6 @@ def build_train_command(
         cmd.append(f"--dataset.episodes={episodes_arg}")
 
     if extra_flags:
-        # Validate against blocked flags before passthrough
-        err = _validate_extra_flags(extra_flags)
-        if err:
-            raise ValueError(err)
         for key, value in extra_flags.items():
             flag = key if key.startswith("--") else f"--{key}"
             cmd.append(f"{flag}={value}")
@@ -305,9 +380,10 @@ def build_train_command(
     return cmd
 
 
-@tool
+@tool(context=True)
 def lerobot_train(
     dataset_root: str,
+    tool_context: ToolContext | None = None,
     policy_type: str = "act",
     pretrained_path: str | None = None,
     output_dir: str | None = None,
@@ -442,6 +518,11 @@ def lerobot_train(
             if out_path.is_dir() and not _has_resumable_checkpoint(resolved_output_dir):
                 if not any(out_path.iterdir()):
                     shutil.rmtree(out_path, ignore_errors=True)
+
+            if extra_flags:
+                gate_err = _gate_extra_flags(extra_flags, tool_context)
+                if gate_err:
+                    return gate_err
 
             try:
                 cmd = build_train_command(
