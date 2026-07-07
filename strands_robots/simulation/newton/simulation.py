@@ -129,6 +129,21 @@ class NewtonSimEngine(DomainRandomizationMixin, NewtonRecordingMixin, SimEngine)
             ValueError: If ``solver`` is not a known solver name.
         """
         super().__init__()
+        # State that teardown (destroy/cleanup/__del__) touches must be set
+        # before any fallible construction step. Otherwise a partially built
+        # engine -- e.g. ensure_newton() raising when warp is absent, or an
+        # unknown solver -- leaves __del__ to acquire self._lock during GC and
+        # raise AttributeError, masking the real construction error with log
+        # noise. Initialising the lock and viewer handles first keeps destroy()
+        # a clean no-op on a half-constructed instance.
+        self._lock = threading.RLock()
+        self._world: SimWorld | None = None
+        # Interactive viewer handle (newton.viewer.ViewerGL/ViewerViser/
+        # ViewerNull). None until open_viewer() is called; synced once per
+        # control step from _advance() on the stepping thread.
+        self._viewer: Any = None
+        self._viewer_kind: str | None = None
+
         self._nt, self._wp = ensure_newton()
         if solver.lower() not in solver_registry():
             raise ValueError(f"Unknown Newton solver {solver!r}. Available: {sorted(solver_registry())}")
@@ -138,15 +153,6 @@ class NewtonSimEngine(DomainRandomizationMixin, NewtonRecordingMixin, SimEngine)
         self.device = device
         self.default_width = default_width
         self.default_height = default_height
-
-        self._world: SimWorld | None = None
-        self._lock = threading.RLock()
-
-        # Interactive viewer handle (newton.viewer.ViewerGL/ViewerViser/
-        # ViewerNull). None until open_viewer() is called; synced once per
-        # control step from _advance() on the stepping thread.
-        self._viewer: Any = None
-        self._viewer_kind: str | None = None
 
         # Newton handles (rebuilt on every scene mutation via _rebuild).
         self._model: Any = None
