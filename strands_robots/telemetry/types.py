@@ -44,20 +44,20 @@ class StreamTier(Enum):
 class EventCategory(Enum):
     """Robotics event categories with default tier routing.
 
-    Each category encodes its default tier — the routing table is defined
+    Each category encodes its default tier - the routing table is defined
     once here, not scattered across if/elif chains. Callers can override
     per-event when needed.
 
     Format: (category_name, default_tier)
     """
 
-    # --- Safety (STREAM tier — lowest-latency transport, flushed first) ---
+    # --- Safety (STREAM tier - lowest-latency transport, flushed first) ---
     EMERGENCY_STOP = ("emergency_stop", StreamTier.STREAM)
     COLLISION = ("collision", StreamTier.STREAM)
     JOINT_LIMIT = ("joint_limit", StreamTier.STREAM)
     SAFETY_ALERT = ("safety_alert", StreamTier.STREAM)
 
-    # --- Control loop (BATCH tier — high frequency, batch-friendly) ---
+    # --- Control loop (BATCH tier - high frequency, batch-friendly) ---
     JOINT_STATE = ("joint_state", StreamTier.BATCH)
     VELOCITY_COMMAND = ("velocity_command", StreamTier.BATCH)
     ACTION_SENT = ("action_sent", StreamTier.BATCH)
@@ -65,7 +65,7 @@ class EventCategory(Enum):
     IMU = ("imu", StreamTier.BATCH)
     END_EFFECTOR = ("end_effector", StreamTier.BATCH)
 
-    # --- Task lifecycle (BATCH tier — moderate frequency) ---
+    # --- Task lifecycle (BATCH tier - moderate frequency) ---
     TASK_START = ("task_start", StreamTier.BATCH)
     TASK_END = ("task_end", StreamTier.BATCH)
     POLICY_INFERENCE = ("policy_inference", StreamTier.BATCH)
@@ -73,7 +73,7 @@ class EventCategory(Enum):
     EPISODE_START = ("episode_start", StreamTier.BATCH)
     EPISODE_END = ("episode_end", StreamTier.BATCH)
 
-    # --- Heavy data (STORAGE tier — large payloads) ---
+    # --- Heavy data (STORAGE tier - large payloads) ---
     CAMERA_FRAME = ("camera_frame", StreamTier.STORAGE)
     POINT_CLOUD = ("point_cloud", StreamTier.STORAGE)
     DEPTH_MAP = ("depth_map", StreamTier.STORAGE)
@@ -100,7 +100,7 @@ class BatchConfig:
     Flush triggers when the count or age threshold is exceeded:
     - max_count: Maximum events before flush
     - max_age_ms: Maximum time since oldest event before flush
-    - max_bytes: advisory only — size-based flushing is not currently a trigger
+    - max_bytes: advisory only - size-based flushing is not currently a trigger
     """
 
     max_count: int = 100

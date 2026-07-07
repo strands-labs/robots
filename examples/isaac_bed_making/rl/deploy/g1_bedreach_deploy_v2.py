@@ -171,6 +171,7 @@ def main() -> None:
             try:
                 os.remove(args.proceed_file)            # clear any stale sentinel so we never auto-proceed
             except FileNotFoundError:
+                # Sentinel is absent on a fresh run; nothing to clear.
                 pass
             print("\n*** STAGE WHOLE — LAST RESORT, GANTRY-ONLY. Support = FEET ON THE GROUND with a "
                   "SLACK gantry (never fully suspended). Hardware e-stop + the battery in reach. ***")

@@ -46,7 +46,7 @@ def nearest_forward(points):
     return float(np.percentile(points[m,0],3)), n
 
 try: os.remove(a.abort_flag)
-except FileNotFoundError: pass
+except FileNotFoundError: pass  # no stale abort flag to clear on a fresh run
 
 loco = G1Locomotion(iface=a.iface); loco.connect()          # LocoClient FIRST (DDS ordering)
 loco.set_abort_source(lambda: os.path.exists(a.abort_flag))
@@ -103,13 +103,15 @@ finally:
     except Exception: Rf = None
     try:
         tele.write(json.dumps({"t":round(time.time()-t0,3),"R":Rf if Rf is None else round(Rf,3),"vx":0.0,"event":result})+"\n")
-        tele.close()
-    except Exception: pass
+    except Exception:
+        pass  # final telem line is best-effort
+    finally:
+        tele.close()  # guaranteed close even if the final write raises
     print(f"[approach] RESULT={result}  R_final={Rf if Rf is None else round(Rf,3)}", flush=True)
     try: snap("arrival")
-    except Exception: pass
+    except Exception: pass  # arrival snapshot is best-effort
     try: loco.stop()                                     # belt-and-suspenders in case the first stop() raised
-    except Exception: pass
+    except Exception: pass  # already stopped above; ignore a repeat-stop error
     try: loco.shutdown()
     except Exception as e: print("[approach] shutdown() error:", e, flush=True)
 sys.exit(0 if result == "arrived" else 2)

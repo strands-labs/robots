@@ -13,9 +13,11 @@ Physical realism choices:
   equalities, so the floating bases do not fight dynamics and do not warp
   through the bed. Limb joints are still PD-actuated.
 - Bedsheet corners are grasped by toggling per-corner weld equalities
-  between the right hand wrist of the relevant robot and the corresponding
-  flex node body. The sheet's physics handles collision with the bed, and
-  the placement is intentionally imperfect after the welds are released.
+  between a kinematic mocap anchor body and the corresponding flex node.
+  The driver snaps the anchor to the grasping hand's wrist each frame, so
+  the corner tracks the hand while the weld is active. The sheet's physics
+  handles collision with the bed, and the placement is intentionally
+  imperfect after the welds are released.
 - Walking routes never traverse the bed footprint.
 
 Usage:
@@ -99,9 +101,6 @@ WORKER_PREFIX = "worker_"
 PELVIS_HEIGHT_M = 0.793
 BED_STAND_OFFSET_M = 0.55
 SHEET_DROP_POS = (-(BED_LENGTH_M / 2.0 + 0.65), 0.0, 0.45)
-
-# Right hand grasp anchor relative to the wrist_yaw body origin (palm front).
-HAND_GRASP_OFFSET = (0.13, -0.005, 0.0)
 
 SheetLayout = Dict[int, Tuple[float, float, float]]
 
@@ -253,6 +252,12 @@ def build_scene(
             "impratio": "4",
         },
     )
+    # MuJoCo auto-estimates the solver arena from the compiled model, but that
+    # estimate undersizes the peak: when the flex sheet is fully in contact
+    # with both the bed and a humanoid the constraint count spikes (observed
+    # nefc up to ~1500), overflowing the arena at MakeHessian. Pin an explicit
+    # arena well above that peak so the demo cannot abort mid-rollout.
+    ET.SubElement(scene, "size", {"memory": "128M"})
 
     default = g1_root.find("default")
     if default is not None:
@@ -604,7 +609,7 @@ def _apply_gait_pose(pose: Dict[str, float], prefix: str, gait_phase: float, int
 
     if intensity <= 0.0:
         return
-    for side, _ in (("left", 1), ("right", -1)):
+    for side, sign in (("left", 1), ("right", -1)):
         phase = gait_phase if side == "left" else gait_phase + math.pi
         swing = math.sin(phase)
         lift = max(0.0, swing)
@@ -1406,6 +1411,7 @@ def _sync_viewer(viewer_handle) -> None:
             return
         viewer_handle.sync()
     except Exception:
+        # Viewer sync is cosmetic; a rendering-backend hiccup must not stop the sim.
         pass
 
 
@@ -1415,6 +1421,7 @@ def _close_viewer(viewer_handle) -> None:
     try:
         viewer_handle.close()
     except Exception:
+        # Best-effort teardown; the viewer window may already be gone.
         pass
 
 
@@ -1535,17 +1542,28 @@ def _render_frame(mujoco, model, data, output_path: Path, width: int, height: in
 
     from PIL import Image
 
-    renderer = None
+    # Reuse a single Renderer across frames: allocating a GL context/framebuffer
+    # per exported frame is expensive. Cache it keyed by model identity + size
+    # (it is released when the process exits).
+    cache_key = (id(model), width, height)
+    renderer = getattr(_render_frame, "_renderer", None)
+    if getattr(_render_frame, "_renderer_key", None) != cache_key:
+        if renderer is not None:
+            renderer.close()
+        _render_frame._renderer = None
+        try:
+            renderer = mujoco.Renderer(model, height=height, width=width)
+        except Exception as exc:
+            raise RuntimeError(f"{exc}. {_render_troubleshooting_hint()}") from exc
+        _render_frame._renderer = renderer
+        _render_frame._renderer_key = cache_key
+
     try:
-        renderer = mujoco.Renderer(model, height=height, width=width)
         camera_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, "overview")
         renderer.update_scene(data, camera=camera_id if camera_id >= 0 else None)
         img = renderer.render()
     except Exception as exc:
         raise RuntimeError(f"{exc}. {_render_troubleshooting_hint()}") from exc
-    finally:
-        if renderer is not None:
-            renderer.close()
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     Image.fromarray(img).save(output_path)
@@ -1648,7 +1666,6 @@ def _step_run(
         # rank-deficient Hessian when the stiff cloth weld engages during a
         # grasp/carry) can be recovered instead of aborting the whole run.
         _qpos0 = data.qpos.copy()
-        _qvel0 = data.qvel.copy()
         _act0 = data.act.copy() if data.act.size else None
         for _ in range(args.substeps):
             try:
@@ -2103,7 +2120,7 @@ def _drive_make_bed(
         drifted_total = max(drifted_total, drifted)
         render_error = render_error or error
 
-    return frame_state.saved_frame, render_error, planner.worker_assist_calls + drifted_total
+    return frame_state.saved_frame, render_error, planner.worker_assist_calls, drifted_total
 
 
 def _sheet_to_bed_corner(sheet_corner: str) -> str:
@@ -2120,6 +2137,7 @@ def _write_summary(
     saved_frames: int,
     render_error: Optional[str],
     worker_assists: int,
+    drifted_corners: int,
 ) -> None:
     lines = [
         "Unitree G1 two-humanoid bed-making demo complete.",
@@ -2135,6 +2153,7 @@ def _write_summary(
         f"Frame export: {'enabled' if _should_export_frames(args) else 'disabled'}",
         f"Frames exported: {saved_frames}",
         f"Worker hold corrections: {worker_assists}",
+        f"Max drifted corners: {drifted_corners}",
         f"Render status: {render_error or 'ok'}",
     ]
     lines.extend(f"Plan {index}: {step.label}" for index, step in enumerate(placement_plan(), start=1))
@@ -2204,7 +2223,7 @@ def main() -> int:
     viewer_handle = None
     try:
         viewer_handle = _open_viewer(mujoco, model, data, args)
-        saved_frames, render_error, worker_assists = _drive_make_bed(
+        saved_frames, render_error, worker_assists, drifted_corners = _drive_make_bed(
             args,
             scene,
             mujoco,

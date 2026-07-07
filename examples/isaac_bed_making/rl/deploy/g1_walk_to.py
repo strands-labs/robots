@@ -32,7 +32,7 @@ a = ap.parse_args()
 
 # Start clean: a stale abort flag must not insta-abort this run.
 try: os.remove(a.abort_flag)
-except FileNotFoundError: pass
+except FileNotFoundError: pass  # no stale abort flag to clear on a fresh run
 
 loco = G1Locomotion(iface=a.iface); loco.connect()
 loco.set_abort_source(lambda: os.path.exists(a.abort_flag))
@@ -41,7 +41,7 @@ p0 = loco.pose()
 print(f"[walk] start=({p0.x:+.2f},{p0.y:+.2f},{math.degrees(p0.yaw):+.1f}deg) "
       f"target=({a.tx:+.2f},{a.ty:+.2f},{a.tyaw_deg:+.1f}deg) "
       f"dist={math.hypot(a.tx-p0.x,a.ty-p0.y):.2f}m vmax={a.vmax} abort_flag={a.abort_flag}")
-r1 = "skipped"; r2 = "skipped"
+r2 = "skipped"   # r1 is always set by walk_to() below before it is read
 try:
     r1 = loco.walk_to((a.tx, a.ty), tolerance_m=a.tol, vmax=a.vmax); print("[walk] walk_to ->", r1)
     if r1 is None:
@@ -55,7 +55,7 @@ p1 = loco.pose()
 err = math.hypot(a.tx-p1.x, a.ty-p1.y)
 print(f"[walk] final=({p1.x:+.2f},{p1.y:+.2f},{math.degrees(p1.yaw):+.1f}deg) pos_err={err:.2f}m")
 try: loco.shutdown()
-except Exception: pass
+except Exception: pass  # best-effort DDS teardown
 # Exit gate uses a looser 0.15 m than --tol (0.06): turn_to can nudge the base a couple cm while
 # squaring heading, so the *post-turn* position is judged against the looser bound, by design.
 sys.exit(0 if (r1 is None and r2 is None and err <= 0.15) else 2)

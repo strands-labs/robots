@@ -59,6 +59,7 @@ class _LoopbackBus:
                 try:
                     await handler(source_id, event_name, payload)
                 except Exception:
+                    # One subscriber's failure must not break fan-out to the others.
                     pass
 
         return _sink
@@ -145,6 +146,7 @@ class SwarmCoordinator:
                         if inspect.isawaitable(res):
                             await res
                     except Exception:
+                        # Best-effort per-driver stop; keep tearing down the rest.
                         pass
             for t in self._tasks:
                 t.cancel()
@@ -153,6 +155,7 @@ class SwarmCoordinator:
         try:
             asyncio.run_coroutine_threadsafe(_shutdown(), self._loop).result(timeout=10)
         except Exception:
+            # Best-effort shutdown; stop the loop regardless of a drain error.
             pass
         self._loop.call_soon_threadsafe(self._loop.stop)
 

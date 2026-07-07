@@ -261,6 +261,7 @@ def grasp(stage, cloth_path: str, body_path: str, attach_path: str,
         api.CreateDeformableVertexOverlapOffsetAttr(float(bind_offset))
         api.CreateEnableRigidSurfaceAttachmentsAttr(True)
     except Exception:
+        # These attachment attrs are absent on some PhysX schema versions; skip if so.
         pass
     # CRITICAL for the rigid GRAB TABS: auto-filter collisions between the cloth and the attached rigid
     # near the attachment. A tab sits COINCIDENT with the cloth particle it binds, and a cloth particle's
@@ -273,6 +274,7 @@ def grasp(stage, cloth_path: str, body_path: str, attach_path: str,
         api.CreateEnableCollisionFilteringAttr(True)
         api.CreateCollisionFilteringOffsetAttr(max(float(bind_offset), 0.08))
     except Exception:
+        # Collision-filtering attrs are optional across PhysX versions; skip if absent.
         pass
 
 

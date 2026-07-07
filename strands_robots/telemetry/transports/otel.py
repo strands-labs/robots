@@ -49,7 +49,7 @@ class OTelTransport:
         if HAS_OTEL:
             self._tracer = trace_api.get_tracer(tracer_name)
         else:
-            logger.debug("OpenTelemetry not available — OTelTransport is a no-op")
+            logger.debug("OpenTelemetry not available - OTelTransport is a no-op")
 
     def send(self, payload: list[dict[str, Any]] | bytes) -> bool:
         """Convert events to OTel spans.
@@ -107,7 +107,7 @@ class OTelTransport:
                 "service.name": self.service_name,
             },
         ) as span:
-            # Add data as span events (not attributes — data can be large)
+            # Add data as span events (not attributes - data can be large)
             data = event.get("data", {})
             if data and isinstance(data, dict):
                 # Only add small data items as attributes

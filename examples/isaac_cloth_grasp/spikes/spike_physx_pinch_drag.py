@@ -26,7 +26,6 @@ Run::
 from __future__ import annotations
 
 import argparse
-import math
 import sys
 from pathlib import Path
 
@@ -48,7 +47,7 @@ import numpy as np  # noqa: E402
 import omni.usd  # noqa: E402
 import torch  # noqa: E402
 import isaaclab.sim as sim_utils  # noqa: E402
-from pxr import Gf, PhysxSchema, Sdf, UsdGeom, UsdLux, UsdPhysics, UsdShade, Vt  # noqa: E402
+from pxr import Gf, PhysxSchema, UsdGeom, UsdLux, UsdPhysics, UsdShade, Vt  # noqa: E402
 
 carb.settings.get_settings().set_bool("/persistent/physics/enableDeformableBeta", True)
 

@@ -6,17 +6,20 @@ Two robust signals, both from the existing public RobotState — no extra teleme
   * follow_err — max |commanded - actual| over the arm joints (rad). Under the PD arm-overlay a joint
     held back by an immovable load lags its command (torque ≈ Kp·follow_err), so a stalled arm shows a
     large, SUSTAINED following error while a free sweep tracks closely. This is our torque proxy.
-  * yaw_drift — base IMU yaw change from draw-start (deg). Pulling an anchored load feeds a reaction
-    moment into the body and the vendor balancer counter-rotates the torso (observed ~15° on a gripped
-    mattress cover, hardware 2026-06-18). A free pull barely twists the torso.
+  * waist_yaw torque - the PRIMARY signal in the firm-grasp era (2026-06-19). A firm anchored grasp no
+    longer lags the arm; the reaction moment dumps into an upper-torso twist that the vendor balancer
+    resists by driving the waist_yaw motor hard, so an anchored load shows a large waist_yaw tau
+    deviation. See the FailDetector class docstring for the full rationale.
+  * arm tau_est - direct arm motor torque, a SECONDARY verdict signal. It reads 0/garbage on some G1
+    EDU firmware (cf. power_v=0.0), so its threshold is loose.
 
-Optional THIRD signal, logged only (not in the verdict): tau_est on the arm joints. Direct motor
-torque — the strongest "pulling hard" signal IF it is populated, but it reads 0/garbage on some G1 EDU
-firmware (cf. power_v=0.0), so we measure it for calibration and do not yet depend on it.
+Also computed but LOGGED-ONLY (not in the verdict): base IMU yaw_drift (the balancer holds the pelvis
+still while only the torso twists, so the base misses the load) and per-tick dq.
 
-Verdict = FAILED if follow_err OR yaw_drift stays above its threshold for >= sustain_s (sustained, not
-a transient spike at the start of the sweep). Thresholds are first-pass — calibrate against one free
-pull and one anchored pull, then tighten and enable --abort-on-stall.
+Verdict = FAILED if the waist_yaw torque deviation (PRIMARY, once its threshold is calibrated) OR
+follow_err OR arm tau_est stays above threshold for >= sustain_s (sustained, not a transient spike at
+the start of the sweep). Thresholds are first-pass - calibrate against one free pull and one anchored
+pull, then tighten and enable --abort-on-stall.
 """
 from __future__ import annotations
 

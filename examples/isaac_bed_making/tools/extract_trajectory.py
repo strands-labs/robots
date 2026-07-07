@@ -83,7 +83,8 @@ def main() -> int:
     import pyarrow.parquet as pq
     from huggingface_hub import hf_hub_download
 
-    info = json.load(open(hf_hub_download(REPO, "meta/info.json", repo_type="dataset")))
+    with open(hf_hub_download(REPO, "meta/info.json", repo_type="dataset")) as fh:
+        info = json.load(fh)
     fps = int(info["fps"])
     # Locate the episode's rows from the episode metadata.
     ep_meta_files = []

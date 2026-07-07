@@ -23,7 +23,7 @@ c._Call(ROBOT_API_ID_LOCO_GET_FSM_ID, "{}")  # warm the reply reader so StopMove
 
 # clear any stale flag from a previous run
 try: os.remove("/tmp/ABORT")
-except FileNotFoundError: pass
+except FileNotFoundError: pass  # no stale flag to clear on a fresh run
 
 def stop_now():
     # Independent safety layers: write the flag AND StopMove. NEVER let one failing block the other.

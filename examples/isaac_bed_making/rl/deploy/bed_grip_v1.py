@@ -68,6 +68,7 @@ class Bridge:
         try:
             self._s.close()
         except OSError:
+            # Best-effort teardown; the socket may already be closed by the peer.
             pass
 
 
@@ -176,6 +177,7 @@ def main() -> None:
         try:
             os.remove(f)
         except OSError:
+            # Nothing to clear: the sentinel is absent on a fresh run.
             pass
 
     try:
@@ -193,8 +195,6 @@ def main() -> None:
 
         if not args.no_wait and not _wait_for(args.arm_reached_file, args.hold_timeout, print):
             return
-
-        force = list(st.get("left_touch_force") or [0] * 5)   # last touch read; updated through the close for the trace
 
         # Motor order for set/get is [thumb_curl, thumb_aux, index, middle, ring, pinky]. thumb_aux is the
         # LATERAL thumb (0=slap/flat, 1=opposed across the palm = claw): you cannot pinch thin fabric with
@@ -223,7 +223,6 @@ def main() -> None:
         # One smooth continuous flex per channel; touch polled ~10 Hz to feed the confirm. The grasp
         # decision is made entirely by the confirm monitor (below) on the HELD grip — this open-loop close
         # has no contact-gating of its own.
-        gf = gt = 0.0
         dt = 1.0 / max(1.0, args.rate_hz)
         speed = args.grip_max / max(1e-3, args.close_s)   # finger close fraction per second
         thumb_start = args.close_s + args.thumb_lag_s     # thumb flexes ONLY after fingers fully close + settle
@@ -271,6 +270,7 @@ def main() -> None:
             try:
                 open(args.empty_file, "w").close()
             except OSError:
+                # Best-effort sentinel; the release + return below run regardless.
                 pass
             print(f"[grip] ⚠ EMPTY GRAB — closed on nothing. wrote {args.empty_file}; NOT signaling the "
                   f"draw. THIS is the trigger to ask the human for help.")
@@ -310,6 +310,7 @@ def main() -> None:
                         try:
                             open(args.empty_file, "w").close()
                         except OSError:
+                            # Best-effort sentinel; we break and release regardless.
                             pass
                         print(f"[grip] wrote {args.empty_file} — honest failure (not a false-success). "
                               f"THIS is the trigger to ask the human for help.")

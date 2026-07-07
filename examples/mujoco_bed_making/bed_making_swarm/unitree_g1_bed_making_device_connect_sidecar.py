@@ -182,6 +182,7 @@ class BackgroundRuntime:
                     try:
                         loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
                     except Exception:
+                        # Best-effort drain of pending tasks during thread shutdown.
                         pass
                 loop.close()
                 self._stopped.set()
@@ -343,6 +344,7 @@ async def _main(args: argparse.Namespace) -> int:
     try:
         await asyncio.gather(*tasks)
     except asyncio.CancelledError:
+        # Normal on shutdown: the gather is cancelled when the runtimes stop.
         pass
     return 0
 

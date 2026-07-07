@@ -52,7 +52,7 @@ import numpy as np  # noqa: E402
 import omni.usd  # noqa: E402
 import torch  # noqa: E402
 import isaaclab.sim as sim_utils  # noqa: E402
-from pxr import Gf, PhysxSchema, Sdf, UsdGeom, UsdPhysics  # noqa: E402
+from pxr import Gf, PhysxSchema, UsdGeom, UsdPhysics  # noqa: E402
 
 carb.settings.get_settings().set_bool("/persistent/physics/enableDeformableBeta", True)
 print("[spike] deformableBeta =",

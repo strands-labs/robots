@@ -94,12 +94,16 @@ RL_PATH = not (ARGS.pink or ARGS.replay)
 # Import eigenpy + pinocchio BEFORE the Isaac app launches so eigenpy registers its
 # StdVec_StdString converter first. Launching the app afterwards otherwise shadows
 # that registration and Pinocchio's ``model.names.tolist()`` throws inside the Pink
-# IK controller (manipulation.PinkArmIK). Harmless if pinocchio isn't installed.
-try:
-    import eigenpy  # noqa: F401
-    import pinocchio  # noqa: F401
-except Exception:
-    pass
+# IK controller (manipulation.PinkArmIK). These are imported purely for that
+# import-time side effect. Harmless if pinocchio isn't installed.
+import importlib
+
+for _pin_dep in ("eigenpy", "pinocchio"):
+    try:
+        importlib.import_module(_pin_dep)
+    except Exception:
+        # Optional dependency absent; the Pink IK path simply stays disabled.
+        pass
 
 # ── Launch the simulator first (Isaac Lab requires this before other imports) ──
 from isaaclab.app import AppLauncher  # noqa: E402
@@ -1017,6 +1021,7 @@ if __name__ == "__main__":
             while simulation_app.is_running():
                 simulation_app.update()
         except KeyboardInterrupt:
+            # Ctrl-C is the documented way to exit the interactive GUI loop.
             pass
         simulation_app.close()
     else:

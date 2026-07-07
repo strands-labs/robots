@@ -115,7 +115,9 @@ def test_walk_to_next_corner_counterclockwise_then_clockwise():
 
     # Clockwise walks the other way around the ring.
     cw = _run(driver.walkToNextCorner(direction="clockwise"))["target_corner"]
-    assert cw in {"NW", "NE", "SE", "SW"}
+    # After the four CCW steps the cursor is back at NW; one clockwise step
+    # goes the other way around the ring, to NE.
+    assert cw == "NE"
 
 
 # ── Pick up / hold ─────────────────────────────────────────────────────────

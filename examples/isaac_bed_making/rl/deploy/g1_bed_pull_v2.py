@@ -127,11 +127,12 @@ def run_lift_rl_pull(dep, io, SafeStop, *, lift_only, grip_target, draw_target, 
         return True
 
     def retract():
-        """Retrace the EXACT approach path in reverse (recorded joint poses, newest→oldest), under
-        overlay control, so the hand follows the descent path back out and cannot catch on the
-        mattress on the way to the side. Ends at the start pose; the caller then blends the overlay
-        out from there (collision-free). A plain weight-blend would let the vendor pull the arm to
-        side along a DIRECT path — which is what snagged the mattress on the last run."""
+        """Retrace the EXACT recorded joint path in reverse (every pose logged through the come-in
+        AND the draw, newest->oldest), under overlay control, so the hand follows the reverse of the
+        path it took in and cannot catch on the mattress on the way to the side. Ends at the start
+        pose; the caller then blends the overlay out from there (collision-free). A plain weight-blend
+        would let the vendor pull the arm to side along a DIRECT path - which is what snagged the
+        mattress on the last run."""
         log("[pull2] retracting along the reverse approach path")
         for pose in reversed(traj):
             if io.abort_tripped():
@@ -147,6 +148,7 @@ def run_lift_rl_pull(dep, io, SafeStop, *, lift_only, grip_target, draw_target, 
         try:
             os.remove(f)
         except OSError:
+            # Sentinel is absent on a fresh run; nothing to clear.
             pass
 
     with SafeStop(io.damp_once, name="bed_pull2"):
@@ -209,6 +211,7 @@ def run_lift_rl_pull(dep, io, SafeStop, *, lift_only, grip_target, draw_target, 
                         try:
                             open(fail_file, "w").close()
                         except OSError:
+                            # Best-effort sentinel; the failure log below runs regardless.
                             pass
                         log(f"[pull2] ⚠ pull FAILED (anchored load — likely grabbed the mattress cover). "
                             f"wrote {fail_file}. THIS is the trigger to ask the human for help.")

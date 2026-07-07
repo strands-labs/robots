@@ -9,13 +9,13 @@ This is the main entry point for the telemetry subsystem. It provides:
 
 Patterns adopted:
 - Strategy pattern for tier selection
-- Auto-batching with count/size/age thresholds
+- Auto-batching with count/age thresholds (size is advisory only)
 - Gzip compression at batch level
 - Correlation tracking with trace/span IDs
 - Exponential backoff retry on transport failure
 
 Key design decision: Uses collections.deque (not asyncio.Queue) for the
-emit-side buffer. The 50Hz robot control loop is synchronous — asyncio.Queue
+emit-side buffer. The 50Hz robot control loop is synchronous - asyncio.Queue
 would crash with RuntimeError due to cross-event-loop access. deque with
 maxlen gives O(1), GIL-protected, bounded append.
 """
@@ -25,6 +25,7 @@ from __future__ import annotations
 import gzip
 import json
 import logging
+import random
 import threading
 import time
 import uuid
@@ -62,6 +63,8 @@ class TransportConfig:
         handler: Callable that receives a list of serialized event dicts.
         retry_max: Max retry attempts on failure.
         retry_base_ms: Base retry delay in ms (exponential backoff).
+        close: Optional callable invoked once on stream.stop() to release
+            transport-side resources (e.g. LocalWALTransport.close).
     """
 
     name: str
@@ -69,6 +72,7 @@ class TransportConfig:
     handler: Callable[[list[dict[str, Any]] | bytes], bool]
     retry_max: int = 3
     retry_base_ms: float = 100.0
+    close: Callable[[], None] | None = None
 
 
 class TelemetryStream:
@@ -83,7 +87,7 @@ class TelemetryStream:
     Args:
         robot_id: Robot identifier for all emitted events.
         batch_config: Auto-batching thresholds per tier.
-        buffer_maxlen: Max events per tier buffer (ring buffer — drops oldest).
+        buffer_maxlen: Max events per tier buffer (ring buffer - drops oldest).
         flush_interval_s: How often the flush thread checks buffers.
         compression_threshold: Min bytes before gzip compression kicks in.
     """
@@ -174,7 +178,16 @@ class TelemetryStream:
         # Final flush: force-drain every non-empty buffer, regardless of the
         # count/age thresholds, so no buffered events are lost on shutdown.
         self._flush_all(force=True)
-        logger.info(f"TelemetryStream stopped for robot={self.robot_id} | stats={self.get_stats()}")
+
+        # Release transport-side resources (e.g. the WAL file handle).
+        for transport in list(self._transports):
+            if transport.close is not None:
+                try:
+                    transport.close()
+                except Exception as e:
+                    logger.warning("Transport %s close error: %s", transport.name, e)
+
+        logger.info("TelemetryStream stopped for robot=%s | stats=%s", self.robot_id, self.get_stats())
 
     def __enter__(self) -> TelemetryStream:
         return self
@@ -187,7 +200,7 @@ class TelemetryStream:
         self._transports.append(transport)
         logger.info(f"Transport added: {transport.name} for tiers={[t.name for t in transport.tiers]}")
 
-    # --- Emit (hot path — must be <1ms) ---
+    # --- Emit (hot path - must be <1ms) ---
 
     def emit(
         self,
@@ -362,11 +375,11 @@ class TelemetryStream:
         # Reset age tracking. Lock-free/best-effort: an event appended by a concurrent
         # emit() during the drain above may restart its age-timer here, so age-based
         # flushing is approximate. Delivery is still guaranteed by the count trigger and
-        # the force-drain in stop() — no event is lost.
+        # the force-drain in stop() - no event is lost.
         self._buffer_first_ts[tier] = None
 
         # Serialize per-event so one un-serializable event can't lose the whole
-        # (already-drained) batch — drop the offender and keep the rest.
+        # (already-drained) batch - drop the offender and keep the rest.
         serialized = []
         for e in events:
             try:
@@ -394,13 +407,16 @@ class TelemetryStream:
             with self._stats_lock:
                 self._stats["raw_bytes"] += raw_bytes
 
-        # Send to transports for this tier
-        for transport in self._transports:
+        # Send to transports for this tier. Snapshot the list so a concurrent
+        # add_transport() cannot mutate it mid-iteration.
+        for transport in list(self._transports):
             if tier in transport.tiers:
                 self._send_with_retry(transport, batch_payload, tier, compressed)
 
         with self._stats_lock:
-            self._stats["flushed"] += len(events)
+            # Count only events that actually serialized; un-serializable ones
+            # were already tallied under "dropped" above.
+            self._stats["flushed"] += len(serialized)
 
     def _serialize_event(self, event: TelemetryEvent) -> dict[str, Any]:
         """Serialize a single event to dict (numpy-aware)."""
@@ -409,6 +425,11 @@ class TelemetryStream:
             if _HAS_NUMPY:
                 if isinstance(obj, np.ndarray):
                     return obj.tolist()
+                # np.bool_ is not a subclass of np.integer, so it must be
+                # handled before the integer branch or it falls through and
+                # breaks json.dumps.
+                if isinstance(obj, np.bool_):
+                    return bool(obj)
                 if isinstance(obj, (np.integer,)):
                     return int(obj)
                 if isinstance(obj, (np.floating,)):
@@ -452,8 +473,6 @@ class TelemetryStream:
         Returns:
             True if send succeeded, False if all retries exhausted.
         """
-        import random
-
         for attempt in range(transport.retry_max):
             try:
                 success = transport.handler(payload)

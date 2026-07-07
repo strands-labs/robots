@@ -18,6 +18,7 @@ from __future__ import annotations
 import gzip
 import json
 import logging
+import shutil
 import time
 from pathlib import Path
 from typing import Any
@@ -72,7 +73,7 @@ class LocalWALTransport:
                     decompressed = gzip.decompress(payload)
                     events = json.loads(decompressed)
                 except Exception:
-                    # Not gzip — treat as raw JSON
+                    # Not gzip - treat as raw JSON
                     events = json.loads(payload)
             else:
                 events = payload
@@ -116,9 +117,10 @@ class LocalWALTransport:
             if self.compress_rotated and self._current_path:
                 try:
                     gz_path = self._current_path.with_suffix(".jsonl.gz")
-                    with open(self._current_path, "rb") as f_in:
-                        with gzip.open(gz_path, "wb") as f_out:
-                            f_out.write(f_in.read())
+                    # Stream the copy so a large (up to max_file_bytes) WAL file
+                    # is not read fully into memory during rotation.
+                    with open(self._current_path, "rb") as f_in, gzip.open(gz_path, "wb") as f_out:
+                        shutil.copyfileobj(f_in, f_out)
                     self._current_path.unlink()
                 except Exception as e:
                     logger.warning("Failed to compress %s: %s", self._current_path, e)
@@ -126,7 +128,7 @@ class LocalWALTransport:
         # Clean up old files if over limit
         self._cleanup_old_files()
 
-        # Open new file — use monotonic counter to guarantee unique names
+        # Open new file - use monotonic counter to guarantee unique names
         # even when rotations happen within the same millisecond
         timestamp = int(time.time() * 1000)
         self._file_counter += 1

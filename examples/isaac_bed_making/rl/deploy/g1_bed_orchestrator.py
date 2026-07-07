@@ -57,6 +57,7 @@ def clear_sentinels(dry: bool) -> None:
         try:
             os.remove(f)
         except OSError:
+            # Sentinel is absent on a fresh run; nothing to clear.
             pass
 
 
@@ -71,9 +72,11 @@ def _bg(cmd: list[str], log_path: str, dry: bool):
     print(f"  $ {' '.join(cmd)}  > {log_path}", flush=True)
     if dry:
         return None
-    f = open(log_path, "w")
-    return subprocess.Popen(cmd, stdout=f, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
-                            cwd=DEPLOY, env=_env())
+    # The child gets its own dup of the fd, so the parent can drop its handle
+    # right after spawning -- the subprocess keeps writing to the log file.
+    with open(log_path, "w") as f:
+        return subprocess.Popen(cmd, stdout=f, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                                cwd=DEPLOY, env=_env())
 
 
 def _wait(proc, timeout_s: float, dry: bool) -> None:
@@ -138,6 +141,7 @@ def ask_human(args) -> None:
             with open("/tmp/robot_needs_help", "w") as f:
                 f.write(msg + "\n")
         except OSError:
+            # Best-effort help file; the console print below is the primary signal.
             pass
     print(f"  → {msg}", flush=True)
     if args.help_hook:                              # pluggable: wire to a real Device Connect notify

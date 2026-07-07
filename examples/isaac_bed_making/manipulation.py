@@ -230,5 +230,6 @@ def apply_hand_friction(stage, robot_prim_path: str, side: str,
                 physicsUtils.add_physics_material_to_prim(stage, prim, mat_path)
                 bound.append(path)
             except Exception:
+                # Some prims reject the material bind; skip them and bind the rest.
                 pass
     return bound

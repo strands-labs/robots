@@ -186,6 +186,7 @@ class ConsoleVoice:
             self._ground = mod.ground
             self._resolve = mod.VoiceIO._resolve_choices
         except Exception:
+            # Voice module is optional; keep the no-op grounding set above.
             pass
 
     def announce(self, text: str) -> None:
@@ -436,7 +437,7 @@ class HelpAgent:
 # The Device Connect driver depends on device_connect_edge; guard the import so the core
 # (CompetenceMonitor + voice + HelpAgent) is usable without it (tests / sim-only).
 try:
-    from device_connect_edge.drivers import DeviceDriver, emit, on, rpc
+    from device_connect_edge.drivers import DeviceDriver, emit, rpc
     from device_connect_edge.types import DeviceIdentity, DeviceStatus
 
     _HAVE_DC = True
@@ -450,7 +451,7 @@ except Exception:  # pragma: no cover - DC optional for the core
 
         return deco
 
-    emit = on = rpc  # type: ignore
+    emit = rpc  # type: ignore
 
 
 class BedMakingHelpDriver(DeviceDriver):  # type: ignore[misc]
@@ -513,11 +514,13 @@ class BedMakingHelpDriver(DeviceDriver):  # type: ignore[misc]
             try:
                 await method(**payload)
             except Exception:
+                # A Device Connect emit failure must not break the sim; the local sink still runs.
                 pass
         if self._emit_sink is not None:
             try:
                 await self._emit_sink(name, dict(payload))
             except Exception:
+                # Best-effort local event sink; a listener error must not break the caller.
                 pass
 
     # -- callable actions (portal functions) ----------------------------------------------------
@@ -582,19 +585,19 @@ class BedMakingHelpDriver(DeviceDriver):  # type: ignore[misc]
     # -- broadcast events -----------------------------------------------------------------------
     @emit(labels={"category": "coordination"})
     async def helpRequested(self, corner: str = "", reason: str = "", requester: str = "") -> None:
-        ...
+        """Broadcast: the robot is asking a human for help on a corner (body emitted by @emit)."""
 
     @emit(labels={"category": "coordination"})
     async def humanResponded(self, corner: str = "", said: str = "", grounded: str = "", outcome: str = "") -> None:
-        ...
+        """Broadcast: the human answered a help request (body emitted by @emit)."""
 
     @emit(labels={"category": "manipulation"})
     async def cornerPlaced(self, corner: str = "", assisted: bool = False) -> None:
-        ...
+        """Broadcast: a sheet corner was placed, optionally with human assist (body emitted by @emit)."""
 
     @emit(labels={"category": "goal"})
     async def goalReached(self, goal: str = "") -> None:
-        ...
+        """Broadcast: a task goal was reached (body emitted by @emit)."""
 
     # -- voice plumbing (keep blocking I/O off the DC event loop) --------------------------------
     async def _ask_human(self, question: str, choices: Any) -> VoiceReply:
@@ -748,6 +751,7 @@ class HumanPartnerCoordinator:
         try:
             self._call(_shutdown(), timeout=10)
         except Exception:
+            # Best-effort shutdown; stop the loop regardless of a drain error.
             pass
         self._loop.call_soon_threadsafe(self._loop.stop)
 

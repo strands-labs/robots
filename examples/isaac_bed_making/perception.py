@@ -139,7 +139,7 @@ def detect_bed(points_w: np.ndarray, sensor_pos_w, sensor_quat_w) -> BedDetectio
     band = pts[(pts[:, 2] >= BED_Z_BAND_M[0]) & (pts[:, 2] <= BED_Z_BAND_M[1])]
     if band.shape[0] < 20:
         return BedDetection(found=False)
-    # Dominant horizontal plane: the modal z (robust to a few stray returns), then the points flat
+    # Dominant horizontal plane: the median z (robust to a few stray returns), then the points flat
     # within tolerance of it — that is the surface (bed top), as opposed to walls / the bed's faces.
     z_med = float(np.median(band[:, 2]))
     plane = band[np.abs(band[:, 2] - z_med) <= BED_HORIZONTAL_TOL_M]

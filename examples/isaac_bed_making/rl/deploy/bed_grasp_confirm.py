@@ -31,11 +31,12 @@ Signals — both already in the brainco_bridge `get` telemetry, no harness chang
 Verdict = FABRIC PRESENT if (SUSTAINED touch rise >= force_rise) OR (sustained proximity deviation >=
 prox_dev) on at least `fingers_needed` fingers. Otherwise EMPTY GRAB.
 
-CALIBRATION STATUS (this G1): the TOUCH threshold (force_rise) is hardware-calibrated 2026-06-19 to 6
-(empty floor ≤1 over n=7 closes; single-layer sheet 9-39 over n=6, min 9; 2-layer 81). Re-validate the
-SUSTAINED verdict on hardware (empty / real captured grab / brush-slip). The original procedure (capture
-~5 empty + ~5 fabric closes, set the threshold between the clusters) is automated in
-bed_grasp_calibrate.py. Re-run it if the fabric or hand changes.
+CALIBRATION STATUS (this G1): the TOUCH threshold (force_rise) DEFAULTS to 4, hardware-calibrated
+2026-06-19 for the FIXED sequenced close (see __init__): real finger-pad grabs read ~50-110 and the
+empty/slip floor is <=2.5, so 4 sits above the floor and well below a real grab. (An earlier peak-based
+direct close read fabric lower, ~9-39 u16.) Re-validate the SUSTAINED verdict on hardware (empty / real
+captured grab / brush-slip). The procedure (capture ~5 empty + ~5 fabric closes, set the threshold
+between the clusters) is automated in bed_grasp_calibrate.py. Re-run it if the fabric or hand changes.
 
 Bias on purpose: when the two signals disagree or proximity reads garbage, prefer to DECLARE EMPTY
 (escalate to the human) over claiming a grab — a false "I have the sheet" is the failure we are here to

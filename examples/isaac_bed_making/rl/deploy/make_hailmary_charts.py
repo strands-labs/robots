@@ -21,10 +21,11 @@ plt.rcParams.update({"figure.dpi": 130, "font.size": 11, "axes.grid": True, "gri
 
 def load_approach(d):
     t, r = [], []
-    for line in open(os.path.join(d, "run_approach_telem.jsonl")):
-        o = json.loads(line)
-        if o.get("R") is not None:
-            t.append(o["t"]); r.append(o["R"])
+    with open(os.path.join(d, "run_approach_telem.jsonl")) as fh:
+        for line in fh:
+            o = json.loads(line)
+            if o.get("R") is not None:
+                t.append(o["t"]); r.append(o["R"])
     return np.array(t), np.array(r)
 
 # ---- Fig 1: LiDAR-gated approach R(t) ---------------------------------------

@@ -410,7 +410,7 @@ def stage_arms(dep, target, seconds, vmax_rad_s=1.0, kp=40.0, kd=1.5, blend_s=1.
     n_in = int(blend_s / dt)
     for k in range(n_in):
         if remote.aborted():
-            return release_and_exit("abort during blend-in")
+            release_and_exit("abort during blend-in"); return
         publish((k + 1) / n_in)
         time.sleep(dt)
 
@@ -419,7 +419,7 @@ def stage_arms(dep, target, seconds, vmax_rad_s=1.0, kp=40.0, kd=1.5, blend_s=1.
     step = 0
     while time.monotonic() < t_end:
         if remote.aborted():
-            return release_and_exit("controller abort")
+            release_and_exit("controller abort"); return
         obs, _ = dep.build_obs(target)
         a = dep.infer(obs)
         tq = dep.action_to_targets(a)

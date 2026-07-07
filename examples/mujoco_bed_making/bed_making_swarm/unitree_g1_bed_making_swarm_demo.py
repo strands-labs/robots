@@ -329,6 +329,7 @@ async def run_broker(nats_url: str, hold: float, step_delay: float) -> int:
                     if inspect.isawaitable(res):
                         await res
                 except Exception:
+                    # Best-effort per-runtime stop during shutdown; drain the rest.
                     pass
         for task in tasks:
             task.cancel()
@@ -347,12 +348,16 @@ def run_mujoco(args: argparse.Namespace) -> int:
     """
 
     demo = REPO_ROOT / "examples" / "mujoco_bed_making" / "bed_making_demo" / "unitree_g1_bed_making_demo.py"
+    # Pin the demo's frame output dir so the ffmpeg input dir below matches
+    # exactly what the subprocess wrote (the demo's own default output-dir is a
+    # different path, which would leave ffmpeg with no frames to encode).
+    frames_dir = REPO_ROOT / "artifacts" / "mujoco_bed_making" / "unitree_g1_bed_making"
     cmd = [sys.executable, str(demo), "--substeps", str(args.substeps)]
     env = dict(os.environ)
     if args.no_device_connect:
         cmd.append("--no-device-connect")
     if args.render_video:
-        cmd += ["--no-viewer", "--render-frames"]
+        cmd += ["--no-viewer", "--render-frames", "--output-dir", str(frames_dir)]
         # GPU offscreen rendering — the interactive viewer is not used here.
         env.setdefault("MUJOCO_GL", "egl")
 
@@ -364,7 +369,7 @@ def run_mujoco(args: argparse.Namespace) -> int:
         return result.returncode
 
     if args.render_video:
-        frames = REPO_ROOT / "artifacts" / "unitree_g1_bed_making"
+        frames = frames_dir
         out = frames / "bed_making.mp4"
         if shutil.which("ffmpeg") is None:
             print(

@@ -31,7 +31,7 @@ import argparse
 import os
 import time
 
-from bed_deploy_common import ARM_JOINTS, ARM_LIMITS, LEFT_ARM, RIGHT_ARM, load, rc_root
+from bed_deploy_common import ARM_JOINTS, ARM_LIMITS, LEFT_ARM, load, rc_root
 from bed_fail_detect import DrawResistanceMonitor, read_arm_tau
 
 # APPROACH: clear the low mattress the SAME way the lift does — go up + shoulder-wide FIRST, so the
@@ -130,6 +130,7 @@ def run_handoff(dep_dt, io, SafeStop, *, present_only, approach_waypoints, hando
         try:
             os.remove(f)
         except OSError:
+            # Sentinel is absent on a fresh run; nothing to clear.
             pass
 
     with SafeStop(io.damp_once, name="bed_handoff"):
@@ -184,6 +185,7 @@ def run_handoff(dep_dt, io, SafeStop, *, present_only, approach_waypoints, hando
                         try:
                             open(fail_file, "w").close()
                         except OSError:
+                            # Best-effort sentinel; the failure log below runs regardless.
                             pass
                         log(f"[handoff] ⚠ draw FAILED (anchored load). wrote {fail_file}.")
                 if not hold(draw_hold_s, "draw-hold"):

@@ -1,12 +1,12 @@
 """Telemetry Streaming for Robotics.
 
 Key patterns:
-- **Strategy tier routing** — STREAM/BATCH/STORAGE based on event urgency
-- **Auto-batching** — count/size/age triple-trigger flush thresholds
-- **Gzip compression** — at batch level when payload exceeds threshold
-- **Correlation tracking** — W3C trace-context compatible span IDs
-- **Exponential backoff** — retry with jitter on transport failures
-- **Non-blocking emit** — collections.deque for O(1) append in 50Hz loops
+- **Strategy tier routing** - STREAM/BATCH/STORAGE based on event urgency
+- **Auto-batching** - count/age flush thresholds (size is advisory only)
+- **Gzip compression** - at batch level when payload exceeds threshold
+- **Correlation tracking** - W3C trace-context compatible span IDs
+- **Exponential backoff** - retry with jitter on transport failures
+- **Non-blocking emit** - collections.deque for O(1) append in 50Hz loops
 
 Usage:
     from strands_robots.telemetry import TelemetryStream, EventCategory

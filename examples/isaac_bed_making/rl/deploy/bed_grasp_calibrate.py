@@ -168,7 +168,6 @@ def main() -> None:
         if p_ok:
             print(f"    → --confirm-prox-dev {p_thr}")
     else:
-        p_ok = False
         print("  proximity:    DEAD — fall back to touch-only (and consider a vision fabric-in-hand cue).")
 
     print("\n  verdict:")
