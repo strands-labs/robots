@@ -160,6 +160,7 @@ extras you need:
 |-------|----------|---------|
 | `sim-mujoco` | MuJoCo, robot_descriptions, imageio | Simulation (recommended starting point) |
 | `sim-newton` | Newton, Warp, MuJoCo-Warp, trimesh | GPU-native simulation (NVIDIA GPU; batched envs, headless ray-traced render) |
+| `isaac` | usd-core (Isaac Sim installed out-of-band) | Isaac Sim GPU backend - RTX photoreal eval, USD-native scenes (NVIDIA RTX GPU; not in `[all]`) |
 | `lerobot` | LeRobot | Real hardware, local VLA inference, dataset recording |
 | `molmoact2` | LeRobot + transformers, peft, scipy | MolmoAct2 transformers-native VLA (resolves from PyPI via lerobot >= 0.6) |
 | `groot-service` | pyzmq, msgpack | NVIDIA GR00T inference client |
@@ -171,7 +172,7 @@ extras you need:
 | `mesh-iot` | awsiotsdk, awscrt, boto3 | AWS IoT Core mesh transport for fleets |
 | `device-connect` | device-connect-edge, device-connect-agent-tools | Device-aware networking - discovery, RPC, events, safety (falls back to the built-in mesh if absent) |
 | `benchmark-libero` | libero | LIBERO benchmark evaluation |
-| `all` | everything above | Kitchen sink |
+| `all` | everything above except the GPU-only `isaac` extra | Kitchen sink |
 
 ```bash
 # Most users start here:

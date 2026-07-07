@@ -223,6 +223,32 @@ sim-newton = [
     "mujoco-warp>=3.8.0",
     "trimesh>=4.0.0,<5.0.0",
 ]
+# Isaac Sim GPU backend (create_simulation("isaac") / Robot(..., backend="isaac")).
+# Mirrors the sibling strands-robots-sim `[isaac]` extra so the backend's
+# pip-installable companion dep resolves once the in-tree Isaac backend lands
+# (parent epic #1144). GPU/heavy - kept OUT of `[all]` (like sim-newton's spirit
+# but even more so: Isaac Sim needs an RTX GPU + an out-of-band Kit runtime).
+#
+# Isaac Sim itself is NOT installed by this extra. It is an Omniverse Kit
+# application provisioned out-of-band - via the NVIDIA Omniverse Launcher,
+# Isaac Lab (`./isaaclab.sh -i`), or the NGC docker image
+# (`nvcr.io/nvidia/isaac-sim:6.0`). Those images/launchers ship a complete,
+# bootable Kit (Python 3.12 interpreter + the full `isaacsim-*` /
+# `isaacsim-extscache-*` extension set that `SimulationApp` needs to boot).
+# We do NOT pin `isaacsim` here: the PyPI `isaacsim[all]` metapackage is
+# incomplete on its own (it omits the `isaacsim-extscache-*` packages, so
+# `SimulationApp` aborts resolving its extension graph), and every other
+# surface documents Isaac Sim as "installed separately". `isaaclab` is
+# likewise not pinned (out-of-band source install; only a pre-release exists
+# on the index, which a `>=3.0,<4.0` pin would exclude per PEP 440).
+#
+#   * `usd-core` - pure-Python USD runtime used by the procedural scene
+#     builders / loaders even when Kit isn't booted. This is the one genuinely
+#     pip-installable companion dep, so it is the only pin here. usd-core uses
+#     CalVer (25.x/26.x); per AGENTS.md `>=1.0` deps cap the major.
+isaac = [
+    "usd-core>=25.5,<27.0.0",
+]
 benchmark-libero = [
     "libero>=0.1.0,<1.0.0",
 ]
