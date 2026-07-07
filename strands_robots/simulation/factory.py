@@ -108,16 +108,40 @@ def _load_plugin_backends() -> dict[str, type[SimEngine]]:
     is logged and skipped rather than crashing the factory, so a single bad
     plugin can't take down ``create_simulation`` for the working backends.
 
+    A plugin whose entry-point name collides with a **built-in** backend name
+    or alias is skipped entirely (never loaded into the cache) so that:
+
+    * the built-in always wins - a stale ``strands-robots-sim`` still on the
+      ``PYTHONPATH`` after a backend has been absorbed in-tree (e.g. ``isaac``
+      once it lands as a builtin) can neither shadow nor duplicate-register
+      the builtin, and
+    * the plugin's (often heavy - Isaac Sim, Newton) module import is avoided
+      up front when the builtin will be used anyway.
+
+    This skip is the backward-compat guarantee for the robots-sim -> in-tree
+    migration: resolution prefers the builtin and no conflict is ever raised.
+
     Returns:
-        Mapping of entry-point name -> backend class. Aliases are expressed
-        as multiple entry-point names pointing at the same class (e.g.
-        ``newton`` and ``warp`` both resolve to ``NewtonSimulation``); no
-        dedup is applied so whichever requested name resolves cleanly.
+        Mapping of entry-point name -> backend class, excluding any name that
+        collides with a built-in. Aliases are expressed as multiple
+        entry-point names pointing at the same class (e.g. ``newton`` and
+        ``warp`` both resolve to ``NewtonSimulation``); no dedup is applied
+        among plugins so whichever requested name resolves cleanly.
     """
     global _PLUGIN_BACKENDS_CACHE
     if _PLUGIN_BACKENDS_CACHE is None:
         cache: dict[str, type[SimEngine]] = {}
         for ep in entry_points(group=_ENTRY_POINT_GROUP):
+            # Built-ins win over plugins of the same name/alias. Skip the
+            # plugin before ``ep.load()`` so a stale sibling package can never
+            # shadow an absorbed-in-tree backend, and its heavy import is
+            # avoided entirely.
+            if ep.name in _BUILTIN_BACKENDS or ep.name in _BUILTIN_ALIASES:
+                logger.debug(
+                    "Skipping simulation backend plugin %r: shadowed by built-in of the same name.",
+                    ep.name,
+                )
+                continue
             try:
                 cache[ep.name] = ep.load()
             except Exception as exc:  # noqa: BLE001 - one bad plugin must not break the factory
@@ -257,8 +281,10 @@ def _import_backend_class(name: str) -> type[SimEngine]:
         return backend_cls
 
     # 3. Entry-point plugins (third-party packages, e.g. strands-robots-sim).
-    #    Built-ins win over plugins of the same name (checked above), so a
-    #    conflicting plugin can never shadow "mujoco".
+    #    Built-ins win over plugins of the same name: the built-in registry is
+    #    checked above, and ``_load_plugin_backends`` additionally drops any
+    #    plugin whose name/alias collides with a built-in, so a conflicting
+    #    plugin can never shadow "mujoco" (or an absorbed-in-tree "isaac").
     plugins = _load_plugin_backends()
     if name in plugins:
         plugin_cls = plugins[name]

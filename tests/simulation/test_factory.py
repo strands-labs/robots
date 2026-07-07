@@ -303,6 +303,108 @@ class TestEntryPointDiscovery:
             assert "newton" in str(exc_info.value)
 
 
+class TestIsaacBuiltinWinsOverPlugin:
+    """Backward-compat regression guard for issue #1150.
+
+    When the ``isaac`` backend is absorbed in-tree as a built-in (parent epic
+    #1144), a user who still has ``strands-robots-sim`` installed advertises an
+    ``isaac`` entry-point plugin. Resolution MUST prefer the built-in, the
+    plugin must never shadow or duplicate-register it, and no ``ValueError``
+    may fire from the ``register_backend`` conflict checks.
+
+    These tests simulate the post-#1146 state by injecting an ``isaac`` entry
+    into ``_BUILTIN_BACKENDS`` pointed at a real, importable stub module, so
+    they hold regardless of whether the isaac implementation has landed yet.
+    """
+
+    _STUB_MODULE = "strands_robots._test_isaac_builtin_stub"
+
+    @pytest.fixture
+    def isaac_builtin(self, monkeypatch):
+        """Register a stub ``isaac`` built-in backend for the duration of a test.
+
+        Yields the stub class the built-in ``isaac`` resolves to. Uses a real
+        module in ``sys.modules`` because ``_import_backend_class`` imports
+        built-ins via ``importlib.import_module`` (unlike runtime backends,
+        which are plain loader callables).
+        """
+        import sys
+        import types
+
+        stub_mod = types.ModuleType(self._STUB_MODULE)
+
+        class IsaacSimEngine(_FakeSim):
+            """Stand-in for the future in-tree Isaac built-in backend."""
+
+        stub_mod.IsaacSimEngine = IsaacSimEngine
+        monkeypatch.setitem(sys.modules, self._STUB_MODULE, stub_mod)
+        monkeypatch.setitem(
+            factory._BUILTIN_BACKENDS,
+            "isaac",
+            (self._STUB_MODULE, "IsaacSimEngine"),
+        )
+        monkeypatch.setitem(factory._BUILTIN_ALIASES, "isaacsim", "isaac")
+        yield IsaacSimEngine
+
+    def test_builtin_isaac_wins_over_entry_point_plugin(self, isaac_builtin, monkeypatch):
+        """A stale ``strands-robots-sim`` isaac plugin must not shadow the builtin."""
+        _patch_entry_points(monkeypatch, [_FakeEntryPoint("isaac", _PluginSimA)])
+        sim = create_simulation("isaac")
+        assert isinstance(sim, isaac_builtin)
+        assert not isinstance(sim, _PluginSimA)
+
+    def test_builtin_isaac_alias_wins_over_entry_point_plugin(self, isaac_builtin, monkeypatch):
+        """An entry-point named after a built-in *alias* is also shadowed."""
+        _patch_entry_points(monkeypatch, [_FakeEntryPoint("isaacsim", _PluginSimA)])
+        sim = create_simulation("isaacsim")
+        assert isinstance(sim, isaac_builtin)
+        assert not isinstance(sim, _PluginSimA)
+
+    def test_collided_isaac_plugin_is_not_loaded(self, isaac_builtin, monkeypatch):
+        """The plugin's (heavy) class is never even loaded when a builtin wins.
+
+        A plugin whose name collides with a built-in is dropped *before*
+        ``ep.load()`` runs, so the sibling package's Isaac import cost is
+        avoided entirely.
+        """
+        loaded = {"n": 0}
+
+        class _CountingEntryPoint(_FakeEntryPoint):
+            def load(self_inner):
+                loaded["n"] += 1
+                return super().load()
+
+        _patch_entry_points(monkeypatch, [_CountingEntryPoint("isaac", _PluginSimA)])
+        assert "isaac" not in factory._load_plugin_backends()
+        assert loaded["n"] == 0
+
+    def test_list_backends_reports_isaac_once(self, isaac_builtin, monkeypatch):
+        """Even with a colliding plugin, ``isaac`` appears exactly once."""
+        _patch_entry_points(monkeypatch, [_FakeEntryPoint("isaac", _PluginSimA)])
+        backends = list_backends()
+        assert backends.count("isaac") == 1
+        assert backends == sorted(set(backends))
+
+    def test_entry_point_plugin_never_hits_register_backend(self, isaac_builtin, monkeypatch):
+        """Resolving a colliding plugin fires no ``register_backend`` ValueError.
+
+        Entry-point discovery never routes through ``register_backend`` (it
+        populates the plugin cache directly), so the conflict checks that would
+        reject a duplicate ``isaac`` name are never reached. Guard it by making
+        ``register_backend`` explode if it is called at all during resolution.
+        """
+
+        def _boom(*args, **kwargs):
+            raise AssertionError("register_backend must not be called during plugin resolution")
+
+        monkeypatch.setattr(factory, "register_backend", _boom)
+        _patch_entry_points(monkeypatch, [_FakeEntryPoint("isaac", _PluginSimA)])
+        sim = create_simulation("isaac")
+        assert isinstance(sim, isaac_builtin)
+        # list_backends also must not trigger a register_backend call.
+        assert "isaac" in list_backends()
+
+
 class TestEntryPointLazyImport:
     def test_no_eager_plugin_scan_on_import(self):
         """Importing strands_robots.simulation must not scan entry points.
