@@ -27,6 +27,7 @@ nav:
   - World Building: simulation/world-building.md
   - Domain Randomization: simulation/domain-randomization.md
   - Newton Backend (GPU): simulation/newton.md
+  - Isaac Sim Backend (GPU): simulation/isaac.md
 - Device Connect: device-connect.md
 - Multi-robot Mesh: mesh.md
 - ROS 2 Integration: ros2-integration.md
