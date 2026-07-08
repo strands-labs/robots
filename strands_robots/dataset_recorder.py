@@ -136,6 +136,7 @@ def _hf_executable() -> str | None:
             return str(candidate)
     return shutil.which("hf")
 
+
 # Lazy check for LeRobot availability.
 # We must NOT import lerobot at module level because it pulls in
 # `datasets` -> `pandas`, which can crash with a numpy ABI mismatch on
