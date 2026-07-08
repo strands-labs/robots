@@ -3,9 +3,10 @@
 A mobile manipulator (e.g. LeKiwi) carries its floating base on an UNNAMED
 ``<freejoint/>`` that is not enumerated in ``robot.joint_names`` (those are the
 actuated wheel/arm joints). The floating-base IMU-style signals
-(``base_quat`` + ``base_ang_vel``) must still be surfaced from that base free
-joint, otherwise the mobile base is silently observed as a fixed-base arm and a
-recorded dataset loses all base orientation/velocity state.
+(``base_pos`` + ``base_quat`` + ``base_lin_vel`` + ``base_ang_vel``) must still
+be surfaced from that base free joint, otherwise the mobile base is silently
+observed as a fixed-base arm and a recorded dataset loses all base
+position/orientation/velocity state.
 
 The base free joint is recovered from the kinematic tree (walk up from an
 actuated joint to the ancestor base body), so a sibling free-jointed task
@@ -101,6 +102,13 @@ def test_unnamed_base_freejoint_surfaces_base_state(sim):
     assert all(isinstance(x, float) for x in obs["base_quat"])
     assert "base_ang_vel" in obs, "mobile base must surface base_ang_vel"
     assert len(obs["base_ang_vel"]) == 3
+    # Full base kinematics: position (incl. height) + linear velocity too, not
+    # just orientation + turn rate (a velocity-tracking / locomotion controller
+    # needs base height and base linear velocity).
+    assert "base_pos" in obs and len(obs["base_pos"]) == 3
+    assert all(isinstance(x, float) for x in obs["base_pos"])
+    assert "base_lin_vel" in obs and len(obs["base_lin_vel"]) == 3
+    assert all(isinstance(x, float) for x in obs["base_lin_vel"])
 
     # base_quat is the base_plate (identity), NOT the task_cube (90 deg about z,
     # ~[0.707, 0, 0, 0.707]). If the sibling cube's free joint were picked, w
@@ -143,6 +151,8 @@ def test_fixed_base_arm_has_no_base_state(sim):
     obs = sim.get_observation(robot_name="arm", skip_images=True)
     assert "base_quat" not in obs
     assert "base_ang_vel" not in obs
+    assert "base_pos" not in obs
+    assert "base_lin_vel" not in obs
     assert "j0" in obs and "j0.vel" in obs
 
 
@@ -191,6 +201,23 @@ def _set_free_joint(sim, robot, qpos7, qvel6):
     data.qpos[qadr : qadr + 7] = qpos7
     data.qvel[vadr : vadr + 6] = qvel6
     mujoco.mj_forward(model, data)
+
+
+def test_get_observation_surfaces_full_base_kinematics(sim):
+    """get_observation surfaces the free joint's full 6-DoF pose + twist:
+    base_pos (world x,y,z incl. HEIGHT), base_quat, base_lin_vel (m/s) and
+    base_ang_vel (rad/s). A locomotion / velocity-tracking / mobile-manip
+    controller needs base_pos (height) and base_lin_vel (the tracked quantity),
+    not just orientation + turn rate."""
+    sim.add_robot("humanoid", urdf_path=_write(NAMED_BASE_XML))
+    # Distinctive pose + twist so a wrong slice is unmistakable.
+    _set_free_joint(sim, "humanoid", [0.3, 0.4, 0.9, 0.70710678, 0.0, 0.0, 0.70710678], [1.1, 2.2, 3.3, 4.4, 5.5, 6.6])
+
+    obs = sim.get_observation(robot_name="humanoid", skip_images=True)
+    assert obs["base_pos"] == pytest.approx([0.3, 0.4, 0.9], abs=1e-3)
+    assert obs["base_quat"] == pytest.approx([0.7071, 0.0, 0.0, 0.7071], abs=1e-3)
+    assert obs["base_lin_vel"] == pytest.approx([1.1, 2.2, 3.3], abs=1e-3)
+    assert obs["base_ang_vel"] == pytest.approx([4.4, 5.5, 6.6], abs=1e-3)
 
 
 def test_get_robot_state_named_free_base_reports_base_pose_not_scalar(sim):
@@ -247,7 +274,9 @@ def test_get_robot_state_base_matches_get_observation(sim):
 
     base = sim.get_robot_state(robot_name="humanoid")["content"][1]["json"]["base"]
     obs = sim.get_observation(robot_name="humanoid", skip_images=True)
+    assert base["position"] == obs["base_pos"]
     assert base["quaternion"] == obs["base_quat"]
+    assert base["linear_velocity"] == obs["base_lin_vel"]
     assert base["angular_velocity"] == obs["base_ang_vel"]
 
 

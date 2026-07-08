@@ -187,7 +187,13 @@ class PolicyServer:
 
         from websockets.sync.server import serve
 
-        self._server = serve(self._handle, self.host, self.port)
+        # Match the client's connect() options: an observation carrying camera
+        # frames is large (a single 640x480 RGB frame base64-encodes to ~1.2 MiB,
+        # and a multi-camera VLA observation is several MiB), so the default 1 MiB
+        # frame limit must be lifted or the server 1009-closes every real image
+        # observation. Compression is disabled too (base64 binary barely compresses
+        # and deflate wastes CPU at control rate); the client already opts out.
+        self._server = serve(self._handle, self.host, self.port, max_size=None, compression=None)
         # Read back the OS-assigned port when the caller passed 0.
         self.port = self._server.socket.getsockname()[1]
         self._thread = threading.Thread(
@@ -216,7 +222,9 @@ class PolicyServer:
         """
         from websockets.sync.server import serve
 
-        with serve(self._handle, self.host, self.port) as server:
+        # See start(): lift the default 1 MiB frame limit (and disable compression)
+        # so large multi-camera observations stream in, matching the client.
+        with serve(self._handle, self.host, self.port, max_size=None, compression=None) as server:
             self._server = server
             self.port = server.socket.getsockname()[1]
             logger.info("PolicyServer serving on ws://%s:%d", self.host, self.port)

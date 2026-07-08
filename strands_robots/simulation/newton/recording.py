@@ -47,6 +47,7 @@ class NewtonRecordingMixin(DatasetRecordingMixin):
     if TYPE_CHECKING:
         _world: SimWorld | None
         _model: Any
+        _robot_free_base_joint: dict[str, str]
         default_width: int
         default_height: int
 
@@ -157,6 +158,16 @@ class NewtonRecordingMixin(DatasetRecordingMixin):
             resume_existing = self._prepare_dataset_target(dataset_dir, overwrite)
 
             joint_names, camera_keys, camera_dims, robot_type, recording_cameras = self._collect_recording_schema()
+
+            # Doctrine parity with the MuJoCo backend: a floating-base robot
+            # (humanoid/mobile) surfaces base_quat/base_ang_vel via
+            # get_observation, but the joint-name-derived observation.state
+            # schema drops them from the recorded dataset. Flag it at recording
+            # start rather than yielding a silently base-blind training set.
+            # (Non-breaking: the schema is unchanged.)
+            free_base_joints = getattr(self, "_robot_free_base_joint", {})
+            floating_base_robots = [rname for rname in world.robots if free_base_joints.get(rname)]
+            self._warn_floating_base_state_dropped(floating_base_robots)
 
             # Optional camera scoping (parity with the MuJoCo backend). By
             # default every named scene camera is recorded; when ``cameras`` is

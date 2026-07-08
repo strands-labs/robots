@@ -47,6 +47,39 @@ class DatasetRecordingMixin:
         default_width: int
         default_height: int
 
+    def _warn_floating_base_state_dropped(self, robot_names: list[str]) -> None:
+        """Warn that a floating base's orientation + angular velocity are not
+        captured in the recorded ``observation.state``.
+
+        ``get_observation`` surfaces ``base_quat`` (orientation, w,x,y,z) and
+        ``base_ang_vel`` (rad/s) for a floating-base robot (a humanoid or a
+        mobile base), but the dataset's ``observation.state`` schema is derived
+        from the robot's scalar joint names, so those base signals are dropped
+        from every recorded frame - the free base contributes only a single
+        scalar slot (its x-position) when its joint is named, and nothing at
+        all when it is an unnamed ``<freejoint>``. A locomotion / whole-body
+        control policy trained on the resulting dataset would be missing its
+        base state.
+
+        This does NOT change the schema (existing datasets are unchanged); it
+        surfaces the omission at recording start instead of dropping the base
+        state silently, per the "no silent data loss" contract. Called once per
+        :meth:`start_recording` (both backends) - not on the per-frame path.
+        """
+        if not robot_names:
+            return
+        logger.warning(
+            "start_recording: robot(s) %s have a floating base, but the "
+            "recorded observation.state captures only scalar joint positions - "
+            "the base orientation (base_quat) and angular velocity "
+            "(base_ang_vel) that get_observation surfaces are NOT written to "
+            "the dataset. A locomotion/whole-body-control policy needs that "
+            "base state; if you are training on the floating base, record it "
+            "through a base-aware pipeline or extend the dataset schema with "
+            "the base features explicitly.",
+            robot_names,
+        )
+
     @staticmethod
     def _prepare_dataset_target(dataset_dir: Path, overwrite: bool) -> bool:
         """Resolve create-vs-resume and make ``dataset_dir`` safe for create().
@@ -518,8 +551,10 @@ class DatasetRecordingMixin:
 
         Args:
             recorder: The resumed DatasetRecorder.
-            joint_names: Joint names the current scene will emit (namespaced for
-                multi-robot scenes).
+            joint_names: The expected ``observation.state`` column names the
+                current scene will emit (namespaced for multi-robot scenes;
+                includes expanded per-component floating-base columns such as
+                ``base_quat.w`` when the scene records a floating base).
             camera_keys: Sanitized camera feature names the current scene emits.
             camera_dims: Map of camera feature name -> (height, width).
             action_names: Action-column names the current scene will emit

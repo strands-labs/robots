@@ -24,6 +24,43 @@ is forwarded per request and applied server-side before chunk-seam blending.
 Install with `pip install 'strands-robots[inference]'` (pulls only
 `websockets`). See `docs/inference/remote.md`.
 
+### Added: regression guard that the lerobot policy resolver covers every registered policy family
+
+The `lerobot_local` policy-class resolver enumerates policy types dynamically:
+`_ensure_policy_configs_registered` walks `lerobot.policies` at import time and
+lets each `@PreTrainedConfig.register_subclass("<type>")` decorator populate
+lerobot's draccus choice registry, which `list_policy_types()` reports. This
+means a new policy family a future lerobot release ships is picked up with no
+strands-side edit -- but nothing pinned that the dynamic walk actually reaches
+every registered family, so a future lerobot layout change that made the walk
+under-populate would surface only as a runtime `create_policy(policy_type=...)`
+resolver miss for a user. A new version-agnostic test derives the ground-truth
+set of families directly from the installed lerobot source (the
+`register_subclass` decorator arguments under
+`lerobot/policies/*/configuration_*.py`) and asserts `list_policy_types()`
+covers all of them. It never hard-codes a policy count or name list, so it
+tracks whatever lerobot the environment resolves (currently 19 families in
+lerobot 0.6.x). Verified the resolver already covers the full lerobot 0.6.x
+roster; `rtc` (an inference-time action-chunking wrapper, `RTCProcessor`) is
+correctly excluded because it is not a `PreTrainedPolicy` and registers no
+config.
+
+### Fixed: remote inference delivered read-only observation arrays to the wrapped policy
+
+`RemotePolicy` / `PolicyServer` decoded NumPy observations (camera frames, the
+state vector) with `np.frombuffer` over the immutable `bytes` returned by
+`base64.b64decode`, so every array handed to the server-side policy was
+read-only. That silently diverged from the local-inference path, where a freshly
+rendered observation is always writable: a VLA preprocessor that normalizes the
+image/state in place (`image /= 255`, joint rescaling) raised
+`ValueError: output array is read-only`, and `torch.from_numpy(obs)` (zero-copy,
+as pi0/SmolVLA/MolmoAct2 pipelines do) produced a tensor whose in-place mutation
+is undefined behavior. Decoding now wraps the bytes in a mutable `bytearray` so
+the reconstructed array is writable (one allocation, no extra copy, still
+byte-exact), making the remote path transparent to the wrapped policy. The
+MuJoCo rollout test used a `MockPolicy` (`requires_images=False`) so it never
+decoded an observation array and missed this.
+
 
 ### Fixed: session `status` tool results dropped their telemetry via a `**spread` top-level smuggle
 
@@ -868,6 +905,110 @@ are now built from Newton's authoritative per-joint coordinate/DOF starts
 (`joint_q_start` / `joint_qd_start`), so each joint reads its own value. A
 fixed-base arm (all revolute joints) is unaffected -- its indices are already
 the joint ordinals.
+
+### Fixed: remote inference server rejected every image observation over 1 MiB
+
+`PolicyServer` opened its WebSocket with `serve(...)` at the library default
+1 MiB (`2**20`) frame limit, while `RemotePolicy` correctly passes
+`max_size=None` to `connect(...)`. A real VLA observation carries camera
+frames -- a single 640x480 RGB frame base64-encodes to ~1.2 MiB and a
+multi-camera observation is several MiB -- so the server closed the
+connection with `1009 (message too big)` on the first image-carrying
+`get_actions` request, before the wrapped policy ever ran. The whole remote
+path was therefore usable only with an image-free policy. The server now
+passes `max_size=None` (and, matching the client, `compression=None`) to both
+`serve(...)` call sites so large multi-camera observations stream in. Verified
+end to end by serving a SmolVLA policy over the wire and driving a MuJoCo
+rollout to a recorded LeRobotDataset.
+
+### Fixed: Newton backend surfaces a floating base as a structured pose, not a garbage scalar
+
+On the Newton backend, `get_robot_state` reported a floating-base robot's free
+root joint (a humanoid's named `floating_base_joint`) as a scalar joint
+`{position, velocity}` -- reading its base x-coordinate as a "position" and
+linear-velocity-x as a "velocity", silently dropping the orientation and the
+rest of the twist -- and `get_observation` never surfaced the base at all. A
+real `unitree_g1` therefore reported garbage for its base and no orientation to
+a WBC / locomotion controller. Both now mirror the MuJoCo backend: the free
+joint is excluded from the scalar `state` map and a structured `base` entry
+(`position`, `quaternion` w,x,y,z, `linear_velocity`, `angular_velocity`) is
+surfaced, and `get_observation` gains `base_quat` / `base_ang_vel`. Newton
+stores the free joint's coordinates as `[xyz, quat_xyzw]`, so the quaternion is
+reordered `xyzw -> wxyz` to match the MuJoCo (w,x,y,z) contract.
+
+### Fixed: warn when a floating base's orientation + angular velocity are dropped from a recorded dataset
+
+`get_observation` surfaces `base_quat` (orientation, w,x,y,z) and `base_ang_vel`
+(rad/s) for a floating-base robot -- a humanoid's named `floating_base_joint` or
+a mobile base's unnamed `<freejoint>` -- so a locomotion / whole-body-control
+policy can read its base state. But `start_recording` derives the LeRobotDataset
+`observation.state` schema from the robot's scalar joint names, so those base
+signals never reached the dataset: the free base contributed only a single
+scalar slot (its x-position) when its joint was named, and nothing at all when
+it was unnamed. A dataset recorded from a humanoid/mobile rollout was therefore
+silently base-blind, and a policy trained on it would be missing the exact
+orientation/angular-velocity signals a locomotion controller needs. Both
+backends (MuJoCo and Newton) now warn once at `start_recording` when a
+floating-base robot is being recorded, naming the affected robot(s) and the
+dropped signals, per the project's "no silent data loss" contract. The dataset
+schema is intentionally unchanged (existing datasets are stable); this surfaces
+the omission instead of dropping it silently. A new shared
+`_robot_free_base_joint_id` helper centralizes the named+unnamed free-joint
+detection.
+
+### Fixed: preserve a floating base's orientation + angular velocity in recorded datasets
+
+`get_observation` surfaces a floating-base robot's `base_quat` (orientation,
+w,x,y,z) and `base_ang_vel` (rad/s), but `start_recording` derived the
+`observation.state` schema from scalar joint names only, so those base signals
+were dropped from every recorded frame - a humanoid's named `floating_base_joint`
+contributed just one scalar slot (its x-position) and a mobile base's unnamed
+`<freejoint>` contributed nothing. A locomotion / whole-body-control policy
+trained on the resulting dataset was base-blind. `start_recording` (MuJoCo
+backend) now writes the base orientation + angular velocity as per-component
+scalar columns (`base_quat.w`.. `base_ang_vel.z`), so a recorded G1/mobile-base
+episode carries the base state a WBC policy needs (verified end to end: the
+recorded columns read back byte-for-byte after `LeRobotDataset` reopen). This
+supersedes the earlier drop-warning (#1169): the base state `get_observation`
+surfaces is now recorded, not merely flagged. A fixed-base arm is unaffected
+(no base columns, no schema growth); multi-robot base columns are prefixed like
+joint ids (`alice__base_quat.w`). `DatasetRecorder.create` gains an optional
+`extra_state_specs` to declare per-component vector state columns whose source
+key is read from the observation and flattened in schema order.
+
+### Fixed: surface a floating base's full position + linear velocity (not just orientation + turn rate)
+
+`get_observation` surfaced a floating-base robot's `base_quat` (orientation) and
+`base_ang_vel` (turn rate) but not its `base_pos` (world x,y,z, including
+HEIGHT) or `base_lin_vel` (m/s) - the two signals a locomotion, velocity-tracking
+or mobile-manipulation controller most needs: you cannot detect a fall or track a
+height target without base height, nor compute a velocity-tracking reward without
+base linear velocity. A free joint's `qpos` is `[xyz, quat]` and its `qvel` is
+`[linvel, angvel]`, so both were already available; only the orientation half was
+being read. `get_observation` now surfaces the full 6-DoF base pose + twist -
+`base_pos`, `base_quat`, `base_lin_vel`, `base_ang_vel` - on both the MuJoCo and
+Newton backends, and `start_recording` (MuJoCo) preserves all four as
+per-component scalar columns (`base_pos.x`.. `base_ang_vel.z`) so a recorded
+humanoid/mobile-base episode is no longer base-blind (verified end to end: a
+known base position + linear velocity read back byte-for-byte after
+`LeRobotDataset` reopen). All four keys are additive and absent for fixed-base
+arms (no schema growth); multi-robot base columns are prefixed like joint ids
+(`alice__base_pos.x`). Completes the base-state surfacing begun in #1134/#1172.
+
+### Fixed: `send_action` crashed on a non-scalar dict action value instead of returning an error
+
+`send_action` returns a structured `{"status": "error", ...}` for every other
+malformed input (a wrong-length vector, a non-numeric vector entry, a scalar, a
+string, unresolved keys, no world), but a `{name: value}` mapping whose value was
+non-scalar - a list / tuple / multi-element array, exactly what a policy emitting
+a vector-valued key such as `base_velocity: [vx, vy, omega]` produces - slipped
+past the contract and raised an unhandled `TypeError` deep in the actuator-apply
+loop (`float(value)`), crashing the caller mid-rollout after already writing
+`data.ctrl` for the earlier keys. The shared `_coerce_action` now validates that
+every mapping value coerces to a scalar float up front, so the whole action is
+rejected atomically with an actionable message naming the offending key - on both
+the MuJoCo and Newton backends. Scalars, numeric strings and `numpy` float
+scalars are accepted unchanged.
 
 ## [0.4.1] - 2026-07-01
 

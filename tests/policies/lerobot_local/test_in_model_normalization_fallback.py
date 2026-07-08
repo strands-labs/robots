@@ -176,3 +176,56 @@ def test_reconstruction_degrades_when_lerobot_import_raises_non_import_error(mon
 
     assert pre is None
     assert post is None
+
+
+def test_missing_single_file_weights_stays_passthrough(monkeypatch, tmp_path):
+    """A checkpoint with no single-file ``model.safetensors`` degrades cleanly.
+
+    Sharded VLA checkpoints (and any path where the single-file weights cannot
+    be read) make ``_load_checkpoint_state_dict`` return ``None``. The fallback
+    must then return ``(None, None)`` without attempting reconstruction, leaving
+    the caller's missing-postprocessor diagnostic to fire -- it must never
+    fabricate a pipeline from stats it does not have.
+    """
+    import strands_robots.policies.lerobot_local.processor as proc
+
+    monkeypatch.setattr(proc, "_load_checkpoint_state_dict", lambda _path: None)
+
+    pre, post = ProcessorBridge._load_in_model_normalization_fallback(
+        str(tmp_path), policy_config=_act_config(), device="cpu"
+    )
+
+    assert pre is None
+    assert post is None
+
+
+def test_reconstruction_failure_warns_with_migration_command(monkeypatch, caplog, tmp_path):
+    """In-model buffers present but pipeline rebuild fails -> warn + passthrough.
+
+    When ``extract_normalization_stats`` finds buffers but
+    ``make_pre_post_processors`` raises (e.g. a config the factory rejects), the
+    fallback must degrade to ``(None, None)`` rather than crash the load, and it
+    must warn with the exact manual ``migrate_policy_normalization`` command so
+    the operator can recover -- never silently drop normalization.
+    """
+    import logging
+
+    import lerobot.policies.factory as factory
+
+    _write_old_format_checkpoint(tmp_path, with_norm_buffers=True)
+
+    def _raise_factory(*args, **kwargs):
+        raise RuntimeError("factory rejected the reconstructed config")
+
+    monkeypatch.setattr(factory, "make_pre_post_processors", _raise_factory)
+
+    with caplog.at_level(logging.WARNING):
+        pre, post = ProcessorBridge._load_in_model_normalization_fallback(
+            str(tmp_path), policy_config=_act_config(), device="cpu"
+        )
+
+    assert pre is None
+    assert post is None
+    assert any("migrate_policy_normalization" in record.getMessage() for record in caplog.records), (
+        "must warn with the manual migration command on reconstruction failure"
+    )

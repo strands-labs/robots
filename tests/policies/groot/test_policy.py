@@ -1,6 +1,9 @@
 """Tests for Gr00tPolicy - unit tests WITHOUT Isaac-GR00T installed."""
 
 import asyncio
+import sys
+import types
+from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -184,6 +187,138 @@ class TestConstruction:
         """set_robot_state_keys is a documented no-op."""
         p = Gr00tPolicy()
         p.set_robot_state_keys(["a", "b"])  # should not raise
+
+
+# (section)
+# Local model loading (version dispatch + per-version loaders)
+# (section)
+
+
+def _fake_module(name, **attrs):
+    m = types.ModuleType(name)
+    for k, v in attrs.items():
+        setattr(m, k, v)
+    return m
+
+
+@contextmanager
+def _inject_modules(mods):
+    """Register a fake gr00t package subtree in sys.modules for the block.
+
+    ``mods`` maps a dotted module name to a module object. Parent packages are
+    created automatically so ``from a.b.c import d`` resolves against the stubs
+    instead of the (uninstalled) real gr00t package.
+    """
+    full = dict(mods)
+    for name in list(mods):
+        parts = name.split(".")
+        for i in range(1, len(parts)):
+            parent = ".".join(parts[:i])
+            full.setdefault(parent, types.ModuleType(parent))
+    with patch.dict(sys.modules, full):
+        yield
+
+
+class _FakeEmbodimentTag:
+    """Stand-in for gr00t's EmbodimentTag enum with a getattr-able attribute."""
+
+    GR1 = "GR1_TAG"
+    NEW_EMBODIMENT = "NEW_TAG"
+
+
+class TestLocalLoad:
+    """The local (in-process) load path routes by detected GR00T version and
+    builds the version-specific policy with the right kwargs. These paths import
+    the uninstalled ``gr00t`` package, so they are exercised against stub modules.
+    """
+
+    def test_dispatch_routes_by_version(self):
+        for version, method in (("n1.7", "_load_n17"), ("n1.6", "_load_n16"), ("n1.5", "_load_n15")):
+            p = _make_policy(version=version)
+            with patch.object(p, method) as loader:
+                p._load_local_policy("/model", "TAG", "cpu")
+            loader.assert_called_once_with("/model", "TAG", "cpu")
+
+    def test_n15_native_config_uses_gr00t_modality_config_and_transform(self):
+        p = _make_policy(version="n1.5")
+        p.data_config_name = "so100_dualcam"
+        native = MagicMock()
+        native.modality_config.return_value = {"mc": 1}
+        native.transform.return_value = {"mt": 1}
+        n15policy = MagicMock(name="N15Policy")
+        with _inject_modules(
+            {
+                "gr00t.experiment.data_config": _fake_module(
+                    "gr00t.experiment.data_config", DATA_CONFIG_MAP={"so100_dualcam": native}
+                ),
+                "gr00t.model.policy": _fake_module("gr00t.model.policy", Gr00tPolicy=n15policy),
+            }
+        ):
+            p._load_n15("/model", "NEW_EMBODIMENT", "cpu")
+        kw = n15policy.call_args.kwargs
+        assert kw["model_path"] == "/model"
+        assert kw["embodiment_tag"] == "NEW_EMBODIMENT"
+        assert kw["modality_config"] == {"mc": 1}
+        assert kw["modality_transform"] == {"mt": 1}
+        assert kw["device"] == "cpu"
+        assert p._local_policy is n15policy.return_value
+
+    def test_n15_unknown_config_falls_back_and_drops_none_transform(self):
+        p = _make_policy(version="n1.5")
+        p.data_config_name = "not_a_gr00t_config"
+        p.data_config = MagicMock()
+        p.data_config.modality_config.return_value = {"fallback": 1}
+        n15policy = MagicMock(name="N15Policy")
+        with _inject_modules(
+            {
+                "gr00t.experiment.data_config": _fake_module("gr00t.experiment.data_config", DATA_CONFIG_MAP={}),
+                "gr00t.model.policy": _fake_module("gr00t.model.policy", Gr00tPolicy=n15policy),
+            }
+        ):
+            p._load_n15("/model", "NEW_EMBODIMENT", "cuda")
+        kw = n15policy.call_args.kwargs
+        assert kw["modality_config"] == {"fallback": 1}
+        # transform is None for the fallback path and must be filtered out.
+        assert "modality_transform" not in kw
+        assert p._local_policy is n15policy.return_value
+
+    def test_n16_resolves_known_embodiment_tag_and_forwards_strict(self):
+        p = _make_policy(version="n1.6")
+        p._strict = True
+        n16policy = MagicMock(name="N16Policy")
+        with _inject_modules(
+            {
+                "gr00t.data.embodiment_tags": _fake_module(
+                    "gr00t.data.embodiment_tags", EmbodimentTag=_FakeEmbodimentTag
+                ),
+                "gr00t.policy.gr00t_policy": _fake_module("gr00t.policy.gr00t_policy", Gr00tPolicy=n16policy),
+            }
+        ):
+            p._load_n16("/model", "gr1", "cuda")
+        kw = n16policy.call_args.kwargs
+        assert kw["embodiment_tag"] == "GR1_TAG"
+        assert kw["model_path"] == "/model"
+        assert kw["device"] == "cuda"
+        assert kw["strict"] is True
+        assert p._local_policy is n16policy.return_value
+
+    def test_n17_unknown_embodiment_falls_back_to_new_embodiment(self):
+        p = _make_policy(version="n1.7")
+        p._strict = False
+        n17policy = MagicMock(name="N17Policy")
+        with _inject_modules(
+            {
+                "gr00t.data.embodiment_tags": _fake_module(
+                    "gr00t.data.embodiment_tags", EmbodimentTag=_FakeEmbodimentTag
+                ),
+                "gr00t.policy.gr00t_policy": _fake_module("gr00t.policy.gr00t_policy", Gr00tPolicy=n17policy),
+            }
+        ):
+            p._load_n17("/model", "does_not_exist", "cpu")
+        kw = n17policy.call_args.kwargs
+        assert kw["embodiment_tag"] == "NEW_TAG"
+        assert kw["strict"] is False
+        assert p._local_policy is n17policy.return_value
 
 
 # (section)

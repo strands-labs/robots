@@ -273,3 +273,45 @@ def test_start_recording_unknown_camera_errors(tmp_path):
     assert "front" in text  # the available list is surfaced
     # A failed scope must not leave the session flagged as recording.
     assert world._backend_state.get("recording") is False
+
+
+def test_start_recording_warns_when_floating_base_state_dropped(tmp_path, caplog):
+    """A floating-base robot (``_robot_free_base_joint`` populated) whose
+    base_quat/base_ang_vel are not in the joint-name-derived observation.state
+    schema triggers the base-drop warning at recording start (parity with the
+    MuJoCo backend)."""
+    import logging
+
+    world = _world_with_robot("humanoid")
+    engine = _make_engine(world)
+    # NewtonSimEngine.__init__ records the base free joint per robot; the __new__
+    # harness skips it, so set what a floating-base build would produce.
+    engine._robot_free_base_joint = {"humanoid": "floating_base_joint"}
+
+    with caplog.at_level(logging.WARNING, logger="strands_robots.simulation.recording"):
+        started = engine.start_recording(
+            repo_id="local/newton_fb_warn", root=str(tmp_path / "ds"), fps=20, overwrite=True
+        )
+    engine.stop_recording()
+    assert started["status"] == "success", started
+    base_warnings = [r for r in caplog.records if "have a floating base" in r.getMessage()]
+    assert base_warnings, "floating-base state-drop warning was not emitted"
+    assert "humanoid" in base_warnings[0].getMessage()
+
+
+def test_start_recording_no_base_warning_for_fixed_arm(tmp_path, caplog):
+    """A fixed-base arm (no floating base recorded) must NOT warn - and the
+    detection must degrade gracefully when ``_robot_free_base_joint`` is absent
+    entirely (the __new__ harness leaves it unset)."""
+    import logging
+
+    engine = _make_engine(_world_with_robot("so100"))
+    assert not hasattr(engine, "_robot_free_base_joint")  # attr absent -> getattr default
+
+    with caplog.at_level(logging.WARNING, logger="strands_robots.simulation.recording"):
+        started = engine.start_recording(
+            repo_id="local/newton_arm_nowarn", root=str(tmp_path / "ds"), fps=20, overwrite=True
+        )
+    engine.stop_recording()
+    assert started["status"] == "success", started
+    assert not any("have a floating base" in r.getMessage() for r in caplog.records)

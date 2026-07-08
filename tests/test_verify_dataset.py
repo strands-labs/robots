@@ -416,6 +416,46 @@ class TestVideoFrameCountIntegrity:
         assert report["status"] == "error"
         assert any("6 frame(s)" in p and "maps 7 frame(s)" in p for p in report["problems"]), report["problems"]
 
+    def test_packed_file_with_one_null_length_skips_frame_check(self, tmp_path: Path) -> None:
+        pytest.importorskip("av")
+        # Two episodes packed into ONE shared file, but the second episode's
+        # ``length`` is null (some writers omit it per-row). The packed file's
+        # expected frame count is therefore only partially known (3 from ep0,
+        # unknown from ep1), so the total the parquet "maps" to the file cannot
+        # be computed confidently. The verifier must SKIP the frame-count
+        # comparison for that file rather than compare the real 5-frame video
+        # against the partial expected 3 and cry truncation. Removing that
+        # skip guard turns this into a false-positive "5 frame(s) but maps
+        # 3 frame(s)" error, so this pins the guard.
+        ep_dir = tmp_path / "meta" / "episodes" / "chunk-000"
+        ep_dir.mkdir(parents=True, exist_ok=True)
+        vk = "observation.images.cam1"
+        columns = {
+            "episode_index": [0, 1],
+            "length": [3, None],  # ep1 carries no length -> partial expected
+            f"videos/{vk}/chunk_index": [0, 0],
+            f"videos/{vk}/file_index": [0, 0],  # both episodes -> file 0
+        }
+        pq.write_table(pa.table(columns), ep_dir / "episodes_000.parquet")
+        info = {
+            "total_episodes": 2,
+            "total_frames": 3,
+            "features": {vk: {"dtype": "video", "shape": [3, 64, 64], "names": ["channels", "height", "width"]}},
+            "video_path": "videos/{video_key}/chunk-{chunk_index:03d}/file-{file_index:03d}.mp4",
+        }
+        (tmp_path / "meta" / "info.json").write_text(json.dumps(info), encoding="utf-8")
+        rel = tmp_path / "videos/observation.images.cam1/chunk-000/file-000.mp4"
+        # A frame count that would mismatch the partial expected (3) if compared.
+        _write_real_mp4(rel, n_frames=5)
+
+        # min_frames=0 disables the unrelated per-episode length check (the null
+        # length reads as a 0-frame episode) so this isolates the video
+        # frame-count path: the packed file's partial expected count must not be
+        # compared against the real 5-frame video.
+        report = verify_dataset(tmp_path, min_frames=0)
+        assert report["status"] == "success", report
+        assert not any("frame(s)" in p for p in report["problems"]), report["problems"]
+
     def test_missing_length_column_skips_frame_check(self, tmp_path: Path) -> None:
         pytest.importorskip("av")
         # No ``length`` column -> expected frames are unknown, so the frame-count
@@ -484,6 +524,76 @@ class TestVideoFrameCountOptionalDependency:
         # degrades to "cannot confirm" and the dataset passes instead of
         # false-flagging - no crash, no spurious truncation problem.
         monkeypatch.setitem(sys.modules, "av", None)
+        report = verify_dataset(tmp_path)
+        assert report["status"] == "success", report["problems"]
+        assert not any("truncated" in p for p in report["problems"]), report["problems"]
+
+
+def _write_audio_only_container(path: Path) -> None:
+    """Encode a valid container that opens cleanly but carries NO video stream.
+
+    Simulates a file whose extension/magic looks like an MP4 but whose only
+    stream is audio (e.g. a truncated recorder run that muxed audio before the
+    video track was added, or a wrong file swapped into the dataset). The
+    container opens without error, so the frame-count probe reaches the
+    ``streams.video`` check rather than the corrupt-header ``except`` path.
+    """
+    import av
+    import numpy as np
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with av.open(str(path), mode="w") as container:
+        stream = container.add_stream("aac", rate=44100)
+        stream.layout = "mono"
+        nsamp = 1024
+        for i in range(4):
+            samples = np.zeros((1, nsamp), dtype=np.float32)
+            frame = av.AudioFrame.from_ndarray(samples, format="fltp", layout="mono")
+            frame.sample_rate = 44100
+            frame.pts = i * nsamp
+            for packet in stream.encode(frame):
+                container.mux(packet)
+        for packet in stream.encode():  # flush the encoder
+            container.mux(packet)
+
+
+class TestVideoFrameCountNoVideoStream:
+    """A present, readable container with no video stream must degrade to
+    "cannot confirm" (return ``None``) - the third guard of the frame-count
+    probe alongside the av-missing and corrupt-header cases. It reaches the
+    ``if not container.streams.video`` branch: the file opens fine, so it is
+    neither missing/empty nor an unreadable header, yet no frame count exists.
+    Treating it as "cannot confirm" keeps the verifier from false-flagging a
+    truncated encode on a file that simply carries no video track.
+    """
+
+    def test_frame_count_returns_none_for_audio_only_container(self, tmp_path: Path) -> None:
+        pytest.importorskip("av")
+        path = tmp_path / "audio-only-000.mp4"
+        _write_audio_only_container(path)
+        # Sanity: the file opens and truly has zero video streams (so the None
+        # comes from the no-video-stream guard, not a decode error).
+        import av
+
+        with av.open(str(path)) as container:
+            assert len(container.streams.video) == 0
+        assert _video_frame_count(path) is None
+
+    def test_verify_does_not_false_flag_no_video_stream(self, tmp_path: Path) -> None:
+        pytest.importorskip("av")
+        # Parquet records a 5-frame episode; the on-disk file is a valid but
+        # video-less container. The frame count cannot be confirmed, so the
+        # check must NOT report a truncated encode.
+        _write_video_dataset(
+            tmp_path,
+            episode_indices=[0],
+            video_keys=["observation.images.cam1"],
+            frames_per_episode=[5],
+            write_files=set(),
+        )
+        _write_audio_only_container(
+            tmp_path / "videos/observation.images.cam1/chunk-000/file-000.mp4",
+        )
         report = verify_dataset(tmp_path)
         assert report["status"] == "success", report["problems"]
         assert not any("truncated" in p for p in report["problems"]), report["problems"]

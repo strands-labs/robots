@@ -160,7 +160,7 @@ extras you need:
 |-------|----------|---------|
 | `sim-mujoco` | MuJoCo, robot_descriptions, imageio | Simulation (recommended starting point) |
 | `sim-newton` | Newton, Warp, MuJoCo-Warp, trimesh | GPU-native simulation (NVIDIA GPU; batched envs, headless ray-traced render) |
-| `sim-isaac` | usd-core, imageio (Isaac Sim installed out-of-band) | NVIDIA Isaac Sim backend - photorealistic RTX rendering, synthetic data, GPU-batched sensors. Isaac Sim itself is **not** pip-installable; install it via the Omniverse Launcher, Isaac Lab, or the NGC docker image. This extra pulls only the pip-installable Python helpers. |
+| `sim-isaac` | usd-core, imageio (Isaac Sim installed out-of-band) | NVIDIA Isaac Sim backend - photorealistic RTX rendering, synthetic data, GPU-batched sensors, USD-native scenes. Isaac Sim itself is **not** pip-installable; install it via the Omniverse Launcher, Isaac Lab, or the NGC docker image. This extra pulls only the pip-installable Python helpers. (NVIDIA RTX GPU; GPU-only, not in `[all]`.) |
 | `lerobot` | LeRobot | Real hardware, local VLA inference, dataset recording |
 | `molmoact2` | LeRobot + transformers, peft, scipy | MolmoAct2 transformers-native VLA (resolves from PyPI via lerobot >= 0.6) |
 | `groot-service` | pyzmq, msgpack | NVIDIA GR00T inference client |
@@ -172,7 +172,7 @@ extras you need:
 | `mesh-iot` | awsiotsdk, awscrt, boto3 | AWS IoT Core mesh transport for fleets |
 | `device-connect` | device-connect-edge, device-connect-agent-tools | Device-aware networking - discovery, RPC, events, safety (falls back to the built-in mesh if absent) |
 | `benchmark-libero` | libero | LIBERO benchmark evaluation |
-| `all` | everything above | Kitchen sink |
+| `all` | everything above except the GPU-only `sim-isaac` extra | Kitchen sink |
 
 ```bash
 # Most users start here:
@@ -187,6 +187,16 @@ uv pip install "strands-robots[molmoact2]"
 # Everything:
 uv pip install "strands-robots[all]"
 ```
+
+The **Isaac Sim** GPU backend is a built-in, in-tree peer of `mujoco` and
+`newton` (it lives at `strands_robots.simulation.isaac`). Its pip-installable
+helpers ship in the `sim-isaac` extra, but Isaac Sim itself is a ~30 GB
+non-PyPI install you provision out-of-band (Omniverse Launcher, Isaac Lab, or
+the NGC docker image). Install the helpers with
+`pip install 'strands-robots[sim-isaac]'`, then select the backend with
+`create_simulation("isaac")` - see
+[Simulation (MuJoCo)](#simulation-mujoco) and
+[`docs/simulation/isaac.md`](docs/simulation/isaac.md).
 
 From source:
 
@@ -388,7 +398,7 @@ Robot("my_arm", urdf_path="arm.xml") # bring your own MJCF/URDF
 |-----------|------|---------|-------------|
 | `name` | `str` | required | Robot name or alias (see [Supported robots](#supported-robots)) |
 | `mode` | `str` | `"sim"` | `"sim"`, `"real"`, or `"auto"` (case-insensitive) |
-| `backend` | `str` | `"mujoco"` | Sim backend (Isaac/Newton on the roadmap) |
+| `backend` | `str` | `"mujoco"` | Sim backend: `"mujoco"`, `"newton"` (built-in), or `"isaac"` (via the [`strands-robots-sim`](https://github.com/strands-labs/robots-sim) plugin) |
 | `urdf_path` | `str` | `None` | Explicit MJCF/URDF path (skips registry lookup) |
 | `cameras` | `dict` | `None` | Camera config (**`mode="real"` only**) |
 | `position` | `list[float]` | `[0,0,0]` | Spawn position in the sim world |
@@ -911,7 +921,11 @@ my_engine = "my_pkg.backend:MyEngine"
 
 Built-in backends always take precedence over plugins of the same name, plugin
 discovery is lazy (it never slows cold import), and `list_backends()` returns
-the merged builtin + plugin set.
+the merged builtin + plugin set. Requesting a known-but-uninstalled plugin
+backend (e.g. `create_simulation("isaac")` without the plugin) raises a
+`ValueError` carrying the exact install hint. See
+[`docs/simulation/isaac.md`](docs/simulation/isaac.md) for the Isaac Sim
+backend's install, usage, config, and `STRANDS_ISAAC_*` env vars.
 
 ## Mesh networking
 
@@ -1065,6 +1079,22 @@ touches ROS 2.
 | `STRANDS_MESH_BRIDGE_TOPICS_PREFIX` | Comma-separated topic suffixes the bridge matches as a path **prefix** (so `response` matches `response/<turn-id>`). Extend this (not `STRANDS_MESH_BRIDGE_TOPICS`) when adding an RPC-shape topic with a per-turn tail | `response` |
 | `STRANDS_GR00T_IMAGE` | Container image the `gr00t_inference` tool runs (must pass the image allowlist; agent cannot choose it) | `gr00t:latest` |
 | `STRANDS_GR00T_IMAGE_ALLOW` | Extra image-name patterns (trailing `*` = tag wildcard) added to the built-in allowlist (`gr00t:*`, `nvcr.io/nvidia/isaac-gr00t:*`) | built-in only |
+
+</details>
+
+<details>
+<summary><b>Isaac Sim backend env vars (<code>strands-robots-sim</code> plugin)</b></summary>
+
+These are read by the out-of-tree [`strands-robots-sim`](https://github.com/strands-labs/robots-sim)
+Isaac Sim backend (`pip install 'strands-robots-sim[isaac]'`) when it builds its
+`IsaacConfig`; an explicit `create_simulation("isaac", ...)` kwarg always wins.
+See [`docs/simulation/isaac.md`](docs/simulation/isaac.md).
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `STRANDS_ISAAC_NUCLEUS_URL` | Override the Omniverse Nucleus server URL (when `nucleus_url` is not passed) | unset (Isaac defaults) |
+| `STRANDS_ISAAC_HEADLESS` | Truthy (`1`/`true`/`yes`) forces headless; falsy forces a window | unset (uses `headless` kwarg) |
+| `STRANDS_ISAAC_RTX_PATHTRACING` | Truthy forces `render_mode="rtx_pathtracing"` | unset |
 
 </details>
 

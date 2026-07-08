@@ -78,6 +78,19 @@ def test_image_allowlist_env_extends(monkeypatch):
     assert gi._is_allowed_image("myreg/gr00t:v1") is True
 
 
+def test_image_allowlist_literal_pattern_pins_exact_ref(monkeypatch):
+    # An operator pattern with NO trailing "*" is matched literally, not as a
+    # prefix. Pinning "myreg/gr00t:v1.0" must admit that exact ref only -- a
+    # sibling tag ("myreg/gr00t:v1.0-evil") or a longer image sharing the
+    # prefix must be rejected, so a literal pin cannot be silently widened into
+    # a wildcard. The wildcard branch is exercised above; this locks in the
+    # complementary literal-match branch that guards the exact-pin contract.
+    monkeypatch.setenv("STRANDS_GR00T_IMAGE_ALLOW", "myreg/gr00t:v1.0")
+    assert gi._is_allowed_image("myreg/gr00t:v1.0") is True
+    assert gi._is_allowed_image("myreg/gr00t:v1.0-evil") is False
+    assert gi._is_allowed_image("myreg/gr00t:v2.0") is False
+
+
 # --- _start_container guards (defence in depth) ------------------------
 
 

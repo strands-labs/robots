@@ -63,6 +63,39 @@ def arm_xml(tmp_path):
     return str(p)
 
 
+# A structurally-valid arm with NO ``<keyframe>`` block, to exercise the
+# "model declares no keyframe" error contract.
+_NO_KEYFRAME_MJCF = """
+<mujoco model="no_kf_arm">
+  <compiler angle="radian"/>
+  <worldbody>
+    <body name="l1" pos="0 0 0.1">
+      <joint name="shoulder" type="hinge" axis="0 1 0"/>
+      <geom type="capsule" fromto="0 0 0 0 0 0.3" size="0.03" mass="1"/>
+    </body>
+  </worldbody>
+</mujoco>
+"""
+
+# Malformed MJCF (unclosed element) so ``MjModel.from_xml_path`` raises while
+# reading the source model, exercising the "cannot read keyframe" branch.
+_MALFORMED_MJCF = "<mujoco><worldbody><body><joint name='j' type='hinge'/></body</mujoco>"
+
+
+@pytest.fixture
+def no_keyframe_xml(tmp_path):
+    p = tmp_path / "no_kf_arm.xml"
+    p.write_text(_NO_KEYFRAME_MJCF)
+    return str(p)
+
+
+@pytest.fixture
+def malformed_xml(tmp_path):
+    p = tmp_path / "malformed_arm.xml"
+    p.write_text(_MALFORMED_MJCF)
+    return str(p)
+
+
 @pytest.fixture
 def sim():
     s = Simulation(tool_name="devx_add_robot_keyframe", mesh=False)
@@ -144,3 +177,42 @@ class TestAddRobotKeyframe:
         )
         assert result["status"] == "success"
         assert np.allclose(_qpos(sim), _HOME)
+
+    @pytest.mark.parametrize("bad_index", [5, -1])
+    def test_out_of_range_index_errors_and_leaks_nothing(self, sim, arm_xml, bad_index):
+        # An integer index outside [0, nkey) must fail cleanly, naming the
+        # keyframe count and available names so the caller can correct it, and
+        # must not leave a half-added robot behind. Negative indices are
+        # rejected too (they are not Python-style "from the end" here).
+        result = sim.add_robot(name="a", urdf_path=arm_xml, keyframe=bad_index)
+        assert result["status"] == "error"
+        text = result["content"][0]["text"]
+        assert f"keyframe index {bad_index} out of range" in text
+        # The single available keyframe is named to make the error actionable.
+        assert "1 keyframe(s)" in text
+        assert "'home'" in text
+        assert "a" not in sim._world.robots
+        # The name is reusable after the rejected add.
+        assert sim.add_robot(name="a", urdf_path=arm_xml, keyframe="home")["status"] == "success"
+
+    def test_model_without_keyframe_errors(self, sim, no_keyframe_xml):
+        # Requesting a keyframe from a model that declares none must surface a
+        # clear error (naming the requested keyframe) rather than silently
+        # spawning at the zero pose.
+        result = sim.add_robot(name="a", urdf_path=no_keyframe_xml, keyframe="home")
+        assert result["status"] == "error"
+        text = result["content"][0]["text"]
+        assert "declares no <keyframe>" in text
+        assert "keyframe='home'" in text
+        assert "a" not in sim._world.robots
+
+    def test_unreadable_source_model_errors(self, sim, malformed_xml):
+        # If the source model cannot even be compiled to read its keyframes,
+        # the failure is surfaced (naming the file) instead of raising an
+        # opaque exception up through add_robot.
+        result = sim.add_robot(name="a", urdf_path=malformed_xml, keyframe="home")
+        assert result["status"] == "error"
+        text = result["content"][0]["text"]
+        assert "Cannot read keyframe from" in text
+        assert "malformed_arm.xml" in text
+        assert "a" not in sim._world.robots

@@ -208,6 +208,11 @@ class DatasetRecorder:
         self._closed = False
         self._cached_state_keys: list[str] | None = None
         self._cached_action_keys: list[str] | None = None
+        # Ordered SOURCE keys to read observation.state from, when they diverge
+        # from the flat schema ``names`` (e.g. a floating base's ``base_quat``
+        # source key expands to 4 per-component ``base_quat.*`` schema names).
+        # ``None`` -> derive the read order from the schema names (scalar-only).
+        self._state_source_keys: list[str] | None = None
         # Optional remap of observed camera stream names -> declared schema
         # names. Keys/values are bare camera names (no "observation.images."
         # prefix); a leading prefix on either side is tolerated and stripped.
@@ -255,6 +260,7 @@ class DatasetRecorder:
         camera_dims: dict[str, tuple[int, int]] | None = None,
         joint_names: list[str] | None = None,
         action_names: list[str] | None = None,
+        extra_state_specs: list[tuple[str, list[str]]] | None = None,
         task: str = "",
         root: str | None = None,
         use_videos: bool = True,
@@ -281,6 +287,13 @@ class DatasetRecorder:
                 space diverges from the joint names (e.g. actuator short-names
                 from SimEngine.robot_action_keys, where a tendon gripper is an
                 actuator with no matching joint). Falls back to joint_names.
+            extra_state_specs: Optional vector state signals to append to the
+                observation.state schema as per-component scalar columns, as
+                ``(source_key, [component_suffixes])`` pairs. Each source key is
+                read from the observation and flattened in order (e.g. a
+                floating base's ``("base_quat", ["w","x","y","z"])`` adds four
+                ``base_quat.*`` columns). Scalar joint/action fallbacks ignore
+                these; add_frame reads the source keys, not the expanded names.
             task: Default task description
             root: Local directory for dataset storage
             use_videos: Encode camera frames as video (True) or keep as images
@@ -312,6 +325,7 @@ class DatasetRecorder:
             camera_dims=camera_dims,
             joint_names=joint_names,
             action_names=action_names,
+            extra_state_specs=extra_state_specs,
             use_videos=use_videos,
             video_width=video_width,
             video_height=video_height,
@@ -349,6 +363,13 @@ class DatasetRecorder:
         dataset = LeRobotDatasetCls.create(**create_kwargs)
 
         recorder = cls(dataset=dataset, task=task, camera_key_map=camera_key_map)
+        # When vector state specs expand the schema (e.g. a floating base),
+        # add_frame must read the SOURCE keys (``base_quat``) rather than the
+        # expanded per-component schema names (``base_quat.w``). Record the
+        # source order: scalar state keys first, then each vector source key.
+        if extra_state_specs:
+            scalar_source = list(joint_names) if joint_names else []
+            recorder._state_source_keys = scalar_source + [k for k, _ in extra_state_specs]
         logger.info("DatasetRecorder ready: %s", repo_id)
         return recorder
 
@@ -445,6 +466,7 @@ class DatasetRecorder:
         camera_dims: dict[str, tuple[int, int]] | None = None,
         joint_names: list[str] | None = None,
         action_names: list[str] | None = None,
+        extra_state_specs: list[tuple[str, list[str]]] | None = None,
         use_videos: bool = True,
         video_height: int = 480,
         video_width: int = 640,
@@ -494,6 +516,19 @@ class DatasetRecorder:
             state_dim = len(joint_names)
             state_names = list(joint_names)
 
+        # Preserve additional vector state signals (e.g. a floating base's
+        # ``base_quat`` / ``base_ang_vel``) as per-component scalar columns so
+        # they are not silently dropped from ``observation.state``. Each spec is
+        # ``(source_key, [component_suffixes])``; ``add_frame`` reads the source
+        # key from the observation and flattens it in this same order. The
+        # scalar joint/action fallbacks below use the pre-expansion dims.
+        scalar_state_dim = state_dim
+        scalar_state_names = list(state_names)
+        if extra_state_specs:
+            for src_key, comps in extra_state_specs:
+                state_names.extend(f"{src_key}.{c}" for c in comps)
+                state_dim += len(comps)
+
         if state_dim > 0:
             features["observation.state"] = {
                 "dtype": "float32",
@@ -522,9 +557,9 @@ class DatasetRecorder:
         elif joint_names:
             action_dim = len(joint_names)
             action_col_names = list(joint_names)
-        elif state_dim > 0:
-            action_dim = state_dim  # Same dim as state by default
-            action_col_names = state_names[:]
+        elif scalar_state_dim > 0:
+            action_dim = scalar_state_dim  # Same dim as scalar state by default
+            action_col_names = scalar_state_names[:]
 
         if action_dim > 0:
             features["action"] = {
@@ -578,9 +613,14 @@ class DatasetRecorder:
         if state_keys:
             state_vals = []
             if self._cached_state_keys is None:
-                feat = self.dataset.features.get("observation.state", {})
-                state_names = feat.get("names", []) if isinstance(feat, dict) else getattr(feat, "names", [])
-                self._cached_state_keys = state_names if state_names else sorted(state_keys)
+                if self._state_source_keys is not None:
+                    # Vector-expanded schema: read SOURCE keys (e.g. ``base_quat``);
+                    # the list/ndarray branch below flattens each in schema order.
+                    self._cached_state_keys = list(self._state_source_keys)
+                else:
+                    feat = self.dataset.features.get("observation.state", {})
+                    state_names = feat.get("names", []) if isinstance(feat, dict) else getattr(feat, "names", [])
+                    self._cached_state_keys = state_names if state_names else sorted(state_keys)
 
             for k in self._cached_state_keys:
                 v = observation.get(k)

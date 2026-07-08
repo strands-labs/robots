@@ -65,6 +65,39 @@ class RecordingPolicy(Policy):
         return [{key: base + i * 0.01 for key in self.robot_state_keys} for i in range(self.actions_per_step)]
 
 
+class WritabilityAssertingPolicy(Policy):
+    """Records whether observation arrays received over the wire are writable.
+
+    A locally-run policy always receives writable observation arrays (a freshly
+    rendered camera frame / state vector); the remote path must not silently
+    deliver a read-only array, which breaks in-place normalization.
+    """
+
+    def __init__(self) -> None:
+        self.image_writable: bool | None = None
+
+    @property
+    def provider_name(self) -> str:
+        return "writability-asserting"
+
+    @property
+    def requires_images(self) -> bool:
+        return True
+
+    def set_robot_state_keys(self, robot_state_keys: list[str]) -> None:
+        pass
+
+    async def get_actions(
+        self, observation_dict: dict[str, Any], instruction: str, **kwargs: Any
+    ) -> list[dict[str, Any]]:
+        image = observation_dict["observation.images.cam"]
+        self.image_writable = bool(image.flags.writeable)
+        # In-place normalization is the common VLA preprocessing step; it raises
+        # "output array is read-only" if the wire delivered a read-only buffer.
+        image += 1
+        return [{"j0": 0.0}]
+
+
 def _free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.bind(("127.0.0.1", 0))
@@ -205,3 +238,23 @@ def test_policy_server_requires_exactly_one_policy_source():
         PolicyServer()
     with pytest.raises(ValueError, match="exactly one"):
         PolicyServer(policy=RecordingPolicy(), policy_provider="mock")
+
+
+def test_observation_delivered_to_server_policy_is_writable():
+    """The observation the server hands the wrapped policy must be writable.
+
+    Regression: the wire codec decoded arrays via ``np.frombuffer`` on immutable
+    ``bytes``, yielding read-only observations. In-place normalization inside the
+    policy then raised on the server and propagated as a RuntimeError to the
+    client - a divergence from the transparent local-inference path.
+    """
+    policy = WritabilityAssertingPolicy()
+    server = PolicyServer(policy=policy, host="127.0.0.1", port=0).start()
+    client = RemotePolicy(endpoint=f"ws://127.0.0.1:{server.port}")
+    try:
+        obs = {"observation.images.cam": np.zeros((8, 8, 3), dtype=np.uint8)}
+        client.get_actions_sync(obs, "")
+        assert policy.image_writable is True
+    finally:
+        client.close()
+        server.stop()

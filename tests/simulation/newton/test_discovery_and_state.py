@@ -156,6 +156,78 @@ class TestFloatingBaseJointIndices:
         assert dofs == list(range(len(names)))
 
 
+class TestFloatingBaseSurfacing:
+    """A floating base must surface as a structured pose, not a garbage scalar.
+
+    Parity with the MuJoCo backend (get_observation ``base_quat``/``base_ang_vel``
+    and get_robot_state ``base``): a robot whose root is a free joint (a
+    humanoid's named ``floating_base_joint``) must NOT report the base
+    x-coordinate as a scalar joint value. The 6-DoF base pose + twist is
+    surfaced instead, with the quaternion reordered from Newton's native xyzw to
+    the MuJoCo (w,x,y,z) contract and the free-joint scalar removed from
+    get_robot_state's per-joint ``state`` map.
+    """
+
+    # A distinctive base pose (+90deg about Z) and twist; hinge sentinels.
+    _S = 0.7071067811865476  # sin(45) == cos(45)
+
+    def _set_base_and_hinges(self, engine):
+        q = engine._state_0.joint_q.numpy().copy()
+        q[0:3] = [0.3, 0.4, 0.9]  # base position
+        q[3:7] = [0.0, 0.0, self._S, self._S]  # xyzw: +90 about Z
+        q[7] = 0.55  # j1 sentinel
+        q[8] = -0.22  # j2 sentinel
+        engine._state_0.joint_q.assign(q)
+        qd = engine._state_0.joint_qd.numpy().copy()
+        qd[:] = 0.0
+        qd[0:3] = [1.1, 2.2, 3.3]  # base linear velocity
+        qd[3:6] = [4.4, 5.5, 6.6]  # base angular velocity
+        qd[6] = 0.7  # j1 velocity
+        qd[7] = -0.3  # j2 velocity
+        engine._state_0.joint_qd.assign(qd)
+
+    def test_get_robot_state_surfaces_base_not_a_scalar_joint(self, engine_floater):
+        self._set_base_and_hinges(engine_floater)
+        payload = engine_floater.get_robot_state("floater")["content"][1]["json"]
+        state = payload["state"]
+        # The free joint is NOT a scalar joint in ``state`` (its coordinates are
+        # [xyz + quat], not a single angle).
+        assert "root" not in state
+        assert set(state) == {"j1", "j2"}
+        # A structured ``base`` entry carries the 6-DoF pose + twist.
+        base = payload["base"]
+        assert base["position"] == pytest.approx([0.3, 0.4, 0.9], abs=1e-4)
+        # Quaternion is reordered xyzw -> wxyz to match the MuJoCo contract.
+        assert base["quaternion"] == pytest.approx([self._S, 0.0, 0.0, self._S], abs=1e-4)
+        assert base["linear_velocity"] == pytest.approx([1.1, 2.2, 3.3], abs=1e-4)
+        assert base["angular_velocity"] == pytest.approx([4.4, 5.5, 6.6], abs=1e-4)
+        # Child hinges still read their own coordinates (not shifted / dropped).
+        assert state["j1"]["position"] == pytest.approx(0.55, abs=1e-4)
+        assert state["j2"]["position"] == pytest.approx(-0.22, abs=1e-4)
+
+    def test_get_observation_surfaces_full_base_kinematics(self, engine_floater):
+        self._set_base_and_hinges(engine_floater)
+        obs = engine_floater.get_observation("floater", skip_images=True)
+        # Full base pose + twist for locomotion / velocity tracking: position
+        # (world x,y,z incl. height), orientation (w,x,y,z), linear velocity
+        # (m/s) and angular velocity (rad/s). Parity with the MuJoCo backend.
+        assert obs["base_pos"] == pytest.approx([0.3, 0.4, 0.9], abs=1e-4)
+        assert obs["base_quat"] == pytest.approx([self._S, 0.0, 0.0, self._S], abs=1e-4)
+        assert obs["base_lin_vel"] == pytest.approx([1.1, 2.2, 3.3], abs=1e-4)
+        assert obs["base_ang_vel"] == pytest.approx([4.4, 5.5, 6.6], abs=1e-4)
+
+    def test_fixed_base_arm_has_no_base_entry(self, engine_so100):
+        # A fixed-base arm (no free root) must be unchanged: no base pose, no
+        # base_quat / base_ang_vel keys.
+        payload = engine_so100.get_robot_state("so100")["content"][1]["json"]
+        assert "base" not in payload
+        obs = engine_so100.get_observation("so100", skip_images=True)
+        assert "base_quat" not in obs
+        assert "base_ang_vel" not in obs
+        assert "base_pos" not in obs
+        assert "base_lin_vel" not in obs
+
+
 class TestListBodies:
     def test_scoped_lists_only_robot_bodies_with_gripper(self, engine_so100):
         result = engine_so100.list_bodies("so100")

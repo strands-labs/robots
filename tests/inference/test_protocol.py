@@ -44,6 +44,37 @@ def test_observation_message_roundtrip_preserves_arrays_and_scalars():
     assert decoded_obs["instruction"] == "pick the cube"
 
 
+def test_decoded_array_is_writable_for_in_place_preprocessing():
+    """A decoded observation array must be writable, matching the local path.
+
+    A locally-run policy receives a freshly rendered (writable) observation and
+    VLA preprocessors normalize it in place; a read-only array raises
+    ``output array is read-only``.
+    """
+    image = np.random.randint(0, 256, size=(16, 16, 3), dtype=np.uint8)
+    restored = protocol.decode_ndarray(protocol.encode_ndarray(image))
+    assert restored.flags.writeable is True
+    restored += 1  # in-place op must not raise
+
+    state = np.array([0.1, 0.2, 0.3], dtype=np.float32)
+    restored_state = protocol.decode_ndarray(protocol.encode_ndarray(state))
+    assert restored_state.flags.writeable is True
+    restored_state *= 2.0
+
+
+def test_observation_arrays_writable_after_full_message_roundtrip():
+    """Arrays decoded from a full loads(dumps(...)) message are writable too."""
+    obs = {
+        "observation.state": np.array([0.1, 0.2], dtype=np.float64),
+        "observation.images.top": np.zeros((8, 8, 3), dtype=np.uint8),
+    }
+    decoded = protocol.loads(protocol.dumps({"type": protocol.MSG_GET_ACTIONS, "observation": obs}))
+    decoded_obs = decoded["observation"]
+    assert decoded_obs["observation.state"].flags.writeable is True
+    assert decoded_obs["observation.images.top"].flags.writeable is True
+    decoded_obs["observation.images.top"][0, 0, 0] = 42  # must not raise
+
+
 def test_action_chunk_passes_through_untouched():
     # Action chunks are already JSON-native (dict[str, float | list[float]]).
     actions = [{"joint_0": 0.5, "gripper": [0.1, 0.2]}, {"joint_0": 0.6, "gripper": [0.15, 0.25]}]

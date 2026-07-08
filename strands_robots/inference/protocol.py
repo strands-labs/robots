@@ -88,13 +88,26 @@ def encode_ndarray(arr: np.ndarray) -> dict[str, Any]:
 def decode_ndarray(envelope: dict[str, Any]) -> np.ndarray:
     """Reconstruct a NumPy array from an :func:`encode_ndarray` envelope.
 
+    The reconstructed array is WRITABLE, matching what a locally-run policy
+    receives: a freshly rendered observation (camera frame or state vector) is
+    always writable, and a policy legitimately relies on that. VLA preprocessors
+    routinely normalize the observation in place (``image /= 255``, joint-state
+    rescaling) or hand it to ``torch.from_numpy`` (zero-copy, then mutated), both
+    of which raise ``ValueError: output array is read-only`` or invoke undefined
+    behavior on a read-only buffer. Because :func:`base64.b64decode` returns
+    immutable ``bytes``, decoding through ``np.frombuffer`` directly would yield
+    a read-only array and silently diverge from the local-inference contract; we
+    wrap the decoded bytes in a mutable ``bytearray`` so the view is writable
+    (one allocation, no extra copy of the array data, still byte-exact).
+
     Args:
         envelope: A dict produced by :func:`encode_ndarray`.
 
     Returns:
-        The reconstructed array with the original ``dtype`` and ``shape``.
+        The reconstructed writable array with the original ``dtype`` and
+        ``shape``.
     """
-    raw = base64.b64decode(envelope[_NDARRAY_TAG])
+    raw = bytearray(base64.b64decode(envelope[_NDARRAY_TAG]))
     dtype = np.dtype(envelope["dtype"])
     array = np.frombuffer(raw, dtype=dtype)
     return array.reshape(envelope["shape"])

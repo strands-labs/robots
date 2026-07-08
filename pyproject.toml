@@ -223,19 +223,37 @@ sim-newton = [
     "mujoco-warp>=3.8.0",
     "trimesh>=4.0.0,<5.0.0",
 ]
-# Isaac Sim GPU-native backend (NVIDIA Isaac Sim / Omniverse). Provides
-# photorealistic RTX rendering, synthetic-data generation, and GPU-batched
-# sensor simulation. IMPORTANT: Isaac Sim itself is NOT pip-installable - it
-# ships via the NVIDIA Omniverse Launcher, Isaac Lab, or the NGC docker image
-# (see strands_robots/simulation/isaac/_install.py for the pinned image tag).
+# Isaac Sim GPU-native backend (NVIDIA Isaac Sim / Omniverse). Selected via
+# create_simulation("isaac") / Robot(..., backend="isaac"); the vendored
+# in-tree backend lives at strands_robots.simulation.isaac (parent epic #1144).
+# Provides photorealistic RTX rendering, synthetic-data generation, and
+# GPU-batched sensor simulation. GPU/heavy - kept OUT of `[all]` (like
+# sim-newton's spirit but even more so: Isaac Sim needs an RTX GPU + an
+# out-of-band Kit runtime).
+#
+# IMPORTANT: Isaac Sim itself is NOT installed by this extra. It is an Omniverse
+# Kit application provisioned out-of-band - via the NVIDIA Omniverse Launcher,
+# Isaac Lab (`./isaaclab.sh -i`), or the NGC docker image
+# (`nvcr.io/nvidia/isaac-sim:6.0`; see
+# strands_robots/simulation/isaac/_install.py for the pinned image tag). Those
+# images/launchers ship a complete, bootable Kit (Python 3.12 interpreter + the
+# full `isaacsim-*` / `isaacsim-extscache-*` extension set that `SimulationApp`
+# needs to boot). We do NOT pin `isaacsim` here: the PyPI `isaacsim[all]`
+# metapackage is incomplete on its own (it omits the `isaacsim-extscache-*`
+# packages, so `SimulationApp` aborts resolving its extension graph), and every
+# other surface documents Isaac Sim as "installed separately".
+#
 # This extra pulls ONLY the pip-installable Python helpers the backend uses
-# out-of-band from an Isaac Sim install: usd-core for USD prim / description
-# parsing (loaders.load_usd), imageio for rollout-video encoding, and the
-# shared sim base. All heavy omni/isaacsim imports stay lazy - installing this
-# extra never imports Isaac Sim.
+# out-of-band from an Isaac Sim install:
+#   * `usd-core` - pure-Python USD runtime used by the procedural scene
+#     builders / loaders (loaders.load_usd) even when Kit isn't booted. usd-core
+#     uses CalVer (25.x/26.x); per AGENTS.md `>=1.0` deps cap the major.
+#   * `imageio` / `imageio-ffmpeg` - rollout-video encoding.
+# All heavy omni/isaacsim imports stay lazy - installing this extra never
+# imports Isaac Sim.
 sim-isaac = [
     "strands-robots[sim]",
-    "usd-core>=24.5",
+    "usd-core>=25.5,<27.0.0",
     "imageio>=2.28.0,<3.0.0",
     "imageio-ffmpeg>=0.4.0,<1.0.0",
 ]
@@ -461,7 +479,7 @@ ignore_missing_imports = false
 
 # Third-party libs without type stubs
 [[tool.mypy.overrides]]
-module = ["lerobot.*", "gr00t.*", "draccus.*", "msgpack.*", "websockets", "websockets.*", "zmq.*", "huggingface_hub.*", "serial.*", "psutil.*", "torch.*", "torchvision.*", "transformers.*", "einops.*", "robot_descriptions.*", "mujoco.*", "imageio.*", "libero.*", "zenoh.*", "boto3", "boto3.*", "awscrt", "awscrt.*", "awsiot", "awsiot.*", "botocore.*", "strands_robots.policies.cosmos3._msgpack_numpy", "diffusers", "diffusers.*", "accelerate", "accelerate.*", "openpi_client", "openpi_client.*", "openpi_server", "openpi_server.*", "openpi", "openpi.*", "device_connect_edge", "device_connect_edge.*", "device_connect_agent_tools", "device_connect_agent_tools.*", "rclpy", "rclpy.*", "cyclonedds", "cyclonedds.*", "rosidl_runtime_py", "rosidl_runtime_py.*", "moveit", "moveit.*", "moveit_configs_utils", "moveit_configs_utils.*", "geometry_msgs", "geometry_msgs.*", "mink", "mink.*", "qpsolvers", "qpsolvers.*", "onnxruntime", "onnxruntime.*", "motionbricks", "motionbricks.*", "trimesh", "trimesh.*", "stable_baselines3", "stable_baselines3.*"]
+module = ["lerobot.*", "gr00t.*", "draccus.*", "msgpack.*", "websockets", "websockets.*", "zmq.*", "huggingface_hub.*", "serial.*", "psutil.*", "torch.*", "torchvision.*", "transformers.*", "einops.*", "robot_descriptions.*", "mujoco.*", "imageio.*", "libero.*", "zenoh.*", "boto3", "boto3.*", "awscrt", "awscrt.*", "awsiot", "awsiot.*", "botocore.*", "strands_robots.policies.cosmos3._msgpack_numpy", "diffusers", "diffusers.*", "accelerate", "accelerate.*", "openpi_client", "openpi_client.*", "openpi_server", "openpi_server.*", "openpi", "openpi.*", "device_connect_edge", "device_connect_edge.*", "device_connect_agent_tools", "device_connect_agent_tools.*", "rclpy", "rclpy.*", "cyclonedds", "cyclonedds.*", "rosidl_runtime_py", "rosidl_runtime_py.*", "moveit", "moveit.*", "moveit_configs_utils", "moveit_configs_utils.*", "geometry_msgs", "geometry_msgs.*", "mink", "mink.*", "qpsolvers", "qpsolvers.*", "onnxruntime", "onnxruntime.*", "motionbricks", "motionbricks.*", "trimesh", "trimesh.*", "stable_baselines3", "stable_baselines3.*", "strands_robots_sim", "strands_robots_sim.*", "isaacsim", "isaacsim.*", "omni", "omni.*"]
 ignore_missing_imports = true
 
 # Device Connect drivers - thin wrappers over the untyped device_connect_edge

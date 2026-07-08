@@ -458,7 +458,11 @@ class SimEngine(ABC):
         vector to joint names there mis-maps or drops commanded DOFs. A mapping
         is returned unchanged. The vector length must match the robot's actuator
         count exactly; a mismatch is reported as a caller error rather than
-        silently truncated (which would drop commands - e.g. a gripper axis).
+        silently truncated (which would drop commands - e.g. a gripper axis). A
+        mapping is returned unchanged once every value is confirmed to coerce to
+        a scalar float; a non-scalar value (a list / multi-element array) is
+        rejected with an actionable error rather than raised as an unhandled
+        ``TypeError`` deep in the actuator-application loop.
 
         Args:
             action: A ``{name: value}`` mapping, or an ordered numeric vector
@@ -471,6 +475,33 @@ class SimEngine(ABC):
             be ignored. Otherwise ``action_dict`` is the normalized mapping.
         """
         if isinstance(action, Mapping):
+            # Each value is applied downstream as ``float(value)`` per actuator
+            # with no guard, so a non-scalar value (a list / tuple / multi-element
+            # array - e.g. a policy emitting a vector-valued key such as a
+            # ``base_velocity`` [vx, vy, omega]) would raise an unhandled
+            # ``TypeError`` past send_action's structured-error contract and crash
+            # the caller mid-rollout, after partially applying the earlier keys.
+            # Validate every value coerces to a scalar float up front so the whole
+            # action is rejected atomically with an actionable message, symmetric
+            # with the vector-form non-numeric-entry validation below. Values are
+            # returned unchanged (the downstream ``float(value)`` accepts scalars,
+            # numeric strings, and length-1 arrays exactly as before).
+            for key, value in action.items():
+                try:
+                    float(value)
+                except (TypeError, ValueError):
+                    return None, {
+                        "status": "error",
+                        "content": [
+                            {
+                                "text": (
+                                    f"send_action: action value for key '{key}' must be a "
+                                    "scalar number (one value per actuator/joint), got "
+                                    f"{type(value).__name__}."
+                                )
+                            }
+                        ],
+                    }
             return dict(action), None
 
         # ``str``/``bytes`` are iterable but never a valid multi-joint action;

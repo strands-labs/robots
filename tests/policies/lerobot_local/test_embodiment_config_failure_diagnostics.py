@@ -120,3 +120,50 @@ def test_active_bridge_without_postprocessor_still_warns(monkeypatch, caplog):
     assert pol._processor_bridge is bridge
     msgs = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
     assert any("policy_postprocessor.json" in m for m in msgs), msgs
+
+
+def _patch_from_pretrained_raises(monkeypatch, exc: Exception) -> None:
+    """Make ``ProcessorBridge.from_pretrained`` raise -- the checkpoint ships
+    no loadable processor pipeline (missing configs / optional import)."""
+
+    def _boom(cls, *a, **k):
+        raise exc
+
+    monkeypatch.setattr(
+        "strands_robots.policies.lerobot_local.policy.ProcessorBridge.from_pretrained",
+        classmethod(_boom),
+    )
+
+
+def test_from_pretrained_failure_falls_back_to_raw_flow(monkeypatch, caplog):
+    """When ``ProcessorBridge.from_pretrained`` raises and no overrides were
+    requested, the checkpoint legitimately has no pipeline: fall back to the
+    raw obs/action flow (bridge is None, no embodiment-config failure) and
+    still emit the missing-postprocessor warning so a raw-action checkpoint
+    is not mistaken for a frozen policy."""
+    _patch_from_pretrained_raises(monkeypatch, FileNotFoundError("no processor configs"))
+    pol = _make_policy(embodiment=None)
+
+    with caplog.at_level(logging.WARNING):
+        pol._load_processor_bridge()
+
+    assert pol._processor_bridge is None
+    assert pol._embodiment_config_failed is False
+    msgs = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    # The generic missing-postprocessor diagnostic still fires for the raw flow.
+    assert any("policy_postprocessor.json" in m for m in msgs), msgs
+
+
+def test_from_pretrained_failure_raises_when_overrides_requested(monkeypatch):
+    """A caller that passes ``processor_overrides`` has opted into the
+    processor pipeline; if ``from_pretrained`` cannot load it, silently
+    dropping the overrides would be a hidden behaviour change. The load must
+    fail-fast with a RuntimeError naming the real cause instead."""
+    _patch_from_pretrained_raises(monkeypatch, ValueError("incompatible processor config"))
+    pol = _make_policy(
+        embodiment=None,
+        processor_overrides={"normalizer_processor": {"stats": {}}},
+    )
+
+    with pytest.raises(RuntimeError, match="Processor bridge failed to load"):
+        pol._load_processor_bridge()

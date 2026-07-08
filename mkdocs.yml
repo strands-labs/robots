@@ -27,6 +27,7 @@ nav:
   - World Building: simulation/world-building.md
   - Domain Randomization: simulation/domain-randomization.md
   - Newton Backend (GPU): simulation/newton.md
+  - Isaac Sim Backend (GPU): simulation/isaac.md
 - Device Connect: device-connect.md
 - Multi-robot Mesh: mesh.md
 - ROS 2 Integration: ros2-integration.md
@@ -54,7 +55,9 @@ nav:
   - Overview: training/overview.md
   - VLA-on-G1 Workflow: training/vla_workflow.md
   - Reinforcement Learning: training/rl.md
-- Recording & Datasets: recording.md
+- Datasets:
+  - Recording: recording.md
+  - Steerable Annotation: data/annotation.md
 - Remote Inference: inference/remote.md
 - Examples:
   - Overview: examples/overview.md
