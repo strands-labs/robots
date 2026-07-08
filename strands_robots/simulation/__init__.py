@@ -52,6 +52,8 @@ from typing import TYPE_CHECKING, Any
 # TYPE_CHECKING-only eager imports so mypy can resolve the heavy classes
 # below to concrete types instead of the dynamic __getattr__ -> Any. PEP 562.
 if TYPE_CHECKING:
+    from strands_robots.simulation.isaac.config import IsaacConfig
+    from strands_robots.simulation.isaac.simulation import IsaacSimulation
     from strands_robots.simulation.mujoco.simulation import Simulation
     from strands_robots.simulation.mujoco.simulation import Simulation as MuJoCoSimulation
     from strands_robots.simulation.mujoco.spec_builder import SpecBuilder
