@@ -114,6 +114,28 @@ def _codec_create_kwargs(sig_params: Any, vcodec: str, *, context: str = "create
 _BUCKET_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9][A-Za-z0-9._-]*)?$")
 _RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
+
+def _hf_executable() -> str | None:
+    """Resolve the ``hf`` CLI, preferring the one in the running interpreter's
+    environment before falling back to PATH.
+
+    ``huggingface_hub`` installs the ``hf`` entry point next to the active
+    Python (e.g. inside a virtualenv's ``bin``/``Scripts``). A bare ``hf`` on
+    PATH is only found when that environment is also on PATH, which is often not
+    the case for a subprocess launched from a venv whose ``bin`` was never
+    activated. Checking ``sys.executable``'s directory first makes
+    ``sync_to_bucket`` work from any environment where ``huggingface_hub`` is
+    installed, not just an activated one. Returns ``None`` if no ``hf`` is found.
+    """
+    import shutil
+
+    exe_dir = Path(sys.executable).parent
+    for name in ("hf", "hf.exe"):
+        candidate = exe_dir / name
+        if candidate.exists():
+            return str(candidate)
+    return shutil.which("hf")
+
 # Lazy check for LeRobot availability.
 # We must NOT import lerobot at module level because it pulls in
 # `datasets` -> `pandas`, which can crash with a numpy ABI mismatch on
@@ -916,10 +938,10 @@ class DatasetRecorder:
         The shard layout is already Xet/bucket-friendly at the 100 MB default,
         and ``meta/`` MUST ship or downstream loses normalization stats.
         """
-        import shutil
         import subprocess
 
-        if shutil.which("hf") is None:
+        hf = _hf_executable()
+        if hf is None:
             return {
                 "status": "error",
                 "message": "`hf` CLI not found. pip install -U huggingface_hub (>=1.x) and run `hf auth login`.",
@@ -954,7 +976,7 @@ class DatasetRecorder:
 
         if create:
             cp = subprocess.run(
-                ["hf", "buckets", "create", bucket] + (["--private"] if private else []),
+                [hf, "buckets", "create", bucket] + (["--private"] if private else []),
                 capture_output=True,
                 text=True,
             )
@@ -965,7 +987,7 @@ class DatasetRecorder:
                     "message": f"bucket create failed: {cp.stderr.strip()}",
                 }
 
-        cmd = ["hf", "sync", local_root, dest]
+        cmd = [hf, "sync", local_root, dest]
         if delete:
             cmd.append("--delete")
         logger.info("Syncing %s -> %s", local_root, dest)

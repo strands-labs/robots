@@ -1546,11 +1546,12 @@ def _write_meta(root) -> None:
 
 def test_sync_to_bucket_missing_hf_cli_errors(tmp_path, monkeypatch):
     """No ``hf`` CLI on PATH -> actionable error, never a subprocess call."""
-    import shutil
     import subprocess
 
+    from strands_robots import dataset_recorder as dr
+
     _write_meta(tmp_path)
-    monkeypatch.setattr(shutil, "which", lambda _name: None)
+    monkeypatch.setattr(dr, "_hf_executable", lambda: None)
 
     def _boom(*_a, **_k):
         raise AssertionError("subprocess must not run when hf CLI is absent")
@@ -1580,11 +1581,12 @@ def test_sync_to_bucket_rejects_unsafe_bucket(tmp_path, monkeypatch, bad_bucket)
     from an agent tool (``stop_recording(bucket=...)``), so a weakened bucket
     regex would let shell metacharacters / path traversal reach ``hf``.
     """
-    import shutil
     import subprocess
 
+    from strands_robots import dataset_recorder as dr
+
     _write_meta(tmp_path)
-    monkeypatch.setattr(shutil, "which", lambda _name: "/usr/bin/hf")
+    monkeypatch.setattr(dr, "_hf_executable", lambda: "hf")
 
     def _boom(*_a, **_k):
         raise AssertionError(f"subprocess must not run for unsafe bucket {bad_bucket!r}")
@@ -1599,9 +1601,9 @@ def test_sync_to_bucket_rejects_unsafe_bucket(tmp_path, monkeypatch, bad_bucket)
 
 def test_sync_to_bucket_requires_finalized_meta_dir(tmp_path, monkeypatch):
     """A dataset with no ``meta/`` (never finalized) is refused."""
-    import shutil
+    from strands_robots import dataset_recorder as dr
 
-    monkeypatch.setattr(shutil, "which", lambda _name: "/usr/bin/hf")
+    monkeypatch.setattr(dr, "_hf_executable", lambda: "hf")
     # No _write_meta: meta/ is absent.
 
     result = _sync_recorder(tmp_path).sync_to_bucket("my-org/robot-fave")
@@ -1614,11 +1616,12 @@ def test_sync_to_bucket_requires_finalized_meta_dir(tmp_path, monkeypatch):
 @pytest.mark.parametrize("bad_run_id", ["bad/id", "run;id", ".."])
 def test_sync_to_bucket_rejects_unsafe_run_id(tmp_path, monkeypatch, bad_run_id):
     """run_id must be a single safe path segment (no '/', traversal, metachars)."""
-    import shutil
     import subprocess
 
+    from strands_robots import dataset_recorder as dr
+
     _write_meta(tmp_path)
-    monkeypatch.setattr(shutil, "which", lambda _name: "/usr/bin/hf")
+    monkeypatch.setattr(dr, "_hf_executable", lambda: "hf")
 
     def _boom(*_a, **_k):
         raise AssertionError(f"subprocess must not run for unsafe run_id {bad_run_id!r}")
@@ -1633,11 +1636,12 @@ def test_sync_to_bucket_rejects_unsafe_run_id(tmp_path, monkeypatch, bad_run_id)
 
 def test_sync_to_bucket_success_creates_and_syncs(tmp_path, monkeypatch):
     """Happy path: creates the bucket then syncs to the derived HF URI."""
-    import shutil
     import subprocess
 
+    from strands_robots import dataset_recorder as dr
+
     _write_meta(tmp_path)
-    monkeypatch.setattr(shutil, "which", lambda _name: "/usr/bin/hf")
+    monkeypatch.setattr(dr, "_hf_executable", lambda: "hf")
 
     calls: list[list[str]] = []
 
@@ -1662,11 +1666,12 @@ def test_sync_to_bucket_success_creates_and_syncs(tmp_path, monkeypatch):
 
 def test_sync_to_bucket_preexisting_bucket_is_not_an_error(tmp_path, monkeypatch):
     """`hf buckets create` failing because the bucket already exists is tolerated."""
-    import shutil
     import subprocess
 
+    from strands_robots import dataset_recorder as dr
+
     _write_meta(tmp_path)
-    monkeypatch.setattr(shutil, "which", lambda _name: "/usr/bin/hf")
+    monkeypatch.setattr(dr, "_hf_executable", lambda: "hf")
 
     def _fake_run(cmd, *_a, **_k):
         if cmd[:3] == ["hf", "buckets", "create"]:
@@ -1683,11 +1688,12 @@ def test_sync_to_bucket_preexisting_bucket_is_not_an_error(tmp_path, monkeypatch
 
 def test_sync_to_bucket_create_failure_surfaced(tmp_path, monkeypatch):
     """A genuine `hf buckets create` failure is surfaced, not swallowed."""
-    import shutil
     import subprocess
 
+    from strands_robots import dataset_recorder as dr
+
     _write_meta(tmp_path)
-    monkeypatch.setattr(shutil, "which", lambda _name: "/usr/bin/hf")
+    monkeypatch.setattr(dr, "_hf_executable", lambda: "hf")
 
     def _fake_run(cmd, *_a, **_k):
         if cmd[:3] == ["hf", "buckets", "create"]:
@@ -1704,11 +1710,12 @@ def test_sync_to_bucket_create_failure_surfaced(tmp_path, monkeypatch):
 
 def test_sync_to_bucket_sync_failure_surfaced(tmp_path, monkeypatch):
     """A non-zero `hf sync` return code is surfaced with its stderr."""
-    import shutil
     import subprocess
 
+    from strands_robots import dataset_recorder as dr
+
     _write_meta(tmp_path)
-    monkeypatch.setattr(shutil, "which", lambda _name: "/usr/bin/hf")
+    monkeypatch.setattr(dr, "_hf_executable", lambda: "hf")
 
     def _fake_run(cmd, *_a, **_k):
         if cmd[:3] == ["hf", "buckets", "create"]:
@@ -1725,11 +1732,12 @@ def test_sync_to_bucket_sync_failure_surfaced(tmp_path, monkeypatch):
 
 def test_sync_to_bucket_delete_flag_forwards_to_sync(tmp_path, monkeypatch):
     """delete=True appends --delete to the `hf sync` command (mirror semantics)."""
-    import shutil
     import subprocess
 
+    from strands_robots import dataset_recorder as dr
+
     _write_meta(tmp_path)
-    monkeypatch.setattr(shutil, "which", lambda _name: "/usr/bin/hf")
+    monkeypatch.setattr(dr, "_hf_executable", lambda: "hf")
 
     calls: list[list[str]] = []
 
@@ -1746,3 +1754,36 @@ def test_sync_to_bucket_delete_flag_forwards_to_sync(tmp_path, monkeypatch):
     assert len(calls) == 1
     assert calls[0][:2] == ["hf", "sync"]
     assert "--delete" in calls[0]
+
+
+def test_hf_executable_prefers_interpreter_env_over_path(tmp_path, monkeypatch):
+    """`_hf_executable` finds the ``hf`` next to the running interpreter before
+    falling back to PATH, so sync works from a venv whose bin is not activated.
+    """
+    import shutil
+
+    from strands_robots import dataset_recorder as dr
+
+    # A fake venv layout: <venv>/bin/python and <venv>/bin/hf.
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "hf").write_text("#!/bin/sh\n")
+    monkeypatch.setattr(dr.sys, "executable", str(bin_dir / "python"))
+    # PATH lookup would resolve elsewhere; the interpreter-env hit must win.
+    monkeypatch.setattr(shutil, "which", lambda _name: "/somewhere/else/hf")
+
+    assert dr._hf_executable() == str(bin_dir / "hf")
+
+
+def test_hf_executable_falls_back_to_path(tmp_path, monkeypatch):
+    """When no ``hf`` sits next to the interpreter, fall back to PATH lookup."""
+    import shutil
+
+    from strands_robots import dataset_recorder as dr
+
+    empty = tmp_path / "bin"
+    empty.mkdir()
+    monkeypatch.setattr(dr.sys, "executable", str(empty / "python"))
+    monkeypatch.setattr(shutil, "which", lambda _name: "/usr/bin/hf")
+
+    assert dr._hf_executable() == "/usr/bin/hf"
