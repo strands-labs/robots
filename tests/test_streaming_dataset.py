@@ -14,7 +14,6 @@ import pytest
 
 import strands_robots.dataset_recorder as dr
 import strands_robots.streaming_dataset as sd
-from strands_robots.dataset_recorder import DatasetRecorder
 
 
 class _FakeStreaming:
@@ -128,7 +127,7 @@ class _FakeDataset:
 
 
 def _recorder(tmp_path):
-    rec = DatasetRecorder(dataset=_FakeDataset(str(tmp_path)))
+    rec = dr.DatasetRecorder(dataset=_FakeDataset(str(tmp_path)))
     rec.episode_count = 3
     rec.frame_count = 300
     return rec
