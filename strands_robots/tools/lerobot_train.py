@@ -43,22 +43,24 @@ _EXPERT_ONLY_POLICIES = {"pi0", "pi05", "pi0_fast", "smolvla"}
 # that an LLM agent (or prompt injection) could abuse. Gated by a HIL
 # interrupt; operators can pre-approve individual flags via
 # STRANDS_TRAIN_EXTRA_FLAGS_ALLOW or bypass entirely with BYPASS_TOOL_CONSENT.
-_BLOCKED_EXTRA_FLAGS = frozenset({
-    'output_dir',
-    'config_path',
-    'wandb.enable',
-    'wandb.project',
-    'wandb.entity',
-    'wandb.api_key',
-    'dataset.root',
-    'policy.pretrained_path',
-    'push_to_hub',
-    'policy.push_to_hub',
-    'hub_repo_id',
-})
+_BLOCKED_EXTRA_FLAGS = frozenset(
+    {
+        "output_dir",
+        "config_path",
+        "wandb.enable",
+        "wandb.project",
+        "wandb.entity",
+        "wandb.api_key",
+        "dataset.root",
+        "policy.pretrained_path",
+        "push_to_hub",
+        "policy.push_to_hub",
+        "hub_repo_id",
+    }
+)
 
-_EXTRA_FLAGS_ALLOW_ENV = 'STRANDS_TRAIN_EXTRA_FLAGS_ALLOW'
-_BYPASS_CONSENT_ENV = 'BYPASS_TOOL_CONSENT'
+_EXTRA_FLAGS_ALLOW_ENV = "STRANDS_TRAIN_EXTRA_FLAGS_ALLOW"
+_BYPASS_CONSENT_ENV = "BYPASS_TOOL_CONSENT"
 
 _APPROVE_RESPONSES = frozenset({"y", "yes", "approve", "approved"})
 
@@ -70,7 +72,7 @@ def _approve_response(response: object) -> bool:
 
 def _normalize_hydra_key(key: str) -> str:
     """Strip Hydra prefixes (--key, +key, ~key, ++key) for comparison."""
-    return key.lstrip('-+~')
+    return key.lstrip("-+~")
 
 
 def _validate_extra_flags(extra_flags: dict[str, Any]) -> list[tuple[str, str]]:
@@ -100,10 +102,7 @@ def _gate_extra_flags(
         return None
 
     allow_raw = os.environ.get(_EXTRA_FLAGS_ALLOW_ENV)
-    allowed = (
-        frozenset(f.strip() for f in allow_raw.split(',') if f.strip())
-        if allow_raw else frozenset()
-    )
+    allowed = frozenset(f.strip() for f in allow_raw.split(",") if f.strip()) if allow_raw else frozenset()
 
     needs_approval = [(raw, norm) for raw, norm in blocked if norm not in allowed]
     if not needs_approval:
@@ -117,18 +116,21 @@ def _gate_extra_flags(
 
     flag_names = ", ".join(raw for raw, _ in needs_approval)
     block_msg = (
-        f"extra_flags {flag_names} blocked for security reasons "
-        f"(controls output paths, telemetry, or code loading)."
+        f"extra_flags {flag_names} blocked for security reasons (controls output paths, telemetry, or code loading)."
     )
 
     if tool_context is None:
         return {
             "status": "error",
-            "content": [{"text": (
-                f"{block_msg} No tool_context available for operator approval. "
-                f"Set {_EXTRA_FLAGS_ALLOW_ENV} or {_BYPASS_CONSENT_ENV}=true "
-                f"to allow in headless mode."
-            )}],
+            "content": [
+                {
+                    "text": (
+                        f"{block_msg} No tool_context available for operator approval. "
+                        f"Set {_EXTRA_FLAGS_ALLOW_ENV} or {_BYPASS_CONSENT_ENV}=true "
+                        f"to allow in headless mode."
+                    )
+                }
+            ],
         }
 
     try:
@@ -143,10 +145,9 @@ def _gate_extra_flags(
     except RuntimeError as exc:
         return {
             "status": "error",
-            "content": [{"text": (
-                f"blocked extra_flags require operator approval, "
-                f"but interrupts are not available: {exc}"
-            )}],
+            "content": [
+                {"text": (f"blocked extra_flags require operator approval, but interrupts are not available: {exc}")}
+            ],
         }
 
     if not _approve_response(response):
@@ -157,8 +158,6 @@ def _gate_extra_flags(
 
     logger.info("blocked extra_flags %s approved via operator interrupt", flag_names)
     return None
-
-
 
 
 class SessionManager:

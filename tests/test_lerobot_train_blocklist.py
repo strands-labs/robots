@@ -17,54 +17,69 @@ from strands_robots.tools.lerobot_train import (
 class TestValidateExtraFlags:
     """Pin the blocklist contract: dangerous flags detected, benign flags pass."""
 
-    @pytest.mark.parametrize("key", [
-        "output_dir",
-        "--output_dir",
-        "+output_dir",
-        "~output_dir",
-        "++output_dir",
-    ])
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "output_dir",
+            "--output_dir",
+            "+output_dir",
+            "~output_dir",
+            "++output_dir",
+        ],
+    )
     def test_output_dir_all_hydra_forms_blocked(self, key):
         blocked = _validate_extra_flags({key: "/tmp/evil"})
         assert len(blocked) == 1
         assert blocked[0][1] == "output_dir"
 
-    @pytest.mark.parametrize("key", [
-        "config_path",
-        "--config_path",
-        "+config_path",
-    ])
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "config_path",
+            "--config_path",
+            "+config_path",
+        ],
+    )
     def test_config_path_blocked(self, key):
         blocked = _validate_extra_flags({key: "/tmp/malicious.yaml"})
         assert len(blocked) == 1
 
-    @pytest.mark.parametrize("key", [
-        "wandb.enable",
-        "--wandb.enable",
-        "+wandb.enable",
-        "wandb.project",
-        "wandb.entity",
-        "wandb.api_key",
-    ])
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "wandb.enable",
+            "--wandb.enable",
+            "+wandb.enable",
+            "wandb.project",
+            "wandb.entity",
+            "wandb.api_key",
+        ],
+    )
     def test_wandb_flags_blocked(self, key):
         blocked = _validate_extra_flags({key: "true"})
         assert len(blocked) == 1
 
-    @pytest.mark.parametrize("key", [
-        "dataset.root",
-        "--dataset.root",
-        "policy.pretrained_path",
-        "--policy.pretrained_path",
-    ])
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "dataset.root",
+            "--dataset.root",
+            "policy.pretrained_path",
+            "--policy.pretrained_path",
+        ],
+    )
     def test_data_and_model_paths_blocked(self, key):
         blocked = _validate_extra_flags({key: "/etc/shadow"})
         assert len(blocked) == 1
 
-    @pytest.mark.parametrize("key", [
-        "push_to_hub",
-        "policy.push_to_hub",
-        "hub_repo_id",
-    ])
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "push_to_hub",
+            "policy.push_to_hub",
+            "hub_repo_id",
+        ],
+    )
     def test_hub_push_flags_blocked(self, key):
         blocked = _validate_extra_flags({key: "attacker/repo"})
         assert len(blocked) == 1
@@ -85,13 +100,16 @@ class TestValidateExtraFlags:
 
 
 class TestNormalizeHydraKey:
-    @pytest.mark.parametrize("raw,expected", [
-        ("output_dir", "output_dir"),
-        ("--output_dir", "output_dir"),
-        ("+output_dir", "output_dir"),
-        ("~output_dir", "output_dir"),
-        ("++output_dir", "output_dir"),
-    ])
+    @pytest.mark.parametrize(
+        "raw,expected",
+        [
+            ("output_dir", "output_dir"),
+            ("--output_dir", "output_dir"),
+            ("+output_dir", "output_dir"),
+            ("~output_dir", "output_dir"),
+            ("++output_dir", "output_dir"),
+        ],
+    )
     def test_strips_prefixes(self, raw, expected):
         assert _normalize_hydra_key(raw) == expected
 
