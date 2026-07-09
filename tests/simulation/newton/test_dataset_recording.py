@@ -273,3 +273,132 @@ def test_start_recording_unknown_camera_errors(tmp_path):
     assert "front" in text  # the available list is surfaced
     # A failed scope must not leave the session flagged as recording.
     assert world._backend_state.get("recording") is False
+
+
+_BASE_COLS = [
+    "base_pos.x",
+    "base_pos.y",
+    "base_pos.z",
+    "base_quat.w",
+    "base_quat.x",
+    "base_quat.y",
+    "base_quat.z",
+    "base_lin_vel.x",
+    "base_lin_vel.y",
+    "base_lin_vel.z",
+    "base_ang_vel.x",
+    "base_ang_vel.y",
+    "base_ang_vel.z",
+]
+
+
+def _recorder_state_names(engine: NewtonSimEngine) -> tuple[list[str], tuple[int, ...] | None]:
+    world = engine._world
+    assert world is not None
+    rec = world._backend_state["dataset_recorder"]
+    feat = rec.dataset.features.get("observation.state", {})
+    names = feat.get("names", []) if isinstance(feat, dict) else getattr(feat, "names", [])
+    shape = feat.get("shape") if isinstance(feat, dict) else getattr(feat, "shape", None)
+    return list(names), shape
+
+
+def test_start_recording_preserves_floating_base_state_schema(tmp_path, caplog):
+    """A floating-base robot (``_robot_free_base_joint`` populated) records its
+    full base kinematics as per-component observation.state columns
+    (``base_pos.x`` .. ``base_ang_vel.z``), matching the MuJoCo backend, and no
+    longer emits the legacy base-state-dropped warning."""
+    import logging
+
+    world = _world_with_robot("humanoid")
+    engine = _make_engine(world)
+    # NewtonSimEngine.__init__ records the base free joint per robot; the __new__
+    # harness skips it, so set what a floating-base build would produce.
+    engine._robot_free_base_joint = {"humanoid": "floating_base_joint"}
+
+    with caplog.at_level(logging.WARNING, logger="strands_robots.simulation.recording"):
+        started = engine.start_recording(
+            repo_id="local/newton_fb_preserve", root=str(tmp_path / "ds"), fps=20, overwrite=True
+        )
+    assert started["status"] == "success", started
+    names, shape = _recorder_state_names(engine)
+    for col in _BASE_COLS:
+        assert col in names, f"{col} missing from recorded observation.state schema"
+    # The scalar joints are preserved alongside the base columns, and the flat
+    # feature shape matches the per-element name count.
+    for j in _SO100_JOINTS:
+        assert j in names
+    assert tuple(shape)[0] == len(names)
+    # The base state is now preserved, so the legacy drop-warning is superseded.
+    assert not any("have a floating base" in r.getMessage() for r in caplog.records), (
+        "the base-drop warning must not fire now that base state is preserved"
+    )
+    engine.stop_recording()
+
+
+def test_start_recording_fixed_arm_has_no_base_columns(tmp_path, caplog):
+    """A fixed-base arm (no floating base recorded) gains NO base columns - the
+    schema is unchanged - and detection degrades gracefully when
+    ``_robot_free_base_joint`` is absent entirely (the __new__ harness leaves it
+    unset)."""
+    import logging
+
+    engine = _make_engine(_world_with_robot("so100"))
+    assert not hasattr(engine, "_robot_free_base_joint")  # attr absent -> getattr default
+
+    with caplog.at_level(logging.WARNING, logger="strands_robots.simulation.recording"):
+        started = engine.start_recording(
+            repo_id="local/newton_arm_nobase", root=str(tmp_path / "ds"), fps=20, overwrite=True
+        )
+    assert started["status"] == "success", started
+    names, _shape = _recorder_state_names(engine)
+    assert not any(n.startswith(("base_pos", "base_quat", "base_lin_vel", "base_ang_vel")) for n in names), (
+        "fixed-base arm must NOT gain floating-base columns"
+    )
+    assert not any("have a floating base" in r.getMessage() for r in caplog.records)
+    engine.stop_recording()
+
+
+def test_recorded_floating_base_values_round_trip(tmp_path):
+    """End-to-end: a known base pose + twist fed through the real on_frame hook
+    is written to the dataset and read back after reopen - the base state is no
+    longer silently dropped on the Newton backend."""
+    from lerobot.datasets.lerobot_dataset import LeRobotDataset
+
+    world = _world_with_robot("humanoid")
+    engine = _make_engine(world)
+    engine._robot_free_base_joint = {"humanoid": "floating_base_joint"}
+    root = str(tmp_path / "ds")
+    started = engine.start_recording(repo_id="local/newton_fb_roundtrip", root=root, fps=20, overwrite=True)
+    assert started["status"] == "success", started
+
+    known_pos = [0.11, -0.22, 0.83]  # world x, y, HEIGHT
+    known_quat = [0.7071068, 0.0, 0.7071068, 0.0]  # +90deg about Y
+    known_linvel = [0.41, -0.52, 0.63]
+    known_angvel = [0.13, 0.24, 0.37]
+    hook = engine._make_run_policy_hook("humanoid", "t")
+    assert hook is not None
+    for step in range(3):
+        # A floating-base get_observation surfaces the base kinematics as vector
+        # keys alongside the scalar joints; feed exactly that shape to the hook.
+        obs: dict[str, object] = {j: float(step) * 0.01 for j in _SO100_JOINTS}
+        obs["base_pos"] = list(known_pos)
+        obs["base_quat"] = list(known_quat)
+        obs["base_lin_vel"] = list(known_linvel)
+        obs["base_ang_vel"] = list(known_angvel)
+        action = {j: 0.0 for j in _SO100_JOINTS}
+        hook(step, obs, action)
+    engine.save_episode()
+    engine.stop_recording()
+
+    ds = LeRobotDataset("local/newton_fb_roundtrip", root=root)
+    names = ds.features["observation.state"]["names"]
+    idx = {n: i for i, n in enumerate(names)}
+    state = np.asarray(ds[0]["observation.state"], dtype=np.float32)
+    got_pos = [float(state[idx[f"base_pos.{c}"]]) for c in "xyz"]
+    got_quat = [float(state[idx[f"base_quat.{c}"]]) for c in "wxyz"]
+    got_linvel = [float(state[idx[f"base_lin_vel.{c}"]]) for c in "xyz"]
+    got_angvel = [float(state[idx[f"base_ang_vel.{c}"]]) for c in "xyz"]
+    assert np.allclose(got_pos, known_pos, atol=1e-3), f"base_pos not preserved: {got_pos}"
+    assert np.allclose(got_quat, known_quat, atol=1e-3), f"base_quat not preserved: {got_quat}"
+    assert np.allclose(got_linvel, known_linvel, atol=1e-3), f"base_lin_vel not preserved: {got_linvel}"
+    assert np.allclose(got_angvel, known_angvel, atol=1e-3), f"base_ang_vel not preserved: {got_angvel}"

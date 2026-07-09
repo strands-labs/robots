@@ -261,6 +261,27 @@ class ZeroActionMonitor:
 
 # Imported lazily so this module is importable without lerobot (e.g. for unit
 # testing EmbodimentMap loading/validation in a minimal env).
+# Warn-once dedup for state_keys absent from the observation (keyed by the
+# missing-key tuple, which is stable across the 50Hz control loop).
+_WARNED_MISSING_STATE_KEYS: set[tuple[str, ...]] = set()
+
+
+def _warn_missing_state_keys(missing: list[str]) -> None:
+    """Warn once that some declared ``state_keys`` were absent (zero-filled in place)."""
+    sig = tuple(missing)
+    if sig in _WARNED_MISSING_STATE_KEYS:
+        return
+    _WARNED_MISSING_STATE_KEYS.add(sig)
+    logger.warning(
+        "lerobot_local: state_key(s) %s absent from the observation; zero-filled IN "
+        "PLACE so the present joints keep their model index (the missing dims read 0). "
+        "The canonical trigger is a mimic/tendon gripper actuator (e.g. left/gripper) "
+        "whose sim observation exposes finger joints instead -- the arm proprioception "
+        "stays aligned while the gripper state reads 0.",
+        missing,
+    )
+
+
 def register_pack_state_step() -> type | None:
     """Define + register :class:`PackStateProcessorStep` against lerobot.
 
@@ -322,8 +343,11 @@ def register_pack_state_step() -> type | None:
                 return observation  # already packed -> passthrough
 
             vals: list[float] = []
+            missing: list[str] = []
+            present = 0
             for k in self.state_keys:
                 if k in observation:
+                    present += 1
                     v = observation[k]
                     if isinstance(v, np.ndarray):
                         if v.ndim == 0:
@@ -334,11 +358,23 @@ def register_pack_state_step() -> type | None:
                         vals.extend(float(x) for x in v)
                     else:
                         vals.append(float(v))
+                else:
+                    # Zero-fill the missing key IN PLACE so it holds its slot.
+                    # Skipping it (the previous behavior) collapsed the vector and
+                    # shifted every following joint out of its model index -- the
+                    # embodiment-path analog of the generic-path fix in
+                    # LerobotLocalPolicy._collect_state_values.
+                    vals.append(0.0)
+                    missing.append(k)
 
-            if not vals:
-                # No declared state keys present; leave obs alone so a clearer
-                # downstream error (or a state-less policy) can handle it.
+            if present == 0:
+                # No declared state key present at all; leave obs alone so a
+                # clearer downstream error (or a state-less policy) can handle
+                # it, rather than emitting an all-zero state vector.
                 return observation
+
+            if missing:
+                _warn_missing_state_keys(missing)
 
             # Convert sim units (radians + gripper joint range) to the model's
             # training units (arm degrees, gripper 0..100) BEFORE packing, so the

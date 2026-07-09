@@ -46,7 +46,12 @@ def pack_array(obj):
 
 def unpack_array(obj):
     if b"__ndarray__" in obj:
-        return np.ndarray(buffer=obj[b"data"], dtype=np.dtype(obj[b"dtype"]), shape=obj[b"shape"])
+        # copy: a ``np.ndarray(buffer=...)`` view over the transient msgpack recv
+        # bytes is read-only and does not own its data, so normalizing it in place
+        # or handing it to ``torch.from_numpy`` (zero-copy) crashes or hits the
+        # "not writable -> undefined behavior" hazard. Copy to a writable, owning
+        # array - matching the sibling VERA packer and the inference protocol.
+        return np.frombuffer(obj[b"data"], dtype=np.dtype(obj[b"dtype"])).reshape(tuple(obj[b"shape"])).copy()
 
     if b"__npgeneric__" in obj:
         return np.dtype(obj[b"dtype"]).type(obj[b"data"])

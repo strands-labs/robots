@@ -47,6 +47,7 @@ class NewtonRecordingMixin(DatasetRecordingMixin):
     if TYPE_CHECKING:
         _world: SimWorld | None
         _model: Any
+        _robot_free_base_joint: dict[str, str]
         default_width: int
         default_height: int
 
@@ -158,6 +159,36 @@ class NewtonRecordingMixin(DatasetRecordingMixin):
 
             joint_names, camera_keys, camera_dims, robot_type, recording_cameras = self._collect_recording_schema()
 
+            # Backend parity with the MuJoCo recorder: a floating-base robot
+            # (humanoid / mobile) exposes full base kinematics via
+            # get_observation - position (base_pos, world x,y,z incl. height),
+            # orientation (base_quat, w,x,y,z), linear velocity (base_lin_vel,
+            # m/s) and angular velocity (base_ang_vel, rad/s) - but the
+            # observation.state schema above is derived from scalar joint names,
+            # so those base signals would be dropped and a locomotion /
+            # velocity-tracking / whole-body-control policy trained on the
+            # dataset would be base-blind. Preserve them as per-component scalar
+            # columns (base_pos.x .. base_ang_vel.z); the DatasetRecorder
+            # extra_state_specs / _state_source_keys machinery flattens the
+            # vector observation keys into observation.state each frame with no
+            # recorder changes. Multi-robot base columns are prefixed like the
+            # joint ids (``alice__base_quat.w``) to match the prefixed
+            # observation keys the recording hook emits. A fixed-base arm has no
+            # free base joint -> no base columns (schema unchanged).
+            free_base_joints = getattr(self, "_robot_free_base_joint", {})
+            multi_robot = len(world.robots) > 1
+            base_state_specs: list[tuple[str, list[str]]] = []
+            for rname in world.robots:
+                if free_base_joints.get(rname):
+                    prefix = f"{rname}__" if multi_robot else ""
+                    base_state_specs.append((f"{prefix}base_pos", ["x", "y", "z"]))
+                    base_state_specs.append((f"{prefix}base_quat", ["w", "x", "y", "z"]))
+                    base_state_specs.append((f"{prefix}base_lin_vel", ["x", "y", "z"]))
+                    base_state_specs.append((f"{prefix}base_ang_vel", ["x", "y", "z"]))
+            # Full observation.state schema (scalar joints + expanded base
+            # components) - used to validate a resumed dataset's on-disk schema.
+            state_names_full = list(joint_names) + [f"{src}.{c}" for src, comps in base_state_specs for c in comps]
+
             # Optional camera scoping (parity with the MuJoCo backend). By
             # default every named scene camera is recorded; when ``cameras`` is
             # given, record exactly that subset. Names may be the raw camera
@@ -207,7 +238,7 @@ class NewtonRecordingMixin(DatasetRecordingMixin):
             if resume_existing:
                 logger.info("Resuming existing dataset for append: %s", dataset_dir)
                 resumed = _DatasetRecorder.resume(repo_id=repo_id, root=root, task=task, vcodec=vcodec)
-                self._verify_resume_schema(resumed, joint_names, camera_keys, camera_dims)
+                self._verify_resume_schema(resumed, state_names_full, camera_keys, camera_dims)
                 world._backend_state["dataset_recorder"] = resumed
             else:
                 world._backend_state["dataset_recorder"] = _DatasetRecorder.create(
@@ -215,6 +246,7 @@ class NewtonRecordingMixin(DatasetRecordingMixin):
                     fps=fps,
                     robot_type=robot_type,
                     joint_names=joint_names,
+                    extra_state_specs=base_state_specs,
                     camera_keys=camera_keys,
                     camera_dims=camera_dims,
                     task=task,

@@ -126,11 +126,17 @@ class TestRequireSarmProgress:
             reward_mod._require_sarm_progress()
 
     def test_old_lerobot_raises_clear_error(self, monkeypatch):
-        # matplotlib present, but the SARM module is absent (pre-0.5.2 lerobot).
+        # matplotlib present, but the SARM module is absent (too-old lerobot).
         monkeypatch.setattr(reward_mod, "require_optional", lambda *a, **k: None)
         monkeypatch.setitem(sys.modules, _SARM_MOD, None)
-        with pytest.raises(ImportError, match="lerobot >= 0.5.2"):
+        with pytest.raises(ImportError, match=r"lerobot >= 0\.6") as excinfo:
             reward_mod._require_sarm_progress()
+        # lerobot 0.6 (incl. the rewards package) ships from PyPI, so the hint
+        # must NOT send the caller chasing a from-source / git+ install.
+        msg = str(excinfo.value)
+        assert "from source" not in msg
+        assert "git+" not in msg
+        assert "0.5.2" not in msg
 
 
 class TestRewardProgress:
@@ -201,5 +207,9 @@ class TestLoadRewardModel:
 
     def test_old_lerobot_raises_clear_error(self, monkeypatch):
         monkeypatch.setattr(reward_mod.importlib.util, "find_spec", lambda name: None)
-        with pytest.raises(ImportError, match="lerobot >= 0.5.2"):
+        with pytest.raises(ImportError, match=r"lerobot >= 0\.6") as excinfo:
             load_reward_model("/ckpt/sarm", device="cpu")
+        msg = str(excinfo.value)
+        assert "from source" not in msg
+        assert "git+" not in msg
+        assert "0.5.2" not in msg

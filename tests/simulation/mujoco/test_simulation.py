@@ -62,6 +62,38 @@ ROBOT_XML = """
 """
 
 
+# Robot with a gripper-named end body. list_bodies(robot_name=...) advertises the
+# best-guess gripper/EEF mount so an agent can attach a wrist camera without
+# guessing a body name. The short name must contain gripper/hand/ee/tool.
+GRIPPER_ARM_XML = """
+<mujoco model="gripper_arm">
+  <compiler angle="radian" autolimits="true"/>
+  <option timestep="0.002"/>
+  <worldbody>
+    <light name="main" pos="0 0 3" dir="0 0 -1"/>
+    <geom name="ground" type="plane" size="5 5 0.01" rgba="0.9 0.9 0.9 1"/>
+    <body name="base" pos="0 0 0.1">
+      <geom type="cylinder" size="0.05 0.05" rgba="0.3 0.3 0.8 1"/>
+      <joint name="shoulder_pan" type="hinge" axis="0 0 1" range="-3.14 3.14"/>
+      <body name="link1" pos="0 0 0.1">
+        <geom type="capsule" size="0.03" fromto="0 0 0 0 0 0.2" rgba="0.8 0.3 0.3 1"/>
+        <joint name="elbow" type="hinge" axis="0 1 0" range="-2.0 2.0"/>
+        <body name="gripper" pos="0 0 0.2">
+          <geom type="box" size="0.02 0.02 0.02" rgba="0.2 0.2 0.2 1"/>
+          <joint name="jaw" type="slide" axis="0 1 0" range="0 0.04"/>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+  <actuator>
+    <position name="shoulder_pan_act" joint="shoulder_pan" kp="50"/>
+    <position name="elbow_act" joint="elbow" kp="50"/>
+    <position name="jaw_act" joint="jaw" kp="20"/>
+  </actuator>
+</mujoco>
+"""
+
+
 # Free-base (floating) robot - a 1-DoF "leg" on a free joint, like the G1's
 # floating base. Used to test that get_observation surfaces base_quat /
 # base_ang_vel for locomotion controllers (WBC).
@@ -185,6 +217,21 @@ def sim_with_robot(sim_with_world, robot_xml_path):
     result = sim_with_world.add_robot("arm1", urdf_path=robot_xml_path)
     assert result["status"] == "success"
     return sim_with_world
+
+
+@pytest.fixture
+def sim_with_gripper_robot(sim_with_world):
+    """Simulation with world + a robot whose end body is named ``gripper``."""
+    tmpdir = tempfile.mkdtemp()
+    path = os.path.join(tmpdir, "gripper_arm.xml")
+    with open(path, "w") as f:
+        f.write(GRIPPER_ARM_XML)
+    try:
+        result = sim_with_world.add_robot("griparm", urdf_path=path)
+        assert result["status"] == "success"
+        yield sim_with_world
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
 
 
 # World Management
@@ -707,6 +754,28 @@ class TestListBodies:
         described = sim_with_robot.describe()
         assert "arm1/base" in described["bodies"]
         assert "list_bodies" in described["methods"]
+
+    def test_list_bodies_reports_gripper_mount_when_present(self, sim_with_gripper_robot):
+        """A robot with a gripper-like body gets its wrist/EEF mount resolved
+        automatically. This is the payoff of the discovery surface: the agent
+        reads ``gripper_body`` and mounts a wrist camera in one turn instead of
+        guessing the body name. The detection matches on the short (namespace-
+        stripped) body name, so the reported mount stays namespaced."""
+        result = sim_with_gripper_robot.list_bodies(robot_name="griparm")
+        assert result["status"] == "success"
+        payload = result["content"][1]["json"]
+        assert payload["gripper_body"] == "griparm/gripper"
+        # The human-readable text advertises the same mount point.
+        assert "Gripper/EEF mount: 'griparm/gripper'" in result["content"][0]["text"]
+        # And the discovered mount actually works as an add_camera parent_body.
+        cam = sim_with_gripper_robot.add_camera(
+            "wrist",
+            position=[0.0, 0.0, 0.05],
+            target=[0.0, 0.0, 0.0],
+            parent_body=payload["gripper_body"],
+        )
+        assert cam["status"] == "success"
+        assert sim_with_gripper_robot._world.cameras["wrist"].parent_body == "griparm/gripper"
 
 
 # Scene Injection (XML round-trip)

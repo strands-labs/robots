@@ -58,17 +58,17 @@ MOLMOACT2_TYPE = "molmoact2"
 _MOLMOACT2_RUNTIME_DEPS = ("transformers", "peft", "scipy")
 
 #: Install hint for when lerobot itself is too old / absent. MolmoAct2Policy and
-#: the ``lerobot.configs`` feature symbols only exist in lerobot >= 0.5.2 (merged
-#: in lerobot PR #3604), which is not yet on PyPI -- so the fix is a from-source
-#: install. This is NOT the right advice when a *transitive* dependency is the
-#: thing missing (see ``_factory_import_error``).
+#: the ``lerobot.configs`` feature symbols ship in lerobot >= 0.6.0 (merged in
+#: lerobot PR #3604), which ``strands-robots[molmoact2]`` pulls straight from
+#: PyPI via the ``strands-robots[lerobot]`` (>=0.6.0) pin -- no from-source
+#: install is needed. This is NOT the right advice when a *transitive*
+#: dependency is the thing missing (see ``_factory_import_error``).
 _LEROBOT_VERSION_HINT = (
-    "MolmoAct2 requires lerobot >= 0.5.2 (PR #3604), which is not yet on "
-    "PyPI (latest release 0.5.1 lacks MolmoAct2Policy). Install the extra "
-    "plus lerobot from source:\n"
-    "  uv pip install 'strands-robots[molmoact2]' "
-    "'lerobot[feetech] @ git+https://github.com/huggingface/lerobot.git'\n"
-    "On Jetson/aarch64, add --no-build-isolation if pyav fails to build."
+    "MolmoAct2 requires lerobot >= 0.6.0 (which ships MolmoAct2Policy via "
+    "lerobot PR #3604). Install (or reinstall) the extra -- it pulls a "
+    "compatible lerobot from PyPI:\n"
+    "  uv pip install 'strands-robots[molmoact2]'\n"
+    "On Jetson/aarch64, add --no-build-isolation if a wheel fails to build."
 )
 
 
@@ -81,7 +81,8 @@ def _factory_import_error(exc: ImportError) -> ImportError:
 
     * lerobot itself is too old or absent -- the ``lerobot`` package is missing,
       or the MolmoAct2-era symbols it should expose are not there yet. The fix
-      is a lerobot >= 0.5.2 from-source install (:data:`_LEROBOT_VERSION_HINT`).
+      is to (re)install ``strands-robots[molmoact2]``, which pulls lerobot
+      >= 0.6.0 from PyPI (:data:`_LEROBOT_VERSION_HINT`).
     * a *transitive* dependency that the factory pulls in is missing -- here
       ``exc.name`` names a non-lerobot package. The fix is to install THAT
       package; telling the caller to reinstall lerobot is a dead end that sends

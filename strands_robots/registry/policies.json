@@ -272,6 +272,26 @@
         "motionbricks",
         "motion_bricks"
       ]
+    },
+    "remote": {
+      "module": "strands_robots.inference.client",
+      "class": "RemotePolicy",
+      "description": "Remote inference over WebSocket (WS-JSON) - forwards observations to a PolicyServer and returns action chunks",
+      "requires": [],
+      "config_keys": [
+        "endpoint",
+        "host",
+        "port",
+        "connect_timeout",
+        "request_timeout"
+      ],
+      "defaults": {},
+      "shorthands": [
+        "remote"
+      ],
+      "url_patterns": [
+        "^wss?://"
+      ]
     }
   }
 }

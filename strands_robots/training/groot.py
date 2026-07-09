@@ -210,10 +210,18 @@ class Gr00tTrainer(Trainer):
         cmd.append(f"--tune_diffusion_model={'true' if tune['diffusion'] else 'false'}")
 
         if spec.augmentation:
+            # Mirror build_finetune_config exactly: random_rotation_angle and
+            # color_jitter_params are native FinetuneConfig fields; every other
+            # augmentation key is bundled into --extra_augmentation_config JSON.
             if "random_rotation_angle" in spec.augmentation:
                 cmd.append(f"--random_rotation_angle={spec.augmentation['random_rotation_angle']}")
             if "color_jitter_params" in spec.augmentation:
-                cmd.append(f"--extra_augmentation_config={json.dumps(spec.augmentation)}")
+                cmd.append(f"--color_jitter_params={spec.augmentation['color_jitter_params']}")
+            extra_aug = {
+                k: v for k, v in spec.augmentation.items() if k not in ("random_rotation_angle", "color_jitter_params")
+            }
+            if extra_aug:
+                cmd.append(f"--extra_augmentation_config={json.dumps(extra_aug)}")
 
         mcfg = spec.extra.get("modality_config_path")
         if mcfg:

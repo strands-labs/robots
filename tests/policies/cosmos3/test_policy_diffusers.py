@@ -378,3 +378,134 @@ def test_load_pipeline_enables_safety_checker_when_requested(monkeypatch):
 
     Cosmos3DiffusersBackend(embodiment=get_embodiment("droid"), device="cpu", enable_safety_checker=True)
     assert "enable_safety_checker" not in captured["kwargs"]
+
+
+# --- Raw-pipeline output contracts + dead-end errors -----------------------
+# The FakePipeline above always emits a plain 2-D ``[T, D]`` action array, so
+# the raw-pipeline paths that only surface with a real Cosmos3OmniPipeline are
+# untested by the happy-path suite: the ``[num_chunks, T, D]`` squeeze in
+# ``_extract_action`` (the model can emit a leading chunk dim), the tensor
+# branch of ``_as_action_tensor`` (forward/inverse-dynamics driven with a
+# ``torch.Tensor`` instead of a NumPy array), and the two ``ValueError``
+# dead-end contracts (``_resolve_torch_dtype`` on an unknown dtype string,
+# ``_first_frame`` on an observation carrying no ``(H, W, 3)`` frame). These
+# pin those contracts, mirroring the bf16 / safety-checker GPU-path regression
+# tests above.
+
+
+def test_extract_action_squeezes_leading_num_chunks_dim():
+    """A real ``Cosmos3OmniPipeline`` may emit ``action`` as a list holding a
+    single ``[num_chunks, T, D]`` tensor; ``_extract_action`` must return the
+    first chunk as ``[T, D]``. The mocked 2-D happy path never exercises this
+    squeeze, so a regression here would silently mis-shape a real rollout chunk.
+    """
+    from strands_robots.policies.cosmos3.policy_diffusers import _extract_action
+
+    chunk = np.arange(2 * 32 * 10, dtype=np.float32).reshape(2, 32, 10)
+    arr = _extract_action([chunk], mode="policy")
+    assert arr.shape == (32, 10)
+    np.testing.assert_array_equal(arr, chunk[0])
+    # A plain 2-D chunk passes through unchanged (the common case).
+    flat = np.arange(32 * 10, dtype=np.float32).reshape(32, 10)
+    np.testing.assert_array_equal(_extract_action([flat], mode="policy"), flat)
+
+
+def test_extract_action_missing_field_is_mode_dependent():
+    """``forward_dynamics`` is the only world-only mode: a missing/empty action
+    field returns ``None`` there but is surfaced as a ``RuntimeError`` in the
+    action-producing ``policy`` mode rather than silently swallowed."""
+    from strands_robots.policies.cosmos3.policy_diffusers import _extract_action
+
+    assert _extract_action(None, mode="forward_dynamics") is None
+    assert _extract_action([], mode="forward_dynamics") is None
+    with pytest.raises(RuntimeError, match="no action field"):
+        _extract_action(None, mode="policy")
+    with pytest.raises(RuntimeError, match="no action field"):
+        _extract_action([], mode="policy")
+
+
+def test_as_action_tensor_coerces_tensor_and_array_to_float32():
+    """``raw_actions`` for forward/inverse-dynamics may arrive as a
+    ``torch.Tensor`` (e.g. a chunk carried over from a prior rollout) or a NumPy
+    array; both must coerce to a ``float32`` tensor. The forward-dynamics tests
+    above only pass a NumPy array, leaving the tensor branch uncovered.
+    """
+    import torch
+
+    from strands_robots.policies.cosmos3.policy_diffusers import Cosmos3DiffusersBackend
+
+    from_tensor = Cosmos3DiffusersBackend._as_action_tensor(torch.tensor([[1.0, 2.0]], dtype=torch.float64))
+    assert isinstance(from_tensor, torch.Tensor)
+    assert from_tensor.dtype == torch.float32
+    np.testing.assert_allclose(from_tensor.numpy(), [[1.0, 2.0]])
+
+    from_array = Cosmos3DiffusersBackend._as_action_tensor(np.array([[3.0, 4.0]], dtype=np.float64))
+    assert isinstance(from_array, torch.Tensor)
+    assert from_array.dtype == torch.float32
+    np.testing.assert_allclose(from_array.numpy(), [[3.0, 4.0]])
+
+
+def test_resolve_torch_dtype_unknown_raises_actionable_error():
+    """An unknown dtype string is a caller misconfiguration; it must raise a
+    ``ValueError`` naming the offending value rather than falling through to a
+    ``None`` dtype that would fail cryptically inside ``from_pretrained``."""
+    import torch
+
+    from strands_robots.policies.cosmos3.policy_diffusers import _resolve_torch_dtype
+
+    assert _resolve_torch_dtype(torch, "bfloat16") is torch.bfloat16
+    assert _resolve_torch_dtype(torch, "float32") is torch.float32
+    with pytest.raises(ValueError, match="Unknown torch dtype 'not_a_dtype'"):
+        _resolve_torch_dtype(torch, "not_a_dtype")
+
+
+def test_first_frame_requires_an_hwc_camera_frame():
+    """``_first_frame`` scans the embodiment camera keys and any image-like key
+    for an ``(H, W, 3)`` array; an observation carrying only scalars or a
+    wrong-shaped array must raise a ``ValueError`` that names both the keys it
+    searched and the observation keys it saw (a dead-end error, not a crash
+    deep inside the pipeline)."""
+    backend = Cosmos3DiffusersBackend(
+        embodiment=get_embodiment("droid"),
+        pipeline=FakePipeline(),
+        condition_cls=FakeCondition,
+    )
+    # No (H, W, 3) frame: a 2-D greyscale array and a scalar.
+    bad = {
+        "observation/wrist_image_left": np.zeros((360, 640), dtype=np.uint8),
+        "observation/exterior_image_1_left": None,  # present-but-None key is skipped
+        "joint_0": 0.1,
+    }
+    with pytest.raises(ValueError, match="requires at least one camera frame"):
+        backend._first_frame(bad)
+    # A valid HWC frame is returned as-is.
+    frame = np.zeros((8, 8, 3), dtype=np.uint8)
+    assert backend._first_frame({"observation/wrist_image_left": frame}).shape == (8, 8, 3)
+
+
+def test_import_condition_cls_missing_diffusers_raises_install_hint(monkeypatch):
+    """``forward_dynamics`` / ``inverse_dynamics`` import
+    ``diffusers.CosmosActionCondition`` lazily via ``_import_condition_cls``;
+    when native diffusers is absent it must raise the same actionable install
+    error the pipeline import gives, not a bare ``ImportError`` from deep in the
+    call. Mirrors ``test_missing_diffusers_raises_actionable_error`` for the
+    condition-class import path."""
+    import builtins
+
+    # An injected pipeline + condition_cls lets __init__ skip the diffusers
+    # import, so we exercise _import_condition_cls in isolation.
+    backend = Cosmos3DiffusersBackend(
+        embodiment=get_embodiment("droid"),
+        pipeline=FakePipeline(),
+        condition_cls=FakeCondition,
+    )
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "diffusers" or name.startswith("diffusers."):
+            raise ImportError("No module named 'diffusers'")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    with pytest.raises(ImportError, match="diffusers"):
+        backend._import_condition_cls()

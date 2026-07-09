@@ -192,3 +192,67 @@ def test_recording_scoped_cameras_does_not_warn(sim_with_cameras, tmp_path, capl
     assert not any("observation.images.default" in m for m in warnings), (
         f"scoped recording must not warn about default, got: {warnings}"
     )
+
+
+@pytest.fixture
+def sim_with_namespaced_camera():
+    """A sim whose sensor camera carries a namespaced MuJoCo name (``arm0/wrist_cam``).
+
+    Robots that inject a namespace prefix produce camera names containing ``/``,
+    which LeRobot cannot use as a feature key (``/`` is reserved for nested
+    features), so ``start_recording`` collapses the separator to ``__`` for the
+    dataset schema. This fixture reproduces that shape so the raw name and the
+    schema-safe name genuinely differ.
+    """
+    from strands_robots.simulation import Simulation
+
+    tmpdir = tempfile.mkdtemp()
+    path = os.path.join(tmpdir, "test_arm.xml")
+    with open(path, "w") as f:
+        f.write(_ROBOT_XML)
+
+    s = Simulation()
+    s.create_world()
+    s.add_robot("arm", urdf_path=path)
+    s.add_camera(name="arm0/wrist_cam", position=[0.5, 0.0, 0.3], target=[0.0, 0.0, 0.1], width=64, height=64)
+    yield s
+    s.destroy()
+
+
+def test_cameras_selectable_by_schema_safe_name(sim_with_namespaced_camera, tmp_path):
+    """A namespaced camera can be scoped by its schema-safe (``__``) name.
+
+    ``start_recording`` documents that ``cameras=`` names may be given in either
+    the raw MuJoCo form (``arm0/wrist_cam``) or the collapsed schema-safe form
+    (``arm0__wrist_cam``). This pins the schema-safe alias path: requesting the
+    ``__`` form resolves to the same camera and produces the collapsed feature
+    key, and the raw name is what gets stashed for the frame filter.
+    """
+    sim = sim_with_namespaced_camera
+    res = sim.start_recording(
+        repo_id="local/scope_safe_name",
+        root=str(tmp_path / "safe"),
+        cameras=["arm0__wrist_cam"],
+        overwrite=True,
+    )
+    assert res["status"] == "success"
+    # The schema-safe key is what lands in the dataset; the stray implicit
+    # ``default`` overview camera is excluded.
+    assert _recorder_image_features(sim) == {"observation.images.arm0__wrist_cam"}
+    # The frame filter is keyed on the RAW MuJoCo name (what observations carry).
+    assert sim._world._backend_state["recording_cameras"] == {"arm0/wrist_cam"}
+
+
+def test_cameras_raw_and_schema_safe_names_are_equivalent(sim_with_namespaced_camera, tmp_path):
+    """Selecting a namespaced camera by raw or schema-safe name yields the same schema."""
+    sim = sim_with_namespaced_camera
+    res = sim.start_recording(
+        repo_id="local/scope_raw_name",
+        root=str(tmp_path / "raw"),
+        cameras=["arm0/wrist_cam"],
+        overwrite=True,
+    )
+    assert res["status"] == "success"
+    # Raw request collapses to the same schema-safe feature key as the ``__`` form.
+    assert _recorder_image_features(sim) == {"observation.images.arm0__wrist_cam"}
+    assert sim._world._backend_state["recording_cameras"] == {"arm0/wrist_cam"}

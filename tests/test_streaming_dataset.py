@@ -12,8 +12,8 @@ import subprocess
 
 import pytest
 
+import strands_robots.dataset_recorder as dr
 import strands_robots.streaming_dataset as sd
-from strands_robots.dataset_recorder import DatasetRecorder
 
 
 class _FakeStreaming:
@@ -127,7 +127,7 @@ class _FakeDataset:
 
 
 def _recorder(tmp_path):
-    rec = DatasetRecorder(dataset=_FakeDataset(str(tmp_path)))
+    rec = dr.DatasetRecorder(dataset=_FakeDataset(str(tmp_path)))
     rec.episode_count = 3
     rec.frame_count = 300
     return rec
@@ -137,9 +137,7 @@ def test_sync_to_bucket_builds_cli(tmp_path, monkeypatch):
     (tmp_path / "meta").mkdir()  # satisfy the meta/ guard
     rec = _recorder(tmp_path)
 
-    import shutil
-
-    monkeypatch.setattr(shutil, "which", lambda _: "/usr/bin/hf")
+    monkeypatch.setattr(dr, "_hf_executable", lambda: "hf")
 
     calls = []
 
@@ -164,9 +162,7 @@ def test_sync_to_bucket_builds_cli(tmp_path, monkeypatch):
 
 def test_sync_to_bucket_requires_meta(tmp_path, monkeypatch):
     rec = _recorder(tmp_path)  # NO meta/ dir
-    import shutil
-
-    monkeypatch.setattr(shutil, "which", lambda _: "/usr/bin/hf")
+    monkeypatch.setattr(dr, "_hf_executable", lambda: "hf")
     res = rec.sync_to_bucket("my-org/robot-fave")
     assert res["status"] == "error"
     assert "meta/" in res["message"]
@@ -175,9 +171,7 @@ def test_sync_to_bucket_requires_meta(tmp_path, monkeypatch):
 def test_sync_to_bucket_missing_hf_cli(tmp_path, monkeypatch):
     (tmp_path / "meta").mkdir()
     rec = _recorder(tmp_path)
-    import shutil
-
-    monkeypatch.setattr(shutil, "which", lambda _: None)
+    monkeypatch.setattr(dr, "_hf_executable", lambda: None)
     res = rec.sync_to_bucket("my-org/robot-fave")
     assert res["status"] == "error"
     assert "hf` CLI" in res["message"] or "hf CLI" in res["message"]
@@ -188,9 +182,7 @@ def _guard_recorder(tmp_path, monkeypatch):
     subprocess call would be a security regression (the fake raises)."""
     (tmp_path / "meta").mkdir()
     rec = _recorder(tmp_path)
-    import shutil
-
-    monkeypatch.setattr(shutil, "which", lambda _: "/usr/bin/hf")
+    monkeypatch.setattr(dr, "_hf_executable", lambda: "hf")
 
     def boom(*a, **k):  # subprocess must never run with a rejected target
         raise AssertionError(f"subprocess.run reached with {a!r}")
@@ -245,9 +237,7 @@ def test_sync_to_bucket_bucket_create_failure_surfaces_error(tmp_path, monkeypat
     never fall through to ``hf sync`` (a silent success would upload nowhere)."""
     (tmp_path / "meta").mkdir()
     rec = _recorder(tmp_path)
-    import shutil
-
-    monkeypatch.setattr(shutil, "which", lambda _: "/usr/bin/hf")
+    monkeypatch.setattr(dr, "_hf_executable", lambda: "hf")
 
     calls = []
 
@@ -276,9 +266,7 @@ def test_sync_to_bucket_existing_bucket_proceeds_to_sync(tmp_path, monkeypatch):
     exists is idempotent: sync proceeds and the call succeeds."""
     (tmp_path / "meta").mkdir()
     rec = _recorder(tmp_path)
-    import shutil
-
-    monkeypatch.setattr(shutil, "which", lambda _: "/usr/bin/hf")
+    monkeypatch.setattr(dr, "_hf_executable", lambda: "hf")
 
     calls = []
 
@@ -306,9 +294,7 @@ def test_sync_to_bucket_sync_failure_surfaces_stderr(tmp_path, monkeypatch):
     not a false success."""
     (tmp_path / "meta").mkdir()
     rec = _recorder(tmp_path)
-    import shutil
-
-    monkeypatch.setattr(shutil, "which", lambda _: "/usr/bin/hf")
+    monkeypatch.setattr(dr, "_hf_executable", lambda: "hf")
 
     def fake_run(cmd, capture_output=True, text=True):
         is_create = cmd[:3] == ["hf", "buckets", "create"]
@@ -332,9 +318,7 @@ def test_sync_to_bucket_delete_flag_forwarded(tmp_path, monkeypatch):
     mirrored (removed-locally files are pruned remotely)."""
     (tmp_path / "meta").mkdir()
     rec = _recorder(tmp_path)
-    import shutil
-
-    monkeypatch.setattr(shutil, "which", lambda _: "/usr/bin/hf")
+    monkeypatch.setattr(dr, "_hf_executable", lambda: "hf")
 
     calls = []
 

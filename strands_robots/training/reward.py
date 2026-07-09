@@ -59,9 +59,10 @@ def _require_sarm_progress() -> Any:
         from lerobot.rewards.sarm.compute_rabc_weights import compute_sarm_progress
     except ImportError as e:
         raise ImportError(
-            "SARM RA-BC progress computation requires lerobot >= 0.5.2 (the "
-            "'lerobot.rewards.sarm' package). Install lerobot from source:\n"
-            "  uv pip install 'lerobot @ git+https://github.com/huggingface/lerobot.git'"
+            "SARM RA-BC progress computation requires lerobot >= 0.6.0 (the "
+            "'lerobot.rewards.sarm' package). Reinstall the extra -- it pulls "
+            "lerobot from PyPI:\n"
+            "  uv pip install 'strands-robots[lerobot]'"
         ) from e
     return compute_sarm_progress
 
@@ -177,8 +178,8 @@ def load_reward_model(
     """
     if importlib.util.find_spec("lerobot.rewards") is None:
         raise ImportError(
-            "reward-model inference requires lerobot >= 0.5.2 (the 'lerobot.rewards' "
-            "package). Install lerobot from source."
+            "reward-model inference requires lerobot >= 0.6.0 (the 'lerobot.rewards' "
+            "package). Reinstall 'strands-robots[lerobot]'."
         )
     from lerobot.rewards import make_reward_model, make_reward_model_config
 

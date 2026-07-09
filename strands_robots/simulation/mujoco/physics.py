@@ -135,7 +135,7 @@ class PhysicsMixin:
     reads/writes MuJoCo arrays directly for checkpointing, raycasts,
     jacobians, joint control, sensor readout, etc.
 
-    **Coupling** (see simulation.py top-level docstring): mixin reaches
+    **Coupling** (see the :mod:`simulation` top-level docstring): mixin reaches
     into ``self._world``, ``self._lock``, and the host's
     ``_require_no_running_policy`` / ``_require_world`` / ``_prune_done_futures``
     helpers. ``TYPE_CHECKING`` stubs below exist so mypy accepts those

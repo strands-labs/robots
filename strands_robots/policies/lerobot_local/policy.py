@@ -379,6 +379,21 @@ class LerobotLocalPolicy(Policy):
         # vs named-joint mismatch). Keeps the state-key fallback loud, not
         # silent (see _resolve_state_order).
         self._state_key_mismatch_warned: bool = False
+        # Warn at most once per policy when SOME (but not all) configured
+        # robot_state_keys are absent from the observation - the
+        # partial-mismatch case. Previously the absent keys were silently
+        # dropped from the state vector, shifting every following joint
+        # value into the wrong index before a trailing zero-pad (the
+        # canonical trigger is a mimic/tendon gripper whose actuator name
+        # differs from the observation's finger-joint names, e.g. aloha).
+        # Missing dims are now zero-filled IN PLACE so present dims keep
+        # their model index, and the degradation is surfaced rather than
+        # silent (mirrors _resolve_state_order's all-missing guard).
+        self._state_missing_keys_warned: bool = False
+        # Telemetry parallel to generic_state_keys_used: flipped True the
+        # first time a resolved state key is missing from the observation
+        # so run_policy / eval_policy can surface a machine-checkable signal.
+        self.missing_state_keys_used = False
 
         # Action diagnostics: surface a model<->embodiment action-dim mismatch
         # (zero-filled actuators) and a persistent near-zero action stream
@@ -844,6 +859,7 @@ class LerobotLocalPolicy(Policy):
                 device=str(self._device) if self._device else None,
                 overrides=self.processor_overrides or {},
                 policy_type=self.policy_type,
+                policy_config=getattr(self._policy, "config", None),
             )
         except (FileNotFoundError, ValueError, ImportError) as exc:
             # Processor bridge is optional - models work without it via the raw
@@ -1961,6 +1977,78 @@ class LerobotLocalPolicy(Policy):
             self._state_key_mismatch_warned = True
         return scalar_keys
 
+    def _collect_state_values(self, observation_dict: dict[str, Any], order: list[str]) -> list[float]:
+        """Pull the joint-state vector from ``observation_dict`` in ``order``.
+
+        Every key in ``order`` contributes exactly one slot, in order, so the
+        emitted vector is index-aligned with the resolved key list. A key that
+        is present as a scalar (Python/NumPy number or 0-d array) contributes
+        its value; a key that is ABSENT from the observation (or present but
+        non-scalar) contributes ``0.0`` IN PLACE - it is never dropped.
+
+        Dropping an absent key instead (the prior behaviour) shifted every
+        following joint value up by one index before the caller's trailing
+        zero-pad, silently mis-aligning ``observation.state``. The canonical
+        trigger is a mimic/tendon gripper whose actuator name (e.g. aloha's
+        ``left/gripper``) is not among the observation's finger-joint names
+        while the arm joints are: the arm values slid into the gripper slots.
+        ``so101`` and any robot whose keys are all present are unaffected.
+
+        When ``order`` is ``robot_state_keys`` and some of them are missing
+        (a partial mismatch), the degradation is surfaced - ``strict_keys``
+        raises, otherwise it warns once and sets ``missing_state_keys_used`` -
+        mirroring :meth:`_resolve_state_order`'s all-missing guard. The
+        observation's own scalar-key fallback (``order`` != ``robot_state_keys``)
+        has no missing keys by construction, so this never double-fires with
+        the all-missing path.
+
+        Args:
+            observation_dict: Raw strands/sim observation for this step.
+            order: Resolved key ordering from :meth:`_resolve_state_order`.
+
+        Returns:
+            One float per key in ``order`` (missing keys zero-filled in place).
+
+        Raises:
+            ValueError: When ``strict_keys`` is set and a resolved
+                ``robot_state_keys`` entry is missing from the observation.
+        """
+        values: list[float] = []
+        missing: list[str] = []
+        for key in order:
+            v = observation_dict.get(key)
+            if isinstance(v, bool):
+                # bool is an int subclass but never a joint reading.
+                missing.append(key)
+                values.append(0.0)
+            elif isinstance(v, (int, float, np.floating, np.integer)):
+                values.append(float(v))
+            elif isinstance(v, np.ndarray) and v.ndim == 0:
+                values.append(float(v))
+            else:
+                missing.append(key)
+                values.append(0.0)
+        # Only a robot_state_keys ordering can contain a key absent from the
+        # observation; the scalar-key fallback is built from present keys.
+        if missing and order is self.robot_state_keys:
+            shown = missing[:8]
+            ellipsis = "..." if len(missing) > 8 else ""
+            msg = (
+                f"{len(missing)} configured robot_state_keys are not present in the "
+                f"observation: {shown}{ellipsis}. Present joints keep their index and the "
+                "missing dims are zero-filled in place, but the sim/robot does not report "
+                "those joints - commonly a mimic/tendon gripper whose actuator name differs "
+                "from the observation's finger-joint names. Pass embodiment='<name>' or call "
+                "set_robot_state_keys([...]) with names the observation actually contains."
+            )
+            if self.strict_keys:
+                raise ValueError("strict_keys=True: " + msg)
+            self.missing_state_keys_used = True
+            if not self._state_missing_keys_warned:
+                logger.warning(msg)
+                self._state_missing_keys_warned = True
+        return values
+
     def _to_lerobot_observation(self, observation_dict: dict[str, Any]) -> dict[str, Any]:
         """Remap a strands-native observation to LeRobot feature keys.
 
@@ -2064,14 +2152,10 @@ class LerobotLocalPolicy(Policy):
         # generic joint_0..N vs named-joint mismatch) instead of silently
         # producing a zero/empty state (see _resolve_state_order).
         order = self._resolve_state_order(observation_dict, scalar_keys)
-        state_vals = []
-        for k in order:
-            if k in observation_dict:
-                v = observation_dict[k]
-                if isinstance(v, (int, float, np.floating, np.integer)):
-                    state_vals.append(float(v))
-                elif isinstance(v, np.ndarray) and v.ndim == 0:
-                    state_vals.append(float(v))
+        # Build the vector index-aligned with ``order`` - a resolved key absent
+        # from the observation is zero-filled IN PLACE (not dropped, which would
+        # shift following joints into the wrong slots) and surfaced loudly.
+        state_vals = self._collect_state_values(observation_dict, order)
         if state_vals:
             # Adapt state dim to the model's declared observation.state shape.
             # The preprocessor's normalizer does element-wise ops against fixed
@@ -2392,18 +2476,11 @@ class LerobotLocalPolicy(Policy):
         ]
         order = self._resolve_state_order(observation_dict, scalar_keys)
 
-        # Collect state values in resolved order. Each key maps to a single
-        # float value representing one joint/motor position.
-        state_values = []
-        for key in order:
-            if key in observation_dict:
-                value = observation_dict[key]
-                if isinstance(value, (int, float)):
-                    state_values.append(float(value))
-                elif isinstance(value, (np.floating, np.integer)):
-                    state_values.append(float(value))
-                elif isinstance(value, np.ndarray) and value.ndim == 0:
-                    state_values.append(float(value))
+        # Collect state values index-aligned with the resolved order. A key in
+        # ``order`` absent from the observation is zero-filled IN PLACE (not
+        # dropped, which would shift following joints into the wrong slots) and
+        # surfaced loudly. Each key maps to one joint/motor position.
+        state_values = self._collect_state_values(observation_dict, order)
 
         if state_values:
             # Auto-adapt state dimension to match what the model expects.

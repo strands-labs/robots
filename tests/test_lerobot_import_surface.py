@@ -38,21 +38,18 @@ _PACKAGE_DIR = Path(strands_robots.__file__).resolve().parent
 
 # Symbols strands imports for FORWARD compatibility with a future lerobot:
 # they exist on lerobot main but not in any wheel within the currently pinned
-# range (lerobot>=0.5.0,<0.6.0 resolves 0.5.x), and EVERY use is gated behind a
-# try/except (ImportError, TypeError) fallback that degrades gracefully when the
-# symbol is absent. Their absence on the pinned wheel is therefore expected, not
-# a rename/removal, so the drift guard must not flag them. Remove an entry once
-# the pinned lerobot range ships the symbol (it then resolves like any other).
-_FORWARD_COMPAT_SYMBOLS: frozenset[tuple[str, str]] = frozenset(
-    {
-        # reanchor_relative_rtc_prefix landed in lerobot after 0.5.1 (it lives in
-        # lerobot/policies/rtc/relative.py on main). LerobotLocalPolicy consumes
-        # it to re-anchor the RTC chunk-seam prefix for relative-action policies,
-        # falling back to a stale-frame prefix with a one-time warning when it is
-        # missing - so a 0.5.x install degrades rather than failing to import.
-        ("lerobot.policies.rtc", "reanchor_relative_rtc_prefix"),
-    }
-)
+# range, and EVERY use is gated behind a try/except (ImportError, TypeError)
+# fallback that degrades gracefully when the symbol is absent. Their absence on
+# the pinned wheel is therefore expected, not a rename/removal, so the drift
+# guard must not flag them. Remove an entry once the pinned lerobot range ships
+# the symbol (it then resolves like any other).
+#
+# Empty: the pinned range is now lerobot>=0.6.0, which ships every symbol
+# strands imports -- reanchor_relative_rtc_prefix (previously forward-compat)
+# lands in lerobot 0.6, so it is now checked like any other import. A new entry
+# belongs here only when strands starts importing a symbol that exists on
+# lerobot main but not yet in the pinned range.
+_FORWARD_COMPAT_SYMBOLS: frozenset[tuple[str, str]] = frozenset()
 
 
 def _python_sources() -> list[Path]:

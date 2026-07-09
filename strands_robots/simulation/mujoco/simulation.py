@@ -5,8 +5,8 @@ Architecture notes (honest version, see GH #118)
 The ``Simulation`` class uses multiple-inheritance to compose four mixins
 (``PhysicsMixin``, ``RenderingMixin``, ``RecordingMixin``, ``RandomizationMixin``)
 on top of the ``SimEngine`` ABC and the Strands ``AgentTool`` base. The
-split keeps each file navigable (physics.py ~1150 lines, rendering.py ~730,
-etc.) but the mixin boundaries describe *where code lives*, NOT the
+split keeps each module navigable (:mod:`physics` ~1150 lines,
+:mod:`rendering` ~730, etc.) but the mixin boundaries describe *where code lives*, NOT the
 coupling graph.
 
 Every mixin reaches back into this class for the same shared state:
@@ -58,7 +58,7 @@ from strands.tools.tools import AgentTool
 from strands.types._events import ToolResultEvent
 from strands.types.tools import ToolSpec, ToolUse
 
-from strands_robots.simulation.base import SimEngine
+from strands_robots.simulation.base import SimEngine, reject_setup_kwargs
 from strands_robots.simulation.model_registry import (
     count_sim_robots,
     list_available_models,
@@ -121,6 +121,15 @@ def _drop_unrecorded_cameras(observation: dict[str, Any], recorded: set[str] | N
     return {
         k: v for k, v in observation.items() if not (isinstance(v, np.ndarray) and v.ndim >= 2 and k not in recorded)
     }
+
+
+def _jnt_qpos_width(mj: Any, jnt_type: int) -> int:
+    """qpos slice width for a MuJoCo joint type (free=7, ball=4, slide/hinge=1)."""
+    if jnt_type == int(mj.mjtJoint.mjJNT_FREE):
+        return 7
+    if jnt_type == int(mj.mjtJoint.mjJNT_BALL):
+        return 4
+    return 1
 
 
 _TOOL_SPEC_PATH = Path(__file__).parent / "tool_spec.json"
@@ -194,8 +203,12 @@ class MuJoCoSimEngine(
                 GPU backends) so an identical call resolves across backends.
                 Mirrors ``NewtonSimEngine``'s forward-compatible contract. Note
                 they are NOT passed to ``super().__init__()`` (``AgentTool``
-                takes no constructor arguments).
+                takes no constructor arguments). Robot-setup arguments
+                (``robot_name`` / ``robot``) are rejected here rather than
+                dropped - a constructor builds an empty engine, so use
+                ``Robot("so101", mode="sim")`` or ``add_robot`` instead.
         """
+        reject_setup_kwargs(kwargs)
         super().__init__()
         self._init_ros_bridge(ros2_bridge=ros2_bridge, ros2_domain=ros2_domain)
         self.tool_name_str = tool_name
@@ -331,7 +344,7 @@ class MuJoCoSimEngine(
         rather than silently truncated.
 
         Thread-safety: acquires self._lock around ctrl writes + mj_step,
-        as documented in base.py's SimEngine contract. Concurrent calls
+        as documented in the :class:`~strands_robots.simulation.base.SimEngine` contract. Concurrent calls
         from the agent's dispatch thread and a PolicyRunner worker are
         serialized here.
 
@@ -623,7 +636,7 @@ class MuJoCoSimEngine(
         Stashes the live ``MjSpec`` in ``_backend_state["spec"]`` so every
         subsequent scene mutation uses ``spec.recompile(model, data)`` in
         place - that preserves existing joint state automatically, replacing
-        the legacy XML-round-trip helpers in ``scene_ops.py``.
+        the legacy XML-round-trip helpers in :mod:`scene_ops`.
 
         Also exports ``spec.to_xml()`` to ``_backend_state["xml"]`` for any
         consumer that still reads the raw MJCF string (e.g. ``load_scene``
@@ -658,7 +671,7 @@ class MuJoCoSimEngine(
         This is the "nuke and pave" path used when the world config changes
         in a way that can't be expressed as a spec mutation (e.g. clearing
         every body). For incremental changes (add/remove body, camera),
-        prefer ``_recompile_preserving_state`` in ``scene_ops.py`` which
+        prefer ``_recompile_preserving_state`` in :mod:`scene_ops` which
         goes through ``spec.recompile(model, data)`` and preserves joint
         state.
         """
@@ -852,6 +865,7 @@ class MuJoCoSimEngine(
         data_config: str | None = None,
         position: list[float] | None = None,
         orientation: list[float] | None = None,
+        keyframe: str | int | None = None,
     ) -> dict[str, Any]:
         """Add a robot to the simulation via XML round-trip composition.
 
@@ -866,6 +880,12 @@ class MuJoCoSimEngine(
         URDF filename), with a numeric suffix appended if that label is already
         taken -- so ``add_robot(data_config="so101")`` twice yields ``so101``
         and ``so101_2`` instead of erroring.
+
+        ``keyframe`` (name ``str`` or index ``int``) spawns the robot in a
+        canonical pose declared by a ``<keyframe>`` in its source model
+        (e.g. panda ``"home"``) instead of the all-zero configuration, and the
+        pose is restored by ``reset()``. An unknown keyframe is a hard error
+        naming the available keyframes; ``None`` (default) keeps the zero pose.
         """
         if self._world is None or self._world._model is None or self._world._data is None:
             return {"status": "error", "content": [{"text": _NO_WORLD_MSG}]}
@@ -954,6 +974,16 @@ class MuJoCoSimEngine(
                 self._world.robots.pop(name, None)
                 return mesh_err
 
+            # Resolve the requested spawn keyframe from the robot's SOURCE
+            # model BEFORE mutating the scene, so an unknown keyframe fails
+            # cleanly (naming the available keyframes) without leaving a
+            # half-added robot behind.
+            home_by_short: dict[str, list[float]] | None = None
+            if keyframe is not None:
+                home_by_short, kf_err = self._keyframe_home_qpos(resolved_path, keyframe)
+                if kf_err is not None:
+                    return kf_err
+
             # Register the robot BEFORE attach so scene_ops can re-discover
             # its joint/actuator IDs inside the merged model.
             self._world.robots[name] = robot
@@ -997,15 +1027,16 @@ class MuJoCoSimEngine(
                         origin_robot=name,
                     )
 
-            # leave the freshly-added robot in a clean, deterministic
-            # zero state (qpos=qvel=ctrl=0) rather than silently settling
-            # under gravity for 100 steps. Callers that want a pre-settled
-            # pose should call step()/reset() explicitly. This makes
-            # `add_robot` -> `get_robot_state` observations meaningful for
-            # learning pipelines that expect t=0 to be a canonical start.
+            # Leave the freshly-added robot in a clean, deterministic state:
+            # the zero configuration by default, or -- when a spawn keyframe was
+            # requested -- that keyframe's canonical home pose. Either way t=0 is
+            # a well-defined start for learning/eval pipelines (no silent settle
+            # under gravity). Callers that want a pre-settled pose call step().
             mj.mj_resetData(self._world._model, self._world._data)
             self._world.sim_time = 0.0
             self._world.step_count = 0
+            if home_by_short:
+                self._apply_home_qpos_to_robot(robot, home_by_short)
             mj.mj_forward(self._world._model, self._world._data)
 
             # Attach the robot to the mesh as its own peer so the agent can
@@ -1044,6 +1075,120 @@ class MuJoCoSimEngine(
             self._world.robots.pop(name, None)
             logger.error("Failed to add robot '%s': %s", name, e)
             return {"status": "error", "content": [{"text": f"Failed to load: {e}"}]}
+
+    def _keyframe_home_qpos(
+        self, resolved_path: str, keyframe: str | int
+    ) -> tuple[dict[str, list[float]] | None, dict[str, Any] | None]:
+        """Read a robot's ``<keyframe>`` home pose from its SOURCE model.
+
+        Returns ``(home_by_short_joint, None)`` mapping each source joint's
+        short name to its qpos slice, or ``(None, error_result)`` when the
+        source model cannot be compiled or the keyframe name/index is unknown
+        (the error names the available keyframes so the caller can fix it).
+        """
+        mj = self._mj
+        fname = os.path.basename(resolved_path)
+        # ``bool`` is an ``int`` subclass; reject it explicitly so True/False is
+        # never silently taken as keyframe index 1/0.
+        if isinstance(keyframe, bool):
+            return None, {
+                "status": "error",
+                "content": [{"text": "keyframe must be a keyframe name (str) or index (int), not a bool."}],
+            }
+        try:
+            src = mj.MjModel.from_xml_path(resolved_path)
+        except Exception as e:  # noqa: BLE001 - surface any compile failure to the caller
+            return None, {
+                "status": "error",
+                "content": [{"text": f"Cannot read keyframe from '{fname}': {e}"}],
+            }
+        names = [mj.mj_id2name(src, mj.mjtObj.mjOBJ_KEY, i) for i in range(src.nkey)]
+        if src.nkey == 0:
+            return None, {
+                "status": "error",
+                "content": [{"text": f"Model '{fname}' declares no <keyframe>; cannot apply keyframe={keyframe!r}."}],
+            }
+        if isinstance(keyframe, int):
+            if keyframe < 0 or keyframe >= src.nkey:
+                return None, {
+                    "status": "error",
+                    "content": [
+                        {
+                            "text": (
+                                f"keyframe index {keyframe} out of range; '{fname}' has "
+                                f"{src.nkey} keyframe(s): {names}."
+                            )
+                        }
+                    ],
+                }
+            idx = keyframe
+        else:
+            if keyframe not in names:
+                avail = ", ".join(repr(n) for n in names)
+                return None, {
+                    "status": "error",
+                    "content": [{"text": f"Keyframe {keyframe!r} not found in '{fname}'. Available: {avail}."}],
+                }
+            idx = names.index(keyframe)
+        kq = src.key_qpos[idx]
+        home: dict[str, list[float]] = {}
+        for j in range(src.njnt):
+            jn = mj.mj_id2name(src, mj.mjtObj.mjOBJ_JOINT, j)
+            if not jn:
+                continue
+            adr = int(src.jnt_qposadr[j])
+            width = _jnt_qpos_width(mj, int(src.jnt_type[j]))
+            home[jn] = [float(x) for x in kq[adr : adr + width]]
+        return home, None
+
+    def _apply_home_qpos_to_robot(self, robot: SimRobot, home_by_short: dict[str, list[float]]) -> None:
+        """Write ``home_by_short`` onto ``robot``'s joints in the live model and
+        record the applied pose (keyed by namespaced joint name) on the robot so
+        :meth:`reset` can restore it. The caller runs ``mj_forward`` afterwards.
+        """
+        mj = self._mj
+        assert self._world is not None and self._world._model is not None and self._world._data is not None
+        model = self._world._model
+        data = self._world._data
+        pfx = robot.namespace or ""
+        stored: dict[str, list[float]] = {}
+        for j in range(model.njnt):
+            jn = mj.mj_id2name(model, mj.mjtObj.mjOBJ_JOINT, j)
+            if not jn:
+                continue
+            short = jn[len(pfx) :] if pfx and jn.startswith(pfx) else jn
+            vals = home_by_short.get(short)
+            if vals is None:
+                continue
+            adr = int(model.jnt_qposadr[j])
+            width = _jnt_qpos_width(mj, int(model.jnt_type[j]))
+            if len(vals) != width:
+                # width mismatch (unexpected for a matching source model): skip
+                # defensively rather than corrupt an adjacent joint's slice.
+                continue
+            data.qpos[adr : adr + width] = vals
+            stored[jn] = vals
+        robot.home_qpos = stored
+
+    def _restore_home_poses(self) -> None:
+        """Re-apply every robot's captured keyframe home pose onto the live
+        ``qpos`` (a no-op for robots spawned without a keyframe). The caller
+        holds the model lock and runs ``mj_forward`` afterwards.
+        """
+        mj = self._mj
+        assert self._world is not None and self._world._model is not None and self._world._data is not None
+        model = self._world._model
+        data = self._world._data
+        for robot in self._world.robots.values():
+            hq = getattr(robot, "home_qpos", None)
+            if not hq:
+                continue
+            for jn, vals in hq.items():
+                jid = mj.mj_name2id(model, mj.mjtObj.mjOBJ_JOINT, jn)
+                if jid < 0:
+                    continue
+                adr = int(model.jnt_qposadr[jid])
+                data.qpos[adr : adr + len(vals)] = vals
 
     def remove_robot(self, name: str) -> dict[str, Any]:
         """Remove a robot and every element it injected (bodies, actuators,
@@ -1359,9 +1504,22 @@ class MuJoCoSimEngine(
         return base
 
     def get_robot_state(self, robot_name: str | None = None) -> dict[str, Any]:
-        """canonical name parameter is ``robot_name``. The router
-        accepts ``name`` as an alias (bidirectional) so legacy LLM calls
-        keep working, but new tool specs should document only robot_name."""
+        """Return a robot's per-joint position/velocity, plus base pose for a floating base.
+
+        The canonical name parameter is ``robot_name``. The router accepts
+        ``name`` as an alias (bidirectional) so legacy LLM calls keep working,
+        but new tool specs should document only robot_name.
+
+        The ``json`` payload carries ``{"state": {joint: {"position", "velocity"}}}``
+        for the scalar (hinge/slide) joints. A robot with a floating base (a
+        6-DoF free joint - a humanoid's named ``floating_base_joint`` or a mobile
+        base's unnamed ``<freejoint/>`` like LeKiwi) additionally carries a
+        ``"base"`` entry with ``position`` (xyz), ``quaternion`` (w,x,y,z),
+        ``linear_velocity`` and ``angular_velocity``. The free joint is NOT
+        reported as a scalar joint (its qpos is [xyz+quat], not a single angle),
+        and the base ``quaternion``/``angular_velocity`` match get_observation's
+        ``base_quat``/``base_ang_vel`` for the same robot.
+        """
         if self._world is None or self._world._model is None or self._world._data is None:
             return {"status": "error", "content": [{"text": _NO_WORLD_MSG}]}
         try:
@@ -1378,26 +1536,68 @@ class MuJoCoSimEngine(
         # Namespace-aware joint lookup (see add_robot / _apply_sim_action).
         pfx = robot.namespace or ""
         state = {}
+        free_jnt_id = -1  # the robot's floating-base free joint, if any
         for jnt_name in robot.joint_names:
             jnt_id = -1
             if pfx:
                 jnt_id = mj.mj_name2id(model, mj.mjtObj.mjOBJ_JOINT, pfx + jnt_name)
             if jnt_id < 0:
                 jnt_id = mj.mj_name2id(model, mj.mjtObj.mjOBJ_JOINT, jnt_name)
-            if jnt_id >= 0:
-                state[jnt_name] = {
-                    "position": float(data.qpos[model.jnt_qposadr[jnt_id]]),
-                    "velocity": float(data.qvel[model.jnt_dofadr[jnt_id]]),
-                }
+            if jnt_id < 0:
+                continue
+            # A FREE joint (6-DoF floating base, e.g. a humanoid's named
+            # ``floating_base_joint``) has no scalar hinge/slide value: its qpos
+            # is [xyz(3) + quat(4)] and qvel is [linvel(3) + angvel(3)]. Reading
+            # qpos[jnt_qposadr] as a "position" reports the base x-coordinate as a
+            # joint angle and silently drops the orientation, so record it and
+            # surface a structured ``base`` entry below instead.
+            if model.jnt_type[jnt_id] == mj.mjtJoint.mjJNT_FREE:
+                free_jnt_id = jnt_id
+                continue
+            state[jnt_name] = {
+                "position": float(data.qpos[model.jnt_qposadr[jnt_id]]),
+                "velocity": float(data.qvel[model.jnt_dofadr[jnt_id]]),
+            }
 
-        # Additive sensor noise (set_obs_noise); no-op when unconfigured.
+        # Additive sensor noise (set_obs_noise); no-op when unconfigured. Runs
+        # over the scalar joints only; the floating-base pose/twist below is left
+        # un-noised, matching get_observation's base_quat / base_ang_vel contract.
         state = self._apply_state_noise(state)
+
+        # Floating base: surface the full 6-DoF pose + twist under a ``base`` key,
+        # consistent with get_observation's base_quat / base_ang_vel. Recovered
+        # from the kinematic tree when the free joint is unnamed and therefore
+        # absent from ``joint_names`` (e.g. a mobile base like LeKiwi).
+        if free_jnt_id < 0:
+            free_jnt_id = self._robot_base_free_joint(model, robot, pfx)
+        base: dict[str, list[float]] | None = None
+        if free_jnt_id >= 0:
+            qadr = int(model.jnt_qposadr[free_jnt_id])
+            vadr = int(model.jnt_dofadr[free_jnt_id])
+            base = {
+                "position": [float(v) for v in data.qpos[qadr : qadr + 3]],
+                "quaternion": [float(v) for v in data.qpos[qadr + 3 : qadr + 7]],
+                "linear_velocity": [float(v) for v in data.qvel[vadr : vadr + 3]],
+                "angular_velocity": [float(v) for v in data.qvel[vadr + 3 : vadr + 6]],
+            }
 
         text = f"'{robot_name}' state (t={self._world.sim_time:.3f}s):\n"
         for jnt, vals in state.items():
             text += f"{jnt}: pos={vals['position']:.4f}, vel={vals['velocity']:.4f}\n"
+        if base is not None:
+            p_, q_ = base["position"], base["quaternion"]
+            lv_, av_ = base["linear_velocity"], base["angular_velocity"]
+            text += (
+                f"base: pos=[{p_[0]:.4f}, {p_[1]:.4f}, {p_[2]:.4f}], "
+                f"quat=[{q_[0]:.4f}, {q_[1]:.4f}, {q_[2]:.4f}, {q_[3]:.4f}], "
+                f"lin_vel=[{lv_[0]:.4f}, {lv_[1]:.4f}, {lv_[2]:.4f}], "
+                f"ang_vel=[{av_[0]:.4f}, {av_[1]:.4f}, {av_[2]:.4f}]\n"
+            )
 
-        return {"status": "success", "content": [{"text": text}, {"json": {"state": state}}]}
+        json_payload: dict[str, Any] = {"state": state}
+        if base is not None:
+            json_payload["base"] = base
+        return {"status": "success", "content": [{"text": text}, {"json": json_payload}]}
 
     def list_bodies(self, robot_name: str | None = None) -> dict[str, Any]:
         """List MuJoCo body names available as camera/sensor mount points.
@@ -1650,7 +1850,9 @@ class MuJoCoSimEngine(
         Two paths, transparent to the caller:
 
         * **Dynamic objects** (``is_static=False``, created with a freejoint)
-          are moved cheaply by writing ``data.qpos`` + a forward pass.
+          are moved cheaply by writing ``data.qpos`` + a forward pass. The
+          object is placed **at rest** at the new pose (its freejoint velocity
+          is zeroed), consistent with ``add_object`` and ``reset``.
         * **Static objects** (``is_static=True``, welded to the worldbody with
           no DOF) cannot be moved through ``data.qpos``; they are repositioned
           by editing the spec body pose and recompiling the scene (preserving
@@ -1676,12 +1878,27 @@ class MuJoCoSimEngine(
             # Dynamic object: a freejoint carries its pose, so move it cheaply
             # through data.qpos + a forward pass (no recompile).
             qpos_addr = model.jnt_qposadr[jnt_id]
+            moved = False
             if position:
                 data.qpos[qpos_addr : qpos_addr + 3] = position
                 self._world.objects[name].position = position
+                moved = True
             if orientation:
                 data.qpos[qpos_addr + 3 : qpos_addr + 7] = orientation
                 self._world.objects[name].orientation = orientation
+                moved = True
+            if moved:
+                # Place the object AT REST at the new pose. A freejoint retains
+                # its 6-DOF linear+angular velocity across a bare data.qpos
+                # write, so without this a repositioned object keeps its prior
+                # momentum: a settling object teleports and immediately shoots
+                # off, and an eval/benchmark loop that repositions objects
+                # between episodes starts each episode with the object drifting
+                # (silently non-reproducible). This matches add_object (spawns
+                # at rest), reset (zeroes velocities), and the Newton backend
+                # (rebuilds from the builder at rest).
+                dof_addr = model.jnt_dofadr[jnt_id]
+                data.qvel[dof_addr : dof_addr + 6] = 0.0
             mj.mj_forward(model, data)
         elif position is not None or orientation is not None:
             # Static object: welded to the worldbody with no freejoint, so it
@@ -2016,6 +2233,12 @@ class MuJoCoSimEngine(
             # here so reset() leaves a fully consistent, render-ready state,
             # matching the mj_resetData -> mj_forward idiom used by
             # _compile_world and load_scene.
+            #
+            # Re-apply any per-robot keyframe home pose captured at add_robot
+            # time (mj_resetData alone drops it back to the zero configuration),
+            # so a keyframe spawn is sticky across resets -- mirroring how a
+            # benchmark restores its canonical start pose each episode.
+            self._restore_home_poses()
             mj.mj_forward(self._world._model, self._world._data)
             self._world.sim_time = 0.0
             self._world.step_count = 0
@@ -3211,8 +3434,8 @@ class MuJoCoSimEngine(
             if field_key in remapped and param_key not in remapped:
                 remapped[param_key] = remapped.pop(field_key)
 
-        # Fold flat video keys into `video` dict for run_policy/start_policy/eval_policy.
-        if action in ("run_policy", "start_policy", "eval_policy") and "video" not in remapped:
+        # Fold flat video keys into `video` dict for the rollout/eval actions.
+        if action in ("run_policy", "start_policy", "eval_policy", "evaluate_benchmark") and "video" not in remapped:
             _video_flat: dict[str, Any] = {}
             if "output_path" in remapped:
                 _video_flat["path"] = remapped.pop("output_path")

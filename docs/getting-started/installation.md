@@ -13,7 +13,7 @@ Requires **Python >= 3.12**. Examples use [`uv`](https://docs.astral.sh/uv/) (`c
 | (none) | core only - Robot factory, registry, lazy imports | Inspect the catalog, write tools |
 | `[sim]` | `robot_descriptions` | Sim asset resolution without MuJoCo |
 | `[sim-mujoco]` | `sim` + `mujoco`, `imageio`, `imageio-ffmpeg` | Any `Robot()` with default `mode="sim"` |
-| `[lerobot]` | `lerobot>=0.5.0,<0.6.0` | `LerobotLocalPolicy` + dataset recording |
+| `[lerobot]` | `lerobot>=0.6.0,<0.7.0` | `LerobotLocalPolicy` + dataset recording |
 | `[groot-service]` | `pyzmq`, `msgpack` | `Gr00tPolicy` (ZMQ to a GR00T container) |
 | `[cosmos3-service]` | `msgpack`, `websockets` | `Cosmos3Policy` (WebSocket to Cosmos 3 server) |
 | `[mesh]` | `eclipse-zenoh`, `json5` | Multi-robot mesh discovery + RPC |
@@ -47,33 +47,28 @@ uv pip install "numpy<2" "pandas==2.1.4"
 uv pip install "strands-robots[sim-mujoco,lerobot]"
 ```
 
-The `[lerobot]` extra includes `torchcodec` on aarch64 (required because
-torchvision 0.26 removed `VideoReader` and lerobot's own torchcodec marker
-excludes aarch64). If torch CUDA is needed on Jetson, ensure you install from
-NVIDIA's index or set `UV_TORCH_BACKEND=auto`:
+lerobot 0.6 pulls `torchcodec` on aarch64 itself (its dependency marker now
+covers linux aarch64 and pins the torch-ABI-matched torchcodec 0.11), so the
+video decoder resolves without a strands override. If torch CUDA is needed on
+Jetson, ensure you install from NVIDIA's index or set `UV_TORCH_BACKEND=auto`:
 
 ```bash
 export UV_TORCH_BACKEND=auto   # resolves +cu130 wheels for Thor/Jetson
 uv pip install "strands-robots[sim-mujoco,lerobot]"
 ```
 
-### MolmoAct2 on Jetson (lerobot from source)
+### MolmoAct2 on Jetson
 
-MolmoAct2 checkpoints (e.g. `allenai/MolmoAct2-SO100_101`) require lerobot
-**from source** (git main) because `MolmoAct2Policy` was added after lerobot
-0.5.1 (the latest PyPI release). See
-[LeRobot Local: MolmoAct2](../policies/lerobot-local.md#molmoact2) for full
-instructions. Quick path:
+MolmoAct2 checkpoints (e.g. `allenai/MolmoAct2-SO100_101`) resolve straight from
+PyPI now that lerobot >= 0.6 ships `MolmoAct2Policy` (it was added after lerobot
+0.5.1). See [LeRobot Local: MolmoAct2](../policies/lerobot-local.md#molmoact2)
+for full instructions. Quick path:
 
 ```bash
-# Install the [molmoact2] extra (transformers, peft, scipy on top of lerobot)
-# plus lerobot from source (skips pyav if it fails on aarch64):
-uv pip install "strands-robots[molmoact2]" \
-    "lerobot[feetech] @ git+https://github.com/huggingface/lerobot.git" --no-build-isolation
-uv pip install torchcodec>=0.7   # video decode backend for aarch64
+# The [molmoact2] extra layers transformers, peft, scipy on top of lerobot >= 0.6;
+# lerobot 0.6 pulls the aarch64 torchcodec decoder itself:
+uv pip install "strands-robots[molmoact2]"
 ```
-
-This will be unnecessary once lerobot >= 0.5.2 is published to PyPI.
 
 ## Headless rendering
 

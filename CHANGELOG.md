@@ -5,6 +5,78 @@ All notable behavioural changes to `strands-robots` are logged here. Follows
 
 ## [Unreleased]
 
+### Fixed: scene mutations silently swallowed a cached-XML refresh failure
+
+Every MuJoCo scene mutation keeps a legacy XML string in
+`_backend_state["xml"]` in sync with the live `MjSpec` so the `load_scene` +
+`add_robot` round-trip can read it. That refresh calls `spec.to_xml()`, which
+can fail on specs MuJoCo cannot serialise. Two of the four mutation paths
+(`replace_scene_mjcf` and `patch_scene_mjcf`) wrapped it in a bare
+`except Exception: pass`, so a failure left the cache stale and diverged from
+the live spec with no diagnostic -- a subsequent XML-cache reader would see
+outdated scene contents and nothing explained why. The other two paths
+(`add_object`/recompile and `eject_robot_from_scene`) already logged the reason.
+All four now funnel through one `_sync_cached_xml` helper that logs the failure
+at debug and leaves the prior cache intact: still never fatal (the live
+model/spec are already updated), but no longer silent.
+
+### Added: remote policy inference (client/server split) for edge robots + remote GPU
+
+A resource-constrained robot host (edge device / laptop CPU) often cannot run a
+large VLA (pi0, SmolVLA, MolmoAct2) at control rate. The new
+`strands_robots.inference` package splits inference across two machines over a
+portable WS-JSON WebSocket protocol: `PolicyServer` wraps ANY `Policy` and
+serves it (run it on the GPU box), and `RemotePolicy` is a drop-in `Policy` that
+forwards observations to the server and returns the action chunk (construct it
+on the robot host). `RemotePolicy` is wired into `create_policy` as the `remote`
+provider, so `create_policy("remote", endpoint="ws://gpu-box:8765")` -- or the
+smart string `create_policy("ws://gpu-box:8765")` -- yields one, usable anywhere
+a local policy is (`run_policy`, `eval_policy`, hardware loops). The client
+mirrors the server policy's `requires_images` / `execution_horizon` /
+`actions_per_step` / `supports_rtc` metadata, and the Real-Time Chunking
+contract is preserved end to end: the runner-counted `rtc_observed_delay_steps`
+is forwarded per request and applied server-side before chunk-seam blending.
+Install with `pip install 'strands-robots[inference]'` (pulls only
+`websockets`). See `docs/inference/remote.md`.
+
+### Added: regression guard that the lerobot policy resolver covers every registered policy family
+
+The `lerobot_local` policy-class resolver enumerates policy types dynamically:
+`_ensure_policy_configs_registered` walks `lerobot.policies` at import time and
+lets each `@PreTrainedConfig.register_subclass("<type>")` decorator populate
+lerobot's draccus choice registry, which `list_policy_types()` reports. This
+means a new policy family a future lerobot release ships is picked up with no
+strands-side edit -- but nothing pinned that the dynamic walk actually reaches
+every registered family, so a future lerobot layout change that made the walk
+under-populate would surface only as a runtime `create_policy(policy_type=...)`
+resolver miss for a user. A new version-agnostic test derives the ground-truth
+set of families directly from the installed lerobot source (the
+`register_subclass` decorator arguments under
+`lerobot/policies/*/configuration_*.py`) and asserts `list_policy_types()`
+covers all of them. It never hard-codes a policy count or name list, so it
+tracks whatever lerobot the environment resolves (currently 19 families in
+lerobot 0.6.x). Verified the resolver already covers the full lerobot 0.6.x
+roster; `rtc` (an inference-time action-chunking wrapper, `RTCProcessor`) is
+correctly excluded because it is not a `PreTrainedPolicy` and registers no
+config.
+
+### Fixed: remote inference delivered read-only observation arrays to the wrapped policy
+
+`RemotePolicy` / `PolicyServer` decoded NumPy observations (camera frames, the
+state vector) with `np.frombuffer` over the immutable `bytes` returned by
+`base64.b64decode`, so every array handed to the server-side policy was
+read-only. That silently diverged from the local-inference path, where a freshly
+rendered observation is always writable: a VLA preprocessor that normalizes the
+image/state in place (`image /= 255`, joint rescaling) raised
+`ValueError: output array is read-only`, and `torch.from_numpy(obs)` (zero-copy,
+as pi0/SmolVLA/MolmoAct2 pipelines do) produced a tensor whose in-place mutation
+is undefined behavior. Decoding now wraps the bytes in a mutable `bytearray` so
+the reconstructed array is writable (one allocation, no extra copy, still
+byte-exact), making the remote path transparent to the wrapped policy. The
+MuJoCo rollout test used a `MockPolicy` (`requires_images=False`) so it never
+decoded an observation array and missed this.
+
+
 ### Fixed: session `status` tool results dropped their telemetry via a `**spread` top-level smuggle
 
 The `status` action of `lerobot_teleoperate` and `lerobot_train` returned the
@@ -225,6 +297,29 @@ those views, names may be given in raw or schema-safe (`/` -> `__`) form, and
 an unknown name fails loudly listing the available cameras. `dataset_cameras`
 now behaves identically on both engines.
 
+### Fixed: the Newton recorder dropped a floating base's state from the dataset
+
+A floating-base robot (a humanoid or a mobile base) exposes its full base
+kinematics via `get_observation` on both backends -- position (`base_pos`,
+world x/y/z including height), orientation (`base_quat`, w/x/y/z), linear
+velocity (`base_lin_vel`, m/s) and angular velocity (`base_ang_vel`, rad/s).
+The MuJoCo recorder preserves these as per-component `observation.state`
+columns, but the Newton recorder derived its schema from scalar joint names
+only and merely *warned* that the base state was being dropped -- so a
+dataset recorded on the Newton backend was silently base-blind, and a
+locomotion / velocity-tracking / whole-body-control policy trained on it was
+missing exactly the base state it needs.
+
+`NewtonSimEngine.start_recording` now preserves the floating base as the same
+per-component scalar columns (`base_pos.x` .. `base_ang_vel.z`) as the MuJoCo
+backend, reusing the `DatasetRecorder` `extra_state_specs` machinery that
+flattens the vector observation keys into `observation.state` each frame.
+Multi-robot base columns are namespaced (`alice__base_quat.w`) to match the
+recorded observation keys, a resumed dataset is validated against the full
+(joints + base) schema, and a fixed-base arm gains no base columns (the schema
+is unchanged). The now-superseded base-state-dropped warning is removed from
+both backends.
+
 ### Fixed: `render_depth` ignored a camera's configured resolution
 
 `render()` and `render_all()` honor a named camera's configured resolution
@@ -420,21 +515,21 @@ the reward-model, robot, teleop, and camera surfaces already use. A static
 fallback is kept for the offline case (lerobot not importable). Genuinely unknown
 policy types are still rejected.
 
-### Added
+### Added: `evaluate_benchmark` honors `policy_object` + control frequency (parity with `run_policy` / `eval_policy`)
 
-- `evaluate_benchmark(policy_object=..., control_frequency=..., control_substeps=...)`
-  brings the benchmark evaluation entry point to parity with `run_policy` /
-  `eval_policy`. It could previously neither evaluate a pre-built `Policy` (it
-  always ran `create_policy`, forcing a redundant reload of a multi-GB VLA
-  checkpoint) nor set the control-loop rate (physics stepped at a hardcoded
-  50 Hz). A benchmark's `max_steps` maps to a wall-clock episode length that
-  depends on the control frequency, so a policy trained/evaluated at a
-  different rate was scored over a mismatched horizon; `control_frequency`
-  now lets the benchmark run at the policy's rate. The shared
-  `PolicyRunner.evaluate` plumbing already supported these; only the facade
-  exposes them now. A non-positive `control_frequency` is rejected with a
-  structured error, and the `control_frequency` tool parameter is forwarded on
-  the agent-dispatch path.
+`evaluate_benchmark(policy_object=..., control_frequency=..., control_substeps=...)`
+brings the benchmark evaluation entry point to parity with `run_policy` /
+`eval_policy`. It could previously neither evaluate a pre-built `Policy` (it
+always ran `create_policy`, forcing a redundant reload of a multi-GB VLA
+checkpoint) nor set the control-loop rate (physics stepped at a hardcoded
+50 Hz). A benchmark's `max_steps` maps to a wall-clock episode length that
+depends on the control frequency, so a policy trained/evaluated at a
+different rate was scored over a mismatched horizon; `control_frequency`
+now lets the benchmark run at the policy's rate. The shared
+`PolicyRunner.evaluate` plumbing already supported these; only the facade
+exposes them now. A non-positive `control_frequency` is rejected with a
+structured error, and the `control_frequency` tool parameter is forwarded on
+the agent-dispatch path.
 
 
 ### Docs: `run_policy(async_rtc=...)` no longer claims SmolVLA/MolmoAct2 blend the chunk seam internally
@@ -488,17 +583,17 @@ policy types are still rejected.
   than on a rendered caption. The `start_recording` signature in `describe()`
   also now names its `cameras=` dataset-scope parameter, which was omitted.
 
-### Fixed
+### Fixed: the `grasped` predicate missed LIBERO/robosuite multi-geom bodies (a successful grasp scored as a failure)
 
-- The `grasped` benchmark/DSL predicate now matches the grasped body's geoms
-  across the `<body>_g<idx>` LIBERO/robosuite multi-geom convention, not only
-  the exact `body` / `<body>_geom` names. LIBERO objects (a BDDL object
-  `cube_1` owns collision geoms `cube_1_g0` / `cube_1_g1` ...) were never
-  matched, so `(grasped cube_1)` BDDL goals silently resolved to `False` even
-  when the gripper was in contact - a successful grasp was scored as a failure.
-  Body-geom matching now mirrors `_body_contact`'s `<body>_g` prefix so the two
-  contact predicates agree on what counts as a body's geom; strands-native
-  `add_object` (`<body>_geom`) and single-geom scenes are unchanged.
+The `grasped` benchmark/DSL predicate now matches the grasped body's geoms
+across the `<body>_g<idx>` LIBERO/robosuite multi-geom convention, not only
+the exact `body` / `<body>_geom` names. LIBERO objects (a BDDL object
+`cube_1` owns collision geoms `cube_1_g0` / `cube_1_g1` ...) were never
+matched, so `(grasped cube_1)` BDDL goals silently resolved to `False` even
+when the gripper was in contact - a successful grasp was scored as a failure.
+Body-geom matching now mirrors `_body_contact`'s `<body>_g` prefix so the two
+contact predicates agree on what counts as a body's geom; strands-native
+`add_object` (`<body>_geom`) and single-geom scenes are unchanged.
 
 
 ### Fixed: `CooperativeStop` from an `on_frame` hook crashed `eval_policy` / `evaluate_benchmark` instead of stopping gracefully
@@ -535,6 +630,497 @@ misleading missing-postprocessor message is suppressed for that case. A
 malformed embodiment *spec* still raises loudly. Behaviour is unchanged for a
 correctly-configured policy and for a checkpoint that genuinely ships no
 processor configs.
+
+### Added: `evaluate_benchmark(video=...)` records a per-episode rollout MP4
+
+`eval_policy` could already record one rollout MP4 per episode, but
+`evaluate_benchmark` (the spec/benchmark eval path) could not - the spec route
+hard-rejected `video`, so a benchmark evaluation could only be read as an
+aggregate `success_rate` and never watched to see *why* episodes fail.
+`evaluate_benchmark` now accepts the same `video={"path", "fps", "camera",
+"width", "height"}` config as `run_policy` / `eval_policy` and writes one MP4
+per episode (`_ep{i}` filename templating), returning the written paths in the
+result JSON `video_paths`. Frames are captured synchronously on the eval thread
+at the `on_frame` point (render is read-only over `mjData`), so recording does
+not perturb the bit-stable benchmark rollout. Bad path/camera fails up-front;
+omitting `video` records nothing (opt-in). The agent-tool router folds the flat
+`output_path`/`fps`/`camera_name` keys into `video` for `evaluate_benchmark`
+too.
+
+### Added: `verify-dataset` flags a truncated / partial-encode video (fewer frames than recorded)
+
+`verify_dataset` (`strands-robots verify-dataset`) already flagged missing and
+empty per-episode video files, but a *present, non-empty* MP4 whose decoded
+frame count is fewer than the frames the parquet maps into it passed silently -
+correct episode counts, a real file, but missing pixels (the encoder crashed
+mid-episode, the file was partially synced, or the write was interrupted). Check
+5 now also compares each video file's frame count, read from the container
+header via PyAV (`av`) without decoding, against the sum of the `length` of
+every episode packed into that file (LeRobot v3 concatenates whole episodes into
+one shared file per camera). The comparison is best-effort: it is skipped when
+`av` is unavailable, when a packed episode carries no `length`, or when the
+codec header omits the frame count, so it never yields a false positive on a
+header it cannot read - it reports only a confidently-read mismatch. This is the
+frame-count sibling of the existing missing/empty-video and dead-column
+integrity checks. Disable with `--no-check-videos`.
+
+### Fixed: `download_assets(action="status")` marks each robot available or missing
+
+The per-row availability marker in the `status` listing was an empty-both
+`'' if r['available'] else ''` ternary (a fossil of an emoji marker that was
+stripped), so downloaded and missing robots rendered identically and the
+per-row output conveyed no availability information -- defeating the action's
+purpose. Each row now carries an ASCII marker: `[ok]` when the robot's assets
+are present, `[--]` when missing. The summary count line and cache path are
+unchanged.
+
+### Fixed: `move_object` retained a dynamic object's velocity, so a repositioned object kept its prior momentum
+
+The dynamic-object path of `move_object` (objects with a freejoint) wrote the
+new pose into `data.qpos` but never touched the freejoint's 6 velocity DOF, so
+a bare position/orientation write left the object's prior linear and angular
+velocity intact. A repositioned object therefore kept whatever momentum it had:
+a settling object teleported to its new pose and immediately shot off, and an
+eval/benchmark loop that repositions objects between episodes started each
+episode with the object drifting from its "placed" pose (silently
+non-reproducible). The dynamic path now zeroes the freejoint velocity so the
+object is placed **at rest** at the new pose, matching `add_object` (spawns at
+rest), `reset` (zeroes velocities), and the Newton backend (rebuilds from the
+builder at rest). A `move_object` call with neither `position` nor `orientation`
+remains a true no-op and leaves velocity untouched.
+
+### Fixed: benchmark/reward DSL silently swallowed unresolvable body/joint names
+
+A typo (or otherwise unresolvable name) in a benchmark success predicate or a
+reward-term body/joint used to be completely silent. On a backend that
+*supports* the lookup (`get_body_state` / `get_observation`), an unresolvable
+name made the term degrade to a constant with no diagnostic: a bool predicate
+to `False` (the episode silently never succeeds, indistinguishable from a
+failing policy) and a `distance_neg` / `joint_progress` reward to `0.0` -- which
+is that term's *maximum* (`-w * dist <= 0`), so a dead term pins at its ceiling
+and inflates the reported return. During a multi-hour RL run or a benchmark
+eval this quietly corrupts success rates and reward signals. The lookup helpers
+now log the unresolvable name once at `WARNING` (deduplicated so the hot loop
+never spams); returned values are unchanged. A missing lookup *method*
+(unsupported backend) stays silent -- that is a capability gap, not a spec typo.
+Additionally, `body_upright` now resolves the LIBERO `<name>_main` root-body
+convention (the `_body_position` fallback was never mirrored to the quaternion
+path), so `(upright X)` on a procedurally-generated LIBERO object no longer
+silently evaluates to `False`.
+
+### Fixed: OLD-FORMAT in-model normalization was silently dropped -> canonical checkpoints ran un-normalized
+
+Loading a pre-processor-era lerobot checkpoint through the `lerobot_local`
+provider ran it with normalization dropped. Those checkpoints (the canonical
+zoo -- `lerobot/act_aloha_sim_transfer_cube_human`, `diffusion_pusht`, and the
+tdmpc/vqbet entries a user grabs first) store their Normalize modules *inside*
+the policy, so `model.safetensors` carries `normalize_inputs.*` /
+`unnormalize_outputs.*` buffers and `config.json` carries a
+`normalization_mapping`, with no `policy_preprocessor.json` /
+`policy_postprocessor.json`. Current lerobot no longer registers those modules,
+so `PreTrainedPolicy.from_pretrained` drops the buffers as "unexpected keys"
+(only a `WARNING:root` line) and, with no processor JSON to replace them, the
+policy ran with normalization dropped: observations reached the model raw and
+predicted actions reached the robot un-unnormalized. For a MEAN_STD checkpoint
+that is not an "arm barely moves" under-motion -- raw z-scored actions applied
+as robot units make the arm *flail* (measured on `act_aloha_sim_transfer_cube_human`:
+right-gripper path 3.36 m spanning z [0.03, 0.90] m, vs 0.62 m spanning
+z [0.16, 0.32] m once normalized). `ProcessorBridge` now reconstructs the
+pre/post pipelines from those same in-model buffers using lerobot's own
+`extract_normalization_stats` + `make_pre_post_processors` factory (the exact
+machinery of `migrate_policy_normalization`), so an old-format checkpoint runs
+normalized with zero user action. The reconstruction is best-effort and only
+fires when a checkpoint ships no processor configs, no `norm_stats.json`, but
+does carry in-model buffers -- modern checkpoints are untouched. The
+reconstruction also degrades to passthrough when the lerobot recovery
+helpers cannot be imported for any reason (not only `ImportError`): an
+unrelated broken sibling policy module -- e.g. a dataclass that fails at
+definition time while importing the `lerobot.policies` package -- must not
+crash an ACT/diffusion checkpoint load. The `make_pre_post_processors`
+factory is imported from its canonical module `lerobot.policies.factory`
+(where lerobot's own `migrate_policy_normalization` sources it) rather than
+the `lerobot.policies` top-level re-export, which is not stable across
+lerobot releases.
+
+### Fixed: a partial `robot_state_keys` mismatch silently mis-aligned `observation.state`
+
+When the configured `robot_state_keys` are keyed by a robot's actuator names
+but some of those names are absent from `get_observation()` -- the canonical
+case being a mimic/tendon gripper whose actuator (`left/gripper` /
+`right/gripper` on aloha) is not among the observation's finger-joint names
+while the arm joints are -- both state-build paths in the `lerobot_local`
+provider iterated the resolved key order and appended only the keys present in
+the observation. An absent key was therefore *dropped*, shifting every
+following joint value up one index before the trailing zero-pad, so the model
+received a garbage `observation.state` while the run reported success. On a real
+MuJoCo aloha sim this shifted 8 of the 14 state dims (the entire right arm slid
+into the wrong slots and both gripper dims landed wrong). `_resolve_state_order`
+already made the *all*-missing case loud (#897); the *partial*-missing case was
+still silent. A missing key is now zero-filled IN PLACE via a shared
+`_collect_state_values` helper, so present joints keep their model index, and
+the degradation is surfaced -- `strict_keys=True` raises naming the missing
+keys; otherwise it warns once and sets the new `missing_state_keys_used`
+telemetry flag (surfaced in the `run_policy` / `eval_policy` result alongside
+`generic_state_keys_used`). Robots whose keys are all present (e.g. `so101`)
+are unaffected.
+
+### Fixed: warn when an action value is clamped by a ctrl-limited actuator
+
+`send_action` (and therefore `replay_episode`) wrote an action value verbatim
+to `data.ctrl` for an actuator addressed by name. When that actuator is
+`ctrllimited` and the value falls outside its `ctrlrange`, MuJoCo clamps it
+inside `mj_step` -- so the commanded value is silently NOT reproduced for that
+actuator while the call still reports success. Replaying a dataset whose action
+units differ from the target robot's actuator ctrl units hit this hard: a
+normalized gripper action (e.g. the ALOHA convention, values in `[0.19, 1.12]`)
+replayed onto a joint-position gripper whose ctrlrange is `[0.002, 0.037]`
+clamps every value to the maximum, pinning the gripper fully open and silently
+destroying the grasp channel while `replay_episode` reports `Frames: N/N`. The
+direct-actuator ctrl write now warns once per `(prefix, key)` when the value is
+meaningfully outside the actuator's `ctrlrange`, naming the actuator and range
+so the unit mismatch is actionable instead of silent. A small tolerance absorbs
+boundary rounding; unlimited actuators (which never clamp) are skipped; the
+warning is de-duplicated so a 50Hz control loop never spams the log. No
+trajectory behaviour changes.
+
+### Added: `add_robot(keyframe=...)` spawns a robot in its canonical home pose
+
+MuJoCo Menagerie robots ship a canonical start pose in a MJCF `<keyframe>`
+(panda/ur5e/fr3/kuka `home`, aloha `neutral_pose`, quadruped/humanoid standing
+`home`). `add_robot` and `reset` ran `mj_resetData` -- the all-zero
+configuration -- so that shipped pose was unreachable outside the LIBERO
+benchmark adapter, and a robot spawned folded/collapsed rather than in its
+ready pose. A policy trained from the home pose then saw an out-of-distribution
+start that measurably suppressed its rollout. `add_robot(keyframe="home")` (or
+an integer index) now reads the named keyframe from the robot's source model,
+applies its `qpos` to the robot's joints by name at spawn, and records it so
+`reset()` restores it -- a keyframe spawn is sticky across resets, mirroring how
+a benchmark restores its canonical start each episode. `keyframe=None` (the
+default) keeps the historical zero-pose spawn byte-for-byte; an unknown
+keyframe name/index is a hard error that names the available keyframes rather
+than silently falling back to zeros. Newton `add_robot` accepts the argument
+for signature parity and rejects a non-`None` value with a clear
+not-yet-supported error. Exposed on the `simulation` agent tool as a `keyframe`
+string.
+
+### Fixed: the `aloha` embodiment mis-aligned `observation.state` and mapped gripper actions onto non-actuators
+
+The declarative-embodiment state builder (`PackStateProcessorStep.observation()`)
+appended a value only for `state_keys` *found* in the observation and skipped the
+absent ones, so a missing key DROPPED its slot and shifted every following joint
+up one index before the trailing pad -- the embodiment-path analog of the
+generic-path fix from "a partial `robot_state_keys` mismatch silently mis-aligned
+`observation.state`" above. A missing `state_key` is now zero-filled IN PLACE so
+the present joints keep their model index, with a one-time warning naming the
+absent keys.
+
+The `aloha` config compounded this: it declared the 16 finger-JOINT names
+(`left/left_finger`, `left/right_finger`, ...) for both `state_keys` and
+`action_keys`, but the model's 14 ACTUATORS follow the canonical gym-aloha /
+LeRobot ACT convention `[6 arm + 1 gripper] x 2` (`left/gripper` / `right/gripper`
+at indices 6 and 13, each driving both fingers). Against a canonical 14-D ACT the
+16-key state build raised `observation.state dim 16 > model expected 14`, and the
+finger-joint `action_keys` mapped the policy's gripper command onto non-actuators
+(the gripper was never driven). The config now uses the 14 actuator keys, so the
+action maps 1:1 onto actuators and the arm proprioception is index-aligned; the
+two gripper STATE slots -- absent from the sim observation, which exposes finger
+joints -- are zero-filled in place (a units-correct finger->gripper state mapping
+is a checkpoint-specific follow-up). Loading the canonical
+`lerobot/act_aloha_sim_transfer_cube_human` through `embodiment="aloha"` now runs
+a rollout instead of crashing.
+
+### Changed: track lerobot 0.6 -- require `lerobot>=0.6.0` and drop the 0.5.1-era torch/torchcodec overrides
+
+The `[lerobot]` / `[molmoact2]` extras now require `lerobot>=0.6.0,<0.7.0`
+(was `>=0.5.0,<0.6.0`). lerobot 0.6 ships mature, platform-correct dependency
+markers -- `torch>=2.7,<2.12` with a `torchcodec>=0.11,<0.12` marker on linux
+aarch64 -- so the codec/decoder stack now resolves ABI-consistently
+(torch 2.11 + torchcodec 0.11.x + torchvision 0.26) on linux x86_64/aarch64 and
+macOS arm64 without any strands override. The per-platform torchcodec pins in
+the `[lerobot]` extra and the `torch`/`torchvision` entries in
+`[tool.uv].override-dependencies` -- all added to compensate for lerobot 0.5.1's
+deficient markers (its `torch<2.11` cap that skipped the NVIDIA Thor/Jetson
+sm_110 cuBLAS fix, and its torchcodec marker that excluded linux aarch64) -- are
+removed; the sole remaining uv override is the diffusers security floor. The
+aarch64 torch 2.11 requirement (the Thor sm_110 fix) now falls out of lerobot
+0.6's own torchcodec marker rather than a strands override, and the previously
+unbounded aarch64 `torchcodec>=0.11` pin (which resolved a torch-ABI-mismatched
+torchcodec 0.14) is bounded by lerobot 0.6's `<0.12`. `MolmoAct2Policy` (added
+to lerobot after the 0.5.1 PyPI release) now resolves straight from PyPI via the
+`[molmoact2]` extra -- the "install lerobot from source" step is gone.
+
+### Docs: correct post-lerobot-0.6 VLA install guidance
+
+The `lerobot>=0.6.0` requirement obsoleted a body of pre-0.6 install lore that
+survived in the `train_policy` tool docstring and the training / lerobot-local
+docs: `pip install 'lerobot[smolvla]==0.5.1'`, a `transformers==5.3.0` pin, the
+"a newer transformers crashes the VLA import (`backbone_cfg`)" note, and
+"MolmoAct2 requires lerobot from source". lerobot 0.6's `[smolvla]`/`[pi]`/
+`[molmoact2]` extras now require `transformers>=5.4.0,<5.6.0`, so the old
+`transformers==5.3.0` pin is a hard resolution conflict rather than a fix, and
+`strands-robots[molmoact2]` resolves `MolmoAct2Policy` straight from PyPI (no
+git-from-source). The guidance now matches the declared extras; a regression
+test pins the docs to the pyproject requirements so the stale lore cannot
+return.
+
+### Fixed: `build_command` dropped `--peft.lora_alpha`, diverging from the LoRA config it trains
+
+`LerobotTrainer.build_command` is the argv-parity helper that documents the
+draccus CLI equivalent to the typed `TrainPipelineConfig` that `train(cfg)`
+consumes in-process, and it powers the native-parity drift check. Its LoRA
+branch emitted `--peft.method_type`, `--peft.r`, and `--peft.target_modules`
+but omitted `--peft.lora_alpha`, even though `build_config` wires
+`spec.lora_alpha` into `PeftConfig.lora_alpha`. `lora_alpha` sets the LoRA
+scaling numerator (scaling = `lora_alpha / r`), so the documented "equivalent
+command" for a LoRA fine-tune silently trained with lerobot's default alpha
+rather than the requested one -- a real behavioral divergence between the CLI
+description and the in-process run, and a hole in the parity guard. It is now
+emitted (only when set, mirroring `--peft.r` / `--peft.target_modules`), and a
+regression test pins the emitted flag to `cfg.peft.lora_alpha`.
+
+### Fixed: lerobot "too old / absent" install hints recommended a from-source install after the `>=0.6.0` bump
+
+The user-facing error hints for a missing/too-old lerobot -- MolmoAct2's
+`_LEROBOT_VERSION_HINT` and the `lerobot.rewards` gates in `training.reward` /
+`LerobotTrainer.validate` -- still claimed lerobot was "not yet on PyPI (latest
+release 0.5.1)" and told the caller to install it from source
+(`lerobot @ git+https://github.com/huggingface/lerobot.git`). Since the core
+dependency is now pinned to `lerobot[feetech,dataset]>=0.6.0`, lerobot 0.6 --
+including `MolmoAct2Policy` (lerobot PR #3604) and the `lerobot.rewards`
+package -- ships straight from PyPI through the `strands-robots[lerobot]` /
+`[molmoact2]` extras, so a from-source `git+` install is both unnecessary and
+liable to conflict with the pinned floor. The hints now point at a plain PyPI
+(re)install of the extra and name the correct `>= 0.6.0` floor. This is the
+runtime-error counterpart of the docstring/docs guidance corrected in the
+post-0.6 dependency-guidance pass, which left these `.py` strings stale.
+
+### Fixed: mobile-base observation dropped all base state when the floating base is an unnamed free joint
+
+`get_observation` surfaces floating-base IMU-style signals (`base_quat`,
+`base_ang_vel`) only when the free joint was found while iterating
+`robot.joint_names`. That holds for a humanoid whose base joint is named (e.g.
+the Unitree G1's `floating_base_joint`), but a mobile manipulator such as
+LeKiwi carries its base on an **unnamed** `<freejoint/>` that is not in
+`joint_names` (those are the actuated wheel/arm joints). Such a robot was
+silently observed as a fixed-base arm -- its observation carried no base
+orientation or angular velocity -- so a locomotion/navigation controller (or a
+recorder configured to log base state) could not sense the base heading or turn
+rate. The base free joint is now recovered from the kinematic tree (walk
+up from an actuated joint to its ancestor base body), so any floating base
+surfaces base state regardless of whether its free joint is named. A sibling
+free-jointed task object (a cube) is never mistaken for the base, and a
+fixed-base arm still surfaces no base state.
+
+### Fixed: `get_robot_state` misreported a floating base's free joint as a scalar joint
+
+For a robot with a floating base (a 6-DoF free joint), `get_robot_state` read
+`qpos[jnt_qposadr]` as a scalar joint "position" and `qvel[jnt_dofadr]` as a
+"velocity". A free joint's qpos is `[xyz(3) + quat(4)]` and qvel is
+`[linvel(3) + angvel(3)]`, so this reported the base's x-coordinate as a joint
+angle and silently dropped the orientation and the rest of the twist -- while
+`get_observation` (its policy-facing counterpart) already surfaces the base
+correctly as `base_quat` / `base_ang_vel`. A humanoid's named
+`floating_base_joint` hit the wrong-scalar path; a mobile base's unnamed
+`<freejoint/>` (e.g. LeKiwi) was skipped entirely, so `get_robot_state` had no
+base information at all. The free joint is now surfaced under a structured
+`base` entry -- `position` (xyz), `quaternion` (w,x,y,z), `linear_velocity`,
+`angular_velocity` -- recovered from the kinematic tree when the free joint is
+unnamed, with the `quaternion` / `angular_velocity` matching `get_observation`.
+A fixed-base arm still reports only its scalar joints (no `base` entry).
+
+### Fixed: Newton `get_observation` / `get_robot_state` shifted every joint after a floating base
+
+The Newton backend built its per-joint coordinate/DOF index maps
+(`_joint_coord_index` / `_joint_dof_index`) from a per-joint ordinal offset --
+one coordinate and one DOF per joint. That assumption breaks for any robot with
+a multi-coordinate joint: a floating base (a free joint) spans 7 coordinates
+(xyz + quaternion) and 6 DOFs, so every child joint after it was read from the
+wrong index. A humanoid whose root is a free joint (e.g. Unitree G1/H1) reported
+a base coordinate for its first leg joint and shifted the reading of every joint
+after -- so `get_robot_state` and the policy-facing `get_observation` returned
+garbage joint positions/velocities for the entire floating-base robot. The maps
+are now built from Newton's authoritative per-joint coordinate/DOF starts
+(`joint_q_start` / `joint_qd_start`), so each joint reads its own value. A
+fixed-base arm (all revolute joints) is unaffected -- its indices are already
+the joint ordinals.
+
+### Fixed: remote inference server rejected every image observation over 1 MiB
+
+`PolicyServer` opened its WebSocket with `serve(...)` at the library default
+1 MiB (`2**20`) frame limit, while `RemotePolicy` correctly passes
+`max_size=None` to `connect(...)`. A real VLA observation carries camera
+frames -- a single 640x480 RGB frame base64-encodes to ~1.2 MiB and a
+multi-camera observation is several MiB -- so the server closed the
+connection with `1009 (message too big)` on the first image-carrying
+`get_actions` request, before the wrapped policy ever ran. The whole remote
+path was therefore usable only with an image-free policy. The server now
+passes `max_size=None` (and, matching the client, `compression=None`) to both
+`serve(...)` call sites so large multi-camera observations stream in. Verified
+end to end by serving a SmolVLA policy over the wire and driving a MuJoCo
+rollout to a recorded LeRobotDataset.
+
+### Fixed: Newton backend surfaces a floating base as a structured pose, not a garbage scalar
+
+On the Newton backend, `get_robot_state` reported a floating-base robot's free
+root joint (a humanoid's named `floating_base_joint`) as a scalar joint
+`{position, velocity}` -- reading its base x-coordinate as a "position" and
+linear-velocity-x as a "velocity", silently dropping the orientation and the
+rest of the twist -- and `get_observation` never surfaced the base at all. A
+real `unitree_g1` therefore reported garbage for its base and no orientation to
+a WBC / locomotion controller. Both now mirror the MuJoCo backend: the free
+joint is excluded from the scalar `state` map and a structured `base` entry
+(`position`, `quaternion` w,x,y,z, `linear_velocity`, `angular_velocity`) is
+surfaced, and `get_observation` gains `base_quat` / `base_ang_vel`. Newton
+stores the free joint's coordinates as `[xyz, quat_xyzw]`, so the quaternion is
+reordered `xyzw -> wxyz` to match the MuJoCo (w,x,y,z) contract.
+
+### Fixed: warn when a floating base's orientation + angular velocity are dropped from a recorded dataset
+
+`get_observation` surfaces `base_quat` (orientation, w,x,y,z) and `base_ang_vel`
+(rad/s) for a floating-base robot -- a humanoid's named `floating_base_joint` or
+a mobile base's unnamed `<freejoint>` -- so a locomotion / whole-body-control
+policy can read its base state. But `start_recording` derives the LeRobotDataset
+`observation.state` schema from the robot's scalar joint names, so those base
+signals never reached the dataset: the free base contributed only a single
+scalar slot (its x-position) when its joint was named, and nothing at all when
+it was unnamed. A dataset recorded from a humanoid/mobile rollout was therefore
+silently base-blind, and a policy trained on it would be missing the exact
+orientation/angular-velocity signals a locomotion controller needs. Both
+backends (MuJoCo and Newton) now warn once at `start_recording` when a
+floating-base robot is being recorded, naming the affected robot(s) and the
+dropped signals, per the project's "no silent data loss" contract. The dataset
+schema is intentionally unchanged (existing datasets are stable); this surfaces
+the omission instead of dropping it silently. A new shared
+`_robot_free_base_joint_id` helper centralizes the named+unnamed free-joint
+detection.
+
+### Fixed: preserve a floating base's orientation + angular velocity in recorded datasets
+
+`get_observation` surfaces a floating-base robot's `base_quat` (orientation,
+w,x,y,z) and `base_ang_vel` (rad/s), but `start_recording` derived the
+`observation.state` schema from scalar joint names only, so those base signals
+were dropped from every recorded frame - a humanoid's named `floating_base_joint`
+contributed just one scalar slot (its x-position) and a mobile base's unnamed
+`<freejoint>` contributed nothing. A locomotion / whole-body-control policy
+trained on the resulting dataset was base-blind. `start_recording` (MuJoCo
+backend) now writes the base orientation + angular velocity as per-component
+scalar columns (`base_quat.w`.. `base_ang_vel.z`), so a recorded G1/mobile-base
+episode carries the base state a WBC policy needs (verified end to end: the
+recorded columns read back byte-for-byte after `LeRobotDataset` reopen). This
+supersedes the earlier drop-warning (#1169): the base state `get_observation`
+surfaces is now recorded, not merely flagged. A fixed-base arm is unaffected
+(no base columns, no schema growth); multi-robot base columns are prefixed like
+joint ids (`alice__base_quat.w`). `DatasetRecorder.create` gains an optional
+`extra_state_specs` to declare per-component vector state columns whose source
+key is read from the observation and flattened in schema order.
+
+### Fixed: surface a floating base's full position + linear velocity (not just orientation + turn rate)
+
+`get_observation` surfaced a floating-base robot's `base_quat` (orientation) and
+`base_ang_vel` (turn rate) but not its `base_pos` (world x,y,z, including
+HEIGHT) or `base_lin_vel` (m/s) - the two signals a locomotion, velocity-tracking
+or mobile-manipulation controller most needs: you cannot detect a fall or track a
+height target without base height, nor compute a velocity-tracking reward without
+base linear velocity. A free joint's `qpos` is `[xyz, quat]` and its `qvel` is
+`[linvel, angvel]`, so both were already available; only the orientation half was
+being read. `get_observation` now surfaces the full 6-DoF base pose + twist -
+`base_pos`, `base_quat`, `base_lin_vel`, `base_ang_vel` - on both the MuJoCo and
+Newton backends, and `start_recording` (MuJoCo) preserves all four as
+per-component scalar columns (`base_pos.x`.. `base_ang_vel.z`) so a recorded
+humanoid/mobile-base episode is no longer base-blind (verified end to end: a
+known base position + linear velocity read back byte-for-byte after
+`LeRobotDataset` reopen). All four keys are additive and absent for fixed-base
+arms (no schema growth); multi-robot base columns are prefixed like joint ids
+(`alice__base_pos.x`). Completes the base-state surfacing begun in #1134/#1172.
+
+### Fixed: `send_action` crashed on a non-scalar dict action value instead of returning an error
+
+`send_action` returns a structured `{"status": "error", ...}` for every other
+malformed input (a wrong-length vector, a non-numeric vector entry, a scalar, a
+string, unresolved keys, no world), but a `{name: value}` mapping whose value was
+non-scalar - a list / tuple / multi-element array, exactly what a policy emitting
+a vector-valued key such as `base_velocity: [vx, vy, omega]` produces - slipped
+past the contract and raised an unhandled `TypeError` deep in the actuator-apply
+loop (`float(value)`), crashing the caller mid-rollout after already writing
+`data.ctrl` for the earlier keys. The shared `_coerce_action` now validates that
+every mapping value coerces to a scalar float up front, so the whole action is
+rejected atomically with an actionable message naming the offending key - on both
+the MuJoCo and Newton backends. Scalars, numeric strings and `numpy` float
+scalars are accepted unchanged.
+
+### Fixed: Newton reported a floating base's angular velocity in the world frame, not the body frame
+
+`get_observation` / `get_robot_state` are a cross-backend contract, but the two
+backends surfaced a floating base's `base_ang_vel` in different frames for the
+same physical motion. The MuJoCo backend returns it in the BODY frame (its
+free-joint `qvel` angular block is local) - the IMU-gyro convention a WBC /
+locomotion controller consumes (the WBC observation builder feeds `base_ang_vel`
+straight in alongside a body-frame projected-gravity cue). The Newton backend
+returned the RAW world-frame angular velocity, so once the base yawed away from
+identity the two backends disagreed by up to the full magnitude of the signal
+(a base spinning about world-X at 2 rad/s reads `[2, 0, 0]` on Newton vs
+`[0, -2, 0]` on MuJoCo at a 90-degree yaw). A humanoid/mobile policy evaluated
+across backends - or a G1 WBC controller driven on Newton - was silently fed a
+mis-framed gyro signal that destabilises the gait as the base turns. Newton's
+`_free_base_pose` now rotates the angular velocity world -> body via the base
+quaternion so `base_ang_vel` matches MuJoCo (verified equal to 1e-6 across a
+0-90 degree yaw sweep on a real G1). The linear velocity stays world-frame on
+both backends (already consistent); the frame of each base signal is now
+documented on both backends' `get_observation`.
+
+
+### Fixed: surface a mistyped RemotePolicy connection endpoint instead of silently defaulting to localhost
+
+`RemotePolicy` (the `remote` inference client) tolerates unrecognized
+constructor kwargs so a shared `policy_config` superset can be forwarded through
+`create_policy` unchanged -- the cross-provider ignore-unknown-kwargs contract.
+But it dropped them SILENTLY, so passing the server endpoint under the wrong
+name (e.g. `RemotePolicy(uri=...)` -- `uri` is the object's own attribute name,
+an easy slip) left the client connected to the default `ws://127.0.0.1:8765`
+with no hint that the intended endpoint never took effect; the only symptom was
+a confusing "connection refused" to a port the user never chose. `RemotePolicy`
+now logs a WARNING naming the ignored kwarg(s) and the endpoint actually in use,
+so the misconfiguration is visible at construction. Unknown kwargs are still
+tolerated (no behavioural break); the normal `endpoint=`/`host=`/`port=` and
+smart-string (`create_policy("ws://...")`) paths stay silent. Mirrors the
+earlier no-silent-localhost-default fix for `cosmos3://` URLs.
+
+### Fixed: Cosmos 3 msgpack decode returned read-only, buffer-aliasing arrays
+
+The vendored NumPy msgpack codec the Cosmos 3 RoboLab client uses to unpack the
+server's action chunk (and any returned observation) reconstructed each array
+with `np.ndarray(buffer=<recv bytes>, ...)`. Because msgpack hands back an
+immutable `bytes` object, that array is **read-only** and does **not own its
+data** -- it aliases the transient wire buffer. Normalizing a decoded array in
+place (e.g. `image /= 255`) then raises `output array is read-only`, and handing
+it to `torch.from_numpy` (zero-copy) trips torch's "given NumPy array is not
+writable ... undefined behavior" hazard. The sibling VERA packer
+(`policies/vera/_msgpack_numpy.py`) already copies for exactly this reason, and
+the remote-inference protocol decodes into a writable `bytearray`; the Cosmos 3
+decode was the lone site left aliasing the recv buffer. It now copies to a
+writable, owning array, matching both -- round-trip dtype/shape/value fidelity
+is unchanged.
+
+### Added: base_velocity velocity-tracking reward term for the predicate/reward DSL
+
+The declarative predicate/reward DSL (`strands_robots.simulation.predicates`,
+consumed by `DeclarativeBenchmark` specs and RL `SimEnv` reward stacks) grew a
+`base_velocity(vx, vy, wz, weight=1.0, robot=None)` reward term -- the canonical
+dense locomotion reward, previously impossible to express because the DSL could
+only reference body positions, quaternions and scalar joint positions, never a
+floating base's velocity.
+
+It rewards a floating-base robot for matching a commanded BODY-frame velocity
+(`vx` forward, `vy` lateral in the robot's own heading, `wz` yaw rate) as
+`-weight * ||(v_body_x, v_body_y, w_body_z) - (vx, vy, wz)||`. It consumes the
+floating-base observation surfaced by `get_observation`: `base_lin_vel` (world
+frame) is rotated into the base frame via `base_quat`, and `base_ang_vel` is
+already body-frame, so the tracked velocity is heading-relative -- matching the
+IsaacLab / legged_gym locomotion-command convention rather than a fixed world
+axis. On a fixed-base arm (no floating base) the term degrades to `0.0` and logs
+the missing base once, consistent with the DSL's other name-resolution
+degradation. Works on both the MuJoCo and Newton backends (both surface the base
+twist with the same frame convention).
 
 ## [0.4.1] - 2026-07-01
 

@@ -414,7 +414,7 @@
       "dim_policy": "pad"
     },
     "aloha": {
-      "__note__": "SIM: mujoco_menagerie/aloha/aloha.xml. Bimanual: left/* + right/* (16 joints incl. 2 fingers/arm). Cameras vary by scene; default top cam mapped to observation.images.top. Previously this entry had EMPTY state_keys (no-op bug) - now fully populated.",
+      "__note__": "SIM: mujoco_menagerie/aloha/aloha.xml. Bimanual 14-DOF control matching the canonical gym-aloha / LeRobot ACT convention [6 arm + 1 gripper] x 2 arms: the model's 14 ACTUATORS are left/{waist,shoulder,elbow,forearm_roll,wrist_angle,wrist_rotate,gripper} and the right/* mirror; each gripper actuator drives both fingers. These are robot_action_keys, so the policy's action maps 1:1 onto actuators (previously the entry declared the 16 finger-JOINT names, which are not actuators and crash/mis-align a 14-D ACT). The sim observation exposes the finger JOINTS (left/left_finger, ...) not a gripper value, so the two gripper STATE slots are zero-filled IN PLACE (arm proprioception stays index-aligned; a warning is emitted once). A units-correct finger->gripper state mapping is a checkpoint-specific follow-up. Cameras vary by scene; default top cam -> observation.images.top.",
       "obs_rename": {
         "top": "observation.images.top"
       },
@@ -425,16 +425,14 @@
         "left/forearm_roll",
         "left/wrist_angle",
         "left/wrist_rotate",
-        "left/left_finger",
-        "left/right_finger",
+        "left/gripper",
         "right/waist",
         "right/shoulder",
         "right/elbow",
         "right/forearm_roll",
         "right/wrist_angle",
         "right/wrist_rotate",
-        "right/left_finger",
-        "right/right_finger"
+        "right/gripper"
       ],
       "action_keys": [
         "left/waist",
@@ -443,16 +441,14 @@
         "left/forearm_roll",
         "left/wrist_angle",
         "left/wrist_rotate",
-        "left/left_finger",
-        "left/right_finger",
+        "left/gripper",
         "right/waist",
         "right/shoulder",
         "right/elbow",
         "right/forearm_roll",
         "right/wrist_angle",
         "right/wrist_rotate",
-        "right/left_finger",
-        "right/right_finger"
+        "right/gripper"
       ],
       "dim_policy": "pad"
     },

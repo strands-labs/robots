@@ -89,7 +89,11 @@ def resolve_policy(policy: str, **extra_kwargs) -> tuple[str, dict[str, Any]]:
         for pattern in prov_info.get("url_patterns", []):
             if re.match(pattern, policy):
                 if pattern.startswith("^wss?://"):
-                    match = re.match(r"wss?://([^:]+):?(\d+)?", policy)
+                    # Pass the full URL through as ``endpoint`` so the scheme
+                    # (ws:// vs wss://) and any path survive; also split out
+                    # host/port for providers that consume them directly.
+                    kwargs["endpoint"] = policy
+                    match = re.match(r"wss?://([^:/]+):?(\d+)?", policy)
                     if match:
                         kwargs["host"] = match.group(1)
                         kwargs["port"] = int(match.group(2) or 8000)

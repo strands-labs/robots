@@ -266,7 +266,7 @@ def clear_peers() -> None:
 # Session lifecycle
 
 
-# Review thread session.py:270 -- endpoint scheme validation. Under
+# Endpoint scheme validation. Under
 # ``STRANDS_MESH_AUTH_MODE=mtls`` the wire-config builder restricts
 # transports to TLS via ``link_protocols_block``; an operator who sets
 # ``ZENOH_LISTEN=tcp/...`` (the documented format) gets a confusing
@@ -352,7 +352,7 @@ def _build_config() -> Any:
     config = zenoh.Config()
 
     # Explicit endpoints from env vars (legacy ZENOH_CONNECT / ZENOH_LISTEN).
-    # Review thread session.py:270 -- validate endpoint schemes against
+    # Validate endpoint schemes against
     # auth_mode BEFORE inserting them, so an operator who set
     # ``ZENOH_LISTEN=tcp/0.0.0.0:7447`` under the default
     # ``STRANDS_MESH_AUTH_MODE=mtls`` posture gets a loud
@@ -364,7 +364,7 @@ def _build_config() -> Any:
     # endpoint validation and the later mTLS/none branch selection see
     # the SAME value, even when no ``Mesh.start`` thread-local is in
     # play (direct ``get_session()`` callers, integration tests).
-    # Review thread session.py:357 -- two independent reads of
+    # Two independent reads of
     # ``os.environ['STRANDS_MESH_AUTH_MODE']`` between scheme
     # validation and block selection used to allow a concurrent test
     # fixture / plugin mutating env to put the two halves of the
@@ -396,13 +396,13 @@ def _build_config() -> Any:
 
     # mTLS + ACL when auth_mode=mtls. The "none" mode emits everything
     # above except the auth + ACL blocks; it is dev-only. ``auth_mode``
-    # was resolved once at the top of ``_build_config`` (review thread
-    # session.py:357) so endpoint validation and block selection share
+    # was resolved once at the top of ``_build_config`` so endpoint
+    # validation and block selection share
     # the same value.
     if auth_mode == "mtls":
         blocks.append(_zenoh_config.link_protocols_block())
         blocks.append(_zenoh_config.tls_block())
-        # Issue #218 / review session.py:296: take ONE snapshot of the
+        # Issue #218: take ONE snapshot of the
         # ACL state and thread it through both the wire-config-build
         # path AND the refuse-to-start shape gate at Mesh.start. The
         # previous two-call pattern (``acl_block`` +
@@ -560,7 +560,7 @@ def get_session() -> Any | None:
             # Aligns with the loud-on-misconfig posture of _float_env
             # and _load_acl_file. Addressed in PR-224 R1.
             #
-            # R4 (review thread session.py:517): prefer the thread-local
+            # Prefer the thread-local
             # ``auth_mode`` stash from ``Mesh.start``. This is the same
             # one-resolve-per-Mesh.start invariant ``_build_config``
             # already honours at line 328-329; without it, the listener
@@ -580,8 +580,7 @@ def get_session() -> Any | None:
             # Build config OUTSIDE the listener try so a bad ACL /
             # TLS configuration (ValueError from _build_config) propagates
             # loudly to Mesh.start rather than being silently downgraded
-            # to client-mode as if it were a port-already-bound error
-            # (review thread at session.py:445).
+            # to client-mode as if it were a port-already-bound error.
             cfg = _build_config()
             cfg.insert_json5("listen/endpoints", json.dumps([local_ep]))
             cfg.insert_json5("connect/endpoints", json.dumps([local_ep]))
@@ -616,7 +615,7 @@ def get_session() -> Any | None:
             # Build cfg OUTSIDE the try so a config-shape ValueError
             # (NaN env clamp, missing TLS file, bad ACL) propagates
             # loudly to Mesh.start instead of being silently downgraded
-            # to "session unavailable" (review threads session.py:465 and 489).
+            # to "session unavailable".
             cfg = _build_config()
             cfg.insert_json5("mode", '"client"')
             cfg.insert_json5("connect/endpoints", json.dumps([local_ep]))
@@ -634,7 +633,7 @@ def get_session() -> Any | None:
 
         # Explicit endpoints provided via env vars.
         # Build cfg outside the try (same loud-on-misconfig discipline
-        # as the auto-listener path; review thread session.py:500).
+        # as the auto-listener path).
         cfg = _build_config()
         # Re-resolve _ZError under the explicit-endpoints branch (reached
         # when _LOCAL_LISTEN env var is unset, so the listener-block
@@ -707,7 +706,7 @@ def _get_zenoh_session_directly() -> Any | None:
             # Aligns with the loud-on-misconfig posture of _float_env
             # and _load_acl_file. Addressed in PR-224 R1.
             #
-            # R4 (review thread session.py:517): prefer the thread-local
+            # Prefer the thread-local
             # ``auth_mode`` stash. Mirrors the same fix at the
             # ``get_session`` boundary upstairs and the
             # ``_build_config`` boundary at line 328-329. See full
@@ -718,7 +717,7 @@ def _get_zenoh_session_directly() -> Any | None:
             local_ep = f"{scheme}/127.0.0.1:{mesh_port}"
 
             # Build cfg outside the listener try so config-shape
-            # ValueError surfaces loudly (review thread session.py:568).
+            # ValueError surfaces loudly.
             cfg = _build_config()
             cfg.insert_json5("listen/endpoints", json.dumps([local_ep]))
             cfg.insert_json5("connect/endpoints", json.dumps([local_ep]))
@@ -730,8 +729,8 @@ def _get_zenoh_session_directly() -> Any | None:
                 logger.info("Zenoh mesh session opened (listener on %s)", local_ep)
                 return _SESSION
             except (RuntimeError, OSError, ConnectionError, _ZError) as exc:
-                # Narrow tuple per review thread session.py:568 -- mirror the
-                # narrowing applied in get_session() upstairs. Config-shape
+                # Narrow tuple mirroring the narrowing applied in
+                # get_session() upstairs. Config-shape
                 # ValueError now propagates instead of being swallowed at DEBUG.
                 logger.debug(
                     "Zenoh listener on %s unavailable (%s) - trying client mode",

@@ -382,4 +382,5 @@ python -m lerobot.scripts.train policy=act \
 ## See also
 
 - [Training](training/overview.md) - what to do with the data.
+- [Steerable annotation](data/annotation.md) - add language conditioning columns to a recorded dataset.
 - [LeRobot dataset docs](https://huggingface.co/docs/lerobot) - upstream spec.

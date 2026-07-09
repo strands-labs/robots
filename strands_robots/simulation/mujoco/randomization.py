@@ -17,7 +17,7 @@ class RandomizationMixin:
     inertia scale, so randomized bodies stay physically consistent) and geom
     friction by a random factor inside a user-supplied range.
 
-    **Coupling** (see simulation.py top-level docstring): mixin reaches
+    **Coupling** (see the :mod:`simulation` top-level docstring): mixin reaches
     into ``self._world``, ``self._lock``, and the host's
     ``_require_no_running_policy`` / ``_require_world`` helpers. ``TYPE_CHECKING``
     stubs below exist so mypy accepts those lookups; they are a

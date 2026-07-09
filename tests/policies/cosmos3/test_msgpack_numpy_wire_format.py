@@ -121,3 +121,28 @@ def test_codec_is_interoperable_with_plain_msgpack_for_scalars():
     # protocol for primitives the server may send without the ndarray envelope.
     blob = mnp.packb({"reward": np.float64(1.25)})
     assert msgpack.unpackb(blob, raw=False) == {"reward": 1.25}
+
+
+def test_decoded_array_is_writable_and_owns_its_data():
+    # A ``np.ndarray(buffer=...)`` view over the transient msgpack recv bytes is
+    # read-only and non-owning, so normalizing a decoded observation in place or
+    # handing a decoded action chunk to ``torch.from_numpy`` (zero-copy) crashes
+    # or hits torch's "not writable -> undefined behavior" hazard. The decode
+    # must yield a writable, owning array (parity with the VERA packer and the
+    # inference protocol). Fails before the copy fix.
+    action = np.arange(8 * 10, dtype=np.float32).reshape(8, 10)
+    out = mnp.unpackb(mnp.packb({"action": action}))["action"]
+    assert out.flags.writeable, "decoded array must be writable"
+    assert out.flags.owndata, "decoded array must own its data (not alias recv bytes)"
+
+
+def test_decoded_array_supports_in_place_mutation_without_aliasing():
+    # In-place ops (e.g. image /= 255) must succeed and must not be a view over
+    # the transient wire buffer, so mutating the decoded array cannot corrupt a
+    # subsequent decode of the same wire payload.
+    arr = np.ones((2, 3), dtype=np.float32)
+    blob = mnp.packb({"image": arr})
+    first = mnp.unpackb(blob)["image"]
+    first += 5.0  # read-only view would raise here
+    second = mnp.unpackb(blob)["image"]
+    assert np.array_equal(second, arr), "decoded arrays must be independent copies"

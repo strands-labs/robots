@@ -52,6 +52,11 @@ class SimRobot:
     joint_names: list[str] = field(default_factory=list)
     actuator_ids: list[int] = field(default_factory=list)
     namespace: str = ""
+    # Canonical home pose applied by ``add_robot(keyframe=...)`` and re-applied
+    # on ``reset()``. Maps each (namespaced) joint name to its qpos slice. Empty
+    # for robots spawned without a keyframe (the default zero pose), so reset()
+    # stays byte-identical for those robots.
+    home_qpos: dict[str, list[float]] = field(default_factory=dict)
     policy_running: bool = False
     policy_steps: int = 0
     policy_instruction: str = ""

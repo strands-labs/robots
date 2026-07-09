@@ -1270,18 +1270,31 @@ class TestHardwareConfigV040Followups:
             "the bare except Exception on plugin registration must be gone (#291)"
         )
 
-    def test_lerobot_extra_pins_torchcodec_on_aarch64(self):
-        """#378: the public [lerobot] extra must carry the aarch64 torchcodec
-        pin so a `pip install strands-robots[lerobot]` on Thor/Jetson gets a
-        working video decoder (not just the hatch dev env)."""
+    def test_lerobot_extra_provides_aarch64_video_decoder(self):
+        """#378: a `pip install strands-robots[lerobot]` on Thor/Jetson must get a
+        working aarch64 video decoder (torchcodec), not the removed
+        `torchvision.io.VideoReader`.
+
+        The [lerobot] extra used to carry an explicit aarch64 torchcodec pin
+        because lerobot 0.5.1's own marker excluded aarch64. lerobot 0.6 fixed
+        that upstream (its `torchcodec>=0.11,<0.12; aarch64` marker pulls the
+        torch-ABI-matched decoder), so the strands override was dropped and the
+        guarantee now rides on the `lerobot>=0.6.0` floor. This pins that floor
+        so a revert below 0.6 -- which would resurrect the missing-decoder bug
+        without the removed override -- fails here."""
         import tomllib
         from pathlib import Path
+
+        from packaging.requirements import Requirement
+        from packaging.version import Version
 
         root = Path(__file__).resolve().parents[1]
         data = tomllib.load(open(root / "pyproject.toml", "rb"))
         lerobot_extra = data["project"]["optional-dependencies"]["lerobot"]
-        assert any("torchcodec" in dep and "aarch64" in dep for dep in lerobot_extra), (
-            f"[lerobot] extra must pin torchcodec on linux+aarch64 (#378); got {lerobot_extra}"
+        lerobot_req = next(Requirement(d) for d in lerobot_extra if Requirement(d).name == "lerobot")
+        assert Version("0.6.0") in lerobot_req.specifier and Version("0.5.9") not in lerobot_req.specifier, (
+            f"[lerobot] extra must floor lerobot at >=0.6.0 so aarch64 gets torchcodec (#378); "
+            f"got {lerobot_req.specifier}"
         )
 
 

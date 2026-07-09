@@ -36,6 +36,7 @@ from strands_robots.simulation.policy_runner import (
     VideoConfig,
     _extract_frame_ndarray,
 )
+from tests.simulation.mujoco._gl_probe import requires_gl
 
 #
 # PolicyRunner against FakeSim (backend-agnostic)
@@ -331,10 +332,7 @@ def test_simengine_run_policy_validates_robot_exists():
 #
 
 
-@pytest.mark.skipif(
-    os.environ.get("CI") == "true" and not os.environ.get("ROBOT_TEST_MUJOCO"),
-    reason="requires OpenGL; opt-in via ROBOT_TEST_MUJOCO=1",
-)
+@requires_gl
 def test_run_policy_video_writes_mp4(tmp_path: Path) -> None:
     pytest.importorskip("mujoco")
     os.environ.setdefault("MUJOCO_GL", "glfw")
@@ -456,10 +454,7 @@ def test_extract_frame_ndarray_always_returns_three_channels() -> None:
 #
 
 
-@pytest.mark.skipif(
-    os.environ.get("CI") == "true" and not os.environ.get("ROBOT_TEST_MUJOCO"),
-    reason="requires OpenGL; opt-in via ROBOT_TEST_MUJOCO=1",
-)
+@requires_gl
 def test_run_policy_reuses_policy_object() -> None:
     pytest.importorskip("mujoco")
     """Two rollouts with a single pre-built MockPolicy should both succeed."""

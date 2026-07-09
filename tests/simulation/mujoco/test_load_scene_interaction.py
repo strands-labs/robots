@@ -24,6 +24,7 @@ import pytest
 pytest.importorskip("mujoco")
 
 from strands_robots.simulation.mujoco.simulation import Simulation  # noqa: E402
+from tests.simulation.mujoco._gl_probe import gl_available  # noqa: E402
 
 # Minimal scene: a ground plane + a named block body. This is *not* a robot -
 # there are no joints/actuators/sensors. The original bug triggered when
@@ -346,8 +347,8 @@ def test_load_scene_render_returns_real_geometry_immediately(sim: Simulation, sc
     context.
     """
     pytest.importorskip("mujoco")
-    if os.environ.get("CI") == "true" and not os.environ.get("ROBOT_TEST_MUJOCO"):
-        pytest.skip("requires OpenGL; opt-in via ROBOT_TEST_MUJOCO=1")
+    if not gl_available():
+        pytest.skip("no usable OpenGL context; force-skip with ROBOT_TEST_MUJOCO=0")
 
     os.environ.setdefault("MUJOCO_GL", "glfw")
     import io

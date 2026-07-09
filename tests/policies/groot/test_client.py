@@ -349,3 +349,52 @@ class TestMsgSerializerPassthrough:
         """
         assert MsgSerializer._decode(42) == 42
         assert MsgSerializer._decode([1, 2, 3]) == [1, 2, 3]
+
+
+class TestClientTeardownNonBlocking:
+    """Teardown must not block on a request queued to a dead sidecar.
+
+    A REQ socket connected to an unreachable server buffers the outgoing
+    request internally. With the default (infinite) ZMQ linger, ``close()``
+    (and the ``context.term()`` that follows) blocks forever waiting to flush
+    that undelivered request - which stalls the GC that drives ``__del__`` and
+    interpreter shutdown. The client pins ``LINGER=0`` at socket creation so
+    the buffered request is discarded and teardown returns promptly.
+    """
+
+    @staticmethod
+    def _dead_port() -> int:
+        """Return a TCP port with nothing listening on it."""
+        import socket as _socket
+
+        s = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+        s.close()
+        return port
+
+    def test_socket_linger_is_zero(self):
+        client = Gr00tInferenceClient(host="127.0.0.1", port=self._dead_port())
+        try:
+            assert client.socket.getsockopt(zmq.LINGER) == 0
+        finally:
+            client.__del__()
+
+    def test_teardown_bounded_with_queued_request_to_dead_server(self):
+        import threading
+
+        client = Gr00tInferenceClient(host="127.0.0.1", port=self._dead_port())
+        # Queue a request that can never be delivered (no peer). send() returns
+        # immediately; the bytes sit in the socket's outgoing buffer.
+        client.socket.send(b"never-delivered")
+
+        done = threading.Event()
+
+        def _run() -> None:
+            client.__del__()
+            done.set()
+
+        worker = threading.Thread(target=_run, daemon=True)
+        worker.start()
+        # Pre-fix (infinite linger) this blocks forever; post-fix it is instant.
+        assert done.wait(timeout=10.0), "client teardown blocked on a queued request to a dead server"

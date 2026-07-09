@@ -2,7 +2,7 @@
 
 This is the ONLY path for building / mutating MuJoCo scenes in strands-robots.
 It replaces the string-concat ``MJCFBuilder`` (deleted) and the XML-round-trip
-helpers in ``scene_ops.py``:
+helpers in :mod:`scene_ops`:
 
 - ``SpecBuilder.build(world)``: build a fresh ``MjSpec`` from a ``SimWorld``.
 - ``add_object`` / ``remove_body`` / ``add_camera``: mutate an existing spec.

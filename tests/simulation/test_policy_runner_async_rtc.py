@@ -159,15 +159,71 @@ def _run(
 
 
 def test_async_rtc_starts_next_inference_mid_chunk() -> None:
-    """The prefetched chunk-N+1 inference fires while chunk N is still draining."""
-    result, policy, sim = _run(async_rtc=True)
+    """The prefetched chunk-(N+1) inference genuinely overlaps chunk-N execution.
+
+    Proven by a rendezvous, NOT a wall-clock timing race: the consumer blocks
+    the final action of the first chunk until the prefetch worker has entered
+    ``get_actions``, so the step index captured at inference start is guaranteed
+    to be observed strictly before the chunk drains - deterministically,
+    independent of thread-scheduling latency under CPU load. (Reading
+    ``send_count`` on the worker thread and asserting ``< chunk`` without this
+    handshake flaked under load: the worker could be scheduled only after the
+    consumer had already drained the chunk, reading a boundary value.)
+
+    The rendezvous also pins the mid-chunk trigger itself: were the prefetch
+    submitted only at the chunk boundary (no overlap), the worker would never
+    start before the blocked final send and the wait would time out.
+    """
+    infer_started = threading.Event()
+
+    class _RendezvousSim(_CountingSim):
+        def send_action(self, action, robot_name=None, n_substeps=1):
+            # Block the final action of the first chunk until the prefetch
+            # worker has begun inference. The worker is submitted at the
+            # mid-chunk trigger (strictly before this step), so it cannot
+            # deadlock; if overlap regressed to boundary-only prefetch this
+            # wait times out and fails the test.
+            with self._lock:
+                about_to_send = self.send_count + 1
+            if about_to_send == _CHUNK:
+                assert infer_started.wait(timeout=5.0), "prefetch worker did not start before the first chunk drained"
+            with self._lock:
+                self.send_count += 1
+            if self._exec_sleep:
+                time.sleep(self._exec_sleep)
+
+    class _RendezvousPolicy(_ChunkPolicy):
+        async def get_actions(
+            self, observation_dict: dict[str, Any], instruction: str, **kwargs: Any
+        ) -> list[dict[str, Any]]:
+            with self._lock:
+                is_first_prefetch = len(self.infer_starts) == 1
+                self.infer_starts.append(self._sim.send_count)
+                self.observed_delays.append(self.rtc_observed_delay_steps)
+            if is_first_prefetch:
+                infer_started.set()
+            if self._infer_sleep:
+                time.sleep(self._infer_sleep)
+            keys = self.robot_state_keys or ["j0", "j1", "j2"]
+            return [{k: 0.0 for k in keys} for _ in range(self._chunk)]
+
+    sim = _RendezvousSim(exec_sleep=_EXEC_SLEEP)
+    policy = _RendezvousPolicy(sim)
+    policy.set_robot_state_keys(sim.robot_joint_names("arm"))
+    result = PolicyRunner(sim).run(
+        "arm",
+        policy,
+        duration=16 / 50.0,
+        control_frequency=50.0,
+        action_horizon=_CHUNK,
+        fast_mode=True,
+        async_rtc=True,
+    )
     assert result["status"] == "success"
-    # More than one chunk was consumed, so prefetch had to fire.
+    # More than one chunk was consumed, so the prefetch had to fire.
     assert len(policy.infer_starts) >= 2
-    # At least one inference began at a non-chunk-boundary step index -> the
-    # query overlapped execution rather than waiting for a full drain.
-    assert any(c % _CHUNK != 0 for c in policy.infer_starts), policy.infer_starts
-    # Specifically the first prefetch starts strictly before chunk 1 drains.
+    # The first prefetch's inference began strictly before the first chunk's
+    # final action drained - genuine overlap, guaranteed by the rendezvous.
     assert policy.infer_starts[1] < _CHUNK, policy.infer_starts
 
 

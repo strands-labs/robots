@@ -208,6 +208,32 @@ def test_gait_clock_walk_entry_reseeds_indices():
     assert clk.frozen_FL is False and clk.frozen_FR is False
 
 
+def test_gait_clock_warmup_pins_right_foot_at_peak():
+    # Warm-up ramp (upstream ``just_started`` window): for the first
+    # ``0.5 / freq`` seconds of walking the right-foot phase is pinned to 0.25,
+    # which the [0, 1) stretch (0.25 < DURATION=0.5 -> 0.25 * 0.5/0.5 = 0.25)
+    # and the sine map (sin(2*pi*0.25) = 1.0) turn into clock_FR == +1.0 exactly.
+    # This eases the robot into the cycle; the left foot meanwhile tracks the
+    # true reseeded phase, so the two channels are NOT identical during warm-up.
+    # freq=1.0, dt=0.02 -> window = 0.5 s = ticks 1..24 (just_started 0.02..0.48,
+    # each < 0.5); tick 25 (just_started == 0.50) exits the ramp.
+    clk = GaitClock()
+    clk.update(np.zeros(3), freq=1.0)  # static priming tick
+    for tick in range(1, 25):
+        sig = clk.update(np.array([1.0, 0.0, 0.0]), freq=1.0)
+        assert clk.just_started == pytest.approx(0.02 * tick)
+        # Right foot held at the sine peak for the whole warm-up window.
+        assert sig[1] == pytest.approx(1.0), f"clock_FR at tick {tick}"
+        # Left foot is on its own trajectory (not frozen with the right).
+        assert abs(sig[0] - sig[1]) > 1e-6
+    # Tick 25 leaves the window (just_started == 0.50, not < 0.50); the right
+    # foot is released from the pin and rejoins the phase clock on the next tick.
+    clk.update(np.array([1.0, 0.0, 0.0]), freq=1.0)
+    assert clk.just_started == pytest.approx(0.50)
+    sig26 = clk.update(np.array([1.0, 0.0, 0.0]), freq=1.0)
+    assert sig26[1] < 1.0 - 1e-6, "clock_FR should leave the +1.0 pin after warm-up"
+
+
 def test_gait_clock_signal_bounded_and_periodic_while_walking():
     clk = GaitClock()
     sigs = [clk.update(np.array([1.5, 0.0, 0.0]), freq=1.0) for _ in range(400)]

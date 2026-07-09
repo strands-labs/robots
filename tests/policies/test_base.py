@@ -13,7 +13,7 @@ from typing import Any
 
 import pytest
 
-from strands_robots.policies.base import Policy
+from strands_robots.policies.base import ChunkedPolicy, Policy, resolve_chunk_length
 from strands_robots.policies.mock import MockPolicy
 
 
@@ -273,3 +273,137 @@ class TestRTCObservedDelay:
         a.set_rtc_observed_delay(7)
         assert a.rtc_observed_delay_steps == 7
         assert b.rtc_observed_delay_steps is None
+
+
+class _ChunkedPolicy(_IdentityPolicy):
+    """Open-loop chunked policy: emits an N-step chunk, no cross-chunk state."""
+
+    actions_per_step = 8
+    supports_rtc = False
+
+
+class _RTCPolicy(_IdentityPolicy):
+    """RTC policy: owns its re-query interval and blends chunk seams itself."""
+
+    supports_rtc = True
+
+    @property
+    def execution_horizon(self) -> int:
+        return 5
+
+
+class _BadHorizonPolicy(_IdentityPolicy):
+    """A policy that declares a non-numeric ``actions_per_step``."""
+
+    actions_per_step = "not-a-number"  # type: ignore[assignment]
+
+
+class TestExecutionHorizon:
+    """``execution_horizon`` is the single source of truth for the re-query interval."""
+
+    def test_defaults_to_one_when_actions_per_step_undeclared(self):
+        # A single-step policy (MockPolicy, classical planners) declares nothing.
+        assert _IdentityPolicy().execution_horizon == 1
+
+    def test_derives_from_actions_per_step_for_chunked_policy(self):
+        assert _ChunkedPolicy().execution_horizon == 8
+
+    def test_non_numeric_actions_per_step_falls_back_to_one(self):
+        # A misconfigured chunk length must degrade to single-step, not crash
+        # the re-query loop that reads this property every tick.
+        assert _BadHorizonPolicy().execution_horizon == 1
+
+    def test_non_positive_actions_per_step_is_clamped_to_one(self):
+        class _Zero(_IdentityPolicy):
+            actions_per_step = 0
+
+        assert _Zero().execution_horizon == 1
+
+
+class TestIsChunkEmitting:
+    """``is_chunk_emitting`` is derived from the re-query interval, not provider name."""
+
+    def test_single_step_policy_is_not_chunk_emitting(self):
+        assert _IdentityPolicy().is_chunk_emitting() is False
+
+    def test_open_loop_chunked_policy_is_chunk_emitting(self):
+        assert _ChunkedPolicy().is_chunk_emitting() is True
+
+    def test_rtc_policy_reporting_horizon_gt_one_is_chunk_emitting(self):
+        assert _RTCPolicy().is_chunk_emitting() is True
+
+
+class TestChunkedPolicyProtocol:
+    """The runtime-checkable protocol lets a consumer branch on chunk metadata."""
+
+    def test_policy_exposing_chunk_metadata_matches_protocol(self):
+        assert isinstance(_ChunkedPolicy(), ChunkedPolicy)
+
+    def test_policy_without_chunk_metadata_does_not_match(self):
+        # _IdentityPolicy declares neither actions_per_step nor supports_rtc.
+        assert not isinstance(_IdentityPolicy(), ChunkedPolicy)
+
+
+class TestResolveChunkLength:
+    """The single re-query rule every chunk consumer must apply identically."""
+
+    def test_single_step_policy_honours_requested_action_horizon(self):
+        # execution_horizon == 1, so the caller's action_horizon wins.
+        assert resolve_chunk_length(_IdentityPolicy(), action_horizon=4) == 4
+
+    def test_open_loop_chunk_is_not_truncated_below_trained_length(self):
+        # A smaller action_horizon must NOT drop the trained chunk tail.
+        assert resolve_chunk_length(_ChunkedPolicy(), action_horizon=4) == 8
+
+    def test_open_loop_chunk_extends_to_requested_horizon(self):
+        # A larger action_horizon is honoured for a non-RTC policy.
+        assert resolve_chunk_length(_ChunkedPolicy(), action_horizon=16) == 16
+
+    def test_rtc_policy_interval_is_not_overridden_by_action_horizon(self):
+        # RTC owns its interval; stretching it would empty the blended tail.
+        assert resolve_chunk_length(_RTCPolicy(), action_horizon=20) == 5
+
+    def test_action_horizon_is_clamped_to_at_least_one(self):
+        assert resolve_chunk_length(_IdentityPolicy(), action_horizon=0) == 1
+        assert resolve_chunk_length(_IdentityPolicy(), action_horizon=-3) == 1
+
+    def test_duck_typed_object_falls_back_to_actions_per_step(self):
+        # A non-Policy object without execution_horizon is sized by its raw
+        # actions_per_step attribute.
+        class _DuckChunk:
+            actions_per_step = 6
+
+        assert resolve_chunk_length(_DuckChunk(), action_horizon=2) == 6
+
+    def test_duck_typed_object_without_chunk_metadata_is_single_action(self):
+        class _Bare:
+            pass
+
+        assert resolve_chunk_length(_Bare(), action_horizon=3) == 3
+
+    def test_none_duck_typed_horizon_degrades_to_single_action(self):
+        class _DuckNone:
+            actions_per_step = None
+
+        assert resolve_chunk_length(_DuckNone(), action_horizon=4) == 4
+
+    def test_non_numeric_duck_typed_horizon_degrades_to_single_action(self):
+        # A garbage chunk length must not crash the consumer's sizing call.
+        class _DuckGarbage:
+            actions_per_step = "not-a-number"
+
+        assert resolve_chunk_length(_DuckGarbage(), action_horizon=4) == 4
+
+    def test_non_positive_duck_typed_horizon_is_clamped_to_one(self):
+        class _DuckNegative:
+            actions_per_step = -2
+
+        assert resolve_chunk_length(_DuckNegative(), action_horizon=3) == 3
+
+
+class TestPreflightDefault:
+    """The default preflight hook is a cheap no-op that never rejects config."""
+
+    def test_default_preflight_accepts_any_observation_keys(self):
+        # A provider that does not override preflight must not block construction.
+        assert _IdentityPolicy.preflight({"observation.state", "front"}) is None

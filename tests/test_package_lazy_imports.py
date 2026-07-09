@@ -267,3 +267,62 @@ class TestPolicyTypeDiscoveryReexported:
         )
         proc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
         assert proc.returncode == 0, proc.stderr
+
+
+class TestImportResilience:
+    """``import strands_robots`` must never fail because an optional import-time
+    autoconfig step raised.
+
+    The package body runs two best-effort autoconfig blocks at import:
+
+    - a MuJoCo GL-backend probe (headless EGL/OSMesa selection), which can
+      raise ``OSError`` when no usable GL device is present, and
+    - a macOS dyld-path shim for torchcodec's ffmpeg discovery.
+
+    Both are convenience shims, not correctness invariants, so a failure in
+    either must be swallowed and leave ``import strands_robots`` succeeding.
+    These tests reload the package with each shim forced to raise and assert
+    the import still completes and the light API stays usable.
+    """
+
+    def test_import_survives_gl_backend_configure_failure(self):
+        # The GL autoconfig block only runs when mujoco is importable.
+        pytest.importorskip("mujoco")
+        import importlib
+
+        import strands_robots.simulation.mujoco.backend as backend_mod
+
+        real = backend_mod._configure_gl_backend
+
+        def _raise_oserror():
+            # Mirrors a headless box with no usable GL device: EGL/OSMesa
+            # initialisation surfaces as an OSError.
+            raise OSError("simulated EGL device-open failure")
+
+        backend_mod._configure_gl_backend = _raise_oserror  # type: ignore[assignment]
+        try:
+            # Reload re-runs the package body, which now calls the raising
+            # shim. The except-guard must swallow it: reload must not raise.
+            reloaded = importlib.reload(strands_robots)
+            assert callable(reloaded.create_policy)
+        finally:
+            backend_mod._configure_gl_backend = real  # type: ignore[assignment]
+            importlib.reload(strands_robots)
+
+    def test_import_survives_dyld_shim_failure(self):
+        import importlib
+
+        import strands_robots._dyld as dyld_mod
+
+        real = dyld_mod.ensure_ffmpeg_on_dyld_path
+
+        def _raise_runtime(*args, **kwargs):
+            raise RuntimeError("simulated dyld shim failure")
+
+        dyld_mod.ensure_ffmpeg_on_dyld_path = _raise_runtime  # type: ignore[assignment]
+        try:
+            reloaded = importlib.reload(strands_robots)
+            assert callable(reloaded.create_policy)
+        finally:
+            dyld_mod.ensure_ffmpeg_on_dyld_path = real  # type: ignore[assignment]
+            importlib.reload(strands_robots)

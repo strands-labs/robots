@@ -310,8 +310,8 @@ that matches your `extra["policy_type"]` / provider — verified on an L40S GPU:
 | Provider / policy | Install | Notes |
 |---|---|---|
 | `lerobot_local` + ACT / diffusion | `pip install 'strands-robots[lerobot]'` | works out of the box (torch + torchcodec + datasets) |
-| `lerobot_local` + `smolvla` | `pip install 'lerobot[smolvla]==0.5.1'` | **needs `transformers==5.3.0`** (lerobot's pinned `[smolvla]` extra). A newer transformers (e.g. 5.12) crashes smolvla import with `non-default argument 'backbone_cfg' follows default argument`. Pin it. |
-| `lerobot_local` + `pi0` / `pi05` | `pip install 'lerobot[pi]==0.5.1'` | same `transformers==5.3.0` pin via lerobot's `[pi]` extra |
+| `lerobot_local` + `smolvla` | `pip install 'strands-robots[lerobot]' 'lerobot[smolvla]'` | lerobot 0.6's `[smolvla]` extra layers `transformers>=5.4.0,<5.6.0` + num2words on top. Do **not** pin `transformers==5.3.0` - it conflicts with lerobot 0.6's transformers floor. |
+| `lerobot_local` + `pi0` / `pi05` | `pip install 'strands-robots[lerobot]' 'lerobot[pi]'` | lerobot 0.6's `[pi]` extra (same `transformers>=5.4.0,<5.6.0` range + scipy) |
 | `groot` | Isaac-GR00T checkout + its own venv (`omegaconf`, `tyro`, …); point `extra["groot_root"]` / `GR00T_ROOT` at it | launched as a subprocess, so it uses GR00T's interpreter, not ours |
 | `cosmos3` | cosmos-framework checkout (`uv sync --group=cu130-train`); point `extra["cosmos_root"]` / `COSMOS_ROOT` at it | torchrun-driven; same subprocess-interpreter rule |
 

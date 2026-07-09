@@ -189,6 +189,65 @@ def test_restore_skips_existing_without_overwrite(populated: Path, tmp_path: Pat
     assert dest.load_calibration("robots", "so101_follower", "orange_arm") == _calib(6)
 
 
+def test_structure_skips_absent_device_type_directory(tmp_path: Path) -> None:
+    """Discovery tolerates a missing top-level device-type directory.
+
+    The manager materializes ``teleoperators`` and ``robots`` on construction,
+    but a hand-managed tree may lack one. ``get_calibration_structure`` must
+    skip the absent directory and still report the other, rather than raising.
+    """
+    mgr = LeRobotCalibrationManager(tmp_path)
+    mgr.save_calibration("robots", "so101_follower", "arm1", _calib(3))
+    # Remove the (empty) teleoperators directory so the branch that skips a
+    # non-existent device-type path is exercised.
+    mgr.teleop_path.rmdir()
+
+    structure = mgr.get_calibration_structure()
+    assert structure["teleoperators"] == {}
+    assert structure["robots"] == {"so101_follower": ["arm1"]}
+
+
+def test_backup_default_location_is_timestamped_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Backup with no explicit output_dir writes to a timestamped default dir."""
+    monkeypatch.setattr("strands_robots.tools.lerobot_calibrate.BACKUP_DIR", tmp_path / "default_backups")
+    mgr = LeRobotCalibrationManager(tmp_path / "src")
+    mgr.save_calibration("robots", "so101_follower", "arm1", _calib(2))
+
+    ok, location, count = mgr.backup_calibrations()
+    assert ok is True
+    assert count == 1
+    dest = Path(location)
+    assert dest.parent == tmp_path / "default_backups"
+    assert dest.name.startswith("backup_")
+    assert (dest / "backup_manifest.json").is_file()
+
+
+def test_backup_filters_by_device_model(populated: Path, tmp_path: Path) -> None:
+    """A device_model filter backs up only matching models across every type."""
+    mgr = LeRobotCalibrationManager(populated)
+    ok, _location, count = mgr.backup_calibrations(
+        output_dir=tmp_path / "followers_only", device_model="so101_follower"
+    )
+    assert ok is True
+    # so101_follower has two calibrations; the so101_leader teleoperator is skipped.
+    assert count == 2
+
+
+def test_restore_ignores_nondirectory_entries(tmp_path: Path) -> None:
+    """Restore skips stray files at the model level and restores real dirs."""
+    backup = tmp_path / "backup_src"
+    (backup / "robots" / "so101_follower").mkdir(parents=True)
+    (backup / "robots" / "so101_follower" / "arm1.json").write_text('{"shoulder": {"id": 1}}')
+    # A regular file sitting where a model directory would be must be ignored.
+    (backup / "robots" / "stray.txt").write_text("not a model directory")
+
+    mgr = LeRobotCalibrationManager(tmp_path / "live")
+    ok, _message, restored = mgr.restore_calibrations(backup)
+    assert ok is True
+    assert restored == 1
+    assert mgr.calibration_exists("robots", "so101_follower", "arm1")
+
+
 # --- tool action contract --------------------------------------------------
 
 

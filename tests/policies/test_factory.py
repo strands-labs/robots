@@ -72,10 +72,17 @@ class TestCreatePolicy:
         with pytest.raises(Exception):
             create_policy("grpc://localhost:50051")
 
-    def test_create_via_ws_url_triggers_smart_resolution(self):
-        """A ws:// URL should trigger smart-string resolution."""
-        with pytest.raises(Exception):
-            create_policy("ws://localhost:8080")
+    def test_create_via_ws_url_resolves_to_remote_policy(self):
+        """A ws:// URL resolves to the remote-inference provider (RemotePolicy).
+
+        Construction is lazy (the WebSocket connects on first use), so this
+        succeeds without a running server and preserves the full endpoint URL.
+        """
+        from strands_robots.inference import RemotePolicy
+
+        policy = create_policy("ws://localhost:8080")
+        assert isinstance(policy, RemotePolicy)
+        assert policy.uri == "ws://localhost:8080"
 
 
 @pytest.mark.skipif(not _groot_available, reason="groot-service extras not installed")

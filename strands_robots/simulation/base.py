@@ -46,6 +46,49 @@ from strands_robots.simulation.policy_runner import PolicyRunner, VideoConfig
 logger = logging.getLogger(__name__)
 
 
+# Robot-setup keyword arguments that identify a caller who confused a backend
+# *constructor* with the robot-setup entry points. A constructor builds only an
+# empty engine; a robot is added afterwards via ``add_robot`` (or in one step by
+# the ``Robot(name, mode="sim")`` factory). Backend constructors accept
+# ``**kwargs`` for cross-backend forward compatibility - so a single call can
+# carry GPU-backend options such as ``num_envs`` / ``device`` that non-GPU
+# backends simply drop - but that sink must not silently swallow an argument
+# that names a *robot to set up*. Matching the "no silent swallow of unknown
+# kwargs" contract already enforced for ``add_object``, these are rejected
+# loudly instead of being dropped and failing far downstream with an unrelated
+# "No world" error.
+_SETUP_KWARGS: tuple[str, ...] = ("robot_name", "robot")
+
+
+def reject_setup_kwargs(kwargs: Mapping[str, Any]) -> None:
+    """Reject robot-setup keyword arguments passed to a backend constructor.
+
+    A backend ``__init__`` accepts ``**kwargs`` only as a forward-compatibility
+    sink for backend-specific options. Passing ``robot_name`` (or ``robot``)
+    there is always a mistake: the constructor creates an empty engine, so the
+    argument is meaningless and would otherwise be silently dropped, leaving a
+    robot-less engine that fails later with a confusing "No world" error.
+
+    Args:
+        kwargs: The residual keyword arguments a backend ``__init__`` is about
+            to drop into its forward-compatibility sink.
+
+    Raises:
+        TypeError: If ``kwargs`` names a robot-setup argument. The message
+            points at the ``Robot(name, mode="sim")`` factory (one-step setup)
+            and the ``create_world()`` + ``add_robot(name)`` sequence.
+    """
+    offending = [k for k in _SETUP_KWARGS if k in kwargs]
+    if not offending:
+        return
+    names = ", ".join(repr(k) for k in offending)
+    raise TypeError(
+        f"Simulation backend constructor does not accept {names}: a constructor "
+        'builds an empty engine, not a robot. Use Robot("so101", mode="sim") for '
+        'one-step setup, or create_world() then add_robot("so101").'
+    )
+
+
 class SimEngine(ABC):
     """Abstract base class for simulation engines.
 
@@ -214,7 +257,10 @@ class SimEngine(ABC):
         first action, so a backend that leaves derived state stale would feed
         the policy's first inference of every episode a degenerate observation.
         The MuJoCo backend enforces this by running ``mj_forward`` after
-        ``mj_resetData`` (which alone zeroes all derived quantities).
+        ``mj_resetData`` (which alone zeroes all derived quantities). It also
+        re-applies any per-robot home pose captured from an
+        ``add_robot(keyframe=...)`` spawn, so a keyframe pose survives a reset
+        instead of collapsing to the zero configuration.
         """
         ...
 
@@ -238,8 +284,21 @@ class SimEngine(ABC):
         data_config: str | None = None,
         position: list[float] | None = None,
         orientation: list[float] | None = None,
+        keyframe: str | int | None = None,
     ) -> dict[str, Any]:
-        """Add a robot to the simulation."""
+        """Add a robot to the simulation.
+
+        ``keyframe`` optionally spawns the robot in a canonical pose declared
+        by a ``<keyframe>`` in its source model (e.g. panda ``"home"``, aloha
+        ``"neutral_pose"``) instead of the default all-zero configuration.
+        Pass the keyframe name (``str``) or index (``int``). The pose is
+        applied to the robot's joints by name and stored so :meth:`reset`
+        restores it (a keyframe spawn is sticky across resets, matching how a
+        benchmark restores its canonical start each episode). ``None`` (the
+        default) keeps the historical zero-pose spawn. An unknown keyframe
+        name/index is a hard error that names the available keyframes; it
+        never silently falls back to zeros.
+        """
         ...
 
     @abstractmethod
@@ -442,7 +501,11 @@ class SimEngine(ABC):
         vector to joint names there mis-maps or drops commanded DOFs. A mapping
         is returned unchanged. The vector length must match the robot's actuator
         count exactly; a mismatch is reported as a caller error rather than
-        silently truncated (which would drop commands - e.g. a gripper axis).
+        silently truncated (which would drop commands - e.g. a gripper axis). A
+        mapping is returned unchanged once every value is confirmed to coerce to
+        a scalar float; a non-scalar value (a list / multi-element array) is
+        rejected with an actionable error rather than raised as an unhandled
+        ``TypeError`` deep in the actuator-application loop.
 
         Args:
             action: A ``{name: value}`` mapping, or an ordered numeric vector
@@ -455,6 +518,33 @@ class SimEngine(ABC):
             be ignored. Otherwise ``action_dict`` is the normalized mapping.
         """
         if isinstance(action, Mapping):
+            # Each value is applied downstream as ``float(value)`` per actuator
+            # with no guard, so a non-scalar value (a list / tuple / multi-element
+            # array - e.g. a policy emitting a vector-valued key such as a
+            # ``base_velocity`` [vx, vy, omega]) would raise an unhandled
+            # ``TypeError`` past send_action's structured-error contract and crash
+            # the caller mid-rollout, after partially applying the earlier keys.
+            # Validate every value coerces to a scalar float up front so the whole
+            # action is rejected atomically with an actionable message, symmetric
+            # with the vector-form non-numeric-entry validation below. Values are
+            # returned unchanged (the downstream ``float(value)`` accepts scalars,
+            # numeric strings, and length-1 arrays exactly as before).
+            for key, value in action.items():
+                try:
+                    float(value)
+                except (TypeError, ValueError):
+                    return None, {
+                        "status": "error",
+                        "content": [
+                            {
+                                "text": (
+                                    f"send_action: action value for key '{key}' must be a "
+                                    "scalar number (one value per actuator/joint), got "
+                                    f"{type(value).__name__}."
+                                )
+                            }
+                        ],
+                    }
             return dict(action), None
 
         # ``str``/``bytes`` are iterable but never a valid multi-joint action;
@@ -837,7 +927,7 @@ class SimEngine(ABC):
             carries the rollout facts as typed fields (``n_steps``,
             ``elapsed_s``, ``stopped_early``, ``action_errors``, ``video_path``,
             ``video_frames``, ``positional_fallback_used``,
-            ``generic_state_keys_used``, ...) so callers can self-correct
+            ``generic_state_keys_used``, ``missing_state_keys_used``, ...) so callers can self-correct
             programmatically without parsing the text. The two routing-
             degradation flags are True when the driving policy could not bind
             the observation to the model's inputs by name and silently fell
@@ -1617,6 +1707,7 @@ class SimEngine(ABC):
         control_frequency: float = 50.0,
         control_substeps: int | None = None,
         policy_object: Policy | None = None,
+        video: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Run a registered :class:`BenchmarkProtocol` against the current sim.
 
@@ -1698,11 +1789,22 @@ class SimEngine(ABC):
                 per process instead of reloading it on every benchmark call.
                 When ``None`` the policy is built from ``policy_provider`` /
                 ``policy_config``.
+            video: Optional per-episode rollout MP4 config (same dict schema as
+                :meth:`run_policy` / :meth:`eval_policy`: ``path`` enables it,
+                plus ``fps`` / ``camera`` / ``width`` / ``height``). One file
+                per episode with ``_ep{i}`` inserted into the filename so a
+                benchmark eval can be WATCHED to see why episodes fail, not just
+                read as an aggregate success_rate. Frames are captured
+                synchronously on the eval thread (render is read-only over
+                ``mjData``), so recording does not perturb the bit-stable
+                benchmark rollout. Written paths are returned in the result
+                json ``video_paths``. ``None`` (default) records nothing.
 
         Returns:
             Standard status dict. On success, carries per-episode cumulative
             reward + aggregate success_rate / avg_reward / avg_steps in the
-            JSON payload.
+            JSON payload, plus ``video_paths`` (the per-episode MP4s written
+            when ``video`` is set).
         """
         from strands_robots.policies import create_policy
         from strands_robots.simulation.benchmark import get_benchmark
@@ -1782,6 +1884,7 @@ class SimEngine(ABC):
             control_substeps=control_substeps,
             on_frame=on_frame,
             policy_kwargs=policy_kwargs,
+            video=video,
         )
 
     def list_benchmarks(self) -> dict[str, Any]:

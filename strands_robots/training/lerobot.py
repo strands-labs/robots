@@ -572,7 +572,7 @@ class LerobotTrainer(Trainer):
         if importlib.util.find_spec("lerobot.rewards") is None:
             problems.append(
                 "the installed lerobot has no reward-model support (no 'lerobot.rewards'); "
-                "requires lerobot >= 0.5.2 (install from source)"
+                "requires lerobot >= 0.6.0 -- reinstall 'strands-robots[lerobot]'"
             )
         return problems
 
@@ -622,6 +622,8 @@ class LerobotTrainer(Trainer):
                 cmd.append("--peft.method_type=LORA")
                 if spec.lora_r is not None:
                     cmd.append(f"--peft.r={spec.lora_r}")
+                if spec.lora_alpha is not None:
+                    cmd.append(f"--peft.lora_alpha={spec.lora_alpha}")
                 if spec.lora_target_modules is not None:
                     cmd.append(f"--peft.target_modules={spec.lora_target_modules}")
             elif spec.method == "expert_only":

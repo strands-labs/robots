@@ -26,6 +26,55 @@ PREPROCESSOR_CONFIG = "policy_preprocessor.json"
 POSTPROCESSOR_CONFIG = "policy_postprocessor.json"
 
 
+def _load_checkpoint_state_dict(pretrained_name_or_path: str) -> dict[str, Any] | None:
+    """Load a checkpoint's single-file ``model.safetensors`` state dict.
+
+    Resolves a local directory first, then the HF Hub (cached). Returns ``None``
+    when no single-file ``model.safetensors`` is present (e.g. a sharded VLA
+    checkpoint) or safetensors is unavailable -- the OLD-FORMAT checkpoints this
+    supports (ACT / diffusion / tdmpc / vqbet zoo) are all single-file, so this
+    stays best-effort and never raises into the load path.
+
+    Args:
+        pretrained_name_or_path: HF model ID or local checkpoint path.
+
+    Returns:
+        The loaded state dict, or ``None``.
+    """
+    import os
+
+    try:
+        from safetensors import SafetensorError
+        from safetensors.torch import load_file
+    except ImportError:
+        return None
+
+    # A truncated / corrupt model.safetensors (e.g. an interrupted Hub download)
+    # raises safetensors' own SafetensorError, which is NOT an OSError/ValueError.
+    # Catch it too so the best-effort loader degrades to passthrough instead of
+    # crashing the ACT/diffusion load path (see the module and function docstring).
+    local = os.path.join(pretrained_name_or_path, "model.safetensors")
+    if os.path.isfile(local):
+        try:
+            return load_file(local)
+        except (OSError, ValueError, SafetensorError) as exc:
+            logger.debug("Could not read %s: %s", local, exc)
+            return None
+
+    try:
+        from huggingface_hub import hf_hub_download
+        from huggingface_hub.errors import HfHubHTTPError
+
+        path = hf_hub_download(pretrained_name_or_path, "model.safetensors")
+        return load_file(path)
+    except ImportError:
+        return None
+    except (HfHubHTTPError, OSError, ValueError, SafetensorError) as exc:
+        # No single-file weights on the Hub (sharded), offline, corrupt, or unreadable.
+        logger.debug("No single-file model.safetensors for %s: %s", pretrained_name_or_path, exc)
+        return None
+
+
 def _try_import_processor() -> Any | None:
     """Import LeRobot processor pipeline class.
 
@@ -156,6 +205,7 @@ class ProcessorBridge:
         overrides: dict[str, Any] | None = None,
         policy_type: str | None = None,
         norm_tag: str | None = None,
+        policy_config: Any | None = None,
     ) -> "ProcessorBridge":
         """Load processor pipelines from a pretrained model.
 
@@ -173,6 +223,9 @@ class ProcessorBridge:
                 processor steps before loading the standard pipeline configs.
             norm_tag: Embodiment tag selecting which stats to apply from a
                 ``norm_stats.json`` fallback (auto-resolved when None).
+            policy_config: The loaded policy's ``PreTrainedConfig``. Enables the
+                in-model-normalization fallback (see Notes) for OLD-FORMAT
+                checkpoints; when None that fallback is skipped.
 
         Returns:
             ProcessorBridge instance with loaded pipelines.
@@ -184,6 +237,21 @@ class ProcessorBridge:
             bridge falls back to building quantile/min-max/mean-std normalizers
             from those stats instead of silently passing data through
             un-normalized. See :mod:`.norm_stats`.
+
+            When a checkpoint ships no processor configs AND no
+            ``norm_stats.json`` but DOES carry OLD-FORMAT in-model normalization
+            buffers in its ``model.safetensors`` (``normalize_inputs.*`` /
+            ``unnormalize_outputs.*`` -- the pre-processor-era lerobot format
+            still used by the canonical zoo checkpoints, e.g.
+            ``lerobot/act_aloha_sim_transfer_cube_human``), those buffers are
+            silently DROPPED by ``PreTrainedPolicy.from_pretrained`` under
+            current lerobot (the modules moved to the processor pipeline). The
+            bridge then reconstructs the pre/post pipelines from those buffers
+            via lerobot's own ``extract_normalization_stats`` +
+            ``make_pre_post_processors`` (requires ``policy_config``). Without
+            this, a MEAN_STD checkpoint runs UN-normalized -- raw z-scored
+            actions applied as robot units make the arm flail. See
+            :meth:`_load_in_model_normalization_fallback`.
         """
         DataProcessorPipeline = _try_import_processor()
         if DataProcessorPipeline is None:
@@ -221,6 +289,16 @@ class ProcessorBridge:
         # such checkpoints. Build quantile/min-max/mean-std normalizers instead.
         if preprocessor is None and postprocessor is None:
             preprocessor, postprocessor = cls._load_norm_stats_fallback(pretrained_name_or_path, norm_tag=norm_tag)
+
+        # Third fallback: an OLD-FORMAT checkpoint ships no processor configs and
+        # no norm_stats.json, but carries in-model normalization buffers that
+        # current lerobot drops on load (see the class-level Notes). Reconstruct
+        # the pre/post pipelines from those buffers so the policy runs normalized
+        # instead of flailing on raw MEAN_STD actions. Needs the policy config.
+        if preprocessor is None and postprocessor is None and policy_config is not None:
+            preprocessor, postprocessor = cls._load_in_model_normalization_fallback(
+                pretrained_name_or_path, policy_config, device
+            )
 
         return cls(
             preprocessor=preprocessor,
@@ -336,6 +414,105 @@ class ProcessorBridge:
             pretrained_name_or_path,
         )
         return _norm_stats.build_norm_stats_processors(payload, norm_tag=norm_tag)
+
+    @staticmethod
+    def _load_in_model_normalization_fallback(
+        pretrained_name_or_path: str,
+        policy_config: Any,
+        device: str | None = None,
+    ) -> tuple[Any | None, Any | None]:
+        """Rebuild pre/post pipelines from OLD-FORMAT in-model normalization buffers.
+
+        Pre-processor-era lerobot checkpoints (the canonical zoo: ``act_aloha_*``,
+        ``diffusion_pusht``, tdmpc/vqbet entries) stored their Normalize modules
+        *inside* the policy, so ``model.safetensors`` carries
+        ``normalize_inputs.*`` / ``normalize_targets.*`` / ``unnormalize_outputs.*``
+        buffers and ``config.json`` carries ``normalization_mapping``. Current
+        lerobot's policy classes no longer register those modules, so
+        ``_load_as_safetensor(strict=False)`` drops the buffers as "unexpected
+        keys" (only a ``WARNING:root`` is logged) and no processor JSON exists to
+        replace them -- the policy then runs with normalization dropped. For a
+        MEAN_STD checkpoint that means raw z-scored actions applied as robot
+        units, i.e. the arm FLAILS.
+
+        This reconstructs the pipelines from those same buffers using lerobot's
+        own recovery machinery -- ``extract_normalization_stats`` (the exact
+        scanner ``migrate_policy_normalization`` uses) + the public
+        ``make_pre_post_processors`` factory -- so the checkpoint runs normalized
+        with zero user action, equivalent to running lerobot's migration script.
+
+        Best-effort: returns ``(None, None)`` (leaving the bridge a passthrough,
+        so the caller's missing-postprocessor diagnostic still fires) when the
+        recovery API is unavailable, no single-file ``model.safetensors`` is
+        present, or it carries no in-model normalization buffers. When buffers
+        ARE present but reconstruction fails, warns with the exact manual
+        migration command rather than failing silently.
+
+        Args:
+            pretrained_name_or_path: HF model ID or local checkpoint path.
+            policy_config: The loaded policy's ``PreTrainedConfig`` (supplies
+                ``input_features`` / ``output_features`` / ``normalization_mapping``
+                to the factory).
+            device: Resolved target device (unused directly -- the built pipeline
+                inherits ``policy_config.device`` and the bridge moves tensors).
+
+        Returns:
+            ``(preprocessor, postprocessor)`` reconstructed pipelines, or
+            ``(None, None)``.
+        """
+        try:
+            from lerobot.policies.factory import make_pre_post_processors
+            from lerobot.processor.migrate_policy_normalization import (
+                extract_normalization_stats,
+            )
+        except Exception as exc:  # noqa: BLE001 - recovery is best-effort
+            # The helpers may be genuinely absent (older lerobot -> ImportError)
+            # or unimportable because an unrelated sibling policy module fails at
+            # definition time (e.g. a broken dataclass in lerobot.policies.groot
+            # raises TypeError while importing the policies package). Either way
+            # reconstruction is impossible, so degrade to passthrough instead of
+            # letting an unrelated lerobot defect crash ACT/diffusion loads.
+            logger.debug("In-model normalization recovery unavailable: %s", exc)
+            return None, None
+
+        state_dict = _load_checkpoint_state_dict(pretrained_name_or_path)
+        if not state_dict:
+            return None, None
+        stats = extract_normalization_stats(state_dict)
+        if not stats:
+            # No in-model normalization buffers -> genuinely no normalization to
+            # recover; let the passthrough diagnostic handle it.
+            return None, None
+
+        try:
+            preprocessor, postprocessor = make_pre_post_processors(policy_cfg=policy_config, dataset_stats=stats)
+        except Exception as exc:  # noqa: BLE001 - recovery is best-effort
+            logger.warning(
+                "lerobot_local: %s ships OLD-FORMAT in-model normalization (%d buffers "
+                "in model.safetensors: %s) that current lerobot drops on load, and "
+                "automatic reconstruction failed (%s). Migrate it once with: "
+                "python -m lerobot.processor.migrate_policy_normalization "
+                "--pretrained-path %s --output-dir <dir>  then load <dir>. Until then "
+                "the policy runs UN-normalized (raw MEAN_STD actions applied as robot "
+                "units make the arm flail).",
+                pretrained_name_or_path,
+                len(stats),
+                sorted(stats),
+                exc,
+                pretrained_name_or_path,
+            )
+            return None, None
+
+        logger.info(
+            "lerobot_local: %s ships no processor configs but carries OLD-FORMAT "
+            "in-model normalization; reconstructed pre/post pipelines from its "
+            "%d in-model buffer group(s) %s (equivalent to lerobot's "
+            "migrate_policy_normalization). The policy runs normalized.",
+            pretrained_name_or_path,
+            len(stats),
+            sorted(stats),
+        )
+        return preprocessor, postprocessor
 
     def apply_embodiment(self, embodiment, input_features: dict | None = None) -> None:
         """Inject a declarative :class:`EmbodimentMap` into the loaded pipeline.

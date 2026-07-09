@@ -356,3 +356,44 @@ def test_publish_telemetry_per_robot_failure_does_not_interrupt_loop(fake_ros: d
     assert "/broken/joint_states" not in topics
     assert "/healthy/joint_states" in topics
     assert topics["/healthy/joint_states"].messages[0].position == [0.5, -0.25]
+
+
+def test_publish_telemetry_skip_images_publishes_joints_only(fake_ros: dict[str, Any]) -> None:
+    """``skip_images=True`` publishes joint_states but never publishes camera images.
+
+    Backends call ``_publish_ros_telemetry(skip_images=True)`` on the hot step
+    path to skip the render/publish cost when no camera subscriber needs frames.
+    Pin the contract: joint_states still go out, but no ``image_raw`` publisher
+    is created for camera keys present in the observation.
+    """
+    obs = {"shoulder_pan": 0.5, "elbow": -0.25, "front": np.zeros((2, 2, 3), dtype=np.uint8)}
+    engine = _FakeEngine(obs, ros2_bridge=True, ros2_domain=3)
+
+    engine._publish_ros_telemetry(skip_images=True)
+
+    node = fake_ros["nodes"][0]
+    topics = {p.topic: p for p in node.publishers}
+    assert "/so101/joint_states" in topics
+    assert topics["/so101/joint_states"].messages[0].position == [0.5, -0.25]
+    assert "/so101/front/image_raw" not in topics
+
+
+def test_shutdown_ros_bridge_tears_down_active_bridge_idempotently(fake_ros: dict[str, Any]) -> None:
+    """``_shutdown_ros_bridge`` destroys an active bridge and clears the handle.
+
+    Pins the documented "safe to call repeatedly" contract: the first call
+    forwards to :meth:`SimRosBridge.shutdown` (destroying the ROS 2 node) and
+    resets ``_ros_bridge`` to None, so a second call is a no-op rather than a
+    double shutdown on a dead node.
+    """
+    engine = _FakeEngine({"shoulder_pan": 0.0, "elbow": 0.0}, ros2_bridge=True, ros2_domain=2)
+    node = fake_ros["nodes"][0]
+    assert engine._ros_bridge is not None
+
+    engine._shutdown_ros_bridge()
+
+    assert node.destroyed is True
+    assert engine._ros_bridge is None
+
+    engine._shutdown_ros_bridge()  # idempotent: must not raise, handle stays None
+    assert engine._ros_bridge is None

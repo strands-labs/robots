@@ -518,8 +518,10 @@ class DatasetRecordingMixin:
 
         Args:
             recorder: The resumed DatasetRecorder.
-            joint_names: Joint names the current scene will emit (namespaced for
-                multi-robot scenes).
+            joint_names: The expected ``observation.state`` column names the
+                current scene will emit (namespaced for multi-robot scenes;
+                includes expanded per-component floating-base columns such as
+                ``base_quat.w`` when the scene records a floating base).
             camera_keys: Sanitized camera feature names the current scene emits.
             camera_dims: Map of camera feature name -> (height, width).
             action_names: Action-column names the current scene will emit

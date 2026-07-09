@@ -170,3 +170,44 @@ class TestRewardModelConfigParity:
         )
         problems = LerobotTrainer(device="cpu").validate(spec)
         assert any("does not support field" in p and "annotation_mode" in p for p in problems)
+
+    def test_ctor_rejection_becomes_actionable_error(self, dataset_root, tmp_path, monkeypatch):
+        """A field the reward-config CONSTRUCTOR rejects surfaces an actionable
+        ValueError naming the fields, not a raw TypeError.
+
+        ``_reward_friendly_fields`` introspects the resolved config dataclass to
+        decide which ``extra['reward_model']`` keys to forward. If the installed
+        lerobot's constructor and that introspection ever diverge (an API drift),
+        the forwarded kwargs can be rejected by ``make_reward_model_config`` with
+        a ``TypeError``. The trainer must translate that into a ``ValueError``
+        that names the rejected fields so the drift is diagnosable, and chain the
+        original ``TypeError`` as the cause - not leak a bare, contextless error.
+        """
+        pytest.importorskip("lerobot.rewards")
+        import lerobot.rewards as lr
+
+        def _reject(rtype, **kwargs):
+            raise TypeError("unexpected keyword argument 'device'")
+
+        # The trainer imports make_reward_model_config from lerobot.rewards at
+        # call time, so patching the module attribute intercepts the real call.
+        monkeypatch.setattr(lr, "make_reward_model_config", _reject)
+
+        spec = TrainSpec(
+            dataset_root=dataset_root,
+            base_model="",
+            output_dir=str(tmp_path / "sarm_out"),
+            steps=100,
+            extra={"reward_model": {"type": "sarm"}},
+        )
+        trainer = LerobotTrainer(device="cpu")
+        with pytest.raises(ValueError) as excinfo:
+            trainer.build_config(spec)
+
+        msg = str(excinfo.value)
+        assert "reward_model type 'sarm' rejected field(s)" in msg
+        # The forwarded-field list (always includes the managed 'device') is
+        # named so the drift is diagnosable from the message alone.
+        assert "device" in msg
+        # The original TypeError is chained for debugging, not swallowed.
+        assert isinstance(excinfo.value.__cause__, TypeError)

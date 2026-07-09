@@ -1185,3 +1185,73 @@ def test_connect_robot_rolls_back_half_open_connect() -> None:
     assert fake.connect_attempts == 2
     assert fake.bus_disconnect_calls == [False, False]
     hw.cleanup()
+
+
+class TestConnectRobotErrorBranches:
+    """`_connect_robot` error handling: tolerate benign "already connected"
+    signals, fail loudly when the port never actually opens, and never let a
+    rollback failure mask the original connect error."""
+
+    def test_device_already_connected_error_is_tolerated(self) -> None:
+        """lerobot raises ``DeviceAlreadyConnectedError`` when the port is
+        already open; a connect that raises it (leaving the port live) is a
+        success, not an error."""
+        from lerobot.utils.errors import DeviceAlreadyConnectedError
+
+        class _AlreadyOpen(_FakeLeRobot):
+            def connect(self, calibrate: bool = False) -> None:  # noqa: ARG002 - lerobot signature
+                self._connected = True
+                raise DeviceAlreadyConnectedError("already connected")
+
+        hw = _make_robot(_AlreadyOpen(connected=False))
+        ok, err = asyncio.run(hw._connect_robot())
+        assert ok is True and err == ""
+        hw.cleanup()
+
+    def test_string_already_connected_is_tolerated(self) -> None:
+        """Some drivers raise a plain exception whose message says "already
+        connected" instead of the typed error; that must be tolerated too, not
+        re-raised."""
+
+        class _StringAlready(_FakeLeRobot):
+            def connect(self, calibrate: bool = False) -> None:  # noqa: ARG002 - lerobot signature
+                self._connected = True
+                raise RuntimeError("Device is already connected")
+
+        hw = _make_robot(_StringAlready(connected=False))
+        ok, err = asyncio.run(hw._connect_robot())
+        assert ok is True and err == ""
+        hw.cleanup()
+
+    def test_clean_connect_that_stays_disconnected_reports_failure(self) -> None:
+        """connect() returns without raising but the port never actually
+        opened: the final ``is_connected`` gate must catch it and report a
+        failure rather than a false success."""
+
+        class _NoOpConnect(_FakeLeRobot):
+            def connect(self, calibrate: bool = False) -> None:  # noqa: ARG002 - lerobot signature
+                pass  # never flips _connected -> stays disconnected
+
+        hw = _make_robot(_NoOpConnect(connected=False))
+        ok, err = asyncio.run(hw._connect_robot())
+        assert ok is False
+        assert "failed to connect" in err.lower()
+        hw.cleanup()
+
+    def test_rollback_swallows_disconnect_error(self) -> None:
+        """A half-open connect triggers rollback; if the port close itself
+        raises, that failure must be swallowed so the caller still sees the
+        original connect error, not the cleanup error."""
+
+        class _RollbackBoom(_HalfOpenConnectLeRobot):
+            def disconnect(self, disable_torque: bool = True) -> None:
+                self.bus_disconnect_calls.append(disable_torque)
+                raise OSError("port close failed")
+
+        fake = _RollbackBoom()
+        hw = _make_robot(fake)
+        ok, err = asyncio.run(hw._connect_robot())
+        assert ok is False
+        assert "connection failed" in err.lower()  # original error, not the rollback OSError
+        assert fake.bus_disconnect_calls == [False]  # rollback was still attempted
+        hw.cleanup()

@@ -42,6 +42,33 @@ def test_status_action_summarizes_availability() -> None:
     assert "so100" in text and "panda" in text
 
 
+def test_status_action_marks_each_row_available_or_missing() -> None:
+    """Each robot row carries a per-row availability marker.
+
+    Regression: the marker was an empty-both ``'' if r['available'] else ''``
+    ternary (an emoji-stripping fossil), so downloaded and missing robots
+    rendered identically and the per-row status conveyed nothing. Assert the
+    marker is present and correctly maps availability to the robot on its row.
+    """
+    robots_info = [
+        {"name": "so100", "category": "arm", "description": "arm", "available": True},
+        {"name": "panda", "category": "arm", "description": "arm", "available": False},
+    ]
+    with (
+        patch(f"{_MOD}.list_available_robots", return_value=robots_info),
+        patch(f"{_MOD}.get_user_assets_dir", return_value="/tmp/assets"),
+    ):
+        result = download_assets(action="status")
+    rows = {
+        name: next(ln for ln in result["content"][0]["text"].splitlines() if name in ln) for name in ("so100", "panda")
+    }
+    # Available and missing rows are visually distinguishable.
+    assert rows["so100"] != rows["panda"].replace("panda", "so100")
+    # ...and the marker maps to the correct robot.
+    assert "[ok]" in rows["so100"] and "[--]" not in rows["so100"]
+    assert "[--]" in rows["panda"] and "[ok]" not in rows["panda"]
+
+
 def test_download_action_parses_names_and_reports_counts() -> None:
     """``action='download'`` splits comma names and surfaces result counts."""
     fake_result = {

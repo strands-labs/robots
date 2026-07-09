@@ -8,13 +8,17 @@ tests under ``tests/simulation/mujoco/``.
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import pytest
 
 from strands_robots.simulation.predicates import (
     PREDICATE_REGISTRY,
+    StatefulRewardTerm,
     _extract_json,
+    _reset_resolution_warnings,
+    _StagedReward,
     make_predicate,
     register_predicate,
 )
@@ -812,3 +816,223 @@ class TestExtractJsonHelperGuard:
     def test_extract_json_returns_empty_for_non_dict_result(self):
         assert _extract_json(None) == {}
         assert _extract_json("not a dict") == {}  # type: ignore[arg-type]
+
+
+# Name-resolution surfacing (#176 follow-up): a spec that references a body /
+# joint the backend supports looking up but cannot resolve (a typo) must not be
+# silent. It still degrades to a constant, but the name is logged once, and the
+# LIBERO ``<name>_main`` root-body fallback now also covers the quaternion path.
+
+_PRED_LOGGER = "strands_robots.simulation.predicates"
+
+
+class TestBodyUprightLiberoMainFallback:
+    """body_upright must resolve the LIBERO ``<name>_main`` root body.
+
+    BDDL ``(upright X)`` compiles to ``body_upright(body=X)`` with the bare
+    object name, but the MJCF root body of a procedurally-generated LIBERO
+    object is ``X_main``. Before the fix, ``_body_quaternion`` tried only the
+    bare name (unlike ``_body_position``, which has the fallback), so an upright
+    mug silently scored as not-upright and the goal was never satisfiable.
+    """
+
+    def test_upright_resolves_via_main_suffix(self):
+        # Only the _main root body exists (the bare BDDL name does not).
+        sim = _BodyStateWithQuatSim({"mug_main": {"quaternion": [1, 0, 0, 0]}})
+        pred = make_predicate("body_upright", body="mug")
+        assert pred(sim) is True  # FAILS pre-fix: no _main fallback -> False
+
+    def test_upright_tilted_via_main_suffix_is_false(self):
+        # Resolves via _main but genuinely tipped over -> correctly False.
+        sim = _BodyStateWithQuatSim({"mug_main": {"quaternion": [0.707, 0.707, 0.0, 0.0]}})
+        pred = make_predicate("body_upright", body="mug", tol=0.1)
+        assert pred(sim) is False
+
+
+class TestUnresolvedNameSurfacing:
+    def setup_method(self):
+        _reset_resolution_warnings()
+
+    def test_reward_term_warns_on_unresolved_body(self, caplog):
+        sim = _BodyStateSim({"a": [0, 0, 0]})
+        term = make_predicate("distance_neg", body_a="a", body_b="ghost_reach_1", weight=1.0)
+        with caplog.at_level(logging.WARNING, logger=_PRED_LOGGER):
+            value = term(sim)
+        assert value == 0.0  # value contract unchanged
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 1  # FAILS pre-fix: silent, zero warnings
+        assert "ghost_reach_1" in warnings[0].getMessage()
+
+    def test_bool_predicate_warns_on_unresolved_body(self, caplog):
+        sim = _BodyStateSim({"a": [0, 0, 0]})
+        pred = make_predicate("distance_less_than", body_a="a", body_b="ghost_reach_2", threshold=1.0)
+        with caplog.at_level(logging.WARNING, logger=_PRED_LOGGER):
+            assert pred(sim) is False
+        assert any("ghost_reach_2" in r.getMessage() for r in caplog.records if r.levelno == logging.WARNING)
+
+    def test_joint_term_warns_on_unresolved_joint(self, caplog):
+        sim = _JointObsSim({"drawer": 0.1})
+        term = make_predicate("joint_progress", joint="ghost_joint_3", target=0.2, weight=1.0)
+        with caplog.at_level(logging.WARNING, logger=_PRED_LOGGER):
+            value = term(sim)
+        assert value == 0.0
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 1  # FAILS pre-fix
+        assert "ghost_joint_3" in warnings[0].getMessage()
+
+    def test_upright_warns_on_unresolved_body(self, caplog):
+        sim = _BodyStateWithQuatSim({})
+        pred = make_predicate("body_upright", body="ghost_up_4")
+        with caplog.at_level(logging.WARNING, logger=_PRED_LOGGER):
+            assert pred(sim) is False
+        assert any("ghost_up_4" in r.getMessage() for r in caplog.records if r.levelno == logging.WARNING)
+
+    def test_no_warning_when_backend_lacks_introspection(self, caplog):
+        # Unsupported backend (no get_body_state) is a capability gap, not a
+        # spec typo -> must stay silent (pre-fix behaviour preserved).
+        sim = _NoHelpersSim()
+        term = make_predicate("distance_neg", body_a="a", body_b="b", weight=1.0)
+        with caplog.at_level(logging.WARNING, logger=_PRED_LOGGER):
+            assert term(sim) == 0.0
+        assert [r for r in caplog.records if r.levelno == logging.WARNING] == []
+
+    def test_no_warning_when_body_resolves(self, caplog):
+        sim = _BodyStateSim({"a": [0, 0, 0]})
+        term = make_predicate("distance_neg", body_a="a", body_b="a", weight=1.0)
+        with caplog.at_level(logging.WARNING, logger=_PRED_LOGGER):
+            assert term(sim) == 0.0
+        assert [r for r in caplog.records if r.levelno == logging.WARNING] == []
+
+    def test_warns_only_once_per_name(self, caplog):
+        sim = _BodyStateSim({"a": [0, 0, 0]})
+        term = make_predicate("distance_neg", body_a="a", body_b="ghost_dedup_5", weight=1.0)
+        with caplog.at_level(logging.WARNING, logger=_PRED_LOGGER):
+            term(sim)
+            term(sim)
+            term(sim)
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING and "ghost_dedup_5" in r.getMessage()]
+        assert len(warnings) == 1  # deduped across the hot loop
+
+
+class TestStagedReward:
+    """Behavioural tests for the ``staged_reward`` phase-machine primitive.
+
+    Exercises the declarative phase machine end to end via the closed-registry
+    ``make_predicate`` path (no ``eval``): stage-local shaping reward, one-time
+    transition bonus, monotonic (forward-only) advancement, ``reset()``, and
+    every factory validation error.
+    """
+
+    @staticmethod
+    def _spec():
+        # Stage 0: dense reward 1.0 while below; advance once cube clears z=0.5,
+        # awarding a one-time bonus of 10.0. Stage 1 (final) pays a flat 2.0.
+        return [
+            {
+                "reward": {"predicate": "constant", "value": 1.0},
+                "advance_when": {"predicate": "body_above_z", "body": "cube", "z": 0.5},
+                "bonus": 10.0,
+            },
+            {"reward": {"predicate": "constant", "value": 2.0}},
+        ]
+
+    def test_make_predicate_returns_stateful_term(self):
+        term = make_predicate("staged_reward", stages=self._spec())
+        # Consumers duck-type on ``reset``; the concrete type must honour the
+        # StatefulRewardTerm contract so SimEnv/benchmark resets it per episode.
+        assert isinstance(term, StatefulRewardTerm)
+        assert hasattr(term, "reset")
+        assert term.phase == 0
+
+    def test_advances_on_gate_with_one_time_bonus(self):
+        sim = _BodyStateSim({"cube": [0.0, 0.0, 0.0]})
+        term = make_predicate("staged_reward", stages=self._spec())
+
+        # Gate closed -> stage 0 dense reward only, no advance.
+        assert term(sim) == pytest.approx(1.0)
+        assert term.phase == 0
+
+        # Gate fires -> emit stage-0 reward + one-time bonus, then advance.
+        sim._pos["cube"] = [0.0, 0.0, 1.0]
+        assert term(sim) == pytest.approx(1.0 + 10.0)
+        assert term.phase == 1
+
+        # Final stage: flat reward, bonus is NOT paid again.
+        assert term(sim) == pytest.approx(2.0)
+        assert term.phase == 1
+
+    def test_phase_is_monotonic_no_regression(self):
+        sim = _BodyStateSim({"cube": [0.0, 0.0, 1.0]})
+        term = make_predicate("staged_reward", stages=self._spec())
+        term(sim)  # advance to stage 1
+        assert term.phase == 1
+        # Gate condition reverses; the machine must not fall back to stage 0.
+        sim._pos["cube"] = [0.0, 0.0, 0.0]
+        assert term(sim) == pytest.approx(2.0)
+        assert term.phase == 1
+
+    def test_reset_returns_to_first_stage(self):
+        sim = _BodyStateSim({"cube": [0.0, 0.0, 1.0]})
+        term = make_predicate("staged_reward", stages=self._spec())
+        term(sim)
+        assert term.phase == 1
+        term.reset()
+        assert term.phase == 0
+        # After reset it re-earns the transition bonus on the next gate hit.
+        assert term(sim) == pytest.approx(1.0 + 10.0)
+
+    def test_empty_stages_yields_zero_reward(self):
+        # The factory rejects empty stages, but the term itself must be a safe
+        # no-op if ever constructed empty by a consumer.
+        term = _StagedReward([])
+        assert term(_BodyStateSim({})) == 0.0
+
+    def test_factory_rejects_non_list_or_empty_stages(self):
+        with pytest.raises(ValueError, match="non-empty list"):
+            make_predicate("staged_reward", stages=[])
+        with pytest.raises(ValueError, match="non-empty list"):
+            make_predicate("staged_reward", stages="not-a-list")
+
+    def test_factory_rejects_non_dict_stage(self):
+        with pytest.raises(ValueError, match=r"stage\[0\] must be a dict"):
+            make_predicate("staged_reward", stages=["oops"])
+
+    def test_factory_rejects_unknown_stage_keys(self):
+        bad = [{"reward": {"predicate": "constant", "value": 1.0}, "typo": 3}]
+        with pytest.raises(ValueError, match="unknown keys"):
+            make_predicate("staged_reward", stages=bad)
+
+    def test_factory_rejects_missing_or_malformed_reward(self):
+        with pytest.raises(ValueError, match="reward must be a predicate-call dict"):
+            make_predicate("staged_reward", stages=[{"advance_when": None}])
+        with pytest.raises(ValueError, match="reward must be a predicate-call dict"):
+            make_predicate("staged_reward", stages=[{"reward": {"value": 1.0}}])
+
+    def test_factory_requires_advance_when_on_non_final_stage(self):
+        two = [
+            {"reward": {"predicate": "constant", "value": 1.0}},
+            {"reward": {"predicate": "constant", "value": 2.0}},
+        ]
+        with pytest.raises(ValueError, match="must declare"):
+            make_predicate("staged_reward", stages=two)
+
+    def test_factory_rejects_malformed_advance_when(self):
+        bad = [
+            {
+                "reward": {"predicate": "constant", "value": 1.0},
+                "advance_when": {"body": "cube", "z": 0.5},
+            },
+            {"reward": {"predicate": "constant", "value": 2.0}},
+        ]
+        with pytest.raises(ValueError, match="advance_when must be a predicate-call dict"):
+            make_predicate("staged_reward", stages=bad)
+
+    def test_factory_rejects_non_numeric_bonus(self):
+        base = {
+            "reward": {"predicate": "constant", "value": 1.0},
+            "advance_when": {"predicate": "body_above_z", "body": "cube", "z": 0.5},
+        }
+        for bad_bonus in ("lots", True):
+            spec = [{**base, "bonus": bad_bonus}, {"reward": {"predicate": "constant", "value": 2.0}}]
+            with pytest.raises(ValueError, match="bonus must be a number"):
+                make_predicate("staged_reward", stages=spec)

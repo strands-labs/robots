@@ -32,6 +32,7 @@ os.environ.setdefault("MUJOCO_GL", "glfw")
 from PIL import Image  # noqa: E402
 
 from strands_robots.simulation.mujoco.simulation import Simulation  # noqa: E402
+from tests.simulation.mujoco._gl_probe import gl_available  # noqa: E402
 
 
 def _black_fraction(img: np.ndarray) -> float:
@@ -62,17 +63,9 @@ def sim():
 
 
 def _skip_if_no_gl():
-    """Skip on headless CI without GL."""
-    try:
-        s = Simulation(tool_name="probe", mesh=False)
-        s.create_world()
-        r = s.render(camera_name="default", width=40, height=30)
-        s.cleanup(policy_stop_timeout=0.1)
-    except Exception as e:
-        pytest.skip(f"no GL available: {e}")
-    else:
-        if r.get("status") != "success":
-            pytest.skip(r.get("content", [{}])[0].get("text", "render unavailable"))
+    """Skip when no usable offscreen GL context is available."""
+    if not gl_available():
+        pytest.skip("no usable OpenGL context; force-skip with ROBOT_TEST_MUJOCO=0")
 
 
 class TestRenderAfterSceneEdit:

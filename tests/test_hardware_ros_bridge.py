@@ -565,3 +565,67 @@ def test_init_ros_bridge_rejects_unknown_transport(fake_ros: dict[str, Any]) -> 
     hw = _make_robot({"j0.pos": 0.0})
     with pytest.raises(ValueError, match="must be 'rclpy' or 'rtps'"):
         hw._init_ros_bridge(ros2_bridge=True, ros2_transport="zenoh")
+
+
+# --- inbound command spin loop ----------------------------------------------
+# The command spin thread runs in a background daemon that coverage cannot
+# trace, so these tests drive `_spin_loop` synchronously to pin its documented
+# contract: it services `spin_once` until the stop event is set, and a single
+# transient `spin_once` failure must not kill the loop.
+
+
+def test_command_spin_loop_services_callbacks_until_stopped(fake_ros: dict[str, Any]) -> None:
+    # Telemetry-only bridge starts no thread, so _spin_loop can be driven in
+    # the (traced) test thread with no race against a live daemon.
+    bridge = HardwareRosBridge(enable_commands=False)
+    bridge._spin_period = 0.001
+    calls: list[tuple[Any, float]] = []
+
+    def spin_once(node: Any, timeout_sec: float = 0.0) -> None:
+        calls.append((node, timeout_sec))
+        if len(calls) >= 3:
+            bridge._stop.set()
+
+    bridge._rclpy.spin_once = spin_once  # type: ignore[attr-defined]
+    bridge._stop.clear()
+    bridge._spin_loop()
+
+    # Serviced exactly until stop was signalled, always against our node and at
+    # the configured spin period.
+    assert len(calls) == 3
+    assert calls[0][0] is bridge._node
+    assert calls[0][1] == pytest.approx(0.001)
+    bridge.shutdown()
+
+
+def test_command_spin_loop_survives_a_transient_spin_once_failure(fake_ros: dict[str, Any]) -> None:
+    bridge = HardwareRosBridge(enable_commands=False)
+    bridge._spin_period = 0.001
+    attempts = {"n": 0}
+
+    def spin_once(node: Any, timeout_sec: float = 0.0) -> None:
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            raise RuntimeError("executor hiccup")
+        # The retry proves the loop kept running past the exception.
+        bridge._stop.set()
+
+    bridge._rclpy.spin_once = spin_once  # type: ignore[attr-defined]
+    bridge._stop.clear()
+    bridge._spin_loop()  # must not propagate the RuntimeError
+
+    assert attempts["n"] == 2  # retried after swallowing the failure
+    bridge.shutdown()
+
+
+def test_start_spin_is_idempotent(fake_ros: dict[str, Any]) -> None:
+    robot = _FakeDrivableRobot()
+    bridge = HardwareRosBridge(robot)  # type: ignore[arg-type]  # enable_commands default -> thread started
+    first = bridge._spin_thread
+    assert first is not None and first.is_alive()
+
+    # A second start while the thread is alive is a no-op (no duplicate thread).
+    bridge._start_spin()
+    assert bridge._spin_thread is first
+    assert _live_command_threads() == 1
+    bridge.shutdown()

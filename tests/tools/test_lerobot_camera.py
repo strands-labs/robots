@@ -685,3 +685,71 @@ def test_frame_to_image_content_passes_through_non_rgb_frame() -> None:
     assert "image" in content
     assert content["image"]["format"] == "png"
     assert content["image"]["source"]["bytes"]
+
+
+# --- dispatch catch-all: the tool never raises past dispatch ---------------
+#
+# Every action branch and helper is wrapped in a top-level ``try/except`` so an
+# unexpected failure (a lerobot API drift, a driver crash) is turned into the
+# ``{"status": "error"}`` tool-result contract rather than propagating out of
+# the ``@tool`` and killing the agent turn. These pin that guarantee for each of
+# the three catch-all wrappers.
+
+
+def test_dispatch_catch_all_wraps_unexpected_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An unexpected error inside an action branch becomes an error result.
+
+    The ``discover`` branch delegates to ``_discover_cameras``; if that raises
+    something the helper itself does not handle, the dispatcher's outer guard
+    must still return the two-key error contract, never re-raise.
+    """
+
+    def boom() -> dict[str, Any]:
+        raise RuntimeError("driver exploded")
+
+    monkeypatch.setattr(cam_mod, "_discover_cameras", boom)
+
+    result = lerobot_camera(action="discover")
+
+    assert result["status"] == "error"
+    assert set(result) == {"status", "content"}
+    body = _texts(result)
+    assert "Camera operation failed" in body
+    assert "driver exploded" in body
+    _assert_ascii(body)
+
+
+def test_discover_catch_all_wraps_probe_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A failing OpenCV probe surfaces as a discovery error, not an exception."""
+
+    def boom() -> list[dict[str, Any]]:
+        raise OSError("v4l2 enumeration failed")
+
+    monkeypatch.setattr(cam_mod.OpenCVCamera, "find_cameras", staticmethod(boom))
+
+    result = cam_mod._discover_cameras()
+
+    assert result["status"] == "error"
+    assert set(result) == {"status", "content"}
+    body = _texts(result)
+    assert "Camera discovery failed" in body
+    assert "v4l2 enumeration failed" in body
+    _assert_ascii(body)
+
+
+def test_details_catch_all_wraps_backend_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A failure while assembling OpenCV details is returned as an error result."""
+
+    def boom() -> str:
+        raise RuntimeError("backend query failed")
+
+    monkeypatch.setattr(cam_mod, "_get_opencv_backend_name", boom)
+
+    result = cam_mod._list_camera_details("opencv")
+
+    assert result["status"] == "error"
+    assert set(result) == {"status", "content"}
+    body = _texts(result)
+    assert "Camera details failed" in body
+    assert "backend query failed" in body
+    _assert_ascii(body)

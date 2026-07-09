@@ -12,7 +12,7 @@ end to end with all I/O mocked (no hardware, daemon, or network):
 - REST move/lifecycle RPCs (listMoves / wakeUp / sleep / stopMotion /
   getDaemonStatus) and the paths they hit.
 - Expression sequences (nod / shake / happy) with sleep stubbed out.
-- Caller authorization gating on a state-mutating RPC.
+- Caller-authorization fail-closed gating across the full mutating RPC surface.
 - ``onEmergencyStop`` acting only on an allowlisted source.
 
 These use the REAL device_connect_edge package so the @rpc caller-identity
@@ -296,13 +296,48 @@ def test_expression_returns_to_neutral(rmd, method, expression):
 # -- caller authorization ---------------------------------------------------
 
 
-def test_movement_rpc_denied_for_unlisted_caller(rmd, monkeypatch):
+# Every state-mutating RPC (real-time head/antenna/body commands, motor
+# torque toggles, recorded-move playback, expression sequences, and the
+# REST move/lifecycle calls) must consult the caller allowlist. Read-only
+# RPCs (getJoints / getImu / listMoves / getDaemonStatus) are intentionally
+# ungated and excluded here.
+_MUTATING_RPCS = [
+    ("look", {"pitch": 5}),
+    ("antennas", {"left": 10, "right": -10}),
+    ("body", {"yaw": 15}),
+    ("enableMotors", {"motor_ids": "1,2"}),
+    ("disableMotors", {"motor_ids": ""}),
+    ("playMove", {"move_name": "wave"}),
+    ("nod", {}),
+    ("shake", {}),
+    ("happy", {}),
+    ("wakeUp", {}),
+    ("sleep", {}),
+    ("stopMotion", {}),
+]
+
+
+@pytest.mark.parametrize(("method", "kwargs"), _MUTATING_RPCS, ids=[m for m, _ in _MUTATING_RPCS])
+def test_mutating_rpc_denied_for_unlisted_caller(rmd, monkeypatch, method, kwargs):
+    """Every mutating RPC fail-closes on an unauthorized caller.
+
+    With an allowlist configured and an anonymous caller (no source_device),
+    each state-mutating RPC must return the standard authorization error and
+    issue neither a real-time hardware command nor a daemon REST call. This
+    pins the contract for the whole mutating surface so a new RPC that forgets
+    the gate cannot slip through with only ``look`` covered.
+    """
     monkeypatch.setenv("DEVICE_CONNECT_RPC_ALLOW", "trusted-*")
     drv = _bare(rmd, _hw=AsyncMock())
-    res = _run(drv.look(pitch=5))
+    with patch.object(rmd, "api", MagicMock()) as fake_api, patch.object(rmd.asyncio, "sleep", AsyncMock()):
+        res = _run(getattr(drv, method)(**kwargs))
     assert res["status"] == "error"
     assert "not authorized" in res["reason"]
+    # The rejection names the specific RPC that was denied.
+    assert method in res["reason"]
+    # Fail-closed: no physical command and no daemon REST call may fire.
     drv._hw.send_cmd.assert_not_awaited()
+    fake_api.assert_not_called()
 
 
 # -- emergency stop ---------------------------------------------------------

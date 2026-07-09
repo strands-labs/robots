@@ -18,10 +18,13 @@ Checks performed against a dataset root (the dir containing ``meta/``):
   5. every per-episode video file referenced by the dataset (one MP4 per
      camera per episode, resolved from ``meta/info.json``'s ``video_path``
      template and the episode parquet's ``videos/<key>/chunk_index`` /
-     ``file_index`` columns) exists on disk and is non-empty - flags the
-     video-modality sibling of mega-episode corruption, where the episode
-     count is correct but the pixels are missing/unwritten (disable with
-     ``--no-check-videos``).
+     ``file_index`` columns) exists on disk, is non-empty, and - when its
+     frame count can be read from the container header - holds exactly the
+     number of frames the parquet maps into it (the sum of the ``length`` of
+     every episode packed into that file). Flags the video-modality sibling
+     of mega-episode corruption: a correct episode count but missing pixels,
+     whether the file is absent/empty or a truncated/partial encode with
+     fewer frames than recorded (disable with ``--no-check-videos``).
   6. no ``action`` / ``observation.state`` column is identically zero across
      a multi-frame episode - the dead-control-column corruption (correct
      counts and pixels, but the proprioceptive/action signal was written as
@@ -177,11 +180,13 @@ def verify_dataset(
             "- the recording did not produce the intended number of distinct episodes"
         )
 
-    # Check 5: per-episode video files exist on disk and are non-empty. A
-    # dataset can pass every count check yet carry missing/empty MP4 streams
-    # (the recorder's video encoder failed, the files were partially synced, or
-    # frames were never captured) - correct episode counts, no pixels. This is
-    # the video-modality sibling of the mega-episode class above.
+    # Check 5: per-episode video files exist on disk, are non-empty, and hold
+    # the frame count the parquet maps into them. A dataset can pass every count
+    # check yet carry missing/empty MP4 streams, or a truncated/partial encode
+    # with fewer frames than recorded (the video encoder failed mid-episode, the
+    # files were partially synced, or frames were never captured) - correct
+    # episode counts, missing pixels. This is the video-modality sibling of the
+    # mega-episode class above.
     if check_videos:
         checked, video_problems = _verify_video_files(root_path)
         report["video_files_checked"] = checked
@@ -205,15 +210,47 @@ def verify_dataset(
     return report
 
 
+def _video_frame_count(path: Path) -> int | None:
+    """Best-effort decoded-frame count for a video file, read from the container
+    header (no full decode).
+
+    Returns the stream frame count when the container header carries it (the
+    common case for the finalized MP4s LeRobot writes), or ``None`` when it
+    cannot be read: PyAV (``av``) is not installed, the file is unreadable /
+    corrupt, or the codec header omits ``nb_frames``. ``None`` means "cannot
+    confirm", never "zero frames", so the caller only flags a genuine,
+    confidently-read mismatch and never false-positives on a header that lacks a
+    frame count.
+    """
+    try:
+        import av
+    except ImportError:
+        return None
+    try:
+        with av.open(str(path)) as container:
+            if not container.streams.video:
+                return None
+            n = container.streams.video[0].frames
+    except (OSError, ValueError, RuntimeError):
+        # Unreadable/corrupt header (incl. av.error.InvalidDataError, a
+        # ValueError subclass): treat as "cannot confirm" and skip the compare.
+        return None
+    return int(n) if isinstance(n, int) and n > 0 else None
+
+
 def _verify_video_files(root_path: Path) -> tuple[int, list[str]]:
     """Resolve and integrity-check every per-episode video file in a dataset.
 
     For each video feature declared in ``meta/info.json`` (``dtype == "video"``)
     and each episode, the on-disk MP4 path is resolved from the ``video_path``
     template and the episode parquet's ``videos/<key>/chunk_index`` /
-    ``file_index`` columns, then checked for existence and non-zero size. This
-    catches datasets whose episode counts are correct but whose pixels are
-    missing or were never written.
+    ``file_index`` columns, then checked for existence and non-zero size.
+    Additionally, when a file's frame count can be read from the container
+    header (via :func:`_video_frame_count`) and every episode packed into it
+    carries a ``length``, the decoded frame count is compared to the sum of
+    those lengths - flagging a truncated / partial encode (a present, non-empty
+    file with fewer frames than recorded). This catches datasets whose episode
+    counts are correct but whose pixels are missing, unwritten, or partial.
 
     Args:
         root_path: Dataset root directory (the dir that contains ``meta/``).
@@ -254,14 +291,22 @@ def _verify_video_files(root_path: Path) -> tuple[int, list[str]]:
         return 0, []
 
     parquet_files = sorted((root_path / "meta" / "episodes").glob("**/*.parquet"))
-    # (video_key, chunk_index, file_index) -> set of referencing episode_index.
+    # (video_key, chunk_index, file_index) -> first referencing episode_index.
     referenced: dict[tuple[str, int, int], int] = {}
+    # Same key -> total frames the parquet maps into that file (LeRobot v3 packs
+    # multiple whole episodes into one shared file per camera, so the file must
+    # hold exactly the sum of those episodes' ``length`` values).
+    expected_frames: dict[tuple[str, int, int], int] = {}
+    # Files a frame-count comparison must skip because at least one referencing
+    # episode carried no ``length`` (the column is optional in some writers).
+    unknown_len_files: set[tuple[str, int, int]] = set()
     keys_with_refs: set[str] = set()
     for pf in parquet_files:
         table = pq.read_table(pf)
         cols = set(table.column_names)
         data = table.to_pydict()
         episodes = data.get("episode_index", [])
+        lengths = data.get("length")
         for vk in video_keys:
             ci_col = f"videos/{vk}/chunk_index"
             fi_col = f"videos/{vk}/file_index"
@@ -274,8 +319,14 @@ def _verify_video_files(root_path: Path) -> tuple[int, list[str]]:
                 ci, fi = chunk_idx[i], file_idx[i]
                 if ci is None or fi is None:
                     continue
+                key = (vk, int(ci), int(fi))
                 ep = int(episodes[i]) if i < len(episodes) and episodes[i] is not None else -1
-                referenced.setdefault((vk, int(ci), int(fi)), ep)
+                referenced.setdefault(key, ep)
+                length = lengths[i] if lengths is not None and i < len(lengths) else None
+                if length is None:
+                    unknown_len_files.add(key)
+                else:
+                    expected_frames[key] = expected_frames.get(key, 0) + int(length)
 
     problems: list[str] = []
     for vk in video_keys:
@@ -292,6 +343,30 @@ def _verify_video_files(root_path: Path) -> tuple[int, list[str]]:
             problems.append(f"missing video file for '{vk}' (episode {ep}): {rel}")
         elif path.stat().st_size == 0:
             problems.append(f"empty video file for '{vk}' (episode {ep}): {rel}")
+
+    # Frame-count integrity: a present, non-empty video whose decoded frame
+    # count is fewer (or otherwise different) than the frames the parquet maps
+    # into it is a truncated / partial encode - correct episode counts, a
+    # non-empty file, but missing pixels (the encoder crashed mid-episode, the
+    # file was partially synced, or the write was interrupted). This is the
+    # frame-count sibling of the missing/empty-video class above. It is reported
+    # only when the count can be read confidently from the container header, so
+    # a codec whose header omits the frame count never yields a false positive.
+    for key in sorted(expected_frames):
+        if key in unknown_len_files:
+            continue  # a referencing episode lacked a length: cannot compute expected
+        vk, ci, fi = key
+        rel = template.format(video_key=vk, chunk_index=ci, file_index=fi)
+        path = root_path / rel
+        if not path.is_file() or path.stat().st_size == 0:
+            continue  # already reported as missing / empty above
+        actual = _video_frame_count(path)
+        if actual is not None and actual != expected_frames[key]:
+            problems.append(
+                f"video file for '{vk}' has {actual} frame(s) but the parquet maps "
+                f"{expected_frames[key]} frame(s) to it: {rel} - truncated / partial "
+                "encode (correct episode counts, non-empty file, but missing pixels)"
+            )
 
     return len(referenced), problems
 

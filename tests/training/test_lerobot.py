@@ -96,11 +96,24 @@ class TestBuildCommand:
     def test_lora_flags(self, spec):
         spec.method = "lora"
         spec.lora_r = 16
+        spec.lora_alpha = 32
         spec.lora_target_modules = "q_proj,v_proj"
         cmd = LerobotTrainer(device="cpu").build_command(spec)
         assert "--peft.method_type=LORA" in cmd
         assert "--peft.r=16" in cmd
+        # lora_alpha (the LoRA scaling numerator; scaling = lora_alpha / r) is a
+        # real PeftConfig field that build_config wires; the argv-parity helper
+        # must emit it too or the documented "equivalent CLI" trains with a
+        # different LoRA scale than the in-process train(cfg).
+        assert "--peft.lora_alpha=32" in cmd
         assert "--peft.target_modules=q_proj,v_proj" in cmd
+
+    def test_lora_alpha_omitted_when_unset(self, spec):
+        # Only emitted when requested, mirroring --peft.r / --peft.target_modules.
+        spec.method = "lora"
+        spec.lora_r = 16
+        cmd = LerobotTrainer(device="cpu").build_command(spec)
+        assert not any(c.startswith("--peft.lora_alpha") for c in cmd)
 
     def test_expert_only_flag(self, spec):
         spec.method = "expert_only"
@@ -335,6 +348,26 @@ class TestBuildConfigAdditionalBranches:
         cfg = LerobotTrainer(device="cpu").build_config(spec)
         assert cfg.peft.r == 8
         assert cfg.peft.lora_alpha == 32
+
+    def test_lora_alpha_build_command_matches_build_config(self, spec):
+        """build_command's argv-parity for --peft.lora_alpha must agree with the
+        value build_config wires into cfg.peft.lora_alpha (drift guard, the
+        contract build_command exists to uphold)."""
+        pytest.importorskip("lerobot")
+        import dataclasses
+
+        from lerobot.configs.default import PeftConfig
+
+        if "lora_alpha" not in {f.name for f in dataclasses.fields(PeftConfig)}:
+            pytest.skip("installed lerobot PeftConfig has no lora_alpha field")
+        spec.method = "lora"
+        spec.lora_r = 8
+        spec.lora_alpha = 32
+        trainer = LerobotTrainer(device="cpu")
+        cmd = trainer.build_command(spec)
+        cfg = trainer.build_config(spec)
+        emitted = [c for c in cmd if c.startswith("--peft.lora_alpha=")]
+        assert emitted == [f"--peft.lora_alpha={cfg.peft.lora_alpha}"]
 
     def test_unsupported_lora_option_raises_actionable_error(self, spec, monkeypatch):
         """A LoRA option the installed PeftConfig rejects must raise a clear
@@ -765,6 +798,47 @@ class TestRelativeActions:
             assert LerobotTrainer().validate(spec) == []
 
 
+class TestExpertOnlyMethod:
+    """expert_only training method -> policy.train_expert_only on the built config.
+
+    ``method="expert_only"`` trains only the action expert of a VLA while the
+    (V)LM backbone stays frozen - the standard cheap-finetune recipe for the pi0
+    family. build_command emits ``--policy.train_expert_only=true`` for the CLI
+    launch path, but an in-process run consumes the ``build_config`` object
+    directly, so the flag must also be applied to the policy config there.
+    Before this was pinned only the CLI path was exercised; a build_config
+    regression that dropped the flag would silently full-finetune the backbone
+    (a far more expensive, different run) while reporting success.
+    """
+
+    def _expert_spec(self, dataset_root, tmp_path, ptype="pi0"):
+        return TrainSpec(
+            dataset_root=dataset_root,
+            base_model="",
+            output_dir=str(tmp_path / "out"),
+            steps=200,
+            method="expert_only",
+            extra={"policy_type": ptype},
+        )
+
+    def test_build_config_sets_train_expert_only(self, dataset_root, tmp_path):
+        cfg = LerobotTrainer(device="cpu").build_config(self._expert_spec(dataset_root, tmp_path))
+        assert cfg.policy.train_expert_only is True
+
+    def test_default_method_leaves_train_expert_only_at_preset(self, dataset_root, tmp_path):
+        spec = TrainSpec(
+            dataset_root=dataset_root,
+            base_model="",
+            output_dir=str(tmp_path / "out"),
+            steps=200,
+            extra={"policy_type": "pi0"},
+        )
+        assert spec.method == "full"
+        cfg = LerobotTrainer(device="cpu").build_config(spec)
+        # A plain (non-expert_only) run must not silently flip the flag on.
+        assert cfg.policy.train_expert_only is False
+
+
 class TestSampleWeightingRABC:
     """RA-BC sample-weighting wiring: extra['sample_weighting'] -> nested SampleWeightingConfig.
 
@@ -1109,3 +1183,98 @@ class TestLearningRate:
         )
         with pytest.raises(ValueError, match="optimizer_lr"):
             LerobotTrainer(device="cpu").build_config(spec)
+
+
+class TestOfflineRegistryFallbacks:
+    """Graceful degradation when lerobot's config ChoiceRegistry is unavailable.
+
+    Type/field discovery reads live off lerobot's draccus registries, which are
+    populated as an import side effect of ``lerobot.policies`` / ``lerobot.rewards``.
+    When those imports fail (lerobot not installed, or lerobot < 0.5.2 with no
+    ``lerobot.rewards``), discovery must fall back to the documented static sets
+    instead of raising, so ``validate`` still produces an actionable message
+    offline. Import failure is simulated by binding the submodule to ``None`` in
+    ``sys.modules`` (makes ``import`` raise ``ImportError``).
+    """
+
+    def test_policy_registry_is_none_when_lerobot_policies_unimportable(self, monkeypatch):
+        import sys
+
+        from strands_robots.training import lerobot as mod
+
+        monkeypatch.setitem(sys.modules, "lerobot.policies", None)
+        assert mod._policy_registry() is None
+
+    def test_policy_types_use_static_fallback_offline(self, monkeypatch):
+        import sys
+
+        from strands_robots.training import lerobot as mod
+
+        monkeypatch.setitem(sys.modules, "lerobot.policies", None)
+        assert mod._lerobot_policy_types() == set(mod._LEROBOT_POLICY_TYPES_FALLBACK)
+
+    def test_relative_action_support_uses_static_fallback_offline(self, monkeypatch):
+        import sys
+
+        from strands_robots.training import lerobot as mod
+
+        monkeypatch.setitem(sys.modules, "lerobot.policies", None)
+        # The pi0 family is in the documented fallback set; act is not.
+        assert mod._policy_supports_relative_actions("pi0") is True
+        assert mod._policy_supports_relative_actions("act") is False
+
+    def test_reward_registry_is_none_when_lerobot_rewards_unimportable(self, monkeypatch):
+        import sys
+
+        from strands_robots.training import lerobot as mod
+
+        monkeypatch.setitem(sys.modules, "lerobot.rewards", None)
+        assert mod._reward_registry() is None
+
+    def test_reward_model_types_use_static_fallback_offline(self, monkeypatch):
+        import sys
+
+        from strands_robots.training import lerobot as mod
+
+        monkeypatch.setitem(sys.modules, "lerobot.rewards", None)
+        assert mod._reward_model_types() == set(mod._REWARD_MODEL_TYPES_FALLBACK)
+
+
+class TestRunTypeLabel:
+    """``_run_type_label`` distinguishes a reward-model run from a policy run."""
+
+    def test_labels_reward_model_run(self):
+        spec = TrainSpec(extra={"reward_model": {"type": "sarm"}})
+        assert LerobotTrainer(device="cpu")._run_type_label(spec) == "reward_model:sarm"
+
+    def test_labels_policy_run(self):
+        spec = TrainSpec(extra={"policy_type": "diffusion"})
+        assert LerobotTrainer(device="cpu")._run_type_label(spec) == "policy:diffusion"
+
+
+class TestValSplitEpisodesFallthrough:
+    """The held-out split is a no-op (use the full dataset) when it can't be computed.
+
+    ``_val_split_episodes`` returns ``None`` -- meaning "train on every episode" --
+    rather than raising or emitting a malformed ``episodes`` range when the episode
+    count is unknown (no readable ``meta/info.json``) or the requested holdout is
+    not strictly inside ``(0, total)``.
+    """
+
+    def test_no_op_when_episode_count_unknown(self, tmp_path):
+        # dataset_root set but no meta/info.json -> total unknown -> no split.
+        spec = TrainSpec(dataset_root=str(tmp_path), val_episodes=2)
+        assert LerobotTrainer(device="cpu")._val_split_episodes(spec) is None
+
+    def test_no_op_when_holdout_not_smaller_than_total(self, dataset_root):
+        # info.json reports total_episodes=10; a holdout >= total is out of range.
+        spec = TrainSpec(dataset_root=dataset_root, val_episodes=10)
+        assert LerobotTrainer(device="cpu")._val_split_episodes(spec) is None
+
+
+class TestHardwareFloor:
+    """``hardware_floor`` advertises the advisory minimum compute for LeRobot tuning."""
+
+    def test_advisory_single_consumer_gpu(self):
+        floor = LerobotTrainer(device="cpu").hardware_floor
+        assert floor == {"min_gpus": 1, "min_vram_gb": 8, "multinode": False}

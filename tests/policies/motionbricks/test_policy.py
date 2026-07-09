@@ -145,6 +145,35 @@ def test_config_from_file_missing(tmp_path: Any) -> None:
         MotionBricksConfig.from_file(str(tmp_path / "nope.json"))
 
 
+def test_config_rejects_empty_result_dir() -> None:
+    # result_dir is the path to the checkpoint tree; an empty string would
+    # silently misbehave deep in the generator, so __post_init__ fails fast.
+    with pytest.raises(ValueError, match="result_dir must be a non-empty path"):
+        MotionBricksConfig(result_dir="")
+
+
+def test_config_from_file_rejects_non_json_extension(tmp_path: Any) -> None:
+    p = tmp_path / "mb.yaml"
+    p.write_text('{"result_dir": "out"}')
+    with pytest.raises(ValueError, match="unsupported extension"):
+        MotionBricksConfig.from_file(str(p))
+
+
+def test_config_from_file_rejects_invalid_json(tmp_path: Any) -> None:
+    p = tmp_path / "mb.json"
+    p.write_text("{not valid json,,,}")
+    with pytest.raises(ValueError, match="not valid JSON"):
+        MotionBricksConfig.from_file(str(p))
+
+
+def test_config_from_file_rejects_non_mapping(tmp_path: Any) -> None:
+    # Valid JSON, but a top-level array/scalar is not a config mapping.
+    p = tmp_path / "mb.json"
+    p.write_text('["result_dir", "out"]')
+    with pytest.raises(ValueError, match="must contain a mapping"):
+        MotionBricksConfig.from_file(str(p))
+
+
 # ---------------------------------------------------------------------------
 # Style resolution + control-signal assembly
 # ---------------------------------------------------------------------------

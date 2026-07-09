@@ -30,7 +30,20 @@ jobs:
 
       - name: Install system dependencies (OpenGL for MuJoCo)
         run: |
-          sudo apt-get update
+          # The GitHub runner image preconfigures third-party apt repos (e.g.
+          # the packages.microsoft.com azure-cli feed) whose mirrors sometimes
+          # serve a corrupt InRelease file ("Clearsigned file isn't valid, got
+          # 'NOSPLIT'"), making a plain `apt-get update` exit 100 and fail the
+          # whole build. The packages we actually need (libosmesa6-dev, ffmpeg)
+          # come from the standard Ubuntu archive, so retry a few times with a
+          # short backoff to ride out transient mirror hiccups before failing.
+          for attempt in 1 2 3; do
+            if sudo apt-get update; then
+              break
+            fi
+            echo "apt-get update failed (attempt ${attempt}/3), retrying in 5s..."
+            sleep 5
+          done
           sudo apt-get install -y libosmesa6-dev ffmpeg
 
       # The Device Connect integration (strands_robots/device_connect) can

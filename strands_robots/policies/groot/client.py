@@ -123,6 +123,11 @@ class Gr00tInferenceClient:
         self.socket = self.context.socket(self._zmq.REQ)
         self.socket.setsockopt(self._zmq.RCVTIMEO, self.timeout_ms)
         self.socket.setsockopt(self._zmq.SNDTIMEO, self.timeout_ms)
+        # LINGER=0 so socket.close() / context.term() never block waiting to
+        # flush undelivered requests to a dead sidecar. Without it the default
+        # linger is infinite, so a queued request to an unreachable server
+        # hangs teardown (and interpreter shutdown / GC of __del__) forever.
+        self.socket.setsockopt(self._zmq.LINGER, 0)
         self.socket.connect(f"tcp://{self.host}:{self.port}")
 
     def reconnect(self):
@@ -194,6 +199,12 @@ class Gr00tInferenceClient:
         return response
 
     def __del__(self):
+        # The socket is created with LINGER=0 (see _init_socket) so close()
+        # discards any undelivered request immediately rather than blocking to
+        # flush it to a dead sidecar; term() then returns once the closed
+        # socket is gone. Without the zero linger a request queued to an
+        # unreachable server hangs the GC that drives __del__ (and interpreter
+        # shutdown) indefinitely.
         if hasattr(self, "socket"):
             self.socket.close()
         if hasattr(self, "context"):

@@ -104,6 +104,46 @@ def test_allow_abs_bypasses_sandbox(tmp_path):
     assert resolved == (tmp_path / "elsewhere.mp4").resolve()
 
 
+def test_sandbox_rejects_intermediate_symlink_escape(tmp_path):
+    """A dir symlink planted *inside* the sandbox that points outside cannot
+    smuggle a write past confinement.
+
+    The final path component is a plain filename (so the ``is_symlink()`` guard,
+    which only inspects the leaf, does not fire); the escape lives in an
+    intermediate directory component. Confinement holds because ``resolve()``
+    expands the intermediate symlink before the ``relative_to(sandbox_root)``
+    check, so the true on-disk destination is seen to be outside the root.
+    Regression guard: a future refactor that resolved leniently (or short-
+    circuited the confinement check) would silently reopen an arbitrary-write
+    hole here.
+    """
+    root = tmp_path / "videos"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    link = root / "escape"
+    link.symlink_to(outside, target_is_directory=True)
+    with pytest.raises(ValueError, match="outside the sandbox"):
+        validate_output_path(str(link / "clip.mp4"), sandbox_root=root.resolve(), allow_abs=False)
+
+
+def test_sandbox_accepts_intermediate_symlink_staying_inside(tmp_path):
+    """A dir symlink whose target is still under the sandbox root is accepted.
+
+    Confinement is defined by the *resolved* destination, not a blanket ban on
+    symlinked path components, so a symlink that stays inside the root must not
+    be rejected (that would break legitimate layouts that route through a link).
+    """
+    root = tmp_path / "videos"
+    root.mkdir()
+    real = root / "real"
+    real.mkdir()
+    link = root / "alias"
+    link.symlink_to(real, target_is_directory=True)
+    resolved = validate_output_path(str(link / "clip.mp4"), sandbox_root=root.resolve(), allow_abs=False)
+    assert resolved == (real / "clip.mp4").resolve()
+
+
 # --- video_sandbox_args env policy --------------------------------------------
 
 

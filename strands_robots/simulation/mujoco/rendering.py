@@ -95,7 +95,7 @@ class RenderingMixin:
     Owns ``render``, ``render_depth``, ``render_all``, ``get_contacts``, and
     the low-level ``_apply_sim_action`` (MuJoCo ``ctrl[]`` write + mj_step).
 
-    **Coupling** (see simulation.py top-level docstring): mixin reaches
+    **Coupling** (see the :mod:`simulation` top-level docstring): mixin reaches
     into ``self._world``, ``self._renderer_tls``, ``self._renderer_model``,
     ``self.default_width`` / ``self.default_height``, ``self._lock`` and
     ``self._viewer_handle``. ``TYPE_CHECKING`` stubs below exist so mypy
@@ -248,6 +248,56 @@ class RenderingMixin:
             return None
         return state.get("viz_option")
 
+    def _robot_base_free_joint(self, model: Any, robot: Any, pfx: str) -> int:
+        """Return the id of the robot's floating-base free joint, or ``-1``.
+
+        Fallback for a floating base that is NOT a named entry in
+        ``robot.joint_names`` (e.g. a mobile base whose ``<freejoint>`` is
+        unnamed). Resolves the robot's first actuated joint, then walks up the
+        body tree and returns the free joint attached to an ancestor body. This
+        matches only the robot's OWN base: a sibling task object (a free-jointed
+        cube) is never on the ancestor chain of an actuated joint, and a
+        fixed-base arm has no ancestor free joint (returns ``-1``).
+        """
+        mj = _ensure_mujoco()
+        for jnt_name in robot.joint_names:
+            lookup = pfx + jnt_name if pfx else jnt_name
+            jnt_id = mj.mj_name2id(model, mj.mjtObj.mjOBJ_JOINT, lookup)
+            if jnt_id < 0 and pfx:
+                jnt_id = mj.mj_name2id(model, mj.mjtObj.mjOBJ_JOINT, jnt_name)
+            if jnt_id < 0:
+                continue
+            body = int(model.jnt_bodyid[jnt_id])
+            while body > 0:
+                for j in range(model.njnt):
+                    if int(model.jnt_bodyid[j]) == body and model.jnt_type[j] == mj.mjtJoint.mjJNT_FREE:
+                        return j
+                body = int(model.body_parentid[body])
+            break
+        return -1
+
+    def _robot_free_base_joint_id(self, model: Any, robot: Any) -> int:
+        """Return the id of ``robot``'s floating-base free joint, or ``-1``.
+
+        Combined detection shared by observation surfacing and dataset
+        recording: first scans ``robot.joint_names`` for a NAMED free joint (a
+        humanoid's ``floating_base_joint``), then falls back to the
+        kinematic-tree walk (:meth:`_robot_base_free_joint`) for an UNNAMED
+        ``<freejoint>`` (a mobile base like LeKiwi). A fixed-base arm has
+        neither and returns ``-1``. Mirrors the free-joint detection inlined in
+        :meth:`_get_sim_observation`.
+        """
+        mj = _ensure_mujoco()
+        pfx = robot.namespace or ""
+        for jnt_name in robot.joint_names:
+            lookup = pfx + jnt_name if pfx else jnt_name
+            jnt_id = mj.mj_name2id(model, mj.mjtObj.mjOBJ_JOINT, lookup)
+            if jnt_id < 0 and pfx:
+                jnt_id = mj.mj_name2id(model, mj.mjtObj.mjOBJ_JOINT, jnt_name)
+            if jnt_id >= 0 and model.jnt_type[jnt_id] == mj.mjtJoint.mjJNT_FREE:
+                return int(jnt_id)
+        return self._robot_base_free_joint(model, robot, pfx)
+
     def _get_sim_observation(self, robot_name: str, *, skip_images: bool = False) -> dict[str, Any]:
         """Get observation from sim: joint state + cameras (unless skipped).
 
@@ -289,15 +339,34 @@ class RenderingMixin:
                 # velocity-feedback controllers (WBC) read it to close the loop.
                 obs[f"{jnt_name}.vel"] = float(data.qvel[model.jnt_dofadr[jnt_id]])
 
-        # Floating-base IMU-style signals from the free joint, when present.
-        # WBC and other locomotion controllers consume ``base_quat`` (the base
-        # orientation, w,x,y,z) and ``base_ang_vel`` (rad/s). Both are additive
-        # and absent for fixed-base robots (arms), so non-locomotion callers
-        # never see them.
+        # A floating base that is NOT a named entry in ``robot.joint_names``
+        # (e.g. a mobile base whose ``<freejoint>`` is unnamed, like LeKiwi) is
+        # missed by the loop above. Recover it from the kinematic tree so a
+        # mobile manipulator surfaces base state instead of being silently
+        # treated as a fixed-base arm.
+        if free_jnt_id < 0:
+            free_jnt_id = self._robot_base_free_joint(model, robot, pfx)
+
+        # Floating-base signals from the free joint, when present. A free
+        # joint's qpos is [xyz(3), quat(4)] and its qvel is [linvel(3),
+        # angvel(3)], so we surface the full base pose + twist:
+        #   base_pos     - world position x,y,z (incl. HEIGHT, m)
+        #   base_quat    - orientation w,x,y,z
+        #   base_lin_vel - linear velocity x,y,z (m/s, WORLD frame)
+        #   base_ang_vel - angular velocity x,y,z (rad/s, BODY frame; MuJoCo's
+        #                  free-joint qvel angular block is local, matching the
+        #                  IMU-gyro frame WBC/locomotion controllers consume)
+        # WBC / locomotion / velocity-tracking / mobile-manip controllers need
+        # base_pos (height for fall/height tracking) and base_lin_vel (the
+        # tracked quantity in a velocity-tracking reward) in addition to the
+        # orientation + turn rate. All four are additive and absent for
+        # fixed-base robots (arms), so non-locomotion callers never see them.
         if free_jnt_id >= 0:
             qadr = model.jnt_qposadr[free_jnt_id]
             vadr = model.jnt_dofadr[free_jnt_id]
+            obs["base_pos"] = [float(v) for v in data.qpos[qadr : qadr + 3]]
             obs["base_quat"] = [float(v) for v in data.qpos[qadr + 3 : qadr + 7]]
+            obs["base_lin_vel"] = [float(v) for v in data.qvel[vadr : vadr + 3]]
             obs["base_ang_vel"] = [float(v) for v in data.qvel[vadr + 3 : vadr + 6]]
 
         if skip_images:
@@ -479,7 +548,9 @@ class RenderingMixin:
         for key, value in action_dict.items():
             act_id = _lookup(mj.mjtObj.mjOBJ_ACTUATOR, key)
             if act_id >= 0:
-                data.ctrl[act_id] = float(value)
+                fval = float(value)
+                self._warn_ctrl_clamp(model, act_id, pfx, key, fval, mj)
+                data.ctrl[act_id] = fval
                 continue
 
             # Fallback: key is a joint name. Find the actuator that drives
@@ -543,6 +614,59 @@ class RenderingMixin:
             pfx,
             reason,
             hint,
+        )
+
+    def _warn_ctrl_clamp(self, model: Any, act_id: int, pfx: str, key: str, value: float, mj: Any) -> None:
+        """Warn once when a value written to a ctrl-limited actuator is out of range.
+
+        The direct-actuator branch of :meth:`_apply_action_by_name` writes the
+        action value verbatim to ``data.ctrl``. When that actuator is
+        ``ctrllimited`` and the value falls outside its ``ctrlrange``, MuJoCo
+        clamps it inside ``mj_step`` - so the commanded trajectory is silently
+        NOT reproduced for that actuator while the call still reports success.
+
+        This is exactly the failure mode of replaying a dataset whose action
+        units differ from this robot's actuator ctrl units (e.g. a normalized
+        gripper action in ``[0, 1]`` replayed onto a joint-position gripper
+        whose ctrlrange is a few radians), or of a policy emitting
+        out-of-distribution commands. Surface it once per ``(prefix, key)`` so
+        a 50Hz control loop never spams the log. A small tolerance absorbs
+        boundary rounding, and unlimited actuators (which never clamp) are
+        skipped.
+        """
+        try:
+            if not bool(model.actuator_ctrllimited[act_id]):
+                return
+            lo = float(model.actuator_ctrlrange[act_id][0])
+            hi = float(model.actuator_ctrlrange[act_id][1])
+        except (IndexError, TypeError, ValueError):
+            return
+        if hi <= lo:
+            # [0, 0] sentinel or degenerate range: not a meaningful limit.
+            return
+        tol = (hi - lo) * 0.01
+        if lo - tol <= value <= hi + tol:
+            return
+        warned = getattr(self, "_warned_ctrl_clamp_keys", None)
+        if warned is None:
+            warned = set()
+            self._warned_ctrl_clamp_keys = warned
+        dedup = (pfx, key)
+        if dedup in warned:
+            return
+        warned.add(dedup)
+        logger.warning(
+            "[sim] action value %.4g for ctrl-limited actuator %r (prefix=%r) is outside "
+            "its ctrlrange [%.4g, %.4g]; MuJoCo will clamp it, so the commanded value is "
+            "NOT reproduced for this actuator. This usually means the action units do not "
+            "match the actuator - e.g. a normalized gripper action replayed onto a "
+            "joint-position gripper, or an out-of-distribution policy command. Rescale the "
+            "action to the actuator's units (or pass a matching action_key_map to replay).",
+            value,
+            key,
+            pfx,
+            lo,
+            hi,
         )
 
     def _get_valid_action_keys(self, pfx: str) -> list[str]:
@@ -1567,7 +1691,7 @@ class RenderingMixin:
         distinct from the script main).
 
         Symptoms of the daemon-thread bug this fixes (#191):
-        ``run_mujoco_agent.py --policy=groot`` measured 2-3% frame
+        a threaded MuJoCo agent driver measured 2-3% frame
         capture rate vs the programmatic single-thread driver, with
         visible greenish GL clear-colour gradient frames at episode
         boundaries. The synchronous mode trades the daemon thread for a

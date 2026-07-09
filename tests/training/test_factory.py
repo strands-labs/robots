@@ -159,6 +159,34 @@ class TestLifecycle:
         assert floor["multinode"] is False
 
 
+class TestHardwareFloorContract:
+    """Every registered trainer's ``hardware_floor`` honors the ABC contract.
+
+    ``Trainer.hardware_floor`` powers the ``plan`` advisor: :meth:`Trainer.validate`
+    checks a spec's requested resources against it, so a floor that omits a key
+    or returns the wrong type would break feasibility checking for the whole
+    provider family. The advisory keys are ``min_gpus`` (int), ``min_vram_gb``
+    (int), and ``multinode`` (bool); GPU/VRAM counts must be non-negative.
+    """
+
+    @pytest.mark.parametrize("provider", list_trainers())
+    def test_floor_shape_and_types(self, provider):
+        floor = create_trainer(provider).hardware_floor
+
+        assert isinstance(floor, dict), f"{provider} hardware_floor is not a dict"
+        assert {"min_gpus", "min_vram_gb", "multinode"} <= set(floor), (
+            f"{provider} hardware_floor is missing advisory keys: {sorted(floor)}"
+        )
+
+        # bool is a subclass of int, so reject it explicitly for the counts.
+        assert isinstance(floor["min_gpus"], int) and not isinstance(floor["min_gpus"], bool)
+        assert isinstance(floor["min_vram_gb"], int) and not isinstance(floor["min_vram_gb"], bool)
+        assert isinstance(floor["multinode"], bool)
+
+        assert floor["min_gpus"] >= 0
+        assert floor["min_vram_gb"] >= 0
+
+
 class TestSpecTolerance:
     def test_unknown_extra_keys_do_not_break_validate(self, spec):
         """The **kwargs-style tolerance rule: unknown extras are ignored."""

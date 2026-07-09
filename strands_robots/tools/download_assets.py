@@ -39,7 +39,8 @@ def download_assets(
     (override with ``STRANDS_ASSETS_DIR``).
 
     Args:
-        action: ``download`` | ``list`` | ``status``
+        action: ``download`` | ``list`` | ``status``.  ``status`` marks each
+            robot ``[ok]`` (assets present) or ``[--]`` (missing).
         robots: Comma-separated names (e.g. ``so100,panda``). Omit for all.
         category: Filter: arm, bimanual, hand, humanoid, mobile, mobile_manip
         force: Re-download even if present
@@ -56,7 +57,7 @@ def download_assets(
             available = sum(1 for r in robots_info if r["available"])
             lines = [f"{available} available, {len(robots_info) - available} missing"]
             lines.extend(
-                f"{'' if r['available'] else ''} {r['name']:<20s} {r['category']:<12s} {r['description']}"
+                f"{'[ok]' if r['available'] else '[--]'} {r['name']:<20s} {r['category']:<12s} {r['description']}"
                 for r in robots_info
             )
             lines.append(f"\nCache: {get_user_assets_dir()}")

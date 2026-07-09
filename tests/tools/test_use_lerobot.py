@@ -466,6 +466,37 @@ def test_grayscale_frame_encodes() -> None:
     assert block["image"]["source"]["bytes"]
 
 
+def test_integer_frame_clipped_not_scaled_and_round_trips() -> None:
+    """Non-uint8 integer frames are clipped into [0, 255], not magnitude-scaled.
+
+    Float frames are rescaled by their magnitude (a [0, 1] image becomes
+    [0, 255]), but a plain integer buffer is assumed to already be in pixel
+    units, so out-of-range values must saturate rather than wrap or rescale.
+    The encoded block must round-trip back through cv2 to a valid uint8 image
+    of the same spatial shape.
+    """
+    cv2 = pytest.importorskip("cv2")
+    # int16 RGB frame with values deliberately outside [0, 255]. Per-pixel
+    # values are channel-symmetric so the RGB->BGR swap does not reorder them.
+    frame = np.full((8, 8, 3), 4095, dtype=np.int16)
+    frame[0, 0] = -50  # must saturate to 0, not wrap
+    frame[1, 1] = 200  # in range -> passes through unchanged
+    block = M._array_to_image_block(frame)
+    assert block is not None
+    assert block["image"]["format"] == "png"  # small frame -> lossless PNG
+    raw = block["image"]["source"]["bytes"]
+    assert raw
+    decoded = cv2.imdecode(np.frombuffer(raw, dtype=np.uint8), cv2.IMREAD_COLOR)
+    assert decoded is not None
+    assert decoded.dtype == np.uint8
+    assert decoded.shape == (8, 8, 3)
+    # Clip semantics (PNG is lossless): -50 saturates to 0, 4095 to 255, and the
+    # in-range 200 survives -- a magnitude rescale would have crushed 200 instead.
+    assert decoded.min() == 0
+    assert decoded.max() == 255
+    assert 200 in decoded
+
+
 def test_collect_images_finds_frames_in_list() -> None:
     """Images one level inside a list are collected; non-images are ignored."""
     pytest.importorskip("cv2")
@@ -595,6 +626,57 @@ def test_dispatch_import_error_suggests_install(monkeypatch: pytest.MonkeyPatch)
     _assert_ascii(text)
     assert "Import error" in text
     assert "pip install lerobot" in text
+
+
+def test_dispatch_missing_optional_dependency_suggests_extra(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A resolve that fails because a path exists but an optional dependency is
+    missing must return an actionable "install the extra" hint, not a dead-end.
+
+    ``_import_from_lerobot`` classifies this case by carrying the underlying
+    third-party ImportError on ``LeRobotResolveError.real_error``. The
+    dispatcher branches on that marker: when present it tells the agent which
+    ``lerobot[...]`` extra to install (distinct from the genuinely-missing-path
+    branch, which points at ``__discovery__``). This pins the exact user-facing
+    message so the two failure modes never collapse into one generic error.
+    """
+
+    def resolver(path: str) -> Any:
+        raise M.LeRobotResolveError(
+            "'datasets.lerobot_dataset' exists but failed to import: No module named 'datasets'",
+            real_error=ImportError("No module named 'datasets'"),
+        )
+
+    monkeypatch.setattr(M, "_import_from_lerobot", resolver)
+    result = _fn(module="datasets.lerobot_dataset", method="LeRobotDataset")
+    assert result["status"] == "error"
+    text = _texts(result)
+    _assert_ascii(text)
+    # Carries the real import failure and an actionable extra to install ...
+    assert "exists but failed to import" in text
+    assert "optional dependency is missing" in text
+    assert "lerobot[dataset]" in text
+    # ... and does NOT collapse into the genuinely-missing __discovery__ tip.
+    assert "__discovery__" not in text
+
+
+def test_dispatch_genuinely_missing_path_points_at_discovery(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A resolve that fails with no underlying dependency error (the path simply
+    does not exist) must point the agent at ``__discovery__`` -- and must NOT
+    emit the misleading "install an extra" hint reserved for the missing-dep
+    branch. This is the sibling contract to the missing-dependency case.
+    """
+
+    def resolver(path: str) -> Any:
+        raise M.LeRobotResolveError("Cannot resolve 'does.not.exist' in lerobot")
+
+    monkeypatch.setattr(M, "_import_from_lerobot", resolver)
+    result = _fn(module="does.not.exist", method="")
+    assert result["status"] == "error"
+    text = _texts(result)
+    _assert_ascii(text)
+    assert "Cannot resolve" in text
+    assert "__discovery__" in text
+    assert "optional dependency is missing" not in text
 
 
 # ----------------------------------------------------------------------------

@@ -154,7 +154,7 @@ static list (see [Discovering supported policy types](#discovering-supported-pol
 | `smolvla` | SmolVLA - HuggingFace small VLA |
 | `pi0` / `pi05` / `pi0_fast` | Physical Intelligence VLA family |
 | `groot` | NVIDIA GR00T |
-| `molmoact2` | transformers-native SO100/SO101 VLA; **requires lerobot from source** (see below) |
+| `molmoact2` | transformers-native SO100/SO101 VLA; `pip install 'strands-robots[molmoact2]'` (see below) |
 | `eo1` | EO-1 VLA |
 | `xvla` | X-VLA |
 | `wall_x` | Wall-X VLA |
@@ -191,32 +191,18 @@ one-line fix instead of a dead end.
 
 ## MolmoAct2
 
-> **Important:** MolmoAct2 requires lerobot installed **from source** (git main).
-> The `MolmoAct2Policy` class was added after lerobot 0.5.1 (the latest PyPI
-> release as of June 2025; merged in lerobot PR #3604). A plain
-> `pip install strands-robots[lerobot]` resolves lerobot 0.5.1, which does NOT
-> include MolmoAct2.
-
-The `[molmoact2]` extra layers the auxiliary deps MolmoAct2's modeling and
-processor code needs on top of lerobot core (`transformers`, `peft`, `scipy`),
-but PyPI rejects direct git URLs in a published package, so you still install
-lerobot itself from source in the same command:
+MolmoAct2 ships in lerobot **>= 0.6** - its `MolmoAct2Policy` was merged in
+lerobot PR #3604 and first released in 0.6.0 - so it resolves straight from
+PyPI with no git-from-source install. The `[molmoact2]` extra layers the
+auxiliary deps MolmoAct2's modeling and processor code needs
+(`transformers>=5.4.0,<5.6.0`, `peft`, `scipy`) on top of
+`strands-robots[lerobot]` (which pins `lerobot>=0.6.0,<0.7.0`):
 
 ```bash
-# Standard (x86_64, macOS):
-uv pip install "strands-robots[molmoact2]" \
-    "lerobot[feetech] @ git+https://github.com/huggingface/lerobot.git"
-
-# Jetson / aarch64 (pyav wheel may fail to build - skip it, lerobot uses torchcodec):
-uv pip install "strands-robots[molmoact2]" \
-    "lerobot[feetech] @ git+https://github.com/huggingface/lerobot.git" --no-build-isolation
-# If pyav still blocks the install, exclude it and add torchcodec manually:
-uv pip install torchcodec>=0.7
-uv pip install "lerobot[feetech] @ git+https://github.com/huggingface/lerobot.git" --no-deps
-uv pip install -r <(pip show lerobot 2>/dev/null | grep Requires | sed 's/Requires: //;s/, /\n/g' | grep -v "^av$")
+uv pip install "strands-robots[molmoact2]"
 ```
 
-Once lerobot from source is installed, MolmoAct2 works:
+MolmoAct2 then works:
 
 ```python
 policy = create_policy(

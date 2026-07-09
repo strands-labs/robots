@@ -494,8 +494,7 @@ def _load_seq_counters() -> None:
                 # dict (or a dict with no valid entries) must NOT flip
                 # sidecar_loaded=True, otherwise the audit-log fallback
                 # is skipped and an attacker writing ``{}`` gets every
-                # peer's seq reset. (R3 follow-up - review thread on
-                # PR#221 audit.py:531).
+                # peer's seq reset.
                 merged_any = False
                 for key, value in payload.items():
                     if not (isinstance(key, str) and isinstance(value, int) and value >= 0):

@@ -22,7 +22,7 @@ Public API:
 
 Every function takes a ``SimWorld`` whose ``_backend_state["spec"]`` holds the
 live ``MjSpec``. They return ``True`` on success, ``False`` on failure (matching
-the legacy API) so call sites in ``simulation.py`` don't need to change.
+the legacy API) so call sites in :mod:`simulation` don't need to change.
 """
 
 from __future__ import annotations
@@ -48,6 +48,24 @@ def _get_spec(world: SimWorld) -> Any | None:
     so callers can return a clean error dict rather than crashing mid-op.
     """
     return world._backend_state.get("spec")
+
+
+def _sync_cached_xml(world: SimWorld, spec: Any) -> None:
+    """Refresh the legacy XML cache in ``world._backend_state["xml"]`` from ``spec``.
+
+    Some readers (the ``load_scene`` + ``add_robot`` round-trip) consume the
+    cached XML string rather than the live ``MjSpec``, so it must be refreshed
+    after every recompile. ``spec.to_xml()`` can fail on specs MuJoCo cannot
+    serialise; that is never fatal to the mutation (the live model/spec are
+    already updated), so we leave the previous cache in place - but we always
+    log the reason at debug so a silently stale cache stays diagnosable rather
+    than being swallowed.
+    """
+    try:
+        with filter_mujoco_attach_noise():
+            world._backend_state["xml"] = spec.to_xml()
+    except Exception as xml_err:
+        logger.debug("spec.to_xml() failed; cached XML left stale: %s", xml_err)
 
 
 def _recompile_preserving_state(world: SimWorld, spec: Any) -> bool:
@@ -80,11 +98,7 @@ def _recompile_preserving_state(world: SimWorld, spec: Any) -> bool:
 
     # Keep the cached XML in sync with the spec for legacy readers (e.g.
     # load_scene + add_robot round-trip).
-    try:
-        with filter_mujoco_attach_noise():
-            world._backend_state["xml"] = spec.to_xml()
-    except Exception as xml_err:
-        logger.debug("spec.to_xml() failed: %s", xml_err)
+    _sync_cached_xml(world, spec)
 
     # Re-discover per-robot IDs. Names inside MuJoCo are namespaced under
     # robot.namespace (e.g. "arm1/shoulder_pan") when robots were attached
@@ -446,11 +460,7 @@ def eject_robot_from_scene(world: SimWorld, robot_name: str) -> bool:
     world._model = new_model
     world._data = new_data
     world._backend_state["spec"] = new_spec
-    try:
-        with filter_mujoco_attach_noise():
-            world._backend_state["xml"] = new_spec.to_xml()
-    except Exception as xml_err:
-        logger.debug("spec.to_xml() failed: %s", xml_err)
+    _sync_cached_xml(world, new_spec)
 
     # Step 4: restore state for every joint that survived the rebuild. Joints
     # belonging to the ejected robot simply don't resolve and get skipped.
@@ -521,11 +531,7 @@ def replace_scene_mjcf(world: SimWorld, xml: str) -> bool:
     # _compile_world() which also calls mj_forward after MjData construction.
     mj.mj_forward(new_model, new_data)
 
-    try:
-        with filter_mujoco_attach_noise():
-            world._backend_state["xml"] = new_spec.to_xml()
-    except Exception:
-        pass
+    _sync_cached_xml(world, new_spec)
     return True
 
 
@@ -740,9 +746,5 @@ def patch_scene_mjcf(world: SimWorld, ops: list[dict[str, Any]]) -> int:
     mj = _ensure_mujoco()
     mj.mj_forward(world._model, world._data)
 
-    try:
-        with filter_mujoco_attach_noise():
-            world._backend_state["xml"] = spec.to_xml()
-    except Exception:
-        pass
+    _sync_cached_xml(world, spec)
     return applied

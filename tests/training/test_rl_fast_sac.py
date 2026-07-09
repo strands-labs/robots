@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+from typing import Any
 
 import pytest
 
@@ -105,6 +106,35 @@ def test_validate_rejects_bad_specs() -> None:
     # tau out of range.
     problems = trainer.validate(RLTrainSpec(output_dir="/tmp/x", tau=2.0))
     assert any("tau" in p for p in problems)
+
+
+@pytest.mark.parametrize(
+    ("overrides", "expected"),
+    [
+        ({"output_dir": ""}, "output_dir is required"),
+        ({"total_timesteps": 0}, "total_timesteps must be > 0"),
+        ({"rollout_steps": 0}, "rollout_steps must be > 0"),
+        ({"buffer_size": 0}, "buffer_size must be > 0"),
+        ({"batch_size": 0}, "batch_size must be > 0"),
+        ({"gradient_steps": 0}, "gradient_steps must be > 0"),
+    ],
+)
+def test_validate_flags_each_out_of_range_field(overrides: dict[str, Any], expected: str) -> None:
+    """Each numeric guard in the FastSAC preflight names the offending field.
+
+    ``validate`` is a pure, read-only preflight the ``train`` entry point runs
+    before touching torch or the env, so a misconfigured spec fails with an
+    actionable message instead of a deep stack trace. One otherwise-valid spec
+    per case isolates a single bad field; a non-None ``env_factory`` keeps the
+    env-factory guard quiet so only the field under test is exercised.
+    """
+    from strands_robots.training.rl import RLTrainSpec
+
+    trainer = create_trainer("fast_sac")
+    base: dict[str, Any] = {"output_dir": "/tmp/x", "env_factory": lambda: None}
+    base.update(overrides)
+    problems = trainer.validate(RLTrainSpec(**base))
+    assert any(expected in p for p in problems), problems
 
 
 def test_train_rejects_non_rl_spec() -> None:
@@ -220,3 +250,63 @@ def test_setup_reconciles_env_device_to_learner_device() -> None:
     assert trainer.env.device == trainer.device
     assert trainer._obs["actor_obs"].device == trainer.device
     assert trainer.buffer.device == trainer.device
+
+
+def test_setup_without_autotune_uses_fixed_alpha() -> None:
+    """``autotune_alpha=False`` pins alpha as a constant, not a learnable temp.
+
+    With autotuning off the learner must not build a temperature optimizer and
+    ``log_alpha`` must be a plain (non-grad) tensor, so ``alpha`` stays at
+    ``init_alpha`` for the whole run rather than drifting toward the entropy
+    target. This is the SAC-without-auto-entropy contract users opt into when
+    they want a hand-tuned temperature.
+    """
+    from strands_robots.training.rl import RLTrainSpec
+    from strands_robots.training.rl.fast_sac import FastSacTrainer
+
+    trainer = FastSacTrainer()
+    spec = RLTrainSpec(
+        env_factory=_make_reach_env,
+        output_dir="/tmp/sac_fixed_alpha",
+        device="cpu",
+        autotune_alpha=False,
+        init_alpha=0.5,
+        rollout_steps=4,
+        batch_size=16,
+        learning_starts=16,
+    )
+    trainer.setup(spec)
+
+    assert trainer.autotune_alpha is False
+    assert trainer.log_alpha.requires_grad is False
+    assert not hasattr(trainer, "alpha_optimizer")
+    assert trainer.alpha.item() == pytest.approx(0.5)
+
+
+def test_update_is_noop_until_buffer_reaches_batch_size() -> None:
+    """``update`` returns zero-loss metrics while the buffer is below a batch.
+
+    The learner cannot form a full minibatch until the replay buffer holds at
+    least ``batch_size`` transitions, so a freshly-set-up trainer (empty buffer)
+    must short-circuit to zero losses rather than sampling an undersized batch.
+    """
+    from strands_robots.training.rl import RLTrainSpec
+    from strands_robots.training.rl.fast_sac import FastSacTrainer
+
+    trainer = FastSacTrainer()
+    spec = RLTrainSpec(
+        env_factory=_make_reach_env,
+        output_dir="/tmp/sac_warmup_noop",
+        device="cpu",
+        rollout_steps=4,
+        batch_size=16,
+        learning_starts=16,
+    )
+    trainer.setup(spec)
+    assert trainer.buffer.size < spec.batch_size  # nothing collected yet
+
+    metrics = trainer.update()
+    assert metrics["critic_loss"] == 0.0
+    assert metrics["actor_loss"] == 0.0
+    assert metrics["latest_loss"] == 0.0
+    assert metrics["alpha"] == pytest.approx(trainer.alpha.item())

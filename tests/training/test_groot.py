@@ -169,6 +169,56 @@ class TestBuildCommand:
         # consumed keys must not leak
         assert not any(c.startswith("--groot_root=") for c in cmd)
 
+    def test_no_augmentation_emits_no_augmentation_flags(self, spec):
+        """With no augmentation, none of the augmentation flags appear."""
+        cmd = Gr00tTrainer().build_command(spec)
+        assert not any(c.startswith("--random_rotation_angle=") for c in cmd)
+        assert not any(c.startswith("--color_jitter_params=") for c in cmd)
+        assert not any(c.startswith("--extra_augmentation_config=") for c in cmd)
+
+    def test_augmentation_native_and_extra_map_to_distinct_flags(self, spec):
+        """build_command mirrors build_finetune_config: random_rotation_angle
+        and color_jitter_params are native flags; any other key is bundled into
+        --extra_augmentation_config JSON that excludes those native keys.
+        """
+        spec.augmentation = {
+            "random_rotation_angle": 30,
+            "color_jitter_params": [0.3, 0.3, 0.3, 0.1],
+            "mixup_alpha": 0.4,
+        }
+        cmd = Gr00tTrainer().build_command(spec)
+        assert "--random_rotation_angle=30" in cmd
+        # color_jitter_params is a native field: its own flag, NOT folded into
+        # --extra_augmentation_config.
+        assert "--color_jitter_params=[0.3, 0.3, 0.3, 0.1]" in cmd
+        extra_flags = [c for c in cmd if c.startswith("--extra_augmentation_config=")]
+        assert len(extra_flags) == 1
+        extra = json.loads(extra_flags[0].split("=", 1)[1])
+        assert extra == {"mixup_alpha": 0.4}
+        # native keys must NOT leak into the extra config bundle.
+        assert "random_rotation_angle" not in extra
+        assert "color_jitter_params" not in extra
+
+    def test_extra_only_augmentation_is_not_dropped(self, spec):
+        """An augmentation dict with only non-native keys still emits
+        --extra_augmentation_config (regression: it used to be silently dropped
+        unless color_jitter_params was also present).
+        """
+        spec.augmentation = {"mixup_alpha": 0.4}
+        cmd = Gr00tTrainer().build_command(spec)
+        extra_flags = [c for c in cmd if c.startswith("--extra_augmentation_config=")]
+        assert len(extra_flags) == 1
+        assert json.loads(extra_flags[0].split("=", 1)[1]) == {"mixup_alpha": 0.4}
+
+    def test_color_jitter_only_emits_native_flag_no_extra(self, spec):
+        """color_jitter_params alone emits its native flag and no extra bundle
+        (regression: --extra_augmentation_config used to dump the whole dict).
+        """
+        spec.augmentation = {"color_jitter_params": [0.2, 0.2, 0.2, 0.05]}
+        cmd = Gr00tTrainer().build_command(spec)
+        assert "--color_jitter_params=[0.2, 0.2, 0.2, 0.05]" in cmd
+        assert not any(c.startswith("--extra_augmentation_config=") for c in cmd)
+
 
 # ---------------------------------------------------------------------------
 # Fake Isaac-GR00T package tree so the config-lowering + in-process launch

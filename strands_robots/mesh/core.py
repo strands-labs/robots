@@ -442,8 +442,7 @@ class Mesh(SensorLoopsMixin):
         :func:`_acl_config.snapshot_acl` and stashes the result on
         ``self._acl_snapshot`` so :func:`session._build_config`
         downstream can reuse the SAME dict (closes the
-        ``Mesh.start`` -> ``_build_config`` TOCTOU window flagged in
-        review at session.py:296).
+        ``Mesh.start`` -> ``_build_config`` TOCTOU window).
         """
         from strands_robots.mesh import _acl_config, _zenoh_config
 
@@ -468,7 +467,7 @@ class Mesh(SensorLoopsMixin):
         # Stash the snapshot AND auth_mode on a thread-local used by
         # ``session._build_config`` so the wire-config builder picks up
         # the SAME dict the gate inspected AND the SAME auth_mode value.
-        # Issue #218 + review threads session.py:296 / core.py:139.
+        # Issue #218.
         self._acl_snapshot = resolved
         _acl_config._set_thread_snapshot(resolved, auth_mode=auth_mode)
         if auth_mode != "mtls":
@@ -590,8 +589,8 @@ class Mesh(SensorLoopsMixin):
                 session = get_session()
             finally:
                 # Snapshot has been consumed by ``session._build_config``
-                # via the thread-local single-flight (issue #218 +
-                # review session.py:296), or we refused to start before
+                # via the thread-local single-flight (issue #218), or
+                # we refused to start before
                 # ``get_session`` was reached -- either way, clear it so
                 # the next ``Mesh.start`` (different instance, same
                 # thread) or direct ``get_session()`` call sees fresh

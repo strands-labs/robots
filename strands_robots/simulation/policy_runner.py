@@ -1319,6 +1319,7 @@ class PolicyRunner:
             # Defaults False for policies without the attribute (e.g. MockPolicy).
             "positional_fallback_used": bool(getattr(policy, "positional_fallback_used", False)),
             "generic_state_keys_used": bool(getattr(policy, "generic_state_keys_used", False)),
+            "missing_state_keys_used": bool(getattr(policy, "missing_state_keys_used", False)),
             # Process RSS (MB) at result time: confirms a heavy model is resident
             # and, across a loop, that it stays resident instead of oscillating
             # as it would on a per-episode reload. None when unmeasurable.
@@ -1658,10 +1659,12 @@ class PolicyRunner:
                 as :meth:`run` / ``run_policy``: ``path`` enables it, plus
                 ``fps`` / ``camera`` / ``width`` / ``height``). One file per
                 episode with ``_ep{i}`` inserted into the filename; the written
-                paths are returned in the result json ``video_paths``. Only the
-                ``success_fn`` path records - passing ``video`` with a ``spec``
-                is rejected (the benchmark path stays recording-free; use
-                :meth:`run` for a benchmark rollout video).
+                paths are returned in the result json ``video_paths``. Recorded
+                on BOTH eval routes: the ``success_fn`` path and the
+                ``spec``/benchmark path (:meth:`_evaluate_with_spec`). Frames are
+                captured synchronously on the eval thread at the ``on_frame``
+                point (after ``send_action``), so recording never perturbs the
+                bit-stable spec-path rollout.
 
         Returns:
             Standard status dict. The JSON payload carries an RTC telemetry
@@ -1722,20 +1725,6 @@ class PolicyRunner:
                 ],
             }
 
-        if video and spec is not None:
-            return {
-                "status": "error",
-                "content": [
-                    {
-                        "text": (
-                            "video recording is only supported on the success_fn eval "
-                            "path (eval_policy). The spec/benchmark path does not record "
-                            "rollout video; use run_policy(video=...) for a benchmark rollout."
-                        )
-                    }
-                ],
-            }
-
         if spec is not None:
             return self._evaluate_with_spec(
                 robot_name,
@@ -1749,6 +1738,7 @@ class PolicyRunner:
                 control_frequency=control_frequency,
                 control_substeps=control_substeps,
                 policy_kwargs=_policy_kwargs,
+                video=video,
             )
 
         try:
@@ -1999,6 +1989,7 @@ class PolicyRunner:
                         "policy_load_cache_hit": bool(getattr(policy, "load_cache_hit", False)),
                         "positional_fallback_used": bool(getattr(policy, "positional_fallback_used", False)),
                         "generic_state_keys_used": bool(getattr(policy, "generic_state_keys_used", False)),
+                        "missing_state_keys_used": bool(getattr(policy, "missing_state_keys_used", False)),
                         **rtc_telemetry,
                         "policy_resident_rss_mb": process_rss_mb(),
                         "episodes": results,
@@ -2022,6 +2013,7 @@ class PolicyRunner:
         control_frequency: float = 50.0,
         control_substeps: int | None = None,
         policy_kwargs: dict[str, Any] | None = None,
+        video: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Drive a :class:`BenchmarkProtocol` for ``n_episodes`` episodes.
 
@@ -2045,6 +2037,12 @@ class PolicyRunner:
         are logged WARNING; the rollout continues. The hook receives a
         global step counter (across episodes), so callers that need
         per-episode buckets should track episode boundaries themselves.
+
+        ``video`` (optional) records one rollout MP4 per episode (``_ep{i}``
+        filename templating), captured synchronously on the eval thread at the
+        same point as ``on_frame`` - render is read-only over ``mjData`` so it
+        does not perturb the bit-stable spec-path rollout. Written paths are
+        returned in the result json ``video_paths``.
         """
         # Lazy import to avoid circular reference (benchmark module imports
         # `SimEngine` from base which imports this module under TYPE_CHECKING).
@@ -2099,10 +2097,28 @@ class PolicyRunner:
                 spec_instruction,
             )
 
+        # Optional per-episode rollout video (evaluate_benchmark video=). One
+        # MP4 per episode via the _ep{i} filename templating, so a benchmark
+        # eval can be watched to see WHY episodes fail - not just read as an
+        # aggregate success_rate (parity with eval_policy). The writer is opened
+        # per episode below and frames are captured synchronously on the eval
+        # thread at the on_frame point, so recording never perturbs the
+        # bit-stable spec-path rollout (render is read-only over mjData).
+        video_paths: list[str] = []
+        current_vwriter: _RolloutVideoWriter | None = None
+
         stopped_early = False
         try:
             for ep in range(n_episodes):
                 self.sim.reset()
+                # Per-episode MP4 (foo_ep{i}.mp4). Path/camera validation +
+                # probe render happen here; a bad path/camera fails the eval
+                # up-front (on ep 0) instead of running N episodes and writing
+                # nothing. No-op (returns None) when video is unset.
+                ep_vcfg = self.sim._episode_video_config(video, ep)
+                current_vwriter, _video_err = _RolloutVideoWriter.open(self.sim, ep_vcfg, control_frequency)
+                if _video_err is not None:
+                    return _video_err
                 # Per-episode seeded RNG - deterministic given the master seed
                 # and the episode index.
                 episode_seed = master_rng.randint(0, 2**31 - 1)
@@ -2226,6 +2242,13 @@ class PolicyRunner:
                             # GL clear-colour artifacts. See
                             # ``Simulation.start_cameras_recording_synchronous``
                             # for the recorder side of this contract.
+                            # Capture the rollout video frame synchronously on
+                            # the eval thread (same point + ep-local cadence as
+                            # eval_policy's _fire_on_frame). Independent of the
+                            # user on_frame hook so video records with or without
+                            # one. ``steps`` is the pre-increment ep-local index.
+                            if current_vwriter is not None:
+                                current_vwriter.capture(steps)
                             if on_frame is not None:
                                 try:
                                     on_frame(global_step, observation, action_applied)
@@ -2305,11 +2328,25 @@ class PolicyRunner:
                 # #708 - same per-episode recorder boundary as evaluate().
                 self._finalize_recorder_episode()
 
+                if current_vwriter is not None:
+                    current_vwriter.close()
+                    if current_vwriter.frame_count > 0 and os.path.exists(current_vwriter.path):
+                        video_paths.append(current_vwriter.path)
+                    else:
+                        logger.warning(
+                            "evaluate_benchmark episode %d: video requested but wrote 0 frames to %s",
+                            ep,
+                            current_vwriter.path,
+                        )
+                    current_vwriter = None
+
         except CooperativeStop:
             # A user/backend on_frame hook requested a graceful stop (the
             # same signal run() honors). End the benchmark over the episodes
             # completed so far instead of crashing with an uncaught
-            # BaseException.
+            # BaseException. Close any in-progress episode video cleanly.
+            if current_vwriter is not None:
+                current_vwriter.close()
             stopped_early = True
             logger.info(
                 "on_frame requested a cooperative stop; ending benchmark after %d completed episode(s)",
@@ -2352,8 +2389,10 @@ class PolicyRunner:
                         "policy_load_cache_hit": bool(getattr(policy, "load_cache_hit", False)),
                         "positional_fallback_used": bool(getattr(policy, "positional_fallback_used", False)),
                         "generic_state_keys_used": bool(getattr(policy, "generic_state_keys_used", False)),
+                        "missing_state_keys_used": bool(getattr(policy, "missing_state_keys_used", False)),
                         "policy_resident_rss_mb": process_rss_mb(),
                         "episodes": results,
+                        "video_paths": video_paths,
                     }
                 },
             ],

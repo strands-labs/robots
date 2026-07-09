@@ -37,7 +37,7 @@ import numpy as np
 
 from strands_robots.assets import resolve_model_path, resolve_robot_name
 from strands_robots.registry.discovery import discover_urdf_path, list_urdf_discoverable
-from strands_robots.simulation.base import SimEngine
+from strands_robots.simulation.base import SimEngine, reject_setup_kwargs
 from strands_robots.simulation.model_registry import (
     list_available_models,
     resolve_model,
@@ -89,6 +89,28 @@ def _short_joint_name(label: str) -> str:
     return label.rsplit("/", 1)[-1]
 
 
+def _quat_rotate_inverse_wxyz(quat_wxyz: list[float], vec: list[float]) -> list[float]:
+    """Express a WORLD-frame 3-vector in the body frame given a (w,x,y,z) quaternion.
+
+    Computes ``R(q)^T @ vec`` (the standard "rotate by the inverse"), used to
+    turn Newton's world-frame free-joint angular velocity into the BODY frame so
+    ``base_ang_vel`` matches the MuJoCo backend and the IMU-gyro convention WBC /
+    locomotion controllers consume. The quaternion is normalised internally; a
+    ~zero-norm quaternion returns ``vec`` unchanged.
+    """
+    q = np.asarray(quat_wxyz, dtype=np.float64)
+    norm = float(np.linalg.norm(q))
+    if norm < 1e-8:
+        return [float(v) for v in vec]
+    w, x, y, z = q / norm
+    v = np.asarray(vec, dtype=np.float64)
+    q_vec = np.array([x, y, z], dtype=np.float64)
+    a = v * (2.0 * w * w - 1.0)
+    b = np.cross(q_vec, v) * (w * 2.0)
+    c = q_vec * (float(np.dot(q_vec, v)) * 2.0)
+    return [float(t) for t in (a - b + c)]
+
+
 class NewtonSimEngine(DomainRandomizationMixin, NewtonRecordingMixin, SimEngine):
     """GPU-native simulation backend built on Newton (Warp / MuJoCo-Warp).
 
@@ -123,12 +145,30 @@ class NewtonSimEngine(DomainRandomizationMixin, NewtonRecordingMixin, SimEngine)
                 ``None`` selects Warp's default device (GPU when available).
             default_width: Default render width in pixels.
             default_height: Default render height in pixels.
-            **kwargs: Ignored; accepted for forward compatibility.
+            **kwargs: Ignored; accepted for forward compatibility. Robot-setup
+                arguments (``robot_name`` / ``robot``) are rejected rather than
+                dropped - use ``Robot("so101", mode="sim")`` or ``add_robot``.
 
         Raises:
             ValueError: If ``solver`` is not a known solver name.
         """
+        reject_setup_kwargs(kwargs)
         super().__init__()
+        # State that teardown (destroy/cleanup/__del__) touches must be set
+        # before any fallible construction step. Otherwise a partially built
+        # engine -- e.g. ensure_newton() raising when warp is absent, or an
+        # unknown solver -- leaves __del__ to acquire self._lock during GC and
+        # raise AttributeError, masking the real construction error with log
+        # noise. Initialising the lock and viewer handles first keeps destroy()
+        # a clean no-op on a half-constructed instance.
+        self._lock = threading.RLock()
+        self._world: SimWorld | None = None
+        # Interactive viewer handle (newton.viewer.ViewerGL/ViewerViser/
+        # ViewerNull). None until open_viewer() is called; synced once per
+        # control step from _advance() on the stepping thread.
+        self._viewer: Any = None
+        self._viewer_kind: str | None = None
+
         self._nt, self._wp = ensure_newton()
         if solver.lower() not in solver_registry():
             raise ValueError(f"Unknown Newton solver {solver!r}. Available: {sorted(solver_registry())}")
@@ -138,15 +178,6 @@ class NewtonSimEngine(DomainRandomizationMixin, NewtonRecordingMixin, SimEngine)
         self.device = device
         self.default_width = default_width
         self.default_height = default_height
-
-        self._world: SimWorld | None = None
-        self._lock = threading.RLock()
-
-        # Interactive viewer handle (newton.viewer.ViewerGL/ViewerViser/
-        # ViewerNull). None until open_viewer() is called; synced once per
-        # control step from _advance() on the stepping thread.
-        self._viewer: Any = None
-        self._viewer_kind: str | None = None
 
         # Newton handles (rebuilt on every scene mutation via _rebuild).
         self._model: Any = None
@@ -168,6 +199,11 @@ class NewtonSimEngine(DomainRandomizationMixin, NewtonRecordingMixin, SimEngine)
         # Distinct from _joint_coord_index because free joints have more
         # coordinates (quaternion) than DOFs; arm joints are 1:1.
         self._joint_dof_index: dict[tuple[str, str], int] = {}
+        # Short name of each robot's floating-base free joint (a humanoid's
+        # named ``floating_base_joint``), when it has one. Used to surface the
+        # 6-DoF base pose/twist instead of reporting the base x-coordinate as a
+        # scalar joint value (parity with the MuJoCo backend).
+        self._robot_free_base_joint: dict[str, str] = {}
         # Ordered full body labels per robot (rebuilt with the model).
         self._robot_body_map: dict[str, list[str]] = {}
         # Parsed mesh geometry keyed by resolved mesh_path, so rebuilds do not
@@ -317,6 +353,7 @@ class NewtonSimEngine(DomainRandomizationMixin, NewtonRecordingMixin, SimEngine)
         data_config: str | None = None,
         position: list[float] | None = None,
         orientation: list[float] | None = None,
+        keyframe: str | int | None = None,
         source: str | None = None,
     ) -> dict[str, Any]:
         """Add a robot to the world from a registered name, MJCF, or URDF.
@@ -342,6 +379,10 @@ class NewtonSimEngine(DomainRandomizationMixin, NewtonRecordingMixin, SimEngine)
                 the registry; ``"robot_descriptions"`` resolves the URDF directly
                 via ``robot_descriptions.<name>_description.URDF_PATH``. See
                 :func:`~strands_robots.registry.discovery.list_urdf_discoverable`.
+            keyframe: Canonical spawn pose. Not yet supported on the Newton
+                backend (the MuJoCo backend applies a source ``<keyframe>``);
+                passing a non-``None`` value is a clean error rather than a
+                silent ignore.
 
         Returns:
             Status dict including the resolved joint names.
@@ -358,6 +399,18 @@ class NewtonSimEngine(DomainRandomizationMixin, NewtonRecordingMixin, SimEngine)
                         "text": (
                             f"Unknown source {source!r}. "
                             f"Valid: {[s for s in _ROBOT_SOURCES if s is not None]} or None (default)."
+                        )
+                    }
+                ],
+            }
+        if keyframe is not None:
+            return {
+                "status": "error",
+                "content": [
+                    {
+                        "text": (
+                            "keyframe= is not yet supported on the Newton backend; "
+                            "spawn keyframe home poses are a MuJoCo-backend feature."
                         )
                     }
                 ],
@@ -595,8 +648,13 @@ class NewtonSimEngine(DomainRandomizationMixin, NewtonRecordingMixin, SimEngine)
         Returns:
             Mapping of short joint name to joint position (float), plus one
             entry per registered camera (name -> RGB ndarray) when
-            ``skip_images`` is False. Empty when no world exists or the robot
-            is unknown.
+            ``skip_images`` is False. A robot with a floating base additionally
+            carries ``base_pos`` (world x,y,z incl. height), ``base_quat``
+            (orientation, w,x,y,z), ``base_lin_vel`` (m/s, WORLD frame) and
+            ``base_ang_vel`` (rad/s, BODY frame - matching the MuJoCo backend and
+            the IMU-gyro frame WBC / locomotion controllers consume) for
+            locomotion controllers. Empty when no world exists or the robot is
+            unknown.
         """
         if self._world is None or self._model is None:
             return {}
@@ -615,6 +673,7 @@ class NewtonSimEngine(DomainRandomizationMixin, NewtonRecordingMixin, SimEngine)
             skip_images = False
         with self._lock:
             joint_q = self._state_0.joint_q.numpy()
+            joint_qd = self._state_0.joint_qd.numpy()
             robot_joints = self._world.robots[robot_name].joint_names
             obs: dict[str, Any] = {}
             for jname in robot_joints:
@@ -625,6 +684,17 @@ class NewtonSimEngine(DomainRandomizationMixin, NewtonRecordingMixin, SimEngine)
         # camera frames are added afterwards (and carry their own jitter via the
         # render path), so the result holds mixed float/ndarray values.
         obs_out: dict[str, Any] = dict(self._apply_joint_pos_noise(obs))
+        # Floating-base IMU-style signals for a robot with a free root (a
+        # humanoid / mobile base): ``base_quat`` (orientation, w,x,y,z) and
+        # ``base_ang_vel`` (rad/s), consumed by WBC / locomotion controllers.
+        # Additive and absent for fixed-base arms; left un-noised, matching the
+        # MuJoCo backend's contract.
+        base = self._free_base_pose(robot_name, joint_q, joint_qd)
+        if base is not None:
+            obs_out["base_pos"] = base["position"]
+            obs_out["base_quat"] = base["quaternion"]
+            obs_out["base_lin_vel"] = base["linear_velocity"]
+            obs_out["base_ang_vel"] = base["angular_velocity"]
         if not skip_images:
             from strands_robots.simulation.policy_runner import _extract_frame_ndarray
 
@@ -1244,6 +1314,56 @@ class NewtonSimEngine(DomainRandomizationMixin, NewtonRecordingMixin, SimEngine)
 
     # Robot / scene discovery
 
+    def _free_base_pose(self, robot_name: str, joint_q: Any, joint_qd: Any) -> dict[str, list[float]] | None:
+        """Return a robot's floating-base 6-DoF pose + twist, or None.
+
+        For a robot whose root is a free joint (a humanoid's named
+        ``floating_base_joint``), returns a dict with ``position`` (xyz),
+        ``quaternion`` (w,x,y,z), ``linear_velocity`` (world frame) and
+        ``angular_velocity`` (BODY frame), mirroring the MuJoCo backend's
+        ``base`` entry. Newton stores the free joint's coordinates as
+        ``[xyz, quat_xyzw]`` and its DOFs as ``[linear(3), angular(3)]`` in the
+        WORLD frame, so the quaternion is reordered ``xyzw -> wxyz`` to match the
+        MuJoCo (w,x,y,z) contract, the linear velocity maps directly (world on
+        both backends), and the angular velocity is rotated world -> body so it
+        matches MuJoCo's body-frame convention (the IMU-gyro frame WBC /
+        locomotion controllers consume). Returns None for a fixed-base robot.
+
+        Args:
+            robot_name: The robot to query.
+            joint_q: The world's ``joint_q`` array (already ``.numpy()``).
+            joint_qd: The world's ``joint_qd`` array (already ``.numpy()``).
+
+        Returns:
+            The base pose/twist dict, or None when the robot has no free root.
+        """
+        base_jname = self._robot_free_base_joint.get(robot_name)
+        if base_jname is None:
+            return None
+        q = self._joint_coord_index.get((robot_name, base_jname))
+        d = self._joint_dof_index.get((robot_name, base_jname))
+        if q is None or d is None or q + 7 > len(joint_q) or d + 6 > len(joint_qd):
+            return None
+        quat_wxyz = [
+            float(joint_q[q + 6]),
+            float(joint_q[q + 3]),
+            float(joint_q[q + 4]),
+            float(joint_q[q + 5]),
+        ]
+        # Newton stores the free joint's angular velocity in the WORLD frame,
+        # while the MuJoCo backend reports it in the BODY frame (MuJoCo's
+        # free-joint qvel angular block is local) - the IMU-gyro convention WBC /
+        # locomotion controllers consume via get_observation's base_ang_vel.
+        # Rotate world -> body so base_ang_vel agrees across both backends; the
+        # linear velocity stays world-frame on both, so it maps directly.
+        ang_world = [float(joint_qd[d + 3]), float(joint_qd[d + 4]), float(joint_qd[d + 5])]
+        return {
+            "position": [float(v) for v in joint_q[q : q + 3]],
+            "quaternion": quat_wxyz,
+            "linear_velocity": [float(v) for v in joint_qd[d : d + 3]],
+            "angular_velocity": _quat_rotate_inverse_wxyz(quat_wxyz, ang_world),
+        }
+
     def get_robot_state(self, robot_name: str | None = None) -> dict[str, Any]:
         """Return per-joint position and velocity for a robot.
 
@@ -1253,6 +1373,16 @@ class NewtonSimEngine(DomainRandomizationMixin, NewtonRecordingMixin, SimEngine)
         ``joint_q`` via the per-joint coordinate index and velocities from
         ``joint_qd`` via the per-joint DOF index (the two indices differ once
         a free-floating object adds a quaternion coordinate).
+
+        A robot with a floating base (a 6-DoF free root, e.g. a humanoid's
+        named ``floating_base_joint``) additionally carries a ``"base"`` entry
+        with ``position`` (xyz), ``quaternion`` (w,x,y,z), ``linear_velocity``
+        and ``angular_velocity``. The free joint is NOT reported as a scalar
+        joint (its coordinates are [xyz + quat], not a single angle), and the
+        base ``quaternion``/``angular_velocity`` match get_observation's
+        ``base_quat``/``base_ang_vel`` for the same robot (``angular_velocity``
+        is in the BODY frame, ``linear_velocity`` in the WORLD frame, matching
+        the MuJoCo backend).
 
         Args:
             robot_name: Robot to query. ``None`` resolves to the sole robot
@@ -1275,18 +1405,41 @@ class NewtonSimEngine(DomainRandomizationMixin, NewtonRecordingMixin, SimEngine)
             joint_q = self._state_0.joint_q.numpy()
             joint_qd = self._state_0.joint_qd.numpy()
             state: dict[str, dict[str, float]] = {}
+            base_jname = self._robot_free_base_joint.get(robot_name)
             for jname in self._world.robots[robot_name].joint_names:
+                # A FREE joint (6-DoF floating base) has no scalar hinge value:
+                # its coordinates are [xyz + quaternion]. Reading joint_q[start]
+                # as a "position" reports the base x-coordinate and drops the
+                # orientation, so skip it and surface a structured ``base`` below.
+                if jname == base_jname:
+                    continue
                 q_idx = self._joint_coord_index.get((robot_name, jname))
                 d_idx = self._joint_dof_index.get((robot_name, jname))
                 pos = float(joint_q[q_idx]) if q_idx is not None and q_idx < len(joint_q) else 0.0
                 vel = float(joint_qd[d_idx]) if d_idx is not None and d_idx < len(joint_qd) else 0.0
                 state[jname] = {"position": pos, "velocity": vel}
         state = self._apply_state_noise(state)
+        # Floating base: surface the full 6-DoF pose + twist under a ``base``
+        # key (sibling of ``state``, left un-noised), consistent with
+        # get_observation's base_quat / base_ang_vel and the MuJoCo backend.
+        base = self._free_base_pose(robot_name, joint_q, joint_qd)
 
         text = f"'{robot_name}' state (t={self._world.sim_time:.3f}s):\n"
         for jnt, vals in state.items():
             text += f"{jnt}: pos={vals['position']:.4f}, vel={vals['velocity']:.4f}\n"
-        return {"status": "success", "content": [{"text": text}, {"json": {"state": state}}]}
+        if base is not None:
+            p_, q_ = base["position"], base["quaternion"]
+            lv_, av_ = base["linear_velocity"], base["angular_velocity"]
+            text += (
+                f"base: pos=[{p_[0]:.4f}, {p_[1]:.4f}, {p_[2]:.4f}], "
+                f"quat=[{q_[0]:.4f}, {q_[1]:.4f}, {q_[2]:.4f}, {q_[3]:.4f}], "
+                f"lin_vel=[{lv_[0]:.4f}, {lv_[1]:.4f}, {lv_[2]:.4f}], "
+                f"ang_vel=[{av_[0]:.4f}, {av_[1]:.4f}, {av_[2]:.4f}]\n"
+            )
+        json_payload: dict[str, Any] = {"state": state}
+        if base is not None:
+            json_payload["base"] = base
+        return {"status": "success", "content": [{"text": text}, {"json": json_payload}]}
 
     def list_robots_info(self) -> dict[str, Any]:
         """Pretty-printed robot listing (dict-shaped, for agent display).
@@ -1742,11 +1895,10 @@ class NewtonSimEngine(DomainRandomizationMixin, NewtonRecordingMixin, SimEngine)
         self._joint_coord_index = {}
         self._joint_dof_index = {}
         self._robot_joint_map = {}
+        self._robot_free_base_joint = {}
         self._robot_body_map = {}
 
         for robot_name, robot in self._world.robots.items():
-            coord_before = builder.joint_coord_count
-            dof_before = builder.joint_dof_count
             label_before = len(builder.joint_label)
             body_before = builder.body_count
             xform = wp.transform(
@@ -1761,12 +1913,34 @@ class NewtonSimEngine(DomainRandomizationMixin, NewtonRecordingMixin, SimEngine)
             else:
                 builder.add_mjcf(model_path, xform=xform, collapse_fixed_joints=True)
             new_labels = builder.joint_label[label_before:]
+            # Map each joint to its coordinate index in joint_q and its DOF index
+            # in joint_qd. These are NOT the joint's ordinal position: a floating
+            # base (a free joint) spans 7 coordinates (xyz + quaternion) and 6
+            # DOFs, a ball joint 4/3, while a revolute/prismatic joint spans 1/1.
+            # So once a robot has a multi-coordinate joint (e.g. a humanoid whose
+            # root is a free joint), every joint after it is offset. Read the
+            # authoritative per-joint coordinate/DOF starts the builder tracks
+            # (joint_q_start / joint_qd_start) instead of assuming one coordinate
+            # and one DOF per joint - otherwise get_observation and
+            # get_robot_state report the base coordinates for the first child
+            # joint and shift the reading of every joint after it.
+            q_start = builder.joint_q_start
+            qd_start = builder.joint_qd_start
             short_names: list[str] = []
             for offset, label in enumerate(new_labels):
                 short = _short_joint_name(label)
                 short_names.append(short)
-                self._joint_coord_index[(robot_name, short)] = coord_before + offset
-                self._joint_dof_index[(robot_name, short)] = dof_before + offset
+                joint_index = label_before + offset
+                self._joint_coord_index[(robot_name, short)] = int(q_start[joint_index])
+                self._joint_dof_index[(robot_name, short)] = int(qd_start[joint_index])
+                # A free root (6-DoF floating base) is not a scalar joint: its
+                # coordinates are [xyz + quaternion]. Remember it so state/obs
+                # queries surface a structured base pose (see _free_base_pose).
+                if (
+                    builder.joint_type[joint_index] == self._nt.JointType.FREE
+                    and robot_name not in self._robot_free_base_joint
+                ):
+                    self._robot_free_base_joint[robot_name] = short
             self._robot_joint_map[robot_name] = short_names
             self._robot_body_map[robot_name] = list(builder.body_label[body_before:])
 

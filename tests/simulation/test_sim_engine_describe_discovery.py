@@ -53,7 +53,7 @@ def _make_minimal_engine():
             data_config: str | None = None,
             position: list[float] | None = None,
             orientation: list[float] | None = None,
-            **kwargs: Any,
+            keyframe: str | int | None = None,
         ) -> dict[str, Any]:
             self._robots.append(name)
             return {}

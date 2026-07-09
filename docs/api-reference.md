@@ -120,7 +120,7 @@ from strands_robots.policies.cosmos3 import Cosmos3Policy
 | `MockPolicy` | Sinusoidal mock. `requires_images=False`. |
 | `create_policy(provider, **kw)` | Resolve + construct. Accepts `zmq://`, `cosmos3://`, HF `org/model`. |
 | `register_policy(name, loader, aliases)` | Runtime registration. |
-| `list_providers()` | `['cosmos3', 'groot', 'lerobot_local', 'mock', + aliases]`. |
+| `list_providers()` | Sorted names of every JSON-registered provider (`cosmos3`, `curobo`, `groot`, `lerobot_local`, `mock`, `motionbricks`, `moveit2`, `remote`, `vera`, `wbc`, `wbc_gait`) plus any runtime `register_policy` names and their aliases. |
 | `list_policy_types()` | `policy_type` strings the installed lerobot resolves; `[]` without lerobot. Discovery peer of `list_providers`. |
 | `UntrustedRemoteCodeError` | Raised when `STRANDS_TRUST_REMOTE_CODE` is required but unset. |
 | `Gr00tPolicy` | GR00T N1.5/N1.6/N1.7 via ZMQ (service) or in-process. |

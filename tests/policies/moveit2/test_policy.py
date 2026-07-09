@@ -151,16 +151,26 @@ class TestMoveIt2InferenceClient:
         """
         client = MoveIt2InferenceClient(host="127.0.0.1", port=9999)
         old_socket = client.socket
-        old_socket.close = MagicMock()
+        # wraps= records the call for the assertion while still running the real
+        # close(). A bare MagicMock would stub close() out entirely, orphaning a
+        # live ZMQ socket on the still-open context - which raises
+        # PytestUnraisableExceptionWarning when the GC finally reaps it (and, if
+        # it is collected before the context, hangs context.term() forever).
+        old_socket.close = MagicMock(wraps=old_socket.close)
 
         client.reconnect()
 
         old_socket.close.assert_called_once()
+        # reconnect() must genuinely close the old socket, not merely call a
+        # method named close - assert the socket is really shut, so a
+        # regression that stops closing it (leaking the fd) is caught.
+        assert old_socket.closed is True
         assert client.socket is not old_socket
         # New socket is usable for a round-trip (send/recv wired by _init_socket).
         client.socket.send = MagicMock()
         client.socket.recv = MagicMock(return_value=MsgSerializer.to_bytes({"status": "ok"}))
         assert client.ping() is True
+        client._teardown()
 
     def test_reconnect_ignores_errors_closing_a_broken_socket(self):
         """A close() that raises must not stop reconnect from rebuilding.
@@ -170,11 +180,16 @@ class TestMoveIt2InferenceClient:
         """
         client = MoveIt2InferenceClient(host="127.0.0.1", port=9999)
         old_socket = client.socket
+        real_close = old_socket.close
         old_socket.close = MagicMock(side_effect=RuntimeError("already dead"))
 
         client.reconnect()  # must not propagate
 
         assert client.socket is not old_socket
+        # The stubbed close() raised, so the real socket is still open; close it
+        # for real (and tear the client down) so no live ZMQ handle is orphaned.
+        real_close()
+        client._teardown()
 
     def test_teardown_swallows_socket_close_errors(self):
         """_teardown() is best-effort: a raising close()/term() never propagates.
@@ -184,9 +199,15 @@ class TestMoveIt2InferenceClient:
         so the method itself must never raise.
         """
         client = MoveIt2InferenceClient(host="127.0.0.1", port=9999)
+        real_close = client.socket.close
+        real_term = client.context.term
         client.socket.close = MagicMock(side_effect=RuntimeError("boom"))
         client.context.term = MagicMock(side_effect=RuntimeError("boom"))
         client._teardown()  # must not raise
+        # The stubbed close()/term() raised, so the real socket and context are
+        # still live; release them for real so nothing is orphaned to the GC.
+        real_close()
+        real_term()
 
     def test_plan_helper_omits_optional_fields_when_unset(self):
         """plan() should not send ``target_pose`` / ``world_update`` keys when
@@ -719,3 +740,52 @@ class TestMoveIt2TrajectoryDecode:
         # Two non-empty rows -> two actions; the empty row produced nothing.
         assert len(actions) == 2
         assert all(set(step.keys()) == {"joint_0", "joint_1"} for step in actions)
+
+
+class TestClientTeardownNonBlocking:
+    """Teardown must not block on a request queued to a dead sidecar.
+
+    A REQ socket connected to an unreachable server buffers the outgoing
+    request internally. With the default (infinite) ZMQ linger, ``close()``
+    (and the ``context.term()`` that follows) blocks forever waiting to flush
+    that undelivered request - which stalls the GC that drives ``__del__`` and
+    interpreter shutdown. The client pins ``LINGER=0`` at socket creation so
+    the buffered request is discarded and teardown returns promptly.
+    """
+
+    @staticmethod
+    def _dead_port() -> int:
+        """Return a TCP port with nothing listening on it."""
+        import socket as _socket
+
+        s = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+        s.close()
+        return port
+
+    def test_socket_linger_is_zero(self):
+        client = MoveIt2InferenceClient(host="127.0.0.1", port=self._dead_port())
+        try:
+            assert client.socket.getsockopt(zmq.LINGER) == 0
+        finally:
+            client._teardown()
+
+    def test_teardown_bounded_with_queued_request_to_dead_server(self):
+        import threading
+
+        client = MoveIt2InferenceClient(host="127.0.0.1", port=self._dead_port())
+        # Queue a request that can never be delivered (no peer). send() returns
+        # immediately; the bytes sit in the socket's outgoing buffer.
+        client.socket.send(b"never-delivered")
+
+        done = threading.Event()
+
+        def _run() -> None:
+            client._teardown()
+            done.set()
+
+        worker = threading.Thread(target=_run, daemon=True)
+        worker.start()
+        # Pre-fix (infinite linger) this blocks forever; post-fix it is instant.
+        assert done.wait(timeout=10.0), "client teardown blocked on a queued request to a dead server"

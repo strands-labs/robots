@@ -108,12 +108,15 @@ class TestEvalPolicyVideo:
         # No per-episode stub file should have been written.
         assert not (tmp_path / "bad_ep0.mp4").exists()
 
-    def test_video_rejected_on_benchmark_spec_path(self, sim_with_arm, tmp_path):
-        """Recording is a success_fn-path feature; passing video with a spec is
-        rejected loudly rather than silently ignored."""
+    @requires_gl
+    def test_video_recorded_on_benchmark_spec_path(self, sim_with_arm, tmp_path):
+        """Recording works on BOTH eval routes: the spec/benchmark path now
+        records a per-episode MP4 too (parity with eval_policy), captured
+        synchronously so the bit-stable rollout is unperturbed. See
+        test_evaluate_benchmark_video.py for the full facade coverage."""
 
         class _NoopSpec(BenchmarkProtocol):
-            max_steps = 3
+            max_steps = 4
 
             @property
             def supported_robots(self) -> list[str]:
@@ -134,7 +137,8 @@ class TestEvalPolicyVideo:
             __import__("strands_robots.policies", fromlist=["create_policy"]).create_policy("mock"),
             spec=_NoopSpec(),
             n_episodes=1,
-            video={"path": str(tmp_path / "x.mp4"), "camera": "arm1/side"},
+            control_frequency=20.0,
+            video={"path": str(tmp_path / "x.mp4"), "camera": "arm1/side", "fps": 10},
         )
-        assert result["status"] == "error", result
-        assert "video" in result["content"][0]["text"].lower()
+        assert result["status"] == "success", result
+        assert _result_json(result)["video_paths"] == [str(tmp_path / "x_ep0.mp4")]

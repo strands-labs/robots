@@ -12,10 +12,7 @@ import pytest
 
 pytest.importorskip("mujoco")
 
-_requires_mujoco = pytest.mark.skipif(
-    os.environ.get("CI") == "true" and not os.environ.get("ROBOT_TEST_MUJOCO"),
-    reason="requires OpenGL; opt-in via ROBOT_TEST_MUJOCO=1",
-)
+from tests.simulation.mujoco._gl_probe import requires_gl as _requires_mujoco  # noqa: E402
 
 
 @_requires_mujoco

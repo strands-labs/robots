@@ -145,7 +145,7 @@ from pathlib import Path
 # Windows process would emit the same WARNING per peer connection. The
 # module-level dict (rather than a plain bool) keeps mutation explicit at
 # the call site without needing a ``global`` declaration.
-# Review thread _zenoh_config.py:540 -- key the one-shot WARNING on
+# Key the one-shot WARNING on
 # the resolved key path (with mtime fingerprint for rotation detection)
 # rather than a single boolean cell. A long-running process that
 # rotates ``STRANDS_MESH_TLS_KEY`` to a different file used to see
@@ -618,7 +618,7 @@ def _resolve_tls_paths() -> tuple[Path, Path, Path]:
     if not _is_posix():
         # Atomic check-and-set under lock so concurrent _build_config
         # calls (e.g. multi-threaded test harness) don't both fire the
-        # WARNING. Per review thread _zenoh_config.py:540, key the
+        # WARNING. Key the
         # one-shot on (key_path, mtime_ns) so rotating
         # ``STRANDS_MESH_TLS_KEY`` to a different file (or replacing
         # the file in-place) re-arms the warning.

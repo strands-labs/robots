@@ -26,10 +26,10 @@ class RecordingMixin(DatasetRecordingMixin):
     ``start_recording`` reads the live ``MjModel`` to enumerate joints and
     cameras (with their real render resolutions) before creating/resuming the
     LeRobotDataset. Per-step frames are fed by the ``on_frame`` hook built in
-    ``simulation.py``. Separately, ``start_cameras_recording`` dumps raw
+    :mod:`simulation`. Separately, ``start_cameras_recording`` dumps raw
     per-camera MP4s.
 
-    **Coupling** (see simulation.py top-level docstring): mixin reaches
+    **Coupling** (see the :mod:`simulation` top-level docstring): mixin reaches
     into ``self._world`` (trajectory buffer + dataset_recorder live in
     ``_world._backend_state``). ``TYPE_CHECKING`` stub below exists so mypy
     accepts the ``_world`` lookup; it is a documentary contract, not an
@@ -45,6 +45,9 @@ class RecordingMixin(DatasetRecordingMixin):
 
         def robot_action_keys(self, robot_name: str) -> list[str]:
             """Actuator-ordered action keys for ``robot_name`` (concrete on SimEngine)."""
+
+        def _robot_free_base_joint_id(self, model: Any, robot: Any) -> int:
+            """Free-base joint id for ``robot`` or -1 (concrete on RenderingMixin)."""
 
     def start_recording(
         self,
@@ -189,6 +192,29 @@ class RecordingMixin(DatasetRecordingMixin):
                 robot_type = robot.data_config or rname
 
             mj = _ensure_mujoco()
+            # A floating-base robot (humanoid / mobile) exposes full base
+            # kinematics via get_observation - position (base_pos, world x,y,z
+            # incl. height), orientation (base_quat, w,x,y,z), linear velocity
+            # (base_lin_vel, m/s) and angular velocity (base_ang_vel, rad/s) -
+            # but the observation.state schema above is derived from scalar joint
+            # names, so those base signals would be dropped. Preserve them as
+            # per-component scalar columns so a locomotion / velocity-tracking /
+            # whole-body-control policy trained on the dataset is not base-blind.
+            # Detected via the shared free-base joint finder; multi-robot base
+            # columns are prefixed like joint ids (``alice__base_quat.w``) to
+            # match the prefixed observation keys the recording hook emits.
+            base_state_specs: list[tuple[str, list[str]]] = []
+            for rname, robot in self._world.robots.items():
+                if self._robot_free_base_joint_id(self._world._model, robot) >= 0:
+                    prefix = f"{rname}__" if multi_robot else ""
+                    base_state_specs.append((f"{prefix}base_pos", ["x", "y", "z"]))
+                    base_state_specs.append((f"{prefix}base_quat", ["w", "x", "y", "z"]))
+                    base_state_specs.append((f"{prefix}base_lin_vel", ["x", "y", "z"]))
+                    base_state_specs.append((f"{prefix}base_ang_vel", ["x", "y", "z"]))
+            # Full observation.state schema names (scalar joints + expanded base
+            # components) - used to validate a resumed dataset's on-disk schema.
+            state_names_full = list(joint_names) + [f"{src}.{c}" for src, comps in base_state_specs for c in comps]
+
             # Declare each camera in the dataset schema at the SAME
             # resolution it actually renders at. Cameras added via add_camera
             # carry their own width/height (e.g. 256x256 for a LIBERO VLA),
@@ -303,7 +329,7 @@ class RecordingMixin(DatasetRecordingMixin):
                 # a camera resolution between episodes would otherwise yield a
                 # cryptic per-feature shape error on the next add_frame. Compare
                 # up front and raise a clear schema-diff instead.
-                self._verify_resume_schema(resumed, joint_names, camera_keys, camera_dims, action_names)
+                self._verify_resume_schema(resumed, state_names_full, camera_keys, camera_dims, action_names)
                 self._world._backend_state["dataset_recorder"] = resumed
             else:
                 self._world._backend_state["dataset_recorder"] = _DatasetRecorder.create(
@@ -312,6 +338,7 @@ class RecordingMixin(DatasetRecordingMixin):
                     robot_type=robot_type,
                     joint_names=joint_names,
                     action_names=action_names,
+                    extra_state_specs=base_state_specs,
                     camera_keys=camera_keys,
                     camera_dims=camera_dims,
                     task=task,

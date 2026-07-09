@@ -61,6 +61,7 @@ def _make_dummy_engine_class() -> type[SimEngine]:
             data_config: str | None = None,
             position: list[float] | None = None,
             orientation: list[float] | None = None,
+            keyframe: str | int | None = None,
         ) -> dict[str, Any]:
             return {}
 

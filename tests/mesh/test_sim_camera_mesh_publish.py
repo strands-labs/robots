@@ -195,6 +195,172 @@ class TestSimCameraPublish:
             sim_cam.assert_not_called()
 
 
+class TestSimCameraPublishGuards:
+    """Guard + resilience contracts for the _publish_sim_cameras path.
+
+    A sim child peer must publish camera frames without ever crashing the
+    background camera loop: partially-attached worlds, nameless robots, a
+    missing mujoco install, unnamed cameras, and per-camera render failures
+    are all tolerated and result in a silent no-op rather than an exception.
+    """
+
+    @staticmethod
+    def _mesh_for(robot):
+        from strands_robots.mesh.core import Mesh
+
+        mesh = Mesh.__new__(Mesh)
+        mesh.robot = robot
+        mesh.peer_id = "sim__arm"
+        mesh._running = True
+        published: list = []
+        mesh.publish = lambda k, p: published.append((k, p))
+        return mesh, published
+
+    def test_noop_when_world_not_built(self):
+        """World attached but MuJoCo model/data not built yet -> no-op.
+
+        A SimRobot gets its _world back-reference on attach, but the world's
+        _model/_data are only populated once the sim is constructed. Publishing
+        before that must short-circuit instead of dereferencing None.
+        """
+        from strands_robots.simulation.models import SimRobot, SimWorld
+
+        world = SimWorld()
+        world._model = None
+        world._data = None
+
+        robot = SimRobot(name="arm", urdf_path="/tmp/x.urdf", namespace="arm/")
+        robot._world = world
+
+        mesh, published = self._mesh_for(robot)
+        mesh._publish_sim_cameras()
+
+        assert published == []
+
+    def test_noop_without_robot_name(self):
+        """A SimRobot with no name cannot scope its cameras -> no-op."""
+        from strands_robots.simulation.models import SimRobot, SimWorld
+
+        xml = """
+        <mujoco>
+          <worldbody>
+            <camera name="arm/top_cam" pos="0 0 1" xyaxes="1 0 0 0 1 0"/>
+            <body name="arm/base">
+              <geom type="box" size="0.1 0.1 0.1"/>
+            </body>
+          </worldbody>
+        </mujoco>
+        """
+        model = mujoco.MjModel.from_xml_string(xml)
+        data = mujoco.MjData(model)
+        mujoco.mj_forward(model, data)
+
+        world = SimWorld()
+        world._model = model
+        world._data = data
+
+        robot = SimRobot(name="", urdf_path="/tmp/x.urdf", namespace="arm/")
+        robot._world = world
+
+        mesh, published = self._mesh_for(robot)
+        mesh._publish_sim_cameras()
+
+        assert published == []
+
+    def test_noop_without_mujoco_installed(self, monkeypatch):
+        """When mujoco is not importable the sim camera path is a silent no-op.
+
+        [mesh] does not depend on [sim-mujoco]; a mesh peer running without the
+        sim extra must degrade gracefully rather than raise ImportError.
+        """
+        import sys
+
+        from strands_robots.simulation.models import SimRobot, SimWorld
+
+        world = SimWorld()
+        world._model = MagicMock()
+        world._data = MagicMock()
+
+        robot = SimRobot(name="arm", urdf_path="/tmp/x.urdf", namespace="arm/")
+        robot._world = world
+
+        mesh, published = self._mesh_for(robot)
+        # Setting the cached module entry to None makes `import mujoco` raise
+        # ImportError, simulating a peer without the [sim-mujoco] extra.
+        monkeypatch.setitem(sys.modules, "mujoco", None)
+        mesh._publish_sim_cameras()
+
+        assert published == []
+
+    def test_skips_unnamed_camera(self):
+        """A camera with no name attribute is skipped (mj_id2name -> empty)."""
+        from strands_robots.simulation.models import SimRobot, SimWorld
+
+        # Unnamed camera in an un-namespaced robot: cam_name resolves to empty,
+        # so it is skipped before any render is attempted.
+        xml = """
+        <mujoco>
+          <worldbody>
+            <camera pos="0 0 1" xyaxes="1 0 0 0 1 0"/>
+            <body name="base">
+              <geom type="box" size="0.1 0.1 0.1"/>
+            </body>
+          </worldbody>
+        </mujoco>
+        """
+        model = mujoco.MjModel.from_xml_string(xml)
+        data = mujoco.MjData(model)
+        mujoco.mj_forward(model, data)
+
+        world = SimWorld()
+        world._model = model
+        world._data = data
+
+        robot = SimRobot(name="arm", urdf_path="/tmp/x.urdf", namespace="")
+        robot._world = world
+
+        mesh, published = self._mesh_for(robot)
+        mesh._publish_sim_cameras()
+
+        assert published == []
+
+    def test_survives_per_camera_render_failure(self):
+        """A render failure on one camera is swallowed; nothing is published.
+
+        One flaky camera must not crash the background publish loop nor leak a
+        partial frame. The render error is logged at debug and the method
+        returns normally with an empty frame set.
+        """
+        from strands_robots.simulation.models import SimRobot, SimWorld
+
+        xml = """
+        <mujoco>
+          <worldbody>
+            <camera name="arm/top_cam" pos="0 0 1" xyaxes="1 0 0 0 1 0"/>
+            <body name="arm/base">
+              <geom type="box" size="0.1 0.1 0.1"/>
+            </body>
+          </worldbody>
+        </mujoco>
+        """
+        model = mujoco.MjModel.from_xml_string(xml)
+        data = mujoco.MjData(model)
+        mujoco.mj_forward(model, data)
+
+        world = SimWorld()
+        world._model = model
+        world._data = data
+
+        robot = SimRobot(name="arm", urdf_path="/tmp/x.urdf", namespace="arm/")
+        robot._world = world
+
+        mesh, published = self._mesh_for(robot)
+        with patch("mujoco.Renderer", side_effect=RuntimeError("EGL context lost")):
+            mesh._publish_sim_cameras()  # must not raise
+
+        assert published == []
+
+
 class TestEncodeAndPublishFrames:
     """Unit tests for the shared _encode_and_publish_frames helper."""
 

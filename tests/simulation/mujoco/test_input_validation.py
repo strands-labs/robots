@@ -723,3 +723,117 @@ class TestSendActionVectorValidation:
         keys = sim_with_robot.robot_action_keys("panda")
         res = sim_with_robot.send_action([0.0] * len(keys))
         assert res["status"] == "success", res["content"][0]["text"]
+
+
+# Non-sized scalar rejection: len() on a scalar raises TypeError, which the
+# facade must translate into a structured error instead of letting it escape
+# past the tool boundary.
+
+
+class TestApplyForceNonSizedVector:
+    """apply_force must reject a non-sized scalar force/torque/point.
+
+    A scalar (e.g. ``force=5``) is not a 3-vector; ``len()`` raises TypeError.
+    Without the guard that error would escape the tool contract; with it the
+    caller gets an actionable "must be a list/tuple of 3 numbers" message and
+    the physics buffer is never touched.
+    """
+
+    @pytest.mark.parametrize("field", ["force", "torque"])
+    def test_scalar_force_or_torque_errors(self, sim_with_robot, field):
+        res = sim_with_robot.apply_force(body_name="link1", **{field: 5})
+        assert res["status"] == "error", res
+        assert f"'{field}' must be a list/tuple of 3 numbers" in res["content"][0]["text"]
+
+    def test_scalar_point_errors(self, sim_with_robot):
+        # point alone would trip the "specify force or torque" guard first, so
+        # pair it with a valid force to reach the point-vector validation.
+        res = sim_with_robot.apply_force(body_name="link1", force=[1.0, 0.0, 0.0], point=9)
+        assert res["status"] == "error", res
+        assert "'point' must be a list/tuple of 3 numbers" in res["content"][0]["text"]
+
+
+class TestRaycastNonSizedVector:
+    """raycast must reject a non-sized scalar origin/direction.
+
+    mj_ray aborts the process on malformed input, so the facade validates
+    shapes first. A scalar origin/direction makes ``len()`` raise TypeError,
+    which must degrade to a structured error, not a crash.
+    """
+
+    def test_scalar_origin_errors(self, sim_with_robot):
+        res = sim_with_robot.raycast(origin=5, direction=[0, 0, -1])
+        assert res["status"] == "error", res
+        assert "must be lists of 3 numbers" in res["content"][0]["text"]
+
+    def test_scalar_direction_errors(self, sim_with_robot):
+        res = sim_with_robot.raycast(origin=[0, 0, 5], direction=7)
+        assert res["status"] == "error", res
+        assert "must be lists of 3 numbers" in res["content"][0]["text"]
+
+
+class TestSetBodyPropertiesNonNumericMass:
+    """set_body_properties must reject a non-numeric mass.
+
+    ``float("heavy")`` raises ValueError; the facade catches it and returns an
+    actionable error rather than letting it escape the tool boundary.
+    """
+
+    def test_non_numeric_mass_errors(self, sim_with_robot):
+        res = sim_with_robot.set_body_properties(body_name="link1", mass="heavy")
+        assert res["status"] == "error", res
+        assert "'mass' must be a positive number" in res["content"][0]["text"]
+
+
+# A scene carrying named + unnamed sensors, so get_sensor_data exercises both
+# the unnamed-sensor fallback naming and the "sensor not found" contract.
+_SENSOR_SCENE_MJCF = """<mujoco>
+  <worldbody>
+    <body name="pend">
+      <joint name="hinge" type="hinge" axis="0 1 0"/>
+      <geom type="capsule" size="0.02 0.1" fromto="0 0 0 0 0 -0.2"/>
+    </body>
+  </worldbody>
+  <sensor>
+    <jointpos name="hinge_pos" joint="hinge"/>
+    <jointvel joint="hinge"/>
+  </sensor>
+</mujoco>"""
+
+
+@requires_gl
+class TestGetSensorDataContract:
+    """get_sensor_data reporting over a model that actually has sensors.
+
+    Covers the read path that the empty-world "no sensors" tests cannot reach:
+    an unnamed sensor gets a synthesized ``sensor_<i>`` name, and requesting a
+    name that is not present returns a structured "not found" error even though
+    the model does carry sensors.
+    """
+
+    @pytest.fixture
+    def sim_with_sensors(self):
+        sim = Simulation()
+        sim.create_world()
+        res = sim.replace_scene_mjcf(_SENSOR_SCENE_MJCF)
+        assert res["status"] == "success", res["content"][0]["text"]
+        yield sim
+        sim.destroy()
+
+    def test_lists_named_and_synthesized_sensor_names(self, sim_with_sensors):
+        res = sim_with_sensors.get_sensor_data()
+        assert res["status"] == "success", res
+        text = res["content"][0]["text"]
+        # named sensor kept verbatim; the anonymous jointvel gets a fallback name
+        assert "hinge_pos" in text
+        assert "sensor_1" in text
+
+    def test_named_sensor_scopes_to_single_reading(self, sim_with_sensors):
+        res = sim_with_sensors.get_sensor_data(sensor_name="hinge_pos")
+        assert res["status"] == "success", res
+        assert "hinge_pos" in res["content"][0]["text"]
+
+    def test_unknown_sensor_errors_when_model_has_sensors(self, sim_with_sensors):
+        res = sim_with_sensors.get_sensor_data(sensor_name="nope")
+        assert res["status"] == "error", res
+        assert "Sensor 'nope' not found." in res["content"][0]["text"]

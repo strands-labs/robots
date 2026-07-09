@@ -86,6 +86,9 @@ For data collection from a different source, swap the WBC policy for a LeRobot
 teleop driver, a VR controller, or `MockPolicy` (synthetic, runs with no weights
 or hardware - the quick-demo default). The dataset format is identical either way.
 
+To train a **language-conditioned (steerable)** policy, annotate the recorded
+dataset with language columns first - see [Steerable annotation](../data/annotation.md).
+
 ### 2. Fine-tune  - post-train Isaac-GR00T N1.7
 
 Use the [`Trainer` abstraction](overview.md) with the `"groot"` provider to

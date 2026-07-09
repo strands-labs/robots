@@ -88,6 +88,19 @@ class TestObservationAction:
         payload = result["content"][-1]["json"]
         assert payload["unresolved_keys"] == ["NotAJoint"]
 
+    def test_send_action_nonscalar_value_is_actionable_error(self, engine_with_so100):
+        """A non-scalar dict value returns a clean error, not an uncaught TypeError.
+
+        Backend parity with the MuJoCo path: the shared ``_coerce_action``
+        validates every mapping value coerces to a scalar float before the
+        per-actuator apply loop, so a vector-valued key (e.g. a policy emitting
+        ``base_velocity: [vx, vy, omega]``) is rejected atomically instead of
+        crashing the caller mid-rollout.
+        """
+        result = engine_with_so100.send_action({"Rotation": [0.1, 0.2, 0.3]}, robot_name="so100")
+        assert result["status"] == "error"
+        assert "scalar" in result["content"][0]["text"]
+
     def test_physics_timestep_positive(self, engine_with_so100):
         assert engine_with_so100.physics_timestep() > 0
 
