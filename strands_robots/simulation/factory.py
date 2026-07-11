@@ -72,17 +72,17 @@ _BUILTIN_ALIASES: dict[str, str] = {
 DEFAULT_BACKEND = "mujoco"
 
 # Suggested ``pip install`` hints surfaced in the "unknown backend" error so
-# users discover that heavy out-of-tree backends ship in the sibling
-# ``strands-robots-sim`` plugin package. Keyed by the entry-point name a
-# plugin is expected to register.
+# users discover that heavy GPU backends ship behind in-tree optional extras
+# (``strands-robots[sim-newton]``). Keyed by the backend name (or common alias)
+# a user is likely to reach for.
 _PLUGIN_INSTALL_HINTS: dict[str, str] = {
     "newton": "pip install 'strands-robots[sim-newton]'",
     # The warp-lang based GPU-parallel MuJoCo path is the built-in ``newton``
     # backend; ``warp`` and ``mjwarp`` are common names users reach for, so map
     # both to the same actionable install hint instead of a bare "unknown
     # backend" dead end.
-    "warp": "pip install 'strands-robots-sim[newton]'",
-    "mjwarp": "pip install 'strands-robots-sim[newton]'",
+    "warp": "pip install 'strands-robots[sim-newton]'",
+    "mjwarp": "pip install 'strands-robots[sim-newton]'",
 }
 
 # Plugin backends discovered via importlib.metadata entry points. Populated
