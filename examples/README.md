@@ -29,6 +29,7 @@ record→train→deploy loop) as Jupyter notebooks - all CPU-only, no hardware o
 | 08 | [`08_discover_lerobot.py`](08_discover_lerobot.py) | `use_lerobot` tool: discover LeRobot robots, policies, teleoperators, cameras | No | No |
 | -- | [`vla_g1_workflow.py`](vla_g1_workflow.py) | VLA-on-G1: record -> GR00T fine-tune -> WBC deploy | No | Optional (tune) |
 | — | [`vera_mimicgen_panda/`](vera_mimicgen_panda/) | VERA MimicGen → Panda (eef-delta + IK bridge) | No | **Yes** (server) |
+| — | [`mujoco_gs/`](mujoco_gs/) | MuJoCo + 3D Gaussian Splatting hybrid render (depth-aware composite) driven by the `Simulation` AgentTool | No | Optional (`gsplat`) |
 | -- | [`lerobot_hardware_catalog.py`](lerobot_hardware_catalog.py) | `Robot()` covers the whole LeRobot hardware catalog (name -> lerobot_type) | No | No |
 
 ## What each example shows vs raw lerobot
