@@ -49,6 +49,7 @@ record→train→deploy loop) as Jupyter notebooks - all CPU-only, no hardware o
 | [`cosmos3_sim_rollout.py`](cosmos3_sim_rollout.py) | Cosmos 3 VLA in MuJoCo with WebSocket policy server |
 | [`wbc_g1_torque_deploy.py`](wbc_g1_torque_deploy.py) | GR00T-WBC (SONIC) locomotion on the Unitree G1 via the torque-control deploy loop |
 | [`lerobot/hub_to_hardware.py`](lerobot/hub_to_hardware.py) | Full agent-driven pipeline: record, train, deploy |
+| [`so101_curobo/`](so101_curobo/) | SO-101 tabletop pick-and-place: cuRobo motion planning + LeRobot dataset capture. Backend-agnostic (`SimEngine`): MuJoCo today, Isaac when `strands-robots[sim-isaac]` is installed. **GPU: Optional** (cuRobo / Isaac) |
 
 ## Environment variables
 
