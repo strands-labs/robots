@@ -112,7 +112,7 @@ sim.step(100)   # publishes /so101/joint_states + camera image_raw on the ROS 2 
   plus classical motion planners, MPC, and scripted controllers behind one ABC.
 - **Mesh networking built in.** Every robot is a Zenoh peer. `tell()` another
   robot what to do; broadcast an E-STOP; bridge to AWS IoT Core for fleets.
-- **65-action simulation tool.** World building, physics, rendering, domain
+- **67-action simulation tool.** World building, physics, rendering, domain
   randomization, and LeRobotDataset recording - all agent-callable.
 - **ROS 2 interop.** Observe + command any ROS 2 graph (`use_ros`), act as a
   robot with no rclpy (`use_rtps`), or expose a running sim as a ROS node.
@@ -219,7 +219,7 @@ agent = Agent(tools=[robot])
 agent("Wave the arm using the mock policy for 200 steps, then render a top-down view")
 ```
 
-`Robot("so100")` returns a `Simulation` instance - the full 65-action
+`Robot("so100")` returns a `Simulation` instance - the full 67-action
 simulation AgentTool. Drive it in natural language through an `Agent`, call its
 methods directly (`robot.render(camera_name="topdown")`), or dispatch an action
 by calling it (`robot(action="render", camera_name="topdown")`). See
@@ -503,7 +503,7 @@ AgentTool returning `{"status", "content"}`.
 | `start` | `instruction`, `policy_port`, `duration` | Non-blocking async start |
 | `status` | - | Current task status |
 | `stop` | - | Interrupt running task (emergency stop) |
-In sim mode the same tool exposes the 65 Simulation actions - see Simulation (MuJoCo).
+In sim mode the same tool exposes the 67 Simulation actions - see Simulation (MuJoCo).
 </details>
 
 <details>
@@ -827,7 +827,7 @@ torch-free until an RL provider is resolved on first use.
 ## Simulation (MuJoCo)
 
 `Robot("so100")` (sim mode) returns a `Simulation` - a MuJoCo-backed AgentTool
-exposing **65 actions** for world composition, physics, rendering, policy
+exposing **67 actions** for world composition, physics, rendering, policy
 execution, and dataset recording. Build it directly when you want full control:
 
 ```python
@@ -1150,7 +1150,7 @@ strands_robots/
 │   ├── base.py            # SimEngine ABC
 │   ├── factory.py         # create_simulation() + backend registry
 │   ├── models.py          # SimWorld / SimRobot / SimObject / SimCamera
-│   └── mujoco/            # MuJoCo backend (65-action AgentTool)
+│   └── mujoco/            # MuJoCo backend (67-action AgentTool)
 ├── mesh/                  # Zenoh mesh: core, sensors, input, audit, transport, iot
 ├── benchmarks/libero/     # LIBERO suite + BDDL parser + adapter
 └── tools/                 # gr00t_inference, lerobot_*, pose, serial, robot_mesh
