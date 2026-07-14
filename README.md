@@ -113,7 +113,8 @@ sim.step(100)   # publishes /so101/joint_states + camera image_raw on the ROS 2 
 - **Mesh networking built in.** Every robot is a Zenoh peer. `tell()` another
   robot what to do; broadcast an E-STOP; bridge to AWS IoT Core for fleets.
 - **67-action simulation tool.** World building, physics, rendering, domain
-  randomization, and LeRobotDataset recording - all agent-callable.
+  randomization, procedural terrain (`create_world(terrain="rough"|"stairs"|"pyramid"|"slope")`
+  for locomotion), and LeRobotDataset recording - all agent-callable.
 - **ROS 2 interop.** Observe + command any ROS 2 graph (`use_ros`), act as a
   robot with no rclpy (`use_rtps`), or expose a running sim as a ROS node.
 - **One mental model.** Sim and hardware share the same policy interface,
