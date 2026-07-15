@@ -519,7 +519,8 @@ class CuroboMotionPlanner:
         builder = RobotBuilder(urdf_path=self.urdf_path, asset_path=self.asset_path, tool_frames=[self.tool_frame])
         tmp_yml = os.path.join(tempfile.mkdtemp(prefix="curobo_so101_"), "so101_curobo.yml")
         builder.save(builder.build(), tmp_yml, include_cspace=True)
-        robot = yaml.safe_load(open(tmp_yml))
+        with open(tmp_yml) as f:
+            robot = yaml.safe_load(f)
         # When top-down grasping is on, relax the *success* orientation tolerance
         # so the solver accepts the most-vertical pose the 5-DOF arm can reach
         # (strict vertical is infeasible). Position-only segments set the
