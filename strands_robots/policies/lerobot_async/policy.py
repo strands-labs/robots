@@ -108,6 +108,15 @@ class LerobotAsyncPolicy(Policy):
             round-trip per control step.
         connect_timeout: Seconds to wait for the gRPC ``Ready`` handshake.
         request_timeout: Seconds to wait for each observation/action RPC.
+        rename_map: Optional ``{robot_obs_key: model_feature_key}`` map forwarded
+            to the server's ``RemotePolicyConfig.rename_map``. The server applies
+            it as a ``RenameObservationsProcessorStep`` (renaming each matching
+            observation key to its mapped name) before the policy sees the
+            observation - the async analog of the ``lerobot_local`` provider's
+            ``obs_rename``. Use it when the checkpoint expects camera/state keys
+            that differ from the ones the robot exposes (e.g.
+            ``{"observation.images.front": "observation.images.laptop"}``); keys
+            not present in the map pass through unchanged.
 
     Unrecognized kwargs are ignored (for forward-compatible ``policy_config``
     passthrough via :func:`~strands_robots.policies.create_policy`) but logged
@@ -133,6 +142,7 @@ class LerobotAsyncPolicy(Policy):
         actions_per_step: int | None = None,
         connect_timeout: float = DEFAULT_CONNECT_TIMEOUT,
         request_timeout: float = DEFAULT_REQUEST_TIMEOUT,
+        rename_map: dict[str, str] | None = None,
         **ignored_kwargs: Any,
     ) -> None:
         address = server_address or f"{host}:{port}"
@@ -163,6 +173,12 @@ class LerobotAsyncPolicy(Policy):
         self.actions_per_step = int(actions_per_step) if actions_per_step is not None else self.actions_per_chunk
         self.connect_timeout = connect_timeout
         self.request_timeout = request_timeout
+        if rename_map is not None and not isinstance(rename_map, dict):
+            raise ValueError(
+                "lerobot_async: rename_map must be a dict mapping each robot observation "
+                f"key to the model's expected feature key, got {type(rename_map).__name__}."
+            )
+        self.rename_map: dict[str, str] = dict(rename_map) if rename_map else {}
 
         if ignored_kwargs:
             logger.warning(
@@ -261,6 +277,7 @@ class LerobotAsyncPolicy(Policy):
             lerobot_features=lerobot_features,
             actions_per_chunk=self.actions_per_chunk,
             device=self.device,
+            rename_map=self.rename_map,
         )
         self._stub.SendPolicyInstructions(
             self._pb2.PolicySetup(data=pickle.dumps(cfg)),  # nosec B301

@@ -6,6 +6,7 @@ Runs CPU-only, 2 steps - just enough to prove the record->train->load loop.
 """
 
 import os
+import sys
 
 import pytest
 
@@ -18,7 +19,7 @@ from strands_robots.training import TrainSpec, create_trainer  # noqa: E402
 @pytest.fixture(scope="module")
 def recorded_dataset(tmp_path_factory):
     """Record a tiny dataset in MuJoCo sim (one short episode)."""
-    os.environ.setdefault("MUJOCO_GL", "cgl")
+    os.environ.setdefault("MUJOCO_GL", "cgl" if sys.platform == "darwin" else "egl")
     from strands_robots import MockPolicy, Robot
 
     root = str(tmp_path_factory.mktemp("e2e_ds"))

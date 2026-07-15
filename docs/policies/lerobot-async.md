@@ -87,6 +87,7 @@ sim.run_policy(
 | `actions_per_step`         | `actions_per_chunk` | Actions executed from one chunk before re-querying (the re-query interval) |
 | `connect_timeout`          | `10.0`        | Seconds to wait for the gRPC `Ready` handshake              |
 | `request_timeout`          | `60.0`        | Seconds to wait for each observation/action RPC             |
+| `rename_map`               | `{}`          | `{robot_obs_key: model_feature_key}` forwarded to the server; renames observation keys before the policy sees them (async analog of `lerobot_local`'s `obs_rename`) |
 
 ## Notes
 
@@ -99,3 +100,20 @@ sim.run_policy(
   names before inference; those scalars are concatenated into
   `observation.state` and any RGB/depth camera arrays are declared as image
   features in the handshake.
+- When the checkpoint expects camera/state keys that differ from the ones the
+  robot exposes, pass `rename_map={robot_obs_key: model_feature_key}`. The
+  server applies it as a `RenameObservationsProcessorStep` before inference, so
+  a stock checkpoint (e.g. one trained with `observation.images.laptop`) is
+  reachable from a robot whose camera is named `front` without re-exporting the
+  model - the remote counterpart of the [`lerobot_local`](lerobot-local.md)
+  provider's `obs_rename`:
+
+  ```python
+  policy = create_policy(
+      "lerobot_async",
+      server_address="gpu-box:8080",
+      policy_type="act",
+      pretrained_name_or_path="lerobot/act_so101",
+      rename_map={"observation.images.front": "observation.images.laptop"},
+  )
+  ```

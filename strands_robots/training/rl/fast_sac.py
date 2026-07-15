@@ -107,10 +107,12 @@ def _build_actor_critic(num_actor_obs: int, num_critic_obs: int, num_actions: in
             return torch.tanh(mean)
 
         def q_values(self, critic_obs: torch.Tensor, action: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+            """Twin-critic Q-values ``(Q1, Q2)`` for a state-action pair (clipped double-Q)."""
             x = torch.cat([critic_obs, action], dim=-1)
             return self.q1(x), self.q2(x)
 
         def q_target(self, critic_obs: torch.Tensor, action: torch.Tensor) -> torch.Tensor:
+            """Conservative target value ``min(Q1_target, Q2_target)`` for the TD backup."""
             x = torch.cat([critic_obs, action], dim=-1)
             return torch.min(self.q1_target(x), self.q2_target(x))
 
@@ -122,6 +124,7 @@ class FastSacTrainer(BaseRLAlgo):
 
     @property
     def provider_name(self) -> str:
+        """Registry key for this trainer (``"fast_sac"``)."""
         return "fast_sac"
 
     def validate(self, spec: TrainSpec) -> list[str]:
