@@ -163,6 +163,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as _dt
+import logging
 import os
 import time
 from typing import Any
@@ -173,6 +174,8 @@ from strands_robots.benchmarks.libero import load_libero_suite
 from strands_robots.simulation import create_simulation
 from strands_robots.simulation.isaac import IsaacSimulation
 from strands_robots.tools import gr00t_inference
+
+logger = logging.getLogger(__name__)
 
 # Module-level handle for the @tool-wrapped function below.
 # The wrapper has to access ``_sim`` from outer scope because
@@ -846,8 +849,15 @@ def main() -> None:
         try:
             if _sim is not None:
                 _sim.destroy()
-        except Exception:
-            pass
+        except (RuntimeError, OSError, AttributeError) as exc:
+            # destroy() handles its own internal errors and returns a
+            # status dict, but a torn-down stage / omni surface drift can
+            # still surface a low-level RuntimeError/OSError/AttributeError
+            # here. Log it rather than bury it: the teardown is
+            # best-effort (SimulationApp is process-wide and outlives this
+            # run), so a partial failure must not mask the real eval
+            # result, but the reason still belongs in the log.
+            logger.debug("Isaac sim teardown raised during destroy(): %s", exc)
         _sim = None
         _on_frame = None
         if server_handle is not None:

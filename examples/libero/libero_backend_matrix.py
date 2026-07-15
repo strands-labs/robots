@@ -123,9 +123,11 @@ _BACKEND_ROWS: list[tuple[str, str, list[str]]] = [
 # Two grep-stable lines that every per-backend driver produces. Kept
 # in sync with the spec in examples/README.md "Two execution
 # patterns" + the `print(...)` calls at the tail of run_mujoco.py and
-# run_isaac.py. If those drift, the parser surfaces an empty
-# ``success_rate`` rather than crashing -- the row will read ``ok``
-# with ``--`` cells and a stderr hint.
+# run_isaac.py. ``_RE_BENCHMARK`` matches the leading announce line and
+# ``_RE_RESULT`` the trailing metrics line. If the metrics line drifts
+# the parser surfaces empty ``success_rate`` cells rather than crashing;
+# if the announce line is *also* absent ``_parse_driver_output`` flags
+# it as output-format drift in the row status (see that function).
 _RE_BENCHMARK = re.compile(r"^benchmark_name=(?P<task>\S+)\s*$", re.MULTILINE)
 _RE_RESULT = re.compile(
     r"^policy=\S+\s+task=\S+\s+" r"success_rate=(?P<sr>[0-9]+\.[0-9]+)\s+" r"wall_time=(?P<wt>[0-9]+\.[0-9]+)s\b",
@@ -150,22 +152,32 @@ def _find_driver(driver_filename: str) -> Path | None:
     return candidate if candidate.is_file() else None
 
 
-def _parse_driver_output(stdout: str) -> tuple[float | None, float | None]:
-    """Extract (success_rate, wall_time) from a driver's stdout.
+def _parse_driver_output(stdout: str) -> tuple[float | None, float | None, str | None]:
+    """Extract (success_rate, wall_time, drift_reason) from a driver's stdout.
 
-    Returns ``(None, None)`` if the result line is missing -- the
-    driver may have exited early before the eval started (e.g., HF
-    token missing for ``--policy=groot``) and the matrix script will
-    still mark the row ``ok`` but with ``--`` cells; the user can
-    re-run the offending driver standalone to see the full traceback.
+    Returns ``(None, None, None)`` if the result line is missing but the
+    ``benchmark_name=`` line is present -- the driver ran far enough to
+    announce its benchmark then exited early before the eval finished
+    (e.g., HF token missing for ``--policy=groot``); the matrix script
+    marks the row ``ok`` with ``--`` cells and the user can re-run the
+    offending driver standalone to see the full traceback.
+
+    Returns a non-None ``drift_reason`` when the ``benchmark_name=``
+    line is *also* absent. Every driver prints ``benchmark_name=<task>``
+    before it prints anything else on the happy path, so a subprocess
+    that exited 0 without it has drifted from the two-line output
+    contract (lines renamed, prefix added, etc.). Surfacing this as a
+    status keeps the drift from masquerading as a silent early exit.
     """
+    benchmark_seen = _RE_BENCHMARK.search(stdout) is not None
     m = _RE_RESULT.search(stdout)
     if not m:
-        return None, None
+        drift = None if benchmark_seen else "no benchmark_name= line (output format drift?)"
+        return None, None, drift
     try:
-        return float(m["sr"]), float(m["wt"])
+        return float(m["sr"]), float(m["wt"]), None
     except (TypeError, ValueError):
-        return None, None
+        return None, None, None
 
 
 def _short_skip_reason(stderr: str, returncode: int) -> str:
@@ -250,8 +262,9 @@ def _run_one(
     if completed.returncode != 0:
         return RowResult(label, None, None, f"skip ({_short_skip_reason(completed.stderr, completed.returncode)})")
 
-    sr, wt = _parse_driver_output(completed.stdout)
-    return RowResult(label, sr, wt, "ok")
+    sr, wt, drift = _parse_driver_output(completed.stdout)
+    status = "ok" if drift is None else f"ok ({drift})"
+    return RowResult(label, sr, wt, status)
 
 
 def _print_table(rows: list[RowResult], *, task: str, n_episodes: int, seed: int) -> None:
