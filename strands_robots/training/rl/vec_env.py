@@ -103,18 +103,22 @@ class VecSimEnv:
 
     @property
     def actor_obs_keys(self) -> list[str]:
+        """Actor observation keys, proxied from sub-env 0 (identical across homogeneous sub-envs)."""
         return self.envs[0].actor_obs_keys
 
     @property
     def critic_obs_keys(self) -> list[str]:
+        """Critic observation keys, proxied from sub-env 0 (identical across homogeneous sub-envs)."""
         return self.envs[0].critic_obs_keys
 
     @property
     def engine(self) -> Any:
+        """Simulation engine of sub-env 0 (authoritative for homogeneous sub-envs)."""
         return self.envs[0].engine
 
     @property
     def robot_name(self) -> str | None:
+        """Robot name of sub-env 0, or ``None`` if unset (identical across homogeneous sub-envs)."""
         return self.envs[0].robot_name
 
     # --- helpers -------------------------------------------------------------

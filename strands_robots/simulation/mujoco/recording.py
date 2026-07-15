@@ -9,7 +9,6 @@ resume-schema guard.
 """
 
 import logging
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from strands_robots.simulation.mujoco.backend import _NO_WORLD_MSG, _ensure_mujoco
@@ -145,12 +144,12 @@ class RecordingMixin(DatasetRecordingMixin):
         self._world._backend_state["push_to_hub"] = push_to_hub
 
         # Resolve the on-disk dataset dir (shared by overwrite + resume logic).
-        if root:
-            dataset_dir = Path(root)
-        elif "/" not in repo_id or repo_id.startswith("/") or repo_id.startswith("./"):
-            dataset_dir = Path(repo_id)
-        else:
-            dataset_dir = Path.home() / ".cache" / "huggingface" / "lerobot" / repo_id
+        # Delegates to the same resolver DatasetRecorder.create() uses so the
+        # facade and the low-level recorder agree on where a dataset lives
+        # (honouring $HF_LEROBOT_HOME).
+        from strands_robots.dataset_recorder import resolve_dataset_dir
+
+        dataset_dir = resolve_dataset_dir(repo_id, root)
         # Stash the resolved root so verify_dataset_episodes can read the parquet
         # after stop_recording has finalized the dataset and dropped the recorder.
         self._world._backend_state["last_dataset_root"] = str(dataset_dir)
