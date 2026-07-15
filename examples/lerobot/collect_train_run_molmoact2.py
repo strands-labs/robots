@@ -108,10 +108,12 @@ def _build_scene(sim: Any) -> None:
     """Compose the pick-and-place scene: two cameras, a red cube, a plate.
 
     MolmoAct2-SO100_101 was trained with TWO RGB views (a top and a side
-    camera); its image keys default to ``observation.images.image`` +
-    ``observation.images.wrist_image``. Camera order does not matter for this
-    checkpoint. We add two cameras so the recorded dataset and the inference
-    observations match what the model expects.
+    camera). The "so101" embodiment's ``obs_rename`` maps camera source keys
+    ``front`` -> ``observation.images.image`` and ``wrist`` ->
+    ``observation.images.wrist_image``, so the cameras MUST be named ``front``
+    and ``wrist`` here; the rename then produces the image keys the model
+    expects. (Naming them ``image``/``wrist_image`` directly skips the rename
+    and MolmoAct2 fails with "image_keys missing from observation".)
 
     Note: ``add_camera`` takes ``name`` (not ``camera_name``); the dispatch
     router rejects unknown kwargs. ``render`` is the action that takes
@@ -121,24 +123,24 @@ def _build_scene(sim: Any) -> None:
     Kept deterministic so the recorded dataset has a stable feature schema;
     per-episode variety comes from ``randomize`` in the collection loop.
     """
-    # Top-down-ish view.
+    # Top-down-ish view. Named "front" so obs_rename -> observation.images.image.
     _must(
         sim,
         "add_camera",
         {
-            "name": "image",
+            "name": "front",
             "position": [0.3, 0.0, 0.7],
             "target": [0.1, 0.0, 0.05],
             "width": 640,
             "height": 480,
         },
     )
-    # Side view.
+    # Side view. Named "wrist" so obs_rename -> observation.images.wrist_image.
     _must(
         sim,
         "add_camera",
         {
-            "name": "wrist_image",
+            "name": "wrist",
             "position": [0.5, -0.4, 0.4],
             "target": [0.1, 0.0, 0.1],
             "width": 640,
