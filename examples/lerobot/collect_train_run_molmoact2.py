@@ -248,9 +248,11 @@ def train(args: argparse.Namespace) -> int:
     dataset_root = Path.home() / ".cache" / "huggingface" / "lerobot" / repo_id
 
     cmd = (
-        "python -m lerobot.scripts.train \\\n"
+        "lerobot-train \\\n"
         "    --policy.type=molmoact2 \\\n"
         f"    --policy.pretrained_path={TEACHER_REPO} \\\n"
+        "    --policy.push_to_hub=false \\\n"
+        "    --policy.repo_id=local/molmoact2_ft \\\n"
         f"    --dataset.repo_id={repo_id} \\\n"
         f"    --dataset.root={dataset_root} \\\n"
         f"    --output_dir={args.output_dir} \\\n"
@@ -270,7 +272,9 @@ def train(args: argparse.Namespace) -> int:
     print(cmd)
     print("\n# NOTE: the exact flag names are defined by LeRobot's MolmoAct2 policy")
     print("# integration. Confirm against the authoritative doc in the LeRobot")
-    print("# source tree: docs/source/molmoact2.mdx (and `... train --help`).")
+    print("# source tree: docs/source/molmoact2.mdx (and `lerobot-train --help`).")
+    print("# --policy.repo_id + --policy.push_to_hub=false are required by the")
+    print("# trainer's config validation even for a purely local run.")
     print("# Fits a 24GB L4 (g6.4xlarge) in bfloat16; float32 needs ~24-26GB.")
     print("=" * 72 + "\n")
     return 0
@@ -311,7 +315,8 @@ def run(args: argparse.Namespace) -> int:
 
     try:
         asyncio.run(rollout())
-        sim._dispatch_action("render", {"camera_name": "image"})
+        # "front" is one of the cameras _build_scene adds (see the obs_rename note there).
+        sim._dispatch_action("render", {"camera_name": "front"})
     finally:
         sim.destroy()
         log.info("Done.")
