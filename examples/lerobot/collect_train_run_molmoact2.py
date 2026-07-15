@@ -71,10 +71,15 @@ log = logging.getLogger("collect_train_run_molmoact2")
 # LerobotLocal path auto-detects model_type=="molmoact2" and routes it.
 TEACHER_REPO = "allenai/MolmoAct2-SO100_101"
 
-# The robot/embodiment. so101 in sim; the same code runs on a physical SO-101
-# with mode="real".
+# The robot/embodiment. Both are the sim SO-101: ROBOT spawns the MuJoCo arm,
+# and the "so101" embodiment maps the sim's numeric joint keys ("1".."6") into
+# observation.state and converts the sim's RADIANS to the DEGREES the MolmoAct2
+# checkpoint expects. (The "so_real" embodiment is for a *physical* SO-101 whose
+# state keys are "<motor>.pos"; on this sim it would leave observation.state
+# empty and MolmoAct2 would fail with "requires observation.state". Switch ROBOT
+# to mode="real" and EMBODIMENT to "so_real" to drive the physical arm.)
 ROBOT = "so101"
-EMBODIMENT = "so_real"
+EMBODIMENT = "so101"
 
 DEFAULT_TASK = "Pick up the red cube and place it on the plate"
 
@@ -82,6 +87,7 @@ DEFAULT_TASK = "Pick up the red cube and place it on the plate"
 # ---------------------------------------------------------------------------
 # Scene setup (shared by collect + run)
 # ---------------------------------------------------------------------------
+
 
 def _must(sim: Any, action: str, params: dict[str, Any]) -> dict[str, Any]:
     """Dispatch a sim action and fail loud on error.
@@ -170,6 +176,7 @@ def _build_scene(sim: Any) -> None:
 # Phase 1: COLLECT
 # ---------------------------------------------------------------------------
 
+
 def collect(args: argparse.Namespace) -> int:
     """Drive the pretrained teacher policy in sim and record a LeRobotDataset."""
     from strands_robots import Robot
@@ -227,6 +234,7 @@ def collect(args: argparse.Namespace) -> int:
 # Phase 2: TRAIN (runs upstream in LeRobot - we print the exact command)
 # ---------------------------------------------------------------------------
 
+
 def train(args: argparse.Namespace) -> int:
     """Print the upstream LeRobot fine-tuning command.
 
@@ -270,6 +278,7 @@ def train(args: argparse.Namespace) -> int:
 # Phase 3: RUN (load the fine-tuned checkpoint back through Robot())
 # ---------------------------------------------------------------------------
 
+
 def run(args: argparse.Namespace) -> int:
     """Run a fine-tuned checkpoint in sim through the same Robot() abstraction."""
     from strands_robots import Robot
@@ -310,6 +319,7 @@ def run(args: argparse.Namespace) -> int:
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
+
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     p = argparse.ArgumentParser(
