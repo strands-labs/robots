@@ -116,3 +116,50 @@ class TestAsciiOnlyAndAlignment:
         # so100 has sim support in the registry.
         so100_row = next(ln for ln in table.split("\n") if ln.startswith("so100 "))
         assert "yes" in so100_row
+
+
+class TestCustomCategoryNotDropped:
+    """A robot whose category is outside the common set must still get a row.
+
+    ``register_robot`` accepts an arbitrary ``category`` string, so a user can
+    register a robot under a category (e.g. ``"quadruped"``) that the table's
+    preferred display order does not enumerate. Such a robot must still appear
+    in the body - otherwise the visible rows under-count the footer ``Total``,
+    producing a misleading discovery surface.
+    """
+
+    def _register(self, tmp_path, name, category):
+        from strands_robots.registry import register_robot
+
+        robot_dir = tmp_path / name
+        robot_dir.mkdir(parents=True, exist_ok=True)
+        (robot_dir / "bot.xml").write_text(f'<mujoco model="{name}"><worldbody/></mujoco>')
+        register_robot(
+            name=name,
+            model_xml="bot.xml",
+            asset_dir=str(robot_dir),
+            category=category,
+            joints=4,
+            description=f"custom {category} robot",
+        )
+
+    def test_custom_category_robot_appears_in_body(self, tmp_path):
+        self._register(tmp_path, "quadbot", "quadruped")
+        table = format_robot_table(max_width=1000)
+        assert "quadbot" in table, "robot with a custom category was dropped from the table body"
+
+    def test_body_row_count_matches_total_with_custom_category(self, tmp_path):
+        """The consistency invariant must survive custom categories: one body
+        row per registered robot, matching the footer ``Total``."""
+        self._register(tmp_path, "quadbot", "quadruped")
+        table = format_robot_table(max_width=1000)
+        lines = table.split("\n")
+        non_empty_rows = [ln for ln in lines[2:-2] if ln.strip() and "Total:" not in ln]
+        assert len(non_empty_rows) == len(list_robots())
+
+    def test_missing_category_defaults_to_other_and_is_shown(self, tmp_path):
+        """A robot registered with an empty category groups under ``"other"``
+        (via ``list_robots_by_category``) and must still be rendered."""
+        self._register(tmp_path, "mysterybot", "")
+        table = format_robot_table(max_width=1000)
+        assert "mysterybot" in table

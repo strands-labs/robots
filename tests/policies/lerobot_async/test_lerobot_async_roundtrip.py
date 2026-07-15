@@ -74,6 +74,44 @@ def test_actions_per_step_defaults_to_chunk_size() -> None:
     assert policy.execution_horizon == 32
 
 
+def test_rename_map_defaults_to_empty() -> None:
+    policy = create_policy(
+        "lerobot_async",
+        server_address="h:1",
+        policy_type="act",
+        pretrained_name_or_path="x/y",
+    )
+    assert isinstance(policy, LerobotAsyncPolicy)
+    assert policy.rename_map == {}
+
+
+def test_rename_map_is_stored() -> None:
+    """A supplied rename_map is honored (not swallowed by the ignored-kwargs bag)."""
+    mapping = {"observation.images.front": "observation.images.laptop"}
+    policy = create_policy(
+        "lerobot_async",
+        server_address="h:1",
+        policy_type="act",
+        pretrained_name_or_path="x/y",
+        rename_map=mapping,
+    )
+    assert isinstance(policy, LerobotAsyncPolicy)
+    assert policy.rename_map == mapping
+    # A copy, not the caller's object.
+    assert policy.rename_map is not mapping
+
+
+def test_rename_map_invalid_type_raises() -> None:
+    with pytest.raises(ValueError, match="rename_map must be a dict"):
+        create_policy(
+            "lerobot_async",
+            server_address="h:1",
+            policy_type="act",
+            pretrained_name_or_path="x/y",
+            rename_map=["observation.images.front"],
+        )
+
+
 def test_missing_policy_type_raises() -> None:
     with pytest.raises(ValueError, match="policy_type"):
         create_policy("lerobot_async", server_address="h:1", pretrained_name_or_path="x/y")
@@ -294,6 +332,50 @@ def test_roundtrip_sends_wellformed_instructions_and_observation(running_server)
     assert obs.observation["task"] == "pick up the cube"
     assert obs.observation["joint_3"] == pytest.approx(0.3)
     assert obs.observation["top"].shape == (8, 8, 3)
+    policy.close()
+
+
+def test_roundtrip_forwards_rename_map_to_server(running_server) -> None:
+    """rename_map reaches the server's RemotePolicyConfig so it can remap obs keys.
+
+    The async transport applies rename_map server-side (as a
+    RenameObservationsProcessorStep), so a checkpoint that expects different
+    camera/state keys than the robot exposes is only reachable if the client
+    forwards the map. Without forwarding, the server receives the empty default
+    and cannot decode a mismatched observation.
+    """
+    servicer, address = running_server
+    mapping = {"top": "observation.images.laptop"}
+    policy = _client(
+        address,
+        policy_type="act",
+        pretrained_name_or_path="lerobot/act_so101",
+        device="cpu",
+        actions_per_chunk=CHUNK_LEN,
+        rename_map=mapping,
+    )
+    policy.set_robot_state_keys(STATE_KEYS)
+    policy.get_actions_sync(_observation(), "pick up the cube")
+
+    cfg = servicer.policy_config
+    assert isinstance(cfg, RemotePolicyConfig)
+    assert cfg.rename_map == mapping
+    policy.close()
+
+
+def test_roundtrip_default_rename_map_is_empty(running_server) -> None:
+    """With no rename_map the server receives the empty default (no accidental remap)."""
+    servicer, address = running_server
+    policy = _client(
+        address,
+        policy_type="act",
+        pretrained_name_or_path="lerobot/act_so101",
+        device="cpu",
+        actions_per_chunk=CHUNK_LEN,
+    )
+    policy.set_robot_state_keys(STATE_KEYS)
+    policy.get_actions_sync(_observation(), "task")
+    assert servicer.policy_config.rename_map == {}
     policy.close()
 
 

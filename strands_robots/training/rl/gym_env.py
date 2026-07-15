@@ -146,9 +146,11 @@ def _make_gym_env_class() -> type:
             return self._to_numpy_obs(obs_dict), reward, terminated, truncated, out_info
 
         def render(self) -> None:  # pragma: no cover - no render mode advertised
+            """No-op: this wrapper advertises no render mode (always returns ``None``)."""
             return None
 
         def close(self) -> None:
+            """No-op: SimEnv teardown is owned by the caller / Robot, not this wrapper."""
             # SimEnv does not own engine teardown (the caller / Robot owns it),
             # so there is nothing to release here.
             return None

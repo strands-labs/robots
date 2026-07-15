@@ -510,6 +510,54 @@ class TestBuildProcessorsGuards:
         assert ns.build_norm_stats_processors(payload, "t") == (None, None)
 
 
+class TestOptionalDepDegradation:
+    """``build_norm_stats_processors`` degrades to ``(None, None)`` -- never
+    raises -- when LeRobot's processor framework is unavailable.
+
+    The norm-stats fallback runs during policy load. LeRobot's processor
+    pipeline is an optional surface: an install that ships the pure-numpy
+    ``FeatureNormalizer`` math but not the ``ProcessorStep`` /
+    ``DataProcessorPipeline`` classes (older/partial lerobot) must still load
+    the policy and simply skip the pipeline wiring, rather than crashing the
+    whole ``ProcessorBridge.from_pretrained`` path. These lock that contract
+    at each import seam the builder crosses.
+    """
+
+    def test_make_step_classes_none_when_processor_framework_absent(self, monkeypatch):
+        # ``_make_step_classes`` imports its ProcessorStep bases lazily. When
+        # that import fails (framework absent) it returns None so the caller can
+        # degrade -- masking the submodule in sys.modules forces the ImportError.
+        import sys
+
+        monkeypatch.setitem(sys.modules, "lerobot.processor.pipeline", None)
+        assert ns._make_step_classes() is None
+
+    def test_build_degrades_when_step_classes_unavailable(self, monkeypatch):
+        # Valid, resolvable payload, but the ProcessorStep framework cannot be
+        # built: the builder must return the (None, None) pair, not raise.
+        monkeypatch.setattr(ns, "_make_step_classes", lambda: None)
+        assert ns.build_norm_stats_processors(_load_fixture()) == (None, None)
+
+    @_requires_lerobot_pipeline
+    def test_build_degrades_when_pipeline_class_unimportable(self, monkeypatch):
+        # The ProcessorStep bases resolve, but ``DataProcessorPipeline`` itself
+        # is missing from the installed lerobot: the deferred import inside the
+        # builder raises ImportError, which must fall through to (None, None).
+        import lerobot.processor.pipeline as pipeline_mod
+
+        monkeypatch.delattr(pipeline_mod, "DataProcessorPipeline", raising=False)
+        assert ns.build_norm_stats_processors(_load_fixture()) == (None, None)
+
+    def test_build_degrades_when_normalizer_fails_to_build(self, monkeypatch):
+        # Defensive contract at the normalizer seam: the stats dicts are present
+        # and well-formed, but ``FeatureNormalizer.from_stats`` yields None (an
+        # unusable normalizer). The builder must return the (None, None) pair
+        # rather than wire a None normalizer into a ProcessorStep -- guarding the
+        # degradation path if from_stats ever gains a dict-input None return.
+        monkeypatch.setattr(ns.FeatureNormalizer, "from_stats", staticmethod(lambda *a, **k: None))
+        assert ns.build_norm_stats_processors(_load_fixture()) == (None, None)
+
+
 class TestHubLoader:
     """load_norm_stats Hub path: config.json filename override + fetch."""
 

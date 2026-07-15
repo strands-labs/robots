@@ -60,6 +60,7 @@ def _build_actor_critic(num_actor_obs: int, num_critic_obs: int, num_actions: in
             return Normal(mean, std)
 
         def act(self, actor_obs: torch.Tensor, critic_obs: torch.Tensor) -> dict[str, torch.Tensor]:
+            """Sample an action for rollout collection; returns ``{action, log_prob, value, mean}``."""
             dist = self._distribution(actor_obs)
             action = dist.sample()
             return {
@@ -72,6 +73,7 @@ def _build_actor_critic(num_actor_obs: int, num_critic_obs: int, num_actions: in
         def evaluate(
             self, actor_obs: torch.Tensor, critic_obs: torch.Tensor, action: torch.Tensor
         ) -> dict[str, torch.Tensor]:
+            """Re-score stored actions under the current policy for the PPO update; returns ``{log_prob, value, entropy}``."""
             dist = self._distribution(actor_obs)
             return {
                 "log_prob": dist.log_prob(action).sum(-1),
@@ -133,6 +135,7 @@ class PpoTrainer(BaseRLAlgo):
 
     @property
     def provider_name(self) -> str:
+        """Registry key for this trainer (``"ppo"``)."""
         return "ppo"
 
     def validate(self, spec: TrainSpec) -> list[str]:

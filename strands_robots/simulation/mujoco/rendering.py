@@ -852,7 +852,7 @@ class RenderingMixin:
                     "content": [
                         {
                             "text": (
-                                " Rendering unavailable (no OpenGL context). "
+                                "Rendering unavailable (no OpenGL context). "
                                 "Install EGL or OSMesa for offscreen rendering: "
                                 "apt-get install libosmesa6-dev"
                             )
@@ -995,7 +995,7 @@ class RenderingMixin:
                     "content": [
                         {
                             "text": (
-                                " Depth rendering unavailable (no OpenGL context). "
+                                "Depth rendering unavailable (no OpenGL context). "
                                 "Install EGL or OSMesa for offscreen rendering."
                             )
                         }

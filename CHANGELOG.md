@@ -5,6 +5,77 @@ All notable behavioural changes to `strands-robots` are logged here. Follows
 
 ## [Unreleased]
 
+### Added: `DatasetRecorder.create(overwrite=...)` for honest re-recording into an existing `repo_id`
+
+`DatasetRecorder.create()` calls `LeRobotDataset.create()`, which `mkdir`s its
+target with `exist_ok=False` and raises a bare `FileExistsError` when the
+dataset directory already exists. `create()` exposed no `overwrite` parameter,
+so re-running a capture script into the same `repo_id` dead-ended with a cryptic
+crash and no in-API way to force a fresh dataset -- while `resume()`'s docstring
+and its no-resume `RuntimeError` both pointed callers at an `overwrite=True` that
+only existed on the `Simulation.start_recording` facade.
+
+`create()` now takes `overwrite: bool = False` and resolves an existing target up
+front, matching the facade: `overwrite=True` wipes and recreates a fresh dataset;
+`overwrite=False` on an existing dataset (a dir containing `meta/`) raises a clear
+`FileExistsError` naming `overwrite=True` and `resume()`; an existing empty
+directory (e.g. `tempfile.mkdtemp()`) is cleared so `create()` does not trip over
+its own existence guard; and a non-empty non-dataset directory raises `ValueError`
+rather than clobbering unrelated files. The dataset-directory resolution is now a
+shared `resolve_dataset_dir()` helper used by both `create()` and the sim facade
+(honouring `$HF_LEROBOT_HOME`), so the two surfaces can no longer diverge.
+
+### Fixed: notebooks and the lerobot e2e test fixture no longer hard-default `MUJOCO_GL` to the macOS-only `cgl`
+
+The four `.py` examples became platform-aware in #973, but the notebooks under
+`examples/notebooks/` (`01`, `02`, `03`, `05`) and the module fixture of
+`tests/training/test_lerobot_e2e.py` still planted `MUJOCO_GL=cgl`
+unconditionally in their first cell / setup. `cgl` is the macOS-only offscreen
+GL backend, so on headless Linux (CI, cloud GPUs, Jetson) the first offscreen
+render died with `RuntimeError: invalid value for environment variable
+MUJOCO_GL: cgl`. Since `setdefault(..., "cgl")` writes `cgl` precisely when
+nothing is exported, the `examples/notebooks/README.md` claim that the notebooks
+"fall back to the environment's default" on headless Linux was also false.
+
+All five sites now use the same platform-aware default as the `.py` examples --
+`os.environ.setdefault("MUJOCO_GL", "cgl" if sys.platform == "darwin" else "egl")`
+-- so `cgl` is selected only on macOS and a user-exported `MUJOCO_GL` still
+wins, and the README now describes the actual behaviour. A new
+`tests/test_examples_mujoco_gl.py` guard scans the notebooks plus every tracked
+`examples/` / `tests/` `.py` file and fails on any unguarded `MUJOCO_GL=cgl`
+default, so this regression cannot creep back in.
+
+### Added: `lerobot_async` honors a `rename_map` for remote observation-key remapping
+
+`LerobotAsyncPolicy` (the gRPC client to a LeRobot `PolicyServer`) built its
+`RemotePolicyConfig` without a `rename_map`, so a caller-supplied `rename_map=`
+landed in the ignored-kwargs bag and was silently dropped (warned, then
+discarded). That left the async provider unable to drive a checkpoint whose
+expected camera/state feature keys differ from the ones the robot exposes -- the
+exact remapping the in-process [`lerobot_local`] provider already supports via
+`obs_rename`. A stock checkpoint trained with, say, `observation.images.laptop`
+was therefore unreachable from a robot whose camera is named `front`.
+
+`create_policy("lerobot_async", ..., rename_map={robot_obs_key: model_feature_key})`
+now forwards the map verbatim to the server's `RemotePolicyConfig.rename_map`,
+which the server applies as a `RenameObservationsProcessorStep` (renaming each
+matching observation key before the policy sees it). The default stays `{}` (no
+remap), and a non-dict `rename_map` is rejected client-side with a clear error.
+
+### Docs: correct the remaining pre-0.6 lerobot install guidance (`architecture.md` / `troubleshooting.md` / `molmoact2.md`)
+
+The `lerobot>=0.6.0` floor bump (`lerobot[feetech,dataset]>=0.6.0,<0.7.0`) and the
+follow-up VLA dependency-guidance pass corrected most docs, but a few user-facing
+spots still carried the dead pre-0.6 narrative. The `architecture.md` dependency
+matrix advertised the obsolete `lerobot>=0.5.0,<0.6.0` cap; the `troubleshooting.md`
+version-skew row told users to `pip install "lerobot>=0.5.0,<0.6"` (a manual pin that
+*conflicts* with the declared `>=0.6.0` floor) and to install `MolmoAct2Policy` "from
+source" (it ships in lerobot >= 0.6 on PyPI, so `strands-robots[molmoact2]` resolves it),
+and its Jetson/pyav row linked to a broken `#molmoact2-on-jetson-lerobot-from-source`
+anchor. Corrected all of these (plus the `molmoact2.md` "lerobot from source" install
+line) to match the current PyPI floor, and extended `tests/test_lerobot_dependency_docs.py`
+to pin them -- including a heading-slug resolution check so the Jetson anchor stays live.
+
 ### Added: `get_ground_height(x, y)` -- query the local terrain surface height
 
 `create_world(terrain=...)` raises the local ground up to

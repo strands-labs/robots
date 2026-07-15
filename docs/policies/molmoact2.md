@@ -9,7 +9,7 @@ MolmoAct2 runs through the [LeRobot Local](lerobot-local.md) provider
 action/observation contract for the SO-100/101 checkpoints and how to debug the
 common "the policy runs but the arm does not move in MuJoCo" report.
 
-For install (lerobot from source + the `[molmoact2]` extra), caching, the
+For install (the `[molmoact2]` extra, which pulls lerobot >= 0.6 from PyPI), caching, the
 processor/`norm_stats.json` bridge and camera routing, see the
 [LeRobot Local](lerobot-local.md) page.
 

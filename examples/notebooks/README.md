@@ -12,8 +12,9 @@ uv pip install "strands-robots[sim-mujoco,lerobot]" jupyterlab
 jupyter lab
 ```
 
-On macOS the notebooks set `MUJOCO_GL=cgl` for offscreen rendering; on headless
-Linux they fall back to the environment's default (set `MUJOCO_GL=egl` if needed).
+On macOS the notebooks set `MUJOCO_GL=cgl` for offscreen rendering; everywhere
+else (e.g. headless Linux) they default to `egl`. An exported `MUJOCO_GL`
+always wins.
 
 ## The series
 

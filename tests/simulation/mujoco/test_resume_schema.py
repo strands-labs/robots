@@ -19,11 +19,18 @@ class _FakeRecorder:
         self.dataset = type("_DS", (), {"features": features})()
 
 
-def _features(joint_names, cams):
-    """Build a minimal on-disk feature dict: cams maps name -> (h, w)."""
+def _features(joint_names, cams, actions=None):
+    """Build a minimal on-disk feature dict: cams maps name -> (h, w).
+
+    When ``actions`` is given, an ``action`` feature is added carrying those
+    column names, mirroring what ``DatasetRecorder`` writes for the actuator
+    command vector.
+    """
     feats = {
         "observation.state": {"dtype": "float32", "shape": (len(joint_names),), "names": list(joint_names)},
     }
+    if actions is not None:
+        feats["action"] = {"dtype": "float32", "shape": (len(actions),), "names": list(actions)}
     for name, (h, w) in cams.items():
         feats[f"observation.images.{name}"] = {"dtype": "video", "shape": (3, h, w)}
     return feats
@@ -70,3 +77,23 @@ def test_resume_schema_error_message_is_ascii():
     with pytest.raises(ValueError) as exc:
         verify(None, rec, ["shoulder_pan", "elbow"], [], {})
     str(exc.value).encode("ascii")  # raises if any non-ASCII glyph leaked
+
+
+def test_resume_schema_action_columns_mismatch_raises():
+    """A resumed dataset whose action columns diverge from the scene is rejected.
+
+    Guards the actuator-command half of the schema check: joints/cameras can
+    match while the action vector silently changed (e.g. a robot swapped for one
+    with different actuators), which would otherwise only surface as a cryptic
+    per-frame shape error on the next add_frame.
+    """
+    rec = _FakeRecorder(_features(["j"], {}, actions=["shoulder_pan", "elbow"]))
+    with pytest.raises(ValueError, match="action columns differ"):
+        verify(None, rec, ["j"], [], {}, action_names=["shoulder_pan", "wrist"])
+
+
+def test_resume_schema_matching_action_columns_passes():
+    """Matching action columns must not raise when action_names is supplied."""
+    rec = _FakeRecorder(_features(["j"], {}, actions=["shoulder_pan", "elbow"]))
+    # No raise -> the action feature matches the scene's actuator columns.
+    verify(None, rec, ["j"], [], {}, action_names=["shoulder_pan", "elbow"])
