@@ -190,7 +190,7 @@ def build_app(groot_host: str = "127.0.0.1", groot_port: int = 8000):
 
         run_btn.click(on_run, inputs=[task_dd], outputs=[status, clip])
         # Re-point the <img> (fresh cache-buster) if the stream needs a kick.
-        refresh_btn.click(lambda: _live_img_html(), outputs=[live_view])
+        refresh_btn.click(_live_img_html, outputs=[live_view])
 
     return demo, runner
 
