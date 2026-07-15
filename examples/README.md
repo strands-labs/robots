@@ -28,6 +28,7 @@ record→train→deploy loop) as Jupyter notebooks - all CPU-only, no hardware o
 | 07 | [`07_post_tune_any_policy.py`](07_post_tune_any_policy.py) | `create_trainer` + `TrainSpec` (record→train→load) | No | No |
 | 08 | [`08_discover_lerobot.py`](08_discover_lerobot.py) | `use_lerobot` tool: discover LeRobot robots, policies, teleoperators, cameras | No | No |
 | 09 | [`09_procedural_terrain.py`](09_procedural_terrain.py) | `create_world(terrain=...)` heightfield ground + `difficulty` curriculum | No | No |
+| 10 | [`10_evaluate_benchmark.py`](10_evaluate_benchmark.py) | `register_builtin_benchmarks` + `evaluate_benchmark` (success rate / reward) | No | No |
 | -- | [`vla_g1_workflow.py`](vla_g1_workflow.py) | VLA-on-G1: record -> GR00T fine-tune -> WBC deploy | No | Optional (tune) |
 | — | [`vera_mimicgen_panda/`](vera_mimicgen_panda/) | VERA MimicGen → Panda (eef-delta + IK bridge) | No | **Yes** (server) |
 | -- | [`lerobot_hardware_catalog.py`](lerobot_hardware_catalog.py) | `Robot()` covers the whole LeRobot hardware catalog (name -> lerobot_type) | No | No |
