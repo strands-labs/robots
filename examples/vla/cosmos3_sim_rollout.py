@@ -29,8 +29,8 @@ Prerequisites
 Run
 ---
     # headless servers need an EGL/OSMesa GL backend for offscreen rendering
-    MUJOCO_GL=egl python examples/cosmos3_sim_rollout.py
-    MUJOCO_GL=egl python examples/cosmos3_sim_rollout.py --record /tmp/c3_rollout.mp4
+    MUJOCO_GL=egl python examples/vla/cosmos3_sim_rollout.py
+    MUJOCO_GL=egl python examples/vla/cosmos3_sim_rollout.py --record /tmp/c3_rollout.mp4
 
 Verified on a single L40S: 32-step DROID action chunks (~3 s warm/chunk), the
 Franka arm physically moves under the policy, and an MP4 is recorded.

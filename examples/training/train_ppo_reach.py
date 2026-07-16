@@ -8,7 +8,7 @@ and the joint trajectory is reported.
 
 Run (headless on a GPU box, or plain CPU - PPO here trains fine on CPU)::
 
-    MUJOCO_GL=egl python examples/train_ppo_reach.py
+    MUJOCO_GL=egl python examples/training/train_ppo_reach.py
 
 Requires the ``[sim-mujoco]`` extra plus ``torch``. The same recipe generalizes
 to locomotion / whole-body control by swapping the robot and the reward terms

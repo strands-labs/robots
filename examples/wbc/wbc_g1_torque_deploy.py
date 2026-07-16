@@ -32,7 +32,7 @@ Usage::
     # Point at a checkpoint dir with policy.onnx (+ optional walk_policy.onnx,
     # config.json). The real weights live in the upstream GR00T-WBC repo under
     # decoupled_wbc/sim2mujoco/resources/robots/g1/policy/.
-    python examples/wbc_g1_torque_deploy.py --checkpoint /path/to/grootwbc-g1 \
+    python examples/wbc/wbc_g1_torque_deploy.py --checkpoint /path/to/grootwbc-g1 \
         --duration 5 --vx 0.5 [--mp4 /tmp/g1_walk.mp4]
 
 It prints per-second base x/z and a final verdict (advanced / fell / stayed put),

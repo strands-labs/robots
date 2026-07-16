@@ -1,6 +1,6 @@
 """Train an SO-100 arm to reach a target joint angle with FastSAC, from scratch.
 
-The off-policy peer of ``examples/train_ppo_reach.py``: no demonstration
+The off-policy peer of ``examples/training/train_ppo_reach.py``: no demonstration
 dataset, just a reward function. FastSAC (Soft Actor-Critic) replays past
 transitions from a buffer, so it reaches the target in far fewer environment
 steps than on-policy PPO. The deterministic (mean) policy is rolled out at the
@@ -8,7 +8,7 @@ end and the joint trajectory is reported.
 
 Run (headless on a GPU box, or plain CPU - FastSAC here trains fine on CPU)::
 
-    MUJOCO_GL=egl python examples/train_fastsac_reach.py
+    MUJOCO_GL=egl python examples/training/train_fastsac_reach.py
 
 Requires the ``[sim-mujoco]`` extra plus ``torch``. The same recipe generalizes
 to locomotion / whole-body control by swapping the robot and the reward terms

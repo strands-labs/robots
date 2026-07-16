@@ -20,8 +20,8 @@ console if the action stream is degenerate).
 
 Dependencies: pip install "strands-robots[sim-mujoco]"   (+[molmoact2] for --checkpoint)
 Run:
-    MUJOCO_GL=egl python examples/molmoact2_so101_debug.py
-    MUJOCO_GL=egl python examples/molmoact2_so101_debug.py --checkpoint allenai/MolmoAct2-SO100_101
+    MUJOCO_GL=egl python examples/vla/molmoact2_so101_debug.py
+    MUJOCO_GL=egl python examples/vla/molmoact2_so101_debug.py --checkpoint allenai/MolmoAct2-SO100_101
 """
 
 from __future__ import annotations

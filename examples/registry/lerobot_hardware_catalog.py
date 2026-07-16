@@ -14,8 +14,8 @@ read helpers and the ``Robot()`` factory - never ``import lerobot`` directly.
 That is the whole point: users program against ``Robot("g1")``, not the driver.
 
 Run:
-    python examples/lerobot_hardware_catalog.py        # hardware catalog
-    python examples/lerobot_hardware_catalog.py --g1   # focus: Unitree G1 in sim
+    python examples/registry/lerobot_hardware_catalog.py        # hardware catalog
+    python examples/registry/lerobot_hardware_catalog.py --g1   # focus: Unitree G1 in sim
 """
 
 from __future__ import annotations

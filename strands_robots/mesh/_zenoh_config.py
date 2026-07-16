@@ -82,7 +82,7 @@ Configuration env vars
     permissive ACL from :func:`~strands_robots.mesh._acl_config.default_acl`
     is used: any CA-signed peer may publish/subscribe on any key. Operators
     who require role separation between robots and operators must supply
-    a custom ACL file (template at ``examples/mesh_acl_example.json5``).
+    a custom ACL file (template at ``examples/mesh/mesh_acl_example.json5``).
     See CHANGELOG.md Section 8 for the rationale (Zenoh 1.x ACL CN-glob
     quirks made a true default-deny silently total-deny on first run).
 

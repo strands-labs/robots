@@ -440,7 +440,7 @@ def _build_config() -> Any:
                 "default ACL. Any CA-signed peer can publish/subscribe "
                 "on any key. For production fleets supply an operator "
                 "ACL enumerating each peer's cert CN; see "
-                "examples/mesh_acl_example.json5."
+                "examples/mesh/mesh_acl_example.json5."
             )
     else:
         logger.error(

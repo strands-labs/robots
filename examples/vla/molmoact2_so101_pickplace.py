@@ -15,8 +15,8 @@ Hardware requirements:
 
 Usage:
   export STRANDS_TRUST_REMOTE_CODE=1
-  python molmoact2_so101_pickplace.py --task "Pick up the pen"
-  python molmoact2_so101_pickplace.py --dry-run  # no motor commands
+  python examples/vla/molmoact2_so101_pickplace.py --task "Pick up the pen"
+  python examples/vla/molmoact2_so101_pickplace.py --dry-run  # no motor commands
 """
 
 from __future__ import annotations

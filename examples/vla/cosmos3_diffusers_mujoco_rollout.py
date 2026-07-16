@@ -19,7 +19,7 @@ the headless Thor rollout attached to PR #458.
 
     uv pip install "strands-robots[cosmos3-diffusers,cosmos3-sim]" \
         "diffusers @ git+https://github.com/huggingface/diffusers"
-    python examples/cosmos3_diffusers_mujoco_rollout.py --instruction "pick up the red cube" --render out.mp4
+    python examples/vla/cosmos3_diffusers_mujoco_rollout.py --instruction "pick up the red cube" --render out.mp4
 """
 
 from __future__ import annotations

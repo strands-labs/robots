@@ -236,7 +236,7 @@ def _load_acl_file(path: Path) -> dict[str, Any]:
                     f"{len(data['rules'])} rule(s) -- a blacklist policy where any "
                     "rule gap exposes the mesh. Refusing to load. Remediate one of:\n"
                     "  1. Rewrite the ACL with default_permission='deny' and "
-                    "explicit allow rules (see examples/mesh_acl_example.json5).\n"
+                    "explicit allow rules (see examples/mesh/mesh_acl_example.json5).\n"
                     "  2. Set STRANDS_MESH_ACCEPT_PERMISSIVE_ACL=1 to acknowledge "
                     "the dev/lab posture."
                 )
@@ -258,7 +258,7 @@ def _load_acl_file(path: Path) -> dict[str, Any]:
                 "DENY (every key denied for every peer). If intentional this is the "
                 "'firewall mesh off' posture; otherwise add at least one "
                 "allow-permission rule plus a matching policy/subject "
-                "(see examples/mesh_acl_example.json5).",
+                "(see examples/mesh/mesh_acl_example.json5).",
                 path,
             )
     _validate_acl_shape(data, path)
@@ -434,7 +434,7 @@ def default_acl(namespace: str) -> dict[str, Any]:
     Operators who want per-role enforcement supply their own ACL via
     ``STRANDS_MESH_ACL_FILE`` enumerating each peer's exact cert CN
     (Zenoh 1.x cert_common_names does not support globs -- see
-    ``examples/mesh_acl_example.json5`` for the canonical template).
+    ``examples/mesh/mesh_acl_example.json5`` for the canonical template).
 
     Why permissive default rather than default-deny: a default-deny
     skeleton with no enumerated subjects rejects every legitimate
@@ -458,7 +458,7 @@ def default_acl(namespace: str) -> dict[str, Any]:
         # publish and subscribe on any key. This is the documented behaviour
         # (CHANGELOG section 8, README "Default ACL -- permissive by design").
         # Operators wanting per-role enforcement supply STRANDS_MESH_ACL_FILE
-        # (see examples/mesh_acl_example.json5 for the canonical template).
+        # (see examples/mesh/mesh_acl_example.json5 for the canonical template).
         #
         # Earlier versions of this default mixed default_permission='deny'
         # with two key_exprs=['**'] allow-rules; the effective behaviour was

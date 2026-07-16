@@ -31,7 +31,7 @@
 // the topic shape (there is no `${cn}` substitution like IoT's
 // `${iot:Connection.Thing.ThingName}`). For STRICT per-peer isolation
 // equivalent to the IoT policy, enumerate one rule + one subject per
-// robot CN - see examples/mesh_acl_strict_per_peer.json5. When in doubt,
+// robot CN - see examples/mesh/mesh_acl_strict_per_peer.json5. When in doubt,
 // prefer the IoT transport for fleets that require hard cross-peer
 // subscribe denial.
 //

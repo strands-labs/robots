@@ -20,7 +20,7 @@ Usage::
     # checkpoint dir holds policy.onnx (+ walk_policy.onnx, config.json); the
     # real weights live in NVlabs/GR00T-WholeBodyControl under
     # decoupled_wbc/sim2mujoco/resources/robots/g1/policy/.
-    python examples/wbc_g1_composite.py --checkpoint /path/to/grootwbc-g1 \
+    python examples/wbc/wbc_g1_composite.py --checkpoint /path/to/grootwbc-g1 \
         --duration 5 --vx 0.4 --mp4 /tmp/g1_composite.mp4
 """
 

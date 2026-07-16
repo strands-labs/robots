@@ -497,7 +497,7 @@ class Mesh(SensorLoopsMixin):
             "    - Sharing a trusted lab network?  Set "
             "STRANDS_MESH_ACCEPT_PERMISSIVE_ACL=1 to accept this posture.\n"
             "    - Production?  Point STRANDS_MESH_ACL_FILE at a role-separated "
-            "ACL (see examples/mesh_acl_example.json5).\n"
+            "ACL (see examples/mesh/mesh_acl_example.json5).\n"
             "    - Don't need the mesh?  It is OFF by default now -- just drop "
             "mesh=True (or set STRANDS_MESH=false).",
             self.peer_id,
@@ -1851,7 +1851,7 @@ class Mesh(SensorLoopsMixin):
 
         Wire authentication (mTLS + ACL) admits this handler. **When the
         operator supplies an ``STRANDS_MESH_ACL_FILE`` with role
-        separation (template at ``examples/mesh_acl_example.json5``),
+        separation (template at ``examples/mesh/mesh_acl_example.json5``),
         only peers in the ``operator_peer`` subject can publish on
         ``safety/**``.** The default ACL shipped by ``default_acl()`` is
         permissive (CHANGELOG.md Section 8 -- "any CA-signed peer may

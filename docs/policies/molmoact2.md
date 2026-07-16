@@ -134,7 +134,7 @@ its `so101_real`/`so100_follower` aliases) match the lerobot SOFollower driver's
 `<motor>.pos` keys reported over the serial bus. Pick the embodiment for the
 robot you actually instantiate: `embodiment="so101"` for the sim examples,
 `embodiment="so_real"` for the hardware example
-(`examples/molmoact2_so101_pickplace.py`).
+(`examples/vla/molmoact2_so101_pickplace.py`).
 
 ## Debugging "runs but does not move"
 
@@ -165,12 +165,12 @@ point you at the embodiment / rename config. The warnings re-arm on
 
 ### Repro / debug script
 
-`examples/molmoact2_so101_debug.py` pushes a known degree-space action through
+`examples/vla/molmoact2_so101_debug.py` pushes a known degree-space action through
 the `so101` mapping into MuJoCo and logs per-step joint deltas - no model
 weights needed - then contrasts it with feeding raw degrees (which saturates):
 
 ```bash
-MUJOCO_GL=egl python examples/molmoact2_so101_debug.py
+MUJOCO_GL=egl python examples/vla/molmoact2_so101_debug.py
 # ... add --checkpoint allenai/MolmoAct2-SO100_101 to roll out the real policy
 ```
 

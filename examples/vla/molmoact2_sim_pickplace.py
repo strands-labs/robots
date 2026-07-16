@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """SO101 pick-and-place in MuJoCo simulation - same policy, sim robot.
 
-Mirrors ``molmoact2_so101_pickplace.py`` but swaps the robot to sim mode. Two
+Mirrors ``examples/vla/molmoact2_so101_pickplace.py`` but swaps the robot to sim mode. Two
 things change versus the hardware example: ``mode="sim"`` (the default) and the
 policy ``embodiment``. Sim uses ``embodiment="so101"`` (bare-numeric MuJoCo
 joint keys "1".."6"); the hardware example uses ``embodiment="so_real"`` (the
@@ -11,8 +11,8 @@ plumbing are otherwise identical.
 Usage:
   export STRANDS_TRUST_REMOTE_CODE=1
   export MUJOCO_GL=egl   # headless rendering (CI / SSH sessions)
-  python molmoact2_sim_pickplace.py --task "Pick up the red cube"
-  python molmoact2_sim_pickplace.py --dry-run  # policy inference only, no actuation
+  python examples/vla/molmoact2_sim_pickplace.py --task "Pick up the red cube"
+  python examples/vla/molmoact2_sim_pickplace.py --dry-run  # policy inference only, no actuation
 """
 
 from __future__ import annotations

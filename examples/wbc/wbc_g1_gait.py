@@ -2,7 +2,7 @@
 """Gait-clock WBC variant for the Unitree G1 - usage + clock visualization.
 
 NVIDIA's GR00T-WholeBodyControl ships two MuJoCo reference controllers for the
-G1: the non-gait balance/walk pair (see ``examples/wbc_g1_torque_deploy.py``)
+G1: the non-gait balance/walk pair (see ``examples/wbc/wbc_g1_torque_deploy.py``)
 and a *gait-clock* variant - a single ONNX policy fed a 95-dim observation that
 carries an 8-wide command (with a ``freq_cmd`` step-frequency slot) plus a
 2-dim bipedal phase clock. :class:`strands_robots.policies.wbc.WBCGaitPolicy`
@@ -22,10 +22,10 @@ This example has two modes:
 Usage::
 
     # Clock visualization (the demonstrable behavior, no weights needed):
-    python examples/wbc_g1_gait.py --plot-clock --out /tmp/g1_gait_clock.png
+    python examples/wbc/wbc_g1_gait.py --plot-clock --out /tmp/g1_gait_clock.png
 
     # Policy usage (needs a 95x6 gait checkpoint):
-    python examples/wbc_g1_gait.py --checkpoint /path/to/gait-g1 --vx 0.5 --freq 1.5
+    python examples/wbc/wbc_g1_gait.py --checkpoint /path/to/gait-g1 --vx 0.5 --freq 1.5
 """
 
 from __future__ import annotations

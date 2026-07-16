@@ -28,13 +28,13 @@ Dependencies:
 
 Usage:
     # Quick demo (record + deploy with mock policy, ~10s):
-    python examples/vla_g1_workflow.py
+    python examples/locomotion/vla_g1_workflow.py
 
     # Full pipeline with real fine-tuning:
-    python examples/vla_g1_workflow.py --tune --base-model nvidia/GR00T-N1.7-3B
+    python examples/locomotion/vla_g1_workflow.py --tune --base-model nvidia/GR00T-N1.7-3B
 
     # Deploy-only with an existing SONIC checkpoint:
-    python examples/vla_g1_workflow.py --checkpoint /path/to/grootwbc-g1
+    python examples/locomotion/vla_g1_workflow.py --checkpoint /path/to/grootwbc-g1
 """
 
 from __future__ import annotations

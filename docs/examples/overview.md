@@ -38,8 +38,8 @@ git clone https://github.com/strands-labs/robots
 cd robots
 uv pip install -e ".[all]"
 
-python examples/cosmos3_sim_rollout.py           # needs cosmos3-service + server on :8000
-python examples/molmoact2_so101_pickplace.py     # requires hardware
+python examples/vla/cosmos3_sim_rollout.py           # needs cosmos3-service + server on :8000
+python examples/vla/molmoact2_so101_pickplace.py     # requires hardware
                                                  # requires GPU
 ```
 
