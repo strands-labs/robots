@@ -243,14 +243,14 @@ def resolve_model_path(
             candidates.extend(_resolve_candidates(asset_dir_name, xml_file, name))
 
     if not candidates:
-        logger.warning("Robot model not found: %s → %s/%s", name, asset_dir_name, xml_file)
+        logger.warning("Robot model not found: %s -> %s/%s", name, asset_dir_name, xml_file)
         return None
 
     # Prefer the candidate whose directory contains mesh files,
     # because an XML without meshes will fail to load in MuJoCo.
     for path in candidates:
         if _has_meshes(path.parent):
-            logger.debug("Resolved %s → %s (has meshes)", name, path)
+            logger.debug("Resolved %s -> %s (has meshes)", name, path)
             return Path(path)
 
     # XML found but no meshes - auto-download and re-check
@@ -260,11 +260,11 @@ def resolve_model_path(
         refreshed = _resolve_candidates(asset_dir_name, xml_file, name)
         for path in refreshed:
             if _has_meshes(path.parent):
-                logger.debug("Resolved %s → %s (auto-downloaded)", name, path)
+                logger.debug("Resolved %s -> %s (auto-downloaded)", name, path)
                 return Path(path)
 
     # Final fallback: return first candidate (some robots have no meshes)
-    logger.debug("Resolved %s → %s (no meshes available)", name, candidates[0])
+    logger.debug("Resolved %s -> %s (no meshes available)", name, candidates[0])
     return Path(candidates[0])
 
 

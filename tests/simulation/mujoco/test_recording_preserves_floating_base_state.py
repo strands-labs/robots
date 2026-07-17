@@ -156,6 +156,10 @@ def test_named_floating_base_preserved_in_schema(sim):
     names, shape = _state_names(sim)
     for col in _BASE_COLS:
         assert col in names, f"{col} missing from recorded observation.state schema"
+    # The free joint is NOT recorded as a degenerate scalar joint column
+    # (its 6-DoF state is the structured base_* columns above); matching
+    # get_observation / get_robot_state.
+    assert "floating_base_joint" not in names, "the free joint must not be a scalar observation.state column"
     # shape length must match the flat per-element name count.
     assert tuple(shape)[0] == len(names)
     sim.stop_recording()

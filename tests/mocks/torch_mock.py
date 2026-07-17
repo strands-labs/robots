@@ -81,6 +81,9 @@ class MockTensor:
     def item(self):
         return float(self._data.flat[0])
 
+    def tolist(self):
+        return self._data.tolist()
+
     def numpy(self):
         return self._data.copy()
 
@@ -123,6 +126,9 @@ class MockTensor:
 
     def reshape(self, *shape):
         return MockTensor(self._data.reshape(shape))
+
+    def flatten(self, *args, **kwargs):
+        return MockTensor(self._data.reshape(-1))
 
     def permute(self, *dims):
         return MockTensor(np.transpose(self._data, dims))

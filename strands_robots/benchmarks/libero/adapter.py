@@ -1775,11 +1775,9 @@ class LiberoAdapter(BenchmarkProtocol):
 
         Walks the BDDL predicate tree compiled at construction time
         (:func:`compile_goal`) against the current sim state. The
-        evaluator was hardened in #170 / #173 / #175 to match
-        upstream LIBERO's ``check_ontop`` / ``check_contact``
-        semantics byte-for-byte at the moment of contact (#171
-        sub-task 3e contact check, #175 round 46d body-name
-        ``_main`` suffix fallback).
+        evaluator matches upstream LIBERO's ``check_ontop`` /
+        ``check_contact`` semantics byte-for-byte at the moment of
+        contact, including the ``_main`` body-name suffix fallback.
         """
         return bool(self._success_fn(sim))
 

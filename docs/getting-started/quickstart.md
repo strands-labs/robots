@@ -48,6 +48,14 @@ agent = Agent(tools=[robot])
 agent("Add a red cube and pick it up using the mock policy")
 ```
 
+## Next: the notebook series
+
+For a guided, click-and-run path, work through the
+[getting-started notebooks](../examples/overview.md), five notebooks that run
+end-to-end in simulation with no hardware, no GPU, and no Hugging Face
+credentials. They take you from `Robot("so100")` through recording a dataset,
+training a policy, and the full streaming data loop, each building on the last.
+
 ## See also
 
 - [Policy providers](../policies/overview.md) - GR00T, LeRobot Local, Cosmos 3.

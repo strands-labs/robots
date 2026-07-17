@@ -1,10 +1,10 @@
-"""Pin: examples/mesh_acl_example.json5 references must resolve to live test files.
+"""Pin: examples/mesh/mesh_acl_example.json5 references must resolve to live test files.
 
 Background: in the prior fix the test files under ``tests/mesh/`` were renamed away from
 methodology-style names (``test_redteam_zenoh.py``, ``test_pentest_findings.py``)
 to subject-under-test names (``test_zenoh_transport_security.py``,
 ``test_application_security.py``). Five direct references were updated, but
-``examples/mesh_acl_example.json5:8`` retained the stale name and was caught
+``examples/mesh/mesh_acl_example.json5:8`` retained the stale name and was caught
 re-flagged earlier review.
 
 This test pins the example-file references against the actual test tree so a
@@ -17,7 +17,7 @@ import re
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-_EXAMPLE = _REPO_ROOT / "examples" / "mesh_acl_example.json5"
+_EXAMPLE = _REPO_ROOT / "examples" / "mesh" / "mesh_acl_example.json5"
 
 
 def _extract_test_path_refs(text: str) -> list[str]:
@@ -33,7 +33,7 @@ def test_acl_example_test_refs_resolve() -> None:
     assert refs, "expected at least one test-file reference in the example header"
     missing = [ref for ref in refs if not (_REPO_ROOT / ref).is_file()]
     assert not missing, (
-        f"examples/mesh_acl_example.json5 references missing test files: {missing}. "
+        f"examples/mesh/mesh_acl_example.json5 references missing test files: {missing}. "
         "Update the example header or rename the test back."
     )
 
@@ -47,6 +47,6 @@ def test_acl_example_does_not_reference_renamed_files() -> None:
     }
     found = {old: new for old, new in stale_names.items() if old in body}
     assert not found, (
-        f"examples/mesh_acl_example.json5 contains stale R16-renamed references: {found}. "
+        f"examples/mesh/mesh_acl_example.json5 contains stale R16-renamed references: {found}. "
         "Replace each old name with its new name."
     )

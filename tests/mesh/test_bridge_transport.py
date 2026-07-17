@@ -7,6 +7,7 @@ either side fails.
 
 from __future__ import annotations
 
+import time
 from unittest.mock import MagicMock
 
 import pytest
@@ -14,9 +15,11 @@ import pytest
 from strands_robots.mesh.transport.bridge_transport import (
     _DEFAULT_BRIDGE_PREFIX_SUFFIXES,
     _DEFAULT_DEDUP_TTL_S,
+    _MAX_DEDUP_ENTRIES,
     DEFAULT_BRIDGE_SUFFIXES,
     BridgeTransport,
     _BridgeSubHandle,
+    _CommandDeduplicator,
     _resolve_bridge_filter,
     _resolve_bridge_prefix_filter,
     _resolve_dedup_ttl,
@@ -526,3 +529,125 @@ class TestBridgeCloseFailSoft:
 
         with pytest.raises(ValueError):
             b.close()
+
+
+class TestShouldBridgePathTraversal:
+    """Reject ``..`` path-traversal in a prefix-matched tail.
+
+    ``response`` is the one default prefix that accepts a trailing component
+    (``response/<turn>``). Defence-in-depth: an attacker who appends a
+    traversal segment (``response/../safety/estop``) to that prefix must NOT
+    have the message bridged onto MQTT. The tail scan rejects any segment equal
+    to ``..``; Zenoh keys never legitimately contain one.
+    """
+
+    def test_traversal_tail_on_allowed_prefix_does_not_bridge(self):
+        assert (
+            _should_bridge(
+                "strands/peer1/response/../safety/estop",
+                DEFAULT_BRIDGE_SUFFIXES,
+                {"response"},
+            )
+            is False
+        )
+
+    def test_deeply_nested_traversal_tail_does_not_bridge(self):
+        assert (
+            _should_bridge(
+                "strands/peer1/response/turn-42/../../cmd",
+                DEFAULT_BRIDGE_SUFFIXES,
+                {"response"},
+            )
+            is False
+        )
+
+    def test_clean_prefix_tail_still_bridges(self):
+        # Positive control: a legitimate per-turn tail with no traversal
+        # segment must still bridge, so the guard is not over-broad.
+        assert (
+            _should_bridge(
+                "strands/peer1/response/turn-42",
+                DEFAULT_BRIDGE_SUFFIXES,
+                {"response"},
+            )
+            is True
+        )
+
+
+class TestBridgeFanOutFailSoftSymmetry:
+    """``put()`` isolates a failure on either transport from the other.
+
+    The Zenoh-side failure direction is pinned above; this pins the symmetric
+    IoT-side direction so a broker/MQTT outage can never suppress the LAN Zenoh
+    publish (or raise out of ``put``).
+    """
+
+    def test_iot_failure_does_not_block_zenoh(self, fake_transports):
+        z, i = fake_transports
+        i.put.side_effect = RuntimeError("iot broker unreachable")
+        b = BridgeTransport(zenoh=z, iot=i)
+        b.connect()
+
+        # ``presence`` bridges to both; the IoT put raises but must be
+        # absorbed, and the Zenoh publish must still happen.
+        b.put("strands/peer1/presence", {"k": 1})
+
+        z.put.assert_called_once_with("strands/peer1/presence", {"k": 1})
+        i.put.assert_called_once()
+
+
+class TestBridgeInspectionAccessors:
+    """The bridge exposes its underlying transports and filter for inspection.
+
+    ``raw_session`` in particular is documented backwards-compat surface that
+    ``Mesh.subscribe`` delegates to the Zenoh side; pin that these accessors
+    return the underlying objects rather than a copy or wrapper.
+    """
+
+    def test_accessors_delegate_to_underlying_transports(self, fake_transports):
+        z, i = fake_transports
+        b = BridgeTransport(zenoh=z, iot=i)
+
+        assert b.zenoh is z
+        assert b.iot is i
+        assert b.raw_session is z.raw_session
+        # bridge_suffixes is the resolved fan-out filter (a frozenset).
+        assert isinstance(b.bridge_suffixes, frozenset)
+        assert b.bridge_suffixes == DEFAULT_BRIDGE_SUFFIXES
+
+
+class TestCommandDeduplicatorBounds:
+    """Bounded-cache contracts for the cross-transport dedup cache (issue #231).
+
+    The cache must never grow without bound: once it exceeds the soft cap a
+    cheap stale-eviction sweep drops entries older than the TTL window, so a
+    flood of unique commands cannot exhaust memory.
+    """
+
+    def test_ttl_property_reflects_configured_window(self):
+        assert _CommandDeduplicator(ttl_s=42.5).ttl == 42.5
+
+    def test_stale_entries_evicted_once_over_soft_cap(self):
+        dedup = _CommandDeduplicator(ttl_s=1.0)
+        # Seed the cache just over the soft cap with entries whose timestamps
+        # are well outside the TTL window (i.e. stale).
+        stale_ts = time.monotonic() - 3600.0
+        dedup._seen = {("strands/peer/cmd", f"id-{n}"): stale_ts for n in range(_MAX_DEDUP_ENTRIES + 5)}
+
+        # A fresh, canonically-identified command triggers the GC sweep. It is
+        # not a duplicate (first sighting), and the stale seeds are evicted.
+        is_dup = dedup.is_duplicate(
+            "strands/peer/cmd",
+            {"sender_id": "a", "turn_id": "t1", "command": "go"},
+        )
+
+        assert is_dup is False
+        # Every stale seed was swept; only the freshly-seen entry remains.
+        assert len(dedup._seen) == 1
+
+    def test_non_dict_payload_has_no_identity_and_passes_through(self):
+        # A non-dict payload carries no canonical (sender_id, turn_id, command)
+        # triple, so dedup is bypassed (treated as never-seen) rather than
+        # raising on the bridge fan-out path.
+        dedup = _CommandDeduplicator(ttl_s=1.0)
+        assert dedup.is_duplicate("strands/peer/cmd", ["not", "a", "dict"]) is False

@@ -590,7 +590,7 @@ class LerobotTrainer(Trainer):
         if root:
             cmd.append(f"--dataset.root={root}")
         if rm is not None:
-            cmd.extend(self._reward_model_command_flags(rm))
+            cmd.extend(self._reward_model_command_flags(rm, spec.base_model))
         else:
             ptype = self._resolve_policy_type(spec)
             cmd.append(f"--policy.type={ptype}")
@@ -647,11 +647,18 @@ class LerobotTrainer(Trainer):
             cmd.append(f"--{key}={value}")
         return cmd
 
-    def _reward_model_command_flags(self, rm: dict[str, Any]) -> list[str]:
+    def _reward_model_command_flags(self, rm: dict[str, Any], base_model: str = "") -> list[str]:
         """argv-parity flags for a reward-model run (``--reward_model.*``)."""
         rtype = self._reward_model_type(rm)
         friendly = _reward_friendly_fields(rtype)
         flags = [f"--reward_model.type={rtype}", f"--reward_model.device={self.device}"]
+        # Warm-start checkpoint: build_config sets reward_cfg.pretrained_path from
+        # spec.base_model, so the equivalent CLI must set it too (mirrors the policy
+        # path's --policy.pretrained_path). Omitting it left the documented
+        # reward-model CLI training from scratch (pretrained_path defaults to None)
+        # instead of warm-starting from base_model.
+        if base_model:
+            flags.append(f"--reward_model.pretrained_path={base_model}")
         for key, value in rm.items():
             if key != "type" and key in friendly:
                 flags.append(f"--reward_model.{key}={value}")

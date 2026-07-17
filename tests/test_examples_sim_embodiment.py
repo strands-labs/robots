@@ -8,7 +8,8 @@ which never match the bare-numeric MuJoCo joint names (``"1".."6"``). The
 ``observation.state``, and a state-conditioned policy (MolmoAct2) fails deep
 inside the lerobot processor pipeline with ``requires observation.state``.
 
-This statically scans top-level example scripts: any example that constructs a
+This statically scans every example script (recursively across topic
+subfolders): any example that constructs a
 SIM robot (``Robot(...)`` without ``mode="real"``, or ``create_simulation(...)``)
 and passes a hardware (``*_real``) embodiment to ``create_policy`` is a defect.
 Pure-hardware examples (``Robot(..., mode="real")``) are exempt - ``so_real`` is
@@ -106,7 +107,7 @@ def _create_policy_embodiments(tree: ast.AST) -> list[str]:
 def _example_scripts() -> list[Path]:
     if not _EXAMPLES_DIR.is_dir():
         return []
-    return sorted(_EXAMPLES_DIR.glob("*.py"))
+    return sorted(_EXAMPLES_DIR.rglob("*.py"))
 
 
 @pytest.mark.parametrize("script", _example_scripts(), ids=[p.name for p in _example_scripts()])

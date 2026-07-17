@@ -144,6 +144,47 @@ def test_read_pose_odom_fallback() -> None:
     assert pose["frame"] == "odom"
 
 
+def test_read_pose_slam_accessor_fault_falls_through_to_odom() -> None:
+    """A SLAM accessor that raises mid-tick must not abort pose resolution.
+
+    ``_read_pose`` consults sources in priority order (explicit provider ->
+    SLAM -> odometry). Each sub-source has its own fail-soft guard so a single
+    faulty accessor degrades to the next source rather than crashing the pose
+    publish loop. Here the SLAM accessor throws, so resolution falls through to
+    the odometry pose.
+    """
+
+    class _SlamFaultRobot:
+        _odom_pose = {"x": 5.0}
+
+        @property
+        def _slam_pose(self) -> Any:
+            raise RuntimeError("sensor bus fault reading '_slam_pose'")
+
+    pose = _Host(_SlamFaultRobot())._read_pose()
+    assert pose is not None
+    assert pose["source"] == "odom"
+    assert pose["frame"] == "odom"
+    assert pose["x"] == 5.0
+
+
+def test_read_pose_slam_and_odom_accessor_faults_yield_none() -> None:
+    """When both the SLAM and odometry accessors raise, pose resolution
+    returns ``None`` (no sample) instead of propagating the driver fault, so
+    the publish loop survives a fully faulted pose subsystem."""
+
+    class _PoseFaultRobot:
+        @property
+        def _slam_pose(self) -> Any:
+            raise RuntimeError("sensor bus fault reading '_slam_pose'")
+
+        @property
+        def _odom_pose(self) -> Any:
+            raise RuntimeError("sensor bus fault reading '_odom_pose'")
+
+    assert _Host(_PoseFaultRobot())._read_pose() is None
+
+
 # _read_health --------------------------------------------------------------
 
 
@@ -405,7 +446,7 @@ class _FaultyRobot:
     """Robot whose sensor-provider accessors raise, simulating a driver/bus
     fault on sensor read (a property that throws mid-tick).
 
-    Each provider attribute the readers consult (``_pose``, ``_battery``,
+    Each provider attribute the readers consult (``_pose``, ``_slam_pose``, ``_odom_pose``, ``_battery``,
     ``_temps``, ``_imu``, ``robot``, ``_odom``, ``_lidar_summary``,
     ``_lidar_state``, ``_hands``, ``_map_info``) is a property that raises
     ``RuntimeError`` -- a non-``AttributeError`` fault. This is deliberate:
@@ -419,6 +460,14 @@ class _FaultyRobot:
     @property
     def _pose(self) -> Any:
         raise RuntimeError("sensor bus fault reading '_pose'")
+
+    @property
+    def _slam_pose(self) -> Any:
+        raise RuntimeError("sensor bus fault reading '_slam_pose'")
+
+    @property
+    def _odom_pose(self) -> Any:
+        raise RuntimeError("sensor bus fault reading '_odom_pose'")
 
     @property
     def _battery(self) -> Any:

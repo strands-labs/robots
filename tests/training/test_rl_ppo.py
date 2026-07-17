@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+from typing import Any
 
 import pytest
 
@@ -99,6 +100,37 @@ def test_validate_rejects_bad_specs() -> None:
     # rollout_steps must divide into num_mini_batches.
     problems = trainer.validate(RLTrainSpec(output_dir="/tmp/x", rollout_steps=10, num_mini_batches=3))
     assert any("divisible" in p for p in problems)
+
+
+@pytest.mark.parametrize(
+    ("overrides", "expected"),
+    [
+        ({"output_dir": ""}, "output_dir is required"),
+        ({"total_timesteps": 0}, "total_timesteps must be > 0"),
+        ({"total_timesteps": -1}, "total_timesteps must be > 0"),
+        ({"rollout_steps": 0}, "rollout_steps must be > 0"),
+        ({"num_envs": 0}, "num_envs must be >= 1"),
+        ({"rollout_steps": 10, "num_mini_batches": 3}, "divisible"),
+        ({"num_mini_batches": 0}, "divisible"),
+    ],
+)
+def test_validate_flags_each_out_of_range_field(overrides: dict[str, Any], expected: str) -> None:
+    """Each numeric guard in the PPO preflight names the offending field.
+
+    ``validate`` is a pure, read-only preflight the ``train`` entry point runs
+    before touching torch or the env, so a misconfigured spec fails with an
+    actionable message instead of a deep stack trace inside ``setup``. One
+    otherwise-valid spec per case isolates a single bad field; a non-None
+    ``env_factory`` keeps the env-factory guard quiet so only the field under
+    test is exercised. Mirrors the FastSAC preflight contract test.
+    """
+    from strands_robots.training.rl import RLTrainSpec
+
+    trainer = create_trainer("ppo")
+    base: dict[str, Any] = {"output_dir": "/tmp/x", "env_factory": lambda: None}
+    base.update(overrides)
+    problems = trainer.validate(RLTrainSpec(**base))
+    assert any(expected in p for p in problems), problems
 
 
 def test_train_rejects_non_rl_spec() -> None:

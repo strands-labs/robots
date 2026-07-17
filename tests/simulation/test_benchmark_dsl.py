@@ -100,6 +100,40 @@ class TestFromDictValidation:
         bench = DeclarativeBenchmark.from_dict({"name": "x", "default_robot": "anything", "supported_robots": []})
         assert bench.default_robot == "anything"
 
+    def test_accepts_instruction(self):
+        """A spec may declare a natural-language ``instruction`` and it is
+        surfaced on the compiled benchmark. Before this was supported the key
+        was rejected as an unknown top-level key, so a spec-authored benchmark
+        could not carry a task command for a language-conditioned policy."""
+        bench = DeclarativeBenchmark.from_dict(
+            {
+                "name": "x",
+                "default_robot": "so100",
+                "supported_robots": ["so100"],
+                "instruction": "walk forward at 1 m/s",
+            }
+        )
+        assert bench.instruction == "walk forward at 1 m/s"
+
+    def test_instruction_defaults_to_empty(self):
+        """A spec that omits ``instruction`` compiles to the empty-string
+        default (backward compatible with every pre-existing spec)."""
+        bench = DeclarativeBenchmark.from_dict({"name": "x", "default_robot": "so100", "supported_robots": ["so100"]})
+        assert bench.instruction == ""
+
+    def test_rejects_non_string_instruction(self):
+        """A non-string ``instruction`` is a clear error, not a silent coerce."""
+        with pytest.raises(ValueError) as exc:
+            DeclarativeBenchmark.from_dict(
+                {
+                    "name": "x",
+                    "default_robot": "so100",
+                    "supported_robots": ["so100"],
+                    "instruction": 123,
+                }
+            )
+        assert "instruction" in str(exc.value)
+
     def test_rejects_non_positive_max_steps(self):
         for bad in (-1, 0, "300", True):
             with pytest.raises(ValueError):
@@ -192,6 +226,26 @@ class TestPredicateCompilation:
         with pytest.raises(ValueError) as exc:
             DeclarativeBenchmark.from_dict(self._base_spec(success={"all": [], "other": []}))
         assert "other" in str(exc.value)
+
+    def test_rejects_unknown_predicate_in_dense_reward(self):
+        """A typo'd predicate name in a ``dense_reward`` term surfaces the same
+        clear ``Unknown predicate ... Valid: [...]`` error as a success clause.
+
+        Success / failure clauses reject unknown names early via
+        ``predicate_kind`` kind-checking, but ``dense_reward`` terms compile
+        through a different path with no kind requirement and rely on
+        ``make_predicate`` to reject the name. This pins that a typo in a
+        reward-term predicate still fails loudly at compile time with a
+        discoverable list of valid predicates, rather than a cryptic
+        downstream crash at evaluation.
+        """
+        with pytest.raises(ValueError) as exc:
+            DeclarativeBenchmark.from_dict(
+                self._base_spec(dense_reward=[{"predicate": "totally_made_up", "value": 1.0}])
+            )
+        msg = str(exc.value)
+        assert "Unknown predicate" in msg
+        assert "totally_made_up" in msg
 
     def test_predicate_bad_kwargs_surface_compile_error(self):
         """Bad predicate kwargs (wrong types, missing required) surface as a

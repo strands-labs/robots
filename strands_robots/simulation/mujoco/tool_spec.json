@@ -63,6 +63,7 @@
         "get_contact_forces",
         "forward_kinematics",
         "get_total_mass",
+        "get_ground_height",
         "export_xml",
         "render_all",
         "start_cameras_recording",
@@ -89,6 +90,14 @@
     },
     "ground_plane": {
       "type": "boolean"
+    },
+    "terrain": {
+      "type": "string",
+      "description": "create_world: heightfield terrain kind ('rough' = bumps, 'stairs' = step plateaus along +x, 'pyramid' = concentric step plateaus toward the centre, 'slope' = constant-grade incline); omit for a flat ground plane. MuJoCo backend only."
+    },
+    "difficulty": {
+      "type": "number",
+      "description": "create_world: terrain curriculum knob - scales the heightfield's peak elevation (1.0 = full height, <1 gentler, >1 harsher) to ramp terrain magnitude across resets without changing the terrain kind. Only meaningful together with 'terrain'; difficulty != 1.0 with no terrain is rejected. MuJoCo backend only."
     },
     "urdf_path": {
       "type": "string",
@@ -281,6 +290,14 @@
     "fast_mode": {
       "type": "boolean",
       "description": "Skip sleep between actions for faster data collection"
+    },
+    "x": {
+      "type": "number",
+      "description": "World x coordinate (for get_ground_height)"
+    },
+    "y": {
+      "type": "number",
+      "description": "World y coordinate (for get_ground_height)"
     },
     "body_name": {
       "type": "string",

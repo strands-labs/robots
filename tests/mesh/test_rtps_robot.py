@@ -69,3 +69,46 @@ def test_tools_are_uniquely_named(rec: _Recorder) -> None:
 def test_invalid_topic_rejected_at_construction() -> None:
     with pytest.raises(ValueError, match="invalid cmd_vel_topic"):
         RtpsRobot.from_rtps(node_name="bot", cmd_vel_topic="not absolute")
+
+
+def test_generated_drive_tool_publishes_over_rtps(rec: _Recorder) -> None:
+    """The agent-facing drive_<node> tool forwards to the RTPS publish path.
+
+    ``.tools`` builds per-instance ``@tool`` closures; invoking the drive tool
+    must produce the same Twist publish call as :meth:`RtpsRobot.drive`, so an
+    agent driving via the tool and code driving via the method are equivalent.
+    """
+    robot = RtpsRobot.from_rtps(node_name="turtlesim", cmd_vel_topic="/turtle1/cmd_vel")
+    drive_tool: Any = next(t for t in robot.tools if t.tool_name == "drive_turtlesim")
+
+    result = drive_tool(linear=2.0, angular=1.5)
+
+    assert result["status"] == "success"
+    call = rec.calls[0]
+    assert call["action"] == "publish"
+    assert call["topic"] == "/turtle1/cmd_vel"
+    assert call["type"] == "geometry_msgs/msg/Twist"
+    assert call["fields"] == {"linear": {"x": 2.0}, "angular": {"z": 1.5}}
+
+
+def test_generated_stop_tool_publishes_zero(rec: _Recorder) -> None:
+    """The agent-facing stop_<node> tool publishes a single zero-velocity Twist."""
+    robot = RtpsRobot.from_rtps(node_name="turtlesim", cmd_vel_topic="/turtle1/cmd_vel")
+    stop_tool: Any = next(t for t in robot.tools if t.tool_name == "stop_turtlesim")
+
+    result = stop_tool()
+
+    assert result["status"] == "success"
+    call = rec.calls[0]
+    assert call["action"] == "publish"
+    assert call["fields"] == {"linear": {"x": 0.0}, "angular": {"z": 0.0}}
+    assert call["count"] == 1
+
+
+def test_repr_shows_wiring() -> None:
+    """``repr`` surfaces the node name, cmd_vel topic, and interface type."""
+    robot = RtpsRobot.from_rtps(node_name="turtlesim", cmd_vel_topic="/turtle1/cmd_vel")
+    text = repr(robot)
+    assert text == (
+        "RtpsRobot(node_name='turtlesim', cmd_vel_topic='/turtle1/cmd_vel', cmd_vel_type='geometry_msgs/msg/Twist')"
+    )

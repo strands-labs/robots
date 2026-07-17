@@ -224,10 +224,10 @@ class TestJSON5EndToEnd:
     """
 
     def test_example_file_loads_and_parses(self):
-        # Load the canonical template `examples/mesh_acl_example.json5`
+        # Load the canonical template `examples/mesh/mesh_acl_example.json5`
         # via the public _load_acl_file path (exercises the full
         # json5.loads -> _validate_acl_shape pipeline).
-        example_path = Path(__file__).resolve().parents[2] / "examples" / "mesh_acl_example.json5"
+        example_path = Path(__file__).resolve().parents[2] / "examples" / "mesh" / "mesh_acl_example.json5"
         assert example_path.is_file(), f"Example file not found at {example_path}"
         parsed = ac._load_acl_file(example_path)
 
@@ -364,9 +364,9 @@ class TestDefaultACLPermissiveShape:
 
     def test_load_acl_file_round_trip_with_example(self, tmp_path):
         # Another review concern: "the loader never being tested against the
-        # shipped example." Load ``examples/mesh_acl_example.json5`` and
+        # shipped example." Load ``examples/mesh/mesh_acl_example.json5`` and
         # verify ``_load_acl_file`` parses it without raising.
-        example_src = Path(__file__).resolve().parents[2] / "examples" / "mesh_acl_example.json5"
+        example_src = Path(__file__).resolve().parents[2] / "examples" / "mesh" / "mesh_acl_example.json5"
         assert example_src.is_file(), f"Example file not found at {example_src}"
 
         # Copy to tmp_path so we can use _load_acl_file (which requires a Path)

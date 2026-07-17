@@ -93,7 +93,7 @@ Newton backend, so a rollout rig can be enumerated instead of guessed.
 | Action | Key params |
 |--------|-----------|
 | `step` | `n_steps=1` (max 100 000/call) |
-| `set_gravity` | `gravity=[x,y,z]` |
+| `set_gravity` | `gravity=[x,y,z]` or a scalar z-component |
 | `set_timestep` | `timestep` |
 | `get_contacts` / `get_contact_forces` | - |
 | `apply_force` | `body_name`, `force`, `torque`, `point` |

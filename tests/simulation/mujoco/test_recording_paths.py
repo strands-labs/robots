@@ -605,14 +605,15 @@ def test_start_recording_without_lerobot_points_at_mp4_fallback(sim_with_two_rob
 
 def test_start_recording_resolves_namespaced_repo_id_under_hf_cache(sim_with_two_robots, monkeypatch, tmp_path):
     """With root=None and a 'user/name' repo_id, the dataset dir resolves under
-    the HuggingFace lerobot cache. We pin this by pointing Path.home at a temp
+    the HuggingFace lerobot cache. We pin this by pointing the resolver's HF-cache home at a temp
     dir, pre-seeding the resolved cache dir, and asserting overwrite=True wipes
     exactly that resolved path."""
     import strands_robots.dataset_recorder as dr
-    import strands_robots.simulation.mujoco.recording as rec
 
     monkeypatch.setattr(dr, "has_lerobot_dataset", lambda: True)
-    monkeypatch.setattr(rec.Path, "home", classmethod(lambda cls: tmp_path))
+    # Path resolution lives in dataset_recorder.resolve_dataset_dir(); pin the
+    # HF-cache home it uses so the resolved dir is deterministic under tmp_path.
+    monkeypatch.setattr(dr, "_lerobot_home", lambda: tmp_path / ".cache" / "huggingface" / "lerobot")
     monkeypatch.setattr(dr.DatasetRecorder, "create", classmethod(lambda cls, **kw: object()))
 
     cache_dir = tmp_path / ".cache" / "huggingface" / "lerobot" / "user" / "name"

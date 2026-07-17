@@ -191,3 +191,44 @@ def test_convert_helper_joint_mids_does_not_mutate_input():
     src = [10.0, 20.0, 30.0]
     _convert_joint_vector(src, to_model=True, joint_mids=[1.0, 2.0, 3.0])
     assert src == [10.0, 20.0, 30.0]
+
+
+# Degenerate gripper range: a robot whose gripper joint has a zero-width range
+# (``min == max``, e.g. a welded/fixed gripper joint or a malformed asset) must
+# not crash the units conversion. ``_convert_joint_vector`` normalises the
+# gripper column via ``(v - lo) / span``; a zero span would raise
+# ZeroDivisionError and take down every observation/action pass. The guard
+# treats a zero-span gripper as a pass-through (value unchanged) in both
+# directions, so the rest of the vector still converts.
+
+
+def _zero_span_map() -> EmbodimentMap:
+    return EmbodimentMap(
+        name="test_zero_span",
+        state_keys=["1", "2", "3", "4", "5", "6"],
+        action_keys=["1", "2", "3", "4", "5", "6"],
+        state_units="degrees",
+        action_units="degrees",
+        gripper_index=5,
+        gripper_joint_range=[0.5, 0.5],  # zero span
+    )
+
+
+def test_zero_span_gripper_does_not_divide_by_zero_to_model():
+    """sim -> model with a zero-span gripper must not raise and must leave the
+    gripper column untouched while arm joints still convert rad -> deg."""
+    emb = _zero_span_map()
+    out = emb.sim_state_to_model([math.pi / 2] * 5 + [1.23])
+    assert out[5] == 1.23  # gripper passed through unchanged
+    for i in range(5):
+        assert math.isclose(out[i], 90.0, abs_tol=1e-6), out
+
+
+def test_zero_span_gripper_does_not_divide_by_zero_from_model():
+    """model -> sim with a zero-span gripper must not raise and must leave the
+    gripper column untouched while arm joints still convert deg -> rad."""
+    emb = _zero_span_map()
+    out = emb.model_action_to_sim([90.0] * 5 + [1.23])
+    assert out[5] == 1.23  # gripper passed through unchanged
+    for i in range(5):
+        assert math.isclose(out[i], math.pi / 2, abs_tol=1e-6), out

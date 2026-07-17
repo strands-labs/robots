@@ -159,6 +159,69 @@ def test_replay_bool_speed_rejected(monkeypatch):
     assert "positive" in r["content"][0]["text"]
 
 
+def test_replay_nan_speed_rejected_before_loading(monkeypatch):
+    """A non-finite ``speed`` (``nan``/``inf``) must be rejected up front.
+
+    ``nan`` is never ``<= 0``, so it slipped past a bare ``speed <= 0`` guard
+    into ``frame_interval = 1 / (dataset_fps * speed)`` (= ``nan``) and then
+    ``time.sleep(nan - elapsed)``, which raises a bare ``ValueError`` deep in
+    the playback loop -- breaking replay()'s documented "returns a status dict"
+    contract -- while also reporting a meaningless "Speed: nanx". The guard must
+    reject it before the dataset loader runs.
+    """
+    sim = _MinimalSim(robots=["r0"])
+
+    import strands_robots.dataset_recorder as dr
+
+    def _must_not_load(*args, **kwargs):
+        raise AssertionError("load_lerobot_episode reached despite non-finite speed")
+
+    monkeypatch.setattr(dr, "load_lerobot_episode", _must_not_load, raising=False)
+
+    for bad in (float("nan"), float("inf")):
+        r = PolicyRunner(sim).replay(repo_id="some/dataset", robot_name="r0", speed=bad)
+        assert r["status"] == "error"
+        assert "positive" in r["content"][0]["text"]
+
+
+def test_replay_numpy_scalar_speed_accepted(monkeypatch):
+    """A NumPy-scalar ``speed`` (e.g. read from a config array) is a valid
+    positive rate and must not be rejected.
+
+    ``isinstance(x, (int, float))`` is ``False`` for every NumPy scalar except
+    ``np.float64``, so a ``np.float32(2.0)`` speed was wrongly rejected with
+    "speed must be a positive number" even though 2.0 is valid. Once accepted,
+    the scalar must be coerced to a plain ``float`` so it does not raise a
+    ``TypeError`` in ``time.sleep`` on the playback path, and the returned
+    ``"speed"`` status field is a plain float.
+    """
+
+    class _TinyDataset:
+        fps = 30
+
+        def __len__(self):
+            return 2
+
+        def __getitem__(self, idx):
+            return {"action": [0.1 * idx, 0.2, 0.3]}
+
+    def loader(repo_id, episode, root):
+        return _TinyDataset(), 0, 2
+
+    sim = _MinimalSim(robots=["r0"])
+
+    import strands_robots.dataset_recorder as dr
+
+    monkeypatch.setattr(dr, "load_lerobot_episode", loader, raising=False)
+
+    # speed=100.0 magnitude keeps the test fast; use a NumPy float32 scalar.
+    r = PolicyRunner(sim).replay(repo_id="fake/tiny", robot_name="r0", speed=np.float32(100.0))
+    assert r["status"] == "success"
+    reported = r["content"][1]["json"]["speed"]
+    assert reported == 100.0
+    assert type(reported) is float
+
+
 def test_replay_with_tensor_like_actions(monkeypatch):
     """Dataset actions may be torch tensors; replay must call .numpy().tolist()."""
 

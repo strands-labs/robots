@@ -135,3 +135,62 @@ class TestRobotActionKeysDefault:
 
     def test_missing_robot_returns_empty(self, sim):
         assert sim.robot_action_keys("does_not_exist") == []
+
+
+class TestValidActionKeyHint:
+    """The valid-key hint shown when an action key is dropped must return the
+    short (prefix-stripped) form callers pass to ``send_action``.
+
+    When a key cannot be applied, ``_warn_unresolved_action_key`` surfaces the
+    actuators the scene accepts via ``_get_valid_action_keys(pfx)``. In a
+    multi-robot world actuators are namespaced (``armA/shoulder``); the hint
+    must strip the active robot's prefix so the operator sees exactly the keys
+    ``send_action`` expects, not the internal fully-qualified names. Unnamed
+    actuators have no addressable key and are omitted from the hint.
+    """
+
+    _XML = """
+    <mujoco>
+      <worldbody>
+        <body name="l">
+          <joint name="j1" type="hinge" axis="0 0 1"/>
+          <geom type="box" size="0.02 0.02 0.02"/>
+          <body name="l2" pos="0 0 0.1">
+            <joint name="j2" type="hinge" axis="0 1 0"/>
+            <geom type="box" size="0.02 0.02 0.02"/>
+            <body name="l3" pos="0 0 0.1">
+              <joint name="j3" type="hinge" axis="1 0 0"/>
+              <geom type="box" size="0.02 0.02 0.02"/>
+            </body>
+          </body>
+        </body>
+      </worldbody>
+      <actuator>
+        <position name="armA/shoulder" joint="j1"/>
+        <position name="armA/elbow" joint="j2"/>
+        <position joint="j3"/>
+      </actuator>
+    </mujoco>
+    """
+
+    def _mixin(self):
+        import mujoco
+
+        from strands_robots.simulation.mujoco.rendering import RenderingMixin
+
+        model = mujoco.MjModel.from_xml_string(self._XML)
+
+        class _World:
+            _model = model
+
+        mixin = RenderingMixin()
+        mixin._world = _World()
+        return mixin
+
+    def test_prefix_is_stripped_for_matching_robot(self):
+        """A robot prefix yields the short keys send_action resolves."""
+        assert self._mixin()._get_valid_action_keys("armA/") == ["shoulder", "elbow"]
+
+    def test_no_prefix_returns_fully_qualified_names(self):
+        """Without a prefix the raw namespaced actuator names are returned."""
+        assert self._mixin()._get_valid_action_keys("") == ["armA/shoulder", "armA/elbow"]

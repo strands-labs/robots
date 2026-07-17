@@ -218,6 +218,11 @@ def test_get_observation_surfaces_full_base_kinematics(sim):
     assert obs["base_quat"] == pytest.approx([0.7071, 0.0, 0.0, 0.7071], abs=1e-3)
     assert obs["base_lin_vel"] == pytest.approx([1.1, 2.2, 3.3], abs=1e-3)
     assert obs["base_ang_vel"] == pytest.approx([4.4, 5.5, 6.6], abs=1e-3)
+    # The 6-DoF free joint is NOT emitted as a degenerate scalar joint entry
+    # (it would report base-x as a joint angle) - its full state is the
+    # structured base_* keys above, matching get_robot_state.
+    assert "floating_base_joint" not in obs
+    assert "floating_base_joint.vel" not in obs
 
 
 def test_get_robot_state_named_free_base_reports_base_pose_not_scalar(sim):

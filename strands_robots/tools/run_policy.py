@@ -48,7 +48,7 @@ Design notes (the contract this tool pins):
   tests where the goal is just to exercise the policy.
 
 See ``strands-labs/robots#708`` for the full root-cause analysis and the
-e2e_agent_test.py fix history (HB#352 -> #716 -> this tool).
+end-to-end agent-test fix history (HB#352 -> #716 -> this tool).
 """
 
 from __future__ import annotations
@@ -62,12 +62,6 @@ from typing import Any
 from strands.tools.decorator import tool
 
 logger = logging.getLogger(__name__)
-
-
-def _ok(text: str, **extra: Any) -> dict[str, Any]:
-    out: dict[str, Any] = {"status": "success", "content": [{"text": text}]}
-    out.update(extra)
-    return out
 
 
 def _err(text: str) -> dict[str, Any]:
