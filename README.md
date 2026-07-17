@@ -399,7 +399,7 @@ Robot("my_arm", urdf_path="arm.xml") # bring your own MJCF/URDF
 |-----------|------|---------|-------------|
 | `name` | `str` | required | Robot name or alias (see [Supported robots](#supported-robots)) |
 | `mode` | `str` | `"sim"` | `"sim"`, `"real"`, or `"auto"` (case-insensitive) |
-| `backend` | `str` | `"mujoco"` | Sim backend: `"mujoco"`, `"newton"` (built-in), or `"isaac"` (via the [`strands-robots-sim`](https://github.com/strands-labs/robots-sim) plugin) |
+| `backend` | `str` | `"mujoco"` | Sim backend: `"mujoco"`, `"newton"`, or `"isaac"` (all built-in; `isaac` needs the `sim-isaac` extra) |
 | `urdf_path` | `str` | `None` | Explicit MJCF/URDF path (skips registry lookup) |
 | `cameras` | `dict` | `None` | Camera config (**`mode="real"` only**) |
 | `position` | `list[float]` | `[0,0,0]` | Spawn position in the sim world |
@@ -1086,10 +1086,10 @@ touches ROS 2.
 </details>
 
 <details>
-<summary><b>Isaac Sim backend env vars (<code>strands-robots-sim</code> plugin)</b></summary>
+<summary><b>Isaac Sim backend env vars (<code>strands-robots[sim-isaac]</code>)</b></summary>
 
-These are read by the out-of-tree [`strands-robots-sim`](https://github.com/strands-labs/robots-sim)
-Isaac Sim backend (`pip install 'strands-robots-sim[isaac]'`) when it builds its
+These are read by the built-in, in-tree Isaac Sim backend
+(`pip install 'strands-robots[sim-isaac]'`) when it builds its
 `IsaacConfig`; an explicit `create_simulation("isaac", ...)` kwarg always wins.
 See [`docs/simulation/isaac.md`](docs/simulation/isaac.md).
 
