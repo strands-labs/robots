@@ -29,7 +29,7 @@ A ``Trainer`` is selected by the SAME provider name as its ``Policy``
 owns both the inference class and the training class. Adding a new policy =
 add a ``Policy`` + a ``Trainer`` under one provider entry.
 
-See :class:`MockTrainer` (``strands_robots/training/mock.py``) for the canonical
+See :class:`~strands_robots.training.mock.MockTrainer` for the canonical
 no-dependency reference implementation.
 """
 

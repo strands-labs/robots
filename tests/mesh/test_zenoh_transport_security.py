@@ -416,7 +416,7 @@ def _role_acl(robot_cns: list[str], op_cns: list[str]) -> dict:
     """Build a role-based ACL using literal CNs (Zenoh 1.x has no CN globs).
 
     This is the operator-template ACL from
-    ``examples/mesh_acl_example.json5`` rendered as a dict for tests.
+    ``examples/mesh/mesh_acl_example.json5`` rendered as a dict for tests.
     """
     return {
         "enabled": True,
@@ -475,7 +475,7 @@ def _role_acl(robot_cns: list[str], op_cns: list[str]) -> dict:
 
 class TestACLEnforcement:
     """Role-based ACL with literal cert CNs (the only thing Zenoh 1.x
-    supports -- see ``examples/mesh_acl_example.json5`` for the
+    supports -- see ``examples/mesh/mesh_acl_example.json5`` for the
     operator-facing template).
 
     A ``robot-*`` cert publishing on ``cmd`` is dropped at the

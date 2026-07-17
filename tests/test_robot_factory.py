@@ -201,11 +201,15 @@ class TestRobotFactory:
     def test_mjwarp_backend_gives_plugin_install_hint(self):
         """The GPU-parallel warp/MuJoCo path is the built-in ``newton`` backend;
         ``mjwarp`` is a name users reach for. ``Robot(backend="mjwarp")`` must
-        point them at the warp/newton plugin rather than dead-ending on an
-        unhelpful unknown-backend error with no remedy."""
-        with pytest.raises(ValueError, match="strands-robots-sim") as exc_info:
+        point them at the in-tree ``strands-robots[sim-newton]`` extra rather
+        than dead-ending on an unhelpful unknown-backend error with no remedy.
+        The hint must not reference the deprecated ``strands-robots-sim``
+        sibling package."""
+        with pytest.raises(ValueError, match=r"strands-robots\[sim-newton\]") as exc_info:
             Robot("so100", mode="sim", backend="mjwarp", num_envs=128)
-        assert "pip install" in str(exc_info.value)
+        msg = str(exc_info.value)
+        assert "pip install" in msg
+        assert "strands-robots-sim" not in msg
 
     def test_invalid_mode_raises(self):
         with pytest.raises(ValueError, match="Invalid mode"):

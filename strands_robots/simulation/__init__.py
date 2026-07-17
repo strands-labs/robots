@@ -1,25 +1,14 @@
 """Strands Robots Simulation - multi-backend simulation framework.
 
-Architecture::
-
-    simulation/
-    ├ __init__.py          ← this file (re-exports, lazy loading)
-    ├ base.py              ← SimEngine ABC
-    ├ factory.py           ← create_simulation() + backend registration
-    ├ models.py            ← shared dataclasses (SimWorld, SimRobot, ...)
-    ├ model_registry.py    ← URDF/MJCF resolution (shared across backends)
-    └ mujoco/              ← MuJoCo CPU backend
-        ├ __init__.py
-        ├ backend.py       ← lazy mujoco import + GL config
-        ├ spec_builder.py  ← MjSpec-based scene builder/mutator
-        ├ physics.py       ← advanced physics (raycasting, jacobians, forces)
-        ├ scene_ops.py     ← live scene mutation via spec.recompile()
-        ├ rendering.py     ← render RGB/depth, observations
-        ├ policy_runner.py ← run_policy, eval_policy, replay
-        ├ randomization.py ← domain randomization
-        ├ recording.py     ← LeRobotDataset recording
-        ├ tool_spec.json   ← AgentTool input schema
-        └ simulation.py    ← Simulation (AgentTool orchestrator)
+A backend-agnostic layer built around the :class:`~strands_robots.simulation.base.SimEngine`
+ABC, shared dataclasses (:class:`~strands_robots.simulation.models.SimWorld`,
+:class:`~strands_robots.simulation.models.SimRobot`,
+:class:`~strands_robots.simulation.models.SimObject`, ...), a shared
+URDF/MJCF resolver (:mod:`strands_robots.simulation.model_registry`), and a
+:func:`~strands_robots.simulation.factory.create_simulation` factory that
+selects a registered backend. The default backend is
+:mod:`strands_robots.simulation.mujoco` (CPU physics + offscreen rendering, no
+GPU required); the Isaac Sim and Newton backends load lazily on demand.
 
 Usage::
 

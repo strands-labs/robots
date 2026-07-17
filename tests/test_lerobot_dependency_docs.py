@@ -85,3 +85,77 @@ def test_lerobot_local_docs_do_not_claim_molmoact2_needs_source() -> None:
     assert "resolves lerobot 0.5.1, which does NOT" not in text
     # points at the PyPI extra instead
     assert "strands-robots[molmoact2]" in text
+
+
+# --- negative contract, extended: the pre-0.6 "lerobot from source / <0.6 pin"
+#     narrative also lingered in the architecture / troubleshooting / molmoact2
+#     pages after the >=0.6.0 floor bump. These pin it out. ---
+
+_ARCHITECTURE = _REPO_ROOT / "docs" / "architecture.md"
+_TROUBLESHOOTING = _REPO_ROOT / "docs" / "troubleshooting.md"
+_MOLMOACT2 = _REPO_ROOT / "docs" / "policies" / "molmoact2.md"
+_INSTALLATION = _REPO_ROOT / "docs" / "getting-started" / "installation.md"
+
+
+def _lerobot_floor_from_pyproject() -> str:
+    """The exact version specifier the ``[lerobot]`` extra declares (e.g. ``>=0.6.0,<0.7.0``)."""
+    for spec in _extras()["lerobot"]:
+        if spec.startswith("lerobot["):  # lerobot[feetech,dataset]>=0.6.0,<0.7.0
+            return spec.split("]", 1)[1]
+    raise AssertionError("no lerobot extra spec found in pyproject")
+
+
+def test_architecture_lerobot_extra_row_matches_pyproject_floor() -> None:
+    text = _ARCHITECTURE.read_text()
+    # the dependency-matrix row must not advertise the dead pre-0.6 cap
+    assert "lerobot>=0.5.0,<0.6.0" not in text, "architecture.md still cites the dead <0.6.0 lerobot cap"
+    # it must reflect the real floor (>=0.6.0)
+    assert ">=0.6.0" in text, "architecture.md [lerobot] row should name the >=0.6.0 floor"
+
+
+def test_troubleshooting_version_skew_remedy_does_not_conflict_with_floor() -> None:
+    text = _TROUBLESHOOTING.read_text()
+    # remedying a version-skew ImportError by pinning ``<0.6`` directly conflicts
+    # with the pyproject floor (``lerobot[...]>=0.6.0``); the remedy must (re)install
+    # the extra instead of a manual sub-floor pin.
+    assert "lerobot>=0.5.0,<0.6" not in text, "troubleshooting remedy pins lerobot below the required >=0.6.0 floor"
+    assert "strands-robots[lerobot]" in text
+
+
+def test_troubleshooting_molmoact2_is_pypi_not_from_source() -> None:
+    text = _TROUBLESHOOTING.read_text()
+    # MolmoAct2Policy ships in lerobot >= 0.6 (PyPI); no from-source git+ remedy.
+    assert "git+https://github.com/huggingface/lerobot" not in text
+    assert "not in PyPI lerobot" not in text
+    # the remedy is the [molmoact2] extra
+    assert "strands-robots[molmoact2]" in text
+
+
+def _md_heading_slugs(text: str) -> set[str]:
+    """GitHub/mkdocs heading slugs: lowercase, spaces->'-', drop non-alnum/non-space/non-hyphen."""
+    slugs: set[str] = set()
+    for line in text.splitlines():
+        s = line.strip()
+        if not s.startswith("#"):
+            continue
+        title = s.lstrip("#").strip()
+        slug = "".join(c for c in title.lower() if c.isalnum() or c in " -").replace(" ", "-")
+        slugs.add(slug)
+    return slugs
+
+
+def test_troubleshooting_jetson_anchor_resolves_to_a_real_heading() -> None:
+    """The Jetson/pyav row links into installation.md; that anchor must exist (was broken)."""
+    text = _TROUBLESHOOTING.read_text()
+    # the stale, non-existent anchor is gone
+    assert "molmoact2-on-jetson-lerobot-from-source" not in text
+    # and the anchor it now links to resolves to a real installation.md heading
+    slugs = _md_heading_slugs(_INSTALLATION.read_text())
+    assert "molmoact2-on-jetson" in slugs, "installation.md lost the '### MolmoAct2 on Jetson' heading"
+    assert "getting-started/installation.md#molmoact2-on-jetson" in text
+
+
+def test_molmoact2_doc_install_line_is_not_from_source() -> None:
+    text = _MOLMOACT2.read_text()
+    assert "lerobot from source" not in text
+    assert "[molmoact2]" in text

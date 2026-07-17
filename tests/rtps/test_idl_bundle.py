@@ -59,3 +59,42 @@ def test_sensor_msgs_chain_present() -> None:
     ):
         cls = idl.get_type(ros_type)
         assert cls.__idl_typename__ == dds_type_name(ros_type), ros_type
+
+
+# --- get_type resolver contract, decoupled from the optional [ros2] extra ----
+# The lines below exercise get_type's resolution + unknown-type error formatting
+# WITHOUT requiring cyclonedds: the resolver reads the module-level REGISTRY and
+# _HAVE_CYCLONEDDS flag, so monkeypatching a stand-in registry pins the
+# user-facing contract on every CI matrix leg, not only the [ros2] one.
+
+
+def test_get_type_resolves_registered_type(monkeypatch: pytest.MonkeyPatch) -> None:
+    sentinel = object()
+    monkeypatch.setattr(idl, "_HAVE_CYCLONEDDS", True)
+    monkeypatch.setattr(idl, "REGISTRY", {"pkg_msgs/msg/Foo": sentinel})
+    assert idl.get_type("pkg_msgs/msg/Foo") is sentinel
+
+
+def test_get_type_unknown_lists_known_types_sorted(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(idl, "_HAVE_CYCLONEDDS", True)
+    monkeypatch.setattr(
+        idl,
+        "REGISTRY",
+        {"pkg_msgs/msg/Zed": object(), "pkg_msgs/msg/Alpha": object()},
+    )
+    with pytest.raises(KeyError) as excinfo:
+        idl.get_type("pkg_msgs/msg/Missing")
+    message = str(excinfo.value)
+    # Known types are listed sorted so the hint is deterministic, and the
+    # message points at use_ros for out-of-bundle (custom) messages.
+    assert message.index("Alpha") < message.index("Zed")
+    assert "use_ros" in message
+
+
+def test_get_type_unknown_with_empty_registry_reports_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Degenerate but real: backend present, bundle empty -> the hint must say
+    # "(none)" rather than dangle after "Known types: ".
+    monkeypatch.setattr(idl, "_HAVE_CYCLONEDDS", True)
+    monkeypatch.setattr(idl, "REGISTRY", {})
+    with pytest.raises(KeyError, match=r"Known types: \(none\)"):
+        idl.get_type("pkg_msgs/msg/Missing")

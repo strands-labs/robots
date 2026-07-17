@@ -9,7 +9,6 @@
 
 from __future__ import annotations
 
-import importlib.util
 import os
 
 import pytest
@@ -24,8 +23,6 @@ requires_gl = pytest.mark.skipif(
 )
 from strands_robots.simulation.mujoco.simulation import Simulation  # noqa: E402
 
-has_lerobot = importlib.util.find_spec("lerobot") is not None
-
 
 @pytest.fixture
 def sim():
@@ -36,8 +33,40 @@ def sim():
 
 
 class TestStartRecordingErrorWithoutLerobot:
-    @pytest.mark.skipif(has_lerobot, reason="test targets the no-lerobot code path")
-    def test_error_message_points_to_start_cameras_recording(self, sim):
+    """start_recording must degrade to an actionable structured error - never a
+    raw ImportError traceback - when the [lerobot] extra is unavailable.
+
+    Both failure modes are exercised deterministically (independent of whether
+    lerobot happens to be installed in the test environment) because the
+    contract must hold in every environment:
+
+    * the extra is cleanly absent (``has_lerobot_dataset()`` returns False), and
+    * a partial/broken install where importing ``DatasetRecorder`` itself
+      raises ImportError (e.g. lerobot-from-source API drift).
+
+    Previously this was guarded by ``skipif(has_lerobot)``, so with lerobot
+    installed the whole error contract went untested and the ImportError
+    fallback was never covered.
+    """
+
+    def test_extra_absent_points_to_start_cameras_recording(self, sim, monkeypatch):
+        import strands_robots.dataset_recorder as dr
+
+        monkeypatch.setattr(dr, "has_lerobot_dataset", lambda: False)
+        result = sim.start_recording(repo_id="local/test_rec")
+        assert result["status"] == "error"
+        text = result["content"][0]["text"]
+        assert "start_cameras_recording" in text
+        assert "lerobot" in text.lower()
+
+    def test_broken_import_falls_through_to_structured_error(self, sim, monkeypatch):
+        import strands_robots.dataset_recorder as dr
+
+        # Simulate a partial/broken lerobot install: the symbol is gone, so the
+        # in-function ``from ... import DatasetRecorder`` raises ImportError,
+        # which must be swallowed into the same actionable error rather than
+        # propagating a traceback out of the tool call.
+        monkeypatch.delattr(dr, "DatasetRecorder", raising=False)
         result = sim.start_recording(repo_id="local/test_rec")
         assert result["status"] == "error"
         text = result["content"][0]["text"]

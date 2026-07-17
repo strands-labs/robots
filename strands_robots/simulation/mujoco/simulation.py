@@ -45,6 +45,7 @@ import inspect
 import json
 import logging
 import math
+import numbers
 import os
 import re
 import threading
@@ -52,7 +53,7 @@ import time
 from collections.abc import AsyncGenerator, Callable, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from strands.tools.tools import AgentTool
 from strands.types._events import ToolResultEvent
@@ -89,6 +90,7 @@ from strands_robots.simulation.mujoco.scene_ops import (
 )
 from strands_robots.simulation.mujoco.spec_builder import SpecBuilder, _validate_size
 from strands_robots.simulation.policy_runner import CooperativeStop
+from strands_robots.simulation.terrain import SUPPORTED_TERRAINS, validate_difficulty, validate_terrain
 from strands_robots.teleop_mixin import TeleopMixin
 
 if TYPE_CHECKING:
@@ -130,6 +132,64 @@ def _jnt_qpos_width(mj: Any, jnt_type: int) -> int:
     if jnt_type == int(mj.mjtJoint.mjJNT_BALL):
         return 4
     return 1
+
+
+def _validate_finite_vector(method: str, param_name: str, vec: Any) -> str | None:
+    """Return an error message if any element of ``vec`` is not a finite number.
+
+    Guards the numeric vectors a scene-construction call bakes into the
+    compiled MJCF (``add_object`` color/size, ``add_camera`` position/target,
+    etc.) against the two classes the numeric-input campaign targets:
+
+    * A non-numeric or non-iterable element (e.g. ``["a", "b", "c"]`` or a
+      nested list) otherwise raises a bare ``TypeError``/``ValueError`` deep
+      inside MuJoCo's ``add_geom`` or a ``size <= 0`` comparison - escaping the
+      structured ``{"status": "error"}`` tool-result contract.
+    * A ``nan``/``inf`` component is baked verbatim into the geom/camera and
+      either poisons the physics state on the next ``mj_forward`` or aborts the
+      spec recompile with a cryptic "spec recompile refused", reporting a
+      success/garbage result instead of an actionable error.
+
+    A numpy real scalar per element is accepted (``float(np.float64(...))``
+    succeeds), matching the "accept NumPy scalar components" behaviour of the
+    other sim setters. Length is NOT checked here (color is 3-or-4, size is
+    shape-dependent); use :func:`_validate_pose_vector` for a fixed length.
+    Returns ``None`` when every element is a finite real number.
+    """
+    try:
+        iter(vec)
+    except TypeError:
+        return f"{method}: '{param_name}' must be a list/tuple of numbers, got {vec!r}"
+    for _elem in vec:
+        try:
+            _f = float(_elem)
+        except (TypeError, ValueError):
+            return f"{method}: '{param_name}' elements must be numbers, got {vec!r}"
+        if not math.isfinite(_f):
+            return f"{method}: '{param_name}' must contain finite numbers (no nan/inf), got {vec!r}"
+    return None
+
+
+def _validate_pose_vector(method: str, param_name: str, vec: Any, expected_len: int) -> str | None:
+    """Return an error message if ``vec`` is not ``expected_len`` finite numbers.
+
+    Fixed-length wrapper over :func:`_validate_finite_vector` for the pose
+    vectors written straight into ``data.qpos`` (``move_object`` /
+    ``add_object`` position+orientation, ``add_camera`` position+target). A
+    wrong-length vector otherwise raises a bare ``ValueError`` inside the numpy
+    assignment - escaping the structured ``{"status": "error"}`` tool-result
+    contract - and a ``nan``/``inf`` component is propagated through the whole
+    physics state by ``mj_forward``, reporting ``success`` while silently
+    poisoning the simulation. A numpy real scalar per element is accepted.
+    Returns ``None`` when ``vec`` is acceptable.
+    """
+    try:
+        length = len(vec)
+    except TypeError:
+        return f"{method}: '{param_name}' must be a list/tuple of {expected_len} numbers, got {vec!r}"
+    if length != expected_len:
+        return f"{method}: '{param_name}' must be a {expected_len}-element vector, got {length} ({vec!r})"
+    return _validate_finite_vector(method, param_name, vec)
 
 
 _TOOL_SPEC_PATH = Path(__file__).parent / "tool_spec.json"
@@ -362,7 +422,7 @@ class MuJoCoSimEngine(
                 return {"status": "error", "content": [{"text": "No robots in the world."}]}
             robot_name = next(iter(self._world.robots))
         if robot_name not in self._world.robots:
-            return {"status": "error", "content": [{"text": f"Robot '{robot_name}' not found."}]}
+            return {"status": "error", "content": [{"text": self._unknown_robot_msg(robot_name)}]}
         action_map, coerce_error = self._coerce_action(action, robot_name)
         if coerce_error is not None:
             return coerce_error
@@ -414,10 +474,61 @@ class MuJoCoSimEngine(
             return 0
 
     def create_world(
-        self, timestep: float | None = None, gravity: list[float] | None = None, ground_plane: bool = True
+        self,
+        timestep: float | None = None,
+        gravity: list[float] | None = None,
+        ground_plane: bool = True,
+        terrain: str | None = None,
+        difficulty: float = 1.0,
     ) -> dict[str, Any]:
-        """Create a new simulation world."""
+        """Create a new simulation world.
+
+        ``terrain`` lays down a deterministic heightfield instead of the flat
+        ground plane, so a floating-base/locomotion robot is spawned and
+        evaluated on non-flat ground: ``"rough"`` = smoothed value-noise bumps,
+        ``"stairs"`` = a flight of discrete step plateaus rising along +x,
+        ``"pyramid"`` = concentric step plateaus rising toward the centre,
+        ``"slope"`` = a constant-grade inclined ramp (see
+        :mod:`strands_robots.simulation.terrain`). Only applies when
+        ``ground_plane=True``.
+
+        ``difficulty`` scales the terrain's peak elevation (``1.0`` = full
+        height, ``<1`` gentler, ``>1`` harsher) - the curriculum knob a
+        trainer ramps across resets. It is only meaningful with a ``terrain``;
+        ``difficulty != 1.0`` with no ``terrain`` is rejected (it would have no
+        effect) and must be a finite value ``> 0``.
+
+        A floating-base robot added to a terrain world is spawned SEATED on
+        the local terrain surface (its base is raised by the heightfield
+        height beneath it) at ``add_robot`` and on every ``reset()``, rather
+        than at the flat-ground keyframe height that would leave its feet
+        buried below the raised terrain.
+        """
         # mujoco verified at __init__
+
+        if terrain is not None:
+            try:
+                validate_terrain(terrain)
+            except ValueError as exc:
+                return {"status": "error", "content": [{"text": str(exc)}]}
+        try:
+            validate_difficulty(difficulty)
+        except ValueError as exc:
+            return {"status": "error", "content": [{"text": str(exc)}]}
+        if terrain is None and float(difficulty) != 1.0:
+            return {
+                "status": "error",
+                "content": [
+                    {
+                        "text": (
+                            f"difficulty={difficulty!r} has no effect without a terrain "
+                            "(it scales a heightfield's elevation); pass a terrain "
+                            f"({'/'.join(repr(t) for t in sorted(SUPPORTED_TERRAINS))}) as well, "
+                            "or omit difficulty for a flat ground plane."
+                        )
+                    }
+                ],
+            }
 
         if self._world is not None and self._world._model is not None:
             return {
@@ -436,6 +547,8 @@ class MuJoCoSimEngine(
             timestep=timestep or self.default_timestep,
             gravity=_gravity,
             ground_plane=ground_plane,
+            terrain=terrain,
+            terrain_difficulty=float(difficulty),
         )
 
         self._world.cameras["default"] = SimCamera(
@@ -858,6 +971,64 @@ class MuJoCoSimEngine(
         msg += " Use action='list_urdfs' to see all available robots."
         return msg
 
+    def _unknown_object_msg(self, requested: str) -> str:
+        """Actionable 'object not found' message: name it, offer a close-match,
+        and point at the discovery surface - consistent with the camera
+        render/record error paths and ``_unknown_model_msg`` (#1299) rather
+        than a dead-end "Object 'X' not found."."""
+        known = list(self._world.objects.keys()) if self._world is not None else []
+        msg = f"Object '{requested}' not found."
+        if known:
+            import difflib
+
+            matches = difflib.get_close_matches(requested, known, n=3, cutoff=0.4)
+            if matches:
+                msg += " Did you mean: " + ", ".join(matches) + "?"
+            msg += f" Available objects: {known}. Use action='list_objects' to see all."
+        else:
+            msg += " No objects in the scene; add one with action='add_object'."
+        return msg
+
+    def _unknown_camera_msg(self, requested: str) -> str:
+        """Actionable 'camera not found' message for ``remove_camera`` - lists the
+        renderable cameras (like the render/record error paths already do) plus a
+        close-match, so a typo is fixable in-place without a discovery round-trip.
+
+        The recovery hint names the canonical ``list_cameras`` action (the name
+        in ``tool_spec.json`` and ``describe()``), not the internal
+        ``list_cameras_info`` method the dispatcher aliases it to - so a blind
+        agent following the hint learns the same action the discovery surface
+        teaches, mirroring the ``list_objects`` hint in ``_unknown_object_msg``."""
+        known = self._list_camera_names()
+        msg = f"Camera '{requested}' not found."
+        if known:
+            import difflib
+
+            matches = difflib.get_close_matches(requested, known, n=3, cutoff=0.4)
+            if matches:
+                msg += " Did you mean: " + ", ".join(matches) + "?"
+            msg += f" Available: {known}. Use action='list_cameras' to see all."
+        return msg
+
+    def _unknown_robot_msg(self, requested: str) -> str:
+        """Actionable 'robot not found' message: name it, offer a close-match,
+        and list the robots in the world - consistent with ``_unknown_object_msg`` /
+        ``_unknown_camera_msg`` / ``_unknown_model_msg`` (#1299/#1303) rather than a
+        dead-end "Robot 'X' not found." that forces an agent driving the API blind
+        into a discovery round-trip on every typo."""
+        known = list(self._world.robots.keys()) if self._world is not None else []
+        msg = f"Robot '{requested}' not found."
+        if known:
+            import difflib
+
+            matches = difflib.get_close_matches(requested, known, n=3, cutoff=0.4)
+            if matches:
+                msg += " Did you mean: " + ", ".join(matches) + "?"
+            msg += f" Available robots: {known}. Use action='list_robots' to see all."
+        else:
+            msg += " No robots in the scene; add one with action='add_robot'."
+        return msg
+
     def add_robot(
         self,
         name: str | None = None,
@@ -886,12 +1057,48 @@ class MuJoCoSimEngine(
         (e.g. panda ``"home"``) instead of the all-zero configuration, and the
         pose is restored by ``reset()``. An unknown keyframe is a hard error
         naming the available keyframes; ``None`` (default) keeps the zero pose.
+
+        A ``name``/``data_config`` that resolves to no model is reported as an
+        actionable error naming the requested robot, offering close-match
+        suggestions and pointing at ``list_urdfs`` (plus the
+        ``data_config=``/``urdf_path=`` options) -- not a dead-end "supply a
+        model source". The bare model-source message is kept only when no
+        ``name`` was supplied at all.
+
+        ``position`` (3 elements) and ``orientation`` (4-element wxyz quaternion)
+        are validated up front: a wrong-length, non-numeric, or non-finite
+        (nan/inf) vector returns an actionable ``{"status": "error"}`` and
+        leaves the simulation unchanged, rather than baking a degenerate pose
+        into the robot's base transform. NumPy scalar components are accepted.
         """
         if self._world is None or self._world._model is None or self._world._data is None:
             return {"status": "error", "content": [{"text": _NO_WORLD_MSG}]}
         if err := self._require_no_running_policy("add_robot"):
             return err
 
+        # Validate the caller-supplied base pose before it is baked into the
+        # robot's frame pos/quat. Without this, `add_robot` shares the numeric
+        # -vector failure classes already guarded on `add_object` / `move_object`
+        # / `add_camera`: a nan/inf `position`/`orientation` is written verbatim
+        # into the base transform and propagated across the whole physics state
+        # by `mj_forward` while `add_robot` still reports `status="success"`
+        # (silent corruption); a wrong-length vector yields a generic "Failed to
+        # inject robot" with no hint that the length was wrong; and a non-numeric
+        # element raises a bare MuJoCo `add_frame(): incompatible function
+        # arguments` TypeError that escapes the structured-error contract. NumPy
+        # scalar components are accepted.
+        if position is not None and (e := _validate_pose_vector("add_robot", "position", position, 3)) is not None:
+            return {"status": "error", "content": [{"text": e}]}
+        if (
+            orientation is not None
+            and (e := _validate_pose_vector("add_robot", "orientation", orientation, 4)) is not None
+        ):
+            return {"status": "error", "content": [{"text": e}]}
+
+        # Remember whether the caller supplied a `name` (vs an auto-derived
+        # label): an explicit name that resolves to no model is a
+        # mistyped/unknown robot, not a 'you forgot a model source' case.
+        explicit_name = name
         # Auto-derive an instance label when the caller didn't supply one.
         # Friction fix: ``name`` used to be required, so a natural
         # ``add_robot(data_config="so101")`` failed with "requires parameter
@@ -950,6 +1157,21 @@ class MuJoCoSimEngine(
                 )
 
         if not resolved_path:
+            # A caller-provided `name` that resolves to no model is almost
+            # always a mistyped/unknown robot (the deprecated
+            # name-as-registry-key short form). Surface the same actionable
+            # "no model found (did you mean ...?) / list_urdfs" error the
+            # data_config path and the Robot() factory give, instead of a
+            # dead-end "supply urdf_path or data_config". The bare
+            # "supply a model source" message is kept only for the no-name
+            # case (auto-derived label, nothing to resolve).
+            if explicit_name:
+                msg = self._unknown_model_msg(explicit_name)
+                msg += (
+                    f" Or pass data_config=<registered model> or urdf_path=<file> "
+                    f"to add '{explicit_name}' as an instance under that label."
+                )
+                return {"status": "error", "content": [{"text": msg}]}
             return {"status": "error", "content": [{"text": "Either urdf_path or data_config is required."}]}
         if not os.path.exists(resolved_path):
             return {"status": "error", "content": [{"text": f"File not found: {resolved_path}"}]}
@@ -1037,6 +1259,14 @@ class MuJoCoSimEngine(
             self._world.step_count = 0
             if home_by_short:
                 self._apply_home_qpos_to_robot(robot, home_by_short)
+            # ``mj_resetData`` above zeroed the entire model, which also drops
+            # any robot added earlier back to the zero configuration. Re-apply
+            # every robot's captured home pose (a no-op for robots spawned
+            # without a keyframe) so incrementally building a multi-robot scene
+            # keeps each arm at its canonical home pose instead of silently
+            # collapsing all but the most recently added robot.
+            self._restore_home_poses()
+            self._seat_floating_bases_on_terrain()
             mj.mj_forward(self._world._model, self._world._data)
 
             # Attach the robot to the mesh as its own peer so the agent can
@@ -1190,6 +1420,47 @@ class MuJoCoSimEngine(
                 adr = int(model.jnt_qposadr[jid])
                 data.qpos[adr : adr + len(vals)] = vals
 
+    def _seat_floating_bases_on_terrain(self) -> None:
+        """Raise each floating-base robot onto the local terrain surface.
+
+        ``create_world(terrain=...)`` lays a heightfield whose surface rises up
+        to ``TERRAIN_ELEVATION * difficulty`` above ``z=0``, but a robot's model
+        spawns its free base at the flat-ground keyframe height (e.g. the
+        Unitree Go2 base at ``z=0.445``, feet ~``z=0.02``). On a terrain world
+        that leaves the feet BELOW the heightfield -- the robot spawns *buried*
+        in the ground, with penetration that grows with the curriculum
+        ``difficulty`` -- contradicting the terrain feature's stated purpose of
+        spawning a locomotion robot ON non-flat ground. Offset each floating
+        base's ``z`` by the terrain height beneath its ``(x, y)`` so it is
+        seated on the surface (feet just clear of it), the correct initial
+        state for a locomotion policy and a terrain-difficulty curriculum.
+
+        A flat ground plane (``_ground_height_at`` returns ``0.0``) is a no-op,
+        so non-terrain worlds are byte-for-byte unchanged; a fixed-base arm (no
+        free joint) is skipped. Called once per spawn / reset cycle right after
+        the home-pose restore (which returns each base to its flat keyframe z),
+        so it starts from a known base height and is idempotent. Handles both a
+        NAMED floating base (a humanoid's ``floating_base_joint``) and an
+        UNNAMED ``<freejoint>`` (a mobile base) via
+        :meth:`_robot_free_base_joint_id`. The caller holds the model lock and
+        runs ``mj_forward`` afterwards.
+        """
+        world = self._world
+        if world is None or world._model is None or world._data is None:
+            return
+        model = world._model
+        data = world._data
+        if model.nhfield == 0:  # flat ground plane -- nothing to seat onto
+            return
+        for robot in world.robots.values():
+            jid = self._robot_free_base_joint_id(model, robot)
+            if jid < 0:  # fixed-base arm: no floating base to seat
+                continue
+            adr = int(model.jnt_qposadr[jid])
+            ground = self._ground_height_at(float(data.qpos[adr]), float(data.qpos[adr + 1]))
+            if ground:
+                data.qpos[adr + 2] = float(data.qpos[adr + 2]) + ground
+
     def remove_robot(self, name: str) -> dict[str, Any]:
         """Remove a robot and every element it injected (bodies, actuators,
         sensors, equality/tendon refs) from the MJCF scene, then recompile.
@@ -1206,7 +1477,7 @@ class MuJoCoSimEngine(
         OTHER robot is running a policy.
         """
         if self._world is None or name not in self._world.robots:
-            return {"status": "error", "content": [{"text": f"Robot '{name}' not found."}]}
+            return {"status": "error", "content": [{"text": self._unknown_robot_msg(name)}]}
 
         # Step 1: cooperatively stop THIS robot's policy if running.
         # Has to happen before the global check so remove_robot works even
@@ -1568,6 +1839,10 @@ class MuJoCoSimEngine(
             "translational + rotational Jacobian of a body/site/geom for IK/control"
         )
         base["methods"]["get_total_mass"] = "() -> dict  # total mass of the model"
+        base["methods"]["get_ground_height"] = (
+            "(x, y) -> dict  # local terrain surface height (world z) beneath (x, y); "
+            "0.0 on flat ground -- place objects/cameras/goals on create_world(terrain=...) ground"
+        )
         base["methods"]["raycast"] = (
             "(origin: list[float], direction: list[float], exclude_body=-1, "
             "include_static=True) -> dict  # first geom hit along a world-frame "
@@ -1664,28 +1939,61 @@ class MuJoCoSimEngine(
             "(inspect concurrent-policy state when driving two or more arms in one scene)"
         )
 
-        # Scene / world lifecycle + MJCF editing surface. describe() teaches how
-        # to build a scene (add_robot/add_object/add_camera/load_scene), run a
-        # policy, and read/checkpoint the result, but previously gave no way to
-        # discover the world lifecycle itself -- create_world (the fresh-world
-        # entry point that precedes add_robot) and destroy (release resources at
-        # session end, which the tool-spec guidance explicitly asks callers to
-        # do) -- or the MJCF-editing family: patch or wholesale-replace the live
-        # MJCF and serialize the scene back to XML. All five are first-class
-        # actions in the tool spec + action dispatcher; listing them completes
-        # the discovery surface with the world-lifecycle and MJCF-authoring
-        # operations alongside the build / act / read surfaces. (The URDF/model
-        # registry trio -- register_urdf / list_urdfs / remove_robot -- is
-        # advertised with the robot-registry family earlier in describe().)
-        base["methods"]["create_world"] = (
-            "(timestep=None, gravity=None, ground_plane=True) -> dict  # create a "
-            "fresh empty simulation world; the lifecycle entry point that precedes "
-            "add_robot/add_object (gravity is [gx,gy,gz], ground_plane adds a floor)"
+        # Multi-robot rollout + per-robot action/joint introspection. describe()
+        # advertises run_policy (drive ONE robot with a created policy) and the
+        # background start/stop/list lifecycle, but omits run_multi_policy -- the
+        # facade that drives SEVERAL robots, each with its OWN Policy, in one
+        # synchronized control loop that co-observes every robot into one merged
+        # frame per timestep (the correct path for bimanual / handover / multi-
+        # agent data collection; independent start_policy threads instead
+        # interleave single-robot frames into a shared recorder). A caller
+        # assembling its {robot_name: Policy} map also has to know exactly what
+        # each robot's policy must emit, so this block advertises the two
+        # per-robot introspection primitives alongside it: robot_action_keys
+        # (the actuator short-names send_action resolves -- NOT always the joint
+        # names, since passive/mimic fingers have no actuator and a tendon
+        # gripper is an actuator with no joint) and robot_joint_names (the
+        # ordered observation.state joint vector). Without these three an agent
+        # could drive one robot from describe() but had to guess how to drive
+        # many, or key a multi-robot policy by joint name and watch tendon/mimic
+        # DOFs silently no-op. (get_features exposes the whole-scene view; these
+        # return the exact per-robot lists a policy is keyed on. Newton exposes
+        # the same trio and has the same gap; deferred to keep this diff
+        # MuJoCo-scoped like the sibling describe() families.)
+        base["methods"]["run_multi_policy"] = (
+            "(policies: dict[str, Policy], instructions='' | dict, duration=10.0, "
+            "control_frequency=50.0, action_horizon=8 | dict, n_steps=None, "
+            "max_steps=None) -> dict  # drive MULTIPLE robots, each with its own "
+            "Policy, in one synchronized loop that records ALL robots into ONE "
+            "merged frame per timestep (prefixed state/action, e.g. "
+            "'alice__shoulder_pan'); the concurrent multi-robot sibling of "
+            "run_policy for bimanual / handover / multi-agent data collection. "
+            "policies keys and action_horizon dict keys are robot names from the "
+            "'robots' list; per-robot instructions/horizon are supported"
         )
-        base["methods"]["destroy"] = (
-            "() -> dict  # tear down the world and release all resources (joins any "
-            "running background policy first); call at session end. The inverse of create_world"
+        base["methods"]["robot_action_keys"] = (
+            "(robot_name: str) -> list[str]  # the actuator short-names a policy "
+            "should emit as its action-dict keys for robot_name -- the exact keys "
+            "send_action resolves. NOT always the joint names: passive/mimic "
+            "fingers have no driving actuator and a tendon gripper is an actuator "
+            "with no joint, so keying by robot_joint_names makes those DOFs "
+            "silently no-op. Use this to key each policy in a run_multi_policy map"
         )
+        base["methods"]["robot_joint_names"] = (
+            "(robot_name: str) -> list[str]  # the ordered joint names for "
+            "robot_name -- the names of the observation.state vector a policy "
+            "reads (the observation sibling of robot_action_keys' action side)"
+        )
+
+        # MJCF-editing surface. create_world / destroy (the world lifecycle) are
+        # advertised on the base SimEngine.describe() contract; here we add the
+        # MuJoCo-specific MJCF-editing family: patch or wholesale-replace the
+        # live MjSpec and serialize the scene back to XML. All three are
+        # first-class actions in the tool spec + action dispatcher, completing
+        # the discovery surface with MJCF-authoring operations alongside the
+        # build / act / read surfaces. (The URDF/model registry trio --
+        # register_urdf / list_urdfs / remove_robot -- is advertised with the
+        # robot-registry family earlier in describe().)
         base["methods"]["patch_scene_mjcf"] = (
             "(ops: list[dict]) -> dict  # apply structured edits to the live "
             "MjSpec atomically then recompile once (rolled back if any op fails). "
@@ -1704,6 +2012,72 @@ class MuJoCoSimEngine(
             "scene (incl. runtime mutations) to canonical MJCF via spec.to_xml(); "
             "writes to output_path when given, else returns the XML inline. The "
             "read sibling of replace_scene_mjcf"
+        )
+        # Teleoperation surface (TeleopMixin, shared with the hardware Robot).
+        # describe() teaches how to build a scene and drive it with a policy,
+        # but gave no way to discover the OTHER actuation source: driving a sim
+        # robot from an attached teleoperator (a real leader arm, gamepad, or
+        # keyboard) - the leader->follower / human-demonstration workflow that
+        # feeds data collection. All six are public facade methods on the sim;
+        # without them a caller could not learn from describe() how to attach an
+        # input device, run the teleop loop, or stop it, and had to guess these
+        # names. Listing them here reveals the teleop lifecycle (attach ->
+        # teleoperate -> stop) as the human-driven sibling of run_policy.
+        base["methods"]["attach_teleop"] = (
+            "(device_or_spec, *, name=None, method=None, map_fn=None, **kwargs) "
+            "-> Simulation  # attach a teleoperator (lazy - no hardware touched "
+            "until teleoperate). device_or_spec is a built lerobot Teleoperator "
+            "or a type string ('so101_leader', 'gamepad', 'keyboard'); map_fn "
+            "remaps a real leader's joint names onto the sim robot's actuators. "
+            "Returns self for chaining"
+        )
+        base["methods"]["teleoperate"] = (
+            "(*, names=None, robot_name=None, hz=50.0, publish=False, "
+            "block=False, duration=None) -> dict  # drive the sim from its "
+            "attached teleoperator(s): each tick polls get_action(), applies "
+            "map_fn, merges (last-wins), and send_action()s the result. "
+            "block=False runs a background loop and returns immediately; "
+            "duration stops it after N seconds; publish=True also mirrors the "
+            "stream to the mesh. The human-driven sibling of run_policy"
+        )
+        base["methods"]["stop_teleoperate"] = (
+            "() -> dict  # stop the background teleop loop, any mesh publishers, "
+            "and disconnect every device; frame/error stats. The inverse of teleoperate"
+        )
+        base["methods"]["get_teleoperate_status"] = (
+            "() -> dict  # local teleop-loop status (running, frames, errors, "
+            "actual hz, attached devices); distinct from the mesh teleop status"
+        )
+        base["methods"]["list_teleops"] = (
+            "() -> dict  # attached teleoperators and their connection state "
+            "(the teleop sibling of list_robots / list_cameras)"
+        )
+        base["methods"]["detach_teleop"] = (
+            "(name: str | None = None) -> dict  # detach one teleoperator by "
+            "name, or all when name is None; disconnects each and stops the loop "
+            "if it would be left with no devices. The inverse of attach_teleop"
+        )
+
+        # Live interactive viewer. describe() teaches how to build a scene, drive
+        # it with a policy, and read/checkpoint the result, but gave no way to
+        # discover how to OPEN a live window on the running model for human
+        # inspection (watch a rollout, debug a pose, hand-verify a scene). Both
+        # are first-class actions in the tool spec + action dispatcher, so a
+        # caller enumerating the sim's contract from describe() alone had to
+        # guess their names. open_viewer launches a passive MuJoCo viewer (an
+        # interactive OpenGL window that requires a local display -- it errors on
+        # a headless host, where render()/render_all() capture frames instead)
+        # and close_viewer is its teardown, completing the discovery surface with
+        # the human-inspection sibling of the render family.
+        base["methods"]["open_viewer"] = (
+            "() -> dict  # launch a passive interactive MuJoCo viewer window bound "
+            "to the running model (mujoco.viewer.launch_passive); requires a local "
+            "display -- errors on a headless host, where render()/render_all() "
+            "capture frames instead. Idempotent ('Viewer already open' if one is up)"
+        )
+        base["methods"]["close_viewer"] = (
+            "() -> dict  # close the interactive viewer opened by open_viewer; "
+            "idempotent (succeeds even if none is open). The inverse of open_viewer"
         )
 
         if self._world is not None:
@@ -1738,7 +2112,7 @@ class MuJoCoSimEngine(
         except ValueError as e:
             return {"status": "error", "content": [{"text": str(e)}]}
         if robot_name not in self._world.robots:
-            return {"status": "error", "content": [{"text": f"Robot '{robot_name}' not found."}]}
+            return {"status": "error", "content": [{"text": self._unknown_robot_msg(robot_name)}]}
 
         mj = self._mj
         robot = self._world.robots[robot_name]
@@ -1920,6 +2294,15 @@ class MuJoCoSimEngine(
         ``z = 0.775``. Assuming half-extent makes objects look like they "sink
         into" a support when the rest height was simply mis-computed.
 
+        On a ``create_world(terrain=...)`` world the local ground beneath
+        ``(x, y)`` is *elevated* (up to ``TERRAIN_ELEVATION * difficulty`` above
+        ``z = 0``), so this flat-support formula -- which assumes a support at
+        ``z = 0`` -- leaves an object spawned there buried in the heightfield
+        (it then sinks through instead of resting on the surface). Query the
+        local surface with :meth:`get_ground_height` and add the shape's rest
+        offset (e.g. ``size_z / 2`` for a box) to place the object on the
+        terrain: ``position=[x, y, get_ground_height(x, y)["content"][1]["json"]["height"] + size_z / 2]``.
+
         Args:
             name: Unique object name. Its geom is injected as ``"<name>_geom"``.
             shape: ``"box"``, ``"sphere"``, ``"cylinder"``, ``"capsule"``,
@@ -1941,7 +2324,10 @@ class MuJoCoSimEngine(
         Returns:
             Agent-tool status dict. ``{"status": "success", ...}`` on success;
             ``{"status": "error", ...}`` when no world exists, a policy is
-            running, the name is taken, ``size`` has a non-positive extent,
+            running, the name is taken, ``position``/``orientation``/``color``/
+            ``size`` contains a non-finite (``nan``/``inf``) or non-numeric
+            element or ``position``/``orientation`` is the wrong length (3 / 4),
+            ``size`` has a non-positive extent,
             ``shape="mesh"`` is missing ``mesh_path``, or the recompile fails.
 
         Example:
@@ -1991,6 +2377,27 @@ class MuJoCoSimEngine(
                 "content": [{"text": "add_object: shape='mesh' requires mesh_path (path to an STL/OBJ asset)."}],
             }
 
+        # Validate every caller-supplied numeric vector is finite BEFORE we bake
+        # it into the compiled MJCF. Without this: a nan/inf position or
+        # orientation is written verbatim into the object's freejoint qpos and
+        # mj_forward then propagates it through the whole physics state
+        # (reporting success while silently poisoning the sim); a nan/inf size
+        # aborts the recompile with a cryptic "spec recompile refused"; and a
+        # non-numeric element (e.g. ["a", ...]) raises a bare TypeError inside
+        # MuJoCo's add_geom or the size <= 0 comparison, escaping the
+        # structured-error contract. NumPy scalar components are accepted.
+        if position is not None and (e := _validate_pose_vector("add_object", "position", position, 3)) is not None:
+            return {"status": "error", "content": [{"text": e}]}
+        if (
+            orientation is not None
+            and (e := _validate_pose_vector("add_object", "orientation", orientation, 4)) is not None
+        ):
+            return {"status": "error", "content": [{"text": e}]}
+        if color is not None and (e := _validate_finite_vector("add_object", "color", color)) is not None:
+            return {"status": "error", "content": [{"text": e}]}
+        if size is not None and (e := _validate_finite_vector("add_object", "size", size)) is not None:
+            return {"status": "error", "content": [{"text": e}]}
+
         # 'size' is the full extent in meters per the docstring; reject a
         # non-positive (degenerate) extent before mutating scene state so the
         # caller gets a clear error rather than a confusing recompile failure.
@@ -2039,8 +2446,10 @@ class MuJoCoSimEngine(
         }
 
     def remove_object(self, name: str) -> dict[str, Any]:
-        if self._world is None or name not in self._world.objects:
-            return {"status": "error", "content": [{"text": f"Object '{name}' not found."}]}
+        if self._world is None or self._world._model is None or self._world._data is None:
+            return {"status": "error", "content": [{"text": _NO_WORLD_MSG}]}
+        if name not in self._world.objects:
+            return {"status": "error", "content": [{"text": self._unknown_object_msg(name)}]}
         if err := self._require_no_running_policy("remove_object"):
             return err
         del self._world.objects[name]
@@ -2069,17 +2478,37 @@ class MuJoCoSimEngine(
           by editing the spec body pose and recompiling the scene (preserving
           other joints' state), just like ``add_object`` / ``remove_object``.
 
-        Returns ``status="error"`` if the object is unknown or the static-body
-        recompile fails - it never reports success without actually moving the
-        object.
+        ``position`` must be a 3-element vector and ``orientation`` a 4-element
+        wxyz quaternion; each must contain only finite real numbers (NumPy
+        scalars accepted). A wrong-length, non-numeric, or nan/inf pose is
+        rejected up front rather than raising a bare ``ValueError`` past the
+        tool-result contract or silently writing a non-finite value into
+        ``data.qpos`` (which ``mj_forward`` would propagate through the whole
+        physics state).
+
+        Returns ``status="error"`` if the object is unknown, the pose is
+        invalid, or the static-body recompile fails - it never reports success
+        without actually moving the object.
         """
         if self._world is None or self._world._model is None or self._world._data is None:
             return {"status": "error", "content": [{"text": _NO_WORLD_MSG}]}
         if name not in self._world.objects:
-            return {"status": "error", "content": [{"text": f"Object '{name}' not found."}]}
+            return {"status": "error", "content": [{"text": self._unknown_object_msg(name)}]}
         # Guard: move_object writes qpos + calls mj_forward, racing a running policy.
         if err := self._require_no_running_policy("move_object"):
             return err
+
+        # Validate the pose BEFORE mutating any state. Both the dynamic path
+        # (raw data.qpos write) and the static path (spec reposition) otherwise
+        # let a wrong-length / non-numeric vector raise a bare ValueError past
+        # the tool-result contract, or write a nan/inf straight into qpos where
+        # mj_forward silently poisons the whole physics state. Only validate a
+        # component that is actually supplied (None leaves it unchanged; the
+        # move logic below treats a falsy value as "no change").
+        if position and (perr := _validate_pose_vector("move_object", "position", position, 3)) is not None:
+            return {"status": "error", "content": [{"text": perr}]}
+        if orientation and (oerr := _validate_pose_vector("move_object", "orientation", orientation, 4)) is not None:
+            return {"status": "error", "content": [{"text": oerr}]}
 
         mj = self._mj
         model, data = self._world._model, self._world._data
@@ -2149,7 +2578,7 @@ class MuJoCoSimEngine(
         renderable cameras (what ``render`` / ``start_recording`` can target)
         instead of guessing names or triggering a "camera not found" error.
         """
-        if self._world is None or self._world._model is None:
+        if self._world is None or self._world._model is None or self._world._data is None:
             return {"status": "error", "content": [{"text": _NO_WORLD_MSG}]}
         cams = self.list_cameras()
         lines = ["Cameras (renderable):\n"] + [f"  - {c}" for c in cams]
@@ -2187,11 +2616,14 @@ class MuJoCoSimEngine(
         mount points before placing a camera; robot bodies are namespaced
         ``<robot>/<body>`` (e.g. ``so101/gripper`` is the SO101 wrist mount).
 
-        Validation: ``fov`` must be a finite angle in ``(0, 180)`` degrees and
-        ``width``/``height`` must be positive ints within the offscreen
-        framebuffer cap (same bounds ``render`` enforces). Invalid values are
-        rejected here at config time with an actionable error rather than
-        deferring a cryptic spec-recompile or GL failure to the first render.
+        Validation: ``position`` and ``target`` must each be 3 finite numbers
+        (NumPy scalars accepted); ``fov`` must be a finite angle in ``(0, 180)``
+        degrees; and ``width``/``height`` must be positive ints within the
+        offscreen framebuffer cap (same bounds ``render`` enforces). Invalid
+        values are rejected here at config time with an actionable error rather
+        than deferring an uncaught ``TypeError`` (non-numeric), a silently
+        degenerate camera (``nan``/``inf`` baked into ``xyaxes``), or a cryptic
+        spec-recompile / GL failure to the first render.
         """
         if self._world is None or self._world._model is None or self._world._data is None:
             return {"status": "error", "content": [{"text": _NO_WORLD_MSG}]}
@@ -2202,14 +2634,14 @@ class MuJoCoSimEngine(
         pos = position or [1.0, 1.0, 1.0]
         tgt = target or [0.0, 0.0, 0.0]
         for _lbl, _vec in (("position", pos), ("target", tgt)):
-            try:
-                if len(_vec) != 3:
-                    return {
-                        "status": "error",
-                        "content": [{"text": f"add_camera: '{_lbl}' must be 3 elements [x,y,z], got {len(_vec)}"}],
-                    }
-            except TypeError:
-                return {"status": "error", "content": [{"text": f"add_camera: '{_lbl}' must be a list of 3 numbers"}]}
+            # Validate shape AND finiteness up front. The degenerate-orientation
+            # check below does ``abs(pos[i] - tgt[i])`` element-wise, so a
+            # non-numeric element (e.g. ["a", ...]) would otherwise raise a bare
+            # TypeError there, and a nan/inf slips silently into the camera's
+            # baked xyaxes (fwd /= flen divides by nan -> a degenerate camera
+            # that renders garbage while reporting success). NumPy scalars ok.
+            if (e := _validate_pose_vector("add_camera", _lbl, _vec, 3)) is not None:
+                return {"status": "error", "content": [{"text": e}]}
         # Degenerate orientation: position == target means no well-defined look direction.
         if all(abs(pos[i] - tgt[i]) < 1e-9 for i in range(3)):
             return {
@@ -2227,7 +2659,10 @@ class MuJoCoSimEngine(
         # cryptic "spec recompile refused", or - for fov <= 0 - silently
         # registers a degenerate camera that renders nothing useful. Reject it
         # here with an actionable message, mirroring the position/target checks.
-        if not isinstance(fov, (int, float)) or isinstance(fov, bool) or not math.isfinite(fov):
+        # Accept any real number (``numbers.Real``) so a NumPy scalar fov
+        # (e.g. ``np.float32(58.0)`` from a config array) is not rejected as
+        # "not a finite number"; only ``bool`` and non-finite values are refused.
+        if isinstance(fov, bool) or not isinstance(fov, numbers.Real) or not math.isfinite(float(fov)):
             return {
                 "status": "error",
                 "content": [{"text": f"add_camera: 'fov' must be a finite number in degrees, got {fov!r}."}],
@@ -2319,8 +2754,10 @@ class MuJoCoSimEngine(
         from the MjSpec via :func:`SpecBuilder.remove_camera` so future
         renders/compiles no longer see it.
         """
-        if self._world is None or name not in self._world.cameras:
-            return {"status": "error", "content": [{"text": f"Camera '{name}' not found."}]}
+        if self._world is None or self._world._model is None or self._world._data is None:
+            return {"status": "error", "content": [{"text": _NO_WORLD_MSG}]}
+        if name not in self._world.cameras:
+            return {"status": "error", "content": [{"text": self._unknown_camera_msg(name)}]}
         if err := self._require_no_running_policy("remove_camera"):
             return err
         cam = self._world.cameras.pop(name)
@@ -2450,6 +2887,7 @@ class MuJoCoSimEngine(
             # so a keyframe spawn is sticky across resets -- mirroring how a
             # benchmark restores its canonical start pose each episode.
             self._restore_home_poses()
+            self._seat_floating_bases_on_terrain()
             mj.mj_forward(self._world._model, self._world._data)
             self._world.sim_time = 0.0
             self._world.step_count = 0
@@ -2518,37 +2956,61 @@ class MuJoCoSimEngine(
             tls.model = None
 
     def set_gravity(self, gravity: list[float] | float | int) -> dict[str, Any]:
+        """Set the world gravity vector.
+
+        Accepts either a 3-element ``[x, y, z]`` list or a bare real scalar,
+        which is interpreted as the z-component (``[0, 0, z]``). The scalar
+        may be any :class:`numbers.Real` -- a Python ``int`` / ``float`` or a
+        NumPy scalar such as ``np.float32`` / ``np.int64`` (e.g. a value read
+        from a config array or produced by ``np.degrees(...)``). A NumPy
+        array is treated as the vector form, not a scalar.
+
+        Args:
+            gravity: Gravity as ``[x, y, z]`` (m/s^2) or a real scalar z-component.
+
+        Returns:
+            Agent-tool ``status`` / ``content`` dict. Errors (structured, never
+            raised) on a missing world, a running policy, a non-3-element or
+            non-numeric vector, or non-finite components.
+        """
         if self._world is None or self._world._model is None or self._world._data is None:
             return {"status": "error", "content": [{"text": _NO_WORLD_MSG}]}
         # set_gravity during a running policy races the worker thread
         if err := self._require_no_running_policy("set_gravity"):
             return err
-        # validate length/dtype before numpy broadcast
-        if isinstance(gravity, (int, float)):
-            gravity = [0.0, 0.0, float(gravity)]
-        try:
-            if len(gravity) != 3:
+        # Accept any real scalar (numbers.Real) as a z-only gravity so a value
+        # computed as a NumPy scalar (np.float32 / np.int64 / np.degrees(...)) is
+        # treated like a plain float, not refused with a misleading "has no len()".
+        # A NumPy array is not numbers.Real, so it still takes the vector path.
+        if isinstance(gravity, numbers.Real):
+            components = [0.0, 0.0, float(gravity)]
+        else:
+            # Any other value must be a 3-element sized vector (list / tuple /
+            # NumPy array). Validate length/dtype before the numpy broadcast.
+            try:
+                vector = cast("Sequence[float]", gravity)
+                if len(vector) != 3:
+                    return {
+                        "status": "error",
+                        "content": [
+                            {"text": f"set_gravity: 'gravity' must be a 3-element list [x,y,z], got {len(vector)}"}
+                        ],
+                    }
+                components = [float(g) for g in vector]
+            except (TypeError, ValueError) as e:
                 return {
                     "status": "error",
-                    "content": [
-                        {"text": f"set_gravity: 'gravity' must be a 3-element list [x,y,z], got {len(gravity)}"}
-                    ],
+                    "content": [{"text": f"set_gravity: 'gravity' must be a 3-element list of numbers ({e})"}],
                 }
-            gravity = [float(g) for g in gravity]
-        except (TypeError, ValueError) as e:
+        if not all(math.isfinite(g) for g in components):
             return {
                 "status": "error",
-                "content": [{"text": f"set_gravity: 'gravity' must be a 3-element list of numbers ({e})"}],
-            }
-        if not all(math.isfinite(g) for g in gravity):
-            return {
-                "status": "error",
-                "content": [{"text": f"set_gravity: all components must be finite, got {gravity}"}],
+                "content": [{"text": f"set_gravity: all components must be finite, got {components}"}],
             }
         with self._lock:
-            self._world._model.opt.gravity[:] = gravity
-            self._world.gravity = gravity
-        return {"status": "success", "content": [{"text": f"Gravity: {gravity}"}]}
+            self._world._model.opt.gravity[:] = components
+            self._world.gravity = components
+        return {"status": "success", "content": [{"text": f"Gravity: {components}"}]}
 
     def set_timestep(self, timestep: float) -> dict[str, Any]:
         if self._world is None or self._world._model is None or self._world._data is None:
@@ -2579,6 +3041,19 @@ class MuJoCoSimEngine(
     # Viewer
 
     def open_viewer(self) -> dict[str, Any]:
+        """Launch a passive interactive MuJoCo viewer window bound to the running model.
+
+        Opens ``mujoco.viewer.launch_passive`` on the live model/data so a human
+        can watch a rollout, debug a pose, or hand-verify a scene. The viewer is
+        an interactive OpenGL window and therefore **requires a local display**:
+        on a headless host it fails with a viewer error, where
+        :meth:`render` / :meth:`render_all` capture frames instead. Idempotent --
+        succeeds with "Viewer already open" if one is already up. The inverse is
+        :meth:`close_viewer`.
+
+        Returns:
+            Agent-tool ``status``/``content`` dict.
+        """
         if self._world is None or self._world._model is None:
             return {"status": "error", "content": [{"text": "No simulation to view."}]}
         from strands_robots.simulation.mujoco.backend import _mujoco_viewer
@@ -2602,6 +3077,14 @@ class MuJoCoSimEngine(
             self._viewer_handle = None
 
     def close_viewer(self) -> dict[str, Any]:
+        """Close the interactive viewer opened by :meth:`open_viewer`.
+
+        Idempotent -- succeeds even when no viewer is open. The inverse of
+        :meth:`open_viewer`.
+
+        Returns:
+            Agent-tool ``status``/``content`` dict.
+        """
         self._close_viewer()
         return {"status": "success", "content": [{"text": "Viewer closed."}]}
 
@@ -2683,7 +3166,7 @@ class MuJoCoSimEngine(
 
         if robot_name is not None:
             if robot_name not in self._world.robots:
-                return {"status": "error", "content": [{"text": f"Robot '{robot_name}' not found."}]}
+                return {"status": "error", "content": [{"text": self._unknown_robot_msg(robot_name)}]}
             robot = self._world.robots[robot_name]
             ns = (getattr(robot, "namespace", "") or "").rstrip("/")
             prefix = f"{ns}/" if ns else ""
@@ -2900,7 +3383,7 @@ class MuJoCoSimEngine(
                 "(direct path or auto-resolve from data_config name), add objects, run VLA policies, "
                 "render cameras, record trajectories, domain randomize. "
                 "Same Policy ABC as real robot control - sim and real with zero code changes. "
-                "Actions (67 total): "
+                "Actions (68 total): "
                 "[World] create_world, load_scene, reset, get_state, destroy, export_xml; "
                 "[Robots] add_robot, remove_robot, list_robots, get_robot_state, list_bodies; "
                 "[Objects] add_object, remove_object, move_object, list_objects; "
@@ -2909,7 +3392,7 @@ class MuJoCoSimEngine(
                 "[Rendering] render, render_depth, render_all, open_viewer, close_viewer; "
                 "[Physics] step, set_gravity, set_timestep, set_joint_positions, set_joint_velocities, "
                 "apply_force, get_contacts, get_contact_forces, get_body_state, get_energy, "
-                "get_total_mass, get_sensor_data, get_jacobian, get_mass_matrix, inverse_dynamics, "
+                "get_total_mass, get_ground_height, get_sensor_data, get_jacobian, get_mass_matrix, inverse_dynamics, "
                 "forward_kinematics, save_state, load_state, set_body_properties, set_geom_properties; "
                 "[Scene MJCF] replace_scene_mjcf, patch_scene_mjcf, raycast, multi_raycast; "
                 "[Recording] start_recording, save_episode, stop_recording, get_recording_status, "
@@ -2982,7 +3465,7 @@ class MuJoCoSimEngine(
         except ValueError as e:
             return {"status": "error", "content": [{"text": str(e)}]}
         if robot_name not in self._world.robots:
-            return {"status": "error", "content": [{"text": f"Robot '{robot_name}' not found."}]}
+            return {"status": "error", "content": [{"text": self._unknown_robot_msg(robot_name)}]}
 
         # Per-robot gate: another policy running on a DIFFERENT robot is fine.
         if err := self._require_no_running_policy("start_policy", robot_name=robot_name):
@@ -3256,7 +3739,7 @@ class MuJoCoSimEngine(
         # Validate every robot exists.
         for rname in policies:
             if rname not in self._world.robots:
-                return {"status": "error", "content": [{"text": f"Robot '{rname}' not found."}]}
+                return {"status": "error", "content": [{"text": self._unknown_robot_msg(rname)}]}
 
         # Reject if any of these robots already has a running async policy
         # (would double-step physics on that robot).
@@ -3594,7 +4077,14 @@ class MuJoCoSimEngine(
                     ],
                 }
             for i, component in enumerate(val):
-                if not isinstance(component, (int, float)) or isinstance(component, bool):
+                # Accept any real scalar, including NumPy types (np.float32 /
+                # np.int64 / ...): vector params like position / gravity / point
+                # naturally arrive from an observation or mj_data (a NumPy
+                # array), so `[float(x) for x in obs[...]]` is not required of
+                # the caller. isinstance(_, (int, float)) rejected those (only
+                # np.float64 subclasses float). numbers.Real still rejects
+                # bool / np.bool_ (np.bool_ is not a Real) and non-numeric junk.
+                if not isinstance(component, numbers.Real) or isinstance(component, bool):
                     return None, {
                         "status": "error",
                         "content": [
@@ -3700,7 +4190,7 @@ class MuJoCoSimEngine(
                 "content": [{"text": "stop_policy requires 'robot_name'."}],
             }
         if self._world is None or robot_name not in self._world.robots:
-            return {"status": "error", "content": [{"text": f"Robot '{robot_name}' not found."}]}
+            return {"status": "error", "content": [{"text": self._unknown_robot_msg(robot_name)}]}
         robot = self._world.robots[robot_name]
         was_running = robot.policy_running
         robot.policy_running = False

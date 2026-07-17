@@ -19,10 +19,12 @@ Usage::
 from __future__ import annotations
 
 import logging
+import math
+import numbers
 import os
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Mapping, Sequence
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, SupportsFloat
 
 if TYPE_CHECKING:
     from strands_robots.policies import Policy
@@ -228,6 +230,31 @@ class SimEngine(ABC):
             raise ValueError("No robots registered in the simulation. Add a robot first (add_robot or Robot factory).")
         raise ValueError(f"Multiple robots registered; specify robot_name. Available: {names}")
 
+    def _unknown_robot_msg(self, requested: str) -> str:
+        """Actionable 'robot not found' message for the backend-agnostic facade.
+
+        Keeps the "Robot 'X' not found." prefix (the consistent error shape the
+        concrete backends also emit via their own ``_unknown_robot_msg``), then
+        appends a difflib close-match, the robots currently in the world, and the
+        discovery action so an agent driving the API by name can recover a typo in
+        zero extra calls instead of hitting a dead-end string. Uses the abstract
+        :meth:`list_robots` primitive, so every backend inherits it; the MuJoCo
+        engine overrides with a ``self._world.robots``-backed variant. Mirrors the
+        ``_unknown_object_msg`` / ``_unknown_camera_msg`` pattern (#1299/#1303/#1306).
+        """
+        known = self.list_robots()
+        msg = f"Robot '{requested}' not found."
+        if known:
+            import difflib
+
+            matches = difflib.get_close_matches(requested, known, n=3, cutoff=0.4)
+            if matches:
+                msg += " Did you mean: " + ", ".join(matches) + "?"
+            msg += f" Available robots: {known}. Use action='list_robots' to see all."
+        else:
+            msg += " No robots in the scene; add one with action='add_robot'."
+        return msg
+
     # World lifecycle
 
     @abstractmethod
@@ -236,8 +263,33 @@ class SimEngine(ABC):
         timestep: float | None = None,
         gravity: list[float] | None = None,
         ground_plane: bool = True,
+        terrain: str | None = None,
+        difficulty: float = 1.0,
     ) -> dict[str, Any]:
-        """Create a new simulation world."""
+        """Create a new simulation world.
+
+        ``terrain`` (``"rough"`` = value-noise bumps, ``"stairs"`` = discrete
+        step plateaus rising along +x, ``"pyramid"`` = concentric step plateaus
+        rising toward the centre, ``"slope"`` = a constant-grade inclined ramp;
+        see :mod:`strands_robots.simulation.terrain`) lays down a
+        deterministic heightfield instead of the flat ground plane so a
+        locomotion policy can be spawned/evaluated on non-flat ground; it is
+        only meaningful when ``ground_plane=True`` and defaults to ``None`` (a
+        flat plane). Backends without heightfield support reject a non-None
+        ``terrain`` with an actionable error rather than silently ignoring it.
+
+        ``difficulty`` scales the terrain's peak elevation (``1.0`` = full
+        height, ``<1`` gentler, ``>1`` harsher) so a curriculum can ramp
+        terrain magnitude across resets without changing the terrain *kind*.
+        It is only meaningful with a ``terrain``; setting ``difficulty != 1.0``
+        with no ``terrain`` is rejected with an actionable error rather than
+        silently having no effect. Must be a finite value ``> 0``.
+
+        A floating-base robot added to a terrain world is spawned seated on
+        the local terrain surface (raised by the heightfield height beneath
+        it) at ``add_robot`` and on ``reset()``, so its feet are not buried
+        below the raised terrain.
+        """
         ...
 
     @abstractmethod
@@ -467,6 +519,16 @@ class SimEngine(ABC):
               camera associated with the robot, keyed by camera name.
               Shape ``(H, W, 3)``. Cameras whose render fails MAY be
               omitted; joint state MUST still be returned.
+            - Floating base: a robot whose root is a 6-DoF free joint (a
+              humanoid's named ``floating_base_joint`` or a mobile base's
+              unnamed ``<freejoint>``) does NOT report that free joint as a
+              scalar ``"<joint_name>"`` entry - its qpos is [xyz + quat], so a
+              scalar would report the base x-coordinate as a joint angle and
+              drop the rest. Instead it surfaces the full base pose + twist as
+              ``"base_pos"`` (world x,y,z incl. height), ``"base_quat"``
+              (w,x,y,z), ``"base_lin_vel"`` and ``"base_ang_vel"``, matching
+              :meth:`get_robot_state`'s ``"base"`` entry. Absent for fixed-base
+              arms.
 
         Single-camera rendering is :meth:`render`'s job, not this method's.
         For batched multi-robot observation (future Isaac / Newton), add a
@@ -482,6 +544,69 @@ class SimEngine(ABC):
             is not yet created or ``robot_name`` is unknown.
         """
         ...
+
+    def _ground_height_at(self, x: float, y: float) -> float:
+        """Terrain surface height (world z) beneath world ``(x, y)``; ``0.0`` on flat ground.
+
+        Default ``0.0`` -- a flat ground plane, and any backend without a
+        heightfield. The MuJoCo backend overrides this to sample a
+        ``create_world(terrain=...)`` heightfield so that height-based locomotion
+        predicates (:func:`~strands_robots.simulation.predicates.base_below_z`)
+        measure a base's clearance above the *local* ground instead of an
+        absolute world z -- an absolute test silently misses a collapse on a
+        raised terrain plateau (the base still sits above a flat-ground
+        threshold). Not a public tool action.
+        """
+        return 0.0
+
+    def get_ground_height(self, x: SupportsFloat, y: SupportsFloat) -> dict[str, Any]:
+        """Query the terrain surface height (world z) beneath world ``(x, y)``.
+
+        Public counterpart of the internal :meth:`_ground_height_at` hook: a
+        ``create_world(terrain=...)`` heightfield raises the local ground up to
+        ``TERRAIN_ELEVATION * difficulty`` above ``z=0``, and there was no public
+        way to ask where that surface is. Callers building a terrain scene need
+        it to place an object / camera / goal *on* the surface -- an object added
+        at a flat-ground ``z`` (computed as if the support were at ``z=0``) on a
+        raised plateau spawns *buried* in the heightfield and sinks through
+        instead of resting on it. The same local-height sampler already backs the
+        terrain-relative locomotion predicates
+        (:func:`~strands_robots.simulation.predicates.base_below_z`) and the
+        spawn/reset base-seating; this exposes it as a facade query.
+
+        Returns ``0.0`` for a flat ground plane and for any backend without a
+        heightfield, so a non-terrain world reports a flat surface.
+
+        Args:
+            x: World x coordinate. Any object convertible to ``float``
+                (``SupportsFloat``), including NumPy scalars, that is a finite
+                real number.
+            y: World y coordinate. Same accepted types as ``x``.
+
+        Returns:
+            Agent-tool status dict. On success ``content`` carries a
+            ``{"json": {"x": ..., "y": ..., "height": ...}}`` block with the
+            surface height in meters. Errors when ``x`` / ``y`` is not a finite
+            real number. Accepts any real scalar, including NumPy scalar
+            types (``np.float32`` / ``np.int64`` / ...), since terrain
+            coordinates naturally come from ``mj_data`` / an observation
+            (a NumPy array), not hand-typed Python floats.
+        """
+        for label, val in (("x", x), ("y", y)):
+            if isinstance(val, bool) or not isinstance(val, numbers.Real) or not math.isfinite(float(val)):
+                return {
+                    "status": "error",
+                    "content": [{"text": f"get_ground_height: {label} must be a finite number, got {val!r}."}],
+                }
+        fx, fy = float(x), float(y)
+        height = float(self._ground_height_at(fx, fy))
+        return {
+            "status": "success",
+            "content": [
+                {"text": f"Ground height at ({fx:.4f}, {fy:.4f}) = {height:.4f}m"},
+                {"json": {"x": fx, "y": fy, "height": height}},
+            ],
+        }
 
     def _coerce_action(
         self, action: dict[str, Any] | Sequence[float], robot_name: str
@@ -762,10 +887,13 @@ class SimEngine(ABC):
         (``round(1 / control_frequency / ...)``); a value ``<= 0`` or a
         non-number otherwise reaches that arithmetic deep inside the runner and
         raises a bare ``ValueError``/``TypeError``/``ZeroDivisionError`` rather
-        than the structured tool-error dict the public API contracts. ``bool`` is
-        rejected explicitly: it is an ``int`` subclass, so ``True`` would slip
-        through the numeric check and act as a silent 1 Hz. Returns a structured
-        error dict to surface, or ``None`` when valid.
+        than the structured tool-error dict the public API contracts. Any real
+        scalar is accepted (``numbers.Real``), so a NumPy-scalar frequency such
+        as ``np.float32(50.0)`` or ``np.int64(50)`` passes; ``bool`` is rejected
+        explicitly (an ``int`` subclass, ``True`` would slip through and act as a
+        silent 1 Hz) and non-finite values (``nan``/``inf``) are rejected before
+        the ``<= 0`` comparison. Returns a structured error dict to surface, or
+        ``None`` when valid.
 
         Args:
             control_frequency: The caller-supplied value to validate.
@@ -774,10 +902,22 @@ class SimEngine(ABC):
         Returns:
             An error dict naming the offending parameter, or ``None``.
         """
+        # Accept any real scalar (``numbers.Real``) so a NumPy-scalar frequency
+        # (e.g. ``np.float32(50.0)`` / ``np.int64(50)`` computed from a config
+        # array or ``mj_data``) is not rejected: ``isinstance(x, (int, float))``
+        # is ``False`` for every NumPy scalar except ``np.float64``. ``bool`` is
+        # still rejected explicitly (an ``int`` subclass, ``True`` would act as a
+        # silent 1 Hz), and non-finite values (``nan``/``inf``) are rejected via
+        # ``math.isfinite`` before the ``<= 0`` comparison so a ``nan`` -- which
+        # is never ``<= 0`` -- cannot slip through into the ``1 / frequency`` and
+        # ``n_steps / frequency`` arithmetic. Mirrors the ``numbers.Real`` +
+        # finiteness contract already applied to ``add_camera(fov=...)`` and
+        # ``get_ground_height``.
         if (
             isinstance(control_frequency, bool)
-            or not isinstance(control_frequency, (int, float))
-            or control_frequency <= 0
+            or not isinstance(control_frequency, numbers.Real)
+            or not math.isfinite(float(control_frequency))
+            or float(control_frequency) <= 0
         ):
             return {
                 "status": "error",
@@ -943,6 +1083,11 @@ class SimEngine(ABC):
 
         if err := self._validate_positive_frequency(control_frequency, "run_policy"):
             return err
+        # Coerce to a plain Python float now the value is validated: a NumPy
+        # scalar (accepted above via numbers.Real) flows into 1 / control_frequency
+        # and time.sleep(...) downstream, and time.sleep rejects a numpy.float32
+        # with a bare "cannot be interpreted as an integer" TypeError.
+        control_frequency = float(control_frequency)
 
         # accept n_steps (or legacy max_steps) as an alternate horizon
         # specification. duration = n_steps / control_frequency. If both
@@ -960,7 +1105,7 @@ class SimEngine(ABC):
         if robot_name not in self.list_robots():
             return {
                 "status": "error",
-                "content": [{"text": f"Robot '{robot_name}' not found."}],
+                "content": [{"text": self._unknown_robot_msg(robot_name)}],
             }
 
         if policy_object is None:
@@ -976,8 +1121,18 @@ class SimEngine(ABC):
             # Caller is responsible for policy.set_robot_state_keys(...) if needed,
             # but we set it here defensively so the semantics match the provider path.
             policy = policy_object
-        policy.set_robot_state_keys(self.robot_action_keys(robot_name))
-        self.bind_policy_sim_context(policy, robot_name)
+        # set_robot_state_keys + sim-context binding are best-effort policy
+        # configuration: a raising robot_action_keys (a backend quirk, a world
+        # torn down mid-setup) must not crash the whole rollout. A genuine
+        # wrong-embodiment mismatch is surfaced far more actionably downstream
+        # by PolicyRunner's fail-fast probe ("the robot has not moved"). This
+        # matches the guarded binding in MujocoSimulation.run_policy's
+        # multi-robot path.
+        try:
+            policy.set_robot_state_keys(self.robot_action_keys(robot_name))
+            self.bind_policy_sim_context(policy, robot_name)
+        except Exception as exc:  # noqa: BLE001 - non-fatal policy configuration
+            logger.debug("policy binding for %r failed: %s", robot_name, exc)
 
         # Auto-install any action controller this policy needs to run correctly
         # on this scene (e.g. the WBC torque shim on a position-servo G1). The
@@ -1644,7 +1799,7 @@ class SimEngine(ABC):
         if resolved_robot not in robots:
             return {
                 "status": "error",
-                "content": [{"text": f"Robot '{resolved_robot}' not found."}],
+                "content": [{"text": self._unknown_robot_msg(resolved_robot)}],
             }
 
         if err := self._validate_action_horizon(action_horizon, "eval_policy"):
@@ -1655,6 +1810,11 @@ class SimEngine(ABC):
             return err
         if err := self._validate_positive_frequency(control_frequency, "eval_policy"):
             return err
+        # Coerce to a plain Python float now the value is validated: a NumPy
+        # scalar (accepted above via numbers.Real) flows into 1 / control_frequency
+        # and time.sleep(...) downstream, and time.sleep rejects a numpy.float32
+        # with a bare "cannot be interpreted as an integer" TypeError.
+        control_frequency = float(control_frequency)
 
         if policy_object is None:
             from strands_robots.policies import create_policy
@@ -1815,6 +1975,11 @@ class SimEngine(ABC):
             return err
         if err := self._validate_positive_frequency(control_frequency, "evaluate_benchmark"):
             return err
+        # Coerce to a plain Python float now the value is validated: a NumPy
+        # scalar (accepted above via numbers.Real) flows into 1 / control_frequency
+        # and time.sleep(...) downstream, and time.sleep rejects a numpy.float32
+        # with a bare "cannot be interpreted as an integer" TypeError.
+        control_frequency = float(control_frequency)
 
         spec = get_benchmark(benchmark_name)
         if spec is None:
@@ -1859,7 +2024,7 @@ class SimEngine(ABC):
         if resolved_robot not in robots:
             return {
                 "status": "error",
-                "content": [{"text": f"Robot '{resolved_robot}' not found. Loaded: {robots}"}],
+                "content": [{"text": self._unknown_robot_msg(resolved_robot)}],
             }
 
         if policy_object is None:
@@ -2074,6 +2239,12 @@ class SimEngine(ABC):
                     "(checker|gradient|flat) + rgb1/rgb2/texdim, texrepeat [u,v]"
                 ),
                 "remove_object": "(name: str) -> dict  # remove a previously added object",
+                "remove_robot": (
+                    "(name: str) -> dict  # remove a robot (and every scene "
+                    "element it introduced) from the world; the inverse of "
+                    "add_robot, completing the add/remove pair alongside "
+                    "remove_object"
+                ),
                 "run_policy": "(robot_name: str, policy_provider='mock', n_episodes=1, reset_between=True, ...) -> dict",
                 "start_policy": "(robot_name: str, policy_provider='mock', ...) -> dict",
                 "eval_policy": (
@@ -2099,9 +2270,10 @@ class SimEngine(ABC):
                     "DSL) as YAML/JSON at runtime and register it under benchmark_name"
                 ),
                 "register_builtin_benchmarks": (
-                    "() -> dict  # register the shipped built-in benchmarks "
-                    "(e.g. the go2_walk_forward velocity-tracking locomotion task) "
-                    "so they appear in list_benchmarks and can be run via evaluate_benchmark"
+                    "() -> dict  # register the shipped built-in velocity-tracking "
+                    "locomotion benchmarks - the go2_walk_forward quadruped task and "
+                    "the g1_walk_forward / t1_walk_forward humanoid tasks - so they "
+                    "appear in list_benchmarks and can be run via evaluate_benchmark"
                 ),
                 "replay_episode": (
                     "(repo_id: str, robot_name=None, episode=0, root=None, "
@@ -2117,6 +2289,24 @@ class SimEngine(ABC):
                     "run_policy reports unresolved keys"
                 ),
                 "render": "(camera_name='default', width=None, height=None) -> dict",
+                "create_world": (
+                    "(timestep=None, gravity=None, ground_plane=True, terrain=None, "
+                    "difficulty=1.0) -> dict  # create a fresh simulation world - the "
+                    "world-lifecycle entry point that precedes add_robot / add_object. "
+                    "gravity is [gx, gy, gz]; ground_plane lays a floor; terrain lays a "
+                    "deterministic locomotion heightfield instead of the flat plane "
+                    "('rough' value-noise bumps, 'stairs' step plateaus rising +x, "
+                    "'pyramid' concentric steps rising to the centre, 'slope' a "
+                    "constant-grade ramp); difficulty (finite, > 0; 1.0 = full height) "
+                    "scales the terrain peak elevation for a curriculum without changing "
+                    "the terrain kind. Backends without heightfield support reject a "
+                    "non-None terrain rather than ignoring it"
+                ),
+                "destroy": (
+                    "() -> dict  # tear down the world and release all resources "
+                    "(joins any running background policy first); the inverse of "
+                    "create_world, called at session end"
+                ),
                 "reset": "() -> dict  # during recording, flushes the buffered rollout as one episode before resetting",
                 "step": "(n_steps: int = 1) -> dict",
                 "get_state": (
@@ -2124,6 +2314,27 @@ class SimEngine(ABC):
                     "count, timestep, gravity, and robot / object / camera / "
                     "body / joint / actuator counts (the whole-world sibling of "
                     "get_robot_state / get_observation)"
+                ),
+                "load_scene": (
+                    "(scene_path: str) -> dict  # load a complete scene from "
+                    "an MJCF/URDF file; the alternative scene-construction "
+                    "entry point to building it up with add_robot / add_object"
+                ),
+                "randomize": (
+                    "(**kwargs) -> dict  # domain randomization (colors, "
+                    "lighting, physics, positions); each backend defines its "
+                    "own opt-in axes - see the backend describe() for the "
+                    "concrete signature"
+                ),
+                "set_obs_noise": (
+                    "(**kwargs) -> dict  # configure additive Gaussian sensor "
+                    "noise on joint observations and rendered frames so a "
+                    "policy is not evaluated on noise-free observations"
+                ),
+                "get_contacts": (
+                    "() -> dict  # active contacts at the current step - the "
+                    "physics-grounding read used to verify a grasp or detect "
+                    "a collision instead of trusting a rendered caption"
                 ),
             },
             "note": (

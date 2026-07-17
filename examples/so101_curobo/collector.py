@@ -235,19 +235,14 @@ class LeRobotDataCollector:
 
         Mirrors ``LeRobotDataset.create``'s default of ``$HF_LEROBOT_HOME/{repo_id}``
         so the re-run cleanup in :meth:`_new_recorder` can also clear the HF-cache
-        default (issue #143), not just an explicit ``--root``. Best-effort: returns
-        ``None`` if LeRobot isn't importable, leaving behavior unchanged.
+        default (issue #143), not just an explicit ``--root``. Delegates to the
+        SDK's ``resolve_dataset_dir`` (which honours ``HF_LEROBOT_HOME`` and
+        falls back to the documented default when lerobot is absent) so this
+        example never imports lerobot directly.
         """
-        import os
+        from strands_robots.dataset_recorder import resolve_dataset_dir
 
-        try:
-            from lerobot.utils.constants import HF_LEROBOT_HOME
-        except Exception:  # noqa: BLE001 - older/newer LeRobot layouts
-            home = os.environ.get("HF_LEROBOT_HOME") or os.path.join(
-                os.path.expanduser("~"), ".cache", "huggingface", "lerobot"
-            )
-            return os.path.join(home, *self.repo_id.split("/"))
-        return os.path.join(str(HF_LEROBOT_HOME), *self.repo_id.split("/"))
+        return str(resolve_dataset_dir(self.repo_id))
 
     def _new_recorder(self, task: str):
         if not self.available():

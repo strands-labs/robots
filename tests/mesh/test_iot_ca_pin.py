@@ -6,7 +6,9 @@ SHA-256 fingerprint before writing the file to disk. These tests exercise:
 * :func:`_verify_ca_bytes` accepts the canonical bytes and rejects any
   one-byte modification.
 * :func:`_ensure_ca` raises on a rogue download, on a tampered on-disk
-  copy, and on responses larger than :data:`_CA_FETCH_MAX_BYTES`.
+  copy, on an unreadable existing copy (fail-closed on an O_NOFOLLOW
+  symlink-swap race), and on responses larger than
+  :data:`_CA_FETCH_MAX_BYTES`.
 * The :envvar:`STRANDS_MESH_DISABLE_CA_PIN` break-glass env var bypasses
   the check (with a WARNING log) for proxy environments that legitimately
   re-encode the cert.
@@ -14,6 +16,7 @@ SHA-256 fingerprint before writing the file to disk. These tests exercise:
 
 from __future__ import annotations
 
+import errno
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -103,6 +106,26 @@ class TestEnsureCA:
         with patch("strands_robots.mesh.iot.provision.urllib.request.urlopen") as mock_url:
             with patch("strands_robots.mesh.iot.provision.os.read", side_effect=chunked_read):
                 provision._ensure_ca(ca_path)
+            mock_url.assert_not_called()
+
+    def test_existing_file_unreadable_fails_closed(self, tmp_path):
+        # A regular, non-symlink CA file that becomes unreadable at open
+        # time (e.g. an O_NOFOLLOW symlink-swap race lands here with ELOOP,
+        # or the file is genuinely unreadable) MUST fail closed: raise a
+        # RuntimeError rather than silently skipping the pin check or
+        # falling through to download-and-trust. Regression guard for the
+        # ``except OSError`` catch in the existing-file re-use branch.
+        ca_path = tmp_path / "ca.pem"
+        ca_path.write_bytes(_REAL_CA)
+
+        def raise_eloop(*_args, **_kwargs):
+            raise OSError(errno.ELOOP, "Too many levels of symbolic links")
+
+        with patch("strands_robots.mesh.iot.provision.urllib.request.urlopen") as mock_url:
+            with patch("strands_robots.mesh.iot.provision.os.open", side_effect=raise_eloop):
+                with pytest.raises(RuntimeError, match="unreadable"):
+                    provision._ensure_ca(ca_path)
+            # Fail-closed: must NOT reach the download path.
             mock_url.assert_not_called()
 
     def test_existing_tampered_file_raises(self, tmp_path):

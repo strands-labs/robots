@@ -584,6 +584,36 @@ class TestRuntimeModification:
         assert model.body_mass[body_id] == pytest.approx(2.0)
         assert model.body_inertia[body_id] == pytest.approx([0.0, 0.0, 0.0])
 
+    def test_set_body_mass_rejects_nonfinite(self, sim):
+        """A non-finite mass is rejected instead of silently corrupting the model.
+
+        ``float('nan') <= 0`` and ``float('inf') <= 0`` are both ``False``, so a
+        bare ``mass <= 0`` guard lets NaN/+Inf slip through: the body's mass and
+        (mass-tracking) inertia would be set to NaN/Inf and the next ``mj_step``
+        would produce a non-finite ``qacc`` -- a silent physics corruption
+        reported as ``status="success"``. The guard must also reject non-finite
+        values, matching the finiteness contract already enforced by
+        ``set_timestep`` / ``set_gravity``.
+        """
+        model = sim._world._model
+        body_id = mj.mj_name2id(model, mj.mjtObj.mjOBJ_BODY, "box1")
+        good_mass = float(model.body_mass[body_id])
+        good_inertia = model.body_inertia[body_id].copy()
+        assert good_mass > 0 and (good_inertia > 0).all()
+
+        for bad in (float("nan"), float("inf"), -float("inf")):
+            result = sim.set_body_properties(body_name="box1", mass=bad)
+            assert result["status"] == "error", f"mass={bad!r} was not rejected"
+            assert "finite" in result["content"][0]["text"]
+            # Neither mass nor inertia was mutated by the rejected call.
+            assert model.body_mass[body_id] == pytest.approx(good_mass)
+            assert model.body_inertia[body_id] == pytest.approx(good_inertia)
+            # And the world remains integrable (no NaN leaked into the model).
+            mj.mj_forward(model, sim._world._data)
+            import numpy as np
+
+            assert np.all(np.isfinite(sim._world._data.qacc))
+
     def test_set_geom_color(self, sim):
         result = sim.set_geom_properties(geom_name="box_geom", color=[0, 1, 0, 1])
         assert result["status"] == "success"
@@ -1075,3 +1105,61 @@ class TestRaycastReflectsCurrentPose:
 
         after = _extract_json_block(sim.multi_raycast(origin=[0, 0, 2], directions=dirs), 1)["rays"]
         assert after[0]["distance"] == pytest.approx(2.0, abs=1e-3)  # now hits ground
+
+
+class TestContactForcesReflectsCurrentPose:
+    """get_contact_forces must reflect the CURRENT qpos, exactly like get_contacts.
+
+    ``mj_contactForce`` reads ``data.contact[]``/``data.ncon`` (collision output)
+    and ``data.efc_force`` (constraint solve) -- all recomputed only by
+    ``mj_forward``/``mj_step``. A manual ``qpos`` write (planning/IK loop), a
+    pose set right after ``reset``/``add_robot``, or a policy thread
+    mid-``mj_step`` leaves them stale, so without a forward the method reports
+    phantom contacts with fabricated forces while returning ``status=success``.
+    ``get_contacts`` already forwards; the two contact queries must agree.
+    """
+
+    @staticmethod
+    def _box_in_forces(result):
+        for block in result["content"]:
+            if "json" in block:
+                return any("box_geom" in (c["geom1"], c["geom2"]) for c in block["json"].get("contacts", []))
+        return False
+
+    @staticmethod
+    def _lift_box(sim):
+        model, data = sim._world._model, sim._world._data
+        jid = mj.mj_name2id(model, mj.mjtObj.mjOBJ_JOINT, "box_free")
+        adr = int(model.jnt_qposadr[jid])
+        data.qpos[adr : adr + 3] = [0.0, 0.0, 3.0]  # lift the box 3m into the air
+        data.qpos[adr + 3 : adr + 7] = [1.0, 0.0, 0.0, 0.0]
+        # deliberately NO mj_forward / mj_step here
+
+    def test_get_contact_forces_reflects_pose_change_without_forward(self, sim):
+        # Settle the box on the ground -> a real box_geom<->ground contact.
+        for _ in range(500):
+            mj.mj_step(sim._world._model, sim._world._data)
+        base = sim.get_contact_forces()
+        assert base["status"] == "success"
+        assert self._box_in_forces(base)
+
+        self._lift_box(sim)
+
+        # Query FIRST (before any other call forwards). The box is 3m up with no
+        # possible contact, so a correct query no longer reports box_geom.
+        # Pre-fix reads the stale contact list + fabricated force for the box.
+        after = sim.get_contact_forces()
+        assert after["status"] == "success"
+        assert not self._box_in_forces(after)
+
+    def test_contact_queries_agree_after_pose_change(self, sim):
+        for _ in range(500):
+            mj.mj_step(sim._world._model, sim._world._data)
+        self._lift_box(sim)
+        # get_contact_forces must be queried FIRST; get_contacts forwards and
+        # would otherwise clear the staleness for the second call. After the
+        # box is lifted, neither query may still report the airborne box.
+        forces_has_box = self._box_in_forces(sim.get_contact_forces())
+        contacts_text = sim.get_contacts()["content"][0]["text"]
+        assert forces_has_box is False
+        assert "box_geom" not in contacts_text

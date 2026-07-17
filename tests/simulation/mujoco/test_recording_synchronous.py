@@ -305,6 +305,72 @@ class TestStartCamerasRecordingSynchronous:
         finally:
             sim.destroy()
 
+    def test_on_frame_after_finalize_is_noop(self):
+        """A straggler ``on_frame`` call that arrives after the recording has
+        been finalized must be a silent no-op: no render, no buffered frame,
+        no error increment, no exception.
+
+        The eval loop drives ``on_frame`` from the control thread while the
+        recorder can be stopped from another path (``finalize`` /
+        ``stop_cameras_recording``). Finalize flips ``state["running"]`` to
+        False, so the very next ``on_frame`` invocation must short-circuit
+        before touching the (now flushed) buffers. Pinned so a refactor that
+        drops the running-flag guard can't resurrect writes into a closed
+        recording.
+        """
+        sim = _make_sim_with_fake_render()
+        try:
+            result = sim.start_cameras_recording_synchronous(cameras=["cam_a"], fps=15, name="t_noop")
+            json_block = next(c["json"] for c in result["content"] if "json" in c)
+            on_frame = json_block["on_frame"]
+            finalize = json_block["finalize"]
+
+            for step in range(3):
+                on_frame(step, {}, {})
+            assert len(sim._test_render_calls) == 3
+
+            final = finalize()
+            assert final["status"] == "success", final
+
+            # Recording is stopped; a late frame must not render or mutate state.
+            on_frame(99, {}, {})
+            assert len(sim._test_render_calls) == 3, "on_frame after finalize must not render"
+        finally:
+            sim.destroy()
+
+    def test_on_frame_counts_undecodable_render_as_error(self):
+        """A render that returns *successfully* but carries no decodable image
+        must be counted as an error, not buffered as a frame.
+
+        This is distinct from the exception path: ``render`` does not raise,
+        but ``_extract_frame_ndarray`` returns ``None`` (an error-status dict,
+        a content block with no image payload, or PNG bytes that fail to
+        decode). The recorder increments ``state["errors"][cam]`` and skips
+        the frame so a silently-broken camera surfaces in the error tally
+        instead of masquerading as captured frames.
+        """
+        sim = _make_sim_with_fake_render()
+        try:
+
+            def _imageless_render(camera_name: str, width: int | None = None, height: int | None = None, **_kw):
+                # Valid result shape, but no image block -> _extract_frame_ndarray
+                # returns None without raising.
+                return {"status": "success", "content": [{"text": "no frame available"}]}
+
+            sim.render = _imageless_render  # type: ignore[assignment,method-assign]
+
+            result = sim.start_cameras_recording_synchronous(cameras=["cam_a"], fps=15, name="t_noimg")
+            on_frame = next(c["json"] for c in result["content"] if "json" in c)["on_frame"]
+
+            for step in range(5):
+                on_frame(step, {}, {})
+
+            state = sim._cams_rec_state
+            assert len(state["buffers"]["cam_a"]) == 0, "undecodable renders must not be buffered"
+            assert state["errors"]["cam_a"] == 5, "each undecodable render must increment the error tally"
+        finally:
+            sim.destroy()
+
     def test_already_recording_returns_error(self):
         """Concurrent recordings (sync vs daemon, or sync vs sync) are
         rejected. Caller must explicitly stop the active recording first.

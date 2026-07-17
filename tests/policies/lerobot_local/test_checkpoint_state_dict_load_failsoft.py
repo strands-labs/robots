@@ -74,6 +74,17 @@ class TestHubCheckpoint:
         monkeypatch.setattr("huggingface_hub.hf_hub_download", lambda *_a, **_k: str(bad))
         assert _load_checkpoint_state_dict(str(tmp_path)) is None
 
+    def test_absent_huggingface_hub_degrades_to_none(self, tmp_path, monkeypatch):
+        # No local checkpoint and huggingface_hub is not importable (the [hub]
+        # dependency was never installed): the guarded Hub import must swallow
+        # the ImportError and return None instead of crashing the load path.
+        import sys
+        import types
+
+        stub = types.ModuleType("huggingface_hub")  # bare module: no hf_hub_download
+        monkeypatch.setitem(sys.modules, "huggingface_hub", stub)
+        assert _load_checkpoint_state_dict(str(tmp_path)) is None
+
 
 class TestSafetensorsUnavailable:
     def test_missing_safetensors_returns_none(self, tmp_path, monkeypatch):

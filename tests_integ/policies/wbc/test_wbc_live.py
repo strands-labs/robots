@@ -78,7 +78,7 @@ def _load_harness():  # type: ignore[no-untyped-def]
     import importlib.util
     from pathlib import Path
 
-    path = Path(__file__).resolve().parents[3] / "examples" / "wbc_g1_torque_deploy.py"
+    path = Path(__file__).resolve().parents[3] / "examples" / "wbc" / "wbc_g1_torque_deploy.py"
     spec = importlib.util.spec_from_file_location("wbc_g1_torque_deploy", path)
     assert spec and spec.loader
     mod = importlib.util.module_from_spec(spec)
@@ -93,7 +93,7 @@ def _load_harness():  # type: ignore[no-untyped-def]
         "compute_torques on a torque-actuator G1 at control_decimation=4) with the real "
         "SONIC weights - the deploy path, not sim.run_policy's position-servo path. It is "
         "compute-heavy and needs the real checkpoint, so it is opt-in. Set WBC_GAIT_CHECK=1 "
-        "(with WBC_CHECKPOINT) to run it. The harness lives at examples/wbc_g1_torque_deploy.py."
+        "(with WBC_CHECKPOINT) to run it. The harness lives at examples/wbc/wbc_g1_torque_deploy.py."
     ),
 )
 def test_wbc_forward_walk_translates_base_without_falling() -> None:

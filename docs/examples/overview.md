@@ -16,6 +16,7 @@ hardware, no GPU, no Hugging Face credentials.
 | [`02_record_and_stream.ipynb`](https://github.com/strands-labs/robots/blob/main/examples/notebooks/02_record_and_stream.ipynb) | Record a LeRobotDataset, then stream it back with `stream_dataset()`. |
 | [`03_record_train_deploy.ipynb`](https://github.com/strands-labs/robots/blob/main/examples/notebooks/03_record_train_deploy.ipynb) | The full loop: record, train an ACT policy on CPU, export, and load it back. |
 | [`04_discover_lerobot.ipynb`](https://github.com/strands-labs/robots/blob/main/examples/notebooks/04_discover_lerobot.ipynb) | Discover the LeRobot API with `use_lerobot`: list robots, policies, teleoperators, cameras, and inspect any class. |
+| [`05_streaming_data_loop.ipynb`](https://github.com/strands-labs/robots/blob/main/examples/notebooks/05_streaming_data_loop.ipynb) | The streaming data loop: record, render, stream back, train, and load in one notebook (the optional Storage Bucket sync needs LeRobot >= 0.6.1). |
 
 ```bash
 uv pip install "strands-robots[sim-mujoco,lerobot]" jupyterlab
@@ -37,8 +38,8 @@ git clone https://github.com/strands-labs/robots
 cd robots
 uv pip install -e ".[all]"
 
-python examples/cosmos3_sim_rollout.py           # needs cosmos3-service + server on :8000
-python examples/molmoact2_so101_pickplace.py     # requires hardware
+python examples/vla/cosmos3_sim_rollout.py           # needs cosmos3-service + server on :8000
+python examples/vla/molmoact2_so101_pickplace.py     # requires hardware
                                                  # requires GPU
 ```
 

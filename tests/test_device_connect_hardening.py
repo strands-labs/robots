@@ -553,6 +553,45 @@ def test_init_device_connect_uses_secure_default():
     assert captured["allow_insecure"] is False
 
 
+def test_init_device_connect_insecure_emits_prominent_warning(caplog):
+    """Opting into insecure transport must NEVER be silent.
+
+    The entrypoint logs a prominent WARNING whenever insecure (unencrypted,
+    unauthenticated) transport is active, so an insecure deployment is always
+    visible in the logs rather than a quiet default. This pins that invariant
+    against a regression that drops the warning.
+    """
+    import logging
+    from unittest.mock import patch
+
+    from strands_robots.device_connect import init_device_connect
+
+    captured = {}
+
+    class _FakeRuntime:
+        def __init__(self, **kw):
+            captured.update(kw)
+
+        def set_heartbeat_provider(self, *_a, **_k):
+            pass
+
+        async def run(self):
+            return None
+
+    async def _go():
+        with patch("strands_robots.device_connect.DeviceRuntime", _FakeRuntime):
+            await init_device_connect(_FakeRobot(), peer_id="p1", allow_insecure=True)
+
+    with caplog.at_level(logging.WARNING, logger="strands_robots.device_connect"):
+        _run(_go())
+
+    assert captured["allow_insecure"] is True
+    insecure_warnings = [
+        r for r in caplog.records if "INSECURE mode" in r.getMessage() and r.levelno == logging.WARNING
+    ]
+    assert insecure_warnings, "insecure transport must emit a prominent WARNING (never silent)"
+
+
 def test_no_forced_insecure_setdefault_in_source():
     # The agent-side connector must NOT force insecure mode process-wide.
     import strands_robots.tools.robot_mesh as rm

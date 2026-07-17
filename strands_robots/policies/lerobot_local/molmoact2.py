@@ -120,9 +120,18 @@ def is_molmoact2(pretrained_name_or_path: str, policy_type: str | None) -> bool:
     """Return True if this checkpoint should use the MolmoAct2 wrapper path.
 
     Detection (cheap → expensive):
-      1. Explicit ``policy_type == "molmoact2"``.
-      2. ``config.json`` has ``model_type == "molmoact2"`` (transformers-native)
+      1. An explicit ``policy_type`` is authoritative and short-circuits with no
+         I/O: ``"molmoact2"`` (case-insensitive) -> True, any other declared type
+         -> False. A caller who names a lerobot-native type (e.g. ``"act"``) has
+         already told us this is not a transformers-native MolmoAct2 checkpoint.
+      2. Only in auto-detect mode (``policy_type`` is ``None`` / empty):
+         ``config.json`` has ``model_type == "molmoact2"`` (transformers-native)
          AND no lerobot ``type`` key. Reads local file or HF Hub config.json.
+
+    The config.json probe in step 2 is a Hub round-trip, so it MUST NOT run when
+    the caller already declared the type -- otherwise every explicitly-typed load
+    (the common case) pays a needless network request that stalls or fails when
+    the Hub is slow/unreachable.
 
     Args:
         pretrained_name_or_path: HF repo id or local dir.
@@ -131,8 +140,8 @@ def is_molmoact2(pretrained_name_or_path: str, policy_type: str | None) -> bool:
     Returns:
         True if the MolmoAct2 wrapper path applies.
     """
-    if policy_type and policy_type.lower() == MOLMOACT2_TYPE:
-        return True
+    if policy_type:
+        return policy_type.lower() == MOLMOACT2_TYPE
     if not pretrained_name_or_path:
         return False
 

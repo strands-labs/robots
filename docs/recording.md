@@ -308,6 +308,32 @@ recorder.save_episode()
 recorder.finalize()
 ```
 
+### Re-recording into an existing `repo_id`
+
+`DatasetRecorder.create()` builds a **fresh** dataset. If the resolved dataset
+directory already exists, LeRobot's `create()` would raise a bare
+`FileExistsError` (its `mkdir` uses `exist_ok=False`). `create()` resolves this
+up front, matching the `start_recording` facade:
+
+- `overwrite=True` wipes the existing directory and creates a fresh dataset.
+- `overwrite=False` (default) on an existing dataset (a dir containing `meta/`)
+  raises a clear `FileExistsError` naming `overwrite=True` (fresh) and
+  `resume()` (append) - not a cryptic LeRobot error, and never a silent clobber.
+- An existing **empty** directory (e.g. from `tempfile.mkdtemp()`) is cleared so
+  `create()` does not dead-end on its own existence guard.
+- A non-empty **non-dataset** directory raises `ValueError` rather than deleting
+  unrelated files.
+
+```python
+# Re-run a capture script into the same repo_id, replacing the old dataset:
+recorder = DatasetRecorder.create(
+    repo_id="user/my_dataset", fps=30, joint_names=[...], overwrite=True,
+)
+```
+
+Use `resume()` (not `create(overwrite=True)`) when you want to **append**
+episodes to the existing dataset instead of replacing it.
+
 ## Instance methods
 
 | Method | What |

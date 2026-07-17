@@ -35,7 +35,7 @@ In MuJoCo (the ``droid`` embodiment drives a Franka/DROID-class arm - use the
                    instruction="pick up the red cube", n_steps=24,
                    control_frequency=15.0)
 
-See ``examples/cosmos3_sim_rollout.py`` for a complete, runnable rollout +
+See ``examples/vla/cosmos3_sim_rollout.py`` for a complete, runnable rollout +
 recording. Available embodiments: droid, umi, av, bridge
 (see :mod:`strands_robots.policies.cosmos3.embodiments`).
 """

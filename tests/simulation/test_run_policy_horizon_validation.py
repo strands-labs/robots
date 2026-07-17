@@ -16,6 +16,7 @@ alias is asserted to behave identically to ``n_steps`` (it is normalized to
 
 from __future__ import annotations
 
+import numpy as np
 import pytest
 
 from strands_robots.simulation import create_simulation
@@ -245,6 +246,57 @@ class TestControlFrequencyGuards:
     def test_control_frequency_error_is_ascii(self, sim):
         text = _err_text(sim.run_policy("arm1", duration=1.0, control_frequency=-1.0, fast_mode=True))
         text.encode("ascii")  # raises UnicodeEncodeError if any non-ASCII leaks
+
+
+class TestControlFrequencyNumpyScalars:
+    """control_frequency accepts NumPy real scalars but still rejects junk.
+
+    control_frequency is routinely computed from a config array or an
+    observation (``fps = 1.0 / dt`` where ``dt`` is a ``np.float32``), so the
+    guard must accept any real scalar. ``isinstance(x, (int, float))`` is
+    ``False`` for every NumPy scalar except ``np.float64`` (the only one that
+    subclasses Python ``float``), so pre-fix a perfectly valid
+    ``np.float32(50.0)`` / ``np.int64(50)`` frequency was rejected with the
+    misleading "control_frequency must be > 0" error. The guard now uses
+    ``numbers.Real`` while still rejecting ``bool`` / ``np.bool_``, non-finite
+    values, and non-positive frequencies. This is shared by run_policy,
+    eval_policy and evaluate_benchmark via ``_validate_positive_frequency``.
+    """
+
+    @pytest.mark.parametrize("freq", [np.float32(30.0), np.int64(30), np.float64(30.0)])
+    def test_run_policy_accepts_numpy_scalar_frequency(self, sim, freq):
+        result = sim.run_policy("arm1", n_steps=2, control_frequency=freq, fast_mode=True)
+        assert result["status"] == "success", result
+
+    def test_eval_policy_accepts_numpy_scalar_frequency(self, sim):
+        result = sim.eval_policy(robot_name="arm1", n_episodes=1, max_steps=2, control_frequency=np.float32(30.0))
+        assert result["status"] == "success", result
+
+    def test_run_policy_realtime_path_accepts_numpy_scalar_frequency(self, sim):
+        # The default (non-fast_mode) real-time path computes
+        # ``action_sleep = 1.0 / control_frequency`` and calls
+        # ``time.sleep(action_sleep)``. A NumPy-scalar frequency left
+        # action_sleep a ``numpy.float32``, which ``time.sleep`` rejects with
+        # "'numpy.float32' object cannot be interpreted as an integer" -- so
+        # accepting the scalar at the guard is not enough; it must be coerced to
+        # a Python float. A high frequency keeps the per-step sleep negligible.
+        result = sim.run_policy("arm1", n_steps=2, control_frequency=np.float32(500.0))
+        assert result["status"] == "success", result
+
+    @pytest.mark.parametrize("bad", [np.float32(-1.0), np.int64(-5), np.float32("nan"), np.bool_(True)])
+    def test_run_policy_rejects_bad_numpy_scalar_frequency(self, sim, bad):
+        # A negative NumPy scalar, np.bool_, or non-finite value is still a
+        # caller error and must surface the structured guard, not step physics.
+        text = _err_text(sim.run_policy("arm1", n_steps=2, control_frequency=bad, fast_mode=True))
+        assert "control_frequency must be > 0" in text
+
+    @pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+    def test_run_policy_rejects_non_finite_python_float_frequency(self, sim, bad):
+        # A non-finite Python float used to slip through (nan/inf are never
+        # ``<= 0``) and feed nan/inf into the ``1 / frequency`` and
+        # ``n_steps / frequency`` arithmetic; it is now rejected up front.
+        text = _err_text(sim.run_policy("arm1", n_steps=2, control_frequency=bad, fast_mode=True))
+        assert "control_frequency must be > 0" in text
 
 
 class TestEvalPolicyCountGuards:

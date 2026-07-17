@@ -3,11 +3,18 @@
 from __future__ import annotations
 
 import importlib.util
+import math
 
 import pytest
 
 from strands_robots.simulation.newton import backend
-from strands_robots.simulation.newton.simulation import _short_joint_name
+from strands_robots.simulation.newton.simulation import (
+    _quat_rotate_inverse_wxyz,
+    _short_joint_name,
+)
+from strands_robots.simulation.predicates import (
+    _quat_rotate_inverse_wxyz as _predicates_quat_rotate_inverse_wxyz,
+)
 
 _HAS_NEWTON = importlib.util.find_spec("newton") is not None and importlib.util.find_spec("warp") is not None
 
@@ -30,6 +37,91 @@ class TestShortJointName:
 
     def test_plain_name_unchanged(self):
         assert _short_joint_name("Jaw") == "Jaw"
+
+
+def _reference_world_to_body(quat_wxyz: list[float], vec: list[float]) -> list[float]:
+    """Reference world->body rotation: ``R(q)^T @ vec`` from first principles.
+
+    Builds the rotation matrix from a normalised (w, x, y, z) quaternion and
+    applies its transpose, independent of the implementation under test.
+    """
+    w, x, y, z = quat_wxyz
+    n = math.sqrt(w * w + x * x + y * y + z * z)
+    w, x, y, z = w / n, x / n, y / n, z / n
+    # Body<-world rotation is R(q) transposed (== R(q^-1)).
+    r = [
+        [1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y)],
+        [2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x)],
+        [2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)],
+    ]
+    # transpose(R) @ vec
+    return [sum(r[k][i] * vec[k] for k in range(3)) for i in range(3)]
+
+
+class TestQuatRotateInverseWxyz:
+    """Body-frame the base angular velocity: ``R(q)^T @ vec`` for a (w,x,y,z) quat.
+
+    The Newton backend rotates the free-joint world-frame angular velocity into
+    the body frame so ``base_ang_vel`` matches the MuJoCo backend and the
+    IMU-gyro convention locomotion / WBC controllers consume. A wrong transform
+    silently corrupts the observation those controllers close the loop on, so
+    the numeric contract is pinned directly (it is otherwise unreachable without
+    a GPU + Newton install).
+    """
+
+    def test_identity_quaternion_returns_vector_unchanged(self):
+        assert _quat_rotate_inverse_wxyz([1.0, 0.0, 0.0, 0.0], [1.0, 2.0, 3.0]) == pytest.approx(
+            [1.0, 2.0, 3.0], abs=1e-12
+        )
+
+    def test_yaw_90_matches_first_principles_reference(self):
+        # +90 deg about world +Z. A world +X vector reads as body -Y.
+        q = [math.cos(math.pi / 4), 0.0, 0.0, math.sin(math.pi / 4)]
+        got = _quat_rotate_inverse_wxyz(q, [1.0, 0.0, 0.0])
+        assert got == pytest.approx(_reference_world_to_body(q, [1.0, 0.0, 0.0]), abs=1e-9)
+        assert got == pytest.approx([0.0, -1.0, 0.0], abs=1e-9)
+
+    def test_arbitrary_rotation_matches_first_principles_reference(self):
+        q = [0.5, 0.5, -0.5, 0.5]  # a valid unit quaternion (90 deg composite)
+        vec = [0.3, -1.2, 4.5]
+        assert _quat_rotate_inverse_wxyz(q, vec) == pytest.approx(_reference_world_to_body(q, vec), abs=1e-9)
+
+    def test_unnormalized_quaternion_is_normalized_internally(self):
+        # Scaling a quaternion does not change the rotation it encodes; the
+        # helper must normalise so callers can pass a raw free-joint quat.
+        q_unit = [0.5, 0.5, -0.5, 0.5]
+        q_scaled = [4.0 * c for c in q_unit]
+        vec = [1.0, -2.0, 0.5]
+        assert _quat_rotate_inverse_wxyz(q_scaled, vec) == pytest.approx(
+            _quat_rotate_inverse_wxyz(q_unit, vec), abs=1e-12
+        )
+
+    def test_zero_norm_quaternion_returns_vector_unchanged(self):
+        # A degenerate (~zero-norm) quaternion cannot define a rotation; the
+        # documented contract returns the input vector rather than dividing by ~0.
+        assert _quat_rotate_inverse_wxyz([0.0, 0.0, 0.0, 0.0], [5.0, 6.0, 7.0]) == pytest.approx(
+            [5.0, 6.0, 7.0], abs=1e-12
+        )
+        assert _quat_rotate_inverse_wxyz([1e-12, 0.0, 0.0, 0.0], [5.0, 6.0, 7.0]) == pytest.approx(
+            [5.0, 6.0, 7.0], abs=1e-12
+        )
+
+    def test_parity_with_canonical_predicates_implementation(self):
+        # The predicates module keeps an intentional numpy-free mirror of this
+        # helper (predicates stay dependency-free). Two copies can silently
+        # drift; assert bit-for-bit agreement across a spread of quats/vectors
+        # so a fix or regression in one copy cannot diverge unnoticed.
+        cases = [
+            ([1.0, 0.0, 0.0, 0.0], [1.0, 2.0, 3.0]),
+            ([math.cos(math.pi / 4), 0.0, 0.0, math.sin(math.pi / 4)], [1.0, 0.0, 0.0]),
+            ([0.5, 0.5, -0.5, 0.5], [0.3, -1.2, 4.5]),
+            ([2.0, 0.0, 0.0, 0.0], [1.0, 2.0, 3.0]),  # unnormalized
+            ([0.0, 0.0, 0.0, 0.0], [5.0, 6.0, 7.0]),  # degenerate
+        ]
+        for quat, vec in cases:
+            assert _quat_rotate_inverse_wxyz(quat, vec) == pytest.approx(
+                _predicates_quat_rotate_inverse_wxyz(quat, vec), abs=1e-9
+            )
 
 
 @pytest.mark.skipif(_HAS_NEWTON, reason="newton installed; missing-dep path not exercised")

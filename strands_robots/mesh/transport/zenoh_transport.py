@@ -5,9 +5,9 @@ This wrapper deliberately delegates to the legacy ``session.get_session()`` /
 ``session.put()`` / ``session.release_session()`` functions instead of
 reimplementing them. That keeps:
 
-1. **Zero behaviour change for existing callers.** Every test in
-   ``tests/mesh/test_mesh_session.py`` that pokes
-   ``session._SESSION`` / ``_SESSION_REFS`` keeps working - the legacy
+1. **Zero behaviour change for existing callers.** Every existing
+   caller that pokes ``session._SESSION`` / ``_SESSION_REFS`` keeps
+   working - the legacy
    module is the single source of truth for Zenoh state.
 2. **A single connect/teardown path.** Multiple :class:`ZenohTransport`
    instances in the same process all funnel into the same ref-counted

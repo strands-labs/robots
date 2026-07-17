@@ -173,6 +173,21 @@ _SIM_WIDTH = 5
 _REAL_WIDTH = 5
 # Width of the fixed prefix columns, including single-space separators.
 _FIXED_PREFIX_WIDTH = _NAME_WIDTH + 1 + _CAT_WIDTH + 1 + _JOINTS_WIDTH + 1 + _SIM_WIDTH + 1 + _REAL_WIDTH + 1
+# Preferred display order for the category groups in ``format_robot_table``.
+# It is only an ORDERING hint, not an allowlist: categories present in the
+# registry but absent here (e.g. a user-registered robot with a custom
+# category) are appended afterwards in sorted order so every robot still
+# gets a row - the table body must never under-count the footer Total.
+_CATEGORY_DISPLAY_ORDER = (
+    "arm",
+    "bimanual",
+    "hand",
+    "humanoid",
+    "expressive",
+    "mobile",
+    "mobile_manip",
+    "aerial",
+)
 
 
 def format_robot_table(max_width: int = 100) -> str:
@@ -191,7 +206,10 @@ def format_robot_table(max_width: int = 100) -> str:
 
     Returns:
         Multi-line string: a header row, a rule, one row per robot grouped
-        by category, then a totals footer.
+        by category (common categories first, then any custom categories in
+        sorted order), then a totals footer. Every registered robot gets
+        exactly one row, so the body row count always matches the footer
+        ``Total``.
     """
     desc_width = max(20, max_width - _FIXED_PREFIX_WIDTH)
 
@@ -206,9 +224,13 @@ def format_robot_table(max_width: int = 100) -> str:
     rule_width = min(max(max_width, len(header)), _FIXED_PREFIX_WIDTH + desc_width)
     lines = [header, "-" * rule_width]
 
-    for cat in ["arm", "bimanual", "hand", "humanoid", "expressive", "mobile", "mobile_manip", "aerial"]:
-        by_cat = list_robots_by_category()
-        for r in by_cat.get(cat, []):
+    by_cat = list_robots_by_category()
+    # Preferred groups first, then any remaining categories in sorted order
+    # so no robot is silently dropped from the body (see _CATEGORY_DISPLAY_ORDER).
+    ordered_cats = [c for c in _CATEGORY_DISPLAY_ORDER if c in by_cat]
+    ordered_cats += sorted(c for c in by_cat if c not in _CATEGORY_DISPLAY_ORDER)
+    for cat in ordered_cats:
+        for r in by_cat[cat]:
             sim = "yes" if r["has_sim"] else ""
             real = "yes" if r["has_real"] else ""
             joints = str(r["joints"]) if r["joints"] else "?"

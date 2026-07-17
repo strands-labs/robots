@@ -20,8 +20,7 @@ Two recommended ways to run the sidecar:
    This is the recommended dev-loop setup; the docker path is for
    pinned reproducible deployments.
 
-The wire protocol is documented in :mod:`strands_robots.policies.moveit2.client`
-and pinned by tests under ``tests/policies/moveit2/test_policy.py``.
+The wire protocol is documented in :mod:`strands_robots.policies.moveit2.client`.
 """
 
 # Note: importing the server module here would force-import rclpy /

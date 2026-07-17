@@ -1152,6 +1152,51 @@ class TestSpecInstructionFallback:
         warnings = [r for r in caplog.records if "instruction is empty" in r.getMessage()]
         assert warnings, "expected a warning about empty instruction"
 
+    def test_degrades_when_spec_instruction_property_raises(self, caplog):
+        """A spec whose ``instruction`` property *raises* (a custom
+        ``BenchmarkProtocol`` built against an older API, or one that computes
+        its instruction lazily and hits an error) must not crash the eval.
+        ``_evaluate_with_spec`` swallows the lookup error, degrades to the
+        empty instruction, and still emits the empty-instruction warning so
+        the operator knows a language-conditioned policy is running blind. Pin
+        so a future refactor does not drop the defensive fallback and turn a
+        broken property into an uncaught crash mid-benchmark."""
+        import logging as _logging
+
+        captured: list[str] = []
+
+        class _LangPolicy(MockPolicy):
+            async def get_actions(self, observation_dict, instruction, **kwargs):
+                captured.append(instruction)
+                return [{}]
+
+        class _SpecWithRaisingInstruction(_CountingBenchmark):
+            @property
+            def instruction(self) -> str:
+                raise RuntimeError("instruction backend not wired up")
+
+        sim = FakeSim()
+        policy = _LangPolicy()
+        policy.set_robot_state_keys(sim.robot_joint_names("fake_robot"))
+        with caplog.at_level(_logging.DEBUG, logger="strands_robots.simulation.policy_runner"):
+            result = PolicyRunner(sim).evaluate(
+                "fake_robot", policy, spec=_SpecWithRaisingInstruction(), n_episodes=1, seed=42
+            )
+
+        # Eval completed instead of crashing on the raising property.
+        assert result["status"] == "success", f"eval should survive a raising spec.instruction; got {result}"
+        # The policy ran with the degraded empty instruction, not a partial value.
+        assert captured, "expected at least one get_actions call"
+        assert all(c == "" for c in captured), f"expected empty instruction, got {captured!r}"
+        # The lookup failure is surfaced at DEBUG, not silently swallowed.
+        assert any("spec.instruction lookup raised" in r.getMessage() for r in caplog.records), (
+            "expected a DEBUG log noting the spec.instruction lookup raised"
+        )
+        # The operator still gets the empty-instruction WARNING after degrading.
+        assert any("instruction is empty" in r.getMessage() for r in caplog.records), (
+            "expected the empty-instruction warning after degrading"
+        )
+
 
 class TestOnFrameHookForSpec:
     """#191: ``policy_runner._evaluate_with_spec`` invokes ``on_frame``

@@ -263,6 +263,145 @@ class TestIsaacSimulationConstruction:
         assert result["status"] == "error"
         assert result["content"] and "text" in result["content"][0]
 
+    def test_create_world_signature_parity_with_base(self):
+        # The base SimEngine.create_world abstractmethod declares
+        # ``terrain`` / ``difficulty`` (the terrain-curriculum contract). Every
+        # backend override must accept them so a caller / the tool router can
+        # pass them uniformly; a narrower override raises a bare TypeError on a
+        # documented parameter instead of the contract's actionable error.
+        import inspect
+
+        from strands_robots.simulation.base import SimEngine
+        from strands_robots.simulation.isaac.simulation import IsaacSimulation
+
+        base = set(inspect.signature(SimEngine.create_world).parameters)
+        override = set(inspect.signature(IsaacSimulation.create_world).parameters)
+        assert {"terrain", "difficulty"} <= override, f"Isaac create_world drops base params: missing {base - override}"
+
+    def test_create_world_terrain_rejected_with_actionable_error(self):
+        # Base contract (SimEngine.create_world docstring): a backend without
+        # heightfield support rejects a non-None ``terrain`` with an actionable
+        # error - NOT a bare TypeError, NOT a silent ignore. The rejection is
+        # exercised before Isaac Sim boots, so it holds on any host.
+        from strands_robots.simulation.isaac.simulation import IsaacSimulation
+
+        sim = IsaacSimulation(num_envs=1, headless=True)
+        result = sim.create_world(terrain="rough")
+        assert result["status"] == "error"
+        text = result["content"][0]["text"].lower()
+        assert "terrain" in text and "mujoco" in text, text
+
+    def test_create_world_difficulty_accepted_for_signature_parity(self):
+        # ``difficulty`` is accepted (signature parity with the base contract);
+        # passing it must not raise TypeError. A default ``difficulty=1.0`` is a
+        # no-op that falls through to the world build (here the structured
+        # Isaac-Sim-absent error on a host without Isaac Sim), not a crash.
+        from strands_robots.simulation.isaac.simulation import IsaacSimulation
+
+        sim = IsaacSimulation(num_envs=1, headless=True)
+        result = sim.create_world(difficulty=1.0)
+        assert result["status"] == "error"  # Isaac Sim absent -> structured error
+        assert "difficulty" not in result["content"][0]["text"].lower()
+
+    def test_create_world_difficulty_without_terrain_rejected(self):
+        # Base create_world contract: a non-default ``difficulty`` with no
+        # ``terrain`` is rejected with an actionable error rather than silently
+        # having no effect. Isaac has no heightfield terrain for difficulty to
+        # scale, so any != 1.0 value is doubly inert here; the reject fires
+        # before Isaac Sim boots, so it holds on any host (and takes precedence
+        # over the Isaac-Sim-absent error). Was a status=success / silent no-op
+        # on a host with Isaac Sim before this contract landed.
+        from strands_robots.simulation.isaac.simulation import IsaacSimulation
+
+        sim = IsaacSimulation(num_envs=1, headless=True)
+        result = sim.create_world(difficulty=2.0)
+        assert result["status"] == "error"
+        text = result["content"][0]["text"].lower()
+        assert "difficulty" in text and "mujoco" in text, text
+
+    def test_add_object_signature_parity_with_base(self):
+        # The base SimEngine.add_object declares ``mesh_path`` / ``material``
+        # (the "reject a non-None material loudly rather than silently ignore
+        # it" contract). The Isaac override must accept them so the tool
+        # router / a caller can pass them uniformly instead of hitting a bare
+        # TypeError or, worse, a silent **kwargs swallow.
+        import inspect
+
+        from strands_robots.simulation.base import SimEngine
+        from strands_robots.simulation.isaac.simulation import IsaacSimulation
+
+        base = set(inspect.signature(SimEngine.add_object).parameters)
+        override = set(inspect.signature(IsaacSimulation.add_object).parameters)
+        assert {"mesh_path", "material"} <= override, f"Isaac add_object drops base params: missing {base - override}"
+
+    def test_add_object_material_rejected_with_actionable_error(self):
+        # Base contract (SimEngine.add_object docstring): a backend that does
+        # not support ``material`` rejects a non-None value loudly rather than
+        # silently ignoring it. The Isaac add_object only sets a flat color, so
+        # a material spec is rejected with an actionable error before the stage
+        # boots (holds on any host, Isaac Sim present or not).
+        from strands_robots.simulation.isaac.simulation import IsaacSimulation
+
+        sim = IsaacSimulation(num_envs=1, headless=True)
+        result = sim.add_object("block", material={"albedo": [0.2, 0.2, 0.2]})
+        assert result["status"] == "error"
+        text = result["content"][0]["text"].lower()
+        assert "material" in text and "mujoco" in text, text
+
+    def test_add_object_mesh_path_rejected_with_actionable_error(self):
+        # The Isaac add_object supports only primitive shapes; a custom
+        # ``mesh_path`` is rejected with an actionable error rather than being
+        # silently dropped into **kwargs.
+        from strands_robots.simulation.isaac.simulation import IsaacSimulation
+
+        sim = IsaacSimulation(num_envs=1, headless=True)
+        result = sim.add_object("part", mesh_path="/tmp/widget.obj")
+        assert result["status"] == "error"
+        text = result["content"][0]["text"].lower()
+        assert "mesh" in text and "mujoco" in text, text
+
+    def test_add_robot_signature_parity_with_base(self):
+        # The base SimEngine.add_robot declares ``keyframe`` (spawn at a
+        # canonical <keyframe> pose). Every backend override must accept it
+        # so a caller / the tool router can pass it uniformly; a narrower
+        # override raises a bare TypeError on a documented parameter instead
+        # of the contract's actionable error (cf. create_world terrain and
+        # add_object material/mesh_path parity).
+        import inspect
+
+        from strands_robots.simulation.base import SimEngine
+        from strands_robots.simulation.isaac.simulation import IsaacSimulation
+
+        base = set(inspect.signature(SimEngine.add_robot).parameters)
+        override = set(inspect.signature(IsaacSimulation.add_robot).parameters)
+        assert {"keyframe"} <= override, f"Isaac add_robot drops base params: missing {base - override}"
+
+    def test_add_robot_keyframe_rejected_with_actionable_error(self):
+        # Base contract (SimEngine.add_robot docstring): an unknown/unsupported
+        # keyframe is a hard error that never silently falls back to zeros. The
+        # Isaac backend does not parse the MuJoCo <keyframe> block, so a non-None
+        # keyframe is rejected with an actionable error - NOT a bare TypeError,
+        # NOT a silent zero-pose spawn. The rejection fires before Isaac Sim
+        # boots, so it holds on any host.
+        from strands_robots.simulation.isaac.simulation import IsaacSimulation
+
+        sim = IsaacSimulation(num_envs=1, headless=True)
+        result = sim.add_robot("panda", keyframe="home")
+        assert result["status"] == "error"
+        text = result["content"][0]["text"].lower()
+        assert "keyframe" in text and "mujoco" in text, text
+
+    def test_add_robot_keyframe_none_not_rejected(self):
+        # keyframe=None (the default) must NOT hit the reject path - a plain
+        # add_robot call still degrades to the structured Isaac-Sim-absent /
+        # no-world error rather than the keyframe rejection.
+        from strands_robots.simulation.isaac.simulation import IsaacSimulation
+
+        sim = IsaacSimulation(num_envs=1, headless=True)
+        result = sim.add_robot("panda")
+        assert result["status"] == "error"
+        assert "keyframe" not in result["content"][0]["text"].lower()
+
 
 class TestProceduralBuilders:
     def test_list_procedural_robots(self):

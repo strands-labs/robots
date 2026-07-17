@@ -5,8 +5,8 @@ strands_robots abstraction, not bypass it. Any ``from lerobot`` or
 ``import lerobot`` at the top-level of an example file is a documentation
 failure: it teaches users to skip the SDK and wire lerobot manually.
 
-Internal helper directories (like examples/lerobot/) are excluded - only
-top-level example scripts are checked.
+Examples now live in topic subfolders (vla/, wbc/, training/, ...), so this
+walks the tree recursively; every example script is checked wherever it lives.
 """
 
 from __future__ import annotations
@@ -25,10 +25,10 @@ _LEROBOT_IMPORT_RE = re.compile(r"^\s*(from\s+lerobot|import\s+lerobot)", re.MUL
 
 
 def _example_scripts() -> list[Path]:
-    """Collect top-level .py files in examples/ (not subdirectories)."""
+    """Collect .py files anywhere under examples/ (recursively)."""
     if not _EXAMPLES_DIR.is_dir():
         return []
-    return sorted(_EXAMPLES_DIR.glob("*.py"))
+    return sorted(_EXAMPLES_DIR.rglob("*.py"))
 
 
 @pytest.mark.parametrize(
