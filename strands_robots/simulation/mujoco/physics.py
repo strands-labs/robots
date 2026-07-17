@@ -30,6 +30,116 @@ from strands_robots.simulation.mujoco.backend import (
 logger = logging.getLogger(__name__)
 
 
+def _coerce_finite_vector(
+    values: Any,
+    name: str,
+    method: str,
+    *,
+    min_value: float | None = None,
+    strict_min: bool = False,
+) -> tuple[list[float] | None, dict[str, Any] | None]:
+    """Coerce a numeric vector to ``float`` and validate every element.
+
+    Each element must be a real number (Python or NumPy scalar) and finite --
+    ``nan`` / ``inf`` are rejected because they slip silently into the MuJoCo
+    model buffers and corrupt the solver while the tool still reports success.
+    An optional lower bound enforces physics invariants (non-negative friction,
+    positive geom extent).
+
+    Args:
+        values: The input sequence (list / tuple / NumPy array).
+        name: Parameter name, used in error text.
+        method: Calling method name, used in error text.
+        min_value: If set, every element must be ``>= min_value`` (or ``>`` when
+            ``strict_min`` is True).
+        strict_min: Use a strict ``>`` comparison against ``min_value``.
+
+    Returns:
+        ``(floats, None)`` on success, or ``(None, error_dict)`` on the first
+        invalid element -- matching the structured-error tool contract so the
+        caller never raises past dispatch.
+    """
+    try:
+        seq = list(values)
+    except TypeError:
+        return None, {
+            "status": "error",
+            "content": [{"text": f"{method}: '{name}' must be a sequence of numbers, got {values!r}"}],
+        }
+    out: list[float] = []
+    for elem in seq:
+        try:
+            f = float(elem)
+        except (TypeError, ValueError):
+            return None, {
+                "status": "error",
+                "content": [{"text": f"{method}: '{name}' elements must be numbers, got {values!r}"}],
+            }
+        if not math.isfinite(f):
+            return None, {
+                "status": "error",
+                "content": [{"text": f"{method}: '{name}' must contain finite numbers (no nan/inf), got {values!r}"}],
+            }
+        if min_value is not None and ((f <= min_value) if strict_min else (f < min_value)):
+            rel = ">" if strict_min else ">="
+            return None, {
+                "status": "error",
+                "content": [{"text": f"{method}: '{name}' values must be {rel} {min_value}, got {values!r}"}],
+            }
+        out.append(f)
+    return out, None
+
+
+def _coerce_finite_joint_map(
+    values: dict[str, Any],
+    name: str,
+    method: str,
+) -> tuple[dict[str, float], dict[str, Any] | None]:
+    """Coerce a ``{joint_name: value}`` map to finite floats before any write.
+
+    Each value must be a real number (Python or NumPy scalar) and finite. A
+    non-numeric value would otherwise raise ``ValueError`` from ``float(value)``
+    past the structured-error dispatch contract, and ``nan`` / ``inf`` would
+    slip straight into ``data.qpos`` / ``data.qvel`` -- ``mj_forward`` then
+    propagates the ``nan`` across the whole kinematic state (or an ``inf``
+    velocity blows up the integrator) while the tool still reports
+    ``status="success"``. Validating up front keeps the write atomic: an invalid
+    value leaves the model untouched.
+
+    Args:
+        values: The ``{joint_name: value}`` mapping to validate.
+        name: Parameter name (``"positions"`` / ``"velocities"``), used in error text.
+        method: Calling method name, used in error text.
+
+    Returns:
+        ``(coerced, None)`` on success, or ``({}, error_dict)`` on the first
+        invalid value -- matching the structured-error tool contract so the
+        caller never raises past dispatch.
+    """
+    out: dict[str, float] = {}
+    for jnt_name, value in values.items():
+        try:
+            f = float(value)
+        except (TypeError, ValueError):
+            return {}, {
+                "status": "error",
+                "content": [
+                    {"text": f"{method}: '{name}' value for joint '{jnt_name}' must be a number, got {value!r}"}
+                ],
+            }
+        if not math.isfinite(f):
+            return {}, {
+                "status": "error",
+                "content": [
+                    {
+                        "text": f"{method}: '{name}' value for joint '{jnt_name}' must be finite (no nan/inf), got {value!r}"
+                    }
+                ],
+            }
+        out[jnt_name] = f
+    return out, None
+
+
 def _full_mass_matrix(mj: Any, model: Any, data: Any) -> np.ndarray:
     """Return the dense ``nv x nv`` mass matrix M(q), robust to MuJoCo drift.
 
@@ -156,6 +266,7 @@ class PhysicsMixin:
             self, action_name: str, robot_name: str | None = None
         ) -> dict[str, Any] | None: ...
         def _require_world(self) -> dict[str, Any] | None: ...
+        def _unknown_robot_msg(self, requested: str) -> str: ...
 
     # State Checkpointing
 
@@ -317,7 +428,7 @@ class PhysicsMixin:
 
         body_id = self._resolve_mj_name(mj.mjtObj.mjOBJ_BODY, body_name)
         if body_id < 0:
-            return {"status": "error", "content": [{"text": f"Body '{body_name}' not found."}]}
+            return {"status": "error", "content": [{"text": self._unknown_mj_entity_msg("Body", body_name)}]}
 
         f = np.array(force or [0, 0, 0], dtype=np.float64)
         t = np.array(torque or [0, 0, 0], dtype=np.float64)
@@ -381,6 +492,48 @@ class PhysicsMixin:
                     return int(mid)
         return -1
 
+    def _unknown_mj_entity_msg(self, kind: str, requested: str) -> str:
+        """Actionable "<kind> not found" message for the physics/introspection
+        lookups (``get_body_state`` / ``get_jacobian`` / ``set_body_properties`` /
+        ``set_geom_properties`` / ``get_sensor_data`` ...): name the entity, offer
+        a difflib close-match over the model's *named* entities, list the
+        available names (capped), and - for bodies - point at the ``list_bodies``
+        discovery action. Consistent with ``_unknown_object_msg`` /
+        ``_unknown_camera_msg`` / ``_unknown_robot_msg`` (#1299/#1303/#1306)
+        rather than a dead-end "<Kind> 'X' not found." that forces an agent
+        driving the API blind into guesswork on every typo.
+
+        The ``"<Kind> 'X' not found."`` prefix is preserved so the consistent
+        error shape (T15 in ``test_agenttool_contract``) is unaffected.
+
+        ``kind`` is one of ``"Body" | "Site" | "Geom" | "Sensor"``.
+        """
+        import mujoco as _mj
+
+        model = self._world._model if self._world is not None else None
+        msg = f"{kind} '{requested}' not found."
+        if model is None:
+            return msg
+        obj_type, count = {
+            "Body": (_mj.mjtObj.mjOBJ_BODY, model.nbody),
+            "Site": (_mj.mjtObj.mjOBJ_SITE, model.nsite),
+            "Geom": (_mj.mjtObj.mjOBJ_GEOM, model.ngeom),
+            "Sensor": (_mj.mjtObj.mjOBJ_SENSOR, model.nsensor),
+        }[kind]
+        known = [nm for i in range(int(count)) if (nm := _mj.mj_id2name(model, obj_type, i)) and nm != "world"]
+        if known:
+            import difflib
+
+            matches = difflib.get_close_matches(requested, known, n=3, cutoff=0.4)
+            if matches:
+                msg += " Did you mean: " + ", ".join(matches) + "?"
+            shown = known if len(known) <= 30 else known[:30] + ["..."]
+            plural = {"Body": "bodies", "Site": "sites", "Geom": "geoms", "Sensor": "sensors"}[kind]
+            msg += f" Available {plural}: {shown}."
+            if kind == "Body":
+                msg += " Use action='list_bodies' to see all."
+        return msg
+
     def raycast(
         self,
         origin: list[float],
@@ -422,11 +575,24 @@ class PhysicsMixin:
                 "content": [{"text": "raycast: 'origin' and 'direction' must be lists of 3 numbers"}],
             }
 
+        # Every element must be a finite real number. Without this, a
+        # non-numeric element (e.g. ["a", ...]) raises ValueError inside
+        # np.array(dtype=float64) -- escaping the structured-error contract --
+        # and nan/inf slip silently into mj_ray (nan direction survives the
+        # zero-length guard because ``nan < 1e-10`` is False, then poisons the
+        # normalized vector fed to the C solver).
+        origin_f, err = _coerce_finite_vector(origin, "origin", "raycast")
+        if err is not None:
+            return err
+        direction_f, err = _coerce_finite_vector(direction, "direction", "raycast")
+        if err is not None:
+            return err
+
         mj = _ensure_mujoco()
         model, data = self._world._model, self._world._data
 
-        pnt = np.array(origin, dtype=np.float64)
-        vec = np.array(direction, dtype=np.float64)
+        pnt = np.array(origin_f, dtype=np.float64)
+        vec = np.array(direction_f, dtype=np.float64)
         # Normalize direction
         norm = np.linalg.norm(vec)
         if norm < 1e-10:
@@ -515,19 +681,19 @@ class PhysicsMixin:
             if body_name:
                 obj_id = self._resolve_mj_name(mj.mjtObj.mjOBJ_BODY, body_name)
                 if obj_id < 0:
-                    return {"status": "error", "content": [{"text": f"Body '{body_name}' not found."}]}
+                    return {"status": "error", "content": [{"text": self._unknown_mj_entity_msg("Body", body_name)}]}
                 mj.mj_jacBody(model, data, jacp, jacr, obj_id)
                 label = f"body '{body_name}'"
             elif site_name:
                 obj_id = self._resolve_mj_name(mj.mjtObj.mjOBJ_SITE, site_name)
                 if obj_id < 0:
-                    return {"status": "error", "content": [{"text": f"Site '{site_name}' not found."}]}
+                    return {"status": "error", "content": [{"text": self._unknown_mj_entity_msg("Site", site_name)}]}
                 mj.mj_jacSite(model, data, jacp, jacr, obj_id)
                 label = f"site '{site_name}'"
             elif geom_name:
                 obj_id = self._resolve_mj_name(mj.mjtObj.mjOBJ_GEOM, geom_name)
                 if obj_id < 0:
-                    return {"status": "error", "content": [{"text": f"Geom '{geom_name}' not found."}]}
+                    return {"status": "error", "content": [{"text": self._unknown_mj_entity_msg("Geom", geom_name)}]}
                 mj.mj_jacGeom(model, data, jacp, jacr, obj_id)
                 label = f"geom '{geom_name}'"
             else:
@@ -700,7 +866,7 @@ class PhysicsMixin:
 
         body_id = self._resolve_mj_name(mj.mjtObj.mjOBJ_BODY, body_name)
         if body_id < 0:
-            return {"status": "error", "content": [{"text": f"Body '{body_name}' not found."}]}
+            return {"status": "error", "content": [{"text": self._unknown_mj_entity_msg("Body", body_name)}]}
 
         with self._lock:
             # Reflect the CURRENT qpos/qvel. This reads data.xpos/xquat/xmat/xipos
@@ -765,6 +931,12 @@ class PhysicsMixin:
         * list/tuple: [v0, v1, ...] - ordered positional. Must match a single robot's
           joint count (when ``robot_name`` is given, that robot's joints; otherwise the
           world must contain exactly one robot, or the call errors).
+
+        Every value must be a finite real number (Python or NumPy scalar). A
+        ``nan`` / ``inf`` or a non-numeric value returns a structured
+        ``status="error"`` and leaves ``qpos`` untouched, rather than corrupting
+        the kinematic state (``mj_forward`` propagates a ``nan`` everywhere) or
+        raising past the tool-dispatch contract.
         """
         if self._world is None or self._world._model is None or self._world._data is None:
             return {"status": "error", "content": [{"text": _NO_WORLD_MSG}]}
@@ -788,7 +960,7 @@ class PhysicsMixin:
             if robot_name is not None:
                 robots = [r for r in robots if r.name == robot_name]
                 if not robots:
-                    return {"status": "error", "content": [{"text": f"Robot '{robot_name}' not found."}]}
+                    return {"status": "error", "content": [{"text": self._unknown_robot_msg(robot_name)}]}
             if len(robots) == 0:
                 return {
                     "status": "error",
@@ -838,6 +1010,14 @@ class PhysicsMixin:
                 ],
             }
 
+        # Validate every value is a finite number before any qpos write. Without
+        # this a non-numeric entry raises ValueError past the structured-error
+        # contract, and a nan/inf lands in data.qpos where mj_forward propagates
+        # it across the whole kinematic state while the tool still reports success.
+        positions, err = _coerce_finite_joint_map(positions, "positions", "set_joint_positions")
+        if err:
+            return err
+
         set_count = 0
         with self._lock:
             for jnt_name, value in positions.items():
@@ -869,6 +1049,11 @@ class PhysicsMixin:
 
         Writes to qvel. Useful for initializing dynamics. Accepts dict or list
         (see set_joint_positions for list semantics).
+
+        Every value must be a finite real number (Python or NumPy scalar). A
+        ``nan`` / ``inf`` or a non-numeric value returns a structured
+        ``status="error"`` and leaves ``qvel`` untouched, rather than blowing up
+        the integrator on the next step or raising past the tool-dispatch contract.
         """
         if self._world is None or self._world._model is None or self._world._data is None:
             return {"status": "error", "content": [{"text": _NO_WORLD_MSG}]}
@@ -890,7 +1075,7 @@ class PhysicsMixin:
             if robot_name is not None:
                 robots = [r for r in robots if r.name == robot_name]
                 if not robots:
-                    return {"status": "error", "content": [{"text": f"Robot '{robot_name}' not found."}]}
+                    return {"status": "error", "content": [{"text": self._unknown_robot_msg(robot_name)}]}
             if len(robots) == 0:
                 return {
                     "status": "error",
@@ -936,6 +1121,13 @@ class PhysicsMixin:
                     }
                 ],
             }
+
+        # Validate every value is a finite number before any qvel write (see
+        # set_joint_positions): a nan/inf velocity blows up the integrator on the
+        # next step and a non-numeric entry escapes the structured-error contract.
+        velocities, err = _coerce_finite_joint_map(velocities, "velocities", "set_joint_velocities")
+        if err:
+            return err
 
         set_count = 0
         with self._lock:
@@ -1011,7 +1203,7 @@ class PhysicsMixin:
             }
 
         if sensor_name and sensor_name not in sensors:
-            return {"status": "error", "content": [{"text": f"Sensor '{sensor_name}' not found."}]}
+            return {"status": "error", "content": [{"text": self._unknown_mj_entity_msg("Sensor", sensor_name)}]}
 
         lines = [f"Sensors ({len(sensors)}/{model.nsensor}):"]
         for name, info in sensors.items():
@@ -1040,12 +1232,12 @@ class PhysicsMixin:
 
         Args:
             body_name: Name of the body to modify.
-            mass: New absolute mass (kg); must be ``> 0``. When set, the body's
+            mass: New absolute mass (kg); must be a finite number ``> 0``. When set, the body's
                 inertia is scaled by ``mass / old_mass`` to preserve consistency.
 
         Returns:
             A tool-result dict; ``status="error"`` if the world is missing, a
-            policy is running, ``mass`` is not a positive number, or the body is
+            policy is running, ``mass`` is not a finite positive number, or the body is
             not found, otherwise ``status="success"`` summarizing the change.
         """
         if self._world is None or self._world._model is None or self._world._data is None:
@@ -1062,17 +1254,17 @@ class PhysicsMixin:
                     "status": "error",
                     "content": [{"text": f"set_body_properties: 'mass' must be a positive number, got {mass!r}"}],
                 }
-            if mass <= 0:
+            if not math.isfinite(mass) or mass <= 0:
                 return {
                     "status": "error",
-                    "content": [{"text": f"set_body_properties: 'mass' must be > 0, got {mass}"}],
+                    "content": [{"text": f"set_body_properties: 'mass' must be a finite number > 0, got {mass}"}],
                 }
 
         mj = _ensure_mujoco()
         model = self._world._model
         body_id = self._resolve_mj_name(mj.mjtObj.mjOBJ_BODY, body_name)
         if body_id < 0:
-            return {"status": "error", "content": [{"text": f"Body '{body_name}' not found."}]}
+            return {"status": "error", "content": [{"text": self._unknown_mj_entity_msg("Body", body_name)}]}
 
         changes = []
         with self._lock:
@@ -1115,6 +1307,13 @@ class PhysicsMixin:
         mid-phase) are recomputed so a grown geom collides correctly instead of
         letting other bodies pass through it. Mesh/plane/height-field geoms take
         their extent from asset data, so a ``size`` write is inert for them.
+
+        All numeric inputs are validated before any model write: ``color``,
+        ``friction`` and ``size`` must contain only finite numbers (``nan`` /
+        ``inf`` are rejected), ``friction`` coefficients must be ``>= 0`` and
+        ``size`` half-extents must be ``> 0``. An invalid value returns a
+        structured ``status="error"`` result and leaves the model untouched,
+        rather than silently corrupting the solver or broadphase bounds.
         """
         if self._world is None or self._world._model is None or self._world._data is None:
             return {"status": "error", "content": [{"text": _NO_WORLD_MSG}]}
@@ -1132,7 +1331,29 @@ class PhysicsMixin:
             if (gid is None or gid < 0) and not geom_name.endswith("_geom"):
                 gid = self._resolve_mj_name(mj.mjtObj.mjOBJ_GEOM, f"{geom_name}_geom")
         if gid is None or gid < 0 or gid >= model.ngeom:
-            return {"status": "error", "content": [{"text": f"Geom '{geom_name or geom_id}' not found."}]}
+            return {
+                "status": "error",
+                "content": [{"text": self._unknown_mj_entity_msg("Geom", str(geom_name or geom_id))}],
+            }
+
+        # Validate numeric inputs before any model write. Without this a nan/inf
+        # (or negative) value lands directly in geom_rgba / geom_friction /
+        # geom_size and silently corrupts rendering, the contact solver, or the
+        # broadphase bounds (geom_rbound becomes inf) while the tool still
+        # reports success. Friction coefficients are non-negative and a geom's
+        # size (half-extent) must be strictly positive.
+        if color is not None:
+            color, err = _coerce_finite_vector(color, "color", "set_geom_properties")
+            if err:
+                return err
+        if friction is not None:
+            friction, err = _coerce_finite_vector(friction, "friction", "set_geom_properties", min_value=0.0)
+            if err:
+                return err
+        if size is not None:
+            size, err = _coerce_finite_vector(size, "size", "set_geom_properties", min_value=0.0, strict_min=True)
+            if err:
+                return err
 
         label = geom_name or f"geom_{gid}"
         changes = []
@@ -1168,8 +1389,17 @@ class PhysicsMixin:
     def get_contact_forces(self) -> dict[str, Any]:
         """Get detailed contact forces for all active contacts.
 
-        Uses mj_contactForce for each active contact pair.
-        Returns normal and friction forces.
+        Uses ``mj_contactForce`` for each active contact pair; returns
+        normal and friction forces.
+
+        Runs ``mj_forward`` first (under the sim lock) so the contact list
+        AND the constraint forces reflect the current ``qpos``/``qvel`` --
+        exactly like :meth:`get_contacts`. Without it, a manual ``qpos``
+        write (planning/IK loop), a pose set immediately after ``reset`` /
+        ``add_robot``, or a policy thread mid-``mj_step`` leaves
+        ``data.ncon`` / ``data.contact[]`` / ``data.efc_force`` stale, and
+        this method would silently report phantom contacts with fabricated
+        forces while still returning ``status=success``.
         """
         if self._world is None or self._world._model is None or self._world._data is None:
             return {"status": "error", "content": [{"text": _NO_WORLD_MSG}]}
@@ -1179,6 +1409,10 @@ class PhysicsMixin:
 
         contacts = []
         with self._lock:
+            # Refresh contacts + constraint forces to the current qpos/qvel
+            # (mirrors get_contacts). mj_contactForce reads data.efc_force,
+            # which only the forward's constraint solve populates.
+            mj.mj_forward(model, data)
             for i in range(data.ncon):
                 c = data.contact[i]
                 g1 = mj.mj_id2name(model, mj.mjtObj.mjOBJ_GEOM, c.geom1) or f"geom_{c.geom1}"
@@ -1246,7 +1480,13 @@ class PhysicsMixin:
         except TypeError:
             return {"status": "error", "content": [{"text": "multi_raycast: 'origin' must be a list of 3 numbers"}]}
 
-        pnt = np.array(origin, dtype=np.float64)
+        # See raycast: reject non-numeric / nan / inf origin before np.array so
+        # a bad element cannot raise past the tool contract or poison mj_ray.
+        origin_f, err = _coerce_finite_vector(origin, "origin", "multi_raycast")
+        if err is not None:
+            return err
+
+        pnt = np.array(origin_f, dtype=np.float64)
         results: list[dict[str, Any]] = []
 
         # Refresh geom world poses once, then serialize every mj_ray against a
@@ -1274,7 +1514,11 @@ class PhysicsMixin:
                         }
                     )
                     continue
-                vec = np.array(d, dtype=np.float64)
+                d_floats, d_err = _coerce_finite_vector(d, "direction", f"ray[{idx}]")
+                if d_err is not None:
+                    results.append({"distance": None, "geom_id": None, "error": d_err["content"][0]["text"]})
+                    continue
+                vec = np.array(d_floats, dtype=np.float64)
                 norm = np.linalg.norm(vec)
                 if norm < 1e-10:
                     results.append({"distance": None, "geom_id": None, "error": f"ray[{idx}]: zero-length direction"})
@@ -1324,7 +1568,7 @@ class PhysicsMixin:
             if body_name is not None:
                 bid = mj.mj_name2id(model, mj.mjtObj.mjOBJ_BODY, body_name)
                 if bid < 0:
-                    return {"status": "error", "content": [{"text": f"Body '{body_name}' not found."}]}
+                    return {"status": "error", "content": [{"text": self._unknown_mj_entity_msg("Body", body_name)}]}
                 body_payload = {
                     "position": data.xpos[bid].tolist(),
                     "quaternion": data.xquat[bid].tolist(),
@@ -1378,6 +1622,65 @@ class PhysicsMixin:
                 {"json": {"total_mass": total, "bodies": bodies}},
             ],
         }
+
+    def _ground_height_at(self, x: float, y: float) -> float:
+        """Terrain surface height (world z) beneath world ``(x, y)``.
+
+        Samples a ``create_world(terrain=...)`` MuJoCo ``<hfield>`` so a
+        height-based locomotion predicate measures a base's clearance above the
+        *local* terrain rather than an absolute world z. Returns ``0.0`` when no
+        heightfield is present (a flat ground plane) and the hfield's base level
+        for a point outside the terrain patch. Bilinearly interpolates the grid.
+        The terrain ground geom is static (world-aligned, welded to the
+        worldbody), so its pose and heightfield are constant after compile.
+        """
+        world = self._world
+        if world is None or world._model is None or world._data is None:
+            return 0.0
+        model, data = world._model, world._data
+        if model.nhfield == 0:
+            return 0.0
+        mj = _ensure_mujoco()
+        hgeom = -1
+        for g in range(model.ngeom):
+            if model.geom_type[g] == mj.mjtGeom.mjGEOM_HFIELD:
+                hgeom = g
+                break
+        if hgeom < 0:
+            return 0.0
+        hid = int(model.geom_dataid[hgeom])
+        if hid < 0:
+            return 0.0
+        gx, gy, gz = (float(v) for v in data.geom_xpos[hgeom])
+        rx, ry, elev = (float(v) for v in model.hfield_size[hid][:3])
+        nrow = int(model.hfield_nrow[hid])
+        ncol = int(model.hfield_ncol[hid])
+        if nrow < 2 or ncol < 2 or rx <= 0.0 or ry <= 0.0:
+            return gz
+        adr = int(model.hfield_adr[hid])
+        grid = np.asarray(model.hfield_data[adr : adr + nrow * ncol], dtype=float).reshape(nrow, ncol)
+        # MuJoCo <hfield> userdata is row-major, row 0 -> min y and col 0 -> min
+        # x, the grid spanning +-radius about the geom origin. Map (x, y) to a
+        # fractional (row, col) and bilinearly interpolate the normalized height.
+        u = (x - gx + rx) / (2.0 * rx)  # 0..1 across x (columns)
+        v = (y - gy + ry) / (2.0 * ry)  # 0..1 across y (rows)
+        if u < 0.0 or u > 1.0 or v < 0.0 or v > 1.0:
+            return gz  # off the terrain patch -> its flush (base) level
+        fc = u * (ncol - 1)
+        fr = v * (nrow - 1)
+        c0 = int(math.floor(fc))
+        r0 = int(math.floor(fr))
+        c1 = min(c0 + 1, ncol - 1)
+        r1 = min(r0 + 1, nrow - 1)
+        tc = fc - c0
+        tr = fr - r0
+        h = (
+            grid[r0, c0] * (1.0 - tc) * (1.0 - tr)
+            + grid[r0, c1] * tc * (1.0 - tr)
+            + grid[r1, c0] * (1.0 - tc) * tr
+            + grid[r1, c1] * tc * tr
+        )
+        return gz + elev * float(h)
 
     # Export Model XML
 

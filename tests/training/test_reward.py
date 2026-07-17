@@ -173,6 +173,23 @@ class TestRewardProgress:
 
         assert reward_progress(Model(), {}) == [0.5]
 
+    def test_torch_mock_models_the_detach_chain(self):
+        # reward_progress() normalizes a torch return via the chain
+        # ``rewards.detach().to("cpu").flatten().tolist()``. When real torch is
+        # absent, tests/conftest.py installs tests/mocks/torch_mock.MockTensor as
+        # ``torch``; ``pytest.importorskip("torch")`` above therefore resolves to
+        # the mock rather than skipping (the mock IS a torch module). The mock
+        # must implement every method in that chain or the "run all unit tests
+        # without PyTorch installed" contract in conftest breaks -- a
+        # torch-return test would fail with AttributeError only in the mocked
+        # (no-real-torch) environment. Pin that ``flatten``/``tolist`` (the two
+        # links the mock previously lacked) survive on MockTensor and that the
+        # full chain a torch tensor takes through reward_progress still yields
+        # the right floats.
+        torch = pytest.importorskip("torch")
+        t = torch.tensor([[0.1], [0.9]])
+        assert t.detach().to("cpu").flatten().tolist() == pytest.approx([0.1, 0.9], abs=1e-6)
+
 
 class TestLoadRewardModel:
     """load_reward_model() builds the reward config and delegates the load to lerobot."""

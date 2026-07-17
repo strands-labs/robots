@@ -111,7 +111,7 @@ class ObservationMapping:
         for robot_key, model_key in self.video.items():
             if model_key not in model_video:
                 raise ValueError(
-                    f"Observation mapping: robot '{robot_key}' → model video "
+                    f"Observation mapping: robot '{robot_key}' -> model video "
                     f"'{model_key}', but model only has: {sorted(model_video)}"
                 )
 
@@ -119,7 +119,7 @@ class ObservationMapping:
         for robot_key, model_key in self.state.items():
             if model_key not in model_state:
                 raise ValueError(
-                    f"Observation mapping: robot '{robot_key}' → model state "
+                    f"Observation mapping: robot '{robot_key}' -> model state "
                     f"'{model_key}', but model only has: {sorted(model_state)}"
                 )
 
@@ -219,7 +219,7 @@ def _auto_infer_action_mapping(
         )
     for mdl, our in zip(remaining_model, remaining_ours):
         actions[mdl] = our
-        logger.info("Auto-mapped action: model '%s' → robot '%s' (positional)", mdl, our)
+        logger.info("Auto-mapped action: model '%s' -> robot '%s' (positional)", mdl, our)
     return ActionMapping(actions=actions)
 
 
@@ -256,7 +256,7 @@ def _match_keys(ours: list[str], model: list[str], label: str, strict_keys: bool
         )
     for our, mdl in zip(remaining_ours, remaining_model):
         mapping[our] = mdl
-        logger.info("Auto-mapped %s: '%s' → '%s' (positional)", label, our, mdl)
+        logger.info("Auto-mapped %s: '%s' -> '%s' (positional)", label, our, mdl)
     return mapping
 
 

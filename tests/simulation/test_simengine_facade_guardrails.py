@@ -358,3 +358,65 @@ def test_get_contacts_not_implemented_on_base_facade():
     """Contact queries require a concrete physics backend to override the hook."""
     with pytest.raises(NotImplementedError, match="get_contacts"):
         FakeSim().get_contacts()
+
+
+# Actionable "robot not found" on the policy-execution sites (#1306 follow-up)
+#
+# run_policy / eval_policy / evaluate_benchmark used to emit a bare
+# "Robot 'X' not found." (or ".. Loaded: [...]") on a mistyped robot_name,
+# unlike the ~9 lookup sites #1306 routed through the backend helper. These pin
+# that all three now surface the close-match + available-list + discovery action
+# via the backend-agnostic SimEngine._unknown_robot_msg helper (list_robots-backed,
+# so every backend inherits it). They fail on the pre-fix bare strings.
+
+
+def test_unknown_robot_msg_offers_close_match_and_discovery_action():
+    """The base helper names the robot, suggests a close match, lists the world,
+    and points at the discovery action - not a dead-end string."""
+    msg = FakeSim(robots=("so100", "so101"))._unknown_robot_msg("so10")
+    assert "Robot 'so10' not found." in msg
+    assert "Did you mean:" in msg and "so100" in msg
+    assert "Available robots:" in msg
+    assert "list_robots" in msg
+
+
+def test_unknown_robot_msg_empty_world_points_at_add_robot():
+    """With no robots, the helper omits the close-match and points at add_robot."""
+    msg = FakeSim(robots=())._unknown_robot_msg("ghost")
+    assert "Robot 'ghost' not found." in msg
+    assert "add_robot" in msg
+    assert "Did you mean" not in msg
+
+
+def test_run_policy_unknown_robot_is_actionable():
+    """run_policy's not-found error carries the close-match + discovery action."""
+    result = FakeSim(robots=("so100",)).run_policy(robot_name="so10", policy_object=MockPolicy())
+    assert result["status"] == "error"
+    text = result["content"][0]["text"]
+    assert "Robot 'so10' not found." in text
+    assert "Did you mean:" in text and "so100" in text
+    assert "list_robots" in text
+
+
+def test_eval_policy_unknown_robot_is_actionable():
+    """eval_policy's not-found error carries the close-match + discovery action."""
+    result = FakeSim(robots=("so100",)).eval_policy(robot_name="so10", policy_object=MockPolicy())
+    assert result["status"] == "error"
+    text = result["content"][0]["text"]
+    assert "Robot 'so10' not found." in text
+    assert "Did you mean:" in text and "so100" in text
+    assert "list_robots" in text
+
+
+def test_evaluate_benchmark_unknown_robot_is_actionable(monkeypatch):
+    """evaluate_benchmark's not-found error carries the close-match + discovery
+    action (replacing the older bare 'Loaded: [...]' tail)."""
+    import strands_robots.simulation.benchmark as bench
+
+    monkeypatch.setattr(bench, "get_benchmark", lambda name: object())
+    result = FakeSim(robots=("so100", "so101")).evaluate_benchmark("any_bench", robot_name="so10")
+    assert result["status"] == "error"
+    text = result["content"][0]["text"]
+    assert "Robot 'so10' not found." in text
+    assert "Did you mean:" in text and "so100" in text
+    assert "list_robots" in text

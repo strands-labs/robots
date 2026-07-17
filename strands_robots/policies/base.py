@@ -17,7 +17,7 @@ their goal from the well-known ``**kwargs`` keys documented on
 :meth:`Policy.get_actions` rather than parsing the natural-language
 ``instruction`` string.
 
-See ``MockPolicy`` (``strands_robots/policies/mock.py``) for the canonical
+See :class:`~strands_robots.policies.mock.MockPolicy` for the canonical
 non-VLA reference implementation.
 """
 

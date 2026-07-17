@@ -2,16 +2,16 @@
 
 The Isaac Sim backend runs the simulation on
 [NVIDIA Isaac Sim](https://developer.nvidia.com/isaac-sim) (PhysX GPU physics +
-RTX path-traced rendering). It ships **out-of-tree** in the sibling package
-[`strands-robots-sim`](https://github.com/strands-labs/robots-sim) and registers
-an `IsaacSimulation` under the `strands_robots.backends` entry-point group. It
-implements the same `SimEngine` contract as the built-in MuJoCo backend, so the
+RTX path-traced rendering). It is a **built-in, in-tree** backend that lives at
+`strands_robots.simulation.isaac`, a peer of the `mujoco` and `newton` backends.
+It implements the same `SimEngine` contract as the MuJoCo backend, so the
 `Robot()` / `Simulation` / policy APIs are identical - only the physics and
 rendering run on the GPU through Isaac Sim.
 
-`strands-robots` has **no hard dependency** on Isaac Sim: install the plugin and
-`create_simulation("isaac")` discovers it through entry points, exactly like
-`create_simulation("mujoco")`.
+`strands-robots` has **no hard dependency** on Isaac Sim: the `sim-isaac` extra
+provides the pip-installable helpers, and `create_simulation("isaac")` resolves
+the **built-in** backend, exactly like `create_simulation("mujoco")`. Isaac Sim
+itself is a ~30 GB non-PyPI install you provision out-of-band (see below).
 
 ## When to use it
 
@@ -29,7 +29,8 @@ Sim is a ~30 GB install and requires an NVIDIA GPU.
 
 ## Install
 
-Isaac Sim itself is **not on PyPI** - install it first, then the Python plugin:
+Isaac Sim itself is **not on PyPI** - install it first, then the `sim-isaac`
+extra:
 
 ```bash
 # Step 1 - install Isaac Sim 6.0 (Python 3.12) via one of:
@@ -37,14 +38,14 @@ Isaac Sim itself is **not on PyPI** - install it first, then the Python plugin:
 #   - Isaac Lab: git clone IsaacLab && ./isaaclab.sh -i, OR
 #   - NGC Docker: docker pull nvcr.io/nvidia/isaac-sim:6.0
 
-# Step 2 - install the Python plugin (pulls in strands-robots transitively):
-pip install 'strands-robots-sim[isaac]'
+# Step 2 - install the sim-isaac extra (helpers for the built-in backend):
+pip install 'strands-robots[sim-isaac]'
 ```
 
-The `[isaac]` extra lives in `strands-robots-sim`, not in `strands-robots`.
-Requesting `create_simulation("isaac")` without the plugin installed raises a
-`ValueError` whose message carries the exact install hint
-(`pip install 'strands-robots-sim[isaac]'`). Backend discovery is lazy, so
+The `sim-isaac` extra lives in **`strands-robots`** (a peer of `sim-mujoco` and
+`sim-newton`). Requesting `create_simulation("isaac")` without the extra
+installed raises a `ValueError` whose message carries the exact install hint
+(`pip install 'strands-robots[sim-isaac]'`). Backend discovery is lazy, so
 MuJoCo-only users never pay the Isaac Sim import cost.
 
 ## Usage
@@ -52,8 +53,7 @@ MuJoCo-only users never pay the Isaac Sim import cost.
 ```python
 from strands_robots.simulation import create_simulation
 
-# Kwargs flow into IsaacConfig. "isaac" resolves via the
-# strands_robots.backends entry point.
+# Kwargs flow into IsaacConfig. "isaac" resolves as a built-in backend.
 sim = create_simulation("isaac", render_mode="rtx_realtime", headless=True)
 sim.create_world()
 sim.add_robot("so100")                          # procedural; no asset files needed
@@ -93,8 +93,8 @@ rejected eagerly. The commonly used fields:
 
 ### Environment variables
 
-The plugin reads three `STRANDS_ISAAC_*` variables (resolved when `IsaacConfig`
-is constructed). An explicit kwarg always wins over the env var.
+The Isaac backend reads three `STRANDS_ISAAC_*` variables (resolved when
+`IsaacConfig` is constructed). An explicit kwarg always wins over the env var.
 
 | Variable | Description | Default |
 |----------|-------------|---------|
@@ -133,9 +133,11 @@ sim.destroy()
 
 ## Where to go next
 
-The plugin ships its own MkDocs site with a Quickstart, architecture, backend
-reference, and troubleshooting:
+The Isaac backend was originally prototyped in the `strands-robots-sim`
+project, which still hosts a MkDocs site with additional architecture notes and
+troubleshooting. It is kept here as background reference; the backend itself now
+ships in-tree in `strands-robots`:
 
-- Plugin docs: <https://strands-labs.github.io/robots-sim/>
+- Background docs: <https://strands-labs.github.io/robots-sim/>
 - Backend reference: <https://strands-labs.github.io/robots-sim/backends/isaac/>
-- Source: <https://github.com/strands-labs/robots-sim>
+- Source (historical): <https://github.com/strands-labs/robots-sim>

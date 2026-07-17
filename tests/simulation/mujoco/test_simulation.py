@@ -1170,6 +1170,45 @@ class TestPolicyExecution:
         assert idempotent["status"] == "success"
         assert "Was not running" in idempotent["content"][0]["text"]
 
+    def test_describe_advertises_multi_robot_rollout_family(self, sim_with_robot):
+        """describe() advertises run_multi_policy and the per-robot action/joint
+        introspection a multi-policy caller needs to wire each robot.
+
+        describe() advertises run_policy (drive ONE robot with a created policy)
+        and the background start/stop/list lifecycle, but omitted
+        run_multi_policy -- the facade that drives SEVERAL robots, each with its
+        own Policy, in one synchronized loop (the correct path for bimanual /
+        multi-agent data collection). It also omitted the two per-robot
+        introspection primitives a caller uses to build that {robot_name:
+        Policy} map: robot_action_keys (the actuator short-names a policy must
+        emit -- NOT always the joint names) and robot_joint_names (the ordered
+        observation.state vector). An agent enumerating the sim from describe()
+        alone could drive one robot but had to guess how to drive many, or key a
+        policy by joint name and watch tendon/mimic DOFs silently no-op.
+        """
+        methods = sim_with_robot.describe()["methods"]
+        for name in ("run_multi_policy", "robot_action_keys", "robot_joint_names"):
+            assert name in methods, f"describe() omits multi-robot method {name!r}"
+        # Advertised signatures name the real parameters / return shape so a
+        # caller can invoke them without reading the source.
+        assert "policies" in methods["run_multi_policy"]
+        assert "-> dict" in methods["run_multi_policy"]
+        assert "-> list[str]" in methods["robot_action_keys"]
+        assert "-> list[str]" in methods["robot_joint_names"]
+        # The advertisement names actuator-vs-joint distinction that makes
+        # robot_action_keys the correct key source over robot_joint_names.
+        assert "send_action" in methods["robot_action_keys"]
+
+        # The advertisement is only useful if the methods it names are real and
+        # return the exact per-robot lists a policy is keyed on.
+        joints = sim_with_robot.robot_joint_names("arm1")
+        keys = sim_with_robot.robot_action_keys("arm1")
+        assert isinstance(joints, list) and joints, "robot_joint_names('arm1') is empty"
+        assert isinstance(keys, list) and keys, "robot_action_keys('arm1') is empty"
+        # Unknown robots return an empty list rather than raising.
+        assert sim_with_robot.robot_joint_names("ghost") == []
+        assert sim_with_robot.robot_action_keys("ghost") == []
+
 
 # Action Dispatch
 

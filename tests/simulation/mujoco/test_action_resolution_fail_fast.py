@@ -209,3 +209,43 @@ class TestFailFastOnActionVectorShapeMismatch:
         # The diagnostic points at the embodiment fix and names valid joints.
         assert "get_features" in text
         assert "1" in text and "6" in text
+
+
+class TestFailFastOnDictVectorValuedKey:
+    """A dict action whose VALUE is non-scalar (a vector on one key, e.g. a
+    policy emitting ``{"base_velocity": [vx, vy, omega]}`` or a wrongly-shaped
+    per-joint chunk) is rejected atomically by ``send_action`` with a plain
+    scalar-value error that carries NO per-key breakdown - unlike a dict whose
+    KEYS are unresolvable, which enumerates ``unresolved_keys``.
+
+    The key itself may be a perfectly valid actuator name; it is the value shape
+    that is wrong, so nothing on that step drives the robot. The runner must
+    still count the whole step as a 100% failure - crediting the dict's own keys
+    as unresolved from the unstructured error - so the fail-fast probe surfaces a
+    structurally-dead rollout instead of silently running the full episode with
+    an arm that never moves. Pre-pin, this unstructured-error branch (dict form,
+    no json breakdown) was the one action-failure path with no coverage.
+    """
+
+    def test_dict_with_vector_valued_key_fails_fast_within_probe_window(self, sim):
+        # "1" IS a valid so101 actuator, but its value is a 2-vector, not a
+        # scalar target, so send_action rejects the whole action with no
+        # per-key breakdown.
+        policy = _FixedKeysPolicy({"1": [0.1, 0.2]})
+        result = sim.run_policy(
+            robot_name="so101",
+            policy_object=policy,
+            n_steps=50,  # would run 50 steps if the dead step were miscounted
+            control_frequency=20.0,
+            fast_mode=True,
+        )
+        assert result["status"] == "error", result
+        text = result["content"][0]["text"]
+        # Bailed in the probe window; did NOT run the full 50-step episode.
+        assert "first 3 action steps" in text
+        assert "50 steps" not in text
+        # The unstructured error is attributed to the dict's own key: the
+        # runner records "1" as unresolved for the dead step so the diagnostic
+        # names the offending key rather than reporting an empty key set.
+        assert "'1'" in text
+        assert "get_features" in text

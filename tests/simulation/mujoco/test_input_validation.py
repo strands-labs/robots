@@ -7,6 +7,8 @@ aborts that were caught by autonomous local testing on PR #85.
 import pytest
 
 pytest.importorskip("mujoco")
+import numpy as np  # noqa: E402
+
 from strands_robots.simulation.mujoco.backend import _can_render  # noqa: E402
 
 requires_gl = pytest.mark.skipif(
@@ -129,6 +131,61 @@ class TestRaycastValidation:
         assert rays[1].get("error") is not None
         assert "zero-length" in rays[1]["error"]
 
+    @pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+    def test_nonfinite_direction_errors(self, sim_with_robot, bad):
+        """A nan/inf direction survives the zero-length guard (``nan < 1e-10`` is
+        False) and would poison the normalized vector fed to mj_ray. Reject it."""
+        res = sim_with_robot.raycast(origin=[0, 0, 1], direction=[bad, 0.0, 0.0])
+        assert res["status"] == "error"
+        assert "finite" in res["content"][0]["text"].lower()
+        assert "direction" in res["content"][0]["text"]
+
+    @pytest.mark.parametrize("bad", [float("nan"), float("inf")])
+    def test_nonfinite_origin_errors(self, sim_with_robot, bad):
+        res = sim_with_robot.raycast(origin=[bad, 0.0, 1.0], direction=[0, 0, -1])
+        assert res["status"] == "error"
+        assert "finite" in res["content"][0]["text"].lower()
+        assert "origin" in res["content"][0]["text"]
+
+    def test_non_numeric_origin_errors_not_raises(self, sim_with_robot):
+        """A non-numeric element must return a structured error, not raise
+        ValueError from np.array(dtype=float64) past the tool contract."""
+        res = sim_with_robot.raycast(origin=["a", "b", "c"], direction=[0, 0, -1])
+        assert res["status"] == "error"
+        assert "number" in res["content"][0]["text"].lower()
+
+    def test_non_numeric_direction_errors_not_raises(self, sim_with_robot):
+        res = sim_with_robot.raycast(origin=[0, 0, 1], direction=["x", 0, 0])
+        assert res["status"] == "error"
+        assert "number" in res["content"][0]["text"].lower()
+
+    def test_multi_raycast_non_numeric_origin_errors_not_raises(self, sim_with_robot):
+        res = sim_with_robot.multi_raycast(origin=["x", 0, 1], directions=[[0, 0, -1]])
+        assert res["status"] == "error"
+        assert "number" in res["content"][0]["text"].lower()
+
+    @pytest.mark.parametrize("bad", [float("nan"), float("inf")])
+    def test_multi_raycast_nonfinite_origin_errors(self, sim_with_robot, bad):
+        res = sim_with_robot.multi_raycast(origin=[bad, 0, 1], directions=[[0, 0, -1]])
+        assert res["status"] == "error"
+        assert "finite" in res["content"][0]["text"].lower()
+
+    def test_multi_raycast_nonfinite_direction_isolates_error(self, sim_with_robot):
+        """A nan direction in one ray must be reported per-ray, not abort the
+        batch or silently pass a poisoned vector to mj_ray."""
+        res = sim_with_robot.multi_raycast(
+            origin=[0, 0, 5],
+            directions=[[0, 0, -1], [float("nan"), 0.0, 0.0], [1, 0, -1]],
+        )
+        assert res["status"] == "success"
+        rays = res["content"][1]["json"]["rays"]
+        assert len(rays) == 3
+        assert rays[1].get("error") is not None
+        assert "finite" in rays[1]["error"].lower()
+        # Valid rays around the bad one are unaffected.
+        assert rays[0].get("error") is None
+        assert rays[2].get("error") is None
+
 
 class TestApplyForceValidation:
     def test_missing_both_force_and_torque_errors(self, sim_with_robot):
@@ -198,7 +255,16 @@ class TestMassAndTimestepValidation:
     def test_set_body_properties_negative_mass_errors(self, sim_with_robot):
         res = sim_with_robot.set_body_properties(body_name="link1", mass=-1.0)
         assert res["status"] == "error"
-        assert "must be > 0" in res["content"][0]["text"]
+        assert "must be a finite number > 0" in res["content"][0]["text"]
+
+    @pytest.mark.parametrize("bad", [float("nan"), float("inf"), -float("inf")])
+    def test_set_body_properties_nonfinite_mass_errors(self, sim_with_robot, bad):
+        """NaN/Inf must be rejected: ``nan <= 0`` and ``inf <= 0`` are both False,
+        so a bare positivity guard would let them corrupt ``body_mass`` /
+        ``body_inertia`` while reporting success."""
+        res = sim_with_robot.set_body_properties(body_name="link1", mass=bad)
+        assert res["status"] == "error"
+        assert "finite" in res["content"][0]["text"]
 
     def test_set_body_properties_zero_mass_errors(self, sim_with_robot):
         res = sim_with_robot.set_body_properties(body_name="link1", mass=0.0)
@@ -396,6 +462,89 @@ class TestSetJointVelocitiesForms:
         assert "nope" in res["content"][0]["text"]
 
 
+# set_joint_positions / set_joint_velocities finite-value validation
+
+
+class TestSetJointFiniteValidation:
+    """Regression: joint setters must reject non-finite / non-numeric values.
+
+    ``set_joint_positions`` / ``set_joint_velocities`` wrote each value straight
+    into ``data.qpos`` / ``data.qvel`` via ``float(value)`` with no guard. A
+    ``nan`` / ``inf`` landed directly in the state buffer -- ``mj_forward`` then
+    propagates the ``nan`` across the whole kinematic tree (or an ``inf``
+    velocity blows up the integrator on the next step) while the tool still
+    returned ``status="success"``; a non-numeric value raised ``ValueError``
+    past the structured-error dispatch contract. Both must now return a
+    structured error and leave the state untouched.
+    """
+
+    def _first_joint(self, sim):
+        joint_names = list(sim._world.robots.values())[0].joint_names or []
+        if not joint_names:
+            pytest.skip("robot has no named joints")
+        return joint_names[0]
+
+    @pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+    def test_positions_nonfinite_rejected_and_qpos_untouched(self, sim_with_robot, bad):
+        jn = self._first_joint(sim_with_robot)
+        before = sim_with_robot._world._data.qpos.copy()
+        res = sim_with_robot.set_joint_positions(positions={jn: bad})
+        assert res["status"] == "error"
+        assert "finite" in res["content"][0]["text"]
+        # State must be left untouched (no nan/inf leaked into qpos).
+        assert np.array_equal(sim_with_robot._world._data.qpos, before)
+        assert np.all(np.isfinite(sim_with_robot._world._data.qpos))
+
+    def test_positions_non_numeric_returns_structured_error(self, sim_with_robot):
+        """A non-numeric value must NOT raise past dispatch."""
+        jn = self._first_joint(sim_with_robot)
+        res = sim_with_robot.set_joint_positions(positions={jn: "not-a-number"})
+        assert res["status"] == "error"
+        assert "must be a number" in res["content"][0]["text"]
+
+    def test_positions_nonfinite_in_list_form_rejected(self, sim_with_robot):
+        joint_names = list(sim_with_robot._world.robots.values())[0].joint_names or []
+        if not joint_names:
+            pytest.skip("robot has no named joints")
+        vals = [0.0] * len(joint_names)
+        vals[0] = float("nan")
+        before = sim_with_robot._world._data.qpos.copy()
+        res = sim_with_robot.set_joint_positions(positions=vals)
+        assert res["status"] == "error"
+        assert "finite" in res["content"][0]["text"]
+        assert np.array_equal(sim_with_robot._world._data.qpos, before)
+
+    @pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+    def test_velocities_nonfinite_rejected_and_qvel_untouched(self, sim_with_robot, bad):
+        jn = self._first_joint(sim_with_robot)
+        before = sim_with_robot._world._data.qvel.copy()
+        res = sim_with_robot.set_joint_velocities(velocities={jn: bad})
+        assert res["status"] == "error"
+        assert "finite" in res["content"][0]["text"]
+        assert np.array_equal(sim_with_robot._world._data.qvel, before)
+        assert np.all(np.isfinite(sim_with_robot._world._data.qvel))
+
+    def test_velocities_non_numeric_returns_structured_error(self, sim_with_robot):
+        jn = self._first_joint(sim_with_robot)
+        res = sim_with_robot.set_joint_velocities(velocities={jn: [1, 2, 3]})
+        assert res["status"] == "error"
+        assert "must be a number" in res["content"][0]["text"]
+
+    def test_bad_value_rejected_even_for_unknown_joint(self, sim_with_robot):
+        """Input is validated up front, so a bad value fails fast regardless of
+        whether the joint resolves -- an unknown joint no longer masks nan/inf."""
+        res = sim_with_robot.set_joint_positions(positions={"ghost": float("inf")})
+        assert res["status"] == "error"
+        assert "finite" in res["content"][0]["text"]
+
+    def test_valid_numpy_scalar_positions_still_apply(self, sim_with_robot):
+        """A finite NumPy scalar is a valid value and must still be written."""
+        jn = self._first_joint(sim_with_robot)
+        res = sim_with_robot.set_joint_positions(positions={jn: np.float64(0.2)})
+        assert res["status"] == "success"
+        assert "1/1" in res["content"][0]["text"]
+
+
 # Policy-running guards
 
 
@@ -552,7 +701,7 @@ class TestAddCameraTargetOrients:
         try:
             res = sim.add_camera(name="bad_cam", position=[1, 2], target=[0, 0, 0])
             assert res["status"] == "error"
-            assert "3 elements" in res["content"][0]["text"]
+            assert "3-element" in res["content"][0]["text"]
         finally:
             sim.destroy()
 
@@ -674,6 +823,32 @@ class TestAddCameraParamValidation:
         assert res["status"] == "error"
         assert "finite number" in res["content"][0]["text"]
 
+    def test_fov_numpy_float32_accepted(self, sim_with_world):
+        # A NumPy scalar fov (e.g. np.float32 from a config array) is a finite
+        # real number; it must be accepted, not rejected as "not a finite number".
+        res = sim_with_world.add_camera(name="npf", position=[0.5, 0, 0.3], target=[0.2, 0, 0.05], fov=np.float32(58.0))
+        assert res["status"] == "success", res["content"][0]["text"]
+        assert "npf" in sim_with_world._world.cameras
+
+    def test_fov_numpy_int64_accepted(self, sim_with_world):
+        res = sim_with_world.add_camera(name="npi", position=[0.5, 0, 0.3], target=[0.2, 0, 0.05], fov=np.int64(58))
+        assert res["status"] == "success", res["content"][0]["text"]
+        assert "npi" in sim_with_world._world.cameras
+
+    def test_fov_numpy_bool_still_rejected(self, sim_with_world):
+        # np.bool_ is not numbers.Real; treat it like Python bool - a caller bug.
+        res = sim_with_world.add_camera(name="npb", position=[0.5, 0, 0.3], target=[0.2, 0, 0.05], fov=np.bool_(True))
+        assert res["status"] == "error"
+        assert "finite number" in res["content"][0]["text"]
+        assert "npb" not in sim_with_world._world.cameras
+
+    def test_fov_numpy_nan_still_rejected(self, sim_with_world):
+        res = sim_with_world.add_camera(
+            name="npn", position=[0.5, 0, 0.3], target=[0.2, 0, 0.05], fov=np.float32("nan")
+        )
+        assert res["status"] == "error"
+        assert "finite" in res["content"][0]["text"]
+
     def test_width_zero_errors(self, sim_with_world):
         res = sim_with_world.add_camera(name="c", position=[0.5, 0, 0.3], target=[0.2, 0, 0.05], width=0)
         assert res["status"] == "error"
@@ -697,6 +872,63 @@ class TestAddCameraParamValidation:
         )
         assert res["status"] == "success"
         assert "good" in sim_with_world._world.cameras
+
+
+class TestAddCameraPositionTargetValidation:
+    """add_camera validates position/target elements are finite real numbers.
+
+    Pre-fix, add_camera only checked that position/target were 3-element
+    vectors, not that each element was a finite number. A non-numeric element
+    (e.g. ["a", "b", "c"]) raised TypeError inside the degenerate-look
+    comparison -- escaping the structured-error tool contract -- and a nan/inf
+    component passed the length check and slipped silently into the camera's
+    xyaxes look-direction basis (a 0/0 division), registering a broken camera
+    that renders nothing. These pin the per-element guard, mirroring
+    apply_force, and confirm NumPy scalar components are still accepted.
+    """
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            {"position": ["a", "b", "c"], "target": [0.0, 0.0, 1.0]},
+            {"position": [0.5, 0.0, 0.3], "target": ["x", "y", "z"]},
+            # nested lists are length-3 but not scalar numbers.
+            {"position": [[1], 2, 3], "target": [0.0, 0.0, 1.0]},
+            # None is neither a number nor coercible.
+            {"position": [1.0, None, 3.0], "target": [0.0, 0.0, 1.0]},
+        ],
+    )
+    def test_non_numeric_elements_error(self, sim_with_world, kwargs):
+        res = sim_with_world.add_camera(name="bad", **kwargs)
+        assert res["status"] == "error"
+        assert "must be numbers" in res["content"][0]["text"]
+        assert "bad" not in sim_with_world._world.cameras
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            {"position": [float("nan"), 0.0, 0.3], "target": [0.0, 0.0, 1.0]},
+            {"position": [float("inf"), 0.0, 0.3], "target": [0.0, 0.0, 1.0]},
+            {"position": [0.5, 0.0, 0.3], "target": [float("-inf"), 0.0, 0.0]},
+            {"position": [0.5, 0.0, 0.3], "target": [0.0, float("nan"), 0.0]},
+        ],
+    )
+    def test_non_finite_elements_error(self, sim_with_world, kwargs):
+        res = sim_with_world.add_camera(name="bad", **kwargs)
+        assert res["status"] == "error"
+        assert "finite numbers" in res["content"][0]["text"]
+        assert "bad" not in sim_with_world._world.cameras
+
+    def test_numpy_scalar_components_accepted(self, sim_with_world):
+        # Components read from a config array arrive as NumPy scalars; they are
+        # finite real numbers and must be accepted like plain floats.
+        res = sim_with_world.add_camera(
+            name="npc",
+            position=[np.float32(0.5), np.float64(0.0), np.int64(1)],
+            target=[0.0, 0.0, 0.0],
+        )
+        assert res["status"] == "success", res["content"][0]["text"]
+        assert "npc" in sim_with_world._world.cameras
 
 
 # send_action ordered-vector normalization
@@ -837,3 +1069,79 @@ class TestGetSensorDataContract:
         res = sim_with_sensors.get_sensor_data(sensor_name="nope")
         assert res["status"] == "error", res
         assert "Sensor 'nope' not found." in res["content"][0]["text"]
+
+
+class TestRouterVectorNumpyScalars:
+    """Router-level vector params accept NumPy scalar components.
+
+    The agent-tool dispatch router (``sim(action=..., **kwargs)`` ->
+    ``_validate_and_build_kwargs``) length- and dtype-checks every vector
+    parameter (position, force, torque, gravity, direction, point,
+    orientation, color) before the value reaches NumPy / MuJoCo. It used
+    ``isinstance(component, (int, float))``, which is ``False`` for NumPy
+    scalars (only ``np.float64`` subclasses ``float``). Vector params
+    routinely arrive from an observation or ``mj_data`` -- a NumPy array whose
+    elements are ``np.float32`` / ``np.int64`` -- so a natural
+    ``position=[obs[0], obs[1], obs[2]]`` was rejected as "must be numeric,
+    got float32" even though every component is a finite real number. The
+    guard now uses ``numbers.Real`` so NumPy scalars pass while ``bool`` /
+    ``np.bool_`` / non-numeric junk stay rejected.
+    """
+
+    @pytest.fixture
+    def sim_with_world(self):
+        sim = Simulation()
+        sim.create_world()
+        yield sim
+        sim.destroy()
+
+    def test_numpy_scalar_position_accepted(self, sim_with_world):
+        """A position built from NumPy scalars (as from an observation) is
+        accepted by the router instead of erroring on dtype."""
+        np = pytest.importorskip("numpy")
+        res = sim_with_world(
+            action="add_object",
+            shape="box",
+            size=[0.02, 0.02, 0.02],
+            position=[np.float32(0.3), np.int64(0), np.float64(0.5)],
+            name="np_cube",
+        )
+        assert res["status"] == "success", res
+
+    def test_python_bool_component_still_rejected(self, sim_with_world):
+        """``bool`` is an ``int`` subclass but is not a valid coordinate; it
+        must stay rejected even though the guard now accepts ``numbers.Real``."""
+        res = sim_with_world(
+            action="add_object",
+            shape="box",
+            size=[0.02, 0.02, 0.02],
+            position=[True, 0.0, 0.5],
+            name="bool_cube",
+        )
+        assert res["status"] == "error", res
+        assert "must be numeric" in res["content"][0]["text"]
+
+    def test_numpy_bool_component_still_rejected(self, sim_with_world):
+        """``np.bool_`` is not a ``numbers.Real`` and stays rejected."""
+        np = pytest.importorskip("numpy")
+        res = sim_with_world(
+            action="add_object",
+            shape="box",
+            size=[0.02, 0.02, 0.02],
+            position=[np.bool_(True), 0.0, 0.5],
+            name="npbool_cube",
+        )
+        assert res["status"] == "error", res
+        assert "must be numeric" in res["content"][0]["text"]
+
+    def test_non_numeric_component_still_rejected(self, sim_with_world):
+        """Non-numeric junk still returns the structured dtype error."""
+        res = sim_with_world(
+            action="add_object",
+            shape="box",
+            size=[0.02, 0.02, 0.02],
+            position=["a", "b", "c"],
+            name="str_cube",
+        )
+        assert res["status"] == "error", res
+        assert "must be numeric" in res["content"][0]["text"]

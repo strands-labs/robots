@@ -225,6 +225,13 @@ class TestFloatingBaseSurfacing:
         # [4.4, 5.5, 6.6] rotated into the +90deg-about-Z body frame is
         # [5.5, -4.4, 6.6]. See test_base_ang_vel_is_body_frame_matching_mujoco.
         assert obs["base_ang_vel"] == pytest.approx([5.5, -4.4, 6.6], abs=1e-4)
+        # The 6-DoF free joint ("root") is NOT emitted as a degenerate scalar
+        # joint entry (it would report base-x as a joint angle) - its full state
+        # is the structured base_* keys above, matching get_robot_state and the
+        # MuJoCo backend. The hinge joints past the free joint are still read.
+        assert "root" not in obs
+        assert obs["j1"] == pytest.approx(0.55, abs=1e-4)
+        assert obs["j2"] == pytest.approx(-0.22, abs=1e-4)
 
     def test_base_ang_vel_is_body_frame_matching_mujoco(self, engine_floater):
         """base_ang_vel is the body-frame angular velocity, not the raw world twist.
@@ -340,6 +347,77 @@ class TestRegistryPassthrough:
 
     def test_register_urdf_empty_path_errors(self, engine):
         assert engine.register_urdf("xx", "")["status"] == "error"
+
+    def test_register_urdf_success_binds_and_resolves(self, engine, tmp_path):
+        """A readable asset registers and round-trips through resolve_model.
+
+        The success path validates the file, binds it under the given config
+        name, and reports the resolved path back so a caller can add_robot the
+        custom asset without re-reading the registry.
+        """
+        asset = tmp_path / "my_arm.xml"
+        asset.write_text("<mujoco/>")
+        result = engine.register_urdf("my_custom_arm", str(asset))
+        assert result["status"] == "success"
+        text = result["content"][0]["text"]
+        assert "my_custom_arm" in text
+        assert str(asset) in text
+        # resolve_model round-trips the just-registered path (not "NOT FOUND").
+        assert "NOT FOUND" not in text
+
+    def test_register_urdf_directory_errors_as_not_a_file(self, engine, tmp_path):
+        """An existing-but-not-a-file path (a directory) is rejected distinctly
+        from the missing-file case, so the caller knows the path resolved but
+        pointed at the wrong kind of node."""
+        result = engine.register_urdf("dircfg", str(tmp_path))
+        assert result["status"] == "error"
+        assert "not a file" in result["content"][0]["text"]
+
+
+class TestWorldStateSummary:
+    """get_state() world summary + the no-world guards on the step/reset/state
+    lifecycle methods.
+
+    get_state is the human-readable introspection facade at MuJoCo parity; the
+    guards ensure the lifecycle methods fail soft with an actionable message
+    instead of dereferencing a None model when create_world was skipped.
+    """
+
+    def test_get_state_summarises_solver_time_and_counts(self, engine_so100):
+        result = engine_so100.get_state()
+        assert result["status"] == "success"
+        text = result["content"][0]["text"]
+        assert "Newton Simulation State" in text
+        # Names the active solver and the world/robot inventory a caller needs
+        # to sanity-check what is loaded before stepping.
+        assert "solver=mujoco" in text
+        assert "step 0" in text
+        assert "Robots: 1" in text
+        assert "Objects: 0" in text
+        assert "DOFs: 6" in text
+
+    def test_get_state_reflects_added_object(self, engine_so100):
+        engine_so100.add_object("cube", shape="box", position=[0.3, 0.0, 0.05], mass=0.2)
+        text = engine_so100.get_state()["content"][0]["text"]
+        assert "Objects: 1" in text
+
+    def test_get_state_without_world_errors(self):
+        from strands_robots.simulation.newton.simulation import NewtonSimEngine
+
+        sim = NewtonSimEngine(solver="mujoco")
+        assert sim.get_state()["status"] == "error"
+
+    def test_reset_without_world_errors(self):
+        from strands_robots.simulation.newton.simulation import NewtonSimEngine
+
+        sim = NewtonSimEngine(solver="mujoco")
+        assert sim.reset()["status"] == "error"
+
+    def test_step_without_world_errors(self):
+        from strands_robots.simulation.newton.simulation import NewtonSimEngine
+
+        sim = NewtonSimEngine(solver="mujoco")
+        assert sim.step()["status"] == "error"
 
 
 class TestDescribeSurface:

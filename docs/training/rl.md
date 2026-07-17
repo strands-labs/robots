@@ -168,7 +168,7 @@ off-policy SAC fields (`buffer_size`, `batch_size`, `learning_starts`,
 
 ## Worked example
 
-`examples/train_ppo_reach.py` (on-policy) and `examples/train_fastsac_reach.py`
+`examples/training/train_ppo_reach.py` (on-policy) and `examples/training/train_fastsac_reach.py`
 (off-policy) both train the SO-100 `Elbow` joint to a target angle in MuJoCo
 from scratch and print the resulting checkpoint path. The MuJoCo backend is
 single-environment (`num_envs == 1`); vectorized backends for

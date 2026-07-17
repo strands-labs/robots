@@ -294,9 +294,8 @@ _OPERATOR_POLICY_DOC: dict[str, Any] = {
             # reads, and operational audit (``mesh_audit.jsonl`` logs
             # every command dispatch). A per-robot operator scope would
             # require a per-robot policy document, which explodes the
-            # policy count linearly with fleet size. Pinned as
-            # intentional by test_iot_policy_scope.py::TestOperatorPolicy
-            # ::test_publish_to_fleet_wildcard_is_deliberate.
+            # policy count linearly with fleet size. This fleet-wildcard
+            # scope is deliberate, not an oversight.
             "Sid": "OperatorPublishToFleet",
             "Effect": "Allow",
             "Action": ["iot:Publish", "iot:RetainPublish"],

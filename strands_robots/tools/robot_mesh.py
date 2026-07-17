@@ -185,7 +185,7 @@ def _warn_none_opt_out_once() -> None:
 # expression and buffers matching traffic into ``inbox`` for the agent to
 # read. Without a topic allowlist a prompt-injected agent can subscribe to
 # another peer's cmd / state / camera / input streams and exfiltrate them
-# into the LLM context. The transport ACL (examples/mesh_acl_example.json5)
+# into the LLM context. The transport ACL (examples/mesh/mesh_acl_example.json5)
 # is the primary control; this tool-layer allowlist is defence in depth so
 # the leak is blocked even on a mesh running the permissive default ACL.
 #

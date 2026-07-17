@@ -37,7 +37,7 @@ The new ingredient is the phase clock - a small stateful generator
 left/right-foot phase signal, with a walk-entry reseed, a warm-up ramp, and a
 static-stance freeze. It is a verbatim NumPy port of the upstream block (no
 torch) and is unit-tested against hand-computed values.
-[`examples/wbc_g1_gait.py --plot-clock`](https://github.com/strands-labs/robots/blob/main/examples/wbc_g1_gait.py)
+[`examples/wbc/wbc_g1_gait.py --plot-clock`](https://github.com/strands-labs/robots/blob/main/examples/wbc/wbc_g1_gait.py)
 visualizes it through a static -> walk -> static schedule (no checkpoint
 needed):
 
@@ -47,6 +47,6 @@ needed):
   (<code>freq_cmd = 1.0</code>): both feet are frozen at the held stance while
   static, then the left/right channels oscillate half a cycle out of phase
   during the walk window, returning to a frozen stance when the command goes
-  static again. Produced by <code>examples/wbc_g1_gait.py --plot-clock</code>.</figcaption>
+  static again. Produced by <code>examples/wbc/wbc_g1_gait.py --plot-clock</code>.</figcaption>
 </figure>
 

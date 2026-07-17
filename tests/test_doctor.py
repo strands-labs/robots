@@ -284,6 +284,20 @@ class TestDoctorDegradedPaths:
         result = check_cuda()
         assert "  WARN  " in result
 
+    def test_cuda_cpu_only_build_warns(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A CPU-only torch build (no ``torch.version.cuda``) is diagnosed as a
+        WARN pointing at the CUDA-enabled install, distinct from a CUDA build
+        whose runtime is merely unavailable."""
+        import torch
+
+        from strands_robots.doctor import check_cuda
+
+        monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+        monkeypatch.setattr(torch.version, "cuda", None, raising=False)
+        result = check_cuda()
+        assert "  WARN  " in result
+        assert "CPU-only" in result
+
     def test_sim_smoke_empty_observation_fails(self, monkeypatch: pytest.MonkeyPatch) -> None:
         import strands_robots
         from strands_robots.doctor import check_sim_smoke
@@ -418,6 +432,25 @@ class TestDoctorSerialPermissions:
         result = check_serial_permissions()
         assert "  PASS  " in result
 
+    def test_in_dialout_accessible_device_passes(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """User in dialout with a readable/writable serial device passes and
+        names the device - the fully-healthy hardware verdict."""
+        import grp
+        import os
+        import platform
+        from pathlib import Path
+
+        from strands_robots.doctor import check_serial_permissions
+
+        monkeypatch.setattr(platform, "system", lambda: "Linux")
+        monkeypatch.setenv("USER", "robotuser")
+        monkeypatch.setattr(grp, "getgrnam", lambda _n: self._fake_group(["robotuser"], gid=20))
+        monkeypatch.setattr(Path, "glob", lambda self, pat: iter([Path("/dev/ttyACM0")]) if "ACM" in pat else iter([]))
+        monkeypatch.setattr(os, "access", lambda _p, _m: True)
+        result = check_serial_permissions()
+        assert "  PASS  " in result
+        assert "/dev/ttyACM0" in result
+
     def test_in_dialout_device_not_accessible_fails(self, monkeypatch: pytest.MonkeyPatch) -> None:
         import grp
         import os
@@ -499,3 +532,21 @@ class TestDoctorVersionResolution:
 
         # Neither an installed distribution nor an importable module exists.
         assert _resolve_version("strands_robots_nope_xyz", "strands-robots-nope-xyz") == "unknown"
+
+    def test_resolve_version_falls_back_to_module_attribute(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """When distribution metadata is absent but the module is importable, the
+        version comes from the module's ``__version__`` attribute (source-tree
+        install path)."""
+        import importlib
+        import importlib.metadata
+        import types
+
+        from strands_robots.doctor import _resolve_version
+
+        def _no_metadata(_dist: str) -> str:
+            raise importlib.metadata.PackageNotFoundError(_dist)
+
+        fake_module = types.SimpleNamespace(__version__="9.9.9-src")
+        monkeypatch.setattr(importlib.metadata, "version", _no_metadata)
+        monkeypatch.setattr(importlib, "import_module", lambda _name: fake_module)
+        assert _resolve_version("some_module", "some-dist") == "9.9.9-src"

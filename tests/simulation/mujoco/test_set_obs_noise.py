@@ -162,3 +162,58 @@ def test_camera_jitter_shifts_rendered_frame(sim):
     sim.set_obs_noise(camera_jitter_px=8, seed=0)
     jittered = _png(sim.render(camera_name="cam1", width=128, height=96))
     assert not np.array_equal(clean, jittered), "camera jitter had no effect on the render"
+
+
+def test_apply_obs_noise_jitters_frames_and_passes_through_floating_base_lists():
+    """`_apply_obs_noise` jitters ndarray frames and leaves floating-base lists intact.
+
+    `get_observation` returns a heterogeneous dict: scalar joint values, camera
+    frames as ndarrays, and (for floating-base robots) `base_quat` / `base_ang_vel`
+    list values. Existing coverage only ever exercises `_apply_obs_noise` with
+    `skip_images=True` on the fixed-base so101, so the ndarray-jitter branch and
+    the floating-base list passthrough documented in the method contract were
+    never driven. Build the heterogeneous obs directly (no GL required) and pin
+    both behaviours: the frame is shifted, the quaternion/angular-velocity lists
+    are returned untouched (a quaternion would need renormalisation - out of
+    scope for additive scalar noise).
+    """
+    s = Simulation(tool_name="test_obs_noise_apply", mesh=False)
+    try:
+        # camera_jitter_px is the only configured noise, so the RNG is consumed
+        # solely by the frame jitter -> seed=0 reproduces the shifting draw the
+        # standalone jitter test relies on.
+        assert s.set_obs_noise(camera_jitter_px=8, seed=0)["status"] == "success"
+
+        frame = np.arange(48 * 64 * 3, dtype=np.uint8).reshape(48, 64, 3)
+        base_quat = [1.0, 0.0, 0.0, 0.0]
+        base_ang_vel = [0.1, 0.2, 0.3]
+        obs = {
+            "shoulder_pan": 0.5,
+            "shoulder_pan.vel": 0.1,
+            "front_cam": frame,
+            "base_quat": base_quat,
+            "base_ang_vel": base_ang_vel,
+        }
+
+        out = s._apply_obs_noise(obs)
+
+        # ndarray frame routed through the jitter path (shape preserved, shifted).
+        assert out["front_cam"].shape == frame.shape
+        assert not np.array_equal(out["front_cam"], frame), "camera frame was not jittered"
+        # Floating-base list signals pass through unchanged (same object).
+        assert out["base_quat"] is base_quat
+        assert out["base_ang_vel"] is base_ang_vel
+    finally:
+        s.cleanup()
+
+
+def test_sub_pixel_camera_jitter_is_a_noop(sim):
+    """A sub-pixel `camera_jitter_px` (0 < px < 1) rounds down to no shift.
+
+    `np.roll` can only shift by whole pixels, so a fractional jitter setting
+    floors to a zero max-shift and returns the frame unchanged rather than
+    raising - a legitimate, if uninformative, configuration.
+    """
+    frame = np.arange(48 * 64 * 3, dtype=np.uint8).reshape(48, 64, 3)
+    assert sim.set_obs_noise(camera_jitter_px=0.5, seed=0)["status"] == "success"
+    assert sim._maybe_jitter_frame(frame) is frame

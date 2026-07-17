@@ -11,6 +11,22 @@ pip install "strands-robots[sim-mujoco,lerobot,mesh]"
 MUJOCO_GL=egl python examples/01_sim_hello_world.py
 ```
 
+## Directory map
+
+The numbered `01_*`..`15_*` scripts below are the core primitive walkthroughs and
+live at the top level. Everything else is grouped by topic:
+
+- [`vla/`](vla/) - vision-language-action provider examples (Cosmos 3, MolmoAct2)
+- [`wbc/`](wbc/) - whole-body control on the Unitree G1 (torque deploy, gait, composite)
+- [`locomotion/`](locomotion/) - G1 locomotion and the VLA-on-G1 record→tune→deploy workflow
+- [`training/`](training/) - from-scratch RL trainers (PPO, FastSAC)
+- [`mesh/`](mesh/) - Zenoh mesh ACL config templates
+- [`registry/`](registry/) - robot / hardware catalog discovery
+- [`lerobot/`](lerobot/) - LeRobot hub-to-hardware companion scripts
+- [`ros2/`](ros2/) - ROS 2 bridge demos
+- [`vera_mimicgen_panda/`](vera_mimicgen_panda/) - VERA MimicGen → Panda rollout
+- [`notebooks/`](notebooks/) - Jupyter getting-started series (CPU-only)
+
 ## Index
 
 Prefer a click-and-run walkthrough? The [`notebooks/`](notebooks/) folder has the
@@ -27,11 +43,18 @@ record→train→deploy loop) as Jupyter notebooks - all CPU-only, no hardware o
 | 06 | [`06_agent_collect_and_stream.py`](06_agent_collect_and_stream.py) | `Agent` record + `stream_dataset` | No | No (needs LLM API) |
 | 07 | [`07_post_tune_any_policy.py`](07_post_tune_any_policy.py) | `create_trainer` + `TrainSpec` (record→train→load) | No | No |
 | 08 | [`08_discover_lerobot.py`](08_discover_lerobot.py) | `use_lerobot` tool: discover LeRobot robots, policies, teleoperators, cameras | No | No |
-| -- | [`vla_g1_workflow.py`](vla_g1_workflow.py) | VLA-on-G1: record -> GR00T fine-tune -> WBC deploy | No | Optional (tune) |
+| 09 | [`09_procedural_terrain.py`](09_procedural_terrain.py) | `create_world(terrain=...)` heightfield ground + `difficulty` curriculum | No | No |
+| 10 | [`10_evaluate_benchmark.py`](10_evaluate_benchmark.py) | `register_builtin_benchmarks` + `evaluate_benchmark` (success rate / reward) | No | No |
+| 11 | [`11_author_a_benchmark.py`](11_author_a_benchmark.py) | `DeclarativeBenchmark.from_dict` + predicate DSL (author a task) | No | No |
+| 12 | [`12_domain_randomization.py`](12_domain_randomization.py) | `randomize` + `set_obs_noise` (sim2real appearance/physics/sensor noise) | No | No |
+| 13 | [`13_physics_introspection.py`](13_physics_introspection.py) | `get_jacobian` / `get_mass_matrix` / `inverse_dynamics` / `get_energy` | No | No |
+| 14 | [`14_save_state_and_perturb.py`](14_save_state_and_perturb.py) | `save_state`/`load_state` + `apply_force` + `raycast` | No | No |
+| 15 | [`15_robot_catalog.py`](15_robot_catalog.py) | `list_robots` / `get_robot` registry discovery (no sim) | No | No |
+| -- | [`locomotion/vla_g1_workflow.py`](locomotion/vla_g1_workflow.py) | VLA-on-G1: record -> GR00T fine-tune -> WBC deploy | No | Optional (tune) |
 | — | [`vera_mimicgen_panda/`](vera_mimicgen_panda/) | VERA MimicGen → Panda (eef-delta + IK bridge) | No | **Yes** (server) |
 | — | [`isaac/isaac_replicator_synthdata.py`](isaac/isaac_replicator_synthdata.py) | `IsaacSimulation` + Omniverse Replicator synthetic-data generation | No | **Yes** (Isaac Sim / RTX) |
 | — | [`isaac_gs/`](isaac_gs/) | Isaac RTX robot z-composited over a 3DGS / panorama backdrop (digital-twin) | No | **Yes** (Isaac Sim / RTX) |
-| -- | [`lerobot_hardware_catalog.py`](lerobot_hardware_catalog.py) | `Robot()` covers the whole LeRobot hardware catalog (name -> lerobot_type) | No | No |
+| -- | [`registry/lerobot_hardware_catalog.py`](registry/lerobot_hardware_catalog.py) | `Robot()` covers the whole LeRobot hardware catalog (name -> lerobot_type) | No | No |
 
 ## What each example shows vs raw lerobot
 
@@ -47,9 +70,9 @@ record→train→deploy loop) as Jupyter notebooks - all CPU-only, no hardware o
 
 | File | What it shows |
 |------|--------------|
-| [`molmoact2_so101_pickplace.py`](molmoact2_so101_pickplace.py) | Real hardware + MolmoAct2 VLA policy on SO-101 |
-| [`cosmos3_sim_rollout.py`](cosmos3_sim_rollout.py) | Cosmos 3 VLA in MuJoCo with WebSocket policy server |
-| [`wbc_g1_torque_deploy.py`](wbc_g1_torque_deploy.py) | GR00T-WBC (SONIC) locomotion on the Unitree G1 via the torque-control deploy loop |
+| [`vla/molmoact2_so101_pickplace.py`](vla/molmoact2_so101_pickplace.py) | Real hardware + MolmoAct2 VLA policy on SO-101 |
+| [`vla/cosmos3_sim_rollout.py`](vla/cosmos3_sim_rollout.py) | Cosmos 3 VLA in MuJoCo with WebSocket policy server |
+| [`wbc/wbc_g1_torque_deploy.py`](wbc/wbc_g1_torque_deploy.py) | GR00T-WBC (SONIC) locomotion on the Unitree G1 via the torque-control deploy loop |
 | [`lerobot/hub_to_hardware.py`](lerobot/hub_to_hardware.py) | Full agent-driven pipeline: record, train, deploy |
 
 ## Environment variables

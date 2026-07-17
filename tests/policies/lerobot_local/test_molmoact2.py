@@ -44,6 +44,31 @@ def test_is_molmoact2_empty_path_no_type():
     assert molmoact2.is_molmoact2("", None) is False
 
 
+def test_is_molmoact2_explicit_nonmolmoact2_type_skips_hub_probe(monkeypatch):
+    """An explicit non-molmoact2 policy_type is authoritative: return False
+    WITHOUT any config.json probe.
+
+    A declared lerobot-native type (``"act"``, ``"diffusion"``, ...) already
+    tells us this is not a transformers-native MolmoAct2 checkpoint. The
+    config.json read is a Hub round-trip, so falling through to it on every
+    explicitly-typed load stalls (or fails) whenever the Hub is slow/unreachable
+    -- e.g. loading ``LerobotLocalPolicy(pretrained_name_or_path="user/act_ckpt",
+    policy_type="act")`` must not touch the network just to rule out molmoact2.
+    """
+    probed: list[str] = []
+
+    def _tracking_read(path):
+        probed.append(path)
+        return {"type": "act"}
+
+    monkeypatch.setattr(molmoact2, "_read_config_json", _tracking_read)
+
+    for declared in ("act", "diffusion", "pi0", "smolvla"):
+        assert molmoact2.is_molmoact2("user/some-checkpoint", declared) is False
+
+    assert probed == [], f"explicit type must not probe config.json, but read {probed}"
+
+
 def test_is_molmoact2_from_config_transformers_native(monkeypatch):
     """A transformers-native ckpt (model_type=molmoact2, no lerobot type) → True."""
     monkeypatch.setattr(

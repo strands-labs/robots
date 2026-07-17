@@ -1,7 +1,7 @@
 """Pin: shipped ACL example templates scope robot subscribe (no blanket ``**``).
 
-Both ``examples/mesh_acl_example.json5`` and
-``examples/mesh_acl_strict_per_peer.json5`` must:
+Both ``examples/mesh/mesh_acl_example.json5`` and
+``examples/mesh/mesh_acl_strict_per_peer.json5`` must:
 
 1. Load + pass the loader's shape validation (so an operator who copies
    them verbatim gets a working, fail-closed ACL).
@@ -21,8 +21,8 @@ from pathlib import Path
 from strands_robots.mesh import _acl_config
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-_EXAMPLE = _REPO_ROOT / "examples" / "mesh_acl_example.json5"
-_STRICT = _REPO_ROOT / "examples" / "mesh_acl_strict_per_peer.json5"
+_EXAMPLE = _REPO_ROOT / "examples" / "mesh" / "mesh_acl_example.json5"
+_STRICT = _REPO_ROOT / "examples" / "mesh" / "mesh_acl_strict_per_peer.json5"
 
 
 def _load(path: Path) -> dict:

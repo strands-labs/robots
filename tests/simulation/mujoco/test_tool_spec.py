@@ -235,6 +235,23 @@ def test_every_tool_spec_action_has_a_public_method_or_documented_alias():
     assert not offenders, "tool_spec actions must resolve to PUBLIC methods:\n  - " + "\n  - ".join(offenders)
 
 
+def test_tool_spec_declares_create_world_curriculum_knobs() -> None:
+    """The LLM-facing tool_spec must advertise create_world's world/terrain knobs.
+
+    The router accepts any create_world signature param at runtime (it validates
+    against the method signature), but an LLM only forms tool calls from the
+    tool_spec schema it is handed. ``terrain`` + its curriculum companion
+    ``difficulty`` (the terrain-elevation curriculum knob) must both be
+    discoverable there, alongside ``ground_plane``, or an agent driving the sim
+    tool cannot spawn a robot on non-flat / curriculum-scaled ground.
+    """
+    spec_path = Path(__file__).resolve().parents[3] / "strands_robots/simulation/mujoco/tool_spec.json"
+    props = json.loads(spec_path.read_text())["properties"]
+    for knob in ("ground_plane", "terrain", "difficulty"):
+        assert knob in props, f"tool_spec.json must advertise create_world's {knob!r} knob"
+    assert props["difficulty"]["type"] == "number"
+
+
 # Schema-load performance contract
 
 

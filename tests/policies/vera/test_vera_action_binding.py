@@ -121,3 +121,63 @@ def test_action_mapping_override():
     out = run(p, obs)
     assert set(out[0].keys()) == {"x", "y"}, f"action_mapping ignored: {out[0]}"
     print("action_mapping override wins:", list(out[0].keys()))
+
+
+# --- 5) server returns a flat 1-D single-timestep action (H omitted) ---
+def test_flat_1d_action_from_server_is_promoted():
+    # A VERA/RemotePolicy server may return a single-timestep action as a flat
+    # 1-D vector (D,) rather than a 2-D chunk (1, D). The provider must promote
+    # it to a one-row chunk so the per-step mapping still yields exactly one
+    # actuator dict bound to the robot joints - never iterate over scalars.
+    meta = {
+        "action_space": "joint_position",
+        "context_frames": 1,
+        "gripper_dim_index": -1,
+        "gripper_is_raw": False,
+        "view_keys": ["image"],
+    }
+    joints = [f"j{i}" for i in range(6)]
+    flat = [0.1 * i for i in range(6)]  # 1-D, no leading H axis
+    p = make_policy(meta, flat)
+    p.set_robot_state_keys(joints)
+    obs = {"image": np.zeros((8, 8, 3), np.uint8), **{j: 0.0 for j in joints}}
+    out = run(p, obs)
+    assert len(out) == 1, f"1-D action should map to exactly one step, got {len(out)}"
+    d = out[0]
+    assert set(d.keys()) == set(joints), f"flat action not bound to joints: {d.keys()}"
+    assert d["j5"] == np.float32(0.5), f"column values garbled: {d}"
+    print("flat 1-D action promoted + bound:", list(d.keys()))
+
+
+# --- 6) standalone vector mapping reads the gripper contract from meta ---
+def test_vector_to_action_dict_reads_gripper_contract_from_meta():
+    # _vector_to_action_dict is the single-vector mapping helper. When called
+    # without explicit gripper args it must fall back to the server's
+    # gripper_dim_index / gripper_is_raw from meta and binarize a raw gripper
+    # float (>0.5 -> close 1.0), so a standalone caller gets the same contract
+    # as the chunk path.
+    meta = {"gripper_dim_index": 2, "gripper_is_raw": True}
+    joints = ["a", "b", "gripper"]
+    c = FakeClient(meta)
+    p = VeraPolicy(client=c, auto_launch_server=False)
+    p._runner = None
+    p.set_robot_state_keys(joints)
+    out = p._vector_to_action_dict(np.array([0.4, 0.6, 0.9], np.float32), meta)
+    assert set(out.keys()) == set(joints), f"not bound to joints: {out}"
+    assert out["gripper"] == 1.0, f"raw gripper not binarized from meta: {out}"
+    assert out["a"] == np.float32(0.4)
+    print("standalone vector honors meta gripper contract:", out)
+
+
+def test_vector_to_action_dict_meta_gripper_disabled_passthrough():
+    # gripper_is_raw False (already-normalized gripper): the value passes
+    # through unchanged - no >0.5 binarization applied.
+    meta = {"gripper_dim_index": 2, "gripper_is_raw": False}
+    joints = ["a", "b", "gripper"]
+    c = FakeClient(meta)
+    p = VeraPolicy(client=c, auto_launch_server=False)
+    p._runner = None
+    p.set_robot_state_keys(joints)
+    out = p._vector_to_action_dict(np.array([0.4, 0.6, 0.9], np.float32), meta)
+    assert out["gripper"] == np.float32(0.9), f"non-raw gripper altered: {out}"
+    print("non-raw gripper passthrough:", out)
