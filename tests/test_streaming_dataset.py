@@ -63,6 +63,39 @@ def test_open_drops_unknown_kwargs(monkeypatch):
     assert r.dataset.repo_id == "org/ds"
 
 
+def test_repo_type_forwarded_when_supported(monkeypatch):
+    """repo_type reaches a StreamingLeRobotDataset that declares the parameter."""
+
+    class _WithRepoType:
+        def __init__(self, repo_id, repo_type="dataset", **kw):
+            self.repo_id = repo_id
+            self.repo_type = repo_type
+            self.num_frames = self.num_episodes = self.fps = 0
+
+        def __iter__(self):
+            yield {}
+
+    monkeypatch.setattr(sd, "StreamingLeRobotDataset", _WithRepoType, raising=False)
+    r = sd.StreamingDatasetReader.open("org/ds", repo_type="bucket", validate_deltas=False)
+    assert r.dataset.repo_type == "bucket"
+
+
+def test_repo_type_dropped_when_unsupported(monkeypatch):
+    """A constructor without repo_type must not raise when repo_type is passed."""
+
+    class _Narrow:
+        def __init__(self, repo_id):
+            self.repo_id = repo_id
+            self.num_frames = self.num_episodes = self.fps = 0
+
+        def __iter__(self):
+            yield {}
+
+    monkeypatch.setattr(sd, "StreamingLeRobotDataset", _Narrow, raising=False)
+    r = sd.StreamingDatasetReader.open("org/ds", repo_type="bucket", validate_deltas=False)
+    assert r.dataset.repo_id == "org/ds"
+
+
 def test_drop_videos_strips_camera_deltas(monkeypatch):
     monkeypatch.setattr(sd, "StreamingLeRobotDataset", _FakeStreaming, raising=False)
     r = sd.StreamingDatasetReader.open(

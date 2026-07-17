@@ -112,6 +112,7 @@ class StreamingDatasetReader:
         return_uint8: bool = True,  # halves frame bandwidth; policies normalize
         validate_deltas: bool = True,  # parity with the materialized dataset path
         drop_videos: bool = False,  # proprio-only streaming (no torchcodec)
+        repo_type: str = "dataset",  # "dataset" or "bucket"; forwarded only to a lerobot that accepts it
     ) -> StreamingDatasetReader:
         StreamingCls = _get_streaming_cls()
         init_sig = inspect.signature(StreamingCls).parameters
@@ -140,8 +141,12 @@ class StreamingDatasetReader:
             seed=seed,
             shuffle=shuffle,
             return_uint8=return_uint8,
+            repo_type=repo_type,
         )
         for k, v in candidate.items():
+            # repo_type (and any other candidate) is only forwarded to a
+            # StreamingLeRobotDataset that declares it; a version without the
+            # parameter drops it here rather than raising a TypeError.
             if not (accepts_var_kw or k in init_sig):
                 continue
             if k in ("streaming", "shuffle", "return_uint8") or v is not None:
