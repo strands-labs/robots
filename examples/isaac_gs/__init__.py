@@ -42,6 +42,22 @@ Until those merge, ``render`` returns blank frames on a stock build.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+# TYPE_CHECKING-only eager imports so static analyzers (and CodeQL's
+# undefined-export check) see concrete definitions for the lazy
+# attributes below; the runtime __getattr__ resolves them on first
+# access without importing omni at package-import time. PEP 562 --
+# same pattern as strands_robots/__init__.py.
+if TYPE_CHECKING:
+    from examples.isaac_gs.camera_utils import (
+        IsaacCameraParams,
+        get_camera_params,
+        render_rgb_and_depth,
+    )
+    from examples.isaac_gs.compositor import IsaacHybridCompositor
+    from examples.isaac_gs.scene import build_default_scene
+
 __all__ = [
     "IsaacCameraParams",
     "get_camera_params",

@@ -785,7 +785,7 @@ def main(argv: "list[str] | None" = None) -> None:
         app.serve_forever()
     except KeyboardInterrupt:
         # Ctrl-C: fall through to finally/shutdown
-        pass
+        logger.info("Interrupted (Ctrl-C); shutting down.")
     finally:
         app.shutdown()
         try:
