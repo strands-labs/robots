@@ -846,8 +846,8 @@ def main() -> None:
         try:
             if _sim is not None:
                 _sim.destroy()
-        except Exception:
-            pass
+        except Exception:  # noqa: BLE001
+            pass  # best-effort teardown; a destroy() failure must not mask the eval result
         _sim = None
         _on_frame = None
         if server_handle is not None:
@@ -868,7 +868,7 @@ if __name__ == "__main__":
         main()
     except SystemExit:
         raise
-    except BaseException:  # noqa: BLE001 - top-level: log + force non-zero exit
+    except (KeyboardInterrupt, Exception):  # noqa: BLE001 - top-level: log + force non-zero exit
         traceback.print_exc()
         sys.stdout.flush()
         sys.stderr.flush()

@@ -784,7 +784,7 @@ def main(argv: "list[str] | None" = None) -> None:
     try:
         app.serve_forever()
     except KeyboardInterrupt:
-        pass
+        pass  # Ctrl-C is the expected shutdown path; fall through to cleanup.
     finally:
         app.shutdown()
         try:

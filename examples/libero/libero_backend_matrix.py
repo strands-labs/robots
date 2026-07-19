@@ -120,13 +120,12 @@ _BACKEND_ROWS: list[tuple[str, str, list[str]]] = [
     ("isaac-4096", "run_isaac_fleet.py", []),
 ]
 
-# Two grep-stable lines that every per-backend driver produces. Kept
-# in sync with the spec in examples/README.md "Two execution
+# The grep-stable result line that every per-backend driver produces.
+# Kept in sync with the spec in examples/README.md "Two execution
 # patterns" + the `print(...)` calls at the tail of run_mujoco.py and
 # run_isaac.py. If those drift, the parser surfaces an empty
 # ``success_rate`` rather than crashing -- the row will read ``ok``
 # with ``--`` cells and a stderr hint.
-_RE_BENCHMARK = re.compile(r"^benchmark_name=(?P<task>\S+)\s*$", re.MULTILINE)
 _RE_RESULT = re.compile(
     r"^policy=\S+\s+task=\S+\s+" r"success_rate=(?P<sr>[0-9]+\.[0-9]+)\s+" r"wall_time=(?P<wt>[0-9]+\.[0-9]+)s\b",
     re.MULTILINE,

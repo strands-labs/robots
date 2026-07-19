@@ -393,7 +393,7 @@ def build_app(
         render_btn.click(on_render, inputs=[camera_dd], outputs=[preview])
         reset_btn.click(on_reset, outputs=[chatbot, preview, bg_status])
         # Point the live MJPEG <img> at the newly selected camera.
-        camera_dd.change(lambda cam: _live_img_html(cam), inputs=[camera_dd], outputs=[live_view])
+        camera_dd.change(_live_img_html, inputs=[camera_dd], outputs=[live_view])
         apply_bg_btn.click(
             on_background_change,
             inputs=[bg_choice, panorama_file, ply_file, rotation, gs_scene_dd],

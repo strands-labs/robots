@@ -53,7 +53,6 @@ class BackgroundRenderer(Protocol):
             (or any value larger than ``cam.zfar``) so the compositor's depth
             test always picks the foreground.
         """
-        ...
 
 
 # --------------------------------------------------------------------------- #
@@ -823,7 +822,6 @@ def _fit_skybox_transform(
 
 _SPZ_MAGIC = 0x5053474E  # "NGSP"
 _SPZ_COLOR_SCALE = 0.15
-_SPZ_DIM_FOR_DEGREE = {0: 0, 1: 3, 2: 8, 3: 15}
 
 
 def _decode_spz_rotations(rot: np.ndarray, smallest_three: bool) -> np.ndarray:
