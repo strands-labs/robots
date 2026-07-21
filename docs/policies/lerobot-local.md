@@ -217,7 +217,7 @@ policy = create_policy(
     # 30-step chunk the model was trained to replay open-loop is consumed
     # before re-querying vision. Pass an explicit value to override.
 )
-# see examples/molmoact2_so101_pickplace.py
+# see examples/vla/molmoact2_so101_pickplace.py
 ```
 
 MolmoAct2 SO-100/101 was trained for **30-step open-loop chunk replay**

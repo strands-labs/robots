@@ -8,6 +8,7 @@ normalization, drop accounting), plus episode/finalize/push lifecycle.
 """
 
 import logging
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -1787,3 +1788,166 @@ def test_hf_executable_falls_back_to_path(tmp_path, monkeypatch):
     monkeypatch.setattr(shutil, "which", lambda _name: "/usr/bin/hf")
 
     assert dr._hf_executable() == "/usr/bin/hf"
+
+
+# create(overwrite=...) makes re-recording into an existing repo_id honest:
+# LeRobotDataset.create() mkdir()s with exist_ok=False and raises a bare
+# FileExistsError on an existing dir. create() now resolves that up front -
+# overwrite=True wipes and recreates; overwrite=False raises a clear error
+# naming overwrite= / resume() (never a cryptic FileExistsError, never a silent
+# clobber). resolve_dataset_dir() is the shared root resolver the sim facade
+# also uses.
+
+
+class _FakeDatasetOverwriteCreate:
+    """create() records that it ran; it does not touch the filesystem."""
+
+    created = 0
+
+    def __init__(self, repo_id, root=None) -> None:
+        self.repo_id = repo_id
+        self.root = root
+
+    @classmethod
+    def create(
+        cls, repo_id, fps=30, root=None, robot_type="unknown", features=None, use_videos=True, image_writer_threads=4
+    ):
+        cls.created += 1
+        return cls(repo_id, root=root)
+
+
+def test_resolve_dataset_dir_prefers_explicit_root():
+    from strands_robots.dataset_recorder import resolve_dataset_dir
+
+    assert resolve_dataset_dir("user/data", root="/tmp/somewhere") == Path("/tmp/somewhere")
+
+
+def test_resolve_dataset_dir_treats_bare_repo_id_as_local_path():
+    from strands_robots.dataset_recorder import resolve_dataset_dir
+
+    # No owner/name slash -> a local directory path, not $HF_LEROBOT_HOME/<id>.
+    assert resolve_dataset_dir("my_local_dataset") == Path("my_local_dataset")
+
+
+def test_create_raises_clear_error_on_existing_dataset_without_overwrite(tmp_path, monkeypatch):
+    """create() on an existing LeRobotDataset dir (has meta/) and no overwrite
+    raises a clear FileExistsError naming overwrite= and resume() - not a bare
+    LeRobot FileExistsError and not a silent append."""
+    _FakeDatasetOverwriteCreate.created = 0
+    _patch_lerobot_dataset(monkeypatch, _FakeDatasetOverwriteCreate)
+    root = tmp_path / "ds"
+    (root / "meta").mkdir(parents=True)
+
+    with pytest.raises(FileExistsError, match="overwrite=True.*resume|resume.*overwrite"):
+        DatasetRecorder.create("user/data", root=str(root), joint_names=["j1"])
+    # create() must NOT have run, and the existing dataset is left untouched.
+    assert _FakeDatasetOverwriteCreate.created == 0
+    assert (root / "meta").exists()
+
+
+def test_create_overwrite_removes_existing_dataset_then_creates_fresh(tmp_path, monkeypatch):
+    """overwrite=True wipes an existing dataset dir before create() runs."""
+    _FakeDatasetOverwriteCreate.created = 0
+    _patch_lerobot_dataset(monkeypatch, _FakeDatasetOverwriteCreate)
+    root = tmp_path / "ds"
+    (root / "meta").mkdir(parents=True)
+    (root / "meta" / "info.json").write_text("{}")
+
+    recorder = DatasetRecorder.create("user/data", root=str(root), joint_names=["j1"], overwrite=True)
+
+    # The stale dataset content was removed before create() ran fresh.
+    assert not (root / "meta" / "info.json").exists()
+    assert _FakeDatasetOverwriteCreate.created == 1
+    assert recorder.dataset.repo_id == "user/data"
+
+
+def test_create_clears_existing_empty_dir(tmp_path, monkeypatch):
+    """An existing EMPTY dir (e.g. tempfile.mkdtemp()) is cleared so create()
+    does not dead-end on LeRobot's exist_ok=False guard."""
+    _FakeDatasetOverwriteCreate.created = 0
+    _patch_lerobot_dataset(monkeypatch, _FakeDatasetOverwriteCreate)
+    root = tmp_path / "empty_ds"
+    root.mkdir()
+
+    recorder = DatasetRecorder.create("user/data", root=str(root), joint_names=["j1"])
+
+    assert _FakeDatasetOverwriteCreate.created == 1
+    assert recorder.dataset.repo_id == "user/data"
+
+
+def test_create_refuses_nonempty_non_dataset_dir(tmp_path, monkeypatch):
+    """A non-empty dir that is not a LeRobotDataset is never clobbered."""
+    _FakeDatasetOverwriteCreate.created = 0
+    _patch_lerobot_dataset(monkeypatch, _FakeDatasetOverwriteCreate)
+    root = tmp_path / "notes"
+    root.mkdir()
+    (root / "important.txt").write_text("do not delete")
+
+    with pytest.raises(ValueError, match="not a LeRobotDataset"):
+        DatasetRecorder.create("user/data", root=str(root), joint_names=["j1"])
+    assert _FakeDatasetOverwriteCreate.created == 0
+    assert (root / "important.txt").exists()
+
+
+# create() target resolution also handles a repo_id/root that points at an
+# existing plain FILE (not a directory) - e.g. an agent passing root= to a path
+# that already holds a file. overwrite=False must refuse with a clear "not a
+# directory" error rather than dead-ending inside LeRobotDataset.create();
+# overwrite=True removes the file so a fresh dataset can be created in its place.
+
+
+def test_create_refuses_file_target_without_overwrite(tmp_path, monkeypatch):
+    """A file at the resolved target (not a dir) raises a clear ValueError and
+    never runs create() or deletes the file."""
+    _FakeDatasetOverwriteCreate.created = 0
+    _patch_lerobot_dataset(monkeypatch, _FakeDatasetOverwriteCreate)
+    target = tmp_path / "not_a_dir"
+    target.write_text("i am a file")
+
+    with pytest.raises(ValueError, match="not a directory"):
+        DatasetRecorder.create("user/data", root=str(target), joint_names=["j1"])
+    assert _FakeDatasetOverwriteCreate.created == 0
+    assert target.is_file()
+    assert target.read_text() == "i am a file"
+
+
+def test_create_overwrite_replaces_file_target_then_creates_fresh(tmp_path, monkeypatch):
+    """overwrite=True on a file target unlinks it before create() runs fresh."""
+    _FakeDatasetOverwriteCreate.created = 0
+    _patch_lerobot_dataset(monkeypatch, _FakeDatasetOverwriteCreate)
+    target = tmp_path / "stale"
+    target.write_text("stale contents")
+
+    recorder = DatasetRecorder.create("user/data", root=str(target), joint_names=["j1"], overwrite=True)
+
+    assert not target.exists()
+    assert _FakeDatasetOverwriteCreate.created == 1
+    assert recorder.dataset.repo_id == "user/data"
+
+
+# resolve_dataset_dir() mirrors LeRobotDataset root resolution. When lerobot is
+# not importable it must fall back to the documented default dataset home
+# (~/.cache/huggingface/lerobot) instead of raising, so callers can still
+# inspect the target path in a lerobot-less environment.
+
+
+def test_resolve_dataset_dir_falls_back_to_default_home_when_lerobot_absent(monkeypatch):
+    import importlib
+
+    from strands_robots.dataset_recorder import resolve_dataset_dir
+
+    # Removing HF_LEROBOT_HOME from lerobot's constants module makes
+    # `from lerobot.utils.constants import HF_LEROBOT_HOME` raise ImportError,
+    # exercising the documented default-home fallback without disturbing any
+    # other lerobot import (the module object itself is left in place).
+    # When lerobot is installed, drop the constant so the import fails; when it
+    # is absent the fallback is already the natural path - both reach line 216.
+    try:
+        constants = importlib.import_module("lerobot.utils.constants")
+        monkeypatch.delattr(constants, "HF_LEROBOT_HOME", raising=False)
+    except ImportError:  # lerobot not installed; the fallback path is what we test
+        pass
+
+    resolved = resolve_dataset_dir("user/data")
+
+    assert resolved == Path.home() / ".cache" / "huggingface" / "lerobot" / "user" / "data"

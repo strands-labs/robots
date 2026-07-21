@@ -13,6 +13,7 @@ background process tracked in an on-disk session store, and ``status``/``stop``/
 ``list`` manage it.
 """
 
+import dataclasses
 import json
 import logging
 import os
@@ -35,9 +36,36 @@ SESSION_DIR = Path.cwd() / ".strands_robots/.sessions"
 SESSION_DIR.mkdir(parents=True, exist_ok=True)
 
 # Policy families that train an action expert on top of a frozen VLM. Only these
-# accept ``--policy.train_expert_only``; emitting it elsewhere is a hard error in
-# lerobot, so callers that pass it on an unsupported policy should be told why.
-_EXPERT_ONLY_POLICIES = {"pi0", "pi05", "pi0_fast", "smolvla"}
+# accept ``--policy.train_expert_only``; emitting it on any other policy is a hard
+# error in lerobot, so callers that pass it on an unsupported policy are told why.
+# The supported set is sourced LIVE from lerobot (the policy configs that declare a
+# ``train_expert_only`` field) so it tracks lerobot instead of drifting against a
+# hardcoded copy; the static snapshot below is the FALLBACK when lerobot is not
+# importable. pi0_fast is intentionally absent - its config has no such field.
+_EXPERT_ONLY_POLICIES_FALLBACK = frozenset({"pi0", "pi05", "smolvla"})
+
+
+def _expert_only_policy_types() -> frozenset[str]:
+    """LeRobot policy types whose config declares ``train_expert_only``.
+
+    Read live from lerobot's ``PreTrainedConfig`` registry so this tracks
+    lerobot (a policy that gains or loses expert-only support is picked up with
+    no change here) instead of drifting against a hardcoded copy. Falls back to
+    the documented static snapshot when lerobot is not importable.
+    """
+    try:
+        import lerobot.policies  # noqa: F401  (register_subclass side effect)
+        from lerobot.configs.policies import PreTrainedConfig
+
+        return frozenset(
+            name
+            for name, cfg_cls in PreTrainedConfig.get_known_choices().items()
+            if any(f.name == "train_expert_only" for f in dataclasses.fields(cfg_cls))
+        )
+    except Exception:  # noqa: BLE001 - offline / lerobot missing -> static fallback
+        return _EXPERT_ONLY_POLICIES_FALLBACK
+
+
 # Security: flags that must not be overridden via extra_flags passthrough.
 # These control file output paths, remote telemetry, and code-loading paths
 # that an LLM agent (or prompt injection) could abuse. Gated by a HIL
@@ -290,9 +318,10 @@ def build_train_command(
         raise ValueError(
             "lora and train_expert_only are mutually exclusive (both freeze the VLM). Pick one fine-tuning strategy."
         )
-    if train_expert_only and policy_type not in _EXPERT_ONLY_POLICIES:
+    expert_only_policies = _expert_only_policy_types()
+    if train_expert_only and policy_type not in expert_only_policies:
         raise ValueError(
-            f"train_expert_only is only valid for {sorted(_EXPERT_ONLY_POLICIES)} policies, not '{policy_type}'."
+            f"train_expert_only is only valid for {sorted(expert_only_policies)} policies, not '{policy_type}'."
         )
     if num_gpus < 1:
         raise ValueError(f"num_gpus must be >= 1, got {num_gpus}")
@@ -418,8 +447,9 @@ def lerobot_train(
     Memory-fit levers:
         ``lora`` and ``train_expert_only`` both freeze the VLM and are mutually
         exclusive; setting both fails fast. ``lora`` emits ``--peft.method_type=LORA``
-        plus the supplied ``--peft.*`` overrides. ``train_expert_only`` only
-        applies to pi0/pi05/pi0_fast/smolvla.
+        plus the supplied ``--peft.*`` overrides. ``train_expert_only`` applies
+        only to policies whose lerobot config exposes it (currently pi0/pi05/
+        smolvla; sourced live so it tracks lerobot).
 
     Overfit guard:
         ``val_episodes=N`` reserves the LAST N episodes for evaluation by training
@@ -457,7 +487,8 @@ def lerobot_train(
         lora_r: LoRA rank.
         lora_alpha: LoRA alpha (scaling = lora_alpha / r).
         lora_target_modules: PEFT target module spec (e.g. "all-linear").
-        train_expert_only: Freeze the VLM, train only the action expert (pi-family).
+        train_expert_only: Freeze the VLM, train only the action expert
+            (policies exposing train_expert_only: pi0/pi05/smolvla).
         val_episodes: Reserve the LAST N episodes as a held-out validation split.
         num_gpus: Number of GPUs; >1 launches via accelerate --multi_gpu.
         push_to_hub: Push the trained checkpoint to the HF Hub at the end.

@@ -185,7 +185,7 @@ def _warn_none_opt_out_once() -> None:
 # expression and buffers matching traffic into ``inbox`` for the agent to
 # read. Without a topic allowlist a prompt-injected agent can subscribe to
 # another peer's cmd / state / camera / input streams and exfiltrate them
-# into the LLM context. The transport ACL (examples/mesh_acl_example.json5)
+# into the LLM context. The transport ACL (examples/mesh/mesh_acl_example.json5)
 # is the primary control; this tool-layer allowlist is defence in depth so
 # the leak is blocked even on a mesh running the permissive default ACL.
 #
@@ -407,8 +407,8 @@ def _rate_limit_check_and_record(action: str) -> str | None:
 def _audit_tool_action(action: str, target: str, success: bool, detail: str) -> None:
     """Best-effort audit log of every safety-significant tool call.
 
-    R7-5: a swallowed exception with no log line means a broken audit
-    path silently disappears. Match the ``core.py:_on_cmd`` pattern -
+    A swallowed exception with no log line means a broken audit
+    path silently disappears. Match the :meth:`~strands_robots.mesh.core.Mesh._on_cmd` pattern -
     log at DEBUG so operators investigating "why don't I see my LLM
     tool actions in the audit log?" get a breadcrumb without flooding
     production. Audit failures must NEVER propagate up into the safety
@@ -847,7 +847,7 @@ def robot_mesh(
         _audit_tool_action(action, target, False, f"rate_limit: {rl_err}")
         return _err(rl_err)
 
-    # R8-7: parse + validate any command body BEFORE the HITL interrupt so
+    # Parse + validate any command body BEFORE the HITL interrupt so
     # the operator never approves an action the validator then rejects
     # (which would burn an audit "operator approved" record and a
     # rate-limit slot for an action that never ran). This applies to
@@ -929,7 +929,7 @@ def robot_mesh(
             if _fleet_wide
             else f"Physical effect on peer '{target}'. Reply 'y' to approve, anything else to deny."
         )
-        # R8-7: surface the validated command (post-validation form) so the
+        # Surface the validated command (post-validation form) so the
         # operator approves what will actually dispatch, not the raw LLM
         # string. tell/stop/emergency_stop have no JSON command body.
         _approval_command = (
@@ -1093,7 +1093,9 @@ def robot_mesh(
         # above (so the operator approves the validated form). Reuse that
         # result rather than re-parsing the LLM string a second time.
         if validated_send_cmd is None:
-            raise RuntimeError("send reached its handler without pre-validation -- R8-7 contract broken")
+            raise RuntimeError(
+                "send reached its handler without pre-validation -- validate-before-HITL contract broken"
+            )
         cmd = validated_send_cmd
         try:
             result = mesh.send(target, cmd, timeout=timeout)
@@ -1105,13 +1107,15 @@ def robot_mesh(
 
     # ── action: broadcast ─────────────────────────────────────────────────
     if action == "broadcast":
-        # R8-7: pre-validated above before the HITL interrupt fired, so
+        # Pre-validated above before the HITL interrupt fired, so
         # the cmd here is already a clean validated dict.
         # Use explicit raise (not assert) -- assert is stripped under
         # ``python -O`` / ``PYTHONOPTIMIZE=1`` which would silently send
         # an unvalidated cmd to mesh.broadcast.
         if validated_broadcast_cmd is None:
-            raise RuntimeError("broadcast reached its handler without pre-validation -- R8-7 contract broken")
+            raise RuntimeError(
+                "broadcast reached its handler without pre-validation -- validate-before-HITL contract broken"
+            )
         cmd = validated_broadcast_cmd
         try:
             results = mesh.broadcast(cmd, timeout=timeout)

@@ -7,7 +7,8 @@ rotation) plus an optional gripper column. MuJoCo arm actuators are commanded in
 Cartesian *delta* onto an absolute target pose and solves it to joint angles.
 
 This module is **copied** from (and intentionally independent of) the cosmos3
-``sim_ik.py``: the cosmos3 version decodes an *absolute* EE pose trajectory
+IK bridge, :mod:`~strands_robots.policies.cosmos3.sim_ik`: that module decodes
+an *absolute* EE pose trajectory
 (translation + rot6d) for its in-process diffusers backend, whereas VERA emits
 *relative* deltas. Copying (rather than sharing) keeps the two providers'
 kinematics decoupled - a change to one model's action semantics can never

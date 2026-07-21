@@ -424,3 +424,95 @@ def test_cosmos3_policy_transport_param():
     from strands_robots.policies.cosmos3 import Cosmos3Policy
 
     assert "transport" in inspect.signature(Cosmos3Policy.__init__).parameters
+
+
+# --- Observation/action-chunk guard branches ------------------------------
+# These pin the client-side validation paths that keep a malformed observation
+# or action chunk from reaching (or silently mis-shaping data for) the RoboLab
+# server: the degenerate no-camera embodiment guard, the mapping-provided
+# joint-state pass-through, the trailing-state-key gripper fallback, and the
+# action-chunk rank check.
+
+
+def test_mapping_provided_joint_state_passes_through_untouched():
+    """When the observation_mapping already supplies observation/joint_position
+    and observation/gripper_position, _attach_joint_state must leave them as-is
+    (early return) rather than recomputing from robot_state_keys."""
+    client = FakeClient(_droid_chunk())
+    js = np.array([[0.11, 0.22, 0.33, 0.44, 0.55, 0.66, 0.77]], dtype=np.float32)
+    gs = np.array([[0.9]], dtype=np.float32)
+    p = Cosmos3Policy(
+        embodiment="droid",
+        client=client,
+        observation_mapping={
+            "cam_w": "observation/wrist_image_left",
+            "cam_e1": "observation/exterior_image_1_left",
+            "cam_e2": "observation/exterior_image_2_left",
+            "my_joints": "observation/joint_position",
+            "my_grip": "observation/gripper_position",
+        },
+    )
+    img = np.zeros((360, 640, 3), dtype=np.uint8)
+    obs = {"cam_w": img, "cam_e1": img, "cam_e2": img, "my_joints": js, "my_grip": gs}
+    asyncio.run(p.get_actions(obs, "go"))
+    # Mapped, non-image state values pass straight through unchanged.
+    np.testing.assert_array_equal(client.last_obs["observation/joint_position"], js)
+    np.testing.assert_array_equal(client.last_obs["observation/gripper_position"], gs)
+
+
+def test_trailing_state_key_used_as_gripper_fallback():
+    """joint_pos with 8 non-gripper-named state keys: joints are the first 7 and
+    the 8th key is taken as the gripper (no gripper/finger name required)."""
+    client = FakeClient(_droid_chunk())
+    p = Cosmos3Policy(embodiment="droid", client=client)
+    keys = [f"axis_{i}" for i in range(8)]  # none named gripper/finger
+    p.set_robot_state_keys(keys)
+    img = np.zeros((360, 640, 3), dtype=np.uint8)
+    obs = {
+        "observation/wrist_image_left": img,
+        "observation/exterior_image_1_left": img,
+        "observation/exterior_image_2_left": img,
+    }
+    for i, k in enumerate(keys):
+        obs[k] = 0.1 * i
+    asyncio.run(p.get_actions(obs, "go"))
+    # 8th state key (axis_7 -> 0.7) becomes the gripper; first 7 become joints.
+    assert client.last_obs["observation/gripper_position"].shape == (1, 1)
+    assert client.last_obs["observation/gripper_position"][0, 0] == pytest.approx(0.7)
+    np.testing.assert_allclose(
+        client.last_obs["observation/joint_position"][0],
+        [0.1 * i for i in range(7)],
+        rtol=1e-6,
+    )
+
+
+def test_degenerate_embodiment_without_cameras_still_requires_a_frame(monkeypatch):
+    """An embodiment that declares no camera_keys must still enforce
+    requires_images: a state-only observation fails fast client-side."""
+    from strands_robots.policies.cosmos3 import embodiments as emb
+
+    nocam = emb.Cosmos3Embodiment(
+        name="nocam_test",
+        domain_name="nocam_test",
+        raw_action_dim=2,
+        action_chunk_size=1,
+        fps=10,
+        camera_keys=[],
+        action_layouts={"midtrain": ["a", "b"]},
+        default_action_space="midtrain",
+    )
+    monkeypatch.setitem(emb.EMBODIMENTS, "nocam_test", nocam)
+    client = FakeClient(np.zeros((1, 2), dtype=np.float32))
+    p = Cosmos3Policy(embodiment="nocam_test", client=client)
+    with pytest.raises(ValueError, match="at least one camera frame"):
+        asyncio.run(p.get_actions({"state": 0.5}, "go"))
+    # Nothing was forwarded to the server.
+    assert client.last_obs is None
+
+
+def test_unpack_rejects_rank_3_chunk():
+    """An action chunk that is neither [D] nor [T, D] is rejected with a clear
+    shape error instead of being silently reshaped."""
+    p = _make_droid_policy()
+    with pytest.raises(ValueError, match="expected action chunk"):
+        p._unpack_actions(np.zeros((2, 3, 4), dtype=np.float32))

@@ -324,15 +324,23 @@ class RenderingMixin:
             if jnt_id < 0 and pfx:
                 jnt_id = mj.mj_name2id(model, mj.mjtObj.mjOBJ_JOINT, jnt_name)
             if jnt_id >= 0:
-                obs[jnt_name] = float(data.qpos[model.jnt_qposadr[jnt_id]])
                 # A FREE joint (6-DoF floating base) has no single hinge/slide
-                # position; its qpos is [xyz(3) + quat(4)] and qvel is
-                # [linvel(3) + angvel(3)]. Record its id so we can surface the
-                # base orientation + angular velocity below, and skip the
-                # scalar ``.vel`` for it (it isn't a 1-DoF joint).
+                # position: its qpos is [xyz(3) + quat(4)] and qvel is
+                # [linvel(3) + angvel(3)]. Emitting obs[<free-joint>] =
+                # qpos[jnt_qposadr] reports the base x-coordinate as a joint
+                # angle and silently drops the y/z position + the full
+                # orientation and twist - a degenerate, misleading scalar (and a
+                # duplicate of base_pos.x that pollutes a recorded
+                # observation.state). Record its id so the full base pose +
+                # twist is surfaced below as the structured base_pos /
+                # base_quat / base_lin_vel / base_ang_vel keys, and skip the
+                # scalar (and its ``.vel``) entirely - matching get_robot_state,
+                # which likewise excludes the free joint from the per-joint
+                # scalar state.
                 if model.jnt_type[jnt_id] == mj.mjtJoint.mjJNT_FREE:
                     free_jnt_id = jnt_id
                     continue
+                obs[jnt_name] = float(data.qpos[model.jnt_qposadr[jnt_id]])
                 # Per-joint velocity (hinge/slide): dof index addresses qvel.
                 # Additive key (``<name>.vel``) - existing position-only
                 # consumers (dataset recording, arm policies) are unaffected;
@@ -844,7 +852,7 @@ class RenderingMixin:
                     "content": [
                         {
                             "text": (
-                                " Rendering unavailable (no OpenGL context). "
+                                "Rendering unavailable (no OpenGL context). "
                                 "Install EGL or OSMesa for offscreen rendering: "
                                 "apt-get install libosmesa6-dev"
                             )
@@ -987,7 +995,7 @@ class RenderingMixin:
                     "content": [
                         {
                             "text": (
-                                " Depth rendering unavailable (no OpenGL context). "
+                                "Depth rendering unavailable (no OpenGL context). "
                                 "Install EGL or OSMesa for offscreen rendering."
                             )
                         }

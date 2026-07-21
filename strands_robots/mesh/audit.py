@@ -179,9 +179,8 @@ _PSK_STATE_LOCK = threading.Lock()
 class _ProcessAuditState:
     """Container for module-level mutable flags.
 
-    Same rationale as ``mesh/security.py::_ProcessSecurityState``: we
-    keep the one-shot ``loaded`` flag on an instance attribute so static
-    analysers see a normal attribute read+write rather than a
+    We keep the one-shot ``loaded`` flag on an instance attribute so
+    static analysers see a normal attribute read+write rather than a
     ``global`` declaration on a module-level scalar (which CodeQL's
     "unused global variable" rule mis-classifies -- alert #222).
 
@@ -950,8 +949,7 @@ def _ensure_paths(path: Path) -> None:
     Defence: if the audit log path is a SYMLINK (potentially pointing
     to attacker-controlled territory like ``/dev/null`` or another
     process's file), refuse to operate. The audit log must always be
-    a real regular file at the canonical location. See
-    review feedback round 4 (symlink-swap defence).
+    a real regular file at the canonical location.
     """
     parent = path.parent
     parent.mkdir(parents=True, exist_ok=True)
@@ -979,8 +977,8 @@ def _ensure_paths(path: Path) -> None:
         # create with O_NOFOLLOW so an attacker who races a
         # symlink in between the is_symlink check above and this open
         # cannot redirect the create. ``Path.touch`` follows symlinks
-        # (the symlink-refusal and fail-soft contracts are pinned in
-        # tests/mesh/test_audit_log_symlink_refused.py). On Windows where
+        # (the symlink-refusal and fail-soft contracts are exercised by the
+        # mesh audit test suite). On Windows where
         # O_NOFOLLOW is 0 the static check above is the only line of
         # defence; this matches the residual-risk note in the module
         # docstring.
@@ -1021,7 +1019,7 @@ def log_safety_event(event_type: str, peer_id: str, payload: dict[str, Any]) -> 
     try:
         seq = _next_seq(peer_id)
     except SeqLockSymlinkError as exc:
-        # PR#221 R3 (issue #238): the seq lockfile is a symlink. Raise
+        # The seq lockfile is a symlink (issue #238). Raise
         # the visible signal: write a poison record with
         # ``sig="SEQ_LOCK_DEGRADED"`` so verify_audit_integrity walkers
         # see a gap on this peer's stream. seq is unknown -- use 0 as

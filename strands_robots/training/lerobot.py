@@ -88,6 +88,13 @@ _SUPPORTED_METHODS = {"full", "lora", "expert_only"}
 # FALLBACK. Currently the pi0 family and groot expose the field.
 _RELATIVE_ACTION_POLICY_TYPES_FALLBACK = frozenset({"pi0", "pi05", "pi0_fast", "groot"})
 
+# LeRobot policy types whose config exposes ``train_expert_only`` (freeze the
+# (V)LM backbone, train only the action expert - the cheap VLA finetune recipe).
+# Discovered live per policy type off the config class (see
+# :func:`_policy_supports_expert_only`); the static set is the offline FALLBACK.
+# Currently pi0, pi05, and smolvla expose the field (pi0_fast does NOT).
+_EXPERT_ONLY_POLICY_TYPES_FALLBACK = frozenset({"pi0", "pi05", "smolvla"})
+
 # RA-BC (Reward-Aligned Behavior Cloning) is surfaced to the agent through the
 # ``extra['sample_weighting']`` dict. lerobot >= 0.5.2 configures sample
 # weighting via a NESTED ``SampleWeightingConfig`` on ``TrainPipelineConfig``
@@ -165,6 +172,28 @@ def _policy_supports_relative_actions(ptype: str) -> bool:
     if reg is not None and ptype in reg:
         return any(f.name == "use_relative_actions" for f in dataclasses.fields(reg[ptype]))
     return ptype in _RELATIVE_ACTION_POLICY_TYPES_FALLBACK
+
+
+def _policy_supports_expert_only(ptype: str) -> bool:
+    """Whether ``ptype``'s lerobot config exposes ``train_expert_only``.
+
+    ``method="expert_only"`` freezes the VLM and trains only the action expert -
+    the standard cheap VLA finetune. lerobot implements it as a per-policy
+    ``config.train_expert_only`` field; requesting it on a policy whose config
+    lacks the field is either a silent no-op (in-process ``build_config`` guards
+    on ``hasattr`` and never flips the flag, so the run silently full-finetunes
+    the backbone while reporting success) or a hard draccus error (the CLI
+    ``--policy.train_expert_only`` flag), so it must be gated by the policy's
+    actual capability. Probed live off the registry's config *class* (a
+    dataclass field lookup, no instantiation - so no device warnings or
+    construction cost), so any policy lerobot adds with expert-only support is
+    recognized with zero per-type maintenance. Falls back to the documented
+    static set when lerobot's registry is unavailable offline.
+    """
+    reg = _policy_registry()
+    if reg is not None and ptype in reg:
+        return any(f.name == "train_expert_only" for f in dataclasses.fields(reg[ptype]))
+    return ptype in _EXPERT_ONLY_POLICY_TYPES_FALLBACK
 
 
 def _reward_registry() -> dict[str, type] | None:
@@ -248,11 +277,12 @@ class LerobotTrainer(Trainer):
 
     @property
     def provider_name(self) -> str:
+        """Provider identity - pairs with the ``lerobot_local`` inference policy."""
         return "lerobot_local"
 
     @property
     def hardware_floor(self) -> dict[str, Any]:
-        # ACT fits a consumer GPU; large VLAs (pi05) want an L40S. Advisory.
+        """Advisory floor: ACT fits a consumer 8 GB GPU; large VLAs (pi05) want an L40S."""
         return {"min_gpus": 1, "min_vram_gb": 8, "multinode": False}
 
     # ---- helpers -----------------------------------------------------------
@@ -420,6 +450,17 @@ class LerobotTrainer(Trainer):
     # ---- ABC ---------------------------------------------------------------
 
     def validate(self, spec: TrainSpec) -> list[str]:
+        """Pure preflight for a LeRobot policy- or reward-model run.
+
+        Runs the shared input-safety gate, then checks a data source -
+        exactly one of a local LeRobotDataset v3 ``dataset_root`` or a Hub
+        ``dataset_repo_id`` (for streaming) - an ``output_dir``, positive
+        ``steps``, single-node only (``num_nodes == 1``), a ``val_episodes``
+        split below the dataset total, and that ``lerobot.scripts.lerobot_train``
+        is importable. ``extra['reward_model']`` switches to reward-model
+        preflight; otherwise the default policy path is checked. Returns the
+        problem list; empty means launchable. Read-only.
+        """
         problems: list[str] = self._security_problems(spec)
 
         # Data source: either a local v3 root, or a Hub repo id (streaming the
@@ -503,6 +544,14 @@ class LerobotTrainer(Trainer):
                 f"relative_actions is not supported by policy_type '{ptype}' "
                 f"(only {supported} expose use_relative_actions); "
                 "drop extra['relative_actions'] or pick a supporting policy"
+            )
+
+        if spec.method == "expert_only" and not _policy_supports_expert_only(ptype):
+            supported = sorted(t for t in _lerobot_policy_types() if _policy_supports_expert_only(t))
+            problems.append(
+                f"method 'expert_only' is not supported by policy_type '{ptype}' "
+                f"(only {supported} expose train_expert_only); "
+                "use method='full' or pick a supporting policy"
             )
 
         sw = spec.extra.get("sample_weighting")
@@ -590,7 +639,7 @@ class LerobotTrainer(Trainer):
         if root:
             cmd.append(f"--dataset.root={root}")
         if rm is not None:
-            cmd.extend(self._reward_model_command_flags(rm))
+            cmd.extend(self._reward_model_command_flags(rm, spec.base_model))
         else:
             ptype = self._resolve_policy_type(spec)
             cmd.append(f"--policy.type={ptype}")
@@ -647,11 +696,18 @@ class LerobotTrainer(Trainer):
             cmd.append(f"--{key}={value}")
         return cmd
 
-    def _reward_model_command_flags(self, rm: dict[str, Any]) -> list[str]:
+    def _reward_model_command_flags(self, rm: dict[str, Any], base_model: str = "") -> list[str]:
         """argv-parity flags for a reward-model run (``--reward_model.*``)."""
         rtype = self._reward_model_type(rm)
         friendly = _reward_friendly_fields(rtype)
         flags = [f"--reward_model.type={rtype}", f"--reward_model.device={self.device}"]
+        # Warm-start checkpoint: build_config sets reward_cfg.pretrained_path from
+        # spec.base_model, so the equivalent CLI must set it too (mirrors the policy
+        # path's --policy.pretrained_path). Omitting it left the documented
+        # reward-model CLI training from scratch (pretrained_path defaults to None)
+        # instead of warm-starting from base_model.
+        if base_model:
+            flags.append(f"--reward_model.pretrained_path={base_model}")
         for key, value in rm.items():
             if key != "type" and key in friendly:
                 flags.append(f"--reward_model.{key}={value}")
@@ -878,6 +934,15 @@ class LerobotTrainer(Trainer):
         return cfg
 
     def train(self, spec: TrainSpec) -> TrainResult:
+        """Run LeRobot training in-process via ``lerobot_train.train(cfg)``.
+
+        Fails closed on any :meth:`validate` problem, builds the
+        ``TrainPipelineConfig`` from the spec (policy or reward-model path,
+        resume, learning rate), and calls lerobot's own training function
+        directly. ``num_gpus > 1`` spawns workers via torch
+        ``elastic_launch``. Blocks until the run terminates and returns a
+        terminal ``TrainResult`` with the checkpoint dir + metrics verdict.
+        """
         problems = self.validate(spec)
         if problems:
             return TrainResult(

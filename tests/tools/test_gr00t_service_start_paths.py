@@ -29,7 +29,10 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from strands_robots.tools.gr00t_inference import (
+    _build_image,
+    _download_checkpoint,
     _is_service_running,
+    _start_service,
     gr00t_inference,
 )
 
@@ -125,3 +128,182 @@ class TestDownloadCheckpointDispatch:
         mock_dl.assert_called_once()
         assert mock_dl.call_args.kwargs["hf_repo"] == "nvidia/GR00T-N1.5-3B"
         assert mock_dl.call_args.kwargs["hf_subfolder"] == "ckpt"
+
+
+class TestStartServiceResponseSurface:
+    """A successful start advertises the transport-specific fields it enabled.
+
+    An operator/LLM reading the start response relies on it to reflect exactly
+    what was launched: when TensorRT is on, the compiled-engine config is echoed
+    back; when the HTTP transport is on, the REST endpoint URL is surfaced so the
+    caller can POST observations without reconstructing ``host:port/act`` itself.
+    """
+
+    @patch(f"{_MODULE}._is_service_running", return_value=True)
+    @patch(f"{_MODULE}.subprocess.run")
+    def test_tensorrt_and_http_fields_surface_in_response(self, mock_run, _mock_is_running):
+        mock_run.return_value.stdout = ""
+        mock_run.return_value.stderr = ""
+        result = _start_service(
+            checkpoint_path="/data/checkpoints/so100",
+            port=8000,
+            data_config="so100",
+            embodiment_tag="so100",
+            denoising_steps=4,
+            host="127.0.0.1",
+            container_name="gr00t",
+            policy_name=None,
+            timeout=2,
+            use_tensorrt=True,
+            trt_engine_path="/engines/so100.plan",
+            vit_dtype="fp8",
+            llm_dtype="nvfp4",
+            dit_dtype="fp8",
+            http_server=True,
+            api_token=None,
+            protocol="n1.5",
+            use_sim_policy_wrapper=False,
+        )
+        assert result["status"] == "success"
+        # HTTP transport surfaces a ready-to-POST endpoint URL.
+        assert result["protocol"] == "HTTP"
+        assert result["endpoint"] == "http://127.0.0.1:8000/act"
+        # TensorRT surfaces the exact compiled-engine config that was requested.
+        assert result["tensorrt"] == {
+            "enabled": True,
+            "engine_path": "/engines/so100.plan",
+            "vit_dtype": "fp8",
+            "llm_dtype": "nvfp4",
+            "dit_dtype": "fp8",
+        }
+
+    @patch(f"{_MODULE}._is_service_running", return_value=True)
+    @patch(f"{_MODULE}.subprocess.run")
+    def test_zmq_start_omits_endpoint_and_tensorrt(self, mock_run, _mock_is_running):
+        """Fields for transports/accelerators that were NOT enabled must be absent."""
+        mock_run.return_value.stdout = ""
+        result = _start_service(
+            checkpoint_path="/cp",
+            port=5555,
+            data_config="so100",
+            embodiment_tag="so100",
+            denoising_steps=4,
+            host="127.0.0.1",
+            container_name="gr00t",
+            policy_name=None,
+            timeout=2,
+            use_tensorrt=False,
+            trt_engine_path="x",
+            vit_dtype="fp8",
+            llm_dtype="nvfp4",
+            dit_dtype="fp8",
+            http_server=False,
+            api_token=None,
+            protocol="n1.5",
+            use_sim_policy_wrapper=False,
+        )
+        assert result["status"] == "success"
+        assert "endpoint" not in result
+        assert "tensorrt" not in result
+
+
+class TestBuildImageGuards:
+    """``_build_image`` re-asserts URL/tag guards before touching git/bash.
+
+    The dispatch boundary already validates these, but the private helper is
+    reachable by operators/tests, so it fails closed on a malformed ref rather
+    than passing attacker-influenced input into a ``git clone`` subprocess.
+    """
+
+    def test_malformed_tag_rejected_before_any_subprocess(self):
+        with patch(f"{_MODULE}.subprocess.run") as mock_run:
+            result = _build_image(
+                repo_url="https://github.com/NVIDIA/Isaac-GR00T",
+                repo_tag="; rm -rf /",
+                image_name="isaac-gr00t:local",
+                force=False,
+            )
+        assert result["status"] == "error"
+        assert "not a valid git ref" in result["message"]
+        mock_run.assert_not_called()
+
+
+class TestDownloadCheckpointErrors:
+    """``_download_checkpoint`` degrades HF failures into a structured error."""
+
+    def test_snapshot_download_failure_returns_structured_error(self, tmp_path):
+        fake_hub = MagicMock()
+        fake_hub.snapshot_download.side_effect = RuntimeError("401 gated repo")
+        with (
+            patch(f"{_MODULE}._checkpoints_dir", return_value=tmp_path),
+            patch(f"{_MODULE}.require_optional", return_value=fake_hub),
+        ):
+            result = _download_checkpoint(
+                hf_repo="nvidia/GR00T-N1.5-3B",
+                hf_subfolder=None,
+                hf_local_dir=None,
+                hf_token=None,
+                force=False,
+            )
+        assert result["status"] == "error"
+        assert "Failed to download" in result["message"]
+        assert "401 gated repo" in result["message"]
+
+
+class TestStartServicePolling:
+    """The start loop polls until the service is reachable, then degrades cleanly."""
+
+    @patch(f"{_MODULE}.time.sleep")
+    @patch(f"{_MODULE}._is_service_running", side_effect=[False, True])
+    @patch(f"{_MODULE}.subprocess.run")
+    def test_retries_until_service_ready(self, mock_run, _mock_probe, mock_sleep):
+        mock_run.return_value.stdout = ""
+        result = _start_service(
+            checkpoint_path="/cp",
+            port=5555,
+            data_config="so100",
+            embodiment_tag="so100",
+            denoising_steps=4,
+            host="127.0.0.1",
+            container_name="gr00t",
+            policy_name=None,
+            timeout=5,
+            use_tensorrt=False,
+            trt_engine_path="x",
+            vit_dtype="fp8",
+            llm_dtype="nvfp4",
+            dit_dtype="fp8",
+            http_server=False,
+            api_token=None,
+            protocol="n1.5",
+            use_sim_policy_wrapper=False,
+        )
+        assert result["status"] == "success"
+        # The probe returned False once, so the loop slept before re-probing.
+        mock_sleep.assert_called_once_with(1)
+
+    @patch(f"{_MODULE}.subprocess.run", side_effect=ValueError("bad argv encoding"))
+    def test_unexpected_exception_returns_structured_error(self, _mock_run):
+        result = _start_service(
+            checkpoint_path="/cp",
+            port=5555,
+            data_config="so100",
+            embodiment_tag="so100",
+            denoising_steps=4,
+            host="127.0.0.1",
+            container_name="gr00t",
+            policy_name=None,
+            timeout=2,
+            use_tensorrt=False,
+            trt_engine_path="x",
+            vit_dtype="fp8",
+            llm_dtype="nvfp4",
+            dit_dtype="fp8",
+            http_server=False,
+            api_token=None,
+            protocol="n1.5",
+            use_sim_policy_wrapper=False,
+        )
+        assert result["status"] == "error"
+        assert "Unexpected error" in result["message"]
+        assert "bad argv encoding" in result["message"]

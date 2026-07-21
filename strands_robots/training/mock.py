@@ -25,6 +25,7 @@ class MockTrainer(Trainer):
 
     @property
     def provider_name(self) -> str:
+        """Provider identity - the dependency-free ``mock`` reference trainer."""
         return "mock"
 
     def validate(self, spec: TrainSpec) -> list[str]:

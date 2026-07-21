@@ -247,6 +247,19 @@ class TestToolSpecMethodParity:
             # Router must reject; must NOT silently succeed with default values.
             assert result["status"] == "error", f"{action} silently accepted {bad_kwargs}"
 
+    def test_recompile_world_dead_helper_is_gone(self, sim):
+        """`_recompile_world` was an orphaned "nuke and pave" rebuild helper: no
+        caller invoked it (the scene-load path rebuilds through
+        ``scene_ops._recompile_preserving_state``), and it was never reachable
+        through the action dispatcher either -- ``_dispatch_action`` rejects any
+        leading-underscore action and no ``_ACTION_ALIASES`` entry maps to it.
+        Pin its removal so an unreachable, uncoverable branch cannot creep back."""
+        assert not hasattr(type(sim), "_recompile_world")
+        for action in ("recompile_world", "_recompile_world"):
+            result = sim._dispatch_action(action, {})
+            assert result["status"] == "error"
+            assert "Unknown action" in result["content"][0]["text"]
+
 
 class TestUnifiedNoWorldMessage:
     """T14: Every action must use the same 'No world.' message when no world exists."""

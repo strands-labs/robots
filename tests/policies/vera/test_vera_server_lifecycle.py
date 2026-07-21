@@ -195,6 +195,18 @@ class TestVeraServerRunnerStart:
         # Timeout must tear the process down.
         assert proc.terminated is True
 
+    def test_polls_again_after_sleep_when_not_yet_ready(self, monkeypatch):
+        # The port is down on the first ready poll (sleep + retry) then up on
+        # the second. Exercises the poll/sleep/retry arm of the wait loop that
+        # both the returns-immediately and times-out tests skip.
+        monkeypatch.setattr(sr.time, "sleep", lambda _s: None)
+        probes = iter([False, True])
+        monkeypatch.setattr(sr, "_port_open", lambda *a, **k: next(probes))
+        runner = sr.VeraServerRunner(VeraConfig(embodiment="pusht"))
+        runner._proc = _FakeProc(poll_values=[None], stdout=None)
+        runner._wait_until_ready()  # must return without raising
+        assert runner.is_running() is True
+
 
 class TestVeraServerRunnerStop:
     def test_stop_is_noop_without_process(self):
@@ -229,10 +241,24 @@ class TestVeraServerRunnerStop:
         assert "loading model" in text
         assert "ready" in text
 
+    # --------------------------------------------------------------------------- #
+    # DockerServerRunner lifecycle
+    # --------------------------------------------------------------------------- #
+    def test_stop_logs_when_unresponsive_to_sigkill(self, caplog):
+        # Both wait() calls time out: the SIGTERM wait escalates to kill(), then
+        # the post-kill wait also times out -> log the unresponsive error and
+        # still clear the handle (never hang or raise).
+        runner = sr.VeraServerRunner(VeraConfig(embodiment="pusht"))
+        proc = _FakeProc(poll_values=[None], stdout=None, wait_raises=2)
+        runner._proc = proc
+        with caplog.at_level("ERROR", logger=sr.logger.name):
+            runner.stop()  # must not raise
+        assert proc.terminated is True
+        assert proc.killed is True
+        assert "unresponsive to SIGKILL" in "\n".join(caplog.messages)
+        assert runner.is_running() is False
 
-# --------------------------------------------------------------------------- #
-# DockerServerRunner lifecycle
-# --------------------------------------------------------------------------- #
+
 class TestDockerServerRunner:
     def _runner(self, **overrides):
         cfg = VeraConfig(embodiment="pusht", server_mode="docker", **overrides)
@@ -372,3 +398,37 @@ class TestDockerServerRunner:
         monkeypatch.setattr(sr.subprocess, "run", lambda *a, **k: (_ for _ in ()).throw(OSError("daemon down")))
         runner.stop()  # swallows the error, still clears the flag
         assert runner._started_container is False
+
+    def test_docker_returns_resolved_executable(self, monkeypatch):
+        # The happy path of the docker resolver: which() finds it -> return it.
+        import shutil
+
+        monkeypatch.setattr(shutil, "which", lambda _name: "/usr/bin/docker")
+        assert self._runner()._docker() == "/usr/bin/docker"
+
+    def test_start_waits_on_already_running_container(self, monkeypatch):
+        # Port down (no reuse) but the container is already up: start() must
+        # skip the docker-run launch and go straight to the readiness wait,
+        # without claiming ownership of a container it did not start.
+        runner = self._runner()
+        probes = iter([False, True])  # reuse check down, then ready poll up
+        monkeypatch.setattr(sr, "_port_open", lambda *a, **k: next(probes))
+        monkeypatch.setattr(runner, "_container_running", lambda: True)
+
+        def _no_launch(*a, **k):
+            raise AssertionError("must not launch a container that is already running")
+
+        monkeypatch.setattr(sr.subprocess, "run", _no_launch)
+        runner.start()
+        assert runner._started_container is False
+
+    def test_wait_times_out_when_never_ready(self, monkeypatch):
+        # Container stays up but the websocket never opens: the wait loop must
+        # sleep, retry, then tear down and raise once the deadline passes.
+        runner = self._runner(server_ready_timeout=1.0)
+        monkeypatch.setattr(sr, "_port_open", lambda *a, **k: False)
+        monkeypatch.setattr(sr.time, "sleep", lambda _s: None)
+        mono = iter([0.0, 0.0, 5.0])  # deadline base, in-window check, expired check
+        monkeypatch.setattr(sr.time, "monotonic", lambda: next(mono))
+        with pytest.raises(TimeoutError, match="did not become ready"):
+            runner._wait_until_ready()

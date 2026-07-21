@@ -62,11 +62,11 @@ from strands_robots.utils import require_optional
 
 logger = logging.getLogger(__name__)
 
-#: Policy types a lerobot ``PolicyServer`` can serve, mirroring
-#: ``lerobot.async_inference.constants.SUPPORTED_POLICIES``. Validated
-#: client-side so a typo fails fast with the valid set instead of only
-#: surfacing after the gRPC handshake.
-SUPPORTED_POLICY_TYPES: tuple[str, ...] = (
+#: Offline fallback for the policy types a lerobot ``PolicyServer`` can serve,
+#: used only when ``lerobot.async_inference.constants.SUPPORTED_POLICIES`` cannot
+#: be imported (lerobot or its async extra absent). A faithful snapshot of that
+#: constant; a drift-guard test keeps the two in sync.
+_SUPPORTED_POLICY_TYPES_FALLBACK: tuple[str, ...] = (
     "act",
     "smolvla",
     "diffusion",
@@ -76,6 +76,30 @@ SUPPORTED_POLICY_TYPES: tuple[str, ...] = (
     "pi05",
     "groot",
 )
+
+
+def _supported_policy_types() -> tuple[str, ...]:
+    """Policy types a lerobot ``PolicyServer`` can serve.
+
+    Sourced live from ``lerobot.async_inference.constants.SUPPORTED_POLICIES`` so
+    it tracks lerobot automatically - the client-side validation stays correct
+    when lerobot adds or drops an async-servable policy, instead of relying on a
+    hand-copied list that silently drifts (accepting a now-unsupported type only
+    to fail after the gRPC handshake, or rejecting a newly-supported one). Falls
+    back to :data:`_SUPPORTED_POLICY_TYPES_FALLBACK` when lerobot or its async
+    extra is not importable.
+    """
+    try:
+        from lerobot.async_inference.constants import SUPPORTED_POLICIES
+    except (ImportError, AttributeError):
+        return _SUPPORTED_POLICY_TYPES_FALLBACK
+    return tuple(sorted(SUPPORTED_POLICIES))
+
+
+#: Policy types a lerobot ``PolicyServer`` can serve (sourced live from lerobot;
+#: see :func:`_supported_policy_types`). Validated client-side so a typo fails
+#: fast with the valid set instead of only surfacing after the gRPC handshake.
+SUPPORTED_POLICY_TYPES: tuple[str, ...] = _supported_policy_types()
 
 #: Default gRPC handshake timeout (seconds).
 DEFAULT_CONNECT_TIMEOUT = 10.0
@@ -108,6 +132,15 @@ class LerobotAsyncPolicy(Policy):
             round-trip per control step.
         connect_timeout: Seconds to wait for the gRPC ``Ready`` handshake.
         request_timeout: Seconds to wait for each observation/action RPC.
+        rename_map: Optional ``{robot_obs_key: model_feature_key}`` map forwarded
+            to the server's ``RemotePolicyConfig.rename_map``. The server applies
+            it as a ``RenameObservationsProcessorStep`` (renaming each matching
+            observation key to its mapped name) before the policy sees the
+            observation - the async analog of the ``lerobot_local`` provider's
+            ``obs_rename``. Use it when the checkpoint expects camera/state keys
+            that differ from the ones the robot exposes (e.g.
+            ``{"observation.images.front": "observation.images.laptop"}``); keys
+            not present in the map pass through unchanged.
 
     Unrecognized kwargs are ignored (for forward-compatible ``policy_config``
     passthrough via :func:`~strands_robots.policies.create_policy`) but logged
@@ -133,6 +166,7 @@ class LerobotAsyncPolicy(Policy):
         actions_per_step: int | None = None,
         connect_timeout: float = DEFAULT_CONNECT_TIMEOUT,
         request_timeout: float = DEFAULT_REQUEST_TIMEOUT,
+        rename_map: dict[str, str] | None = None,
         **ignored_kwargs: Any,
     ) -> None:
         address = server_address or f"{host}:{port}"
@@ -140,15 +174,14 @@ class LerobotAsyncPolicy(Policy):
             address = address.split("://", 1)[1]
         self.server_address = address
 
+        supported = _supported_policy_types()
         if not policy_type:
             raise ValueError(
-                "lerobot_async requires policy_type=... (the lerobot policy the "
-                f"server loads); one of {SUPPORTED_POLICY_TYPES}."
+                f"lerobot_async requires policy_type=... (the lerobot policy the server loads); one of {supported}."
             )
-        if policy_type not in SUPPORTED_POLICY_TYPES:
+        if policy_type not in supported:
             raise ValueError(
-                f"policy_type {policy_type!r} is not served by a lerobot PolicyServer; "
-                f"choose one of {SUPPORTED_POLICY_TYPES}."
+                f"policy_type {policy_type!r} is not served by a lerobot PolicyServer; choose one of {supported}."
             )
         if not pretrained_name_or_path:
             raise ValueError(
@@ -163,6 +196,12 @@ class LerobotAsyncPolicy(Policy):
         self.actions_per_step = int(actions_per_step) if actions_per_step is not None else self.actions_per_chunk
         self.connect_timeout = connect_timeout
         self.request_timeout = request_timeout
+        if rename_map is not None and not isinstance(rename_map, dict):
+            raise ValueError(
+                "lerobot_async: rename_map must be a dict mapping each robot observation "
+                f"key to the model's expected feature key, got {type(rename_map).__name__}."
+            )
+        self.rename_map: dict[str, str] = dict(rename_map) if rename_map else {}
 
         if ignored_kwargs:
             logger.warning(
@@ -261,6 +300,7 @@ class LerobotAsyncPolicy(Policy):
             lerobot_features=lerobot_features,
             actions_per_chunk=self.actions_per_chunk,
             device=self.device,
+            rename_map=self.rename_map,
         )
         self._stub.SendPolicyInstructions(
             self._pb2.PolicySetup(data=pickle.dumps(cfg)),  # nosec B301

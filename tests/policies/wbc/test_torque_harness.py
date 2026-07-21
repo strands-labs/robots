@@ -1,4 +1,4 @@
-"""Smoke test for the torque-control deploy harness (examples/wbc_g1_torque_deploy.py).
+"""Smoke test for the torque-control deploy harness (examples/wbc/wbc_g1_torque_deploy.py).
 
 Runs WITHOUT real SONIC weights: it drives the harness's ``simulate_rollout``
 loop with a STUB WBCPolicy session (real ``compute_torques`` / config / joint
@@ -31,7 +31,7 @@ pytest.importorskip("mujoco", reason="mujoco not installed - pip install 'strand
 from strands_robots.policies.wbc import WBC_G1_ALL_JOINTS, WBCConfig, WBCPolicy  # noqa: E402
 
 # Import the example module by path (examples/ is not an installed package).
-_HARNESS_PATH = Path(__file__).resolve().parents[3] / "examples" / "wbc_g1_torque_deploy.py"
+_HARNESS_PATH = Path(__file__).resolve().parents[3] / "examples" / "wbc" / "wbc_g1_torque_deploy.py"
 
 
 def _load_harness():  # type: ignore[no-untyped-def]

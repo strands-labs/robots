@@ -216,3 +216,183 @@ class TestAddRobotKeyframe:
         assert "Cannot read keyframe from" in text
         assert "malformed_arm.xml" in text
         assert "a" not in sim._world.robots
+
+
+# A floating-base robot whose qpos mixes all three MuJoCo joint widths in one
+# model: a free root (7 = 3 translation + 4 quaternion), a ball joint (4 = a
+# quaternion), and a hinge (1). Humanoids and quadrupeds (unitree g1/go2/h1,
+# etc.) spawn exactly this way - a free base plus articulated joints - and ship
+# their standing pose in a ``<keyframe>``. The keyframe home pose must be
+# sliced out of the flat qpos vector using the correct per-joint width, or the
+# base position/orientation and every downstream joint land in the wrong slot.
+_FLOAT_MJCF = """
+<mujoco model="kf_float">
+  <compiler angle="radian"/>
+  <option timestep="0.002" gravity="0 0 -9.81"/>
+  <worldbody>
+    <body name="base" pos="0 0 0">
+      <freejoint name="root"/>
+      <geom type="box" size="0.05 0.05 0.05" mass="1"/>
+      <body name="link1" pos="0.1 0 0">
+        <joint name="ball1" type="ball"/>
+        <geom type="capsule" fromto="0 0 0 0.1 0 0" size="0.02" mass="0.2"/>
+        <body name="link2" pos="0.1 0 0">
+          <joint name="hinge1" type="hinge" axis="0 0 1"/>
+          <geom type="capsule" fromto="0 0 0 0.1 0 0" size="0.02" mass="0.1"/>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+  <keyframe>
+    <key name="home" qpos="0 0 0.5 1 0 0 0  0.7071 0 0.7071 0  0.3"/>
+  </keyframe>
+</mujoco>
+"""
+
+# free(7): x y z + wxyz quat | ball(4): wxyz quat | hinge(1): angle
+_FLOAT_HOME = [0.0, 0.0, 0.5, 1.0, 0.0, 0.0, 0.0, 0.7071, 0.0, 0.7071, 0.0, 0.3]
+
+
+@pytest.fixture
+def float_xml(tmp_path):
+    p = tmp_path / "kf_float.xml"
+    p.write_text(_FLOAT_MJCF)
+    return str(p)
+
+
+class TestFloatingBaseKeyframe:
+    """Keyframe spawn must slice the home pose with the correct per-joint qpos
+    width for every joint type - free (7) and ball (4), not just hinge/slide
+    (1). This is the floating-base humanoid/quadruped spawn path.
+    """
+
+    def test_free_and_ball_joint_home_pose_applied(self, sim, float_xml):
+        result = sim.add_robot(name="fb", urdf_path=float_xml, keyframe="home")
+        assert result["status"] == "success"
+        # The flat qpos vector is the free base pose, the ball quaternion, and
+        # the hinge angle laid out in joint order - proving each was written to
+        # its own slice at the right width rather than bleeding into the next.
+        assert np.allclose(_qpos(sim), _FLOAT_HOME)
+
+    def test_home_pose_captured_with_correct_per_joint_widths(self, sim, float_xml):
+        sim.add_robot(name="fb", urdf_path=float_xml, keyframe="home")
+        home = sim._world.robots["fb"].home_qpos
+        # Namespaced joint names, each carrying exactly its joint-type width:
+        # a wrong width here (e.g. treating the free root as a 1-wide slide)
+        # would truncate the base pose and shift every later joint.
+        assert set(home) == {"fb/root", "fb/ball1", "fb/hinge1"}
+        assert len(home["fb/root"]) == 7
+        assert len(home["fb/ball1"]) == 4
+        assert len(home["fb/hinge1"]) == 1
+        assert np.allclose(home["fb/root"], [0.0, 0.0, 0.5, 1.0, 0.0, 0.0, 0.0])
+        assert np.allclose(home["fb/ball1"], [0.7071, 0.0, 0.7071, 0.0])
+        assert np.allclose(home["fb/hinge1"], [0.3])
+
+    def test_observation_reflects_free_base_keyframe_pose(self, sim, float_xml):
+        sim.add_robot(name="fb", urdf_path=float_xml, keyframe="home")
+        obs = sim.get_observation(robot_name="fb", skip_images=True)
+        # The free base spawns at the keyframe height/orientation, not the
+        # zero-pose origin.
+        assert np.allclose(obs["base_pos"], [0.0, 0.0, 0.5])
+        assert np.allclose(obs["base_quat"], [1.0, 0.0, 0.0, 0.0])
+
+    def test_reset_restores_floating_base_home_pose(self, sim, float_xml):
+        sim.add_robot(name="fb", urdf_path=float_xml, keyframe="home")
+        # Gravity pulls the un-actuated free base off the home pose.
+        sim.step(40)
+        assert not np.allclose(_qpos(sim), _FLOAT_HOME)
+        assert sim.reset()["status"] == "success"
+        assert np.allclose(_qpos(sim), _FLOAT_HOME)
+
+
+def _joint_qpos(sim, joint_name: str) -> float:
+    """Read the scalar qpos of a named (namespaced) hinge joint from the live
+    compiled model - proves the pose landed on the intended robot's joint."""
+    model = sim._world._model
+    data = sim._world._data
+    jid = mj.mj_name2id(model, mj.mjtObj.mjOBJ_JOINT, joint_name)
+    assert jid >= 0, f"joint {joint_name!r} not found in compiled model"
+    adr = int(model.jnt_qposadr[jid])
+    return float(data.qpos[adr])
+
+
+class TestMultiRobotKeyframeSpawn:
+    """Incrementally adding robots must not disturb an already-spawned robot's
+    keyframe home pose.
+
+    ``add_robot`` runs ``mj_resetData`` (which zeroes the whole model) before
+    posing the freshly-added robot. When an earlier robot was spawned from a
+    ``<keyframe>``, that reset would silently collapse it back to the zero
+    configuration - only the most recently added robot kept its home pose until
+    an unrelated ``reset()`` happened to restore everyone. Building a multi-arm
+    scene one ``add_robot`` at a time is the common path (e.g. a leader/follower
+    pair), so each robot must stay at its canonical home pose across subsequent
+    additions.
+    """
+
+    def test_adding_second_robot_preserves_first_home_pose(self, sim, arm_xml):
+        # Spawn A from its keyframe: it lands at the home pose.
+        sim.add_robot(name="a", urdf_path=arm_xml, keyframe="home")
+        assert np.isclose(_joint_qpos(sim, "a/shoulder"), _HOME[0])
+        assert np.isclose(_joint_qpos(sim, "a/elbow"), _HOME[1])
+
+        # Add a SECOND keyframed robot. A's home pose must survive - the
+        # regression: pre-fix, mj_resetData zeroed A and only B was re-posed.
+        result = sim.add_robot(name="b", urdf_path=arm_xml, keyframe="home")
+        assert result["status"] == "success"
+        assert np.isclose(_joint_qpos(sim, "a/shoulder"), _HOME[0])
+        assert np.isclose(_joint_qpos(sim, "a/elbow"), _HOME[1])
+        assert np.isclose(_joint_qpos(sim, "b/shoulder"), _HOME[0])
+        assert np.isclose(_joint_qpos(sim, "b/elbow"), _HOME[1])
+
+    def test_keyframe_spawn_is_scoped_to_its_own_robot(self, sim, arm_xml):
+        # A added WITHOUT a keyframe stays at the zero configuration even when a
+        # later robot B IS spawned from a keyframe with identical short joint
+        # names ("shoulder"/"elbow"). The home pose must not bleed across the
+        # namespace into A's identically-named joints.
+        sim.add_robot(name="a", urdf_path=arm_xml)
+        sim.add_robot(name="b", urdf_path=arm_xml, keyframe="home")
+        assert np.isclose(_joint_qpos(sim, "a/shoulder"), 0.0)
+        assert np.isclose(_joint_qpos(sim, "a/elbow"), 0.0)
+        assert np.isclose(_joint_qpos(sim, "b/shoulder"), _HOME[0])
+        assert np.isclose(_joint_qpos(sim, "b/elbow"), _HOME[1])
+
+
+class TestApplyHomeQposWidthGuard:
+    """``_apply_home_qpos_to_robot`` must skip a home entry whose value width
+    disagrees with the target joint's qpos width instead of writing a
+    wrong-length slice.
+
+    ``add_robot(keyframe=...)`` reads the home pose from the SAME model it
+    writes it back onto, so the per-joint widths always agree and the guard is
+    unreachable through the public spawn path. It exists as a defensive backstop
+    for callers that hand in an externally-sourced pose (e.g. a benchmark
+    reusing one robot's home pose on a structurally different model): a
+    mismatched entry must be dropped, never sliced into ``qpos``, because a
+    wrong-length assignment would either raise or spill into the adjacent
+    joint's slice and silently corrupt its state. This exercises that guard
+    directly.
+    """
+
+    def test_width_mismatch_entry_skipped_without_corrupting_neighbor(self, sim, arm_xml):
+        # A robot with no keyframe -> both joints start at the zero pose.
+        sim.add_robot(name="a", urdf_path=arm_xml)
+        robot = sim._world.robots["a"]
+        model = sim._world._model
+        data = sim._world._data
+
+        sh_adr = int(model.jnt_qposadr[mj.mj_name2id(model, mj.mjtObj.mjOBJ_JOINT, "a/shoulder")])
+        el_adr = int(model.jnt_qposadr[mj.mj_name2id(model, mj.mjtObj.mjOBJ_JOINT, "a/elbow")])
+
+        # "shoulder" is a 1-wide hinge but the supplied home value has width 2;
+        # "elbow" is correctly sized. Keys are the short (namespace-stripped)
+        # joint names the method matches against.
+        sim._apply_home_qpos_to_robot(robot, {"shoulder": [0.1, 0.2], "elbow": [0.9]})
+
+        # The mismatched shoulder entry is dropped: its qpos slice is untouched
+        # (still the zero pose) and the extra value did NOT spill into the
+        # adjacent elbow slice.
+        assert data.qpos[sh_adr] == 0.0
+        assert data.qpos[el_adr] == 0.9
+        # Only the correctly-sized joint is recorded for reset() to restore.
+        assert robot.home_qpos == {"a/elbow": [0.9]}

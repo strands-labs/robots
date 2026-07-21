@@ -278,7 +278,7 @@ def register_robot(
     # Invalidate loader cache so next get_robot() picks up the merge
     _invalidate_cache()
 
-    logger.info("Registered robot '%s' → %s/%s", name, dir_name, model_xml)
+    logger.info("Registered robot '%s' -> %s/%s", name, dir_name, model_xml)
     return entry
 
 

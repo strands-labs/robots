@@ -10,10 +10,108 @@ Also pins the no-alias rule: the registry must NOT export a duplicate
 it from the discovery surface rather than the API carrying a second name.
 """
 
+import re
 from collections.abc import Sequence
 from typing import Any
 
 import pytest
+
+
+def _advertised_param_names(sig_str: str) -> list[str]:
+    """Extract the parameter names from a describe() signature string.
+
+    describe()["methods"][name] advertises a method as a human-readable
+    signature string such as ``"(robot_name: str, policy_provider='mock', "
+    "n_episodes=1, ...) -> dict  # blurb"``. This pulls out the parameter
+    names (``robot_name``, ``policy_provider``, ``n_episodes``) so a test can
+    assert each names a parameter that really exists on the method. Type
+    annotations, defaults, the ``-> ...`` return, a trailing ``# comment``, the
+    ``...`` continuation marker, and ``*`` / ``/`` markers are all ignored.
+    """
+    open_paren = sig_str.find("(")
+    if open_paren == -1:
+        return []
+    depth = 0
+    close_paren = None
+    for idx in range(open_paren, len(sig_str)):
+        char = sig_str[idx]
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                close_paren = idx
+                break
+    if close_paren is None:
+        return []
+    inner = sig_str[open_paren + 1 : close_paren]
+
+    # Split on top-level commas so defaults like ``[u, v]`` stay intact.
+    chunks: list[str] = []
+    depth = 0
+    current = ""
+    for char in inner:
+        if char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth -= 1
+        if char == "," and depth == 0:
+            chunks.append(current)
+            current = ""
+        else:
+            current += char
+    chunks.append(current)
+
+    names: list[str] = []
+    for chunk in chunks:
+        token = chunk.strip()
+        if not token or token in ("*", "/") or token.startswith("..."):
+            continue
+        token = token.lstrip("*")
+        match = re.match(r"([A-Za-z_][A-Za-z0-9_]*)", token)
+        if match:
+            names.append(match.group(1))
+    return names
+
+
+def _assert_advertised_params_are_real(engine) -> None:
+    """Assert every parameter named in describe() exists on the real method.
+
+    The discovery surface is a contract: an agent reads an advertised
+    signature and calls the method with those keyword arguments. If a method is
+    renamed or a parameter dropped without updating the hardcoded describe()
+    string, the surface silently advertises a stale keyword and the agent hits
+    a ``TypeError`` dead-end. This walks every advertised method, extracts its
+    named parameters, and asserts each one is a real parameter of the bound
+    callable (methods that accept ``**kwargs`` may legitimately advertise
+    pass-through keywords, so they are exempt).
+    """
+    import inspect
+
+    methods = engine.describe()["methods"]
+    violations: list[str] = []
+    for name, sig_str in methods.items():
+        fn = getattr(engine, name, None)
+        if not callable(fn):
+            continue
+        try:
+            params = inspect.signature(fn).parameters
+        except (TypeError, ValueError):
+            continue
+        accepts_var_keyword = any(p.kind == p.VAR_KEYWORD for p in params.values())
+        if accepts_var_keyword:
+            continue
+        real = set(params) | {"self"}
+        for advertised in _advertised_param_names(sig_str):
+            if advertised not in real:
+                violations.append(f"{name}(...{advertised}=...)")
+    assert not violations, (
+        "describe() advertises parameters that do not exist on the real "
+        f"method signature: {sorted(violations)}. The discovery surface is a "
+        "contract - an agent copying an advertised keyword would hit a "
+        "TypeError. Update the hardcoded describe() signature string when the "
+        "method signature changes."
+    )
 
 
 def _make_minimal_engine():
@@ -31,6 +129,8 @@ def _make_minimal_engine():
             timestep: float | None = None,
             gravity: list[float] | None = None,
             ground_plane: bool = True,
+            terrain: str | None = None,
+            difficulty: float = 1.0,
         ) -> dict[str, Any]:
             return {}
 
@@ -236,6 +336,104 @@ class TestDescribeABC:
         # caller can invoke them without reading the source.
         assert "benchmark_name" in methods["evaluate_benchmark"]
         assert "spec_path" in methods["register_benchmark_from_file"]
+
+    def test_describe_register_builtin_benchmarks_advertises_humanoids(self):
+        """describe() advertises register_builtin_benchmarks as shipping BOTH the
+        quadruped and the humanoid locomotion tasks, not the quadruped alone.
+
+        register_builtin_benchmarks() ships three velocity-tracking tasks -
+        go2_walk_forward (quadruped) plus g1_walk_forward and t1_walk_forward
+        (two humanoids of different scale). The discovery-surface description
+        once named only go2_walk_forward as its example, so an agent enumerating
+        describe()["methods"] to decide whether a runnable HUMANOID locomotion
+        eval exists would be misled into thinking only the quadruped ships. Pin
+        the humanoid tasks into the advertised text so it cannot silently
+        regress to quadruped-only as more built-ins are added.
+        """
+        engine = _make_minimal_engine()
+        blurb = engine.describe()["methods"]["register_builtin_benchmarks"]
+        assert "g1_walk_forward" in blurb
+        assert "t1_walk_forward" in blurb
+        assert "humanoid" in blurb.lower()
+
+    def test_describe_lists_scene_mutation_inverse(self):
+        """describe() advertises remove_robot, completing the add/remove pair.
+
+        The base contract advertised ``add_robot`` ("the first
+        scene-construction step") and the object inverse ``remove_object``, but
+        not ``remove_robot`` -- even though it is an abstract method every
+        backend must implement. A caller enumerating ``describe()["methods"]``
+        who built a scene with add_robot could not learn how to tear a robot
+        back out without guessing the name. It belongs on the base discovery
+        surface as the inverse of add_robot, mirroring the add_object /
+        remove_object pair already advertised.
+        """
+        engine = _make_minimal_engine()
+        methods = engine.describe()["methods"]
+        assert "remove_robot" in methods, "describe() omits the base remove_robot method"
+        assert "name" in methods["remove_robot"]
+
+    def test_describe_lists_scene_variation_and_grounding(self):
+        """describe() advertises the scene-variation + physics-grounding facades.
+
+        ``load_scene`` (the alternative scene-construction entry point),
+        ``randomize`` and ``set_obs_noise`` (domain randomization + sensor-noise
+        variation), and ``get_contacts`` (the physics-grounding read used to
+        verify a grasp / detect a collision) are all public methods declared on
+        the base ``SimEngine`` contract, but describe() listed none of them -- so
+        a caller enumerating ``describe()["methods"]`` could build a scene and
+        run a policy, yet could not discover how to load a scene from file, vary
+        it for sim2real, or verify the physics result without guessing the
+        names. They belong on the base discovery surface; each backend documents
+        its concrete signature via its own describe() override.
+        """
+        engine = _make_minimal_engine()
+        methods = engine.describe()["methods"]
+        for name in ("load_scene", "randomize", "set_obs_noise", "get_contacts"):
+            assert name in methods, f"describe() omits base scene/grounding method {name!r}"
+        # Advertised signatures name the real distinguishing details so a caller
+        # can invoke them (or know where to read the concrete backend signature).
+        assert "scene_path" in methods["load_scene"]
+        assert "contact" in methods["get_contacts"].lower()
+
+    def test_describe_lists_world_lifecycle_entry_points(self):
+        """describe() advertises create_world and destroy on the BASE contract.
+
+        create_world (the fresh-world entry point that precedes add_robot /
+        add_object) and destroy (its teardown inverse) are abstract methods
+        every backend must implement, and their lifecycle siblings reset / step
+        / get_state were already advertised. But the base discovery surface
+        listed neither create_world nor destroy -- so a caller enumerating
+        ``describe()["methods"]`` on any backend that does not separately re-add
+        them (the Newton engine builds its surface from scratch and omitted them
+        too) could not learn how to CREATE the world it must populate, nor how
+        to tear it down, without guessing. They belong on the base contract
+        beside reset / step / get_state as the world-lifecycle entry points.
+        """
+        engine = _make_minimal_engine()
+        methods = engine.describe()["methods"]
+        for name in ("create_world", "destroy"):
+            assert name in methods, f"describe() omits world-lifecycle method {name!r}"
+        # The advertised create_world signature names the real knobs (the flat
+        # floor toggle and the locomotion-terrain curriculum) so a caller can
+        # spawn a robot on non-flat ground without reading the source.
+        blurb = methods["create_world"]
+        assert "ground_plane" in blurb
+        assert "terrain" in blurb
+        assert "difficulty" in blurb
+
+    def test_describe_advertised_params_exist_in_signature(self):
+        """Every parameter describe() advertises must exist on the real method.
+
+        Complements test_describe_methods_resolve_to_real_attributes: that pins
+        that an advertised NAME resolves to a callable; this pins that the
+        PARAMETERS named in each advertised signature string are real. A
+        rename that dropped or renamed a parameter without updating the
+        hardcoded describe() string would advertise a stale keyword, and an
+        agent copying it verbatim would dead-end in a TypeError. Pinned on the
+        base contract so the whole backend-agnostic facade surface is covered.
+        """
+        _assert_advertised_params_are_real(_make_minimal_engine())
 
 
 @pytest.mark.skipif(
@@ -568,6 +766,115 @@ class TestDescribeMuJoCo:
         finally:
             sim.destroy()
 
+    def test_describe_lists_scene_lifecycle_methods(self):
+        """describe() advertises the world-lifecycle + MJCF-editing surface.
+
+        describe() taught how to build a scene, run a policy, and read the
+        result, but previously omitted the world lifecycle itself (create_world,
+        the fresh-world entry point that precedes add_robot; destroy, which the
+        tool-spec guidance explicitly asks callers to run at session end) and the
+        MJCF-editing family (patch_scene_mjcf / replace_scene_mjcf, export_xml).
+        All five are first-class actions in the tool spec + action dispatcher, so
+        a caller enumerating how to create, edit, and tear down a scene from
+        describe() alone had to guess these names. (The URDF/model registry trio
+        -- register_urdf / list_urdfs / remove_robot -- is covered by
+        test_describe_lists_robot_registry_family.)
+        """
+        import os
+
+        os.environ.setdefault("MUJOCO_GL", "egl")
+        from strands_robots.simulation import Simulation
+
+        sim = Simulation()
+        try:
+            methods = sim.describe()["methods"]
+            for name in (
+                "create_world",
+                "destroy",
+                "patch_scene_mjcf",
+                "replace_scene_mjcf",
+                "export_xml",
+            ):
+                assert name in methods, f"describe() omits scene-lifecycle method {name!r}"
+            # Advertised signatures name the real distinguishing parameters so a
+            # caller can invoke them without reading the source.
+            assert "ground_plane" in methods["create_world"]
+            assert "ops" in methods["patch_scene_mjcf"]
+            assert "xml" in methods["replace_scene_mjcf"]
+            assert "output_path" in methods["export_xml"]
+        finally:
+            sim.destroy()
+
+    def test_describe_lists_teleop_family(self):
+        """describe() advertises the teleoperation surface, not only run_policy.
+
+        describe() teaches how to build a scene and drive it with a policy
+        (``run_policy`` / ``start_policy``), but the OTHER actuation source --
+        driving a sim robot from an attached teleoperator (a real leader arm,
+        gamepad, or keyboard), the leader->follower / human-demonstration
+        workflow that feeds data collection -- was undiscoverable from
+        describe() alone. The six ``TeleopMixin`` facades (``attach_teleop`` ->
+        ``teleoperate`` -> ``stop_teleoperate``, plus ``detach_teleop`` /
+        ``list_teleops`` / ``get_teleoperate_status``) are public methods on the
+        sim, yet a caller had to guess their names. They belong on the discovery
+        surface as the human-driven sibling of the policy-rollout family.
+        """
+        import os
+
+        os.environ.setdefault("MUJOCO_GL", "egl")
+        from strands_robots.simulation import Simulation
+
+        sim = Simulation()
+        try:
+            methods = sim.describe()["methods"]
+            for name in (
+                "attach_teleop",
+                "teleoperate",
+                "stop_teleoperate",
+                "get_teleoperate_status",
+                "list_teleops",
+                "detach_teleop",
+            ):
+                assert name in methods, f"describe() omits teleop method {name!r}"
+            # Advertised signatures name the real distinguishing parameters so a
+            # caller can invoke them without reading the source.
+            assert "map_fn" in methods["attach_teleop"]
+            assert "publish" in methods["teleoperate"]
+            assert "duration" in methods["teleoperate"]
+            assert "name" in methods["detach_teleop"]
+        finally:
+            sim.destroy()
+
+    def test_describe_lists_viewer_family(self):
+        """describe() advertises the interactive-viewer surface.
+
+        describe() taught how to build a scene, drive it with a policy, and read
+        the result, but gave no way to discover how to OPEN a live window on the
+        running model for human inspection (watch a rollout, debug a pose,
+        hand-verify a scene). open_viewer / close_viewer are first-class actions
+        in the tool spec + action dispatcher, so a caller enumerating the sim's
+        contract from describe() alone had to guess their names. The advertised
+        open_viewer signature also documents the headless caveat (needs a local
+        display; render()/render_all() capture frames instead).
+        """
+        import os
+
+        os.environ.setdefault("MUJOCO_GL", "egl")
+        from strands_robots.simulation import Simulation
+
+        sim = Simulation()
+        try:
+            methods = sim.describe()["methods"]
+            for name in ("open_viewer", "close_viewer"):
+                assert name in methods, f"describe() omits viewer method {name!r}"
+            # The advertised open_viewer signature warns of the display
+            # requirement so a caller does not blindly invoke it on a headless
+            # host (where render()/render_all() are the right frame source).
+            assert "display" in methods["open_viewer"]
+            assert "render" in methods["open_viewer"]
+        finally:
+            sim.destroy()
+
     def test_describe_methods_resolve_to_real_attributes(self):
         """Every method MuJoCo describe() advertises must be a real callable.
 
@@ -587,6 +894,73 @@ class TestDescribeMuJoCo:
                 assert callable(getattr(sim, name, None)), (
                     f"describe() advertises {name!r} but it is not a callable on the engine"
                 )
+        finally:
+            sim.destroy()
+
+    def test_describe_advertised_params_exist_in_signature(self):
+        """Every parameter MuJoCo describe() advertises must exist on the method.
+
+        The live-engine counterpart of the base-contract invariant: MuJoCo's
+        describe() override advertises a far larger method set (rendering,
+        recording, physics introspection/tuning, teleop, viewer, registry),
+        each as a hardcoded signature string. This pins that every keyword
+        those strings name is a real parameter of the bound method, so the
+        discovery surface cannot silently advertise a stale keyword after a
+        signature change and dead-end a caller in a TypeError.
+        """
+        import os
+
+        os.environ.setdefault("MUJOCO_GL", "egl")
+        from strands_robots.simulation import Simulation
+
+        sim = Simulation()
+        try:
+            sim.create_world()
+            sim.add_robot("so100", data_config="so100")
+            _assert_advertised_params_are_real(sim)
+        finally:
+            sim.destroy()
+
+    def test_dispatchable_actions_have_documented_handlers(self):
+        """Every agent-dispatchable action's handler must carry a docstring.
+
+        The handler docstring is the discovery surface an agent reads to learn
+        what an action does; an undocumented handler dead-ends a caller who
+        enumerated the tool spec. Pins the invariant on the live engine so a
+        newly-wired action cannot ship without documentation. (This closed six
+        stragglers: get_state, list_objects, remove_object, reset,
+        set_timestep, step.)
+        """
+        import os
+
+        os.environ.setdefault("MUJOCO_GL", "egl")
+        from strands_robots.simulation import Simulation
+
+        def _find_action_enum(node):
+            if isinstance(node, dict):
+                enum = node.get("enum")
+                if isinstance(enum, list) and all(isinstance(x, str) for x in enum):
+                    yield enum
+                for value in node.values():
+                    yield from _find_action_enum(value)
+
+        sim = Simulation()
+        try:
+            enums = [e for e in _find_action_enum(sim.tool_spec) if "add_robot" in e and "reset" in e]
+            assert len(enums) == 1, "tool_spec must expose exactly one action enum"
+            actions = enums[0]
+            aliases = sim._ACTION_ALIASES
+            undocumented = []
+            for action in actions:
+                handler = getattr(sim, aliases.get(action, action), None)
+                assert callable(handler), f"dispatchable action {action!r} has no callable handler"
+                if not (getattr(handler, "__doc__", None) or "").strip():
+                    undocumented.append(action)
+            assert not undocumented, (
+                "dispatchable actions with undocumented handlers: "
+                f"{sorted(undocumented)} - each action's handler docstring is "
+                "the agent discovery surface for that action"
+            )
         finally:
             sim.destroy()
 

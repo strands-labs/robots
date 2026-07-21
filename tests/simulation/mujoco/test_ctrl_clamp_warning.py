@@ -107,3 +107,37 @@ def test_warn_once_dedup(model, caplog):
         _apply(model, {"grip_act": 0.8}, mixin)
     hits = [r for r in caplog.records if "grip_act" in r.getMessage() and "ctrlrange" in r.getMessage()]
     assert len(hits) == 1, f"expected exactly one dedup'd warning, got {len(hits)}"
+
+
+def test_no_warning_for_degenerate_ctrlrange(model, caplog):
+    """A ctrl-limited actuator whose range is degenerate ([v, v]) never clamps
+    meaningfully, so an out-of-range command must not warn.
+
+    A ``[0, 0]`` (or any ``lo >= hi``) ctrlrange is a sentinel, not a real
+    limit: MuJoCo would pin every command to the single point, but the warning
+    is about *unit mismatch*, not about a legitimately degenerate actuator.
+    Emitting it here would be noise. The range is forced on the compiled model
+    (the MJCF compiler auto-clears ``ctrllimited`` for a zero range) to mirror
+    the sentinel state seen in the wild.
+    """
+    grip_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, "grip_act")
+    model.actuator_ctrlrange[grip_id] = [5.0, 5.0]
+    model.actuator_ctrllimited[grip_id] = 1
+    with caplog.at_level(logging.WARNING, logger=_LOGGER):
+        _apply(model, {"grip_act": 100.0})
+    assert not [r for r in caplog.records if "grip_act" in r.getMessage() and "ctrlrange" in r.getMessage()]
+
+
+def test_no_crash_for_stale_actuator_id(model, caplog):
+    """A stale/out-of-range actuator id must be swallowed, not crash the loop.
+
+    After a scene recompile an actuator id can outlive the model it indexed
+    (fewer actuators than before). Indexing ``actuator_ctrllimited`` with it
+    raises ``IndexError``; the 50Hz control loop must survive that -- the warn
+    is best-effort diagnostics, never a hard dependency. No warning is emitted
+    and no exception escapes.
+    """
+    mixin = RenderingMixin()
+    with caplog.at_level(logging.WARNING, logger=_LOGGER):
+        mixin._warn_ctrl_clamp(model, model.nu + 99, "", "grip_act", 100.0, mujoco)
+    assert not [r for r in caplog.records if "ctrlrange" in r.getMessage()]

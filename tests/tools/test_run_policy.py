@@ -661,3 +661,46 @@ class TestVideoPassthrough:
         # Dict without a usable path is forwarded (facade treats it as "off").
         assert sim.run_policy_calls[0]["video"] == {"fps": 30}
         assert result["content"][1]["json"]["video_paths"] == []
+
+
+# --------------------------------------------------------------------------
+# Success-payload content contract
+# --------------------------------------------------------------------------
+
+
+class TestSuccessPayloadContentShape:
+    """Pin the two-part ``content`` contract of a successful rollout.
+
+    A successful ``run_policy`` result carries EXACTLY two content parts: a
+    human-readable ``{"text": summary}`` followed by a machine-readable
+    ``{"json": payload}`` whose keys downstream verifiers parse (episode /
+    frame counts, warnings, dataset root). Locking this shape guards against
+    a regression to a single ``{"text": ...}`` payload, which would strand the
+    parquet-truth fields the fabrication guard depends on.
+    """
+
+    def test_success_content_is_text_then_json(self) -> None:
+        sim = _FakeSim()
+        result = run_policy(sim, n_episodes=2, n_steps=5, dataset_root=None)
+
+        assert result["status"] == "success"
+        content = result["content"]
+        assert len(content) == 2, "success payload must be [text, json], not a single text part"
+
+        assert set(content[0]) == {"text"}
+        assert isinstance(content[0]["text"], str) and content[0]["text"].strip()
+
+        assert set(content[1]) == {"json"}
+        payload = content[1]["json"]
+        assert isinstance(payload, dict)
+        # The parquet-truth / accounting keys a verifier reads off the payload.
+        for key in (
+            "n_episodes_requested",
+            "n_episodes_actual",
+            "n_frames_actual",
+            "n_episodes_ok",
+            "dataset_root",
+            "warnings",
+            "episodes",
+        ):
+            assert key in payload, f"success payload missing contract key {key!r}"

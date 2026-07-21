@@ -3,7 +3,7 @@
 Loads robot definitions and policy provider configs from JSON files.
 
 Features:
-    - **One file to edit**: Add a robot → edit robots.json, done.
+    - **One file to edit**: Add a robot -> edit robots.json, done.
     - **Hot-reload**: JSON is re-read when the file changes (mtime check).
     - **Self-contained entries**: Each robot/policy owns its aliases,
       shorthands, and URL patterns - no separate lookup tables.
@@ -16,17 +16,21 @@ Usage::
     from strands_robots.registry import get_policy_provider, resolve_policy
 
     info = get_robot("so100")
-    name = resolve_name("franka") # → "panda"
+    name = resolve_name("franka")  # -> "panda"
     providers = list_policy_providers()
 
-Architecture:
-    registry/
-        __init__.py      ← this file (re-exports only)
-        loader.py        ← JSON loading + mtime hot-reload + validation
-        robots.py        ← robot query/resolve/list functions
-        policies.py      ← policy resolve/import/kwargs functions
-        robots.json      ← robot definitions (aliases inside each entry)
-        policies.json    ← policy providers (shorthands/urls inside each entry)
+Architecture (this package re-exports the public API of its sibling modules):
+    - :mod:`~strands_robots.registry.loader` - JSON loading + mtime hot-reload
+      + validation.
+    - :mod:`~strands_robots.registry.robots` - robot query/resolve/list functions.
+    - :mod:`~strands_robots.registry.policies` - policy resolve/import/kwargs
+      functions.
+    - :mod:`~strands_robots.registry.discovery` - robot_descriptions
+      auto-discovery of installed robot models.
+    - :mod:`~strands_robots.registry.user_registry` - user-defined robot
+      register/unregister persisted to disk.
+    - ``robots.json`` - robot definitions (aliases inside each entry).
+    - ``policies.json`` - policy providers (shorthands/urls inside each entry).
 """
 
 from .discovery import (

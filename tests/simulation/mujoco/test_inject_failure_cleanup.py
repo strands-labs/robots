@@ -13,6 +13,16 @@ The observable proof of correct rollback is that the *same name* can be added
 successfully right after a failed attempt: a leaked orphan would make the retry
 collide on the duplicate name at recompile time. These tests fail before the
 rollback fix (the retry errors with ``repeated name``) and pass after it.
+
+The injectors themselves catch ``(ValueError, RuntimeError)`` and return
+``False``, so ``add_object`` / ``add_camera`` also carry a defensive
+``except (ValueError, RuntimeError)`` around the injection call. That guard
+exists so an *unexpected* raise from the scene-injection layer is surfaced
+as a structured ``{'status': 'error'}`` (never re-raised past tool dispatch,
+per the tool contract) while still rolling the half-added element out of the
+``_world`` registry. The raise-path tests force the injector to raise and
+pin that contract; they fail if the guard is removed (the exception escapes)
+or if the cleanup ``pop`` is dropped (the ghost element leaks).
 """
 
 from __future__ import annotations
@@ -64,6 +74,26 @@ class TestAddObjectInjectionRollback:
         assert ok["status"] == "success"
         assert "cube" in sim._world.objects
 
+    def test_injector_raising_is_caught_cleaned_up_not_reraised(self, sim, monkeypatch):
+        # The injectors normally swallow (ValueError, RuntimeError) and return
+        # False, so this defensive branch only fires if the scene-injection
+        # layer raises unexpectedly. Force that: add_object must surface a
+        # structured error (not re-raise past dispatch) and roll the
+        # half-added object back out of the registry.
+        from strands_robots.simulation.mujoco import simulation as sim_mod
+
+        def boom(_world, _obj):
+            raise RuntimeError("spec.recompile blew up")
+
+        monkeypatch.setattr(sim_mod, "inject_object_into_scene", boom)
+
+        result = sim.add_object(name="ghost", shape="box", position=[0.2, 0.0, 0.1])
+        assert result["status"] == "error"
+        assert "ghost" not in sim._world.objects
+        text = result["content"][0]["text"]
+        assert "into live scene" in text
+        assert "spec.recompile blew up" in text
+
 
 class TestAddCameraInjectionRollback:
     def test_recompile_refusal_rolls_back_and_same_name_is_reusable(self, sim, monkeypatch):
@@ -91,3 +121,21 @@ class TestAddCameraInjectionRollback:
         retry = sim.add_camera(name="wrist", position=[0.5, 0.0, 0.5], target=[0.0, 0.0, 0.1])
         assert retry["status"] == "success"
         assert "wrist" in sim._world.cameras
+
+    def test_injector_raising_is_caught_cleaned_up_not_reraised(self, sim, monkeypatch):
+        # Mirror of the object raise-path: an unexpected raise from the camera
+        # injection layer must be caught, surfaced as a structured error, and
+        # the half-added camera rolled back out of the registry.
+        from strands_robots.simulation.mujoco import simulation as sim_mod
+
+        def boom(_world, _cam):
+            raise ValueError("camera spec exploded")
+
+        monkeypatch.setattr(sim_mod, "inject_camera_into_scene", boom)
+
+        result = sim.add_camera(name="phantom", position=[0.5, 0.0, 0.5], target=[0.0, 0.0, 0.1])
+        assert result["status"] == "error"
+        assert "phantom" not in sim._world.cameras
+        text = result["content"][0]["text"]
+        assert "into live scene" in text
+        assert "camera spec exploded" in text

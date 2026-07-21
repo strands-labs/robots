@@ -12,6 +12,8 @@ booleans, and never lets a bridge failure interrupt the control loop.
 ``_migrate_legacy_calibration`` copies a pre-0.5 ``so100_follower/`` /
 ``so101_follower/`` calibration file to the unified ``so_follower/`` path,
 refusing to guess when the source is ambiguous and no-op'ing for non-SO robots.
+Any copy failure (OSError) is logged and swallowed so a migration that
+cannot complete leaves the robot uncalibrated rather than aborting connect.
 """
 
 from __future__ import annotations
@@ -20,6 +22,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+import pytest
 
 from strands_robots.hardware_robot import Robot as HwRobot
 
@@ -172,3 +175,24 @@ class TestLegacyCalibrationMigration:
         hw = _migration_robot(None)
         # robot exposes no calibration path -> nothing to migrate, must not raise.
         hw._migrate_legacy_calibration()
+
+    def test_copy_failure_is_logged_and_swallowed(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # A single valid legacy source is found, so migration reaches the copy
+        # step. If ``shutil.copy2`` raises OSError (permission denied, disk
+        # full, read-only mount), the documented contract is fail-soft: log a
+        # warning and leave the robot in its pre-existing uncalibrated state
+        # rather than aborting connect with a traceback.
+        new_path = self._seed(tmp_path, "so_follower", ["so100_follower"])
+        hw = _migration_robot(str(new_path))
+
+        def _raise_oserror(*_args: object, **_kwargs: object) -> None:
+            raise OSError("disk full")
+
+        monkeypatch.setattr("strands_robots.hardware_robot.shutil.copy2", _raise_oserror)
+
+        # Must not propagate the OSError...
+        hw._migrate_legacy_calibration()
+
+        # ...and the shared path stays absent -> robot remains uncalibrated,
+        # which the connect path reports clearly on its own.
+        assert not new_path.is_file()

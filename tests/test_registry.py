@@ -96,6 +96,45 @@ class TestLoader:
         with pytest.raises(ValueError, match="Duplicate URL pattern"):
             _validate("policies", bad_data)
 
+    def test_validate_policy_alias_collides_with_canonical_name_raises(self):
+        """An alias matching a different provider's canonical name should raise.
+
+        get_policy_provider resolves through the alias map before the canonical
+        name, so an alias equal to another provider's name silently shadows it.
+        """
+        bad_data = {
+            "providers": {
+                "prov_a": {"aliases": ["prov_b"], "shorthands": [], "url_patterns": []},
+                "prov_b": {"aliases": [], "shorthands": [], "url_patterns": []},
+            }
+        }
+        with pytest.raises(ValueError, match="collides with a canonical provider name"):
+            _validate("policies", bad_data)
+
+    def test_validate_policy_shorthand_collides_with_canonical_name_raises(self):
+        """A shorthand matching a different provider's canonical name should raise."""
+        bad_data = {
+            "providers": {
+                "prov_a": {"aliases": [], "shorthands": ["prov_b"], "url_patterns": []},
+                "prov_b": {"aliases": [], "shorthands": [], "url_patterns": []},
+            }
+        }
+        with pytest.raises(ValueError, match="collides with a canonical provider name"):
+            _validate("policies", bad_data)
+
+    def test_validate_policy_self_shorthand_allowed(self):
+        """A provider naming itself in its shorthands is idiomatic and must pass.
+
+        Every real provider lists its canonical name as a shorthand so the bare
+        name resolves; the canonical-collision guard must not reject that.
+        """
+        clean_data = {
+            "providers": {
+                "prov_a": {"aliases": [], "shorthands": ["prov_a"], "url_patterns": []},
+            }
+        }
+        _validate("policies", clean_data)
+
     def test_validate_clean_data_passes(self):
         """Well-formed data should pass validation without error."""
         clean_robots = {

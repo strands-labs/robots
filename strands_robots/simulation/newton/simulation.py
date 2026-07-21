@@ -201,8 +201,9 @@ class NewtonSimEngine(DomainRandomizationMixin, NewtonRecordingMixin, SimEngine)
         self._joint_dof_index: dict[tuple[str, str], int] = {}
         # Short name of each robot's floating-base free joint (a humanoid's
         # named ``floating_base_joint``), when it has one. Used to surface the
-        # 6-DoF base pose/twist instead of reporting the base x-coordinate as a
-        # scalar joint value (parity with the MuJoCo backend).
+        # 6-DoF base pose/twist as the structured base_* keys and to EXCLUDE the
+        # free joint from the scalar joint state (its qpos is [xyz+quat], not a
+        # single angle) - matching get_robot_state and the MuJoCo backend.
         self._robot_free_base_joint: dict[str, str] = {}
         # Ordered full body labels per robot (rebuilt with the model).
         self._robot_body_map: dict[str, list[str]] = {}
@@ -228,6 +229,8 @@ class NewtonSimEngine(DomainRandomizationMixin, NewtonRecordingMixin, SimEngine)
         timestep: float | None = None,
         gravity: list[float] | None = None,
         ground_plane: bool = True,
+        terrain: str | None = None,
+        difficulty: float = 1.0,
     ) -> dict[str, Any]:
         """Create an empty Newton world.
 
@@ -236,10 +239,54 @@ class NewtonSimEngine(DomainRandomizationMixin, NewtonRecordingMixin, SimEngine)
                 ``default_timestep``).
             gravity: Gravity vector ``[x, y, z]`` (default ``[0, 0, -9.81]``).
             ground_plane: Whether to add a ground plane.
+            terrain: Heightfield terrain kind (e.g. ``"rough"``/``"stairs"``/``"pyramid"``/``"slope"``,
+                MuJoCo backend only). The Newton backend has no heightfield
+                ground yet, so a non-None value is rejected with an actionable
+                error.
+            difficulty: Terrain curriculum elevation scale (MuJoCo backend
+                only, alongside ``terrain``); accepted for signature parity with
+                the base contract. Since Newton has no heightfield terrain,
+                ``difficulty`` can never take effect, so a non-default
+                (``!= 1.0``) value is rejected with an actionable error (the base
+                ``create_world`` contract: reject rather than silently ignore it)
+                rather than silently having no effect.
 
         Returns:
             Status dict with a human-readable confirmation.
         """
+        if terrain is not None:
+            return {
+                "status": "error",
+                "content": [
+                    {
+                        "text": (
+                            f"terrain={terrain!r} is not supported on the Newton backend "
+                            "(heightfield terrain, e.g. 'rough'/'stairs'/'pyramid'/'slope', is MuJoCo-only); use "
+                            "create_simulation(backend='mujoco') for terrain, or omit terrain "
+                            "for a flat ground plane."
+                        )
+                    }
+                ],
+            }
+        # Base create_world contract: reject a non-default difficulty with no
+        # terrain rather than silently ignoring it. On Newton difficulty is
+        # doubly inert - there is no heightfield terrain for it to scale (a
+        # non-None terrain is already rejected above) - so any != 1.0 value is
+        # meaningless here; surface that instead of a status=success no-op.
+        if float(difficulty) != 1.0:
+            return {
+                "status": "error",
+                "content": [
+                    {
+                        "text": (
+                            f"difficulty={difficulty!r} has no effect on the Newton backend "
+                            "(it scales a heightfield terrain's elevation, and this backend "
+                            "has no heightfield terrain); use create_simulation(backend='mujoco') "
+                            "for a terrain curriculum, or omit difficulty for a flat ground plane."
+                        )
+                    }
+                ],
+            }
         with self._lock:
             self._world = SimWorld(
                 timestep=timestep or self.default_timestep,
@@ -675,8 +722,18 @@ class NewtonSimEngine(DomainRandomizationMixin, NewtonRecordingMixin, SimEngine)
             joint_q = self._state_0.joint_q.numpy()
             joint_qd = self._state_0.joint_qd.numpy()
             robot_joints = self._world.robots[robot_name].joint_names
+            free_short = self._robot_free_base_joint.get(robot_name)
             obs: dict[str, Any] = {}
             for jname in robot_joints:
+                # A 6-DoF free joint (floating base) is not a scalar joint: its
+                # coordinate 0 is the base x-position, so obs[jname] =
+                # joint_q[idx] would report base-x as a joint angle (dropping the
+                # rest of the pose + twist) - a degenerate scalar and a duplicate
+                # of base_pos.x. Its full state is surfaced below as the
+                # structured base_pos/base_quat/base_lin_vel/base_ang_vel keys,
+                # matching get_robot_state and the MuJoCo backend.
+                if jname == free_short:
+                    continue
                 idx = self._joint_coord_index.get((robot_name, jname))
                 if idx is not None and idx < len(joint_q):
                     obs[jname] = float(joint_q[idx])
@@ -1729,6 +1786,16 @@ class NewtonSimEngine(DomainRandomizationMixin, NewtonRecordingMixin, SimEngine)
                 "set_obs_noise": (
                     "(joint_pos_std=0.0, joint_vel_std=0.0, camera_jitter_px=0.0, seed=None) -> dict "
                     "(additive Gaussian sensor noise on observations + rendered frames)"
+                ),
+                "create_world": (
+                    "(timestep=None, gravity=None, ground_plane=True, terrain=None, "
+                    "difficulty=1.0) -> dict  (create a fresh simulation world - the "
+                    "world-lifecycle entry point that precedes add_robot / add_object; "
+                    "gravity is [gx, gy, gz], ground_plane lays a floor)"
+                ),
+                "destroy": (
+                    "() -> dict  (tear down the world and release all resources, joining "
+                    "any running background policy first; the inverse of create_world)"
                 ),
                 "reset": "() -> dict (restore baseline joint configuration)",
                 "step": "(n_steps: int = 1) -> dict",

@@ -53,7 +53,7 @@ For untrusted networks or production fleets, `STRANDS_MESH_AUTH_MODE=mtls` is re
 mTLS alone is not sufficient - pair it with an access-control list:
 
 - The built-in default ACL is permissive: any CA-signed peer may publish and subscribe on any key. If you forget to supply an ACL, the SDK warns on every session open.
-- Supply an operator ACL via `STRANDS_MESH_ACL_FILE` that enumerates each peer's certificate CN and the key expressions it may use. See [`examples/mesh_acl_example.json5`](https://github.com/strands-labs/robots/blob/main/examples/mesh_acl_example.json5) and [`examples/mesh_acl_strict_per_peer.json5`](https://github.com/strands-labs/robots/blob/main/examples/mesh_acl_strict_per_peer.json5).
+- Supply an operator ACL via `STRANDS_MESH_ACL_FILE` that enumerates each peer's certificate CN and the key expressions it may use. See [`examples/mesh/mesh_acl_example.json5`](https://github.com/strands-labs/robots/blob/main/examples/mesh/mesh_acl_example.json5) and [`examples/mesh/mesh_acl_strict_per_peer.json5`](https://github.com/strands-labs/robots/blob/main/examples/mesh/mesh_acl_strict_per_peer.json5).
 - `STRANDS_MESH_ACCEPT_PERMISSIVE_ACL=1` exists only to silence the permissive-ACL warning when you have deliberately accepted it (e.g. a closed lab). Do not set it in production - it does not make the mesh safer, it only quiets the reminder that it is not.
 
 > ⚠️ **WAN/cloud Zenoh routers MUST deploy a topic-level ACL.**
@@ -67,7 +67,7 @@ mTLS alone is not sufficient - pair it with an access-control list:
 > fleet.
 >
 > mTLS gives you **identity**; the ACL gives you **least privilege**. You need
-> both. Adapt [`examples/mesh_acl_strict_per_peer.json5`](https://github.com/strands-labs/robots/blob/main/examples/mesh_acl_strict_per_peer.json5)
+> both. Adapt [`examples/mesh/mesh_acl_strict_per_peer.json5`](https://github.com/strands-labs/robots/blob/main/examples/mesh/mesh_acl_strict_per_peer.json5)
 > to your fleet (it pins each peer's certificate CN to the exact key
 > expressions it may publish/subscribe) and deploy it on **every
 > internet-facing router**, not just on LAN peers. Without it, an

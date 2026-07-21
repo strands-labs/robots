@@ -16,6 +16,12 @@ That dual role makes its file-handling discipline security-relevant:
   timestamp (and records with a non-numeric ``ts``) while keeping newer
   ones, so a time-bounded forensic query returns only the window asked
   for.
+* A corrupt line that is not valid JSON (a torn write, or a
+  forward-compatibility line from a newer writer) must be skipped so
+  the whole read is not aborted, while a DEBUG breadcrumb is emitted --
+  the skipped line is invisible to the ``_load_seq_counters`` seq-seed
+  walk, so the breadcrumb is the operator's only signal the seed may be
+  incomplete.
 
 These behaviors had no direct regression coverage; this file pins them.
 """
@@ -128,3 +134,37 @@ def test_read_audit_log_since_filters_old_and_non_numeric_ts(tmp_path, monkeypat
     records = audit.read_audit_log(since=150.0)
     events = [r.get("event") for r in records]
     assert events == ["new"], f"since= should keep only records at/after the cutoff, got {events}"
+
+
+def test_read_audit_log_skips_malformed_json_line(tmp_path, monkeypatch, caplog):
+    """A corrupt (non-JSON) line is skipped; surrounding valid records survive.
+
+    A torn write (process killed mid-append) or a forward-compat line from a
+    newer writer can leave a line that is not valid JSON. The forensic walker
+    must skip that single line rather than abort the entire read, so the valid
+    records around it remain recoverable. A DEBUG breadcrumb is emitted because
+    a skipped line is invisible to the ``_load_seq_counters`` seq-seed walk,
+    which would otherwise silently under-seed the per-peer counter.
+    """
+    active = audit.audit_log_path()
+    active.parent.mkdir(parents=True, exist_ok=True)
+    active.write_text(
+        "\n".join(
+            [
+                '{"event": "before", "payload": {"i": 1}}',
+                "{ this is not valid json",
+                '{"event": "after", "payload": {"i": 2}}',
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    with caplog.at_level("DEBUG", logger="strands_robots.mesh.audit"):
+        records = audit.read_audit_log()
+
+    events = [r.get("event") for r in records]
+    assert events == ["before", "after"], f"malformed line must be skipped while valid records are kept, got {events}"
+    assert any("skipping malformed line" in m for m in caplog.messages), (
+        f"expected a DEBUG breadcrumb for the skipped line, got {caplog.messages}"
+    )

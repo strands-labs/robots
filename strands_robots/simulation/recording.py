@@ -442,9 +442,8 @@ class DatasetRecordingMixin:
 
         This is the in-process counterpart to ``start_recording`` /
         ``stop_recording``: where those WRITE a dataset, ``stream_dataset``
-        READS one back lazily for eval / replay / inspection (Phase 3 of the
-        physical-AI data loop). Training scripts can instead use
-        ``python -m lerobot.scripts.train dataset.streaming=true`` which uses
+        READS one back lazily for eval / replay / inspection. Training scripts
+        can instead use ``lerobot-train --dataset.streaming=true`` which uses
         the same underlying StreamingLeRobotDataset.
 
         Args:
@@ -453,7 +452,8 @@ class DatasetRecordingMixin:
             **kwargs: Forwarded to
                 :meth:`StreamingDatasetReader.open` - e.g. ``root``,
                 ``delta_timestamps``, ``episodes``, ``shuffle``, ``buffer_size``,
-                ``max_num_shards``, ``drop_videos`` (proprio-only, torchcodec-free).
+                ``max_num_shards``, ``drop_videos`` (proprio-only, torchcodec-free),
+                ``repo_type`` (``"dataset"`` or ``"bucket"``).
 
         Returns:
             A :class:`~strands_robots.streaming_dataset.StreamingDatasetReader`.

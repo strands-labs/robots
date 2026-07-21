@@ -15,6 +15,8 @@ Spec schema (top-level keys)::
     supported_robots: list[str]           # default [] (any)
     default_robot: string                 # required - registry data_config
     scene: string                         # optional MJCF/URDF path for sim.load_scene()
+    instruction: string                   # optional natural-language task command
+                                          #   for language-conditioned policies (GR00T, ...)
     success:
       all: [<bool predicate_call>, ...]   # all must be true (reward terms rejected)
       any: [<bool predicate_call>, ...]   # at least one must be true
@@ -84,6 +86,7 @@ _ALLOWED_TOP_LEVEL = frozenset(
         "supported_robots",
         "default_robot",
         "scene",
+        "instruction",
         "success",
         "failure",
         "dense_reward",
@@ -208,6 +211,7 @@ class DeclarativeBenchmark(BenchmarkProtocol):
         failure_fn: Callable[[SimEngine], bool],
         reward_terms: list[Callable[[SimEngine], float]],
         scene: str | None = None,
+        instruction: str = "",
     ):
         self._name = name
         self._supported_robots = list(supported_robots)
@@ -217,6 +221,7 @@ class DeclarativeBenchmark(BenchmarkProtocol):
         self._failure_fn = failure_fn
         self._reward_terms = list(reward_terms)
         self._scene = scene
+        self._instruction = instruction
 
     @property
     def name(self) -> str:
@@ -229,6 +234,19 @@ class DeclarativeBenchmark(BenchmarkProtocol):
     @property
     def default_robot(self) -> str:
         return self._default_robot
+
+    @property
+    def instruction(self) -> str:
+        """Natural-language task command declared in the spec (default ``""``).
+
+        Overrides :attr:`BenchmarkProtocol.instruction` so a spec-authored
+        (declarative) benchmark can carry a task description without a Python
+        subclass -- the ``PolicyRunner`` eval loop falls back to this when the
+        caller passes no ``instruction=`` to ``evaluate_benchmark``, so a
+        language-conditioned policy (GR00T, OpenVLA, ...) receives the command
+        instead of an empty string (the #187 off-task failure mode).
+        """
+        return self._instruction
 
     def on_episode_start(self, sim: SimEngine, rng: random.Random) -> None:
         """Load the declared scene (if any) before delegating to the base impl.
@@ -316,6 +334,10 @@ class DeclarativeBenchmark(BenchmarkProtocol):
         if scene is not None and not isinstance(scene, str):
             raise ValueError(f"spec.scene: must be a string path or omitted, got {type(scene).__name__}")
 
+        instruction = spec.get("instruction", "")
+        if not isinstance(instruction, str):
+            raise ValueError(f"spec.instruction: must be a string or omitted, got {type(instruction).__name__}")
+
         success_fn = _compile_bool_group(spec.get("success"), default=False, context="success")
         failure_fn = _compile_bool_group(spec.get("failure"), default=False, context="failure")
         reward_terms = _compile_reward_terms(spec.get("dense_reward"))
@@ -329,6 +351,7 @@ class DeclarativeBenchmark(BenchmarkProtocol):
             failure_fn=failure_fn,
             reward_terms=reward_terms,
             scene=scene,
+            instruction=instruction,
         )
 
 

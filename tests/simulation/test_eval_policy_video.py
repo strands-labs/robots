@@ -142,3 +142,89 @@ class TestEvalPolicyVideo:
         )
         assert result["status"] == "success", result
         assert _result_json(result)["video_paths"] == [str(tmp_path / "x_ep0.mp4")]
+
+
+class TestEvalPolicyVideoZeroFramesCaptured:
+    """A camera that passes the up-front probe but decodes no in-loop frames
+    (e.g. it is unplugged mid-eval) must not silently list empty per-episode
+    MP4s as if they held a rollout.
+
+    ``run_policy`` already flags a 0-frame rollout, but the multi-episode paths
+    - ``eval_policy`` (per-episode ``_ep{i}.mp4``) and the ``spec``/benchmark
+    route (:meth:`PolicyRunner.evaluate` with a spec) - independently decide
+    whether to append each episode's writer path to the returned ``video_paths``.
+    This pins that both routes stay ``status=success`` (a dead camera does not
+    kill a scored eval), OMIT the empty episode from ``video_paths`` so the
+    aggregate honestly reflects which episodes captured, and log a per-episode
+    warning naming the offending path.
+    """
+
+    @staticmethod
+    def _blind_render(*_a, **_k):
+        # Probe (``_RolloutVideoWriter.open``) requires status=success, so this
+        # opens the writer; but it carries no image block, so every in-loop
+        # ``capture()`` decodes to None and no frame is ever appended.
+        return {"status": "success", "content": [{"text": "no image block"}]}
+
+    @requires_gl
+    def test_eval_policy_omits_empty_episode_videos(self, sim_with_arm, tmp_path, monkeypatch, caplog):
+        import logging
+
+        monkeypatch.setattr(sim_with_arm, "render", self._blind_render)
+        base = tmp_path / "eval.mp4"
+        with caplog.at_level(logging.WARNING, logger="strands_robots.simulation.policy_runner"):
+            result = sim_with_arm.eval_policy(
+                robot_name="arm1",
+                policy_provider="mock",
+                n_episodes=2,
+                max_steps=6,
+                control_frequency=20.0,
+                video={"path": str(base), "camera": "arm1/side", "fps": 10, "width": 160, "height": 120},
+            )
+        # A dead camera does not fail the scored eval.
+        assert result["status"] == "success", result
+        # Both episodes captured 0 frames -> neither is listed.
+        assert _result_json(result)["video_paths"] == []
+        # Every episode that requested a video but wrote nothing is flagged.
+        zero_frame_warnings = [r for r in caplog.records if "wrote 0 frames" in r.getMessage()]
+        assert len(zero_frame_warnings) == 2, [r.getMessage() for r in caplog.records]
+        assert "eval_policy episode" in zero_frame_warnings[0].getMessage()
+
+    @requires_gl
+    def test_benchmark_spec_path_omits_empty_episode_videos(self, sim_with_arm, tmp_path, monkeypatch, caplog):
+        import logging
+
+        from strands_robots.policies import create_policy
+
+        class _NoopSpec(BenchmarkProtocol):
+            max_steps = 5
+
+            @property
+            def supported_robots(self) -> list[str]:
+                return ["arm1"]
+
+            @property
+            def default_robot(self) -> str:
+                return "arm1"
+
+            def on_step(self, sim, obs, action):
+                return StepInfo(reward=0.0)
+
+            def is_success(self, sim):
+                return False
+
+        monkeypatch.setattr(sim_with_arm, "render", self._blind_render)
+        with caplog.at_level(logging.WARNING, logger="strands_robots.simulation.policy_runner"):
+            result = PolicyRunner(sim_with_arm).evaluate(
+                "arm1",
+                create_policy("mock"),
+                spec=_NoopSpec(),
+                n_episodes=2,
+                control_frequency=20.0,
+                video={"path": str(tmp_path / "bench.mp4"), "camera": "arm1/side", "fps": 10},
+            )
+        assert result["status"] == "success", result
+        assert _result_json(result)["video_paths"] == []
+        zero_frame_warnings = [r for r in caplog.records if "wrote 0 frames" in r.getMessage()]
+        assert len(zero_frame_warnings) == 2, [r.getMessage() for r in caplog.records]
+        assert "evaluate_benchmark episode" in zero_frame_warnings[0].getMessage()
