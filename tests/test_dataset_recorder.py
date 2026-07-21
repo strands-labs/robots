@@ -1859,6 +1859,48 @@ def test_sync_to_bucket_delete_flag_forwards_to_sync(tmp_path, monkeypatch):
     assert "--delete" in calls[0]
 
 
+def test_sync_dataset_to_bucket_standalone_needs_no_recorder(tmp_path, monkeypatch):
+    """The module-level ``sync_dataset_to_bucket`` syncs an on-disk dataset with
+    no live DatasetRecorder (lifecycle-independent daily-sync path used by
+    ``stop_recording(bucket=...)`` on an idle sim)."""
+    import subprocess
+
+    from strands_robots import dataset_recorder as dr
+
+    root = tmp_path / "robot-fave"
+    root.mkdir()
+    _write_meta(root)
+    monkeypatch.setattr(dr, "_hf_executable", lambda: "hf")
+
+    calls: list[list[str]] = []
+
+    def _fake_run(cmd, *_a, **_k):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, stdout="ok", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+
+    result = dr.sync_dataset_to_bucket(str(root), "my-org/robot-fave")
+
+    assert result["status"] == "success"
+    # run_id defaults to the dataset directory name when no recorder exists.
+    assert result["bucket_uri"] == "hf://buckets/my-org/robot-fave/robot-fave"
+    assert calls[0][:3] == ["hf", "buckets", "create"]
+    assert calls[1][:2] == ["hf", "sync"] and calls[1][2] == str(root)
+
+
+def test_sync_dataset_to_bucket_standalone_requires_finalized_meta(tmp_path, monkeypatch):
+    """The standalone sync refuses a dataset root without ``meta/``."""
+    from strands_robots import dataset_recorder as dr
+
+    monkeypatch.setattr(dr, "_hf_executable", lambda: "hf")
+
+    result = dr.sync_dataset_to_bucket(str(tmp_path), "my-org/robot-fave")
+
+    assert result["status"] == "error"
+    assert "meta/" in result["message"]
+
+
 def test_hf_executable_prefers_interpreter_env_over_path(tmp_path, monkeypatch):
     """`_hf_executable` finds the ``hf`` next to the running interpreter before
     falling back to PATH, so sync works from a venv whose bin is not activated.
