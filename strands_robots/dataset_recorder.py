@@ -137,6 +137,42 @@ def _hf_executable() -> str | None:
     return shutil.which("hf")
 
 
+def _huggingface_hub_version_error() -> str | None:
+    """Return an actionable error message if ``huggingface_hub`` is too old for bucket sync.
+
+    The ``hf buckets`` / ``hf sync`` subcommands ship in huggingface_hub>=1.0.
+    On older releases (e.g. the 0.36.x stable line) the ``hf`` binary exists,
+    so :func:`_hf_executable` succeeds, but the subcommands fail with argparse
+    usage noise ("invalid choice: 'buckets'") that gives no hint the fix is an
+    upgrade. Version-checking the installed package up front turns that noise
+    into a clear upgrade instruction without spawning a subprocess.
+
+    Returns ``None`` (no error) when:
+
+    - the installed version is >= 1.0, or
+    - ``huggingface_hub`` is not importable in this interpreter (the ``hf``
+      binary may come from a different environment on PATH whose version we
+      cannot see; the normal subprocess error path still applies), or
+    - the version string is unparseable (fail open rather than block a
+      possibly-capable CLI on a cosmetic version format).
+    """
+    try:
+        import huggingface_hub
+    except ImportError:
+        return None
+
+    version = getattr(huggingface_hub, "__version__", "")
+    match = re.match(r"(\d+)\.(\d+)", version)
+    if match is None:
+        return None
+    if (int(match.group(1)), int(match.group(2))) >= (1, 0):
+        return None
+    return (
+        f"bucket sync requires huggingface_hub>=1.0 (`hf buckets`/`hf sync`); "
+        f"installed: {version}. pip install -U 'huggingface_hub>=1.0'."
+    )
+
+
 # Lazy check for LeRobot availability.
 # We must NOT import lerobot at module level because it pulls in
 # `datasets` -> `pandas`, which can crash with a numpy ABI mismatch on
@@ -1070,6 +1106,13 @@ class DatasetRecorder:
                 "status": "error",
                 "message": "`hf` CLI not found. pip install -U huggingface_hub (>=1.x) and run `hf auth login`.",
             }
+
+        # `hf buckets` / `hf sync` need huggingface_hub>=1.0; on 0.x the CLI
+        # exists but rejects those subcommands with argparse noise. Gate on the
+        # installed package version so users get an upgrade instruction instead.
+        version_error = _huggingface_hub_version_error()
+        if version_error is not None:
+            return {"status": "error", "message": version_error}
 
         if not _BUCKET_RE.match(bucket):
             return {

@@ -1565,6 +1565,108 @@ def test_sync_to_bucket_missing_hf_cli_errors(tmp_path, monkeypatch):
     assert "hf" in result["message"]
 
 
+def test_sync_to_bucket_old_huggingface_hub_errors(tmp_path, monkeypatch):
+    """huggingface_hub<1.0 -> clear upgrade instruction, never a subprocess call.
+
+    Regression test for the version gate: on 0.x the ``hf`` binary exists but
+    lacks the ``buckets``/``sync`` subcommands, so without the gate the user
+    gets argparse usage noise piped verbatim into the status dict.
+    """
+    import subprocess
+
+    import huggingface_hub
+
+    from strands_robots import dataset_recorder as dr
+
+    _write_meta(tmp_path)
+    monkeypatch.setattr(dr, "_hf_executable", lambda: "hf")
+    monkeypatch.setattr(huggingface_hub, "__version__", "0.36.2")
+
+    def _boom(*_a, **_k):
+        raise AssertionError("subprocess must not run when huggingface_hub is too old")
+
+    monkeypatch.setattr(subprocess, "run", _boom)
+
+    result = _sync_recorder(tmp_path).sync_to_bucket("my-org/robot-fave")
+
+    assert result["status"] == "error"
+    assert "huggingface_hub>=1.0" in result["message"]
+    assert "0.36.2" in result["message"]
+    assert "pip install -U 'huggingface_hub>=1.0'" in result["message"]
+
+
+def test_sync_to_bucket_new_huggingface_hub_passes_version_gate(tmp_path, monkeypatch):
+    """huggingface_hub>=1.0 passes the version gate and proceeds to sync."""
+    import subprocess
+
+    import huggingface_hub
+
+    from strands_robots import dataset_recorder as dr
+
+    _write_meta(tmp_path)
+    monkeypatch.setattr(dr, "_hf_executable", lambda: "hf")
+    monkeypatch.setattr(huggingface_hub, "__version__", "1.0.0")
+
+    def _fake_run(cmd, *_a, **_k):
+        return subprocess.CompletedProcess(cmd, 0, stdout="ok", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+
+    result = _sync_recorder(tmp_path).sync_to_bucket("my-org/robot-fave")
+
+    assert result["status"] == "success"
+
+
+def test_sync_to_bucket_unimportable_huggingface_hub_skips_version_gate(tmp_path, monkeypatch):
+    """No importable huggingface_hub package -> the gate fails open.
+
+    The ``hf`` binary can come from a different environment on PATH (e.g. a
+    pipx install) whose version this interpreter cannot see; blocking on a
+    missing *package* would break a working CLI. The normal subprocess error
+    path still surfaces genuine failures.
+    """
+    import subprocess
+    import sys
+
+    from strands_robots import dataset_recorder as dr
+
+    _write_meta(tmp_path)
+    monkeypatch.setattr(dr, "_hf_executable", lambda: "hf")
+    # A None entry in sys.modules makes `import huggingface_hub` raise ImportError.
+    monkeypatch.setitem(sys.modules, "huggingface_hub", None)
+
+    def _fake_run(cmd, *_a, **_k):
+        return subprocess.CompletedProcess(cmd, 0, stdout="ok", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+
+    result = _sync_recorder(tmp_path).sync_to_bucket("my-org/robot-fave")
+
+    assert result["status"] == "success"
+
+
+def test_sync_to_bucket_unparseable_huggingface_hub_version_skips_gate(tmp_path, monkeypatch):
+    """An unparseable version string fails open rather than blocking the CLI."""
+    import subprocess
+
+    import huggingface_hub
+
+    from strands_robots import dataset_recorder as dr
+
+    _write_meta(tmp_path)
+    monkeypatch.setattr(dr, "_hf_executable", lambda: "hf")
+    monkeypatch.setattr(huggingface_hub, "__version__", "unknown")
+
+    def _fake_run(cmd, *_a, **_k):
+        return subprocess.CompletedProcess(cmd, 0, stdout="ok", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+
+    result = _sync_recorder(tmp_path).sync_to_bucket("my-org/robot-fave")
+
+    assert result["status"] == "success"
+
+
 @pytest.mark.parametrize(
     "bad_bucket",
     [
