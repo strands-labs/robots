@@ -186,3 +186,28 @@ def test_no_userfacing_file_invokes_removed_lerobot_scripts_train() -> None:
         assert "lerobot.scripts.lerobot_train" in text, (
             f"{path.name} lost its `lerobot.scripts.lerobot_train` reference"
         )
+
+
+# --- negative contract: lerobot 0.6 relocated + renamed the codec allowlist.
+#     ``VALID_VIDEO_CODECS`` moved from ``lerobot.datasets.video_utils`` to
+#     ``lerobot.configs.video``, the hardware-encoder set was renamed
+#     ``HW_ENCODERS`` -> ``HW_VIDEO_CODECS``, and ``libaom-av1`` joined the set.
+#     ``dataset_recorder.py``'s codec-routing header/docstring still documented
+#     the pre-0.6 snapshot (a ``>=0.5.0,<0.6.0`` "supported range" and a
+#     ``video_utils.VALID_VIDEO_CODECS ... | HW_ENCODERS`` allowlist) even though
+#     the ``[lerobot]`` extra floors lerobot at >=0.6.0 - so the code comment
+#     contradicted both the pyproject floor and the installed lerobot API. ---
+
+_DATASET_RECORDER = _REPO_ROOT / "strands_robots" / "dataset_recorder.py"
+
+
+def test_dataset_recorder_codec_docs_track_the_supported_lerobot_floor() -> None:
+    text = _DATASET_RECORDER.read_text()
+    # the dead pre-0.6 "supported range" claim is gone (the extra floors >=0.6.0)
+    assert ">=0.5.0,<0.6.0" not in text, "dataset_recorder.py still cites the dead pre-0.6 supported lerobot range"
+    # the hardware-encoder set was renamed in lerobot 0.6; the stale symbol must
+    # not linger in the documented allowlist
+    assert "HW_ENCODERS" not in text, "dataset_recorder.py cites the renamed HW_ENCODERS symbol (now HW_VIDEO_CODECS)"
+    # and the current allowlist symbols/entries are the ones documented
+    assert "HW_VIDEO_CODECS" in text
+    assert "libaom-av1" in text

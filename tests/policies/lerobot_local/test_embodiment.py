@@ -4,6 +4,8 @@ These tests exercise the REAL mapping path (not mocked) to close the gap that
 let B7/B12 slip past the mock-heavy existing suite.
 """
 
+import math
+
 import numpy as np
 import pytest
 
@@ -300,6 +302,73 @@ def test_pack_state_passthrough_when_no_state_keys_present():
     out = s.observation(dict(obs))
     assert "observation.state" not in out
     assert "observation.images.image" in out
+
+
+# SO-arm degrees units on the declarative packing step. The direct
+# EmbodimentMap.sim_state_to_model conversion is covered in test_so_arm_units;
+# these pin the SAME rad->deg / gripper-0..100 conversion where it actually runs
+# at inference time: inside PackStateProcessorStep.observation when the
+# embodiment declares state_units="degrees". A native step must leave the raw
+# radian/joint values untouched, so the two together lock the boundary.
+
+# so101 sim gripper joint range (matches test_so_arm_units.GRIPPER_RANGE).
+_SO_GRIPPER_RANGE = [-0.175, 1.745]
+
+
+def test_pack_state_degrees_units_converts_radians_to_model_units():
+    """A degrees embodiment must convert the packed observation.state from sim
+    radians to the model's training units: arm joints in degrees, gripper in
+    RANGE_0_100. pi/2 rad arm joints -> 90 deg; a mid-range gripper -> 50."""
+    Step = _require_pack_state()
+    s = Step(
+        state_keys=["1", "2", "3", "4", "5", "6"],
+        expected_dim=6,
+        dim_policy="strict",
+        state_units="degrees",
+        gripper_index=5,
+        gripper_joint_range=_SO_GRIPPER_RANGE,
+    )
+    lo, hi = _SO_GRIPPER_RANGE
+    obs = {"1": math.pi / 2, "2": math.pi / 2, "3": math.pi / 2, "4": math.pi / 2, "5": math.pi / 2, "6": (lo + hi) / 2}
+    out = list(s.observation(obs)["observation.state"])
+    for i in range(5):
+        assert math.isclose(out[i], 90.0, abs_tol=1e-4), (i, out)
+    assert math.isclose(out[5], 50.0, abs_tol=1e-4), out
+
+
+def test_pack_state_degrees_units_applies_joint_mids():
+    """When the embodiment supplies per-joint calibration mids (degrees), the
+    degrees packing path must subtract them (mid-centered degrees, matching
+    lerobot motors_bus DEGREES mode), not emit the absolute joint angle."""
+    Step = _require_pack_state()
+    mids = [10.0, -20.0, 30.0, -5.0, 15.0, 0.0]
+    s = Step(
+        state_keys=["1", "2", "3", "4", "5", "6"],
+        expected_dim=6,
+        dim_policy="strict",
+        state_units="degrees",
+        gripper_index=5,
+        gripper_joint_range=_SO_GRIPPER_RANGE,
+        joint_mids=mids,
+    )
+    lo, hi = _SO_GRIPPER_RANGE
+    obs = {k: math.pi / 2 for k in ("1", "2", "3", "4", "5")}
+    obs["6"] = (lo + hi) / 2
+    out = list(s.observation(obs)["observation.state"])
+    for i in range(5):
+        assert math.isclose(out[i], 90.0 - mids[i], abs_tol=1e-4), (i, out)
+    assert math.isclose(out[5], 50.0, abs_tol=1e-4), out
+
+
+def test_pack_state_native_units_leaves_values_unconverted():
+    """The default native step is the boundary case: raw radian arm values pass
+    through unchanged (no rad->deg), so observation.state carries sim units."""
+    Step = _require_pack_state()
+    s = Step(state_keys=["1", "2", "3"], expected_dim=3, dim_policy="strict")
+    out = list(s.observation({"1": math.pi / 2, "2": 0.5, "3": -1.0})["observation.state"])
+    assert math.isclose(out[0], math.pi / 2, abs_tol=1e-6), out
+    assert math.isclose(out[1], 0.5, abs_tol=1e-6)
+    assert math.isclose(out[2], -1.0, abs_tol=1e-6)
 
 
 def test_pack_state_transform_features_is_passthrough():

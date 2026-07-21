@@ -42,16 +42,21 @@ Until those merge, ``render`` returns blank frames on a stock build.
 
 from __future__ import annotations
 
-# Eager re-exports are safe here: none of these modules import omni (or any
-# other Isaac dependency) at module level -- heavy imports are lazy inside the
-# functions that need them, so `import examples.isaac_gs` stays cheap.
-from examples.isaac_gs.camera_utils import (
-    IsaacCameraParams,
-    get_camera_params,
-    render_rgb_and_depth,
-)
-from examples.isaac_gs.compositor import IsaacHybridCompositor
-from examples.isaac_gs.scene import build_default_scene
+from typing import TYPE_CHECKING
+
+# TYPE_CHECKING-only eager imports so static analyzers (and CodeQL's
+# undefined-export check) see concrete definitions for the lazy
+# attributes below; the runtime __getattr__ resolves them on first
+# access without importing omni at package-import time. PEP 562 --
+# same pattern as strands_robots/__init__.py.
+if TYPE_CHECKING:
+    from examples.isaac_gs.camera_utils import (
+        IsaacCameraParams,
+        get_camera_params,
+        render_rgb_and_depth,
+    )
+    from examples.isaac_gs.compositor import IsaacHybridCompositor
+    from examples.isaac_gs.scene import build_default_scene
 
 __all__ = [
     "IsaacCameraParams",
@@ -60,3 +65,19 @@ __all__ = [
     "IsaacHybridCompositor",
     "build_default_scene",
 ]
+
+
+def __getattr__(name: str):  # PEP 562 lazy re-export (avoid importing omni at package import)
+    if name in ("IsaacCameraParams", "get_camera_params", "render_rgb_and_depth"):
+        from examples.isaac_gs import camera_utils
+
+        return getattr(camera_utils, name)
+    if name == "IsaacHybridCompositor":
+        from examples.isaac_gs.compositor import IsaacHybridCompositor
+
+        return IsaacHybridCompositor
+    if name == "build_default_scene":
+        from examples.isaac_gs.scene import build_default_scene
+
+        return build_default_scene
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
