@@ -119,6 +119,39 @@ class TestMsgpackNumpy:
         out = mnp.unpackb(mnp.packb({"action": a}))
         assert np.allclose(out["action"], a)
 
+    def test_npscalar_encoded_as_tagged_map_and_roundtrips(self):
+        # np.generic scalars pack as a tagged __npscalar__ map (not a bare
+        # value) so the wire form is self-describing and dtype survives.
+        v = np.float32(1.5)
+        enc = mnp._encode(v)
+        assert enc[b"__npscalar__"] is True
+        assert enc[b"dtype"] == v.dtype.str
+        out = mnp.unpackb(mnp.packb({"s": v}))
+        assert out["s"] == pytest.approx(1.5)
+
+    def test_npscalar_decode_reconstructs_dtype(self):
+        # Decode side reconstructs the exact numpy dtype from the tag.
+        dec = mnp._decode({b"__npscalar__": True, b"data": 7, b"dtype": "<i8"})
+        assert dec == 7
+        assert np.dtype(getattr(dec, "dtype", "<i8")) == np.dtype("<i8")
+
+    def test_encode_passthrough_for_native_types(self):
+        # Non-numpy, JSON-native values are handed back untouched so msgpack
+        # serializes them directly.
+        assert mnp._encode(42) == 42
+        assert mnp._encode("hi") == "hi"
+        assert mnp._encode([1, 2]) == [1, 2]
+
+    def test_non_wire_safe_ndarray_dtype_rejected(self):
+        # object/void dtype arrays cannot go over the wire and must raise
+        # rather than silently emitting an undecodable blob.
+        obj_arr = np.array([{"not": "wire-safe"}], dtype=object)
+        with pytest.raises(ValueError, match="cannot serialize ndarray"):
+            mnp.packb({"x": obj_arr})
+        void_arr = np.zeros(2, dtype=np.dtype([("f", np.int32)]))
+        with pytest.raises(ValueError, match="cannot serialize ndarray"):
+            mnp.packb({"x": void_arr})
+
 
 # --------------------------------------------------------------------------- #
 # Server runner — list-arg command construction (no shell strings, PR #621)

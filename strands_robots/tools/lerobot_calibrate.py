@@ -417,7 +417,7 @@ def lerobot_calibrate(
                 }
 
             # Format output
-            content_lines = [" **LeRobot Calibrations**", f"Location: `{manager.base_path}`", ""]
+            content_lines = ["**LeRobot Calibrations**", f"Location: `{manager.base_path}`", ""]
             total_count = 0
 
             for dev_type, models in structure.items():
@@ -427,13 +427,13 @@ def lerobot_calibrate(
                 if not models:
                     continue
 
-                content_lines.append(f"##  **{dev_type.title()}**")
+                content_lines.append(f"## **{dev_type.title()}**")
 
                 for model, calibrations in models.items():
                     if device_model and device_model != model:
                         continue
 
-                    content_lines.append(f"###  **{model}** ({len(calibrations)} calibrations)")
+                    content_lines.append(f"### **{model}** ({len(calibrations)} calibrations)")
 
                     for calib_id in calibrations:
                         info = manager.get_calibration_info(dev_type, model, calib_id)
@@ -526,7 +526,7 @@ def lerobot_calibrate(
 
                 content_lines.extend(
                     [
-                        f"###  **{result['device_type']}/{result['device_model']}/{result['device_id']}**",
+                        f"### **{result['device_type']}/{result['device_model']}/{result['device_id']}**",
                         f"  - **Modified:** {modified}",
                         f"  - **Size:** {size_kb:.1f} KB",
                         f"  - **Motors:** {motor_info}",
@@ -549,14 +549,14 @@ def lerobot_calibrate(
 
             if success:
                 content_lines = [
-                    " **Backup Completed Successfully**",
+                    "**Backup Completed Successfully**",
                     f"**Location:** `{message}`",
                     f"**Files copied:** {count}",
                     "",
                 ]
 
                 if device_type or device_model or device_id:
-                    content_lines.append(" **Filters applied:**")
+                    content_lines.append("**Filters applied:**")
                     if device_type:
                         content_lines.append(f"  - Device Type: `{device_type}`")
                     if device_model:
@@ -658,10 +658,10 @@ def lerobot_calibrate(
                         }
 
             content_lines = [
-                " **Calibration Analysis**",
+                "**Calibration Analysis**",
                 f"**Base Path:** `{manager.base_path}`",
                 "",
-                "###  **Summary Statistics**",
+                "### **Summary Statistics**",
                 f"  - **Total Calibrations:** {total_calibrations}",
                 f"  - **Teleoperators:** {device_counts['teleoperators']}",
                 f"  - **Robots:** {device_counts['robots']}",
@@ -670,7 +670,7 @@ def lerobot_calibrate(
             ]
 
             if model_stats:
-                content_lines.extend(["###  **Device Model Breakdown**"])
+                content_lines.extend(["### **Device Model Breakdown**"])
                 for model_key, count in sorted(model_stats.items()):
                     motor_info = ""
                     if model_key in motor_stats:

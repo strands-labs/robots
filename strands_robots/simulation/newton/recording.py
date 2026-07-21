@@ -293,11 +293,19 @@ class NewtonRecordingMixin(DatasetRecordingMixin):
         joint_names: list[str] = []
         robot_type = "unknown"
         multi_robot = len(world.robots) > 1
+        free_base = getattr(self, "_robot_free_base_joint", {})
         for rname, robot in world.robots.items():
+            # Exclude the floating base's free joint from the scalar joint
+            # schema: its 6-DoF state is recorded as the structured base_*
+            # columns below and get_observation no longer emits it as a scalar,
+            # so a floating_base_joint scalar column would be dead/degenerate.
+            # Mirrors get_observation / get_robot_state.
+            free_short = free_base.get(rname)
+            scalar_jn = [jn for jn in robot.joint_names if jn != free_short]
             if multi_robot:
-                joint_names.extend(f"{rname}__{jn}" for jn in robot.joint_names)
+                joint_names.extend(f"{rname}__{jn}" for jn in scalar_jn)
             else:
-                joint_names.extend(robot.joint_names)
+                joint_names.extend(scalar_jn)
             robot_type = robot.data_config or rname
 
         camera_keys: list[str] = []

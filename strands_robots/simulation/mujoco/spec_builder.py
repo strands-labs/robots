@@ -27,6 +27,14 @@ import numpy as np
 
 from strands_robots.simulation.models import SimCamera, SimObject, SimRobot, SimWorld
 from strands_robots.simulation.mujoco.backend import _ensure_mujoco
+from strands_robots.simulation.terrain import (
+    TERRAIN_BASE,
+    TERRAIN_RADIUS,
+    TERRAIN_RESOLUTION,
+    TERRAIN_SEED,
+    generate_heightfield,
+    terrain_elevation,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -311,16 +319,44 @@ class SpecBuilder:
         )
         main_light.type = mujoco.mjtLightType.mjLIGHT_DIRECTIONAL
 
-        # Ground plane.
+        # Ground. A rough-terrain heightfield (``create_world(terrain=...)``)
+        # replaces the flat plane so a locomotion policy walks over bumps; both
+        # share the checker material and the "ground" geom name so downstream
+        # ground-plane detection (attach_robot floor-strip) and any name lookup
+        # are terrain-agnostic. The hfield surface spans z in
+        # [0, terrain_elevation(difficulty)] on a solid base slab -> flush with z=0 at its
+        # lowest point (no hole under the robot), same +/-5 m footprint as the
+        # flat plane so the reachable workspace is unchanged.
         if world.ground_plane:
-            spec.worldbody.add_geom(
-                name="ground",
-                type=mujoco.mjtGeom.mjGEOM_PLANE,
-                size=[5.0, 5.0, 0.01],
-                material="grid_mat",
-                conaffinity=1,
-                condim=3,
-            )
+            if world.terrain:
+                heights = generate_heightfield(world.terrain, resolution=TERRAIN_RESOLUTION, seed=TERRAIN_SEED)
+                # difficulty scales the hfield PEAK elevation (kind-agnostic): the
+                # normalized [0, 1] heights are the same, only the metre scale changes.
+                elevation = terrain_elevation(world.terrain_difficulty)
+                spec.add_hfield(
+                    name="terrain_hfield",
+                    size=[TERRAIN_RADIUS, TERRAIN_RADIUS, elevation, TERRAIN_BASE],
+                    nrow=TERRAIN_RESOLUTION,
+                    ncol=TERRAIN_RESOLUTION,
+                    userdata=heights,
+                )
+                spec.worldbody.add_geom(
+                    name="ground",
+                    type=mujoco.mjtGeom.mjGEOM_HFIELD,
+                    hfieldname="terrain_hfield",
+                    material="grid_mat",
+                    conaffinity=1,
+                    condim=3,
+                )
+            else:
+                spec.worldbody.add_geom(
+                    name="ground",
+                    type=mujoco.mjtGeom.mjGEOM_PLANE,
+                    size=[5.0, 5.0, 0.01],
+                    material="grid_mat",
+                    conaffinity=1,
+                    condim=3,
+                )
 
         # Cameras. Skip cameras that were discovered inside a robot's URDF -
         # they'll come back automatically via ``spec.attach(robot_spec)``.
@@ -683,7 +719,9 @@ class SpecBuilder:
         #      angled/elevated plane, e.g. a ramp or wall, which must survive).
         #   3. Debug log -- record which geoms were stripped so a disappearing
         #      (or surviving) robot floor is diagnosable.
-        world_has_ground = any(g.type == mujoco.mjtGeom.mjGEOM_PLANE for g in scene_spec.geoms)
+        world_has_ground = any(
+            g.type in (mujoco.mjtGeom.mjGEOM_PLANE, mujoco.mjtGeom.mjGEOM_HFIELD) for g in scene_spec.geoms
+        )
         stripped: list[str] = []
         if world_has_ground:
             for plane in [
@@ -758,9 +796,4 @@ def _is_z0_ground_plane(geom: Any) -> bool:
 
 __all__ = [
     "SpecBuilder",
-    "_is_z0_ground_plane",
-    "_geom_type",
-    "_normalize_size",
-    "_validate_size",
-    "_target_quat",
 ]

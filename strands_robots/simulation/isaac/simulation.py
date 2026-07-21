@@ -634,6 +634,8 @@ class IsaacSimulation(SimEngine):
         timestep: float | None = None,
         gravity: list[float] | None = None,
         ground_plane: bool = True,
+        terrain: str | None = None,
+        difficulty: float = 1.0,
     ) -> dict[str, Any]:
         """Create a new simulation world in Isaac Sim.
 
@@ -648,12 +650,61 @@ class IsaacSimulation(SimEngine):
             Override gravity vector from config. [gx, gy, gz].
         ground_plane : bool
             Whether to add a ground plane. Default True.
+        terrain : str, optional
+            Heightfield terrain kind (e.g. ``"rough"``/``"stairs"``/
+            ``"pyramid"``/``"slope"``). The Isaac backend has no heightfield
+            ground yet, so a non-None value is rejected with an actionable
+            error rather than raising ``TypeError`` or being silently ignored
+            (honouring the
+            :class:`~strands_robots.simulation.base.SimEngine` ``create_world``
+            contract). Use ``create_simulation(backend="mujoco")`` for terrain.
+        difficulty : float
+            Terrain curriculum elevation scale (only meaningful together with
+            ``terrain``). Accepted for signature parity with the base contract.
+            Since the Isaac backend has no heightfield terrain, ``difficulty``
+            can never take effect, so a non-default (``!= 1.0``) value is
+            rejected with an actionable error (the base ``create_world``
+            contract: reject rather than silently ignore it) rather than
+            silently having no effect.
 
         Returns
         -------
         dict
             Status dict with world info.
         """
+        if terrain is not None:
+            return {
+                "status": "error",
+                "content": [
+                    {
+                        "text": (
+                            f"terrain={terrain!r} is not supported on the Isaac backend yet "
+                            "(heightfield terrain, e.g. 'rough'/'stairs'/'pyramid'/'slope', is "
+                            "currently MuJoCo-only); use create_simulation(backend='mujoco') for "
+                            "terrain, or omit terrain for a flat ground plane."
+                        )
+                    }
+                ],
+            }
+        # Base create_world contract: reject a non-default difficulty with no
+        # terrain rather than silently ignoring it. On Isaac difficulty is
+        # doubly inert - there is no heightfield terrain for it to scale (a
+        # non-None terrain is already rejected above) - so any != 1.0 value is
+        # meaningless here; surface that instead of a status=success no-op.
+        if float(difficulty) != 1.0:
+            return {
+                "status": "error",
+                "content": [
+                    {
+                        "text": (
+                            f"difficulty={difficulty!r} has no effect on the Isaac backend "
+                            "(it scales a heightfield terrain's elevation, and this backend "
+                            "has no heightfield terrain); use create_simulation(backend='mujoco') "
+                            "for a terrain curriculum, or omit difficulty for a flat ground plane."
+                        )
+                    }
+                ],
+            }
         with self._lock:
             if self._world_created:
                 return {
@@ -1008,6 +1059,7 @@ class IsaacSimulation(SimEngine):
         data_config: str | None = None,
         position: list[float] | None = None,
         orientation: list[float] | None = None,
+        keyframe: str | int | None = None,
     ) -> dict[str, Any]:
         """Add a robot to the simulation.
 
@@ -1027,12 +1079,38 @@ class IsaacSimulation(SimEngine):
             Base position [x, y, z].
         orientation : list[float], optional
             Base orientation as quaternion [w, x, y, z].
+        keyframe : str | int, optional
+            Canonical-pose keyframe (e.g. panda ``"home"``). The Isaac
+            backend does not parse the MuJoCo ``<keyframe>`` block this
+            refers to, so a non-None value is rejected with an actionable
+            error rather than raising ``TypeError`` or being silently
+            ignored (honouring the
+            :class:`~strands_robots.simulation.base.SimEngine` ``add_robot``
+            contract). Use ``create_simulation(backend="mujoco")`` to spawn
+            at a keyframe, or omit ``keyframe`` for the default zero-pose
+            spawn.
 
         Returns
         -------
         dict
             Status dict with robot info.
         """
+        if keyframe is not None:
+            return {
+                "status": "error",
+                "content": [
+                    {
+                        "text": (
+                            f"add_robot: keyframe={keyframe!r} is not supported on "
+                            "the Isaac backend (spawning at a MuJoCo <keyframe> pose "
+                            "is currently MuJoCo-only); use "
+                            "create_simulation(backend='mujoco') to spawn at a "
+                            "keyframe, or omit keyframe for the default zero-pose "
+                            "spawn."
+                        )
+                    }
+                ],
+            }
         with self._lock:
             if not self._world_created:
                 return {
@@ -1247,6 +1325,8 @@ class IsaacSimulation(SimEngine):
         color: list[float] | None = None,
         mass: float = 0.1,
         is_static: bool = False,
+        mesh_path: str | None = None,
+        material: dict[str, Any] | None = None,
         **kwargs: Any,
     ) -> dict[str, Any]:
         """Add an object (shape primitive) to the scene.
@@ -1304,6 +1384,17 @@ class IsaacSimulation(SimEngine):
             Sphere, Cylinder, Capsule}`` and stays pinned in space. If
             ``False`` (default), uses the ``Dynamic*`` counterpart and
             participates in physics with ``mass``.
+        mesh_path : str, optional
+            Path to a custom mesh asset. Loading custom meshes is not
+            supported by the Isaac backend yet; a non-``None`` value is
+            rejected with an actionable error rather than being silently
+            ignored (honouring the
+            :class:`~strands_robots.simulation.base.SimEngine` ``add_object``
+            contract). Use ``create_simulation(backend='mujoco')`` for meshes.
+        material : dict, optional
+            Visual material/texture spec. NOT supported by the Isaac backend
+            yet; a non-``None`` value is rejected loudly rather than silently
+            dropped (use the MuJoCo backend for matte/textured surfaces).
 
         Returns
         -------
@@ -1314,6 +1405,34 @@ class IsaacSimulation(SimEngine):
             ``mass``, and ``is_static`` so an agent can confirm what
             actually landed on the stage without re-querying.
         """
+        if material is not None:
+            return {
+                "status": "error",
+                "content": [
+                    {
+                        "text": (
+                            "add_object: material= is not supported on the "
+                            "Isaac backend yet (matte/textured surfaces); use "
+                            "create_simulation(backend='mujoco') for materials, "
+                            "or omit material for a flat color."
+                        )
+                    }
+                ],
+            }
+        if mesh_path is not None:
+            return {
+                "status": "error",
+                "content": [
+                    {
+                        "text": (
+                            "add_object: mesh_path=/custom mesh objects are not "
+                            "supported on the Isaac backend yet; use "
+                            "create_simulation(backend='mujoco') for meshes, or a "
+                            "primitive shape (box/sphere/capsule/cylinder)."
+                        )
+                    }
+                ],
+            }
         with self._lock:
             if not self._world_created:
                 return {"status": "error", "content": [{"text": "No world created."}]}
@@ -2203,9 +2322,8 @@ class IsaacSimulation(SimEngine):
         -------
         dict
             Standard Strands tool-result envelope carrying ONLY ``status`` and
-            ``content`` (the tool-result contract forbids extra top-level keys;
-            see tests/test_tool_result_contract.py). On success ``content``
-            holds a ``text`` block, a ``{"image": {"format": "png", ...}}``
+            ``content`` (the tool-result contract forbids extra top-level
+            keys). On success ``content`` holds a ``text`` block, a ``{"image": {"format": "png", ...}}``
             block with raw PNG bytes (matching the MuJoCo backend so the shared
             ``PolicyRunner._extract_frame_ndarray`` can pull frames for video
             recording, #127), and a ``{"json": {...}}`` block with pixel stats
@@ -2232,9 +2350,9 @@ class IsaacSimulation(SimEngine):
             content.append(block)
         # Structured telemetry (resolution, prim_path, rtx flag, pixel stats)
         # lives INSIDE a content json block, never as extra top-level keys -
-        # the Strands tool-result contract permits only {status, content}
-        # (see tests/test_tool_result_contract.py). Consumers that need the
-        # raw rgb/depth ndarrays use get_observation() or the internal
+        # the Strands tool-result contract permits only {status, content}.
+        # Consumers that need the raw rgb/depth ndarrays use get_observation()
+        # or the internal
         # _render_frame() helper; the PNG image block above feeds the shared
         # PolicyRunner video pipeline (#127).
         json_block: dict[str, Any] = dict(meta.get("json", {}))

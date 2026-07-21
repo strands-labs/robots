@@ -162,6 +162,38 @@ def test_expert_only_rejected_for_non_expert_policy() -> None:
         )
 
 
+def test_expert_only_rejected_for_pi0_fast() -> None:
+    # pi0_fast's lerobot config exposes NO train_expert_only field, so the CLI
+    # flag is a hard draccus error. The supported set is sourced live from
+    # lerobot (not a hardcoded copy that once wrongly listed pi0_fast).
+    with pytest.raises(ValueError, match="train_expert_only is only valid"):
+        build_train_command(
+            dataset_root="/data/cubes",
+            policy_type="pi0_fast",
+            train_expert_only=True,
+        )
+
+
+def test_expert_only_policy_types_tracks_lerobot_registry() -> None:
+    # Drift guard: the live supported set must equal the lerobot policy configs
+    # that actually declare a train_expert_only field, so it tracks lerobot.
+    import dataclasses
+
+    # importorskip both registers the policy configs (side-effect import) and
+    # binds PreTrainedConfig unconditionally, so it is always initialized on the
+    # path that uses it below (CodeQL: no use-before-init).
+    pytest.importorskip("lerobot.policies")
+    PreTrainedConfig = pytest.importorskip("lerobot.configs.policies").PreTrainedConfig
+    expected = {
+        name
+        for name, cfg_cls in PreTrainedConfig.get_known_choices().items()
+        if any(f.name == "train_expert_only" for f in dataclasses.fields(cfg_cls))
+    }
+    assert set(train_mod._expert_only_policy_types()) == expected
+    # pi0_fast has no such field on current lerobot.
+    assert "pi0_fast" not in expected
+
+
 def test_val_episodes_reserves_last_n_episodes(tmp_path: Path) -> None:
     root = _write_dataset(tmp_path / "ds", total_episodes=10)
     cmd = build_train_command(
@@ -386,6 +418,45 @@ def test_session_manager_retains_finished_session_with_dead_pid(tmp_path: Path) 
     # PID 1 is not one of ours; _load_sessions keeps it but it is not "running".
     sessions = mgr.list_sessions()
     assert "done" in sessions
+
+
+@pytest.mark.parametrize(
+    "exc_factory",
+    [
+        pytest.param(train_mod.psutil.NoSuchProcess, id="no-such-process"),
+        pytest.param(train_mod.psutil.AccessDenied, id="access-denied"),
+    ],
+)
+def test_session_with_pid_that_vanishes_mid_probe_is_dropped(monkeypatch: pytest.MonkeyPatch, exc_factory: Any) -> None:
+    """A session whose PID still exists at check time but whose process object
+    raises while being probed (a race where the process exits between
+    ``pid_exists`` and ``is_running``, or a process we may not inspect) is
+    dropped from the active set. The load must never raise and must never
+    report such a session as running.
+
+    This is the complement of the dead-PID case above: there ``pid_exists`` is
+    already False and the finished session is retained for its log tail, whereas
+    here the PID reads live but the probe fails, so the session cannot be
+    confirmed running and is excluded.
+    """
+    mgr = SessionManager()
+    mgr.add_session("racy", {"pid": 4242, "action": "train"})
+
+    monkeypatch.setattr(train_mod.psutil, "pid_exists", lambda pid: True)
+
+    class _VanishingProcess:
+        def __init__(self, pid: int) -> None:
+            self._pid = pid
+
+        def is_running(self) -> bool:
+            raise exc_factory(self._pid)
+
+    monkeypatch.setattr(train_mod.psutil, "Process", _VanishingProcess)
+
+    sessions = mgr.list_sessions()
+    assert "racy" not in sessions, (
+        "a session whose process cannot be confirmed running must be dropped, not reported as active"
+    )
 
 
 def test_session_manager_get_and_remove_round_trip(tmp_path: Path) -> None:

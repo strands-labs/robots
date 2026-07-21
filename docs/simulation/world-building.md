@@ -52,10 +52,70 @@ sim.add_robot(name="panda", data_config="panda", keyframe="home")  # or keyframe
 ```
 
 The pose is applied to the robot's joints by name and is restored by `reset()`,
-so a keyframe spawn is sticky across episodes. An unknown keyframe name/index
+so a keyframe spawn is sticky across episodes. It also survives later
+`add_robot` calls, so incrementally building a multi-robot scene keeps every
+already-spawned arm at its home pose rather than collapsing it to zero. An
+unknown keyframe name/index
 is an error that lists the model's available keyframes. `keyframe=None` (the
 default) keeps the zero-pose spawn. (MuJoCo backend; the Newton backend rejects
 `keyframe=` as not-yet-supported.)
+
+## Rough terrain
+
+By default `create_world()` lays down a flat ground plane. A locomotion
+policy is only interesting on ground it can trip on, so pass a `terrain=`
+kind to lay down a deterministic heightfield instead - a floating-base robot
+then settles onto and walks over it. Four kinds ship:
+
+- `terrain="rough"` - smoothed value-noise bumps (robustness to uneven ground).
+- `terrain="stairs"` - a flight of discrete step plateaus rising along +x
+  (foot placement + climbing).
+- `terrain="pyramid"` - concentric square step plateaus rising toward the centre
+  from every direction (an omnidirectional climb).
+- `terrain="slope"` - a constant-grade inclined ramp rising along +x
+  (a continuous uphill pitch).
+
+```python
+sim.create_world(terrain="rough")        # bumpy heightfield ground
+sim.add_robot("unitree_go2", keyframe="home")
+```
+
+The field spans the same +/-5 m footprint as the flat plane (the reachable
+workspace is unchanged), its surface ranges from 0 up to ~8 cm on a solid
+base slab (flush with `z=0` at its lowest point, so a robot never falls
+below the nominal floor), and it is regenerated identically on every
+`reset()` (deterministic given the terrain kind), so a benchmark that
+evaluates a policy on rough ground is reproducible. `terrain` only applies
+when `ground_plane=True` (the default, which is the master floor switch);
+an unknown kind is rejected with an error listing the supported kinds. It
+is the ground-generation primitive a terrain *curriculum* (progressive
+difficulty across resets) builds on. (MuJoCo backend; the Newton backend
+rejects `terrain=` as not-yet-supported.)
+
+That curriculum knob is `difficulty`, which scales the terrain's peak
+elevation (the metre height its normalized `[0, 1]` field maps to) without
+changing the terrain *kind*:
+
+```python
+sim.create_world(terrain="rough", difficulty=0.3)  # gentle bumps (early stage)
+# ... later, harder stages ...
+sim.create_world(terrain="rough", difficulty=1.0)  # full ~8 cm bumps (default)
+sim.create_world(terrain="rough", difficulty=2.0)  # exaggerated ~16 cm bumps
+```
+
+`difficulty=1.0` (the default) is the full-height terrain, byte-identical to
+omitting it; `<1` is gentler, `>1` harsher. It must be a finite value `> 0`,
+and it only applies with a `terrain` - setting `difficulty != 1.0` on a flat
+world (no `terrain`) is rejected with an error rather than silently having no
+effect. A locomotion curriculum ramps `difficulty` across resets to grow the
+terrain the policy must handle.
+
+A floating-base robot added to a terrain world (or reset in one) spawns
+SEATED on the local terrain surface: its base is raised by the heightfield
+height beneath its `(x, y)` so its feet rest on the ground, rather than at
+the flat-ground keyframe height (which would leave them buried below a raised
+heightfield). A flat ground plane and a fixed-base arm (no free joint) are
+unaffected.
 
 ## Procedural objects
 

@@ -2,7 +2,8 @@
 
 Follow-up to the R7 Phase 1 procedural-builder slice (PR #46): instead of
 hardcoding ``_build_so100`` / ``_build_panda`` / ``_build_unitree_g1`` in
-``procedural.py``, drive the same ``ProceduralRobot`` dataclass from existing
+:mod:`strands_robots.simulation.isaac.procedural`, drive the same
+``ProceduralRobot`` dataclass from existing
 robot description files (URDF, MJCF, USD) so the code path becomes a generic
 loader rather than a per-robot Python builder.
 
@@ -15,8 +16,8 @@ Supported formats:
       definition extraction.
     * **USD** - ``load_usd(path)``. Walks the USD prim hierarchy via
       ``pxr.Usd`` / ``pxr.UsdPhysics`` to extract ``PhysicsRevoluteJoint`` /
-      ``PhysicsPrismaticJoint`` + body inertia. Gated behind the ``[isaac]``
-      extra (``usd-core>=24.5``); raises :class:`ImportError` with an
+      ``PhysicsPrismaticJoint`` + body inertia. Gated behind the ``sim-isaac``
+      extra (``usd-core>=25.5``); raises :class:`ImportError` with an
       install hint when ``pxr`` is unavailable.
 
 Failure semantics (closes the #33 class of bugs - silent ``joint_count=0``
@@ -542,7 +543,7 @@ def _lazy_import_usd() -> tuple[Any, Any, Any]:
 
     Returns (Usd, Sdf, UsdPhysics) tuple. Raises ImportError with an install
     hint when the modules are unavailable (Pixar USD ships only via the
-    ``[isaac]`` extra).
+    ``sim-isaac`` extra).
     """
     try:
         from pxr import Sdf, Usd, UsdPhysics  # type: ignore[import-not-found]
@@ -551,8 +552,8 @@ def _lazy_import_usd() -> tuple[Any, Any, Any]:
     except ImportError as e:
         raise ImportError(
             "USD loader requires Pixar USD (pxr.Usd / pxr.UsdPhysics). "
-            "Install via: pip install 'strands-robots-sim[isaac]' "
-            "or directly: pip install 'usd-core>=24.5'"
+            "Install via: pip install 'strands-robots[sim-isaac]' "
+            "or directly: pip install 'usd-core>=25.5,<27.0.0'"
         ) from e
 
 
@@ -582,7 +583,7 @@ def load_usd(path: str) -> ProceduralRobot:
     ``PhysicsPrismaticJoint`` / ``PhysicsFixedJoint``) plus rigid-body
     prims with ``UsdPhysicsRigidBodyAPI``.
 
-    Gated behind the ``[isaac]`` extra (``usd-core``); raises
+    Gated behind the ``sim-isaac`` extra (``usd-core``); raises
     :class:`ImportError` with an install hint when ``pxr`` is unavailable.
 
     Parameters
@@ -600,7 +601,7 @@ def load_usd(path: str) -> ProceduralRobot:
     FileNotFoundError
         If ``path`` doesn't exist.
     ImportError
-        If ``pxr`` is not importable (install via ``[isaac]`` extra).
+        If ``pxr`` is not importable (install via ``sim-isaac`` extra).
     ValueError
         If the stage fails to open, declares zero rigid bodies, or has a
         joint with an unresolved body0 / body1 reference.

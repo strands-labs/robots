@@ -72,17 +72,17 @@ _BUILTIN_ALIASES: dict[str, str] = {
 DEFAULT_BACKEND = "mujoco"
 
 # Suggested ``pip install`` hints surfaced in the "unknown backend" error so
-# users discover that heavy out-of-tree backends ship in the sibling
-# ``strands-robots-sim`` plugin package. Keyed by the entry-point name a
-# plugin is expected to register.
+# users discover that heavy GPU backends ship behind in-tree optional extras
+# (``strands-robots[sim-newton]``). Keyed by the backend name (or common alias)
+# a user is likely to reach for.
 _PLUGIN_INSTALL_HINTS: dict[str, str] = {
     "newton": "pip install 'strands-robots[sim-newton]'",
     # The warp-lang based GPU-parallel MuJoCo path is the built-in ``newton``
     # backend; ``warp`` and ``mjwarp`` are common names users reach for, so map
     # both to the same actionable install hint instead of a bare "unknown
     # backend" dead end.
-    "warp": "pip install 'strands-robots-sim[newton]'",
-    "mjwarp": "pip install 'strands-robots-sim[newton]'",
+    "warp": "pip install 'strands-robots[sim-newton]'",
+    "mjwarp": "pip install 'strands-robots[sim-newton]'",
 }
 
 # Plugin backends discovered via importlib.metadata entry points. Populated
@@ -256,7 +256,7 @@ def _import_backend_class(name: str) -> type[SimEngine]:
     # 1. Runtime registry (user-registered)
     if name in _runtime_registry:
         cls: type[SimEngine] = _runtime_registry[name]()
-        logger.debug("Loaded runtime backend: %s → %s", name, cls.__name__)
+        logger.debug("Loaded runtime backend: %s -> %s", name, cls.__name__)
         return cls
 
     # 2. Built-in registry
@@ -278,7 +278,7 @@ def _import_backend_class(name: str) -> type[SimEngine]:
                 f"`strands_robots.simulation.factory.register_backend()` to proceed."
             ) from exc
         backend_cls: type[SimEngine] = getattr(module, class_name)  # type: ignore[assignment]
-        logger.debug("Loaded built-in backend: %s → %s.%s", name, module_path, class_name)
+        logger.debug("Loaded built-in backend: %s -> %s.%s", name, module_path, class_name)
         return backend_cls
 
     # 3. Entry-point plugins (third-party packages, e.g. strands-robots-sim).
@@ -289,7 +289,7 @@ def _import_backend_class(name: str) -> type[SimEngine]:
     plugins = _load_plugin_backends()
     if name in plugins:
         plugin_cls = plugins[name]
-        logger.debug("Loaded plugin backend: %s → %s", name, plugin_cls.__name__)
+        logger.debug("Loaded plugin backend: %s -> %s", name, plugin_cls.__name__)
         return plugin_cls
 
     available = ", ".join(list_backends())

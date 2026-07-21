@@ -202,13 +202,13 @@ alone diverge - see the note in [In simulation](#in-simulation)).
 
 For a self-contained, low-level reference - building the torque-actuated G1,
 running `policy.compute_torques(...)` at `control_decimation=4`, and rendering -
-[`examples/wbc_g1_torque_deploy.py`](https://github.com/strands-labs/robots/blob/main/examples/wbc_g1_torque_deploy.py)
+[`examples/wbc/wbc_g1_torque_deploy.py`](https://github.com/strands-labs/robots/blob/main/examples/wbc/wbc_g1_torque_deploy.py)
 reproduces the upstream deploy loop directly - torque motors, `policy.compute_torques(...)` at
 `control_decimation=4`, whole-body observation with real joint velocities + base
 IMU - and is the right way to see the G1 actually locomote:
 
 ```bash
-python examples/wbc_g1_torque_deploy.py --checkpoint /path/to/grootwbc-g1 \
+python examples/wbc/wbc_g1_torque_deploy.py --checkpoint /path/to/grootwbc-g1 \
     --duration 5 --vx 0.5 --mp4 /tmp/g1_walk.mp4
 ```
 
@@ -221,7 +221,7 @@ holding height); a standing command (`--vx 0`) holds balance in place.
   <figcaption>Unitree G1 under <code>WBCPolicy</code> (GR00T-WBC SONIC, <code>walk_policy.onnx</code>)
   commanded at <code>vx = 0.5 m/s</code> — the torque-PD deploy loop in MuJoCo (headless).
   The base advances ~2.3 m over 6 s (~0.38 m/s) while holding pelvis height ~0.75 m and
-  staying upright. Produced by <code>examples/wbc_g1_torque_deploy.py --vx 0.5 --mp4</code>
+  staying upright. Produced by <code>examples/wbc/wbc_g1_torque_deploy.py --vx 0.5 --mp4</code>
   (<a href="../../assets/wbc/g1_walk.mp4">MP4</a>).</figcaption>
 </figure>
 
@@ -258,12 +258,12 @@ joint) is raised, never silently resolved. The merged chunk length is the
 shorter of the two, so a per-tick controller (WBC, `execution_horizon == 1`) is
 never starved by a slower chunk-emitting manipulation policy.
 
-[`examples/wbc_g1_composite.py`](https://github.com/strands-labs/robots/blob/main/examples/wbc_g1_composite.py)
+[`examples/wbc/wbc_g1_composite.py`](https://github.com/strands-labs/robots/blob/main/examples/wbc/wbc_g1_composite.py)
 runs the composite in the torque-deploy loop with a zero-dependency scripted
 arm-wave as the upper body (swap in `--upper-port` for a real GR00T server):
 
 ```bash
-python examples/wbc_g1_composite.py --checkpoint /path/to/grootwbc-g1 \
+python examples/wbc/wbc_g1_composite.py --checkpoint /path/to/grootwbc-g1 \
     --duration 5 --vx 0.4 --mp4 /tmp/g1_composite.mp4
 ```
 
@@ -272,7 +272,7 @@ python examples/wbc_g1_composite.py --checkpoint /path/to/grootwbc-g1 \
   <figcaption>Unitree G1 under <code>CompositePolicy</code>: <code>WBCPolicy</code> (GR00T-WBC SONIC)
   drives the legs+waist for a <code>vx = 0.4 m/s</code> walk while the upper-body policy drives the
   arms - the base advances ~1.55 m over 5 s while the arms move, in MuJoCo (headless).
-  Produced by <code>examples/wbc_g1_composite.py --vx 0.4 --mp4</code>
+  Produced by <code>examples/wbc/wbc_g1_composite.py --vx 0.4 --mp4</code>
   (<a href="../../assets/wbc/g1_composite.mp4">MP4</a>).</figcaption>
 </figure>
 

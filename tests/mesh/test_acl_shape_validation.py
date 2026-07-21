@@ -165,7 +165,7 @@ def test_subjects_not_a_list_rejected(tmp_path: Path) -> None:
 
 def test_shipped_example_still_loads(tmp_path: Path) -> None:
     """Anti-regression: the shipped example file must still pass shape validation."""
-    example_path = Path(__file__).parent.parent.parent / "examples" / "mesh_acl_example.json5"
+    example_path = Path(__file__).parent.parent.parent / "examples" / "mesh" / "mesh_acl_example.json5"
     if not example_path.exists():
         pytest.skip(f"example not found at {example_path}")
     parsed = _acl_config._load_acl_file(example_path)

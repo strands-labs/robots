@@ -117,6 +117,63 @@ class TestEjectMissingBodyIsConsistent:
         assert world._model.nbody == nbody_before
 
 
+class TestRepositionBodyGuards:
+    """``reposition_body_in_scene`` is the static-fixture sibling of the
+    inject/eject helpers and makes the same defensive promises: a call before
+    ``create_world`` and a call naming a body absent from the spec both return
+    ``False`` (logged) without mutating the compiled model, so ``move_object``'s
+    static branch surfaces a clean error instead of a silent no-op. The happy
+    path (a welded fixture actually relocates) is pinned alongside so the guard
+    tests cannot pass by simply disabling the feature."""
+
+    def test_reposition_without_spec_returns_false(self) -> None:
+        assert scene_ops.reposition_body_in_scene(SimWorld(), "x", position=[0, 0, 1]) is False
+
+    def test_reposition_unknown_body_returns_false_without_changing_model(self, sim: Simulation) -> None:
+        sim.create_world()
+        world = sim._world
+        assert world is not None
+        nbody_before = world._model.nbody
+        assert scene_ops.reposition_body_in_scene(world, "does_not_exist", position=[0, 0, 1]) is False
+        # A body that is not in the spec is a no-op: the compiled model is untouched.
+        assert world._model.nbody == nbody_before
+
+    def test_reposition_treats_raising_spec_lookup_as_missing(self, sim: Simulation, monkeypatch) -> None:
+        """Some MuJoCo builds raise ``KeyError``/``ValueError`` from
+        ``spec.body(name)`` for an unknown body instead of returning ``None``.
+        The helper catches that and treats it as a missing body (returns
+        ``False``) rather than letting the exception escape the scene edit."""
+        sim.create_world()
+        world = sim._world
+        assert world is not None
+
+        class _RaisingSpec:
+            def body(self, name: str):  # noqa: ANN202 - stub mirrors mjSpec.body
+                raise ValueError(f"no such body: {name}")
+
+        monkeypatch.setattr(scene_ops, "_get_spec", lambda _world: _RaisingSpec())
+        assert scene_ops.reposition_body_in_scene(world, "whatever", position=[0, 0, 1]) is False
+
+    def test_reposition_relocates_static_fixture(self, sim: Simulation) -> None:
+        """A welded static body (no freejoint) is moved by editing its spec pose
+        and recompiling - the qpos path cannot touch a DOF-less body, so this is
+        the only route that actually relocates a static fixture."""
+        sim.create_world()
+        world = sim._world
+        assert world is not None
+        assert (
+            sim.add_object(
+                name="fixture", shape="box", size=[0.05, 0.05, 0.05], position=[0.2, 0.0, 0.1], is_static=True
+            )["status"]
+            == "success"
+        )
+        assert scene_ops.reposition_body_in_scene(world, "fixture", position=[0.4, 0.1, 0.3]) is True
+        mj = sim._mj
+        bid = mj.mj_name2id(world._model, mj.mjtObj.mjOBJ_BODY, "fixture")
+        assert bid >= 0
+        assert pytest.approx(list(world._model.body_pos[bid]), abs=1e-6) == [0.4, 0.1, 0.3]
+
+
 class TestSnapshotRestoreWithoutModel:
     def test_snapshot_empty_world_returns_empty_dict(self) -> None:
         assert scene_ops._snapshot_joint_state(SimWorld()) == {}

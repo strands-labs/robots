@@ -295,16 +295,21 @@ class TestEntryPointDiscovery:
         sim = create_simulation("isaac", num_envs=1, headless=True)
         assert type(sim).__name__ == "IsaacSimulation"
 
-    def test_mjwarp_and_warp_names_suggest_newton_plugin(self, monkeypatch):
+    def test_mjwarp_and_warp_names_suggest_newton_extra(self, monkeypatch):
         """The GPU-parallel warp/MuJoCo path is the built-in ``newton`` backend.
         ``warp`` and ``mjwarp`` are common names users reach for; both must
-        surface the ``strands-robots-sim[newton]`` install hint instead of a
-        bare unknown-backend dead end."""
+        surface the in-tree ``strands-robots[sim-newton]`` install hint instead
+        of a bare unknown-backend dead end. The hint must match the built-in
+        ``newton`` extra, not the deprecated ``strands-robots-sim`` sibling
+        package."""
         _patch_entry_points(monkeypatch, [])
         for name in ("warp", "mjwarp"):
-            with pytest.raises(ValueError, match="strands-robots-sim") as exc_info:
+            with pytest.raises(ValueError, match=r"strands-robots\[sim-newton\]") as exc_info:
                 create_simulation(name)
-            assert "newton" in str(exc_info.value)
+            msg = str(exc_info.value)
+            assert "newton" in msg
+            # The deprecated sibling package must not be referenced.
+            assert "strands-robots-sim" not in msg
 
 
 class TestIsaacBuiltinWinsOverPlugin:

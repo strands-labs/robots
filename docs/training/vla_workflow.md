@@ -14,13 +14,13 @@ end-to-end:
 
 ```bash
 # Quick demo (record + deploy with mock, ~10s on CPU):
-python examples/vla_g1_workflow.py
+python examples/locomotion/vla_g1_workflow.py
 
 # Full pipeline with real fine-tuning (Docker + GPU):
-python examples/vla_g1_workflow.py --tune --base-model nvidia/GR00T-N1.7-3B
+python examples/locomotion/vla_g1_workflow.py --tune --base-model nvidia/GR00T-N1.7-3B
 
 # Deploy-only with downloaded SONIC weights:
-python examples/vla_g1_workflow.py --checkpoint /path/to/grootwbc-g1
+python examples/locomotion/vla_g1_workflow.py --checkpoint /path/to/grootwbc-g1
 ```
 
 ## Pipeline stages
@@ -70,7 +70,7 @@ sim.stop_recording()
 The `vla_g1_workflow.py` example wires exactly this up behind a flag:
 
 ```bash
-python examples/vla_g1_workflow.py --record-checkpoint /path/to/grootwbc-g1
+python examples/locomotion/vla_g1_workflow.py --record-checkpoint /path/to/grootwbc-g1
 ```
 
 Two ingredients make WBC close its loop through `sim.run_policy`:
@@ -145,7 +145,7 @@ For real deploy-grade locomotion (with the upstream torque-PD law), use the
 [torque-control harness](../policies/wbc.md#watching-it-walk-torque-control-deploy):
 
 ```bash
-python examples/wbc_g1_torque_deploy.py --checkpoint /tmp/g1_finetuned --vx 0.5
+python examples/wbc/wbc_g1_torque_deploy.py --checkpoint /tmp/g1_finetuned --vx 0.5
 ```
 
 ## Prerequisites

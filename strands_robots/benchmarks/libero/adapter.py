@@ -754,8 +754,9 @@ class LiberoAdapter(BenchmarkProtocol):
            ``sim._world._backend_state["viz_option"]`` with an
            ``mjvOption`` matching upstream LIBERO's
            ``OffScreenRenderEnv`` viewer config (#168 bug E).
-           The render path in ``simulation/mujoco/rendering.py`` reads
-           that option and threads it to ``Renderer.update_scene(..., scene_option=...)``,
+           The render path in
+           :mod:`strands_robots.simulation.mujoco.rendering` reads that
+           option and threads it to ``Renderer.update_scene(..., scene_option=...)``,
            hiding collision geoms / site markers / joint /
            actuator / COM widgets. Skipped on bare-Panda fallback
            (no scene loaded - default render options are appropriate
@@ -1775,11 +1776,9 @@ class LiberoAdapter(BenchmarkProtocol):
 
         Walks the BDDL predicate tree compiled at construction time
         (:func:`compile_goal`) against the current sim state. The
-        evaluator was hardened in #170 / #173 / #175 to match
-        upstream LIBERO's ``check_ontop`` / ``check_contact``
-        semantics byte-for-byte at the moment of contact (#171
-        sub-task 3e contact check, #175 round 46d body-name
-        ``_main`` suffix fallback).
+        evaluator matches upstream LIBERO's ``check_ontop`` /
+        ``check_contact`` semantics byte-for-byte at the moment of
+        contact, including the ``_main`` body-name suffix fallback.
         """
         return bool(self._success_fn(sim))
 
@@ -1888,8 +1887,8 @@ class LiberoAdapter(BenchmarkProtocol):
         # exactly matches upstream's ``OffScreenRenderEnv.sim.model.get_xml()``)
         # and instead lets ``_install_render_options`` populate
         # ``world._backend_state["viz_option"]`` at episode start; the
-        # render path in ``simulation/mujoco/rendering.py`` reads that
-        # option and threads it to ``Renderer.update_scene(..., scene_option=...)``,
+        # render path in ``strands_robots.simulation.mujoco.rendering`` reads
+        # that option and threads it to ``Renderer.update_scene(..., scene_option=...)``,
         # which is what RoboSuite's ``OffScreenRenderEnv`` does. This
         # matches upstream output to within Δ=2.4 RGB units of the
         # reference render.

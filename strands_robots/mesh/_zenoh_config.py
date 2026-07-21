@@ -82,7 +82,7 @@ Configuration env vars
     permissive ACL from :func:`~strands_robots.mesh._acl_config.default_acl`
     is used: any CA-signed peer may publish/subscribe on any key. Operators
     who require role separation between robots and operators must supply
-    a custom ACL file (template at ``examples/mesh_acl_example.json5``).
+    a custom ACL file (template at ``examples/mesh/mesh_acl_example.json5``).
     See CHANGELOG.md Section 8 for the rationale (Zenoh 1.x ACL CN-glob
     quirks made a true default-deny silently total-deny on first run).
 
@@ -155,7 +155,7 @@ from pathlib import Path
 # the rotation-loop attacker case.
 # #307: use an insertion-ordered dict (acting as an ordered set) so eviction
 # is deterministic FIFO -- matching the _ACL_CACHE eviction order in
-# _acl_config.py (``pop(next(iter(...)))``). Both bounded mesh caches now
+# ``strands_robots.mesh._acl_config`` (``pop(next(iter(...)))``). Both bounded mesh caches now
 # share one eviction discipline; see AGENTS.md cache-eviction note.
 _NON_POSIX_TLS_WARNED_KEYS: OrderedDict[tuple[str, int], None] = OrderedDict()
 _NON_POSIX_TLS_WARNED_LOCK = threading.Lock()
@@ -180,7 +180,7 @@ logger = logging.getLogger(__name__)
 #: Fleet namespace fallback when ``STRANDS_MESH_NAMESPACE`` is unset.
 #:
 #: This must match the literal topic prefix every mesh component emits
-#: (`mesh/core.py`, `mesh/sensors.py`, `mesh/input.py`, the IoT path).
+#: (`strands_robots.mesh.core`, `strands_robots.mesh.sensors`, `strands_robots.mesh.input`, the IoT path).
 #: The `namespace` Zenoh config field provides routing isolation --
 #: two fleets with different namespaces cannot exchange messages even
 #: when their key-expressions collide. The default below tracks the
@@ -612,8 +612,8 @@ def _resolve_tls_paths() -> tuple[Path, Path, Path]:
     # attacker has chmod'd 0o600) would pass while the actual TLS load
     # later opens the symlink target. Symmetric with the
     # ``O_NOFOLLOW`` + lstat-reject discipline applied across
-    # ``audit.py:_ensure_paths``, ``_load_seq_counters``, and
-    # ``_acl_config.py:_load_acl_file``.
+    # ``strands_robots.mesh.audit._ensure_paths``, ``_load_seq_counters``, and
+    # ``strands_robots.mesh._acl_config._load_acl_file``.
     #
     if not _is_posix():
         # Atomic check-and-set under lock so concurrent _build_config
@@ -658,8 +658,8 @@ def _resolve_tls_paths() -> tuple[Path, Path, Path]:
         # returns the link's own metadata -- since the loop already
         # rejected symlinks, ``lstat`` is equivalent to ``stat`` for
         # the path we are looking at, but we keep ``lstat`` explicit to
-        # match the discipline of audit.py:_ensure_paths,
-        # _load_seq_counters, and _acl_config.py:_load_acl_file.
+        # match the discipline of ``strands_robots.mesh.audit._ensure_paths``,
+        # _load_seq_counters, and ``strands_robots.mesh._acl_config._load_acl_file``.
         #
         # Residual TOCTOU window: between this lstat() and Zenoh's
         # eventual open() of the same path, an attacker who controls

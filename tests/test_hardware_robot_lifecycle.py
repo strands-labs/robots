@@ -721,6 +721,21 @@ class TestStatusSurface:
         assert status["task_error"] == "gripper stalled"
         hw.cleanup()
 
+    def test_get_status_lists_the_devices_configured_cameras(self):
+        """The operator health probe enumerates the arm's configured cameras.
+
+        A follower with wrist/front cameras must surface those camera names
+        under ``cameras`` so a supervising agent knows which image streams
+        exist before starting a policy run. An arm with no cameras reports an
+        empty list (already covered by the connection-status test).
+        """
+        fake = _FakeLeRobot(connected=True)
+        fake.config = type("Cfg", (), {"cameras": {"wrist_cam": object(), "front_cam": object()}})()
+        hw = _make_robot(fake)
+        status = asyncio.run(hw.get_status())
+        assert status["cameras"] == ["wrist_cam", "front_cam"]
+        hw.cleanup()
+
     def test_tool_spec_advertises_actions(self):
         hw = _make_robot()
         spec = hw.tool_spec
@@ -873,6 +888,25 @@ class TestTeleopStopAndStatus:
         assert "gamepad" in hw._input_publishers
         hw.cleanup()
 
+    def test_stop_named_device_removes_only_the_matching_receiver_by_suffix(self):
+        """``stop_teleop(device_name=...)`` tears down the receiver whose
+        ``<source>/<device>`` key ends in that device and leaves other
+        sources' receivers running, so a follower can drop one operator's
+        input stream without disturbing another live session.
+        """
+        hw = _make_robot()
+        leader = _FakeReceiver()
+        gamepad = _FakeReceiver()
+        hw._input_publishers = {}
+        hw._input_receivers = {"opA/leader": leader, "opB/gamepad": gamepad}
+        result = hw.stop_teleop(device_name="leader")
+        assert result["status"] == "success"
+        assert "opA/leader" not in hw._input_receivers
+        assert "opB/gamepad" in hw._input_receivers
+        assert leader.stopped is True
+        assert gamepad.stopped is False
+        hw.cleanup()
+
     def test_stop_with_no_sessions(self):
         hw = _make_robot()
         result = hw.stop_teleop()
@@ -931,6 +965,21 @@ class TestCleanup:
         hw = _make_robot(fake)
         asyncio.run(hw.stop())
         assert fake.is_connected is False
+
+    def test_async_stop_is_fail_soft_when_disconnect_raises(self):
+        """``stop()`` is the operator teardown path; a device whose
+        ``disconnect()`` raises (e.g. the USB cable was already pulled) must
+        not propagate the fault out of ``stop()`` and abort the shutdown.
+        """
+
+        class _RaisingDisconnect(_FakeLeRobot):
+            def disconnect(self) -> None:
+                raise RuntimeError("device already gone")
+
+        hw = _make_robot(_RaisingDisconnect(connected=True))
+        # Must not raise despite the disconnect fault.
+        asyncio.run(hw.stop())
+        hw.cleanup()
 
 
 class TestExecuteTaskSync:

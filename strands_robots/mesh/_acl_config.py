@@ -5,8 +5,7 @@ serialised ``access_control`` block ready for
 ``zenoh.Config.insert_json5``. When the env var is unset, returns the
 permissive :func:`default_acl` skeleton.
 
-Zenoh 1.x quirks (each verified against a live session in
-``tests/mesh/test_zenoh_transport_security.py``):
+Zenoh 1.x quirks (each verified against a live session):
 
 * ``enabled: true`` is required -- without it the entire block is a
   no-op even if rules and subjects are populated.
@@ -84,7 +83,7 @@ ACL_FILE_MAX_BYTES: int = 256 * 1024
 
 # json5 is imported lazily inside
 # ``_parse_json5`` rather than at module top-level. Importing it eagerly every
-# import of ``strands_robots.mesh`` (including ``session.py`` for
+# import of ``strands_robots.mesh`` (including ``strands_robots.mesh.session`` for
 # ``auth_mode=none`` dev paths) triggered the json5 import even when
 # no ACL file is loaded. Operators running with no ACL file (the
 # permissive default) and no ``mesh`` extra installed got an
@@ -142,7 +141,7 @@ def _load_acl_file(path: Path) -> dict[str, Any]:
     # ACL_FILE_MAX_BYTES + 1 so an attacker who races content between
     # stat() and read() cannot bypass the size cap. Mirrors the
     # O_NOFOLLOW + bounded-read discipline used for the audit log
-    # (audit.py:_ensure_paths). The ACL file gates wire authorisation,
+    # (``strands_robots.mesh.audit._ensure_paths``). The ACL file gates wire authorisation,
     # so the same TOCTOU + symlink-swap defences apply.
     if path.is_symlink():
         raise ValueError(
@@ -237,7 +236,7 @@ def _load_acl_file(path: Path) -> dict[str, Any]:
                     f"{len(data['rules'])} rule(s) -- a blacklist policy where any "
                     "rule gap exposes the mesh. Refusing to load. Remediate one of:\n"
                     "  1. Rewrite the ACL with default_permission='deny' and "
-                    "explicit allow rules (see examples/mesh_acl_example.json5).\n"
+                    "explicit allow rules (see examples/mesh/mesh_acl_example.json5).\n"
                     "  2. Set STRANDS_MESH_ACCEPT_PERMISSIVE_ACL=1 to acknowledge "
                     "the dev/lab posture."
                 )
@@ -259,7 +258,7 @@ def _load_acl_file(path: Path) -> dict[str, Any]:
                 "DENY (every key denied for every peer). If intentional this is the "
                 "'firewall mesh off' posture; otherwise add at least one "
                 "allow-permission rule plus a matching policy/subject "
-                "(see examples/mesh_acl_example.json5).",
+                "(see examples/mesh/mesh_acl_example.json5).",
                 path,
             )
     _validate_acl_shape(data, path)
@@ -435,7 +434,7 @@ def default_acl(namespace: str) -> dict[str, Any]:
     Operators who want per-role enforcement supply their own ACL via
     ``STRANDS_MESH_ACL_FILE`` enumerating each peer's exact cert CN
     (Zenoh 1.x cert_common_names does not support globs -- see
-    ``examples/mesh_acl_example.json5`` for the canonical template).
+    ``examples/mesh/mesh_acl_example.json5`` for the canonical template).
 
     Why permissive default rather than default-deny: a default-deny
     skeleton with no enumerated subjects rejects every legitimate
@@ -459,7 +458,7 @@ def default_acl(namespace: str) -> dict[str, Any]:
         # publish and subscribe on any key. This is the documented behaviour
         # (CHANGELOG section 8, README "Default ACL -- permissive by design").
         # Operators wanting per-role enforcement supply STRANDS_MESH_ACL_FILE
-        # (see examples/mesh_acl_example.json5 for the canonical template).
+        # (see examples/mesh/mesh_acl_example.json5 for the canonical template).
         #
         # Earlier versions of this default mixed default_permission='deny'
         # with two key_exprs=['**'] allow-rules; the effective behaviour was

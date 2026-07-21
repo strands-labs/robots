@@ -1400,17 +1400,16 @@ class LerobotLocalPolicy(Policy):
             logger.debug("RTC disabled for policy '%s'", type(self._policy).__name__)
             return
 
-        # Read RTC parameters from config, with user overrides
-        if rtc_config is not None:
-            if self._rtc_execution_horizon is None:
-                self._rtc_execution_horizon = getattr(rtc_config, "execution_horizon", 10)
-            if self._rtc_max_guidance_weight is None:
-                self._rtc_max_guidance_weight = getattr(rtc_config, "max_guidance_weight", 10.0)
-        else:
-            if self._rtc_execution_horizon is None:
-                self._rtc_execution_horizon = 10
-            if self._rtc_max_guidance_weight is None:
-                self._rtc_max_guidance_weight = 10.0
+        # Read RTC parameters from config, honoring user-provided overrides.
+        # Reaching this point guarantees rtc_config is not None: RTC is only
+        # enabled when a non-None rtc_config was found (see the auto-detect and
+        # explicit-enable branches above), so no rtc_config-is-None fallback is
+        # needed here. getattr still supplies the 10 / 10.0 defaults when the
+        # config object omits the attributes.
+        if self._rtc_execution_horizon is None:
+            self._rtc_execution_horizon = getattr(rtc_config, "execution_horizon", 10)
+        if self._rtc_max_guidance_weight is None:
+            self._rtc_max_guidance_weight = getattr(rtc_config, "max_guidance_weight", 10.0)
 
         logger.info(
             "RTC enabled for '%s': execution_horizon=%d, max_guidance_weight=%.1f",

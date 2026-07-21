@@ -693,10 +693,9 @@ class BridgeTransport:
                 except (AttributeError, UnicodeDecodeError, json.JSONDecodeError):
                     # narrow per AGENTS.md > Review
                     # Learnings (#86) > "Exception Clauses Must Be Narrow".
-                    # Same tuple as the four wire handlers in core.py
+                    # Same tuple as the four wire handlers in ``strands_robots.mesh.core``
                     # (_on_cmd, _on_response, _on_safety_estop,
-                    # _on_safety_resume). Pinned by
-                    # ``test_wire_handler_narrow_except.py``.
+                    # _on_safety_resume).
                     payload = None
 
                 # Use the actual delivered topic (sample.key_expr), not the

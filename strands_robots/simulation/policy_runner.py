@@ -32,6 +32,8 @@ methods (e.g. MuJoCo acquires a lock inside ``send_action`` / ``step``).
 from __future__ import annotations
 
 import logging
+import math
+import numbers
 import os
 import random
 import time
@@ -92,9 +94,9 @@ def set_eval_seed(seed: int) -> None:
     Public since #179: standalone integration tests
     (``tests_integ/.../test_libero_10_scene5_mujoco_engine_success_rate``)
     bypass :meth:`evaluate_benchmark` and need to call this directly to
-    get reproducible policy rollouts. The leading ``_`` was an oversight
-    from #168 round 38; the function is the supported way to seed an
-    eval and is part of the public API.
+    get reproducible policy rollouts. Despite the leading ``_``, this
+    function is the supported way to seed an eval and is part of the
+    public API.
 
     NumPy / torch are imported lazily so this helper works on minimal
     installs that don't have torch (e.g. ``policy_provider="mock"``
@@ -1409,8 +1411,10 @@ class PolicyRunner:
             episode: Episode index in the dataset (non-negative).
             root: Optional local dataset root override.
             speed: Playback speed multiplier (1.0 = real time). Must be a
-                positive number; a non-positive or non-numeric value is
-                rejected with a structured error.
+                positive, finite number (any real scalar, including a NumPy
+                scalar such as ``np.float32(2.0)``); a non-positive,
+                non-finite or non-numeric value is rejected with a structured
+                error.
             action_key_map: Optional list of action keys, one per action
                 vector index. Required when dataset action ordering differs
                 from ``robot_action_keys(robot_name)``. If ``None``, positional
@@ -1423,19 +1427,41 @@ class PolicyRunner:
             Standard status dict with per-frame stats.
         """
         # ``speed`` is a playback-rate multiplier used as the divisor in
-        # ``frame_interval = 1 / (dataset_fps * speed)``. A value of 0 raised a
-        # bare ZeroDivisionError (breaking the documented "returns a status
-        # dict" contract) and a negative value silently played the episode
-        # forward at full speed while reporting success with a meaningless
-        # "Speed: -1.0x". Reject a non-positive or non-numeric speed up front,
-        # before the (potentially multi-minute) dataset download. ``bool`` is
-        # an ``int`` subclass, so ``True`` is rejected explicitly rather than
-        # acting as a silent 1.0x.
-        if isinstance(speed, bool) or not isinstance(speed, (int, float)) or speed <= 0:
+        # ``frame_interval = 1 / (dataset_fps * speed)`` and, once computed,
+        # flows into ``time.sleep(frame_interval - elapsed)`` on the real-time
+        # playback path. A value of 0 raised a bare ZeroDivisionError (breaking
+        # the documented "returns a status dict" contract) and a negative value
+        # silently played the episode forward at full speed while reporting
+        # success with a meaningless "Speed: -1.0x". Reject a non-positive or
+        # non-numeric speed up front, before the (potentially multi-minute)
+        # dataset download. Accept any real scalar (``numbers.Real``) so a
+        # NumPy-scalar speed such as ``np.float32(2.0)`` or ``np.int64(2)``
+        # (e.g. read from a config array) is not rejected:
+        # ``isinstance(x, (int, float))`` is ``False`` for every NumPy scalar
+        # except ``np.float64``. ``bool`` is still rejected explicitly (an
+        # ``int`` subclass, so ``True`` would act as a silent 1.0x), and
+        # non-finite values (``nan``/``inf``) are rejected via ``math.isfinite``
+        # before the ``<= 0`` comparison so a ``nan`` -- which is never
+        # ``<= 0`` -- cannot slip through into the ``1 / (fps * speed)``
+        # arithmetic and reach ``time.sleep(nan)``. Mirrors the ``numbers.Real``
+        # + finiteness contract applied to ``control_frequency`` and
+        # ``add_camera(fov=...)``.
+        if (
+            isinstance(speed, bool)
+            or not isinstance(speed, numbers.Real)
+            or not math.isfinite(float(speed))
+            or float(speed) <= 0
+        ):
             return {
                 "status": "error",
                 "content": [{"text": f"replay: speed must be a positive number (got {speed!r})."}],
             }
+        # Coerce to a plain Python float: a validated NumPy scalar still flows
+        # into ``time.sleep(frame_interval - ...)`` and the returned
+        # ``"speed": speed`` status field, where a ``numpy.float32`` raises a
+        # bare "object cannot be interpreted as an integer" TypeError in
+        # ``time.sleep`` and is not natively JSON-serialisable.
+        speed = float(speed)
 
         try:
             from strands_robots.dataset_recorder import load_lerobot_episode

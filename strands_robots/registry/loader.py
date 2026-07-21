@@ -137,16 +137,29 @@ def _validate_robots(data: dict) -> None:
 
 
 def _validate_policies(data: dict) -> None:
-    """Ensure no two providers share the same alias, shorthand, or URL pattern."""
+    """Ensure no two providers share the same alias, shorthand, or URL pattern.
+
+    Also rejects an alias or shorthand that collides with a *different*
+    provider's canonical name. ``get_policy_provider`` resolves a lookup key
+    through the alias/shorthand map before falling back to the canonical name
+    (``alias_map.get(name, name)``), so such a collision silently shadows the
+    real provider - its own name would resolve to the alias owner instead.
+    A provider naming *itself* in its shorthands is allowed and idiomatic
+    (every provider lists its canonical name as a shorthand so the bare name
+    resolves), hence the ``!= provider_name`` guard.
+    """
     seen_aliases: dict[str, str] = {}
     seen_url_patterns: dict[str, str] = {}
+    providers = data.get("providers", {})
 
-    for provider_name, info in data.get("providers", {}).items():
+    for provider_name, info in providers.items():
         for alias in info.get("aliases", []):
             if alias in seen_aliases:
                 raise ValueError(
                     f"Duplicate policy alias '{alias}': claimed by both '{seen_aliases[alias]}' and '{provider_name}'"
                 )
+            if alias != provider_name and alias in providers:
+                raise ValueError(f"Policy alias '{alias}' in '{provider_name}' collides with a canonical provider name")
             seen_aliases[alias] = provider_name
 
         for shorthand in info.get("shorthands", []):
@@ -154,6 +167,10 @@ def _validate_policies(data: dict) -> None:
                 raise ValueError(
                     f"Duplicate policy shorthand '{shorthand}': claimed by both "
                     f"'{seen_aliases[shorthand]}' and '{provider_name}'"
+                )
+            if shorthand != provider_name and shorthand in providers:
+                raise ValueError(
+                    f"Policy shorthand '{shorthand}' in '{provider_name}' collides with a canonical provider name"
                 )
             seen_aliases[shorthand] = provider_name
 

@@ -130,8 +130,10 @@ def _env_pos_float(env_var: str, default: float) -> float:
     """Parse a positive float from *env_var*, falling back to *default*.
 
     Non-numeric / non-positive / NaN / inf values fall back to the default.
-    Local to security.py (the analogous helper in core.py is not importable
-    here without a cycle). Used for the teleop input safety bound (H-2).
+    Local to :mod:`~strands_robots.mesh.security`; the analogous helper
+    :func:`~strands_robots.mesh.core._parse_positive_float_env` is not
+    importable here without an import cycle. Used for the teleop input
+    safety bound (H-2).
     """
     raw = os.getenv(env_var)
     if raw is None:

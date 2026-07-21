@@ -92,7 +92,7 @@ def _resolve_robot_descriptions_module(name: str, info: dict) -> str | None:
         try:
             importlib.import_module(f"robot_descriptions.{candidate}")
             logger.warning(
-                "Resolved '%s' via naming heuristic → '%s'. "
+                "Resolved '%s' via naming heuristic -> '%s'. "
                 "Consider adding 'robot_descriptions_module' to the registry.",
                 name,
                 candidate,

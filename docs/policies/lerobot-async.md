@@ -80,13 +80,14 @@ sim.run_policy(
 | `server_address`           | `127.0.0.1:8080` | Server `host:port` (gRPC); wins over `host`/`port`. `grpc://` scheme stripped |
 | `host`                     | `127.0.0.1`   | Server host (when `server_address` is omitted)              |
 | `port`                     | `8080`        | Server port (when `server_address` is omitted)              |
-| `policy_type`              | -             | **Required.** LeRobot policy type the server loads (`act`, `smolvla`, `diffusion`, `tdmpc`, `vqbet`, `pi0`, `pi05`, `groot`) |
+| `policy_type`              | -             | **Required.** LeRobot policy type the server loads -- the async-servable set from lerobot's `SUPPORTED_POLICIES` (`act`, `smolvla`, `diffusion`, `tdmpc`, `vqbet`, `pi0`, `pi05`, `groot`, ...); validated client-side against the live lerobot constant |
 | `pretrained_name_or_path`  | -             | **Required.** HuggingFace id or path the server loads       |
 | `device`                   | `cuda`        | Device for **server-side** inference; set `cpu` for a CPU server |
 | `actions_per_chunk`        | `50`          | Max actions the server returns per chunk                    |
 | `actions_per_step`         | `actions_per_chunk` | Actions executed from one chunk before re-querying (the re-query interval) |
 | `connect_timeout`          | `10.0`        | Seconds to wait for the gRPC `Ready` handshake              |
 | `request_timeout`          | `60.0`        | Seconds to wait for each observation/action RPC             |
+| `rename_map`               | `{}`          | `{robot_obs_key: model_feature_key}` forwarded to the server; renames observation keys before the policy sees them (async analog of `lerobot_local`'s `obs_rename`) |
 
 ## Notes
 
@@ -99,3 +100,20 @@ sim.run_policy(
   names before inference; those scalars are concatenated into
   `observation.state` and any RGB/depth camera arrays are declared as image
   features in the handshake.
+- When the checkpoint expects camera/state keys that differ from the ones the
+  robot exposes, pass `rename_map={robot_obs_key: model_feature_key}`. The
+  server applies it as a `RenameObservationsProcessorStep` before inference, so
+  a stock checkpoint (e.g. one trained with `observation.images.laptop`) is
+  reachable from a robot whose camera is named `front` without re-exporting the
+  model - the remote counterpart of the [`lerobot_local`](lerobot-local.md)
+  provider's `obs_rename`:
+
+  ```python
+  policy = create_policy(
+      "lerobot_async",
+      server_address="gpu-box:8080",
+      policy_type="act",
+      pretrained_name_or_path="lerobot/act_so101",
+      rename_map={"observation.images.front": "observation.images.laptop"},
+  )
+  ```

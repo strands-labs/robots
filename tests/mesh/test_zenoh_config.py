@@ -9,7 +9,9 @@ parses cleanly through Zenoh's Rust ``Config`` validator lives in
 from __future__ import annotations
 
 import json
+import logging
 import os
+from collections import OrderedDict
 
 import pytest
 
@@ -195,6 +197,17 @@ class TestTransportCaps:
         with pytest.raises(ValueError):
             zc.transport_caps_block()
 
+    def test_non_integer_rejected(self, monkeypatch):
+        """A non-numeric STRANDS_MESH_MAX_SESSIONS raises naming the parse failure.
+
+        Distinct from the out-of-bounds path: this is the ``int(raw)`` parse
+        failure, so the config fails loud at build time rather than letting a
+        typo silently fall back to the default cap.
+        """
+        monkeypatch.setenv("STRANDS_MESH_MAX_SESSIONS", "lots")
+        with pytest.raises(ValueError, match=r"STRANDS_MESH_MAX_SESSIONS='lots' is not an integer"):
+            zc.transport_caps_block()
+
 
 # --- downsampling -------------------------------------------------------
 
@@ -221,6 +234,17 @@ class TestDownsampling:
     def test_freq_oob_rejected(self, monkeypatch):
         monkeypatch.setenv("STRANDS_MESH_CMD_RATE_HZ", "9999999")
         with pytest.raises(ValueError):
+            zc.downsampling_block()
+
+    def test_non_float_rejected(self, monkeypatch):
+        """A non-numeric STRANDS_MESH_CMD_RATE_HZ raises naming the parse failure.
+
+        Complements the finite-check (NaN/inf) and out-of-bounds paths: an
+        unparseable literal must also fail loud rather than disabling the rate
+        cap on a typo.
+        """
+        monkeypatch.setenv("STRANDS_MESH_CMD_RATE_HZ", "fast")
+        with pytest.raises(ValueError, match=r"STRANDS_MESH_CMD_RATE_HZ='fast' is not a float"):
             zc.downsampling_block()
 
 
@@ -290,6 +314,16 @@ class TestLowPassFilter:
     def test_oversize_cap_rejected(self, monkeypatch):
         monkeypatch.setenv("STRANDS_MESH_MAX_CMD_BYTES", "999999999999")
         with pytest.raises(ValueError):
+            zc.low_pass_filter_block()
+
+    def test_non_integer_byte_cap_rejected(self, monkeypatch):
+        """A non-numeric byte-cap env var raises an actionable
+        "is not an integer" ValueError at config-build time, naming the
+        env var and offending value, rather than an opaque failure deeper
+        in ``zenoh.open()``.
+        """
+        monkeypatch.setenv("STRANDS_MESH_MAX_CMD_BYTES", "big")
+        with pytest.raises(ValueError, match=r"STRANDS_MESH_MAX_CMD_BYTES='big' is not an integer"):
             zc.low_pass_filter_block()
 
 
@@ -398,6 +432,71 @@ class TestTLSKeyMode:
         monkeypatch.setenv("STRANDS_MESH_TLS_KEY", str(key))
         path, _value = zc.tls_block()
         assert path == "transport/link/tls"
+
+
+class TestTLSKeyModeNonPosix:
+    """On non-POSIX the 0o600 key-mode check is skipped with a one-shot WARNING.
+
+    POSIX enforces the private-key mode contract via ``lstat`` (see
+    :class:`TestTLSKeyMode`). Windows cannot express 0o600 via ``stat``, so the
+    loader must not silently imply the guarantee holds -- it emits a single
+    WARNING per key (deduplicated by ``(path, mtime)``) telling the operator to
+    fall back to filesystem ACLs. These tests drive that branch by simulating a
+    non-POSIX host so they run on the POSIX CI box too.
+    """
+
+    def _make_tls_files(self, tmp_path):
+        ca = tmp_path / "ca.crt"
+        cert = tmp_path / "peer.crt"
+        key = tmp_path / "peer.key"
+        for f in (ca, cert, key):
+            f.write_text("dummy\n")
+        return ca, cert, key
+
+    def _set_env(self, monkeypatch, ca, cert, key):
+        monkeypatch.setenv("STRANDS_MESH_TLS_CA", str(ca))
+        monkeypatch.setenv("STRANDS_MESH_TLS_CERT", str(cert))
+        monkeypatch.setenv("STRANDS_MESH_TLS_KEY", str(key))
+
+    def test_non_posix_skips_mode_check_and_warns(self, monkeypatch, tmp_path, caplog):
+        """A world-readable key that POSIX would reject passes with a WARNING off-POSIX."""
+        ca, cert, key = self._make_tls_files(tmp_path)
+        key.chmod(0o644)  # POSIX would reject this; non-POSIX must skip + warn.
+        self._set_env(monkeypatch, ca, cert, key)
+        monkeypatch.setattr(zc, "_is_posix", lambda: False)
+        monkeypatch.setattr(zc, "_NON_POSIX_TLS_WARNED_KEYS", OrderedDict())
+        with caplog.at_level(logging.WARNING, logger="strands_robots.mesh._zenoh_config"):
+            paths = zc._resolve_tls_paths()
+        assert paths == (ca, cert, key)
+        assert "mTLS key mode" in caplog.text
+        assert "SKIPPED" in caplog.text
+
+    def test_non_posix_warning_is_one_shot_per_key(self, monkeypatch, tmp_path, caplog):
+        """The WARNING fires once per key; a second resolve of the same key is silent."""
+        ca, cert, key = self._make_tls_files(tmp_path)
+        self._set_env(monkeypatch, ca, cert, key)
+        monkeypatch.setattr(zc, "_is_posix", lambda: False)
+        monkeypatch.setattr(zc, "_NON_POSIX_TLS_WARNED_KEYS", OrderedDict())
+        zc._resolve_tls_paths()  # first resolve arms + emits the warning
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger="strands_robots.mesh._zenoh_config"):
+            zc._resolve_tls_paths()  # same key -> deduplicated, no re-warn
+        assert "SKIPPED" not in caplog.text
+
+    def test_non_posix_warning_cache_evicts_oldest_at_capacity(self, monkeypatch, tmp_path, caplog):
+        """At capacity a new key evicts the oldest entry (bounded, FIFO) and still warns."""
+        ca, cert, key = self._make_tls_files(tmp_path)
+        self._set_env(monkeypatch, ca, cert, key)
+        monkeypatch.setattr(zc, "_is_posix", lambda: False)
+        cap = zc._NON_POSIX_TLS_WARNED_MAX
+        full = OrderedDict(((f"/old/key{i}", 0), None) for i in range(cap))
+        monkeypatch.setattr(zc, "_NON_POSIX_TLS_WARNED_KEYS", full)
+        with caplog.at_level(logging.WARNING, logger="strands_robots.mesh._zenoh_config"):
+            zc._resolve_tls_paths()
+        assert "SKIPPED" in caplog.text
+        # Bounded: never grows past the cap, and the oldest entry was evicted.
+        assert len(zc._NON_POSIX_TLS_WARNED_KEYS) == cap
+        assert ("/old/key0", 0) not in zc._NON_POSIX_TLS_WARNED_KEYS
 
 
 def test_link_protocols_block_restricts_to_tls():

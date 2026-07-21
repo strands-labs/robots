@@ -335,6 +335,37 @@ def test_start_recording_preserves_floating_base_state_schema(tmp_path, caplog):
     engine.stop_recording()
 
 
+def test_start_recording_excludes_free_joint_scalar_from_schema(tmp_path):
+    """A NAMED free joint enumerated in ``robot.joint_names`` (as a real Newton
+    floating-base build produces, e.g. ``floating_base_joint``) must NOT be
+    recorded as a scalar observation.state column: its qpos is [xyz + quat], so
+    a scalar would report the base x-coordinate as a joint angle (a degenerate
+    duplicate of ``base_pos.x``). Its 6-DoF state is preserved as the structured
+    base_* columns instead, matching get_observation / get_robot_state."""
+    world = SimWorld()
+    world.robots["humanoid"] = SimRobot(
+        name="humanoid",
+        urdf_path="g1.xml",
+        data_config="humanoid",
+        joint_names=["floating_base_joint", *_SO100_JOINTS],
+    )
+    engine = _make_engine(world)
+    engine._robot_free_base_joint = {"humanoid": "floating_base_joint"}
+    started = engine.start_recording(
+        repo_id="local/newton_free_joint_excluded", root=str(tmp_path / "ds"), fps=20, overwrite=True
+    )
+    assert started["status"] == "success", started
+    names, _shape = _recorder_state_names(engine)
+    # The degenerate free-joint scalar is excluded from the scalar joint schema.
+    assert "floating_base_joint" not in names, "the free joint must not be a scalar observation.state column"
+    # The actuated scalar joints and the structured base columns remain.
+    for j in _SO100_JOINTS:
+        assert j in names
+    for col in _BASE_COLS:
+        assert col in names
+    engine.stop_recording()
+
+
 def test_start_recording_fixed_arm_has_no_base_columns(tmp_path, caplog):
     """A fixed-base arm (no floating base recorded) gains NO base columns - the
     schema is unchanged - and detection degrades gracefully when

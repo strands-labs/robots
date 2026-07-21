@@ -74,6 +74,44 @@ def test_actions_per_step_defaults_to_chunk_size() -> None:
     assert policy.execution_horizon == 32
 
 
+def test_rename_map_defaults_to_empty() -> None:
+    policy = create_policy(
+        "lerobot_async",
+        server_address="h:1",
+        policy_type="act",
+        pretrained_name_or_path="x/y",
+    )
+    assert isinstance(policy, LerobotAsyncPolicy)
+    assert policy.rename_map == {}
+
+
+def test_rename_map_is_stored() -> None:
+    """A supplied rename_map is honored (not swallowed by the ignored-kwargs bag)."""
+    mapping = {"observation.images.front": "observation.images.laptop"}
+    policy = create_policy(
+        "lerobot_async",
+        server_address="h:1",
+        policy_type="act",
+        pretrained_name_or_path="x/y",
+        rename_map=mapping,
+    )
+    assert isinstance(policy, LerobotAsyncPolicy)
+    assert policy.rename_map == mapping
+    # A copy, not the caller's object.
+    assert policy.rename_map is not mapping
+
+
+def test_rename_map_invalid_type_raises() -> None:
+    with pytest.raises(ValueError, match="rename_map must be a dict"):
+        create_policy(
+            "lerobot_async",
+            server_address="h:1",
+            policy_type="act",
+            pretrained_name_or_path="x/y",
+            rename_map=["observation.images.front"],
+        )
+
+
 def test_missing_policy_type_raises() -> None:
     with pytest.raises(ValueError, match="policy_type"):
         create_policy("lerobot_async", server_address="h:1", pretrained_name_or_path="x/y")
@@ -297,6 +335,50 @@ def test_roundtrip_sends_wellformed_instructions_and_observation(running_server)
     policy.close()
 
 
+def test_roundtrip_forwards_rename_map_to_server(running_server) -> None:
+    """rename_map reaches the server's RemotePolicyConfig so it can remap obs keys.
+
+    The async transport applies rename_map server-side (as a
+    RenameObservationsProcessorStep), so a checkpoint that expects different
+    camera/state keys than the robot exposes is only reachable if the client
+    forwards the map. Without forwarding, the server receives the empty default
+    and cannot decode a mismatched observation.
+    """
+    servicer, address = running_server
+    mapping = {"top": "observation.images.laptop"}
+    policy = _client(
+        address,
+        policy_type="act",
+        pretrained_name_or_path="lerobot/act_so101",
+        device="cpu",
+        actions_per_chunk=CHUNK_LEN,
+        rename_map=mapping,
+    )
+    policy.set_robot_state_keys(STATE_KEYS)
+    policy.get_actions_sync(_observation(), "pick up the cube")
+
+    cfg = servicer.policy_config
+    assert isinstance(cfg, RemotePolicyConfig)
+    assert cfg.rename_map == mapping
+    policy.close()
+
+
+def test_roundtrip_default_rename_map_is_empty(running_server) -> None:
+    """With no rename_map the server receives the empty default (no accidental remap)."""
+    servicer, address = running_server
+    policy = _client(
+        address,
+        policy_type="act",
+        pretrained_name_or_path="lerobot/act_so101",
+        device="cpu",
+        actions_per_chunk=CHUNK_LEN,
+    )
+    policy.set_robot_state_keys(STATE_KEYS)
+    policy.get_actions_sync(_observation(), "task")
+    assert servicer.policy_config.rename_map == {}
+    policy.close()
+
+
 def test_server_empty_response_raises(running_server) -> None:
     """If the server yields no actions, the client must raise, never fabricate zeros."""
     servicer, address = running_server
@@ -392,3 +474,63 @@ def test_inference_without_state_keys_raises(running_server) -> None:
     with pytest.raises(RuntimeError, match="robot_state_keys is empty"):
         policy.get_actions_sync(_observation(), "task")
     policy.close()
+
+
+# -- lerobot drift guard: SUPPORTED_POLICY_TYPES is live-sourced -----------------
+#
+# The set of policy types a lerobot ``PolicyServer`` can serve lives in lerobot's
+# own ``async_inference.constants.SUPPORTED_POLICIES``. The client validation
+# must track that constant, not a hand-copied list: a stale copy either rejects a
+# newly-servable policy client-side or accepts a dropped one only to fail after
+# the gRPC handshake. These pin that the copy cannot silently drift.
+
+from strands_robots.policies.lerobot_async import policy as async_policy  # noqa: E402
+
+
+def test_supported_policy_types_sourced_live_from_lerobot() -> None:
+    """The client's supported set is the live lerobot constant, not a fixed copy."""
+    constants = pytest.importorskip("lerobot.async_inference.constants")
+    live = getattr(constants, "SUPPORTED_POLICIES", None)
+    if live is None:
+        pytest.skip("lerobot async SUPPORTED_POLICIES not available")
+    assert set(async_policy._supported_policy_types()) == set(live)
+    assert set(async_policy.SUPPORTED_POLICY_TYPES) == set(live)
+
+
+def test_fallback_is_a_faithful_snapshot_of_lerobot() -> None:
+    """The offline fallback stays in sync with lerobot; drift trips this test."""
+    constants = pytest.importorskip("lerobot.async_inference.constants")
+    live = getattr(constants, "SUPPORTED_POLICIES", None)
+    if live is None:
+        pytest.skip("lerobot async SUPPORTED_POLICIES not available")
+    assert set(async_policy._SUPPORTED_POLICY_TYPES_FALLBACK) == set(live), (
+        "_SUPPORTED_POLICY_TYPES_FALLBACK drifted from lerobot's SUPPORTED_POLICIES; "
+        "update the fallback tuple to match the current lerobot constant."
+    )
+
+
+def test_validation_tracks_a_newly_added_lerobot_policy(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A policy type lerobot adds to SUPPORTED_POLICIES is accepted immediately.
+
+    Proves the client-side check reads lerobot live rather than a frozen copy: a
+    type that only exists in lerobot's (here monkeypatched) constant passes
+    validation instead of being wrongly rejected as "not served".
+    """
+    constants = pytest.importorskip("lerobot.async_inference.constants")
+    live = getattr(constants, "SUPPORTED_POLICIES", None)
+    if live is None:
+        pytest.skip("lerobot async SUPPORTED_POLICIES not available")
+    fake = "fake_async_policy_xyz"
+    monkeypatch.setattr(constants, "SUPPORTED_POLICIES", tuple(sorted({*live, fake})))
+
+    assert fake in async_policy._supported_policy_types()
+    # create_policy must NOT reject the freshly-supported type (lazy connect, so
+    # no server is contacted here).
+    policy = create_policy(
+        "lerobot_async",
+        server_address="gpu-box:8080",
+        policy_type=fake,
+        pretrained_name_or_path="x/y",
+    )
+    assert isinstance(policy, LerobotAsyncPolicy)
+    assert policy.policy_type == fake

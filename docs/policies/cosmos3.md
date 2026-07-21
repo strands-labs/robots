@@ -207,7 +207,7 @@ concern, not an IK one.)
 
 ![Cosmos 3 -> MuJoCo: Franka tracking the Cosmos action (left) beside the Cosmos predicted world (right)](../assets/cosmos3/cosmos3_mujoco_sidebyside.gif)
 
-*Left: MuJoCo Franka driven by a **real** `nvidia/Cosmos3-Nano` action chunk through de-normalize → decode → IK. Right: the Cosmos predicted world video from the same forward pass. Runnable: `examples/cosmos3_diffusers_mujoco_rollout.py --render out.mp4`.*
+*Left: MuJoCo Franka driven by a **real** `nvidia/Cosmos3-Nano` action chunk through de-normalize → decode → IK. Right: the Cosmos predicted world video from the same forward pass. Runnable: `examples/vla/cosmos3_diffusers_mujoco_rollout.py --render out.mp4`.*
 
 > Install the sim bridge: `uv pip install "strands-robots[cosmos3-sim]"`
 > (pulls `mink` + `mujoco`; numpy>=2 compatible, co-installable with
@@ -227,7 +227,7 @@ sim.run_policy(
     duration=15.0,
     control_frequency=50.0,
 )
-# see examples/cosmos3_sim_rollout.py
+# see examples/vla/cosmos3_sim_rollout.py
 ```
 
 `robot="panda"` activates the built-in DROID-layout mapping (`joint_0..6/gripper` → `joint1..7/finger_joint1`). `requires_images=True`.

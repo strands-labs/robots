@@ -13,8 +13,11 @@ on GPU or attached hardware.
 This guard closes that gap statically. It parses every module under the
 ``strands_robots`` package, collects each ``from lerobot... import NAME`` and
 ``import lerobot...`` statement, imports the referenced LeRobot module, and
-asserts the named symbol exists. A renamed/removed LeRobot attribute fails here,
-in the fast unit suite, instead of at runtime in a deferred branch.
+asserts the named symbol resolves -- either as a top-level attribute of the
+module or as an importable submodule (``from lerobot.transport import
+services_pb2`` binds a submodule, which is absent from the parent namespace
+until first imported). A renamed/removed LeRobot attribute fails here, in the
+fast unit suite, instead of at runtime in a deferred branch.
 
 The scan is conservative: a LeRobot submodule that cannot be imported in the
 current environment (an optional extra is absent) is skipped rather than failed,
@@ -26,6 +29,7 @@ from __future__ import annotations
 
 import ast
 import importlib
+import importlib.util
 from pathlib import Path
 
 import pytest
@@ -84,6 +88,28 @@ def _collect_lerobot_imports() -> list[tuple[str, str | None, Path, int]]:
     return found
 
 
+def _resolves_in(module: object, module_name: str, symbol: str) -> bool:
+    """Return True if ``from module_name import symbol`` resolves.
+
+    ``from pkg import name`` succeeds in two distinct cases: ``name`` is a
+    top-level attribute of ``pkg`` (a class/function/constant), OR ``name`` is a
+    submodule of ``pkg``. A not-yet-imported submodule is absent from the parent
+    package namespace -- ``hasattr(pkg, name)`` is False until something imports
+    it -- so an attribute-only check both false-positives on valid submodule
+    imports (e.g. ``from lerobot.transport import services_pb2``) and makes the
+    result order-dependent: it passes only once an earlier test happens to
+    import the submodule and bind it on the parent. Treat the symbol as resolved
+    when it names an importable submodule, using ``find_spec`` so the check
+    stays side-effect-free (it never actually imports the submodule).
+    """
+    if hasattr(module, symbol):
+        return True
+    try:
+        return importlib.util.find_spec(f"{module_name}.{symbol}") is not None
+    except (ImportError, AttributeError, ValueError):
+        return False
+
+
 # The scan below walks the same few hundred small ``strands_robots`` .py files
 # with ``ast.parse`` + ``Path.read_text`` and completes in well under a second.
 # Its only way to exceed the global ``--timeout=120`` budget is a transient
@@ -126,7 +152,7 @@ def test_imported_lerobot_symbols_resolve() -> None:
             continue
         if symbol is None:
             continue  # plain `import lerobot.x` already validated by import_module
-        if not hasattr(mod, symbol):
+        if not _resolves_in(mod, module, symbol):
             rel = f.relative_to(_PACKAGE_DIR.parent)
             drift.append(f"  {rel}:{lineno}: `from {module} import {symbol}` - symbol not found")
 
@@ -167,3 +193,45 @@ def test_forward_compat_allowlist_entries_are_actually_imported() -> None:
         "stale forward-compat allowlist entries (no matching lerobot import in "
         f"strands_robots): {stale} - remove them from _FORWARD_COMPAT_SYMBOLS"
     )
+
+
+def test_submodule_imports_are_not_flagged_as_drift(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A ``from pkg import submodule`` import must not be reported as API drift.
+
+    ``strands_robots`` imports ``services_pb2`` / ``services_pb2_grpc`` as
+    submodules of ``lerobot.transport``. A submodule is absent from its parent
+    package namespace until something imports it, so an attribute-only drift
+    check (``hasattr``) both false-positives on these valid imports and makes
+    the guard order-dependent -- green only after an earlier test happens to
+    import the submodule and bind it on the parent, red when run in isolation.
+
+    This forces the cold state (submodule not yet imported, attribute unbound)
+    so the assertion holds regardless of collection order: the drift guard must
+    resolve the submodule via ``find_spec`` and report no drift. On the
+    attribute-only implementation this fails; with submodule-aware resolution it
+    passes deterministically.
+    """
+    transport = importlib.import_module("lerobot.transport")
+    submods = ("services_pb2", "services_pb2_grpc")
+    imports = _collect_lerobot_imports()
+    present = {sym for mod, sym, _f, _ln in imports if mod == "lerobot.transport" and sym in submods}
+    if not present:
+        pytest.skip("strands_robots no longer imports lerobot.transport submodules")
+
+    import sys
+
+    # Force the cold state: drop cached submodules and unbind them from the
+    # parent so hasattr(transport, name) is False, exactly as when the guard
+    # runs before anything imports them.
+    for name in present:
+        sys.modules.pop(f"lerobot.transport.{name}", None)
+        if name in transport.__dict__:
+            monkeypatch.delitem(transport.__dict__, name, raising=False)
+        assert not hasattr(transport, name), f"failed to force cold state for {name!r}"
+        assert _resolves_in(transport, "lerobot.transport", name), (
+            f"submodule import `from lerobot.transport import {name}` was flagged as "
+            "drift even though it is an importable submodule"
+        )
+
+    # The full guard must also be clean: no submodule import is reported.
+    test_imported_lerobot_symbols_resolve()
