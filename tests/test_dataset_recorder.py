@@ -1757,6 +1757,212 @@ def test_sync_to_bucket_delete_flag_forwards_to_sync(tmp_path, monkeypatch):
     assert "--delete" in calls[0]
 
 
+# ── sync_dataset_to_bucket (module-level, lifecycle-independent) ───────────
+#
+# Issue #1502: syncing an on-disk dataset must not require a live recording
+# session. These tests exercise the free function directly - no DatasetRecorder
+# is constructed - and pin that the method is a thin delegate.
+
+
+def test_sync_dataset_to_bucket_works_without_a_recorder(tmp_path, monkeypatch):
+    """The free function syncs a bare directory: no recorder, no lerobot.
+
+    run_id defaults to the directory name (there is no repo_id to derive from),
+    and the success dict carries the derived bucket URI.
+    """
+    import subprocess
+
+    from strands_robots import dataset_recorder as dr
+
+    root = tmp_path / "robot-fave"
+    (root / "meta").mkdir(parents=True)
+    monkeypatch.setattr(dr, "_hf_executable", lambda: "hf")
+
+    calls: list[list[str]] = []
+
+    def _fake_run(cmd, *_a, **_k):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, stdout="ok", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+
+    result = dr.sync_dataset_to_bucket(root, "my-org/robot-fave")
+
+    assert result["status"] == "success"
+    # run_id derived from Path(root).name, not from any repo_id.
+    assert result["bucket_uri"] == "hf://buckets/my-org/robot-fave/robot-fave"
+    # No recorder in scope: episodes/frames counters are a recorder concept.
+    assert "episodes" not in result
+    assert "frames" not in result
+    assert calls[0][:3] == ["hf", "buckets", "create"]
+    assert calls[1][:2] == ["hf", "sync"]
+    assert calls[1][2] == str(root)
+    assert calls[1][3] == "hf://buckets/my-org/robot-fave/robot-fave"
+
+
+def test_sync_dataset_to_bucket_accepts_str_root(tmp_path, monkeypatch):
+    """``root`` may be a plain string (the docstring advertises str | Path)."""
+    import subprocess
+
+    from strands_robots import dataset_recorder as dr
+
+    root = tmp_path / "run-021"
+    (root / "meta").mkdir(parents=True)
+    monkeypatch.setattr(dr, "_hf_executable", lambda: "hf")
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda cmd, *_a, **_k: subprocess.CompletedProcess(cmd, 0, stdout="ok", stderr=""),
+    )
+
+    result = dr.sync_dataset_to_bucket(str(root), "my-org/robot-fave", create=False)
+
+    assert result["status"] == "success"
+    assert result["bucket_uri"] == "hf://buckets/my-org/robot-fave/run-021"
+
+
+def test_sync_dataset_to_bucket_missing_hf_cli_errors(tmp_path, monkeypatch):
+    """No ``hf`` CLI -> actionable error, never a subprocess call."""
+    import subprocess
+
+    from strands_robots import dataset_recorder as dr
+
+    _write_meta(tmp_path)
+    monkeypatch.setattr(dr, "_hf_executable", lambda: None)
+
+    def _boom(*_a, **_k):
+        raise AssertionError("subprocess must not run when hf CLI is absent")
+
+    monkeypatch.setattr(subprocess, "run", _boom)
+
+    result = dr.sync_dataset_to_bucket(tmp_path, "my-org/robot-fave")
+
+    assert result["status"] == "error"
+    assert "hf" in result["message"]
+
+
+@pytest.mark.parametrize(
+    "bad_bucket",
+    [
+        "my-org/robot; rm -rf /",  # shell metacharacters
+        "my-org/../etc",  # path traversal
+        "org/name/extra",  # more than one path segment
+        "-leading-dash",  # must start alphanumeric
+        "org/ name",  # embedded space
+    ],
+)
+def test_sync_dataset_to_bucket_rejects_unsafe_bucket(tmp_path, monkeypatch, bad_bucket):
+    """The lifted free function keeps the bucket allowlist (LLM-input safety).
+
+    The refactor must not weaken the injection-prevention contract that the
+    method carried: values failing ``_BUCKET_RE`` are rejected before any
+    subprocess or URI interpolation.
+    """
+    import subprocess
+
+    from strands_robots import dataset_recorder as dr
+
+    _write_meta(tmp_path)
+    monkeypatch.setattr(dr, "_hf_executable", lambda: "hf")
+
+    def _boom(*_a, **_k):
+        raise AssertionError(f"subprocess must not run for unsafe bucket {bad_bucket!r}")
+
+    monkeypatch.setattr(subprocess, "run", _boom)
+
+    result = dr.sync_dataset_to_bucket(tmp_path, bad_bucket)
+
+    assert result["status"] == "error"
+    assert "invalid bucket" in result["message"]
+
+
+@pytest.mark.parametrize("bad_run_id", ["bad/id", "run;id", ".."])
+def test_sync_dataset_to_bucket_rejects_unsafe_run_id(tmp_path, monkeypatch, bad_run_id):
+    """The lifted free function keeps the run_id allowlist (LLM-input safety)."""
+    import subprocess
+
+    from strands_robots import dataset_recorder as dr
+
+    _write_meta(tmp_path)
+    monkeypatch.setattr(dr, "_hf_executable", lambda: "hf")
+
+    def _boom(*_a, **_k):
+        raise AssertionError(f"subprocess must not run for unsafe run_id {bad_run_id!r}")
+
+    monkeypatch.setattr(subprocess, "run", _boom)
+
+    result = dr.sync_dataset_to_bucket(tmp_path, "my-org/robot-fave", run_id=bad_run_id)
+
+    assert result["status"] == "error"
+    assert "invalid run_id" in result["message"]
+
+
+def test_sync_dataset_to_bucket_requires_meta_dir(tmp_path, monkeypatch):
+    """A directory with no ``meta/`` (never finalized) is refused."""
+    from strands_robots import dataset_recorder as dr
+
+    monkeypatch.setattr(dr, "_hf_executable", lambda: "hf")
+    # No _write_meta: meta/ is absent.
+
+    result = dr.sync_dataset_to_bucket(tmp_path, "my-org/robot-fave")
+
+    assert result["status"] == "error"
+    assert "meta/" in result["message"]
+    assert "finalize()" in result["message"]
+
+
+def test_recorder_sync_to_bucket_delegates_to_module_helper(tmp_path, monkeypatch):
+    """The method is a thin delegate: dataset root forwarded, run_id derived
+    from repo_id, and episodes/frames counters added on success."""
+    from strands_robots import dataset_recorder as dr
+
+    seen: dict = {}
+
+    def _fake_sync(root, bucket, run_id=None, *, create=True, private=True, delete=False):
+        seen.update(root=root, bucket=bucket, run_id=run_id, create=create, private=private, delete=delete)
+        return {"status": "success", "bucket_uri": f"hf://buckets/{bucket}/{run_id}"}
+
+    monkeypatch.setattr(dr, "sync_dataset_to_bucket", _fake_sync)
+
+    result = _sync_recorder(tmp_path, repo_id="my-org/robot-fave").sync_to_bucket(
+        "my-org/robot-fave", create=False, private=False, delete=True
+    )
+
+    assert seen["root"] == str(tmp_path)
+    assert seen["bucket"] == "my-org/robot-fave"
+    # run_id defaults to the dataset repo_id's last segment, not the dir name.
+    assert seen["run_id"] == "robot-fave"
+    assert (seen["create"], seen["private"], seen["delete"]) == (False, False, True)
+    # The method augments the helper's success dict with recorder counters.
+    assert result["status"] == "success"
+    assert result["episodes"] == 2
+    assert result["frames"] == 40
+
+
+def test_recorder_sync_to_bucket_error_passthrough_has_no_counters(tmp_path, monkeypatch):
+    """On helper failure the method returns the error dict untouched."""
+    from strands_robots import dataset_recorder as dr
+
+    monkeypatch.setattr(
+        dr,
+        "sync_dataset_to_bucket",
+        lambda *_a, **_k: {"status": "error", "message": "boom"},
+    )
+
+    result = _sync_recorder(tmp_path).sync_to_bucket("my-org/robot-fave")
+
+    assert result == {"status": "error", "message": "boom"}
+
+
+def test_sync_dataset_to_bucket_exported_top_level():
+    """``strands_robots.sync_dataset_to_bucket`` lazy-resolves to the helper."""
+    import strands_robots
+    from strands_robots import dataset_recorder as dr
+
+    assert "sync_dataset_to_bucket" in strands_robots.__all__
+    assert strands_robots.sync_dataset_to_bucket is dr.sync_dataset_to_bucket
+
+
 def test_hf_executable_prefers_interpreter_env_over_path(tmp_path, monkeypatch):
     """`_hf_executable` finds the ``hf`` next to the running interpreter before
     falling back to PATH, so sync works from a venv whose bin is not activated.
