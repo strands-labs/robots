@@ -335,7 +335,9 @@ for frame in reader:
 
 `stream_dataset()` is the in-process read counterpart to
 `start_recording`/`stop_recording`. For full training, the upstream trainer uses
-the same engine — `python -m lerobot.scripts.train dataset.repo_id=... dataset.streaming=true`.
+the same engine — `lerobot-train --policy.type=act --dataset.repo_id=... --dataset.streaming=true --num_workers=4`
+(the `lerobot-train` entry point wraps `python -m lerobot.scripts.lerobot_train`;
+flags are draccus `--dotted.key=value` form).
 
 **Verify episode integrity.** A recording's ground truth is the parquet under
 `meta/episodes/`, not the count a model narrates while collecting. Collect
@@ -364,7 +366,9 @@ Phase 1/2 collection target that avoids git-LFS history bloat) with one kwarg:
 sim.stop_recording(bucket="your-org/robot-fave")   # → hf://buckets/your-org/robot-fave/demo
 ```
 
-Requires the `hf` CLI (`pip install -U huggingface_hub` + `hf auth login`).
+Requires the `hf` CLI with the `buckets`/`sync` subcommands
+(`pip install -U "huggingface_hub>=1.0"` + `hf auth login` — 0.x releases of
+`huggingface_hub` ship an `hf` entry point without them).
 
 **Proprio-only / no video** (e.g. edge devices without a torchcodec wheel):
 `sim.stream_dataset(repo_id, drop_videos=True)` streams state/action only and

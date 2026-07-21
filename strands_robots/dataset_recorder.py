@@ -1050,7 +1050,8 @@ class DatasetRecorder:
         Mutable, Xet-deduplicated dump target for COLLECTION - avoids git-LFS
         history bloat of push_to_hub during recording. Daily re-sync uploads
         only changed chunks (content-defined chunking). Requires the ``hf`` CLI
-        (huggingface_hub>=1.x) and ``hf auth login``.
+        with the ``buckets``/``sync`` subcommands (``huggingface_hub>=1.0``)
+        and ``hf auth login``.
 
         ``bucket`` and ``run_id`` are validated against an allowlist before any
         subprocess or URI interpolation: ``bucket`` must be ``"name"`` or
@@ -1059,8 +1060,9 @@ class DatasetRecorder:
         path is agent-reachable via ``stop_recording(bucket=, run_id=)``. A
         rejected value returns ``{"status": "error", ...}`` without running ``hf``.
 
-        The shard layout is already Xet/bucket-friendly at the 100 MB default,
-        and ``meta/`` MUST ship or downstream loses normalization stats.
+        The shard layout is already Xet/bucket-friendly at lerobot's defaults
+        (100 MB data parquet / 200 MB video MP4 shards), and ``meta/`` MUST
+        ship or downstream loses normalization stats.
         """
         import subprocess
 
@@ -1068,7 +1070,7 @@ class DatasetRecorder:
         if hf is None:
             return {
                 "status": "error",
-                "message": "`hf` CLI not found. pip install -U huggingface_hub (>=1.x) and run `hf auth login`.",
+                "message": '`hf` CLI not found. pip install -U "huggingface_hub>=1.0" and run `hf auth login`.',
             }
 
         if not _BUCKET_RE.match(bucket):
