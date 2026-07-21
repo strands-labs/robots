@@ -452,8 +452,11 @@ class DatasetRecordingMixin:
             **kwargs: Forwarded to
                 :meth:`StreamingDatasetReader.open` - e.g. ``root``,
                 ``delta_timestamps``, ``episodes``, ``shuffle``, ``buffer_size``,
-                ``max_num_shards``, ``drop_videos`` (proprio-only, torchcodec-free),
-                ``repo_type`` (``"dataset"`` or ``"bucket"``).
+                ``max_num_shards``, ``drop_videos`` (proprio-only,
+                torchcodec-free; requires ``delta_timestamps`` with at least one
+                non-video key, else ValueError), ``repo_type`` (``"dataset"`` or
+                ``"bucket"``; ``"bucket"`` requires lerobot>=0.6.1, else
+                RuntimeError).
 
         Returns:
             A :class:`~strands_robots.streaming_dataset.StreamingDatasetReader`.

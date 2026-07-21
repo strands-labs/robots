@@ -367,8 +367,12 @@ sim.stop_recording(bucket="your-org/robot-fave")   # → hf://buckets/your-org/r
 Requires the `hf` CLI (`pip install -U huggingface_hub` + `hf auth login`).
 
 **Proprio-only / no video** (e.g. edge devices without a torchcodec wheel):
-`sim.stream_dataset(repo_id, drop_videos=True)` streams state/action only and
-never touches the video decoder.
+`sim.stream_dataset(repo_id, drop_videos=True, delta_timestamps={...})` streams
+state/action only and never touches the video decoder. `drop_videos=True`
+requires a `delta_timestamps` with at least one non-video key (e.g.
+`{"observation.state": [0.0], "action": [0.0]}`) - without one, every feature
+including video would stream, so the call raises `ValueError` instead of
+silently no-opping.
 
 > **macOS note (zero-touch).** torchcodec links ffmpeg via `@rpath`, and
 > Homebrew's ffmpeg (`/opt/homebrew/lib`) is not on the default dyld search

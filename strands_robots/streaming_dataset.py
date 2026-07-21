@@ -72,8 +72,19 @@ def _get_streaming_cls() -> Any:
             "Install with: pip install 'strands-robots[lerobot]' "
             "(needs torchcodec for video keys; on aarch64/Jetson that means "
             "torch>=2.11 + torchcodec>=0.11). "
-            "For proprio-only streaming without torchcodec, use drop_videos=True."
+            "For proprio-only streaming without torchcodec, use drop_videos=True "
+            "with a delta_timestamps covering the non-video keys you need."
         ) from exc
+
+
+def _lerobot_version() -> str:
+    """Best-effort installed lerobot version string for error messages."""
+    try:
+        from importlib.metadata import PackageNotFoundError, version
+
+        return version("lerobot")
+    except (ImportError, PackageNotFoundError):
+        return "unknown"
 
 
 class StreamingDatasetReader:
@@ -112,20 +123,63 @@ class StreamingDatasetReader:
         return_uint8: bool = True,  # halves frame bandwidth; policies normalize
         validate_deltas: bool = True,  # parity with the materialized dataset path
         drop_videos: bool = False,  # proprio-only streaming (no torchcodec)
-        repo_type: str = "dataset",  # "dataset" or "bucket"; forwarded only to a lerobot that accepts it
+        repo_type: str = "dataset",  # "dataset" or "bucket"; non-default REQUIRES a lerobot that accepts it
     ) -> StreamingDatasetReader:
+        """Open a version-tolerant streaming reader.
+
+        Raises:
+            RuntimeError: ``repo_type`` is not ``"dataset"`` but the installed
+                ``StreamingLeRobotDataset`` does not accept a ``repo_type``
+                parameter (lerobot < 0.6.1). Silently dropping the kwarg would
+                stream from the versioned *dataset* namespace instead of the
+                requested bucket - a different storage system, not a cosmetic
+                difference - so this is never tolerant-dropped.
+            ValueError: ``drop_videos=True`` but no non-video keys remain in
+                ``delta_timestamps`` (or none were passed). Without a proprio
+                ``delta_timestamps``, StreamingLeRobotDataset streams every
+                feature - including camera keys via torchcodec decode - so the
+                call would silently do the opposite of what was asked.
+            ImportError: ``StreamingLeRobotDataset`` is not importable.
+        """
         StreamingCls = _get_streaming_cls()
         init_sig = inspect.signature(StreamingCls).parameters
         # If the constructor accepts **kwargs, every candidate is forwardable.
         accepts_var_kw = any(p.kind is inspect.Parameter.VAR_KEYWORD for p in init_sig.values())
 
+        # repo_type selects WHICH storage system is read (versioned dataset
+        # namespace vs bucket). Unlike the cosmetic kwargs below, silently
+        # dropping it on an older lerobot would open the wrong storage system
+        # without error - fail fast instead.
+        if repo_type != "dataset" and not (accepts_var_kw or "repo_type" in init_sig):
+            raise RuntimeError(
+                f"repo_type={repo_type!r} requires lerobot>=0.6.1 "
+                f"(installed: {_lerobot_version()}): the installed "
+                "StreamingLeRobotDataset does not accept a repo_type parameter, "
+                "and silently falling back to the 'dataset' namespace would "
+                "stream from a different storage system. "
+                "Upgrade with: pip install 'lerobot>=0.6.1'"
+            )
+
         # Proprio-only: strip video keys from delta_timestamps so video decode
         # (torchcodec) is never invoked - lets constrained edge devices stream
         # state/action without a torchcodec wheel.
-        if drop_videos and delta_timestamps:
-            delta_timestamps = {
-                k: v for k, v in delta_timestamps.items() if not k.startswith("observation.images.")
-            } or None
+        if drop_videos:
+            if delta_timestamps:
+                delta_timestamps = {
+                    k: v for k, v in delta_timestamps.items() if not k.startswith("observation.images.")
+                } or None
+            if delta_timestamps is None:
+                # Without delta_timestamps, StreamingLeRobotDataset streams
+                # EVERY feature - camera keys included, invoking torchcodec -
+                # so drop_videos=True would be a silent no-op doing the
+                # opposite of what was asked. Refuse rather than no-op.
+                raise ValueError(
+                    "drop_videos=True requires delta_timestamps with at least "
+                    "one non-video key: without it, every feature (including "
+                    "camera keys, via torchcodec decode) is streamed and "
+                    "drop_videos has no effect. Pass e.g. "
+                    "delta_timestamps={'observation.state': [0.0], 'action': [0.0]}."
+                )
 
         kwargs: dict[str, Any] = {"repo_id": repo_id}
         candidate = dict(
@@ -144,9 +198,11 @@ class StreamingDatasetReader:
             repo_type=repo_type,
         )
         for k, v in candidate.items():
-            # repo_type (and any other candidate) is only forwarded to a
-            # StreamingLeRobotDataset that declares it; a version without the
-            # parameter drops it here rather than raising a TypeError.
+            # Tolerant forwarding covers only kwargs whose absence does not
+            # change semantics (a lerobot without the parameter behaves the
+            # same for its default). repo_type is guarded above: a non-default
+            # value on a lerobot that lacks the parameter raises instead of
+            # being dropped here; the "dataset" default is safe to skip.
             if not (accepts_var_kw or k in init_sig):
                 continue
             if k in ("streaming", "shuffle", "return_uint8") or v is not None:

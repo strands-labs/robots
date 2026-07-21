@@ -391,7 +391,14 @@ Useful kwargs (forwarded to `StreamingLeRobotDataset`, version-tolerant):
 `episodes=[...]` (subset without download), `buffer_size`, `max_num_shards`,
 `return_uint8=True` (default; halves frame bandwidth), and
 `drop_videos=True` (proprio-only — skips video decode entirely, so it works on
-edge devices without a torchcodec wheel).
+edge devices without a torchcodec wheel; requires `delta_timestamps` with at
+least one non-video key, otherwise `open()` raises `ValueError` rather than
+silently streaming video anyway).
+
+One kwarg is **not** tolerant-forwarded because its absence changes semantics:
+`repo_type="bucket"` requires `lerobot>=0.6.1` — on older versions `open()`
+raises `RuntimeError` instead of silently streaming from the versioned dataset
+namespace (a different storage system).
 
 For **training**, the upstream trainer uses the same engine:
 
