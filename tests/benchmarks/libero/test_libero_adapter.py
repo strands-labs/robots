@@ -468,6 +468,67 @@ class TestOnEpisodeStart:
         with pytest.raises(RuntimeError, match="load_scene"):
             adapter.on_episode_start(sim, random.Random(0))
 
+    def test_settle_action_sent_when_controller_installed(self):
+        """After scene load with an OSC action_controller installed,
+        ``on_episode_start`` emits one empty settle action.
+
+        Upstream LIBERO's ``OffScreenRenderEnv.reset`` does
+        ``set_init_state(...) + env.step(np.zeros(7))``, so the first
+        observation a policy sees is one control step past the raw
+        ``init_state``. The adapter mirrors that with a single
+        ``send_action({})`` (a zero OSC command). Without it, the first
+        observation is OOD versus the post-step training data.
+        """
+        adapter = LiberoAdapter.from_text(PICK_CUBE_BDDL, scene_path="/fake/scene.xml")
+        sim = FakeSim(data_config="panda")
+        actions: list[Any] = []
+        sim.send_action = lambda action, robot_name=None, n_substeps=1: actions.append(action)  # type: ignore[assignment]
+        # Simulate a working OSC controller having been installed on the
+        # world (the real install needs robosuite + a compiled model).
+        sim._world._backend_state["action_controller"] = object()
+
+        adapter.on_episode_start(sim, random.Random(0))
+
+        assert {} in actions, "expected one empty settle send_action({})"
+
+    def test_settle_action_failure_does_not_abort_episode(self, caplog):
+        """A raising settle ``send_action`` must be swallowed with a
+        WARNING - a failed settle never aborts the eval.
+
+        The episode continues at the un-settled init pose rather than
+        propagating the exception out of ``on_episode_start``.
+        """
+        import logging
+
+        adapter = LiberoAdapter.from_text(PICK_CUBE_BDDL, scene_path="/fake/scene.xml")
+        sim = FakeSim(data_config="panda")
+
+        def _boom(action, robot_name=None, n_substeps=1):
+            raise RuntimeError("settle boom")
+
+        sim.send_action = _boom  # type: ignore[assignment]
+        sim._world._backend_state["action_controller"] = object()
+
+        with caplog.at_level(logging.WARNING):
+            adapter.on_episode_start(sim, random.Random(0))  # must not raise
+
+        assert any("settle send_action" in r.getMessage() for r in caplog.records)
+
+    def test_no_settle_action_without_controller(self):
+        """With no OSC action_controller installed, the settle step is
+        skipped entirely - the adapter must not emit a spurious
+        ``send_action`` on the name-lookup (no-op controller) path.
+        """
+        adapter = LiberoAdapter.from_text(PICK_CUBE_BDDL, scene_path="/fake/scene.xml")
+        sim = FakeSim(data_config="panda")
+        actions: list[Any] = []
+        sim.send_action = lambda action, robot_name=None, n_substeps=1: actions.append(action)  # type: ignore[assignment]
+        # No "action_controller" key -> settle must not fire.
+
+        adapter.on_episode_start(sim, random.Random(0))
+
+        assert actions == [], "settle must not fire without an installed controller"
+
     def test_jitter_applied_when_init_declares_subject(self):
         adapter = LiberoAdapter.from_text(
             """

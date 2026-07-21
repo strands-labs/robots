@@ -33,14 +33,16 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 
-# Every LeRobot surface in the supported ``>=0.5.0,<0.6.0`` range validates the
-# codec against the same codec-name allowlist - ``video_utils.VALID_VIDEO_CODECS
-# = {"h264", "hevc", "libsvtav1", "auto"} | HW_ENCODERS`` - and *rejects* the
-# ffmpeg library names ("libx264"/"libx265"). This holds for the flat ``vcodec``
-# kwarg (0.5.0/0.5.1) just as much as for the ``RGBEncoderConfig`` /
-# ``VideoEncoderConfig`` surfaces a later minor may expose. So there is exactly
-# one correct normalization direction: ffmpeg name -> codec name, applied to
-# whichever surface is present. Callers may pass either spelling.
+# Every LeRobot codec surface validates the requested codec against the same
+# codec-name allowlist - ``configs.video.VALID_VIDEO_CODECS = {"h264", "hevc",
+# "libsvtav1", "libaom-av1", "auto"} | HW_VIDEO_CODECS`` - and *rejects* the
+# ffmpeg library names ("libx264"/"libx265"). This holds for the current
+# ``rgb_encoder=RGBEncoderConfig(vcodec=...)`` surface (lerobot >=0.6.0,<0.7.0,
+# the supported range) exactly as it did for the flat ``vcodec`` kwarg and the
+# interim ``camera_encoder=VideoEncoderConfig(...)`` surface the tolerant
+# routing below still handles. So there is exactly one correct normalization
+# direction: ffmpeg name -> codec name, applied to whichever surface is present.
+# Callers may pass either spelling.
 _ENCODER_CODEC_NAMES = {"libx264": "h264", "libx265": "hevc"}
 
 
@@ -55,16 +57,16 @@ def _codec_create_kwargs(sig_params: Any, vcodec: str, *, context: str = "create
       * 0.5.0 / 0.5.1: a flat ``create/resume(..., vcodec=...)`` kwarg.
       * an interim build briefly exposed
         ``camera_encoder=VideoEncoderConfig(vcodec=...)``.
-      * a later minor may move the codec into
+      * lerobot >= 0.6 (the supported range) moved the codec into
         ``rgb_encoder=RGBEncoderConfig(vcodec=...)``.
 
     Every one of these surfaces validates against LeRobot's codec-name allowlist
-    (``{"h264", "hevc", "libsvtav1", "auto"} | HW_ENCODERS``) and rejects the
-    ffmpeg library names ("libx264"/"libx265"). So the codec is normalized to its
-    codec-name spelling once and routed onto whichever surface is present. The
-    caller may pass either spelling ("h264" or "libx264"). An unknown codec
-    raises loudly (LeRobot's own ValueError) rather than silently falling back
-    to the default.
+    (``{"h264", "hevc", "libsvtav1", "libaom-av1", "auto"} | HW_VIDEO_CODECS``)
+    and rejects the ffmpeg library names ("libx264"/"libx265"). So the codec is
+    normalized to its codec-name spelling once and routed onto whichever surface
+    is present. The caller may pass either spelling ("h264" or "libx264"). An
+    unknown codec raises loudly (LeRobot's own ValueError) rather than silently
+    falling back to the default.
 
     Args:
         sig_params: ``inspect.Signature.parameters`` of ``create``/``resume``.

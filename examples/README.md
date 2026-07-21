@@ -52,6 +52,8 @@ record→train→deploy loop) as Jupyter notebooks - all CPU-only, no hardware o
 | 15 | [`15_robot_catalog.py`](15_robot_catalog.py) | `list_robots` / `get_robot` registry discovery (no sim) | No | No |
 | -- | [`locomotion/vla_g1_workflow.py`](locomotion/vla_g1_workflow.py) | VLA-on-G1: record -> GR00T fine-tune -> WBC deploy | No | Optional (tune) |
 | — | [`vera_mimicgen_panda/`](vera_mimicgen_panda/) | VERA MimicGen → Panda (eef-delta + IK bridge) | No | **Yes** (server) |
+| — | [`isaac/isaac_replicator_synthdata.py`](isaac/isaac_replicator_synthdata.py) | `IsaacSimulation` + Omniverse Replicator synthetic-data generation | No | **Yes** (Isaac Sim / RTX) |
+| — | [`isaac_gs/`](isaac_gs/) | Isaac RTX robot z-composited over a 3DGS / panorama backdrop (digital-twin) | No | **Yes** (Isaac Sim / RTX) |
 | -- | [`registry/lerobot_hardware_catalog.py`](registry/lerobot_hardware_catalog.py) | `Robot()` covers the whole LeRobot hardware catalog (name -> lerobot_type) | No | No |
 
 ## What each example shows vs raw lerobot
@@ -75,6 +77,7 @@ record→train→deploy loop) as Jupyter notebooks - all CPU-only, no hardware o
 | [`libero/run_isaac.py`](libero/run_isaac.py) | LIBERO benchmark eval on the Isaac Sim backend (`create_simulation("isaac")`) with rollout-MP4 recording. **GPU: Yes** (Isaac Sim 6.0+) |
 | [`libero/run_isaac_agent.py`](libero/run_isaac_agent.py) | LIBERO-on-Isaac driven by a Strands `Agent` in natural language. **GPU: Yes** (Isaac Sim 6.0+, needs LLM API) |
 | [`libero/libero_backend_matrix.py`](libero/libero_backend_matrix.py) | Run one LIBERO task across every installed backend, side-by-side `success_rate` / `wall_time` table |
+| [`so101_curobo/`](so101_curobo/) | SO-101 tabletop pick-and-place: cuRobo motion planning + LeRobot dataset capture. Backend-agnostic (`SimEngine`): MuJoCo today, Isaac when `strands-robots[sim-isaac]` is installed. **GPU: Optional** (cuRobo / Isaac) |
 
 ## Environment variables
 

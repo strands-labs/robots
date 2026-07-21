@@ -551,9 +551,9 @@ class SimEngine(ABC):
         Default ``0.0`` -- a flat ground plane, and any backend without a
         heightfield. The MuJoCo backend overrides this to sample a
         ``create_world(terrain=...)`` heightfield so that height-based locomotion
-        predicates (:func:`~strands_robots.simulation.predicates.base_below_z`)
-        measure a base's clearance above the *local* ground instead of an
-        absolute world z -- an absolute test silently misses a collapse on a
+        predicates (``base_below_z``) measure a base's clearance above the
+        *local* ground instead of an absolute world z -- an absolute test
+        silently misses a collapse on a
         raised terrain plateau (the base still sits above a flat-ground
         threshold). Not a public tool action.
         """
@@ -570,8 +570,7 @@ class SimEngine(ABC):
         at a flat-ground ``z`` (computed as if the support were at ``z=0``) on a
         raised plateau spawns *buried* in the heightfield and sinks through
         instead of resting on it. The same local-height sampler already backs the
-        terrain-relative locomotion predicates
-        (:func:`~strands_robots.simulation.predicates.base_below_z`) and the
+        terrain-relative locomotion predicates (``base_below_z``) and the
         spawn/reset base-seating; this exposes it as a facade query.
 
         Returns ``0.0`` for a flat ground plane and for any backend without a
