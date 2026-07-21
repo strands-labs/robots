@@ -233,21 +233,16 @@ class LeRobotDataCollector:
     def _default_root(self) -> str | None:
         """Resolve the on-disk dir LeRobot would use when ``--root`` is unset.
 
-        Mirrors ``LeRobotDataset.create``'s default of ``$HF_LEROBOT_HOME/{repo_id}``
-        so the re-run cleanup in :meth:`_new_recorder` can also clear the HF-cache
-        default (issue #143), not just an explicit ``--root``. Best-effort: returns
-        ``None`` if LeRobot isn't importable, leaving behavior unchanged.
+        Delegates to :func:`strands_robots.dataset_recorder.resolve_dataset_dir`,
+        which mirrors ``LeRobotDataset.create``'s default of
+        ``$HF_LEROBOT_HOME/{repo_id}`` (honouring the ``HF_LEROBOT_HOME``
+        environment override), so the re-run cleanup in :meth:`_new_recorder`
+        can also clear the HF-cache default (issue #143), not just an explicit
+        ``--root``.
         """
-        import os
+        from strands_robots.dataset_recorder import resolve_dataset_dir
 
-        try:
-            from lerobot.utils.constants import HF_LEROBOT_HOME
-        except Exception:  # noqa: BLE001 - older/newer LeRobot layouts
-            home = os.environ.get("HF_LEROBOT_HOME") or os.path.join(
-                os.path.expanduser("~"), ".cache", "huggingface", "lerobot"
-            )
-            return os.path.join(home, *self.repo_id.split("/"))
-        return os.path.join(str(HF_LEROBOT_HOME), *self.repo_id.split("/"))
+        return str(resolve_dataset_dir(self.repo_id))
 
     def _new_recorder(self, task: str):
         if not self.available():
