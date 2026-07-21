@@ -26,6 +26,8 @@ stubbed for the driver-construction branches.
 
 from __future__ import annotations
 
+import dataclasses
+import logging
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
@@ -183,3 +185,62 @@ class TestInitializeRobotDispatch:
         hw = _make_robot()
         with pytest.raises(ValueError, match="Unsupported robot type"):
             hw._initialize_robot(12345, None)
+
+
+class TestCreateMinimalConfigDefensiveBranches:
+    """Config-build guards for the ``valid_fields`` / construction seams.
+
+    These pin the actionable-error and observability contracts that protect
+    against lerobot registry drift: a config class that is not a dataclass, a
+    dataclass that drops the ``id`` field while the caller passes an explicit
+    ``id=``, and a config whose construction rejects the assembled kwargs. All
+    three resolve the config class through lerobot's draccus registry, so the
+    resolution is stubbed to inject the drifted class rather than depend on a
+    hypothetical future lerobot build.
+    """
+
+    def test_non_dataclass_config_class_raises_actionable_typeerror(self, monkeypatch):
+        from lerobot.robots.config import RobotConfig
+
+        hw = _make_robot()
+
+        class NotADataclass:
+            """A plain class so ``dataclasses.fields()`` raises ``TypeError``."""
+
+        monkeypatch.setattr(RobotConfig, "get_choice_class", lambda robot_type: NotADataclass)
+        with pytest.raises(TypeError, match="non-dataclass config class"):
+            hw._create_minimal_config("so101_follower", None)
+
+    def test_config_without_id_field_warns_on_explicit_id(self, monkeypatch, caplog):
+        from lerobot.robots.config import RobotConfig
+
+        hw = _make_robot()
+
+        @dataclasses.dataclass
+        class NoIdConfig:
+            cameras: dict[str, Any] = dataclasses.field(default_factory=dict)
+
+        monkeypatch.setattr(RobotConfig, "get_choice_class", lambda robot_type: NoIdConfig)
+        with caplog.at_level(logging.WARNING, logger="strands_robots.hardware_robot"):
+            cfg = hw._create_minimal_config("future_robot", None, id="left_arm")
+
+        # An explicit id= that cannot namespace calibration is surfaced, not dropped.
+        assert isinstance(cfg, NoIdConfig)
+        assert any("does not declare an 'id' field" in rec.getMessage() for rec in caplog.records)
+
+    def test_config_construction_failure_wraps_valueerror(self, monkeypatch):
+        from lerobot.robots.config import RobotConfig
+
+        hw = _make_robot()
+
+        @dataclasses.dataclass
+        class ExplodingConfig:
+            id: str = ""
+            cameras: dict[str, Any] = dataclasses.field(default_factory=dict)
+
+            def __post_init__(self) -> None:
+                raise ValueError("post-init rejected the assembled config")
+
+        monkeypatch.setattr(RobotConfig, "get_choice_class", lambda robot_type: ExplodingConfig)
+        with pytest.raises(ValueError, match="Failed to construct ExplodingConfig"):
+            hw._create_minimal_config("so101_follower", None)

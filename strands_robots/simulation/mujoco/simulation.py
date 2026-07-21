@@ -778,22 +778,6 @@ class MuJoCoSimEngine(
             logger.debug("spec.to_xml() failed: %s", xml_err)
         self._world.status = SimStatus.IDLE
 
-    def _recompile_world(self) -> dict[str, Any]:
-        """Rebuild MjModel from scratch via :meth:`_compile_world`.
-
-        This is the "nuke and pave" path used when the world config changes
-        in a way that can't be expressed as a spec mutation (e.g. clearing
-        every body). For incremental changes (add/remove body, camera),
-        prefer ``_recompile_preserving_state`` in :mod:`scene_ops` which
-        goes through ``spec.recompile(model, data)`` and preserves joint
-        state.
-        """
-        try:
-            self._compile_world()
-            return {"status": "success"}
-        except Exception as e:
-            return {"status": "error", "content": [{"text": f"Recompile failed: {e}"}]}
-
     # Robot Management
 
     @staticmethod
@@ -2446,6 +2430,19 @@ class MuJoCoSimEngine(
         }
 
     def remove_object(self, name: str) -> dict[str, Any]:
+        """Remove a named object from the live scene.
+
+        Deletes the object from the world registry and ejects its body from the
+        MjSpec, recompiling the model while preserving the state of the
+        remaining bodies.
+
+        Args:
+            name: The object name (as passed to ``add_object``).
+
+        Returns:
+            A ``{status, content}`` tool result. ``status`` is ``"error"`` when
+            no world exists, ``name`` is unknown, or a policy is running.
+        """
         if self._world is None or self._world._model is None or self._world._data is None:
             return {"status": "error", "content": [{"text": _NO_WORLD_MSG}]}
         if name not in self._world.objects:
@@ -2560,6 +2557,13 @@ class MuJoCoSimEngine(
         return {"status": "success", "content": [{"text": f"'{name}' moved to {position or 'same'}"}]}
 
     def list_objects(self) -> dict[str, Any]:
+        """List every object in the scene with its shape, position, and mass.
+
+        Returns:
+            A ``{status, content}`` tool result whose text enumerates the
+            objects (or reports that there are none). ``status`` is
+            ``"error"`` when no world exists.
+        """
         if self._world is None or self._world._model is None or self._world._data is None:
             return {"status": "error", "content": [{"text": _NO_WORLD_MSG}]}
         if not self._world.objects:
@@ -2787,6 +2791,16 @@ class MuJoCoSimEngine(
     _STEPS_PER_BATCH = 1000  # Release lock every N steps for cancellation.
 
     def step(self, n_steps: int = 1) -> dict[str, Any]:
+        """Advance the simulation by ``n_steps`` physics steps.
+
+        Args:
+            n_steps: Non-negative step count (``0`` is an accepted no-op).
+
+        Returns:
+            A ``{status, content}`` tool result reporting the elapsed sim time
+            and total step count. ``status`` is ``"error"`` when no world
+            exists or ``n_steps`` is negative / not an integer.
+        """
         if self._world is None or self._world._model is None or self._world._data is None:
             return {"status": "error", "content": [{"text": _NO_WORLD_MSG}]}
         # reject negative, accept zero as no-op
@@ -2835,6 +2849,19 @@ class MuJoCoSimEngine(
         }
 
     def reset(self) -> dict[str, Any]:
+        """Reset the world to its initial state, beginning a new rollout.
+
+        Restores the initial pose and re-forwards derived state so the world is
+        render- and observation-ready on return. If a recording is active with
+        buffered frames, flushes them as their own episode first, so a
+        ``run_policy`` + ``reset`` collection loop records one episode per
+        rollout instead of merging every rollout into episode 0.
+
+        Returns:
+            A ``{status, content}`` tool result. ``status`` is ``"error"`` when
+            no world exists or a policy is running (a reset during a live
+            ``mj_step`` can segfault).
+        """
         if self._world is None or self._world._model is None or self._world._data is None:
             return {"status": "error", "content": [{"text": _NO_WORLD_MSG}]}
         # reset during a running policy races mj_step -> SEGFAULT risk
@@ -2900,6 +2927,16 @@ class MuJoCoSimEngine(
         return {"status": "success", "content": [{"text": f"{flush_note}Reset to initial state."}]}
 
     def get_state(self) -> dict[str, Any]:
+        """Summarize the current simulation state.
+
+        Reports sim time, step count, timestep, gravity, and counts of robots,
+        objects, cameras, bodies, joints, and actuators (plus recording status
+        when a recording is active).
+
+        Returns:
+            A ``{status, content}`` tool result. ``status`` is ``"error"`` when
+            no world exists.
+        """
         if self._world is None or self._world._model is None or self._world._data is None:
             return {"status": "error", "content": [{"text": _NO_WORLD_MSG}]}
         lines = [
@@ -3013,6 +3050,16 @@ class MuJoCoSimEngine(
         return {"status": "success", "content": [{"text": f"Gravity: {components}"}]}
 
     def set_timestep(self, timestep: float) -> dict[str, Any]:
+        """Set the physics integration timestep in seconds.
+
+        Args:
+            timestep: A finite positive float.
+
+        Returns:
+            A ``{status, content}`` tool result. ``status`` is ``"error"`` when
+            no world exists, a policy is running, or ``timestep`` is
+            non-positive or non-finite.
+        """
         if self._world is None or self._world._model is None or self._world._data is None:
             return {"status": "error", "content": [{"text": _NO_WORLD_MSG}]}
         if err := self._require_no_running_policy("set_timestep"):

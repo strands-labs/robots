@@ -519,3 +519,52 @@ class TestValidateThingNameFullmatch:
 
         with pytest.raises(ValueError, match="invalid characters"):
             provision._validate_thing_name("robot\x0c")
+
+
+class TestChmodFailureResilience:
+    """Provisioning must not crash on a filesystem that rejects ``os.chmod``.
+
+    ``provision_robot`` / ``provision_operator`` best-effort chmod the cert
+    directory (0o700) and the written cert/key (0o600) to lock down private
+    material. On non-POSIX or restricted mounts (some container overlay/bind
+    mounts, network filesystems) ``os.chmod`` raises ``OSError``; provisioning
+    is designed to degrade gracefully rather than abort, since the AWS-side
+    resources are already created by the time the local files are written.
+    """
+
+    pytestmark = pytest.mark.usefixtures("bypass_ca")
+
+    @staticmethod
+    def _install(monkeypatch, fake_iot_client):
+        monkeypatch.setattr(
+            "strands_robots.mesh.iot.provision._require_boto3",
+            lambda: MagicMock(client=lambda *a, **kw: fake_iot_client),
+        )
+
+        def _deny_chmod(*_a, **_kw):
+            raise OSError("chmod not supported on this filesystem")
+
+        monkeypatch.setattr("strands_robots.mesh.iot.provision.os.chmod", _deny_chmod)
+
+    def test_provision_robot_survives_chmod_oserror(self, fake_iot_client, tmp_cert_dir, monkeypatch):
+        self._install(monkeypatch, fake_iot_client)
+
+        result = provision_robot("chmod-denied-robot", cert_dir=tmp_cert_dir)
+
+        # Provisioning completes and the material is still written, even though
+        # the best-effort mode-hardening chmod calls all failed.
+        assert isinstance(result, ProvisionedThing)
+        assert result.thing_name == "chmod-denied-robot"
+        assert result.cert_path.exists()
+        assert result.key_path.exists()
+        assert result.cert_path.read_text().startswith("-----BEGIN CERTIFICATE-----")
+
+    def test_provision_operator_survives_chmod_oserror(self, fake_iot_client, tmp_cert_dir, monkeypatch):
+        self._install(monkeypatch, fake_iot_client)
+
+        result = provision_operator("chmod-denied-ops", cert_dir=tmp_cert_dir)
+
+        assert isinstance(result, ProvisionedThing)
+        assert result.policy_name == OPERATOR_POLICY_NAME
+        assert result.cert_path.exists()
+        assert result.key_path.exists()

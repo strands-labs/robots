@@ -1013,3 +1013,120 @@ def test_start_recording_existing_empty_root_records(sim_with_two_robots, tmp_pa
     ds = LeRobotDataset(repo_id="local/empty_root_probe", root=root)
     assert ds.meta.total_episodes == 1, f"expected 1 episode, got {ds.meta.total_episodes}"
     assert ds.meta.total_frames > 0
+
+
+def test_run_multi_policy_single_robot_records_unnamespaced_columns(tmp_path):
+    """A single-robot world driven via ``run_multi_policy`` records BARE
+    (un-prefixed) action/observation columns.
+
+    ``run_multi_policy`` accepts a one-entry ``policies`` dict (e.g. a bimanual
+    rig temporarily driving a single arm). When the world holds exactly one
+    robot, ``multi_robot`` is False and the merged frame must carry the robot's
+    plain actuator/joint keys - NOT ``<name>__`` prefixed - so the dataset
+    schema is identical to a single-robot ``run_policy`` recording and a policy
+    trained on one layout can consume the other. This pins the un-namespaced
+    merge branch of the synchronized loop (the multi-robot namespaced branch is
+    covered by ``test_b4_synchronized_multi_robot_recording``).
+    """
+    from strands_robots.dataset_recorder import has_lerobot_dataset
+
+    if not has_lerobot_dataset():
+        pytest.skip("lerobot not installed")
+
+    import numpy as np
+
+    from strands_robots.policies import create_policy
+    from strands_robots.simulation import Simulation
+
+    tmpdir = tempfile.mkdtemp()
+    path = os.path.join(tmpdir, "test_arm.xml")
+    with open(path, "w") as f:
+        f.write(_ROBOT_XML)
+
+    sim = Simulation()
+    sim.create_world()
+    sim.add_robot("solo", urdf_path=path, position=[0, 0, 0])
+    sim.step(5)
+    try:
+        root = str(tmp_path / "solo")
+        r = sim.start_recording(repo_id="local/solo_multi", fps=20, root=root, overwrite=True)
+        assert r["status"] == "success", r
+
+        r = sim.run_multi_policy(
+            policies={"solo": create_policy("mock")},
+            instructions="wave",
+            duration=0.5,
+            control_frequency=20.0,
+        )
+        assert r["status"] == "success", r
+        assert tool_json(r)["steps"] > 0
+        sim.stop_recording()
+
+        from lerobot.datasets.lerobot_dataset import LeRobotDataset
+
+        ds = LeRobotDataset(repo_id="local/solo_multi", root=root)
+
+        af = ds.features["action"]
+        names = af["names"] if isinstance(af, dict) else getattr(af, "names", None)
+        assert names, names
+        # Single-robot world: columns are the bare actuator keys, un-prefixed.
+        assert all("__" not in n for n in names), f"expected un-namespaced columns, got {names}"
+        assert set(names) == {"shoulder_pan_act", "shoulder_lift_act", "elbow_act"}, names
+
+        # Frames were actually written with non-zero commanded actions.
+        assert len(ds) > 0
+        moved = 0
+        for i in range(len(ds)):
+            if float(np.abs(np.asarray(ds[i]["action"])).sum()) > 1e-6:
+                moved += 1
+        assert moved == len(ds), f"only {moved}/{len(ds)} frames carried a commanded action"
+    finally:
+        sim.destroy()
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def test_get_state_reports_live_recording_progress(sim_with_two_robots, tmp_path):
+    """``get_state`` annotates the recorded step count while a recording is live.
+
+    ``Simulation.get_state`` is the human-readable introspection surface an
+    agent polls to monitor a data-collection episode. When a LeRobotDataset
+    recording is active it appends a ``[recording] N steps`` line so the caller
+    can watch the buffer fill mid-rollout; on an idle world that line is absent.
+    The count reflects the trajectory buffer the run_policy hook fills, so it is
+    strictly positive once frames have been rolled out under an active recorder.
+    """
+    import re
+
+    from strands_robots.dataset_recorder import has_lerobot_dataset
+
+    if not has_lerobot_dataset():
+        pytest.skip("lerobot not installed")
+
+    sim = sim_with_two_robots
+
+    # Idle world: no recording annotation on the state summary.
+    idle = sim.get_state()
+    assert idle["status"] == "success"
+    assert "[recording]" not in idle["content"][0]["text"]
+
+    r = sim.start_recording(repo_id="local/state_progress", fps=20, root=str(tmp_path), overwrite=True)
+    assert r["status"] == "success", r
+
+    from strands_robots.policies.mock import MockPolicy
+
+    policy = MockPolicy()
+    policy.set_robot_state_keys(sim.robot_joint_names("alpha"))
+    r = sim.run_policy("alpha", policy_object=policy, duration=0.5, control_frequency=20.0)
+    assert r["status"] == "success", r
+
+    # Recording still active: the summary reports a positive buffered count.
+    active_text = sim.get_state()["content"][0]["text"]
+    match = re.search(r"\[recording\] (\d+) steps", active_text)
+    assert match is not None, active_text
+    assert int(match.group(1)) > 0, active_text
+
+    sim.stop_recording()
+
+    # Back to idle: the annotation is gone once the recording is finalized.
+    done_text = sim.get_state()["content"][0]["text"]
+    assert "[recording]" not in done_text

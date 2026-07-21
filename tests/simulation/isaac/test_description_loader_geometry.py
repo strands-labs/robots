@@ -307,8 +307,17 @@ class TestUsdLoaderGate:
             pass
         else:
             pytest.skip("pxr is installed; the import gate does not apply")
-        with pytest.raises(ImportError, match=r"usd-core"):
+        with pytest.raises(ImportError, match=r"usd-core") as excinfo:
             load_usd(_write(tmp_path, "stage.usda", "#usda 1.0\n"))
+        # The hint must point at the real extra that ships usd-core --
+        # ``strands-robots[sim-isaac]`` (see pyproject + isaac/_install.py),
+        # never a nonexistent ``strands-robots-sim[isaac]`` combination that
+        # would leave a following user still without the dependency.
+        msg = str(excinfo.value)
+        assert "strands-robots[sim-isaac]" in msg
+        assert "strands-robots-sim[isaac]" not in msg
+        # The pinned floor in the sim-isaac extra is usd-core>=25.5, not 24.5.
+        assert "usd-core>=25.5" in msg
 
 
 class TestParseFallbacks:

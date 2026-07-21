@@ -978,3 +978,33 @@ class TestSpecAccessorDriftResilience:
         assert gripper.added_cameras[0]["name"] == "wrist"
         # The camera went to the scanned parent, not the worldbody fallback.
         assert spec.worldbody.added_cameras == []
+
+
+class TestPublicApiSurface:
+    """``__all__`` declares the public API; private helpers must stay out of it.
+
+    The underscore-prefixed module helpers (``_geom_type`` et al.) are internal
+    implementation detail consumed by sibling modules via explicit-name imports,
+    not through ``from spec_builder import *``. Listing them in ``__all__`` both
+    contradicts their private naming and pollutes the documented public surface.
+    """
+
+    def test_all_declares_only_public_names(self):
+        from strands_robots.simulation.mujoco import spec_builder
+
+        assert spec_builder.__all__ == ["SpecBuilder"]
+        assert all(not name.startswith("_") for name in spec_builder.__all__)
+
+    def test_private_helpers_remain_importable_by_name(self):
+        # Removing them from __all__ must not remove them as module attributes;
+        # scene_ops and simulation import them by explicit name.
+        from strands_robots.simulation.mujoco import spec_builder
+
+        for name in (
+            "_is_z0_ground_plane",
+            "_geom_type",
+            "_normalize_size",
+            "_validate_size",
+            "_target_quat",
+        ):
+            assert callable(getattr(spec_builder, name)), name

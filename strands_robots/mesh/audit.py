@@ -1019,7 +1019,7 @@ def log_safety_event(event_type: str, peer_id: str, payload: dict[str, Any]) -> 
     try:
         seq = _next_seq(peer_id)
     except SeqLockSymlinkError as exc:
-        # PR#221 R3 (issue #238): the seq lockfile is a symlink. Raise
+        # The seq lockfile is a symlink (issue #238). Raise
         # the visible signal: write a poison record with
         # ``sig="SEQ_LOCK_DEGRADED"`` so verify_audit_integrity walkers
         # see a gap on this peer's stream. seq is unknown -- use 0 as

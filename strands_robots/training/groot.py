@@ -95,11 +95,12 @@ class Gr00tTrainer(Trainer):
 
     @property
     def provider_name(self) -> str:
+        """Provider identity - pairs with the ``groot`` inference policy."""
         return "groot"
 
     @property
     def hardware_floor(self) -> dict[str, Any]:
-        # N1.x fine-tune fits one modern GPU (lite); multi-GPU recommended.
+        """Advisory floor: a GR00T N1.x fine-tune fits one 24 GB GPU (multi-GPU recommended)."""
         return {"min_gpus": 1, "min_vram_gb": 24, "multinode": False}
 
     def _resolve_groot_root(self, spec: TrainSpec) -> str | None:
@@ -118,6 +119,16 @@ class Gr00tTrainer(Trainer):
         return merged
 
     def validate(self, spec: TrainSpec) -> list[str]:
+        """Pure preflight for a GR00T N1.x fine-tune.
+
+        Runs the shared input-safety gate, then checks a LeRobotDataset v3
+        ``dataset_root``, a ``base_model``, an ``output_dir``, a required
+        ``embodiment`` tag, a supported ``method``, positive ``steps``,
+        single-node only (``num_nodes == 1``), a resolvable Isaac-GR00T
+        checkout (GR00T_ROOT / ``groot_root`` / ``extra['groot_root']``),
+        and an optional ``extra['modality_config_path']`` that exists.
+        Returns the problem list; empty means launchable. Read-only.
+        """
         problems: list[str] = self._security_problems(spec)
 
         if not spec.dataset_root:
@@ -389,6 +400,15 @@ class Gr00tTrainer(Trainer):
             raise FileNotFoundError(f"Modality config path does not exist: {modality_config_path}")
 
     def train(self, spec: TrainSpec) -> TrainResult:
+        """Run a GR00T fine-tune in-process by calling the experiment runner.
+
+        Fails closed on any :meth:`validate` problem, then builds a
+        ``FinetuneConfig`` + ``Config`` and calls
+        ``gr00t.experiment.experiment.run`` directly (no subprocess). Single
+        GPU pins one CUDA device to avoid the HF Trainer DataParallel wrap;
+        ``num_gpus > 1`` spawns workers via torch ``elastic_launch``. Blocks
+        until the run terminates and returns a terminal ``TrainResult``.
+        """
         problems = self.validate(spec)
         if problems:
             return TrainResult(

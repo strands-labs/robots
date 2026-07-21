@@ -107,3 +107,48 @@ class TestRendererCacheBounding:
 
         assert (first_w, first_h) not in sim._renderer_tls.renderers
         assert close_calls == [1], "evicted renderer must have close() called exactly once"
+
+
+@requires_gl
+class TestRendererTeardownRobustness:
+    """Teardown must always complete even if a cached renderer's ``close()``
+    raises. ``destroy()``/``cleanup()`` close every main-thread renderer before
+    nulling ``self._world`` and shutting the executor down; if one renderer's
+    ``close()`` propagated, teardown would abort with the world still live and
+    worker threads holding stale ``model``/``data`` pointers - the exact
+    cross-thread free that SIGSEGVs. So a failing ``close()`` is swallowed and
+    the rest of teardown proceeds, emptying the cache regardless."""
+
+    def test_destroy_swallows_renderer_close_failure_and_empties_cache(self, sim):
+        sim.create_world()
+        sim.render(width=160, height=120)
+        renderer = sim._renderer_tls.renderers[(160, 120)]
+
+        close_calls: list[int] = []
+        original_close = renderer.close
+
+        def _boom(*_a, **_k):
+            close_calls.append(1)
+            raise RuntimeError("simulated GL context free failure")
+
+        renderer.close = _boom
+        try:
+            # Teardown must not propagate the close() failure...
+            result = sim.destroy()
+            assert result["status"] == "success"
+            # ...it must still have attempted the close...
+            assert close_calls == [1]
+            # ...and the main-thread renderer cache must be emptied regardless.
+            assert not getattr(sim._renderer_tls, "renderers", {})
+        finally:
+            # Restore the real close() so the renderer's __del__ frees its GL
+            # context cleanly (the simulated failure left it allocated).
+            renderer.close = original_close
+
+    def test_teardown_is_a_noop_before_any_render(self, sim):
+        # No render() has been called, so the TLS cache holds no ``renderers``
+        # attribute yet; closing it must be a clean no-op (no AttributeError).
+        sim.create_world()
+        assert getattr(sim._renderer_tls, "renderers", None) is None
+        result = sim.destroy()
+        assert result["status"] == "success"

@@ -216,6 +216,31 @@ def test_publish_image_fields(fake_cyclonedds: dict[str, Any]) -> None:
     assert len(msg.data) == 4 * 6 * 3
 
 
+def test_publish_image_drops_non_rgb_frames(fake_cyclonedds: dict[str, Any]) -> None:
+    """publish_image silently drops frames that are not HxWx3 RGB.
+
+    A ``sensor_msgs/Image`` published with a mismatched shape/step would make a
+    downstream ROS 2 consumer misread the raw byte buffer, so the bridge rejects
+    grayscale (2D) and non-3-channel frames before it ever creates a writer.
+    """
+    b = _bridge(enable_commands=False)
+    topic = "rt/test_arm/wrist/image_raw"
+
+    # 2D grayscale, 4-channel RGBA, and a singleton channel are all malformed
+    # for an rgb8 Image -> each must be dropped without publishing.
+    b.publish_image("test_arm", "wrist", np.zeros((4, 6), dtype=np.uint8))
+    b.publish_image("test_arm", "wrist", np.zeros((4, 6, 4), dtype=np.uint8))
+    b.publish_image("test_arm", "wrist", np.zeros((4, 6, 1), dtype=np.uint8))
+    assert not any(w.topic == topic for w in fake_cyclonedds["writers"])
+
+    # A well-formed RGB frame afterwards still publishes -> the guard is
+    # specific to malformed frames, not a blanket mute of the camera topic.
+    b.publish_image("test_arm", "wrist", np.zeros((4, 6, 3), dtype=np.uint8))
+    writer = next(w for w in fake_cyclonedds["writers"] if w.topic == topic)
+    (msg,) = writer.samples
+    assert (msg.height, msg.width, msg.encoding) == (4, 6, "rgb8")
+
+
 def test_command_subscription_drives_send_action(fake_cyclonedds: dict[str, Any]) -> None:
     robot = _FakeRobot()
     b = _bridge(robot)

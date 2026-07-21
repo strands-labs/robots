@@ -92,8 +92,6 @@ def _import_from_lerobot(module_path: str):
     full_path = f"lerobot.{module_path}" if not module_path.startswith("lerobot.") else module_path
 
     segments = full_path.split(".")
-    if not segments or segments == [""]:
-        raise LeRobotResolveError(f"Cannot resolve '{module_path}' in lerobot")
 
     # Walk from the longest importable module prefix down to the shortest. The
     # first prefix that imports cleanly is the module; remaining segments are
@@ -510,6 +508,13 @@ def use_lerobot(
     frames (numpy HxW / HxWxC arrays) returned by a call are emitted as proper
     Strands ``image`` content blocks so the model can actually see them.
 
+    Calls under restricted namespaces (``lerobot.scripts``,
+    ``lerobot.common.datasets.push``) and side-effecting methods
+    (``push_to_hub``, ``upload_folder``, ``save_to_disk``, ...) are refused
+    before invocation - whether named via ``method`` or reached through the
+    ``module`` path - so a prompt-injected call cannot push to the Hub or
+    spawn a training subprocess.
+
     Args:
         module: Dotted path into lerobot (e.g. "cameras.opencv.OpenCVCamera",
                 "datasets.lerobot_dataset.LeRobotDataset", "policies.factory").
@@ -624,10 +629,20 @@ def use_lerobot(
                     "status": "error",
                     "content": [{"text": f"Blocked: {full_path} is in a restricted module namespace"}],
                 }
-        if method in _BLOCKED_METHODS:
+        # A blocked method can be reached either via the ``method`` argument or as
+        # a segment of ``module``: ``_import_from_lerobot`` walks attribute chains,
+        # so ``module="datasets.lerobot_dataset.LeRobotDataset.push_to_hub"`` with
+        # an empty ``method`` resolves straight to the callable. Screen the method
+        # name AND every module-path segment so the guard cannot be bypassed by
+        # moving the method name into the module path.
+        blocked_name = next(
+            (name for name in (method, *full_path.split(".")) if name in _BLOCKED_METHODS),
+            None,
+        )
+        if blocked_name is not None:
             return {
                 "status": "error",
-                "content": [{"text": f"Blocked: method '{method}' is not permitted via use_lerobot"}],
+                "content": [{"text": f"Blocked: method '{blocked_name}' is not permitted via use_lerobot"}],
             }
 
         # Call it

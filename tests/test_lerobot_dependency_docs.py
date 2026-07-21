@@ -159,3 +159,30 @@ def test_molmoact2_doc_install_line_is_not_from_source() -> None:
     text = _MOLMOACT2.read_text()
     assert "lerobot from source" not in text
     assert "[molmoact2]" in text
+
+
+# --- negative contract: lerobot renamed the training entrypoint module
+#     ``lerobot.scripts.train`` -> ``lerobot.scripts.lerobot_train`` (the script
+#     rename wave; the old module is removed, so ``python -m
+#     lerobot.scripts.train`` now raises ``ModuleNotFoundError``). The rest of the
+#     codebase already uses the current name (``strands_robots.training.lerobot``,
+#     ``strands_robots.tools.lerobot_train``, ``docs/training/overview.md``); these
+#     two user-facing "how to train" spots lagged. Pin the dead module out and
+#     require the current one. ---
+
+_STREAMING_DATASET = _REPO_ROOT / "strands_robots" / "streaming_dataset.py"
+_RECORDING = _REPO_ROOT / "docs" / "recording.md"
+
+
+def test_no_userfacing_file_invokes_removed_lerobot_scripts_train() -> None:
+    for path in (_STREAMING_DATASET, _RECORDING):
+        text = path.read_text()
+        assert "lerobot.scripts.train" not in text, (
+            f"{path.name} instructs the removed `python -m lerobot.scripts.train`; "
+            "lerobot renamed the trainer module to `lerobot.scripts.lerobot_train`"
+        )
+        # each file documents a train invocation, so the current module name must
+        # be the one it points at
+        assert "lerobot.scripts.lerobot_train" in text, (
+            f"{path.name} lost its `lerobot.scripts.lerobot_train` reference"
+        )

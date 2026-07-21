@@ -162,6 +162,38 @@ def test_expert_only_rejected_for_non_expert_policy() -> None:
         )
 
 
+def test_expert_only_rejected_for_pi0_fast() -> None:
+    # pi0_fast's lerobot config exposes NO train_expert_only field, so the CLI
+    # flag is a hard draccus error. The supported set is sourced live from
+    # lerobot (not a hardcoded copy that once wrongly listed pi0_fast).
+    with pytest.raises(ValueError, match="train_expert_only is only valid"):
+        build_train_command(
+            dataset_root="/data/cubes",
+            policy_type="pi0_fast",
+            train_expert_only=True,
+        )
+
+
+def test_expert_only_policy_types_tracks_lerobot_registry() -> None:
+    # Drift guard: the live supported set must equal the lerobot policy configs
+    # that actually declare a train_expert_only field, so it tracks lerobot.
+    import dataclasses
+
+    # importorskip both registers the policy configs (side-effect import) and
+    # binds PreTrainedConfig unconditionally, so it is always initialized on the
+    # path that uses it below (CodeQL: no use-before-init).
+    pytest.importorskip("lerobot.policies")
+    PreTrainedConfig = pytest.importorskip("lerobot.configs.policies").PreTrainedConfig
+    expected = {
+        name
+        for name, cfg_cls in PreTrainedConfig.get_known_choices().items()
+        if any(f.name == "train_expert_only" for f in dataclasses.fields(cfg_cls))
+    }
+    assert set(train_mod._expert_only_policy_types()) == expected
+    # pi0_fast has no such field on current lerobot.
+    assert "pi0_fast" not in expected
+
+
 def test_val_episodes_reserves_last_n_episodes(tmp_path: Path) -> None:
     root = _write_dataset(tmp_path / "ds", total_episodes=10)
     cmd = build_train_command(

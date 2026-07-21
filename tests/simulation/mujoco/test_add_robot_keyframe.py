@@ -356,3 +356,43 @@ class TestMultiRobotKeyframeSpawn:
         assert np.isclose(_joint_qpos(sim, "a/elbow"), 0.0)
         assert np.isclose(_joint_qpos(sim, "b/shoulder"), _HOME[0])
         assert np.isclose(_joint_qpos(sim, "b/elbow"), _HOME[1])
+
+
+class TestApplyHomeQposWidthGuard:
+    """``_apply_home_qpos_to_robot`` must skip a home entry whose value width
+    disagrees with the target joint's qpos width instead of writing a
+    wrong-length slice.
+
+    ``add_robot(keyframe=...)`` reads the home pose from the SAME model it
+    writes it back onto, so the per-joint widths always agree and the guard is
+    unreachable through the public spawn path. It exists as a defensive backstop
+    for callers that hand in an externally-sourced pose (e.g. a benchmark
+    reusing one robot's home pose on a structurally different model): a
+    mismatched entry must be dropped, never sliced into ``qpos``, because a
+    wrong-length assignment would either raise or spill into the adjacent
+    joint's slice and silently corrupt its state. This exercises that guard
+    directly.
+    """
+
+    def test_width_mismatch_entry_skipped_without_corrupting_neighbor(self, sim, arm_xml):
+        # A robot with no keyframe -> both joints start at the zero pose.
+        sim.add_robot(name="a", urdf_path=arm_xml)
+        robot = sim._world.robots["a"]
+        model = sim._world._model
+        data = sim._world._data
+
+        sh_adr = int(model.jnt_qposadr[mj.mj_name2id(model, mj.mjtObj.mjOBJ_JOINT, "a/shoulder")])
+        el_adr = int(model.jnt_qposadr[mj.mj_name2id(model, mj.mjtObj.mjOBJ_JOINT, "a/elbow")])
+
+        # "shoulder" is a 1-wide hinge but the supplied home value has width 2;
+        # "elbow" is correctly sized. Keys are the short (namespace-stripped)
+        # joint names the method matches against.
+        sim._apply_home_qpos_to_robot(robot, {"shoulder": [0.1, 0.2], "elbow": [0.9]})
+
+        # The mismatched shoulder entry is dropped: its qpos slice is untouched
+        # (still the zero pose) and the extra value did NOT spill into the
+        # adjacent elbow slice.
+        assert data.qpos[sh_adr] == 0.0
+        assert data.qpos[el_adr] == 0.9
+        # Only the correctly-sized joint is recorded for reset() to restore.
+        assert robot.home_qpos == {"a/elbow": [0.9]}
