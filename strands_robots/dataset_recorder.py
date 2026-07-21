@@ -1050,7 +1050,10 @@ class DatasetRecorder:
         Mutable, Xet-deduplicated dump target for COLLECTION - avoids git-LFS
         history bloat of push_to_hub during recording. Daily re-sync uploads
         only changed chunks (content-defined chunking). Requires the ``hf`` CLI
-        (huggingface_hub>=1.x) and ``hf auth login``.
+        with ``buckets``/``sync`` subcommands, which ship in
+        ``huggingface_hub>=1.0`` - an older install returns a
+        ``{"status": "error"}`` naming the required version rather than piping
+        argparse "invalid choice" noise. Also requires ``hf auth login``.
 
         ``bucket`` and ``run_id`` are validated against an allowlist before any
         subprocess or URI interpolation: ``bucket`` must be ``"name"`` or
@@ -1069,6 +1072,23 @@ class DatasetRecorder:
             return {
                 "status": "error",
                 "message": "`hf` CLI not found. pip install -U huggingface_hub (>=1.x) and run `hf auth login`.",
+            }
+
+        # The `hf buckets` / `hf sync` subcommands ship in huggingface_hub>=1.0.
+        # An older `hf` on PATH exists but rejects these subcommands with
+        # argparse "invalid choice" noise; version-check first so the user gets
+        # an actionable message instead of piped CLI usage errors.
+        import huggingface_hub
+        from packaging.version import Version
+
+        if Version(huggingface_hub.__version__) < Version("1.0"):
+            return {
+                "status": "error",
+                "message": (
+                    f"bucket sync requires huggingface_hub>=1.0 (for `hf buckets`/`hf sync`); "
+                    f"installed: {huggingface_hub.__version__}. "
+                    "pip install -U 'huggingface_hub>=1.0'."
+                ),
             }
 
         if not _BUCKET_RE.match(bucket):

@@ -1565,6 +1565,36 @@ def test_sync_to_bucket_missing_hf_cli_errors(tmp_path, monkeypatch):
     assert "hf" in result["message"]
 
 
+def test_sync_to_bucket_rejects_old_huggingface_hub(tmp_path, monkeypatch):
+    """huggingface_hub<1.0 lacks `hf buckets`/`hf sync` -> actionable error.
+
+    An `hf` binary from an older huggingface_hub exists on PATH but rejects the
+    bucket subcommands with argparse noise. sync_to_bucket must version-check
+    and return a clear "upgrade huggingface_hub>=1.0" error without ever
+    launching the CLI (which would only emit unusable usage text).
+    """
+    import subprocess
+
+    import huggingface_hub
+
+    from strands_robots import dataset_recorder as dr
+
+    _write_meta(tmp_path)
+    monkeypatch.setattr(dr, "_hf_executable", lambda: "hf")
+    monkeypatch.setattr(huggingface_hub, "__version__", "0.36.2")
+
+    def _boom(*_a, **_k):
+        raise AssertionError("subprocess must not run on an unsupported huggingface_hub")
+
+    monkeypatch.setattr(subprocess, "run", _boom)
+
+    result = _sync_recorder(tmp_path).sync_to_bucket("my-org/robot-fave")
+
+    assert result["status"] == "error"
+    assert "huggingface_hub>=1.0" in result["message"]
+    assert "0.36.2" in result["message"]
+
+
 @pytest.mark.parametrize(
     "bad_bucket",
     [
