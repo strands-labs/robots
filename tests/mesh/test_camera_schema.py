@@ -191,3 +191,102 @@ def test_publish_cameras_once_kill_switch_lenient_truthy(fake_robot_with_camera,
         with patch("strands_robots.mesh.core.put") as mock_put:
             m._publish_cameras_once()
         assert not mock_put.called, f"value {raw!r} should disable publishing"
+
+
+# --- start() camera-thread wiring -----------------------------------------
+#
+# _resolve_camera_hz and _publish_cameras_once are exercised in isolation
+# above. These two tests pin the start()-level contract: the opt-in
+# STRANDS_MESH_CAMERA_HZ env var must actually spawn a dedicated
+# camera-publisher thread inside start(), and leaving it unset must not.
+# Without this, a start() refactor could silently drop camera streaming
+# while every unit-level camera test still passed.
+
+
+class _StubSub:
+    """A declared-subscriber stand-in with a no-op undeclare for clean stop()."""
+
+    def undeclare(self) -> None:
+        return None
+
+
+def _prime_started_mesh(monkeypatch, m):
+    """Stub the Zenoh session + ACL gate and neutralize every publishing loop.
+
+    Lets ``start()`` run to completion deterministically: subscriber
+    declaration succeeds, the permissive-ACL gate is forced open, and each
+    loop entry point is replaced with a no-op so the spawned daemon threads
+    exit immediately instead of touching a live session.
+    """
+    from strands_robots.mesh import core as mesh_core
+
+    class _StubSession:
+        def declare_subscriber(self, *_args, **_kwargs):
+            return _StubSub()
+
+    monkeypatch.setattr(mesh_core, "get_session", lambda: _StubSession())
+    monkeypatch.setattr(mesh_core, "release_session", lambda: None)
+    monkeypatch.setattr(mesh_core.Mesh, "_refuse_under_permissive_default_acl", lambda self: False)
+    for loop_name in (
+        "_heartbeat_loop",
+        "_state_loop",
+        "_camera_loop",
+        "_pose_loop",
+        "_health_loop",
+        "_imu_loop",
+        "_odom_loop",
+        "_lidar_loop",
+        "_hand_loop",
+        "_map_info_loop",
+    ):
+        monkeypatch.setattr(m, loop_name, lambda *a, **k: None)
+
+
+def test_start_spawns_camera_thread_when_hz_positive(fake_robot_with_camera, monkeypatch, caplog):
+    """A positive STRANDS_MESH_CAMERA_HZ makes start() spin up the camera loop.
+
+    Pins the opt-in wiring in start(): when the rate resolves > 0, a daemon
+    thread named ``mesh-camera-<peer_id>`` is created and an operator-visible
+    "camera stream enabled" INFO breadcrumb is logged. A refactor that drops
+    the spawn would silently disable camera streaming.
+    """
+    import logging
+
+    from strands_robots.mesh import Mesh
+
+    monkeypatch.setenv("STRANDS_MESH_CAMERA_HZ", "5")
+    m = Mesh(fake_robot_with_camera, peer_id="test-cam-start-on")
+    _prime_started_mesh(monkeypatch, m)
+
+    try:
+        with caplog.at_level(logging.INFO, logger="strands_robots.mesh.core"):
+            m.start()
+        assert m._running is True
+        cam_threads = [t for t in m._threads if t.name == f"mesh-camera-{m.peer_id}"]
+        assert len(cam_threads) == 1, "exactly one camera-publisher thread must be spawned"
+        assert any("camera stream enabled" in r.getMessage() for r in caplog.records), (
+            "operator must see the camera-stream-enabled breadcrumb"
+        )
+    finally:
+        m.stop()
+
+
+def test_start_omits_camera_thread_when_hz_unset(fake_robot_with_camera, monkeypatch):
+    """With STRANDS_MESH_CAMERA_HZ unset, start() spawns no camera thread.
+
+    Companion to the positive case: proves the camera loop is genuinely
+    opt-in (default disabled) and not spawned unconditionally.
+    """
+    from strands_robots.mesh import Mesh
+
+    monkeypatch.delenv("STRANDS_MESH_CAMERA_HZ", raising=False)
+    m = Mesh(fake_robot_with_camera, peer_id="test-cam-start-off")
+    _prime_started_mesh(monkeypatch, m)
+
+    try:
+        m.start()
+        assert m._running is True
+        cam_threads = [t for t in m._threads if t.name == f"mesh-camera-{m.peer_id}"]
+        assert cam_threads == [], "no camera thread when the rate env var is unset"
+    finally:
+        m.stop()

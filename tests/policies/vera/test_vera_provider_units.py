@@ -16,6 +16,12 @@ that does not need a running VERA server or GPU:
 * ``_ensure_started`` -- start-the-runner-once handshake and the live
   ``motion_plan_scale`` configure call.
 * ``VeraPolicy.reset`` -- seed forwarding and best-effort server-error swallow.
+* ``VeraPolicy.get_actions`` -- graceful degradation: an empty ``[0, D]`` server
+  chunk yields no action (empty list) instead of a crash or a bogus zero action.
+* ``_ensure_started`` -- the live ``configure(motion_plan_scale)`` call is
+  best-effort: a server that rejects it is swallowed+logged and inference proceeds.
+* ``VeraPolicy`` construction -- ``auto_launch_server`` builds a managed runner
+  from the policy config (when none is injected) and starts it once on first use.
 
 All assertions are on observable outputs (returned arrays/dicts, the recorded
 wire payload sent to the fake client, emitted log records), not internal state.
@@ -318,3 +324,65 @@ class TestReset:
         with caplog.at_level(logging.INFO, logger="strands_robots.policies.vera.provider"):
             policy.reset()  # must not raise despite the server error
         assert any("best-effort failed" in r.getMessage() for r in caplog.records)
+
+
+class TestEmptyChunkDegradesGracefully:
+    """An empty inference result yields no action, never a crash.
+
+    When the server returns a zero-row ``[0, D]`` chunk (nothing to execute this
+    tick), ``get_actions`` must return an empty list so the rollout loop simply
+    skips the step, rather than raising or emitting a bogus zero action.
+    """
+
+    def test_empty_server_chunk_returns_no_actions(self):
+        client = _FakeClient(
+            {"action_space": "pos", "context_frames": 1},
+            np.zeros((0, 3), dtype=np.float32),
+        )
+        policy = VeraPolicy(client=client, config=_cfg())
+        out = asyncio.run(policy.get_actions(_img_obs(), ""))
+        assert out == []
+
+
+class TestLiveConfigureIsBestEffort:
+    """``_ensure_started`` applies ``motion_plan_scale`` opportunistically.
+
+    A server that rejects the live ``configure`` call must not abort the
+    handshake: the error is swallowed and logged, and inference still proceeds.
+    """
+
+    def test_configure_error_is_swallowed_and_logged(self, caplog):
+        class _ConfigureBoomClient(_FakeClient):
+            def configure(self, params):
+                raise RuntimeError("configure rejected by server")
+
+        client = _ConfigureBoomClient({"action_space": "pos", "context_frames": 1}, [[0.0]])
+        policy = VeraPolicy(client=client, config=_cfg(motion_plan_scale=2.0))
+        with caplog.at_level(logging.INFO, logger="strands_robots.policies.vera.provider"):
+            out = asyncio.run(policy.get_actions(_img_obs(), ""))  # must not raise
+        assert out  # inference still produced an action despite the configure failure
+        assert any("configure(motion_plan_scale) skipped" in r.getMessage() for r in caplog.records)
+
+
+class TestAutoLaunchServerRunner:
+    """When ``auto_launch_server`` is set and no runner is injected, the policy
+    builds a managed runner from its config and starts it on first use."""
+
+    def test_managed_runner_created_from_config_and_started_once(self, monkeypatch):
+        runner = _FakeRunner()
+        created_with: list = []
+
+        def _fake_make(cfg):
+            created_with.append(cfg)
+            return runner
+
+        monkeypatch.setattr(
+            "strands_robots.policies.vera.provider.make_server_runner",
+            _fake_make,
+        )
+        client = _FakeClient({"action_space": "pos", "context_frames": 1}, [[0.0]])
+        cfg = _cfg(auto_launch_server=True)
+        policy = VeraPolicy(client=client, config=cfg)
+        assert created_with == [cfg]  # runner built from this policy's config
+        asyncio.run(policy.get_actions(_img_obs(), ""))
+        assert runner.start_calls == 1

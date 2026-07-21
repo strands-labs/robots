@@ -796,9 +796,4 @@ def _is_z0_ground_plane(geom: Any) -> bool:
 
 __all__ = [
     "SpecBuilder",
-    "_is_z0_ground_plane",
-    "_geom_type",
-    "_normalize_size",
-    "_validate_size",
-    "_target_quat",
 ]

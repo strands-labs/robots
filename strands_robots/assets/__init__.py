@@ -4,7 +4,8 @@ Assets are resolved from ``robot_descriptions`` package or downloaded from
 MuJoCo Menagerie GitHub, cached in ``~/.strands_robots/assets/``.
 Override with ``STRANDS_ASSETS_DIR`` env var.
 
-Implementation lives in ``assets/manager.py`` - this file is thin exports only.
+Implementation lives in :mod:`~strands_robots.assets.manager` - this file is thin
+exports only.
 """
 
 from strands_robots.assets.manager import (

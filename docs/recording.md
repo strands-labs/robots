@@ -396,8 +396,8 @@ edge devices without a torchcodec wheel).
 For **training**, the upstream trainer uses the same engine:
 
 ```bash
-python -m lerobot.scripts.train policy=act \
-  dataset.repo_id=user/my_dataset dataset.streaming=true num_workers=4
+python -m lerobot.scripts.lerobot_train --policy.type=act \
+  --dataset.repo_id=user/my_dataset --dataset.streaming=true --num_workers=4
 ```
 
 > **macOS:** video streaming needs Homebrew ffmpeg on the dyld path. `import

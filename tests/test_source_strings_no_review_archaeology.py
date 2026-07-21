@@ -19,9 +19,12 @@ rejects these review-archaeology shapes:
   * ``review <module>.py:<line>`` (a review citation carrying a rot-prone
     internal source-location back-pointer),
   * review-*round* provenance -- ``review [feedback] round N`` and a PR/issue
-    number narrating a ``round N`` (e.g. ``#168 round 38``, ``#175 round 46d``).
-    Which review pass produced a change is exactly the provenance that belongs
-    in git history, not the source; the number rots and misdirects the reader.
+    number narrating a ``round N`` (e.g. ``#168 round 38``, ``#175 round 46d``),
+    plus the *compact* tags for the same thing: ``R<round>-<item>`` (``R7-5``,
+    ``R8-7``) and a PR/issue number followed by ``R<round>`` (``PR-224 R1``,
+    ``PR#221 R3``, ``#317 R3``). Which review pass produced a change is exactly
+    the provenance that belongs in git history, not the source; the number rots
+    and misdirects the reader.
 
 References to *upstream* files (e.g. ``run_mujoco_gear_wbc.py:47-50``) and to
 stable, named anchors (``AGENTS.md > Review Learnings``, a bare issue number
@@ -51,6 +54,12 @@ import strands_robots
 #     PR review pass that produced a change. The flattener strips the ``#`` of a
 #     ``#NNN`` PR reference, so ``#168 round 38`` arrives here as ``168 round
 #     38`` and is caught by the digits-prefixed alternative.
+#   * ``R<round>-<item>`` (``R7-5``) and ``<digits> R<round>`` -- the compact
+#     spelling of the same review-round provenance. The ``R`` is matched
+#     case-sensitively via ``(?-i:R)`` so lowercase prose (``3 revisions``) is
+#     never mistaken for a round tag; after the flattener strips ``#``/``PR``,
+#     ``PR#221 R3`` and ``#317 R3`` arrive as ``221 R3`` / ``317 R3`` and are
+#     caught by the ``<digits> R<round>`` alternative.
 # Upstream ``<file>.py:<line>`` references (not preceded by ``review``), named
 # anchors like ``Review Learnings``, and bare issue numbers are not matched.
 _REVIEW_ARCHAEOLOGY = re.compile(
@@ -60,6 +69,8 @@ _REVIEW_ARCHAEOLOGY = re.compile(
     r"|\breview\s+[A-Za-z_][A-Za-z0-9_]*\.py:\d+"
     r"|review\s+(?:feedback\s+)?round\s+\d+"
     r"|\b\d+\s+round\s+\d+[a-z]?\b"
+    r"|\b(?-i:R)\d+-\d+\b"
+    r"|\b\d+\s+(?-i:R)\d+\b"
     r")"
 )
 
@@ -110,6 +121,11 @@ def test_review_round_provenance_is_matched() -> None:
         "175 round 46d body-name",  # was "#175 round 46d ..."
         "See review feedback round 4 (symlink-swap defence).",
         "review round 2",
+        "R7-5: a swallowed exception means a broken audit path",  # compact round-item
+        "reached its handler without pre-validation -- R8-7 contract broken",
+        "and _load_acl_file. Addressed in PR-224 R1.",
+        "PR 221 R3 (issue 238): the seq lockfile is a symlink",  # was "PR#221 R3"
+        "default localhost:8000 ( 317 R3)",  # was "(#317 R3)"
     ]
     for text in offenders:
         assert _REVIEW_ARCHAEOLOGY.search(text), f"should be flagged: {text!r}"
@@ -124,6 +140,11 @@ def test_legitimate_references_are_not_matched() -> None:
         "round-trip the dataset and assert it is non-empty",
         "round the value to the nearest integer",
         "the first round of IK refinement converges quickly",  # 'round' without digits
+        "R2-D2",  # 'R<n>-<n>' needs a digit after the dash; D2 is not one
+        "range R1-R5 of the sweep",  # dash followed by 'R', not a digit
+        "resolve to localhost:8000 by default",  # bare port, no round tag
+        "step 3 runs 5 revisions",  # lowercase 'r', not the uppercase round tag
+        "the SO-101 arm has 6 joints",  # digit-dash-digit but no leading 'R'
     ]
     for text in allowed:
         assert not _REVIEW_ARCHAEOLOGY.search(text), f"false positive: {text!r}"

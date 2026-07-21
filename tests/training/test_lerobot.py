@@ -880,6 +880,34 @@ class TestExpertOnlyMethod:
         # A plain (non-expert_only) run must not silently flip the flag on.
         assert cfg.policy.train_expert_only is False
 
+    def test_validate_rejects_expert_only_for_unsupported_policy(self, dataset_root, tmp_path):
+        # pi0_fast's lerobot config has NO train_expert_only field: build_config
+        # silently full-finetunes the backbone (hasattr guard) while reporting
+        # success, so validate() must surface it up front.
+        spec = self._expert_spec(dataset_root, tmp_path, ptype="pi0_fast")
+        problems = LerobotTrainer().validate(spec)
+        assert any("method 'expert_only' is not supported" in p for p in problems)
+
+    def test_validate_accepts_expert_only_for_supported_policy(self, dataset_root, tmp_path):
+        for ptype in ("pi0", "pi05", "smolvla"):
+            spec = self._expert_spec(dataset_root, tmp_path, ptype=ptype)
+            assert LerobotTrainer().validate(spec) == []
+
+    def test_policy_supports_expert_only_tracks_config_field(self):
+        # Drift guard: the capability must reflect each config's ACTUAL
+        # train_expert_only field, not a hardcoded copy - so a lerobot policy
+        # that gains/loses the field is tracked with zero maintenance here.
+        import dataclasses
+
+        from strands_robots.training.lerobot import _policy_registry, _policy_supports_expert_only
+
+        reg = _policy_registry()
+        if reg is None:
+            pytest.skip("lerobot registry unavailable offline")
+        for ptype, cfg_cls in reg.items():
+            has_field = any(f.name == "train_expert_only" for f in dataclasses.fields(cfg_cls))
+            assert _policy_supports_expert_only(ptype) is has_field, ptype
+
 
 class TestSampleWeightingRABC:
     """RA-BC sample-weighting wiring: extra['sample_weighting'] -> nested SampleWeightingConfig.
@@ -931,6 +959,26 @@ class TestSampleWeightingRABC:
 
         monkeypatch.setitem(sys.modules, "lerobot.utils.sample_weighting", None)
         with pytest.raises(ValueError, match="requires lerobot >= 0.5.2"):
+            LerobotTrainer(device="cpu").build_config(self._rabc_spec(dataset_root, tmp_path))
+
+    def test_build_config_missing_sample_weighting_field_raises_actionable(self, dataset_root, tmp_path, monkeypatch):
+        # A lerobot whose TrainPipelineConfig predates the nested sample-weighting
+        # field (no ``cfg.sample_weighting`` attribute at all) must raise the
+        # actionable "does not expose sample weighting" ValueError -- distinct from
+        # the ImportError path above, where the field exists but the helper module
+        # is gone. Shadow TrainPipelineConfig with a subclass that hides the
+        # attribute to stand in for that older lerobot.
+        pytest.importorskip("lerobot.utils.sample_weighting")
+        import lerobot.configs.train as lerobot_train_cfg
+
+        class _NoSampleWeightingConfig(lerobot_train_cfg.TrainPipelineConfig):
+            def __getattribute__(self, name):
+                if name == "sample_weighting":
+                    raise AttributeError(name)
+                return super().__getattribute__(name)
+
+        monkeypatch.setattr(lerobot_train_cfg, "TrainPipelineConfig", _NoSampleWeightingConfig)
+        with pytest.raises(ValueError, match="does not expose sample weighting"):
             LerobotTrainer(device="cpu").build_config(self._rabc_spec(dataset_root, tmp_path))
 
     def test_build_command_emits_nested_flags(self, dataset_root, tmp_path):
@@ -1360,3 +1408,69 @@ class TestHardwareFloor:
     def test_advisory_single_consumer_gpu(self):
         floor = LerobotTrainer(device="cpu").hardware_floor
         assert floor == {"min_gpus": 1, "min_vram_gb": 8, "multinode": False}
+
+
+class TestLerobotDdpWorker:
+    """``_lerobot_worker`` is the per-GPU entry torch's elastic launcher spawns.
+
+    It rebuilds the typed config in-worker and calls lerobot's ``train`` inline
+    (no argv, no nested interpreter). Only local rank 0 tees output to the shared
+    log so parallel workers do not interleave writes into one file.
+    """
+
+    def _install_fake_train(self, monkeypatch, recorder):
+        import sys
+        import types
+
+        module = types.ModuleType("lerobot.scripts.lerobot_train")
+
+        def _train(cfg, **kwargs):
+            recorder["cfg"] = cfg
+            print("TRAINING_RAN")
+
+        module.train = _train
+        monkeypatch.setitem(sys.modules, "lerobot.scripts.lerobot_train", module)
+
+    def _spec(self, tmp_path):
+        return TrainSpec(
+            dataset_root=str(tmp_path),
+            base_model="",
+            output_dir=str(tmp_path / "out"),
+            steps=1,
+            extra={"policy_type": "act"},
+        )
+
+    def test_rank0_worker_trains_and_writes_shared_log(self, tmp_path, monkeypatch):
+        from strands_robots.training import lerobot as lerobot_module
+
+        recorder: dict = {}
+        self._install_fake_train(monkeypatch, recorder)
+        sentinel = object()
+        monkeypatch.setattr(LerobotTrainer, "build_config", lambda self, spec: sentinel)
+        monkeypatch.setenv("LOCAL_RANK", "0")
+
+        log_path = tmp_path / "train.log"
+        lerobot_module._lerobot_worker("act", "cpu", self._spec(tmp_path), str(log_path))
+
+        # The config built in-worker is exactly what lerobot's train() receives.
+        assert recorder["cfg"] is sentinel
+        # Rank 0 owns the shared log, so train output lands in it.
+        assert log_path.is_file()
+        assert "TRAINING_RAN" in log_path.read_text()
+
+    def test_nonzero_rank_worker_trains_without_writing_shared_log(self, tmp_path, monkeypatch):
+        from strands_robots.training import lerobot as lerobot_module
+
+        recorder: dict = {}
+        self._install_fake_train(monkeypatch, recorder)
+        sentinel = object()
+        monkeypatch.setattr(LerobotTrainer, "build_config", lambda self, spec: sentinel)
+        monkeypatch.setenv("LOCAL_RANK", "1")
+
+        log_path = tmp_path / "train.log"
+        lerobot_module._lerobot_worker("act", "cpu", self._spec(tmp_path), str(log_path))
+
+        # Training still runs on every rank...
+        assert recorder["cfg"] is sentinel
+        # ...but only rank 0 writes the shared log, so a non-zero rank leaves it absent.
+        assert not log_path.exists()

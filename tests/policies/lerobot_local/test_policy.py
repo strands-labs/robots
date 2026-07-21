@@ -1403,6 +1403,52 @@ class TestRTCInit:
             mock_logger.warning.assert_called_once()
         assert policy._rtc_enabled is False
 
+    @pytest.mark.parametrize("rtc_requested", [None, True, False])
+    def test_rtc_never_enabled_without_rtc_config(self, rtc_requested):
+        """RTC must never enable when the policy config has no rtc_config.
+
+        This is the invariant that lets ``_init_rtc`` read RTC parameters off
+        ``rtc_config`` unconditionally once enabled: reaching the parameter
+        block guarantees ``rtc_config is not None``. A ``predict_action_chunk``
+        method alone (present on every lerobot policy base class) must not be
+        enough to turn RTC on for any ``rtc_enabled`` request value.
+        """
+        policy = _make_policy()
+        mock_policy = MagicMock()
+        mock_policy.predict_action_chunk = MagicMock()
+        # config exists but exposes no rtc_config attribute.
+        mock_policy.config = MagicMock(spec=[])
+        policy._policy = mock_policy
+        policy._loaded = True
+        policy._rtc_requested = rtc_requested
+        policy._init_rtc()
+        assert policy._rtc_enabled is False
+        # Parameters stay unresolved (the config-None fallback is gone).
+        assert policy._rtc_execution_horizon is None
+        assert policy._rtc_max_guidance_weight is None
+
+    def test_rtc_params_default_when_config_omits_them(self):
+        """Enabled RTC with an rtc_config lacking the tuning attrs uses 10 / 10.0.
+
+        The rtc_config-is-None fallback was removed because ``getattr`` already
+        supplies these defaults when the config object omits the fields.
+        """
+        policy = _make_policy()
+        mock_policy = MagicMock()
+        mock_policy.predict_action_chunk = MagicMock()
+        # rtc_config present and enabled, but WITHOUT execution_horizon /
+        # max_guidance_weight attributes.
+        rtc_cfg = MagicMock(spec=["enabled"])
+        rtc_cfg.enabled = True
+        mock_policy.config.rtc_config = rtc_cfg
+        policy._policy = mock_policy
+        policy._loaded = True
+        policy._rtc_requested = None  # auto-detect
+        policy._init_rtc()
+        assert policy._rtc_enabled is True
+        assert policy._rtc_execution_horizon == 10
+        assert policy._rtc_max_guidance_weight == 10.0
+
 
 class TestRTCConfigSchemaContract:
     """Pin RTC config-reading against lerobot's REAL ``RTCConfig`` schema.

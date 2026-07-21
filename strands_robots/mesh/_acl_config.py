@@ -83,7 +83,7 @@ ACL_FILE_MAX_BYTES: int = 256 * 1024
 
 # json5 is imported lazily inside
 # ``_parse_json5`` rather than at module top-level. Importing it eagerly every
-# import of ``strands_robots.mesh`` (including ``session.py`` for
+# import of ``strands_robots.mesh`` (including ``strands_robots.mesh.session`` for
 # ``auth_mode=none`` dev paths) triggered the json5 import even when
 # no ACL file is loaded. Operators running with no ACL file (the
 # permissive default) and no ``mesh`` extra installed got an
@@ -141,7 +141,7 @@ def _load_acl_file(path: Path) -> dict[str, Any]:
     # ACL_FILE_MAX_BYTES + 1 so an attacker who races content between
     # stat() and read() cannot bypass the size cap. Mirrors the
     # O_NOFOLLOW + bounded-read discipline used for the audit log
-    # (audit.py:_ensure_paths). The ACL file gates wire authorisation,
+    # (``strands_robots.mesh.audit._ensure_paths``). The ACL file gates wire authorisation,
     # so the same TOCTOU + symlink-swap defences apply.
     if path.is_symlink():
         raise ValueError(

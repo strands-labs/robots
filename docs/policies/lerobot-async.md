@@ -80,7 +80,7 @@ sim.run_policy(
 | `server_address`           | `127.0.0.1:8080` | Server `host:port` (gRPC); wins over `host`/`port`. `grpc://` scheme stripped |
 | `host`                     | `127.0.0.1`   | Server host (when `server_address` is omitted)              |
 | `port`                     | `8080`        | Server port (when `server_address` is omitted)              |
-| `policy_type`              | -             | **Required.** LeRobot policy type the server loads (`act`, `smolvla`, `diffusion`, `tdmpc`, `vqbet`, `pi0`, `pi05`, `groot`) |
+| `policy_type`              | -             | **Required.** LeRobot policy type the server loads -- the async-servable set from lerobot's `SUPPORTED_POLICIES` (`act`, `smolvla`, `diffusion`, `tdmpc`, `vqbet`, `pi0`, `pi05`, `groot`, ...); validated client-side against the live lerobot constant |
 | `pretrained_name_or_path`  | -             | **Required.** HuggingFace id or path the server loads       |
 | `device`                   | `cuda`        | Device for **server-side** inference; set `cpu` for a CPU server |
 | `actions_per_chunk`        | `50`          | Max actions the server returns per chunk                    |

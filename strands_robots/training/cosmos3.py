@@ -89,11 +89,12 @@ class Cosmos3Trainer(Trainer):
 
     @property
     def provider_name(self) -> str:
+        """Provider identity - pairs with the ``cosmos3`` inference policy."""
         return "cosmos3"
 
     @property
     def hardware_floor(self) -> dict[str, Any]:
-        # SFT tested on 8xH100 80GB; HSDP multi-node beyond.
+        """Advisory floor: Cosmos3 SFT is validated on 8xH100 80 GB (HSDP multi-node beyond)."""
         return {"min_gpus": 8, "min_vram_gb": 80, "multinode": True}
 
     def _resolve_cosmos_root(self, spec: TrainSpec) -> str | None:
@@ -123,6 +124,16 @@ class Cosmos3Trainer(Trainer):
         return output_dir if entries else None
 
     def validate(self, spec: TrainSpec) -> list[str]:
+        """Pure preflight for a Cosmos3 SFT run.
+
+        Runs the shared input-safety gate, then checks a LeRobotDataset v3
+        ``dataset_root``, a ``base_model`` to convert to DCP, an
+        ``output_dir``, a supported ``method``, positive ``steps``, an
+        ``extra['sft_toml']`` recipe that exists, and a resolvable
+        ``cosmos_framework`` checkout (COSMOS_ROOT / ``cosmos_root`` /
+        ``extra['cosmos_root']``). Returns the problem list; empty means
+        launchable. Read-only - no filesystem writes, no GPUs.
+        """
         problems: list[str] = self._security_problems(spec)
 
         if not spec.dataset_root:
@@ -269,6 +280,14 @@ class Cosmos3Trainer(Trainer):
         return out
 
     def train(self, spec: TrainSpec) -> TrainResult:
+        """Run Cosmos3 SFT in-process: validate -> DCP prepare -> launch.
+
+        Fails closed on any :meth:`validate` problem, converts the base
+        checkpoint to PyTorch DCP via :meth:`prepare`, verifies
+        ``cosmos_framework.scripts.train`` imports, then launches the run
+        from the ``extra['sft_toml']`` recipe plus scalar overrides. Blocks
+        until the run terminates and returns a terminal ``TrainResult``.
+        """
         problems = self.validate(spec)
         if problems:
             return TrainResult(

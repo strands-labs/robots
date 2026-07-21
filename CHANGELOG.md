@@ -5,6 +5,50 @@ All notable behavioural changes to `strands-robots` are logged here. Follows
 
 ## [Unreleased]
 
+### Docs: document the six remaining undocumented dispatchable sim actions
+
+`get_state`, `list_objects`, `remove_object`, `reset`, `set_timestep`, and
+`step` were dispatchable through the MuJoCo simulation agent tool (they are in
+the `tool_spec` action enum and `describe()` advertises them) yet their handler
+methods on `MuJoCoSimEngine` had NO docstring -- so an agent enumerating the
+tool spec had no summary of what the action does or when it errors, the exact
+discovery-surface dead-end the docstring convention exists to prevent. Each now
+carries a summary + Args/Returns naming the `{status, content}` result and its
+`status="error"` conditions (e.g. `reset` documents that it flushes buffered
+recording frames as a separate episode and errors while a policy is running;
+`step` documents that `0` is an accepted no-op). A new contract test
+(`test_dispatchable_actions_have_documented_handlers`) pins the invariant on the
+live engine so no future dispatchable action can ship without a docstring.
+
+### Fixed: training `expert_only` supported-policy set sourced live from lerobot
+
+`LerobotTrainer` gated `method="expert_only"` (freeze the VLM, train only the
+action expert) against a HARD-CODED tuple `{pi0, pi05, pi0_fast, smolvla}`, and
+the `lerobot_train` tool's `build_train_command` used a separate hard-copied
+set. That is the stale-allowlist drift class (sibling of the `lerobot_async`
+and reward-model registry fixes): lerobot's `PI0FASTConfig` exposes NO
+`train_expert_only` field, so an `expert_only` pi0_fast run passed `validate`,
+then `build_config`'s `hasattr` guard silently SKIPPED the flag and
+full-finetuned the whole backbone (a far more expensive, different run) while
+reporting success; conversely a policy lerobot later GAINS the field would be
+wrongly rejected. The supported set is now sourced live -- a policy supports
+`expert_only` iff its lerobot config declares a `train_expert_only` field
+(`dataclasses.fields`) -- with a static fallback used only when lerobot is not
+importable, and drift-guard tests keep the fallback a faithful snapshot. The
+docstrings no longer claim a fixed `pi0/pi05/pi0_fast/smolvla` list.
+
+### Changed: `lerobot_async` sources its server-supported policy set live from lerobot
+
+`LerobotAsyncPolicy` validates `policy_type` client-side against the set of
+policies a lerobot `PolicyServer` can serve. That set was a hand-copied tuple
+kept in sync with `lerobot.async_inference.constants.SUPPORTED_POLICIES` by
+hand -- a silent drift landmine: when lerobot adds an async-servable policy the
+client wrongly rejected it (only the frozen copy was accepted), and if lerobot
+dropped one the client accepted it only to fail after the gRPC handshake. It is
+now sourced live from that lerobot constant, with a static fallback used only
+when lerobot or its async extra is not importable, and a drift-guard test keeps
+the fallback a faithful snapshot.
+
 ### Fixed: `add_robot` rejects a non-finite / malformed base pose instead of baking it into the scene
 
 `add_robot` writes the caller-supplied `position` (3) / `orientation`
@@ -2125,6 +2169,10 @@ now emits `--reward_model.pretrained_path=<base_model>` when `base_model` is
 set, mirroring the policy path. (`push_to_hub` is intentionally not emitted:
 `RewardModelConfig.push_to_hub` already defaults to `False`, so `build_config`
 setting it `False` is a no-op the CLI need not restate.)
+
+### Docs: point the streamed-training instructions at the current `lerobot.scripts.lerobot_train` module
+
+`strands_robots/streaming_dataset.py`'s module docstring and the `docs/recording.md` streamed-training example instructed `python -m lerobot.scripts.train ...` -- but lerobot renamed that module to `lerobot.scripts.lerobot_train` (the old path is removed, so the command now raises `ModuleNotFoundError`). The rest of the codebase already uses the current name (`strands_robots.training.lerobot`, `strands_robots.tools.lerobot_train`, `docs/training/overview.md`); these two user-facing spots lagged. Corrected both to `python -m lerobot.scripts.lerobot_train` and updated the `recording.md` example to the draccus `--dotted.flags` form (`--policy.type=act --dataset.repo_id=... --dataset.streaming=true --num_workers=4`), matching how the trainer is invoked everywhere else.
 
 ## [0.4.1] - 2026-07-01
 
