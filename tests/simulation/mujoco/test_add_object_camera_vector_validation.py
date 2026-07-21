@@ -12,7 +12,10 @@ through:
   cryptic "spec recompile refused", and a non-numeric ``color`` / ``size``
   raised a bare ``TypeError`` from inside MuJoCo's ``add_geom`` / the
   ``size <= 0`` comparison - escaping the structured ``{"status": "error"}``
-  tool-result contract.
+  tool-result contract. A bare scalar ``color`` / ``size`` (a non-iterable
+  passed where a vector is expected) is the same class of malformed input and
+  is likewise rejected up front rather than raising a bare ``TypeError`` from
+  ``add_geom``.
 * ``add_camera`` baked a ``nan`` / ``inf`` ``position`` / ``target`` into the
   camera's ``xyaxes`` (``fwd /= flen`` divides by ``nan`` -> a silently
   degenerate camera that renders garbage while reporting ``success``), and a
@@ -80,6 +83,33 @@ def test_add_object_rejects_nonnumeric(sim, kwargs, expect):
     result = sim.add_object("bad", shape="box", **kwargs)
     assert result["status"] == "error", result
     assert expect in result["content"][0]["text"]
+    assert "bad" not in sim._world.objects
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"color": 5},
+        {"color": np.float64(1.0)},
+        {"size": 0.05},
+        {"size": np.float32(0.05)},
+    ],
+)
+def test_add_object_rejects_scalar_color_size(sim, kwargs):
+    """A bare scalar ``color`` / ``size`` is rejected, not raised as a TypeError.
+
+    ``color`` and ``size`` are variable-length vectors (color is 3-or-4, size is
+    shape-dependent), so they are content-validated without a fixed length. A
+    caller passing a single number instead of a vector is a non-iterable that
+    would otherwise reach ``iter(vec)`` / MuJoCo's ``add_geom`` and raise a bare
+    ``TypeError``, escaping the ``{"status": "error"}`` tool-result contract.
+    The guard turns it into a structured error naming the offending parameter.
+    """
+    result = sim.add_object("bad", shape="box", **kwargs)
+    assert result["status"] == "error", result
+    text = result["content"][0]["text"]
+    assert "must be a list/tuple of numbers" in text
+    assert next(iter(kwargs)) in text
     assert "bad" not in sim._world.objects
 
 

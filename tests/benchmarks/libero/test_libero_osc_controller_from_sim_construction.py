@@ -32,6 +32,7 @@ the true binding API.
 
 from __future__ import annotations
 
+import builtins
 import sys
 import types
 
@@ -214,6 +215,68 @@ class TestFromSimDependencyClassification:
         # Must be the base class, not the degrade-gracefully subclass.
         assert not isinstance(exc.value, _ControllerDependencyMissing)
         assert "coverage" in str(exc.value).lower()
+
+
+def _force_mujoco_import_error(monkeypatch, exc: BaseException):
+    """Make ``import mujoco`` (and only that import) raise ``exc``.
+
+    ``from_sim`` imports mujoco lazily as its very first step, before it ever
+    touches robosuite or the sim, so overriding ``builtins.__import__`` for the
+    single ``"mujoco"`` name exercises the mujoco dependency-classification
+    guard while leaving every other import untouched. This is the mujoco-side
+    analogue of ``_install_fake_robosuite`` above: mujoco is installed on this
+    image, so the guard's failure branches are otherwise unreachable.
+    """
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "mujoco":
+            raise exc
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+
+
+class TestFromSimMujocoImportClassification:
+    """The lazy ``import mujoco`` in from_sim runs before robosuite and must
+    classify its own failures the same way (#522): a genuinely-absent mujoco
+    degrades gracefully, but the numba/coverage>=7 clash is a fixable setup bug
+    the caller surfaces strictly rather than silently dropping every action."""
+
+    def test_missing_mujoco_degrades_as_dependency_missing(self, monkeypatch):
+        """mujoco truly absent (``ModuleNotFoundError``) -> the degrade-
+        gracefully subclass, since mujoco is an optional sim dependency."""
+        _force_mujoco_import_error(monkeypatch, ModuleNotFoundError("No module named 'mujoco'"))
+
+        with pytest.raises(_ControllerDependencyMissing, match="mujoco not available"):
+            _from_sim(_StubSim(None))
+
+    def test_mujoco_numba_coverage_clash_surfaces_as_install_error(self, monkeypatch):
+        """A mujoco ``ImportError`` carrying the coverage.types/Tracer signature
+        is the #522 clash: raise the base _ControllerInstallError, NOT the
+        degrade-gracefully subclass, so strict mode surfaces it."""
+        _force_mujoco_import_error(
+            monkeypatch,
+            ImportError("module 'coverage.types' has no attribute 'Tracer'"),
+        )
+
+        with pytest.raises(_ControllerInstallError) as exc:
+            _from_sim(_StubSim(None))
+        # Must be the base class, not the degrade-gracefully subclass.
+        assert not isinstance(exc.value, _ControllerDependencyMissing)
+        assert "clash" in str(exc.value).lower()
+
+    def test_other_mujoco_import_error_degrades_as_dependency_missing(self, monkeypatch):
+        """A mujoco ``ImportError`` that is NOT the clash (e.g. a broken native
+        extension / missing GL backend) is treated as an unavailable optional
+        dep and degrades, not surfaced as a fixable setup bug."""
+        _force_mujoco_import_error(
+            monkeypatch,
+            ImportError("libGL.so.1: cannot open shared object file"),
+        )
+
+        with pytest.raises(_ControllerDependencyMissing, match="mujoco import failed"):
+            _from_sim(_StubSim(None))
 
 
 class TestFromSimSceneValidationGuards:

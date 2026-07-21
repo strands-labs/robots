@@ -55,6 +55,8 @@ Add to `strands_robots/registry/policies.json`:
 
 The factory imports lazily on first use.
 
+Aliases and shorthands are validated on load: each must be unique across providers and must not collide with a *different* provider's canonical name (that would silently shadow it, since lookups resolve through the alias/shorthand map before the canonical name). Listing a provider's own name in its `shorthands` is allowed and idiomatic -- it is how the bare name resolves. A colliding entry raises `ValueError` at registry load.
+
 ## ABC contract
 
 | Method / property | Abstract | Default |

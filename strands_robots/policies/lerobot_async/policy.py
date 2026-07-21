@@ -62,11 +62,11 @@ from strands_robots.utils import require_optional
 
 logger = logging.getLogger(__name__)
 
-#: Policy types a lerobot ``PolicyServer`` can serve, mirroring
-#: ``lerobot.async_inference.constants.SUPPORTED_POLICIES``. Validated
-#: client-side so a typo fails fast with the valid set instead of only
-#: surfacing after the gRPC handshake.
-SUPPORTED_POLICY_TYPES: tuple[str, ...] = (
+#: Offline fallback for the policy types a lerobot ``PolicyServer`` can serve,
+#: used only when ``lerobot.async_inference.constants.SUPPORTED_POLICIES`` cannot
+#: be imported (lerobot or its async extra absent). A faithful snapshot of that
+#: constant; a drift-guard test keeps the two in sync.
+_SUPPORTED_POLICY_TYPES_FALLBACK: tuple[str, ...] = (
     "act",
     "smolvla",
     "diffusion",
@@ -76,6 +76,30 @@ SUPPORTED_POLICY_TYPES: tuple[str, ...] = (
     "pi05",
     "groot",
 )
+
+
+def _supported_policy_types() -> tuple[str, ...]:
+    """Policy types a lerobot ``PolicyServer`` can serve.
+
+    Sourced live from ``lerobot.async_inference.constants.SUPPORTED_POLICIES`` so
+    it tracks lerobot automatically - the client-side validation stays correct
+    when lerobot adds or drops an async-servable policy, instead of relying on a
+    hand-copied list that silently drifts (accepting a now-unsupported type only
+    to fail after the gRPC handshake, or rejecting a newly-supported one). Falls
+    back to :data:`_SUPPORTED_POLICY_TYPES_FALLBACK` when lerobot or its async
+    extra is not importable.
+    """
+    try:
+        from lerobot.async_inference.constants import SUPPORTED_POLICIES
+    except (ImportError, AttributeError):
+        return _SUPPORTED_POLICY_TYPES_FALLBACK
+    return tuple(sorted(SUPPORTED_POLICIES))
+
+
+#: Policy types a lerobot ``PolicyServer`` can serve (sourced live from lerobot;
+#: see :func:`_supported_policy_types`). Validated client-side so a typo fails
+#: fast with the valid set instead of only surfacing after the gRPC handshake.
+SUPPORTED_POLICY_TYPES: tuple[str, ...] = _supported_policy_types()
 
 #: Default gRPC handshake timeout (seconds).
 DEFAULT_CONNECT_TIMEOUT = 10.0
@@ -150,15 +174,14 @@ class LerobotAsyncPolicy(Policy):
             address = address.split("://", 1)[1]
         self.server_address = address
 
+        supported = _supported_policy_types()
         if not policy_type:
             raise ValueError(
-                "lerobot_async requires policy_type=... (the lerobot policy the "
-                f"server loads); one of {SUPPORTED_POLICY_TYPES}."
+                f"lerobot_async requires policy_type=... (the lerobot policy the server loads); one of {supported}."
             )
-        if policy_type not in SUPPORTED_POLICY_TYPES:
+        if policy_type not in supported:
             raise ValueError(
-                f"policy_type {policy_type!r} is not served by a lerobot PolicyServer; "
-                f"choose one of {SUPPORTED_POLICY_TYPES}."
+                f"policy_type {policy_type!r} is not served by a lerobot PolicyServer; choose one of {supported}."
             )
         if not pretrained_name_or_path:
             raise ValueError(

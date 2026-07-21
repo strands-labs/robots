@@ -35,6 +35,7 @@ from strands_robots.mesh.session import (
     put,
     release_session,
     update_peer,
+    zenoh_error_types,
 )
 from strands_robots.mesh.session import (
     get_peers as _session_get_peers,
@@ -615,19 +616,17 @@ class Mesh(SensorLoopsMixin):
                 # task.
                 declared.append(session.declare_subscriber("strands/safety/estop", self._on_safety_estop))
                 declared.append(session.declare_subscriber("strands/safety/resume", self._on_safety_resume))
-            except (RuntimeError, OSError) as exc:
-                # narrow the lifecycle cleanup catch from bare ``Exception``
-                # to the tuple Zenoh's ``declare_subscriber`` actually raises
-                # (``ZError`` is a subclass of ``RuntimeError``; transport-layer
-                # failures surface as ``OSError``). This mirrors the wire-handler
-                # tuple established earlier for ``_on_cmd`` / ``_on_safety_estop``
-                # so programmer errors (``TypeError``, ``AttributeError``,
-                # ``MemoryError``) on the partial-failure cleanup path surface
-                # in tests rather than being silently swallowed.
+            except zenoh_error_types() as exc:
+                # ``zenoh_error_types()`` names the transport-side failures a
+                # ``declare_subscriber`` realistically raises -- including
+                # ``zenoh.ZError`` (an ``Exception`` subclass, NOT a
+                # ``RuntimeError``) -- while still letting programmer errors
+                # (``TypeError`` / ``AttributeError`` / ``MemoryError``) surface
+                # instead of being silently swallowed on this cleanup path.
                 for sub in declared:
                     try:
                         sub.undeclare()
-                    except (RuntimeError, OSError):
+                    except zenoh_error_types():
                         # Best-effort cleanup; an undeclare failure here
                         # cannot recover the parent failure that put us in
                         # this branch and surfacing it would mask the
@@ -713,8 +712,11 @@ class Mesh(SensorLoopsMixin):
         for sub in subs_to_drop:
             try:
                 sub.undeclare()
-            except Exception:
-                pass
+            except zenoh_error_types():
+                # Best-effort teardown; a Zenoh undeclare failure here cannot
+                # recover state (we are already stopping) and a programmer
+                # error must still surface rather than be swallowed.
+                logger.debug("[mesh] %s: subscriber undeclare failed during stop()", self.peer_id)
 
         # Undeclare any safety publishers we lazily declared so the
         # underlying Zenoh entity is released cleanly when the
@@ -728,7 +730,7 @@ class Mesh(SensorLoopsMixin):
         for pub in pubs_to_drop:
             try:
                 pub.undeclare()
-            except (RuntimeError, OSError):
+            except zenoh_error_types():
                 logger.debug(
                     "[mesh] %s: safety publisher undeclare failed during stop()",
                     self.peer_id,

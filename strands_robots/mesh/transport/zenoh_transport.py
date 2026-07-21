@@ -14,7 +14,8 @@ reimplementing them. That keeps:
    ``zenoh.Session`` singleton.
 3. **A clean migration story.** When the Zenoh implementation needs to
    evolve (e.g. to add per-key QoS or per-endpoint TLS), changes go into
-   ``session.py`` and this wrapper benefits automatically.
+   the :mod:`~strands_robots.mesh.session` module and this wrapper
+   benefits automatically.
 
 The Zenoh dependency stays **lazy**: importing this module does not import
 ``zenoh``. The first :meth:`connect` call delegates to ``session.get_session``

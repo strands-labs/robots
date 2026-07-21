@@ -278,3 +278,48 @@ def test_relative_action_falls_back_when_reanchor_helper_unavailable(make_stub, 
     prev = captured[1]
     assert prev is not None
     assert torch.allclose(prev, leftover_model)
+
+
+@_requires_reanchor
+def test_resolve_rtc_rebase_backfills_action_names_from_policy_config():
+    # A RelativeActionsProcessorStep that was serialized without action_names
+    # (action_names is None) cannot build the per-joint relative mask, so the
+    # re-anchor would convert the wrong action dimensions. _resolve_rtc_rebase_steps
+    # must backfill the layout from the policy config's action_feature_names -
+    # the same fallback LeRobot's RTCInferenceEngine applies - before wiring the
+    # step in as the re-anchor source.
+    names = [f"j{i}.pos" for i in range(_ACTION_DIM)]
+    relative_step = RelativeActionsProcessorStep(enabled=True, action_names=None)
+    policy, _ = _make_rtc_policy(
+        preprocessor=DataProcessorPipeline(steps=[relative_step]),
+        postprocessor=DataProcessorPipeline(steps=[IdentityProcessorStep()]),
+    )
+    # The fixture's inner policy exposes config.action_feature_names == names.
+    assert relative_step.action_names is None
+
+    policy._resolve_rtc_rebase_steps()
+
+    assert policy._rtc_relative_step is relative_step
+    assert policy._rtc_reanchor_fn is not None
+    # Backfilled from config so the joint mask can be built for re-anchoring.
+    assert relative_step.action_names == names
+
+
+@_requires_reanchor
+def test_resolve_rtc_rebase_leaves_action_names_unset_without_config_layout():
+    # When the policy config carries no action_feature_names either, there is
+    # nothing to backfill from: the relative step keeps action_names is None
+    # (LeRobot builds an all-joints mask in that case) yet the step is still
+    # resolved as the re-anchor source rather than being silently dropped.
+    relative_step = RelativeActionsProcessorStep(enabled=True, action_names=None)
+    policy, _ = _make_rtc_policy(
+        preprocessor=DataProcessorPipeline(steps=[relative_step]),
+        postprocessor=DataProcessorPipeline(steps=[IdentityProcessorStep()]),
+    )
+    policy._policy.config.action_feature_names = None
+
+    policy._resolve_rtc_rebase_steps()
+
+    assert policy._rtc_relative_step is relative_step
+    assert policy._rtc_reanchor_fn is not None
+    assert relative_step.action_names is None

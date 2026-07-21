@@ -10,7 +10,9 @@ LeRobot-native"), and the relative-action set omitted ``groot`` (which exposes
 ``use_relative_actions``), so a valid ``groot`` + relative-actions run was
 wrongly rejected. Both are now discovered live from lerobot's
 ``PreTrainedConfig`` ChoiceRegistry - the same zero-maintenance discovery the
-reward-model, robot, teleop, and camera surfaces already use.
+reward-model, robot, teleop, and camera surfaces already use. The
+``method='expert_only'`` gate is discovered the same way, off each config's
+``train_expert_only`` field.
 
 These tests pin the invariant against whatever lerobot is installed (they read
 its live registry rather than hardcoding type names), so they hold across
@@ -27,11 +29,13 @@ import pytest
 
 from strands_robots.training import TrainSpec
 from strands_robots.training.lerobot import (
+    _EXPERT_ONLY_POLICY_TYPES_FALLBACK,
     _LEROBOT_POLICY_TYPES_FALLBACK,
     _RELATIVE_ACTION_POLICY_TYPES_FALLBACK,
     LerobotTrainer,
     _lerobot_policy_types,
     _policy_registry,
+    _policy_supports_expert_only,
     _policy_supports_relative_actions,
 )
 
@@ -119,6 +123,45 @@ class TestRelativeActionDiscovery:
             assert _policy_supports_relative_actions(ptype) == has_field
 
 
+class TestExpertOnlyDiscovery:
+    def test_gate_tracks_config_field_for_every_registry_type(self, dataset_root, tmp_path):
+        """`method='expert_only'` is rejected iff the config lacks train_expert_only.
+
+        expert_only freezes the VLM and trains only the action expert; lerobot
+        implements it as a per-policy ``config.train_expert_only`` field. The
+        gate is derived from the actual dataclass field (not a hardcoded set),
+        so it fails whenever the static fallback diverges from lerobot's configs.
+        """
+        reg = _policy_registry()
+        if reg is None:
+            pytest.skip("lerobot not installed")
+        trainer = LerobotTrainer(device="cpu")
+        for ptype, cfg_cls in reg.items():
+            has_field = any(f.name == "train_expert_only" for f in dataclasses.fields(cfg_cls))
+            spec = TrainSpec(
+                dataset_root=dataset_root,
+                base_model="",
+                output_dir=str(tmp_path / "out"),
+                steps=10,
+                method="expert_only",
+                extra={"policy_type": ptype},
+            )
+            problems = trainer.validate(spec)
+            rejected = any("method 'expert_only' is not supported" in p for p in problems)
+            assert rejected == (not has_field), (
+                f"{ptype!r}: config has train_expert_only={has_field} but "
+                f"validate {'rejected' if rejected else 'accepted'} expert_only"
+            )
+
+    def test_helper_agrees_with_config_field(self):
+        reg = _policy_registry()
+        if reg is None:
+            pytest.skip("lerobot not installed")
+        for ptype, cfg_cls in reg.items():
+            has_field = any(f.name == "train_expert_only" for f in dataclasses.fields(cfg_cls))
+            assert _policy_supports_expert_only(ptype) == has_field
+
+
 class TestOfflineFallback:
     """When lerobot's registry is unavailable, the static fallbacks drive the gate."""
 
@@ -132,3 +175,10 @@ class TestOfflineFallback:
             assert _policy_supports_relative_actions(ptype) is True
         assert _policy_supports_relative_actions("act") is False
         assert _policy_supports_relative_actions("definitely_not_a_policy") is False
+
+    def test_expert_only_falls_back_to_static_set(self, monkeypatch):
+        monkeypatch.setattr("strands_robots.training.lerobot._policy_registry", lambda: None)
+        for ptype in _EXPERT_ONLY_POLICY_TYPES_FALLBACK:
+            assert _policy_supports_expert_only(ptype) is True
+        assert _policy_supports_expert_only("act") is False
+        assert _policy_supports_expert_only("definitely_not_a_policy") is False

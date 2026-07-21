@@ -198,7 +198,7 @@ _ROBOT_POLICY_DOC: dict[str, Any] = {
             # the robot never needs to Receive its own copy. Do NOT widen
             # ``AllowReceiveScoped`` back to ``${ThingName}/*`` to "fix" this
             # asymmetry -- that re-opens the fleet-eavesdrop surface the narrow
-            # Receive list closes. See issue #253 / PR #228 R5.
+            # Receive list closes. See issue #253.
             "Sid": "AllowOwnSubscriptions",
             "Effect": "Allow",
             "Action": "iot:Subscribe",

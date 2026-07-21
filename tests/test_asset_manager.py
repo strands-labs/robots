@@ -196,6 +196,34 @@ class TestHasMeshes:
         os.utime(d, (d.stat().st_atime, key[1]))  # keep mtime stable
         assert manager._has_meshes(d) is False
 
+    def test_stat_oserror_falls_back_to_stable_cache_key(self, tmp_path, monkeypatch):
+        """A ``stat()`` failure after ``exists()`` must not crash mesh discovery.
+
+        There is a window between the ``directory.exists()`` guard and the
+        ``directory.stat().st_mtime`` cache-key read where the directory can
+        become un-stattable (a TOCTOU removal, or its permissions stripped).
+        Mesh detection degrades gracefully: it falls back to a stable
+        ``(path, 0.0)`` cache key and still walks the tree, rather than letting
+        the ``OSError`` escape and abort robot-asset resolution. Removing the
+        fallback would let the ``stat()`` raise propagate and break this.
+        """
+        d = tmp_path / "withmesh"
+        (d / "meshes").mkdir(parents=True)
+        (d / "meshes" / "link.obj").write_bytes(b"o")
+
+        def _raise_stat(self, *args, **kwargs):
+            raise OSError("stat unavailable")
+
+        # exists() stays truthy (the dir is really there); only the cache-key
+        # stat() read fails, exactly as a mid-call permission strip would look.
+        monkeypatch.setattr(Path, "exists", lambda self, *a, **k: True)
+        monkeypatch.setattr(Path, "stat", _raise_stat)
+
+        assert manager._has_meshes(d) is True
+        # The fallback key (mtime pinned to 0.0) was used, so the walk result
+        # is memoised there and served from cache on the next call.
+        assert manager._MESH_CACHE.get((str(d), 0.0)) is True
+
 
 class TestAutoDownloadFallback:
     """When no XML is found on disk, resolution attempts an auto-download."""

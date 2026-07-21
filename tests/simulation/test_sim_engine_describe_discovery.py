@@ -10,10 +10,108 @@ Also pins the no-alias rule: the registry must NOT export a duplicate
 it from the discovery surface rather than the API carrying a second name.
 """
 
+import re
 from collections.abc import Sequence
 from typing import Any
 
 import pytest
+
+
+def _advertised_param_names(sig_str: str) -> list[str]:
+    """Extract the parameter names from a describe() signature string.
+
+    describe()["methods"][name] advertises a method as a human-readable
+    signature string such as ``"(robot_name: str, policy_provider='mock', "
+    "n_episodes=1, ...) -> dict  # blurb"``. This pulls out the parameter
+    names (``robot_name``, ``policy_provider``, ``n_episodes``) so a test can
+    assert each names a parameter that really exists on the method. Type
+    annotations, defaults, the ``-> ...`` return, a trailing ``# comment``, the
+    ``...`` continuation marker, and ``*`` / ``/`` markers are all ignored.
+    """
+    open_paren = sig_str.find("(")
+    if open_paren == -1:
+        return []
+    depth = 0
+    close_paren = None
+    for idx in range(open_paren, len(sig_str)):
+        char = sig_str[idx]
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                close_paren = idx
+                break
+    if close_paren is None:
+        return []
+    inner = sig_str[open_paren + 1 : close_paren]
+
+    # Split on top-level commas so defaults like ``[u, v]`` stay intact.
+    chunks: list[str] = []
+    depth = 0
+    current = ""
+    for char in inner:
+        if char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth -= 1
+        if char == "," and depth == 0:
+            chunks.append(current)
+            current = ""
+        else:
+            current += char
+    chunks.append(current)
+
+    names: list[str] = []
+    for chunk in chunks:
+        token = chunk.strip()
+        if not token or token in ("*", "/") or token.startswith("..."):
+            continue
+        token = token.lstrip("*")
+        match = re.match(r"([A-Za-z_][A-Za-z0-9_]*)", token)
+        if match:
+            names.append(match.group(1))
+    return names
+
+
+def _assert_advertised_params_are_real(engine) -> None:
+    """Assert every parameter named in describe() exists on the real method.
+
+    The discovery surface is a contract: an agent reads an advertised
+    signature and calls the method with those keyword arguments. If a method is
+    renamed or a parameter dropped without updating the hardcoded describe()
+    string, the surface silently advertises a stale keyword and the agent hits
+    a ``TypeError`` dead-end. This walks every advertised method, extracts its
+    named parameters, and asserts each one is a real parameter of the bound
+    callable (methods that accept ``**kwargs`` may legitimately advertise
+    pass-through keywords, so they are exempt).
+    """
+    import inspect
+
+    methods = engine.describe()["methods"]
+    violations: list[str] = []
+    for name, sig_str in methods.items():
+        fn = getattr(engine, name, None)
+        if not callable(fn):
+            continue
+        try:
+            params = inspect.signature(fn).parameters
+        except (TypeError, ValueError):
+            continue
+        accepts_var_keyword = any(p.kind == p.VAR_KEYWORD for p in params.values())
+        if accepts_var_keyword:
+            continue
+        real = set(params) | {"self"}
+        for advertised in _advertised_param_names(sig_str):
+            if advertised not in real:
+                violations.append(f"{name}(...{advertised}=...)")
+    assert not violations, (
+        "describe() advertises parameters that do not exist on the real "
+        f"method signature: {sorted(violations)}. The discovery surface is a "
+        "contract - an agent copying an advertised keyword would hit a "
+        "TypeError. Update the hardcoded describe() signature string when the "
+        "method signature changes."
+    )
 
 
 def _make_minimal_engine():
@@ -323,6 +421,19 @@ class TestDescribeABC:
         assert "ground_plane" in blurb
         assert "terrain" in blurb
         assert "difficulty" in blurb
+
+    def test_describe_advertised_params_exist_in_signature(self):
+        """Every parameter describe() advertises must exist on the real method.
+
+        Complements test_describe_methods_resolve_to_real_attributes: that pins
+        that an advertised NAME resolves to a callable; this pins that the
+        PARAMETERS named in each advertised signature string are real. A
+        rename that dropped or renamed a parameter without updating the
+        hardcoded describe() string would advertise a stale keyword, and an
+        agent copying it verbatim would dead-end in a TypeError. Pinned on the
+        base contract so the whole backend-agnostic facade surface is covered.
+        """
+        _assert_advertised_params_are_real(_make_minimal_engine())
 
 
 @pytest.mark.skipif(
@@ -783,6 +894,73 @@ class TestDescribeMuJoCo:
                 assert callable(getattr(sim, name, None)), (
                     f"describe() advertises {name!r} but it is not a callable on the engine"
                 )
+        finally:
+            sim.destroy()
+
+    def test_describe_advertised_params_exist_in_signature(self):
+        """Every parameter MuJoCo describe() advertises must exist on the method.
+
+        The live-engine counterpart of the base-contract invariant: MuJoCo's
+        describe() override advertises a far larger method set (rendering,
+        recording, physics introspection/tuning, teleop, viewer, registry),
+        each as a hardcoded signature string. This pins that every keyword
+        those strings name is a real parameter of the bound method, so the
+        discovery surface cannot silently advertise a stale keyword after a
+        signature change and dead-end a caller in a TypeError.
+        """
+        import os
+
+        os.environ.setdefault("MUJOCO_GL", "egl")
+        from strands_robots.simulation import Simulation
+
+        sim = Simulation()
+        try:
+            sim.create_world()
+            sim.add_robot("so100", data_config="so100")
+            _assert_advertised_params_are_real(sim)
+        finally:
+            sim.destroy()
+
+    def test_dispatchable_actions_have_documented_handlers(self):
+        """Every agent-dispatchable action's handler must carry a docstring.
+
+        The handler docstring is the discovery surface an agent reads to learn
+        what an action does; an undocumented handler dead-ends a caller who
+        enumerated the tool spec. Pins the invariant on the live engine so a
+        newly-wired action cannot ship without documentation. (This closed six
+        stragglers: get_state, list_objects, remove_object, reset,
+        set_timestep, step.)
+        """
+        import os
+
+        os.environ.setdefault("MUJOCO_GL", "egl")
+        from strands_robots.simulation import Simulation
+
+        def _find_action_enum(node):
+            if isinstance(node, dict):
+                enum = node.get("enum")
+                if isinstance(enum, list) and all(isinstance(x, str) for x in enum):
+                    yield enum
+                for value in node.values():
+                    yield from _find_action_enum(value)
+
+        sim = Simulation()
+        try:
+            enums = [e for e in _find_action_enum(sim.tool_spec) if "add_robot" in e and "reset" in e]
+            assert len(enums) == 1, "tool_spec must expose exactly one action enum"
+            actions = enums[0]
+            aliases = sim._ACTION_ALIASES
+            undocumented = []
+            for action in actions:
+                handler = getattr(sim, aliases.get(action, action), None)
+                assert callable(handler), f"dispatchable action {action!r} has no callable handler"
+                if not (getattr(handler, "__doc__", None) or "").strip():
+                    undocumented.append(action)
+            assert not undocumented, (
+                "dispatchable actions with undocumented handlers: "
+                f"{sorted(undocumented)} - each action's handler docstring is "
+                "the agent discovery surface for that action"
+            )
         finally:
             sim.destroy()
 
