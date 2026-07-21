@@ -376,6 +376,24 @@ def test_sync_to_bucket_delete_flag_forwarded(tmp_path, monkeypatch):
 # ── stream_dataset facade ──────────────────────────────────────────────────
 
 
+def test_module_level_stream_dataset_delegates(monkeypatch):
+    """stream_dataset(...) is a thin alias for StreamingDatasetReader.open -
+    dataset read-back must not require constructing a simulator."""
+    captured = {}
+
+    def fake_open(repo_id, **kw):
+        captured["repo_id"] = repo_id
+        captured["kw"] = kw
+        return "READER"
+
+    monkeypatch.setattr(sd.StreamingDatasetReader, "open", staticmethod(fake_open), raising=True)
+
+    out = sd.stream_dataset("org/ds", root="/tmp/x", shuffle=False, drop_videos=True)
+    assert out == "READER"
+    assert captured["repo_id"] == "org/ds"
+    assert captured["kw"] == {"root": "/tmp/x", "shuffle": False, "drop_videos": True}
+
+
 def test_recording_mixin_stream_dataset_delegates(monkeypatch):
     """sim.stream_dataset(...) must delegate to StreamingDatasetReader.open,
     keeping streaming a native facade method (not user-side plumbing)."""

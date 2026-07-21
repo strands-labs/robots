@@ -212,3 +212,36 @@ class StreamingDatasetReader:
 
     def __iter__(self) -> Any:
         return iter(self.dataset)
+
+
+def stream_dataset(repo_id: str, **kwargs: Any) -> StreamingDatasetReader:
+    """Open a streaming reader for a LeRobotDataset without a simulator.
+
+    Thin module-level alias for :meth:`StreamingDatasetReader.open`, exported
+    at the package root (``strands_robots.stream_dataset``). Use this from
+    training/eval scripts that only need to READ a dataset - it never touches
+    MuJoCo, a GL context, or a thread pool, unlike constructing a ``Robot()``
+    simulation. ``Simulation.stream_dataset`` is sugar delegating here so the
+    "the same Robot() that records reads it back" flow still works.
+
+    Args:
+        repo_id: HF dataset id (e.g. ``"lerobot/svla_so100_pickplace"``) or a
+            local repo_id paired with ``root=``.
+        **kwargs: Forwarded to :meth:`StreamingDatasetReader.open` - e.g.
+            ``root``, ``delta_timestamps``, ``episodes``, ``shuffle``,
+            ``buffer_size``, ``max_num_shards``, ``drop_videos``
+            (proprio-only, torchcodec-free), ``repo_type``.
+
+    Returns:
+        A :class:`StreamingDatasetReader`.
+
+    Example:
+        import strands_robots
+
+        reader = strands_robots.stream_dataset(
+            "lerobot/svla_so100_pickplace", shuffle=False
+        )
+        for frame in reader:
+            ...
+    """
+    return StreamingDatasetReader.open(repo_id, **kwargs)

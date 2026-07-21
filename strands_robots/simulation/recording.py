@@ -446,6 +446,10 @@ class DatasetRecordingMixin:
         can instead use ``lerobot-train --dataset.streaming=true`` which uses
         the same underlying StreamingLeRobotDataset.
 
+        Sugar for the module-level :func:`strands_robots.stream_dataset` -
+        reading a dataset does not require a simulator, so scripts without a
+        GL stack should call that function directly.
+
         Args:
             repo_id: HF dataset id (e.g. ``"lerobot/svla_so100_pickplace"``) or
                 a local repo_id paired with ``root=``.
@@ -468,9 +472,9 @@ class DatasetRecordingMixin:
             for frame in reader:
                 ...
         """
-        from strands_robots.streaming_dataset import StreamingDatasetReader
+        from strands_robots.streaming_dataset import stream_dataset
 
-        return StreamingDatasetReader.open(repo_id, **kwargs)
+        return stream_dataset(repo_id, **kwargs)
 
     def get_recording_status(self) -> dict[str, Any]:
         """Returns success in every lifecycle state (no world / not
