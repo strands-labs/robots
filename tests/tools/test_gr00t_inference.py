@@ -495,6 +495,48 @@ class TestDownloadCheckpoint:
         assert result["status"] == "success"
         assert result["skipped"] is True
 
+    def test_subfolder_probe_ignores_sibling_subcheckpoints(self, tmp_path):
+        """A shared cache dir holding a DIFFERENT sub-checkpoint must not
+        short-circuit the download of the requested one.
+
+        Regression: `hf_local_dir` populated with `libero_spatial/` made the
+        `hf_subfolder="libero_10"` download report skipped=True, so the
+        container started against a missing /data/checkpoints/libero_10 and
+        the model never loaded (examples/libero/run_mujoco.py's multi-suite
+        `--task libero-10-...` flow timed out at the readiness gate).
+        """
+        local = tmp_path / "ckpt"
+        (local / "libero_spatial").mkdir(parents=True)
+        (local / "libero_spatial" / "config.json").write_text("{}")
+
+        fake_hub = MagicMock()
+        with patch("strands_robots.tools.gr00t_inference.require_optional", return_value=fake_hub):
+            result = _download_checkpoint(
+                hf_repo="nvidia/GR00T-N1.7-LIBERO",
+                hf_subfolder="libero_10",
+                hf_local_dir=str(local),
+                hf_token=None,
+                force=False,
+            )
+        assert result["status"] == "success"
+        assert result["skipped"] is False
+        assert fake_hub.snapshot_download.call_args.kwargs["allow_patterns"] == ["libero_10/*"]
+
+    def test_subfolder_probe_skips_when_requested_subfolder_populated(self, tmp_path):
+        local = tmp_path / "ckpt"
+        (local / "libero_10").mkdir(parents=True)
+        (local / "libero_10" / "config.json").write_text("{}")
+
+        result = _download_checkpoint(
+            hf_repo="nvidia/GR00T-N1.7-LIBERO",
+            hf_subfolder="libero_10",
+            hf_local_dir=str(local),
+            hf_token=None,
+            force=False,
+        )
+        assert result["status"] == "success"
+        assert result["skipped"] is True
+
     def test_force_redownloads(self, tmp_path):
         local = tmp_path / "ckpt"
         local.mkdir()
