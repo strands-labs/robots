@@ -1482,6 +1482,52 @@ class TestServiceUnpackWithMapping:
         assert "single_arm" in result[0]
 
 
+class TestUnpackMalformedActionChunk:
+    """Both unpack paths must survive degenerate server/model action chunks.
+
+    A well-formed chunk carries a leading time axis on every value, so the
+    unpackers read ``.shape[0]`` for the horizon. An empty chunk yields no
+    actions; a scalar (0-D) value has no time axis and must raise an actionable
+    ``ValueError`` rather than the opaque ``IndexError: tuple index out of
+    range`` that ``.shape[0]`` on a 0-D array would otherwise surface.
+    """
+
+    def test_service_empty_chunk_returns_no_actions(self):
+        p = Gr00tPolicy(data_config="so100", host="localhost", port=19999)
+        p._action_mapping = None
+        assert p._unpack_service_actions({}) == []
+
+    def test_local_empty_chunk_returns_no_actions(self):
+        p = Gr00tPolicy(data_config="so100", host="localhost", port=19999)
+        p._action_mapping = ActionMapping(actions={"single_arm": "joints"})
+        assert p._unpack_actions({}) == []
+
+    def test_service_scalar_value_raises_actionable_error(self):
+        p = Gr00tPolicy(data_config="so100", host="localhost", port=19999)
+        p._action_mapping = None
+        with pytest.raises(ValueError, match=r"scalar \(0-D\) action value"):
+            p._unpack_service_actions({"action.single_arm": 5.0})
+
+    def test_local_scalar_value_raises_actionable_error(self):
+        p = Gr00tPolicy(data_config="so100", host="localhost", port=19999)
+        p._action_mapping = ActionMapping(actions={"single_arm": "joints"})
+        with pytest.raises(ValueError, match=r"scalar \(0-D\) action value"):
+            p._unpack_actions({"action.single_arm": 5.0})
+
+    def test_scalar_error_names_offending_key(self):
+        p = Gr00tPolicy(data_config="so100", host="localhost", port=19999)
+        p._action_mapping = None
+        with pytest.raises(ValueError, match="single_arm"):
+            p._unpack_service_actions({"action.single_arm": np.float64(1.0)})
+
+    def test_one_d_value_is_a_valid_horizon(self):
+        """A 1-D value is a horizon of scalars, not a malformed chunk."""
+        p = Gr00tPolicy(data_config="so100", host="localhost", port=19999)
+        p._action_mapping = None
+        result = p._unpack_service_actions({"action.single_arm": np.ones(3)})
+        assert result == [{"single_arm": 1.0}, {"single_arm": 1.0}, {"single_arm": 1.0}]
+
+
 # (section)
 # Exports
 # (section)

@@ -1144,6 +1144,24 @@ class TestReset:
         policy.reset()
         policy._policy.reset.assert_called_once()
 
+    def test_reset_propagates_to_processor_bridge(self):
+        """reset() resets the processor bridge so a finished episode's
+        preprocessor / normalizer state cannot leak into the next one.
+
+        The docstring for reset() guarantees cross-episode isolation, but every
+        other reset test nulls ``_processor_bridge``, leaving that propagation
+        unpinned. A live bridge must have its ``reset()`` called exactly once.
+        """
+        policy = _make_policy()
+        policy._loaded = True
+        policy._policy = MagicMock()
+        bridge = MagicMock()
+        policy._processor_bridge = bridge
+        policy.reset()
+        bridge.reset.assert_called_once_with()
+        # Inner policy is still reset in the same pass.
+        policy._policy.reset.assert_called_once()
+
     def test_reset_safe_when_not_loaded(self):
         policy = _make_policy()
         assert policy._policy is None

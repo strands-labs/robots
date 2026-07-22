@@ -53,7 +53,6 @@ class BackgroundRenderer(Protocol):
             (or any value larger than ``cam.zfar``) so the compositor's depth
             test always picks the foreground.
         """
-        ...
 
 
 # --------------------------------------------------------------------------- #
