@@ -847,11 +847,10 @@ class TestEvalSeeding:
         """``set_eval_seed`` is the single public RNG-seeding entry point
         (no leading underscore, exported via ``__all__``).
 
-        #179 renamed the helper to the public ``set_eval_seed`` (standalone
-        integration tests such as
-        ``tests_integ/.../test_libero_10_scene5_mujoco_engine_success_rate``
-        call it directly for reproducible rollouts). A private
-        ``_set_eval_seed`` back-compat alias lingered afterwards; it is
+        The helper was renamed from a private ``_set_eval_seed`` to the
+        public ``set_eval_seed`` so standalone callers (integration tests
+        that drive a rollout without ``evaluate_benchmark``) can seed
+        directly. A private back-compat alias lingered afterwards; it is
         now removed so the module exposes exactly one name. Pin that
         single-name contract: the private alias must not reappear.
         """
@@ -864,6 +863,28 @@ class TestEvalSeeding:
         assert "set_eval_seed" in policy_runner.__all__
         # The private back-compat alias is gone (single public name only).
         assert not hasattr(policy_runner, "_set_eval_seed")
+
+    def test_set_eval_seed_docstring_matches_public_contract(self):
+        """The docstring must describe the function as it actually is:
+        a public, no-underscore name.
+
+        Regression pin: the docstring previously carried a stale line
+        ("Despite the leading ``_``...") from before the private-to-public
+        rename, and cited a specific test-file path. Both contradict the
+        docstring convention (describe the public contract, reference
+        behavior not test files) and confuse a reader who sees no leading
+        underscore on the actual symbol.
+        """
+        from strands_robots.simulation.policy_runner import set_eval_seed
+
+        doc = set_eval_seed.__doc__ or ""
+        # No stale claim of a leading-underscore / private name.
+        assert "leading ``_``" not in doc
+        assert "leading _" not in doc
+        # No test-file-path citation embedded in the public docstring.
+        assert "tests_integ/" not in doc
+        # The symbol itself is public.
+        assert not set_eval_seed.__name__.startswith("_")
 
     def test_set_eval_seed_torch_reproducibility(self):
         """#179 - ``set_eval_seed`` seeds torch's CPU + CUDA RNGs and
@@ -1519,3 +1540,71 @@ class TestCooperativeStop:
         payload = next(c["json"] for c in result["content"] if "json" in c)
         assert payload["stopped_early"] is False
         assert payload["episodes_completed"] == 2
+
+    def test_evaluate_benchmark_docstring_documents_cooperative_stop(self):
+        """The ``evaluate_benchmark`` facade must document the cooperative-stop
+        contract, matching its ``eval_policy`` / ``run_policy`` siblings.
+
+        A caller relying only on the facade docstring otherwise cannot discover
+        that raising ``CooperativeStop`` from ``on_frame`` ends the eval
+        gracefully (rather than crashing with an uncaught ``BaseException``) and
+        that the result reports ``stopped_early`` / ``episodes_completed``.
+        """
+        doc = SimEngine.evaluate_benchmark.__doc__ or ""
+        assert "CooperativeStop" in doc, "evaluate_benchmark doc must name CooperativeStop"
+        assert "stopped_early" in doc, "evaluate_benchmark doc must document stopped_early"
+        assert "episodes_completed" in doc, "evaluate_benchmark doc must document episodes_completed"
+
+    def test_spec_cooperative_stop_closes_in_progress_video(self, tmp_path: Path):
+        """A cooperative stop mid-episode with recording active closes the
+        in-progress episode's video writer cleanly and drops it from
+        ``video_paths`` (the episode never completed), while the eval still
+        returns a graceful ``stopped_early`` result.
+        """
+        import base64
+        import io
+
+        import numpy as np
+        from PIL import Image
+
+        def _png_b64() -> str:
+            buf = io.BytesIO()
+            Image.fromarray(np.zeros((16, 16, 3), dtype=np.uint8)).save(buf, format="PNG")
+            return base64.b64encode(buf.getvalue()).decode()
+
+        class _RenderingFakeSim(FakeSim):
+            """FakeSim that returns a decodable PNG so the rollout video writer
+            actually opens and captures frames (base FakeSim renders no image)."""
+
+            def render(self, camera_name="default", width=None, height=None):
+                return {
+                    "status": "success",
+                    "content": [{"image": {"format": "png", "source": {"bytes": _png_b64()}}}],
+                }
+
+        sim = _RenderingFakeSim()
+        policy = MockPolicy()
+        policy.set_robot_state_keys(sim.robot_joint_names("fake_robot"))
+
+        def hook(step, obs, action):
+            # Fire during episode 0 (max_steps=20) so the episode never completes
+            # and its video writer is still open when the stop propagates.
+            if step >= 4:
+                raise CooperativeStop("user stopped benchmark")
+
+        video_path = tmp_path / "rollout.mp4"
+        result = PolicyRunner(sim).evaluate(
+            "fake_robot",
+            policy,
+            spec=_CountingBenchmark(),
+            n_episodes=5,
+            on_frame=hook,
+            video={"path": str(video_path), "fps": 30, "camera": "default"},
+        )
+        assert result["status"] == "success"
+        payload = next(c["json"] for c in result["content"] if "json" in c)
+        assert payload["stopped_early"] is True
+        # Stop fired inside episode 0 -> no episode fully completed.
+        assert payload["episodes_completed"] == 0
+        # The interrupted episode's partial video is closed but never reported.
+        assert payload["video_paths"] == []

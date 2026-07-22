@@ -573,8 +573,10 @@ class SimEngine(ABC):
         terrain-relative locomotion predicates (``base_below_z``) and the
         spawn/reset base-seating; this exposes it as a facade query.
 
-        Returns ``0.0`` for a flat ground plane and for any backend without a
-        heightfield, so a non-terrain world reports a flat surface.
+        Returns ``0.0`` for a flat ground plane, for any backend without a
+        heightfield, and before ``create_world`` (a world-less engine has no
+        terrain), so a non-terrain -- or not-yet-built -- world reports a flat
+        surface rather than raising, unlike the world-scoped physics queries.
 
         Args:
             x: World x coordinate. Any object convertible to ``float``
@@ -1919,7 +1921,15 @@ class SimEngine(ABC):
                 pattern and produces 2-3% frame-capture rates with
                 greenish GL clear-colour artifacts. Pair with
                 :meth:`~strands_robots.simulation.mujoco.simulation.Simulation.start_cameras_recording_synchronous`
-                for the recorder side. See #191.
+                for the recorder side. See #191. Raising
+                :class:`~strands_robots.simulation.policy_runner.CooperativeStop`
+                from the hook ends the benchmark gracefully after the
+                episodes completed so far - the result json carries
+                ``stopped_early=True`` and ``episodes_completed`` (matching
+                :meth:`run_policy` / :meth:`eval_policy`); any in-progress
+                episode's partial video is closed cleanly and is NOT listed
+                in ``video_paths``. A non-``CooperativeStop`` hook exception
+                is logged at WARN and never aborts the eval.
             policy_kwargs: Per-call goal payload forwarded verbatim to every
                 ``policy.get_actions(obs, instruction, **policy_kwargs)`` call
                 (same contract as :meth:`run_policy` / :meth:`eval_policy`).

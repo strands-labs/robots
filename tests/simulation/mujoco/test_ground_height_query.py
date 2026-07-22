@@ -126,3 +126,47 @@ def test_get_ground_height_accepts_numpy_scalars() -> None:
         assert sim.get_ground_height(np.float64("inf"), 0.0)["status"] == "error"
     finally:
         sim.destroy()
+
+
+def test_get_ground_height_world_less_reports_flat_ground() -> None:
+    """A world-less engine (before ``create_world``) reports flat ground.
+
+    ``get_ground_height`` is deliberately *not* world-scoped like the sibling
+    physics queries (``get_total_mass`` and friends return ``_NO_WORLD_MSG``
+    before a world exists). A caller sizing a scene may ask where the ground is
+    before building the world, and the documented contract is that any
+    surface without a heightfield -- including a not-yet-built world -- reads as
+    a flat ``0.0`` rather than raising. This pins that public behaviour so a
+    later no-world guard cannot silently turn the query into an error.
+    """
+    sim = MuJoCoSimEngine()
+    try:
+        r = sim.get_ground_height(1.0, 2.0)
+        assert r["status"] == "success"
+        payload = r["content"][1]["json"]
+        assert payload["x"] == 1.0 and payload["y"] == 2.0
+        assert payload["height"] == 0.0
+        # The internal sampler that backs the locomotion predicates agrees.
+        assert sim._ground_height_at(1.0, 2.0) == 0.0
+        # And dispatching through the agent-tool router is equally safe.
+        ok = sim(action="get_ground_height", x=1.0, y=2.0)
+        assert ok["status"] == "success"
+        assert ok["content"][1]["json"]["height"] == 0.0
+    finally:
+        sim.destroy()
+
+
+def test_seat_floating_bases_on_terrain_world_less_is_noop() -> None:
+    """Terrain base-seating is a safe no-op before a world is built.
+
+    ``_seat_floating_bases_on_terrain`` runs once per spawn / reset cycle. Its
+    world-less guard must return without touching physics state (there is no
+    model / data to seat onto), so an errant early call cannot raise.
+    """
+    sim = MuJoCoSimEngine()
+    try:
+        # Must not raise and must leave the engine world-less.
+        sim._seat_floating_bases_on_terrain()
+        assert sim._world is None
+    finally:
+        sim.destroy()

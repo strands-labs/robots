@@ -885,7 +885,7 @@ if __name__ == "__main__":
         main()
     except SystemExit:
         raise
-    except BaseException:  # noqa: BLE001 - top-level: log + force non-zero exit
+    except (KeyboardInterrupt, Exception):  # noqa: BLE001 - top-level: log + force non-zero exit
         traceback.print_exc()
         sys.stdout.flush()
         sys.stderr.flush()

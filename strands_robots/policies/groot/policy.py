@@ -312,6 +312,36 @@ def _coerce_action_row(row: Any) -> float | list[float]:
     return float(row) if np.ndim(row) == 0 else list(row)
 
 
+def _action_chunk_horizon(chunk: dict[str, np.ndarray]) -> int:
+    """Return the shared time-axis length of a normalized action chunk.
+
+    Both unpack paths reduce each action value to ``(horizon,)`` or
+    ``(horizon, action_dim)`` and then iterate ``range(horizon)``. Every value
+    must therefore carry a leading time axis. A 0-D / scalar value has no time
+    axis, so a server or model that emits one is malformed; surface it as an
+    actionable error instead of the opaque ``IndexError: tuple index out of
+    range`` that a ``.shape[0]`` read on a 0-D array would otherwise raise.
+
+    Args:
+        chunk: Normalized ``{bare_key: np.ndarray}`` action mapping (non-empty).
+
+    Returns:
+        The leading-axis length shared by the chunk's values.
+
+    Raises:
+        ValueError: If any value is 0-D (has no leading time axis).
+    """
+    scalar_keys = [k for k, v in chunk.items() if v.ndim == 0]
+    if scalar_keys:
+        shapes = {k: tuple(chunk[k].shape) for k in scalar_keys}
+        raise ValueError(
+            f"GR00T returned scalar (0-D) action value(s) for {scalar_keys} "
+            f"(shapes {shapes}); expected a leading time axis of shape (horizon,) "
+            "or (horizon, action_dim). The action chunk is malformed."
+        )
+    return next(iter(chunk.values())).shape[0]
+
+
 # Gr00tPolicy
 
 
@@ -799,7 +829,7 @@ class Gr00tPolicy(Policy):
             return []
 
         assert self._action_mapping is not None, "Action mapping not initialized"
-        horizon = next(iter(squeezed.values())).shape[0]
+        horizon = _action_chunk_horizon(squeezed)
         mapped_keys = set(self._action_mapping.actions.keys())
 
         actions: list[dict[str, Any]] = []
@@ -925,7 +955,7 @@ class Gr00tPolicy(Policy):
         if not normalized:
             return []
 
-        horizon = next(iter(normalized.values())).shape[0]
+        horizon = _action_chunk_horizon(normalized)
 
         # If we have action mappings, use them for consistent key translation
         if self._action_mapping and self._action_mapping.actions:
