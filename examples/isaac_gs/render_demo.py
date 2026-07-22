@@ -163,23 +163,14 @@ def _video_path(args: argparse.Namespace, out_dir: str, ts: str) -> str:
 def _encode_clip(frames, path: str, fps: int = 20) -> None:
     """Assemble RGB frames into a clip at ``path`` (.mp4 or .gif).
 
-    Mirrors ``examples/mujoco_gs/libero_groot.py``'s ``_encode_mp4`` for
-    output parity (``imageio`` libx264, ``quality=7``,
-    ``macro_block_size=8``). GIF output skips the libx264-only knobs.
+    Delegates to the shared library encoder
+    (``strands_robots.rendering.encode_clip``, issue #1537) with this demo's
+    historical knobs (libx264 ``quality=7``, ``macro_block_size=8``; GIF
+    output takes per-frame duration instead).
     """
-    try:
-        import imageio
-    except ImportError as e:  # pragma: no cover
-        raise ImportError(
-            "imageio (with imageio-ffmpeg for MP4) is required to assemble the clip; "
-            "`pip install imageio imageio-ffmpeg`."
-        ) from e
+    from strands_robots.rendering import encode_clip
 
-    if str(path).lower().endswith(".gif"):
-        # Pillow's GIF writer takes per-frame duration (ms), not fps.
-        imageio.mimsave(path, list(frames), duration=1000.0 / max(1, int(fps)))
-    else:
-        imageio.mimsave(path, list(frames), fps=int(fps), codec="libx264", quality=7, macro_block_size=8)
+    encode_clip(frames, path, fps=fps, quality=7, macro_block_size=8)
 
 
 def _date_out(out: "str | None") -> str:
@@ -268,7 +259,7 @@ def main() -> None:
                     sim.step(5)
 
             frame = compositor.render(camera_name=build.camera_name)
-            fg_px = int(frame.mask.sum())
+            fg_px = int(frame.foreground_mask.sum())
             if want_video:
                 rendered.append(frame.rgb)
             if args.stills:

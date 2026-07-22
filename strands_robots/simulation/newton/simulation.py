@@ -54,6 +54,8 @@ from strands_robots.utils import require_optional
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    from strands_robots.rendering import CameraParams
+
 logger = logging.getLogger(__name__)
 
 # Newton's default control rate. MJCF position actuators settle within a few
@@ -1086,28 +1088,16 @@ class NewtonSimEngine(DomainRandomizationMixin, NewtonRecordingMixin, SimEngine)
             return {"status": "error", "content": [{"text": "No world. Call create_world first."}]}
 
         is_default = camera_name in (None, "", "default", "free")
-        if is_default:
-            label = "default"
-            eye = (0.6, 0.6, 0.5)
-            target = (0.0, 0.0, 0.15)
-            fov_deg = 50.0
-            w = width or self.default_width
-            h = height or self.default_height
-        else:
-            cam = self._world.cameras.get(camera_name)
-            if cam is None:
-                return {
-                    "status": "error",
-                    "content": [{"text": f"Camera '{camera_name}' not found. Available: {self.list_cameras()}"}],
-                }
-            label = camera_name
-            try:
-                eye, target = self._resolve_camera_pose(cam)
-            except ValueError as exc:
-                return {"status": "error", "content": [{"text": f"Render failed: {exc}"}]}
-            fov_deg = cam.fov
-            w = width or cam.width
-            h = height or cam.height
+        label = "default" if is_default else camera_name
+        try:
+            eye, target, fov_deg, w, h = self._resolve_camera_view(camera_name, width, height)
+        except KeyError:
+            return {
+                "status": "error",
+                "content": [{"text": f"Camera '{camera_name}' not found. Available: {self.list_cameras()}"}],
+            }
+        except ValueError as exc:
+            return {"status": "error", "content": [{"text": f"Render failed: {exc}"}]}
 
         try:
             img = self._render_rgb(w, h, eye=eye, target=target, fov_deg=fov_deg)
@@ -1221,6 +1211,120 @@ class NewtonSimEngine(DomainRandomizationMixin, NewtonRecordingMixin, SimEngine)
         frame = rgba[0, 0] if rgba.ndim == 5 else rgba[0]
         frame = np.ascontiguousarray(frame[..., :3])
         return self._maybe_jitter_frame(frame)
+
+    def get_frame(
+        self, camera_name: str = "default", width: int | None = None, height: int | None = None
+    ) -> tuple[np.ndarray, np.ndarray | None]:
+        """Render a camera to raw ``(rgb, depth)`` ndarrays.
+
+        Newton's ray-traced tiled camera has **no depth output path**, so the
+        depth element is always ``None`` -- per the raw-frame API contract
+        (issue #1537) this is explicit rather than a zero-filled buffer, and
+        depth-dependent consumers (``HybridCompositor``) raise a clear error
+        instead of silently compositing wrong pixels.
+
+        Args:
+            camera_name: ``"default"`` (or ``None``/``""``/``"free"``) for
+                the built-in three-quarter view, or a camera registered via
+                ``add_camera``.
+            width: image width; ``None`` uses the camera's configured
+                resolution (or the engine default for the built-in view).
+            height: image height; same fallback as ``width``.
+
+        Returns:
+            ``(rgb, None)`` -- ``rgb`` is ``(H, W, 3) uint8``.
+
+        Raises:
+            RuntimeError: no world created.
+            KeyError: unknown camera name.
+            ValueError: the camera's mount body is no longer in the model.
+        """
+        if self._world is None or self._model is None:
+            raise RuntimeError("No world. Call create_world first.")
+        eye, target, fov_deg, w, h = self._resolve_camera_view(camera_name, width, height)
+        rgb = self._render_rgb(w, h, eye=eye, target=target, fov_deg=fov_deg)
+        return np.asarray(rgb, dtype=np.uint8), None
+
+    def get_camera_params(
+        self, camera_name: str = "default", width: int | None = None, height: int | None = None
+    ) -> CameraParams:
+        """Return pinhole :class:`~strands_robots.rendering.CameraParams`.
+
+        ``K`` is derived from the camera's vertical FOV with square pixels
+        and a centered principal point (the same pinhole model
+        ``_render_rgb`` traces rays with); ``T_world_cam`` is the OpenGL
+        optical frame (+X right, +Y up, -Z forward) of the camera's live
+        look-at pose (body-mounted cameras resolve against the current body
+        transform). Newton exposes no scene clip planes; the params carry a
+        conventional ``znear=0.01`` and a far plane "at infinity"
+        (``zfar=1e6``) for the background-compositing depth convention.
+
+        Args:
+            camera_name: a camera registered via ``add_camera``. The built-in
+                free view (``"default"``/``None``/``""``/``"free"``) is
+                accepted and reports the fixed default vantage.
+            width: image width to compute ``K`` for; ``None`` uses the
+                camera's configured resolution.
+            height: image height to compute ``K`` for.
+
+        Raises:
+            RuntimeError: no world created.
+            KeyError: unknown camera name.
+            ValueError: the camera's mount body is no longer in the model.
+        """
+        from strands_robots.rendering import CameraParams as _CameraParams
+
+        if self._world is None or self._model is None:
+            raise RuntimeError("No world. Call create_world first.")
+        eye, target, fov_deg, w, h = self._resolve_camera_view(camera_name, width, height)
+
+        fy = 0.5 * h / math.tan(math.radians(fov_deg) / 2.0)
+        K = np.array([[fy, 0.0, 0.5 * w], [0.0, fy, 0.5 * h], [0.0, 0.0, 1.0]], dtype=np.float64)
+
+        # Look-at basis in the OpenGL optical convention: -Z forward.
+        fwd = np.asarray(target, dtype=np.float64) - np.asarray(eye, dtype=np.float64)
+        norm = float(np.linalg.norm(fwd))
+        if norm < 1e-12:
+            raise ValueError(f"camera '{camera_name}': eye and target coincide; look-at pose is undefined")
+        fwd /= norm
+        world_up = np.array([0.0, 0.0, 1.0])
+        if abs(float(fwd @ world_up)) > 1.0 - 1e-6:
+            world_up = np.array([0.0, 1.0, 0.0])  # straight up/down view: fall back
+        right = np.cross(fwd, world_up)
+        right /= np.linalg.norm(right)
+        up = np.cross(right, fwd)
+        T = np.eye(4, dtype=np.float64)
+        T[:3, :3] = np.stack([right, up, -fwd], axis=1)
+        T[:3, 3] = np.asarray(eye, dtype=np.float64)
+        return _CameraParams(K=K, T_world_cam=T, width=w, height=h, znear=0.01, zfar=1_000_000.0)
+
+    def _resolve_camera_view(
+        self, camera_name: str | None, width: int | None, height: int | None
+    ) -> tuple[tuple[float, ...], tuple[float, ...], float, int, int]:
+        """Resolve ``(eye, target, fov_deg, width, height)`` for a camera name.
+
+        Shared by :meth:`render`, :meth:`get_frame` and
+        :meth:`get_camera_params` so all three agree on the built-in default
+        view and per-camera config fallbacks.
+
+        Raises:
+            KeyError: unknown camera name.
+            ValueError: the camera's mount body is no longer in the model.
+        """
+        if camera_name in (None, "", "default", "free"):
+            return (
+                (0.6, 0.6, 0.5),
+                (0.0, 0.0, 0.15),
+                50.0,
+                int(width or self.default_width),
+                int(height or self.default_height),
+            )
+        assert camera_name is not None  # the free-camera tokens were handled above
+        cam = self._world.cameras.get(camera_name) if self._world is not None else None
+        if cam is None:
+            raise KeyError(f"Camera '{camera_name}' not found. Available: {self.list_cameras()}")
+        eye, target = self._resolve_camera_pose(cam)
+        return eye, target, float(cam.fov), int(width or cam.width), int(height or cam.height)
 
     # Interactive viewer
 

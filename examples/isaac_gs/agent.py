@@ -24,7 +24,7 @@ logger = logging.getLogger("isaac_gs.agent")
 
 def _scene_names() -> list:
     try:
-        from examples.mujoco_gs.backgrounds import gsplat_skybox_scene_names
+        from strands_robots.rendering import gsplat_skybox_scene_names
 
         return gsplat_skybox_scene_names()
     except Exception:  # noqa: BLE001

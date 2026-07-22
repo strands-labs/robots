@@ -106,43 +106,28 @@ def _live_img_html(camera: str) -> str:
 def _mjpeg_frames(app: "IsaacGsApp", camera: str):
     """Yield ``multipart/x-mixed-replace`` JPEG chunks of the live composite.
 
-    Each frame is rendered on Isaac's **main thread** via ``app.render_once``
-    (the same render queue the buttons use), keeping the RTX context
-    thread-affine. We only drive renders once the main-thread serve loop is
-    live -- rendering Isaac off the main thread (pre-serve) is unsafe -- and
-    block-render one frame at a time, so the queue never backs up. The stream
-    follows ``app.current_camera`` (driven by the dropdown / agent) so it never
-    needs to reconnect when the view changes -- it's one persistent stream that
-    is never a Gradio event output, hence never greyed out during processing.
+    Byte framing + pacing come from the shared library generator
+    (``strands_robots.rendering.mjpeg_frames``, issue #1537); this wrapper
+    supplies the demo's frame source: each frame is rendered on Isaac's
+    **main thread** via ``app.render_once`` (the same render queue the
+    buttons use), keeping the RTX context thread-affine. We only drive
+    renders once the main-thread serve loop is live -- rendering Isaac off
+    the main thread (pre-serve) is unsafe -- and block-render one frame at a
+    time, so the queue never backs up. The stream follows
+    ``app.current_camera`` (driven by the dropdown / agent) so it never
+    needs to reconnect when the view changes -- it's one persistent stream
+    that is never a Gradio event output, hence never greyed out during
+    processing.
     """
-    import io
+    from strands_robots.rendering import mjpeg_frames
 
-    from PIL import Image
+    def _current_frame():
+        if not getattr(app, "_serving", False):
+            return None  # Isaac still booting; the generator idles
+        rgb, _status = app.render_once(camera=app.current_camera)
+        return np.asarray(rgb)
 
-    boundary = b"--frame\r\nContent-Type: image/jpeg\r\n\r\n"
-    frame_dt = 1.0 / float(LIVE_FPS)
-    try:
-        while True:
-            t0 = time.time()
-            if getattr(app, "_serving", False):
-                try:
-                    rgb, _status = app.render_once(camera=app.current_camera)
-                    im = Image.fromarray(np.asarray(rgb)[:, :, :3].astype(np.uint8))
-                    if im.size != (LIVE_W, LIVE_H):
-                        im = im.resize((LIVE_W, LIVE_H))
-                    buf = io.BytesIO()
-                    im.save(buf, format="JPEG", quality=75)
-                    yield boundary + buf.getvalue() + b"\r\n"
-                except Exception as exc:  # noqa: BLE001 - a dropped frame must not kill the stream
-                    logger.debug("live frame error: %s", exc)
-                    time.sleep(0.2)
-            else:
-                time.sleep(0.2)
-            elapsed = time.time() - t0
-            if elapsed < frame_dt:
-                time.sleep(frame_dt - elapsed)
-    except GeneratorExit:  # client disconnected
-        return
+    return mjpeg_frames(_current_frame, fps=LIVE_FPS, quality=75, size=(LIVE_W, LIVE_H))
 
 
 class _RenderRequest:
@@ -309,7 +294,7 @@ class IsaacGsApp:
         if wave and self._build and self._build.robot_joint_count > 0:
             self._wave_arm()
         frame = self._compositor.render(camera_name=camera)
-        fg_px = int(frame.mask.sum())
+        fg_px = int(frame.foreground_mask.sum())
         status = f"camera={camera} foreground_px={fg_px} size={frame.rgb.shape[1]}x{frame.rgb.shape[0]}"
         return frame.rgb, status
 
@@ -546,7 +531,7 @@ def build_ui(app: IsaacGsApp, agent: "object | None" = None, robot_label: str = 
     # Background choices: the curated 3DGS skybox presets + procedural
     # panorama + an uploaded-.ply sentinel.
     try:
-        from examples.mujoco_gs.backgrounds import gsplat_skybox_scene_names
+        from strands_robots.rendering import gsplat_skybox_scene_names
 
         gs_scenes = gsplat_skybox_scene_names()
     except Exception:  # noqa: BLE001

@@ -267,6 +267,27 @@ sim-isaac = [
     "imageio>=2.28.0,<3.0.0",
     "imageio-ffmpeg>=0.4.0,<1.0.0",
 ]
+# 3D Gaussian Splatting hybrid rendering (strands_robots.rendering:
+# GsplatBackground + HybridCompositor). GPU/heavy - kept OUT of `[all]`
+# (sim-isaac precedent).
+#
+# IMPORTANT: `gsplat` ships to PyPI as a source distribution that JIT-compiles
+# its CUDA kernels with `nvcc` on FIRST USE (same supply-chain class as cuRobo
+# above). On a box with a CUDA *runtime* but no CUDA *toolkit* - e.g. the
+# Isaac Sim container - `pip install gsplat` succeeds and imports fine, yet the
+# first rasterization call fails ("No CUDA toolkit found"). Call
+# `strands_robots.rendering.gsplat_rasterizer_available()` to probe an install
+# before relying on it, or install a pre-built wheel from the gsplat wheel
+# index (ships compiled kernels, no nvcc needed):
+# https://docs.gsplat.studio/main/installation.html
+# `PanoramaBackground` is the zero-GPU-dep fallback; torch is pinned without a
+# CUDA constraint (the probe fails loud on CPU-only builds instead of dying
+# deep inside the first frame).
+sim-gs = [
+    "gsplat>=1.4.0,<2.0.0",
+    "plyfile>=1.0.0,<2.0.0",
+    "torch>=2.2.0,<3.0.0",
+]
 benchmark-libero = [
     "libero>=0.1.0,<1.0.0",
 ]
@@ -490,7 +511,7 @@ ignore_missing_imports = false
 
 # Third-party libs without type stubs
 [[tool.mypy.overrides]]
-module = ["lerobot.*", "gr00t.*", "draccus.*", "msgpack.*", "websockets", "websockets.*", "zmq.*", "huggingface_hub.*", "serial.*", "psutil.*", "torch.*", "torchvision.*", "transformers.*", "einops.*", "robot_descriptions.*", "mujoco.*", "imageio.*", "pyarrow", "pyarrow.*", "libero.*", "zenoh.*", "boto3", "boto3.*", "awscrt", "awscrt.*", "awsiot", "awsiot.*", "botocore.*", "strands_robots.policies.cosmos3._msgpack_numpy", "diffusers", "diffusers.*", "accelerate", "accelerate.*", "openpi_client", "openpi_client.*", "openpi_server", "openpi_server.*", "openpi", "openpi.*", "device_connect_edge", "device_connect_edge.*", "device_connect_agent_tools", "device_connect_agent_tools.*", "rclpy", "rclpy.*", "cyclonedds", "cyclonedds.*", "rosidl_runtime_py", "rosidl_runtime_py.*", "moveit", "moveit.*", "moveit_configs_utils", "moveit_configs_utils.*", "geometry_msgs", "geometry_msgs.*", "mink", "mink.*", "qpsolvers", "qpsolvers.*", "onnxruntime", "onnxruntime.*", "motionbricks", "motionbricks.*", "trimesh", "trimesh.*", "stable_baselines3", "stable_baselines3.*", "strands_robots_sim", "strands_robots_sim.*", "isaacsim", "isaacsim.*", "omni", "omni.*"]
+module = ["lerobot.*", "gr00t.*", "draccus.*", "msgpack.*", "websockets", "websockets.*", "zmq.*", "huggingface_hub.*", "serial.*", "psutil.*", "torch.*", "torchvision.*", "transformers.*", "einops.*", "robot_descriptions.*", "mujoco.*", "imageio.*", "pyarrow", "pyarrow.*", "libero.*", "zenoh.*", "boto3", "boto3.*", "awscrt", "awscrt.*", "awsiot", "awsiot.*", "botocore.*", "strands_robots.policies.cosmos3._msgpack_numpy", "diffusers", "diffusers.*", "accelerate", "accelerate.*", "openpi_client", "openpi_client.*", "openpi_server", "openpi_server.*", "openpi", "openpi.*", "device_connect_edge", "device_connect_edge.*", "device_connect_agent_tools", "device_connect_agent_tools.*", "rclpy", "rclpy.*", "cyclonedds", "cyclonedds.*", "rosidl_runtime_py", "rosidl_runtime_py.*", "moveit", "moveit.*", "moveit_configs_utils", "moveit_configs_utils.*", "geometry_msgs", "geometry_msgs.*", "mink", "mink.*", "qpsolvers", "qpsolvers.*", "onnxruntime", "onnxruntime.*", "motionbricks", "motionbricks.*", "trimesh", "trimesh.*", "stable_baselines3", "stable_baselines3.*", "strands_robots_sim", "strands_robots_sim.*", "isaacsim", "isaacsim.*", "omni", "omni.*", "gsplat", "gsplat.*", "plyfile", "plyfile.*"]
 ignore_missing_imports = true
 
 # Device Connect drivers - thin wrappers over the untyped device_connect_edge

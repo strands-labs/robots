@@ -29,12 +29,15 @@ import os
 import queue
 import threading
 import time
-from typing import Any, TypedDict
+from typing import TYPE_CHECKING, Any, TypedDict
 
 import numpy as np
 
 from strands_robots.simulation.base import SimEngine
 from strands_robots.simulation.isaac.config import IsaacConfig
+
+if TYPE_CHECKING:
+    from strands_robots.rendering import CameraParams
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +51,31 @@ logger = logging.getLogger(__name__)
 # that threshold so every frame is crisp on its own; captured frames
 # are downscaled to the caller's requested size before return.
 _MIN_RENDER_PX = 640
+
+
+def _quat_wxyz_to_rotmat(quat: np.ndarray) -> np.ndarray:
+    """Convert a ``(w, x, y, z)`` quaternion to a ``(3, 3)`` rotation matrix.
+
+    Isaac's ``Camera.get_world_pose()`` returns the orientation as a
+    ``(w, x, y, z)`` quaternion (USD convention). No external dep needed --
+    the standard quaternion-to-matrix formula.
+    """
+    w, x, y, z = (float(quat[0]), float(quat[1]), float(quat[2]), float(quat[3]))
+    n = w * w + x * x + y * y + z * z
+    if n < 1e-12:
+        return np.eye(3, dtype=np.float64)
+    s = 2.0 / n
+    wx, wy, wz = s * w * x, s * w * y, s * w * z
+    xx, xy, xz = s * x * x, s * x * y, s * x * z
+    yy, yz, zz = s * y * y, s * y * z, s * z * z
+    return np.array(
+        [
+            [1.0 - (yy + zz), xy - wz, xz + wy],
+            [xy + wz, 1.0 - (xx + zz), yz - wx],
+            [xz - wy, yz + wx, 1.0 - (xx + yy)],
+        ],
+        dtype=np.float64,
+    )
 
 
 def _env_int(name: str, default: int) -> int:
@@ -2499,6 +2527,139 @@ class IsaacSimulation(SimEngine):
                 },
             )
 
+    def get_frame(
+        self, camera_name: str = "default", width: int | None = None, height: int | None = None
+    ) -> tuple[np.ndarray, np.ndarray | None]:
+        """Render a camera to raw ``(rgb, depth)`` ndarrays (metric depth).
+
+        Public counterpart of the internal :meth:`_render_frame` (issue
+        #1537): returns the raw RTX ``(H, W, 3) uint8`` RGB frame and the
+        ``(H, W) float32`` metric depth buffer for in-process consumers such
+        as :class:`strands_robots.rendering.HybridCompositor`, without the
+        agent-tool PNG envelope and without reaching into private state.
+
+        Unlike :meth:`_render_frame` -- whose blank-frame fallbacks exist for
+        the envelope path -- this method **raises** on every degraded path
+        (headless mode, unknown camera, Phase-1 camera without an RTX
+        handle), so a compositing consumer can never silently receive black
+        pixels with zero depth.
+
+        Isaac's depth annotator reports pixels with no geometry as ``0`` or
+        non-finite; consumers should treat both extremes as background.
+
+        Concurrency: takes ``self._lock`` (via ``_render_frame``); rendering
+        must be driven from the thread that owns the ``SimulationApp`` (use
+        :meth:`run_on_main` from worker threads).
+
+        Args:
+            camera_name: a camera previously added via ``add_camera``.
+            width: must be ``None`` or the camera's native render width --
+                Isaac RTX cameras render at the resolution fixed at
+                ``add_camera`` time; a mismatch raises rather than silently
+                dropping the requested size.
+            height: same contract as ``width``.
+
+        Returns:
+            ``(rgb, depth)`` -- ``(H, W, 3) uint8`` and ``(H, W) float32``.
+
+        Raises:
+            RuntimeError: no world, headless render mode, camera without an
+                RTX handle, or an RTX render failure.
+            KeyError: unknown camera name.
+            ValueError: ``width``/``height`` differ from the camera's native
+                render resolution.
+        """
+        with self._lock:
+            if not self._world_created:
+                raise RuntimeError("No world created. Call create_world first.")
+            if self._config.render_mode == "headless":
+                raise RuntimeError(
+                    "get_frame is unavailable in headless render mode (no RTX frames are produced); "
+                    "use render_mode='rtx_realtime' or consume the envelope render() fallback."
+                )
+            if camera_name not in self._cameras:
+                raise KeyError(f"Camera '{camera_name}' not found. Available: {sorted(self._cameras)}")
+            cam = self._cameras[camera_name]
+            if cam.handle is None:
+                raise RuntimeError(f"Camera '{camera_name}' has no live RTX handle; re-add it via add_camera().")
+            for arg_name, arg, native in (("width", width, cam.width), ("height", height, cam.height)):
+                if arg is not None and int(arg) != int(native):
+                    raise ValueError(
+                        f"Isaac cameras render at the resolution fixed at add_camera time; "
+                        f"requested {arg_name}={arg} but camera '{camera_name}' renders at "
+                        f"{cam.width}x{cam.height}. Re-add the camera with the desired size."
+                    )
+            rgb, depth, meta = self._render_frame(camera_name)
+        if rgb is None:
+            raise RuntimeError(str(meta.get("error", f"Failed to render camera '{camera_name}'")))
+        depth_arr = None if depth is None else np.asarray(depth, dtype=np.float32)
+        return np.asarray(rgb, dtype=np.uint8), depth_arr
+
+    def get_camera_params(
+        self, camera_name: str = "default", width: int | None = None, height: int | None = None
+    ) -> CameraParams:
+        """Return pinhole :class:`~strands_robots.rendering.CameraParams`.
+
+        Intrinsics come from the RTX camera handle
+        (``Camera.get_intrinsics_matrix()``), the pose from
+        ``Camera.get_world_pose()``. ``get_world_pose`` returns the camera
+        *prim's* world orientation, whose local axes are offset from the
+        OpenGL optical frame ``CameraParams`` promises (+X right, +Y up, -Z
+        forward): the USD camera prim basis maps prim +X -> GL -Z, prim +Y ->
+        GL -X, prim +Z -> GL +Y. This backend-inherent fixed correction
+        (``R_gl = R_prim @ PRIM_TO_GL``) is applied here -- consistent across
+        poses -- so a composited background is upright and aligned with the
+        RTX foreground (previously example-side, issue #1537).
+
+        Args:
+            camera_name: a camera previously added via ``add_camera``.
+            width: must be ``None`` or the camera's native render width (the
+                handle's intrinsics are only valid at native resolution).
+            height: same contract as ``width``.
+
+        Raises:
+            RuntimeError: no world, or the camera has no live RTX handle.
+            KeyError: unknown camera name.
+            ValueError: ``width``/``height`` differ from the native render
+                resolution.
+        """
+        from strands_robots.rendering import CameraParams
+
+        with self._lock:
+            if not self._world_created:
+                raise RuntimeError("No world created. Call create_world first.")
+            if camera_name not in self._cameras:
+                raise KeyError(f"Camera '{camera_name}' not found. Available: {sorted(self._cameras)}")
+            cam = self._cameras[camera_name]
+            if cam.handle is None:
+                raise RuntimeError(
+                    f"Camera '{camera_name}' has no live RTX handle -- intrinsics/pose cannot be "
+                    "read off a registration-only camera. Re-add it via add_camera()."
+                )
+            for arg_name, arg, native in (("width", width, cam.width), ("height", height, cam.height)):
+                if arg is not None and int(arg) != int(native):
+                    raise ValueError(
+                        f"Isaac camera intrinsics are only valid at the native render resolution; "
+                        f"requested {arg_name}={arg} but camera '{camera_name}' renders at "
+                        f"{cam.width}x{cam.height}. Re-add the camera with the desired size."
+                    )
+            K = np.asarray(cam.handle.get_intrinsics_matrix(), dtype=np.float64).reshape(3, 3)
+            position, quat_wxyz = cam.handle.get_world_pose()
+            w_px, h_px = int(cam.width), int(cam.height)
+
+        position = np.asarray(position, dtype=np.float64).reshape(3)
+        quat_wxyz = np.asarray(quat_wxyz, dtype=np.float64).reshape(4)
+        # Fixed camera-local correction, USD camera prim basis -> OpenGL
+        # optical frame (see docstring). R_gl = R_prim @ PRIM_TO_GL.
+        prim_to_gl = np.array([[0.0, 0.0, -1.0], [-1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float64)
+        T = np.eye(4, dtype=np.float64)
+        T[:3, :3] = _quat_wxyz_to_rotmat(quat_wxyz) @ prim_to_gl
+        T[:3, 3] = position
+        # Isaac exposes no scene-level clip planes on the handle; carry the
+        # conventional near plane and a far plane "at infinity" for the
+        # compositor's depth convention.
+        return CameraParams(K=K, T_world_cam=T, width=w_px, height=h_px, znear=0.01, zfar=1_000_000.0)
+
     def _warmup_camera(self, name: str, n_steps: int) -> bool:
         """Step the world (with rendering) until camera ``name`` yields a frame.
 
@@ -2979,13 +3140,7 @@ class IsaacSimulation(SimEngine):
             state["running"] = False
             self._cams_rec_state = None
 
-        try:
-            import imageio.v2 as imageio
-        except ImportError:
-            return {
-                "status": "error",
-                "content": [{"text": "imageio not installed. pip install imageio imageio-ffmpeg"}],
-            }
+        from strands_robots.rendering.video import encode_clip
 
         elapsed = _time.time() - state["started_at"]
         lines = [
@@ -3000,13 +3155,16 @@ class IsaacSimulation(SimEngine):
             frames_written = 0
             size_kb = 0.0
             if frames_buffer:
-                writer = imageio.get_writer(path, fps=state["fps"], quality=8, macro_block_size=1)
+                # Shared encoder (strands_robots.rendering.video, issue #1537);
+                # same imageio/libx264 invocation as the previous inline writer.
                 try:
-                    for arr in frames_buffer:
-                        writer.append_data(arr)
-                        frames_written += 1
-                finally:
-                    writer.close()
+                    encode_clip(frames_buffer, path, fps=state["fps"])
+                except ImportError:
+                    return {
+                        "status": "error",
+                        "content": [{"text": "imageio not installed. pip install imageio imageio-ffmpeg"}],
+                    }
+                frames_written = len(frames_buffer)
                 if _os.path.exists(path):
                     size_kb = _os.path.getsize(path) / 1024
             lines.append(

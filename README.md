@@ -162,6 +162,7 @@ extras you need:
 | `sim-mujoco` | MuJoCo, robot_descriptions, imageio | Simulation (recommended starting point) |
 | `sim-newton` | Newton, Warp, MuJoCo-Warp, trimesh | GPU-native simulation (NVIDIA GPU; batched envs, headless ray-traced render) |
 | `sim-isaac` | usd-core, imageio (Isaac Sim installed out-of-band) | NVIDIA Isaac Sim backend - photorealistic RTX rendering, synthetic data, GPU-batched sensors, USD-native scenes. Isaac Sim itself is **not** pip-installable; install it via the Omniverse Launcher, Isaac Lab, or the NGC docker image. This extra pulls only the pip-installable Python helpers. (NVIDIA RTX GPU; GPU-only, not in `[all]`.) |
+| `sim-gs` | gsplat, plyfile, torch | 3D Gaussian Splatting hybrid rendering (`strands_robots.rendering`): composite any sim backend's robot over a captured photoreal 3DGS scene. `gsplat` ships as a source dist that JIT-compiles CUDA kernels via `nvcc` on first use - probe with `strands_robots.rendering.gsplat_rasterizer_available()`; the zero-GPU `PanoramaBackground` works without this extra. (CUDA GPU; GPU-only, not in `[all]`.) |
 | `lerobot` | LeRobot | Real hardware, local VLA inference, dataset recording |
 | `molmoact2` | LeRobot + transformers, peft, scipy | MolmoAct2 transformers-native VLA (resolves from PyPI via lerobot >= 0.6) |
 | `groot-service` | pyzmq, msgpack | NVIDIA GR00T inference client |
@@ -173,7 +174,7 @@ extras you need:
 | `mesh-iot` | awsiotsdk, awscrt, boto3 | AWS IoT Core mesh transport for fleets |
 | `device-connect` | device-connect-edge, device-connect-agent-tools | Device-aware networking - discovery, RPC, events, safety (falls back to the built-in mesh if absent) |
 | `benchmark-libero` | libero | LIBERO benchmark evaluation |
-| `all` | everything above except the GPU-only `sim-isaac` extra | Kitchen sink |
+| `all` | everything above except the GPU-only `sim-isaac` / `sim-gs` extras | Kitchen sink |
 
 ```bash
 # Most users start here:
@@ -1153,6 +1154,8 @@ strands_robots/
 │   ├── factory.py         # create_simulation() + backend registry
 │   ├── models.py          # SimWorld / SimRobot / SimObject / SimCamera
 │   └── mujoco/            # MuJoCo backend (67-action AgentTool)
+├── rendering/             # Hybrid rendering: CameraParams, backgrounds (panorama/3DGS),
+│                          #   HybridCompositor, encode_clip / mjpeg_frames
 ├── mesh/                  # Zenoh mesh: core, sensors, input, audit, transport, iot
 ├── benchmarks/libero/     # LIBERO suite + BDDL parser + adapter
 └── tools/                 # gr00t_inference, lerobot_*, pose, serial, robot_mesh

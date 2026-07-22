@@ -6,6 +6,11 @@ import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+if TYPE_CHECKING:
+    import numpy as np
+
+    from strands_robots.rendering import CameraParams
+
 from strands_robots.simulation.mujoco.backend import (
     _NO_WORLD_MSG,
     _can_render,
@@ -1122,6 +1127,161 @@ class RenderingMixin:
         except Exception as e:
             return {"status": "error", "content": [{"text": f"Depth render failed: {e}"}]}
 
+    def get_frame(
+        self, camera_name: str = "default", width: int | None = None, height: int | None = None
+    ) -> "tuple[np.ndarray, np.ndarray]":
+        """Render a camera to raw ``(rgb, depth)`` ndarrays (metric depth).
+
+        Programmatic counterpart of :meth:`render` / :meth:`render_depth`
+        (which wrap pixels in the agent-tool PNG envelope): returns the raw
+        ``(H, W, 3) uint8`` RGB frame and the ``(H, W) float32`` metric depth
+        buffer in meters, pixel-aligned, for in-process consumers such as
+        :class:`strands_robots.rendering.HybridCompositor`.
+
+        Depth semantics match :meth:`render_depth`: MuJoCo >= 3.2 returns
+        metric meters directly; NaN/inf are sanitized to the far clip
+        (``model.vis.map.zfar * model.stat.extent``) and values are clipped to
+        ``[0, zfar]`` -- so "sky" pixels are pinned to the far plane.
+
+        Holds ``self._lock`` for the render (scene read). The GL renderer is
+        cached per-thread (``_renderer_tls``), so this may be called from any
+        thread, but each calling thread pays its own GL-context cost -- prefer
+        a consistent render thread.
+
+        Args:
+            camera_name: named camera, or the free-camera tokens
+                (``None`` / ``""`` / ``"default"`` / ``"free"``).
+            width: image width; ``None`` uses the camera's configured
+                resolution (falling back to the engine default).
+            height: image height; ``None`` uses the camera's configured
+                resolution.
+
+        Returns:
+            ``(rgb, depth)`` -- ``(H, W, 3) uint8`` and ``(H, W) float32``.
+
+        Raises:
+            RuntimeError: no world created, or no GL context available.
+            KeyError: unknown camera name.
+            ValueError: invalid render dimensions.
+        """
+        if self._world is None or self._world._model is None or self._world._data is None:
+            raise RuntimeError(_NO_WORLD_MSG)
+
+        mj = _ensure_mujoco()
+        cam_cfg = self._world.cameras.get(camera_name) if camera_name not in (None, "", "default", "free") else None
+        w = (cam_cfg.width if cam_cfg is not None else self.default_width) if width is None else width
+        h = (cam_cfg.height if cam_cfg is not None else self.default_height) if height is None else height
+        if err := self._validate_render_dims(w, h):
+            raise ValueError(err["content"][0]["text"])
+
+        import numpy as _np
+
+        with self._lock:
+            renderer = self._get_renderer(w, h)
+            if renderer is None:
+                raise RuntimeError(
+                    "Rendering unavailable (no OpenGL context). "
+                    "Install EGL or OSMesa for offscreen rendering: apt-get install libosmesa6-dev"
+                )
+            if camera_name in (None, "", "default", "free"):
+                cam_id = -1
+            else:
+                cam_id = mj.mj_name2id(self._world._model, mj.mjtObj.mjOBJ_CAMERA, camera_name)
+                if cam_id < 0:
+                    raise KeyError(f"Camera '{camera_name}' not found. Available: {self._list_camera_names()}")
+
+            scene_option = self._get_viz_option()
+            if cam_id >= 0:
+                renderer.update_scene(self._world._data, camera=cam_id, scene_option=scene_option)
+            else:
+                renderer.update_scene(self._world._data, scene_option=scene_option)
+            rgb = renderer.render().copy()
+
+            renderer.enable_depth_rendering()
+            try:
+                depth = renderer.render().copy()
+            finally:
+                renderer.disable_depth_rendering()
+
+            # Same sanitization as render_depth(): MuJoCo >= 3.2 depth is
+            # already metric meters; only scrub NaN/inf and clamp to [0, zfar].
+            extent = float(self._world._model.stat.extent)
+            zfar = float(self._world._model.vis.map.zfar) * extent
+
+        depth_m = _np.asarray(depth, dtype=_np.float32)
+        depth_m = _np.nan_to_num(depth_m, nan=zfar, posinf=zfar, neginf=0.0)
+        depth_m = _np.clip(depth_m, 0.0, zfar)
+        return _np.asarray(rgb, dtype=_np.uint8), depth_m
+
+    def get_camera_params(
+        self, camera_name: str = "default", width: int | None = None, height: int | None = None
+    ) -> "CameraParams":
+        """Return pinhole :class:`~strands_robots.rendering.CameraParams`.
+
+        Intrinsics ``K`` come from the camera's vertical FOV
+        (``model.cam_fovy``, square pixels, principal point at the image
+        center); the world-from-camera pose comes from
+        ``data.cam_xpos`` / ``data.cam_xmat``. MuJoCo's camera basis already
+        matches the OpenGL optical convention (+X right, +Y up, -Z forward),
+        so the pose maps across without correction. Clip planes are
+        ``model.vis.map.{znear,zfar} * model.stat.extent``.
+
+        Holds ``self._lock`` and forward-steps kinematics (``mj_forward``, a
+        write to ``mj_data``) so freshly placed cameras have a valid pose even
+        before the first ``step()``.
+
+        Args:
+            camera_name: a named camera. The free camera has no model-fixed
+                pose and is rejected with ``ValueError``.
+            width: image width to compute ``K`` for; ``None`` uses the
+                camera's configured resolution.
+            height: image height to compute ``K`` for.
+
+        Raises:
+            RuntimeError: no world created.
+            ValueError: free camera requested.
+            KeyError: unknown camera name.
+        """
+        if self._world is None or self._world._model is None or self._world._data is None:
+            raise RuntimeError(_NO_WORLD_MSG)
+        if camera_name in (None, "", "default", "free"):
+            raise ValueError(
+                "The free camera has no model-fixed pose/intrinsics; use a named camera added via add_camera()."
+            )
+
+        mj = _ensure_mujoco()
+        import numpy as _np
+
+        from strands_robots.rendering import CameraParams
+
+        model = self._world._model
+        cam_id = mj.mj_name2id(model, mj.mjtObj.mjOBJ_CAMERA, camera_name)
+        if cam_id < 0:
+            raise KeyError(f"Camera '{camera_name}' not found. Available: {self._list_camera_names()}")
+
+        cam_cfg = self._world.cameras.get(camera_name)
+        w = (cam_cfg.width if cam_cfg is not None else self.default_width) if width is None else int(width)
+        h = (cam_cfg.height if cam_cfg is not None else self.default_height) if height is None else int(height)
+
+        with self._lock:
+            # Make sure cam_xpos / cam_xmat reflect the latest qpos (a WRITE
+            # to mj_data -- hence the lock).
+            mj.mj_forward(model, self._world._data)
+            R = self._world._data.cam_xmat[cam_id].reshape(3, 3).copy()
+            t = self._world._data.cam_xpos[cam_id].copy()
+            fovy_deg = float(model.cam_fovy[cam_id])
+            extent = float(model.stat.extent)
+            znear = extent * float(model.vis.map.znear)
+            zfar = extent * float(model.vis.map.zfar)
+
+        fy = 0.5 * h / _np.tan(_np.deg2rad(fovy_deg) / 2.0)
+        fx = fy  # MuJoCo uses square pixels; intrinsics from vertical FOV are symmetric.
+        K = _np.array([[fx, 0.0, 0.5 * w], [0.0, fy, 0.5 * h], [0.0, 0.0, 1.0]], dtype=_np.float64)
+        T_world_cam = _np.eye(4, dtype=_np.float64)
+        T_world_cam[:3, :3] = R
+        T_world_cam[:3, 3] = t
+        return CameraParams(K=K, T_world_cam=T_world_cam, width=w, height=h, znear=znear, zfar=zfar)
+
     def _list_camera_names(self) -> list[str]:
         """helper to list all camera names (model-defined + SimCamera aliases)
         for error messages when an unknown camera_name is requested."""
@@ -1636,13 +1796,7 @@ class RenderingMixin:
         import os as _os
         import time as _time
 
-        try:
-            import imageio.v2 as imageio
-        except ImportError:
-            return {
-                "status": "error",
-                "content": [{"text": "imageio not installed. pip install imageio imageio-ffmpeg"}],
-            }
+        from strands_robots.rendering.video import encode_clip
 
         elapsed = _time.time() - state["started_at"]
         lines = [
@@ -1657,13 +1811,16 @@ class RenderingMixin:
             frames_written = 0
             size_kb = 0.0
             if frames_buffer:
-                writer = imageio.get_writer(path, fps=state["fps"], quality=8, macro_block_size=1)
+                # Shared encoder (strands_robots.rendering.video, issue #1537);
+                # same imageio/libx264 invocation as the previous inline writer.
                 try:
-                    for arr in frames_buffer:
-                        writer.append_data(arr)
-                        frames_written += 1
-                finally:
-                    writer.close()
+                    encode_clip(frames_buffer, path, fps=state["fps"])
+                except ImportError:
+                    return {
+                        "status": "error",
+                        "content": [{"text": "imageio not installed. pip install imageio imageio-ffmpeg"}],
+                    }
+                frames_written = len(frames_buffer)
                 if _os.path.exists(path):
                     size_kb = _os.path.getsize(path) / 1024
             lines.append(
