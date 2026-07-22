@@ -11,7 +11,9 @@ equivalent from the ``omni.isaac.sensor.Camera`` handle that
 
 * ``camera.get_intrinsics_matrix()`` -> ``K``
 * ``camera.get_world_pose()`` -> ``(position, quaternion)`` -> ``T_world_cam``
-* ``sim.render(camera_name)`` (#62) -> RGB + metric depth
+* ``sim._render_frame(camera_name)`` -> raw RGB + metric depth (the
+  public ``sim.render()`` returns only the ``{status, content}``
+  tool-result envelope; see TODO(#1537) on :func:`render_rgb_and_depth`)
 
 Isaac's USD camera convention matches the OpenGL convention the
 background renderers expect (+X right, +Y up, **-Z forward**), so the
@@ -131,18 +133,26 @@ def get_camera_params(
 def render_rgb_and_depth(sim: "object", camera_name: str) -> "tuple[np.ndarray, np.ndarray]":
     """Render the Isaac RTX foreground RGB + metric depth for a camera.
 
-    Thin wrapper over ``sim.render(camera_name)`` (#62) that normalises
-    the envelope into ``(rgb_uint8_HxWx3, depth_float32_HxW)``.
+    Thin wrapper over ``IsaacSimulation._render_frame(camera_name)`` that
+    normalises the raw frame into ``(rgb_uint8_HxWx3, depth_float32_HxW)``.
+
+    TODO(#1537): ``_render_frame`` is a private helper -- the public
+    ``sim.render()`` returns only the ``{status, content}`` tool-result
+    envelope (raw arrays are forbidden as top-level keys), and there is no
+    public API today that yields the raw ``(rgb, depth)`` pair. The GS-layer
+    library refactor (#1537) adds a public raw-frame API
+    (``get_frame``-style); switch to it and drop this private reach-through
+    when it lands.
 
     Pixels with no geometry (sky / background) come back from Isaac as
     very large / inf depth; the compositor treats those as "see the
     background through here".
     """
-    result = sim.render(camera_name=camera_name)
-    if result.get("status") != "success":
-        raise RuntimeError(f"sim.render({camera_name!r}) failed: {result}")
-    rgb = np.asarray(result["rgb"])
+    rgb, depth, meta = sim._render_frame(camera_name=camera_name)
+    if rgb is None:
+        raise RuntimeError(f"_render_frame({camera_name!r}) failed: {meta.get('error', meta)}")
+    rgb = np.asarray(rgb)
     if rgb.ndim == 3 and rgb.shape[2] == 4:
         rgb = rgb[..., :3]
-    depth = np.asarray(result["depth"], dtype=np.float32)
+    depth = np.asarray(depth, dtype=np.float32)
     return rgb.astype(np.uint8), depth
