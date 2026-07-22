@@ -708,7 +708,7 @@ class SpecBuilder:
         # ``create_world(ground_plane=...)``) is the single source of truth;
         # robots contribute only their own bodies/joints/actuators. See #320.
         #
-        # Three guards from the #360 review (#363):
+        # Three guards keep this strip safe:
         #   1. Conditional strip -- only remove the robot's floor when the world
         #      actually owns a ground plane to replace it. Under
         #      ``create_world(ground_plane=False)`` the world has no ground, so

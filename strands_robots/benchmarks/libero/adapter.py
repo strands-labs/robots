@@ -490,8 +490,7 @@ class LiberoAdapter(BenchmarkProtocol):
         # first observation are then visually identical (#168 bug D-residual).
         self._episode_count: int = 0
         # Snapshot-and-restore fallback for procedurally-generated MJCFs that
-        # don't ship a <keyframe> (the case the post-#168 verification
-        # exposed). Captured on the first episode after super() +
+        # don't ship a <keyframe>. Captured on the first episode after super() +
         # _install_libero_cameras have run; replayed on every subsequent
         # episode so qpos/qvel land on the same canonical state every time.
         self._canonical_qpos: np.ndarray | None = None
@@ -518,7 +517,7 @@ class LiberoAdapter(BenchmarkProtocol):
         # (#168) so a single eval run captures both sides of the
         # policy interface for offline bisection.
         #
-        # #168 verification showed ``arm_qpos`` advances and
+        # In practice ``arm_qpos`` advances and
         # ``eef_pos`` tracks deltas, but the policy is commanding tiny
         # deltas (~0.01 in [-1, +1] normalized space). The remaining
         # `success_rate=0` is on the state-input side - GR00T sees an
@@ -749,7 +748,7 @@ class LiberoAdapter(BenchmarkProtocol):
            compiled model so the static-pose fallbacks only fire when the
            scene genuinely didn't provide them - this matters for not
            recompiling the spec on top of our just-restored canonical
-           state (#166 review finding).
+           state.
         6. ``_install_render_options`` - populate
            ``sim._world._backend_state["viz_option"]`` with an
            ``mjvOption`` matching upstream LIBERO's
@@ -908,8 +907,8 @@ class LiberoAdapter(BenchmarkProtocol):
         # Apply canonical state RIGHT AFTER load_scene + pre-register so
         # the snapshot captures the post-load + post-add_robot state -
         # before super() and install_cameras get a chance to do anything
-        # else (#166 review: snapshot taken at the wrong lifecycle point
-        # was the prior round's failure mode).
+        # else. Snapshotting at the wrong lifecycle point would capture
+        # a non-canonical restore state.
         #
         # Always runs - including on the prewarm-fresh-ep0 fast-path
         # (#168 user-flagged fix). The fast-path used to skip
@@ -1218,9 +1217,8 @@ class LiberoAdapter(BenchmarkProtocol):
         # main-thread render on the same camera primes that shared
         # state so the recorder thread's first call lands warm.
         #
-        # Rounds 11-13 attempted thread-side warmup loops, which
-        # #168 verification showed don't help (GL context is
-        # thread-bound and the per-thread Renderer is cold). The
+        # Thread-side warmup loops don't help here: the GL context is
+        # thread-bound and the per-thread Renderer is cold. The
         # main-thread approach here is different: it primes the
         # process-shared driver state, not the per-thread Renderer.
         # If the driver state assumption is wrong (no shared state),
@@ -1336,7 +1334,7 @@ class LiberoAdapter(BenchmarkProtocol):
             # bumps ``nq`` past what the LIBERO ``init_states[0]`` was
             # sized for, and prewarm silently no-ops here. Visible at
             # WARNING level, users can spot the mistake without enabling
-            # debug logging (#168 verification).
+            # debug logging.
             logger.warning(
                 "LiberoAdapter.prewarm: init_state[0] width %d != 1+nq+nv=%d; skipping init-state apply. "
                 "This usually means sim.add_robot (or another spec-recompiling call) ran between "
@@ -1899,10 +1897,10 @@ class LiberoAdapter(BenchmarkProtocol):
         if self._scene_camera_aliases:
             xml = _rename_mjcf_cameras(xml, self._scene_camera_aliases)
 
-        # #168 used to apply ``_apply_libero_visual_fixes(xml)`` here -
-        # rgba alpha=0 on collision geoms + a custom ``<visual>`` block
-        # with a stacked ``<headlight>``. #168 verification showed that
-        # was the wrong direction:
+        # An earlier version applied ``_apply_libero_visual_fixes(xml)``
+        # here - rgba alpha=0 on collision geoms + a custom ``<visual>``
+        # block with a stacked ``<headlight>`` - but that was the wrong
+        # direction:
         #
         # * Upstream LIBERO's ``OffScreenRenderEnv`` emits exactly
         #   ``<visual><map znear="0.001"/></visual>`` (verified
@@ -2324,7 +2322,7 @@ class LiberoAdapter(BenchmarkProtocol):
         gripper). Without this controller, ``_apply_sim_action`` looks
         up GR00T's action keys by name in the model's actuator/joint
         tables, finds no match, and silently drops every action - the
-        policy effectively sends zero torque (#168 verification).
+        policy effectively sends zero torque.
 
         This installs a :class:`_LiberoOSCController` instance in
         ``world._backend_state["action_controller"]``. The rendering
@@ -3685,7 +3683,6 @@ class _LiberoOSCController:
         # substeps per policy action. Mismatch ⇒ the OSC controller
         # under-/over-shoots its delta target every step, manifesting as
         # `success_rate=0` even though motion looks correct in cameras.
-        # See PR #168 (verification then fix in subsequent commits).
         self.physics_substeps_per_control = max(1, int(physics_substeps_per_control))
 
         # Stateful ``current_action`` for the gripper, mirroring
@@ -3718,8 +3715,8 @@ class _LiberoOSCController:
         # log line per ``apply()`` call for the first
         # ``STRANDS_LIBERO_ACTION_LOG_MAX`` (default 50) calls per
         # episode. Captures action keys, delta scale, gripper polarity,
-        # EEF tracking, and qpos/ctrl deltas - answers the diagnostic
-        # questions in PR #168 verification.
+        # EEF tracking, and qpos/ctrl deltas - surfaces the diagnostic
+        # signals for offline bisection.
         self._action_log_enabled = os.environ.get("STRANDS_LIBERO_ACTION_LOG", "").strip().lower() in (
             "1",
             "true",
@@ -3899,7 +3896,7 @@ class _LiberoOSCController:
         # ``mujoco.MjData(model)`` accessible at ``sim_shim.data._data``.
         # That fresh data buffer is DISCONNECTED from our sim's
         # actual ``data`` - the controller would compute torques from
-        # a stale, never-stepped buffer (#168 verification).
+        # a stale, never-stepped buffer.
         # Hot-patch ``sim_shim.data._data`` to point at our actual
         # data so ``controller.run_controller()`` reads/writes the
         # same buffer the eval is stepping.

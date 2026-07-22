@@ -1461,21 +1461,14 @@ class RenderingMixin:
             # render calls per camera return the GL clear-colour
             # gradient before the context settles.
             #
-            # History: rounds 11/12/13 added thread-side warmup; round
-            # 14 reverted because the load-scene-without-mj_forward
-            # bug was bigger. #168 fixed mj_forward in load_scene,
-            # which made warmup unnecessary IN THE SLOW PATH. Round
-            # 17's prewarm-fresh-ep0 fast-path skips load_scene,
-            # leaving no per-recorder-thread render before capture.
-            # #168 tried main-thread warmup (thread-isolation
-            # made it ineffective). #168 re-applied the
-            # 2-pass thread-side warmup. #168 verification showed
-            # 2 passes was insufficient: image channel stayed cold for
-            # ~15 frames while wrist cleared at frame 3 - per-camera
-            # warmup latency varies across cameras (likely GPU
-            # command-buffer flush ordering).
-            #
-            # #168 (this code): replace fixed-pass warmup with an
+            # A fixed number of warmup passes is not enough: the image
+            # channel can stay cold for ~15 frames while the wrist
+            # camera clears by frame 3, because per-camera warmup
+            # latency varies across cameras (likely GPU command-buffer
+            # flush ordering). A main-thread warmup does not help
+            # either - the GL context is thread-bound, so priming the
+            # main thread leaves this daemon thread cold. So replace
+            # the fixed-pass warmup with an
             # adaptive warmup loop. Render each camera until it
             # produces output with column-stddev above the cold-
             # gradient threshold. The cold gradient artifact is uniform
