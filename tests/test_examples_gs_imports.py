@@ -20,7 +20,7 @@ import pytest
 
 def test_mujoco_gs_shims_reexport_library_layer() -> None:
     pkg = importlib.import_module("examples.mujoco_gs")
-    import strands_robots.rendering as rendering
+    from strands_robots import rendering
 
     # Background + camera layer come straight from the library.
     assert pkg.BackgroundRenderer is rendering.BackgroundRenderer
@@ -34,7 +34,7 @@ def test_mujoco_gs_shims_reexport_library_layer() -> None:
 
 def test_isaac_gs_shims_reexport_library_layer() -> None:
     pkg = importlib.import_module("examples.isaac_gs")
-    import strands_robots.rendering as rendering
+    from strands_robots import rendering
 
     assert pkg.IsaacCameraParams is rendering.CameraParams
     assert issubclass(pkg.IsaacHybridCompositor, rendering.HybridCompositor)
@@ -74,7 +74,7 @@ def test_gs_shim_modules_do_not_import_heavy_deps_at_load() -> None:
 
 
 def test_library_rendering_package_has_no_private_exports() -> None:
-    import strands_robots.rendering as rendering
+    from strands_robots import rendering
 
     private = [name for name in rendering.__all__ if name.startswith("_")]
     assert private == []

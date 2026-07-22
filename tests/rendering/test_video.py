@@ -62,7 +62,9 @@ def test_mjpeg_frames_resizes_to_requested_size() -> None:
     frame = np.zeros((8, 8, 3), dtype=np.uint8)
     (chunk,) = list(mjpeg_frames(lambda: frame, fps=1000.0, size=(16, 12), max_frames=1))
     jpeg = chunk.split(b"\r\n\r\n", 1)[1].rstrip(b"\r\n")
-    assert Image.open(io.BytesIO(jpeg)).size == (16, 12)
+    with Image.open(io.BytesIO(jpeg)) as img:
+        size = img.size
+    assert size == (16, 12)
 
 
 def test_mjpeg_frames_strict_reraises_frame_errors() -> None:

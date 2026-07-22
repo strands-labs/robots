@@ -61,11 +61,13 @@ class FrameSource(Protocol):
 
     def get_frame(
         self, camera_name: str = "default", width: int | None = None, height: int | None = None
-    ) -> tuple[np.ndarray, np.ndarray | None]: ...
+    ) -> tuple[np.ndarray, np.ndarray | None]:
+        """Return an ``(rgb, depth)`` pair for the named camera."""
 
     def get_camera_params(
         self, camera_name: str = "default", width: int | None = None, height: int | None = None
-    ) -> CameraParams: ...
+    ) -> CameraParams:
+        """Return the intrinsics/extrinsics for the named camera."""
 
 
 @dataclass
