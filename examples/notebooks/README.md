@@ -12,6 +12,12 @@ uv pip install "strands-robots[sim-mujoco,lerobot]" jupyterlab
 jupyter lab
 ```
 
+> **Notebook 5's bucket path needs `strands-robots >= 0.4.2`** (the
+> `stop_recording(bucket=...)` / `stream_dataset(..., repo_type="bucket")`
+> APIs are not in the 0.4.1 PyPI release). Until v0.4.2 is on PyPI, install
+> from git instead:
+> `uv pip install "strands-robots[sim-mujoco,lerobot] @ git+https://github.com/strands-labs/robots"`
+
 On macOS the notebooks set `MUJOCO_GL=cgl` for offscreen rendering; everywhere
 else (e.g. headless Linux) they default to `egl`. An exported `MUJOCO_GL`
 always wins.
@@ -24,7 +30,7 @@ always wins.
 | 2 | [`02_record_and_stream.ipynb`](02_record_and_stream.ipynb) | Record a LeRobotDataset, then stream it back with `stream_dataset()` |
 | 3 | [`03_record_train_deploy.ipynb`](03_record_train_deploy.ipynb) | The full loop: record, train an ACT policy on CPU, export, and load it back |
 | 4 | [`04_discover_lerobot.ipynb`](04_discover_lerobot.ipynb) | Discover the LeRobot API with `use_lerobot`: list robots, policies, teleoperators, cameras, and inspect any class |
-| 5 | [`05_streaming_data_loop.ipynb`](05_streaming_data_loop.ipynb) | The streaming data loop: record, render, stream back, train, and load, in one notebook (the optional Storage Bucket sync needs LeRobot >= 0.6.1) |
+| 5 | [`05_streaming_data_loop.ipynb`](05_streaming_data_loop.ipynb) | The streaming data loop: record, render, stream back, train, and load, in one notebook (the optional Storage Bucket sync needs `strands-robots >= 0.4.2` + LeRobot >= 0.6.1) |
 
 Read them in order; each builds on the previous one. Notebook 3 trains a real
 policy on CPU with a tiny dataset and two steps - raise the step count and run on

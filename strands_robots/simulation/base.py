@@ -551,9 +551,9 @@ class SimEngine(ABC):
         Default ``0.0`` -- a flat ground plane, and any backend without a
         heightfield. The MuJoCo backend overrides this to sample a
         ``create_world(terrain=...)`` heightfield so that height-based locomotion
-        predicates (:func:`~strands_robots.simulation.predicates.base_below_z`)
-        measure a base's clearance above the *local* ground instead of an
-        absolute world z -- an absolute test silently misses a collapse on a
+        predicates (``base_below_z``) measure a base's clearance above the
+        *local* ground instead of an absolute world z -- an absolute test
+        silently misses a collapse on a
         raised terrain plateau (the base still sits above a flat-ground
         threshold). Not a public tool action.
         """
@@ -570,12 +570,13 @@ class SimEngine(ABC):
         at a flat-ground ``z`` (computed as if the support were at ``z=0``) on a
         raised plateau spawns *buried* in the heightfield and sinks through
         instead of resting on it. The same local-height sampler already backs the
-        terrain-relative locomotion predicates
-        (:func:`~strands_robots.simulation.predicates.base_below_z`) and the
+        terrain-relative locomotion predicates (``base_below_z``) and the
         spawn/reset base-seating; this exposes it as a facade query.
 
-        Returns ``0.0`` for a flat ground plane and for any backend without a
-        heightfield, so a non-terrain world reports a flat surface.
+        Returns ``0.0`` for a flat ground plane, for any backend without a
+        heightfield, and before ``create_world`` (a world-less engine has no
+        terrain), so a non-terrain -- or not-yet-built -- world reports a flat
+        surface rather than raising, unlike the world-scoped physics queries.
 
         Args:
             x: World x coordinate. Any object convertible to ``float``
@@ -1920,7 +1921,15 @@ class SimEngine(ABC):
                 pattern and produces 2-3% frame-capture rates with
                 greenish GL clear-colour artifacts. Pair with
                 :meth:`~strands_robots.simulation.mujoco.simulation.Simulation.start_cameras_recording_synchronous`
-                for the recorder side. See #191.
+                for the recorder side. See #191. Raising
+                :class:`~strands_robots.simulation.policy_runner.CooperativeStop`
+                from the hook ends the benchmark gracefully after the
+                episodes completed so far - the result json carries
+                ``stopped_early=True`` and ``episodes_completed`` (matching
+                :meth:`run_policy` / :meth:`eval_policy`); any in-progress
+                episode's partial video is closed cleanly and is NOT listed
+                in ``video_paths``. A non-``CooperativeStop`` hook exception
+                is logged at WARN and never aborts the eval.
             policy_kwargs: Per-call goal payload forwarded verbatim to every
                 ``policy.get_actions(obs, instruction, **policy_kwargs)`` call
                 (same contract as :meth:`run_policy` / :meth:`eval_policy`).

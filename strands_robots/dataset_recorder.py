@@ -33,14 +33,16 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 
-# Every LeRobot surface in the supported ``>=0.5.0,<0.6.0`` range validates the
-# codec against the same codec-name allowlist - ``video_utils.VALID_VIDEO_CODECS
-# = {"h264", "hevc", "libsvtav1", "auto"} | HW_ENCODERS`` - and *rejects* the
-# ffmpeg library names ("libx264"/"libx265"). This holds for the flat ``vcodec``
-# kwarg (0.5.0/0.5.1) just as much as for the ``RGBEncoderConfig`` /
-# ``VideoEncoderConfig`` surfaces a later minor may expose. So there is exactly
-# one correct normalization direction: ffmpeg name -> codec name, applied to
-# whichever surface is present. Callers may pass either spelling.
+# Every LeRobot codec surface validates the requested codec against the same
+# codec-name allowlist - ``configs.video.VALID_VIDEO_CODECS = {"h264", "hevc",
+# "libsvtav1", "libaom-av1", "auto"} | HW_VIDEO_CODECS`` - and *rejects* the
+# ffmpeg library names ("libx264"/"libx265"). This holds for the current
+# ``rgb_encoder=RGBEncoderConfig(vcodec=...)`` surface (lerobot >=0.6.0,<0.7.0,
+# the supported range) exactly as it did for the flat ``vcodec`` kwarg and the
+# interim ``camera_encoder=VideoEncoderConfig(...)`` surface the tolerant
+# routing below still handles. So there is exactly one correct normalization
+# direction: ffmpeg name -> codec name, applied to whichever surface is present.
+# Callers may pass either spelling.
 _ENCODER_CODEC_NAMES = {"libx264": "h264", "libx265": "hevc"}
 
 
@@ -55,16 +57,16 @@ def _codec_create_kwargs(sig_params: Any, vcodec: str, *, context: str = "create
       * 0.5.0 / 0.5.1: a flat ``create/resume(..., vcodec=...)`` kwarg.
       * an interim build briefly exposed
         ``camera_encoder=VideoEncoderConfig(vcodec=...)``.
-      * a later minor may move the codec into
+      * lerobot >= 0.6 (the supported range) moved the codec into
         ``rgb_encoder=RGBEncoderConfig(vcodec=...)``.
 
     Every one of these surfaces validates against LeRobot's codec-name allowlist
-    (``{"h264", "hevc", "libsvtav1", "auto"} | HW_ENCODERS``) and rejects the
-    ffmpeg library names ("libx264"/"libx265"). So the codec is normalized to its
-    codec-name spelling once and routed onto whichever surface is present. The
-    caller may pass either spelling ("h264" or "libx264"). An unknown codec
-    raises loudly (LeRobot's own ValueError) rather than silently falling back
-    to the default.
+    (``{"h264", "hevc", "libsvtav1", "libaom-av1", "auto"} | HW_VIDEO_CODECS``)
+    and rejects the ffmpeg library names ("libx264"/"libx265"). So the codec is
+    normalized to its codec-name spelling once and routed onto whichever surface
+    is present. The caller may pass either spelling ("h264" or "libx264"). An
+    unknown codec raises loudly (LeRobot's own ValueError) rather than silently
+    falling back to the default.
 
     Args:
         sig_params: ``inspect.Signature.parameters`` of ``create``/``resume``.
@@ -137,6 +139,42 @@ def _hf_executable() -> str | None:
     return shutil.which("hf")
 
 
+def _huggingface_hub_version_error() -> str | None:
+    """Return an actionable error message if ``huggingface_hub`` is too old for bucket sync.
+
+    The ``hf buckets`` / ``hf sync`` subcommands ship in huggingface_hub>=1.0.
+    On older releases (e.g. the 0.36.x stable line) the ``hf`` binary exists,
+    so :func:`_hf_executable` succeeds, but the subcommands fail with argparse
+    usage noise ("invalid choice: 'buckets'") that gives no hint the fix is an
+    upgrade. Version-checking the installed package up front turns that noise
+    into a clear upgrade instruction without spawning a subprocess.
+
+    Returns ``None`` (no error) when:
+
+    - the installed version is >= 1.0, or
+    - ``huggingface_hub`` is not importable in this interpreter (the ``hf``
+      binary may come from a different environment on PATH whose version we
+      cannot see; the normal subprocess error path still applies), or
+    - the version string is unparseable (fail open rather than block a
+      possibly-capable CLI on a cosmetic version format).
+    """
+    try:
+        import huggingface_hub
+    except ImportError:
+        return None
+
+    version = getattr(huggingface_hub, "__version__", "")
+    match = re.match(r"(\d+)\.(\d+)", version)
+    if match is None:
+        return None
+    if (int(match.group(1)), int(match.group(2))) >= (1, 0):
+        return None
+    return (
+        f"bucket sync requires huggingface_hub>=1.0 (`hf buckets`/`hf sync`); "
+        f"installed: {version}. pip install -U 'huggingface_hub>=1.0'."
+    )
+
+
 def sync_dataset_to_bucket(
     root: str | Path,
     bucket: str,  # "my-org/robot-fave"
@@ -191,6 +229,13 @@ def sync_dataset_to_bucket(
             "status": "error",
             "message": "`hf` CLI not found. pip install -U huggingface_hub (>=1.x) and run `hf auth login`.",
         }
+
+    # `hf buckets` / `hf sync` need huggingface_hub>=1.0; on 0.x the CLI
+    # exists but rejects those subcommands with argparse noise. Gate on the
+    # installed package version so users get an upgrade instruction instead.
+    version_error = _huggingface_hub_version_error()
+    if version_error is not None:
+        return {"status": "error", "message": version_error}
 
     if not _BUCKET_RE.match(bucket):
         return {

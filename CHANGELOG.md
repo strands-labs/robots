@@ -5,6 +5,24 @@ All notable behavioural changes to `strands-robots` are logged here. Follows
 
 ## [Unreleased]
 
+### Docs: streaming-data-loop notebook states the minimum `strands-robots` version for the bucket path
+
+The streaming-data-loop notebook (`examples/notebooks/05_streaming_data_loop.ipynb`,
+the in-repo counterpart of the storage-buckets blog draft) told readers to
+`pip install "strands-robots[sim-mujoco,lerobot]"` -- but the bucket APIs it
+demonstrates (`stop_recording(bucket=...)`, `sync_to_bucket`,
+`stream_dataset(..., repo_type="bucket")`) exist only at git HEAD: on the
+latest PyPI release (0.4.1) `StreamingDatasetReader.open()` has no `repo_type`
+parameter, so the notebook's headline snippet raises `TypeError`, and 0.4.1
+pins `lerobot<0.6.0`, below the 0.6.1 floor bucket streaming needs. The
+notebook's Requirements cell and the notebooks index now state the minimum
+`strands-robots >= 0.4.2` and give the
+`pip install "strands-robots[sim-mujoco,lerobot] @ git+https://github.com/strands-labs/robots"`
+install line to use until the v0.4.2 tag is published to PyPI. A new test
+(`tests/test_notebook_min_version_docs.py`) pins the min-version statement and
+forbids the version-less install guidance from creeping back. Cutting the
+v0.4.2 tag itself is tracked in issue #1500.
+
 ### Docs: document the six remaining undocumented dispatchable sim actions
 
 `get_state`, `list_objects`, `remove_object`, `reset`, `set_timestep`, and
