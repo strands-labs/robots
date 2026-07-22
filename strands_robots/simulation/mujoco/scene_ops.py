@@ -500,6 +500,178 @@ def eject_robot_from_scene(world: SimWorld, robot_name: str) -> bool:
     return True
 
 
+# Runtime attach / actuate primitives (GH #1533, PR 1)
+
+
+def add_weld_constraint(
+    world: SimWorld,
+    *,
+    name: str,
+    parent: str,
+    child: str,
+    relpos: list[float],
+    relquat: list[float],
+    torquescale: float = 1.0,
+) -> bool:
+    """Add a named weld equality constraint between two bodies and recompile.
+
+    ``relpos`` / ``relquat`` are the pose of ``child`` expressed in ``parent``'s
+    frame - callers capture the CURRENT runtime relative pose so the weld holds
+    the bodies exactly where they are (MuJoCo's all-zero ``relpose`` quat would
+    instead bake in the compile-time ``qpos0`` pose, which is wrong for a
+    runtime grasp-attach). The equality is stored on the live spec so it
+    survives later recompiles (``add_object`` etc.).
+
+    Returns ``True`` on success. On recompile failure the just-added equality
+    is deleted again so the spec stays compilable, and ``False`` is returned.
+    """
+    spec = _get_spec(world)
+    if spec is None or world._model is None:
+        logger.error("add_weld_constraint: no spec or model in world")
+        return False
+    mj = _ensure_mujoco()
+
+    eq = spec.add_equality()
+    eq.name = name
+    eq.type = mj.mjtEq.mjEQ_WELD
+    eq.objtype = mj.mjtObj.mjOBJ_BODY
+    eq.name1 = parent
+    eq.name2 = child
+    # mjEQ_WELD data layout (mjNEQDATA=11): [anchor(3), relpose pos(3),
+    # relpose quat(4), torquescale(1)]. anchor stays zero - relpose fully
+    # determines the held configuration.
+    data = [0.0] * 11
+    data[3:6] = [float(v) for v in relpos]
+    data[6:10] = [float(v) for v in relquat]
+    data[10] = float(torquescale)
+    eq.data = data
+
+    if not _recompile_preserving_state(world, spec):
+        spec.delete(eq)
+        return False
+    return True
+
+
+def remove_equality_constraint(world: SimWorld, name: str) -> bool:
+    """Delete a named equality constraint from the live spec and recompile.
+
+    Returns ``False`` (logged) when the constraint is missing or the recompile
+    fails, so callers can surface a clean error instead of a silent no-op.
+    """
+    spec = _get_spec(world)
+    if spec is None or world._model is None:
+        logger.error("remove_equality_constraint: no spec or model in world")
+        return False
+    for eq in spec.equalities:
+        if eq.name == name:
+            spec.delete(eq)
+            return _recompile_preserving_state(world, spec)
+    logger.warning("Equality constraint '%s' not found in spec - nothing removed", name)
+    return False
+
+
+def actuate_robot_in_scene(
+    world: SimWorld,
+    robot: SimRobot,
+    kp_by_joint: dict[str, float],
+    *,
+    damping: float,
+    armature: float,
+    gravity_compensation: bool,
+    disable_self_collision: bool,
+) -> bool:
+    """Add position-servo actuators to a robot's joints and recompile.
+
+    The supported form of the private-spec surgery the ``so101_curobo`` example
+    performed by hand (GH #1533): converts an actuator-less (URDF-loaded) arm
+    into a position-controlled one so ``send_action`` / ``run_policy`` can
+    drive it. Per joint in ``kp_by_joint`` (SHORT joint names, values = kp):
+
+    * a position actuator (``set_to_position``: fixed gain kp, affine bias with
+      ``dampratio=1.0`` for ~critical damping, ctrlrange inherited from the
+      joint's range when it declares one),
+    * joint ``damping`` / ``armature`` floors (bare URDFs ship none, which
+      blows up explicit integration),
+
+    plus, scene-wide, the stable ``implicitfast`` integrator, and optionally
+    gravity compensation on the robot's bodies and self-collision disable on
+    the robot's own geoms (cuRobo-style planners ignore adjacent-link
+    contacts, which otherwise block planned motion).
+
+    Atomicity: the spec is snapshotted (XML round-trip) before surgery; any
+    failure restores the snapshot so no partial edit (integrator flip, gravcomp,
+    half the actuators) lingers on the live spec. Returns ``True`` on success.
+    """
+    spec = _get_spec(world)
+    if spec is None or world._model is None:
+        logger.error("actuate_robot_in_scene: no spec or model in world")
+        return False
+    mj = _ensure_mujoco()
+    pfx = robot.namespace or ""
+
+    # Snapshot for atomic rollback (mirrors patch_scene_mjcf): the surgery
+    # touches option/bodies/joints/actuators/geoms, too many objects to undo
+    # piecewise.
+    try:
+        with filter_mujoco_attach_noise():
+            backup_xml = spec.to_xml()
+    except Exception as e:  # pragma: no cover - to_xml on a compiled spec is fine
+        logger.error("actuate_robot_in_scene: failed to snapshot spec: %s", e)
+        return False
+
+    try:
+        # Bare URDF chains (no damping/armature) diverge under the default
+        # Euler integrator once stiff position servos are added; implicitfast
+        # integrates joint damping implicitly and stays stable.
+        spec.option.integrator = mj.mjtIntegrator.mjINT_IMPLICITFAST
+
+        for body in spec.bodies:
+            body_name = body.name or ""
+            if pfx and body_name.startswith(pfx):
+                if gravity_compensation:
+                    body.gravcomp = 1.0
+                if disable_self_collision:
+                    for geom in body.geoms:
+                        geom.contype = 0
+                        geom.conaffinity = 0
+
+        for joint in spec.joints:
+            joint_name = joint.name or ""
+            if not (pfx and joint_name.startswith(pfx)):
+                continue
+            short = joint_name[len(pfx) :]
+            if short not in kp_by_joint:
+                continue
+            joint.damping[0] = max(float(joint.damping[0]), damping)
+            joint.armature = max(float(joint.armature), armature)
+
+        for short, kp in kp_by_joint.items():
+            act = spec.add_actuator()
+            act.name = f"{robot.name}_act_{short}"
+            act.target = f"{pfx}{short}"
+            act.trntype = mj.mjtTrn.mjTRN_JOINT
+            # Find the joint's spec range: inheritrange clamps ctrl to the
+            # joint's limits when it declares any (URDF limits map here);
+            # unlimited joints keep an unlimited ctrlrange.
+            jnt_range_defined = False
+            for joint in spec.joints:
+                if (joint.name or "") == f"{pfx}{short}":
+                    jnt_range_defined = bool(float(joint.range[0]) < float(joint.range[1]))
+                    break
+            act.set_to_position(kp=float(kp), dampratio=1.0, inheritrange=jnt_range_defined)
+    except (ValueError, RuntimeError, TypeError) as e:
+        logger.error("actuate_robot_in_scene: spec surgery failed for '%s': %s", robot.name, e)
+        world._backend_state["spec"] = SpecBuilder.from_mjcf_string(backup_xml)
+        return False
+
+    if not _recompile_preserving_state(world, spec):
+        # Restore the pre-surgery spec so the failed edit doesn't poison
+        # later scene mutations.
+        world._backend_state["spec"] = SpecBuilder.from_mjcf_string(backup_xml)
+        return False
+    return True
+
+
 # Agent-authored raw MJCF (Stage 6)
 
 

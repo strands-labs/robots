@@ -122,6 +122,11 @@ class RenderingMixin:
         # camera jitter through it. Stub so mypy accepts the cross-mixin call.
         def _maybe_jitter_frame(self, frame: Any) -> Any: ...
 
+        # Provided by ManipulationMixin (attach_bodies mode="kinematic");
+        # _apply_sim_action re-pins carried bodies after each substep. Stub so
+        # mypy accepts the cross-mixin call.
+        def _apply_kinematic_attachments(self) -> None: ...
+
     def _validate_render_dims(self, width: int, height: int) -> dict[str, Any] | None:
         """reject non-positive render dims; convert MuJoCo's framebuffer
         overflow to a plain-English message that tells the LLM the actual cap.
@@ -487,6 +492,10 @@ class RenderingMixin:
         if not controller_handled_stepping:
             for _ in range(max(1, n_substeps)):
                 mj.mj_step(model, data)
+                # Kinematic attachments (attach_bodies mode="kinematic")
+                # follow their parent every physics step, including the
+                # policy-driven path. Fast no-op when none are registered.
+                self._apply_kinematic_attachments()
 
         assert self._world is not None
         self._world.sim_time = data.time

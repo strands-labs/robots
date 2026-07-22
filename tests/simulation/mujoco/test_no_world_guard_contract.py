@@ -73,6 +73,11 @@ GUARDED_CALLS: list[tuple[str, tuple, dict]] = [
     ("forward_kinematics", (), {}),
     ("get_total_mass", (), {}),
     ("export_xml", (), {}),
+    # ManipulationMixin - attach/actuate/zero primitives (GH #1533).
+    ("attach_bodies", ("parent", "child"), {}),
+    ("detach_bodies", ("parent", "child"), {}),
+    ("actuate_robot", ("arm",), {}),
+    ("zero_dynamics", (), {}),
     # RandomizationMixin.
     ("randomize", (), {}),
     # RenderingMixin - render + contact-query + camera-recording entry points.
