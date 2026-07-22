@@ -272,7 +272,10 @@ def main() -> None:
     if args.policy == "groot" and args.auto_server:
         from pathlib import Path
 
-        from strands_robots.tools import gr00t_inference
+        # Import the function from its defining module (not the lazy
+        # `strands_robots.tools` re-export) so static analysis resolves
+        # the callable instead of the same-named submodule.
+        from strands_robots.tools.gr00t_inference import gr00t_inference
 
         _configure_gr00t_image(args.image)
 
@@ -490,7 +493,7 @@ def main() -> None:
         sim.destroy()
         # Tear down the GR00T inference container if we brought it up.
         if server_handle is not None:
-            from strands_robots.tools import gr00t_inference
+            from strands_robots.tools.gr00t_inference import gr00t_inference
 
             gr00t_inference(action="lifecycle", lifecycle="teardown", container_name=args.container)
 

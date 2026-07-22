@@ -119,7 +119,11 @@ from strands import Agent
 
 from strands_robots.benchmarks.libero import load_libero_suite
 from strands_robots.simulation import Simulation
-from strands_robots.tools import gr00t_inference
+
+# Import the function from its defining module (not the lazy
+# `strands_robots.tools` re-export) so static analysis resolves the
+# callable instead of the same-named submodule.
+from strands_robots.tools.gr00t_inference import gr00t_inference
 
 
 def _date_dir(date_root: str = "rollouts") -> str:
@@ -459,8 +463,11 @@ def main() -> None:
     finally:
         try:
             sim.destroy()
-        except Exception:
-            pass
+        except Exception as exc:
+            # Best-effort teardown: destroy() can fail if the world was
+            # already torn down mid-eval. Report it, but never let cleanup
+            # mask the primary error or skip the container teardown below.
+            print(f"[agent-eval] warning: sim.destroy() failed during cleanup: {exc}")
         # Tear down the GR00T inference container if we brought it up.
         if server_handle is not None:
             gr00t_inference(action="lifecycle", lifecycle="teardown", container_name=args.container)
