@@ -17,6 +17,7 @@ and ``STRANDS_GPU_TEST=1``. Run with::
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
@@ -125,6 +126,30 @@ class TestIsaacDatasetRecording:
             keys = {part for p in mp4s for part in p.parts if part.startswith("observation.images.")}
             assert keys == {"observation.images.cam1", "observation.images.cam2"}, keys
             assert all(p.stat().st_size > 0 for p in mp4s)
+
+            # Train-shape == read-shape: the camera schema was declared from
+            # the RTX native-resolution probe (which can differ from the
+            # requested camera size - DLSS-safe render products), so the dims
+            # declared in meta/info.json must match what stream_dataset
+            # actually emits on read-back. A mismatch here means training
+            # consumers see a different image shape than the schema promises.
+            info_json = json.loads((Path(root) / "meta" / "info.json").read_text())
+            declared = {
+                key: tuple(int(d) for d in feat["shape"])
+                for key, feat in info_json["features"].items()
+                if key.startswith("observation.images.")
+            }
+            assert set(declared) == keys, declared
+            reader = sim.stream_dataset("local/isaac_gpu_rec", root=root, shuffle=False)
+            frame = next(iter(reader))
+            for key, (c, h, w) in declared.items():
+                emitted = tuple(int(d) for d in frame[key].shape[-3:])
+                # DatasetRecorder declares (C, H, W); tolerate either layout
+                # from the streaming decoder, but H/W/C must be the probed ones.
+                assert emitted in ((c, h, w), (h, w, c)), (
+                    f"{key}: schema declares CHW {(c, h, w)} but stream_dataset "
+                    f"emitted {emitted} - RTX probe shape and read-back shape diverged"
+                )
         finally:
             sim.destroy()
 
