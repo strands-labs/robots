@@ -35,6 +35,7 @@ import numpy as np
 
 from strands_robots.simulation.base import SimEngine
 from strands_robots.simulation.isaac.config import IsaacConfig
+from strands_robots.simulation.isaac.recording import IsaacRecordingMixin
 
 logger = logging.getLogger(__name__)
 
@@ -353,11 +354,16 @@ class _RobotState:
         joint_names: list[str],
         articulation: Any = None,
         actual_prim_path: str | None = None,
+        data_config: str | None = None,
     ):
         self.name = name
         self.prim_path = prim_path
         self.joint_names = joint_names
         self.articulation = articulation
+        # Registry data-config the robot was added under (e.g. ``so100``).
+        # Recorded as the LeRobotDataset ``robot_type`` so datasets collected
+        # on Isaac carry the same embodiment metadata as MuJoCo/Newton ones.
+        self.data_config = data_config
         # The prim path the URDF importer / USD reference actually
         # placed the robot at, which can differ from ``prim_path`` when
         # the importer ignores the requested destination (Isaac Sim 4.5
@@ -407,11 +413,15 @@ class _ObjectState:
         self.handle = handle
 
 
-class IsaacSimulation(SimEngine):
+class IsaacSimulation(IsaacRecordingMixin, SimEngine):
     """GPU-native simulation backend built on NVIDIA Isaac Sim.
 
     Implements the ``SimEngine`` ABC. Provides photorealistic rendering,
     RTX sensors, USD scene management, and fleet replication via Cloner.
+    LeRobotDataset recording (``start_recording`` / ``save_episode`` /
+    ``stop_recording`` / ``stream_dataset``) comes from
+    :class:`~strands_robots.simulation.isaac.recording.IsaacRecordingMixin`,
+    matching the MuJoCo and Newton backends.
 
     Parameters
     ----------
@@ -507,6 +517,14 @@ class IsaacSimulation(SimEngine):
         # Synchronous rollout-video recorder state (set by
         # start_cameras_recording, cleared by stop_cameras_recording).
         self._cams_rec_state: dict[str, Any] | None = None
+
+        # LeRobotDataset recording state - the Isaac side of the
+        # DatasetRecordingMixin state seam. MuJoCo/Newton keep this dict on
+        # their SimWorld (``_backend_state``); Isaac's ``self._world`` is the
+        # Isaac Sim World handle, so the engine owns the dict directly and
+        # IsaacRecordingMixin._recording_state() returns it. Reset by
+        # destroy() alongside the rest of the world state.
+        self._recording_state_dict: dict[str, Any] = {}
 
         # Thread safety
         self._lock = threading.RLock()
@@ -893,6 +911,18 @@ class IsaacSimulation(SimEngine):
             # Drop any in-flight recorder state (buffers reference RTX
             # frames that are meaningless after the stage tears down).
             self._cams_rec_state = None
+            # Same for the LeRobotDataset recording session: a live recorder
+            # holds an OPEN LeRobot episode buffer whose camera frames came
+            # from this stage. Mirror the MuJoCo/Newton behaviour (their
+            # state dict dies with the SimWorld) by resetting the seam dict;
+            # warn when a session was still open so the data loss is visible.
+            if self._recording_state_dict.get("recording", False):
+                logger.warning(
+                    "destroy() called while a dataset recording was active; the unsaved "
+                    "episode buffer is discarded. Call stop_recording() before destroy() "
+                    "to flush and finalize the dataset."
+                )
+            self._recording_state_dict = {}
 
             # Reset state
             self._world_created = False
@@ -1159,6 +1189,7 @@ class IsaacSimulation(SimEngine):
                     name=name,
                     prim_path=prim_path,
                     joint_names=joint_names,
+                    data_config=data_config,
                 )
                 self._robots[name] = robot_state
 
@@ -1210,6 +1241,7 @@ class IsaacSimulation(SimEngine):
                     joint_names=joint_names,
                     articulation=articulation,
                     actual_prim_path=getattr(articulation, "_strands_actual_prim_path", None),
+                    data_config=data_config,
                 )
                 self._robots[name] = robot_state
 
@@ -1273,6 +1305,7 @@ class IsaacSimulation(SimEngine):
                     joint_names=joint_names,
                     articulation=articulation,
                     actual_prim_path=getattr(articulation, "_strands_actual_prim_path", None),
+                    data_config=data_config,
                 )
                 self._robots[name] = robot_state
 
@@ -2107,6 +2140,17 @@ class IsaacSimulation(SimEngine):
             # headless render mode (no RTX frames). Best-effort per camera: a
             # camera whose RTX product hasn't warmed up is omitted rather than
             # failing the whole observation.
+            #
+            # Recording override (parity with MuJoCo/Newton): a non-image
+            # policy (requires_images=False, e.g. the default mock) makes
+            # PolicyRunner pass skip_images=True, but while a dataset
+            # recording is active the recorded frames MUST carry the camera
+            # images the schema declared - so images are forced on for the
+            # duration of the session.
+            if skip_images:
+                rec_state = self._recording_state()
+                if rec_state is not None and rec_state.get("recording", False):
+                    skip_images = False
             if not skip_images and self._config.render_mode != "headless":
                 # Multi-camera refresh: a single ``world.step(render=True)`` in
                 # the substep loop reliably refreshes only the PRIMARY render
@@ -4150,6 +4194,59 @@ class IsaacSimulation(SimEngine):
             UsdGeom.Xformable(fill.GetPrim()).AddRotateXYZOp().Set(Gf.Vec3f(-60.0, 0.0, 180.0))
         except (ImportError, AttributeError, RuntimeError):
             logger.debug("Could not add scene lighting", exc_info=True)
+
+    def describe(self) -> dict[str, Any]:
+        """Return the Isaac engine's live discovery surface.
+
+        Extends the base :meth:`SimEngine.describe` contract with the backend
+        identity, the registered RTX camera names, world state, and the
+        LeRobotDataset recording family
+        (:class:`~strands_robots.simulation.isaac.recording.IsaacRecordingMixin`)
+        so an agent enumerating ``describe()["methods"]`` discovers the
+        record-and-stream workflow (``start_recording`` -> ``run_policy`` ->
+        ``save_episode`` -> ``stop_recording`` -> ``stream_dataset``) exactly
+        as it does on the MuJoCo and Newton backends.
+        """
+        desc = super().describe()
+        desc["backend"] = "isaac"
+        desc["cameras"] = sorted(self._cameras)
+        desc["world_created"] = self._world_created
+        desc["methods"].update(
+            {
+                "add_camera": (
+                    "(name='default', position=None, target=None, width=None, "
+                    "height=None, fov=60.0) -> dict  # register an RTX camera "
+                    "(rendered frames ride get_observation and recordings)"
+                ),
+                "remove_camera": "(name: str) -> dict  # remove a registered RTX camera",
+                "start_recording": (
+                    "(repo_id='local/sim_recording', task='', fps=30, root=None, "
+                    "push_to_hub=False, vcodec='h264', overwrite=False, cameras=None) -> dict  "
+                    "# record joint state + action + RTX cameras to a LeRobotDataset "
+                    "(needs render_mode='rtx_realtime' for camera columns)"
+                ),
+                "save_episode": (
+                    "() -> dict  # flush the current rollout as one episode; prefer "
+                    "run_policy(n_episodes=N) which flushes a boundary per episode"
+                ),
+                "stop_recording": "(push_to_hub=False, bucket=None, run_id=None) -> dict",
+                "get_recording_status": "() -> dict",
+                "stream_dataset": (
+                    "(repo_id: str, **kwargs) -> StreamingDatasetReader  # lazily read a "
+                    "recorded LeRobotDataset back (root=, episodes=, delta_timestamps=, ...)"
+                ),
+                "verify_dataset_episodes": (
+                    "(expected: int) -> dict  # after stop_recording, read the parquet and "
+                    "confirm the dataset holds exactly `expected` episodes; status=error on mismatch"
+                ),
+                "start_cameras_recording": (
+                    "(cameras=None, output_dir=None, fps=30, name=None, max_frames_per_camera=3000) -> dict  "
+                    "# raw per-camera MP4 capture (no lerobot dependency)"
+                ),
+                "stop_cameras_recording": "() -> dict  # finalize the raw MP4 capture",
+            }
+        )
+        return desc
 
     def cleanup(self) -> None:
         """Release all resources.
