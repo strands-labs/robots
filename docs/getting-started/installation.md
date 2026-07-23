@@ -13,7 +13,7 @@ Requires **Python >= 3.12**. Examples use [`uv`](https://docs.astral.sh/uv/) (`c
 | (none) | core only - Robot factory, registry, lazy imports | Inspect the catalog, write tools |
 | `[sim]` | `robot_descriptions` | Sim asset resolution without MuJoCo |
 | `[sim-mujoco]` | `sim` + `mujoco`, `imageio`, `imageio-ffmpeg` | Any `Robot()` with default `mode="sim"` |
-| `[lerobot]` | `lerobot>=0.6.0,<0.7.0` | `LerobotLocalPolicy` + dataset recording |
+| `[lerobot]` | `lerobot>=0.6.1,<0.7.0` | `LerobotLocalPolicy` + dataset recording |
 | `[groot-service]` | `pyzmq`, `msgpack` | `Gr00tPolicy` (ZMQ to a GR00T container) |
 | `[cosmos3-service]` | `msgpack`, `websockets` | `Cosmos3Policy` (WebSocket to Cosmos 3 server) |
 | `[mesh]` | `eclipse-zenoh`, `json5` | Multi-robot mesh discovery + RPC |

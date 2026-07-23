@@ -196,7 +196,7 @@ lerobot PR #3604 and first released in 0.6.0 - so it resolves straight from
 PyPI with no git-from-source install. The `[molmoact2]` extra layers the
 auxiliary deps MolmoAct2's modeling and processor code needs
 (`transformers>=5.4.0,<5.6.0`, `peft`, `scipy`) on top of
-`strands-robots[lerobot]` (which pins `lerobot>=0.6.0,<0.7.0`):
+`strands-robots[lerobot]` (which pins `lerobot>=0.6.1,<0.7.0`):
 
 ```bash
 uv pip install "strands-robots[molmoact2]"

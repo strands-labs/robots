@@ -160,28 +160,54 @@ from packaging.requirements import Requirement  # noqa: E402
 from packaging.version import Version  # noqa: E402
 
 
-def _lerobot_extra_requirement() -> Requirement:
+def _lerobot_requirement(extra: str) -> Requirement:
     data = tomllib.loads(_PYPROJECT.read_text(encoding="utf-8"))
-    extra = data["project"]["optional-dependencies"]["lerobot"]
-    for spec in extra:
+    specs = data["project"]["optional-dependencies"][extra]
+    for spec in specs:
         req = Requirement(spec)
         if req.name == "lerobot":
             return req
-    raise AssertionError("no `lerobot` requirement found in the [lerobot] extra")
+    raise AssertionError(f"no `lerobot` requirement found in the [{extra}] extra")
 
 
-def test_lerobot_extra_requires_at_least_0_6() -> None:
-    """The ``[lerobot]`` extra must floor lerobot at >= 0.6.0.
+def test_lerobot_extra_requires_at_least_0_6_1() -> None:
+    """The ``[lerobot]`` extra must floor lerobot at >= 0.6.1.
 
-    The 0.5.1-era torch/torchcodec overrides were removed because lerobot 0.6's
-    own markers resolve the decoder stack correctly; that only holds for
-    lerobot >= 0.6, so the floor must not regress below it.
+    Two guarantees ride on this floor:
+
+    * The 0.5.1-era torch/torchcodec overrides were removed because lerobot 0.6's
+      own markers resolve the decoder stack correctly, so the floor must not
+      regress into the 0.5.x range.
+    * The flagship bucket-streaming path (``StreamingDatasetReader.open(...,
+      repo_type="bucket")``) needs ``StreamingLeRobotDataset`` to accept a
+      ``repo_type`` parameter, which first shipped in lerobot 0.6.1. Flooring at
+      0.6.1 turns that guarantee from a runtime error on 0.6.0 into an
+      install-time resolution.
     """
-    req = _lerobot_extra_requirement()
-    assert Version("0.6.0") in req.specifier, f"lerobot floor must admit 0.6.0, got {req.specifier}"
+    req = _lerobot_requirement("lerobot")
+    assert Version("0.6.1") in req.specifier, f"lerobot floor must admit 0.6.1, got {req.specifier}"
+    assert Version("0.6.0") not in req.specifier, (
+        f"lerobot floor must exclude 0.6.0 (repo_type='bucket' streaming needs "
+        f"the repo_type parameter that first ships in lerobot 0.6.1), got {req.specifier}"
+    )
     assert Version("0.5.9") not in req.specifier, (
         f"lerobot floor must exclude 0.5.x (the overrides that compensated for "
         f"lerobot 0.5.1's decoder markers were removed), got {req.specifier}"
+    )
+
+
+def test_lerobot_async_extra_floor_matches_lerobot_extra() -> None:
+    """The ``[lerobot-async]`` extra must carry the same >= 0.6.1 floor.
+
+    ``[lerobot-async]`` pins its own ``lerobot[async]`` requirement rather than
+    inheriting the specifier from ``[lerobot]``, so its floor can drift. It must
+    track the same 0.6.1 minimum or the resolver could install a lerobot whose
+    async transport predates the bucket-streaming guarantee.
+    """
+    req = _lerobot_requirement("lerobot-async")
+    assert Version("0.6.1") in req.specifier, f"lerobot-async floor must admit 0.6.1, got {req.specifier}"
+    assert Version("0.6.0") not in req.specifier, (
+        f"lerobot-async floor must exclude 0.6.0 to match the [lerobot] extra, got {req.specifier}"
     )
 
 

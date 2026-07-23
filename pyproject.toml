@@ -183,7 +183,7 @@ lerobot = [
     # marker. NOTE: torch/torchcodec ship as +cuXXX wheels resolved by
     # UV_TORCH_BACKEND; a plain `pip install` on Thor may need the matching CUDA
     # index -- see the README Installation section for the Thor/Jetson caveat.
-    "lerobot[feetech,dataset]>=0.6.0,<0.7.0",
+    "lerobot[feetech,dataset]>=0.6.1,<0.7.0",
 ]
 # Remote/offloaded inference via lerobot's native async-inference gRPC
 # transport (the `lerobot_async` policy provider, LerobotAsyncPolicy). Layers
@@ -193,7 +193,7 @@ lerobot = [
 # it here, so the gRPC/protobuf floor tracks lerobot.
 lerobot-async = [
     "strands-robots[lerobot]",
-    "lerobot[async]>=0.6.0,<0.7.0",
+    "lerobot[async]>=0.6.1,<0.7.0",
 ]
 # MolmoAct2 transformers-native VLA (e.g. allenai/MolmoAct2-SO100_101). The
 # MolmoAct2Policy class ships in lerobot >= 0.6 (it landed via lerobot PR #3604
