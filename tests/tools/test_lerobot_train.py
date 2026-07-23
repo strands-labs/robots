@@ -194,6 +194,48 @@ def test_expert_only_policy_types_tracks_lerobot_registry() -> None:
     assert "pi0_fast" not in expected
 
 
+def test_expert_only_fallback_is_a_faithful_snapshot_of_lerobot() -> None:
+    """The static offline snapshot stays in sync with lerobot; drift trips this.
+
+    ``_EXPERT_ONLY_POLICIES_FALLBACK`` is only consulted when lerobot is not
+    importable, so a policy that gains or loses a ``train_expert_only`` field in
+    lerobot would silently diverge from the snapshot and hand offline callers a
+    stale set. Pinning equality here surfaces that drift the moment it happens.
+    """
+    import dataclasses
+
+    pytest.importorskip("lerobot.policies")
+    PreTrainedConfig = pytest.importorskip("lerobot.configs.policies").PreTrainedConfig
+    expected = {
+        name
+        for name, cfg_cls in PreTrainedConfig.get_known_choices().items()
+        if any(f.name == "train_expert_only" for f in dataclasses.fields(cfg_cls))
+    }
+    assert set(train_mod._EXPERT_ONLY_POLICIES_FALLBACK) == expected, (
+        "_EXPERT_ONLY_POLICIES_FALLBACK drifted from lerobot's expert-only policy "
+        "configs; update the fallback frozenset to match the current lerobot."
+    )
+
+
+def test_expert_only_policy_types_falls_back_when_lerobot_unimportable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fail-soft: an unimportable lerobot yields the static snapshot, not a crash.
+
+    ``_expert_only_policy_types`` sources the supported set live from lerobot's
+    ``PreTrainedConfig`` registry. If lerobot moves or renames those modules (a
+    real risk when tracking lerobot from source), the tool must degrade to
+    :data:`_EXPERT_ONLY_POLICIES_FALLBACK` rather than raise - otherwise a stale
+    lerobot would break ``train_expert_only`` validation for every policy. The
+    ``None`` sentinel in ``sys.modules`` forces ``import lerobot.policies`` to
+    raise ``ImportError`` even though lerobot is installed here.
+    """
+    import sys
+
+    monkeypatch.setitem(sys.modules, "lerobot.policies", None)
+    assert train_mod._expert_only_policy_types() == train_mod._EXPERT_ONLY_POLICIES_FALLBACK
+
+
 def test_val_episodes_reserves_last_n_episodes(tmp_path: Path) -> None:
     root = _write_dataset(tmp_path / "ds", total_episodes=10)
     cmd = build_train_command(

@@ -629,9 +629,12 @@ class SimEngine(ABC):
         count exactly; a mismatch is reported as a caller error rather than
         silently truncated (which would drop commands - e.g. a gripper axis). A
         mapping is returned unchanged once every value is confirmed to coerce to
-        a scalar float; a non-scalar value (a list / multi-element array) is
-        rejected with an actionable error rather than raised as an unhandled
-        ``TypeError`` deep in the actuator-application loop.
+        a scalar float; a *single-element* sequence/array value (e.g. GR00T's
+        per-key ``[0.05]`` rows - the documented ``list[float]`` shape of the
+        ``Policy.get_actions`` contract for a 1-DOF key) is unwrapped to its
+        scalar, while a *multi-element* value is rejected with an actionable
+        error rather than raised as an unhandled ``TypeError`` deep in the
+        actuator-application loop.
 
         Args:
             action: A ``{name: value}`` mapping, or an ordered numeric vector
@@ -652,10 +655,28 @@ class SimEngine(ABC):
             # the caller mid-rollout, after partially applying the earlier keys.
             # Validate every value coerces to a scalar float up front so the whole
             # action is rejected atomically with an actionable message, symmetric
-            # with the vector-form non-numeric-entry validation below. Values are
-            # returned unchanged (the downstream ``float(value)`` accepts scalars,
-            # numeric strings, and length-1 arrays exactly as before).
+            # with the vector-form non-numeric-entry validation below.
+            #
+            # Single-element unwrap (#1538 GR00T-LIBERO regression): the
+            # ``Policy.get_actions -> list[dict]`` contract emits ``list[float]``
+            # for vector-valued keys, which for a 1-DOF key yields a length-1
+            # list (GR00T's service unpack emits ``{"x": [0.05], ...}`` for the
+            # LIBERO delta-EEF layout). Such a value carries exactly one scalar
+            # and is unambiguous, so unwrap it instead of rejecting - the
+            # pre-validation code path applied it fine via the LIBERO action
+            # controller's own scalar coercion, and rejecting it silently
+            # no-ops an entire GR00T eval to success_rate=0. Multi-element
+            # values (the actual #1179 crash class) are still rejected
+            # atomically.
+            normalized: dict[str, Any] = {}
             for key, value in action.items():
+                if (
+                    not isinstance(value, (str, bytes, Mapping))
+                    and hasattr(value, "__len__")
+                    and hasattr(value, "__getitem__")
+                    and len(value) == 1
+                ):
+                    value = value[0]
                 try:
                     float(value)
                 except (TypeError, ValueError):
@@ -671,7 +692,8 @@ class SimEngine(ABC):
                             }
                         ],
                     }
-            return dict(action), None
+                normalized[key] = value
+            return normalized, None
 
         # ``str``/``bytes`` are iterable but never a valid multi-joint action;
         # a scalar has no length. Reject both with an actionable message instead

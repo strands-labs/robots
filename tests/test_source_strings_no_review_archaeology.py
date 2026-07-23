@@ -25,6 +25,12 @@ rejects these review-archaeology shapes:
     ``PR#221 R3``, ``#317 R3``). Which review pass produced a change is exactly
     the provenance that belongs in git history, not the source; the number rots
     and misdirects the reader.
+  * a PR/issue number followed by ``review`` or ``verification`` (``#166
+    review finding``, ``#168 verification showed ...``, ``caught in PR #60
+    review``), plus the compact ``R<round> review`` (``R3 review fix``) --
+    narration of the PR review/verification pass that produced a change. The
+    flattener strips the leading ``#``/``(``-adjacent noise so ``(#168
+    verification)`` arrives as ``168 verification`` and is caught.
 
 References to *upstream* files (e.g. ``run_mujoco_gear_wbc.py:47-50``) and to
 stable, named anchors (``AGENTS.md > Review Learnings``, a bare issue number
@@ -60,6 +66,12 @@ import strands_robots
 #     never mistaken for a round tag; after the flattener strips ``#``/``PR``,
 #     ``PR#221 R3`` and ``#317 R3`` arrive as ``221 R3`` / ``317 R3`` and are
 #     caught by the ``<digits> R<round>`` alternative.
+#   * ``<digits> review`` / ``<digits> verification`` and ``R<round> review``
+#     -- a PR/issue number (or round tag) narrating the review or verification
+#     pass that produced a change (``#166 review finding``, ``#168
+#     verification showed ...``, ``R3 review fix``). ``review``/``verification``
+#     must FOLLOW the number, so prose where the word precedes a count
+#     (``review 5 frames``, ``verification of 3 shards``) is not matched.
 # Upstream ``<file>.py:<line>`` references (not preceded by ``review``), named
 # anchors like ``Review Learnings``, and bare issue numbers are not matched.
 _REVIEW_ARCHAEOLOGY = re.compile(
@@ -71,6 +83,8 @@ _REVIEW_ARCHAEOLOGY = re.compile(
     r"|\b\d+\s+round\s+\d+[a-z]?\b"
     r"|\b(?-i:R)\d+-\d+\b"
     r"|\b\d+\s+(?-i:R)\d+\b"
+    r"|\b\d+\s+(?:review|verification)\b"
+    r"|\b(?-i:R)\d+\s+review\b"
     r")"
 )
 
@@ -126,6 +140,12 @@ def test_review_round_provenance_is_matched() -> None:
         "and _load_acl_file. Addressed in PR-224 R1.",
         "PR 221 R3 (issue 238): the seq lockfile is a symlink",  # was "PR#221 R3"
         "default localhost:8000 ( 317 R3)",  # was "(#317 R3)"
+        "168 verification",  # was "#168 verification"
+        "the post- 168 verification exposed",  # was "post-#168 verification"
+        "166 review finding",  # was "#166 review finding"
+        "caught in PR 60 review",  # was "caught in PR #60 review"
+        "guards from the 360 review ( 363)",  # was "#360 review (#363)"
+        "R3 review fix",  # compact round tag + review
     ]
     for text in offenders:
         assert _REVIEW_ARCHAEOLOGY.search(text), f"should be flagged: {text!r}"
@@ -145,6 +165,9 @@ def test_legitimate_references_are_not_matched() -> None:
         "resolve to localhost:8000 by default",  # bare port, no round tag
         "step 3 runs 5 revisions",  # lowercase 'r', not the uppercase round tag
         "the SO-101 arm has 6 joints",  # digit-dash-digit but no leading 'R'
+        "review 5 candidate frames before capture",  # 'review' precedes the count
+        "verification of 3 shards succeeded",  # 'verification' precedes the count
+        "the 2nd verification pass warms the context",  # '2nd' is not digits+space
     ]
     for text in allowed:
         assert not _REVIEW_ARCHAEOLOGY.search(text), f"false positive: {text!r}"

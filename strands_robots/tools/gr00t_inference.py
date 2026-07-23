@@ -1322,8 +1322,13 @@ def _download_checkpoint(
 ) -> dict[str, Any]:
     """Download a HuggingFace checkpoint via ``huggingface_hub.snapshot_download``.
 
-    Idempotent: when ``local_dir`` already exists and is non-empty AND
-    ``force=False``, returns success without touching the network. Pass
+    Idempotent: when the target is already populated AND ``force=False``,
+    returns success without touching the network. "Already populated" is
+    keyed on the artefact actually requested: with ``hf_subfolder`` set,
+    ``local_dir/<hf_subfolder>`` must exist and be non-empty (a shared
+    ``local_dir`` cache holding *other* sub-checkpoints - e.g.
+    ``libero_spatial/`` when ``libero_10`` was requested - must not
+    short-circuit the download); without it, ``local_dir`` itself. Pass
     ``force=True`` to refresh.
 
     HF token resolution order:
@@ -1343,14 +1348,18 @@ def _download_checkpoint(
 
     local_dir = Path(hf_local_dir).expanduser() if hf_local_dir else _checkpoints_dir() / hf_repo.replace("/", "__")
 
-    if not force and local_dir.is_dir() and any(local_dir.iterdir()):
+    # The presence probe must target the requested artefact: when
+    # `hf_subfolder` filters the download to one sub-checkpoint, only that
+    # subdir being populated counts as "already downloaded".
+    probe_dir = local_dir / hf_subfolder if hf_subfolder else local_dir
+    if not force and probe_dir.is_dir() and any(probe_dir.iterdir()):
         return {
             "status": "success",
             "hf_repo": hf_repo,
             "hf_subfolder": hf_subfolder,
             "local_dir": str(local_dir),
             "skipped": True,
-            "message": f"Checkpoint already at {local_dir}; skipping download (use force=True to refresh)",
+            "message": f"Checkpoint already at {probe_dir}; skipping download (use force=True to refresh)",
         }
 
     token = hf_token or os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
