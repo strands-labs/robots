@@ -269,6 +269,62 @@ class TestPolicyTypeDiscoveryReexported:
         assert proc.returncode == 0, proc.stderr
 
 
+class TestStreamingDatasetReexported:
+    """``stream_dataset`` / ``StreamingDatasetReader`` are package-root exports.
+
+    Reading a dataset back must not require constructing a ``Robot()``
+    simulation (MuJoCo world, GL context, thread pool) - training/eval scripts
+    on GL-less boxes call ``strands_robots.stream_dataset(...)`` directly.
+    Both symbols are lazy (torch/lerobot load on first *call*, not first
+    import), and ``Simulation.stream_dataset`` remains sugar over the same
+    function.
+    """
+
+    def test_in_top_level_all_and_is_lazy(self):
+        for name in ("stream_dataset", "StreamingDatasetReader"):
+            assert name in strands_robots.__all__
+            assert name in strands_robots._LAZY_IMPORTS
+
+    def test_resolves_to_canonical_objects(self):
+        import strands_robots.streaming_dataset as sd_mod
+
+        assert strands_robots.stream_dataset is sd_mod.stream_dataset
+        assert strands_robots.StreamingDatasetReader is sd_mod.StreamingDatasetReader
+
+    def test_stream_dataset_delegates_without_simulator(self, monkeypatch):
+        # Calling the top-level function must reach StreamingDatasetReader.open
+        # with kwargs intact - and require no Simulation/mujoco import.
+        import strands_robots.streaming_dataset as sd_mod
+
+        captured = {}
+
+        def fake_open(repo_id, **kw):
+            captured["repo_id"] = repo_id
+            captured["kw"] = kw
+            return "READER"
+
+        monkeypatch.setattr(sd_mod.StreamingDatasetReader, "open", staticmethod(fake_open), raising=True)
+        out = strands_robots.stream_dataset("org/ds", shuffle=False)
+        assert out == "READER"
+        assert captured == {"repo_id": "org/ds", "kw": {"shuffle": False}}
+
+    def test_streaming_module_import_stays_torch_free(self):
+        # The export must not regress the lazy-import contract: importing the
+        # backing module (as the package-root __getattr__ does on first access)
+        # must not pull torch or lerobot.
+        import subprocess
+        import sys
+
+        code = (
+            "import sys, strands_robots.streaming_dataset as m; "
+            "assert 'torch' not in sys.modules, 'torch eagerly imported'; "
+            "assert 'lerobot' not in sys.modules, 'lerobot eagerly imported'; "
+            "assert callable(m.stream_dataset)"
+        )
+        proc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+        assert proc.returncode == 0, proc.stderr
+
+
 class TestImportResilience:
     """``import strands_robots`` must never fail because an optional import-time
     autoconfig step raised.

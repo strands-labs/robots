@@ -493,7 +493,8 @@ def is_safe_model_path(path: str, *, hf_only: bool = False) -> bool:
         # and ``nvidia/repo/`` (trailing slash). HF would 404 on these,
         # but the validator's job is to enforce the wire contract at the
         # boundary -- not to rely on downstream rejection. Same posture
-        # as R1's reject of ``nvidia/etc/passwd``. (R3 review fix.)
+        # as the ``nvidia/etc/passwd`` reject: enforce the exact
+        # ``owner/repo`` shape here rather than defer to a 404.
         if any(seg in ("", ".") for seg in parts):
             return False
         if len(parts) != 2:

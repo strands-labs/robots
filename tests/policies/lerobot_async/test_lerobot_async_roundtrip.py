@@ -20,6 +20,7 @@ assertion here fails on pre-fix code.
 from __future__ import annotations
 
 import pickle
+import sys
 import time
 from concurrent import futures
 
@@ -507,6 +508,23 @@ def test_fallback_is_a_faithful_snapshot_of_lerobot() -> None:
         "_SUPPORTED_POLICY_TYPES_FALLBACK drifted from lerobot's SUPPORTED_POLICIES; "
         "update the fallback tuple to match the current lerobot constant."
     )
+
+
+def test_supported_policy_types_falls_back_when_lerobot_constants_unimportable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fail-soft: an unimportable lerobot constants module yields the snapshot.
+
+    ``_supported_policy_types`` sources the servable set live from
+    ``lerobot.async_inference.constants.SUPPORTED_POLICIES``. If lerobot moves or
+    renames that module (a real risk when tracking lerobot from source), the
+    client must degrade to :data:`_SUPPORTED_POLICY_TYPES_FALLBACK` rather than
+    raise at import time - otherwise merely importing the provider would crash.
+    The ``None`` sentinel in ``sys.modules`` forces the ``from ... import`` to
+    raise ``ImportError`` even though lerobot is installed here.
+    """
+    monkeypatch.setitem(sys.modules, "lerobot.async_inference.constants", None)
+    assert async_policy._supported_policy_types() == async_policy._SUPPORTED_POLICY_TYPES_FALLBACK
 
 
 def test_validation_tracks_a_newly_added_lerobot_policy(monkeypatch: pytest.MonkeyPatch) -> None:

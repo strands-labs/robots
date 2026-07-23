@@ -58,7 +58,7 @@ if TYPE_CHECKING:
         list_backends,
         register_backend,
     )
-    from strands_robots.streaming_dataset import StreamingDatasetReader
+    from strands_robots.streaming_dataset import StreamingDatasetReader, stream_dataset
     from strands_robots.teleoperator import Teleoperator
     from strands_robots.tools.download_assets import download_assets
     from strands_robots.tools.gr00t_inference import gr00t_inference
@@ -139,6 +139,9 @@ _LAZY_IMPORTS: dict[str, tuple[str, str]] = {
     "SimulationDeviceDriver": ("strands_robots.device_connect", "SimulationDeviceDriver"),
     "ReachyMiniDriver": ("strands_robots.device_connect", "ReachyMiniDriver"),
     "StreamingDatasetReader": ("strands_robots.streaming_dataset", "StreamingDatasetReader"),
+    # Simulator-free dataset read-back: thin alias for StreamingDatasetReader.open.
+    # Lazy so training/eval scripts pay the torch/lerobot import only on first call.
+    "stream_dataset": ("strands_robots.streaming_dataset", "stream_dataset"),
 }
 
 __all__ = [
@@ -187,6 +190,7 @@ __all__ = [
     "SimulationDeviceDriver",
     "ReachyMiniDriver",
     "StreamingDatasetReader",
+    "stream_dataset",
 ]
 
 

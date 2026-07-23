@@ -335,6 +335,43 @@ class TestFullMassMatrixSignatureDrift:
         M = _full_mass_matrix(shim, model, data)
         assert np.allclose(M, reference)
 
+    def test_helper_falls_back_to_1d_only_legacy_signature(self, sim):
+        # Oldest binding: mj_fullM(model, dst, qM) accepts ONLY a raw 1-D sparse
+        # buffer and rejects the [m, 1] column form the first legacy attempt
+        # passes. The helper must fall through that inner TypeError to the flat
+        # 1-D call and still reconstruct the correct matrix. This pins the
+        # innermost fallback (the widest-compatibility call) the other drift
+        # tests never reach, because their shim accepts both buffer shapes.
+        model, data = sim._world._model, sim._world._data
+        mj.mj_forward(model, data)
+        reference = _full_mass_matrix(mj, model, data)
+
+        class _OneDLegacyShim:
+            """mujoco proxy whose mj_fullM accepts only (model, dst, qM_1d)."""
+
+            def __getattr__(self, attr):
+                return getattr(mj, attr)
+
+            @staticmethod
+            def mj_fullM(m, a, b):
+                # Reject the modern (model, data, dst) order.
+                import mujoco as _mj
+
+                if isinstance(a, _mj.MjData):
+                    raise TypeError("legacy binding: expected (model, dst, qM)")
+                # Reject the [m, 1] column buffer the first legacy attempt uses:
+                # only the raw 1-D sparse form is accepted here.
+                arr = np.asarray(b)
+                if arr.ndim != 1:
+                    raise TypeError("oldest binding: expected a 1-D sparse buffer")
+                assert isinstance(a, np.ndarray) and a.flags["WRITEABLE"]
+                assert arr.shape[0] == data.qM.shape[0]
+                a[...] = reference
+
+        shim = _OneDLegacyShim()
+        M = _full_mass_matrix(shim, model, data)
+        assert np.allclose(M, reference)
+
     def test_helper_returns_empty_for_zero_dof(self):
         # A model with no DoFs must return a well-typed (0, 0) array, never
         # crash in numpy on the empty buffer.

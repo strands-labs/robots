@@ -8,7 +8,8 @@ Covers:
 * Registry operations (:func:`register_benchmark` / :func:`get_benchmark` /
   :func:`list_benchmarks` / :func:`unregister_benchmark`), including
   idempotent-overwrite and thread safety.
-* Robot compatibility validation via :meth:`BenchmarkProtocol.on_episode_start`.
+* Robot compatibility validation via :meth:`BenchmarkProtocol.on_episode_start`,
+  including reconciliation when ``sim.list_robots()`` and ``world.robots`` diverge.
 """
 
 from __future__ import annotations
@@ -255,6 +256,44 @@ class TestRobotCompatibility:
         sim = FakeSim()
         bench = _MinimalBenchmark(supported=["so100"], default="so100")
         # Must not raise even though arm1 has unknown data_config.
+        bench.on_episode_start(sim, random.Random(0))  # type: ignore[arg-type]
+
+    def test_skips_robot_listed_but_absent_from_world(self):
+        """A robot returned by ``sim.list_robots()`` but missing from
+        ``world.robots`` is skipped, not treated as a compat failure.
+
+        The compatibility gate reconciles two independent robot views: the
+        engine's ``list_robots()`` and the backend world's ``robots`` mapping.
+        Those can legitimately diverge (a robot registered with the engine
+        before it is composed into the world). Looking the name up with
+        ``world.robots.get(name)`` and skipping a ``None`` result keeps the
+        gate robust; a direct ``world.robots[name]`` index would raise
+        ``KeyError`` and abort every episode on such a divergence.
+        """
+
+        class _Robot:
+            data_config = "panda"  # not in supported -- would raise if reached
+
+        class FakeSimWithGhost:
+            def __init__(self):
+                # world knows only "present"; list_robots also reports "ghost".
+                self._world = type(
+                    "World",
+                    (),
+                    {"robots": {"present": _Robot()}},
+                )()
+
+            def list_robots(self):
+                return ["ghost", "present"]
+
+            def add_robot(self, **kw):  # pragma: no cover
+                raise AssertionError("should not be called")
+
+        sim = FakeSimWithGhost()
+        # supported includes "present"'s config so only the divergence path is
+        # exercised: "ghost" (absent from world.robots) must be skipped, and
+        # "present" (config in supported) must pass -- neither raises.
+        bench = _MinimalBenchmark(supported=["so100", "panda"], default="so100")
         bench.on_episode_start(sim, random.Random(0))  # type: ignore[arg-type]
 
 

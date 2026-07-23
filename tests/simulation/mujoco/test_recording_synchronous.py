@@ -496,3 +496,92 @@ class TestCamerasRecordingOutputIsAscii:
             assert "[idle]" in text
         finally:
             sim.destroy()
+
+
+class TestFlushMixedFrameSizes:
+    """``_flush_cameras_recording_state`` must honor its never-raise contract
+    when a camera's buffer holds frames of different sizes.
+
+    Regression for the LIBERO ``--policy groot`` whole-run recording path
+    (``examples/libero/run_mujoco.py``): a benchmark's per-episode scene
+    reload can re-install a camera at different dimensions mid-recording,
+    so the daemon-thread buffer ends up with mixed frame shapes. Pre-fix,
+    imageio's ``append_data`` raised ``ValueError: All images in a movie
+    should have same size`` out of ``stop_cameras_recording`` - aborting
+    the caller's teardown path despite the flush docstring promising a
+    best-effort, never-raise structured result.
+    """
+
+    @staticmethod
+    def _state(tmp_path: Path, frames: list[np.ndarray]) -> dict[str, Any]:
+        import time as _time
+
+        return {
+            "running": False,
+            "name": "mixed",
+            "cameras": ["cam"],
+            "fps": 30,
+            "buffers": {"cam": frames},
+            "paths": {"cam": str(tmp_path / "mixed__cam.mp4")},
+            "errors": {"cam": 0},
+            "output_dir": str(tmp_path),
+            "started_at": _time.time(),
+        }
+
+    def test_mixed_size_buffer_flushes_dominant_run_without_raising(self, tmp_path: Path):
+        sim = Simulation()
+        try:
+            rng = np.random.default_rng(0)
+            big = [rng.integers(0, 255, size=(24, 32, 3), dtype=np.uint8) for _ in range(6)]
+            small = [np.zeros((12, 16, 3), dtype=np.uint8) for _ in range(2)]
+            frames = [small[0], *big, small[1]]
+
+            result = sim._flush_cameras_recording_state(self._state(tmp_path, frames))
+
+            assert result["status"] == "success"
+            payload = next(c["json"] for c in result["content"] if "json" in c)
+            artifact = payload["artifacts"][0]
+            assert artifact["frames"] == 6
+            assert artifact["frames_skipped_size_mismatch"] == 2
+            # Round-trip: the MP4 exists and holds the dominant-size run.
+            path = Path(artifact["path"])
+            assert path.is_file() and path.stat().st_size > 0
+            reader = imageio.get_reader(str(path))
+            try:
+                decoded = sum(1 for _ in reader)
+            finally:
+                reader.close()
+            assert decoded == 6
+        finally:
+            sim.destroy()
+
+    def test_uniform_buffer_reports_no_skips(self, tmp_path: Path):
+        sim = Simulation()
+        try:
+            frames = [np.full((24, 32, 3), 90, dtype=np.uint8) for _ in range(4)]
+            result = sim._flush_cameras_recording_state(self._state(tmp_path, frames))
+            assert result["status"] == "success"
+            artifact = next(c["json"] for c in result["content"] if "json" in c)["artifacts"][0]
+            assert artifact["frames"] == 4
+            assert "frames_skipped_size_mismatch" not in artifact
+            assert "flush_error" not in artifact
+        finally:
+            sim.destroy()
+
+    def test_writer_failure_reported_not_raised(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        import imageio.v2 as imageio_v2
+
+        def _boom(*_a, **_kw):
+            raise OSError("ffmpeg exploded")
+
+        monkeypatch.setattr(imageio_v2, "get_writer", _boom)
+        sim = Simulation()
+        try:
+            frames = [np.full((24, 32, 3), 90, dtype=np.uint8) for _ in range(3)]
+            result = sim._flush_cameras_recording_state(self._state(tmp_path, frames))
+            assert result["status"] == "success"
+            artifact = next(c["json"] for c in result["content"] if "json" in c)["artifacts"][0]
+            assert artifact["frames"] == 0
+            assert "ffmpeg exploded" in artifact["flush_error"]
+        finally:
+            sim.destroy()

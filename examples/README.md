@@ -52,6 +52,9 @@ record→train→deploy loop) as Jupyter notebooks - all CPU-only, no hardware o
 | 15 | [`15_robot_catalog.py`](15_robot_catalog.py) | `list_robots` / `get_robot` registry discovery (no sim) | No | No |
 | -- | [`locomotion/vla_g1_workflow.py`](locomotion/vla_g1_workflow.py) | VLA-on-G1: record -> GR00T fine-tune -> WBC deploy | No | Optional (tune) |
 | — | [`vera_mimicgen_panda/`](vera_mimicgen_panda/) | VERA MimicGen → Panda (eef-delta + IK bridge) | No | **Yes** (server) |
+| — | [`isaac/isaac_replicator_synthdata.py`](isaac/isaac_replicator_synthdata.py) | `IsaacSimulation` + Omniverse Replicator synthetic-data generation | No | **Yes** (Isaac Sim / RTX) |
+| — | [`isaac_gs/`](isaac_gs/) | Isaac RTX robot z-composited over a 3DGS / panorama backdrop (digital-twin) | No | **Yes** (Isaac Sim / RTX) |
+| — | [`mujoco_gs/`](mujoco_gs/) | MuJoCo + 3D Gaussian Splatting hybrid render (depth-aware composite) driven by the `Simulation` AgentTool | No | Optional (`gsplat`) |
 | -- | [`registry/lerobot_hardware_catalog.py`](registry/lerobot_hardware_catalog.py) | `Robot()` covers the whole LeRobot hardware catalog (name -> lerobot_type) | No | No |
 
 ## What each example shows vs raw lerobot
@@ -72,10 +75,17 @@ record→train→deploy loop) as Jupyter notebooks - all CPU-only, no hardware o
 | [`vla/cosmos3_sim_rollout.py`](vla/cosmos3_sim_rollout.py) | Cosmos 3 VLA in MuJoCo with WebSocket policy server |
 | [`wbc/wbc_g1_torque_deploy.py`](wbc/wbc_g1_torque_deploy.py) | GR00T-WBC (SONIC) locomotion on the Unitree G1 via the torque-control deploy loop |
 | [`lerobot/hub_to_hardware.py`](lerobot/hub_to_hardware.py) | Full agent-driven pipeline: record, train, deploy |
+| [`so101_curobo/`](so101_curobo/) | SO-101 tabletop pick-and-place: cuRobo motion planning + LeRobot dataset capture. Backend-agnostic (`SimEngine`): MuJoCo today, Isaac when `strands-robots[sim-isaac]` is installed. **GPU: Optional** (cuRobo / Isaac) |
+| [`libero/run_mujoco.py`](libero/run_mujoco.py) | LIBERO benchmark eval on the default MuJoCo backend with whole-run MP4 recording. **GPU: Optional** (`--policy mock` is CPU-only; `--policy groot` needs Docker + NVIDIA GPU) |
+| [`libero/run_mujoco_agent.py`](libero/run_mujoco_agent.py) | LIBERO-on-MuJoCo driven by a Strands `Agent` in natural language. **GPU: Optional** (needs LLM API) |
+| [`libero/run_isaac.py`](libero/run_isaac.py) | LIBERO benchmark eval on the Isaac Sim backend (`create_simulation("isaac")`) with rollout-MP4 recording. **GPU: Yes** (Isaac Sim 6.0+) |
+| [`libero/run_isaac_agent.py`](libero/run_isaac_agent.py) | LIBERO-on-Isaac driven by a Strands `Agent` in natural language. **GPU: Yes** (Isaac Sim 6.0+, needs LLM API) |
+| [`libero/libero_backend_matrix.py`](libero/libero_backend_matrix.py) | Run one LIBERO task across every installed backend, side-by-side `success_rate` / `wall_time` table |
 
 ## Environment variables
 
 - `MUJOCO_GL=egl` - headless rendering (required on servers without display)
+- `STRANDS_ISAAC_RTX_PATHTRACING=1` - Isaac Sim LIBERO examples: photoreal RTX pathtracing render mode (default is `rtx_realtime`)
 - `STRANDS_MESH_LOCAL_DEV=1` - skip TLS for mesh examples in local dev
 - `STRANDS_MESH=0` - disable mesh entirely
 - `HF_TOKEN` - push datasets to Hugging Face Hub

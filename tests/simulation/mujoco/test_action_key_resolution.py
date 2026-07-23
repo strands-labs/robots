@@ -196,3 +196,68 @@ class TestPolicyRunnerPartialActionErrors:
         # The fully-broken phrasing ("ALL ... the robot did not move") must NOT
         # appear - the robot did move on the resolved steps.
         assert "did not move" not in text
+
+
+class _MixedKeysEveryStepPolicy(Policy):
+    """A policy that emits a valid AND an unresolved key in EVERY action dict.
+
+    Models the common embodiment-mismatch failure mode where a policy trained
+    on a superset of the robot's DOF (e.g. a 7-DOF arm-plus-gripper checkpoint)
+    is run on a robot that lacks one of those keys: every step drives the real
+    actuators just fine, but also emits one key no actuator can absorb. The
+    robot moves on every step, so the run is operational and must report
+    success - never the fully-broken "the robot did not move" error.
+    """
+
+    @property
+    def provider_name(self) -> str:
+        return "mixed_every_step_test"
+
+    @property
+    def requires_images(self) -> bool:
+        return False
+
+    def set_robot_state_keys(self, robot_state_keys: list[str]) -> None:
+        # Intentionally ignore - this policy hardcodes its own key mix.
+        pass
+
+    async def get_actions(
+        self, observation_dict: dict[str, Any], instruction: str, **kwargs: Any
+    ) -> list[dict[str, Any]]:
+        # Every action dict pairs a real so100 actuator ("Rotation") with a key
+        # that resolves to nothing. send_action reports an error EVERY step, but
+        # the robot moves EVERY step.
+        return [{"Rotation": 0.1, "phantom_dof": 0.2}]
+
+
+class TestPolicyRunnerMixedKeysEveryStep:
+    """run_policy must not misreport a moving robot as "did not move".
+
+    When a policy emits a valid key plus an unresolved key in the SAME action
+    dict on EVERY step, ``send_action`` returns an error on every step
+    (``_action_errors == step_count``) - yet a real actuator is driven every
+    step, so the robot IS moving. The final status must be 'success' with a
+    non-fatal partial-failure note, NOT the fully-broken "the robot did not
+    move" error that only applies when NO step resolves any key.
+    """
+
+    def test_valid_plus_unresolved_key_every_step_succeeds(self, sim):
+        policy = _MixedKeysEveryStepPolicy()
+        result = sim.run_policy(
+            policy_object=policy,
+            n_steps=5,
+            control_frequency=10.0,
+        )
+        text = result["content"][0]["text"]
+        # Pre-fix: _action_errors (5) >= step_count (5) tripped the total-failure
+        # branch and returned status='error' with "the robot did not move",
+        # even though "Rotation" was applied on every step. Post-fix the guard
+        # keys off total-failure steps, so this operational run is a success.
+        assert result["status"] == "success"
+        assert "did not move" not in text
+        # Every step still had an unresolved key -> the non-fatal count note.
+        assert "5/5 action steps had unresolved keys" in text
+        # And the robot genuinely moved: "Rotation" resolved on every step.
+        json_block = next(c["json"] for c in result["content"] if "json" in c)
+        assert json_block["action_resolution_rate"]["Rotation"] == 1.0
+        assert json_block["action_errors"] == 5

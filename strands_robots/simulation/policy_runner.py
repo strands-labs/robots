@@ -91,12 +91,11 @@ def set_eval_seed(seed: int) -> None:
       are scoped to torch (not the broader environment) so the side
       effect surface is acceptable.
 
-    Public since #179: standalone integration tests
-    (``tests_integ/.../test_libero_10_scene5_mujoco_engine_success_rate``)
-    bypass :meth:`evaluate_benchmark` and need to call this directly to
-    get reproducible policy rollouts. Despite the leading ``_``, this
-    function is the supported way to seed an eval and is part of the
-    public API.
+    Public API - the single supported RNG-seeding entry point, exported
+    via ``__all__``. :meth:`evaluate_benchmark` calls it once before an
+    eval, but standalone callers that drive a policy rollout without
+    going through ``evaluate_benchmark`` can call it directly to get
+    reproducible rollouts.
 
     NumPy / torch are imported lazily so this helper works on minimal
     installs that don't have torch (e.g. ``policy_provider="mock"``
@@ -1367,11 +1366,18 @@ class PolicyRunner:
             payload["action_resolution_rate"] = {}
             payload["partial_action_failure_rate"] = 0.0
 
-        # If every send_action call failed (all keys unresolved), the robot
-        # never moved -- report this as an error rather than a false success.
-        if _action_errors > 0 and _action_errors >= step_count and step_count > 0:
+        # If EVERY step was a TOTAL failure (the policy emitted keys but none
+        # resolved to an actuator), the robot never moved -- report this as an
+        # error rather than a false success. This mirrors the fail-fast probe
+        # and must key off ``_total_failure_steps``, NOT ``_action_errors``:
+        # ``_action_errors`` also counts PARTIAL steps (some keys resolve, the
+        # robot moves), so a policy that drives valid keys plus one extra
+        # unresolved key every step (e.g. a 7-DOF-trained policy on a 6-DOF arm)
+        # would otherwise be misreported as "the robot did not move". A partial
+        # rollout is operational -- surfaced via partial_action_failure_rate.
+        if _total_failure_steps >= step_count and step_count > 0:
             text += (
-                f"\n\nALL {_action_errors} action steps had unresolved keys "
+                f"\n\nALL {step_count} action steps had 100% unresolved keys "
                 f"-- the robot did not move. Check that the policy's output keys "
                 f"match the robot's actuator names."
             )

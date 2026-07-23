@@ -168,3 +168,43 @@ def test_read_audit_log_skips_malformed_json_line(tmp_path, monkeypatch, caplog)
     assert any("skipping malformed line" in m for m in caplog.messages), (
         f"expected a DEBUG breadcrumb for the skipped line, got {caplog.messages}"
     )
+
+
+def test_read_audit_log_skips_blank_lines_without_a_corruption_breadcrumb(tmp_path, monkeypatch, caplog):
+    """Blank / whitespace-only lines are skipped silently, not as corruption.
+
+    An append-only JSONL audit log routinely carries blank lines: the trailing
+    newline after the final record yields an empty last line, and a torn write
+    (process killed between the newline and the next record) can leave a
+    whitespace-only line. The reader guards these with an explicit empty-line
+    skip *before* the ``json.loads`` attempt, so a blank line never reaches the
+    malformed-JSON branch. That distinction matters: the "skipping malformed
+    line" DEBUG breadcrumb is the operator's only signal that a real corrupt
+    record may have under-seeded the ``_load_seq_counters`` seq walk. Emitting
+    it for an ordinary trailing newline would drown that signal in
+    false positives, so a blank line must be dropped without any breadcrumb.
+    """
+    active = audit.audit_log_path()
+    active.parent.mkdir(parents=True, exist_ok=True)
+    active.write_text(
+        "\n".join(
+            [
+                '{"event": "before", "payload": {"i": 1}}',
+                "",
+                "   ",
+                '{"event": "after", "payload": {"i": 2}}',
+                "",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    with caplog.at_level("DEBUG", logger="strands_robots.mesh.audit"):
+        records = audit.read_audit_log()
+
+    events = [r.get("event") for r in records]
+    assert events == ["before", "after"], f"blank lines must be skipped while valid records are kept, got {events}"
+    assert not any("skipping malformed line" in m for m in caplog.messages), (
+        f"a blank line is not corruption; it must not emit a malformed-line breadcrumb, got {caplog.messages}"
+    )

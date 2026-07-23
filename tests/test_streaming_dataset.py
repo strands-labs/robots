@@ -80,8 +80,65 @@ def test_repo_type_forwarded_when_supported(monkeypatch):
     assert r.dataset.repo_type == "bucket"
 
 
-def test_repo_type_dropped_when_unsupported(monkeypatch):
-    """A constructor without repo_type must not raise when repo_type is passed."""
+def test_repo_type_bucket_raises_when_unsupported(monkeypatch):
+    """repo_type='bucket' on a constructor without the parameter must raise,
+    never silently open the versioned dataset namespace instead (a different
+    storage system - the forbidden silent-kwarg-drop class)."""
+
+    class _Narrow:
+        def __init__(self, repo_id):
+            raise AssertionError("constructor must never be reached")
+
+    monkeypatch.setattr(sd, "StreamingLeRobotDataset", _Narrow, raising=False)
+    with pytest.raises(RuntimeError, match=r"repo_type='bucket' requires lerobot>=0\.6\.1"):
+        sd.StreamingDatasetReader.open("org/ds", repo_type="bucket", validate_deltas=False)
+
+
+def test_lerobot_version_unknown_when_metadata_unresolvable(monkeypatch):
+    """_lerobot_version() degrades to 'unknown' instead of raising when the
+    installed-distribution metadata for lerobot cannot be resolved (e.g. a
+    source checkout without dist-info). The value only ever enriches an error
+    message, so a PackageNotFoundError here must not escape."""
+    import importlib.metadata as md
+
+    def _raise(_name):
+        raise md.PackageNotFoundError("lerobot")
+
+    monkeypatch.setattr(md, "version", _raise)
+    assert sd._lerobot_version() == "unknown"
+
+
+def test_bucket_guard_message_survives_unresolvable_lerobot_version(monkeypatch):
+    """The repo_type='bucket' fail-fast must surface as the actionable
+    RuntimeError even when lerobot's version metadata is unresolvable: the
+    version lookup that enriches the message must not raise a secondary
+    PackageNotFoundError that masks the primary, upgrade-actionable error."""
+    import importlib.metadata as md
+
+    class _Narrow:
+        def __init__(self, repo_id):
+            raise AssertionError("constructor must never be reached")
+
+    def _raise(_name):
+        raise md.PackageNotFoundError("lerobot")
+
+    monkeypatch.setattr(md, "version", _raise)
+    monkeypatch.setattr(sd, "StreamingLeRobotDataset", _Narrow, raising=False)
+    with pytest.raises(RuntimeError, match=r"installed: unknown") as exc:
+        sd.StreamingDatasetReader.open("org/ds", repo_type="bucket", validate_deltas=False)
+    assert "repo_type='bucket' requires lerobot>=0.6.1" in str(exc.value)
+
+
+def test_repo_type_bucket_forwarded_via_var_kwargs(monkeypatch):
+    """A constructor with **kwargs accepts repo_type; the guard must not fire."""
+    monkeypatch.setattr(sd, "StreamingLeRobotDataset", _FakeStreaming, raising=False)
+    r = sd.StreamingDatasetReader.open("org/ds", repo_type="bucket", validate_deltas=False)
+    assert r.dataset.kw["repo_type"] == "bucket"
+
+
+def test_repo_type_dataset_default_ok_when_unsupported(monkeypatch):
+    """The 'dataset' default is semantics-preserving on an old lerobot: it is
+    skipped by tolerant forwarding and open() succeeds without error."""
 
     class _Narrow:
         def __init__(self, repo_id):
@@ -92,7 +149,7 @@ def test_repo_type_dropped_when_unsupported(monkeypatch):
             yield {}
 
     monkeypatch.setattr(sd, "StreamingLeRobotDataset", _Narrow, raising=False)
-    r = sd.StreamingDatasetReader.open("org/ds", repo_type="bucket", validate_deltas=False)
+    r = sd.StreamingDatasetReader.open("org/ds", repo_type="dataset", validate_deltas=False)
     assert r.dataset.repo_id == "org/ds"
 
 
@@ -113,16 +170,25 @@ def test_drop_videos_strips_camera_deltas(monkeypatch):
     assert "observation.state" in dt and "action" in dt
 
 
-def test_drop_videos_all_camera_keys_yields_none(monkeypatch):
+def test_drop_videos_all_camera_keys_raises(monkeypatch):
+    """If stripping camera keys leaves NO deltas, drop_videos would be a silent
+    no-op (every feature, videos included, would stream) - it must raise."""
     monkeypatch.setattr(sd, "StreamingLeRobotDataset", _FakeStreaming, raising=False)
-    r = sd.StreamingDatasetReader.open(
-        "org/ds",
-        delta_timestamps={"observation.images.front": [-0.1, 0.0]},
-        drop_videos=True,
-        validate_deltas=False,
-    )
-    # All keys were camera keys → delta_timestamps drops out entirely.
-    assert "delta_timestamps" not in r.dataset.kw
+    with pytest.raises(ValueError, match="drop_videos=True requires delta_timestamps"):
+        sd.StreamingDatasetReader.open(
+            "org/ds",
+            delta_timestamps={"observation.images.front": [-0.1, 0.0]},
+            drop_videos=True,
+            validate_deltas=False,
+        )
+
+
+def test_drop_videos_without_deltas_raises(monkeypatch):
+    """drop_videos=True with no delta_timestamps at all previously did nothing
+    (video decode still ran); the documented behavior is now to raise."""
+    monkeypatch.setattr(sd, "StreamingLeRobotDataset", _FakeStreaming, raising=False)
+    with pytest.raises(ValueError, match="drop_videos=True requires delta_timestamps"):
+        sd.StreamingDatasetReader.open("org/ds", drop_videos=True, validate_deltas=False)
 
 
 def test_dataloader_ignores_shuffle(monkeypatch):
@@ -374,6 +440,24 @@ def test_sync_to_bucket_delete_flag_forwarded(tmp_path, monkeypatch):
 
 
 # ── stream_dataset facade ──────────────────────────────────────────────────
+
+
+def test_module_level_stream_dataset_delegates(monkeypatch):
+    """stream_dataset(...) is a thin alias for StreamingDatasetReader.open -
+    dataset read-back must not require constructing a simulator."""
+    captured = {}
+
+    def fake_open(repo_id, **kw):
+        captured["repo_id"] = repo_id
+        captured["kw"] = kw
+        return "READER"
+
+    monkeypatch.setattr(sd.StreamingDatasetReader, "open", staticmethod(fake_open), raising=True)
+
+    out = sd.stream_dataset("org/ds", root="/tmp/x", shuffle=False, drop_videos=True)
+    assert out == "READER"
+    assert captured["repo_id"] == "org/ds"
+    assert captured["kw"] == {"root": "/tmp/x", "shuffle": False, "drop_videos": True}
 
 
 def test_recording_mixin_stream_dataset_delegates(monkeypatch):
