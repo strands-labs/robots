@@ -5,6 +5,71 @@ All notable behavioural changes to `strands-robots` are logged here. Follows
 
 ## [Unreleased]
 
+### Added: LIBERO MuJoCo example drivers (`examples/libero/run_mujoco.py`, `run_mujoco_agent.py`)
+
+The default-backend LIBERO drivers promised by the epic-#1269 migration are
+now in-tree: `run_mujoco.py` (scripted `sim.evaluate_benchmark(...)` eval with
+GR00T container auto-orchestration, whole-run MP4 recording, and the two
+grep-stable result lines `libero_backend_matrix.py` parses) and
+`run_mujoco_agent.py` (the natural-language Strands `Agent` sibling). The
+backend matrix's `mujoco` row flips from `unavailable (file missing)` to a
+real result. The drivers use the new public `LiberoAdapter.ensure_scene()`
+for the pre-recording scene warm-up instead of the private
+`_generate_scene_from_bddl()`, and import smoke tests
+(`tests/test_examples_libero_drivers.py`) pin the library surface they call
+so example/library drift fails CI. Verified end-to-end on GPU:
+`--policy groot` scores 4/5 on `libero-10-LIVING_ROOM_SCENE5` (see the
+driver docstring); `--policy mock` runs green on a GPU-less host.
+
+### Fixed: `send_action` accepts single-element sequence values (GR00T-LIBERO eval regression)
+
+The #1179 up-front scalar validation in `_coerce_action` rejected ANY
+sequence-typed dict value - including the length-1 lists the
+`Policy.get_actions -> list[dict]` contract emits for 1-DOF keys. GR00T's
+service unpack produces exactly that shape for the LIBERO delta-EEF layout
+(`{"x": [0.05], "y": [-0.08], ...}`), so since #1179 every `send_action` in a
+GR00T LIBERO eval returned a structured error, no action ever reached the
+adapter's OSC controller, and the benchmark silently no-opped to
+`success_rate=0` on a green exit-0 run. A single-element sequence/array value
+carries exactly one unambiguous scalar and is now unwrapped before
+validation/apply; multi-element values (the actual #1179 crash class) are
+still rejected atomically, and a sized-but-unindexable value (a set) gets a
+structured error rather than a crash. Applies to both the MuJoCo and Newton
+backends via the shared base. Pinned by
+`tests/simulation/mujoco/test_send_action_vector.py::TestSendActionSingleElementUnwrap`.
+
+### Fixed: camera-recording MP4 flush honors its never-raise contract on mixed frame sizes
+
+A benchmark's per-episode scene reload can re-install a camera at different
+dimensions mid-recording (the LIBERO wrist camera does), leaving the
+daemon-thread recorder's buffer with mixed frame shapes. Pre-fix, imageio's
+`append_data` raised `ValueError: All images in a movie should have same
+size` out of `stop_cameras_recording` - aborting the caller's teardown path
+despite the flush's best-effort, never-raise contract. The flush now encodes
+the dominant-size run, reports skipped frames per camera
+(`frames_skipped_size_mismatch`) and any writer failure (`flush_error`) in
+the structured result instead of raising.
+
+### Fixed: `gr00t_inference` checkpoint-download idempotency probe keys on the requested subfolder
+
+With `hf_subfolder` set, the "already downloaded" probe checked whether the
+shared `local_dir` was non-empty - so a cache holding a DIFFERENT
+sub-checkpoint (e.g. `libero_spatial/` when `libero_10` was requested)
+short-circuited the download, the container started against a missing
+checkpoint path, and the model never loaded. The probe now targets
+`local_dir/<hf_subfolder>` when a subfolder filters the download.
+
+### Added: public `LiberoAdapter.ensure_scene()`
+
+Driver scripts need the LIBERO scene - and the cameras it supplies (`image` /
+`wrist_image`) - available *before* `evaluate_benchmark` runs, so
+`start_cameras_recording` can resolve the camera names. Pre-fix they had to
+call the private `_generate_scene_from_bddl()`. `ensure_scene()` is the
+public equivalent: idempotent, stores + returns the resolved `scene_path`,
+and (unlike the lazy warn-and-fall-back path inside `on_episode_start`)
+propagates generation failures to the caller - an explicit pre-warm request
+that cannot be satisfied fails loudly.
+
 ### Quality: reject PR-review/verification provenance in source comments
 
 The review-archaeology guard (`tests/test_source_strings_no_review_archaeology.py`)

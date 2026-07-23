@@ -1,17 +1,20 @@
-# LIBERO on the Isaac Sim backend
+# LIBERO manipulation-benchmark evaluation
 
-LIBERO manipulation-benchmark evaluation driven by the in-tree Isaac Sim
-backend (`strands_robots.simulation.isaac.IsaacSimulation`, resolved via
-`create_simulation("isaac")`). Companions to the MuJoCo LIBERO path: same CLI
-shape, same two grep-stable output lines, same `evaluate_benchmark(...)` driver.
-The Isaac files differ in backend choice, real-asset (USD/URDF) robot loading,
-and an explicit `add_camera(...)` call (Isaac does not auto-attach viewport
-cameras the way MuJoCo does).
+LIBERO manipulation-benchmark evaluation driven by the in-tree simulation
+backends: the default MuJoCo backend (`strands_robots.simulation.Simulation`)
+and the Isaac Sim backend (`strands_robots.simulation.isaac.IsaacSimulation`,
+resolved via `create_simulation("isaac")`). All drivers share the same CLI
+shape, the same two grep-stable output lines, and the same
+`evaluate_benchmark(...)` driver. The Isaac files differ in backend choice,
+real-asset (USD/URDF) robot loading, and an explicit `add_camera(...)` call
+(Isaac does not auto-attach viewport cameras the way MuJoCo does).
 
 ## Files
 
 | File | What it shows |
 |------|--------------|
+| [`run_mujoco.py`](run_mujoco.py) | LIBERO eval on the default MuJoCo backend: `Simulation()` -> `create_world` -> `add_robot` -> LIBERO scene pre-warm -> `evaluate_benchmark`, with whole-run MP4 recording. Emits two grep-stable lines for the backend matrix. GPU optional (`--policy mock` runs headless on CPU). |
+| [`run_mujoco_agent.py`](run_mujoco_agent.py) | Same eval, driven by a Strands `Agent` in natural language over the full registered `Simulation` tool surface; the script keeps container lifecycle, scene pre-warm, and recording deterministic. |
 | [`run_isaac.py`](run_isaac.py) | LIBERO eval on Isaac Sim: `create_simulation("isaac")` -> `create_world` -> `add_robot` (real Franka USD) -> `add_camera` -> `evaluate_benchmark`, with a synchronous rollout-MP4 recorder. Emits two grep-stable lines for the backend matrix. |
 | [`run_isaac_agent.py`](run_isaac_agent.py) | Same eval, driven by a Strands `Agent` in natural language via a single `@tool`-wrapped `evaluate_isaac_benchmark`. |
 | [`libero_backend_matrix.py`](libero_backend_matrix.py) | Runs one LIBERO task across whichever per-backend driver scripts the host can execute (subprocess-and-parse) and prints a side-by-side `success_rate` / `wall_time` table. Missing drivers show `unavailable`; hosts without Isaac Sim show `skip`. |
@@ -19,15 +22,23 @@ cameras the way MuJoCo does).
 
 ## Install
 
+```bash
+# run_mujoco.py / libero_backend_matrix.py
+pip install "strands-robots[sim-mujoco,benchmark-libero]"
+
+# run_mujoco_agent.py additionally needs the Strands agent SDK + an LLM provider
+pip install "strands-robots[sim-mujoco,benchmark-libero]" strands-agents
+```
+
 The Isaac backend imports stay lazy - installing the extra never imports Isaac
-Sim - but running the eval needs a working Isaac Sim 6.0+ host (RTX GPU,
+Sim - but running the Isaac eval needs a working Isaac Sim 6.0+ host (RTX GPU,
 Ubuntu 22.04+, CUDA 12+, Python 3.12; installed via the Omniverse Launcher,
 Isaac Lab, or the `nvcr.io/nvidia/isaac-sim:6.0` NGC docker image). A pure
 `pip install` does not provide the full `isaacsim-extscache-*` extension set
 `SimulationApp` needs to boot.
 
 ```bash
-# run_isaac.py / libero_backend_matrix.py
+# run_isaac.py
 pip install "strands-robots[sim-isaac,benchmark-libero]"
 
 # run_isaac_agent.py additionally needs the Strands agent SDK + an LLM provider
@@ -37,7 +48,17 @@ pip install "strands-robots[sim-isaac,benchmark-libero]" strands-agents
 ## Run
 
 ```bash
-# Smoke test (mock policy; needs Isaac Sim on the host). Loads the bundled
+# Smoke test on the default MuJoCo backend (mock policy; no GPU / Docker):
+python examples/libero/run_mujoco.py --policy mock --n-episodes 5
+
+# Real LIBERO eval against nvidia/GR00T-N1.7-LIBERO (Docker + NVIDIA GPU +
+# ~30 GB free disk for the checkpoint; auto-orchestrates the GR00T container):
+python examples/libero/run_mujoco.py --policy groot --port 8000 --n-episodes 50
+
+# Agent-driven MuJoCo variant (needs a configured LLM provider for Strands):
+python examples/libero/run_mujoco_agent.py --policy mock --n-episodes 5
+
+# Smoke test on Isaac Sim (needs Isaac Sim on the host). Loads the bundled
 # Franka Panda USD resolved from the Isaac assets root over the Omniverse CDN:
 python examples/libero/run_isaac.py --policy mock --n-episodes 5
 
@@ -45,11 +66,10 @@ python examples/libero/run_isaac.py --policy mock --n-episodes 5
 python examples/libero/run_isaac.py --policy mock --robot-usd /path/to/robot.usd
 python examples/libero/run_isaac.py --policy mock --robot-urdf /path/to/robot.urdf
 
-# Real LIBERO eval against nvidia/GR00T-N1.7-LIBERO (Docker + NVIDIA GPU +
-# ~30 GB free disk for the checkpoint; auto-orchestrates the GR00T container):
+# Real LIBERO eval on Isaac against nvidia/GR00T-N1.7-LIBERO:
 python examples/libero/run_isaac.py --policy groot --port 8000 --n-episodes 50
 
-# Agent-driven variant (needs a configured LLM provider for Strands):
+# Agent-driven Isaac variant (needs a configured LLM provider for Strands):
 python examples/libero/run_isaac_agent.py --policy mock --n-episodes 5
 
 # Side-by-side across every installed backend (mock by default; missing
@@ -57,11 +77,10 @@ python examples/libero/run_isaac_agent.py --policy mock --n-episodes 5
 python examples/libero/libero_backend_matrix.py
 ```
 
-The `mujoco` and `isaac-4096` rows of `libero_backend_matrix.py` reference
-per-backend drivers (`run_mujoco.py`, `run_isaac_fleet.py`) that are migrated
-under separate epic-#1269 child items; until those land, the matrix prints an
-`unavailable (no <driver>.py)` row for them and evaluates the Isaac
-single-env (`isaac-1`) row.
+The `isaac-4096` row of `libero_backend_matrix.py` references a fleet driver
+(`run_isaac_fleet.py`) that has not been migrated yet; until it lands, the
+matrix prints an `unavailable (no run_isaac_fleet.py)` row for it and
+evaluates the `mujoco` and Isaac single-env (`isaac-1`) rows.
 
 ## Environment variables
 
@@ -78,5 +97,3 @@ single-env (`isaac-1`) row.
   GR00T checkpoint download (`--policy groot`).
 - `STRANDS_GR00T_SERVER_SEED` / `STRANDS_GR00T_STRICT_DETERMINISTIC` - consumed
   by `gr00t_server_deterministic_wrapper.py` inside the GR00T container.
-</content>
-</invoke>

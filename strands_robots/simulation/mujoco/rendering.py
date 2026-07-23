@@ -1648,30 +1648,69 @@ class RenderingMixin:
             path = state["paths"][cam]
             errors = state["errors"][cam]
             frames_written = 0
+            frames_skipped = 0
             size_kb = 0.0
+            flush_error = None
             if frames_buffer:
-                writer = imageio.get_writer(path, fps=state["fps"], quality=8, macro_block_size=1)
+                # An MP4 stream requires a constant frame size, but the
+                # capture loop records whatever the live model renders -
+                # and a benchmark's per-episode scene reload can re-install
+                # a camera at different dimensions mid-recording (e.g. the
+                # LIBERO wrist camera). Encode the dominant-size run and
+                # count the rest as skipped instead of letting imageio's
+                # "All images in a movie should have same size" ValueError
+                # abort the whole flush (this method's contract is
+                # never-raise, best-effort).
+                shape_counts: dict[tuple[int, ...], int] = {}
+                for arr in frames_buffer:
+                    shape_counts[arr.shape] = shape_counts.get(arr.shape, 0) + 1
+                target_shape = max(shape_counts, key=lambda s: shape_counts[s])
                 try:
-                    for arr in frames_buffer:
-                        writer.append_data(arr)
-                        frames_written += 1
-                finally:
-                    writer.close()
+                    writer = imageio.get_writer(path, fps=state["fps"], quality=8, macro_block_size=1)
+                    try:
+                        for arr in frames_buffer:
+                            if arr.shape != target_shape:
+                                frames_skipped += 1
+                                continue
+                            writer.append_data(arr)
+                            frames_written += 1
+                    finally:
+                        writer.close()
+                except Exception as e:  # noqa: BLE001 - best-effort flush must never raise
+                    flush_error = f"{type(e).__name__}: {e}"
+                    logger.warning("camera recorder flush failed for %r -> %s: %s", cam, path, flush_error)
+                if frames_skipped:
+                    logger.warning(
+                        "camera recorder flush for %r skipped %d/%d frames whose size didn't match "
+                        "the dominant %s (camera re-installed at different dimensions mid-recording?)",
+                        cam,
+                        frames_skipped,
+                        len(frames_buffer),
+                        target_shape,
+                    )
                 if _os.path.exists(path):
                     size_kb = _os.path.getsize(path) / 1024
-            lines.append(
+            line = (
                 f"   {cam:20s} {frames_written:>5d} frames  {size_kb:>7.1f} KB  "
                 f"({errors} errors)  -> {_os.path.basename(path)}"
             )
-            artifacts.append(
-                {
-                    "camera": cam,
-                    "path": path,
-                    "frames": frames_written,
-                    "errors": errors,
-                    "size_kb": size_kb,
-                }
-            )
+            if frames_skipped:
+                line += f"  [{frames_skipped} skipped: size mismatch]"
+            if flush_error:
+                line += f"  [flush failed: {flush_error}]"
+            lines.append(line)
+            artifact = {
+                "camera": cam,
+                "path": path,
+                "frames": frames_written,
+                "errors": errors,
+                "size_kb": size_kb,
+            }
+            if frames_skipped:
+                artifact["frames_skipped_size_mismatch"] = frames_skipped
+            if flush_error:
+                artifact["flush_error"] = flush_error
+            artifacts.append(artifact)
 
         return {
             "status": "success",

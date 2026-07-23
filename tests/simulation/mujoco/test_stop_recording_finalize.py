@@ -164,6 +164,120 @@ class TestStopRecordingFinalize:
         assert "push_to_hub FAILED: auth denied" in result["content"][0]["text"]
 
 
+class TestStopRecordingIdleKwargs:
+    """Idle-path kwargs are never silently dropped (#1498).
+
+    ``stop_recording(bucket=...)`` on a sim with no open recording session used
+    to return the bare idempotent ``"Was not recording."`` success and skip the
+    bucket sync entirely - the agent believed the upload happened when nothing
+    ran. Contract now:
+
+    * bare ``stop_recording()`` stays the idempotent success no-op;
+    * ``bucket=`` syncs the last-finalized dataset (``last_dataset_root``
+      stashed at start_recording), the documented daily-sync workflow;
+    * ``bucket=`` with no prior dataset is a structured error, not success;
+    * ``push_to_hub=True`` / ``run_id=`` without ``bucket=`` are structured
+      errors (publishing needs an open session; run_id needs bucket).
+    """
+
+    def test_idle_bucket_never_returns_bare_was_not_recording_success(self, recording_sim, monkeypatch):
+        """Regression pin: bucket= on an idle sim must not be a silent no-op."""
+        result = recording_sim.stop_recording(bucket="org/buck")
+        text = result["content"][0]["text"]
+        assert not (result["status"] == "success" and text == "Was not recording.")
+
+    def test_idle_bare_stop_stays_idempotent_success(self, recording_sim):
+        result = recording_sim.stop_recording()
+        assert result["status"] == "success"
+        assert "Was not recording" in result["content"][0]["text"]
+
+    def test_idle_bucket_with_no_prior_dataset_errors(self, recording_sim):
+        # Never recorded on this sim: nothing to sync -> loud error.
+        assert recording_sim._world._backend_state.get("last_dataset_root") is None
+        result = recording_sim.stop_recording(bucket="org/buck")
+        assert result["status"] == "error"
+        text = result["content"][0]["text"]
+        assert "nothing was uploaded" in text
+        assert "start_recording" in text
+
+    def test_idle_bucket_syncs_last_finalized_dataset(self, recording_sim, monkeypatch):
+        # The daily-sync workflow: session already closed, bucket= re-syncs the
+        # dataset stashed as last_dataset_root at start_recording.
+        from strands_robots import dataset_recorder as dr
+
+        recording_sim._world._backend_state["last_dataset_root"] = "/tmp/last_ds"
+        seen = {}
+
+        def _fake_sync(local_root, bucket, run_id=None, **kwargs):
+            seen["args"] = (local_root, bucket, run_id)
+            return {"status": "success", "bucket_uri": f"hf://buckets/{bucket}/run7"}
+
+        monkeypatch.setattr(dr, "sync_dataset_to_bucket", _fake_sync)
+
+        result = recording_sim.stop_recording(bucket="org/buck", run_id="run7")
+        assert result["status"] == "success"
+        assert seen["args"] == ("/tmp/last_ds", "org/buck", "run7")
+        text = result["content"][0]["text"]
+        assert "Synced to bucket: hf://buckets/org/buck/run7" in text
+        assert "/tmp/last_ds" in text
+
+    def test_idle_bucket_sync_failure_is_error(self, recording_sim, monkeypatch):
+        # Unlike the open-session path (where the dataset was still saved), the
+        # ONLY requested effect on the idle path is the sync - a failed sync
+        # fails the call.
+        from strands_robots import dataset_recorder as dr
+
+        recording_sim._world._backend_state["last_dataset_root"] = "/tmp/last_ds"
+        monkeypatch.setattr(
+            dr,
+            "sync_dataset_to_bucket",
+            lambda *a, **k: {"status": "error", "message": "bucket unreachable"},
+        )
+
+        result = recording_sim.stop_recording(bucket="org/buck")
+        assert result["status"] == "error"
+        text = result["content"][0]["text"]
+        assert "FAILED" in text
+        assert "bucket unreachable" in text
+
+    def test_idle_push_to_hub_errors(self, recording_sim):
+        # Publishing a versioned dataset repo needs the open session's recorder.
+        result = recording_sim.stop_recording(push_to_hub=True)
+        assert result["status"] == "error"
+        text = result["content"][0]["text"]
+        assert "push_to_hub" in text
+        assert "no recording session" in text
+
+    def test_idle_run_id_without_bucket_errors(self, recording_sim):
+        result = recording_sim.stop_recording(run_id="run7")
+        assert result["status"] == "error"
+        assert "run_id" in result["content"][0]["text"]
+
+    def test_idle_bucket_after_real_stop_cycle_resyncs(self, recording_sim, monkeypatch):
+        # Full repro from #1498: record -> stop (session closed) -> explicit
+        # stop_recording(bucket=...) must sync, not silently succeed.
+        from strands_robots import dataset_recorder as dr
+
+        rec = _FakeRecorder()
+        _arm(recording_sim, rec)
+        recording_sim._world._backend_state["last_dataset_root"] = rec.root
+        first = recording_sim.stop_recording()
+        assert first["status"] == "success"
+        assert recording_sim._world._backend_state["recording"] is False
+
+        synced = {}
+
+        def _fake_sync(root, bucket, run_id=None, **_k):
+            synced["args"] = (root, bucket)
+            return {"status": "success", "bucket_uri": f"hf://buckets/{bucket}/x"}
+
+        monkeypatch.setattr(dr, "sync_dataset_to_bucket", _fake_sync)
+        second = recording_sim.stop_recording(bucket="org/buck")
+        assert second["status"] == "success"
+        assert synced["args"] == (rec.root, "org/buck")
+        assert "Synced to bucket" in second["content"][0]["text"]
+
+
 class TestStopRecordingEmptyDataset:
     """stop_recording must fail loudly when no frames were captured, but must
     NOT fail a dataset that was filled via per-episode save_episode.

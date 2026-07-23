@@ -765,7 +765,7 @@ class LiberoAdapter(BenchmarkProtocol):
         """
         if self.scene_path is None and self._auto_generate_scene:
             try:
-                generated = self._generate_scene_from_bddl()
+                self.ensure_scene()
             except Exception as e:  # noqa: BLE001 - never abort eval on a setup-time error
                 logger.warning(
                     "LiberoAdapter: scene auto-generation failed (%s); falling back to bare Panda. "
@@ -773,9 +773,6 @@ class LiberoAdapter(BenchmarkProtocol):
                     "or pass scene_path= explicitly to silence this warning.",
                     e,
                 )
-                generated = None
-            if generated is not None:
-                self.scene_path = generated
 
         scene_was_loaded = False
         # Detect "prewarm-fresh ep0": the example script called
@@ -994,6 +991,45 @@ class LiberoAdapter(BenchmarkProtocol):
         # #168 behaviour for ACTION_LOG via the controller's
         # reset() call inside _install_action_controller above).
         self._state_log_step = 0
+
+    def ensure_scene(self) -> str | None:
+        """Resolve :attr:`scene_path`, auto-generating the scene MJCF if needed.
+
+        Public entry point for the scene-resolution step that
+        :meth:`on_episode_start` otherwise runs lazily inside the first
+        episode of ``evaluate_benchmark``. Call this (followed by
+        ``sim.load_scene(...)`` and :meth:`prewarm`) when a driver script
+        needs the scene - and the cameras it supplies (``image`` /
+        ``wrist_image``) - available *before* the eval starts, e.g. so
+        ``sim.start_cameras_recording`` can resolve the LIBERO camera
+        names, which only exist once the scene is loaded.
+
+        Behavior:
+
+        * :attr:`scene_path` already set -> returned unchanged (idempotent).
+        * :attr:`scene_path` unset and ``auto_generate_scene=True`` ->
+          builds the scene MJCF from the BDDL via the upstream ``libero``
+          package (SHA256-keyed on-disk cache, so repeat calls and
+          subsequent processes skip the generator), stores the result on
+          :attr:`scene_path`, and returns it.
+        * No BDDL source recoverable, or ``auto_generate_scene=False`` ->
+          returns ``None`` without side effects.
+
+        Unlike the lazy path inside :meth:`on_episode_start` - which
+        warns and falls back to a bare Panda so an eval never aborts on a
+        setup-time error - this method propagates generation failures to
+        the caller: an explicit pre-warm request that cannot be satisfied
+        should fail loudly.
+
+        Returns:
+            The resolved scene path, or ``None`` when no scene source is
+            available.
+        """
+        if self.scene_path is None and self._auto_generate_scene:
+            generated = self._generate_scene_from_bddl()
+            if generated is not None:
+                self.scene_path = generated
+        return self.scene_path
 
     def prewarm(self, sim: SimEngine) -> None:
         """Idempotent setup that should run BEFORE ``sim.start_cameras_recording``.
