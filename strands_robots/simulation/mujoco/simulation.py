@@ -619,10 +619,8 @@ class MuJoCoSimEngine(
             # (xpos / xquat / xmat / sensor data) is populated. Without
             # this, ``Renderer.update_scene`` finds the body transforms
             # unset and returns a skybox-only gradient on the first
-            # render call after load_scene - the bug-D pattern that
-            # rounds 11/12/13 in #168 chased through several wrong
-            # directions before #168 verification isolated it to
-            # this missing forward call (#168).
+            # render call after load_scene. Forwarding here populates
+            # that derived state before the first render.
             #
             # Cost: O(model.nbody) - negligible for typical scenes.
             # Failure here is genuinely a bug in the loaded MJCF

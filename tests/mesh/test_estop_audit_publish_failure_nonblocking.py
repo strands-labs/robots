@@ -141,3 +141,96 @@ def test_replay_rejected_audit_valueerror_is_swallowed_and_lockout_preserved():
     assert len(calls) == 1
     assert calls[0]["event_type"] == "estop_replay_rejected"
     assert mesh._estop_lockout.is_set()
+
+
+def test_redundant_estop_audit_valueerror_is_swallowed_and_lockout_preserved():
+    """A malformed-payload (ValueError) failure while auditing a
+    ``remote_estop_redundant`` event must not propagate out of the safety
+    handler, and the already-engaged lockout must stay latched.
+
+    A second, legitimate estop (fresh ``t``, distinct issuer) arriving while
+    the lockout is already engaged is recorded as ``remote_estop_redundant``
+    so forensics keep the signal that another operator also tried to engage.
+    That forensic publish is best-effort: a flaky audit sink must not abort
+    handling and drop the fleet into a half-state.
+    """
+    mesh = _stub_mesh()
+    calls = []
+
+    def raising_audit(**kwargs):
+        calls.append(kwargs)
+        if kwargs.get("event_type") == "remote_estop_redundant":
+            raise ValueError("bad audit payload shape")
+
+    mesh.publish_safety_event = raising_audit  # type: ignore[method-assign]
+
+    # Lockout already engaged by a prior estop; the cache is empty so this
+    # envelope takes the fresh-slot path (issuer under cap) and lands in the
+    # ``lockout_was_engaged`` branch that emits ``remote_estop_redundant``.
+    mesh._estop_lockout.set()
+    mesh._last_estop_ts = time.time() - 5.0
+    mesh._last_estop_mono = time.monotonic() - 5.0
+
+    result = mesh._on_safety_estop(
+        _envelope_with_wire_zid(
+            t=time.time(),
+            peer_id="operator-B",
+            wire_zid=_OPERATOR_B_ZID,
+            reason="second operator estop while already locked out",
+        )
+    )
+
+    assert result is None
+    redundant = [c for c in calls if c.get("event_type") == "remote_estop_redundant"]
+    assert len(redundant) == 1
+    # The failing audit did not clear the already-engaged lockout.
+    assert mesh._estop_lockout.is_set()
+
+
+def test_estop_per_issuer_cap_audit_oserror_is_swallowed_and_lockout_engages(monkeypatch):
+    """A disk failure (OSError) while auditing an
+    ``estop_per_issuer_cap_exceeded`` event must not propagate, the flooding
+    issuer's cache slot must not be added, and the legitimate safety event
+    must still engage the lockout.
+
+    The per-issuer fairness bound refuses a new replay-cache slot once one
+    issuer holds ``per_issuer_cap`` entries, but -- unlike a refused resume --
+    a refused estop slot still engages the lockout (the safety event is
+    preserved even when the cache cannot hold it). The over-cap audit is
+    best-effort and its failure must not abort that engagement.
+    """
+    # cache max 8 -> per_issuer_cap = max(1, 8 // 4) == 2.
+    monkeypatch.setenv("STRANDS_MESH_RESUME_REPLAY_CACHE_MAX", "8")
+    mesh = _stub_mesh()
+    calls = []
+
+    def raising_audit(**kwargs):
+        calls.append(kwargs)
+        if kwargs.get("event_type") == "estop_per_issuer_cap_exceeded":
+            raise OSError("audit log volume full")
+
+    mesh.publish_safety_event = raising_audit  # type: ignore[method-assign]
+
+    # Pre-fill the flooder's cap with two fresh entries at distinct cache keys
+    # (so eviction keeps them and the incoming envelope takes a new key).
+    now_mono = time.monotonic()
+    mesh._estop_replay_cache[1.0] = ("op-flooder", now_mono, _OPERATOR_A_ZID)
+    mesh._estop_replay_cache[2.0] = ("op-flooder", now_mono, _OPERATOR_A_ZID)
+
+    result = mesh._on_safety_estop(
+        _envelope_with_wire_zid(
+            t=time.time(),
+            peer_id="op-flooder",
+            wire_zid=_OPERATOR_A_ZID,
+            reason="third estop from a flooding issuer",
+        )
+    )
+
+    assert result is None
+    cap_calls = [c for c in calls if c.get("event_type") == "estop_per_issuer_cap_exceeded"]
+    assert len(cap_calls) == 1
+    # Cap enforced despite the failing audit sink: no new slot for the flooder.
+    flooder_slots = sum(1 for issuer, _mono, _zid in mesh._estop_replay_cache.values() if issuer == "op-flooder")
+    assert flooder_slots == 2
+    # The legitimate safety event still engaged the lockout.
+    assert mesh._estop_lockout.is_set()

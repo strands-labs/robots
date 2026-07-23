@@ -127,3 +127,56 @@ class TestSendActionScalarValues:
             n_substeps=2,
         )
         assert result["status"] == "success", result
+
+
+class TestSendActionSingleElementUnwrap:
+    """A length-1 sequence/array dict value unwraps to its scalar.
+
+    Regression for the GR00T-LIBERO eval path (#1538): the
+    ``Policy.get_actions -> list[dict]`` contract emits ``list[float]`` for
+    vector-valued keys, which for a 1-DOF key yields a length-1 list -
+    GR00T's service unpack produces ``{"x": [0.05], "y": [-0.08], ...}`` for
+    the LIBERO delta-EEF layout. The #1179 scalar validation rejected those
+    values atomically, so EVERY ``send_action`` in a GR00T LIBERO eval
+    errored and the benchmark silently no-opped to ``success_rate=0``
+    (`examples/libero/run_mujoco.py --policy groot`). A single-element value
+    carries exactly one unambiguous scalar; it must apply, while
+    multi-element values stay rejected (the actual #1179 crash class).
+    """
+
+    def test_length1_list_value_applies(self, sim):
+        result = sim.send_action({"1": [0.3], "2": [0.2]}, robot_name="so101", n_substeps=2)
+        assert result["status"] == "success", result
+
+    def test_length1_numpy_array_value_applies(self, sim):
+        result = sim.send_action({"1": np.array([0.3], dtype=np.float32)}, robot_name="so101", n_substeps=2)
+        assert result["status"] == "success", result
+
+    def test_groot_shaped_action_dict_moves_the_arm(self, sim):
+        """The exact per-step dict shape GR00T's service unpack emits
+        (every value a length-1 list) drives the joints away from rest."""
+        joints = sim.robot_joint_names("so101")
+        action = {j: [v] for j, v in zip(joints, [0.6, 0.5, 0.4, 0.0, 0.0, 0.0])}
+        before = sim.get_observation(robot_name="so101", skip_images=True)
+        result = sim.send_action(action, robot_name="so101", n_substeps=60)
+        assert result["status"] == "success", result
+        after = sim.get_observation(robot_name="so101", skip_images=True)
+        moved = sum(abs(float(after[j]) - float(before[j])) for j in joints if j in before and j in after)
+        assert moved > 1e-3, f"arm did not move under a GR00T-shaped action dict (delta={moved})"
+
+    def test_length1_non_numeric_value_still_rejected(self, sim):
+        result = sim.send_action({"1": ["oops"]}, robot_name="so101")
+        assert result["status"] == "error"
+        assert "scalar" in result["content"][0]["text"]
+
+    def test_multielement_value_still_rejected(self, sim):
+        """The unwrap must not weaken the #1179 protection."""
+        result = sim.send_action({"1": [0.1, 0.2, 0.3]}, robot_name="so101")
+        assert result["status"] == "error"
+        assert "scalar" in result["content"][0]["text"]
+
+    def test_unindexable_length1_value_is_error_not_crash(self, sim):
+        """A sized-but-unindexable value (a set) returns a structured error."""
+        result = sim.send_action({"1": {0.5}}, robot_name="so101")
+        assert result["status"] == "error"
+        assert "scalar" in result["content"][0]["text"]

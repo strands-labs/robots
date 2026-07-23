@@ -117,6 +117,122 @@ _BUCKET_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9][A-Za-z0-9._-]
 _RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 
+def sync_dataset_to_bucket(
+    local_root: str,
+    bucket: str,
+    run_id: str | None = None,
+    *,
+    create: bool = True,
+    private: bool = True,
+    delete: bool = False,
+) -> dict[str, Any]:
+    """Sync an on-disk LeRobotDataset into an HF Storage Bucket (Phase 1/2).
+
+    Lifecycle-independent: needs only a finalized dataset directory on disk
+    (``meta/`` present) and the ``hf`` CLI - no live
+    :class:`DatasetRecorder`, no sim world. Both
+    :meth:`DatasetRecorder.sync_to_bucket` and the idle-path bucket sync in
+    ``stop_recording`` delegate here so input validation and CLI
+    orchestration exist exactly once.
+
+    Mutable, Xet-deduplicated dump target for COLLECTION - avoids git-LFS
+    history bloat of push_to_hub during recording. Daily re-sync uploads
+    only changed chunks (content-defined chunking). Requires the ``hf`` CLI
+    (huggingface_hub>=1.x) and ``hf auth login``.
+
+    ``bucket`` and ``run_id`` are validated against an allowlist before any
+    subprocess or URI interpolation: ``bucket`` must be ``"name"`` or
+    ``"org/name"`` and ``run_id`` a single path segment, both restricted to
+    ``[A-Za-z0-9._-]`` (no path traversal or shell metacharacters). This
+    path is agent-reachable via ``stop_recording(bucket=, run_id=)``. A
+    rejected value returns ``{"status": "error", ...}`` without running ``hf``.
+
+    The shard layout is already Xet/bucket-friendly at the 100 MB default,
+    and ``meta/`` MUST ship or downstream loses normalization stats.
+
+    Args:
+        local_root: On-disk dataset root (must contain ``meta/``).
+        bucket: Bucket target, ``"name"`` or ``"org/name"``.
+        run_id: Subpath inside the bucket; defaults to the dataset directory
+            name (``Path(local_root).name``).
+        create: Create the bucket first (pre-existing bucket is not an error).
+        private: Create the bucket as private.
+        delete: Forward ``--delete`` to ``hf sync`` (mirror-remove).
+
+    Returns:
+        ``{"status": "success", "bucket_uri": ...}`` or
+        ``{"status": "error", "message": ...}``.
+    """
+    import subprocess
+
+    hf = _hf_executable()
+    if hf is None:
+        return {
+            "status": "error",
+            "message": "`hf` CLI not found. pip install -U huggingface_hub (>=1.x) and run `hf auth login`.",
+        }
+
+    # `hf buckets` / `hf sync` need huggingface_hub>=1.0; on 0.x the CLI
+    # exists but rejects those subcommands with argparse noise. Gate on the
+    # installed package version so users get an upgrade instruction instead.
+    version_error = _huggingface_hub_version_error()
+    if version_error is not None:
+        return {"status": "error", "message": version_error}
+
+    if not _BUCKET_RE.match(bucket):
+        return {
+            "status": "error",
+            "message": f"invalid bucket {bucket!r}: must match "
+            "'name' or 'org/name' using [A-Za-z0-9._-] (no path traversal "
+            "or shell metacharacters).",
+        }
+
+    # meta/ must ship or downstream loses normalization stats.
+    if not (Path(local_root) / "meta").exists():
+        return {
+            "status": "error",
+            "message": f"No meta/ under {local_root}; the dataset was never finalized. "
+            "Call finalize() (stop_recording does this) before syncing to a bucket "
+            "(stats/info required for streaming/training).",
+        }
+
+    run_id = run_id or Path(local_root).name
+    if not _RUN_ID_RE.match(run_id):
+        return {
+            "status": "error",
+            "message": f"invalid run_id {run_id!r}: must be a single path "
+            "segment using [A-Za-z0-9._-] (no '/', path traversal, or shell "
+            "metacharacters).",
+        }
+    dest = f"hf://buckets/{bucket}/{run_id}"
+
+    if create:
+        cp = subprocess.run(
+            [hf, "buckets", "create", bucket] + (["--private"] if private else []),
+            capture_output=True,
+            text=True,
+        )
+        blob = (cp.stderr + cp.stdout).lower()
+        if cp.returncode != 0 and "exist" not in blob:
+            return {
+                "status": "error",
+                "message": f"bucket create failed: {cp.stderr.strip()}",
+            }
+
+    cmd = [hf, "sync", str(local_root), dest]
+    if delete:
+        cmd.append("--delete")
+    logger.info("Syncing %s -> %s", local_root, dest)
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0:
+        return {
+            "status": "error",
+            "message": proc.stderr.strip() or proc.stdout.strip(),
+        }
+
+    return {"status": "success", "bucket_uri": dest}
+
+
 def _hf_executable() -> str | None:
     """Resolve the ``hf`` CLI, preferring the one in the running interpreter's
     environment before falling back to PATH.
@@ -137,6 +253,42 @@ def _hf_executable() -> str | None:
         if candidate.exists():
             return str(candidate)
     return shutil.which("hf")
+
+
+def _huggingface_hub_version_error() -> str | None:
+    """Return an actionable error message if ``huggingface_hub`` is too old for bucket sync.
+
+    The ``hf buckets`` / ``hf sync`` subcommands ship in huggingface_hub>=1.0.
+    On older releases (e.g. the 0.36.x stable line) the ``hf`` binary exists,
+    so :func:`_hf_executable` succeeds, but the subcommands fail with argparse
+    usage noise ("invalid choice: 'buckets'") that gives no hint the fix is an
+    upgrade. Version-checking the installed package up front turns that noise
+    into a clear upgrade instruction without spawning a subprocess.
+
+    Returns ``None`` (no error) when:
+
+    - the installed version is >= 1.0, or
+    - ``huggingface_hub`` is not importable in this interpreter (the ``hf``
+      binary may come from a different environment on PATH whose version we
+      cannot see; the normal subprocess error path still applies), or
+    - the version string is unparseable (fail open rather than block a
+      possibly-capable CLI on a cosmetic version format).
+    """
+    try:
+        import huggingface_hub
+    except ImportError:
+        return None
+
+    version = getattr(huggingface_hub, "__version__", "")
+    match = re.match(r"(\d+)\.(\d+)", version)
+    if match is None:
+        return None
+    if (int(match.group(1)), int(match.group(2))) >= (1, 0):
+        return None
+    return (
+        f"bucket sync requires huggingface_hub>=1.0 (`hf buckets`/`hf sync`); "
+        f"installed: {version}. pip install -U 'huggingface_hub>=1.0'."
+    )
 
 
 # Lazy check for LeRobot availability.
@@ -1049,87 +1201,24 @@ class DatasetRecorder:
     ) -> dict[str, Any]:
         """Sync the on-disk LeRobotDataset into an HF Storage Bucket (Phase 1/2).
 
-        Mutable, Xet-deduplicated dump target for COLLECTION - avoids git-LFS
-        history bloat of push_to_hub during recording. Daily re-sync uploads
-        only changed chunks (content-defined chunking). Requires the ``hf`` CLI
-        (huggingface_hub>=1.x) and ``hf auth login``.
-
-        ``bucket`` and ``run_id`` are validated against an allowlist before any
-        subprocess or URI interpolation: ``bucket`` must be ``"name"`` or
-        ``"org/name"`` and ``run_id`` a single path segment, both restricted to
-        ``[A-Za-z0-9._-]`` (no path traversal or shell metacharacters). This
-        path is agent-reachable via ``stop_recording(bucket=, run_id=)``. A
-        rejected value returns ``{"status": "error", ...}`` without running ``hf``.
-
-        The shard layout is already Xet/bucket-friendly at the 100 MB default,
-        and ``meta/`` MUST ship or downstream loses normalization stats.
+        Thin wrapper over the lifecycle-independent
+        :func:`sync_dataset_to_bucket` (which holds the input validation and
+        ``hf`` CLI orchestration), bound to this recorder's dataset root and
+        repo id. On success the recorder's episode/frame counters are added to
+        the payload.
         """
-        import subprocess
-
-        hf = _hf_executable()
-        if hf is None:
-            return {
-                "status": "error",
-                "message": "`hf` CLI not found. pip install -U huggingface_hub (>=1.x) and run `hf auth login`.",
-            }
-
-        if not _BUCKET_RE.match(bucket):
-            return {
-                "status": "error",
-                "message": f"invalid bucket {bucket!r}: must match "
-                "'name' or 'org/name' using [A-Za-z0-9._-] (no path traversal "
-                "or shell metacharacters).",
-            }
-
-        local_root = str(self.dataset.root)
-        # meta/ must ship or downstream loses normalization stats.
-        if not (Path(local_root) / "meta").exists():
-            return {
-                "status": "error",
-                "message": f"No meta/ under {local_root}; call finalize() before "
-                "sync_to_bucket (stats/info required for streaming/training).",
-            }
-
-        run_id = run_id or self.dataset.repo_id.split("/")[-1]
-        if not _RUN_ID_RE.match(run_id):
-            return {
-                "status": "error",
-                "message": f"invalid run_id {run_id!r}: must be a single path "
-                "segment using [A-Za-z0-9._-] (no '/', path traversal, or shell "
-                "metacharacters).",
-            }
-        dest = f"hf://buckets/{bucket}/{run_id}"
-
-        if create:
-            cp = subprocess.run(
-                [hf, "buckets", "create", bucket] + (["--private"] if private else []),
-                capture_output=True,
-                text=True,
-            )
-            blob = (cp.stderr + cp.stdout).lower()
-            if cp.returncode != 0 and "exist" not in blob:
-                return {
-                    "status": "error",
-                    "message": f"bucket create failed: {cp.stderr.strip()}",
-                }
-
-        cmd = [hf, "sync", local_root, dest]
-        if delete:
-            cmd.append("--delete")
-        logger.info("Syncing %s -> %s", local_root, dest)
-        proc = subprocess.run(cmd, capture_output=True, text=True)
-        if proc.returncode != 0:
-            return {
-                "status": "error",
-                "message": proc.stderr.strip() or proc.stdout.strip(),
-            }
-
-        return {
-            "status": "success",
-            "bucket_uri": dest,
-            "episodes": self.episode_count,
-            "frames": self.frame_count,
-        }
+        result = sync_dataset_to_bucket(
+            str(self.dataset.root),
+            bucket,
+            run_id=run_id or self.dataset.repo_id.split("/")[-1],
+            create=create,
+            private=private,
+            delete=delete,
+        )
+        if result.get("status") == "success":
+            result["episodes"] = self.episode_count
+            result["frames"] = self.frame_count
+        return result
 
     @property
     def repo_id(self) -> str:

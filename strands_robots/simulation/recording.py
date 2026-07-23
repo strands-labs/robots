@@ -154,8 +154,15 @@ class DatasetRecordingMixin:
     ) -> dict[str, Any]:
         """Stop recording and save episode to LeRobotDataset.
 
-        idempotent - calling when not recording succeeds with a
+        Idempotent - a bare call when not recording succeeds with a
         'Was not recording' message so callers can safely call it unconditionally.
+        When ``bucket=`` / ``run_id=`` / ``push_to_hub=True`` are passed while
+        NOT recording, they are never silently dropped (AGENTS.md: forward all
+        advertised kwargs): ``bucket=`` syncs the last-finalized dataset of this
+        sim (the ``last_dataset_root`` stashed at ``start_recording``) so the
+        "re-run stop_recording(bucket=...) as the daily sync" workflow works;
+        ``push_to_hub=True`` (or ``run_id=`` without ``bucket=``) returns a
+        structured ``status="error"`` because there is nothing to publish.
 
         Returns a structured ``status="error"`` when the recording captured no
         frames (the dataset would contain only ``meta/info.json``), rather than
@@ -168,14 +175,17 @@ class DatasetRecordingMixin:
             output_path: Unused legacy arg (kept for back-compat).
             push_to_hub: Publish to a versioned HF *dataset* repo (the finished
                 artifact). Overrides the ``push_to_hub`` set at start_recording.
+                Requires an open recording session; on the idle path this
+                returns ``status="error"`` instead of a silent no-op.
             bucket: If set (e.g. ``"my-org/robot-fave"``), sync the dataset into
                 a mutable HF Storage Bucket instead of/in addition to the dataset
                 repo - the Phase 1/2 collection target (Xet-deduped, overwrite in
-                place).
+                place). When no recording is open, syncs the last dataset this
+                sim finalized (errors if there is none).
             run_id: Optional subpath inside the bucket (defaults to dataset name).
         """
         if self._world is None or not self._world._backend_state.get("recording", False):
-            return {"status": "success", "content": [{"text": "Was not recording."}]}
+            return self._stop_recording_idle(push_to_hub=push_to_hub, bucket=bucket, run_id=run_id)
 
         self._world._backend_state["recording"] = False
         recorder = self._world._backend_state.get("dataset_recorder", None)
@@ -336,6 +346,103 @@ class DatasetRecordingMixin:
             ],
         }
 
+    def _stop_recording_idle(
+        self,
+        *,
+        push_to_hub: bool,
+        bucket: str | None,
+        run_id: str | None,
+    ) -> dict[str, Any]:
+        """Handle ``stop_recording`` when no recording session is open.
+
+        A bare ``stop_recording()`` stays the idempotent success no-op so
+        callers (including ``run_policy``'s finally block) can invoke it
+        unconditionally. But when the caller passed upload kwargs, dropping
+        them behind a ``status="success"`` is a silent-drop bug (AGENTS.md:
+        "Forward all advertised kwargs" / "No silent defaults on error") - the
+        agent believes data was uploaded when nothing happened:
+
+        * ``bucket=``: sync the last dataset this sim finalized (the
+          ``last_dataset_root`` stashed at ``start_recording``). This is the
+          documented "call stop_recording(bucket=...) again as the daily
+          sync" workflow - the sync only needs the on-disk dataset, not a
+          live recorder. Errors when this sim never recorded anything.
+        * ``push_to_hub=True``: structured error - publishing a versioned
+          dataset repo requires the recorder of an open session.
+        * ``run_id=`` without ``bucket=``: structured error - it only applies
+          together with ``bucket=``.
+        """
+        if not push_to_hub and not bucket and not run_id:
+            return {"status": "success", "content": [{"text": "Was not recording."}]}
+
+        if push_to_hub or (run_id and not bucket):
+            detail = "push_to_hub=True" if push_to_hub else f"run_id={run_id!r} without bucket="
+            return {
+                "status": "error",
+                "content": [
+                    {
+                        "text": (
+                            f"stop_recording: {detail} given but no recording session is "
+                            "open - nothing was published or synced. push_to_hub requires "
+                            "an open session (start_recording -> run_policy -> "
+                            "stop_recording(push_to_hub=True)); run_id= only applies "
+                            "together with bucket=."
+                        )
+                    }
+                ],
+            }
+
+        last_root = self._world._backend_state.get("last_dataset_root") if self._world is not None else None
+        if not last_root:
+            return {
+                "status": "error",
+                "content": [
+                    {
+                        "text": (
+                            f"stop_recording: bucket={bucket!r} given but no recording "
+                            "session is open and this sim has no previously recorded "
+                            "dataset to sync - nothing was uploaded. Record first "
+                            "(start_recording -> run_policy -> stop_recording), or pass "
+                            "bucket= on the stop_recording call that closes the session."
+                        )
+                    }
+                ],
+            }
+
+        # Lazy import: keeps this engine-agnostic mixin free of the
+        # dataset_recorder import (numpy) at module load, matching the lazy
+        # DatasetRecorder import in each backend's start_recording.
+        from strands_robots.dataset_recorder import sync_dataset_to_bucket
+
+        # Every no-bucket combination returned above, so bucket is set here.
+        assert bucket is not None
+        sync_result = sync_dataset_to_bucket(str(last_root), bucket, run_id=run_id)
+        if sync_result.get("status") == "success":
+            return {
+                "status": "success",
+                "content": [
+                    {
+                        "text": (
+                            "Was not recording; synced the last recorded dataset instead.\n"
+                            f"Local: {last_root}\n"
+                            f"Synced to bucket: {sync_result['bucket_uri']}"
+                        )
+                    }
+                ],
+            }
+        return {
+            "status": "error",
+            "content": [
+                {
+                    "text": (
+                        "stop_recording: was not recording, and syncing the last recorded "
+                        f"dataset ({last_root}) to bucket {bucket!r} FAILED: "
+                        f"{sync_result.get('message')}"
+                    )
+                }
+            ],
+        }
+
     def save_episode(self) -> dict[str, Any]:
         """Close the current episode and start a fresh one in the same session.
 
@@ -446,14 +553,21 @@ class DatasetRecordingMixin:
         can instead use ``lerobot-train --dataset.streaming=true`` which uses
         the same underlying StreamingLeRobotDataset.
 
+        Sugar for the module-level :func:`strands_robots.stream_dataset` -
+        reading a dataset does not require a simulator, so scripts without a
+        GL stack should call that function directly.
+
         Args:
             repo_id: HF dataset id (e.g. ``"lerobot/svla_so100_pickplace"``) or
                 a local repo_id paired with ``root=``.
             **kwargs: Forwarded to
                 :meth:`StreamingDatasetReader.open` - e.g. ``root``,
                 ``delta_timestamps``, ``episodes``, ``shuffle``, ``buffer_size``,
-                ``max_num_shards``, ``drop_videos`` (proprio-only, torchcodec-free),
-                ``repo_type`` (``"dataset"`` or ``"bucket"``).
+                ``max_num_shards``, ``drop_videos`` (proprio-only,
+                torchcodec-free; requires ``delta_timestamps`` with at least one
+                non-video key, else ValueError), ``repo_type`` (``"dataset"`` or
+                ``"bucket"``; ``"bucket"`` requires lerobot>=0.6.1, else
+                RuntimeError).
 
         Returns:
             A :class:`~strands_robots.streaming_dataset.StreamingDatasetReader`.
@@ -468,9 +582,9 @@ class DatasetRecordingMixin:
             for frame in reader:
                 ...
         """
-        from strands_robots.streaming_dataset import StreamingDatasetReader
+        from strands_robots.streaming_dataset import stream_dataset
 
-        return StreamingDatasetReader.open(repo_id, **kwargs)
+        return stream_dataset(repo_id, **kwargs)
 
     def get_recording_status(self) -> dict[str, Any]:
         """Returns success in every lifecycle state (no world / not

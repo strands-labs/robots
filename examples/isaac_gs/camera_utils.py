@@ -33,7 +33,12 @@ def get_camera_params(sim: "object", camera_name: str) -> IsaacCameraParams:
 
 
 def render_rgb_and_depth(sim: "object", camera_name: str) -> "tuple[np.ndarray, np.ndarray]":
-    """Render the Isaac RTX foreground RGB + metric depth for a camera."""
+    """Render the Isaac RTX foreground RGB + metric depth for a camera.
+
+    Pixels with no geometry (sky / background) come back from Isaac as
+    zero / very large / non-finite depth; the compositor treats those as
+    "see the background through here".
+    """
     rgb, depth = sim.get_frame(camera_name)  # type: ignore[attr-defined]
     assert depth is not None  # the Isaac backend always produces a depth buffer
     return rgb, depth

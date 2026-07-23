@@ -35,7 +35,8 @@ agent(
     f"Create a world with the so100 robot. Add a red cube at [0.2, 0.0, 0.05] "
     f"and a blue cube at [0.25, 0.05, 0.05]. Add a front camera looking at them. "
     f"Start recording a LeRobot dataset (repo_id='{REPO_ID}', root='{DATASET_ROOT}', "
-    f"fps=30, overwrite=True, task='pick up the red cube'). Run the mock policy "
+    f"fps=30, overwrite=True, task='pick up the red cube', cameras=['front']). "
+    f"Run the mock policy "
     f"for 60 steps with instruction 'pick up the red cube'. Stop recording."
 )
 

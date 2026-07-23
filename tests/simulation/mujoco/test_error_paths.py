@@ -279,6 +279,32 @@ def test_render_unknown_camera_falls_back(ready_sim):
     assert r["status"] in ("success", "error")
 
 
+@requires_gl
+def test_render_surfaces_unexpected_renderer_error_as_status_error(ready_sim, monkeypatch):
+    """An unexpected exception inside the render pipeline must be caught.
+
+    Camera validation and the no-GL-context guard already return structured
+    errors, but a fault raised deeper in the pipeline (a MuJoCo renderer that
+    throws on ``update_scene`` after the camera resolved, e.g. a lost GL context
+    mid-render) must NOT bubble a raw exception past the AgentTool boundary. It
+    has to come back as ``status=error`` carrying the fault text, so the LLM
+    sees a recoverable tool result instead of an unhandled traceback.
+    """
+
+    class _BoomRenderer:
+        def update_scene(self, data, camera=None, scene_option=None):
+            raise RuntimeError("GL context lost mid-render")
+
+    # The free camera ("default") skips name validation, so the fault lands in
+    # the render body itself - the path the catch-all guards.
+    monkeypatch.setattr(ready_sim, "_get_renderer", lambda w, h: _BoomRenderer())
+    r = ready_sim.render(camera_name="default", width=32, height=24)
+    assert r["status"] == "error"
+    text = r["content"][0]["text"]
+    assert "Render failed" in text
+    assert "GL context lost mid-render" in text
+
+
 # ─ Tool-spec dispatch: unknown action + error routing───────────
 
 

@@ -1621,21 +1621,14 @@ class RenderingMixin:
             # render calls per camera return the GL clear-colour
             # gradient before the context settles.
             #
-            # History: rounds 11/12/13 added thread-side warmup; round
-            # 14 reverted because the load-scene-without-mj_forward
-            # bug was bigger. #168 fixed mj_forward in load_scene,
-            # which made warmup unnecessary IN THE SLOW PATH. Round
-            # 17's prewarm-fresh-ep0 fast-path skips load_scene,
-            # leaving no per-recorder-thread render before capture.
-            # #168 tried main-thread warmup (thread-isolation
-            # made it ineffective). #168 re-applied the
-            # 2-pass thread-side warmup. #168 verification showed
-            # 2 passes was insufficient: image channel stayed cold for
-            # ~15 frames while wrist cleared at frame 3 - per-camera
-            # warmup latency varies across cameras (likely GPU
-            # command-buffer flush ordering).
-            #
-            # #168 (this code): replace fixed-pass warmup with an
+            # A fixed number of warmup passes is not enough: the image
+            # channel can stay cold for ~15 frames while the wrist
+            # camera clears by frame 3, because per-camera warmup
+            # latency varies across cameras (likely GPU command-buffer
+            # flush ordering). A main-thread warmup does not help
+            # either - the GL context is thread-bound, so priming the
+            # main thread leaves this daemon thread cold. So replace
+            # the fixed-pass warmup with an
             # adaptive warmup loop. Render each camera until it
             # produces output with column-stddev above the cold-
             # gradient threshold. The cold gradient artifact is uniform
@@ -1809,33 +1802,71 @@ class RenderingMixin:
             path = state["paths"][cam]
             errors = state["errors"][cam]
             frames_written = 0
+            frames_skipped = 0
             size_kb = 0.0
+            flush_error = None
             if frames_buffer:
                 # Shared encoder (strands_robots.rendering.video, issue #1537);
                 # same imageio/libx264 invocation as the previous inline writer.
+                #
+                # An MP4 stream requires a constant frame size, but the
+                # capture loop records whatever the live model renders -
+                # and a benchmark's per-episode scene reload can re-install
+                # a camera at different dimensions mid-recording (e.g. the
+                # LIBERO wrist camera). Encode the dominant-size run and
+                # count the rest as skipped instead of letting imageio's
+                # "All images in a movie should have same size" ValueError
+                # abort the whole flush (this method's contract is
+                # never-raise, best-effort).
+                shape_counts: dict[tuple[int, ...], int] = {}
+                for arr in frames_buffer:
+                    shape_counts[arr.shape] = shape_counts.get(arr.shape, 0) + 1
+                target_shape = max(shape_counts, key=lambda s: shape_counts[s])
+                to_encode = [arr for arr in frames_buffer if arr.shape == target_shape]
+                frames_skipped = len(frames_buffer) - len(to_encode)
                 try:
-                    encode_clip(frames_buffer, path, fps=state["fps"])
+                    encode_clip(to_encode, path, fps=state["fps"])
+                    frames_written = len(to_encode)
                 except ImportError:
                     return {
                         "status": "error",
                         "content": [{"text": "imageio not installed. pip install imageio imageio-ffmpeg"}],
                     }
-                frames_written = len(frames_buffer)
+                except Exception as e:  # noqa: BLE001 - best-effort flush must never raise
+                    flush_error = f"{type(e).__name__}: {e}"
+                    logger.warning("camera recorder flush failed for %r -> %s: %s", cam, path, flush_error)
+                if frames_skipped:
+                    logger.warning(
+                        "camera recorder flush for %r skipped %d/%d frames whose size didn't match "
+                        "the dominant %s (camera re-installed at different dimensions mid-recording?)",
+                        cam,
+                        frames_skipped,
+                        len(frames_buffer),
+                        target_shape,
+                    )
                 if _os.path.exists(path):
                     size_kb = _os.path.getsize(path) / 1024
-            lines.append(
+            line = (
                 f"   {cam:20s} {frames_written:>5d} frames  {size_kb:>7.1f} KB  "
                 f"({errors} errors)  -> {_os.path.basename(path)}"
             )
-            artifacts.append(
-                {
-                    "camera": cam,
-                    "path": path,
-                    "frames": frames_written,
-                    "errors": errors,
-                    "size_kb": size_kb,
-                }
-            )
+            if frames_skipped:
+                line += f"  [{frames_skipped} skipped: size mismatch]"
+            if flush_error:
+                line += f"  [flush failed: {flush_error}]"
+            lines.append(line)
+            artifact = {
+                "camera": cam,
+                "path": path,
+                "frames": frames_written,
+                "errors": errors,
+                "size_kb": size_kb,
+            }
+            if frames_skipped:
+                artifact["frames_skipped_size_mismatch"] = frames_skipped
+            if flush_error:
+                artifact["flush_error"] = flush_error
+            artifacts.append(artifact)
 
         return {
             "status": "success",
