@@ -113,7 +113,7 @@ def list_robots(mode: str = "all") -> list[dict[str, Any]]:
 
             - ``"all"``: every registered robot (no filter).
             - ``"sim"``: robots with a simulation asset (``has_sim``).
-            - ``"real"``: robots with a hardware backend (``has_real``).
+            - ``"real"``: robots with a hardware backend (``has_hardware``).
             - ``"both"``: robots that have BOTH sim and real.
 
     Returns:
