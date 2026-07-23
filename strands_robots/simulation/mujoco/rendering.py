@@ -125,7 +125,8 @@ class RenderingMixin:
         # Provided by ManipulationMixin (attach_bodies mode="kinematic");
         # _apply_sim_action re-pins carried bodies after each substep. Stub so
         # mypy accepts the cross-mixin call.
-        def _apply_kinematic_attachments(self) -> None: ...
+        def _apply_kinematic_attachments(self) -> None:
+            """Provided by ``ManipulationMixin``; declared here for type-checkers."""
 
     def _validate_render_dims(self, width: int, height: int) -> dict[str, Any] | None:
         """reject non-positive render dims; convert MuJoCo's framebuffer
