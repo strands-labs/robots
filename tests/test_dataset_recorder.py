@@ -2100,11 +2100,14 @@ def test_recorder_sync_to_bucket_error_passthrough_has_no_counters(tmp_path, mon
 
 def test_sync_dataset_to_bucket_exported_top_level():
     """``strands_robots.sync_dataset_to_bucket`` lazy-resolves to the helper."""
-    import strands_robots
+    from strands_robots import __all__ as strands_robots_all
     from strands_robots import dataset_recorder as dr
+    from strands_robots import sync_dataset_to_bucket
 
-    assert "sync_dataset_to_bucket" in strands_robots.__all__
-    assert strands_robots.sync_dataset_to_bucket is dr.sync_dataset_to_bucket
+    assert "sync_dataset_to_bucket" in strands_robots_all
+    # The from-import above goes through the package's lazy ``__getattr__``,
+    # so identity with the helper proves the lazy resolution works.
+    assert sync_dataset_to_bucket is dr.sync_dataset_to_bucket
 
 
 def test_hf_executable_prefers_interpreter_env_over_path(tmp_path, monkeypatch):
