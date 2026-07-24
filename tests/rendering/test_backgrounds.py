@@ -309,3 +309,115 @@ class TestSpzGaussianSplatReader:
         path.write_bytes(gzip.compress(struct.pack("<iii", _SPZ_MAGIC, 9, 0) + struct.pack("<BBBB", 0, 12, 0, 0)))
         with pytest.raises(ValueError, match="unsupported SPZ version"):
             _load_spz_splats(path, device="cpu")
+
+
+def _build_ply(path, *, means, scales_log, quats, opacity_logit, f_dc):
+    """Write a minimal 3DGS ``.ply`` with the fields ``_load_ply_splats`` reads.
+
+    The 3D Gaussian-Splatting PLY layout stores scales in log-space
+    (``scale_0..2``), opacity as a logit (``opacity``), rotations as raw WXYZ
+    quaternions (``rot_0..3``), and DC color as SH coefficients (``f_dc_0..2``);
+    the loader converts each back to the render-ready representation.
+    """
+    from plyfile import PlyData, PlyElement
+
+    n = len(means)
+    fields = [
+        ("x", means[:, 0]),
+        ("y", means[:, 1]),
+        ("z", means[:, 2]),
+        ("scale_0", scales_log[:, 0]),
+        ("scale_1", scales_log[:, 1]),
+        ("scale_2", scales_log[:, 2]),
+        ("rot_0", quats[:, 0]),
+        ("rot_1", quats[:, 1]),
+        ("rot_2", quats[:, 2]),
+        ("rot_3", quats[:, 3]),
+        ("opacity", opacity_logit),
+        ("f_dc_0", f_dc[:, 0]),
+        ("f_dc_1", f_dc[:, 1]),
+        ("f_dc_2", f_dc[:, 2]),
+    ]
+    dtype = [(name, "f4") for name, _ in fields]
+    verts = np.empty(n, dtype=dtype)
+    for name, col in fields:
+        verts[name] = np.asarray(col, np.float32)
+    PlyData([PlyElement.describe(verts, "vertex")]).write(str(path))
+
+
+class TestPlyGaussianSplatReader:
+    """Pin the 3DGS ``.ply`` decode contract in :func:`_load_ply_splats`.
+
+    The wire layout stores raw training parameters (log-space scales, logit
+    opacity, SH DC color); the loader must apply the inverse activations so the
+    rasterizer receives linear scales, [0,1] opacity, and [0,1] RGB.
+    """
+
+    def test_load_decodes_every_field(self, tmp_path) -> None:
+        pytest.importorskip("torch")
+        pytest.importorskip("plyfile")
+        from strands_robots.rendering.backgrounds import _load_ply_splats
+
+        means = np.array([[0.5, -0.25, 1.0], [0.0, 0.125, -0.5]], np.float32)
+        scales_log = np.array([[-2.0, -1.0, 0.0], [1.0, 0.5, -0.5]], np.float32)
+        # rot_0..3 are stored/loaded verbatim (no re-normalization in the loader).
+        quats = np.array([[1.0, 0.0, 0.0, 0.0], [0.5, 0.5, 0.5, 0.5]], np.float32)
+        opacity_logit = np.array([0.0, 2.0], np.float32)
+        f_dc = np.array([[0.0, 0.0, 0.0], [1.0, -1.0, 0.5]], np.float32)
+        path = tmp_path / "splat.ply"
+        _build_ply(
+            path,
+            means=means,
+            scales_log=scales_log,
+            quats=quats,
+            opacity_logit=opacity_logit,
+            f_dc=f_dc,
+        )
+
+        splats = _load_ply_splats(path, device="cpu")
+
+        assert set(splats) == {"means", "scales", "quats", "opacities", "colors"}
+        # means pass through unchanged.
+        assert np.allclose(splats["means"].numpy(), means, atol=1e-6)
+        # scales are exp() of the stored log-space values.
+        assert np.allclose(splats["scales"].numpy(), np.exp(scales_log), atol=1e-6)
+        # rotations are the raw stored quaternions (loader does not normalize).
+        assert np.allclose(splats["quats"].numpy(), quats, atol=1e-6)
+        # opacity is a sigmoid of the stored logit: 0 -> 0.5, 2 -> ~0.881.
+        assert np.allclose(
+            splats["opacities"].numpy(),
+            1.0 / (1.0 + np.exp(-opacity_logit)),
+            atol=1e-6,
+        )
+        # DC color decodes via 0.5 + SH_C0 * f_dc, clipped to [0, 1].
+        sh_c0 = 0.28209479177387814
+        colors = splats["colors"].numpy()
+        assert colors.shape == (2, 3)
+        assert np.all((colors >= 0.0) & (colors <= 1.0))
+        assert np.allclose(colors, np.clip(0.5 + sh_c0 * f_dc, 0.0, 1.0), atol=1e-6)
+
+    def test_load_clips_saturated_dc_color_into_unit_range(self, tmp_path) -> None:
+        # Large-magnitude SH DC terms would push 0.5 + SH_C0 * f_dc outside
+        # [0, 1]; the loader must clip so the rasterizer never sees invalid RGB.
+        pytest.importorskip("torch")
+        pytest.importorskip("plyfile")
+        from strands_robots.rendering.backgrounds import _load_ply_splats
+
+        means = np.zeros((2, 3), np.float32)
+        scales_log = np.zeros((2, 3), np.float32)
+        quats = np.tile(np.array([1.0, 0.0, 0.0, 0.0], np.float32), (2, 1))
+        opacity_logit = np.zeros(2, np.float32)
+        f_dc = np.array([[100.0, 100.0, 100.0], [-100.0, -100.0, -100.0]], np.float32)
+        path = tmp_path / "saturated.ply"
+        _build_ply(
+            path,
+            means=means,
+            scales_log=scales_log,
+            quats=quats,
+            opacity_logit=opacity_logit,
+            f_dc=f_dc,
+        )
+
+        colors = _load_ply_splats(path, device="cpu")["colors"].numpy()
+        assert np.allclose(colors[0], 1.0)
+        assert np.allclose(colors[1], 0.0)
