@@ -27,7 +27,10 @@ from collections.abc import Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, SupportsFloat
 
 if TYPE_CHECKING:
+    import numpy as np
+
     from strands_robots.policies import Policy
+    from strands_robots.rendering import CameraParams
 
 # PolicyRunner and VideoConfig are used by run_policy / replay / eval_policy.
 # We could defer these with inline lazy imports (and historically did), but
@@ -2235,6 +2238,75 @@ class SimEngine(ABC):
     def get_contacts(self) -> dict[str, Any]:
         """Get contact information. Override per backend."""
         raise NotImplementedError("get_contacts not implemented by this backend")
+
+    # Raw-frame render APIs (programmatic, not tool-envelope). Optional per
+    # backend, but every in-tree backend implements them: they are the public
+    # counterpart of the per-backend private render internals (issue #1537)
+    # and the substrate for strands_robots.rendering.HybridCompositor.
+
+    def get_frame(
+        self, camera_name: str = "default", width: int | None = None, height: int | None = None
+    ) -> tuple[np.ndarray, np.ndarray | None]:
+        """Render a camera to raw ``(rgb, depth)`` ndarrays.
+
+        The numeric-array counterpart of :meth:`render` (which wraps pixels in
+        the agent-tool PNG envelope). In-process consumers -- the hybrid
+        compositor, dataset recorders, video writers -- use this to get pixels
+        without a PNG round-trip.
+
+        Args:
+            camera_name: name of a camera previously added via ``add_camera``
+                (backends supporting a free camera also accept their free-cam
+                tokens for the RGB path).
+            width: image width in pixels; ``None`` uses the camera's
+                configured resolution.
+            height: image height in pixels; ``None`` uses the camera's
+                configured resolution.
+
+        Returns:
+            ``(rgb, depth)`` where ``rgb`` is ``(H, W, 3) uint8`` and
+            ``depth`` is ``(H, W) float32`` metric meters, or ``None`` on
+            backends with no depth path (Newton). Backends must never
+            substitute silently wrong pixels -- failures raise.
+
+        Raises:
+            KeyError: unknown camera name.
+            ValueError: invalid render dimensions.
+            RuntimeError: no world / renderer unavailable / backend render
+                failure.
+            NotImplementedError: backend has no raw-frame path.
+        """
+        raise NotImplementedError("get_frame not implemented by this backend")
+
+    def get_camera_params(
+        self, camera_name: str = "default", width: int | None = None, height: int | None = None
+    ) -> CameraParams:
+        """Return pinhole intrinsics/extrinsics for a named camera.
+
+        The returned :class:`strands_robots.rendering.CameraParams` carries
+        the intrinsic matrix ``K`` (pixels), the world-from-camera SE(3) pose
+        ``T_world_cam`` in the OpenGL optical convention (+X right, +Y up,
+        **-Z forward**), the image size, and the clip planes. Backends whose
+        native camera basis differs (e.g. Isaac's USD camera prim) apply the
+        fixed basis correction here so consumers never see a backend-specific
+        frame.
+
+        Args:
+            camera_name: name of a camera previously added via ``add_camera``.
+                The free camera has no model-fixed pose and is rejected.
+            width: image width to compute ``K`` for; ``None`` uses the
+                camera's configured resolution.
+            height: image height to compute ``K`` for; ``None`` uses the
+                camera's configured resolution.
+
+        Raises:
+            KeyError: unknown camera name.
+            ValueError: free camera requested, or a resolution the backend
+                cannot honor.
+            RuntimeError: no world created.
+            NotImplementedError: backend has no camera-params path.
+        """
+        raise NotImplementedError("get_camera_params not implemented by this backend")
 
     # Discovery / introspection
 

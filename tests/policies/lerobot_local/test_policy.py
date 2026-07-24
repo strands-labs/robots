@@ -2190,6 +2190,42 @@ class TestToLerobotObservationCameraKeyMap:
         out = policy._to_lerobot_observation({"front": img})
         assert out["observation.images.top"] is img
 
+    def test_strict_keys_without_map_raises_on_unmatched_camera(self):
+        """strict_keys=True fails loud when a camera name cannot bind by name.
+
+        The VLA-preprocessor remap path must mirror the batch path
+        (``_resolve_camera_targets``): with no ``camera_key_map`` and a camera
+        whose name matches no declared image feature, positional fallback would
+        silently feed the frame to the wrong model input. Under strict_keys the
+        remap must raise instead, and the message must name both the unmatched
+        robot key and the available model slot so the fix is actionable.
+        """
+        policy = self._policy(["top"], strict=True)
+        img = np.ones((480, 640, 3), dtype=np.uint8)
+        with pytest.raises(ValueError) as excinfo:
+            policy._to_lerobot_observation({"front": img})
+        msg = str(excinfo.value)
+        assert "strict_keys=True: cannot resolve camera keys" in msg
+        assert "front" in msg  # names the unmatched robot camera
+        assert "observation.images.top" in msg  # names the available model slot
+
+    def test_map_that_misses_one_camera_still_raises_under_strict(self):
+        """A partial camera_key_map does not silence strict for the uncovered cam.
+
+        One camera is bound by the map; a second, unmapped camera whose name
+        matches no declared feature would fall back positionally. Under
+        strict_keys that residual mismatch must still raise rather than route
+        the extra frame into the remaining free slot by position.
+        """
+        policy = self._policy(
+            ["top", "wrist"],
+            strict=True,
+            camera_key_map={"front": "observation.images.top"},
+        )
+        img = np.ones((480, 640, 3), dtype=np.uint8)
+        with pytest.raises(ValueError, match="strict_keys=True: cannot resolve camera keys"):
+            policy._to_lerobot_observation({"front": img, "side": img})
+
     def test_camera_key_map_prevents_positional_misrouting(self):
         """With two cameras the map binds each to its intended slot, not by order.
 

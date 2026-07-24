@@ -15,10 +15,11 @@ Pins two clean-checkout breakages from #1536:
    ``result["rgb"]`` / ``result["depth"]`` off the ``sim.render()`` tool-result
    envelope, which carries ONLY ``{status, content}`` (the tool-result contract
    forbids extra top-level keys) - a guaranteed ``KeyError``. It now consumes
-   ``IsaacSimulation._render_frame`` (raw ``(rgb, depth, meta)``; the private
-   reach-through is a documented TODO(#1537) until a public raw-frame API
-   exists). The behavioral tests below pin that consumption contract with a
-   stub sim - no Isaac install needed.
+   the public raw-frame API ``sim.get_frame`` (issue #1537 promoted the
+   private ``_render_frame`` reach-through into ``SimEngine.get_frame``,
+   which raises on degraded paths instead of returning blank frames). The
+   behavioral tests below pin that consumption contract with a stub sim -
+   no Isaac install needed.
 """
 
 from __future__ import annotations
@@ -80,15 +81,23 @@ def test_isaac_gs_mujoco_gs_dependency_resolves_in_repo() -> None:
 
 
 class _StubSim:
-    """Stub of the ``IsaacSimulation._render_frame`` raw-frame surface."""
+    """Stub of the public ``sim.get_frame`` raw-frame surface (issue #1537)."""
 
-    def __init__(self, rgb, depth, meta=None):
+    def __init__(self, rgb, depth, error: str | None = None):
         self._rgb = rgb
         self._depth = depth
-        self._meta = meta or {"text": "Rendered (stub)"}
+        self._error = error
+
+    def get_frame(self, camera_name: str = "default", width=None, height=None):
+        if self._error is not None:
+            raise RuntimeError(self._error)
+        return self._rgb, self._depth
 
     def _render_frame(self, camera_name: str = "default", width=None, height=None):
-        return self._rgb, self._depth, self._meta
+        raise AssertionError(
+            "render_rgb_and_depth must NOT reach into the private _render_frame - "
+            "the public get_frame API replaced it (#1537)."
+        )
 
     def render(self, camera_name: str = "default", **_: object):
         raise AssertionError(
@@ -98,15 +107,15 @@ class _StubSim:
 
 
 def test_render_rgb_and_depth_consumes_render_frame() -> None:
-    """Happy path: raw ``_render_frame`` arrays come back as (uint8 RGB, float32 depth)."""
+    """Happy path: raw ``get_frame`` arrays come back as (uint8 RGB, float32 depth)."""
     from examples.isaac_gs.camera_utils import render_rgb_and_depth
 
     h, w = 4, 6
-    rgba = np.zeros((h, w, 4), dtype=np.uint8)
-    rgba[..., 0] = 200  # red channel; alpha stays 0 to prove it's sliced away
-    depth_in = np.full((h, w), 1.5, dtype=np.float64)
+    rgb_in = np.zeros((h, w, 3), dtype=np.uint8)
+    rgb_in[..., 0] = 200  # red channel survives the round-trip
+    depth_in = np.full((h, w), 1.5, dtype=np.float32)
 
-    rgb, depth = render_rgb_and_depth(_StubSim(rgba, depth_in), "cam0")
+    rgb, depth = render_rgb_and_depth(_StubSim(rgb_in, depth_in), "cam0")
 
     assert rgb.shape == (h, w, 3)
     assert rgb.dtype == np.uint8
@@ -117,9 +126,10 @@ def test_render_rgb_and_depth_consumes_render_frame() -> None:
 
 
 def test_render_rgb_and_depth_raises_on_render_failure() -> None:
-    """Failure path: ``rgb is None`` surfaces the meta error, never a KeyError."""
+    """Failure path: ``get_frame`` raises on degraded paths and the wrapper
+    propagates it - never a KeyError off a tool-result envelope (#1536)."""
     from examples.isaac_gs.camera_utils import render_rgb_and_depth
 
-    sim = _StubSim(None, None, meta={"error": "No world created."})
+    sim = _StubSim(None, None, error="No world created.")
     with pytest.raises(RuntimeError, match="No world created"):
         render_rgb_and_depth(sim, "cam0")

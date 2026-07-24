@@ -134,3 +134,37 @@ def test_per_issuer_cap_audit_valueerror_is_swallowed_and_cap_enforced(monkeypat
     assert flooder_slots == 2
     # The refused (third) resume must NOT clear the lockout.
     assert m._estop_lockout.is_set() is True
+
+
+def test_redundant_resume_audit_oserror_is_swallowed_and_lockout_stays_clear(monkeypatch):
+    """A disk failure (OSError) while auditing a ``remote_resume_redundant``
+    event must not propagate out of the safety handler.
+
+    A fully-validated resume that arrives while the lockout is already clear
+    still consumed a replay-cache slot, so forensics record it as
+    ``remote_resume_redundant`` (issue #271). That forensic publish is
+    best-effort: a flaky audit sink must not abort handling. The lockout was
+    already clear and must stay clear.
+    """
+    monkeypatch.setenv("STRANDS_MESH_OVERRIDE_CODE", "secret")
+    m = _make_mesh()
+
+    calls = []
+
+    def audit(**kwargs):
+        calls.append(kwargs)
+        if kwargs.get("event_type") == "remote_resume_redundant":
+            raise OSError("audit log volume full")
+
+    m.publish_safety_event = audit
+
+    # Lockout is NOT engaged, so a valid resume lands in the redundant branch.
+    assert m._estop_lockout.is_set() is False
+    env = _make_envelope("secret", peer_id="op-1")
+    m._on_safety_resume(_sample(env))  # must not raise despite the audit OSError
+
+    redundant = [c for c in calls if c.get("event_type") == "remote_resume_redundant"]
+    assert len(redundant) == 1
+    # Lockout was clear before and stays clear (a redundant resume is a no-op
+    # on lockout state).
+    assert m._estop_lockout.is_set() is False

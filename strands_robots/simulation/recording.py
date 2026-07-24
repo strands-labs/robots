@@ -4,9 +4,10 @@ The :class:`DatasetRecordingMixin` holds the parts of the recording workflow
 that have no engine-specific physics dependency: querying recording state,
 flushing an episode boundary, stopping/finalizing a session, streaming a
 dataset back, and reporting status. Every method operates purely through the
-shared ``self._world._backend_state`` dict and the backend-agnostic
-:class:`~strands_robots.dataset_recorder.DatasetRecorder`, so both the MuJoCo
-and Newton backends mix it in unchanged.
+state mapping returned by :meth:`DatasetRecordingMixin._recording_state` (by
+default the shared ``self._world._backend_state`` dict) and the
+backend-agnostic :class:`~strands_robots.dataset_recorder.DatasetRecorder`, so
+the MuJoCo, Newton, and Isaac backends all mix it in unchanged.
 
 Each backend supplies the engine-specific half separately:
 
@@ -15,9 +16,13 @@ Each backend supplies the engine-specific half separately:
 * ``_make_run_policy_hook`` - captures per-step observations/cameras and feeds
   them to the active recorder.
 
-**Coupling**: the mixin reaches into ``self._world._backend_state`` for the
-recording flag, trajectory buffer, and ``dataset_recorder`` handle. The
-``TYPE_CHECKING`` stub documents that contract for mypy; it is not an
+**Coupling**: every method operates on the mutable state mapping returned by
+:meth:`DatasetRecordingMixin._recording_state`. The default accessor reaches
+into ``self._world._backend_state`` (the ``SimWorld`` contract the MuJoCo and
+Newton backends share); backends whose world object is not a ``SimWorld``
+(Isaac Sim's ``self._world`` is the Isaac ``World`` handle) override the
+accessor to supply their own dict instead of forking the mixin. The
+``TYPE_CHECKING`` stub documents the default contract for mypy; it is not an
 enforceable protocol.
 """
 
@@ -46,6 +51,29 @@ class DatasetRecordingMixin:
         _world: "SimWorld | None"
         default_width: int
         default_height: int
+
+    def _recording_state(self) -> dict[str, Any] | None:
+        """Mutable recording-state mapping, or ``None`` when no world exists.
+
+        This is the single seam every engine-independent lifecycle method goes
+        through to reach the recording flag, trajectory mirror,
+        ``dataset_recorder`` handle, ``recording_cameras`` scope and
+        ``last_dataset_root``. The default implementation reads
+        ``self._world._backend_state`` - the ``SimWorld`` contract shared by
+        the MuJoCo and Newton backends, which need no override. Backends whose
+        ``self._world`` is not a ``SimWorld`` (the Isaac backend holds the
+        Isaac Sim ``World`` handle there) override this accessor to return
+        their own dict, keeping one shared mixin instead of a fork.
+
+        Returns:
+            The live state dict, or ``None`` when there is no world (recording
+            is then reported as inactive and lifecycle calls degrade to their
+            documented no-world responses).
+        """
+        world = self._world
+        if world is None:
+            return None
+        return world._backend_state
 
     @staticmethod
     def _prepare_dataset_target(dataset_dir: Path, overwrite: bool) -> bool:
@@ -112,7 +140,8 @@ class DatasetRecordingMixin:
         ``run_policy`` loop flushes an episode boundary after each rollout
         only while a recording is open.
         """
-        return self._world is not None and bool(self._world._backend_state.get("recording", False))
+        state = self._recording_state()
+        return state is not None and bool(state.get("recording", False))
 
     def _active_recorder(self) -> Any:
         """Live dataset recorder, or ``None`` when no session is open.
@@ -120,9 +149,10 @@ class DatasetRecordingMixin:
         Overrides :meth:`SimEngine._active_recorder` so the base ``run_policy``
         episode-contract fields can read the recorder's in-memory episode count.
         """
-        if self._world is None:
+        state = self._recording_state()
+        if state is None:
             return None
-        return self._world._backend_state.get("dataset_recorder")
+        return state.get("dataset_recorder")
 
     def _active_dataset_root(self) -> str | None:
         """On-disk root of the active or most-recently-recorded dataset.
@@ -139,9 +169,10 @@ class DatasetRecordingMixin:
                 return str(recorder.root)
             except (AttributeError, TypeError):
                 pass
-        if self._world is None:
+        state = self._recording_state()
+        if state is None:
             return None
-        last = self._world._backend_state.get("last_dataset_root")
+        last = state.get("last_dataset_root")
         return str(last) if last else None
 
     def stop_recording(
@@ -184,11 +215,12 @@ class DatasetRecordingMixin:
                 sim finalized (errors if there is none).
             run_id: Optional subpath inside the bucket (defaults to dataset name).
         """
-        if self._world is None or not self._world._backend_state.get("recording", False):
+        state = self._recording_state()
+        if state is None or not state.get("recording", False):
             return self._stop_recording_idle(push_to_hub=push_to_hub, bucket=bucket, run_id=run_id)
 
-        self._world._backend_state["recording"] = False
-        recorder = self._world._backend_state.get("dataset_recorder", None)
+        state["recording"] = False
+        recorder = state.get("dataset_recorder", None)
 
         if recorder is None:
             return {"status": "error", "content": [{"text": "No dataset recorder active."}]}
@@ -217,8 +249,8 @@ class DatasetRecordingMixin:
         if pending > 0:
             save_result = recorder.save_episode()
             if isinstance(save_result, dict) and save_result.get("status") == "error":
-                self._world._backend_state["dataset_recorder"] = None
-                self._world._backend_state["trajectory"] = []
+                state["dataset_recorder"] = None
+                state["trajectory"] = []
                 return {
                     "status": "error",
                     "content": [
@@ -232,8 +264,8 @@ class DatasetRecordingMixin:
                     ],
                 }
         elif captured == 0:
-            self._world._backend_state["dataset_recorder"] = None
-            self._world._backend_state["trajectory"] = []
+            state["dataset_recorder"] = None
+            state["trajectory"] = []
             return {
                 "status": "error",
                 "content": [
@@ -301,15 +333,15 @@ class DatasetRecordingMixin:
             else:
                 extra += f"\nBucket sync FAILED: {sync_result.get('message')}"
         # Versioned dataset-repo publish (Phase 4 hand-off).
-        if push_to_hub or self._world._backend_state.get("push_to_hub", False):
+        if push_to_hub or state.get("push_to_hub", False):
             push_result = recorder.push_to_hub(tags=["strands-robots", "sim"])
             if push_result and push_result.get("status") == "success":
                 extra += "\nPushed to HuggingFace Hub"
             elif push_result:
                 extra += f"\npush_to_hub FAILED: {push_result.get('message')}"
 
-        self._world._backend_state["dataset_recorder"] = None
-        self._world._backend_state["trajectory"] = []
+        state["dataset_recorder"] = None
+        state["trajectory"] = []
 
         # #708 - if recorder.episode_count and parquet disagree, surface
         # it in the human-readable text too so an operator scanning the
@@ -392,7 +424,8 @@ class DatasetRecordingMixin:
                 ],
             }
 
-        last_root = self._world._backend_state.get("last_dataset_root") if self._world is not None else None
+        state = self._recording_state()
+        last_root = state.get("last_dataset_root") if state is not None else None
         if not last_root:
             return {
                 "status": "error",
@@ -480,7 +513,8 @@ class DatasetRecordingMixin:
             episode index and frame count; a structured ``status="error"`` is
             returned when no recording is active or the underlying flush fails.
         """
-        if self._world is None or not self._world._backend_state.get("recording", False):
+        state = self._recording_state()
+        if state is None or not state.get("recording", False):
             return {
                 "status": "error",
                 "content": [
@@ -493,7 +527,7 @@ class DatasetRecordingMixin:
                 ],
             }
 
-        recorder = self._world._backend_state.get("dataset_recorder", None)
+        recorder = state.get("dataset_recorder", None)
         if recorder is None:
             return {"status": "error", "content": [{"text": "No dataset recorder active."}]}
 
@@ -516,9 +550,9 @@ class DatasetRecordingMixin:
             # The recorder marks itself closed on a failed flush (the LeRobot
             # episode buffer is in an undefined state); drop it so callers do
             # not keep appending into a poisoned recorder.
-            self._world._backend_state["recording"] = False
-            self._world._backend_state["dataset_recorder"] = None
-            self._world._backend_state["trajectory"] = []
+            state["recording"] = False
+            state["dataset_recorder"] = None
+            state["trajectory"] = []
             return {
                 "status": "error",
                 "content": [{"text": f"save_episode failed: {save_result.get('message')}"}],
@@ -526,7 +560,7 @@ class DatasetRecordingMixin:
 
         # Reset the in-memory trajectory mirror so get_recording_status reports
         # the NEXT episode from zero (matching the recorder's per-episode reset).
-        self._world._backend_state["trajectory"] = []
+        state["trajectory"] = []
 
         episode = save_result.get("episode")
         ep_frames = save_result.get("episode_frames")
@@ -590,14 +624,15 @@ class DatasetRecordingMixin:
         """Returns success in every lifecycle state (no world / not
         recording / recording) with a distinguishing message so callers can
         poll it unconditionally without try/except."""
-        if self._world is None:
+        state = self._recording_state()
+        if state is None:
             return {
                 "status": "success",
                 "content": [{"text": "No world. Call create_world to start recording."}],
             }
 
-        recording = self._world._backend_state.get("recording", False)
-        steps = len(self._world._backend_state.get("trajectory", []))
+        recording = state.get("recording", False)
+        steps = len(state.get("trajectory", []))
 
         if recording:
             text = f"[recording] {steps} steps captured"

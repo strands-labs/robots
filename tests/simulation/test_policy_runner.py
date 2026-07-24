@@ -15,11 +15,13 @@ from __future__ import annotations
 import base64
 import inspect
 import io
+import logging
 import os
 import sys
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
@@ -53,6 +55,10 @@ class FakeSim(SimEngine):
         self._step_count = 0
         self._sim_time = 0.0
         self._robots = {"fake_robot": self._joint_names}
+        # Real SimEngine backends expose a ``_world`` (with ``_backend_state``);
+        # default to None here so the recorder-finalize path is a no-op unless a
+        # test attaches one via ``_attach_recorder``.
+        self._world: Any = None
 
     # Implement abstract methods (bare minimum)
     def create_world(self, timestep=None, gravity=None, ground_plane=True):
@@ -878,3 +884,74 @@ class TestChunkNotTruncatedBelowActionsPerStep:
             f"{policy.get_actions_calls}x (expected 1 - the whole 30-step chunk "
             "should be consumed before re-querying)"
         )
+
+
+#
+# evaluate(): per-episode recorder finalize is fault-tolerant (issue #708)
+#
+# `_finalize_recorder_episode` rolls the attached LeRobot dataset_recorder over
+# to a fresh episode at the end of each eval rollout so the dataset records
+# per-episode boundaries instead of collapsing every rollout into one
+# mega-episode. A recorder failure at that boundary (a non-success status dict,
+# or an exception from `save_episode`) must NOT abort the eval: the rollouts
+# already happened, and losing the episode-split is strictly better than losing
+# the whole eval summary. These pin that fault-tolerance contract through the
+# public `evaluate()` API.
+
+
+class _FailingRecorder:
+    """Dataset-recorder stub whose per-episode `save_episode` fails.
+
+    `mode="non_success"` returns an error status dict; `mode="raise"` throws.
+    Reports a non-empty `episode_frame_count` so the finalize path actually
+    calls `save_episode` (an empty buffer is skipped by design).
+    """
+
+    def __init__(self, mode: str):
+        self.mode = mode
+        self.save_calls = 0
+
+    @property
+    def episode_frame_count(self) -> int:
+        return 5  # non-empty -> finalize will call save_episode
+
+    def save_episode(self) -> dict[str, Any]:
+        self.save_calls += 1
+        if self.mode == "raise":
+            raise RuntimeError("simulated recorder disk failure")
+        return {"status": "error", "content": [{"text": "disk full"}], "message": "disk full"}
+
+
+def _attach_recorder(sim: FakeSim, recorder: Any) -> None:
+    """Attach a dataset recorder to a FakeSim via the backend_state contract."""
+    sim._world = SimpleNamespace(_backend_state={"dataset_recorder": recorder})
+
+
+@pytest.mark.parametrize("mode", ["non_success", "raise"])
+def test_evaluate_survives_per_episode_recorder_save_failure(mode, caplog):
+    """A failing per-episode recorder finalize must not abort the eval.
+
+    Whether `save_episode` returns a non-success status or raises, `evaluate`
+    still completes every requested episode and returns a success summary; the
+    failure is logged, not propagated.
+    """
+    sim = FakeSim()
+    recorder = _FailingRecorder(mode)
+    _attach_recorder(sim, recorder)
+
+    policy = MockPolicy()
+    policy.set_robot_state_keys(sim.robot_joint_names("fake_robot"))
+
+    with caplog.at_level(logging.WARNING, logger="strands_robots.simulation.policy_runner"):
+        result = PolicyRunner(sim).evaluate("fake_robot", policy, n_episodes=2, max_steps=3)
+
+    # Eval survives and reports a normal summary despite the recorder failing.
+    assert result["status"] == "success"
+    payload = next(c["json"] for c in result["content"] if isinstance(c, dict) and "json" in c)
+    assert payload["episodes_completed"] == 2
+    assert payload["stopped_early"] is False
+
+    # The finalize was attempted once per episode (not silently skipped).
+    assert recorder.save_calls == 2
+    # The failure surfaced as a warning rather than an exception.
+    assert any("save_episode" in rec.message for rec in caplog.records)

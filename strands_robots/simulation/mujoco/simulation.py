@@ -74,6 +74,7 @@ from strands_robots.simulation.mujoco.backend import (
     _ensure_mujoco,
     filter_mujoco_attach_noise,
 )
+from strands_robots.simulation.mujoco.manipulation import ManipulationMixin
 from strands_robots.simulation.mujoco.physics import PhysicsMixin
 from strands_robots.simulation.mujoco.randomization import RandomizationMixin
 from strands_robots.simulation.mujoco.recording import RecordingMixin
@@ -206,6 +207,7 @@ class MuJoCoSimEngine(
     RenderingMixin,
     RecordingMixin,
     RandomizationMixin,
+    ManipulationMixin,
     SimEngine,
     AgentTool,
 ):
@@ -1477,6 +1479,22 @@ class MuJoCoSimEngine(
         if err := self._require_no_running_policy("remove_robot"):
             return err
 
+        # An active attachment referencing one of this robot's bodies would be
+        # silently lost by the scene rebuild (weld) or dangle (kinematic).
+        # Fail fast so the caller detaches deliberately.
+        if (attached_child := self.attachment_involving(name)) is not None:
+            return {
+                "status": "error",
+                "content": [
+                    {
+                        "text": (
+                            f"Robot '{name}' is referenced by an active attachment "
+                            f"(child '{attached_child}'). Call detach_bodies first."
+                        )
+                    }
+                ],
+            }
+
         # Pop the robot from the registry BEFORE the rebuild - eject_robot_from_scene
         # rebuilds the spec from the remaining world.robots dict, so the robot
         # we want to drop must no longer be in it.
@@ -1673,6 +1691,26 @@ class MuJoCoSimEngine(
             "(name: str, position=None, orientation=None) -> dict  # reposition "
             "an existing object; position is [x, y, z] meters, orientation is a "
             "[w, x, y, z] quaternion (either may be omitted to leave it unchanged)"
+        )
+        # Manipulation primitives (GH #1533): runtime grasp-assist attach/
+        # detach, URDF-arm actuation, and the anti-explosion dynamics reset.
+        base["methods"]["attach_bodies"] = (
+            "(parent: str, child: str, mode='weld', torquescale=1.0) -> dict  # "
+            "rigidly attach child to parent at their CURRENT relative pose "
+            "(grasp-assist; mode='weld' adds an equality constraint, "
+            "mode='kinematic' teleport-follows every step). NOT a physical grasp"
+        )
+        base["methods"]["detach_bodies"] = "(parent: str, child: str) -> dict  # release an attach_bodies attachment"
+        base["methods"]["actuate_robot"] = (
+            "(robot_name: str, kp=100.0, damping=2.0, armature=0.01, "
+            "gravity_compensation=True, disable_self_collision=False) -> dict  # "
+            "add position-servo actuators to an actuator-less (URDF-loaded) arm "
+            "so send_action / run_policy can drive it (kp: number for all "
+            "hinge/slide joints, or {joint: kp} for a subset)"
+        )
+        base["methods"]["zero_dynamics"] = (
+            "(robot_name: str | None = None) -> dict  # zero qvel/qacc/warmstart "
+            "(world-wide, or one robot's joints) after kinematic qpos writes"
         )
         # Robot-registry + robot-removal surface. describe() calls add_robot
         # "the first scene-construction step" and advertises the object/camera
@@ -2447,6 +2485,21 @@ class MuJoCoSimEngine(
             return {"status": "error", "content": [{"text": self._unknown_object_msg(name)}]}
         if err := self._require_no_running_policy("remove_object"):
             return err
+        # An active attachment referencing this body would make the ejection
+        # recompile fail (dangling weld) or silently drop a kinematic carry.
+        # Fail fast so the caller detaches deliberately.
+        if (attached_child := self.attachment_involving(name)) is not None:
+            return {
+                "status": "error",
+                "content": [
+                    {
+                        "text": (
+                            f"Object '{name}' is referenced by an active attachment "
+                            f"(child '{attached_child}'). Call detach_bodies first."
+                        )
+                    }
+                ],
+            }
         del self._world.objects[name]
         # spec-based path: eject_body_from_scene looks up the body in the
         # live MjSpec, deletes it, and recompiles preserving remaining state.
@@ -2829,6 +2882,10 @@ class MuJoCoSimEngine(
                 ],
             }
         mj = self._mj
+        # Kinematic attachments (attach_bodies mode="kinematic") follow their
+        # parent every physics step. Resolved once here; the per-step call is
+        # a fast no-op when the registry is empty.
+        has_kinematic_attachments = bool(self._world._backend_state.get("kinematic_attachments"))
         # Process in batches, releasing lock between batches so stop_policy
         # and other actions can interleave on long runs.
         remaining = n_steps
@@ -2837,6 +2894,13 @@ class MuJoCoSimEngine(
             with self._lock:
                 for _ in range(batch):
                     mj.mj_step(self._world._model, self._world._data)
+                    if has_kinematic_attachments:
+                        self._apply_kinematic_attachments()
+                if has_kinematic_attachments:
+                    # Re-forward so the carried bodies' derived state (xpos,
+                    # cam xforms) reflects the final teleport for the next
+                    # render/observation.
+                    mj.mj_forward(self._world._model, self._world._data)
                 self._world.sim_time = self._world._data.time
                 self._world.step_count += batch
             remaining -= batch
@@ -3428,7 +3492,7 @@ class MuJoCoSimEngine(
                 "(direct path or auto-resolve from data_config name), add objects, run VLA policies, "
                 "render cameras, record trajectories, domain randomize. "
                 "Same Policy ABC as real robot control - sim and real with zero code changes. "
-                "Actions (68 total): "
+                "Actions (72 total): "
                 "[World] create_world, load_scene, reset, get_state, destroy, export_xml; "
                 "[Robots] add_robot, remove_robot, list_robots, get_robot_state, list_bodies; "
                 "[Objects] add_object, remove_object, move_object, list_objects; "
@@ -3439,6 +3503,7 @@ class MuJoCoSimEngine(
                 "apply_force, get_contacts, get_contact_forces, get_body_state, get_energy, "
                 "get_total_mass, get_ground_height, get_sensor_data, get_jacobian, get_mass_matrix, inverse_dynamics, "
                 "forward_kinematics, save_state, load_state, set_body_properties, set_geom_properties; "
+                "[Manipulation] attach_bodies, detach_bodies, actuate_robot, zero_dynamics; "
                 "[Scene MJCF] replace_scene_mjcf, patch_scene_mjcf, raycast, multi_raycast; "
                 "[Recording] start_recording, save_episode, stop_recording, get_recording_status, "
                 "start_cameras_recording, stop_cameras_recording, get_cameras_recording_status; "

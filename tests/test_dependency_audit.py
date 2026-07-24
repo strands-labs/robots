@@ -202,3 +202,55 @@ def test_no_torch_or_torchvision_uv_override() -> None:
         "torch/torchvision uv overrides must stay removed (they compensated for "
         f"lerobot 0.5.1 and conflict with lerobot 0.6's torch 2.11): {offenders}"
     )
+
+
+# ---------------------------------------------------------------------------
+# ruff minor-cap invariant.
+#
+# ruff is a <1.0 tool, so per the dependency-bound convention it must be capped
+# at the minor (`>=X.Y,<X.(Y+1)`), the same way lerobot is (`>=0.5.0,<0.6.0`).
+# It regressed to a `<1.0.0` (major) cap, which admitted ruff 0.16.0. That
+# release made python-code-block formatting inside Markdown a stable default,
+# so `ruff format --check strands_robots tests tests_integ` began reformatting
+# pre-existing docs and turned CI red with no source change. Capping the minor
+# makes the CI lint toolchain deterministic: a formatter minor bump is adopted
+# deliberately (by raising the cap), never silently.
+
+
+def _ruff_requirements() -> list[Requirement]:
+    """Every declared ``ruff`` requirement across the pyproject lint surfaces.
+
+    Covers the ``dev`` extra and the ``[tool.hatch.envs.default]`` deps -- the
+    two places the lint/format toolchain is pinned. Both feed CI, so both must
+    stay minor-capped and in lockstep.
+    """
+    data = tomllib.loads(_PYPROJECT.read_text(encoding="utf-8"))
+    specs: list[str] = list(data["project"]["optional-dependencies"]["dev"])
+    specs += list(data["tool"]["hatch"]["envs"]["default"]["dependencies"])
+    reqs = [Requirement(s) for s in specs if Requirement(s).name == "ruff"]
+    assert reqs, "no `ruff` requirement found in pyproject"
+    return reqs
+
+
+def test_ruff_is_minor_capped() -> None:
+    """ruff must be minor-capped so a formatter minor bump cannot silently break CI.
+
+    ruff 0.16.0 turned Markdown code-block formatting into a default, which
+    reformatted pre-existing docs under ``ruff format --check`` and reddened CI
+    with no code change. A ``<1.0.0`` (major) cap let that minor slip in; the
+    convention for a ``<1.0`` dep is to cap the minor.
+    """
+    for req in _ruff_requirements():
+        assert Version("0.16.0") not in req.specifier, (
+            f"ruff must be minor-capped below 0.16.0 (its Markdown-format default "
+            f"reddened CI with no source change); got {req.specifier}"
+        )
+        assert Version("0.15.12") in req.specifier, (
+            f"ruff bound must still admit the validated 0.15.x line; got {req.specifier}"
+        )
+
+
+def test_ruff_bound_is_consistent_across_pyproject() -> None:
+    """The ruff bound must be identical in every declaration so they never drift."""
+    specs = {str(req.specifier) for req in _ruff_requirements()}
+    assert len(specs) == 1, f"ruff bound must be identical across pyproject, got {specs}"

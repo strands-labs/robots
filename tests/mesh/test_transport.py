@@ -196,6 +196,24 @@ class TestMqttMatcher:
 class TestIotMqttTransportConfig:
     """Transport config validation without touching a live broker."""
 
+    def test_missing_awsiotsdk_returns_false(self, monkeypatch):
+        """connect() fails soft (returns False) when awsiotsdk is absent.
+
+        The SDK-import guard runs before any config validation, so a fully
+        configured transport must still refuse to connect - returning False
+        rather than raising ImportError - when the ``[mesh-iot]`` extra is
+        not installed. Forcing ``awsiot`` to None in ``sys.modules`` makes
+        ``from awsiot import ...`` raise ImportError deterministically,
+        regardless of whether the SDK is present in the test environment.
+        """
+        import sys
+
+        monkeypatch.setenv("STRANDS_IOT_THING_NAME", "test-thing")
+        monkeypatch.setenv("STRANDS_IOT_ENDPOINT", "x.iot.us-west-2.amazonaws.com")
+        monkeypatch.setitem(sys.modules, "awsiot", None)
+        t = IotMqttTransport()
+        assert t.connect() is False
+
     def test_missing_thing_name_returns_false(self, monkeypatch):
         monkeypatch.delenv("STRANDS_IOT_THING_NAME", raising=False)
         monkeypatch.delenv("STRANDS_IOT_ENDPOINT", raising=False)

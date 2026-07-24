@@ -307,13 +307,15 @@ def _encode_mp4(frames: list[np.ndarray], fps: int = 20) -> str | None:
     import os
     import tempfile
 
-    try:
-        import imageio
-    except ImportError:  # pragma: no cover
-        return None
+    from strands_robots.rendering import encode_clip  # shared library encoder (issue #1537)
+
     if not frames:
         return None
     fd, path = tempfile.mkstemp(suffix=".mp4", prefix="groot_libero_")
     os.close(fd)
-    imageio.mimsave(path, frames, fps=int(fps), codec="libx264", quality=7, macro_block_size=8)
+    try:
+        encode_clip(frames, path, fps=fps, quality=7, macro_block_size=8)
+    except ImportError:  # pragma: no cover - imageio missing: video is best-effort here
+        os.unlink(path)
+        return None
     return path

@@ -75,11 +75,11 @@ from strands_robots.policies import create_policy
 policy = create_policy(
     "vera",
     embodiment="pusht",
-    server_mode="docker",            # <- manage the container, not a subprocess
+    server_mode="docker",  # <- manage the container, not a subprocess
     ckpt_root="/abs/path/vera-ckpts",
 )
 chunk = policy.get_actions_sync(obs, "push the T to the goal")
-policy.close()                       # stops the container it started
+policy.close()  # stops the container it started
 ```
 
 ## Checkpoint wiring

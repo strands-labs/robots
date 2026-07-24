@@ -234,11 +234,9 @@ def run(
 
 
 def _encode_mp4(frames: list[np.ndarray], path: str, fps: int = 20) -> None:
-    try:
-        import imageio
-    except ImportError as e:  # pragma: no cover
-        raise ImportError("imageio (with imageio-ffmpeg) is required to write the MP4.") from e
-    imageio.mimsave(path, frames, fps=int(fps), codec="libx264", quality=7, macro_block_size=8)
+    from strands_robots.rendering import encode_clip  # shared library encoder (issue #1537)
+
+    encode_clip(frames, path, fps=fps, quality=7, macro_block_size=8)
 
 
 def main(argv: list[str] | None = None) -> None:

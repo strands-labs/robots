@@ -7,8 +7,8 @@ install — only the tiny `websockets`+`msgpack` client transport.
 
 ```python
 from strands_robots.policies import create_policy
-policy = create_policy("vera", embodiment="mimicgen", server_mode="docker",
-                       ckpt_root="/abs/path/vera-ckpts")
+
+policy = create_policy("vera", embodiment="mimicgen", server_mode="docker", ckpt_root="/abs/path/vera-ckpts")
 chunk = policy.get_actions_sync(observation, "stack the red block on the green block")
 ```
 

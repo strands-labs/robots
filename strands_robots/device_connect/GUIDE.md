@@ -35,10 +35,13 @@ From another process, discover and invoke:
 ```python
 from strands_robots.tools.robot_mesh import robot_mesh
 
-robot_mesh(action="peers")                           # discover (read-only)
-robot_mesh(action="tell", target="so100-lab-1",      # invoke (HITL-approved)
-           instruction="pick up the cube")
-robot_mesh(action="emergency_stop")                   # e-stop all (HITL-approved)
+robot_mesh(action="peers")  # discover (read-only)
+robot_mesh(
+    action="tell",
+    target="so100-lab-1",  # invoke (HITL-approved)
+    instruction="pick up the cube",
+)
+robot_mesh(action="emergency_stop")  # e-stop all (HITL-approved)
 ```
 
 > **Heads up:** the actuation actions - `tell`, `send`, `stop`, `broadcast`,
@@ -361,11 +364,11 @@ Use the mesh's `subscribe()` to read Reachy's native Zenoh topics directly:
 sim = Robot("so100")
 
 # Subscribe to Reachy's head pose
-sim.mesh.subscribe("reachy_mini/head_pose",
-    lambda topic, data: print(f"Reachy looking at: {data}"))
+sim.mesh.subscribe("reachy_mini/head_pose", lambda topic, data: print(f"Reachy looking at: {data}"))
 
 # Subscribe to Reachy's joint positions
 sim.mesh.subscribe("reachy_mini/joint_positions", name="reachy_joints")
+
 
 # Mirror Reachy's movements in simulation
 def mirror_reachy(topic, data):
@@ -373,6 +376,7 @@ def mirror_reachy(topic, data):
     if joints:
         # Map Reachy joints to sim joints...
         pass
+
 
 sim.mesh.subscribe("reachy_mini/joint_positions", mirror_reachy)
 ```
@@ -421,8 +425,8 @@ runtime = DeviceRuntime(
 await runtime.run()
 
 # Now any agent can discover and control it:
-invoke('device(reachy-mini-1).function(look)', {"pitch": -15, "yaw": 30})
-invoke('device(reachy-mini-1).function(nod)')
+invoke("device(reachy-mini-1).function(look)", {"pitch": -15, "yaw": 30})
+invoke("device(reachy-mini-1).function(nod)")
 ```
 
 ### E2E Demo

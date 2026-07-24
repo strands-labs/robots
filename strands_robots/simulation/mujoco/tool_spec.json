@@ -72,7 +72,11 @@
         "list_benchmarks",
         "register_benchmark_from_file",
         "register_builtin_benchmarks",
-        "evaluate_benchmark"
+        "evaluate_benchmark",
+        "attach_bodies",
+        "detach_bodies",
+        "actuate_robot",
+        "zero_dynamics"
       ]
     },
     "scene_path": {
@@ -418,6 +422,43 @@
     "spec_path": {
       "type": "string",
       "description": "Path to a declarative benchmark spec file (.json, .yaml, .yml). Used by register_benchmark_from_file."
+    },
+    "parent": {
+      "type": "string",
+      "description": "Parent body name for attach_bodies/detach_bodies (robot bodies are namespaced '<robot>/<body>'; call list_bodies to discover names)"
+    },
+    "child": {
+      "type": "string",
+      "description": "Child body name to attach/detach (mode='kinematic' requires it to be a dynamic body with a freejoint)"
+    },
+    "mode": {
+      "type": "string",
+      "enum": ["weld", "kinematic"],
+      "description": "attach_bodies mode: 'weld' adds an equality constraint holding the current relative pose; 'kinematic' teleport-follows the parent every physics step. Neither is a physical grasp."
+    },
+    "torquescale": {
+      "type": "number",
+      "description": "attach_bodies weld-only: torque-to-force ratio of the constraint (finite, > 0; default 1.0)"
+    },
+    "kp": {
+      "type": ["number", "object"],
+      "description": "actuate_robot position gain: a number applies to every hinge/slide joint; a {joint_name: kp} object actuates only the listed joints. Values must be finite and > 0."
+    },
+    "damping": {
+      "type": "number",
+      "description": "actuate_robot per-joint damping floor (finite, >= 0; default 2.0)"
+    },
+    "armature": {
+      "type": "number",
+      "description": "actuate_robot per-joint armature floor (finite, >= 0; default 0.01)"
+    },
+    "gravity_compensation": {
+      "type": "boolean",
+      "description": "actuate_robot: apply gravcomp=1 to the robot's bodies (default true)"
+    },
+    "disable_self_collision": {
+      "type": "boolean",
+      "description": "actuate_robot: zero contype/conaffinity on ALL the robot's geoms so planner-ignored self-contacts cannot block motion (default false)"
     }
   },
   "required": [

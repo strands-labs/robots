@@ -34,6 +34,56 @@ def _world(**backend_state: Any) -> SimpleNamespace:
     return SimpleNamespace(_backend_state=dict(backend_state))
 
 
+# --- _recording_state (default seam) ----------------------------------------
+
+
+def test_default_recording_state_none_when_no_world() -> None:
+    assert _Engine(world=None)._recording_state() is None
+
+
+def test_default_recording_state_is_live_world_backend_state() -> None:
+    """The DEFAULT seam returns ``self._world._backend_state`` by identity.
+
+    Every engine-independent lifecycle method routes through
+    ``_recording_state()``; the MuJoCo and Newton backends rely on the default
+    accessor returning the LIVE ``SimWorld._backend_state`` dict (not a copy),
+    so mutations made through the seam land in the world state the rest of the
+    backend reads. Pinned so a future seam refactor cannot silently change the
+    default those backends depend on.
+    """
+    world = _world(recording=True)
+    state = _Engine(world)._recording_state()
+    assert state is not None
+    assert state is world._backend_state
+    # Live-dict contract: writes through the seam are visible to the world.
+    marker = object()
+    state["dataset_recorder"] = marker
+    assert world._backend_state["dataset_recorder"] is marker
+
+
+def test_mujoco_and_newton_mixins_use_default_recording_state_seam() -> None:
+    """The MuJoCo/Newton recording mixins resolve the seam to ``_backend_state``.
+
+    Only the Isaac backend overrides ``_recording_state()`` (its ``_world`` is
+    the Isaac Sim handle, not a ``SimWorld``). Exercise the seam through each
+    backend's actual mixin class so a future override there - or a change to
+    the shared default - fails this test instead of silently rerouting the
+    recording state those backends rely on.
+    """
+    from strands_robots.simulation.mujoco.recording import RecordingMixin
+    from strands_robots.simulation.newton.recording import NewtonRecordingMixin
+
+    for mixin_cls in (RecordingMixin, NewtonRecordingMixin):
+
+        class _Host(mixin_cls):  # type: ignore[misc, valid-type]
+            def __init__(self, world: Any) -> None:
+                self._world = world
+
+        world = _world(recording=True)
+        assert _Host(world)._recording_state() is world._backend_state, mixin_cls
+        assert _Host(None)._recording_state() is None, mixin_cls
+
+
 # --- _is_recording ---------------------------------------------------------
 
 

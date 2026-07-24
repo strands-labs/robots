@@ -66,7 +66,7 @@ upgrade to a real 3DGS scene.
 pip install "strands-robots[sim-mujoco]" strands-agents gradio numpy Pillow
 
 # Or, with optional real 3DGS rendering (CUDA required), add:
-pip install gsplat torch plyfile
+pip install "strands-robots[sim-gs]"   # gsplat + plyfile + torch (CUDA GPU)
 ```
 
 `strands-robots[sim-mujoco]` brings in `mujoco`, `numpy`, etc. On a headless
@@ -86,7 +86,7 @@ python -m examples.mujoco_gs.app
 # Or with a real panorama image:
 python -m examples.mujoco_gs.app --panorama /path/to/kitchen_4k.jpg
 
-# Or with a real 3DGS scene (requires the [gsplat] extra):
+# Or with a real 3DGS scene (requires the sim-gs extra):
 python -m examples.mujoco_gs.app --gsplat-ply /path/to/scene.ply
 
 # Pick a specific Strands model (optional):
