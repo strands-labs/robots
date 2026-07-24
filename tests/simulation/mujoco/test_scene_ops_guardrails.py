@@ -442,3 +442,93 @@ class TestPatchSceneRequiresCompiledWorld:
         world = SimWorld()
         with pytest.raises(RuntimeError, match="no spec"):
             scene_ops.patch_scene_mjcf(world, [{"op": "add_body", "name": "x"}])
+
+
+class TestWeldEqualityConstraintOpsRequireCompiledWorld:
+    """The equality-constraint and actuator-surgery helpers make the same
+    "no compiled world yet" early return as the inject/eject helpers: an agent
+    that calls ``attach_bodies`` / actuator conversion before ``create_world``
+    gets a clean ``False`` (logged), never a crash mid-surgery."""
+
+    def test_add_weld_constraint_without_spec_returns_false(self) -> None:
+        world = SimWorld()
+        ok = scene_ops.add_weld_constraint(
+            world,
+            name="w",
+            parent="a",
+            child="b",
+            relpos=[0.0, 0.0, 0.0],
+            relquat=[1.0, 0.0, 0.0, 0.0],
+        )
+        assert ok is False
+
+    def test_remove_equality_constraint_without_spec_returns_false(self) -> None:
+        world = SimWorld()
+        assert scene_ops.remove_equality_constraint(world, "w") is False
+
+    def test_actuate_robot_without_spec_returns_false(self) -> None:
+        world = SimWorld()
+        ok = scene_ops.actuate_robot_in_scene(
+            world,
+            SimRobot(name="arm1", urdf_path="x.xml"),
+            {"pan": 50.0},
+            damping=1.0,
+            armature=0.01,
+            gravity_compensation=False,
+            disable_self_collision=False,
+        )
+        assert ok is False
+
+
+class TestWeldEqualityConstraintRoundTrip:
+    """A weld added to a compiled world holds two bodies together (the runtime
+    grasp-attach path), survives on the live spec, and can be removed by name.
+    Removing a name that was never welded is a clean ``False`` (nothing removed)
+    rather than a silent no-op or a crash."""
+
+    @pytest.fixture
+    def two_body_world(self, sim: Simulation) -> SimWorld:
+        sim.create_world()
+        assert (
+            sim.add_object(
+                name="anchor", shape="box", size=[0.05, 0.05, 0.05], position=[0.2, 0.0, 0.3], is_static=True
+            )["status"]
+            == "success"
+        )
+        assert (
+            sim.add_object(name="cube", shape="box", size=[0.05, 0.05, 0.05], position=[0.2, 0.0, 0.4])["status"]
+            == "success"
+        )
+        world = sim._world
+        assert world is not None
+        return world
+
+    def test_add_then_remove_weld_round_trips_neq(self, sim: Simulation, two_body_world: SimWorld) -> None:
+        neq_before = int(two_body_world._model.neq)
+
+        assert (
+            scene_ops.add_weld_constraint(
+                two_body_world,
+                name="grip_weld",
+                parent="anchor",
+                child="cube",
+                relpos=[0.0, 0.0, 0.1],
+                relquat=[1.0, 0.0, 0.0, 0.0],
+            )
+            is True
+        )
+        # The weld is compiled into the live model and resolvable by name.
+        assert int(two_body_world._model.neq) == neq_before + 1
+        mj = sim._mj
+        assert mj.mj_name2id(two_body_world._model, mj.mjtObj.mjOBJ_EQUALITY, "grip_weld") >= 0
+
+        # Removing it by name recompiles back to the original constraint count.
+        assert scene_ops.remove_equality_constraint(two_body_world, "grip_weld") is True
+        assert int(two_body_world._model.neq) == neq_before
+        assert mj.mj_name2id(two_body_world._model, mj.mjtObj.mjOBJ_EQUALITY, "grip_weld") < 0
+
+    def test_remove_unknown_equality_constraint_returns_false(self, two_body_world: SimWorld) -> None:
+        neq_before = int(two_body_world._model.neq)
+        assert scene_ops.remove_equality_constraint(two_body_world, "never_added") is False
+        # A miss must not mutate the compiled model.
+        assert int(two_body_world._model.neq) == neq_before
