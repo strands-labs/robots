@@ -17,6 +17,28 @@ Storage is dumb and auditable: JSONL + JSON + text files under
 ``~/.strands_robots/memory/`` (override with ``STRANDS_MEMORY_DIR``). No
 embeddings, no retrieval model - task keying is exact-name, as in the paper.
 
+Why a dedicated tool rather than a generic memory/journal tool (e.g.
+``strands_tools`` ``journal``/``memory``): the value here is not storage -
+any tool can persist bytes - it is the validation and retrieval *contract*
+around the memory, which a free-text store cannot provide:
+
+- **Traces are schema-enforced, not free text.** Every entry must name an
+  action from the simulation tool enum or a registered ``strands_robots``
+  tool (:func:`get_valid_actions`); free-form code is rejected at save time
+  AND re-validated at load time, because the store is a long-lived,
+  user-editable directory whose content is later injected into planner
+  context (LLM-input-safety baseline, AGENTS.md / PR #92). A journal entry
+  read back into the prompt is an unvalidated injection channel.
+- **The re-grounding contract travels with the memory.** ``load_trace``
+  prepends the "never replay literal coordinates - re-localize from the
+  current observation" contract to every result. This retrieval discipline
+  is what the paper's +56-point perturbation delta rests on; a generic
+  loader returns bytes without it.
+- **Robotics provenance is stamped structurally** (backend, robot, library
+  version, timestamp) so stale traces are identifiable, and task names are
+  path-safety validated before any file is touched.
+
+
 Session integration pattern (the agent decides what to commit - no automatic
 writes):
 
