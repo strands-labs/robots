@@ -30,6 +30,7 @@
         "list_policies_running",
         "render",
         "render_depth",
+        "get_world_point",
         "get_contacts",
         "step",
         "set_gravity",
@@ -221,6 +222,16 @@
     },
     "camera_name": {
       "type": "string"
+    },
+    "pixels": {
+      "type": "array",
+      "items": {
+        "type": "array",
+        "items": {
+          "type": "number"
+        }
+      },
+      "description": "get_world_point: pixel coordinates [[u, v], ...] to ground to world xyz (u = column from the left, v = row from the top; integer-valued, within the rendered resolution). Pick pixels ON the visible surface of the target (avoid rims/edges/reflections/background) and sample several on the same surface - the returned 'point' is the median over the valid samples; pixels with no depth are dropped (see n_valid). Re-localize after any robot/camera/object motion."
     },
     "n_steps": {
       "type": "integer"

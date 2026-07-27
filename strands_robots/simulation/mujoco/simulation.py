@@ -1812,6 +1812,15 @@ class MuJoCoSimEngine(
             "(camera_name='default', width=None, height=None) -> dict "
             "(viewable grayscale depth PNG image block + metric depth_min/depth_max stats)"
         )
+        base["methods"]["get_world_point"] = (
+            "(camera_name='default', pixels=[[u, v], ...], width=None, height=None) -> dict  # "
+            "pixel-to-world grounding: unprojects each [u, v] pixel through the metric depth "
+            "buffer and returns the MEDIAN world [x, y, z] over the valid samples (plus "
+            "per-pixel points and n_valid). Pick pixels ON the visible surface of the target; "
+            "avoid rims/edges/reflections/background; sample several pixels on the same "
+            "surface; re-localize after any robot/camera/object motion. The deployment-shaped "
+            "alternative to get_body_state (works identically with a real RGB-D camera)"
+        )
         base["methods"]["render_all"] = "(cameras=None, width=None, height=None) -> dict (one image block per camera)"
         base["methods"]["set_obs_noise"] = (
             "(joint_pos_std=0.0, joint_vel_std=0.0, camera_jitter_px=0.0, seed=None) -> dict "
@@ -3554,13 +3563,13 @@ class MuJoCoSimEngine(
                 "(direct path or auto-resolve from data_config name), add objects, run VLA policies, "
                 "render cameras, record trajectories, domain randomize. "
                 "Same Policy ABC as real robot control - sim and real with zero code changes. "
-                "Actions (72 total): "
+                "Actions (73 total): "
                 "[World] create_world, load_scene, reset, get_state, destroy, export_xml; "
                 "[Robots] add_robot, remove_robot, list_robots, get_robot_state, list_bodies; "
                 "[Objects] add_object, remove_object, move_object, list_objects; "
                 "[Cameras] add_camera, remove_camera, list_cameras; "
                 "[Policy] run_policy, start_policy, stop_policy, eval_policy, replay_episode, list_policies_running; "
-                "[Rendering] render, render_depth, render_all, open_viewer, close_viewer; "
+                "[Rendering] render, render_depth, render_all, get_world_point, open_viewer, close_viewer; "
                 "[Physics] step, set_gravity, set_timestep, set_joint_positions, set_joint_velocities, "
                 "apply_force, get_contacts, get_contact_forces, get_body_state, get_energy, "
                 "get_total_mass, get_ground_height, get_sensor_data, get_jacobian, get_mass_matrix, inverse_dynamics, "

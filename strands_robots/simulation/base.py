@@ -18,6 +18,7 @@ Usage::
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import math
 import numbers
@@ -2711,6 +2712,208 @@ class SimEngine(ABC):
             NotImplementedError: backend has no camera-params path.
         """
         raise NotImplementedError("get_camera_params not implemented by this backend")
+
+    # Hard cap on pixels per get_world_point call: bounds the per-call work an
+    # LLM can request (agents ground a handful of samples per object; a whole
+    # image belongs to get_frame, not this lookup).
+    _WORLD_POINT_MAX_PIXELS = 1024
+
+    def get_world_point(
+        self,
+        camera_name: str = "default",
+        pixels: Sequence[Sequence[SupportsFloat]] | None = None,
+        width: int | None = None,
+        height: int | None = None,
+    ) -> dict[str, Any]:
+        """Ground image pixels to metric world coordinates via the depth buffer.
+
+        The perception half of deployment-shaped grounding (Harness VLA,
+        arXiv:2607.08448, Appendix E.2): instead of reading privileged object
+        poses (:meth:`get_body_state` -- sim-only oracle truth), the agent
+        picks pixels on the visible surface of the target in the RGB frame and
+        this call unprojects each one through the pixel-aligned metric depth
+        buffer -- ``p_cam = depth * K^-1 @ [u, v, 1]`` in the OpenGL optical
+        frame, then ``p_world = T_world_cam @ p_cam``. The same call shape
+        works on hardware with an RGB-D camera, so grounding built on it
+        transfers.
+
+        Guidance for agents (the paper's localization rule):
+
+        1. Render the camera first (``render`` / ``get_frame``) and pick
+           pixels ON the visible surface of the target object.
+        2. Avoid rims, edges, reflections, transparent surfaces, and
+           background pixels -- depth there is unstable or belongs to
+           something else.
+        3. Sample SEVERAL pixels on the same surface (typically 3-9): the
+           returned ``point`` is the median over the valid samples, which
+           rejects stray outliers.
+        4. Pixels with no depth (background / far plane) are dropped, not
+           zero-filled; check ``n_valid`` against the count you sent.
+        5. Re-localize after any robot, camera, or object motion -- world
+           points are snapshots, not tracks.
+
+        Depth samples are treated as z-depth (distance along the optical
+        axis), the convention every in-tree backend emits. Pixels are indexed
+        ``[u, v]`` with ``u`` the column from the left and ``v`` the row from
+        the top; the unprojection uses the pixel center ``(u + 0.5, v + 0.5)``.
+
+        Atomicity: when the backend exposes an engine lock (``self._lock``,
+        all in-tree backends), the frame render and the camera-params read
+        happen under it, so a concurrent scene mutation cannot slip between
+        the two. All failures return a structured error dict -- this is a
+        tool-envelope method and never raises.
+
+        Args:
+            camera_name: a camera previously added via ``add_camera``
+                (backends with a free camera also accept their free-cam
+                tokens, as for :meth:`get_frame`).
+            pixels: non-empty list of ``[u, v]`` pixel coordinates
+                (integer-valued; at most ``_WORLD_POINT_MAX_PIXELS``).
+            width: image width; ``None`` uses the camera's configured
+                resolution.
+            height: image height; ``None`` uses the camera's configured
+                resolution.
+
+        Returns:
+            On success ``{"status": "success", "content": [{"text": ...},
+            {"json": {"point": [x, y, z], "points": [...], "n_valid": int,
+            "n_requested": int, "camera": str, "width": int, "height": int}}]}``
+            where ``point`` is the per-component median over the valid
+            samples and ``points`` is aligned with the input ``pixels``
+            (``None`` where the pixel had no valid depth). Backends without a
+            metric-depth path (Newton), all-invalid pixel sets, out-of-bounds
+            pixels, and malformed input all return
+            ``{"status": "error", "content": [{"text": ...}]}``.
+        """
+        # numpy stays TYPE_CHECKING-only at this module's top level; import at
+        # use time like the backends' render paths do.
+        import numpy as np
+
+        def _err(msg: str) -> dict[str, Any]:
+            return {"status": "error", "content": [{"text": msg}]}
+
+        # -- Structural validation of `pixels` (before any render work) -- #
+        if pixels is None or isinstance(pixels, (str, bytes)) or not hasattr(pixels, "__len__"):
+            return _err(
+                "get_world_point requires 'pixels': a non-empty list of [u, v] pixel coordinates, e.g. [[320, 240], [322, 238]]."
+            )
+        if len(pixels) == 0:
+            return _err("get_world_point requires at least one [u, v] pixel; got an empty list.")
+        if len(pixels) > self._WORLD_POINT_MAX_PIXELS:
+            return _err(
+                f"get_world_point accepts at most {self._WORLD_POINT_MAX_PIXELS} pixels per call, "
+                f"got {len(pixels)}. Sample a handful of pixels on the target surface instead."
+            )
+        parsed: list[tuple[int, int]] = []
+        for i, px in enumerate(pixels):
+            if isinstance(px, (str, bytes)) or not hasattr(px, "__len__") or len(px) != 2:
+                return _err(f"pixels[{i}] must be a [u, v] pair, got {px!r}.")
+            coords: list[int] = []
+            for axis, component in zip("uv", px, strict=True):
+                if not isinstance(component, numbers.Real) or isinstance(component, bool):
+                    return _err(f"pixels[{i}] {axis} must be numeric, got {type(component).__name__}.")
+                value = float(component)
+                if not math.isfinite(value):
+                    return _err(f"pixels[{i}] {axis} must be finite, got {value}.")
+                if not value.is_integer():
+                    return _err(
+                        f"pixels[{i}] {axis} must be an integer pixel index, got {value} "
+                        "(fractional pixels are rejected, never silently truncated)."
+                    )
+                coords.append(int(value))
+            parsed.append((coords[0], coords[1]))
+
+        # -- Render + camera params (atomic under the engine lock) -- #
+        lock = getattr(self, "_lock", None)
+        ctx = lock if lock is not None else contextlib.nullcontext()
+        with ctx:
+            try:
+                _rgb, depth = self.get_frame(camera_name, width=width, height=height)
+            except NotImplementedError:
+                return _err(
+                    "get_world_point is unavailable: this backend has no raw-frame path (get_frame is not implemented)."
+                )
+            except (KeyError, ValueError, RuntimeError) as e:
+                return _err(f"get_world_point failed to render camera frame: {e}")
+            if depth is None:
+                return _err(
+                    f"get_world_point is unavailable on this backend: camera '{camera_name}' produced no "
+                    "metric depth (get_frame returned depth=None; e.g. Newton's ray-traced camera has no "
+                    "depth output). Use a depth-capable backend (MuJoCo, Isaac) or an RGB-D camera."
+                )
+            h, w = int(depth.shape[0]), int(depth.shape[1])
+            for i, (u, v) in enumerate(parsed):
+                if not (0 <= u < w and 0 <= v < h):
+                    return _err(
+                        f"pixels[{i}] = [{u}, {v}] is outside the rendered {w}x{h} frame "
+                        f"(valid u: 0..{w - 1}, v: 0..{h - 1})."
+                    )
+            try:
+                cam = self.get_camera_params(camera_name, width=w, height=h)
+            except NotImplementedError:
+                return _err(
+                    "get_world_point is unavailable: this backend has no camera-params path (get_camera_params is not implemented)."
+                )
+            except (KeyError, ValueError, RuntimeError) as e:
+                return _err(f"get_world_point failed to read camera parameters: {e}")
+
+        # -- Unproject (pure math; no engine state touched past this point) -- #
+        fx, fy = float(cam.K[0, 0]), float(cam.K[1, 1])
+        cx, cy = float(cam.K[0, 2]), float(cam.K[1, 2])
+        # Background convention across backends: MuJoCo pins no-geometry
+        # pixels to exactly zfar; Isaac reports 0 or non-finite. A small
+        # relative margin below zfar absorbs float rounding at the far plane.
+        zfar_cut = float(cam.zfar) * (1.0 - 1e-6)
+        points: list[list[float] | None] = []
+        valid_points: list[list[float]] = []
+        for u, v in parsed:
+            d = float(depth[v, u])
+            if not (math.isfinite(d) and 0.0 < d < zfar_cut):
+                points.append(None)
+                continue
+            # Pixel center -> OpenGL optical frame (+X right, +Y up, -Z
+            # forward): image v grows down so y flips, and z-depth lies
+            # along -Z.
+            x_cam = (u + 0.5 - cx) / fx * d
+            y_cam = -((v + 0.5 - cy) / fy) * d
+            p_world = cam.T_world_cam @ np.array([x_cam, y_cam, -d, 1.0], dtype=np.float64)
+            world_xyz = [float(p_world[0]), float(p_world[1]), float(p_world[2])]
+            points.append(world_xyz)
+            valid_points.append(world_xyz)
+
+        camera_label = "default" if camera_name in (None, "") else str(camera_name)
+        if not valid_points:
+            return _err(
+                f"get_world_point found no valid depth at any of the {len(parsed)} requested pixels via "
+                f"camera '{camera_label}': every sample hit the background / far plane (zfar={cam.zfar:g} m) "
+                "or had no depth. Pick pixels on the visible surface of the target object -- avoid sky, "
+                "rims/edges, reflections, and background."
+            )
+
+        median = np.median(np.asarray(valid_points, dtype=np.float64), axis=0)
+        point = [float(median[0]), float(median[1]), float(median[2])]
+        n_valid = len(valid_points)
+        text = (
+            f"World point [{point[0]:.4f}, {point[1]:.4f}, {point[2]:.4f}] m "
+            f"(median over {n_valid}/{len(parsed)} valid pixels) via camera '{camera_label}'."
+        )
+        return {
+            "status": "success",
+            "content": [
+                {"text": text},
+                {
+                    "json": {
+                        "point": point,
+                        "points": points,
+                        "n_valid": n_valid,
+                        "n_requested": len(parsed),
+                        "camera": camera_label,
+                        "width": w,
+                        "height": h,
+                    }
+                },
+            ],
+        }
 
     # Discovery / introspection
 
