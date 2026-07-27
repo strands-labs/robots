@@ -241,6 +241,59 @@ def compile_stop_when(stop_when: Any, *, context: str = "stop_when") -> Callable
     return _compile_bool_group(stop_when, default=False, context=context)
 
 
+# Predicate kwargs that name scene entities, per kind. A stop_when clause is
+# probed against the LIVE sim before the rollout starts (see
+# SimEngine.run_policy): a typo'd name would otherwise compile clean, degrade
+# to a constant False at evaluation time, and burn the whole step budget
+# reporting stopped_reason="budget" - indistinguishable from an honest miss.
+_BODY_NAME_KWARGS = frozenset({"body", "body_a", "body_b", "container"})
+_JOINT_NAME_KWARGS = frozenset({"joint"})
+
+
+def stop_when_referenced_entities(stop_when: Any) -> tuple[list[str], list[str]]:
+    """Collect the body and joint names a ``stop_when`` clause references.
+
+    Walks the same shapes :func:`compile_stop_when` accepts (a single
+    predicate call or an ``all``/``any`` group) and gathers the values of the
+    entity-naming kwargs (``body`` / ``body_a`` / ``body_b`` / ``container``
+    for bodies, ``joint`` for joints) so the caller can probe each one
+    against the live sim before arming the clause. Geom names
+    (``contact_between``) are not collected - there is no generic geom
+    lookup on the engine ABC to probe them with.
+
+    Args:
+        stop_when: A clause dict already validated by
+            :func:`compile_stop_when` (unrecognized shapes yield empty
+            results rather than raising - validation is the compiler's job).
+
+    Returns:
+        ``(bodies, joints)`` - deduplicated, insertion-ordered name lists.
+    """
+    bodies: dict[str, None] = {}
+    joints: dict[str, None] = {}
+
+    def _collect(call: Any) -> None:
+        if not isinstance(call, dict):
+            return
+        for key, value in call.items():
+            if isinstance(value, str) and value:
+                if key in _BODY_NAME_KWARGS:
+                    bodies.setdefault(value)
+                elif key in _JOINT_NAME_KWARGS:
+                    joints.setdefault(value)
+
+    if isinstance(stop_when, dict):
+        if "predicate" in stop_when:
+            _collect(stop_when)
+        else:
+            for group_key in ("all", "any"):
+                entries = stop_when.get(group_key)
+                if isinstance(entries, list):
+                    for entry in entries:
+                        _collect(entry)
+    return list(bodies), list(joints)
+
+
 def _compile_reward_terms(terms: list[Any] | None) -> list[Callable[[SimEngine], float]]:
     if terms is None:
         return []
@@ -532,4 +585,5 @@ __all__ = [
     "DeclarativeBenchmark",
     "compile_stop_when",
     "register_benchmark_from_file",
+    "stop_when_referenced_entities",
 ]

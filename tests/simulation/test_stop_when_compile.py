@@ -115,3 +115,45 @@ class TestCompileRejections:
     def test_bad_predicate_kwargs_rejected(self):
         with pytest.raises(ValueError, match="body_above_z"):
             compile_stop_when({"predicate": "body_above_z", "altitude": 0.2})
+
+
+class TestReferencedEntities:
+    """``stop_when_referenced_entities`` - the walker behind the pre-rollout
+    scene probe (a typo'd body must not compile into a clause that silently
+    never fires)."""
+
+    def test_single_call_body(self):
+        from strands_robots.simulation.benchmark_spec import stop_when_referenced_entities
+
+        bodies, joints = stop_when_referenced_entities({"predicate": "body_above_z", "body": "cube", "z": 0.2})
+        assert bodies == ["cube"]
+        assert joints == []
+
+    def test_group_collects_all_name_kwargs_deduplicated(self):
+        from strands_robots.simulation.benchmark_spec import stop_when_referenced_entities
+
+        clause = {
+            "all": [
+                {"predicate": "distance_less_than", "body_a": "cube", "body_b": "tray", "threshold": 0.1},
+                {"predicate": "body_inside", "body": "cube", "container": "bin"},
+                {"predicate": "joint_above", "joint": "so100/Jaw", "value": 0.5},
+            ]
+        }
+        bodies, joints = stop_when_referenced_entities(clause)
+        assert bodies == ["cube", "tray", "bin"]
+        assert joints == ["so100/Jaw"]
+
+    def test_non_name_kwargs_ignored(self):
+        from strands_robots.simulation.benchmark_spec import stop_when_referenced_entities
+
+        # gripper_prefix / z / geoms are not probeable entity names.
+        bodies, joints = stop_when_referenced_entities(
+            {
+                "any": [
+                    {"predicate": "grasped", "body": "cube", "gripper_prefix": "so100"},
+                    {"predicate": "contact_between", "geom_a": "g1", "geom_b": "g2"},
+                ]
+            }
+        )
+        assert bodies == ["cube"]
+        assert joints == []

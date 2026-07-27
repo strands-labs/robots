@@ -1421,7 +1421,12 @@ class SimEngine(ABC):
                 :func:`~strands_robots.simulation.benchmark_spec.compile_stop_when`
                 against the closed predicate registry (never ``eval`` /
                 ``exec``; an unknown predicate name is rejected up front with
-                the valid list) and evaluated against the SIM after every
+                the valid list), and the clause's referenced body/joint names
+                are probed against the LIVE scene before the rollout starts -
+                a typo'd name (or a backend without body lookups) is an
+                up-front structured error instead of a clause that silently
+                never fires and burns the whole budget. The compiled clause is
+                evaluated against the SIM after every
                 applied action - matching the benchmark semantics, not the
                 observation dict - on both the synchronous and async-RTC
                 paths, so the stop lands within one control step of the
@@ -1509,13 +1514,33 @@ class SimEngine(ABC):
                 try:
                     stop_when_fn = compile_stop_when(stop_when)
                 except ValueError as e:
-                    return {"status": "error", "content": [{"text": f"run_policy: {e}"}]}
+                    return {
+                        "status": "error",
+                        "content": [
+                            {"text": f"run_policy: {e}"},
+                            {"json": {"stopped_reason": "error", "steps_used": 0, "n_steps": 0}},
+                        ],
+                    }
 
         if robot_name not in self.list_robots():
             return {
                 "status": "error",
                 "content": [{"text": self._unknown_robot_msg(robot_name)}],
             }
+
+        # Probe the clause's referenced bodies/joints against the LIVE scene.
+        # compile_stop_when validates the predicate NAMES but cannot see the
+        # scene: a typo'd body would compile clean, degrade to a constant
+        # False at evaluation time (predicates never raise), and burn the
+        # whole step budget reporting stopped_reason="budget" -
+        # indistinguishable from an honest miss. Probing here (dict clauses
+        # only - a programmatic callable is opaque) turns that silent
+        # never-fires into an up-front structured error, including on
+        # backends whose predicates cannot resolve bodies at all.
+        if stop_when_fn is not None and isinstance(stop_when, dict):
+            probe_err = self._stop_when_unresolved_error(stop_when)
+            if probe_err is not None:
+                return probe_err
 
         if policy_object is None:
             # Fail fast on a misconfiguration (e.g. camera names that cannot be
@@ -1623,6 +1648,57 @@ class SimEngine(ABC):
         finally:
             if controller_cleanup is not None:
                 controller_cleanup()
+
+    def _stop_when_unresolved_error(self, stop_when: dict[str, Any]) -> dict[str, Any] | None:
+        """Structured error if a ``stop_when`` clause references unresolvable entities.
+
+        Probes every body/joint name in the clause through the SAME lookup
+        path the predicates use at evaluation time
+        (:func:`~strands_robots.simulation.predicates.can_resolve_body` /
+        :func:`~strands_robots.simulation.predicates.can_resolve_joint`,
+        including the LIBERO ``<name>_main`` fallback), against the live
+        scene, once, before the rollout starts. Returns ``None`` when every
+        referenced entity resolves. Bodies added to the scene AFTER this
+        check are out of contract - a rollout does not create bodies.
+        """
+        from strands_robots.simulation.benchmark_spec import stop_when_referenced_entities
+        from strands_robots.simulation.predicates import can_resolve_body, can_resolve_joint, supports_body_lookup
+
+        bodies, joints = stop_when_referenced_entities(stop_when)
+
+        def _err(text: str) -> dict[str, Any]:
+            return {
+                "status": "error",
+                "content": [
+                    {"text": f"run_policy: {text}"},
+                    {"json": {"stopped_reason": "error", "steps_used": 0, "n_steps": 0}},
+                ],
+            }
+
+        if bodies and not supports_body_lookup(self):
+            return _err(
+                f"stop_when references bodies {bodies} but this backend has no body lookup "
+                "(get_body_state), so the clause could never fire and the rollout would "
+                "silently run to its step budget. Use a clause without body-referencing "
+                "predicates, or a backend that supports body lookups."
+            )
+        missing_bodies = [b for b in bodies if not can_resolve_body(self, b)]
+        if missing_bodies:
+            return _err(
+                f"stop_when references bodies not present in the scene: {missing_bodies}. "
+                "The clause would never fire and the rollout would silently run to its "
+                "step budget. Check the names against the loaded scene (get_state lists "
+                "objects; describe() lists actions)."
+            )
+        missing_joints = [j for j in joints if not can_resolve_joint(self, j)]
+        if missing_joints:
+            return _err(
+                f"stop_when references joints not present in the observation: {missing_joints}. "
+                "The clause would never fire and the rollout would silently run to its "
+                "step budget. Check the names against get_observation()'s keys "
+                "(joint names are namespaced '<robot>/<joint>')."
+            )
+        return None
 
     def _run_episodes(
         self,
@@ -1806,10 +1882,23 @@ class SimEngine(ABC):
         Mirrors the single-rollout result shape: a human-readable ``text``
         block plus an agent-consumable ``{"json": {...}}`` block carrying typed
         aggregate fields (``n_episodes_completed``, ``episodes_saved``,
-        ``total_steps``, per-episode list, ``video_paths``).
+        ``total_steps``, per-episode list, ``video_paths``). The payload keeps
+        ONE shape across episode counts: ``stopped_reason`` / ``steps_used``
+        are present here just as on the single-episode payload -
+        ``stopped_reason`` is ``"error"`` on error results and otherwise the
+        LAST episode's reason (why the call as a whole stopped running), with
+        the per-episode attribution in ``stopped_reasons`` (aligned with
+        ``episodes``); ``steps_used`` equals ``total_steps``.
         """
         completed = len(episodes)
         video_paths = [e["video_path"] for e in episodes if e.get("video_path")]
+        stopped_reasons = [e.get("stopped_reason") for e in episodes]
+        if status == "error":
+            stopped_reason = "error"
+        elif stopped_reasons and isinstance(stopped_reasons[-1], str):
+            stopped_reason = stopped_reasons[-1]
+        else:
+            stopped_reason = "budget"
         text = (
             f"Multi-episode run_policy: {completed}/{n_episodes} episode(s) completed, "
             f"{episodes_saved} flushed to dataset, {total_steps} total steps."
@@ -1828,6 +1917,9 @@ class SimEngine(ABC):
             "episodes_saved": episodes_saved,
             "dataset_episode_indices": dataset_episode_indices,
             "total_steps": total_steps,
+            "steps_used": total_steps,
+            "stopped_reason": stopped_reason,
+            "stopped_reasons": stopped_reasons,
             "episodes": episodes,
             "video_paths": video_paths,
         }

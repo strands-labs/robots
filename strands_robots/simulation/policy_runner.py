@@ -1115,6 +1115,12 @@ class PolicyRunner:
         # lives in _RolloutVideoWriter so run() and evaluate() record identically.
         vwriter, _video_err = _RolloutVideoWriter.open(self.sim, video, control_frequency)
         if _video_err is not None:
+            # Every error result carries the stopped_reason="error" json block
+            # (the "recorded on ALL exit paths" contract); the writer's error
+            # dict is text-only because evaluate() shares it, so tag it here.
+            _video_err.setdefault("content", []).append(
+                {"json": {"stopped_reason": "error", "steps_used": 0, "n_steps": 0}}
+            )
             return _video_err
 
         stopped_early = False
@@ -1318,15 +1324,16 @@ class PolicyRunner:
                 async-RTC paths, so the early-return latency bound is ONE
                 control step regardless of chunk length: the check fires
                 within the current chunk-slice and the remaining actions of
-                the chunk are dropped. A raising clause is fatal - the caller
-                asked for early-return semantics the runner can no longer
-                honor, and silently running to the step budget would
-                misreport the rollout - so it surfaces as ``status="error"``
-                via the outer handler rather than being warn-and-continued.
+                the chunk are dropped. Call sites guard on ``stop_when is not
+                None`` so the no-clause hot path pays no per-step call. A
+                raising clause is fatal - the caller asked for early-return
+                semantics the runner can no longer honor, and silently
+                running to the step budget would misreport the rollout - so
+                it surfaces as ``status="error"`` via the outer handler
+                rather than being warn-and-continued.
                 """
                 nonlocal stop_predicate_fired
-                if stop_when is None:
-                    return False
+                assert stop_when is not None  # call sites hoist the None guard
                 try:
                     fired = bool(stop_when(self.sim))
                 except Exception as e:
@@ -1497,8 +1504,9 @@ class PolicyRunner:
                         # the world reaching the condition - the rest of the
                         # in-flight chunk (and any prefetched chunk) is
                         # dropped; the executor shutdown below joins the
-                        # in-flight prefetch worker.
-                        if _stop_when_fired():
+                        # in-flight prefetch worker. The None guard is hoisted
+                        # so the no-clause hot path pays no per-step call.
+                        if stop_when is not None and _stop_when_fired():
                             break
                 finally:
                     # Wait for any in-flight inference so no background thread
@@ -1527,8 +1535,10 @@ class PolicyRunner:
                         # Semantic early return: checked after EVERY applied
                         # action (same cadence as the benchmark eval loop), so
                         # the remaining actions of the chunk are dropped as
-                        # soon as the condition holds.
-                        if _stop_when_fired():
+                        # soon as the condition holds. The None guard is
+                        # hoisted so the no-clause hot path pays no per-step
+                        # call.
+                        if stop_when is not None and _stop_when_fired():
                             break
                     if stop_predicate_fired:
                         break
