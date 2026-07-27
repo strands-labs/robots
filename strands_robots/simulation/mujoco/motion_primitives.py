@@ -76,7 +76,9 @@ _GRIPPER_HINTS = ("gripper", "finger", "jaw")
 _CTRLRANGE_ENDS = ("low", "high")
 
 # Wrist-yaw joint hints, most-specific first. Fallback: the last non-gripper
-# hinge joint in the robot's chain (the distal roll joint on most serial arms).
+# hinge joint in the robot's chain (the distal roll joint on most serial
+# arms). "Non-gripper" is decided by the shared registry-metadata-first
+# classification (_resolve_gripper_actuators), not by _GRIPPER_HINTS alone.
 _WRIST_HINTS = ("wrist_roll", "wrist_yaw", "wrist_rotate", "wrist")
 
 # Physics substeps per control tick. Each move_to/rotate_wrist "step" (and each
@@ -795,7 +797,9 @@ class MotionPrimitivesMixin:
         Atomic primitive: resolves the wrist-roll/yaw joint by name heuristic
         (``wrist_roll`` / ``wrist_yaw`` / ``wrist_rotate`` / ``wrist``, else
         the last non-gripper hinge joint - the distal roll joint on most serial
-        arms), commands it to ``target_yaw`` while every other arm actuator
+        arms; gripper DOFs are excluded via the shared registry-metadata-first
+        classification, :meth:`_resolve_gripper_actuators`), commands it to
+        ``target_yaw`` while every other arm actuator
         holds its current joint position, and servoes until the joint is within
         ``tol`` radians or ``max_steps`` control ticks elapse. Holding the
         other joints preserves the Cartesian EE position up to servo
@@ -815,8 +819,10 @@ class MotionPrimitivesMixin:
             ``{"status": "success", ...}`` with a json block
             ``{reached, steps, wrist_joint, target_yaw, final_yaw,
             yaw_error_rad}``; structured error (with the residual) when the
-            joint cannot be resolved, the target is out of range, or servo
-            convergence times out. Never raises.
+            joint cannot be resolved, the registry gripper metadata is
+            stale/malformed (same contract as ``set_gripper``/``move_to``),
+            the target is out of range, or servo convergence times out.
+            Never raises.
         """
         if target_yaw is None:
             return _err("rotate_wrist requires 'target_yaw' (wrist joint set-point in radians).")
@@ -853,9 +859,21 @@ class MotionPrimitivesMixin:
             def jnt_short(jnt_id: int) -> str:
                 return self._short_name(mj.mj_id2name(model, mj.mjtObj.mjOBJ_JOINT, jnt_id), namespace)
 
+            # Exclude gripper DOFs via the shared registry-first classification
+            # (GH #1661, follow-up to #1658), not a raw name-hint match. On
+            # so101's shipped sim MJCF the joints are named 1..6 - no gripper
+            # hint matches, so the raw heuristic would let the last-hinge
+            # fallback below pick joint 6, which IS the jaw: rotate_wrist
+            # would open/close the gripper instead of rotating the wrist.
+            # Stale/malformed registry metadata is the same loud structured
+            # error set_gripper / move_to return, never a silent fallback.
+            grip_acts, _, grip_err = self._resolve_gripper_actuators(model, robot)
+            if grip_err is not None:
+                return grip_err
+
             hinge = int(mj.mjtJoint.mjJNT_HINGE)
             candidates = [j for j in jact if int(model.jnt_type[j]) == hinge]
-            non_gripper = [j for j in candidates if not any(h in jnt_short(j).lower() for h in _GRIPPER_HINTS)]
+            non_gripper = [j for j in candidates if jact[j] not in grip_acts]
             wrist_jnt: int | None = None
             for hint in _WRIST_HINTS:
                 matches = [j for j in non_gripper if hint in jnt_short(j).lower()]
