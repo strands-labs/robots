@@ -78,15 +78,16 @@ Newton backend, so a rollout rig can be enumerated instead of guessed.
 | `render(camera_name="default", width=None, height=None)` | PNG in `content[...]["image"]["source"]["bytes"]`; no `frame` key |
 | `render_depth(camera_name="default", width=None, height=None)` | Viewable grayscale depth PNG `image` block (near=bright, far=dark) + metric `depth_min`/`depth_max` (meters) in the `json` block |
 | `render_all(cameras=None, width=None, height=None)` | One `image` block per camera (multi-view snapshot) |
+| `get_world_point(camera_name="default", pixels=[[u, v], ...])` | Ground picked pixels to metric world coordinates via the depth buffer; `point` is the median over the valid samples, `points` aligns with the input pixels |
 | `open_viewer` / `close_viewer` | Interactive MuJoCo passive viewer |
 
 !!! note "Get a numpy frame"
     `sim.get_observation(robot_name)[camera_name]` → `np.uint8 (H, W, 3)`
 
 !!! tip "Discover the render surface"
-    `render`, `render_depth`, and `render_all` are all listed in
-    `sim.describe()["methods"]`, so an agent can enumerate the full rendering
-    surface in one call instead of guessing method names.
+    `render`, `render_depth`, `render_all`, and `get_world_point` are all
+    listed in `sim.describe()["methods"]`, so an agent can enumerate the full
+    rendering surface in one call instead of guessing method names.
 
 ## Physics
 

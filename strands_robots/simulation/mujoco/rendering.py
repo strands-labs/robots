@@ -1237,12 +1237,19 @@ class RenderingMixin:
     ) -> "CameraParams":
         """Return pinhole :class:`~strands_robots.rendering.CameraParams`.
 
-        Named cameras: intrinsics ``K`` come from the camera's vertical FOV
-        (``model.cam_fovy``, square pixels, principal point at the image
-        center); the world-from-camera pose comes from
+        Named cameras: the world-from-camera pose comes from
         ``data.cam_xpos`` / ``data.cam_xmat``. MuJoCo's camera basis already
         matches the OpenGL optical convention (+X right, +Y up, -Z forward),
-        so the pose maps across without correction. Clip planes are
+        so the pose maps across without correction. Intrinsics ``K``: a
+        camera declared with an explicit physical sensor (MJCF
+        ``sensorsize`` / ``focal`` / ``principal`` / ``resolution``) gets its
+        ``K`` from ``model.cam_intrinsic`` / ``cam_sensorsize`` /
+        ``cam_resolution`` - non-square pixels (``fx != fy``) and an
+        off-center principal point are honored, matching what MuJoCo actually
+        rasterizes (see :meth:`_explicit_intrinsics_K` for the calibrated
+        sign conventions). All other cameras fall back to the vertical FOV
+        (``model.cam_fovy``, square pixels, principal point at the image
+        center). Clip planes are
         ``model.vis.map.{znear,zfar} * model.stat.extent``.
 
         Free camera (``None`` / ``""`` / ``"default"`` / ``"free"``): the same
@@ -1298,16 +1305,88 @@ class RenderingMixin:
             zfar = extent * float(model.vis.map.zfar)
             if free_camera:
                 R, t, fovy_deg = self._free_camera_pose(mj, _np, model)
+                K_explicit = None
             else:
                 R, t, fovy_deg = self._named_camera_pose(mj, model, self._world._data, camera_name)
+                cam_id = mj.mj_name2id(model, mj.mjtObj.mjOBJ_CAMERA, camera_name)
+                K_explicit = self._explicit_intrinsics_K(_np, model, cam_id, w, h)
 
-        fy = 0.5 * h / _np.tan(_np.deg2rad(fovy_deg) / 2.0)
-        fx = fy  # MuJoCo uses square pixels; intrinsics from vertical FOV are symmetric.
-        K = _np.array([[fx, 0.0, 0.5 * w], [0.0, fy, 0.5 * h], [0.0, 0.0, 1.0]], dtype=_np.float64)
+        if K_explicit is not None:
+            K = K_explicit
+        else:
+            fy = 0.5 * h / _np.tan(_np.deg2rad(fovy_deg) / 2.0)
+            fx = fy  # MuJoCo uses square pixels; intrinsics from vertical FOV are symmetric.
+            K = _np.array([[fx, 0.0, 0.5 * w], [0.0, fy, 0.5 * h], [0.0, 0.0, 1.0]], dtype=_np.float64)
         T_world_cam = _np.eye(4, dtype=_np.float64)
         T_world_cam[:3, :3] = R
         T_world_cam[:3, 3] = t
         return CameraParams(K=K, T_world_cam=T_world_cam, width=w, height=h, znear=znear, zfar=zfar)
+
+    @staticmethod
+    def _explicit_intrinsics_K(np: Any, model: Any, cam_id: int, w: int, h: int) -> "np.ndarray | None":
+        """``K`` for a camera declared with explicit MJCF intrinsics, else ``None``.
+
+        MJCF cameras may declare a physical sensor (``sensorsize`` +
+        ``focal``/``focalpixel`` + ``principal``/``principalpixel`` +
+        ``resolution``). MuJoCo then rasterizes with that intrinsic model -
+        ``fovy`` is ignored, pixels may be non-square (``fx != fy``), and the
+        principal point moves off the image center - so deriving ``K`` from
+        ``fovy`` silently misplaces every unprojected point (~25 cm on the
+        review's repro camera). This helper builds ``K`` the way MuJoCo
+        actually draws.
+
+        Sign conventions were calibrated empirically against MuJoCo 3.8.1 by
+        least-squares fitting blob centroids of spheres at known camera-frame
+        positions over three sensor configurations (offset principal point,
+        non-square sensor, asymmetric focal): a positive MJCF ``principal``
+        offset shifts the principal point toward NEGATIVE ``u`` and ``v``::
+
+            fx = focal_x / (sensor_w / res_w)     fy = focal_y / (sensor_h / res_h)
+            cx = res_w/2 - principal_x / pixel_w  cy = res_h/2 - principal_y / pixel_h
+
+        (fitted (fx, fy, cx, cy) = (300, 300, 85, 80) for sensorsize
+        0.0064x0.0048, focal 0.006, principal (0.0015, 0.0008) at 320x240 -
+        exact to two decimals, and the residuals of the other two
+        configurations pin both signs.) The sensor fixes the view frustum;
+        rendering into a ``(w, h)`` viewport maps that same frustum onto the
+        full viewport, so ``K`` scales linearly per axis (verified: the blob
+        centroid at 640x480 lands at exactly 2x its 320x240 coordinates).
+
+        Args:
+            np: the imported numpy module (kept off this module's top level).
+            model: compiled ``MjModel``.
+            cam_id: camera id in ``model``.
+            w: requested image width in pixels.
+            h: requested image height in pixels.
+
+        Returns:
+            ``(3, 3)`` float64 ``K`` at ``(w, h)``, or ``None`` when the
+            camera declares no physical sensor (``cam_sensorsize`` zero -
+            the ``fovy`` path applies).
+        """
+        sensor_w = float(model.cam_sensorsize[cam_id][0])
+        sensor_h = float(model.cam_sensorsize[cam_id][1])
+        if sensor_w <= 0.0 or sensor_h <= 0.0:
+            return None
+        res_w = float(model.cam_resolution[cam_id][0])
+        res_h = float(model.cam_resolution[cam_id][1])
+        if res_w <= 0.0 or res_h <= 0.0:
+            # sensorsize without resolution does not compile in MuJoCo; be
+            # defensive anyway rather than dividing by zero.
+            return None
+        focal_x, focal_y, pp_x, pp_y = (float(v) for v in model.cam_intrinsic[cam_id])
+        pixel_w = sensor_w / res_w
+        pixel_h = sensor_h / res_h
+        fx = focal_x / pixel_w
+        fy = focal_y / pixel_h
+        cx = res_w / 2.0 - pp_x / pixel_w
+        cy = res_h / 2.0 - pp_y / pixel_h
+        sx = float(w) / res_w
+        sy = float(h) / res_h
+        return np.array(
+            [[fx * sx, 0.0, cx * sx], [0.0, fy * sy, cy * sy], [0.0, 0.0, 1.0]],
+            dtype=np.float64,
+        )
 
     def _named_camera_pose(
         self, mj: Any, model: Any, data: Any, camera_name: str | None

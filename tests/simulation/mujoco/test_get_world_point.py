@@ -160,6 +160,136 @@ def test_dispatch_route_matches_programmatic_call() -> None:
         sim.destroy()
 
 
+# ----- Explicit MJCF intrinsics (review on #1649, item 2) ----- #
+
+# A camera declared with a physical sensor: MuJoCo rasterizes with the
+# intrinsic model (offset principal point, fovy ignored). The fovy-derived K
+# put the principal point at the image center and produced ~25 cm of silent
+# world-point error on this exact camera.
+_INTRINSICS_SCENE = """
+<mujoco model="intrinsics_scene">
+  <statistic extent="2" center="0 0 0"/>
+  <visual><map znear="0.005" zfar="25"/></visual>
+  <worldbody>
+    <light pos="0 0 3" dir="0 0 -1"/>
+    <body name="ball" pos="0 0 0.1">
+      <geom type="sphere" size="0.01" rgba="1 0 0 1"/>
+    </body>
+    <camera name="poff" pos="0 -1 0.1" xyaxes="1 0 0 0 0 1"
+            sensorsize="0.0064 0.0048" focal="0.006 0.006"
+            resolution="320 240" principal="0.0015 0.0008"/>
+  </worldbody>
+</mujoco>
+"""
+
+
+class TestExplicitIntrinsicsK:
+    """``_explicit_intrinsics_K`` formula pins (no GL: model compile only).
+
+    Expected values were calibrated against MuJoCo's rasterizer by
+    least-squares fitting depth-blob centroids of spheres at known
+    camera-frame positions (six positions per configuration); a positive
+    MJCF ``principal`` offset shifts the principal point toward NEGATIVE u/v.
+    """
+
+    @staticmethod
+    def _K(camera_attrs: str, w: int, h: int):
+        import mujoco
+
+        from strands_robots.simulation.mujoco.rendering import RenderingMixin
+
+        xml = f"""
+        <mujoco>
+          <worldbody>
+            <camera name="c" pos="0 -1 0.1" xyaxes="1 0 0 0 0 1" {camera_attrs}/>
+          </worldbody>
+        </mujoco>
+        """
+        model = mujoco.MjModel.from_xml_string(xml)
+        cam_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, "c")
+        return RenderingMixin._explicit_intrinsics_K(np, model, cam_id, w, h)
+
+    def test_offset_principal_point(self) -> None:
+        K = self._K(
+            'sensorsize="0.0064 0.0048" focal="0.006 0.006" resolution="320 240" principal="0.0015 0.0008"',
+            320,
+            240,
+        )
+        assert K is not None
+        assert K[0, 0] == pytest.approx(300.0)
+        assert K[1, 1] == pytest.approx(300.0)
+        assert K[0, 2] == pytest.approx(85.0)
+        assert K[1, 2] == pytest.approx(80.0)
+
+    def test_non_square_sensor(self) -> None:
+        K = self._K('sensorsize="0.008 0.0048" focal="0.006 0.006" resolution="320 240"', 320, 240)
+        assert K is not None
+        assert K[0, 0] == pytest.approx(240.0)  # fx != fy: non-square pixels honored
+        assert K[1, 1] == pytest.approx(300.0)
+        assert K[0, 2] == pytest.approx(160.0)
+        assert K[1, 2] == pytest.approx(120.0)
+
+    def test_asymmetric_focal_negative_principal(self) -> None:
+        K = self._K(
+            'sensorsize="0.0064 0.0048" focal="0.004 0.006" resolution="320 240" principal="-0.001 0.0012"',
+            320,
+            240,
+        )
+        assert K is not None
+        assert K[0, 0] == pytest.approx(200.0)
+        assert K[1, 1] == pytest.approx(300.0)
+        assert K[0, 2] == pytest.approx(210.0)
+        assert K[1, 2] == pytest.approx(60.0)
+
+    def test_scales_linearly_with_render_size(self) -> None:
+        """The sensor fixes the frustum; a 2x viewport doubles K per axis
+        (verified against the rasterizer: the blob centroid at 640x480 lands
+        at exactly 2x its 320x240 coordinates)."""
+        attrs = 'sensorsize="0.0064 0.0048" focal="0.006 0.006" resolution="320 240" principal="0.0015 0.0008"'
+        K1 = self._K(attrs, 320, 240)
+        K2 = self._K(attrs, 640, 480)
+        assert K1 is not None and K2 is not None
+        assert np.allclose(K2[:2, :], 2.0 * K1[:2, :])
+
+    def test_fovy_camera_returns_none(self) -> None:
+        """No physical sensor declared -> the fovy path applies (fallback)."""
+        assert self._K('fovy="45"', 320, 240) is None
+
+
+@requires_gl
+def test_world_point_correct_on_explicit_intrinsics_camera(tmp_path) -> None:
+    """Round-trip on the review's repro camera, non-circularly: the target
+    pixel comes from the DEPTH-blob centroid (rasterizer truth, no K
+    involved), and the unprojected point must land on the sphere's visible
+    surface. The fovy-derived K was ~25 cm off here and reported success."""
+    from strands_robots.simulation import Simulation
+
+    scene = tmp_path / "intrinsics_scene.xml"
+    scene.write_text(_INTRINSICS_SCENE)
+    sim = Simulation(mesh=False)
+    try:
+        assert sim.create_world(ground_plane=False)["status"] == "success"
+        assert sim.load_scene(str(scene))["status"] == "success", "load_scene failed"
+        _rgb, depth = sim.get_frame("poff")
+        assert depth is not None
+        cam = sim.get_camera_params("poff")
+        mask = depth < cam.zfar * 0.5
+        assert mask.sum() > 0, "sphere not visible in depth"
+        vs, us = np.where(mask)
+        u, v = int(round(us.mean())), int(round(vs.mean()))
+        data = _json_block(sim.get_world_point("poff", pixels=[[u, v]]))
+        point = np.asarray(data["point"])
+        # Camera at (0, -1, 0.1) looking +y; the sphere (r=0.01) at
+        # (0, 0, 0.1) presents its near surface at ~(0, -0.01, 0.1).
+        expected = np.array([0.0, -0.01, 0.1])
+        assert np.linalg.norm(point - expected) < 0.02, (
+            f"world point {point.tolist()} is {np.linalg.norm(point - expected):.4f} m from "
+            f"the sphere surface {expected.tolist()} - explicit intrinsics not honored"
+        )
+    finally:
+        sim.destroy()
+
+
 # ----- Tool surface (no GL required) ----- #
 
 
@@ -215,6 +345,24 @@ def test_dispatch_rejects_unknown_params() -> None:
         assert "Unknown parameter 'bogus'" in result["content"][0]["text"]
     finally:
         sim.cleanup()
+
+
+def test_dispatch_non_string_camera_name_is_a_structured_error() -> None:
+    """A camera INDEX (int) must degrade like every sibling camera action -
+    error dict, never a TypeError out of mj_name2id through the envelope
+    (review on #1649, item 1)."""
+    from strands_robots.simulation import Simulation
+
+    sim = Simulation(mesh=False)
+    try:
+        sim.create_world(ground_plane=False)
+        result = sim._dispatch_action("get_world_point", {"camera_name": 5, "pixels": [[1, 1]]})
+        assert result["status"] == "error", result
+        text = result["content"][0]["text"]
+        assert "camera_name" in text
+        assert "int" in text
+    finally:
+        sim.destroy()
 
 
 def test_dispatch_missing_pixels_names_the_parameter() -> None:

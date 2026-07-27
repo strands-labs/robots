@@ -886,7 +886,7 @@ frame = sim.render(camera_name="topdown")   # {status, content:[text, image]}
   `list_urdfs`, `register_urdf`, `get_features`.
 - **Objects**: `add_object`, `remove_object`, `move_object`, `list_objects`.
 - **Cameras & rendering**: `add_camera`, `remove_camera`, `render`,
-  `render_depth`, `render_all`, `start_cameras_recording`,
+  `render_depth`, `render_all`, `get_world_point`, `start_cameras_recording`,
   `stop_cameras_recording`, `get_cameras_recording_status`.
 - **Physics**: `step`, `set_timestep`, `set_gravity`, `apply_force`, `raycast`,
   `multi_raycast`, `get_contacts`, `get_contact_forces`, `get_body_state`,

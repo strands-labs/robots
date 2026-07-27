@@ -2746,7 +2746,10 @@ class SimEngine(ABC):
            something else.
         3. Sample SEVERAL pixels on the same surface (typically 3-9): the
            returned ``point`` is the median over the valid samples, which
-           rejects stray outliers.
+           rejects stray outliers. The median is PER-COMPONENT, so on a
+           strongly tilted surface the combined ``[x, y, z]`` may lie on no
+           single sampled point - treat it as a robust surface estimate, not
+           as one of ``points``.
         4. Pixels with no depth (background / far plane) are dropped, not
            zero-filled; check ``n_valid`` against the count you sent.
         5. Re-localize after any robot, camera, or object motion -- world
@@ -2792,7 +2795,17 @@ class SimEngine(ABC):
         def _err(msg: str) -> dict[str, Any]:
             return {"status": "error", "content": [{"text": msg}]}
 
-        # -- Structural validation of `pixels` (before any render work) -- #
+        # -- Structural validation (before any render work) -- #
+        # camera_name reaches backend name-lookup APIs (e.g. MuJoCo's
+        # mj_name2id) that raise TypeError on non-string input, and the
+        # dispatcher enforces no scalar types - so an LLM passing a camera
+        # INDEX must be caught here to keep the never-raises envelope.
+        if camera_name is not None and not isinstance(camera_name, str):
+            return _err(
+                f"get_world_point 'camera_name' must be a camera name string, got "
+                f"{type(camera_name).__name__} ({camera_name!r}). Cameras are addressed by "
+                "name, not index; see add_camera / get_frame."
+            )
         if pixels is None or isinstance(pixels, (str, bytes)) or not hasattr(pixels, "__len__"):
             return _err(
                 "get_world_point requires 'pixels': a non-empty list of [u, v] pixel coordinates, e.g. [[320, 240], [322, 238]]."
@@ -2833,7 +2846,10 @@ class SimEngine(ABC):
                 return _err(
                     "get_world_point is unavailable: this backend has no raw-frame path (get_frame is not implemented)."
                 )
-            except (KeyError, ValueError, RuntimeError) as e:
+            except (KeyError, ValueError, RuntimeError, TypeError) as e:
+                # TypeError included as defense-in-depth for backend lookup
+                # APIs that reject non-string names (the type is validated
+                # above, but the envelope must hold regardless).
                 return _err(f"get_world_point failed to render camera frame: {e}")
             if depth is None:
                 return _err(
@@ -2854,7 +2870,7 @@ class SimEngine(ABC):
                 return _err(
                     "get_world_point is unavailable: this backend has no camera-params path (get_camera_params is not implemented)."
                 )
-            except (KeyError, ValueError, RuntimeError) as e:
+            except (KeyError, ValueError, RuntimeError, TypeError) as e:
                 return _err(f"get_world_point failed to read camera parameters: {e}")
 
         # -- Unproject (pure math; no engine state touched past this point) -- #
@@ -2881,7 +2897,10 @@ class SimEngine(ABC):
             points.append(world_xyz)
             valid_points.append(world_xyz)
 
-        camera_label = "default" if camera_name in (None, "") else str(camera_name)
+        # One label per camera: every free-camera token (None / "" / "free" /
+        # "default") reports as "default", so the same camera never appears
+        # under two names across calls.
+        camera_label = "default" if camera_name in (None, "", "free", "default") else str(camera_name)
         if not valid_points:
             return _err(
                 f"get_world_point found no valid depth at any of the {len(parsed)} requested pixels via "
