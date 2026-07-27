@@ -76,7 +76,10 @@
         "attach_bodies",
         "detach_bodies",
         "actuate_robot",
-        "zero_dynamics"
+        "zero_dynamics",
+        "move_to",
+        "set_gripper",
+        "rotate_wrist"
       ]
     },
     "scene_path": {
@@ -286,7 +289,24 @@
     },
     "max_steps": {
       "type": "integer",
-      "description": "Max steps per eval episode"
+      "description": "Max steps per eval episode; for move_to / rotate_wrist: max control ticks before returning a not-reached error"
+    },
+    "tol": {
+      "type": "number",
+      "description": "move_to / rotate_wrist convergence tolerance: meters for move_to (EE position, default 0.01), radians for rotate_wrist (joint angle, default 0.02)"
+    },
+    "state": {
+      "type": "string",
+      "enum": ["open", "close"],
+      "description": "set_gripper set-point: 'open' drives the gripper actuator(s) to the HIGH end of ctrlrange, 'close' to the LOW end (SO-100/SO-101 jaw closes toward the low end)"
+    },
+    "steps": {
+      "type": "integer",
+      "description": "set_gripper: control ticks to hold the set-point (each tick advances a few physics substeps); default 12"
+    },
+    "target_yaw": {
+      "type": "number",
+      "description": "rotate_wrist: wrist-yaw joint set-point in radians (must lie within the joint's range)"
     },
     "success_fn": {
       "type": "string",

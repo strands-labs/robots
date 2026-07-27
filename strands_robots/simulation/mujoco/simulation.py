@@ -75,6 +75,7 @@ from strands_robots.simulation.mujoco.backend import (
     filter_mujoco_attach_noise,
 )
 from strands_robots.simulation.mujoco.manipulation import ManipulationMixin
+from strands_robots.simulation.mujoco.motion_primitives import MotionPrimitivesMixin
 from strands_robots.simulation.mujoco.physics import PhysicsMixin
 from strands_robots.simulation.mujoco.randomization import RandomizationMixin
 from strands_robots.simulation.mujoco.recording import RecordingMixin
@@ -212,6 +213,7 @@ class MuJoCoSimEngine(
     RecordingMixin,
     RandomizationMixin,
     ManipulationMixin,
+    MotionPrimitivesMixin,
     SimEngine,
     AgentTool,
 ):
@@ -1757,6 +1759,25 @@ class MuJoCoSimEngine(
         base["methods"]["zero_dynamics"] = (
             "(robot_name: str | None = None) -> dict  # zero qvel/qacc/warmstart "
             "(world-wide, or one robot's joints) after kinematic qpos writes"
+        )
+        # Analytic motion primitives (GH #1645): the agent-facing staging/
+        # transport/release vocabulary around a learned policy (Harness VLA).
+        base["methods"]["move_to"] = (
+            "(robot_name=None, position, orientation=None, tol=0.01, "
+            "max_steps=200) -> dict  # move the end-effector to a world-frame "
+            "[x, y, z] target via IK (position-only when orientation is "
+            "omitted - right for <6-DOF arms); NOT collision-aware; returns "
+            "reached/residual, structured error when unreachable"
+        )
+        base["methods"]["set_gripper"] = (
+            "(robot_name=None, state='open'|'close', steps=12) -> dict  # "
+            "drive the gripper actuator(s) to the open (ctrlrange HIGH) or "
+            "close (ctrlrange LOW) set-point"
+        )
+        base["methods"]["rotate_wrist"] = (
+            "(robot_name=None, target_yaw, tol=0.02, max_steps=200) -> dict  "
+            "# rotate the wrist-yaw joint to a set-point (radians) while the "
+            "other arm joints hold position"
         )
         # Robot-registry + robot-removal surface. describe() calls add_robot
         # "the first scene-construction step" and advertises the object/camera
@@ -3554,7 +3575,7 @@ class MuJoCoSimEngine(
                 "(direct path or auto-resolve from data_config name), add objects, run VLA policies, "
                 "render cameras, record trajectories, domain randomize. "
                 "Same Policy ABC as real robot control - sim and real with zero code changes. "
-                "Actions (72 total): "
+                "Actions (75 total): "
                 "[World] create_world, load_scene, reset, get_state, destroy, export_xml; "
                 "[Robots] add_robot, remove_robot, list_robots, get_robot_state, list_bodies; "
                 "[Objects] add_object, remove_object, move_object, list_objects; "
@@ -3566,6 +3587,8 @@ class MuJoCoSimEngine(
                 "get_total_mass, get_ground_height, get_sensor_data, get_jacobian, get_mass_matrix, inverse_dynamics, "
                 "forward_kinematics, save_state, load_state, set_body_properties, set_geom_properties; "
                 "[Manipulation] attach_bodies, detach_bodies, actuate_robot, zero_dynamics; "
+                "[Motion primitives] move_to (Cartesian EE transport via IK; not collision-aware), "
+                "set_gripper (open/close set-point), rotate_wrist (wrist-yaw set-point holding position); "
                 "[Scene MJCF] replace_scene_mjcf, patch_scene_mjcf, raycast, multi_raycast; "
                 "[Recording] start_recording, save_episode, stop_recording, get_recording_status, "
                 "start_cameras_recording, stop_cameras_recording, get_cameras_recording_status; "
@@ -4188,7 +4211,12 @@ class MuJoCoSimEngine(
     # Dispatched actions that manage their own locking and MUST NOT run
     # under the blanket dispatch RLock (see _dispatch_action). Each one
     # acquires self._lock internally around its own model/data access.
-    _SELF_LOCKING_ACTIONS: frozenset[str] = frozenset({"step", "stop_policy", "remove_robot"})
+    # The motion primitives (move_to / set_gripper / rotate_wrist) lock per
+    # control tick (the step() pattern) so stop_policy / renders can
+    # interleave during a long primitive.
+    _SELF_LOCKING_ACTIONS: frozenset[str] = frozenset(
+        {"step", "stop_policy", "remove_robot", "move_to", "set_gripper", "rotate_wrist"}
+    )
 
     _ACTION_ALIASES = {
         "list_robots": "list_robots_info",
