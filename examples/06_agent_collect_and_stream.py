@@ -60,7 +60,21 @@ for i, frame in enumerate(reader):
     if i >= 2:
         break
 
-# 3. (Optional) Dump to a mutable HF Storage Bucket during collection —
-#    Xet-deduped, overwrite-in-place (Phase 1/2). One kwarg on stop_recording:
-#    sim.stop_recording(bucket="your-org/robot-fave")
-print("\nDone. To dump to an HF Storage Bucket: stop_recording(bucket='org/name')")
+# 3. (Optional) Sync the finished dataset into a mutable HF Storage Bucket for
+#    collection — Xet-deduped, overwrite-in-place (Phase 1/2). Use the
+#    lifecycle-independent helper, which syncs an on-disk dataset without a live
+#    recording session (needs `hf auth login` + huggingface_hub >= 1.0). Set
+#    STRANDS_DEMO_BUCKET="your-org/robot-fave" to run it; it stays a no-op
+#    otherwise so the default path needs no Hub credentials.
+bucket = os.environ.get("STRANDS_DEMO_BUCKET")
+if bucket:
+    from strands_robots import sync_dataset_to_bucket
+
+    result = sync_dataset_to_bucket(DATASET_ROOT, bucket)
+    if result.get("status") == "success":
+        print(f"\nSynced to bucket: {result['bucket_uri']}")
+    else:
+        # Surface the failure instead of reporting a sync that did not happen.
+        raise RuntimeError(f"bucket sync failed: {result.get('message')}")
+else:
+    print("\nDone. Set STRANDS_DEMO_BUCKET=org/name to sync this dataset to an HF Storage Bucket.")
