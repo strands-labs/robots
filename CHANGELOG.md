@@ -5,6 +5,33 @@ All notable behavioural changes to `strands-robots` are logged here. Follows
 
 ## [Unreleased]
 
+### Fixed: a gripper command is honored the same way whichever name the action key spells
+
+`send_action` accepts an action key as either the actuator name (`actuator8` on
+the Panda) or a joint name that actuator drives (`finger_joint1`). Both resolve
+to the same actuator, but only the joint-name branch mapped a logical `[0, 1]`
+open/close fraction onto a tendon gripper's wide ctrlrange. The actuator-name
+branch wrote the value verbatim, so the same command meant opposite things:
+
+```python
+sim.send_action({"finger_joint1": 1.0}, robot_name="panda")
+# -> ctrl 255.0, finger gap 0.0400 m (fully OPEN)
+sim.send_action({"actuator8": 1.0}, robot_name="panda")
+# -> ctrl   1.0, finger gap 0.0002 m (CLOSED - 0.4% of the [0, 255] range)
+```
+
+The actuator name is the spelling the engine advertises: `robot_action_keys()`
+returns actuator names, a policy receives them through
+`set_robot_state_keys()`, and a positional action vector (`send_action([...])`,
+`replay_episode`) binds to them in order. Every policy rollout and dataset
+replay therefore took the unscaled branch and could not open a tendon gripper,
+so a scripted top-down pick left the object on the ground instead of lifting
+it. Both branches now write through one shared path, so the two spellings
+cannot diverge again. Direct joint/position/torque actuators are unchanged (the
+unit mapping applies to tendon transmissions only), and a mapped tendon command
+no longer emits a spurious "MuJoCo will clamp it" warning through the
+actuator-name spelling.
+
 ### Fixed: `add_object` rejects a mass it cannot honor, and a refused add never bricks the scene
 
 `add_object` validated `position`, `orientation`, `color` and `size` but wrote

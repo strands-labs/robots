@@ -175,6 +175,125 @@ def _compile_call(entry: Any, *, context: str, require_kind: str | None = None) 
         raise ValueError(f"{context}: predicate '{pred_name}' compilation failed: {e}") from e
 
 
+def compile_stop_when(stop_when: Any, *, context: str = "stop_when") -> Callable[[SimEngine], bool]:
+    """Compile a ``stop_when`` early-return clause into a ``(sim) -> bool`` callable.
+
+    This is the ``run_policy(stop_when=...)`` compiler: the clause uses the
+    same predicate-DSL schema as a benchmark spec's ``success`` clause, so an
+    agent that can author a success condition can gate a rollout with the
+    identical vocabulary. Two shapes are accepted - a single predicate call::
+
+        {"predicate": "grasped", "body": "cube", "gripper_prefix": "so100"}
+
+    or an ``all`` / ``any`` group of predicate calls::
+
+        {"all": [{"predicate": "body_above_z", "body": "cube", "z": 0.2},
+                 {"predicate": "body_upright", "body": "cube"}]}
+
+    Predicates resolve through the closed registry
+    (:func:`~strands_robots.simulation.predicates.make_predicate`) - nothing
+    here reaches ``eval`` / ``exec``, so the clause is safe to accept from an
+    LLM tool call. Float-valued reward terms are rejected up front (a nonzero
+    float reads as always-``True`` and would stop the rollout on step 1), and
+    an empty clause is rejected rather than compiling to a check that never
+    fires (which would silently run the rollout to its step budget).
+
+    Args:
+        stop_when: The clause dict (single predicate call or ``all``/``any``
+            group).
+        context: Label used to prefix error messages.
+
+    Returns:
+        A side-effect-free callable evaluating the clause against the sim
+        (predicates only read sim state), suitable for per-step checking.
+
+    Raises:
+        ValueError: On a non-dict clause, an empty / never-firing clause, a
+            clause mixing the single-call and group forms, an unknown
+            predicate name (the message lists the valid set), a float-valued
+            predicate, or bad predicate kwargs.
+    """
+    if not isinstance(stop_when, dict):
+        raise ValueError(
+            f"{context}: expected a predicate call like {{'predicate': 'grasped', ...}} or an "
+            f"'all'/'any' group of them, got {type(stop_when).__name__}"
+        )
+    if "predicate" in stop_when:
+        group_keys = {"all", "any"} & set(stop_when.keys())
+        if group_keys:
+            raise ValueError(
+                f"{context}: a clause is either a single predicate call or an 'all'/'any' group, "
+                f"not both (got 'predicate' plus {sorted(group_keys)})"
+            )
+        return _compile_call(stop_when, context=context, require_kind="bool")
+    unknown = set(stop_when.keys()) - {"all", "any"}
+    if unknown:
+        raise ValueError(
+            f"{context}: unknown keys {sorted(unknown)}; pass a single "
+            "{'predicate': <name>, ...} call or an 'all'/'any' group of them"
+        )
+    if not (stop_when.get("all") or stop_when.get("any")):
+        raise ValueError(
+            f"{context}: empty clause - it would never fire and the rollout would silently run "
+            "to its step budget. Pass a predicate call or a non-empty 'all'/'any' group, or "
+            f"omit {context} entirely."
+        )
+    return _compile_bool_group(stop_when, default=False, context=context)
+
+
+# Predicate kwargs that name scene entities, per kind. A stop_when clause is
+# probed against the LIVE sim before the rollout starts (see
+# SimEngine.run_policy): a typo'd name would otherwise compile clean, degrade
+# to a constant False at evaluation time, and burn the whole step budget
+# reporting stopped_reason="budget" - indistinguishable from an honest miss.
+_BODY_NAME_KWARGS = frozenset({"body", "body_a", "body_b", "container"})
+_JOINT_NAME_KWARGS = frozenset({"joint"})
+
+
+def stop_when_referenced_entities(stop_when: Any) -> tuple[list[str], list[str]]:
+    """Collect the body and joint names a ``stop_when`` clause references.
+
+    Walks the same shapes :func:`compile_stop_when` accepts (a single
+    predicate call or an ``all``/``any`` group) and gathers the values of the
+    entity-naming kwargs (``body`` / ``body_a`` / ``body_b`` / ``container``
+    for bodies, ``joint`` for joints) so the caller can probe each one
+    against the live sim before arming the clause. Geom names
+    (``contact_between``) are not collected - there is no generic geom
+    lookup on the engine ABC to probe them with.
+
+    Args:
+        stop_when: A clause dict already validated by
+            :func:`compile_stop_when` (unrecognized shapes yield empty
+            results rather than raising - validation is the compiler's job).
+
+    Returns:
+        ``(bodies, joints)`` - deduplicated, insertion-ordered name lists.
+    """
+    bodies: dict[str, None] = {}
+    joints: dict[str, None] = {}
+
+    def _collect(call: Any) -> None:
+        if not isinstance(call, dict):
+            return
+        for key, value in call.items():
+            if isinstance(value, str) and value:
+                if key in _BODY_NAME_KWARGS:
+                    bodies.setdefault(value)
+                elif key in _JOINT_NAME_KWARGS:
+                    joints.setdefault(value)
+
+    if isinstance(stop_when, dict):
+        if "predicate" in stop_when:
+            _collect(stop_when)
+        else:
+            for group_key in ("all", "any"):
+                entries = stop_when.get(group_key)
+                if isinstance(entries, list):
+                    for entry in entries:
+                        _collect(entry)
+    return list(bodies), list(joints)
+
+
 def _compile_reward_terms(terms: list[Any] | None) -> list[Callable[[SimEngine], float]]:
     if terms is None:
         return []
@@ -464,5 +583,7 @@ def register_benchmark_from_file(
 
 __all__ = [
     "DeclarativeBenchmark",
+    "compile_stop_when",
     "register_benchmark_from_file",
+    "stop_when_referenced_entities",
 ]

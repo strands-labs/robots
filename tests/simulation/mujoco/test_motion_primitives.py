@@ -102,6 +102,73 @@ HINT_COLLIDER_XML = ARM_XML.replace('"prim_arm"', '"hint_collider_arm"').replace
 assert HINT_COLLIDER_XML.count("finger_camera_pan") == 3  # joint def + actuator name/joint refs
 HINT_COLLIDER_XML = HINT_COLLIDER_XML.replace('"jaw"', '"Jaw"')  # joint + actuator refs; so100's metadata name
 
+# The GH #1661 regression arm: so101's shipped sim MJCF names its joints and
+# actuators "1".."6". No wrist hint matches and no gripper hint matches, so
+# the raw-heuristic fallback ("last non-gripper hinge") selected joint 6 -
+# which IS the jaw: rotate_wrist would open/close the gripper instead of
+# rotating the wrist. so101's registry gripper metadata (actuators: ["6"])
+# is what excludes the jaw from the wrist candidate set. Same servo tuning
+# as ARM_XML, one extra wrist-flex link so the DOF count matches the real
+# robot (5 arm joints + jaw).
+SO101_STYLE_XML = """
+<mujoco model="so101_style_arm">
+  <compiler angle="radian" autolimits="true"/>
+  <option timestep="0.002" gravity="0 0 0"/>
+  <default>
+    <joint armature="0.05" damping="0.5"/>
+    <geom density="2000"/>
+  </default>
+  <worldbody>
+    <body name="base" pos="0 0 0">
+      <geom type="cylinder" size="0.04 0.02"/>
+      <body name="link1" pos="0 0 0.05">
+        <joint name="1" type="hinge" axis="0 0 1" range="-3.14 3.14"/>
+        <geom type="capsule" fromto="0 0 0 0 0 0.1" size="0.02"/>
+        <body name="link2" pos="0 0 0.1">
+          <joint name="2" type="hinge" axis="0 1 0" range="-3.14 3.14"/>
+          <geom type="capsule" fromto="0 0 0 0.1 0 0" size="0.02"/>
+          <body name="link3" pos="0.1 0 0">
+            <joint name="3" type="hinge" axis="0 1 0" range="-3.14 3.14"/>
+            <geom type="capsule" fromto="0 0 0 0.1 0 0" size="0.018"/>
+            <body name="link4" pos="0.1 0 0">
+              <joint name="4" type="hinge" axis="0 1 0" range="-3.14 3.14"/>
+              <geom type="capsule" fromto="0 0 0 0.05 0 0" size="0.016"/>
+              <body name="link5" pos="0.05 0 0">
+                <joint name="5" type="hinge" axis="1 0 0" range="-3.0 3.0"/>
+                <geom type="capsule" fromto="0 0 0 0.05 0 0" size="0.015"/>
+                <site name="ee_site" pos="0.05 0 0"/>
+                <body name="jaw_body" pos="0.05 0 0">
+                  <joint name="6" type="hinge" axis="0 0 1" range="-0.2 1.5" armature="0.01" damping="0.1"/>
+                  <geom type="box" size="0.01 0.01 0.02" contype="0" conaffinity="0"/>
+                </body>
+              </body>
+            </body>
+          </body>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+  <actuator>
+    <position name="1" joint="1" kp="20" dampratio="1" ctrlrange="-3.14 3.14"/>
+    <position name="2" joint="2" kp="20" dampratio="1" ctrlrange="-3.14 3.14"/>
+    <position name="3" joint="3" kp="20" dampratio="1" ctrlrange="-3.14 3.14"/>
+    <position name="4" joint="4" kp="20" dampratio="1" ctrlrange="-3.14 3.14"/>
+    <position name="5" joint="5" kp="5" dampratio="1" ctrlrange="-3.0 3.0"/>
+    <position name="6" joint="6" kp="2" dampratio="1" ctrlrange="-0.2 1.5"/>
+  </actuator>
+</mujoco>
+"""
+
+# GH #1661's second failure mode (fallback shift): the most distal arm joint
+# is named ``finger_camera_roll`` - the raw heuristic excluded it from the
+# wrist candidate set, shifting the last-non-gripper-hinge fallback onto the
+# elbow. With so100's registry metadata (gripper = ``Jaw``) the roll joint
+# stays a candidate and the fallback picks it. No wrist hint matches (the
+# name deliberately avoids "wrist"), so the fallback path is exercised.
+FALLBACK_SHIFT_XML = ARM_XML.replace('"prim_arm"', '"fallback_shift_arm"').replace("wrist_roll", "finger_camera_roll")
+assert FALLBACK_SHIFT_XML.count("finger_camera_roll") == 3  # joint def + actuator name/joint refs
+FALLBACK_SHIFT_XML = FALLBACK_SHIFT_XML.replace('"jaw"', '"Jaw"')  # joint + actuator refs; so100's metadata name
+
 
 @pytest.fixture
 def arm_path(tmp_path):
@@ -559,6 +626,7 @@ class TestGripperRegistryMetadata:
         for action, fields in (
             ("set_gripper", {"state": "close"}),
             ("move_to", {"position": REACHABLE}),
+            ("rotate_wrist", {"target_yaw": 0.3}),
         ):
             result = _dispatch(collider_sim, action, robot_name="arm", **fields)
             assert result["status"] == "error", (action, result)
@@ -570,9 +638,13 @@ class TestGripperRegistryMetadata:
             "strands_robots.simulation.mujoco.motion_primitives.get_robot",
             lambda name: {"gripper": {"actuators": [], "closed": "low", "open": "high"}},
         )
-        result = _dispatch(collider_sim, "set_gripper", robot_name="arm", state="close")
-        assert result["status"] == "error", result
-        assert "malformed" in result["content"][0]["text"]
+        for action, fields in (
+            ("set_gripper", {"state": "close"}),
+            ("rotate_wrist", {"target_yaw": 0.3}),
+        ):
+            result = _dispatch(collider_sim, action, robot_name="arm", **fields)
+            assert result["status"] == "error", (action, result)
+            assert "malformed" in result["content"][0]["text"], (action, result)
 
     def test_no_data_config_still_uses_heuristic(self, sim):
         """Zero-config fallback pinned: a robot without a data_config resolves
@@ -580,6 +652,73 @@ class TestGripperRegistryMetadata:
         result = _dispatch(sim, "set_gripper", robot_name="arm", state="close", steps=5)
         assert result["status"] == "success", result
         assert _json_block(result)["actuators"] == ["jaw"]
+
+
+class TestRotateWristRegistryMetadata:
+    """rotate_wrist excludes gripper DOFs via the shared registry-first
+    classification (GH #1661, follow-up to #1658).
+
+    Both heuristic failure modes from #1658 applied to rotate_wrist's joint
+    selection, and one was live on a shipped model: so101's sim MJCF names
+    its joints ``1``..``6`` - no wrist hint matches, no gripper hint matches,
+    so the last-non-gripper-hinge fallback selected joint ``6``, the JAW.
+    rotate_wrist on so101 would open/close the gripper instead of rotating
+    the wrist. These tests use the REAL shipped registry entries (so101:
+    ``actuators: ["6"]``; so100: ``actuators: ["Jaw"]``) against inline
+    arms - no asset downloads.
+    """
+
+    @pytest.fixture
+    def so101_sim(self, tmp_path):
+        path = tmp_path / "so101_style_arm.xml"
+        path.write_text(SO101_STYLE_XML)
+        s = Simulation(tool_name="test_rotate_wrist_metadata", mesh=False)
+        assert s.create_world(gravity=[0, 0, 0])["status"] == "success"
+        assert s.add_robot("arm", urdf_path=str(path), data_config="so101")["status"] == "success"
+        yield s
+        s.cleanup(policy_stop_timeout=2.0)
+
+    def test_jaw_is_never_selected_as_wrist_on_so101_style_model(self, so101_sim):
+        """The issue's acceptance test: joints named 1..6 + so101 registry
+        metadata - the jaw (joint 6) is excluded, the fallback picks the
+        distal arm roll joint (5), and the jaw does not move."""
+        result = _dispatch(so101_sim, "rotate_wrist", robot_name="arm", target_yaw=0.5)
+        assert result["status"] == "success", result
+        payload = _json_block(result)
+        assert payload["wrist_joint"] == "5", payload
+        assert payload["reached"] is True
+        state = _json_block(so101_sim.get_robot_state("arm"))["state"]
+        assert float(state["5"]["position"]) == pytest.approx(0.5, abs=0.05)
+        assert abs(float(state["6"]["position"])) < 0.05, "rotate_wrist moved the jaw"
+
+    def test_hint_colliding_distal_joint_stays_a_wrist_candidate(self, tmp_path):
+        """The fallback-shift failure mode: the most distal arm joint is named
+        ``finger_camera_roll``. The raw heuristic excluded it (finger hint)
+        and the fallback shifted onto the elbow; with so100's metadata
+        (gripper = Jaw) the roll joint stays a candidate and is picked."""
+        path = tmp_path / "fallback_shift_arm.xml"
+        path.write_text(FALLBACK_SHIFT_XML)
+        s = Simulation(tool_name="test_rotate_wrist_fallback_shift", mesh=False)
+        try:
+            assert s.create_world(gravity=[0, 0, 0])["status"] == "success"
+            assert s.add_robot("arm", urdf_path=str(path), data_config="so100")["status"] == "success"
+            result = _dispatch(s, "rotate_wrist", robot_name="arm", target_yaw=0.5)
+            assert result["status"] == "success", result
+            payload = _json_block(result)
+            assert payload["wrist_joint"] == "finger_camera_roll", payload
+            assert payload["reached"] is True
+            state = _json_block(s.get_robot_state("arm"))["state"]
+            assert abs(float(state["elbow"]["position"])) < 0.05, "fallback shifted onto the elbow"
+            assert abs(float(state["Jaw"]["position"])) < 0.05, "rotate_wrist moved the jaw"
+        finally:
+            s.cleanup(policy_stop_timeout=2.0)
+
+    def test_no_metadata_heuristic_unchanged(self, sim):
+        """Zero-config fallback pinned: without registry metadata the wrist
+        hint match resolves ``wrist_roll`` exactly as before this change."""
+        result = _dispatch(sim, "rotate_wrist", robot_name="arm", target_yaw=0.4)
+        assert result["status"] == "success", result
+        assert _json_block(result)["wrist_joint"] == "wrist_roll"
 
 
 class TestRecordingInterplay:

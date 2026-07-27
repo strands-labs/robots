@@ -416,6 +416,11 @@
       "description": "Provider-specific config dict forwarded to strands_robots.policies.create_policy. Contents depend on policy_provider. For 'groot': host, port, api_token, observation_mapping, action_mapping. For 'lerobot_local': pretrained_name_or_path, device, trust_remote_code, actions_per_step, use_processor, processor_overrides, observation_mapping, action_mapping. For 'mock': {} is fine.",
       "additionalProperties": true
     },
+    "stop_when": {
+      "type": "object",
+      "description": "run_policy: optional semantic early-return clause -- the rollout ends as soon as the condition holds in the sim, instead of only when the step budget runs out. Same predicate DSL as a benchmark spec's success: clause: a single bool predicate call like {'predicate': 'grasped', 'body': 'cube', 'gripper_prefix': 'so100'} or {'predicate': 'body_above_z', 'body': 'cube', 'z': 0.2}, or a group {'all': [<call>, ...]} / {'any': [<call>, ...]}. Predicates resolve through the closed registry (never eval/exec); an unknown name or a float-valued reward term is rejected up front with the valid list. Checked after every applied action (also on the async-RTC path, so the stop lands within one control step). Composes with an active recording: frames are captured up to the stop. The result json reports stopped_reason ('predicate'|'budget'|'cancelled'; 'error' on failures) and steps_used so you can decide whether to retry.",
+      "additionalProperties": true
+    },
     "cameras": {
       "type": "array",
       "items": {

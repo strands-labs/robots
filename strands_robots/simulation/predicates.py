@@ -1682,13 +1682,71 @@ def predicate_kind(name: str) -> str:
     return "unknown"
 
 
+def supports_body_lookup(sim: SimEngine) -> bool:
+    """Whether *sim*'s backend can resolve body names at all.
+
+    Body-referencing predicates resolve through ``get_body_state`` (MuJoCo
+    only at time of writing). On a backend without that method every
+    body-referencing predicate degrades to a constant ``False``, so callers
+    that arm such a predicate (e.g. ``run_policy(stop_when=...)``) should
+    check this up front and reject rather than silently never fire.
+
+    Args:
+        sim: The engine to probe.
+
+    Returns:
+        ``True`` when the backend implements ``get_body_state``.
+    """
+    return getattr(sim, "get_body_state", None) is not None
+
+
+def can_resolve_body(sim: SimEngine, body: str) -> bool:
+    """Whether *body* resolves in *sim* right now, via the predicate DSL's own lookup.
+
+    Uses the exact resolution path the body-referencing predicates use at
+    evaluation time (:func:`_body_position`), including the LIBERO
+    ``<name>_main`` fallback - so a ``True`` here means the predicate will
+    genuinely be evaluable against the live scene, and a ``False`` means it
+    would degrade to a constant ``False`` forever (a typo'd name, or a
+    backend without body lookups).
+
+    Args:
+        sim: The engine to probe.
+        body: The body name a predicate clause references.
+
+    Returns:
+        ``True`` when the lookup resolves to a position.
+    """
+    return _body_position(sim, body) is not None
+
+
+def can_resolve_joint(sim: SimEngine, joint: str) -> bool:
+    """Whether *joint* resolves in *sim* right now, via the predicate DSL's own lookup.
+
+    Mirrors :func:`can_resolve_body` for joint-referencing predicates
+    (``joint_above`` / ``joint_below``), using the same ``get_observation``
+    path the predicates use at evaluation time.
+
+    Args:
+        sim: The engine to probe.
+        joint: The joint name a predicate clause references.
+
+    Returns:
+        ``True`` when the lookup resolves to a value.
+    """
+    return _joint_position(sim, joint) is not None
+
+
 __all__ = [
     "PREDICATE_REGISTRY",
     "BoolPredicate",
     "PredicateFactory",
     "RewardTerm",
     "StatefulRewardTerm",
+    "can_resolve_body",
+    "can_resolve_joint",
     "make_predicate",
     "predicate_kind",
     "register_predicate",
+    "supports_body_lookup",
 ]
