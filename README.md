@@ -515,6 +515,7 @@ AgentTool returning `{"status", "content"}`.
 | `lerobot_calibrate` | List, view, back up, restore LeRobot calibrations |
 | `lerobot_teleoperate` | Record demonstrations, replay episodes |
 | `pose_tool` | Store, recall, and execute named robot poses |
+| `harness_memory` | Persist task solution traces + global success rules / failure models across agent sessions (Harness-VLA-style memory) |
 | `serial_tool` | Low-level Feetech servo / raw serial communication |
 | `download_assets` | Pre-fetch robot MJCF + meshes into the asset cache |
 
@@ -1060,6 +1061,7 @@ touches ROS 2.
 |----------|-------------|---------|
 | `STRANDS_ROBOT_MODE` | `Robot()` factory mode: `sim` / `real` / `auto` | `sim` |
 | `STRANDS_ASSETS_DIR` | Robot model asset cache directory | `~/.strands_robots/assets/` |
+| `STRANDS_MEMORY_DIR` | Harness memory store (`harness_memory` tool: task solution traces + global success rules / failure models) | `~/.strands_robots/memory/` |
 | `STRANDS_ROBOTS_RENDER_ROOT` | Sandbox directory that `Simulation.render(output_path=...)` may write into | `~/.strands_robots/renders/` |
 | `STRANDS_ROBOTS_RENDER_ALLOW_ABS` | Set `1` to allow `render(output_path=...)` to write absolute paths outside the render sandbox | unset |
 | `STRANDS_ROBOTS_RENDER_MAX_BYTES` | Max PNG size `render(output_path=...)` will persist | `52428800` (50 MB) |

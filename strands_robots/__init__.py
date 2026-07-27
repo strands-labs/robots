@@ -63,6 +63,7 @@ if TYPE_CHECKING:
     from strands_robots.teleoperator import Teleoperator
     from strands_robots.tools.download_assets import download_assets
     from strands_robots.tools.gr00t_inference import gr00t_inference
+    from strands_robots.tools.harness_memory import harness_memory
     from strands_robots.tools.lerobot_calibrate import lerobot_calibrate
     from strands_robots.tools.lerobot_camera import lerobot_camera
     from strands_robots.tools.lerobot_teleoperate import lerobot_teleoperate
@@ -120,6 +121,7 @@ _LAZY_IMPORTS: dict[str, tuple[str, str]] = {
     # Tools
     "download_assets": ("strands_robots.tools.download_assets", "download_assets"),
     "gr00t_inference": ("strands_robots.tools.gr00t_inference", "gr00t_inference"),
+    "harness_memory": ("strands_robots.tools.harness_memory", "harness_memory"),
     "lerobot_calibrate": ("strands_robots.tools.lerobot_calibrate", "lerobot_calibrate"),
     "lerobot_camera": ("strands_robots.tools.lerobot_camera", "lerobot_camera"),
     "lerobot_teleoperate": ("strands_robots.tools.lerobot_teleoperate", "lerobot_teleoperate"),
@@ -176,6 +178,7 @@ __all__ = [
     "register_backend",
     "download_assets",
     "gr00t_inference",
+    "harness_memory",
     "lerobot_camera",
     "lerobot_teleoperate",
     "lerobot_train",
