@@ -193,3 +193,72 @@ def test_rebot_b601_family_is_drivable_real(registry: dict) -> None:
         assert resolve_name(canonical) == canonical
         assert resolve_name(lerobot_type) == canonical
         assert get_hardware_type(canonical) == lerobot_type
+
+
+# Valid values for gripper.closed / gripper.open: which ctrlrange END the
+# state maps to. Kept in sync with
+# strands_robots/simulation/mujoco/motion_primitives.py::_CTRLRANGE_ENDS.
+_GRIPPER_ENDS = {"low", "high"}
+
+
+def test_gripper_metadata_shape(registry: dict) -> None:
+    """Optional ``gripper`` blocks are shape-checked when present (GH #1658).
+
+    The motion primitives treat this metadata as AUTHORITATIVE over the
+    gripper name heuristic, so a malformed block would either brick
+    ``set_gripper``/``move_to`` for that robot or silently misclassify an
+    arm DOF as a gripper. Shape contract::
+
+        "gripper": {
+            "actuators": ["<actuator short name>", ...],   # non-empty
+            "closed": "low" | "high",                       # ctrlrange end
+            "open":   "low" | "high"                        # must differ
+        }
+
+    Actuator names are the namespace-stripped names in the robot's SHIPPED
+    sim MJCF (``asset.model_xml``), matched case-insensitively at runtime.
+    """
+    problems: list[str] = []
+    for name, info in registry.items():
+        gripper = info.get("gripper")
+        if gripper is None:
+            continue
+        if not isinstance(gripper, dict):
+            problems.append(f"{name}.gripper must be a dict, got {type(gripper).__name__}")
+            continue
+        unknown = set(gripper) - {"actuators", "closed", "open"}
+        if unknown:
+            problems.append(f"{name}.gripper has unknown keys: {sorted(unknown)}")
+        actuators = gripper.get("actuators")
+        if not (isinstance(actuators, list) and actuators and all(isinstance(a, str) and a.strip() for a in actuators)):
+            problems.append(f"{name}.gripper.actuators must be a non-empty list of non-empty strings: {actuators!r}")
+        closed = gripper.get("closed", "low")
+        opened = gripper.get("open", "high")
+        if closed not in _GRIPPER_ENDS:
+            problems.append(f"{name}.gripper.closed must be one of {sorted(_GRIPPER_ENDS)}: {closed!r}")
+        if opened not in _GRIPPER_ENDS:
+            problems.append(f"{name}.gripper.open must be one of {sorted(_GRIPPER_ENDS)}: {opened!r}")
+        if closed in _GRIPPER_ENDS and opened in _GRIPPER_ENDS and closed == opened:
+            problems.append(f"{name}.gripper: 'closed' and 'open' must map to different ctrlrange ends")
+    assert not problems, "Malformed gripper metadata:\n  " + "\n  ".join(problems)
+
+
+def test_shipped_gripper_metadata_entries(registry: dict) -> None:
+    """Pin the gripper metadata for the robots we ship policy configs for.
+
+    The actuator names were verified against each robot's shipped sim model
+    (``asset.model_xml``); losing an entry silently demotes that robot to the
+    name heuristic, which FAILS for so101 (actuators named ``1``..``6``) and
+    panda (tendon-driven ``actuator8``) - their grippers would become
+    undrivable through ``set_gripper``.
+    """
+    expected = {
+        "so100": ["Jaw"],  # trs_so_arm100/so_arm100.xml
+        "so101": ["6"],  # robotstudio so101_new_calib.xml (actuators named 1..6)
+        "panda": ["actuator8"],  # franka_emika_panda/panda.xml (tendon 'split', 0=closed 255=open)
+    }
+    for name, actuators in expected.items():
+        gripper = registry[name].get("gripper")
+        assert gripper is not None, f"{name} lost its registry gripper metadata"
+        assert gripper["actuators"] == actuators, f"{name}.gripper.actuators changed: {gripper['actuators']}"
+        assert gripper["closed"] == "low" and gripper["open"] == "high", name

@@ -91,6 +91,17 @@ ARM_XML = """
 REACHABLE = [0.2, 0.1, 0.2]
 UNREACHABLE = [1.5, 0.0, 0.2]  # inside the sanity box, outside the workspace
 
+# The GH #1658 regression arm: same kinematics as ARM_XML, but the BASE pan
+# actuator is named ``finger_camera_pan`` (contains the "finger" hint - the
+# name heuristic misclassifies it as a gripper drive) and the real gripper
+# matches the shipped so100 registry entry (actuator ``Jaw``). REACHABLE has a
+# nonzero y component, so the EE target is only reachable when the pan DOF is
+# available to the IK solve: with the heuristic in charge, move_to holds the
+# pan at 0 and the target is unreachable.
+HINT_COLLIDER_XML = ARM_XML.replace('"prim_arm"', '"hint_collider_arm"').replace("shoulder_pan", "finger_camera_pan")
+assert HINT_COLLIDER_XML.count("finger_camera_pan") == 3  # joint def + actuator name/joint refs
+HINT_COLLIDER_XML = HINT_COLLIDER_XML.replace('"jaw"', '"Jaw"')  # joint + actuator refs; so100's metadata name
+
 
 @pytest.fixture
 def arm_path(tmp_path):
@@ -450,6 +461,125 @@ class TestRotateWrist:
         result = _dispatch(sim, "rotate_wrist", robot_name="arm")
         assert result["status"] == "error"
         assert "target_yaw" in result["content"][0]["text"]
+
+
+class TestGripperRegistryMetadata:
+    """Registry gripper metadata beats the name heuristic (GH #1658).
+
+    The heuristic's inverse failure mode is silent: an ARM actuator whose
+    name happens to contain a hint (here ``finger_camera_pan``, the base pan
+    joint) would be classified as a gripper - ``set_gripper`` would command
+    it and ``move_to`` would exclude it from IK and hold it, quietly
+    reducing the arm's usable DOF. Registry metadata for the robot's
+    ``data_config`` is authoritative: only the named actuators are gripper
+    drives. These tests use the REAL shipped ``so100`` registry entry
+    (``actuators: ["Jaw"]``) against an inline arm - no asset downloads.
+    """
+
+    @pytest.fixture
+    def collider_sim(self, tmp_path):
+        path = tmp_path / "hint_collider_arm.xml"
+        path.write_text(HINT_COLLIDER_XML)
+        s = Simulation(tool_name="test_gripper_metadata", mesh=False)
+        assert s.create_world(gravity=[0, 0, 0])["status"] == "success"
+        assert s.add_robot("arm", urdf_path=str(path), data_config="so100")["status"] == "success"
+        yield s
+        s.cleanup(policy_stop_timeout=2.0)
+
+    def test_set_gripper_commands_only_metadata_actuators(self, collider_sim):
+        """Regression (the issue's acceptance test): with metadata present,
+        set_gripper commands ONLY the named actuator - the hint-colliding
+        arm actuator is not driven. Pre-#1658 the heuristic classified
+        ``finger_camera_pan`` as a gripper drive and slewed the whole base."""
+        result = _dispatch(collider_sim, "set_gripper", robot_name="arm", state="close", steps=20)
+        assert result["status"] == "success", result
+        payload = _json_block(result)
+        assert payload["actuators"] == ["Jaw"], payload
+        assert "finger_camera_pan" not in payload["targets"]
+
+    def test_move_to_keeps_hint_colliding_arm_dof_in_ik(self, collider_sim):
+        """The off-axis target NEEDS the base pan DOF. Pre-#1658 the heuristic
+        excluded ``finger_camera_pan`` from the IK solve and held it, so the
+        target was unreachable; metadata keeps the DOF usable while the real
+        gripper stays held (grasp preservation intact)."""
+        pytest.importorskip("mink")
+        r = _dispatch(collider_sim, "set_gripper", robot_name="arm", state="close", steps=30)
+        assert r["status"] == "success", r
+        jaw_before = _json_block(r)["gripper_joint_positions"]["Jaw"]
+
+        result = _dispatch(collider_sim, "move_to", robot_name="arm", position=REACHABLE, tol=0.03, max_steps=400)
+        assert result["status"] == "success", result
+        assert _json_block(result)["reached"] is True
+
+        state = _json_block(collider_sim.get_robot_state("arm"))["state"]
+        jaw_after = float(state["Jaw"]["position"])
+        assert abs(jaw_after - jaw_before) < 0.05, f"move_to moved the gripper: {jaw_before:.3f} -> {jaw_after:.3f}"
+        assert abs(float(state["finger_camera_pan"]["position"])) > 0.05, (
+            "the hint-colliding base pan joint never moved - it was excluded from IK"
+        )
+
+    def test_alias_data_config_resolves_metadata(self, tmp_path):
+        """data_config aliases (e.g. multi-cam configs) resolve to the canonical
+        registry entry - so100_dualcam must not silently lose the metadata."""
+        path = tmp_path / "hint_collider_arm.xml"
+        path.write_text(HINT_COLLIDER_XML)
+        s = Simulation(tool_name="test_gripper_metadata_alias", mesh=False)
+        try:
+            assert s.create_world(gravity=[0, 0, 0])["status"] == "success"
+            assert s.add_robot("arm", urdf_path=str(path), data_config="so100_dualcam")["status"] == "success"
+            result = _dispatch(s, "set_gripper", robot_name="arm", state="open", steps=5)
+            assert result["status"] == "success", result
+            assert _json_block(result)["actuators"] == ["Jaw"]
+        finally:
+            s.cleanup(policy_stop_timeout=2.0)
+
+    def test_set_gripper_honors_inverted_open_close_convention(self, collider_sim, monkeypatch):
+        """The metadata ``closed``/``open`` fields override the open=HIGH /
+        close=LOW convention (the SO-101-style sign trap): closed=high means
+        'close' targets the HIGH ctrlrange end."""
+        monkeypatch.setattr(
+            "strands_robots.simulation.mujoco.motion_primitives.get_robot",
+            lambda name: {"gripper": {"actuators": ["Jaw"], "closed": "high", "open": "low"}},
+        )
+        result = _dispatch(collider_sim, "set_gripper", robot_name="arm", state="close", steps=5)
+        assert result["status"] == "success", result
+        assert _json_block(result)["targets"]["Jaw"] == pytest.approx(1.5)  # HIGH end
+        result = _dispatch(collider_sim, "set_gripper", robot_name="arm", state="open", steps=5)
+        assert result["status"] == "success", result
+        assert _json_block(result)["targets"]["Jaw"] == pytest.approx(-0.2)  # LOW end
+
+    def test_stale_metadata_is_a_loud_error_not_a_heuristic_fallback(self, collider_sim, monkeypatch):
+        """Metadata naming actuators absent from the model errors with the
+        model's actual actuator list - silently degrading to the heuristic
+        would reintroduce the misclassification the metadata prevents."""
+        monkeypatch.setattr(
+            "strands_robots.simulation.mujoco.motion_primitives.get_robot",
+            lambda name: {"gripper": {"actuators": ["no_such_actuator"], "closed": "low", "open": "high"}},
+        )
+        for action, fields in (
+            ("set_gripper", {"state": "close"}),
+            ("move_to", {"position": REACHABLE}),
+        ):
+            result = _dispatch(collider_sim, action, robot_name="arm", **fields)
+            assert result["status"] == "error", (action, result)
+            text = result["content"][0]["text"]
+            assert "no_such_actuator" in text and "Jaw" in text, (action, text)
+
+    def test_malformed_metadata_is_a_loud_error(self, collider_sim, monkeypatch):
+        monkeypatch.setattr(
+            "strands_robots.simulation.mujoco.motion_primitives.get_robot",
+            lambda name: {"gripper": {"actuators": [], "closed": "low", "open": "high"}},
+        )
+        result = _dispatch(collider_sim, "set_gripper", robot_name="arm", state="close")
+        assert result["status"] == "error", result
+        assert "malformed" in result["content"][0]["text"]
+
+    def test_no_data_config_still_uses_heuristic(self, sim):
+        """Zero-config fallback pinned: a robot without a data_config resolves
+        the jaw by name hints exactly as before this feature."""
+        result = _dispatch(sim, "set_gripper", robot_name="arm", state="close", steps=5)
+        assert result["status"] == "success", result
+        assert _json_block(result)["actuators"] == ["jaw"]
 
 
 class TestRecordingInterplay:

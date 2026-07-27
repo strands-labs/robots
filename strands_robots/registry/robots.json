@@ -182,6 +182,13 @@
         "scene_xml": "scene.xml",
         "robot_descriptions_module": "panda_mj_description"
       },
+      "gripper": {
+        "actuators": [
+          "actuator8"
+        ],
+        "closed": "low",
+        "open": "high"
+      },
       "legacy_urdf": "panda/panda.urdf",
       "aliases": [
         "bimanual_panda_gripper",
@@ -235,6 +242,13 @@
       "hardware": {
         "lerobot_type": "so100_follower"
       },
+      "gripper": {
+        "actuators": [
+          "Jaw"
+        ],
+        "closed": "low",
+        "open": "high"
+      },
       "legacy_urdf": "so100/so100.urdf",
       "aliases": [
         "so100_4cam",
@@ -256,6 +270,13 @@
       },
       "hardware": {
         "lerobot_type": "so101_follower"
+      },
+      "gripper": {
+        "actuators": [
+          "6"
+        ],
+        "closed": "low",
+        "open": "high"
       },
       "aliases": [
         "robotstudio_so101",

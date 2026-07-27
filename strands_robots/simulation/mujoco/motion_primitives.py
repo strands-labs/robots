@@ -54,18 +54,26 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
+from strands_robots.registry.robots import get_robot
 from strands_robots.simulation.mujoco.backend import _NO_WORLD_MSG
 
 logger = logging.getLogger(__name__)
 
 # Name hints (lowercased substring match on the namespace-stripped actuator /
-# joint name) used to resolve the gripper DOF. Matches the existing runtime
-# precedent (vera provider / cosmos3 policy use gripper|finger; SO-100/SO-101's
-# gripper joint is the "Jaw"). The registry carries no gripper metadata, so a
-# name heuristic is the only zero-config option; an unresolvable gripper
-# returns a structured error listing the actuators so the agent can fall back
-# to send_action.
+# joint name) used to resolve the gripper DOF when the robot registry carries
+# no gripper metadata for the robot's ``data_config``. Matches the existing
+# runtime precedent (vera provider / cosmos3 policy use gripper|finger;
+# SO-100's gripper joint is the "Jaw"). Registry metadata
+# (``robots.json`` -> ``<robot>.gripper``, GH #1658) is authoritative when
+# present; the heuristic is the zero-config fallback for user URDFs / injected
+# MJCF, and an unresolvable gripper returns a structured error listing the
+# actuators so the agent can fall back to send_action.
 _GRIPPER_HINTS = ("gripper", "finger", "jaw")
+
+# Valid values for the registry gripper metadata ``closed`` / ``open`` fields:
+# which ctrlrange END the state maps to. The registry integrity tests
+# shape-check the shipped robots.json against the same two values.
+_CTRLRANGE_ENDS = ("low", "high")
 
 # Wrist-yaw joint hints, most-specific first. Fallback: the last non-gripper
 # hinge joint in the robot's chain (the distal roll joint on most serial arms).
@@ -225,23 +233,108 @@ class MotionPrimitivesMixin:
             return name[len(namespace) :]
         return name or ""
 
-    def _gripper_actuator_ids(self, model: Any, robot: Any) -> set[int]:
-        """Actuator ids on *robot* classified as gripper drives by the name heuristic.
+    def _registry_gripper_metadata(self, robot: Any) -> tuple[dict[str, Any] | None, str | None]:
+        """Registry ``gripper`` block for *robot*'s ``data_config``, shape-checked.
+
+        Returns ``(metadata, None)`` when the robot's ``data_config`` resolves
+        to a registry entry with a well-formed ``gripper`` block,
+        ``(None, None)`` when there is no metadata (heuristic fallback
+        applies), and ``(None, reason)`` when a block exists but is malformed
+        (possible via the user-local registry overlay; the shipped
+        ``robots.json`` is shape-checked by tests). A malformed block is a
+        loud error, never a silent heuristic fallback - half-applying it
+        could reintroduce the silent-DOF bug this metadata exists to fix.
+        """
+        data_config = getattr(robot, "data_config", None)
+        if not data_config:
+            return None, None
+        info = get_robot(data_config)
+        if not info or "gripper" not in info:
+            return None, None
+        meta = info["gripper"]
+        actuators = meta.get("actuators") if isinstance(meta, dict) else None
+        closed_end = meta.get("closed", "low") if isinstance(meta, dict) else None
+        open_end = meta.get("open", "high") if isinstance(meta, dict) else None
+        if (
+            isinstance(actuators, list)
+            and actuators
+            and all(isinstance(a, str) and a for a in actuators)
+            and closed_end in _CTRLRANGE_ENDS
+            and open_end in _CTRLRANGE_ENDS
+            and closed_end != open_end
+        ):
+            return meta, None
+        return None, (
+            f"registry gripper metadata for data_config '{data_config}' is malformed: {meta!r}. "
+            "Expected {'actuators': [non-empty names], 'closed': 'low'|'high', "
+            "'open': 'low'|'high'} with 'closed' != 'open'. Fix the registry entry "
+            "(user overlay: user_robots.json), or drive the gripper directly with "
+            "action='send_action'."
+        )
+
+    def _resolve_gripper_actuators(
+        self, model: Any, robot: Any
+    ) -> tuple[set[int], dict[str, Any] | None, dict[str, Any] | None]:
+        """Resolve *robot*'s gripper actuator ids (registry first, heuristic fallback).
 
         The shared classification behind ``set_gripper`` (which commands these
         actuators) and ``move_to`` (which must NOT command them - the gripper
         DOF is kinematically irrelevant to the EE task, so an IK solve would
         pass whatever seed value it was given straight through, and a random
         restart seed would then servo the jaw to a random point of its range,
-        dropping a held object mid-transport). An actuator qualifies when its
-        short name, or its driven joint's short name, contains one of
-        :data:`_GRIPPER_HINTS`. Callers must hold ``self._lock``.
+        dropping a held object mid-transport). Resolution order (GH #1658):
+
+        1. Registry ``gripper`` metadata for the robot's ``data_config``,
+           when present (authoritative): an actuator qualifies when its
+           namespace-stripped name matches one of ``gripper.actuators``
+           exactly (case-insensitive). Metadata that matches NO actuator in
+           the model is a loud structured error, never a silent heuristic
+           fallback - a stale registry entry degrading to the heuristic
+           would reintroduce exactly the misclassification the metadata
+           exists to prevent.
+        2. Name heuristic (zero-config fallback for user URDFs / injected
+           MJCF): the actuator's short name, or its driven joint's short
+           name, contains one of :data:`_GRIPPER_HINTS`.
+
+        Returns ``(actuator_ids, metadata, error)``: ``metadata`` is the
+        registry block when path 1 resolved (``None`` on the heuristic path);
+        ``error`` is a structured error dict when metadata exists but is
+        unusable (malformed, or matching nothing). Callers must hold
+        ``self._lock``.
         """
         mj = self._mj
         namespace = robot.namespace or ""
         jnt_by_act = {act_id: jnt_id for jnt_id, act_id in self._joint_actuator_map(model, robot).items()}
+        act_ids = [int(a) for a in (robot.actuator_ids or [])]
+
+        meta, malformed_reason = self._registry_gripper_metadata(robot)
+        if malformed_reason is not None:
+            return set(), None, _err(f"Cannot resolve the gripper for '{robot.name}': {malformed_reason}")
+        if meta is not None:
+            wanted = {str(a).lower() for a in meta["actuators"]}
+            matched: set[int] = set()
+            short_names: list[str] = []
+            for act_id in act_ids:
+                short = self._short_name(mj.mj_id2name(model, mj.mjtObj.mjOBJ_ACTUATOR, act_id), namespace)
+                short_names.append(short)
+                if short.lower() in wanted:
+                    matched.add(act_id)
+            if not matched:
+                return (
+                    set(),
+                    None,
+                    _err(
+                        f"Registry gripper metadata for '{robot.name}' (data_config "
+                        f"'{robot.data_config}') names actuators {meta['actuators']} but none "
+                        f"exist in the model. Model actuators: {short_names}. The registry "
+                        "entry is stale for this model; fix it, or drive the gripper "
+                        "directly with action='send_action'."
+                    ),
+                )
+            return matched, meta, None
+
         out: set[int] = set()
-        for act_id in (int(a) for a in (robot.actuator_ids or [])):
+        for act_id in act_ids:
             act_name = self._short_name(mj.mj_id2name(model, mj.mjtObj.mjOBJ_ACTUATOR, act_id), namespace).lower()
             jnt_id = jnt_by_act.get(act_id)
             jnt_name = ""
@@ -249,7 +342,7 @@ class MotionPrimitivesMixin:
                 jnt_name = self._short_name(mj.mj_id2name(model, mj.mjtObj.mjOBJ_JOINT, jnt_id), namespace).lower()
             if any(h in act_name or (jnt_name and h in jnt_name) for h in _GRIPPER_HINTS):
                 out.add(act_id)
-        return out
+        return out, None, None
 
     def _frame_world_pose(
         self, model: Any, data: Any, frame_name: str, frame_type: str
@@ -294,7 +387,8 @@ class MotionPrimitivesMixin:
         eef-delta policies use, so multi-robot scenes resolve the right arm.
 
         GRASP PRESERVATION (contract): gripper actuators (resolved by the same
-        name heuristic ``set_gripper`` uses) are excluded from the IK solve
+        registry-metadata-first classification ``set_gripper`` uses, see
+        :meth:`_resolve_gripper_actuators`) are excluded from the IK solve
         and its restart seeding, and are HELD at their live position for the
         whole servo descent - a closed gripper stays closed through staging
         and transport, so ``set_gripper("close") -> move_to(...)`` carries the
@@ -393,13 +487,16 @@ class MotionPrimitivesMixin:
             # its live position (not omitted: _primitive_tick writes
             # data.ctrl every tick, and an unwritten channel would let a
             # stale ctrl from another path drive it).
-            grip_acts = self._gripper_actuator_ids(model, robot)
+            grip_acts, _, grip_err = self._resolve_gripper_actuators(model, robot)
+            if grip_err is not None:
+                return grip_err
             arm_jact = {j: a for j, a in jact.items() if a not in grip_acts}
             if not arm_jact:
                 return _err(
                     f"move_to: robot '{robot_name}' has no non-gripper joint-transmission "
-                    "actuators to drive - every actuated joint matches the gripper name "
-                    f"heuristic {list(_GRIPPER_HINTS)}. Nothing can move the end-effector."
+                    "actuators to drive - every actuated joint is classified as a gripper "
+                    f"drive (registry metadata or the name heuristic {list(_GRIPPER_HINTS)}). "
+                    "Nothing can move the end-effector."
                 )
 
             try:
@@ -565,15 +662,17 @@ class MotionPrimitivesMixin:
     ) -> dict[str, Any]:
         """Drive the gripper to an open/close set-point (atomic primitive).
 
-        Resolves the gripper actuator(s) by name heuristic (actuator or driven
-        joint short-name containing ``gripper`` / ``finger`` / ``jaw`` - the
-        registry carries no gripper metadata) and commands the actuator
-        ctrlrange end-point: ``"open"`` drives to the HIGH end, ``"close"`` to
-        the LOW end. That is the convention for SO-100/SO-101 (the jaw closes
-        toward the low/negative end of its range - the sign trap documented in
-        the so101_curobo example) and for the Franka split gripper (0=closed,
-        255=open). Motion is NOT recorded into an active dataset recording
-        session (see module docstring).
+        Resolves the gripper actuator(s) via :meth:`_resolve_gripper_actuators`
+        (registry ``gripper`` metadata for the robot's ``data_config`` when
+        present, else the ``gripper`` / ``finger`` / ``jaw`` name heuristic)
+        and commands the actuator ctrlrange end-point. With no metadata,
+        ``"open"`` drives to the HIGH end and ``"close"`` to the LOW end -
+        the convention for SO-100/SO-101 (the jaw closes toward the
+        low/negative end of its range - the sign trap documented in the
+        so101_curobo example) and for the Franka split gripper (0=closed,
+        255=open). Registry metadata's ``closed``/``open`` fields override
+        that convention per robot. Motion is NOT recorded into an active
+        dataset recording session (see module docstring).
 
         Args:
             robot_name: Robot whose gripper to drive; defaults to the single
@@ -611,17 +710,32 @@ class MotionPrimitivesMixin:
             jnt_by_act = {act_id: jnt_id for jnt_id, act_id in jact.items()}
             act_ids = [int(a) for a in (robot.actuator_ids or [])]
             # Shared arm/gripper classification (also the exclusion set that
-            # keeps move_to's IK from commanding the jaw).
-            gripper_acts = sorted(self._gripper_actuator_ids(model, robot))
+            # keeps move_to's IK from commanding the jaw): registry metadata
+            # first, name heuristic as the zero-config fallback.
+            grip_set, grip_meta, grip_err = self._resolve_gripper_actuators(model, robot)
+            if grip_err is not None:
+                return grip_err
+            gripper_acts = sorted(grip_set)
             if not gripper_acts:
                 names = [
                     self._short_name(mj.mj_id2name(model, mj.mjtObj.mjOBJ_ACTUATOR, a), namespace) for a in act_ids
                 ]
                 return _err(
-                    f"set_gripper: could not resolve a gripper actuator for '{robot_name}' - no "
-                    f"actuator/joint name contains {list(_GRIPPER_HINTS)}. Actuators: {names}. "
+                    f"set_gripper: could not resolve a gripper actuator for '{robot_name}' - the "
+                    f"registry carries no gripper metadata for this robot and no actuator/joint "
+                    f"name contains {list(_GRIPPER_HINTS)}. Actuators: {names}. "
                     "Drive it directly with action='send_action' instead."
                 )
+
+            # Which ctrlrange END each state maps to: the registry metadata's
+            # `closed`/`open` fields when present, else the open=HIGH /
+            # close=LOW convention (correct for SO-100/SO-101 and Franka, but
+            # a convention, not a law - the metadata field exists to remove
+            # that sign trap for robots with an inverted gripper).
+            if grip_meta is not None:
+                end = grip_meta.get("open", "high") if state == "open" else grip_meta.get("closed", "low")
+            else:
+                end = "high" if state == "open" else "low"
 
             targets: dict[int, float] = {}
             for act_id in gripper_acts:
@@ -634,7 +748,7 @@ class MotionPrimitivesMixin:
                         f"({lo}, {hi}); cannot infer open/close set-points. Drive it directly "
                         "with action='send_action'."
                     )
-                targets[act_id] = hi if state == "open" else lo
+                targets[act_id] = hi if end == "high" else lo
 
         for _ in range(steps):
             with self._lock:

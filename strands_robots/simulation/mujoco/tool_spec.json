@@ -300,7 +300,7 @@
     "state": {
       "type": "string",
       "enum": ["open", "close"],
-      "description": "set_gripper set-point: 'open' drives the gripper actuator(s) to the HIGH end of ctrlrange, 'close' to the LOW end (SO-100/SO-101 jaw closes toward the low end)"
+      "description": "set_gripper set-point: 'open'/'close' drive the gripper actuator(s) to the ctrlrange end declared in the robot registry's gripper metadata when present, else the default convention: 'open' = HIGH end, 'close' = LOW end (SO-100/SO-101 jaw closes toward the low end)"
     },
     "steps": {
       "type": "integer",

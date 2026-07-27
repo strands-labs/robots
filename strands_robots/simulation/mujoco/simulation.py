@@ -1774,8 +1774,9 @@ class MuJoCoSimEngine(
         )
         base["methods"]["set_gripper"] = (
             "(robot_name=None, state='open'|'close', steps=12) -> dict  # "
-            "drive the gripper actuator(s) to the open (ctrlrange HIGH) or "
-            "close (ctrlrange LOW) set-point"
+            "drive the gripper actuator(s) to the open/close set-point "
+            "(registry gripper metadata when present, else open=ctrlrange "
+            "HIGH / close=LOW)"
         )
         base["methods"]["rotate_wrist"] = (
             "(robot_name=None, target_yaw, tol=0.02, max_steps=200) -> dict  "
