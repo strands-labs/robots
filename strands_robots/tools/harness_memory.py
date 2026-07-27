@@ -108,7 +108,7 @@ def get_valid_actions() -> frozenset[str]:
     global _valid_actions_cache
     if _valid_actions_cache is None:
         spec_path = _sim_tool_spec_path()
-        with open(spec_path) as f:
+        with open(spec_path, encoding="utf-8") as f:
             spec = json.load(f)
         try:
             sim_actions = spec["properties"]["action"]["enum"]
@@ -260,8 +260,10 @@ class HarnessMemory:
 
     All file names derived from agent input go through
     :func:`_validate_task_name` + :func:`strands_robots.utils.safe_join`.
-    Not safe for concurrent writers to the same task; the intended use is
-    one agent session per store.
+    Store content is re-validated on load: the memory directory is long-lived
+    and user-editable, so it is not a trust boundary. Not safe for concurrent
+    writers to the same store; the intended use is one agent session per
+    store. All files are read and written as UTF-8 regardless of locale.
     """
 
     def __init__(self, storage_dir: Path | None = None):
@@ -271,6 +273,10 @@ class HarnessMemory:
         self.storage_dir = storage_dir
         self.tasks_dir = storage_dir / "tasks"
         self.global_dir = storage_dir / "global"
+
+    def _ensure_dirs(self) -> None:
+        """Create the store layout. Called by write paths only, so read-only
+        actions on a fresh box do not create directories as a side effect."""
         self.tasks_dir.mkdir(parents=True, exist_ok=True)
         self.global_dir.mkdir(parents=True, exist_ok=True)
 
@@ -289,7 +295,15 @@ class HarnessMemory:
         backend: str | None = None,
         robot: str | None = None,
     ) -> dict[str, Any]:
-        """Write (or replace) a task's trace + summary. Returns the provenance block."""
+        """Write (or replace) a task's trace + summary. Returns the provenance block.
+
+        The write is atomic per store: both payloads are fully written to
+        temp files first, then moved into place with :func:`os.replace`, so a
+        failed save never leaves a torn trace/summary pair or an orphaned
+        trace (a summary-less trace would be listed by ``list_tasks`` but
+        never loadable by ``load_trace``).
+        """
+        self._ensure_dirs()
         provenance = {
             "saved_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
             "strands_robots_version": _version_string(),
@@ -301,18 +315,56 @@ class HarnessMemory:
         trace_path = self._trace_path(task)
         summary_path = self._summary_path(task)
         trace_lines = "".join(json.dumps(entry, sort_keys=True) + "\n" for entry in trace)
-        trace_path.write_text(trace_lines)
-        summary_path.write_text(json.dumps(stored_summary, indent=2, sort_keys=True) + "\n")
+        summary_text = json.dumps(stored_summary, indent=2, sort_keys=True) + "\n"
+        # Two-phase commit: write both temp files completely, then rename both.
+        # An error while writing leaves the store untouched; the unavoidable
+        # residual window is the instant between the two os.replace calls.
+        trace_tmp = trace_path.with_suffix(trace_path.suffix + ".tmp")
+        summary_tmp = summary_path.with_suffix(summary_path.suffix + ".tmp")
+        try:
+            trace_tmp.write_text(trace_lines, encoding="utf-8")
+            summary_tmp.write_text(summary_text, encoding="utf-8")
+            os.replace(trace_tmp, trace_path)
+            os.replace(summary_tmp, summary_path)
+        except OSError:
+            trace_tmp.unlink(missing_ok=True)
+            summary_tmp.unlink(missing_ok=True)
+            raise
         return provenance
 
     def load_trace(self, task: str) -> tuple[list[dict[str, Any]], dict[str, Any]] | None:
-        """Return (trace, summary) for *task*, or None if not stored."""
+        """Return (trace, summary) for *task*, or None if not stored.
+
+        Store content is re-validated on every load (same checks as the save
+        path): the memory directory is a long-lived plain-text store that may
+        have been edited outside this tool, so nothing is handed to the
+        planner without passing the trace/summary validators again.
+
+        Raises:
+            ValueError: If the stored trace or summary is corrupt or fails
+                re-validation.
+        """
         trace_path = self._trace_path(task)
         summary_path = self._summary_path(task)
         if not trace_path.exists() or not summary_path.exists():
             return None
-        trace = [json.loads(line) for line in trace_path.read_text().splitlines() if line.strip()]
-        summary = json.loads(summary_path.read_text())
+        try:
+            trace = [json.loads(line) for line in trace_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError) as e:
+            raise ValueError(
+                f"stored memory for task {task!r} is corrupt ({e}); delete it with delete_trace and re-save"
+            ) from e
+        # Re-validate before anything reaches planner context: the store is
+        # not a trust boundary (hand-edited or truncated files must not be
+        # echoed back as a "success" payload).
+        try:
+            _validate_trace(trace)
+            _validate_summary(summary)
+        except ValueError as e:
+            raise ValueError(
+                f"stored memory for task {task!r} failed re-validation ({e}); delete it with delete_trace and re-save"
+            ) from e
         return trace, summary
 
     def delete_trace(self, task: str) -> bool:
@@ -325,16 +377,31 @@ class HarnessMemory:
         return removed
 
     def list_tasks(self) -> list[str]:
-        """Sorted task keys that have a stored trace."""
-        return sorted(p.name[: -len(_TRACE_SUFFIX)] for p in self.tasks_dir.glob("*" + _TRACE_SUFFIX))
+        """Sorted task keys that are actually loadable.
+
+        A key is listed only when BOTH the trace and the summary file exist
+        (matching ``load_trace``'s requirement) and the stem passes the same
+        task-name validation as the write path - stray files planted in the
+        store never advertise keys the tool would refuse to load.
+        """
+        tasks = []
+        for p in self.tasks_dir.glob("*" + _TRACE_SUFFIX):
+            name = p.name[: -len(_TRACE_SUFFIX)]
+            if not _TASK_NAME_RE.match(name) or len(name) > _MAX_TASK_NAME_LEN:
+                continue
+            if not (self.tasks_dir / (name + _SUMMARY_SUFFIX)).exists():
+                continue
+            tasks.append(name)
+        return sorted(tasks)
 
     def append_rule(self, kind: str, text: str) -> int:
         """Append one rule line under *kind*; returns the new rule count."""
+        self._ensure_dirs()
         path = self.global_dir / _RULE_FILES[kind]
         existing = self._read_rules(path)
         if len(existing) >= _MAX_RULES_PER_KIND:
             raise ValueError(f"{kind} store full ({_MAX_RULES_PER_KIND} rules); delete or consolidate first")
-        with open(path, "a") as f:
+        with open(path, "a", encoding="utf-8") as f:
             f.write(text + "\n")
         return len(existing) + 1
 
@@ -346,7 +413,11 @@ class HarnessMemory:
     def _read_rules(path: Path) -> list[str]:
         if not path.exists():
             return []
-        return [line for line in path.read_text().splitlines() if line.strip()]
+        try:
+            content = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError as e:
+            raise ValueError(f"rule store at {path.name} is not valid UTF-8 ({e})") from e
+        return [line for line in content.splitlines() if line.strip()]
 
 
 @tool
@@ -388,12 +459,15 @@ def harness_memory(
 
     Storage: ``~/.strands_robots/memory/`` (override with
     ``STRANDS_MEMORY_DIR``). Plain JSONL / JSON / text files - auditable,
-    no embeddings; task keying is exact-name.
+    no embeddings; task keying is exact-name. The store assumes one agent
+    session per store (no concurrent-writer coordination), and everything
+    read back from disk is re-validated before it reaches the response.
 
     Args:
         action: Action to perform.
         task: Task key, matched exactly on later runs. Must match
-            ^[a-zA-Z0-9_-]+$ (max 128 chars).
+            ^[a-zA-Z0-9_-]+$ (max 128 chars; no dots, so use "task_v2"
+            rather than "task.v2").
         trace: Solution skeleton: list of primitive-invocation dicts, one per
             step, e.g. {"action": "run_policy", "instruction": "grasp the
             bowl"}. Spatial values are reference bindings, not replay targets.
