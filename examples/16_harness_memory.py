@@ -28,7 +28,7 @@ re-localizes the cube at its perturbed position, and finishes with
 from __future__ import annotations
 
 from strands_robots import MockPolicy, Robot
-from strands_robots.tools import harness_memory
+from strands_robots.tools.harness_memory import harness_memory
 
 TASK = "put_cube_in_zone"
 

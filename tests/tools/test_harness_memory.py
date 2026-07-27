@@ -16,6 +16,7 @@ Pins the issue's acceptance criteria (Harness VLA style memory):
 
 from __future__ import annotations
 
+import inspect
 import json
 import os
 import subprocess
@@ -24,7 +25,6 @@ from typing import Any
 
 import pytest
 
-import strands_robots.tools.harness_memory as hm_mod
 from strands_robots.tools.harness_memory import (
     REGROUNDING_CONTRACT,
     HarnessMemory,
@@ -223,7 +223,7 @@ def test_summary_must_be_object(memory_dir):
 
 
 def test_trace_entry_count_cap(memory_dir, monkeypatch):
-    monkeypatch.setattr(hm_mod, "_MAX_TRACE_ENTRIES", 2)
+    monkeypatch.setattr("strands_robots.tools.harness_memory._MAX_TRACE_ENTRIES", 2)
     result = _check(harness_memory(action="save_trace", task="t1", trace=VALID_TRACE, summary=VALID_SUMMARY))
     assert result["status"] == "error"
     assert "too long" in _texts(result)
@@ -354,7 +354,7 @@ def test_append_rule_size_cap(memory_dir):
 
 
 def test_rule_count_cap(memory_dir, monkeypatch):
-    monkeypatch.setattr(hm_mod, "_MAX_RULES_PER_KIND", 2)
+    monkeypatch.setattr("strands_robots.tools.harness_memory._MAX_RULES_PER_KIND", 2)
     assert harness_memory(action="append_rule", kind="success_rule", text="one")["status"] == "success"
     assert harness_memory(action="append_rule", kind="success_rule", text="two")["status"] == "success"
     result = _check(harness_memory(action="append_rule", kind="success_rule", text="three"))
@@ -408,7 +408,7 @@ def test_missing_required_params_error_not_raise(memory_dir):
 
 
 def test_module_source_is_ascii():
-    source = hm_mod.__file__
+    source = inspect.getfile(HarnessMemory)
     with open(source, encoding="utf-8") as f:
         content = f.read()
     assert content.isascii(), "harness_memory.py must contain only ASCII characters"
