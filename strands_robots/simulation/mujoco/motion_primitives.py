@@ -225,6 +225,32 @@ class MotionPrimitivesMixin:
             return name[len(namespace) :]
         return name or ""
 
+    def _gripper_actuator_ids(self, model: Any, robot: Any) -> set[int]:
+        """Actuator ids on *robot* classified as gripper drives by the name heuristic.
+
+        The shared classification behind ``set_gripper`` (which commands these
+        actuators) and ``move_to`` (which must NOT command them - the gripper
+        DOF is kinematically irrelevant to the EE task, so an IK solve would
+        pass whatever seed value it was given straight through, and a random
+        restart seed would then servo the jaw to a random point of its range,
+        dropping a held object mid-transport). An actuator qualifies when its
+        short name, or its driven joint's short name, contains one of
+        :data:`_GRIPPER_HINTS`. Callers must hold ``self._lock``.
+        """
+        mj = self._mj
+        namespace = robot.namespace or ""
+        jnt_by_act = {act_id: jnt_id for jnt_id, act_id in self._joint_actuator_map(model, robot).items()}
+        out: set[int] = set()
+        for act_id in (int(a) for a in (robot.actuator_ids or [])):
+            act_name = self._short_name(mj.mj_id2name(model, mj.mjtObj.mjOBJ_ACTUATOR, act_id), namespace).lower()
+            jnt_id = jnt_by_act.get(act_id)
+            jnt_name = ""
+            if jnt_id is not None:
+                jnt_name = self._short_name(mj.mj_id2name(model, mj.mjtObj.mjOBJ_JOINT, jnt_id), namespace).lower()
+            if any(h in act_name or (jnt_name and h in jnt_name) for h in _GRIPPER_HINTS):
+                out.add(act_id)
+        return out
+
     def _frame_world_pose(
         self, model: Any, data: Any, frame_name: str, frame_type: str
     ) -> tuple[np.ndarray, np.ndarray]:
@@ -266,6 +292,13 @@ class MotionPrimitivesMixin:
         (:func:`strands_robots.simulation.ik.discover_ee_frame`: TCP-like site,
         else hand/tool body, else the chain's leaf body) - the same heuristic
         eef-delta policies use, so multi-robot scenes resolve the right arm.
+
+        GRASP PRESERVATION (contract): gripper actuators (resolved by the same
+        name heuristic ``set_gripper`` uses) are excluded from the IK solve
+        and its restart seeding, and are HELD at their live position for the
+        whole servo descent - a closed gripper stays closed through staging
+        and transport, so ``set_gripper("close") -> move_to(...)`` carries the
+        held object rather than releasing it.
 
         NOT collision-aware: the straight servo descent can sweep through
         obstacles. Collision-aware transport is the curobo provider's job; this
@@ -351,6 +384,23 @@ class MotionPrimitivesMixin:
                     "drive. If it was loaded from a bare URDF, add position servos first: "
                     "action='actuate_robot'."
                 )
+            # Split arm vs gripper DOFs: the gripper is kinematically
+            # irrelevant to the EE task (mink passes its seed value straight
+            # through), so it must be excluded from IK seeding and from the
+            # solved command set - otherwise a restart seed would randomize
+            # the jaw and move_to would servo it there, dropping a held
+            # object mid-transport. The gripper channel is instead HELD at
+            # its live position (not omitted: _primitive_tick writes
+            # data.ctrl every tick, and an unwritten channel would let a
+            # stale ctrl from another path drive it).
+            grip_acts = self._gripper_actuator_ids(model, robot)
+            arm_jact = {j: a for j, a in jact.items() if a not in grip_acts}
+            if not arm_jact:
+                return _err(
+                    f"move_to: robot '{robot_name}' has no non-gripper joint-transmission "
+                    "actuators to drive - every actuated joint matches the gripper name "
+                    f"heuristic {list(_GRIPPER_HINTS)}. Nothing can move the end-effector."
+                )
 
             try:
                 from strands_robots.simulation.ik import MinkIKBridge
@@ -390,24 +440,36 @@ class MotionPrimitivesMixin:
             # Damped-least-squares IK is a local method: from a distant seed it
             # can stall in a joint-limit / elbow-branch local minimum even for a
             # reachable target. When the direct solve misses, retry from a few
-            # DETERMINISTIC restart seeds (the robot's own hinge/slide joints
-            # set uniformly within their ranges; everything else - other
-            # robots, object free joints - stays at the live state) and keep
-            # the best solution. Bounded and reproducible: same target, same
-            # answer.
+            # DETERMINISTIC restart seeds and keep the best solution: the first
+            # restart uses the model's home keyframe when one exists (for a
+            # from-home arm that is usually the branch that converges, and it
+            # is free), the rest set the robot's own ARM hinge/slide joints
+            # uniformly within their ranges. Gripper DOFs and everything else
+            # (other robots, object free joints) stay at the live state.
+            # Bounded and reproducible: same target, same answer.
             if ik_residual > float(tol):
+                # The RNG is deliberately reconstructed with a fixed seed PER
+                # CALL (not module-level): identical calls draw identical seed
+                # sequences, which is what makes move_to reproducible. Two
+                # calls to different targets sharing the sequence is fine -
+                # do not "fix" this into a shared RNG, that would make a
+                # call's outcome depend on call history.
                 rng = np.random.default_rng(0)
-                settable_qadr = [int(model.jnt_qposadr[jnt_id]) for jnt_id in jact]
+                settable_qadr = [int(model.jnt_qposadr[jnt_id]) for jnt_id in arm_jact]
                 ranges = [
                     (float(model.jnt_range[jnt_id][0]), float(model.jnt_range[jnt_id][1]))
                     if bool(model.jnt_limited[jnt_id])
                     else (-np.pi, np.pi)
-                    for jnt_id in jact
+                    for jnt_id in arm_jact
                 ]
-                for _ in range(_IK_RESTART_SEEDS):
+                for restart in range(_IK_RESTART_SEEDS):
                     q_seed = q0.copy()
-                    for qadr, (lo, hi) in zip(settable_qadr, ranges, strict=True):
-                        q_seed[qadr] = rng.uniform(lo, hi)
+                    if restart == 0 and int(model.nkey) > 0:
+                        for qadr in settable_qadr:
+                            q_seed[qadr] = float(model.key_qpos[0][qadr])
+                    else:
+                        for qadr, (lo, hi) in zip(settable_qadr, ranges, strict=True):
+                            q_seed[qadr] = rng.uniform(lo, hi)
                     q_try = bridge.solve(target_pose, q_seed)
                     residual_try = float(np.linalg.norm(bridge.ee_pose(q_try)[:3, 3] - target))
                     if residual_try < ik_residual:
@@ -429,7 +491,20 @@ class MotionPrimitivesMixin:
                     },
                 )
 
-            ctrl_targets = {act_id: float(q_star[int(model.jnt_qposadr[jnt_id])]) for jnt_id, act_id in jact.items()}
+            # Command ARM joints to the solve; HOLD gripper joints at their
+            # live position (see the arm/gripper split above - this is the
+            # grasp-preservation contract, and mirrors rotate_wrist's
+            # hold-everything-else behaviour).
+            ctrl_targets = {
+                act_id: float(q_star[int(model.jnt_qposadr[jnt_id])]) for jnt_id, act_id in arm_jact.items()
+            }
+            ctrl_targets.update(
+                {
+                    act_id: float(data.qpos[int(model.jnt_qposadr[jnt_id])])
+                    for jnt_id, act_id in jact.items()
+                    if act_id in grip_acts
+                }
+            )
 
         # ---- servo loop: self-locking per control tick ----
         steps_used = 0
@@ -534,16 +609,10 @@ class MotionPrimitivesMixin:
 
             jact = self._joint_actuator_map(model, robot)
             jnt_by_act = {act_id: jnt_id for jnt_id, act_id in jact.items()}
-            gripper_acts: list[int] = []
             act_ids = [int(a) for a in (robot.actuator_ids or [])]
-            for act_id in act_ids:
-                act_name = self._short_name(mj.mj_id2name(model, mj.mjtObj.mjOBJ_ACTUATOR, act_id), namespace).lower()
-                jnt_id = jnt_by_act.get(act_id)
-                jnt_name = ""
-                if jnt_id is not None:
-                    jnt_name = self._short_name(mj.mj_id2name(model, mj.mjtObj.mjOBJ_JOINT, jnt_id), namespace).lower()
-                if any(h in act_name or (jnt_name and h in jnt_name) for h in _GRIPPER_HINTS):
-                    gripper_acts.append(act_id)
+            # Shared arm/gripper classification (also the exclusion set that
+            # keeps move_to's IK from commanding the jaw).
+            gripper_acts = sorted(self._gripper_actuator_ids(model, robot))
             if not gripper_acts:
                 names = [
                     self._short_name(mj.mj_id2name(model, mj.mjtObj.mjOBJ_ACTUATOR, a), namespace) for a in act_ids

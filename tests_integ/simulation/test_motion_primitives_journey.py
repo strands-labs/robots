@@ -54,6 +54,15 @@ def _json_block(result: dict[str, Any]) -> dict[str, Any]:
     raise AssertionError(f"no json block in result: {result}")
 
 
+def _jaw_position(s: Any) -> float:
+    """Live position of the SO-100 jaw joint (grasp-preservation probe)."""
+    state = _json_block(s.get_robot_state("arm"))["state"]
+    for joint, entry in state.items():
+        if "jaw" in joint.lower():
+            return float(entry["position"])
+    raise AssertionError(f"no jaw joint in robot state: {list(state)}")
+
+
 def test_pick_sequence_via_dispatch_only(sim):
     """move_to above cube -> close -> move_to lift -> open, dispatch-only."""
     # The auto-discovered EE frame on SO-100 is the wrist body (no TCP site in
@@ -73,6 +82,7 @@ def test_pick_sequence_via_dispatch_only(sim):
     # 2) Close the gripper (SO-100 jaw closes toward the LOW end of ctrlrange).
     result = _dispatch(sim, "set_gripper", robot_name="arm", state="close", steps=30)
     assert result["status"] == "success", result
+    jaw_closed = _jaw_position(sim)
 
     # 3) Lift.
     result = _dispatch(sim, "move_to", robot_name="arm", position=lift, tol=tol, max_steps=400)
@@ -82,6 +92,14 @@ def test_pick_sequence_via_dispatch_only(sim):
     # Targets are 0.10 m apart in z and each end pose is within tol of its
     # target, so the realized z gain is at least 0.10 - 2*tol.
     assert lifted["ee_position"][2] - stage["ee_position"][2] > 0.10 - 2 * tol
+    # Grasp preservation on the real arm (review on #1654): transport must not
+    # command the jaw - a closed gripper stays closed through move_to. (The
+    # restart-path variant of this pin lives in the unit suite, where the
+    # synthetic arm makes the restart branch deterministic.)
+    jaw_after_lift = _jaw_position(sim)
+    assert abs(jaw_after_lift - jaw_closed) < 0.15, (
+        f"move_to moved the jaw during transport: {jaw_closed:.3f} -> {jaw_after_lift:.3f}"
+    )
 
     # 4) Release.
     result = _dispatch(sim, "set_gripper", robot_name="arm", state="open", steps=30)

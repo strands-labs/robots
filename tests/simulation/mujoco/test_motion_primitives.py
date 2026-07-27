@@ -344,6 +344,53 @@ class TestMoveTo:
         assert "mink" in result["content"][0]["text"]
 
 
+class TestGraspPreservation:
+    """``move_to`` must never command the gripper (review on #1654).
+
+    The gripper DOF is kinematically irrelevant to the EE task, so mink passes
+    its seed value straight through; the pre-fix restart loop randomized the
+    jaw over its full range and then servoed it there - the
+    stage -> close -> transport sequence silently dropped whatever it held.
+    These tests pin the fix: gripper actuators are excluded from the IK
+    seeding/command set and HELD at their live position.
+    """
+
+    def test_restart_path_move_to_preserves_closed_gripper(self, sim):
+        """A target the direct solve misses (restart branch engaged) must not
+        move a closed jaw. [-0.3, 0.0, 0.25] has a direct-solve residual of
+        ~0.65 m on this arm - the exact repro from the review."""
+        pytest.importorskip("mink")
+        r = _dispatch(sim, "set_gripper", robot_name="arm", state="close", steps=30)
+        assert r["status"] == "success", r
+        jaw_before = _jaw_pos(sim)
+        assert jaw_before < 0.0, f"jaw did not close: {jaw_before}"
+
+        r = _dispatch(sim, "move_to", robot_name="arm", position=[-0.3, 0.0, 0.25], tol=0.03, max_steps=400)
+        assert r["status"] == "success", r
+        assert _json_block(r)["reached"] is True
+
+        jaw_after = _jaw_pos(sim)
+        assert abs(jaw_after - jaw_before) < 0.05, (
+            f"move_to moved the gripper: jaw {jaw_before:.3f} -> {jaw_after:.3f} "
+            f"(ctrlrange [-0.2, 1.5]; the restart path must not command the jaw)"
+        )
+
+    def test_direct_path_move_to_preserves_open_gripper(self, sim):
+        """The direct-solve path must hold the jaw too (the gripper channel is
+        written every tick with the LIVE position, not left to stale ctrl)."""
+        pytest.importorskip("mink")
+        r = _dispatch(sim, "set_gripper", robot_name="arm", state="open", steps=40)
+        assert r["status"] == "success", r
+        jaw_before = _jaw_pos(sim)
+        assert jaw_before > 1.0, f"jaw did not open: {jaw_before}"
+
+        r = _dispatch(sim, "move_to", robot_name="arm", position=REACHABLE, tol=0.03, max_steps=400)
+        assert r["status"] == "success", r
+
+        jaw_after = _jaw_pos(sim)
+        assert abs(jaw_after - jaw_before) < 0.05, f"move_to moved the gripper: jaw {jaw_before:.3f} -> {jaw_after:.3f}"
+
+
 class TestSetGripper:
     """Open/close set-point semantics (LOW end = closed, HIGH end = open)."""
 
