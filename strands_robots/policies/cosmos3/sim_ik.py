@@ -29,11 +29,8 @@ from typing import TYPE_CHECKING, Any, ClassVar
 
 import numpy as np
 
-from strands_robots.simulation.ik import (
-    _PREFERRED_QP_SOLVERS,  # noqa: F401  (back-compat re-export)
-    resolve_qp_solver,
-)
 from strands_robots.simulation.ik import MinkIKBridge as _SharedMinkIKBridge
+from strands_robots.simulation.ik import resolve_qp_solver
 
 if TYPE_CHECKING:
     from .embodiments import Cosmos3Embodiment

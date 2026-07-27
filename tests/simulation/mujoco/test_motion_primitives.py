@@ -25,6 +25,7 @@ IK-dependent tests ``importorskip`` on ``mink`` (the dev env ships it; a clean
 base install skips them), everything else runs on bare ``mujoco``.
 """
 
+import concurrent.futures
 import sys
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -116,6 +117,21 @@ def _json_block(result: dict[str, Any]) -> dict[str, Any]:
         if isinstance(block, dict) and "json" in block:
             return block["json"]
     raise AssertionError(f"no json block in result: {result}")
+
+
+def _drain_policy_thread(s: Simulation, robot_name: str, timeout: float = 10.0) -> None:
+    """Wait for a stopped policy's worker thread to exit before touching the robot.
+
+    Uses :func:`concurrent.futures.wait` rather than ``fut.result()`` because a
+    policy stopped mid-run may legitimately have raised inside the worker; these
+    tests only require that the thread has finished (so the per-robot policy
+    guard clears), and a thread that fails to stop is a hard test failure.
+    """
+    fut = s._policy_threads.get(robot_name)
+    if fut is None:
+        return
+    done, _ = concurrent.futures.wait([fut], timeout=timeout)
+    assert fut in done, f"policy thread for {robot_name!r} did not stop within {timeout}s"
 
 
 def _joint_positions(s: Simulation) -> dict[str, float]:
@@ -270,22 +286,12 @@ class TestGuards:
                 assert "policy is running" in result["content"][0]["text"], (action, result)
         finally:
             sim.stop_policy("arm")
-            fut = sim._policy_threads.get("arm")
-            if fut is not None:
-                try:
-                    fut.result(timeout=10.0)
-                except Exception:
-                    pass
+            _drain_policy_thread(sim, "arm")
 
     def test_allowed_after_policy_stopped(self, sim):
         assert sim.start_policy("arm", policy_provider="mock", duration=10.0, fast_mode=True)["status"] == "success"
         sim.stop_policy("arm")
-        fut = sim._policy_threads.get("arm")
-        if fut is not None:
-            try:
-                fut.result(timeout=10.0)
-            except Exception:
-                pass
+        _drain_policy_thread(sim, "arm")
         result = _dispatch(sim, "set_gripper", robot_name="arm", state="open", steps=2)
         assert result["status"] == "success", result
 
