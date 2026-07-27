@@ -544,6 +544,13 @@ class SimEngine(ABC):
         differently-sized object while reporting success -- and the reported
         size echoes what was asked for, not what was built.
 
+        The same rule applies to ``color``: a backend either honors the
+        component count it was given or rejects it, and may complete only
+        components it documents a default for (MuJoCo completes an RGB triple
+        with an opaque alpha, and rejects every other count). Falling back to
+        the backend's default colour paints a surface the caller never asked
+        for under a success result.
+
         ``material`` (optional): backend-specific visual material/texture
         spec. ``None`` keeps the flat ``color`` rgba (unchanged); a backend
         that supports it (MuJoCo) attaches a real material so surfaces can be

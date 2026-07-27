@@ -5,6 +5,39 @@ All notable behavioural changes to `strands-robots` are logged here. Follows
 
 ## [Unreleased]
 
+### Fixed: `add_object` honors every `color` component or rejects the vector
+
+A MuJoCo geom stores its colour in a 4-component `rgba` row, so only an RGB
+triple (completed with the opaque alpha that row defaults to) or a full RGBA
+quadruple can be applied to it. `add_object` validated that `color` held finite
+numbers but never checked the count, so the parameter failed three different
+ways:
+
+```python
+sim.add_object("cube", shape="box", color=[])
+# -> success: compiled rgba [0.5, 0.5, 0.5, 1.0]  (the default grey, silently)
+sim.add_object("cube", shape="box", color=[1.0, 0.0, 0.0])
+# -> error: "Failed to inject 'cube': spec recompile refused."
+#    (MuJoCo's actionable "rgba should be a list/array of size 4" only logged)
+sim.add_object("cube", shape="box", color=np.array([1.0, 0.0, 0.0, 1.0]))
+# -> ValueError: The truth value of an array with more than one element is
+#    ambiguous  (raised past the tool-result contract)
+```
+
+The empty vector fell through a `color or <default>` coalescing that read it as
+"omitted", and that same truth test raised on any multi-element NumPy colour -
+for example a `geom_rgba` row read back from the model.
+
+`color` is now coerced through the contract the runtime mutator
+`set_geom_properties(color=...)` already enforced: 3 components are read as RGB
+and completed with an opaque alpha, 4 are read as RGBA verbatim, and any other
+count is rejected with a message naming the parameter, the accepted counts and
+the layout. Both entry points share one coercion helper, so their accepted
+domains cannot diverge. The agent-tool router's vector table now carries the
+component counts a parameter can honor rather than a single length, so it stops
+rejecting the RGB triple both methods accept.
+
+
 ### Fixed: `set_geom_properties` honors every vector component or rejects the vector
 
 `color`, `friction` and `size` each target a MuJoCo buffer with a fixed component

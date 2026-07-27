@@ -76,7 +76,7 @@ from strands_robots.simulation.mujoco.backend import (
 )
 from strands_robots.simulation.mujoco.manipulation import ManipulationMixin
 from strands_robots.simulation.mujoco.motion_primitives import MotionPrimitivesMixin
-from strands_robots.simulation.mujoco.physics import PhysicsMixin
+from strands_robots.simulation.mujoco.physics import PhysicsMixin, _coerce_rgba
 from strands_robots.simulation.mujoco.randomization import RandomizationMixin
 from strands_robots.simulation.mujoco.recording import RecordingMixin
 from strands_robots.simulation.mujoco.rendering import RenderingMixin
@@ -158,9 +158,12 @@ def _validate_finite_vector(method: str, param_name: str, vec: Any) -> str | Non
 
     A numpy real scalar per element is accepted (``float(np.float64(...))``
     succeeds), matching the "accept NumPy scalar components" behaviour of the
-    other sim setters. Length is NOT checked here (color is 3-or-4, size is
-    shape-dependent); use :func:`_validate_pose_vector` for a fixed length.
-    Returns ``None`` when every element is a finite real number.
+    other sim setters. Length is NOT checked here (size is shape-dependent, so
+    its count is checked against the shape afterwards); use
+    :func:`_validate_pose_vector` for a fixed length, or the rgba coercion in
+    :mod:`strands_robots.simulation.mujoco.physics` for a colour, whose count
+    the geom's rgba row defines. Returns ``None`` when every element is a finite
+    real number.
     """
     try:
         iter(vec)
@@ -2412,7 +2415,13 @@ class MuJoCoSimEngine(
                 compiles a differently-sized object while reporting success.
                 Every consumed component must be > 0; a non-positive extent is
                 rejected.
-            color: RGBA in 0..1 (default mid-grey).
+            color: ``[r, g, b]`` or ``[r, g, b, a]`` in 0..1 (default mid-grey).
+                An RGB triple is completed with an opaque alpha -- the one
+                component the geom's rgba row defines a default for. Any other
+                component count, including an empty vector, is rejected rather
+                than completed from the backend default, because a completed
+                colour paints a surface the caller never asked for while
+                reporting success.
             mass: Body mass in kg for dynamic objects (default 0.1); ignored when
                 ``is_static``.
             is_static: Fix the body in the world. ``shape="plane"`` forces this
@@ -2425,10 +2434,10 @@ class MuJoCoSimEngine(
             ``{"status": "error", ...}`` when no world exists, a policy is
             running, the name is taken, ``position``/``orientation``/``color``/
             ``size`` contains a non-finite (``nan``/``inf``) or non-numeric
-            element or ``position``/``orientation`` is the wrong length (3 / 4),
-            ``size`` has a non-positive extent or a component count the shape
-            cannot consume, ``shape="mesh"`` is missing ``mesh_path``, or the
-            recompile fails.
+            element or ``position``/``orientation``/``color`` is the wrong length
+            (3 / 4 / 3-or-4), ``size`` has a non-positive extent or a component
+            count the shape cannot consume, ``shape="mesh"`` is missing
+            ``mesh_path``, or the recompile fails.
 
         Example:
             >>> sim.add_object("cube", shape="box", size=[0.05, 0.05, 0.05])  # 5 cm cube
@@ -2497,10 +2506,21 @@ class MuJoCoSimEngine(
             and (e := _validate_pose_vector("add_object", "orientation", orientation, 4)) is not None
         ):
             return {"status": "error", "content": [{"text": e}]}
-        if color is not None and (e := _validate_finite_vector("add_object", "color", color)) is not None:
-            return {"status": "error", "content": [{"text": e}]}
         if size is not None and (e := _validate_finite_vector("add_object", "size", size)) is not None:
             return {"status": "error", "content": [{"text": e}]}
+
+        # 'color' targets the geom's 4-component rgba row, so its component
+        # count is part of the contract - the same one set_geom_properties
+        # enforces on a live geom. Without the count check an RGB triple (or any
+        # other partial vector) reached MuJoCo's add_geom and aborted the
+        # recompile with "spec recompile refused", hiding the actionable reason,
+        # and an empty vector fell through the `color or <default>` coalescing
+        # below and painted the default grey under a success result.
+        color_rgba: list[float] | None = None
+        if color is not None:
+            color_rgba, color_err = _coerce_rgba(color, "add_object")
+            if color_err is not None:
+                return color_err
 
         # 'size' is the full extent in meters per the docstring; reject a
         # non-positive (degenerate) extent before mutating scene state so the
@@ -2524,7 +2544,11 @@ class MuJoCoSimEngine(
             # read an empty list as omitted and substitute the default for a
             # request _validate_size has already rejected.
             size=[0.05, 0.05, 0.05] if size is None else list(size),
-            color=color or [0.5, 0.5, 0.5, 1.0],
+            # ``color is None`` means "omitted" -> the documented mid-grey
+            # default. A supplied colour arrives here already coerced to 4
+            # components; ``or`` would read an empty list as omitted and paint
+            # the default for a request the rgba contract has already rejected.
+            color=[0.5, 0.5, 0.5, 1.0] if color_rgba is None else color_rgba,
             mass=mass,
             mesh_path=mesh_path,
             material=material,
@@ -4240,20 +4264,22 @@ class MuJoCoSimEngine(
     # and must not be reported as "unknown" by the router.
     _ROUTER_PASSTHROUGH = {"action"}
 
-    # Vector params with expected length (for dimension validation before
-    # numpy/MuJoCo sees them). Length 3 = xyz unless noted.
-    _VECTOR_PARAM_LENGTHS: dict[str, int] = {
-        "position": 3,
-        "target": 3,
-        "origin": 3,
-        "force": 3,
-        "torque": 3,
-        "torque_vec": 3,
-        "gravity": 3,
-        "direction": 3,
-        "point": 3,
-        "orientation": 4,  # quaternion (w,x,y,z)
-        "color": 4,  # rgba
+    # Vector params with the component counts the target buffer can honor (for
+    # dimension validation before numpy/MuJoCo sees them). 3 = xyz unless noted.
+    # A param with several honorable counts lists them all, so the router never
+    # rejects a vector the method itself accepts.
+    _VECTOR_PARAM_LENGTHS: dict[str, tuple[int, ...]] = {
+        "position": (3,),
+        "target": (3,),
+        "origin": (3,),
+        "force": (3,),
+        "torque": (3,),
+        "torque_vec": (3,),
+        "gravity": (3,),
+        "direction": (3,),
+        "point": (3,),
+        "orientation": (4,),  # quaternion (w,x,y,z)
+        "color": (3, 4),  # rgb (opaque alpha) or rgba
     }
 
     def _validate_and_build_kwargs(
@@ -4304,18 +4330,19 @@ class MuJoCoSimEngine(
             }
 
         # 2) Vector dimension validation (applies before method runs)
-        for vparam, expected_len in self._VECTOR_PARAM_LENGTHS.items():
+        for vparam, accepted_lens in self._VECTOR_PARAM_LENGTHS.items():
             if vparam not in remapped:
                 continue
             val = remapped[vparam]
             if val is None:
                 continue
+            expected_len = " or ".join(str(n) for n in accepted_lens)
             if not hasattr(val, "__len__"):
                 return None, {
                     "status": "error",
                     "content": [{"text": f"Parameter '{vparam}' must be a list of {expected_len} numbers."}],
                 }
-            if len(val) != expected_len:
+            if len(val) not in accepted_lens:
                 return None, {
                     "status": "error",
                     "content": [

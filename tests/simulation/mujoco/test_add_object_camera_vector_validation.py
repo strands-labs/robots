@@ -87,28 +87,30 @@ def test_add_object_rejects_nonnumeric(sim, kwargs, expect):
 
 
 @pytest.mark.parametrize(
-    "kwargs",
+    ("kwargs", "expect"),
     [
-        {"color": 5},
-        {"color": np.float64(1.0)},
-        {"size": 0.05},
-        {"size": np.float32(0.05)},
+        ({"color": 5}, "must be a sequence of numbers"),
+        ({"color": np.float64(1.0)}, "must be a sequence of numbers"),
+        ({"size": 0.05}, "must be a list/tuple of numbers"),
+        ({"size": np.float32(0.05)}, "must be a list/tuple of numbers"),
     ],
 )
-def test_add_object_rejects_scalar_color_size(sim, kwargs):
+def test_add_object_rejects_scalar_color_size(sim, kwargs, expect):
     """A bare scalar ``color`` / ``size`` is rejected, not raised as a TypeError.
 
-    ``color`` and ``size`` are variable-length vectors (color is 3-or-4, size is
-    shape-dependent), so they are content-validated without a fixed length. A
-    caller passing a single number instead of a vector is a non-iterable that
+    A caller passing a single number instead of a vector is a non-iterable that
     would otherwise reach ``iter(vec)`` / MuJoCo's ``add_geom`` and raise a bare
     ``TypeError``, escaping the ``{"status": "error"}`` tool-result contract.
     The guard turns it into a structured error naming the offending parameter.
+    ``size`` is content-validated without a fixed length (its count is
+    shape-dependent and checked against the shape afterwards); ``color`` shares
+    the rgba coercion with ``set_geom_properties``, so it reports that helper's
+    wording.
     """
     result = sim.add_object("bad", shape="box", **kwargs)
     assert result["status"] == "error", result
     text = result["content"][0]["text"]
-    assert "must be a list/tuple of numbers" in text
+    assert expect in text
     assert next(iter(kwargs)) in text
     assert "bad" not in sim._world.objects
 

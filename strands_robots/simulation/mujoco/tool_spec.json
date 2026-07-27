@@ -159,7 +159,8 @@
       "type": "array",
       "items": {
         "type": "number"
-      }
+      },
+      "description": "Colour in 0..1: [r, g, b] (opaque alpha added) or [r, g, b, a]. Any other component count, including an empty list, is rejected - omit color entirely for the default mid-grey."
     },
     "mass": {
       "type": "number"
