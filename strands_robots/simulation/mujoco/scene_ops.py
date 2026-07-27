@@ -183,6 +183,14 @@ def inject_object_into_scene(world: SimWorld, obj: SimObject) -> bool:
     Without the rollback the orphan lingers and every later scene mutation,
     including a corrected retry under the same name, keeps failing to recompile
     (``repeated name`` collisions), bricking the whole scene after one bad add.
+
+    The same rollback applies when ``SpecBuilder.add_object`` itself raises
+    part-way through, which it can do *after* inserting the body (the geom's
+    type lookup rejects an unsupported shape; the mass write rejects a
+    non-numeric value). That error is then re-raised rather than folded into a
+    ``False`` return, so the caller can report the actual reason - a swallowed
+    ``ValueError`` left the caller with nothing but "spec recompile refused"
+    while the actionable message went to the log.
     """
     spec = _get_spec(world)
     if spec is None or world._model is None:
@@ -196,10 +204,17 @@ def inject_object_into_scene(world: SimWorld, obj: SimObject) -> bool:
         if obj.shape == "mesh" and obj.mesh_path:
             spec.add_mesh(name=f"mesh_{obj.name}", file=obj.mesh_path)
         SpecBuilder.add_object(spec, obj)
-    except (ValueError, RuntimeError) as e:
-        logger.error("Object add failed for '%s': %s", obj.name, e)
+    except (ValueError, RuntimeError):
+        # add_object is atomic over its own body mutation: a raise there (an
+        # unsupported shape, or a name that collides with an existing scene
+        # body) rolls the half-built body back out itself, so only the mesh
+        # asset registered here still needs undoing. Removing it keeps the spec
+        # compilable, then the error propagates: the caller turns it into a
+        # structured result, and the reason - e.g. the exact unsupported shape
+        # and the supported list - is what a caller needs instead of a generic
+        # recompile refusal.
         SpecBuilder.remove_mesh(spec, f"mesh_{obj.name}")
-        return False
+        raise
 
     if not _recompile_preserving_state(world, spec):
         # Roll the just-added body (and any mesh asset) back out so the spec

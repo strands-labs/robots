@@ -159,6 +159,31 @@ sim.add_object("crate", shape="box", size=[0.5])
 sim.add_object("crate", shape="box", size=[0.5, 0.5, 0.5])   # 50 cm crate
 ```
 
+## Object mass
+
+`mass` (kg) applies to dynamic objects and must be a finite number greater than
+zero - the same domain `set_body_properties(mass=...)` enforces when it writes
+the same body. A mass outside it is rejected up front, naming the parameter,
+instead of surfacing as a recompile failure:
+
+```python
+sim.add_object("crate", shape="box", mass=0)
+# status=error: add_object: 'mass' must be a finite number > 0, got 0.0
+sim.add_object("crate", shape="box", mass=1e-16)
+# status=error: add_object: 'mass' must be >= MuJoCo's mjMINVAL (1e-15 kg) ...
+```
+
+This matters beyond the one object: a body's mass divides every force acting on
+it, and the solver keeps a single state vector, so an infinite mass turns the
+whole world's `qpos`/`qvel` to `nan` on the next step - every other body
+included. `is_static=True` needs no mass (MuJoCo derives it from the geom's
+density), so `mass` is ignored there.
+
+Whatever the reason for a rejection - mass, `size`, an unsupported `shape`, an
+unloadable mesh - the scene is rolled back to its previous compilable state and
+the object name stays reusable, so a corrected retry under the same name works
+and one bad add never bricks later scene edits.
+
 ## Mesh objects
 
 Beyond primitives, `add_object` can inject a triangle-mesh asset (STL/OBJ) into

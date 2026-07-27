@@ -127,7 +127,7 @@ def test_declarative_branch_uses_source_keys_for_bare_camera():
         return False
 
     p._requires_action_chunk = _no_chunk
-    p._tensor_to_action_dicts = lambda t: [{"ok": True}]
+    p._tensor_to_action_dicts = lambda t, *a, **k: [{"ok": True}]
 
     obs = {"front": np.ones((64, 64, 3), dtype=np.uint8) * 255}
     p.get_actions_sync(obs, "pick up the cube")

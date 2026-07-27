@@ -82,19 +82,31 @@ class TestInjectEjectRequireCompiledWorld:
         assert scene_ops.eject_robot_from_scene(world, "r") is False
 
 
-class TestInjectFailuresReturnFalse:
-    """A spec mutation that raises (bad shape, unreadable URDF) is caught and
-    surfaced as ``False`` so the caller can emit an error dict, leaving the
-    already-compiled world intact."""
+class TestInjectFailuresLeaveTheWorldIntact:
+    """A spec mutation that fails leaves the already-compiled world intact.
 
-    def test_inject_object_with_unsupported_shape_returns_false(self, sim: Simulation) -> None:
+    How the failure is reported differs by helper.
+    ``inject_robot_into_scene`` folds a raise into ``False``, while
+    ``inject_object_into_scene`` rolls its spec mutation back and re-raises: the
+    object path can fail for reasons only the exception text explains (which
+    shape was unsupported, and which are), and swallowing it left the caller
+    with nothing but a generic "spec recompile refused" while the actionable
+    message went to the log.
+    """
+
+    def test_inject_object_with_unsupported_shape_raises_and_leaves_the_model_intact(self, sim: Simulation) -> None:
         sim.create_world()
         world = sim._world
         assert world is not None
         nbody_before = world._model.nbody
-        assert scene_ops.inject_object_into_scene(world, SimObject(name="bad", shape="not_a_shape")) is False
-        # The failed add must not have grown the compiled model.
+        with pytest.raises(ValueError, match="Unsupported shape 'not_a_shape'"):
+            scene_ops.inject_object_into_scene(world, SimObject(name="bad", shape="not_a_shape"))
+        # The failed add must not have grown the compiled model, and the
+        # half-built body must be gone from the spec so the name is reusable.
         assert world._model.nbody == nbody_before
+        spec = scene_ops._get_spec(world)
+        assert spec is not None
+        assert "bad" not in [body.name for body in spec.bodies]
 
     def test_inject_robot_with_unreadable_urdf_returns_false(self, sim: Simulation) -> None:
         sim.create_world()

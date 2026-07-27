@@ -118,6 +118,46 @@ def _coerce_finite_vector(
     return out, None
 
 
+# A MuJoCo geom stores its colour as a 4-component ``rgba`` row. Alpha is the
+# only component with a meaningful default (opaque), so an RGB triple can be
+# completed without inventing a colour, while any other count cannot.
+_RGBA_ACCEPTED_LENGTHS: tuple[int, ...] = (3, 4)
+_RGBA_LAYOUT = "RGB, or RGBA with alpha"
+
+
+def _coerce_rgba(color: Any, method: str, name: str = "color") -> tuple[list[float] | None, dict[str, Any] | None]:
+    """Coerce a caller-supplied colour to the 4 components a geom's rgba stores.
+
+    Single source of the backend's colour contract, shared by the scene creator
+    (``add_object``) and the runtime mutator (``set_geom_properties``) so their
+    accepted domains cannot diverge: 3 components are read as RGB and completed
+    with an opaque alpha -- the one component MuJoCo defines a default for -- 4
+    are read as RGBA verbatim, and any other count is rejected because it can
+    only be applied by fabricating or discarding components the caller did not
+    ask about. An empty vector is rejected for the same reason: substituting the
+    backend default paints a colour nobody requested under a success result.
+
+    Args:
+        color: The caller's colour sequence (list / tuple / NumPy array).
+        method: Calling method name, used in error text.
+        name: Parameter name, used in error text.
+
+    Returns:
+        ``(rgba, None)`` with exactly 4 finite floats, or ``(None, error_dict)``
+        matching the structured-error tool contract.
+    """
+    floats, err = _coerce_finite_vector(
+        color,
+        name,
+        method,
+        accepted_lengths=_RGBA_ACCEPTED_LENGTHS,
+        layout=_RGBA_LAYOUT,
+    )
+    if floats is None:
+        return None, err
+    return (floats if len(floats) == 4 else [*floats, 1.0]), None
+
+
 def _coerce_finite_joint_map(
     values: dict[str, Any],
     name: str,
@@ -322,11 +362,19 @@ class PhysicsMixin:
         _lock: "threading.RLock"
         _world: "SimWorld | None"
 
-        def _require_no_running_policy(
-            self, action_name: str, robot_name: str | None = None
-        ) -> dict[str, Any] | None: ...
-        def _require_world(self) -> dict[str, Any] | None: ...
-        def _unknown_robot_msg(self, requested: str) -> str: ...
+        # Bodies are one-line docstrings rather than ``...`` because an
+        # ellipsis body is an expression statement with no effect.
+        def _require_no_running_policy(self, action_name: str, robot_name: str | None = None) -> dict[str, Any] | None:
+            """Refuse a mutation while a policy thread is stepping the world."""
+
+        def _require_world(self) -> dict[str, Any] | None:
+            """Refuse a call made before ``create_world``."""
+
+        def _unknown_robot_msg(self, requested: str) -> str:
+            """Build the "robot not found" message with close-match hints."""
+
+        def _validate_mass(self, mass: Any, method: str, param: str = "mass") -> dict[str, Any] | None:
+            """Reject a body mass the physics engine cannot honor."""
 
     # State Checkpointing
 
@@ -1439,20 +1487,12 @@ class PhysicsMixin:
         if err := self._require_no_running_policy("set_body_properties"):
             return err
 
-        # mass must be > 0 (physics invariant)
+        # mass must be > 0 (physics invariant). Shared with add_object so a
+        # mass cannot be established at creation on terms this setter refuses.
         if mass is not None:
-            try:
-                mass = float(mass)
-            except (TypeError, ValueError):
-                return {
-                    "status": "error",
-                    "content": [{"text": f"set_body_properties: 'mass' must be a positive number, got {mass!r}"}],
-                }
-            if not math.isfinite(mass) or mass <= 0:
-                return {
-                    "status": "error",
-                    "content": [{"text": f"set_body_properties: 'mass' must be a finite number > 0, got {mass}"}],
-                }
+            if err := self._validate_mass(mass, "set_body_properties"):
+                return err
+            mass = float(mass)
 
         mj = _ensure_mujoco()
         model = self._world._model
@@ -1576,13 +1616,7 @@ class PhysicsMixin:
         # applied a shape / appearance / contact model nobody asked for under a
         # status="success" result, so the exact count is now required.
         if color is not None:
-            color, err = _coerce_finite_vector(
-                color,
-                "color",
-                "set_geom_properties",
-                accepted_lengths=(3, 4),
-                layout="RGB, or RGBA with alpha",
-            )
+            color, err = _coerce_rgba(color, "set_geom_properties")
             if err:
                 return err
         if friction is not None:
@@ -1634,8 +1668,8 @@ class PhysicsMixin:
 
         with self._lock:
             if color is not None:
-                # Validated as 3 or 4 components; RGB gets an opaque alpha.
-                model.geom_rgba[gid] = color if len(color) == 4 else [*color, 1.0]
+                # Already coerced to 4 components (RGB got an opaque alpha).
+                model.geom_rgba[gid] = color
                 changes.append(f"color → {model.geom_rgba[gid].tolist()}")
 
             if friction is not None:

@@ -5,6 +5,109 @@ All notable behavioural changes to `strands-robots` are logged here. Follows
 
 ## [Unreleased]
 
+### Fixed: a gripper command is honored the same way whichever name the action key spells
+
+`send_action` accepts an action key as either the actuator name (`actuator8` on
+the Panda) or a joint name that actuator drives (`finger_joint1`). Both resolve
+to the same actuator, but only the joint-name branch mapped a logical `[0, 1]`
+open/close fraction onto a tendon gripper's wide ctrlrange. The actuator-name
+branch wrote the value verbatim, so the same command meant opposite things:
+
+```python
+sim.send_action({"finger_joint1": 1.0}, robot_name="panda")
+# -> ctrl 255.0, finger gap 0.0400 m (fully OPEN)
+sim.send_action({"actuator8": 1.0}, robot_name="panda")
+# -> ctrl   1.0, finger gap 0.0002 m (CLOSED - 0.4% of the [0, 255] range)
+```
+
+The actuator name is the spelling the engine advertises: `robot_action_keys()`
+returns actuator names, a policy receives them through
+`set_robot_state_keys()`, and a positional action vector (`send_action([...])`,
+`replay_episode`) binds to them in order. Every policy rollout and dataset
+replay therefore took the unscaled branch and could not open a tendon gripper,
+so a scripted top-down pick left the object on the ground instead of lifting
+it. Both branches now write through one shared path, so the two spellings
+cannot diverge again. Direct joint/position/torque actuators are unchanged (the
+unit mapping applies to tendon transmissions only), and a mapped tendon command
+no longer emits a spurious "MuJoCo will clamp it" warning through the
+actuator-name spelling.
+
+### Fixed: `add_object` rejects a mass it cannot honor, and a refused add never bricks the scene
+
+`add_object` validated `position`, `orientation`, `color` and `size` but wrote
+`mass` straight into the spec, even though `set_body_properties` - which writes
+the same `body_mass` field - has always required a finite value `> 0`:
+
+```python
+sim.add_object("neighbour", shape="box", position=[0, 0, 0.6], mass=1.0)
+sim.add_object("blackhole", shape="box", position=[0.4, 0, 0.6], mass=float("inf"))
+# -> success. One step later every qpos/qvel in the world is nan, including
+#    'neighbour', which stops falling and never moves again.
+```
+
+`mass=0`, negatives and `nan` took the other route: the recompile refused them
+and the result read `Failed to inject 'crate': spec recompile refused.` -
+MuJoCo's actual reason ("mass and inertia of moving bodies must be larger than
+mjMINVAL") only reached the log. A positive mass below `mjMINVAL` behaved the
+same way.
+
+Worse, a mass the spec write itself rejected (a non-numeric value) raised
+*after* the body had been inserted, and the injector rolled back only the mesh
+asset. The half-built body stayed in the spec, so every later scene mutation
+failed to recompile - a valid `add_object`, an `add_camera`, anything - and one
+bad call bricked the world for good. An unsupported `shape` leaked the same way
+(its type lookup also raises after the insert), leaving the name permanently
+taken so a corrected retry failed with `repeated name`.
+
+Now the mass domain is a shared `SimEngine._validate_mass` used by both
+`add_object` and `set_body_properties` (their accepted values cannot diverge),
+MuJoCo's `mjMINVAL` floor is named rather than left to the compiler, and
+`SpecBuilder.add_object` is atomic over its own mutation: a raise after the body
+is inserted (an unsupported shape, or a name that collides with a body already
+in the scene) rolls back only the body this call added and re-raises, so the
+error a caller receives is the actual reason and the object name stays reusable.
+The rollback deletes the surplus body by enumeration rather than by name: on a
+name collision MuJoCo raises `repeated name` but still inserts the duplicate,
+and resolving the name would have deleted the pre-existing healthy body and left
+the empty orphan holding its name - corrupting the very scene the guard protects.
+`SpecBuilder.remove_body` also scans `spec.bodies` when `spec.body(name)` cannot
+see a body added since the last compile - previously such a rollback silently
+removed nothing. `mass` remains ignored for `is_static=True` objects, where
+MuJoCo derives it from the geom density.
+
+### Fixed: `add_object` honors every `color` component or rejects the vector
+
+A MuJoCo geom stores its colour in a 4-component `rgba` row, so only an RGB
+triple (completed with the opaque alpha that row defaults to) or a full RGBA
+quadruple can be applied to it. `add_object` validated that `color` held finite
+numbers but never checked the count, so the parameter failed three different
+ways:
+
+```python
+sim.add_object("cube", shape="box", color=[])
+# -> success: compiled rgba [0.5, 0.5, 0.5, 1.0]  (the default grey, silently)
+sim.add_object("cube", shape="box", color=[1.0, 0.0, 0.0])
+# -> error: "Failed to inject 'cube': spec recompile refused."
+#    (MuJoCo's actionable "rgba should be a list/array of size 4" only logged)
+sim.add_object("cube", shape="box", color=np.array([1.0, 0.0, 0.0, 1.0]))
+# -> ValueError: The truth value of an array with more than one element is
+#    ambiguous  (raised past the tool-result contract)
+```
+
+The empty vector fell through a `color or <default>` coalescing that read it as
+"omitted", and that same truth test raised on any multi-element NumPy colour -
+for example a `geom_rgba` row read back from the model.
+
+`color` is now coerced through the contract the runtime mutator
+`set_geom_properties(color=...)` already enforced: 3 components are read as RGB
+and completed with an opaque alpha, 4 are read as RGBA verbatim, and any other
+count is rejected with a message naming the parameter, the accepted counts and
+the layout. Both entry points share one coercion helper, so their accepted
+domains cannot diverge. The agent-tool router's vector table now carries the
+component counts a parameter can honor rather than a single length, so it stops
+rejecting the RGB triple both methods accept.
+
+
 ### Fixed: `set_geom_properties` honors every vector component or rejects the vector
 
 `color`, `friction` and `size` each target a MuJoCo buffer with a fixed component

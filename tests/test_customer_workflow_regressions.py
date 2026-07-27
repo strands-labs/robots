@@ -93,43 +93,43 @@ class TestMolmoact2Extra:
         joined = " ".join(extras["molmoact2"])
         # Builds on the [lerobot] extra (which carries lerobot[feetech]).
         assert "strands-robots[lerobot]" in joined
-        # The auxiliary deps MolmoAct2 modeling/processor code imports.
-        assert "transformers" in joined
-        assert "peft" in joined
-        assert "scipy" in joined
+        # The auxiliary deps MolmoAct2's modeling/processor code imports
+        # (transformers/peft/scipy) are layered via lerobot's OWN [molmoact2]
+        # extra rather than hand-mirrored here, so they stay in lock-step with
+        # lerobot instead of drifting when lerobot bumps them.
+        assert "lerobot[molmoact2]" in joined
 
     def test_molmoact2_transformers_pin_matches_lerobot(self):
-        """The transformers pin must match lerobot's [transformers-dep] floor.
+        """The transformers floor must track lerobot's [transformers-dep].
 
-        MolmoAct2's modeling/processor code uses transformers 5.4+ APIs.
-        ``molmoact2.build_policy`` guards the dep with an importability-only
-        check (``require_optional``), which a too-loose floor (e.g. the old
-        ``>=4.46``) silently defeats: a resolver can pick transformers 4.x,
-        the import succeeds, the guard passes, then model construction dead-ends
-        deep inside lerobot. The pin must therefore carry lerobot's own floor
-        (``>=5.4.0``) and an upper bound so a future incompatible major cannot
-        slip through.
+        MolmoAct2's modeling/processor code uses transformers 5.4+ APIs. Rather
+        than hand-pin transformers here (which silently drifts when lerobot bumps
+        its own floor), the [molmoact2] extra pulls ``lerobot[molmoact2]``, which
+        pulls ``lerobot[transformers-dep]`` transitively. That keeps the floor in
+        lock-step with lerobot by construction. We therefore assert the
+        DELEGATION (lerobot[molmoact2] with a lerobot floor of >=0.6.0 - the
+        release that carries MolmoAct2 + its transformers>=5.4.0 dep) rather than
+        a literal transformers pin that no longer lives in this extra.
         """
         from packaging.requirements import Requirement
-        from packaging.version import Version
 
         specs = self._extras()["molmoact2"]
-        transformers_req = next(
-            (Requirement(s) for s in specs if Requirement(s).name == "transformers"),
-            None,
+        lerobot_reqs = [
+            Requirement(sp)
+            for sp in specs
+            if Requirement(sp).name == "lerobot" and "molmoact2" in (Requirement(sp).extras or set())
+        ]
+        assert lerobot_reqs, "[molmoact2] must layer lerobot[molmoact2] (which pulls transformers>=5.4.0)"
+        spec = lerobot_reqs[0].specifier
+        # lerobot >=0.6.0 is the floor that ships MolmoAct2 + transformers>=5.4.0.
+        from packaging.version import Version
+
+        assert not spec.contains(Version("0.5.1")), (
+            f"lerobot floor too loose: {spec} admits 0.5.1, which predates MolmoAct2 and its transformers>=5.4.0 dep"
         )
-        assert transformers_req is not None, "[molmoact2] must pin transformers"
-        spec = transformers_req.specifier
-        # Floor must be at least lerobot's transformers-dep floor (5.4.0).
-        assert not spec.contains(Version("4.46")), (
-            f"transformers floor too loose: {spec} admits 4.46, which lacks the "
-            "transformers 5.4+ APIs MolmoAct2 needs (matches lerobot[transformers-dep])"
-        )
-        assert spec.contains(Version("5.4.0")), f"transformers pin {spec} must admit 5.4.0 (lerobot's molmoact2 floor)"
+        assert spec.contains(Version("0.6.0")), f"lerobot pin {spec} must admit 0.6.0 (MolmoAct2 floor)"
         # An upper bound must exist so an incompatible future major is excluded.
-        assert any(s.operator in ("<", "<=", "==", "~=") for s in spec), (
-            f"transformers pin {spec} must carry an upper bound"
-        )
+        assert any(s.operator in ("<", "<=", "==", "~=") for s in spec), f"lerobot pin {spec} must carry an upper bound"
 
     def test_molmoact2_extra_has_no_git_url(self):
         # PyPI rejects direct-reference (git+) deps in a published package's

@@ -571,9 +571,7 @@ class RenderingMixin:
         for key, value in action_dict.items():
             act_id = _lookup(mj.mjtObj.mjOBJ_ACTUATOR, key)
             if act_id >= 0:
-                fval = float(value)
-                self._warn_ctrl_clamp(model, act_id, pfx, key, fval, mj)
-                data.ctrl[act_id] = fval
+                self._write_ctrl(model, data, act_id, pfx, key, value, mj)
                 continue
 
             # Fallback: key is a joint name. Find the actuator that drives
@@ -601,24 +599,51 @@ class RenderingMixin:
                 unresolved.append(key)
                 continue
 
-            # Scale a logical command into the actuator's ctrlrange when the
-            # transmission is a tendon (gripper ctrlrange is e.g. [0, 255]
-            # tendon units, not a finger-joint position). Direct JOINT
-            # actuators keep the raw value (positions/torques in joint units).
-            ctrl_value = self._scale_ctrl_for_actuator(model, ai, float(value), mj)
-            # A direct JOINT actuator writes the value verbatim, so an
-            # out-of-ctrlrange joint-addressed command is silently clamped by
-            # MuJoCo exactly as the actuator-addressed branch above is - apply
-            # the same no-silent-clamp warning here so the contract does not
-            # depend on whether the caller keyed by actuator or by joint name.
-            # Tendon drives are skipped: _scale_ctrl_for_actuator has already
-            # mapped/clamped the command into the ctrlrange on purpose, so a
-            # clamp warning would be spurious.
-            if int(model.actuator_trntype[ai]) != int(mj.mjtTrn.mjTRN_TENDON):
-                self._warn_ctrl_clamp(model, ai, pfx, key, ctrl_value, mj)
-            data.ctrl[ai] = ctrl_value
+            self._write_ctrl(model, data, ai, pfx, key, value, mj)
 
         return unresolved
+
+    def _write_ctrl(
+        self,
+        model: Any,
+        data: Any,
+        act_id: int,
+        pfx: str,
+        key: str,
+        value: Any,
+        mj: Any,
+    ) -> None:
+        """Write one action value to ``data.ctrl[act_id]``, unit-mapping tendon drives.
+
+        The single ctrl-write path for BOTH spellings an action key may take -
+        the actuator name (``actuator8``) and the joint name
+        (``finger_joint1``). Both resolve to the same actuator, so both must
+        write the same ctrl value: a tendon gripper addressed by its actuator
+        name previously wrote the logical command verbatim, so the same
+        ``1.0`` that fully OPENED the gripper through the joint-name key left
+        it CLOSED (``1.0`` of a ``[0, 255]`` tendon ctrlrange) through the
+        actuator name - which is the spelling :meth:`robot_action_keys`
+        advertises and that a policy action vector binds to positionally.
+
+        Applies :meth:`_scale_ctrl_for_actuator` (a no-op for non-tendon
+        transmissions, so direct joint/position/torque actuators still write
+        the raw value) and then warns once on a silent MuJoCo clamp. Tendon
+        drives skip the clamp warning: the scaling has already mapped the
+        command into the ctrlrange on purpose, so a warning would be spurious.
+
+        Args:
+            model: Live ``mujoco.MjModel``.
+            data: Live ``mujoco.MjData`` (caller holds ``self._lock``).
+            act_id: Resolved actuator id to write.
+            pfx: Robot namespace prefix, for de-duplicated warnings.
+            key: Action key as the caller spelled it, for warnings.
+            value: Commanded value in the caller's logical units.
+            mj: The ``mujoco`` module.
+        """
+        ctrl_value = self._scale_ctrl_for_actuator(model, act_id, float(value), mj)
+        if int(model.actuator_trntype[act_id]) != int(mj.mjtTrn.mjTRN_TENDON):
+            self._warn_ctrl_clamp(model, act_id, pfx, key, ctrl_value, mj)
+        data.ctrl[act_id] = ctrl_value
 
     def _warn_unresolved_action_key(self, pfx: str, key: str, reason: str) -> None:
         """Warn once per (prefix, key) that an action key could not be applied.

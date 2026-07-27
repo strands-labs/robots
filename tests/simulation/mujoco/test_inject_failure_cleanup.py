@@ -14,15 +14,18 @@ successfully right after a failed attempt: a leaked orphan would make the retry
 collide on the duplicate name at recompile time. These tests fail before the
 rollback fix (the retry errors with ``repeated name``) and pass after it.
 
-The injectors themselves catch ``(ValueError, RuntimeError)`` and return
-``False``, so ``add_object`` / ``add_camera`` also carry a defensive
-``except (ValueError, RuntimeError)`` around the injection call. That guard
-exists so an *unexpected* raise from the scene-injection layer is surfaced
-as a structured ``{'status': 'error'}`` (never re-raised past tool dispatch,
-per the tool contract) while still rolling the half-added element out of the
-``_world`` registry. The raise-path tests force the injector to raise and
-pin that contract; they fail if the guard is removed (the exception escapes)
-or if the cleanup ``pop`` is dropped (the ghost element leaks).
+``add_object`` / ``add_camera`` also carry an ``except (ValueError,
+RuntimeError)`` around the injection call. It surfaces a raise from the
+scene-injection layer as a structured ``{'status': 'error'}`` (never re-raised
+past tool dispatch, per the tool contract) while rolling the half-added element
+out of the ``_world`` registry. For objects this is a live path, not a purely
+defensive one: ``inject_object_into_scene`` rolls its spec mutation back and
+re-raises so the reason reaches the caller (see
+``test_add_object_mass_contract.py`` for the unsupported-shape case). The
+camera injector still folds a raise into ``False``, so its guard fires only on
+an unexpected error. The raise-path tests force the injector to raise and pin
+that contract; they fail if the guard is removed (the exception escapes) or if
+the cleanup ``pop`` is dropped (the ghost element leaks).
 """
 
 from __future__ import annotations

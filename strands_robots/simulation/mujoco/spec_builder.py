@@ -526,38 +526,56 @@ class SpecBuilder:
         # leaves an orphan body behind.
         material_name = SpecBuilder._build_material(spec, obj) if obj.material is not None else None
 
-        body = spec.worldbody.add_body(
-            name=obj.name,
-            pos=list(obj.position),
-            quat=list(obj.orientation),
-        )
+        # ``add_body(name=...)`` raises ``repeated name`` on a collision with an
+        # existing scene body BUT still inserts the duplicate, and the steps
+        # after it (the geom type lookup, ``add_geom``) can raise as well. Any
+        # raise in this block must undo only what THIS call inserted, then
+        # re-raise so the caller reports the real reason. Deleting by name
+        # (``spec.body(name)`` / :meth:`remove_body`) is unsafe on the collision
+        # path: that accessor resolves the ORIGINAL body present at the last
+        # compile, so it would delete the pre-existing healthy body and leave
+        # the empty orphan holding its name - a silent scene corruption. Instead
+        # record how many bodies already carry this name and, on failure, delete
+        # only the surplus this call produced (the orphan is appended, so it is
+        # the tail of that run). This can never touch a body it did not create.
+        pre_count = sum(1 for b in spec.bodies if b.name == obj.name)
+        try:
+            body = spec.worldbody.add_body(
+                name=obj.name,
+                pos=list(obj.position),
+                quat=list(obj.orientation),
+            )
 
-        if not obj.is_static:
-            body.add_freejoint(name=f"{obj.name}_joint")
-            body.mass = float(obj.mass)
-            body.inertia = [0.001, 0.001, 0.001]
-            body.ipos = [0.0, 0.0, 0.0]
-            body.explicitinertial = True
+            if not obj.is_static:
+                body.add_freejoint(name=f"{obj.name}_joint")
+                body.mass = float(obj.mass)
+                body.inertia = [0.001, 0.001, 0.001]
+                body.ipos = [0.0, 0.0, 0.0]
+                body.explicitinertial = True
 
-        geom_kwargs: dict[str, Any] = {
-            "name": f"{obj.name}_geom",
-            "type": _geom_type(obj.shape),
-            "rgba": list(obj.color),
-            "condim": 3,
-        }
-        if obj.shape == "mesh":
-            geom_kwargs["meshname"] = f"mesh_{obj.name}"
-        else:
-            geom_kwargs["size"] = _normalize_size(obj.shape, list(obj.size))
+            geom_kwargs: dict[str, Any] = {
+                "name": f"{obj.name}_geom",
+                "type": _geom_type(obj.shape),
+                "rgba": list(obj.color),
+                "condim": 3,
+            }
+            if obj.shape == "mesh":
+                geom_kwargs["meshname"] = f"mesh_{obj.name}"
+            else:
+                geom_kwargs["size"] = _normalize_size(obj.shape, list(obj.size))
 
-        # Legacy code only set explicit friction on boxes; preserve parity.
-        if obj.shape == "box":
-            geom_kwargs["friction"] = [1.0, 0.5, 0.001]
+            # Legacy code only set explicit friction on boxes; preserve parity.
+            if obj.shape == "box":
+                geom_kwargs["friction"] = [1.0, 0.5, 0.001]
 
-        if material_name is not None:
-            geom_kwargs["material"] = material_name
+            if material_name is not None:
+                geom_kwargs["material"] = material_name
 
-        body.add_geom(**geom_kwargs)
+            body.add_geom(**geom_kwargs)
+        except (ValueError, RuntimeError):
+            for surplus in [b for b in spec.bodies if b.name == obj.name][pre_count:]:
+                spec.delete(surplus)
+            raise
 
     # material build
     @staticmethod
@@ -734,15 +752,31 @@ class SpecBuilder:
         Returns ``True`` if the body existed and was removed, ``False``
         otherwise (to match the legacy scene_ops API).
 
+        ``spec.body(name)`` only resolves bodies that existed at the last
+        ``compile()``/``recompile()``, so a body added since then - including
+        one this class inserted moments ago, before the validating recompile -
+        is invisible to it and enumerated only by ``spec.bodies``. Both lookups
+        are therefore tried: without the enumeration fallback a rollback of a
+        just-added body silently removed nothing, leaving an orphan that made
+        every later recompile fail on the duplicate name. This mirrors
+        :func:`~strands_robots.simulation.mujoco.scene_ops._find_body` and the
+        parent-body lookup in :meth:`add_camera`.
+
         Note: this removes ONLY the body; any actuators/sensors referencing
         its joints must be cleaned up separately via :meth:`remove_refs_by_prefix`.
         That's only needed for robots - for plain object bodies there are
         no actuators/sensors tied to them.
         """
+        body = None
         try:
             body = spec.body(name)
         except (KeyError, ValueError):
-            return False
+            body = None
+        if body is None:
+            for candidate in getattr(spec, "bodies", ()):
+                if candidate.name == name:
+                    body = candidate
+                    break
         if body is None:
             return False
         spec.delete(body)

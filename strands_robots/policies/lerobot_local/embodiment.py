@@ -374,9 +374,39 @@ def register_pack_state_step() -> type | None:
                     missing.append(k)
 
             if present == 0:
-                # No declared state key present at all; leave obs alone so a
-                # clearer downstream error (or a state-less policy) can handle
-                # it, rather than emitting an all-zero state vector.
+                # None of the DECLARED state_keys are present. The canonical
+                # trigger is a SIM embodiment (e.g. so101: state_keys ['1'..'6'])
+                # driven from REAL hardware, whose observation carries
+                # '<motor>.pos' scalar keys instead (lerobot SOFollower). Rather
+                # than dead-end with "requires observation.state", fall back to
+                # the hardware '.pos' keys so ``embodiment="so101"`` works on the
+                # physical arm too - not only in sim.
+                #
+                # Hardware '.pos' values are ALREADY in the model's training
+                # units (so_follower MotorNormMode: arm DEGREES, gripper
+                # RANGE_0_100), so we pack them RAW and DO NOT apply the
+                # sim-radian -> model-degree conversion below (that would
+                # double-convert). Observation insertion order is lerobot motor
+                # order (shoulder_pan..gripper), which matches the positional
+                # sim state_keys, so a straight collection is index-aligned.
+                pos_keys = [
+                    k
+                    for k in observation
+                    if k.endswith(".pos")
+                    and isinstance(observation[k], (int, float, np.floating, np.ndarray))
+                    and (not isinstance(observation[k], np.ndarray) or observation[k].ndim == 0)
+                ]
+                if len(pos_keys) >= len(self.state_keys) and self.state_keys:
+                    n = len(self.state_keys)
+                    hw_vals = [float(observation[k]) for k in pos_keys[:n]]
+                    target = self.expected_dim or len(hw_vals)
+                    hw_vals = reconcile_dim(hw_vals, target, self.dim_policy, label="observation.state")
+                    out = {k: v for k, v in observation.items() if k not in pos_keys[:n]}
+                    out["observation.state"] = torch.as_tensor(hw_vals, dtype=torch.float32)
+                    return out
+                # No declared state key AND no usable '.pos' fallback; leave obs
+                # alone so a clearer downstream error (or a state-less policy)
+                # can handle it, rather than emitting an all-zero state vector.
                 return observation
 
             if missing:

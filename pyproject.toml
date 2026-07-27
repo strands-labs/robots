@@ -196,24 +196,17 @@ lerobot-async = [
     "lerobot[async]>=0.6.0,<0.7.0",
 ]
 # MolmoAct2 transformers-native VLA (e.g. allenai/MolmoAct2-SO100_101). The
-# MolmoAct2Policy class ships in lerobot >= 0.6 (it landed via lerobot PR #3604
-# after the 0.5.1 PyPI release), so `strands-robots[molmoact2]` now resolves it
-# straight from PyPI through the `strands-robots[lerobot]` (>=0.6) pin -- no
-# git-source step. This extra layers the auxiliary deps MolmoAct2's
-# modeling/processor code needs on top of lerobot core -- transformers
-# (Qwen2Tokenizer + the sharded safetensors loader), peft, scipy -- mirroring
-# lerobot's own [molmoact2] extra.
+# MolmoAct2Policy ships in lerobot >= 0.6 (landed via lerobot PR #3604). Rather
+# than hand-mirror lerobot's aux-dep pins here (transformers/peft/scipy) -- which
+# silently drifts whenever lerobot bumps them -- we defer entirely to lerobot's
+# own ``[molmoact2]`` extra. That extra pulls lerobot[transformers-dep],
+# lerobot[peft-dep], lerobot[scipy-dep] at exactly the versions the MolmoAct2
+# modeling/processor code was built against, so the two stay in lock-step by
+# construction. The base ``strands-robots[lerobot]`` pin (>=0.6.0,<0.7.0) already
+# fixes the lerobot floor; ``lerobot[molmoact2]`` just adds the aux deps.
 molmoact2 = [
     "strands-robots[lerobot]",
-    # Mirror lerobot's own [molmoact2] dep pins exactly. The transformers
-    # floor MUST match lerobot[transformers-dep] (>=5.4.0,<5.6.0): MolmoAct2's
-    # modeling/processor code uses transformers 5.4+ APIs, and a looser floor
-    # (e.g. >=4.46) lets a resolver pick an incompatible transformers that
-    # imports fine -- passing the importability guard in molmoact2.build_policy
-    # -- then dead-ends deep inside lerobot model construction.
-    "transformers>=5.4.0,<5.6.0",
-    "peft>=0.18.0,<1.0.0",
-    "scipy>=1.14.0,<2.0.0",
+    "lerobot[molmoact2]>=0.6.0,<0.7.0",
 ]
 sim = [
     "robot_descriptions>=1.11.0,<2.0.0",

@@ -75,7 +75,8 @@ from strands_robots.simulation.mujoco.backend import (
     filter_mujoco_attach_noise,
 )
 from strands_robots.simulation.mujoco.manipulation import ManipulationMixin
-from strands_robots.simulation.mujoco.physics import PhysicsMixin
+from strands_robots.simulation.mujoco.motion_primitives import MotionPrimitivesMixin
+from strands_robots.simulation.mujoco.physics import PhysicsMixin, _coerce_rgba
 from strands_robots.simulation.mujoco.randomization import RandomizationMixin
 from strands_robots.simulation.mujoco.recording import RecordingMixin
 from strands_robots.simulation.mujoco.rendering import RenderingMixin
@@ -157,9 +158,12 @@ def _validate_finite_vector(method: str, param_name: str, vec: Any) -> str | Non
 
     A numpy real scalar per element is accepted (``float(np.float64(...))``
     succeeds), matching the "accept NumPy scalar components" behaviour of the
-    other sim setters. Length is NOT checked here (color is 3-or-4, size is
-    shape-dependent); use :func:`_validate_pose_vector` for a fixed length.
-    Returns ``None`` when every element is a finite real number.
+    other sim setters. Length is NOT checked here (size is shape-dependent, so
+    its count is checked against the shape afterwards); use
+    :func:`_validate_pose_vector` for a fixed length, or the rgba coercion in
+    :mod:`strands_robots.simulation.mujoco.physics` for a colour, whose count
+    the geom's rgba row defines. Returns ``None`` when every element is a finite
+    real number.
     """
     try:
         iter(vec)
@@ -212,6 +216,7 @@ class MuJoCoSimEngine(
     RecordingMixin,
     RandomizationMixin,
     ManipulationMixin,
+    MotionPrimitivesMixin,
     SimEngine,
     AgentTool,
 ):
@@ -1758,6 +1763,25 @@ class MuJoCoSimEngine(
             "(robot_name: str | None = None) -> dict  # zero qvel/qacc/warmstart "
             "(world-wide, or one robot's joints) after kinematic qpos writes"
         )
+        # Analytic motion primitives (GH #1645): the agent-facing staging/
+        # transport/release vocabulary around a learned policy (Harness VLA).
+        base["methods"]["move_to"] = (
+            "(robot_name=None, position, orientation=None, tol=0.01, "
+            "max_steps=200) -> dict  # move the end-effector to a world-frame "
+            "[x, y, z] target via IK (position-only when orientation is "
+            "omitted - right for <6-DOF arms); NOT collision-aware; returns "
+            "reached/residual, structured error when unreachable"
+        )
+        base["methods"]["set_gripper"] = (
+            "(robot_name=None, state='open'|'close', steps=12) -> dict  # "
+            "drive the gripper actuator(s) to the open (ctrlrange HIGH) or "
+            "close (ctrlrange LOW) set-point"
+        )
+        base["methods"]["rotate_wrist"] = (
+            "(robot_name=None, target_yaw, tol=0.02, max_steps=200) -> dict  "
+            "# rotate the wrist-yaw joint to a set-point (radians) while the "
+            "other arm joints hold position"
+        )
         # Robot-registry + robot-removal surface. describe() calls add_robot
         # "the first scene-construction step" and advertises the object/camera
         # remove halves (remove_object / remove_camera), but not the robot
@@ -2400,9 +2424,16 @@ class MuJoCoSimEngine(
                 compiles a differently-sized object while reporting success.
                 Every consumed component must be > 0; a non-positive extent is
                 rejected.
-            color: RGBA in 0..1 (default mid-grey).
-            mass: Body mass in kg for dynamic objects (default 0.1); ignored when
-                ``is_static``.
+            color: ``[r, g, b]`` or ``[r, g, b, a]`` in 0..1 (default mid-grey).
+                An RGB triple is completed with an opaque alpha -- the one
+                component the geom's rgba row defines a default for. Any other
+                component count, including an empty vector, is rejected rather
+                than completed from the backend default, because a completed
+                colour paints a surface the caller never asked for while
+                reporting success.
+            mass: Body mass in kg for dynamic objects (default 0.1); must be a
+                finite number > 0 (the same domain ``set_body_properties``
+                enforces). Ignored when ``is_static``.
             is_static: Fix the body in the world. ``shape="plane"`` forces this
                 True; other shapes default to dynamic.
             mesh_path: Mesh asset path; required and only used when
@@ -2413,10 +2444,11 @@ class MuJoCoSimEngine(
             ``{"status": "error", ...}`` when no world exists, a policy is
             running, the name is taken, ``position``/``orientation``/``color``/
             ``size`` contains a non-finite (``nan``/``inf``) or non-numeric
-            element or ``position``/``orientation`` is the wrong length (3 / 4),
-            ``size`` has a non-positive extent or a component count the shape
-            cannot consume, ``shape="mesh"`` is missing ``mesh_path``, or the
-            recompile fails.
+            element or ``position``/``orientation``/``color`` is the wrong length
+            (3 / 4 / 3-or-4), ``size`` has a non-positive extent or a component
+            count the shape cannot consume, ``mass`` is not a finite number > 0
+            for a dynamic object, ``shape="mesh"`` is missing ``mesh_path``, or
+            the recompile fails.
 
         Example:
             >>> sim.add_object("cube", shape="box", size=[0.05, 0.05, 0.05])  # 5 cm cube
@@ -2485,16 +2517,59 @@ class MuJoCoSimEngine(
             and (e := _validate_pose_vector("add_object", "orientation", orientation, 4)) is not None
         ):
             return {"status": "error", "content": [{"text": e}]}
-        if color is not None and (e := _validate_finite_vector("add_object", "color", color)) is not None:
-            return {"status": "error", "content": [{"text": e}]}
         if size is not None and (e := _validate_finite_vector("add_object", "size", size)) is not None:
             return {"status": "error", "content": [{"text": e}]}
+
+        # 'color' targets the geom's 4-component rgba row, so its component
+        # count is part of the contract - the same one set_geom_properties
+        # enforces on a live geom. Without the count check an RGB triple (or any
+        # other partial vector) reached MuJoCo's add_geom and aborted the
+        # recompile with "spec recompile refused", hiding the actionable reason,
+        # and an empty vector fell through the `color or <default>` coalescing
+        # below and painted the default grey under a success result.
+        color_rgba: list[float] | None = None
+        if color is not None:
+            color_rgba, color_err = _coerce_rgba(color, "add_object")
+            if color_err is not None:
+                return color_err
 
         # 'size' is the full extent in meters per the docstring; reject a
         # non-positive (degenerate) extent before mutating scene state so the
         # caller gets a clear error rather than a confusing recompile failure.
         if size is not None and (size_err := _validate_size(shape, list(size))) is not None:
             return {"status": "error", "content": [{"text": size_err}]}
+
+        # A dynamic body's mass divides every force acting on it, so a value
+        # outside (0, inf) is unusable: inf compiled successfully and made the
+        # first step produce nan, which the shared state vector then spread to
+        # every OTHER body in the world, while 0/negative/nan aborted the
+        # recompile with a generic "spec recompile refused" that named neither
+        # the parameter nor MuJoCo's mjMINVAL invariant. Checked only for a
+        # dynamic body, which is where the value reaches body_mass - a static
+        # body has no mass in the compiled model, and the result says "static"
+        # rather than quoting a mass, so nothing is silently dishonored there.
+        if not is_static:
+            if (mass_err := self._validate_mass(mass, "add_object")) is not None:
+                return mass_err
+            # MuJoCo additionally refuses to compile a moving body lighter than
+            # mjMINVAL ("mass and inertia of moving bodies must be larger than
+            # mjMINVAL"), which is the last mass value that reached the generic
+            # recompile refusal. Name the floor instead, so every mass this
+            # method accepts is one the compiler accepts.
+            minimum = float(_ensure_mujoco().mjMINVAL)
+            if float(mass) < minimum:
+                return {
+                    "status": "error",
+                    "content": [
+                        {
+                            "text": (
+                                f"add_object: 'mass' must be >= MuJoCo's mjMINVAL ({minimum:g} kg) "
+                                f"for a dynamic body, got {float(mass)!r}; a lighter body cannot be "
+                                "integrated. Use is_static=True for an immovable body."
+                            )
+                        }
+                    ],
+                }
 
         # A material key the builder cannot honor (typo / another renderer's
         # field name) would otherwise be dropped and the object would compile
@@ -2512,7 +2587,11 @@ class MuJoCoSimEngine(
             # read an empty list as omitted and substitute the default for a
             # request _validate_size has already rejected.
             size=[0.05, 0.05, 0.05] if size is None else list(size),
-            color=color or [0.5, 0.5, 0.5, 1.0],
+            # ``color is None`` means "omitted" -> the documented mid-grey
+            # default. A supplied colour arrives here already coerced to 4
+            # components; ``or`` would read an empty list as omitted and paint
+            # the default for a request the rgba contract has already rejected.
+            color=[0.5, 0.5, 0.5, 1.0] if color_rgba is None else color_rgba,
             mass=mass,
             mesh_path=mesh_path,
             material=material,
@@ -3563,7 +3642,7 @@ class MuJoCoSimEngine(
                 "(direct path or auto-resolve from data_config name), add objects, run VLA policies, "
                 "render cameras, record trajectories, domain randomize. "
                 "Same Policy ABC as real robot control - sim and real with zero code changes. "
-                "Actions (73 total): "
+                "Actions (76 total): "
                 "[World] create_world, load_scene, reset, get_state, destroy, export_xml; "
                 "[Robots] add_robot, remove_robot, list_robots, get_robot_state, list_bodies; "
                 "[Objects] add_object, remove_object, move_object, list_objects; "
@@ -3575,6 +3654,8 @@ class MuJoCoSimEngine(
                 "get_total_mass, get_ground_height, get_sensor_data, get_jacobian, get_mass_matrix, inverse_dynamics, "
                 "forward_kinematics, save_state, load_state, set_body_properties, set_geom_properties; "
                 "[Manipulation] attach_bodies, detach_bodies, actuate_robot, zero_dynamics; "
+                "[Motion primitives] move_to (Cartesian EE transport via IK; not collision-aware), "
+                "set_gripper (open/close set-point), rotate_wrist (wrist-yaw set-point holding position); "
                 "[Scene MJCF] replace_scene_mjcf, patch_scene_mjcf, raycast, multi_raycast; "
                 "[Recording] start_recording, save_episode, stop_recording, get_recording_status, "
                 "start_cameras_recording, stop_cameras_recording, get_cameras_recording_status; "
@@ -3821,6 +3902,7 @@ class MuJoCoSimEngine(
         async_rtc: bool | None = None,
         rtc_inference_timeout_s: float | None = None,
         wbc_install_torque_control: bool = True,
+        stop_when: dict[str, Any] | Callable[[SimEngine], bool] | None = None,
     ) -> dict[str, Any]:
         """MuJoCo ``run_policy`` override: pre-flight world check + graceful stop.
 
@@ -3837,6 +3919,11 @@ class MuJoCoSimEngine(
         collection: ``n_episodes > 1`` runs that many rollouts back-to-back,
         flushing a ``save_episode`` boundary after each (when recording) and
         resetting between episodes. See :meth:`SimEngine.run_policy`.
+
+        ``stop_when`` (the semantic early-return predicate clause) is
+        forwarded verbatim to :meth:`SimEngine.run_policy`, which compiles and
+        validates it against the closed predicate registry; see its docstring
+        for the schema and the ``stopped_reason`` telemetry contract.
         """
         if self._world is None or self._world._model is None or self._world._data is None:
             return {"status": "error", "content": [{"text": _NO_WORLD_MSG}]}
@@ -3869,6 +3956,7 @@ class MuJoCoSimEngine(
                 async_rtc=async_rtc,
                 rtc_inference_timeout_s=rtc_inference_timeout_s,
                 wbc_install_torque_control=wbc_install_torque_control,
+                stop_when=stop_when,
             )
         finally:
             if self._world is not None and robot_name in self._world.robots:
@@ -4197,7 +4285,12 @@ class MuJoCoSimEngine(
     # Dispatched actions that manage their own locking and MUST NOT run
     # under the blanket dispatch RLock (see _dispatch_action). Each one
     # acquires self._lock internally around its own model/data access.
-    _SELF_LOCKING_ACTIONS: frozenset[str] = frozenset({"step", "stop_policy", "remove_robot"})
+    # The motion primitives (move_to / set_gripper / rotate_wrist) lock per
+    # control tick (the step() pattern) so stop_policy / renders can
+    # interleave during a long primitive.
+    _SELF_LOCKING_ACTIONS: frozenset[str] = frozenset(
+        {"step", "stop_policy", "remove_robot", "move_to", "set_gripper", "rotate_wrist"}
+    )
 
     _ACTION_ALIASES = {
         "list_robots": "list_robots_info",
@@ -4221,20 +4314,22 @@ class MuJoCoSimEngine(
     # and must not be reported as "unknown" by the router.
     _ROUTER_PASSTHROUGH = {"action"}
 
-    # Vector params with expected length (for dimension validation before
-    # numpy/MuJoCo sees them). Length 3 = xyz unless noted.
-    _VECTOR_PARAM_LENGTHS: dict[str, int] = {
-        "position": 3,
-        "target": 3,
-        "origin": 3,
-        "force": 3,
-        "torque": 3,
-        "torque_vec": 3,
-        "gravity": 3,
-        "direction": 3,
-        "point": 3,
-        "orientation": 4,  # quaternion (w,x,y,z)
-        "color": 4,  # rgba
+    # Vector params with the component counts the target buffer can honor (for
+    # dimension validation before numpy/MuJoCo sees them). 3 = xyz unless noted.
+    # A param with several honorable counts lists them all, so the router never
+    # rejects a vector the method itself accepts.
+    _VECTOR_PARAM_LENGTHS: dict[str, tuple[int, ...]] = {
+        "position": (3,),
+        "target": (3,),
+        "origin": (3,),
+        "force": (3,),
+        "torque": (3,),
+        "torque_vec": (3,),
+        "gravity": (3,),
+        "direction": (3,),
+        "point": (3,),
+        "orientation": (4,),  # quaternion (w,x,y,z)
+        "color": (3, 4),  # rgb (opaque alpha) or rgba
     }
 
     def _validate_and_build_kwargs(
@@ -4285,18 +4380,19 @@ class MuJoCoSimEngine(
             }
 
         # 2) Vector dimension validation (applies before method runs)
-        for vparam, expected_len in self._VECTOR_PARAM_LENGTHS.items():
+        for vparam, accepted_lens in self._VECTOR_PARAM_LENGTHS.items():
             if vparam not in remapped:
                 continue
             val = remapped[vparam]
             if val is None:
                 continue
+            expected_len = " or ".join(str(n) for n in accepted_lens)
             if not hasattr(val, "__len__"):
                 return None, {
                     "status": "error",
                     "content": [{"text": f"Parameter '{vparam}' must be a list of {expected_len} numbers."}],
                 }
-            if len(val) != expected_len:
+            if len(val) not in accepted_lens:
                 return None, {
                     "status": "error",
                     "content": [

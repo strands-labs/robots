@@ -1732,6 +1732,38 @@ class LerobotLocalPolicy(Policy):
         if instruction and "task" not in observation:
             observation["task"] = instruction
 
+        # Detect REAL-hardware observations: lerobot SOFollower & friends key
+        # joint scalars as '<motor>.pos'. When a SIM embodiment (numeric/ named
+        # sim joints) is driven from hardware, the action tensor must still be
+        # emitted under these '.pos' names (and WITHOUT the sim unit conversion)
+        # so SOFollower.send_action accepts it. We capture the '.pos' order here
+        # (lerobot motor order) and thread it into _tensor_to_action_dicts. When
+        # the embodiment's own action_keys are ALREADY '.pos' (e.g. so_real /
+        # so101_follower) this is a harmless no-op override with identical keys.
+        _hw_action_keys: list[str] | None = None
+        if (
+            self._embodiment is not None
+            and self._embodiment.action_keys
+            and not any(str(k).endswith(".pos") for k in self._embodiment.action_keys)
+        ):
+            _pos = [
+                k
+                for k in observation_dict
+                if isinstance(k, str) and k.endswith(".pos") and isinstance(observation_dict[k], (int, float))
+            ]
+            # numpy scalar / 0-d support (np imported at module top)
+            if not _pos:
+                _pos = [
+                    k
+                    for k in observation_dict
+                    if isinstance(k, str)
+                    and k.endswith(".pos")
+                    and isinstance(observation_dict[k], (np.floating, np.ndarray))
+                    and (not isinstance(observation_dict[k], np.ndarray) or observation_dict[k].ndim == 0)
+                ]
+            if len(_pos) >= len(self._embodiment.action_keys):
+                _hw_action_keys = _pos[: len(self._embodiment.action_keys)]
+
         # When the processor bridge has a preprocessor, delegate normalization
         # and tokenization to it, then fix up any remaining raw arrays/tensors
         # that the pipeline did not convert (e.g. images left as HWC uint8
@@ -1812,7 +1844,7 @@ class LerobotLocalPolicy(Policy):
         if self._processor_bridge and self._processor_bridge.has_postprocessor:
             action_tensor = self._processor_bridge.postprocess(action_tensor)
 
-        return self._tensor_to_action_dicts(action_tensor)
+        return self._tensor_to_action_dicts(action_tensor, hw_action_keys=_hw_action_keys)
 
     # Observation batch building
 
@@ -2606,7 +2638,9 @@ class LerobotLocalPolicy(Policy):
             return True
         return type(policy).__name__ == "MolmoAct2Policy"
 
-    def _tensor_to_action_dicts(self, action_tensor: torch.Tensor) -> list[dict[str, Any]]:
+    def _tensor_to_action_dicts(
+        self, action_tensor: torch.Tensor, hw_action_keys: list[str] | None = None
+    ) -> list[dict[str, Any]]:
         """Convert action tensor to list of robot action dicts.
 
         Maps tensor values to robot_state_keys by index. Handles:
@@ -2675,18 +2709,29 @@ class LerobotLocalPolicy(Policy):
         # arm freezes. EmbodimentMap.model_action_to_sim is a no-op when
         # action_units == "native" (the default / real-hardware path).
         emb = self._embodiment
-        convert = emb is not None and getattr(emb, "action_units", "native") != "native"
+        # HARDWARE OVERRIDE: when the caller detected real-hardware '.pos' obs
+        # keys (see get_actions), emit actions under those '.pos' names and SKIP
+        # the sim unit conversion. A SIM embodiment (e.g. so101, action_units=
+        # "degrees") would otherwise (a) key the action by numeric sim joints
+        # ('1'..'6') that the lerobot SOFollower.send_action does not accept, and
+        # (b) convert model DEGREES -> sim RADIANS, feeding ~0.003 rad to a
+        # hardware bus that expects degrees. Both are wrong on the physical arm.
+        # The '.pos' keys are already the model's native units, so pack raw.
+        if hw_action_keys:
+            out_keys = list(hw_action_keys)
+            convert = False
+        else:
+            out_keys = list(self.robot_state_keys)
+            convert = emb is not None and getattr(emb, "action_units", "native") != "native"
 
         result = []
         for action_values in actions_list:
-            vals = [
-                float(action_values[i]) if i < len(action_values) else 0.0 for i in range(len(self.robot_state_keys))
-            ]
+            vals = [float(action_values[i]) if i < len(action_values) else 0.0 for i in range(len(out_keys))]
             # `convert` already implies `emb is not None`; the explicit guard lets
             # the type checker narrow `emb` from `EmbodimentMap | None` at the call.
             if convert and emb is not None:
                 vals = emb.model_action_to_sim(vals)
-            action_dict = {key: vals[index] for index, key in enumerate(self.robot_state_keys)}
+            action_dict = {key: vals[index] for index, key in enumerate(out_keys)}
             result.append(action_dict)
 
         return result

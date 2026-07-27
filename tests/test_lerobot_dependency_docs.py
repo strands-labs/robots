@@ -44,8 +44,16 @@ def test_lerobot_extra_requires_0_6() -> None:
 
 def test_molmoact2_extra_is_pure_pypi_with_transformers_5_4_plus() -> None:
     joined = " ".join(_extras()["molmoact2"])
-    # transformers floor matches lerobot 0.6's transformers-dep (>=5.4.0), NOT 5.3.0
-    assert "transformers>=5.4.0" in joined, joined
+    # The molmoact2 extra defers to lerobot's own [molmoact2] extra for its
+    # transformers/peft/scipy floors instead of hand-mirroring them here (which
+    # silently drifts when lerobot bumps them). lerobot[molmoact2] pulls
+    # lerobot[transformers-dep] (>=5.4.0) transitively, so the >=5.4.0 guarantee
+    # is preserved by construction while staying in lock-step with lerobot.
+    assert "lerobot[molmoact2]" in joined, joined
+    # the lerobot floor is >=0.6.0 (MolmoAct2Policy landed in lerobot 0.6), so
+    # its transformers-dep (>=5.4.0) is what gets resolved - never the pre-0.6
+    # transformers==5.3.0.
+    assert ">=0.6.0" in joined, joined
     # resolves from PyPI - no git-from-source URL
     assert "git+" not in joined, f"molmoact2 extra should not need a git URL: {joined!r}"
 

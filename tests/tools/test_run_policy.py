@@ -725,3 +725,69 @@ class TestSuccessPayloadContentShape:
             "episodes",
         ):
             assert key in payload, f"success payload missing contract key {key!r}"
+
+
+class TestStopWhenPassThrough:
+    """The ``stop_when`` early-return clause (#1644) on the tool wrapper.
+
+    The wrapper forwards the dict verbatim to every per-episode
+    ``Simulation.run_policy`` call (no silent kwarg drop) and validates it
+    against the closed predicate registry BEFORE any recording is started, so
+    an unknown predicate never leaves an empty dataset behind.
+    """
+
+    def test_stop_when_forwarded_to_every_episode(self) -> None:
+        sim = _FakeSim()
+        clause = {"predicate": "body_above_z", "body": "cube", "z": 0.2}
+        result = run_policy(sim, n_episodes=3, n_steps=5, dataset_root=None, stop_when=clause)
+
+        assert result["status"] == "success"
+        assert len(sim.run_policy_calls) == 3
+        for call in sim.run_policy_calls:
+            assert call["stop_when"] == clause
+
+    def test_default_none_forwards_none(self) -> None:
+        sim = _FakeSim()
+        run_policy(sim, n_episodes=1, n_steps=5, dataset_root=None)
+        assert sim.run_policy_calls[0]["stop_when"] is None
+
+    def test_unknown_predicate_rejected_before_recording_starts(self, tmp_path: Path) -> None:
+        sim = _FakeSim()
+        result = run_policy(
+            sim,
+            n_episodes=1,
+            n_steps=5,
+            dataset_root=str(tmp_path / "ds"),
+            stop_when={"predicate": "levitated", "body": "cube"},
+        )
+
+        assert result["status"] == "error"
+        assert "Unknown predicate" in result["content"][0]["text"]
+        # Fail-early contract: nothing was set up, nothing ran.
+        assert sim.start_recording_calls == []
+        assert sim.run_policy_calls == []
+
+    def test_episode_records_surface_stopped_reason(self) -> None:
+        class _ReasonSim(_FakeSim):
+            def run_policy(self, **kwargs: Any) -> dict[str, Any]:
+                self.run_policy_calls.append(kwargs)
+                return {
+                    "status": "success",
+                    "content": [
+                        {"text": "rollout"},
+                        {"json": {"stopped_reason": "predicate", "steps_used": 7}},
+                    ],
+                }
+
+        sim = _ReasonSim()
+        result = run_policy(
+            sim,
+            n_episodes=1,
+            n_steps=50,
+            dataset_root=None,
+            stop_when={"predicate": "body_above_z", "body": "cube", "z": 0.2},
+        )
+        assert result["status"] == "success"
+        episodes = result["content"][1]["json"]["episodes"]
+        assert episodes[0]["stopped_reason"] == "predicate"
+        assert episodes[0]["steps_used"] == 7

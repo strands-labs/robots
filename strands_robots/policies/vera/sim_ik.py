@@ -6,15 +6,15 @@ rotation) plus an optional gripper column. MuJoCo arm actuators are commanded in
 **joint space**, so closing the sim loop needs an IK step that maps each
 Cartesian *delta* onto an absolute target pose and solves it to joint angles.
 
-This module is **copied** from (and intentionally independent of) the cosmos3
-IK bridge, :mod:`~strands_robots.policies.cosmos3.sim_ik`: that module decodes
-an *absolute* EE pose trajectory
-(translation + rot6d) for its in-process diffusers backend, whereas VERA emits
-*relative* deltas. Copying (rather than sharing) keeps the two providers'
-kinematics decoupled - a change to one model's action semantics can never
-silently break the other. The shared piece is only the generic ``mink`` solver
-wrapper (:class:`MinkIKBridge`); the VERA-specific decode lives in
-:func:`decode_vera_delta_chunk_to_targets`.
+The generic damped-least-squares solver wrapper is the shared
+:class:`strands_robots.simulation.ik.MinkIKBridge` (one home for the mink
+``FrameTask`` + ``PostureTask`` solve loop; the cosmos3 provider - which
+decodes *absolute* EE pose trajectories in
+:mod:`~strands_robots.policies.cosmos3.sim_ik` - and the simulation motion
+primitives use the same class). This module subclasses it only to brand the
+install errors with the ``sim-mujoco`` extra, and keeps the VERA-specific
+decode glue (:func:`decode_vera_delta_chunk_to_targets`) local so a change to
+one model's action semantics can never silently break the other.
 
 ``mink`` + ``mujoco`` are imported lazily so importing the VERA provider in the
 light base env (no torch / no sim) stays cheap; a missing stack raises an
@@ -24,12 +24,12 @@ actionable install error rather than a silent default.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import Any, ClassVar
 
 import numpy as np
 
-if TYPE_CHECKING:
-    import mujoco
+from strands_robots.simulation.ik import MinkIKBridge as _SharedMinkIKBridge
+from strands_robots.simulation.ik import resolve_qp_solver
 
 logger = logging.getLogger(__name__)
 
@@ -46,36 +46,22 @@ def _install_hint() -> str:
     )
 
 
-_PREFERRED_QP_SOLVERS = ("daqp", "quadprog", "osqp", "proxqp", "cvxopt", "scs")
+_NO_BACKEND_MSG = (
+    "No qpsolvers backend is installed; the VERA IK bridge needs one "
+    "(e.g. 'daqp' or 'quadprog'). Install: "
+    "uv pip install 'strands-robots[sim-mujoco]' 'qpsolvers[quadprog]'."
+)
 
 
 def _resolve_qp_solver(requested: str | None) -> str:
     """Pick an installed ``qpsolvers`` backend for ``mink.solve_ik``.
 
-    ``mink`` pins ``daqp``, but many envs ship only ``quadprog``. Auto-select
-    from ``qpsolvers.available_solvers`` (prefer daqp, then quadprog) so the IK
-    works everywhere; honour an explicit ``requested`` name when installed, else
-    fail with an actionable error (no silent fallback to an unrequested solver).
+    Delegates to the shared :func:`strands_robots.simulation.ik.resolve_qp_solver`
+    with VERA-branded errors: the install hint and no-backend message name the
+    ``sim-mujoco`` extra so a clean-install user is pointed at the right
+    dependency set (no silent fallback to an unrequested solver).
     """
-    try:
-        from qpsolvers import available_solvers
-    except ImportError as e:
-        raise ImportError(_install_hint()) from e
-    available = list(available_solvers)
-    if not available:
-        raise RuntimeError(
-            "No qpsolvers backend is installed; the VERA IK bridge needs one "
-            "(e.g. 'daqp' or 'quadprog'). Install: "
-            "uv pip install 'strands-robots[sim-mujoco]' 'qpsolvers[quadprog]'."
-        )
-    if requested is not None:
-        if requested not in available:
-            raise ValueError(f"Requested qpsolvers backend {requested!r} is not installed. Available: {available}.")
-        return requested
-    for name in _PREFERRED_QP_SOLVERS:
-        if name in available:
-            return name
-    return available[0]
+    return resolve_qp_solver(requested, install_hint=_install_hint(), no_backend_msg=_NO_BACKEND_MSG)
 
 
 def rot6d_to_matrix(rot6d: np.ndarray) -> np.ndarray:
@@ -113,92 +99,19 @@ def delta_to_matrix(rot_delta: np.ndarray, rotation_dim: int) -> np.ndarray:
     raise ValueError(f"unsupported rotation_dim {rotation_dim!r}; use 3 (axis-angle) or 6 (rot6d)")
 
 
-class MinkIKBridge:
+class MinkIKBridge(_SharedMinkIKBridge):
     """Differential-IK bridge from EE poses to MuJoCo joint configurations.
 
-    A copy of the cosmos3 bridge's generic solver wrapper (the model-agnostic
-    part). See module docstring for why VERA keeps its own copy.
-
-    Args:
-        model: The ``mujoco.MjModel`` for the arm being controlled.
-        ee_frame_name: End-effector frame the Cartesian task tracks.
-        ee_frame_type: ``"body"`` (default), ``"site"`` or ``"geom"``.
-        position_cost / orientation_cost / posture_cost: task weights.
-        solver: qpsolvers backend (``None`` auto-selects).
-        damping / max_iters / dt / pos_threshold / ori_threshold: solver knobs.
+    The VERA branding of the shared
+    :class:`strands_robots.simulation.ik.MinkIKBridge` (same solver, tasks, and
+    convergence behavior): a missing ``mink``/``qpsolvers`` stack raises the
+    ``sim-mujoco`` install hint. See the shared class for the full
+    constructor/solve contract.
     """
 
-    def __init__(
-        self,
-        model: mujoco.MjModel,
-        ee_frame_name: str,
-        ee_frame_type: str = "body",
-        *,
-        position_cost: float = 1.0,
-        orientation_cost: float = 1.0,
-        posture_cost: float = 1e-2,
-        solver: str | None = None,
-        damping: float = 1e-3,
-        max_iters: int = 20,
-        dt: float = 1e-2,
-        pos_threshold: float = 1e-3,
-        ori_threshold: float = 1e-3,
-    ) -> None:
-        try:
-            import mink
-        except ImportError as e:
-            raise ImportError(_install_hint()) from e
-
-        self._mink = mink
-        self.model = model
-        self.ee_frame_name = ee_frame_name
-        self.ee_frame_type = ee_frame_type
-        self.solver = _resolve_qp_solver(solver)
-        self.damping = damping
-        self.max_iters = max_iters
-        self.dt = dt
-        self.pos_threshold = pos_threshold
-        self.ori_threshold = ori_threshold
-
-        self._configuration = mink.Configuration(model)
-        self._frame_task = mink.FrameTask(
-            frame_name=ee_frame_name,
-            frame_type=ee_frame_type,
-            position_cost=position_cost,
-            orientation_cost=orientation_cost,
-            lm_damping=1.0,
-        )
-        self._posture_task = mink.PostureTask(model=model, cost=posture_cost)
-        self._tasks = [self._frame_task, self._posture_task]
-        logger.info(
-            "VERA MinkIKBridge ready [ee=%s/%s solver=%s nq=%d]",
-            ee_frame_type,
-            ee_frame_name,
-            self.solver,
-            model.nq,
-        )
-
-    def ee_pose(self, qpos: np.ndarray) -> np.ndarray:
-        """Forward kinematics: the EE frame's absolute ``(4, 4)`` pose at ``qpos``."""
-        self._configuration.update(np.asarray(qpos, dtype=np.float64))
-        transform = self._configuration.get_transform_frame_to_world(self.ee_frame_name, self.ee_frame_type)
-        return np.asarray(transform.as_matrix(), dtype=np.float64)
-
-    def solve(self, target_pose: np.ndarray, q_init: np.ndarray) -> np.ndarray:
-        """Solve IK for one Cartesian target from a seed configuration."""
-        mink = self._mink
-        q = np.asarray(q_init, dtype=np.float64).copy()
-        self._configuration.update(q)
-        self._posture_task.set_target(q)
-        target = mink.SE3.from_matrix(np.asarray(target_pose, dtype=np.float64))
-        self._frame_task.set_target(target)
-        for _ in range(self.max_iters):
-            velocity = mink.solve_ik(self._configuration, self._tasks, self.dt, self.solver, self.damping)
-            self._configuration.integrate_inplace(velocity, self.dt)
-            err = self._frame_task.compute_error(self._configuration)
-            if np.linalg.norm(err[:3]) <= self.pos_threshold and np.linalg.norm(err[3:]) <= self.ori_threshold:
-                break
-        return np.asarray(self._configuration.q, dtype=np.float64).copy()
+    _INSTALL_HINT: ClassVar[str] = _install_hint()
+    _NO_BACKEND_MSG: ClassVar[str] = _NO_BACKEND_MSG
+    _LOG_LABEL: ClassVar[str] = "VERA MinkIKBridge"
 
 
 def decode_vera_delta_chunk_to_targets(

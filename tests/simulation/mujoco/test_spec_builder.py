@@ -369,6 +369,27 @@ class TestMutation:
         spec = SpecBuilder.build(SimWorld())
         assert SpecBuilder.remove_body(spec, "ghost") is False
 
+    def test_remove_body_added_since_the_last_compile(self):
+        """A body inserted after the last compile is still removable.
+
+        ``spec.body(name)`` resolves only names present at the last
+        ``compile()``/``recompile()``, so a just-added body is invisible to it
+        and reachable only through the ``spec.bodies`` enumeration. Without the
+        fallback scan, rolling back a half-added body removed nothing and the
+        orphan made every later recompile fail on the duplicate name.
+        """
+        spec = SpecBuilder.build(SimWorld())
+        model = spec.compile()
+        data = mujoco.MjData(model)
+
+        spec.worldbody.add_body(name="latecomer")
+        assert spec.body("latecomer") is None, "precondition: invisible to the typed accessor"
+
+        assert SpecBuilder.remove_body(spec, "latecomer") is True
+        assert [b.name for b in spec.bodies] == ["world"]
+        # The spec still compiles, and the name is free for a real object.
+        spec.recompile(model, data)
+
     def test_add_camera_then_recompile(self):
         w = SimWorld()
         spec = SpecBuilder.build(w)

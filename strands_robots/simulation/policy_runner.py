@@ -892,6 +892,7 @@ class PolicyRunner:
         seed: int | None = None,
         async_rtc: bool | None = None,
         rtc_inference_timeout_s: float | None = None,
+        stop_when: Callable[[SimEngine], bool] | None = None,
     ) -> dict[str, Any]:
         """Run ``policy`` on ``robot_name`` for ``duration`` seconds.
 
@@ -992,13 +993,38 @@ class PolicyRunner:
                 :meth:`run` returns), so the abort is bounded by ONE inference,
                 not the whole rollout. ``None`` (default) waits without a deadline
                 (historical behaviour). Ignored on the synchronous path.
+            stop_when: Optional semantic early-return condition - a callable
+                ``(sim) -> bool`` evaluated against the LIVE sim after every
+                applied action, on BOTH the synchronous and async-RTC paths.
+                The first ``True`` ends the rollout cleanly with
+                ``stopped_reason="predicate"``; the remaining actions of an
+                in-flight chunk are dropped, so the early-return latency bound
+                is ONE control step regardless of the policy's chunk length
+                (on the async-RTC path any in-flight prefetch is still joined
+                before :meth:`run` returns). Callers driving the runner
+                through :meth:`SimEngine.run_policy` pass a predicate-DSL dict
+                compiled via
+                :func:`~strands_robots.simulation.benchmark_spec.compile_stop_when`;
+                programmatic callers may pass any callable (mirroring
+                :meth:`evaluate`'s ``success_fn``). A raising ``stop_when`` is
+                fatal (``status="error"``): the caller asked for an
+                early-return semantics the runner can no longer honor, and
+                silently running to the step budget would misreport the
+                rollout. ``None`` (default) preserves the pure step-budget
+                horizon.
 
         Returns:
             ``{"status": "success"|"error", "content": [{"text": ...},
             {"json": {...}}]}``. The ``json`` block is agent-consumable and
             carries the rollout facts as typed fields - ``robot_name``,
-            ``policy``, ``instruction``, ``n_steps``, ``elapsed_s``,
-            ``stopped_early``, ``action_errors``, ``video_path`` (``None`` when
+            ``policy``, ``instruction``, ``n_steps``, ``steps_used`` (the
+            control steps actually executed, equal to ``n_steps``),
+            ``elapsed_s``, ``stopped_early``, ``stopped_reason``
+            (``"predicate"`` - the ``stop_when`` condition fired; ``"budget"``
+            - the step/duration horizon was exhausted; ``"cancelled"`` - a
+            cooperative stop, e.g. ``stop_policy``; on ``status="error"``
+            results the field is ``"error"``), ``action_errors``,
+            ``video_path`` (``None`` when
             no MP4 was written), ``video_frames`` and ``sim_time_s`` (when the
             backend reports sim time) - so callers can self-correct without
             regex-parsing the human-readable ``text``. The block also carries the
@@ -1089,9 +1115,24 @@ class PolicyRunner:
         # lives in _RolloutVideoWriter so run() and evaluate() record identically.
         vwriter, _video_err = _RolloutVideoWriter.open(self.sim, video, control_frequency)
         if _video_err is not None:
+            # Every error result carries the stopped_reason="error" json block
+            # (the "recorded on ALL exit paths" contract); the writer's error
+            # dict is text-only because evaluate() shares it, so tag it here.
+            _video_err.setdefault("content", []).append(
+                {"json": {"stopped_reason": "error", "steps_used": 0, "n_steps": 0}}
+            )
             return _video_err
 
         stopped_early = False
+        # Why the rollout ended, reported in the result json so an agent
+        # deciding whether to retry can distinguish "the world reached the
+        # goal state" from "the step budget ran out" from "the user cancelled"
+        # (stopped_early alone conflates the last two). "budget" is the
+        # default (the loop ran its full horizon); the CooperativeStop handler
+        # re-tags it "cancelled", a fired stop_when re-tags it "predicate",
+        # and every error return reports "error".
+        stopped_reason = "budget"
+        stop_predicate_fired = False
         # T26: skip camera rendering when the policy does not need images.
         _skip_images = not getattr(policy, "requires_images", True)
         # Open-loop chunk replay consumes H actions from ONE observation. That
@@ -1276,6 +1317,36 @@ class PolicyRunner:
                 if not fast_mode:
                     time.sleep(action_sleep)
 
+            def _stop_when_fired() -> bool:
+                """Evaluate the caller's ``stop_when`` clause against the live sim.
+
+                Called after every applied action on BOTH the synchronous and
+                async-RTC paths, so the early-return latency bound is ONE
+                control step regardless of chunk length: the check fires
+                within the current chunk-slice and the remaining actions of
+                the chunk are dropped. Call sites guard on ``stop_when is not
+                None`` so the no-clause hot path pays no per-step call. A
+                raising clause is fatal - the caller asked for early-return
+                semantics the runner can no longer honor, and silently
+                running to the step budget would misreport the rollout - so
+                it surfaces as ``status="error"`` via the outer handler
+                rather than being warn-and-continued.
+                """
+                nonlocal stop_predicate_fired
+                assert stop_when is not None  # call sites hoist the None guard
+                try:
+                    fired = bool(stop_when(self.sim))
+                except Exception as e:
+                    raise RuntimeError(
+                        f"stop_when predicate raised at step {step_count}: {e!r}. The early-return "
+                        "condition cannot be evaluated, so the rollout is aborted rather than "
+                        "silently running to its step budget."
+                    ) from e
+                if fired:
+                    stop_predicate_fired = True
+                    logger.info("stop_when fired at step %d; ending rollout early", step_count)
+                return fired
+
             def _query_chunk(observation: dict[str, Any], observed_delay: int = 0) -> list[dict[str, Any]]:
                 # Resolve ONE action chunk from the policy. Never truncate below
                 # the policy's own intended chunk size: a model trained for
@@ -1428,6 +1499,15 @@ class PolicyRunner:
                             step_obs = cur_obs
                         _apply(step_obs, cur_chunk[idx])
                         idx += 1
+                        # Semantic early return: checked after EVERY applied
+                        # action, so the stop lands within one control step of
+                        # the world reaching the condition - the rest of the
+                        # in-flight chunk (and any prefetched chunk) is
+                        # dropped; the executor shutdown below joins the
+                        # in-flight prefetch worker. The None guard is hoisted
+                        # so the no-clause hot path pays no per-step call.
+                        if stop_when is not None and _stop_when_fired():
+                            break
                 finally:
                     # Wait for any in-flight inference so no background thread
                     # touches the policy/sim after run() returns (the caller may
@@ -1452,22 +1532,45 @@ class PolicyRunner:
                         else:
                             step_obs = observation
                         _apply(step_obs, action_dict)
+                        # Semantic early return: checked after EVERY applied
+                        # action (same cadence as the benchmark eval loop), so
+                        # the remaining actions of the chunk are dropped as
+                        # soon as the condition holds. The None guard is
+                        # hoisted so the no-clause hot path pays no per-step
+                        # call.
+                        if stop_when is not None and _stop_when_fired():
+                            break
+                    if stop_predicate_fired:
+                        break
 
         except CooperativeStop:
             stopped_early = True
+            stopped_reason = "cancelled"
         except Exception as e:
             if vwriter is not None:
                 vwriter.close()
             logger.exception("PolicyRunner.run failed")
             return {
                 "status": "error",
-                "content": [{"text": f"Policy failed: {e}"}, {"json": _rtc_telemetry()}],
+                "content": [
+                    {"text": f"Policy failed: {e}"},
+                    {"json": {**_rtc_telemetry(), "stopped_reason": "error", "steps_used": step_count}},
+                ],
             }
 
-        # Either finished all steps or was cooperatively stopped
+        # Either finished all steps, hit the stop_when condition, or was
+        # cooperatively stopped.
+        if stop_predicate_fired:
+            stopped_early = True
+            stopped_reason = "predicate"
         elapsed = time.time() - start_time
         sim_time = self._maybe_sim_time()
-        prefix = "Policy stopped" if stopped_early else "Policy complete"
+        if not stopped_early:
+            prefix = "Policy complete"
+        elif stopped_reason == "predicate":
+            prefix = "Policy stopped early (stop_when condition met)"
+        else:
+            prefix = "Policy stopped"
         text = (
             f"{prefix} on '{robot_name}'\n{type(policy).__name__} | {instruction}\n{elapsed:.1f}s | {step_count} steps"
         )
@@ -1510,8 +1613,14 @@ class PolicyRunner:
             "policy": type(policy).__name__,
             "instruction": instruction,
             "n_steps": step_count,
+            # Alias of n_steps under the retry-loop name: the control steps
+            # actually executed before the rollout ended. Paired with
+            # stopped_reason it makes "the predicate fired after 37 of 200
+            # steps" queryable without arithmetic on the caller side.
+            "steps_used": step_count,
             "elapsed_s": round(elapsed, 3),
             "stopped_early": stopped_early,
+            "stopped_reason": stopped_reason,
             "action_errors": _action_errors,
             "video_path": None,
             "video_frames": 0,
@@ -1594,6 +1703,10 @@ class PolicyRunner:
                 f"-- the robot did not move. Check that the policy's output keys "
                 f"match the robot's actuator names."
             )
+            # An error result always reports stopped_reason="error": the
+            # rollout may have run its full budget, but the outcome is not a
+            # retryable "budget" completion.
+            payload["stopped_reason"] = "error"
             return {"status": "error", "content": [{"text": text}, {"json": payload}]}
         if _action_errors > 0:
             text += f"\n\n{_action_errors}/{step_count} action steps had unresolved keys."
