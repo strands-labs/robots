@@ -636,6 +636,11 @@ def lerobot_train(
                 if gate_err:
                     return gate_err
 
+            if pretrained_path:
+                gate_err = _gate_extra_flags({"policy.pretrained_path": pretrained_path}, tool_context)
+                if gate_err:
+                    return gate_err
+
             try:
                 cmd = build_train_command(
                     dataset_root=dataset_root,

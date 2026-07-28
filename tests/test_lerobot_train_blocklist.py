@@ -187,3 +187,30 @@ class TestGateExtraFlags:
     @pytest.mark.parametrize("response", ["n", "no", "nope", "", 42, None])
     def test_approve_response_negative(self, response):
         assert _approve_response(response) is False
+
+
+class TestPretrainedPathGate:
+    """Pin: the pretrained_path named parameter is gated identically to extra_flags."""
+
+    @pytest.fixture(autouse=True)
+    def _hermetic_env(self, monkeypatch):
+        monkeypatch.delenv("BYPASS_TOOL_CONSENT", raising=False)
+        monkeypatch.delenv("STRANDS_TRAIN_EXTRA_FLAGS_ALLOW", raising=False)
+
+    def test_pretrained_path_blocked_without_approval(self):
+        """The named parameter hits the same gate as extra_flags={'policy.pretrained_path': ...}."""
+        result = _gate_extra_flags({"policy.pretrained_path": "evil/model"}, None)
+        assert result is not None
+        assert result["status"] == "error"
+
+    def test_pretrained_path_allowed_via_allowlist(self, monkeypatch):
+        monkeypatch.setenv("STRANDS_TRAIN_EXTRA_FLAGS_ALLOW", "policy.pretrained_path")
+        result = _gate_extra_flags({"policy.pretrained_path": "trusted/model"}, None)
+        assert result is None
+
+    def test_pretrained_path_approved_via_interrupt(self):
+        ctx = MagicMock()
+        ctx.interrupt.return_value = "y"
+        result = _gate_extra_flags({"policy.pretrained_path": "org/model"}, ctx)
+        assert result is None
+        ctx.interrupt.assert_called_once()
