@@ -763,6 +763,45 @@ for _alias, _target in _aliases.items():
 del _defs, _aliases
 
 
+def embodiments_matching(observation: dict[str, Any]) -> list[str]:
+    """Canonical embodiment names whose declared ``state_keys`` ``observation`` satisfies.
+
+    Used to build the remedy in the all-missing ``robot_state_keys`` diagnostic
+    (:meth:`LerobotLocalPolicy._resolve_state_order`). That message used to end
+    in one fixed worked example, ``embodiment='so101'``, for every caller. On a
+    real SO-101 the example is self-defeating: ``so101`` is the SIM embodiment
+    and declares numeric MuJoCo actuator names (``'1'..'6'``), while a lerobot
+    ``SOFollower`` reports ``shoulder_pan.pos`` and friends, so following the
+    advice re-raises the identical error with the identical advice. Selecting
+    the name from the observation instead means the remedy offered is always one
+    the observation can actually satisfy.
+
+    Only a FULL match counts: every declared ``state_key`` must be present, so a
+    suggested embodiment cannot itself land in the all-missing (or partially
+    missing) path. Names are canonicalised through :attr:`EmbodimentMap.name`,
+    so the several registry spellings of one config (``so101_follower``,
+    ``so101_real``, ``so_real`` ...) collapse to a single suggestion.
+
+    Distinct configs may declare IDENTICAL keys - ``so_real``, ``koch_real`` and
+    ``omx_real`` all declare the same six ``.pos`` names - so more than one name
+    can come back. The observation alone cannot choose between those, and the
+    caller is expected to present them as alternatives rather than pick one.
+
+    Args:
+        observation: A raw robot/sim observation dict.
+
+    Returns:
+        Canonical embodiment names, sorted for a deterministic message.
+    """
+    present = set(observation)
+    matched: set[str] = set()
+    for entry in EMBODIMENT_MAP.values():
+        declared = list(entry.state_keys or [])
+        if declared and present.issuperset(declared):
+            matched.add(entry.name)
+    return sorted(matched)
+
+
 def load_embodiment(embodiment: str | EmbodimentMap | dict) -> EmbodimentMap:
     """Load an embodiment map by name, dict, or pass through an instance.
 
@@ -795,6 +834,7 @@ __all__ = [
     "EMBODIMENT_MAP",
     "ZeroActionMonitor",
     "diagnose_action_dim",
+    "embodiments_matching",
     "load_embodiment",
     "reconcile_dim",
     "register_pack_state_step",

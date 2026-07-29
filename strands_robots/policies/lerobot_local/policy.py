@@ -21,7 +21,7 @@ import numpy as np
 import torch
 
 from .. import Policy, align_action_values
-from .embodiment import ZeroActionMonitor, diagnose_action_dim, hardware_pos_keys
+from .embodiment import ZeroActionMonitor, diagnose_action_dim, embodiments_matching, hardware_pos_keys
 from .processor import ProcessorBridge
 from .resolution import resolve_policy_class_by_name, resolve_policy_class_from_hub
 
@@ -85,6 +85,77 @@ def _merge_obs_rename(base: dict[str, str], override: dict[str, str | None] | No
 
 
 _VELOCITY_SUFFIX = ".vel"
+
+
+def _state_key_cause(configured: list[str]) -> str:
+    """Name the likely cause of an all-missing ``robot_state_keys`` binding.
+
+    The diagnostic used to assert the generic-key cause unconditionally ("this
+    usually means generic auto-generated keys were paired with ..."), which is
+    wrong whenever the configured keys are named but describe a different robot
+    - e.g. the sim ``so101`` names ``'1'..'6'`` against hardware ``.pos`` keys.
+    Deciding from the keys in hand keeps the sentence true in both cases.
+
+    Args:
+        configured: The ``robot_state_keys`` that matched nothing.
+
+    Returns:
+        One sentence naming the cause, ending in a period.
+    """
+    if any(k.startswith("joint_") for k in configured):
+        return (
+            "This usually means generic auto-generated keys (joint_0..joint_N) were "
+            "paired with a robot/sim that reports named joints."
+        )
+    return "The configured keys name a different robot/sim than the one reporting this observation."
+
+
+def _state_key_remedy(observation_dict: dict[str, Any]) -> str:
+    """Build a remedy the observation in hand can actually satisfy.
+
+    Every branch offers only bindings that resolve against THIS observation, so
+    the guidance cannot send a caller back into the same error. The registry is
+    consulted via :func:`~strands_robots.policies.lerobot_local.embodiment.embodiments_matching`,
+    which returns canonical names only, and which may return several because
+    distinct configs declare identical keys (``so_real`` / ``koch_real`` /
+    ``omx_real``). Those are offered as alternatives rather than resolved
+    arbitrarily: the observation genuinely does not distinguish them, and naming
+    one would be a guess about which robot is plugged in.
+
+    Both documented mechanisms - ``embodiment=`` and ``set_robot_state_keys()`` -
+    are named in every branch; only the embodiment VALUE is derived, and it is
+    omitted rather than guessed when nothing matches. Dropping the mechanism
+    entirely would narrow the long-standing contract that this diagnostic points
+    at both (``tests/policies/lerobot_local/test_state_key_mismatch.py``).
+
+    The observed keys are already listed earlier in the caller's message, so the
+    ``set_robot_state_keys`` arm refers to them instead of repeating them - a
+    29-DOF G1 would otherwise print its joint list twice.
+
+    Args:
+        observation_dict: Raw strands/sim observation for this step.
+
+    Returns:
+        The remedy sentence(s), ending in a period.
+    """
+    candidates = embodiments_matching(observation_dict)
+    if len(candidates) == 1:
+        return (
+            f"Pass embodiment='{candidates[0]}', which declares exactly the observed keys, "
+            "or call set_robot_state_keys() with the observed keys listed above."
+        )
+    if candidates:
+        options = " | ".join(f"'{name}'" for name in candidates)
+        return (
+            f"These embodiments declare exactly the observed keys and the observation "
+            f"cannot choose between them - pass the one describing this robot: {options}. "
+            "Or call set_robot_state_keys() with the observed keys listed above."
+        )
+    return (
+        "No registered embodiment declares the observed keys, so call "
+        "set_robot_state_keys() with the observed keys listed above, or pass "
+        "embodiment= with a map declaring them."
+    )
 
 
 def _drop_velocity_siblings(scalar_keys: list[str]) -> list[str]:
@@ -2066,6 +2137,14 @@ class LerobotLocalPolicy(Policy):
             fall back to the observation's own scalar keys so the state is
             populated rather than silently dropped.
 
+        Both spellings of the guidance are DERIVED from the observation rather
+        than fixed: the suggested ``embodiment=`` names are those whose declared
+        ``state_keys`` this observation actually satisfies
+        (:func:`~strands_robots.policies.lerobot_local.embodiment.embodiments_matching`),
+        so following the advice cannot land back in this same branch. A single
+        fixed example could not do that - ``embodiment='so101'`` is the SIM
+        SO-101 and names ``'1'..'6'``, which matches no hardware observation.
+
         Any ordering derived from the observation (both the fallback above and
         the no-``robot_state_keys`` case) is position-only: a ``<joint>.vel``
         sibling of a present ``<joint>`` is dropped by
@@ -2096,11 +2175,9 @@ class LerobotLocalPolicy(Policy):
         ellipsis = "..." if len(self.robot_state_keys) > 8 else ""
         msg = (
             f"None of the configured robot_state_keys {shown}{ellipsis} are present "
-            f"in the observation. Observed joint/state keys: {scalar_keys}. This "
-            "usually means generic auto-generated keys (joint_0..joint_N) were "
-            "paired with a robot/sim that reports named joints. Pass "
-            "embodiment='<name>' (e.g. embodiment='so101') or call "
-            "set_robot_state_keys([...]) with the robot's actual joint names."
+            f"in the observation. Observed joint/state keys: {scalar_keys}. "
+            f"{_state_key_cause(self.robot_state_keys)} "
+            f"{_state_key_remedy(observation_dict)}"
         )
         if self.strict_keys:
             raise ValueError("strict_keys=True: " + msg)

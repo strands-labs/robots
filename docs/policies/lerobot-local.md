@@ -317,6 +317,18 @@ warns (or raises under `strict_keys=True`), sets `generic_state_keys_used`, and
 falls back to the observation's own scalar keys so the state is populated rather
 than silently dropped.
 
+The remedy in that message is **derived from the observation in hand**: it names
+the embodiments whose declared `state_keys` this observation actually satisfies,
+so applying the suggestion cannot land back in the same branch. Where several
+embodiments declare identical keys (`so_real`, `koch_real` and `omx_real` all
+declare the same six `.pos` names) all of them are offered, because the
+observation alone cannot tell those robots apart; pick the one you have, or call
+`set_robot_state_keys([...])` with the observed keys the message lists. If no
+registered embodiment matches, only `set_robot_state_keys([...])` is suggested.
+A fixed example could not carry that guarantee - `embodiment="so101"` is the SIM
+SO-101 and declares numeric actuator names (`'1'..'6'`), which no hardware
+observation contains.
+
 That fallback ordering is **position-only**: a `<joint>.vel` entry is dropped
 when the observation also carries its `<joint>` position companion. The MuJoCo
 backend emits a velocity sibling beside every joint position, so taking its keys
