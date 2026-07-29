@@ -124,9 +124,9 @@ def _state_key_remedy(observation_dict: dict[str, Any]) -> str:
 
     Both documented mechanisms - ``embodiment=`` and ``set_robot_state_keys()`` -
     are named in every branch; only the embodiment VALUE is derived, and it is
-    omitted rather than guessed when nothing matches. Dropping the mechanism
-    entirely would narrow the long-standing contract that this diagnostic points
-    at both (``tests/policies/lerobot_local/test_state_key_mismatch.py``).
+    omitted rather than guessed when nothing matches. Naming both is a contract
+    this diagnostic has always kept and callers rely on, so the no-match branch
+    still points at ``embodiment=`` even though it has no value to offer.
 
     The observed keys are already listed earlier in the caller's message, so the
     ``set_robot_state_keys`` arm refers to them instead of repeating them - a
