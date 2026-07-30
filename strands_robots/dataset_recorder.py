@@ -222,7 +222,12 @@ def sync_dataset_to_bucket(
             text=True,
         )
         blob = (cp.stderr + cp.stdout).lower()
-        if cp.returncode != 0 and "exist" not in blob:
+        # An already-created bucket is the normal case for a daily re-sync, so it
+        # must not fail the sync. The hub reports it as "You already created this
+        # bucket repo" with a 409, which does not contain "exists" - match the
+        # status code and both phrasings rather than one substring.
+        already_exists = "exist" in blob or "409" in blob or "already created" in blob
+        if cp.returncode != 0 and not already_exists:
             return {
                 "status": "error",
                 "message": f"bucket create failed: {cp.stderr.strip()}",

@@ -1758,6 +1758,76 @@ def test_sync_to_bucket_new_huggingface_hub_passes_version_gate(tmp_path, monkey
     assert result["status"] == "success"
 
 
+def test_sync_to_bucket_tolerates_a_bucket_that_already_exists(tmp_path, monkeypatch):
+    """Re-syncing into an existing bucket must succeed, not fail on create.
+
+    ``create=True`` runs ``hf buckets create`` before every sync, so the second
+    sync of a run - the daily re-sync the bucket exists for - always hits an
+    already-created bucket. The hub reports that as a 409 whose body reads "You
+    already created this bucket repo", which does not contain "exists"; matching
+    only that one substring turned the normal case into
+    ``bucket create failed: ... 409 Conflict``.
+    """
+    import subprocess
+
+    from strands_robots import dataset_recorder as dr
+
+    _write_meta(tmp_path)
+    monkeypatch.setattr(dr, "_hf_executable", lambda: "hf")
+
+    calls = []
+
+    def _fake_run(cmd, *_a, **_k):
+        calls.append(cmd)
+        if "create" in cmd:
+            return subprocess.CompletedProcess(
+                cmd,
+                1,
+                stdout="",
+                stderr=(
+                    "Error: Client error '409 Conflict' for url "
+                    "'https://huggingface.co/api/buckets/my-org/robot-fave'\n"
+                    "You already created this bucket repo: my-org/robot-fave"
+                ),
+            )
+        return subprocess.CompletedProcess(cmd, 0, stdout="ok", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+
+    result = _sync_recorder(tmp_path).sync_to_bucket("my-org/robot-fave")
+
+    assert result["status"] == "success", result
+    assert any("sync" in cmd for cmd in calls), "the sync must still run after create is skipped"
+
+
+def test_sync_to_bucket_still_reports_a_genuine_create_failure(tmp_path, monkeypatch):
+    """A create failure that is not an already-exists conflict still errors.
+
+    Guards the already-exists tolerance above from widening into "ignore every
+    create failure", which would report success for a sync that never ran.
+    """
+    import subprocess
+
+    from strands_robots import dataset_recorder as dr
+
+    _write_meta(tmp_path)
+    monkeypatch.setattr(dr, "_hf_executable", lambda: "hf")
+
+    def _fake_run(cmd, *_a, **_k):
+        if "create" in cmd:
+            return subprocess.CompletedProcess(
+                cmd, 1, stdout="", stderr="Error: 403 Forbidden - insufficient permissions"
+            )
+        raise AssertionError("sync must not run when bucket creation genuinely failed")
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+
+    result = _sync_recorder(tmp_path).sync_to_bucket("my-org/robot-fave")
+
+    assert result["status"] == "error"
+    assert "403" in result["message"]
+
+
 def test_sync_to_bucket_unimportable_huggingface_hub_skips_version_gate(tmp_path, monkeypatch):
     """No importable huggingface_hub package -> the gate fails open.
 

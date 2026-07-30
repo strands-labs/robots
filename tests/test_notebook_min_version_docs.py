@@ -83,3 +83,25 @@ def test_streaming_notebook_reads_the_bucket_path_it_wrote() -> None:
     assert "run_id=RUN_ID" in code, (
         "notebook must pin the sync's run_id to RUN_ID so the write and read sides cannot drift apart."
     )
+
+
+def test_streaming_notebook_records_at_the_rate_it_rolls_out_at() -> None:
+    """The rollout rate must match the recording fps, or nothing is recorded.
+
+    The recorder writes one frame per control step with no decimation, so
+    ``run_policy`` refuses a rollout whose ``control_frequency`` (50 Hz by
+    default) disagrees with the recording's fps rather than writing frames at a
+    distorted timestamp rate. Without an explicit ``control_frequency``, the
+    30 fps recording here captured zero frames while the cell still printed
+    "recorded ->", and every later cell ran against an empty dataset.
+    """
+    code = _notebook_code()
+    assert "control_frequency=30" in code, (
+        "the recording declares fps=30, so run_policy needs control_frequency=30 "
+        "or the rate guard rejects the rollout and no frames are recorded."
+    )
+    assert 'raise RuntimeError(f"rollout failed' in code, (
+        "the rollout's status must be checked; run_policy reports a rejected "
+        "rollout in its result dict rather than raising, so an unchecked call "
+        "prints success over an empty dataset."
+    )
