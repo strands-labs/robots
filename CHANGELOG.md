@@ -5,62 +5,6 @@ All notable behavioural changes to `strands-robots` are logged here. Follows
 
 ## [Unreleased]
 
-### Fixed: re-syncing into an existing bucket failed on the create step
-
-`sync_dataset_to_bucket` and `sync_to_bucket` run `hf buckets create` before
-every sync when `create=True`, so the second sync of a run always meets a bucket
-that already exists. That is the case buckets exist for - the mutable collection
-target you re-sync through the day - and it failed:
-
-```python
-sync_dataset_to_bucket(root, "my-org/robot-fave")   # first call: creates, syncs
-sync_dataset_to_bucket(root, "my-org/robot-fave")   # second call:
-# {"status": "error", "message": "bucket create failed: ... '409 Conflict' ..."}
-```
-
-The already-exists branch matched only the substring `exist`, while the hub
-reports the conflict as `You already created this bucket repo` with a 409. The
-check now matches the status code and both phrasings. A genuine create failure
-(403, for instance) still errors without running the sync, so tolerating the
-conflict does not report success for a sync that never happened.
-
-### Fixed: notebook 5 recorded zero frames while reporting success
-
-Cell 3 recorded at `fps=30` and called `run_policy` without a
-`control_frequency`, which defaults to 50 Hz. The recorder writes one frame per
-control step with no decimation, so the rate guard refused the rollout rather
-than writing frames whose timestamps implied a 1.667x slower episode. The
-refusal arrived as a status dict that the cell discarded, so it printed
-`recorded -> /tmp/nb5_dataset` over a dataset containing nothing but
-`meta/info.json`, and every later cell in the notebook ran against it.
-
-The rollout now runs at `control_frequency=30.0` to match the recording, and
-both `run_policy` and `stop_recording` have their status checked so a refusal
-stops the notebook where it happens.
-
-### Fixed: notebook 5 streamed from a bucket path it never wrote to
-
-The streaming-data-loop notebook synced its dataset with `sync_to_bucket`, which
-uploads to `hf://buckets/{bucket}/{run_id}`, then read it back with
-`stream_dataset(BUCKET, repo_type="bucket")`. LeRobot's bucket reader resolves
-`meta/` and `data/` directly beneath the repo id it is handed, so the read looked
-for `meta/info.json` at the bucket root while the dataset sat one level down
-under its `run_id`:
-
-```python
-rec.sync_to_bucket(BUCKET)                                  # -> hf://buckets/org/name/nb5_demo
-sim.stream_dataset(BUCKET, repo_type="bucket")              # looks in hf://buckets/org/name
-# FileNotFoundError: .../buckets--org--name/meta/info.json
-```
-
-Only the bucket branch was affected; the default local-root path was always
-consistent. The notebook now defines `RUN_ID` alongside `BUCKET`, pins the sync
-to it, and builds the streaming repo id as `f"{BUCKET}/{RUN_ID}"` - the bucket
-namespace is the first two segments of that id and the remainder is the path
-within the bucket, so one id addresses both. A test asserts the write and read
-sides name the same `run_id`, since the two are only consistent by convention
-and drifted apart silently before.
-
 ### Fixed: a live MJPEG stream refuses options it cannot honor
 
 `mjpeg_frames` is the one media entry point in `strands_robots.rendering` that
