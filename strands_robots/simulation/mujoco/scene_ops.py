@@ -19,6 +19,8 @@ Public API:
 * :func:`reposition_body_in_scene` - edit a body's spec ``pos``/``quat`` + recompile.
 * :func:`eject_robot_from_scene` - walk the spec, delete everything namespaced
   under ``{robot_name}/``, then recompile.
+* :func:`refresh_body_inertial_from_geometry` - re-derive a body's mass /
+  center of mass / inertia after one of its geoms was resized at runtime.
 
 Every function takes a ``SimWorld`` whose ``_backend_state["spec"]`` holds the
 live ``MjSpec``. They return ``True`` on success, ``False`` on failure (matching
@@ -267,6 +269,106 @@ def persist_geom_properties(
         spec_geom.friction[:] = friction
     if size is not None:
         spec_geom.size[: len(size)] = size
+    return None
+
+
+def refresh_body_inertial_from_geometry(world: SimWorld, geom_id: int) -> str | None:
+    """Re-derive the inertial row of the body owning ``geom_id`` from its geometry.
+
+    A body that does not declare an ``<inertial>`` takes its mass, center of mass
+    and inertia tensor from the shapes it owns: the compiler integrates them over
+    the geoms once, at compile time. ``model.body_mass`` / ``body_ipos`` /
+    ``body_iquat`` / ``body_inertia`` are therefore DERIVED from ``geom_size``, and
+    no ``mj_forward`` / ``mj_step`` recomputes them. Resizing a geom in the model
+    alone leaves the body describing the shape it used to have, so it resists
+    rotation as the old geometry did while colliding as the new one - and for a
+    geom whose mass comes from a density, it also keeps the old mass and the old
+    balance point.
+
+    The values are read from a compile of a *copy* of the live spec, which already
+    carries the new geometry (see :func:`persist_geom_properties`). That makes the
+    refreshed row equal, by construction, to the one the next scene recompile will
+    produce - so the same resize no longer means two different things depending on
+    whether an unrelated ``add_object`` happens afterwards. Deriving it from
+    MuJoCo's own integrator rather than from per-primitive formulas is also what
+    makes a multi-geom body and a shifted center of mass come out right, with no
+    shape-by-shape special cases to keep correct.
+
+    The live model is not swapped and the scene's own ``mjData`` is never passed to
+    MuJoCo, so entity ids, joint state and the recompile generation are untouched -
+    the refresh reads geometry and writes constants, and a resize therefore leaves
+    the scene exactly where it was. The cost is one spec compile plus one scratch
+    ``mjData``, paid only for a resize of a geom whose body derives its inertia
+    from geometry.
+
+    Args:
+        world: The scene holding the live spec and compiled model.
+        geom_id: Compiled geom index whose size has already been recorded in the
+            spec, as resolved by the caller.
+
+    Returns:
+        ``None`` once the row is refreshed - including when the owning body
+        declares its own ``<inertial>``, which takes nothing from geometry and so
+        needs no refresh - otherwise the reason it could not be, leaving both the
+        model and the spec untouched so the caller can restore them.
+    """
+    mj = _ensure_mujoco()
+    model = world._model
+    if model is None:
+        return "the scene has no compiled model whose inertia could be re-derived"
+
+    spec = _get_spec(world)
+    if spec is None:
+        return _NO_SPEC_REASON
+
+    body_id = int(model.geom_bodyid[geom_id])
+    spec_body, reason = _spec_element_by_id(spec.bodies, body_id, "body")
+    if spec_body is None:
+        return reason
+    if spec_body.explicitinertial:
+        # The compiler ignores a body's geoms when the body declares its own
+        # <inertial>, so that row does not describe the geometry and a resize
+        # cannot make it stale. Returning early also keeps resizing a robot
+        # link's collision geom free, since those links declare their inertials.
+        return None
+
+    try:
+        with filter_mujoco_attach_noise():
+            candidate = spec.copy().compile()
+    except (ValueError, RuntimeError) as e:
+        return f"the resized geometry does not compile, so the body's inertia cannot be re-derived: {e}"
+
+    # Writing a row read from a model with a different body ordering would move
+    # one body's inertia onto another, which is a worse outcome than leaving the
+    # row stale and saying so.
+    if candidate.nbody != model.nbody:
+        return (
+            "the scene spec no longer agrees with the compiled model: it compiles to "
+            f"{candidate.nbody} bodies against the model's {model.nbody}"
+        )
+    if mj.mj_id2name(candidate, mj.mjtObj.mjOBJ_BODY, body_id) != mj.mj_id2name(model, mj.mjtObj.mjOBJ_BODY, body_id):
+        return (
+            "the scene spec no longer agrees with the compiled model: body "
+            f"{body_id} is named differently in a fresh compile"
+        )
+
+    model.body_mass[body_id] = candidate.body_mass[body_id]
+    model.body_ipos[body_id] = candidate.body_ipos[body_id]
+    model.body_iquat[body_id] = candidate.body_iquat[body_id]
+    model.body_inertia[body_id] = candidate.body_inertia[body_id]
+    # body_subtreemass and the invweight / M0 reference constants the constraint
+    # solver scales with are themselves derived from the inertial rows and are not
+    # refreshed by a step. mj_setConst recomputes them, which is what makes the
+    # whole inertial state of the live model equal to that of a fresh compile.
+    #
+    # It is handed a scratch mjData, never the scene's own. Those constants are by
+    # definition evaluated at the model's reference configuration, so mj_setConst
+    # writes qpos0 into whatever data it is given and does not put back what was
+    # there. Passing the live data would rewind every joint and body pose to its
+    # declared value while leaving qvel as it was, so a resize issued after any
+    # stepping would teleport the scene into a state it never occupied - the
+    # order-dependent silent damage this refresh exists to remove.
+    mj.mj_setConst(model, mj.MjData(model))
     return None
 
 

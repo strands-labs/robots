@@ -93,6 +93,13 @@ A mesh / height-field / SDF geom takes its extent from asset data and defines no
 `geom_size` component, so `size` is refused for it (resize the asset instead).
 Growing a size-defined primitive refreshes its broadphase and mid-phase collision
 bounds, so other bodies collide with the new extent rather than passing through it.
+It also re-derives the owning body's mass, center of mass and inertia tensor from
+the new shape - those are integrated from the body's geoms at compile time and are
+never recomputed by a step, so without this a resized body would collide as its new
+shape while resisting rotation as the old one. The values are read from a compile of
+the persisted spec, so a resize means the same thing whether or not another scene
+mutation follows it. A body that declares its own `<inertial>` takes nothing from
+geometry and is left alone.
 
 ## Sensor noise
 

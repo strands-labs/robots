@@ -72,6 +72,7 @@ _EXPECTED_FUNCTIONS = {
     "scene_ops.py::persist_body_mass",
     "scene_ops.py::persist_geom_properties",
     "scene_ops.py::persist_world_option",
+    "scene_ops.py::refresh_body_inertial_from_geometry",
     "scene_ops.py::remove_equality_constraint",
     "scene_ops.py::replace_scene_mjcf",
     "scene_ops.py::reposition_body_in_scene",

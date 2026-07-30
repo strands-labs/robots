@@ -30,6 +30,7 @@ from strands_robots.simulation.mujoco.backend import (
 from strands_robots.simulation.mujoco.scene_ops import (
     persist_body_mass,
     persist_geom_properties,
+    refresh_body_inertial_from_geometry,
 )
 
 logger = logging.getLogger(__name__)
@@ -1777,10 +1778,15 @@ class PhysicsMixin:
         to whatever the scene was compiled with - after this call had already
         reported the new one.
 
-        A resize is the one property with a further consequence at recompile time:
-        the model write resizes the geom without re-deriving the owning body's
-        inertia, whereas the recompile integrates the inertia from the persisted
-        shape - the physically consistent value for the new extents.
+        A resize also changes what the owning body's geometry weighs and how it is
+        balanced, so the body's mass, center of mass and inertia tensor - all
+        integrated from its geoms at compile time, and never recomputed by a step -
+        are re-derived from the resized shape. They are read from a compile of the
+        persisted spec, so they equal the values the next scene recompile produces
+        and the resize means the same thing whether or not anything follows it. A
+        body that declares its own ``<inertial>`` takes nothing from geometry and is
+        left alone. The cost is one spec compile per resize; the live model is not
+        swapped, so entity ids and joint state are preserved.
 
         Every vector must carry the exact number of components its target
         defines, because there is no meaningful value to invent for a component
@@ -1913,6 +1919,9 @@ class PhysicsMixin:
             # geom silently reverts after this call reported the new value.
             # Record it in the spec first, so a scene that cannot carry the
             # change is refused before either representation is touched.
+            # Kept so a refresh that cannot be honored restores the spec to the
+            # size the model is still compiled with, leaving the two in step.
+            prior_size = None if size is None else model.geom_size[gid, : len(size)].tolist()
             if reason := persist_geom_properties(self._world, gid, color=color, friction=friction, size=size):
                 return {"status": "error", "content": [{"text": f"set_geom_properties: {reason}"}]}
 
@@ -1927,6 +1936,17 @@ class PhysicsMixin:
                 changes.append(f"friction → {friction}")
 
             if size is not None:
+                # A resize changes the shape the owning body's inertial row was
+                # integrated from. Re-derive that row from the spec, which now
+                # carries the new size, BEFORE touching the model: a scene whose
+                # resized geometry cannot be compiled is refused with both
+                # representations restored rather than left describing different
+                # shapes. The reported result is then the one the next recompile
+                # reproduces, so the resize does not depend on what follows it.
+                if reason := refresh_body_inertial_from_geometry(self._world, gid):
+                    persist_geom_properties(self._world, gid, size=prior_size)
+                    return {"status": "error", "content": [{"text": f"set_geom_properties: {reason}"}]}
+
                 # Validated as exactly the component count this geom's type
                 # defines; the unused tail of the 3-wide row stays as compiled.
                 model.geom_size[gid, : len(size)] = size
