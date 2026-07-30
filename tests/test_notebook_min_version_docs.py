@@ -53,3 +53,33 @@ def test_notebooks_readme_states_min_version_for_bucket_path() -> None:
     assert _MIN_VERSION in text, (
         f"{_NOTEBOOKS_README} must note that notebook 5's bucket path needs {_MIN_VERSION!r} (issue #1500)."
     )
+
+
+def _notebook_code() -> str:
+    nb = json.loads(_NOTEBOOK.read_text())
+    return "\n".join("".join(cell["source"]) for cell in nb["cells"] if cell["cell_type"] == "code")
+
+
+def test_streaming_notebook_reads_the_bucket_path_it_wrote() -> None:
+    """The bucket read must target the ``run_id`` folder the sync wrote to.
+
+    ``sync_to_bucket`` uploads to ``hf://buckets/{bucket}/{run_id}``, while
+    ``StreamingLeRobotDataset(repo_type="bucket")`` resolves ``meta/`` and
+    ``data/`` directly under the repo id it is handed. A read of ``BUCKET``
+    alone therefore looks for ``meta/info.json`` at the bucket root and raises
+    ``FileNotFoundError``, because the dataset lives one level down. The two
+    sides are only consistent when the read id carries the same ``run_id``.
+    """
+    code = _notebook_code()
+    assert 'stream_dataset(BUCKET, repo_type="bucket"' not in code, (
+        "notebook streams from BUCKET alone while sync_to_bucket writes to "
+        "hf://buckets/{BUCKET}/{RUN_ID}; the read must include the run_id "
+        "segment or it fails with FileNotFoundError on meta/info.json."
+    )
+    assert 'f"{BUCKET}/{RUN_ID}"' in code, (
+        "notebook must build the bucket repo id from BUCKET and RUN_ID so the "
+        "read targets the same path sync_to_bucket wrote to."
+    )
+    assert "run_id=RUN_ID" in code, (
+        "notebook must pin the sync's run_id to RUN_ID so the write and read sides cannot drift apart."
+    )
