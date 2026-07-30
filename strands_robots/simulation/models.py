@@ -192,9 +192,10 @@ class SimWorld:
     # Kept as a top-level field - requested by @yinsong1986 during review to
     # avoid monkey-patching when ``reset()`` creates a fresh ``SimWorld``.
     _checkpoints: dict[str, Any] = field(default_factory=dict)
-    # Monotonically-incremented generation counter bumped on every
-    # spec.recompile (scene_ops._recompile_preserving_state). Checkpoints
-    # stamp this value so load_state can detect a same-shape recompile
-    # (remove one free-jointed object, add another) that the nq/nv/na/nu
-    # counts alone cannot distinguish.
+    # Monotonically-incremented generation counter bumped whenever ``_model`` is
+    # swapped, by the one function that installs it
+    # (``scene_ops.install_compiled_model``). Checkpoints stamp this value so
+    # load_state can detect a swap that the nq/nv/na/nu counts alone cannot
+    # distinguish - a same-shape recompile (remove one free-jointed object, add
+    # another), or a whole scene replaced by one with the same counts.
     _recompile_generation: int = 0

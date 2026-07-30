@@ -86,6 +86,7 @@ from strands_robots.simulation.mujoco.scene_ops import (
     inject_camera_into_scene,
     inject_object_into_scene,
     inject_robot_into_scene,
+    install_compiled_model,
     patch_scene_mjcf,
     persist_world_option,
     replace_scene_mjcf,
@@ -670,8 +671,7 @@ class MuJoCoSimEngine(
         with self._lock:
             world = SimWorld()
             world._backend_state["spec"] = spec
-            world._model = model
-            world._data = data
+            install_compiled_model(world, model, data)
             world.status = SimStatus.IDLE
 
             # Cache the canonical serialisation; legacy readers use this.
@@ -818,8 +818,8 @@ class MuJoCoSimEngine(
         spec = SpecBuilder.build(self._world)
         self._world._backend_state["spec"] = spec
         with filter_mujoco_attach_noise():
-            self._world._model = spec.compile()
-        self._world._data = mj.MjData(self._world._model)
+            model = spec.compile()
+        install_compiled_model(self._world, model, mj.MjData(model))
         # Forward the freshly-allocated MjData so derived state
         # (xpos / xquat / xmat) is populated - same rationale as in
         # ``load_scene`` (#168). Without this, the first
@@ -3057,7 +3057,8 @@ class MuJoCoSimEngine(
             SpecBuilder.remove_camera(spec, mj_name)
             # Recompile so nbody/ncam in _model match the new spec.
             try:
-                self._world._model, self._world._data = spec.recompile(self._world._model, self._world._data)
+                new_model, new_data = spec.recompile(self._world._model, self._world._data)
+                install_compiled_model(self._world, new_model, new_data)
                 try:
                     with filter_mujoco_attach_noise():
                         self._world._backend_state["xml"] = spec.to_xml()

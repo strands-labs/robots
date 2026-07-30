@@ -15,6 +15,8 @@ Public API:
 * :func:`inject_robot_into_scene` - ``spec.attach(robot_spec, prefix=...)``.
 * :func:`inject_object_into_scene` - ``SpecBuilder.add_object(spec, obj)`` + recompile.
 * :func:`inject_camera_into_scene` - ``SpecBuilder.add_camera(spec, cam)`` + recompile.
+* :func:`install_compiled_model` - install a compiled model/data pair as the
+  live scene state; the single point every model swap goes through.
 * :func:`eject_body_from_scene` - ``SpecBuilder.remove_body(spec, name)`` + recompile.
 * :func:`reposition_body_in_scene` - edit a body's spec ``pos``/``quat`` + recompile.
 * :func:`eject_robot_from_scene` - walk the spec, delete everything namespaced
@@ -107,6 +109,35 @@ def _snapshot_spec(spec: Any, *, context: str) -> Any | None:
         return None
 
 
+def install_compiled_model(world: SimWorld, model: Any, data: Any) -> None:
+    """Install a compiled ``model``/``data`` pair as ``world``'s live scene state.
+
+    Every path that swaps the live model goes through here, because the swap has
+    a consequence that is easy to leave behind: ``world._recompile_generation``
+    is the only part of the ``save_state`` / ``load_state`` fingerprint that
+    changes when the new model happens to keep the previous ``nq``/``nv``/``na``/
+    ``nu``. A site that rebinds ``world._model`` without bumping it lets a
+    checkpoint taken against the previous model be applied to this one - the
+    state vector is the right length, so it is written index by index into
+    whatever those indices now mean.
+
+    Concentrating the rebind here makes that impossible to forget: a new swap
+    site cannot install a model without also invalidating the checkpoints taken
+    against the old one.
+
+    Args:
+        world: The scene whose live model/data are replaced.
+        model: The freshly compiled ``MjModel``.
+        data: An ``MjData`` matching ``model``.
+    """
+    world._model = model
+    world._data = data
+    # Any swap invalidates every outstanding checkpoint, including one whose
+    # state vector still has the right length: only this counter distinguishes
+    # a same-shape model from the one the checkpoint was taken against.
+    world._recompile_generation += 1
+
+
 def _recompile_preserving_state(world: SimWorld, spec: Any, *, raise_on_refusal: bool = False) -> bool:
     """Recompile ``spec`` in place, replacing ``world._model`` and ``_data``.
 
@@ -138,13 +169,7 @@ def _recompile_preserving_state(world: SimWorld, spec: Any, *, raise_on_refusal:
             raise
         return False
 
-    world._model = new_model
-    world._data = new_data
-
-    # Bump recompile generation so save_state/load_state can detect stale
-    # checkpoints even when nq/nv/na/nu happen to stay the same (e.g.
-    # remove one free-jointed object, add another of the same shape).
-    world._recompile_generation += 1
+    install_compiled_model(world, new_model, new_data)
     # Forward pass so newly-injected bodies have valid xpos/xquat and any
     # camera xforms are populated. Without this, the next render() call
     # after add_object / add_robot / add_camera returns a 100% black frame
@@ -776,8 +801,7 @@ def eject_robot_from_scene(world: SimWorld, robot_name: str) -> bool:
         logger.error("eject_robot: fresh compile failed: %s", e)
         return False
 
-    world._model = new_model
-    world._data = new_data
+    install_compiled_model(world, new_model, new_data)
     world._backend_state["spec"] = new_spec
     _sync_cached_xml(world, new_spec)
 
@@ -1009,8 +1033,7 @@ def replace_scene_mjcf(world: SimWorld, xml: str) -> bool:
     new_data = mj.MjData(new_model)
 
     world._backend_state["spec"] = new_spec
-    world._model = new_model
-    world._data = new_data
+    install_compiled_model(world, new_model, new_data)
 
     # Run a single forward pass so geom positions / camera xforms are
     # populated. Without this, the very first sim.render() call after
@@ -1265,7 +1288,8 @@ def patch_scene_mjcf(world: SimWorld, ops: list[dict[str, Any]]) -> int:
 
     # One recompile for the whole batch - preserves qpos/qvel for unchanged joints.
     with filter_mujoco_attach_noise():
-        world._model, world._data = spec.recompile(world._model, world._data)
+        new_model, new_data = spec.recompile(world._model, world._data)
+    install_compiled_model(world, new_model, new_data)
 
     # Forward pass so new bodies' xpos / xquat / cam_xmat are populated for
     # the very next render() or get_body_state() call. Same reasoning as
