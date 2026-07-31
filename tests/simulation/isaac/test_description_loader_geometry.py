@@ -95,6 +95,12 @@ class TestSceneObjectExtraction:
         assert table.position == pytest.approx((1.0, 0.0, 0.01))
         # The body-level quat is preserved as [w, x, y, z].
         assert table.quat == pytest.approx((0.707, 0.0, 0.0, 0.707))
+        # The body-frame AABB-centre offset is recorded (#1820): pose
+        # appliers recompose the prim pose from a NEW body pose as
+        # ``body_pos + R(body_quat) @ offset``, which is unrecoverable
+        # from ``position`` alone once the body moves.
+        assert table.offset == pytest.approx((0.0, 0.0, -0.39))
+        assert table.position == pytest.approx(tuple(p + o for p, o in zip((1.0, 0.0, 0.4), table.offset)))
 
     def test_freejoint_body_is_movable_with_cylinder_aabb(self, objects):
         mug = objects["porcelain_mug_1_main"]

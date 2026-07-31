@@ -2119,6 +2119,19 @@ class IsaacSimulation(IsaacRecordingMixin, SimEngine):
         so per-episode reloads don't accumulate duplicate prims or hit the
         "object already exists" guard in :meth:`add_object`.
 
+        Timeline contract (#1820): realizing dynamic objects stops the
+        timeline per prim (#159); after rebuilding the physics view this
+        method restarts it (``world.play()``, which lands the state change
+        without integrating a physics tick), so on success the episode
+        integrates physics. No settle step runs here -- the objects sit
+        at MJCF *placeholder* poses until
+        ``LiberoAdapter._apply_object_pose_state`` teleports them to the
+        episode's init poses, and integrating from the placeholder
+        configuration explodes PhysX (coincident bodies at the robot
+        base). A failed or non-landing restart returns
+        ``{"status": "error"}`` rather than leaving the episode silently
+        frozen.
+
         Parameters
         ----------
         scene_path : str
@@ -2281,6 +2294,77 @@ class IsaacSimulation(IsaacRecordingMixin, SimEngine):
                             robot.name,
                             e,
                         )
+
+                # Restart the timeline (#1820). Every dynamic prim realized
+                # above stopped it (`_construct_shape_prim`, #159) and
+                # nothing else restarts it, so without this the ENTIRE
+                # episode runs on frozen physics: `SimulationContext.step`
+                # only integrates when `is_playing()` -- `world.step()`
+                # renders with stale joint reads, `send_action` targets a
+                # view that never integrates -- and every envelope still
+                # reports success, so the eval reads green with a
+                # motionless robot (measured: 5-episode groot evals at
+                # success_rate=0.00 with byte-similar videos).
+                #
+                # `world.play()` rather than `timeline.play()`: on 6.0.x a
+                # bare `timeline.play()` only QUEUES the state change, and
+                # the headless step path (`world.step(render=False)`) never
+                # runs the app update that would land it -- measured live
+                # (Isaac 6.0 / L4): `is_playing()` still False after
+                # play() + 5 world.steps, joints frozen. `world.play()` is
+                # play + `timeline.commit()` + one app update issued with
+                # `/app/player/playSimulations` DISABLED, so the state
+                # lands synchronously and, critically, NO physics
+                # integrates on the landing tick: the objects realized
+                # above still sit at their MJCF *placeholder* poses (LIBERO
+                # encodes real per-episode poses in BDDL init states, not
+                # in body attributes -- coincident bodies inside the robot
+                # base), and integrating even one tick from that
+                # configuration storms PhysX "Illegal BroadPhaseUpdateData
+                # - non-finite bounds" and NaNs the joint state. That is
+                # also why there is deliberately NO settle step here:
+                # `LiberoAdapter._apply_object_pose_state` teleports the
+                # objects to their episode init poses and owns the settle.
+                #
+                # Ordering: play comes AFTER the STOP-event flush +
+                # `initialize_physics()` + `articulation.initialize()`
+                # above -- the stop -> rebuild -> re-init -> play cycle was
+                # verified live (Isaac 6.0 / L4) to preserve articulation
+                # state, whereas playing before the flush lets the queued
+                # STOP handlers null the freshly-built handles.
+                #
+                # A failure is FATAL, not a warning: warn-and-continue here
+                # reproduces the exact silent-frozen-physics defect this
+                # block fixes (AGENTS.md: never warn-and-continue if the
+                # system will behave unexpectedly).
+                try:
+                    self._world.play()
+                except (AttributeError, RuntimeError, TypeError, ValueError) as e:
+                    msg = (
+                        f"load_scene: restarting the timeline after realizing scene objects "
+                        f"failed ({type(e).__name__}: {e}). The timeline was stopped by the "
+                        f"dynamic-prim constructors (#159), so physics would stay FROZEN for "
+                        f"the whole episode while every action reports success (#1820). "
+                        f"Refusing to continue."
+                    )
+                    logger.error("IsaacSimulation.load_scene: %s", msg)
+                    return {"status": "error", "content": [{"text": msg}]}
+                # Verify the play actually landed. Best-effort import: no
+                # omni.timeline means no live Kit session (the CPU unit-test
+                # skeleton), where the #159 stop never ran either.
+                try:
+                    import omni.timeline  # type: ignore[import-not-found]
+                except ImportError:
+                    logger.debug("load_scene: omni.timeline unavailable; skipping timeline-playing verification")
+                else:
+                    if not omni.timeline.get_timeline_interface().is_playing():
+                        msg = (
+                            "load_scene: timeline still stopped after world.play() -- physics "
+                            "would stay FROZEN for the whole episode while every action "
+                            "reports success (#1820). Refusing to continue."
+                        )
+                        logger.error("IsaacSimulation.load_scene: %s", msg)
+                        return {"status": "error", "content": [{"text": msg}]}
 
             logger.info("IsaacSimulation.load_scene: %s", summary)
             return {
@@ -4484,6 +4568,76 @@ class IsaacSimulation(IsaacRecordingMixin, SimEngine):
                 return {"status": "success", "content": [{"text": "Set joint positions (main)."}]}
             self._action_q.put(_apply)
             return {"status": "success", "content": [{"text": "Set joint positions (queued)."}]}
+
+    def set_robot_pose(
+        self,
+        robot_name: str | None = None,
+        position: list[float] | None = None,
+        orientation: list[float] | None = None,
+    ) -> dict[str, Any]:
+        """Teleport a robot's articulation base to ``(position, orientation)``.
+
+        The scene-alignment counterpart of :meth:`move_object` (#1820): on
+        the MuJoCo backend the robot is part of the scene MJCF, so its base
+        lands wherever the scene author placed it (LIBERO puts
+        ``robot0_base`` at ``(-0.66, 0, 0.912)``); on Isaac the robot is a
+        separately-loaded USD articulation spawned at the origin -- inside
+        the footprint of the scene's origin-anchored static fixtures.
+        ``LiberoAdapter._apply_object_pose_state`` reads the scene's robot
+        base pose and aligns the articulation through this method so live
+        physics doesn't start with the robot interpenetrating a fixture
+        (PhysX "Illegal BroadPhaseUpdateData - non-finite bounds").
+
+        Parameters
+        ----------
+        robot_name : str, optional
+            Robot to move. ``None`` resolves the single robot, mirroring
+            :meth:`send_action`; ambiguous with several robots.
+        position : list[float], optional
+            World position ``[x, y, z]``. ``None`` keeps the current one.
+        orientation : list[float], optional
+            World orientation quaternion ``[w, x, y, z]``. ``None`` keeps
+            the current one.
+
+        Returns
+        -------
+        dict
+            Standard ``{"status", "content"}`` envelope; ``error`` for an
+            unknown/uninitialized robot or a failed pose write.
+        """
+        with self._lock:
+            if not self._world_created or not self._robots:
+                return {"status": "error", "content": [{"text": "No world/robot."}]}
+            if robot_name is None:
+                if len(self._robots) != 1:
+                    return {
+                        "status": "error",
+                        "content": [
+                            {
+                                "text": (
+                                    f"set_robot_pose(robot_name=None) is ambiguous: {len(self._robots)} robots "
+                                    f"present ({sorted(self._robots)}). Pass robot_name explicitly."
+                                )
+                            }
+                        ],
+                    }
+                robot_name = next(iter(self._robots))
+            robot = self._robots.get(robot_name)
+            if robot is None or robot.articulation is None:
+                return {"status": "error", "content": [{"text": f"Robot {robot_name!r} not initialized."}]}
+            try:
+                pos = np.asarray(position[:3], dtype=float) if position is not None else None
+                ori = np.asarray(orientation[:4], dtype=float) if orientation is not None else None
+                robot.articulation.set_world_pose(position=pos, orientation=ori)
+            except (RuntimeError, ValueError, AttributeError, TypeError) as exc:
+                return {
+                    "status": "error",
+                    "content": [{"text": f"set_robot_pose failed: {type(exc).__name__}: {exc}"}],
+                }
+            return {
+                "status": "success",
+                "content": [{"text": f"Robot {robot_name!r} base moved to {position or 'same'}."}],
+            }
 
     def move_object(
         self,

@@ -53,6 +53,9 @@ class _RecordingWorld:
     def __init__(self) -> None:
         self.reset_calls = 0
         self.step_calls = 0
+        self.play_calls = 0
+        self.play_raises: Exception | None = None
+        self.events: list[str] = []
         self.physics_sim_view = object()
 
     def reset(self) -> None:
@@ -60,6 +63,12 @@ class _RecordingWorld:
 
     def step(self, render: bool = True) -> None:
         self.step_calls += 1
+
+    def play(self) -> None:
+        self.play_calls += 1
+        self.events.append("play")
+        if self.play_raises is not None:
+            raise self.play_raises
 
 
 class _RecordingArticulation:
@@ -171,3 +180,116 @@ def test_load_scene_no_world_errors(scene_file) -> None:
     result = engine.load_scene(scene_file)
     assert result["status"] == "error"
     assert "no world" in result["content"][0]["text"].lower()
+
+
+# --- Timeline restart (#1820) ------------------------------------------------
+#
+# Every dynamic prim realized by load_scene stops the timeline (#159), and
+# before #1820 nothing restarted it: the whole episode ran on frozen physics
+# (SimulationContext.step only integrates when is_playing(); joint reads went
+# stale; send_action targeted a view that never integrates) while every
+# envelope still reported success. These pins assert the restart contract:
+# ``world.play()`` (NOT a bare ``timeline.play()``, which on 6.0.x only
+# queues the state change and never lands on the headless step path) fires
+# AFTER the articulation re-init, a failed restart is a fatal error envelope
+# (never a silent warn-and-continue), and a fake ``omni.timeline`` that
+# reports the play never landed also fails loud.
+
+
+def test_load_scene_restarts_timeline_after_articulation_reinit(scene_file) -> None:
+    """world.play() fires exactly once, and only after the articulation
+    re-init. Ordering matters: the stop -> flush -> initialize_physics ->
+    articulation.initialize -> play cycle was verified live (Isaac 6.0 / L4)
+    to preserve articulation state; playing earlier lets the queued #159
+    STOP handlers null the freshly-built physics handles."""
+    engine, _ = _make_engine()
+    world = engine._world
+    art = engine._robots["robot"].articulation
+    assert art is not None
+    original_initialize = art.initialize
+
+    def _recording_initialize(physics_sim_view=None) -> None:
+        world.events.append("articulation_initialize")
+        original_initialize(physics_sim_view)
+
+    art.initialize = _recording_initialize  # type: ignore[method-assign]
+
+    result = engine.load_scene(scene_file)
+    assert result["status"] == "success"
+    assert world.events == ["articulation_initialize", "play"]
+    assert world.play_calls == 1
+
+
+def test_load_scene_play_failure_is_a_fatal_error_envelope(scene_file) -> None:
+    """A failed restart must NOT be warn-and-continue: the timeline was
+    stopped by the dynamic-prim constructors, so continuing runs the whole
+    episode on frozen physics while every action reports success - the
+    exact defect #1820 fixes."""
+    engine, _ = _make_engine()
+    engine._world.play_raises = RuntimeError("kit session torn down")
+
+    result = engine.load_scene(scene_file)
+    assert result["status"] == "error"
+    text = result["content"][0]["text"]
+    assert "FROZEN" in text
+    assert "timeline" in text.lower()
+
+
+def test_load_scene_nonlanding_play_is_a_fatal_error_envelope(scene_file, monkeypatch) -> None:
+    """world.play() returning is not proof the play LANDED: on 6.0.x the
+    timeline state changes on a kit update tick, so load_scene reads
+    ``is_playing()`` back and refuses to hand out a frozen episode."""
+    import sys
+    import types
+
+    fake_timeline_mod = types.SimpleNamespace(
+        get_timeline_interface=lambda: types.SimpleNamespace(is_playing=lambda: False)
+    )
+    fake_omni = types.ModuleType("omni")
+    fake_omni.timeline = fake_timeline_mod  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "omni", fake_omni)
+    monkeypatch.setitem(sys.modules, "omni.timeline", fake_timeline_mod)  # type: ignore[arg-type]
+
+    engine, _ = _make_engine()
+    result = engine.load_scene(scene_file)
+    assert result["status"] == "error"
+    assert "still stopped" in result["content"][0]["text"]
+
+
+def test_load_scene_playing_verification_passes(scene_file, monkeypatch) -> None:
+    """The happy live path: play lands, is_playing() confirms, load succeeds."""
+    import sys
+    import types
+
+    fake_timeline_mod = types.SimpleNamespace(
+        get_timeline_interface=lambda: types.SimpleNamespace(is_playing=lambda: True)
+    )
+    fake_omni = types.ModuleType("omni")
+    fake_omni.timeline = fake_timeline_mod  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "omni", fake_omni)
+    monkeypatch.setitem(sys.modules, "omni.timeline", fake_timeline_mod)  # type: ignore[arg-type]
+
+    engine, calls = _make_engine()
+    result = engine.load_scene(scene_file)
+    assert result["status"] == "success"
+    assert engine._world.play_calls == 1
+    assert calls.added == ["fixture_table", "cube_1_main"]
+
+
+def test_load_scene_missing_omni_timeline_skips_verification(scene_file, monkeypatch) -> None:
+    """Without omni.timeline there is no live Kit session (the CPU
+    skeleton, where the #159 stop never ran either): world.play() is still
+    issued, but the is_playing() read-back is skipped."""
+    import sys
+    import types
+
+    fake_omni = types.ModuleType("omni")
+    monkeypatch.setitem(sys.modules, "omni", fake_omni)
+    # A None sys.modules entry makes ``import omni.timeline`` raise ImportError.
+    monkeypatch.setitem(sys.modules, "omni.timeline", None)  # type: ignore[arg-type]
+
+    engine, calls = _make_engine()
+    result = engine.load_scene(scene_file)
+    assert result["status"] == "success"
+    assert engine._world.play_calls == 1
+    assert calls.added == ["fixture_table", "cube_1_main"]

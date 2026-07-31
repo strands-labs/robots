@@ -550,6 +550,10 @@ class LiberoAdapter(BenchmarkProtocol):
         # episode so qpos/qvel land on the same canonical state every time.
         self._canonical_qpos: np.ndarray | None = None
         self._canonical_qvel: np.ndarray | None = None
+        # CPU-side MuJoCo decode model for the object-pose init-state branch
+        # (#1820, Isaac backend). Cached as (scene_path, model, data) so the
+        # per-episode pose decode doesn't recompile the scene MJCF.
+        self._pose_decode_cache: tuple[str, Any, Any] | None = None
         self._bddl_source = bddl_source
         self._bddl_path = bddl_path
         self._success_fn: Callable[[SimEngine], bool] = compile_goal(problem.goal)
@@ -2870,7 +2874,14 @@ class LiberoAdapter(BenchmarkProtocol):
 
         Best-effort:
 
-        * Sims without an exposed compiled MuJoCo model -> debug-log + skip.
+        * Sims without an exposed compiled MuJoCo model -> route to
+          :meth:`_apply_object_pose_state` (#1820): non-MuJoCo backends
+          (Isaac) have no ``qpos`` to write, so the init state is applied
+          as per-object *poses* decoded through a local CPU MuJoCo
+          compile of the scene MJCF. That helper debug-log + skips when
+          its own preconditions (init states, scene path, a
+          ``move_object`` method, importable ``mujoco``) are missing, so
+          arbitrary model-less sims still degrade gracefully.
         * ``scene_keyframe_index`` out of range when ``nkey > 0`` -> log
           at WARNING and skip (out-of-range is a config error).
         * ``mujoco`` not importable -> debug-log + skip.
@@ -2886,7 +2897,12 @@ class LiberoAdapter(BenchmarkProtocol):
         model = getattr(world, "_model", None) if world is not None else None
         data = getattr(world, "_data", None) if world is not None else None
         if model is None or data is None:
-            logger.debug("LiberoAdapter: sim has no compiled MuJoCo model/data; skipping canonical-state apply")
+            # Non-MuJoCo backend (e.g. Isaac): no compiled model/data to
+            # write qpos into. Apply the init state as per-object poses
+            # instead (#1820) -- without this, Isaac scene objects stay at
+            # their MJCF placeholder poses (coincident bodies at the robot
+            # base) and live physics explodes on the first step.
+            self._apply_object_pose_state(sim, rng)
             return
 
         try:
@@ -3016,6 +3032,189 @@ class LiberoAdapter(BenchmarkProtocol):
 
         # Increment after successful apply so the next call is
         # "episode 1+" and gets RNG-sampled selection.
+        self._episode_count += 1
+
+    def _apply_object_pose_state(self, sim: SimEngine, rng: random.Random | None = None) -> None:
+        """Object-pose branch of :meth:`_apply_canonical_state` (#1820).
+
+        Non-MuJoCo backends (Isaac) realize the LIBERO scene as one prim
+        per MJCF body (``IsaacSimulation.load_scene``), so the flat
+        ``[time, qpos, qvel]`` init-state vector can't be written into an
+        engine ``qpos`` -- there isn't one. Instead this branch decodes
+        the init state into per-object world poses and teleports each
+        realized prim there:
+
+        1. Compile the scene MJCF with **CPU MuJoCo** (a decode-only
+           model; nothing is stepped). ``mujoco`` is always importable on
+           the LIBERO path -- the scene MJCF itself was generated through
+           robosuite, which hard-depends on it.
+        2. Select an init-state row with the SAME semantics as
+           :meth:`_apply_init_state_branch` (episode 0 pinned to row 0,
+           episodes 1+ RNG-sampled; width validated against
+           ``1 + nq + nv``, mismatch fatal per #168 bug I).
+        3. Write ``qpos``/``qvel``, ``mj_forward``, and read each free
+           body's world pose (``data.xpos`` / ``data.xquat``).
+        4. Align the robot base with the scene's ``robot0_base`` body via
+           ``sim.set_robot_pose`` (on MuJoCo the robot is part of the
+           scene MJCF; on Isaac it is a separately-loaded USD spawned at
+           the origin, inside the footprint of the scene's
+           origin-anchored static fixtures).
+        5. Teleport each realized dynamic prim via ``sim.move_object``.
+           The prim is a box at the body's collision-AABB centre, so the
+           prim pose is ``xpos + R(xquat) @ offset`` with the body-frame
+           ``offset`` recorded by :func:`load_mjcf_scene_objects`.
+           Static fixtures keep their MJCF poses (they have no free
+           joint; ``qpos`` cannot move them on MuJoCo either).
+        6. Settle a few physics steps so PhysX resolves residual contact
+           from the teleports before the first observation. The settle
+           runs HERE, after the poses are legal -- ``load_scene`` itself
+           must not step, because its objects still sit at the MJCF
+           placeholder poses (coincident bodies at the robot base) and
+           integrating from that configuration storms PhysX "Illegal
+           BroadPhaseUpdateData - non-finite bounds" and NaNs the joint
+           state (#1820 part 2).
+
+        Failed teleports and unresolvable body names raise
+        ``RuntimeError``: an object left at its placeholder pose
+        interpenetrates the robot base and WILL explode live physics, so
+        warn-and-continue is exactly the silent-failure mode this branch
+        exists to remove.
+
+        Best-effort preconditions (debug-log + skip, preserving the
+        graceful-degradation contract for arbitrary model-less sims):
+        missing/empty init states, missing scene path, no ``move_object``
+        method on the sim, ``mujoco`` not importable.
+        """
+        if self._init_states is None or int(self._init_states.shape[0]) == 0:
+            logger.debug("LiberoAdapter: no init_states; skipping object-pose state apply")
+            return
+        init_states = self._init_states
+        scene_path = self.scene_path
+        if not scene_path or not os.path.exists(scene_path):
+            logger.debug("LiberoAdapter: no scene_path on disk; skipping object-pose state apply")
+            return
+        move_object = getattr(sim, "move_object", None)
+        if not callable(move_object):
+            logger.debug("LiberoAdapter: sim has no move_object(); skipping object-pose state apply")
+            return
+        try:
+            import mujoco as _mj
+        except ImportError:
+            logger.debug("LiberoAdapter: mujoco not importable; skipping object-pose state apply")
+            return
+
+        from strands_robots.simulation.isaac.loaders import load_mjcf_scene_objects
+
+        # Decode model: compile once per scene_path, reuse across episodes.
+        if self._pose_decode_cache is not None and self._pose_decode_cache[0] == scene_path:
+            _, model, data = self._pose_decode_cache
+        else:
+            model = _mj.MjModel.from_xml_path(scene_path)
+            data = _mj.MjData(model)
+            self._pose_decode_cache = (scene_path, model, data)
+
+        # Row selection + width validation: identical semantics to
+        # _apply_init_state_branch (episode 0 -> row 0; episodes 1+ RNG).
+        n_states = int(init_states.shape[0])
+        if self._episode_count == 0:
+            idx = 0
+        else:
+            rng_local = rng if rng is not None else random.Random()
+            idx = rng_local.randint(0, n_states - 1)
+        state = init_states[idx]
+
+        nq = int(model.nq)
+        nv = int(model.nv)
+        expected_width = 1 + nq + nv
+        actual_width = int(state.shape[0])
+        if actual_width != expected_width:
+            raise RuntimeError(
+                f"LiberoAdapter: init_state width {actual_width} does not match the scene MJCF "
+                f"compiled for pose decode (1 + nq={nq} + nv={nv} = {expected_width}). The "
+                f"cached scene diverges from upstream LIBERO's scene for this BDDL task. "
+                f"#168 bug I: silent slicing forbidden - fix the scene generator instead."
+            )
+
+        data.time = float(state[0])
+        np.copyto(data.qpos, state[1 : 1 + nq])
+        np.copyto(data.qvel, state[1 + nq :])
+        _mj.mj_forward(model, data)
+
+        # Align the robot base with the scene (#1820 part 2, robot half).
+        # On MuJoCo the robot is part of the scene MJCF, so its base lands
+        # wherever the scene put it (LIBERO: robot0_base at
+        # (-0.66, 0, 0.912)); on Isaac the robot is a separately-loaded
+        # USD articulation spawned at the ORIGIN -- inside the footprint
+        # of the scene's origin-anchored static fixtures (cabinet, stove),
+        # and live physics starting from that interpenetration is the same
+        # broadphase NaN storm as the object-pose half. Best-effort on the
+        # lookup side (a robot-less scene or a sim without set_robot_pose
+        # skips with a log); a FAILED write raises, same as the object
+        # teleports below.
+        base_body = f"{self._scene_robot_prefix}base"
+        base_id = _mj.mj_name2id(model, _mj.mjtObj.mjOBJ_BODY, base_body)
+        set_robot_pose = getattr(sim, "set_robot_pose", None)
+        if base_id >= 0 and callable(set_robot_pose):
+            base_pos = np.asarray(data.xpos[base_id], dtype=float)
+            base_quat = np.asarray(data.xquat[base_id], dtype=float)  # wxyz
+            result = set_robot_pose(position=base_pos.tolist(), orientation=base_quat.tolist())
+            if isinstance(result, dict) and result.get("status") == "error":
+                text = (result.get("content") or [{}])[0].get("text", "")
+                raise RuntimeError(
+                    f"LiberoAdapter: aligning the robot base with scene body {base_body!r} failed "
+                    f"({text}). A robot left inside the scene's origin-anchored fixtures explodes "
+                    f"live physics on the first step (#1820)."
+                )
+        elif base_id < 0:
+            logger.debug("LiberoAdapter: scene has no %r body; skipping robot base alignment", base_body)
+        else:
+            logger.debug("LiberoAdapter: sim has no set_robot_pose(); skipping robot base alignment")
+
+        moved = 0
+        for obj in load_mjcf_scene_objects(scene_path):
+            if obj.is_static:
+                continue
+            body_id = _mj.mj_name2id(model, _mj.mjtObj.mjOBJ_BODY, obj.name)
+            if body_id < 0:
+                raise RuntimeError(
+                    f"LiberoAdapter: scene object {obj.name!r} (parsed from {scene_path!r}) "
+                    f"has no body in the compiled MJCF - the scene parser and the compiled "
+                    f"model disagree, so its init pose cannot be applied and live physics "
+                    f"would start from its placeholder pose (#1820)."
+                )
+            xpos = np.asarray(data.xpos[body_id], dtype=float)
+            xmat = np.asarray(data.xmat[body_id], dtype=float).reshape(3, 3)
+            xquat = np.asarray(data.xquat[body_id], dtype=float)  # wxyz, matches Isaac
+            prim_pos = xpos + xmat @ np.asarray(obj.offset, dtype=float)
+            result = move_object(name=obj.name, position=prim_pos.tolist(), orientation=xquat.tolist())
+            if isinstance(result, dict) and result.get("status") == "error":
+                text = (result.get("content") or [{}])[0].get("text", "")
+                raise RuntimeError(
+                    f"LiberoAdapter: applying init pose to scene object {obj.name!r} failed "
+                    f"({text}). An object left at its MJCF placeholder pose interpenetrates "
+                    f"the robot base and explodes live physics on the first step (#1820)."
+                )
+            moved += 1
+
+        # Settle now that every dynamic body is at a legal pose. Uses the
+        # engine's own step() (renders per its config); a handful of ticks
+        # lets PhysX resolve residual teleport contact before the first
+        # observation. Best-effort: a sim without step() just skips.
+        step = getattr(sim, "step", None)
+        if callable(step):
+            step(5)
+
+        logger.debug(
+            "LiberoAdapter: applied init_state[%d] as object poses (ep=%d, moved=%d, n_states=%d)",
+            idx,
+            self._episode_count,
+            moved,
+            n_states,
+        )
+
+        # Increment after successful apply so the next call is
+        # "episode 1+" and gets RNG-sampled selection (parity with
+        # _apply_init_state_branch).
         self._episode_count += 1
 
     def _apply_keyframe_branch(
