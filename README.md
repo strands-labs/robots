@@ -161,7 +161,7 @@ extras you need:
 |-------|----------|---------|
 | `sim-mujoco` | MuJoCo, robot_descriptions, imageio, mink + qpsolvers[daqp] | Simulation (recommended starting point). mink/qpsolvers are the differential-IK solver behind the `move_to` Cartesian transport primitive; `qpsolvers` ships no solver of its own, so the `[daqp]` backend extra is declared with it. |
 | `sim-newton` | Newton, Warp, MuJoCo-Warp, trimesh | GPU-native simulation (NVIDIA GPU; batched envs, headless ray-traced render) |
-| `sim-isaac` | usd-core, imageio (Isaac Sim installed out-of-band) | NVIDIA Isaac Sim backend - photorealistic RTX rendering, synthetic data, GPU-batched sensors, USD-native scenes. Isaac Sim itself is **not** pip-installable; install it via the Omniverse Launcher, Isaac Lab, or the NGC docker image. This extra pulls only the pip-installable Python helpers. (NVIDIA RTX GPU; GPU-only, not in `[all]`.) |
+| `sim-isaac` | usd-core, imageio (Isaac Sim installed separately) | NVIDIA Isaac Sim backend - photorealistic RTX rendering, synthetic data, GPU-batched sensors, USD-native scenes. Install Isaac Sim itself separately: via its pip wheels on Python 3.12 (`isaacsim[all,extscache]` from pypi.nvidia.com - see the caveats in [`docs/simulation/isaac.md`](docs/simulation/isaac.md)), the Omniverse Launcher, Isaac Lab, or the NGC docker image. This extra pulls only the pip-installable Python helpers. (NVIDIA RTX GPU; GPU-only, not in `[all]`.) |
 | `sim-gs` | gsplat, plyfile, torch | 3D Gaussian Splatting hybrid rendering (`strands_robots.rendering`): composite any sim backend's robot over a captured photoreal 3DGS scene. `gsplat` ships as a source dist that JIT-compiles CUDA kernels via `nvcc` on first use - probe with `strands_robots.rendering.gsplat_rasterizer_available()`; the zero-GPU `PanoramaBackground` works without this extra. (CUDA GPU; GPU-only, not in `[all]`.) |
 | `lerobot` | LeRobot | Real hardware, local VLA inference, dataset recording |
 | `molmoact2` | LeRobot + transformers, peft, scipy | MolmoAct2 transformers-native VLA (resolves from PyPI via lerobot >= 0.6) |
@@ -192,9 +192,12 @@ uv pip install "strands-robots[all]"
 
 The **Isaac Sim** GPU backend is a built-in, in-tree peer of `mujoco` and
 `newton` (it lives at `strands_robots.simulation.isaac`). Its pip-installable
-helpers ship in the `sim-isaac` extra, but Isaac Sim itself is a ~30 GB
-non-PyPI install you provision out-of-band (Omniverse Launcher, Isaac Lab, or
-the NGC docker image). Install the helpers with
+helpers ship in the `sim-isaac` extra, but the Isaac Sim runtime itself (~30 GB)
+is provisioned separately - via its own pip wheels on Python 3.12
+(`pip install 'isaacsim[all,extscache]==6.0.*' --extra-index-url https://pypi.nvidia.com`,
+with coverage/EULA caveats documented in
+[`docs/simulation/isaac.md`](docs/simulation/isaac.md)), the Omniverse
+Launcher, Isaac Lab, or the NGC docker image. Install the helpers with
 `pip install 'strands-robots[sim-isaac]'`, then select the backend with
 `create_simulation("isaac")` - see
 [Simulation (MuJoCo)](#simulation-mujoco) and

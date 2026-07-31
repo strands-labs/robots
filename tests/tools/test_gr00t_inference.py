@@ -258,9 +258,18 @@ class TestStartServiceEndToEnd:
         # Wire protocol stays "ZMQ" / "HTTP" (back-compat with pre-fix callers).
         assert result["protocol"] == "ZMQ"
 
+    @patch("strands_robots.tools.gr00t_inference.time.sleep")
     @patch("strands_robots.tools.gr00t_inference._is_service_running", return_value=False)
     @patch("strands_robots.tools.gr00t_inference.subprocess.run")
-    def test_timeout_returns_error(self, mock_run, _mock_is_running):
+    def test_timeout_returns_error(self, mock_run, _mock_is_running, _mock_sleep):
+        """A budget that expires with the port still shut reports the failure.
+
+        The budget is a real (if tiny) positive one and ``time.sleep`` is patched
+        out, so this exercises the poll-then-give-up path. It used to pass
+        ``timeout=0`` as a way to avoid sleeping, which skipped the poll loop
+        entirely - the loop this test exists to cover never ran, and the value is
+        now refused at the tool boundary as one no wait can honor.
+        """
         mock_run.return_value.stdout = ""
         result = _start_service(
             checkpoint_path="/cp",
@@ -271,7 +280,7 @@ class TestStartServiceEndToEnd:
             host="0.0.0.0",
             container_name="gr00t",
             policy_name=None,
-            timeout=0,  # don't actually sleep
+            timeout=0.05,
             use_tensorrt=False,
             trt_engine_path="x",
             vit_dtype="fp8",

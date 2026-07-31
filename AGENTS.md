@@ -155,6 +155,45 @@ hatch run format            # ruff check --fix, ruff format
      manual bisect, and an intermediate commit's green is not available to lean
      on. Do not read the intermediate `FAILURE`s as the culprit; they are the
      batching, not a defect.
+   - *And when `main` itself is red, a re-run cannot clear the PRs it blocked.*
+     `pr-and-push.yml` checks out the PR **head commit**, not
+     `refs/pull/N/merge` - the job log reads `HEAD is now at <branch head>` - so
+     a branch's green is a statement about the branch's own tree, which is the
+     reason `Detect an untested overlap with the base branch` has to exist as a
+     separate check. It follows that a fix landing on `main` is invisible to the
+     branch until the branch absorbs it, and
+     `POST /actions/runs/{id}/rerun-failed-jobs` re-uses the head SHA the run
+     recorded, so re-running changes nothing. Measured on #1824, which fixed the
+     three `test_deferred_physics_and_warmup.py` failures open as #1823: #1827
+     and #1829, both re-run after #1824 was on `main`, reported the same single
+     failure (`1 failed, 6287 passed` and `1 failed, 6277 passed`). Merge `main`
+     into the branch and push; there is no cheaper route.
+
+     **That push is free when the merge is conflict-free.** The intuition that
+     it costs the approval is wrong, and the difference is measurable before you
+     push. Two pushes onto #1821, both merges of `main` into an approved branch:
+
+     | push | `git show --cc` | PR diff vs merge base | approval |
+     |---|---|---|---|
+     | `b365d60`, resolved a conflict | 82 lines | changed | dismissed 45s later |
+     | `79cbdad`, clean base merge | 0 lines | identical, `4 files, +158/-7` | survived, still `APPROVED` |
+
+     Dismissal keys on the **PR's own diff**, not on the head SHA changing: a
+     merge that only brings the base forward leaves the diff a reviewer read
+     byte-identical, and nothing is dismissed. A conflict resolution is new,
+     unreviewed text - a combined diff is exactly the text belonging to neither
+     parent - and that is what costs a round. So refreshing an approved branch
+     over a fixed `main` is cheap, and the expensive case is the one worth
+     avoiding structurally, which is what step 3's fragment rule already does for
+     the file every branch used to conflict on.
+
+     Two consequences remain. Merge the fix for a red `main` ahead of the queue
+     rather than alongside it: while it is red nothing on top of it can merge at
+     all, whatever its own state. And do not push the refresh onto a
+     **contributor's** branch - that is the `require_last_push_approval` identity
+     problem below, which is independent of dismissal and does not care that the
+     merge was clean. Ask the contributor to absorb `main` so they stay the last
+     pusher; #1827 was left alone for that reason.
    And before merging, `reviewDecision: APPROVED` alone is not the gate: poll
    `statusCheckRollup.state == SUCCESS` and `mergeStateStatus == CLEAN`
    together, since `reviewDecision` flips before the checks finish.

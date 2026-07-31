@@ -255,16 +255,21 @@ sim-newton = [
 # out-of-band Kit runtime).
 #
 # IMPORTANT: Isaac Sim itself is NOT installed by this extra. It is an Omniverse
-# Kit application provisioned out-of-band - via the NVIDIA Omniverse Launcher,
+# Kit application provisioned separately - via the runtime's own pip wheels
+# (`pip install 'isaacsim[all,extscache]==6.0.*' --extra-index-url
+# https://pypi.nvidia.com`, viable on Python 3.12; the `extscache` extra is
+# required, and see docs/simulation/isaac.md for the coverage-downgrade /
+# EULA / torch-bump caveats, #1803), the NVIDIA Omniverse Launcher,
 # Isaac Lab (`./isaaclab.sh -i`), or the NGC docker image
 # (`nvcr.io/nvidia/isaac-sim:6.0`; see
 # strands_robots/simulation/isaac/_install.py for the pinned image tag). Those
-# images/launchers ship a complete, bootable Kit (Python 3.12 interpreter + the
+# routes ship a complete, bootable Kit (Python 3.12 interpreter + the
 # full `isaacsim-*` / `isaacsim-extscache-*` extension set that `SimulationApp`
-# needs to boot). We do NOT pin `isaacsim` here: the PyPI `isaacsim[all]`
+# needs to boot). We still do NOT pin `isaacsim` here: the bare `isaacsim[all]`
 # metapackage is incomplete on its own (it omits the `isaacsim-extscache-*`
-# packages, so `SimulationApp` aborts resolving its extension graph), and every
-# other surface documents Isaac Sim as "installed separately".
+# packages, so `SimulationApp` aborts resolving its extension graph), it needs
+# the NVIDIA extra index, and its transitive pins (coverage==7.4.4, a
+# torch/torchvision bump) would degrade every non-Isaac install of this extra.
 #
 # This extra pulls ONLY the pip-installable Python helpers the backend uses
 # out-of-band from an Isaac Sim install:

@@ -4192,7 +4192,10 @@ def _numba_coverage_clash_remedy() -> str:
 
     Single source of truth, so every raise site that classifies the clash
     hands the caller the same fix. The version boundary it names is
-    :data:`_COVERAGE_TRACER_MIN_VERSION`.
+    :data:`_COVERAGE_TRACER_MIN_VERSION`. The canonical trigger it names is
+    a pip-installed Isaac Sim, whose ``isaacsim-kernel`` package pins
+    ``coverage==7.4.4``, silently downgrading modern coverage in the same
+    environment (#1803).
     """
     return (
         "This is the known numba/coverage import clash: numba's coverage_support "
@@ -4202,9 +4205,11 @@ def _numba_coverage_clash_remedy() -> str:
         f"'coverage>={_COVERAGE_TRACER_MIN_VERSION}'), or remove coverage from the "
         "eval environment entirely ('pip uninstall coverage'), which numba's "
         "ImportError guard tolerates. Pinning coverage DOWN does not fix it - older "
-        "releases have no coverage.types.Tracer either - and an environment held at "
-        "an older coverage (some GPU-sim wheels pin coverage==7.4.4) is the usual "
-        "cause."
+        "releases have no coverage.types.Tracer either. The usual cause is an "
+        "environment held at an older coverage: a pip-installed Isaac Sim pins "
+        "coverage==7.4.4 via isaacsim-kernel, and the pip conflict warning that "
+        "raising coverage prints against isaacsim-kernel is cosmetic - coverage "
+        "is kit test tooling, not a runtime dependency (#1803)."
     )
 
 

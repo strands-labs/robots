@@ -727,6 +727,10 @@ class IsaacSimulation(IsaacRecordingMixin, SimEngine):
             config.headless,
         )
 
+        # Construction complete - the finalizer may now release what we hold.
+        # See SimEngine._init_complete: this must be the final statement.
+        self._init_complete = True
+
     def _on_main_thread(self) -> bool:
         return threading.get_ident() == self._main_tid
 
@@ -3447,11 +3451,19 @@ class IsaacSimulation(IsaacRecordingMixin, SimEngine):
         -------
         bool
             ``True`` if the camera produced a valid frame within
-            ``n_steps``; ``False`` if it never warmed up (logged at
-            WARNING so a misconfigured camera is visible). Never raises:
+            ``n_steps``; ``False`` if it never warmed up. Never raises:
             a step / render failure is caught and ends the loop, because
             the camera is already registered and render()'s own 0-D guard
             still covers a not-yet-ready product.
+
+            A ``False`` is always reported at WARNING, and the two ways of
+            getting there are reported DIFFERENTLY because they need
+            different remedies: an exhausted budget says the render product
+            never accumulated (waiting/stepping longer may help), while an
+            early abort names the step reached and the exception that ended
+            the loop (waiting cannot help). Reporting both as an exhausted
+            budget sent operators after the renderer for what was really a
+            surface/attribute error visible only at DEBUG.
         """
         if self._world is None:
             return False
@@ -3483,7 +3495,11 @@ class IsaacSimulation(IsaacRecordingMixin, SimEngine):
             except (ImportError, AttributeError, RuntimeError) as e:
                 logger.debug("Camera %r warm-up: could not query/resume timeline: %s", name, e)
 
-        for i in range(max(1, n_steps)):
+        budget = max(1, n_steps)
+        attempted = 0
+        aborted: Exception | None = None
+        for i in range(budget):
+            attempted = i + 1
             try:
                 _ensure_timeline_playing()
                 self._world.step(render=True)
@@ -3508,12 +3524,32 @@ class IsaacSimulation(IsaacRecordingMixin, SimEngine):
                 # and stop rather than failing the already-registered
                 # camera. Programming bugs (NameError) still propagate.
                 logger.debug("Camera %r warm-up step %d failed: %s", name, i + 1, e)
+                aborted = e
                 break
+        if aborted is not None:
+            # An early abort is NOT a slow render product, and the two need
+            # different remedies: the exhaustion report below tells the
+            # operator to let the RTX product accumulate, but a loop that
+            # stopped on step 1 of 5 will never accumulate anything no matter
+            # how long they wait. The cause was DEBUG-only, so the operator
+            # saw only the exhaustion text and chased the renderer instead of
+            # the exception. Name the step reached and the cause.
+            logger.warning(
+                "Camera %r warm-up aborted on step %d of %d: %s: %s. The camera stays "
+                "registered and the first render() may return an error, but the loop "
+                "stopped early - further warm-up steps cannot help until this is resolved.",
+                name,
+                attempted,
+                budget,
+                type(aborted).__name__,
+                aborted,
+            )
+            return False
         logger.warning(
             "Camera %r did not produce a valid frame after %d warm-up step(s); "
             "the first render() may return an error until the RTX product accumulates a frame.",
             name,
-            n_steps,
+            budget,
         )
         return False
 
@@ -5557,13 +5593,14 @@ class IsaacSimulation(IsaacRecordingMixin, SimEngine):
         """Release all resources.
 
         Callers must invoke this explicitly (or use the class as a context
-        manager). There is intentionally no ``__del__`` finalizer: at
-        interpreter shutdown the ``threading`` / ``logger`` / ``omni``
-        modules can already be partially torn down, and acquiring
-        ``self._lock`` from a finalizer is unsafe. Relying on GC for
-        Isaac Sim cleanup also leaks the ``World``/USD stage on the
-        common case where the GC scheduler defers the finalizer past
-        the SimulationApp shutdown.
+        manager). Do not rely on garbage collection: at interpreter shutdown
+        the ``threading`` / ``logger`` / ``omni`` modules can already be
+        partially torn down, acquiring ``self._lock`` from a finalizer is
+        unsafe, and a GC scheduler that defers the finalizer past the
+        ``SimulationApp`` shutdown leaks the ``World``/USD stage. The
+        inherited :meth:`~strands_robots.simulation.base.SimEngine.__del__`
+        is a best-effort last resort for a fully-constructed engine, not the
+        intended path.
         """
         if self._world_created:
             self.destroy()
@@ -5575,10 +5612,23 @@ class IsaacSimulation(IsaacRecordingMixin, SimEngine):
         self.cleanup()
 
     def __repr__(self) -> str:
-        return (
-            f"IsaacSimulation("
-            f"num_envs={self._config.num_envs}, "
-            f"device={self._config.device!r}, "
-            f"headless={self._config.headless}, "
-            f"world={'created' if self._world_created else 'none'})"
-        )
+        """Describe this engine, without ever raising.
+
+        ``repr`` is what a traceback or a failing assertion renders, so it must
+        not be the thing that hides a failure. On an instance whose ``__init__``
+        never finished, reading ``self._config`` raises and the reader is shown
+        ``[AttributeError ... raised in repr()]`` naming an attribute that has
+        nothing to do with the failure under investigation. Report the
+        lifecycle fact that *is* relevant instead, and name no attribute so
+        nobody is sent chasing one.
+        """
+        try:
+            return (
+                f"IsaacSimulation("
+                f"num_envs={self._config.num_envs}, "
+                f"device={self._config.device!r}, "
+                f"headless={self._config.headless}, "
+                f"world={'created' if self._world_created else 'none'})"
+            )
+        except AttributeError:
+            return f"IsaacSimulation(partially constructed, id=0x{id(self):x})"

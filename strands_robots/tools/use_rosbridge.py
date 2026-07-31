@@ -51,6 +51,7 @@ from typing import Any
 from strands import tool
 
 from strands_robots.tools._numeric_options import numeric_option_error
+from strands_robots.utils import tcp_port_error
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +59,58 @@ logger = logging.getLogger(__name__)
 _NAME_RE = re.compile(r"^[A-Za-z0-9_/~]+$")
 _TYPE_RE = re.compile(r"^[A-Za-z0-9_]+/[A-Za-z0-9_]+$")
 _HOST_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+
+# The top of the 16-bit port space is a legal TCP port that this transport cannot
+# address. autobahn builds the WebSocket URL behind roslibpy with
+# ``assert port is None or (type(port) == int and port in range(0, 65535))``
+# (``autobahn/websocket/util.py``), and ``range(0, 65535)`` stops one short of
+# 65535 - so the shared owner accepts the port, the kernel would bind it, and the
+# transport then refuses it with a bare ``assert`` carrying an empty message,
+# raised out of a function annotated ``-> dict[str, Any]``. An agent driving the
+# tool got an exception where every other refusal is a result dict, and the
+# exception named neither the tool nor the parameter.
+#
+# The narrower domain is therefore declared here and refused ahead of the backend
+# probe, for the same reason the numeric options are: the caller learns the same
+# thing whether or not roslibpy is installed, and no socket is dialed first. It is
+# deliberately narrower than ``tcp_port_error``, which keeps the whole port space
+# because that is what a port *is* - this bound belongs to one transport, not to
+# the domain, and lives beside the transport that has it.
+#
+# Under ``python -O`` the assert is stripped and the transport carries 65535, but
+# refusing it uniformly is the honest contract: the tool cannot promise a port
+# whose acceptance depends on an interpreter flag.
+_TRANSPORT_MAX_PORT = 65534
+
+
+def _transport_port_error(port: int, param: str, context: str) -> str | None:
+    """Error text when the rosbridge transport cannot address ``port``.
+
+    Applied after :func:`strands_robots.utils.tcp_port_error`, which establishes
+    that ``port`` is an ``int`` in the 16-bit space, so this only has to place it
+    against the transport's own ceiling. Shared with
+    :class:`strands_robots.mesh.rosbridge_robot.RosbridgeRobot`, which reaches
+    this transport through this module, so the two cannot disagree about which
+    ports it can carry.
+
+    Args:
+        port: A port already accepted by the shared 16-bit domain.
+        param: The parameter name it came from, used in the message.
+        context: Message prefix identifying the surface that received it - the
+            requested action for an agent tool, or the class name for a
+            constructor parameter.
+
+    Returns:
+        An error message, or ``None`` when the transport can address the port.
+    """
+    if port > _TRANSPORT_MAX_PORT:
+        return (
+            f"{context}: port {port!r} is a legal TCP port that the rosbridge WebSocket "
+            f"transport cannot address (it addresses 1-{_TRANSPORT_MAX_PORT}; autobahn's "
+            "URL builder excludes the top of the range)"
+        )
+    return None
+
 
 _INSTALL_HINT = (
     "roslibpy is not importable - install the rosbridge extra: "
@@ -121,6 +174,25 @@ class _RosbridgeBackend:
         this process.
         """
         import roslibpy
+
+        # The client builds its WebSocket URL before it dials, and that builder
+        # gates the port on type IDENTITY rather than isinstance:
+        #
+        #     assert port is None or (type(port) == int and port in range(0, 65535))
+        #         - autobahn/websocket/util.py:85 (autobahn 26.7.1)
+        #
+        # So every int SUBCLASS is refused at every value, including the default
+        # 9090 - an IntEnum read from a settings module is the realistic case -
+        # and the refusal is a bare AssertionError with an empty message, raised
+        # from the constructor below and therefore outside the try that converts
+        # a failed dial. The value is legal and dials exactly as the equal plain
+        # int does, so it is normalized here rather than refused: carrying it is
+        # a capability this tool already advertises through its ``port: int``.
+        # Ahead of the cache read on purpose - the key is then a plain int
+        # whatever flavour arrived, so one (host, port) is one connection
+        # regardless of which type reached it first, and the annotation on
+        # ``_connections`` is true rather than aspirational.
+        port = int(port)
 
         ros = self._connections.get((host, port))
         if ros is None:
@@ -263,8 +335,10 @@ def use_rosbridge(
 
     if not host or not _HOST_RE.match(host):
         return _err(f"invalid host: {host!r}")
-    if not isinstance(port, int) or isinstance(port, bool) or not 1 <= port <= 65535:
-        return _err(f"invalid port: {port!r} (expected 1-65535)")
+    if (port_error := tcp_port_error(port, "port", action)) is not None:
+        return _err(port_error)
+    if (transport_error := _transport_port_error(port, "port", action)) is not None:
+        return _err(transport_error)
     if topic is not None and not _NAME_RE.match(topic):
         return _err(f"invalid topic name: {topic!r}")
     if service is not None and not _NAME_RE.match(service):

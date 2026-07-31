@@ -9,7 +9,8 @@ concrete facades on :class:`strands_robots.simulation.base.SimEngine` promise:
 * ``register_benchmark_from_file`` validates its arguments and converts loader
   exceptions into structured error dicts rather than propagating them.
 * ``start_policy`` transparently passes through to ``run_policy``.
-* ``__del__`` swallows (and logs) cleanup failures during GC.
+* ``__del__`` swallows (and logs) cleanup failures during GC for an engine
+  whose ``__init__`` ran to completion.
 
 All run against a pure-Python fake engine - no MuJoCo, no GPU.
 """
@@ -31,6 +32,10 @@ class FakeSim(SimEngine):
     def __init__(self, robots: tuple[str, ...] = ("fake_robot",)) -> None:
         self._joint_names = ["j0", "j1", "j2"]
         self._robots = {name: self._joint_names for name in robots}
+        # A real engine declares construction complete as the final statement of
+        # its __init__, and SimEngine.__del__ skips an instance that has not, so
+        # a double whose finalizer behaviour is asserted has to declare it too.
+        self._init_complete = True
 
     def create_world(self, timestep=None, gravity=None, ground_plane=True):
         return {"status": "success"}

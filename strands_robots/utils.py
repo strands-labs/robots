@@ -498,6 +498,43 @@ def positive_count_error(value: Any, param: str, context: str) -> str | None:
     return None
 
 
+def tcp_port_error(value: Any, param: str, context: str) -> str | None:
+    """Error text when ``value`` cannot address a TCP port.
+
+    Shared domain for every caller-supplied port number: the agent tools that
+    reach a service over TCP (``use_rosbridge``'s WebSocket,
+    ``gr00t_inference``'s inference service) and the mesh bridges that construct
+    one. A port is an index into the 16-bit TCP port space, so only an ``int``
+    in ``[1, 65535]`` names one: ``0`` asks the kernel for an ephemeral port
+    rather than naming a port, and a value outside the range has nothing to bind
+    or connect to.
+
+    It lives here rather than beside one of its callers for the same reason
+    :func:`positive_count_error` does: those callers sit in different layers
+    (:mod:`strands_robots.tools` and :mod:`strands_robots.mesh` must not depend
+    on each other) and the accepted domain must not diverge between them - the
+    same port cannot be refused by one transport onto a service and accepted by
+    the next.
+
+    ``bool`` is rejected explicitly. It is an ``int`` subclass, so a bare
+    ``1 <= value <= 65535`` test lets ``True`` through as a silent port 1 - a
+    privileged port the caller never named.
+
+    Args:
+        value: The caller-supplied value.
+        param: The parameter name it came from, used in the message.
+        context: Message prefix identifying the surface that received it - the
+            requested action for an agent tool, or the class name for a
+            constructor parameter.
+
+    Returns:
+        An error message, or ``None`` when the value is usable.
+    """
+    if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 65535:
+        return f"{context}: invalid {param}: {value!r} (expected 1-65535)"
+    return None
+
+
 def non_negative_count_error(value: Any, param: str, context: str) -> str | None:
     """Error text when ``value`` is not a usable non-negative integer count.
 

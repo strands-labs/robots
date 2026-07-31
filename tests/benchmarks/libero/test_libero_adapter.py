@@ -3696,6 +3696,9 @@ class TestInstallActionController:
         # Remediation hint names the numba/coverage clash.
         assert "numba" in str(excinfo.value)
         assert "coverage" in str(excinfo.value)
+        # #1803: and carries the one-line verified remedy (pip-installed Isaac
+        # Sim's isaacsim-kernel downgrades coverage to 7.4.4).
+        assert "coverage>=7.6" in str(excinfo.value)
         assert adapter._action_controller_error is not None
         assert "action_controller" not in sim._world._backend_state
 

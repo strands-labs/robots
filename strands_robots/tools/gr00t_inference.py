@@ -21,7 +21,13 @@ from typing import Any
 
 from strands import tool
 
-from strands_robots.utils import get_base_dir, require_optional
+from strands_robots.utils import (
+    get_base_dir,
+    positive_count_error,
+    positive_finite_number_error,
+    require_optional,
+    tcp_port_error,
+)
 
 # Default cache layout for the lifecycle helpers. Mirrors the layout
 # documented in the Isaac-GR00T README so users moving from the manual
@@ -350,6 +356,92 @@ def _checkpoints_dir() -> Path:
     return get_base_dir() / "checkpoints"
 
 
+# Which numeric options each action actually consumes.
+#
+# ``port`` is the only one every service-touching action reads: it is written
+# into the ``docker run -p {port}:{port}`` mapping, into the inference server's
+# ``--port`` argument, and into the ``pgrep -f`` pattern that finds the process
+# to stop. ``denoising_steps`` and ``timeout`` are read only where a service is
+# actually launched and waited for.
+#
+# An action absent from this map reads none of them and is never refused for
+# one: ``list`` scans a fixed set of common ports rather than the caller's, and
+# ``find_containers`` / ``build_image`` / ``download_checkpoint`` never open a
+# socket. ``lifecycle`` is keyed by phase because the two phases are different
+# operations behind one action name - ``"full"`` builds, downloads, starts a
+# container and then starts the service, while ``"teardown"`` only removes the
+# container and reads no numeric option at all.
+_ACTION_NUMERIC_OPTIONS: dict[str, tuple[str, ...]] = {
+    "status": ("port",),
+    "stop": ("port",),
+    "start": ("port", "denoising_steps", "timeout"),
+    "restart": ("port", "denoising_steps", "timeout"),
+    "start_container": ("port",),
+    "lifecycle:full": ("port", "denoising_steps", "timeout"),
+}
+
+
+def _numeric_option_error(
+    action: str,
+    *,
+    port: Any,
+    denoising_steps: Any,
+    timeout: Any,
+    protocol: str,
+    lifecycle: str,
+) -> str | None:
+    """Error text for the first numeric option ``action`` reads but cannot honor.
+
+    ``port``, ``denoising_steps`` and ``timeout`` are agent-supplied and each is
+    consumed somewhere no failure is visible to the caller: ``port`` and
+    ``denoising_steps`` are interpolated into a ``docker exec`` command line that
+    runs detached, so a value the server's own argument parser rejects surfaces
+    minutes later inside the container's log rather than as this call's result;
+    ``timeout`` bounds the poll loop that waits for the port to open, where a
+    non-positive budget skips the loop entirely and reports a service that came
+    up fine as one that "failed to start", and a non-finite budget never gives up.
+    Refusing them here - before any container is built, any checkpoint is
+    downloaded, and any socket is opened - is what makes the value's rejection a
+    property of the request rather than of how far the orchestration got.
+
+    Each option is held to the shared domain for its kind:
+    :func:`~strands_robots.utils.tcp_port_error` for the port,
+    :func:`~strands_robots.utils.positive_count_error` for the discrete denoising
+    step count, and :func:`~strands_robots.utils.positive_finite_number_error`
+    for the wait budget in seconds, where a fractional value is usable.
+
+    Only the options ``action`` actually reads are checked, so a caller is never
+    refused for a value the requested action ignores. ``denoising_steps`` carries
+    one extra condition: the N1.7 entrypoint takes no ``--denoising-steps`` flag
+    (see :func:`_build_inference_command`), so under ``protocol="n1.7"`` the
+    value is genuinely inert and is left alone.
+
+    Args:
+        action: The requested action; decides which options are effective.
+        port: The service port, as supplied.
+        denoising_steps: Diffusion denoising step count, as supplied.
+        timeout: Seconds to wait for the port to open, as supplied.
+        protocol: The server protocol; ``"n1.7"`` ignores ``denoising_steps``.
+        lifecycle: The lifecycle phase, which selects the effective option set
+            when ``action`` is ``"lifecycle"``.
+
+    Returns:
+        An error message naming the action and the option, or ``None`` when every
+        option this call reads is usable.
+    """
+    key = f"lifecycle:{lifecycle}" if action == "lifecycle" else action
+    consumed = _ACTION_NUMERIC_OPTIONS.get(key, ())
+    if "port" in consumed and (error := tcp_port_error(port, "port", action)) is not None:
+        return error
+    if "denoising_steps" in consumed and protocol != "n1.7":
+        error = positive_count_error(denoising_steps, "denoising_steps", action)
+        if error is not None:
+            return error
+    if "timeout" in consumed and (error := positive_finite_number_error(timeout, "timeout", action)) is not None:
+        return error
+    return None
+
+
 @tool
 def gr00t_inference(
     action: str,
@@ -507,16 +599,21 @@ def gr00t_inference(
         action: Action to perform (see Actions above).
         checkpoint_path: Path to model checkpoint directory (required for ``start``/``restart``).
         policy_name: Optional name for the policy service (for registration/tracking).
-        port: Port for the inference service. Defaults to 5555 (ZMQ) or auto-switches
+        port: Port for the inference service. Must be an int in 1-65535.
+            Defaults to 5555 (ZMQ) or auto-switches
             to 8000 when ``http_server=True``.
         data_config: Embodiment data config name (see Data configs above). N1.5/N1.6 only.
         embodiment_tag: Embodiment tag for the model (e.g., ``gr1``, ``so100``,
             ``libero_sim``).
         denoising_steps: Number of denoising steps for action generation (default: 4).
+            Must be a positive integer. Ignored by ``protocol="n1.7"``, whose
+            entrypoint takes no ``--denoising-steps`` flag.
             N1.5/N1.6 only - the N1.7 server reads this from the checkpoint.
         host: Host address to bind the service to (default: ``0.0.0.0``).
         container_name: Specific Docker container name. Auto-detected if omitted.
-        timeout: Seconds to wait for service startup (default: 60).
+        timeout: Seconds to wait for service startup (default: 60). Must be a
+            positive finite number - the wait is a poll loop, so a non-positive
+            budget never polls and a non-finite one never gives up.
         use_tensorrt: Enable TensorRT acceleration (default: False).
         trt_engine_path: Directory for TensorRT engine cache (default: ``gr00t_engine``).
         vit_dtype: ViT precision with TensorRT - ``fp16`` or ``fp8`` (default: ``fp8``).
@@ -669,6 +766,21 @@ def gr00t_inference(
     _hf_local_dir_reason = _check_hf_local_dir_safety(hf_local_dir)
     if _hf_local_dir_reason is not None:
         return {"status": "error", "message": _hf_local_dir_reason}
+
+    # Boundary guard: the numeric options reach a docker command line and the
+    # port-poll loop, neither of which reports back a value it cannot use. Check
+    # them here so a bad one is refused before any container, checkpoint or
+    # socket work starts - and only for the options this action reads.
+    _numeric_reason = _numeric_option_error(
+        action,
+        port=port,
+        denoising_steps=denoising_steps,
+        timeout=timeout,
+        protocol=protocol,
+        lifecycle=lifecycle,
+    )
+    if _numeric_reason is not None:
+        return {"status": "error", "message": f"gr00t_inference: {_numeric_reason}"}
 
     if action == "find_containers":
         return _find_gr00t_containers()

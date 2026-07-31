@@ -68,7 +68,26 @@ class _FakeRos:
     scripted_responses: dict[str, dict[str, Any]] = {}
     scripted_messages: dict[str, list[dict[str, Any]]] = {}
 
+    # The real client builds its WebSocket URL in this constructor, before it
+    # dials, and that builder gates the port on type IDENTITY and on a range
+    # that stops one short of the 16-bit top:
+    #
+    #     assert port is None or (type(port) == int and port in range(0, 65535))
+    #         - autobahn/websocket/util.py:85 (autobahn 26.7.1)
+    #
+    # Reproducing it is what makes this double stand in for the client's
+    # contract instead of a more permissive one. Accepting any port of any type
+    # here let two values that are unusable in production look usable in the
+    # whole suite: an int subclass at EVERY value (#1835) and 65535 (#1822).
+    # The bare AssertionError is deliberate - it is the shape that escapes
+    # upstream, so a test asserting the tool no longer leaks one is asserting
+    # against what a caller would really have seen. Pinned against the
+    # installed dependency by the premise tests in
+    # tests/tools/test_rosbridge_port_type_identity.py, so this stays a
+    # statement about the client rather than a rule of our own invention.
     def __init__(self, host: str | None = None, port: int | None = None) -> None:
+        if not (port is None or (type(port) is int and port in range(0, 65535))):
+            raise AssertionError
         self.host, self.port = host, port
         self.is_connected = False
         self.terminated = False

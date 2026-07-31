@@ -220,6 +220,9 @@ class TestFromSimDependencyClassification:
         # Must be the base class, not the degrade-gracefully subclass.
         assert not isinstance(exc.value, _ControllerDependencyMissing)
         assert "coverage" in str(exc.value).lower()
+        # #1803: the message carries the one-line verified remedy so the user
+        # is not left correlating a coverage version with a robosuite import.
+        assert "coverage>=7.6" in str(exc.value)
 
 
 def _force_mujoco_import_error(monkeypatch, exc: BaseException):
@@ -270,6 +273,8 @@ class TestFromSimMujocoImportClassification:
         # Must be the base class, not the degrade-gracefully subclass.
         assert not isinstance(exc.value, _ControllerDependencyMissing)
         assert "clash" in str(exc.value).lower()
+        # #1803: the clash message carries the one-line verified remedy.
+        assert "coverage>=7.6" in str(exc.value)
 
     def test_other_mujoco_import_error_degrades_as_dependency_missing(self, monkeypatch):
         """A mujoco ``ImportError`` that is NOT the clash (e.g. a broken native
