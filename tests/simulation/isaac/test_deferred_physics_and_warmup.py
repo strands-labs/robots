@@ -34,13 +34,14 @@ The tests drive the REAL ``IsaacSimulation`` methods on a ``__new__`` skeleton
 
 from __future__ import annotations
 
+import logging
 import sys
 import types
 
 import pytest
 
 from strands_robots.simulation.isaac.config import IsaacConfig
-from strands_robots.simulation.isaac.simulation import IsaacSimulation
+from strands_robots.simulation.isaac.simulation import IsaacSimulation, _CameraState
 
 
 class _FakeTimeline:
@@ -205,13 +206,36 @@ class _WarmupWorld:
         return self._remaining == 0
 
 
-def _skeleton_sim(world: _WarmupWorld) -> IsaacSimulation:
-    """Minimal ``__new__`` skeleton for the real ``_warmup_camera`` body."""
+def _skeleton_sim(world: _WarmupWorld, camera: str) -> IsaacSimulation:
+    """Minimal ``__new__`` skeleton for the real ``_warmup_camera`` body.
+
+    EVERY attribute the real body reads must be set here. The warm-up loop
+    wraps its own iteration in ``except (..., AttributeError, ...): break``
+    to tolerate Isaac surface drift, so an attribute this skeleton omits does
+    not surface as an error - it is swallowed into the same bare ``False``
+    that a camera which genuinely never warmed up returns, with the missing
+    name visible only at DEBUG. ``_cameras`` (read to decide whether the
+    secondary render products need flushing) was omitted when this file
+    landed, and all three tests below broke out of the loop on iteration 1
+    without ever reaching the timeline resume they exist to pin.
+    :func:`_assert_reached_render_probe` is what stops that recurring
+    silently; ``camera`` is passed explicitly so the registered camera set
+    always matches the name the test warms up.
+    """
     sim = IsaacSimulation.__new__(IsaacSimulation)
     sim._config = IsaacConfig(headless=True, num_envs=1)
     sim._world = world
+    # Consistent with ``_world`` being set. ``_refresh_all_render_products``
+    # early-returns on a falsy ``_world_created``, so a skeleton that claims
+    # no world would silently no-op the flush a multi-camera case means to
+    # exercise rather than failing.
+    sim._world_created = True
     sim._sim_time = 0.0
     sim._step_count = 0
+    # The real registry type, not a placeholder: ``len(self._cameras)`` is what
+    # the body reads, and a mistyped stand-in would drift from the production
+    # dict the moment anything reads a field off it.
+    sim._cameras = {camera: _CameraState(name=camera, prim_path=f"/World/{camera}", width=640, height=480)}
 
     def _render(camera_name: str = "default", width=None, height=None):  # noqa: ANN001, ARG001
         if world.camera_ready:
@@ -219,13 +243,41 @@ def _skeleton_sim(world: _WarmupWorld) -> IsaacSimulation:
         return {"status": "error", "content": [{"text": "render product not accumulated"}]}
 
     sim.render = _render  # type: ignore[method-assign]
+    # ``SimEngine.__del__`` calls ``cleanup()``, which reads Isaac state this
+    # skeleton does not own; on GC that logged
+    # ``Cleanup error during __del__: ... no attribute '_world_created'`` and
+    # that teardown noise, not the swallowed ``_cameras`` lookup, is what the
+    # failure above was read as. Nothing here allocates a world to release.
+    sim.cleanup = lambda: None  # type: ignore[method-assign]
     return sim
+
+
+@pytest.fixture
+def warmup_log(caplog) -> pytest.LogCaptureFixture:
+    """Capture the warm-up loop's own DEBUG records for the guard below."""
+    caplog.set_level(logging.DEBUG, logger="strands_robots.simulation.isaac.simulation")
+    return caplog
+
+
+def _assert_reached_render_probe(caplog: pytest.LogCaptureFixture) -> None:
+    """Fail naming the attribute if the loop exited through its handler.
+
+    A ``False`` from ``_warmup_camera`` is ambiguous: it means either "this
+    camera never produced a frame" (what these tests assert against) or "an
+    exception broke the loop on its first iteration" (what a test-double gap
+    produces). Only the first is behaviour under test, so pin that the
+    exception path never ran - otherwise a future attribute added to the real
+    body turns these tests vacuous again, reported as the unrelated
+    ``_world_created`` name that ``__repr__`` raises on.
+    """
+    broke = [r.getMessage() for r in caplog.records if "warm-up step" in r.getMessage() and "failed" in r.getMessage()]
+    assert not broke, f"warm-up loop exited through its exception handler, so the loop under test never ran: {broke}"
 
 
 class TestWarmupCameraResumesTimeline:
     """``_warmup_camera`` must not step a dead renderer (stopped timeline)."""
 
-    def test_resumes_stopped_timeline_and_warms_up(self, fake_timeline) -> None:
+    def test_resumes_stopped_timeline_and_warms_up(self, fake_timeline, warmup_log) -> None:
         """The load_scene aftermath: timeline stopped, camera just added.
 
         Pre-fix behaviour: every warm-up step ran with the timeline stopped,
@@ -235,13 +287,14 @@ class TestWarmupCameraResumesTimeline:
         """
         fake_timeline._playing = False
         world = _WarmupWorld(fake_timeline, frames_until_ready=2)
-        sim = _skeleton_sim(world)
+        sim = _skeleton_sim(world, "wrist_image")
 
         assert sim._warmup_camera("wrist_image", n_steps=5) is True
+        _assert_reached_render_probe(warmup_log)
         assert fake_timeline.play_calls >= 1
         assert world.render_steps_while_playing >= 2
 
-    def test_reasserts_play_when_queued_stop_lands_mid_loop(self, fake_timeline) -> None:
+    def test_reasserts_play_when_queued_stop_lands_mid_loop(self, fake_timeline, warmup_log) -> None:
         """A stale ``is_playing() == True`` with a stop in flight.
 
         This is the observed 6.0.x trap: right after the deferred-physics
@@ -252,16 +305,44 @@ class TestWarmupCameraResumesTimeline:
         fake_timeline._playing = True
         fake_timeline.stop()  # queued; lands on the first world.step tick
         world = _WarmupWorld(fake_timeline, frames_until_ready=2)
-        sim = _skeleton_sim(world)
+        sim = _skeleton_sim(world, "wrist_image")
 
         assert sim._warmup_camera("wrist_image", n_steps=5) is True
+        _assert_reached_render_probe(warmup_log)
         assert fake_timeline.play_calls >= 1
+        assert world.render_steps_while_playing >= 2
 
-    def test_playing_timeline_needs_no_resume(self, fake_timeline) -> None:
-        """Steady-state add_camera: timeline already playing -> no play() call."""
+    def test_playing_timeline_needs_no_resume(self, fake_timeline, warmup_log) -> None:
+        """Steady-state add_camera: timeline already playing -> no play() call.
+
+        ``play_calls == 0`` is also what a loop that never ran reports, so the
+        warm-up is pinned to have actually stepped and rendered.
+        """
         fake_timeline._playing = True
         world = _WarmupWorld(fake_timeline, frames_until_ready=1)
-        sim = _skeleton_sim(world)
+        sim = _skeleton_sim(world, "front")
 
         assert sim._warmup_camera("front", n_steps=3) is True
+        _assert_reached_render_probe(warmup_log)
         assert fake_timeline.play_calls == 0
+        assert world.render_steps_while_playing >= 1
+
+    def test_skeleton_attribute_gap_is_not_read_as_a_warmup_failure(self, fake_timeline, warmup_log) -> None:
+        """The guard must be able to fail; pin it against a planted gap.
+
+        Removing an attribute the real body reads reproduces the exact state
+        this file landed in - ``_warmup_camera`` returns ``False`` for a
+        camera that would have warmed up fine. Without this case the guard in
+        the three tests above could pass by never having anything to find.
+        """
+        world = _WarmupWorld(fake_timeline, frames_until_ready=1)
+        sim = _skeleton_sim(world, "front")
+        del sim._cameras
+
+        assert sim._warmup_camera("front", n_steps=3) is False
+        # One step lands before the swallowed read (``world.step`` precedes the
+        # ``_cameras`` lookup), then the handler breaks - so the budget of 3 is
+        # abandoned after 1 and the render probe is never reached.
+        assert world.render_steps_while_playing == 1
+        with pytest.raises(AssertionError, match="the loop under test never ran"):
+            _assert_reached_render_probe(warmup_log)
