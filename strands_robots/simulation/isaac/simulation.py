@@ -1863,14 +1863,33 @@ class IsaacSimulation(IsaacRecordingMixin, SimEngine):
 
     @staticmethod
     def _stop_timeline_for_deferred_physics() -> None:
-        """Stop the Isaac timeline so the physics-tensor view is cleared.
+        """Stop the Isaac timeline AND invalidate the physics-tensor view.
 
         After this returns the physics-tensor view is torn down, so
         ``RigidPrim.__init__`` skips its eager ``_on_physics_ready``
         velocity query and a freshly constructed ``Dynamic*`` prim
-        initialises only on the next ``world.reset()``. Best-effort: a
-        missing ``omni.timeline`` (partial Isaac install) is logged and
-        ignored.
+        initialises only on the next ``world.reset()``.
+
+        ``timeline.stop()`` alone is NOT sufficient on Isaac Sim 6.0.x
+        (verified on the pip ``isaacsim`` 6.0.0.1 and 6.0.1.0 wheels):
+        the view invalidation that upstream documents as happening
+        "automatically when the timeline is stopped" rides an event
+        subscription, and ``SimulationManager.get_physics_sim_view()``
+        is still non-``None`` when ``stop()`` returns - so the eager
+        velocity query in ``RigidPrim.__init__`` still fires and raises
+        the bare ``Exception("Failed to get rigid body velocities from
+        backend")`` this guard exists to prevent (#159 lineage). Upstream
+        provides :meth:`SimulationManager.invalidate_physics` as the
+        documented manual-invalidation entry point ("not intended to be
+        called directly unless a manual invalidation is desired/required"
+        - deferring a not-yet-viewed prim's physics init is exactly that
+        case), and it tears the view down synchronously. Call both: stop
+        the timeline (scene-build ordering, matches Isaac's own "build
+        rigid bodies, then reset once" flow) then invalidate the view.
+
+        Best-effort: a missing ``omni.timeline`` /
+        ``isaacsim.core.simulation_manager`` (partial Isaac install, older
+        Isaac without the manager API) is logged and ignored.
         """
         try:
             import omni.timeline  # type: ignore[import-not-found]
@@ -1878,6 +1897,21 @@ class IsaacSimulation(IsaacRecordingMixin, SimEngine):
             omni.timeline.get_timeline_interface().stop()
         except (ImportError, AttributeError, RuntimeError) as e:
             logger.warning("Could not stop timeline to defer physics init: %s", e)
+        try:
+            from isaacsim.core.simulation_manager import (  # type: ignore[import-not-found]
+                SimulationManager,
+            )
+
+            if SimulationManager.get_physics_sim_view() is not None:
+                SimulationManager.invalidate_physics()
+                logger.info(
+                    "Invalidated live physics-tensor view after timeline stop "
+                    "(stop() alone leaves the view armed on Isaac Sim 6.0.x, "
+                    "so RigidPrim.__init__ would still run its eager velocity "
+                    "query on a prim outside the view)."
+                )
+        except (ImportError, AttributeError, RuntimeError) as e:
+            logger.warning("Could not invalidate physics-tensor view: %s", e)
 
     def _create_shape_prim(
         self,
@@ -2939,8 +2973,37 @@ class IsaacSimulation(IsaacRecordingMixin, SimEngine):
         """
         if self._world is None:
             return False
+
+        # A stopped timeline never feeds the RTX render products, so a
+        # warm-up loop below it would step the physics scene while every
+        # render() probe keeps returning the malformed-buffer error - the
+        # exact state load_scene leaves behind after its deferred-physics
+        # window (the #159 guard stops the timeline before constructing
+        # Dynamic* prims, and ``world.step`` does not resume play). Resume
+        # inside the loop, every iteration: timeline stop/play commands
+        # land asynchronously on a kit update tick, so ``is_playing()`` can
+        # report stale ``True`` right after a queued ``stop()`` and a
+        # single pre-loop resume can be undone when that queued stop lands
+        # mid-warm-up. Re-asserting play() before each step converges even
+        # when a stop event is still in flight. Best-effort, same failure
+        # tolerance as the step loop.
+        def _ensure_timeline_playing() -> None:
+            try:
+                import omni.timeline  # type: ignore[import-not-found]
+
+                timeline = omni.timeline.get_timeline_interface()
+                if not timeline.is_playing():
+                    timeline.play()
+                    logger.debug(
+                        "Camera %r warm-up: resumed stopped timeline so the RTX render product can accumulate frames",
+                        name,
+                    )
+            except (ImportError, AttributeError, RuntimeError) as e:
+                logger.debug("Camera %r warm-up: could not query/resume timeline: %s", name, e)
+
         for i in range(max(1, n_steps)):
             try:
+                _ensure_timeline_playing()
                 self._world.step(render=True)
                 self._sim_time += self._config.physics_dt
                 self._step_count += 1

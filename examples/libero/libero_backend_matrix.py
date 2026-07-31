@@ -125,9 +125,13 @@ _BACKEND_ROWS: list[tuple[str, str, list[str]]] = [
 # patterns" + the `print(...)` calls at the tail of run_mujoco.py and
 # run_isaac.py. If those drift, the parser surfaces an empty
 # ``success_rate`` rather than crashing -- the row will read ``ok``
-# with ``--`` cells and a stderr hint.
+# with ``--`` cells and a stderr hint. Drivers may add extra key=value
+# fields between the shared ones (run_isaac.py emits ``resolved_task=``
+# after ``task=`` when the placeholder task falls back), so match each
+# anchor key anywhere past the previous one rather than requiring strict
+# adjacency.
 _RE_RESULT = re.compile(
-    r"^policy=\S+\s+task=\S+\s+" r"success_rate=(?P<sr>[0-9]+\.[0-9]+)\s+" r"wall_time=(?P<wt>[0-9]+\.[0-9]+)s\b",
+    r"^policy=\S+\s+task=\S+.*?\s" r"success_rate=(?P<sr>[0-9]+\.[0-9]+)\s.*?" r"wall_time=(?P<wt>[0-9]+\.[0-9]+)s\b",
     re.MULTILINE,
 )
 
