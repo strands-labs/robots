@@ -95,20 +95,6 @@ def test_repo_type_bucket_raises_when_unsupported(monkeypatch):
         sd.StreamingDatasetReader.open("org/ds", repo_type="bucket", validate_deltas=False)
 
 
-def test_lerobot_version_unknown_when_metadata_unresolvable(monkeypatch):
-    """_lerobot_version() degrades to 'unknown' instead of raising when the
-    installed-distribution metadata for lerobot cannot be resolved (e.g. a
-    source checkout without dist-info). The value only ever enriches an error
-    message, so a PackageNotFoundError here must not escape."""
-    import importlib.metadata as md
-
-    def _raise(_name):
-        raise md.PackageNotFoundError("lerobot")
-
-    monkeypatch.setattr(md, "version", _raise)
-    assert sd._lerobot_version() == "unknown"
-
-
 def test_bucket_guard_message_survives_unresolvable_lerobot_version(monkeypatch):
     """The repo_type='bucket' fail-fast must surface as the actionable
     RuntimeError even when lerobot's version metadata is unresolvable: the

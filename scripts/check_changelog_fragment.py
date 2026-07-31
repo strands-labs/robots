@@ -73,10 +73,15 @@ Usage
 -----
 ``--base-ref``  the branch being merged into (default ``main``). Resolved as
                 ``origin/<ref>`` when that exists, else as ``<ref>``.
-``--head``      the commit under test (default ``HEAD``). CI passes the pull
-                request's *head* commit, for consistency with the merge-base
-                overlap check and because it is the tree under review. Unlike
-                that check, this one is not defeated by the
+``--head``      the commit under test (default ``HEAD``). CI *names* the pull
+                request's head commit here rather than checking it out, and runs
+                this script from the base branch instead: a branch that forked
+                before this gate landed does not carry the script, so running it
+                out of the head tree died with exit 2 before the check began
+                (issue #1791). Nothing is lost by that -- every input below is
+                read from the object database and never from the working tree, so
+                which tree is checked out cannot change the answer. Unlike the
+                merge-base overlap check, this one is also not defeated by the
                 ``refs/pull/<n>/merge`` commit ``actions/checkout`` produces by
                 default: the question here is which entries the head carries
                 that the base does not, and a branch's appended entry is on the

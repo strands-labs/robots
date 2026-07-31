@@ -354,7 +354,7 @@ class LiberoAdapter(BenchmarkProtocol):
                 action. ``PolicyRunner._evaluate_with_spec`` catches the
                 exception from ``on_episode_start`` and returns a
                 structured ``{"status": "error", ...}`` dict, so a broken
-                *setup* (e.g. the ``numba`` / ``coverage>=7`` import clash,
+                *setup* (e.g. the ``numba`` / ``coverage`` import clash,
                 missing robosuite, missing site/actuator IDs) is no longer
                 indistinguishable from a bad *policy* scoring
                 ``success_rate=0`` on a green run (#522). Set to ``False``
@@ -2362,7 +2362,7 @@ class LiberoAdapter(BenchmarkProtocol):
           the result) before falling through to the no-op name-lookup
           path - the pre-#522 best-effort behaviour.
         * Dependency-clash failures (``ImportError`` / ``AttributeError``
-          from the import chain - e.g. the ``numba`` / ``coverage>=7``
+          from the import chain - e.g. the ``numba`` / ``coverage``
           incompatibility) are ALWAYS re-raised with a remediation hint,
           regardless of the flag, because they are fixable
           environment-level breakage, not a legitimate "no controller
@@ -2389,7 +2389,7 @@ class LiberoAdapter(BenchmarkProtocol):
         except (ImportError, AttributeError) as e:
             # Defense-in-depth: an import/attribute error escaped from_sim's
             # own classification (it normally wraps these). Treat the known
-            # numba/coverage>=7 clash as fatal (surface it, #522); anything
+            # numba/coverage clash as fatal (surface it, #522); anything
             # else degrades like a missing optional dep.
             if _is_numba_coverage_clash(e):
                 remediation = self._action_controller_remediation(e)
@@ -2466,19 +2466,12 @@ class LiberoAdapter(BenchmarkProtocol):
     def _action_controller_remediation(error: BaseException) -> str:
         """Build a remediation hint for a dependency-clash install failure.
 
-        Detects the known ``numba`` / ``coverage>=7`` incompatibility
+        Detects the known ``numba`` / ``coverage`` incompatibility
         (#522) via :func:`_is_numba_coverage_clash` and surfaces a targeted
         fix; falls back to a generic hint for other failures.
         """
         if _is_numba_coverage_clash(error):
-            return (
-                "This is the known numba/coverage>=7 incompatibility: numba's "
-                "coverage_support module subclasses coverage.types.Tracer, which "
-                "coverage>=7 removed. Remediation: uninstall the conflicting "
-                "coverage from the eval environment ('pip uninstall coverage'), or "
-                "pin coverage<7, or upgrade numba to a release that no longer "
-                "imports coverage.types.Tracer."
-            )
+            return _numba_coverage_clash_remedy()
         return (
             "Ensure the OSC controller dependencies (robosuite and its "
             "transitive imports) are importable in this environment."
@@ -3578,7 +3571,7 @@ class _ControllerInstallError(RuntimeError):
     """Raised inside :meth:`_LiberoOSCController.from_sim` when the
     LIBERO action controller can't be built but the prerequisites ARE
     present (missing site / actuator IDs, wrong arm-joint count, a
-    broken-but-installed import such as the numba/coverage>=7 clash,
+    broken-but-installed import such as the numba/coverage clash,
     etc.). With ``strict_action_controller=True`` (the default),
     :meth:`LiberoAdapter._install_action_controller` re-raises this so
     ``PolicyRunner`` returns a structured eval error instead of silently
@@ -3598,14 +3591,59 @@ class _ControllerDependencyMissing(_ControllerInstallError):
     extras."""
 
 
+#: Oldest ``coverage`` release that provides ``coverage.types.Tracer`` - the
+#: symbol ``numba.misc.coverage_support`` subclasses unconditionally. The name
+#: was renamed INTO existence at this release: coverage 7.4.0-7.6.0 call the
+#: same protocol ``TracerCore``, 7.0-7.3 call it ``TTracer``, and 6.x and older
+#: ship no ``coverage/types.py`` at all. The numba clash is therefore a
+#: coverage-too-OLD condition, so every remedy must raise ``coverage`` rather
+#: than pin it down.
+_COVERAGE_TRACER_MIN_VERSION = "7.6.1"
+
+
+def _numba_coverage_clash_remedy() -> str:
+    """Return the remediation text for the ``numba`` / ``coverage`` clash (#522).
+
+    Single source of truth, so every raise site that classifies the clash
+    hands the caller the same fix. The version boundary it names is
+    :data:`_COVERAGE_TRACER_MIN_VERSION`.
+    """
+    return (
+        "This is the known numba/coverage import clash: numba's coverage_support "
+        "module subclasses coverage.types.Tracer with no version guard, and "
+        f"coverage provides that symbol only from {_COVERAGE_TRACER_MIN_VERSION} "
+        f"onward. Remediation: raise coverage (pip install "
+        f"'coverage>={_COVERAGE_TRACER_MIN_VERSION}'), or remove coverage from the "
+        "eval environment entirely ('pip uninstall coverage'), which numba's "
+        "ImportError guard tolerates. Pinning coverage DOWN does not fix it - older "
+        "releases have no coverage.types.Tracer either - and an environment held at "
+        "an older coverage (some GPU-sim wheels pin coverage==7.4.4) is the usual "
+        "cause."
+    )
+
+
 def _is_numba_coverage_clash(error: BaseException) -> bool:
-    """Recognise the ``numba`` / ``coverage>=7`` import incompatibility (#522).
+    """Recognise the ``numba`` / ``coverage`` import incompatibility (#522).
 
     ``numba/misc/coverage_support.py`` defines
-    ``class NumbaTracer(coverage.types.Tracer)``, but ``coverage>=7``
-    removed ``coverage.types.Tracer`` - so importing ``numba`` (pulled in
-    transitively by robosuite's OSC controller path) raises
-    ``AttributeError: module 'coverage.types' has no attribute 'Tracer'``.
+    ``class NumbaTracer(coverage.types.Tracer)`` with no version guard - its
+    only guard is ``except ImportError`` around ``import coverage`` - while
+    ``coverage`` provides ``coverage.types.Tracer`` only from
+    :data:`_COVERAGE_TRACER_MIN_VERSION` onward. Importing ``numba`` (pulled in
+    transitively by robosuite's OSC controller path) against an older
+    ``coverage`` therefore fails in one of two shapes:
+
+    * ``module 'coverage.types' has no attribute 'Tracer'`` - coverage
+      7.0-7.6.0, where ``coverage/types.py`` exists but names the protocol
+      ``TTracer`` (7.0-7.3) or ``TracerCore`` (7.4.0-7.6.0).
+    * ``module 'coverage' has no attribute 'types'`` - coverage 6.x and older,
+      which ship no ``coverage/types.py`` at all.
+
+    Both shapes are the same clash with the same fix, so both are recognised.
+    The second one is what a caller lands in after pinning ``coverage`` *down*;
+    not recognising it would downgrade the strict install error into the silent
+    "GR00T actions will no-op" degrade that #522 exists to prevent.
+
     Walk the exception chain so the signature is still recognised when the
     AttributeError is wrapped by a later ImportError.
     """
@@ -3615,6 +3653,8 @@ def _is_numba_coverage_clash(error: BaseException) -> bool:
         seen.add(id(cur))
         text = str(cur)
         if "coverage.types" in text and "Tracer" in text:
+            return True
+        if "coverage" in text and "has no attribute 'types'" in text:
             return True
         cur = cur.__cause__ or cur.__context__
     return False
@@ -3784,7 +3824,7 @@ class _LiberoOSCController:
         the sim has no compiled MuJoCo model - the caller degrades
         gracefully. Raises the base :class:`_ControllerInstallError` for a
         fixable setup failure (missing site / actuator IDs, wrong arm-joint
-        count, or the known numba/coverage>=7 clash) - in strict mode the
+        count, or the known numba/coverage clash) - in strict mode the
         caller re-raises so ``PolicyRunner`` returns a structured eval
         error instead of silently dropping every GR00T action (#522).
         """
@@ -3796,7 +3836,7 @@ class _LiberoOSCController:
         # caller degrades gracefully; that is an environmental / optional-
         # dep condition, not a fixable setup bug. An import that fails for
         # ANOTHER reason while the module IS importable-but-broken (e.g.
-        # the numba/coverage>=7 ``AttributeError`` clash) raises the base
+        # the numba/coverage ``AttributeError`` clash) raises the base
         # ``_ControllerInstallError`` so the caller can surface it (#522).
         try:
             import mujoco as _mj
@@ -3804,7 +3844,9 @@ class _LiberoOSCController:
             raise _ControllerDependencyMissing(f"mujoco not available: {e}") from e
         except ImportError as e:
             if _is_numba_coverage_clash(e):
-                raise _ControllerInstallError(f"mujoco import hit the numba/coverage clash: {e}") from e
+                raise _ControllerInstallError(
+                    f"mujoco import hit the numba/coverage clash: {e} {_numba_coverage_clash_remedy()}"
+                ) from e
             raise _ControllerDependencyMissing(f"mujoco import failed (treated as unavailable): {e}") from e
         try:
             from robosuite.controllers import (  # type: ignore[import-not-found]
@@ -3814,7 +3856,7 @@ class _LiberoOSCController:
             from robosuite.utils.binding_utils import MjSim  # type: ignore[import-not-found]
         except (ImportError, AttributeError) as e:
             # The robosuite OSC import chain failed. Two cases:
-            #   1. The known numba/coverage>=7 clash (#522) - a FIXABLE
+            #   1. The known numba/coverage clash (#522) - a FIXABLE
             #      environment problem - surface it strictly so the eval
             #      returns an error instead of scoring success_rate=0 with
             #      every action dropped.
@@ -3824,7 +3866,9 @@ class _LiberoOSCController:
             #      as a hard dependency would break installs without the
             #      optional extras.
             if _is_numba_coverage_clash(e):
-                raise _ControllerInstallError(f"robosuite OSC import hit the numba/coverage clash: {e}") from e
+                raise _ControllerInstallError(
+                    f"robosuite OSC import hit the numba/coverage clash: {e} {_numba_coverage_clash_remedy()}"
+                ) from e
             raise _ControllerDependencyMissing(
                 f"robosuite OSC controller imports unavailable: {type(e).__name__}: {e}"
             ) from e

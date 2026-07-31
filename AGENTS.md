@@ -133,6 +133,28 @@ hatch run format            # ruff check --fix, ruff format
      mutation returned that error and the squash was already on `main`. Confirm
      with `state`/`merged`, or `git log origin/main`, before concluding a merge
      failed and redoing the work.
+   - *And on `main` afterwards.* A rollup of `FAILURE` on a merge commit is not
+     evidence that the squash broke anything: a **cancelled** check aggregates
+     into `FAILURE`. `pr-and-push.yml` keys its concurrency group on
+     `github.event.pull_request.number || github.ref`, and on a push there is no
+     PR number, so every push to `refs/heads/main` shares one group under
+     `cancel-in-progress: true` - each merge kills the run of the merge before
+     it. Read each context's own `conclusion` before you believe the rollup.
+     Four PRs merged in the 22 minutes from 03:03:44 to 03:25:25 left three
+     consecutive commits - #1788, #1794, #1796 - each reporting rollup
+     `FAILURE` whose only non-`SUCCESS` context was
+     `call-test-lint / Test and Lint` = `CANCELLED`, killed at 1m07s, 15m00s
+     and 5m38s into their runs. Nothing had failed. See #1800.
+
+     The same timings carry a cost that is not a misread: that suite had not
+     finished in 15m00s, so merging faster than it runs leaves **only the tip
+     verified** and no intermediate commit attributable. A batch is still
+     defensible - each of those four was individually green, passed
+     `Detect an untested overlap with the base branch`, and touched a file set
+     disjoint from the others - but price it knowingly: a red tip then costs a
+     manual bisect, and an intermediate commit's green is not available to lean
+     on. Do not read the intermediate `FAILURE`s as the culprit; they are the
+     batching, not a defect.
    And before merging, `reviewDecision: APPROVED` alone is not the gate: poll
    `statusCheckRollup.state == SUCCESS` and `mergeStateStatus == CLEAN`
    together, since `reviewDecision` flips before the checks finish.

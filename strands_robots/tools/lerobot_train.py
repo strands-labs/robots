@@ -28,6 +28,8 @@ import psutil
 from strands import tool
 from strands.types.tools import ToolContext
 
+from strands_robots.utils import validation_split_error, validation_split_fraction
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -306,6 +308,22 @@ class SessionManager:
         return self._load_sessions()
 
 
+def _read_total_tasks(dataset_root: str) -> int:
+    """Return ``total_tasks`` from a LeRobot v3 dataset's ``meta/info.json``.
+
+    lerobot's own field defaults to 0, and older datasets may omit it entirely;
+    both mean "no task count recorded" and are returned as 0, which callers
+    treat as single-task.
+    """
+    info_path = Path(dataset_root) / "meta" / "info.json"
+    if not info_path.exists():
+        return 0
+    with open(info_path) as f:
+        info = json.load(f)
+    total = info.get("total_tasks")
+    return total if isinstance(total, int) and not isinstance(total, bool) else 0
+
+
 def _read_total_episodes(dataset_root: str) -> int:
     """Return ``total_episodes`` from a LeRobot v3 dataset's ``meta/info.json``.
 
@@ -475,9 +493,21 @@ def build_train_command(
             raise ValueError(
                 f"val_episodes={val_episodes} leaves no training data (dataset has {total} episodes); reserve fewer."
             )
-        train_eps = list(range(total - val_episodes))
-        episodes_arg = "[" + ",".join(str(e) for e in train_eps) + "]"
-        cmd.append(f"--dataset.episodes={episodes_arg}")
+        split_err = validation_split_error(val_episodes, _read_total_tasks(dataset_root), "lerobot_train")
+        if split_err:
+            raise ValueError(split_err)
+        # Hand the split to lerobot instead of restricting --dataset.episodes
+        # ourselves: it holds out the tail AND computes an eval loss on it, where
+        # an episode restriction only shrinks the TRAINING set and leaves the
+        # reserved episodes unused by either half.
+        supplied = {key.lstrip("-") for key in (extra_flags or {})}
+        if "dataset.eval_split" not in supplied:
+            cmd.append(f"--dataset.eval_split={validation_split_fraction(val_episodes, total)}")
+        if "eval_steps" not in supplied:
+            # Validate on the caller's own checkpoint cadence, so every saved
+            # checkpoint has a validation loss recorded beside it. A non-positive
+            # save_freq disables periodic saving, so evaluate once at the end.
+            cmd.append(f"--eval_steps={save_freq if save_freq > 0 else steps}")
 
     if extra_flags:
         for key, value in extra_flags.items():
@@ -531,9 +561,15 @@ def lerobot_train(
         smolvla; sourced live so it tracks lerobot).
 
     Overfit guard:
-        ``val_episodes=N`` reserves the LAST N episodes for evaluation by training
-        only on episodes ``[0 .. total-N-1]`` via ``--dataset.episodes``. The total
-        is read from ``meta/info.json``.
+        ``val_episodes=N`` reserves the LAST N episodes as a validation set by
+        emitting ``--dataset.eval_split`` (the fraction that makes lerobot hold
+        out exactly N) together with ``--eval_steps``, so lerobot both keeps the
+        tail out of training AND logs an eval loss over it at the checkpoint
+        cadence. The episode and task counts are read from ``meta/info.json``;
+        a dataset with several tasks is refused because lerobot applies the
+        split fraction per task, where a global count is not expressible.
+        Passing ``dataset.eval_split`` or ``eval_steps`` in ``extra_flags``
+        overrides the derived value.
 
     Resume:
         ``resume=True`` emits ``--config_path=<ckpt>/train_config.json --resume=true``
@@ -571,7 +607,9 @@ def lerobot_train(
         lora_target_modules: PEFT target module spec (e.g. "all-linear").
         train_expert_only: Freeze the VLM, train only the action expert
             (policies exposing train_expert_only: pi0/pi05/smolvla).
-        val_episodes: Reserve the LAST N episodes as a held-out validation split.
+        val_episodes: Reserve the LAST N episodes as a held-out validation
+            split, evaluated every ``save_freq`` steps so each checkpoint has
+            a validation loss beside it.
         num_gpus: Number of GPUs; >1 launches via accelerate --multi_gpu.
         push_to_hub: Push the trained checkpoint to the HF Hub at the end.
         resume: Resume from the latest checkpoint under output_dir when present.

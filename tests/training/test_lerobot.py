@@ -235,12 +235,19 @@ class TestBuildCommand:
         cmd = LerobotTrainer(device="cpu").build_command(spec)
         assert "--policy.train_expert_only=true" in cmd
 
-    def test_val_split_episodes_flag(self, spec):
-        spec.val_episodes = 2  # total 10 -> train on [0..7]
+    def test_val_split_emits_an_evaluated_split_flag(self, spec):
+        """The reserved tail must be evaluated, not merely withheld from training.
+
+        This previously asserted ``--dataset.episodes=[0..7]``; lerobot draws its
+        eval dataloader from ``dataset.eval_split``, so an episode restriction
+        left the reserved episodes unused and no eval loss was ever computed.
+        """
+        spec.val_episodes = 2  # total 10 -> ceil(10 * 0.15) == 2 reserved
+        spec.save_freq = 400
         cmd = LerobotTrainer(device="cpu").build_command(spec)
-        ep_flags = [c for c in cmd if c.startswith("--dataset.episodes=")]
-        assert ep_flags
-        assert ep_flags[0] == "--dataset.episodes=[0, 1, 2, 3, 4, 5, 6, 7]"
+        assert "--dataset.eval_split=0.15" in cmd
+        assert "--eval_steps=400" in cmd
+        assert not [c for c in cmd if c.startswith("--dataset.episodes=")]
 
     def test_seed_and_jobname_and_passthrough(self, spec):
         spec.seed = 42
@@ -287,11 +294,21 @@ class TestBuildConfig:
         # base checkpoint as a PEFT adapter repo. cfg.peft alone drives wrapping.
         assert cfg.policy.use_peft is False
 
-    def test_val_split_episodes(self, spec):
+    def test_val_split_sets_eval_split_and_a_nonzero_eval_cadence(self, spec):
+        """In-process config must carry BOTH halves of lerobot's coupled pair.
+
+        This previously asserted ``cfg.dataset.episodes == [0..7]``. lerobot's own
+        validate() rejects ``eval_steps > 0`` without ``eval_split > 0``, and an
+        ``eval_split`` with ``eval_steps == 0`` is built but never evaluated - so
+        only the pair yields a validation loss.
+        """
         pytest.importorskip("lerobot")
-        spec.val_episodes = 2  # total 10 -> [0..7]
+        spec.val_episodes = 2  # total 10 -> ceil(10 * 0.15) == 2 reserved
+        spec.save_freq = 400
         cfg = LerobotTrainer(device="cpu").build_config(spec)
-        assert cfg.dataset.episodes == [0, 1, 2, 3, 4, 5, 6, 7]
+        assert cfg.dataset.episodes is None
+        assert cfg.dataset.eval_split == pytest.approx(0.15)
+        assert cfg.eval_steps == 400
 
 
 class TestParseLog:
@@ -886,7 +903,7 @@ class TestStreamingAndHubSource:
             val_episodes=2,
             extra={"policy_type": "act"},
         )
-        assert LerobotTrainer()._val_split_episodes(spec) is None
+        assert LerobotTrainer()._val_eval_split(spec) is None
 
 
 class TestRelativeActions:
@@ -1489,7 +1506,7 @@ class TestRunTypeLabel:
 class TestValSplitEpisodesFallthrough:
     """The held-out split is a no-op (use the full dataset) when it can't be computed.
 
-    ``_val_split_episodes`` returns ``None`` -- meaning "train on every episode" --
+    ``_val_eval_split`` returns ``None`` -- meaning "train on every episode" --
     rather than raising or emitting a malformed ``episodes`` range when the episode
     count is unknown (no readable ``meta/info.json``) or the requested holdout is
     not strictly inside ``(0, total)``.
@@ -1498,12 +1515,12 @@ class TestValSplitEpisodesFallthrough:
     def test_no_op_when_episode_count_unknown(self, tmp_path):
         # dataset_root set but no meta/info.json -> total unknown -> no split.
         spec = TrainSpec(dataset_root=str(tmp_path), val_episodes=2)
-        assert LerobotTrainer(device="cpu")._val_split_episodes(spec) is None
+        assert LerobotTrainer(device="cpu")._val_eval_split(spec) is None
 
     def test_no_op_when_holdout_not_smaller_than_total(self, dataset_root):
         # info.json reports total_episodes=10; a holdout >= total is out of range.
         spec = TrainSpec(dataset_root=dataset_root, val_episodes=10)
-        assert LerobotTrainer(device="cpu")._val_split_episodes(spec) is None
+        assert LerobotTrainer(device="cpu")._val_eval_split(spec) is None
 
 
 class TestHardwareFloor:

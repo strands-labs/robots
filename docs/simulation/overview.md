@@ -96,7 +96,7 @@ Newton backend, so a rollout rig can be enumerated instead of guessed.
 | `step` | `n_steps=1` (max 100 000/call) |
 | `set_gravity` | `gravity=[x,y,z]` or a scalar z-component |
 | `set_timestep` | `timestep` |
-| `get_contacts` / `get_contact_forces` | - |
+| `get_contacts` / `get_contact_forces` | - . `get_contacts` lists every geom pair inside the detection range (`margin` + `gap`) and marks each one `active` - MuJoCo hands only the pairs inside `margin` to the solver, so a pair between the two thresholds is a proximity report carrying no force. Contact predicates count only `active` pairs; `get_contact_forces` gives the load a touching pair carries |
 | `apply_force` | `body_name`, `force`, `torque`, `point` - latched on that body and re-applied every step until the next `apply_force` for it, so several bodies can hold wrenches at once (`force=[0,0,0]` stops one, `reset()` stops all) |
 | `get_jacobian` | `body_name` *or* `site_name` *or* `geom_name` |
 | `get_mass_matrix` | - |

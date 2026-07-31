@@ -1762,24 +1762,91 @@ class SimEngine(ABC):
                 why the rollout ended via ``stopped_reason``.
 
         Returns:
-            Standard status dict with an agent-consumable ``{"json": {...}}``
-            content block alongside the human-readable ``text``. The json block
-            carries the rollout facts as typed fields (``n_steps``,
-            ``steps_used``, ``elapsed_s``, ``stopped_early``,
-            ``stopped_reason`` (``"predicate"`` | ``"budget"`` |
-            ``"cancelled"``; ``"error"`` on error results - so an agent
-            deciding whether to retry knows WHY the rollout ended),
-            ``action_errors``, ``video_path``,
-            ``video_frames``, ``positional_fallback_used``,
-            ``generic_state_keys_used``, ``missing_state_keys_used``, ...) so callers can self-correct
-            programmatically without parsing the text. The two routing-
-            degradation flags are True when the driving policy could not bind
-            the observation to the model's inputs by name and silently fell
-            back (a camera routed to a model image slot positionally, or
-            ``observation.state`` composed from the observation's own scalar
-            keys because none of ``robot_state_keys`` matched). A True flag on
-            an otherwise ``success`` run is the signature of the robot moving
-            on meaningless inputs. Mirrors :meth:`eval_policy`.
+            The standard agent-tool envelope
+            ``{"status": "success"|"error", "content": [{"text": ...},
+            {"json": {...}}]}``. The ``json`` block is the machine-readable
+            rollout report; ``text`` carries the same facts for humans.
+
+            Read the json block by SCANNING ``content`` for the first block
+            with a ``"json"`` key, never by a fixed index::
+
+                report = next(b["json"] for b in result["content"] if "json" in b)
+
+            An early caller-error return (a rejected ``duration``, an unknown
+            robot) carries a ``text`` block ONLY, so a hardcoded
+            ``content[1]`` raises ``IndexError`` on exactly the results a
+            caller most needs to read.
+
+            IMPORTANT - ``status`` is not the rollout verdict. It reports
+            whether the CALL was accepted and the loop ran; it does not say the
+            robot did anything useful. A rollout that drove only a SUBSET of
+            the robot's actuators is deliberately ``success`` (it is
+            operational), so ``status`` alone cannot see it: a policy driving 1
+            of a Panda's 8 actuators returns ``status="success"`` with
+            ``action_errors=0`` and ``partial_action_failure_rate=0.875``. Gate
+            on ``partial_action_failure_rate`` and the binding-degradation
+            flags below to decide whether a rollout is worth anything. A TOTAL
+            failure - no emitted key resolving to any actuator - is reported as
+            ``status="error"``.
+
+            Fields in the json block:
+
+            Identity: ``robot_name``, ``policy`` (the driving policy's class
+            name), ``instruction``.
+
+            Horizon: ``n_steps`` (control steps executed), ``steps_used``
+            (alias of ``n_steps`` under the retry-loop name), ``elapsed_s``,
+            ``sim_time_s`` (when the backend reports sim time),
+            ``stopped_early``, ``stopped_reason`` (``"predicate"`` - the
+            ``stop_when`` condition fired; ``"budget"`` - the step/duration
+            horizon was exhausted; ``"cancelled"`` - a cooperative stop, e.g.
+            ``stop_policy``; ``"error"`` on error results - so an agent
+            deciding whether to retry knows WHY the rollout ended).
+
+            Action health: ``action_errors`` (steps where at least one emitted
+            key did not resolve), ``action_resolution_rate`` (an
+            ``{actuator_name: fraction_of_steps_driven}`` map, so a joint stuck
+            at ``0.0`` names the actuator the policy never drove) and
+            ``partial_action_failure_rate`` (the mean fraction of the robot's
+            DOF never driven; ``0.0`` == every actuator moved every step,
+            ``~0.83`` == only 1 of 6 actuators ever moved).
+
+            Video: ``video_path`` (``None`` when no MP4 was written) and
+            ``video_frames``.
+
+            Episodes: ``n_episodes_requested``, ``n_episodes_completed``,
+            ``episodes_saved`` and ``dataset_episode_indices`` (the dataset
+            episode indices this call flushed, empty without a recording).
+
+            Policy binding: ``positional_fallback_used``,
+            ``generic_state_keys_used`` and ``missing_state_keys_used``. True
+            means the driving policy could not bind the observation to the
+            model's inputs by name and silently fell back (a camera routed to a
+            model image slot positionally, or ``observation.state`` composed
+            from the observation's own scalar keys because none of
+            ``robot_state_keys`` matched). A True flag on an otherwise
+            ``success`` run is the signature of a robot moving on meaningless
+            inputs.
+
+            Policy load: ``policy_load_time_s``, ``policy_load_cache_hit``
+            (``False`` on episode 2+ of a loop is a smell that the caller
+            rebuilt the policy instead of reusing ``policy_object=``) and
+            ``policy_resident_rss_mb``.
+
+            Async-RTC telemetry, so latency masking is provable from the
+            payload instead of from logs: ``rtc_async_enabled``,
+            ``rtc_chunks_acquired``, ``rtc_prefetch_hits``,
+            ``rtc_prefetch_blocks``, ``rtc_avg_inference_ms`` and
+            ``rtc_max_inference_ms``.
+
+            Fail-fast: if EVERY action step in the opening probe window drives
+            zero actuators - none of the policy's emitted keys resolve to any of
+            the robot's actuators - the rollout can never move the robot, so it
+            returns ``status="error"`` at the probe boundary instead of running
+            the full episode (and every remaining model inference call +
+            recording write). The error enumerates the unresolved keys and the
+            robot's valid actuator names. A PARTIAL failure runs to completion,
+            surfaced via ``partial_action_failure_rate``.
         """
         from strands_robots.policies import create_policy
 
@@ -2682,6 +2749,49 @@ class SimEngine(ABC):
         ``eval_ep1.mp4``, ...) so episodes never overwrite each other, and the
         written files are returned in the result json ``video_paths``. Recording
         is unsupported on the benchmark (``evaluate_benchmark``) path.
+
+        Returns:
+            The standard agent-tool envelope
+            ``{"status": "success"|"error", "content": [{"text": ...},
+            {"json": {...}}]}``, read the same way as :meth:`run_policy`'s -
+            by scanning ``content`` for the first block with a ``"json"`` key,
+            never by a fixed index (an early caller-error return carries a
+            ``text`` block only).
+
+            ``status`` reports whether the evaluation RAN, not whether the
+            policy succeeded: an evaluation in which every episode failed is
+            still ``status="success"`` with ``success_rate=0.0``. Read
+            ``success_measured`` first - it is ``False`` when no
+            ``success_fn`` / benchmark spec was supplied, in which case
+            ``success_rate`` is ``0.0`` for every policy regardless of what it
+            did and measures nothing.
+
+            Fields in the json block:
+
+            Outcome: ``success_rate``, ``n_success``, ``success_measured``,
+            ``episodes_completed``, ``episodes`` (the per-episode records) and
+            ``avg_steps``.
+
+            Horizon: ``n_episodes``, ``max_steps`` (the values the evaluation
+            ran with) and ``stopped_early``.
+
+            Video: ``video_paths`` (one MP4 per episode, empty when no
+            recording was requested).
+
+            Policy binding: ``positional_fallback_used``,
+            ``generic_state_keys_used`` and ``missing_state_keys_used`` - True
+            means the policy silently fell back to positional camera routing or
+            to observation-derived state keys, so the robot moved on
+            meaningless inputs and the success rate measures nothing about the
+            policy. See :meth:`run_policy` for the full contract.
+
+            Policy load: ``policy_load_time_s``, ``policy_load_cache_hit`` and
+            ``policy_resident_rss_mb``.
+
+            Async-RTC telemetry: ``rtc_async_enabled``,
+            ``rtc_chunks_acquired``, ``rtc_prefetch_hits``,
+            ``rtc_prefetch_blocks``, ``rtc_avg_inference_ms`` and
+            ``rtc_max_inference_ms``.
         """
         robots = self.list_robots()
         if not robots:
@@ -3139,7 +3249,23 @@ class SimEngine(ABC):
         raise NotImplementedError("set_obs_noise not implemented by this backend")
 
     def get_contacts(self) -> dict[str, Any]:
-        """Get contact information. Override per backend."""
+        """Get contact information. Override per backend.
+
+        Returns:
+            The agent-tool envelope -- ``{"status": ..., "content": [...]}`` --
+            whose ``json`` content block carries ``contacts``, a list of
+            per-contact records. The payload lives in that block, not on the
+            envelope itself, so a caller reading ``result["contacts"]``
+            directly always misses. The predicate DSL's ``contact_*``
+            factories (see
+            :mod:`strands_robots.simulation.predicates`) are the supported
+            readers; ``success_fn="contact"`` on
+            :meth:`~strands_robots.simulation.policy_runner.PolicyRunner.evaluate`
+            shares them.
+
+        Raises:
+            NotImplementedError: Backends that expose no contact list.
+        """
         raise NotImplementedError("get_contacts not implemented by this backend")
 
     # Raw-frame render APIs (programmatic, not tool-envelope). Optional per

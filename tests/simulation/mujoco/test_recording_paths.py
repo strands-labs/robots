@@ -651,12 +651,15 @@ def test_start_recording_without_lerobot_points_at_mp4_fallback(sim_with_two_rob
     returns an error that names the lerobot extra and the plain-MP4 fallback."""
     import strands_robots.dataset_recorder as dr
 
-    monkeypatch.setattr(dr, "has_lerobot_dataset", lambda: False)
+    reason = "lerobot is not installed (ModuleNotFoundError: No module named 'lerobot'). Install lerobot >= 0.6.0 with: pip install 'strands-robots[lerobot]'"
+    monkeypatch.setattr(dr, "lerobot_dataset_import_error", lambda: reason)
 
     r = sim_with_two_robots.start_recording(repo_id="local/no_lerobot", task="t")
     assert r["status"] == "error"
     text = r["content"][0]["text"]
-    assert "lerobot" in text
+    # The diagnosis is surfaced verbatim: a caller must be told WHICH
+    # dependency is missing, not just that recording is unavailable.
+    assert reason in text
     assert "start_cameras_recording" in text
 
 

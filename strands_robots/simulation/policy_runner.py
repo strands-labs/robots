@@ -2967,25 +2967,26 @@ class PolicyRunner:
             return success_fn
         if success_fn == "contact":
             sim = self.sim
+            # Share the DSL's reader instead of keeping a second one. The
+            # inline copy this replaces indexed the engine result as if it
+            # were the payload, so it never saw a real backend's envelope and
+            # scored every episode a failure - while still working against a
+            # test double that returns the bare mapping.
+            #
+            # Imported inside the method, not at module level: base.py imports
+            # this module at import time and predicates.py imports base under
+            # TYPE_CHECKING, so a module-level edge from here to predicates
+            # closes a loop that CodeQL's py/unsafe-cyclic-import walks - it
+            # does not honour the guard (see the #191 note on base.py's import
+            # of this module). No runtime cycle exists either way, and base.py
+            # reaches into predicates the same way from
+            # ``_stop_when_unresolved_error``.
+            from strands_robots.simulation.predicates import make_predicate
+
+            contact_any = make_predicate("contact_any")
 
             def _contact_check(_obs: dict[str, Any]) -> bool:
-                get_contacts = getattr(sim, "get_contacts", None)
-                if get_contacts is None:
-                    return False
-                try:
-                    result = get_contacts()
-                except NotImplementedError:
-                    return False
-                except Exception:
-                    return False
-                # Accept either {"contacts": [...]} or {"n_contacts": int}
-                if isinstance(result, dict):
-                    if result.get("n_contacts", 0) > 0:
-                        return True
-                    contacts = result.get("contacts")
-                    if isinstance(contacts, list) and contacts:
-                        return True
-                return False
+                return bool(contact_any(sim))
 
             return _contact_check
         raise ValueError(f"Unknown success_fn string: {success_fn!r}")

@@ -1632,7 +1632,22 @@ class RenderingMixin:
         return ["default", *[n for n in named if n != "default"]]
 
     def get_contacts(self) -> dict[str, Any]:
-        """Return the list of active geom-geom contacts at the current step.
+        """Return the geom-geom pairs MuJoCo detected at the current step.
+
+        ``mjData.contact`` holds every pair inside the *detection* range,
+        which is the pair's ``margin`` plus its ``gap``. MuJoCo hands only
+        the pairs inside ``margin`` to the constraint solver; a pair between
+        the two thresholds is a proximity report that carries no force at
+        all. Each record therefore reports ``active`` - the solver's own
+        decision, taken from ``mjContact.exclude`` - so a caller asking "are
+        these two touching?" can tell a touch from a near miss. Without it
+        every consumer answered on geometry alone, which reports contact for
+        bodies that are visibly apart whenever an asset declares a ``gap``.
+
+        Proximity reports are still listed: they are what a clearance query
+        wants, and suppressing them would hide the detection set from
+        callers who need it. Use :meth:`get_contact_forces` for the magnitude
+        of the load a touching pair carries.
 
         We run ``mj_forward`` first so the contact list reflects the
         current qpos/qvel even immediately after ``reset`` or ``add_robot``
@@ -1657,6 +1672,11 @@ class RenderingMixin:
                     "geom2": int(data.contact[i].geom2),
                     "dist": float(data.contact[i].dist),
                     "pos": data.contact[i].pos.tolist(),
+                    # ``exclude == 0`` is MuJoCo's own decision to hand the
+                    # pair to the constraint solver, i.e. the pair is close
+                    # enough to push back. Anything else is in the gap and
+                    # carries no force.
+                    "active": int(data.contact[i].exclude) == 0,
                 }
                 for i in range(ncon)
             ]
@@ -1680,12 +1700,16 @@ class RenderingMixin:
         for c in contact_snapshot:
             g1 = _resolve_geom(c["geom1"])
             g2 = _resolve_geom(c["geom2"])
-            contacts.append({"geom1": g1, "geom2": g2, "dist": c["dist"], "pos": c["pos"]})
+            contacts.append({"geom1": g1, "geom2": g2, "dist": c["dist"], "pos": c["pos"], "active": c["active"]})
 
-        text = f"{len(contacts)} contacts" if contacts else "No contacts."
         if contacts:
+            n_active = sum(1 for c in contacts if c["active"])
+            text = f"{len(contacts)} contacts ({n_active} touching)"
             for c in contacts[:10]:
-                text += f"\n  - {c['geom1']} <-> {c['geom2']} (d={c['dist']:.4f})"
+                touch = "" if c["active"] else ", proximity only - no force"
+                text += f"\n  - {c['geom1']} <-> {c['geom2']} (d={c['dist']:.4f}{touch})"
+        else:
+            text = "No contacts."
 
         return {
             "status": "success",

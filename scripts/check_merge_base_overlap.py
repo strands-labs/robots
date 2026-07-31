@@ -70,7 +70,12 @@ Usage
                 ``refs/pull/<n>/merge`` commit ``actions/checkout`` produces by
                 default -- that commit already contains the base tip, which
                 drives the merge base to the base tip and the overlap to the
-                empty set, so the check would pass unconditionally.
+                empty set, so the check would pass unconditionally. CI *names*
+                that commit rather than checking it out, and runs this script
+                from the base branch instead: a branch that forked before a gate
+                landed does not carry that gate's script (issue #1791). Sound
+                because every input below is read from the object database and
+                never from the working tree.
 ``--repo``      repository root (default: the current working directory).
 
 Exit status is ``1`` when a behaviour-bearing path overlaps, else ``0``.

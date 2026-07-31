@@ -220,11 +220,18 @@ sim-mujoco = [
     # primitive in this backend's agent-callable action enum, solves IK on the
     # same mujoco.MjModel via strands_robots.simulation.ik.MinkIKBridge, so the
     # solver is part of what this extra ships rather than an add-on the caller
-    # has to name themselves. `mink` pulls a QP backend of its own
-    # (qpsolvers[daqp], the bridge's first preference); `qpsolvers` is declared
-    # here too because simulation/ik.py imports it directly.
+    # has to name themselves. `qpsolvers` is declared here because
+    # simulation/ik.py imports it directly, and the `[daqp]` backend extra
+    # because qpsolvers on its own solves nothing: with no backend installed
+    # `mink.solve_ik` cannot run and `move_to` returns "IK bridge unavailable:
+    # No qpsolvers backend is installed", whose remedy names THIS extra. daqp is
+    # both the bridge's first preference (ik._PREFERRED_QP_SOLVERS) and the
+    # backend `mink` pulls for itself, so this changes nothing about what
+    # resolves - it stops the guarantee resting on a transitive of `mink` that
+    # this extra does not control. `[cosmos3-sim]`, which drives the same
+    # mink + qpsolvers stack, declares its backend the same way.
     "mink>=0.0.4",
-    "qpsolvers>=4.0.0",
+    "qpsolvers[daqp]>=4.0.0",
 ]
 # Newton GPU-native backend (newton-physics/newton on NVIDIA Warp +
 # MuJoCo-Warp). GPU-batched parallel envs, headless ray-traced rendering, and
@@ -377,6 +384,13 @@ ollama = [
 inference = [
     "websockets>=12.0",
 ]
+# rosbridge WebSocket transport: drive ROS1 (or remote ROS 2) robots from a host
+# with no ROS install at all. Pure-pip `roslibpy` speaks the rosbridge JSON
+# protocol over a WebSocket. See strands_robots/tools/use_rosbridge.py and
+# docs/rosbridge-integration.md.
+rosbridge = [
+    "roslibpy>=1.7.0,<2.0.0",
+]
 all = [
     "strands-robots[groot-service]",
     "strands-robots[moveit2]",
@@ -391,6 +405,7 @@ all = [
     "strands-robots[molmoact2]",
     "strands-robots[ollama]",
     "strands-robots[inference]",
+    "strands-robots[rosbridge]",
 ]
 dev = [
     "pytest>=6.0,<10.0.0",
@@ -531,7 +546,7 @@ ignore_missing_imports = false
 
 # Third-party libs without type stubs
 [[tool.mypy.overrides]]
-module = ["lerobot.*", "gr00t.*", "tyro", "draccus.*", "msgpack.*", "websockets", "websockets.*", "zmq.*", "huggingface_hub.*", "serial.*", "psutil.*", "torch.*", "torchvision.*", "transformers.*", "einops.*", "robot_descriptions.*", "mujoco.*", "imageio.*", "pyarrow", "pyarrow.*", "libero.*", "zenoh.*", "boto3", "boto3.*", "awscrt", "awscrt.*", "awsiot", "awsiot.*", "botocore.*", "strands_robots.policies.cosmos3._msgpack_numpy", "diffusers", "diffusers.*", "accelerate", "accelerate.*", "openpi_client", "openpi_client.*", "openpi_server", "openpi_server.*", "openpi", "openpi.*", "device_connect_edge", "device_connect_edge.*", "device_connect_agent_tools", "device_connect_agent_tools.*", "rclpy", "rclpy.*", "cyclonedds", "cyclonedds.*", "rosidl_runtime_py", "rosidl_runtime_py.*", "moveit", "moveit.*", "moveit_configs_utils", "moveit_configs_utils.*", "geometry_msgs", "geometry_msgs.*", "mink", "mink.*", "qpsolvers", "qpsolvers.*", "onnxruntime", "onnxruntime.*", "motionbricks", "motionbricks.*", "trimesh", "trimesh.*", "stable_baselines3", "stable_baselines3.*", "strands_robots_sim", "strands_robots_sim.*", "isaacsim", "isaacsim.*", "omni", "omni.*", "gsplat", "gsplat.*", "plyfile", "plyfile.*"]
+module = ["lerobot.*", "gr00t.*", "tyro", "draccus.*", "msgpack.*", "websockets", "websockets.*", "zmq.*", "huggingface_hub.*", "serial.*", "psutil.*", "torch.*", "torchvision.*", "transformers.*", "einops.*", "robot_descriptions.*", "mujoco.*", "imageio.*", "pyarrow", "pyarrow.*", "libero.*", "zenoh.*", "boto3", "boto3.*", "awscrt", "awscrt.*", "awsiot", "awsiot.*", "botocore.*", "strands_robots.policies.cosmos3._msgpack_numpy", "diffusers", "diffusers.*", "accelerate", "accelerate.*", "openpi_client", "openpi_client.*", "openpi_server", "openpi_server.*", "openpi", "openpi.*", "device_connect_edge", "device_connect_edge.*", "device_connect_agent_tools", "device_connect_agent_tools.*", "rclpy", "rclpy.*", "cyclonedds", "cyclonedds.*", "roslibpy", "roslibpy.*", "rosidl_runtime_py", "rosidl_runtime_py.*", "moveit", "moveit.*", "moveit_configs_utils", "moveit_configs_utils.*", "geometry_msgs", "geometry_msgs.*", "mink", "mink.*", "qpsolvers", "qpsolvers.*", "onnxruntime", "onnxruntime.*", "motionbricks", "motionbricks.*", "trimesh", "trimesh.*", "stable_baselines3", "stable_baselines3.*", "strands_robots_sim", "strands_robots_sim.*", "isaacsim", "isaacsim.*", "omni", "omni.*", "gsplat", "gsplat.*", "plyfile", "plyfile.*"]
 ignore_missing_imports = true
 
 # Device Connect drivers - thin wrappers over the untyped device_connect_edge

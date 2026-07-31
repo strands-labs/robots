@@ -158,6 +158,7 @@ def test_direct_reference_check_ignores_extras_specifiers_and_markers(tmp_path):
 # resolution. This guard fails if either half regresses.
 import tomllib  # noqa: E402
 
+import pytest  # noqa: E402
 from packaging.requirements import Requirement  # noqa: E402
 from packaging.version import Version  # noqa: E402
 
@@ -367,19 +368,24 @@ _SELF_NAME = "strands-robots"
 _IK_SOLVER_PACKAGES = ("mink", "qpsolvers")
 
 
-def _extra_closure(extra: str) -> set[str]:
-    """Canonical names an extra pulls in, following ``strands-robots[...]`` self-references.
+def _extra_requirements(extra: str) -> dict[str, set[str]]:
+    """Distributions an extra pulls in, each mapped to the extras requested on it.
+
+    Follows ``strands-robots[...]`` self-references, so a composite extra such as
+    ``[all]`` reports its full closure.
 
     Args:
         extra: Name of the extra in ``[project.optional-dependencies]``.
 
     Returns:
-        The set of distribution names reachable from *extra*, lower-cased.
+        Mapping of lower-cased distribution name to the union of extras
+        requested on that distribution (an empty set when it is required
+        without any).
     """
     data = tomllib.loads(_PYPROJECT.read_text(encoding="utf-8"))
     extras = data["project"]["optional-dependencies"]
     seen: set[str] = set()
-    names: set[str] = set()
+    requested: dict[str, set[str]] = {}
     pending = [extra]
     while pending:
         current = pending.pop()
@@ -392,8 +398,20 @@ def _extra_closure(extra: str) -> set[str]:
             if req.name.lower() == _SELF_NAME:
                 pending.extend(req.extras)
                 continue
-            names.add(req.name.lower())
-    return names
+            requested.setdefault(req.name.lower(), set()).update(req.extras)
+    return requested
+
+
+def _extra_closure(extra: str) -> set[str]:
+    """Canonical names an extra pulls in, following ``strands-robots[...]`` self-references.
+
+    Args:
+        extra: Name of the extra in ``[project.optional-dependencies]``.
+
+    Returns:
+        The set of distribution names reachable from *extra*, lower-cased.
+    """
+    return set(_extra_requirements(extra))
 
 
 def test_sim_mujoco_extra_declares_the_ik_solver_stack() -> None:
@@ -656,4 +674,81 @@ def test_require_optional_call_sites_name_declared_extras() -> None:
         "these require_optional call sites name an extra that does not exist, so the ImportError "
         "they raise tells the user to run an install that silently does nothing. Declared extras: "
         f"{sorted(extras)}\n" + "\n".join(offenders)
+    )
+
+
+# ---------------------------------------------------------------------------
+# Declaring `qpsolvers` is not the same as declaring a QP backend.
+#
+# `qpsolvers` is a solver-agnostic front end: it ships no solver of its own, and
+# each backend arrives through one of its extras (`qpsolvers[daqp]`, `[quadprog]`,
+# ...). With none installed, `qpsolvers.available_solvers` is empty,
+# `mink.solve_ik` cannot run, and `move_to` returns
+#     IK bridge unavailable: No qpsolvers backend is installed; the mink IK
+#     bridge needs one (e.g. 'daqp' or 'quadprog'). Install the sim extra:
+#     uv pip install 'strands-robots[sim-mujoco]'.
+# -- advising the extra that shipped the primitive. So an extra that solves IK
+# has to declare a backend, or its own remedy cannot fix it.
+#
+# The `_IK_SOLVER_PACKAGES` guards above check distribution NAMES, which a bare
+# `qpsolvers` satisfies; these check that a backend comes with it.
+_QP_FRONTEND = "qpsolvers"
+
+#: Extras whose code path calls `mink.solve_ik`: `[sim-mujoco]` ships `move_to`,
+#: `[cosmos3-sim]` ships the Cosmos 3 -> MuJoCo bridge (both via MinkIKBridge).
+_MINK_IK_EXTRAS = ("sim-mujoco", "cosmos3-sim")
+
+
+def _declared_qp_backends(extra: str) -> set[str]:
+    """qpsolvers backend extras that *extra* requests, following self-references."""
+    return _extra_requirements(extra).get(_QP_FRONTEND, set())
+
+
+@pytest.mark.parametrize("extra", _MINK_IK_EXTRAS)
+def test_mink_ik_extra_declares_a_qp_backend(extra: str) -> None:
+    """Every extra that solves IK through mink must declare a QP backend.
+
+    Relying on `mink`'s own `qpsolvers[daqp]` pin leaves the guarantee resting on
+    a transitive of a third-party package: if mink ever drops or renames it, the
+    IK primitives break for anyone who installed exactly what this project asked
+    them to.
+    """
+    backends = _declared_qp_backends(extra)
+    assert backends, (
+        f"[{extra}] solves IK via mink but declares {_QP_FRONTEND!r} with no "
+        f"backend extra, so resolving 'strands-robots[{extra}]' need not install "
+        f"any QP solver and mink.solve_ik cannot run. Declare one, e.g. "
+        f"'{_QP_FRONTEND}[daqp]>=4.0.0'."
+    )
+
+
+def test_all_extra_declares_a_qp_backend() -> None:
+    """`pip install 'strands-robots[all]'` must be able to complete an IK solve.
+
+    `[all]` advertises `move_to` by installing the MuJoCo backend, so the QP
+    backend that action needs has to be part of the same closure.
+    """
+    assert _declared_qp_backends("all"), (
+        "pip install 'strands-robots[all]' advertises move_to but declares no "
+        f"{_QP_FRONTEND} backend, so the action can return 'IK bridge unavailable'"
+    )
+
+
+def test_declared_qp_backends_are_real_qpsolvers_extras() -> None:
+    """A declared backend must be an extra `qpsolvers` actually publishes.
+
+    An unknown extra is not an install error - pip warns and installs nothing -
+    so a typo such as `qpsolvers[dapq]` would resolve "successfully" and leave
+    the solver missing exactly as before.
+    """
+    import importlib.metadata
+
+    provided = importlib.metadata.metadata(_QP_FRONTEND).get_all("Provides-Extra") or []
+    published = {name.lower() for name in provided}
+    assert published, f"could not read {_QP_FRONTEND} extras from installed metadata"
+    declared = {backend for extra in _MINK_IK_EXTRAS for backend in _declared_qp_backends(extra)}
+    unknown = sorted(b for b in declared if b.lower() not in published)
+    assert not unknown, (
+        f"declared {_QP_FRONTEND} backend(s) {unknown} are not published extras of "
+        f"{_QP_FRONTEND}; pip installs nothing for an unknown extra. Published: {sorted(published)}"
     )

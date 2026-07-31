@@ -18,6 +18,12 @@ backend does not support them. A predicate that silently evaluates to
 ``False`` because of an unimplemented backend call is a bug in the
 predicate, not the benchmark - file an issue.
 
+Contact predicates count a geom pair only when the physics engine reports it
+as a real touch. ``get_contacts`` also lists pairs inside the detection range
+that carry no force -- see :func:`contact_is_active` -- and counting those
+would make ``contact_any`` / ``contact_between`` / ``grasped`` /
+``body_on(require_contact=True)`` fire for bodies that are visibly apart.
+
 When the backend *does* support a lookup but the referenced ``body`` /
 ``joint`` name cannot be resolved (almost always a spec typo), the term still
 degrades to a constant (``False`` / ``0.0``) but the offending name is logged
@@ -64,7 +70,7 @@ from __future__ import annotations
 
 import logging
 import math
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Any
 
 from strands_robots.utils import finite_number_error, finite_vector_error
@@ -124,9 +130,21 @@ def _reset_resolution_warnings() -> None:
 
 
 def _extract_json(result: dict[str, Any] | None) -> dict[str, Any]:
-    """Return the ``json`` content block payload, or ``{}`` if absent."""
+    """Return a backend result's payload mapping, or ``{}`` if there is none.
+
+    Every in-tree backend returns the agent-tool envelope, so the payload is
+    the ``json`` content block -- see
+    :meth:`strands_robots.simulation.base.SimEngine.get_contacts` for the
+    shape. A result that carries no ``content`` at all is not an envelope, so
+    the mapping itself is the payload: a minimal engine can return a plain
+    reading without wrapping it, and every predicate reads both shapes the
+    same way instead of each one guessing.
+    """
     if not isinstance(result, dict):
         return {}
+    if "content" not in result:
+        # Not an envelope - the mapping is the payload.
+        return dict(result)
     for block in result.get("content", []) or []:
         if isinstance(block, dict):
             payload = block.get("json")
@@ -487,6 +505,39 @@ def _inside_region(body: str, min: list[float], max: list[float]) -> BoolPredica
     return check
 
 
+def contact_is_active(record: Mapping[str, Any]) -> bool:
+    """True when a ``get_contacts`` record is a touch rather than a near miss.
+
+    ``get_contacts`` reports every geom pair inside the *detection* range,
+    which is the pair's ``margin`` plus its ``gap``. Only the pairs inside
+    ``margin`` reach the constraint solver; a pair between the two thresholds
+    carries no force, so treating it as contact answers "touching" for bodies
+    that are visibly apart. Assets ship a non-zero ``margin``/``gap`` -- a
+    foot geom fractions of a millimetre off the floor is the usual case -- so
+    this is the difference between a locomotion or placement clause firing on
+    physics and firing on proximity.
+
+    ``dist`` cannot stand in for this: a pair with a wide ``margin`` is
+    load-bearing at a *positive* distance (the body hovers on a real force),
+    while the near miss above is also positive, so the sign of ``dist`` splits
+    neither case. The solver's own admission decision does, and
+    ``get_contacts`` reports it as ``active``.
+
+    This is the single owner of that reading, so every contact predicate
+    agrees about which records count -- the same role
+    :func:`_geom_belongs_to_body` plays for body-to-geom names.
+
+    A record that does not report ``active`` is treated as a touch, so a
+    payload from a backend or test stub that cannot make the distinction keeps
+    its previous verdict rather than silently answering ``False`` for every
+    contact.
+    """
+    flag = record.get("active")
+    if flag is None:
+        return True
+    return bool(flag)
+
+
 def _contact_between(geom_a: str, geom_b: str) -> BoolPredicate:
     """Pairwise contact predicate.
 
@@ -510,7 +561,7 @@ def _contact_between(geom_a: str, geom_b: str) -> BoolPredicate:
             return False
         want = {geom_a, geom_b}
         for c in contacts:
-            if not isinstance(c, dict):
+            if not isinstance(c, dict) or not contact_is_active(c):
                 continue
             pair = {c.get("geom1"), c.get("geom2")}
             if want <= pair:
@@ -533,10 +584,14 @@ def _contact_any() -> BoolPredicate:
             logger.debug("contact_any() failed: %s", e)
             return False
         payload = _extract_json(result)
-        if payload.get("n_contacts", 0) > 0:
-            return True
         contacts = payload.get("contacts")
-        return bool(isinstance(contacts, list) and contacts)
+        if isinstance(contacts, list):
+            # The per-record list wins over a bare count: only a record
+            # carries the touch/proximity flag, which ``n_contacts`` cannot
+            # express. The count is the fallback for payloads that report
+            # nothing else.
+            return any(isinstance(c, dict) and contact_is_active(c) for c in contacts)
+        return bool(payload.get("n_contacts", 0) > 0)
 
     return check
 
@@ -611,7 +666,7 @@ def _body_contact(sim: SimEngine, body_a: str, body_b: str) -> bool | None:
         return None
 
     for c in contacts:
-        if not isinstance(c, dict):
+        if not isinstance(c, dict) or not contact_is_active(c):
             continue
         g1 = c.get("geom1") or ""
         g2 = c.get("geom2") or ""
@@ -769,7 +824,7 @@ def _grasped(body: str, gripper_prefix: str) -> BoolPredicate:
         if not isinstance(contacts, list):
             return False
         for c in contacts:
-            if not isinstance(c, dict):
+            if not isinstance(c, dict) or not contact_is_active(c):
                 continue
             g1 = c.get("geom1") or ""
             g2 = c.get("geom2") or ""
@@ -1823,6 +1878,7 @@ __all__ = [
     "StatefulRewardTerm",
     "can_resolve_body",
     "can_resolve_joint",
+    "contact_is_active",
     "make_predicate",
     "predicate_kind",
     "register_predicate",

@@ -40,6 +40,7 @@ def test_all_lists_every_lazy_import_name() -> None:
         "train_policy",
         "use_lerobot",
         "use_ros",
+        "use_rosbridge",
         "use_rtps",
     }
 
