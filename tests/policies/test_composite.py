@@ -266,7 +266,7 @@ class TestChildAccessAndRtcForwarding:
         # without leaving children in a half-updated state.
         lower, upper = StubPolicy([{"hip": 0.0}]), StubPolicy([{"shoulder": 0.0}])
         c = CompositePolicy(lower, upper)
-        with pytest.raises(ValueError, match="rtc_observed_delay_steps must be >= 0"):
+        with pytest.raises(ValueError, match="rtc_observed_delay_steps must be a non-negative integer"):
             c.set_rtc_observed_delay(-1)
         assert lower.rtc_observed_delay_steps is None
         assert upper.rtc_observed_delay_steps is None

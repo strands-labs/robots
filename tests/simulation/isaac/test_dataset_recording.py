@@ -81,6 +81,7 @@ def _make_engine(
     engine._prim_registry = []
     engine._cams_rec_state = None
     engine._recording_state_dict = {}
+    engine._action_controllers = {}  # cleared by destroy() (#1812)
     engine._sim_time = 0.0
     engine._step_count = 0
     engine._replicated = False

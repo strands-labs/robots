@@ -119,6 +119,14 @@ correct, deterministic step offset - identical to a local rollout. Per-episode
 `reset(seed)` and `set_control_frequency(hz)` are forwarded too, so seeded
 episodes stay reproducible.
 
+Both forwarded values are validated by the policy itself, so a remote caller
+reaches exactly the accepted domain an in-process one does: `hz` must be a
+finite positive number and the step count `None` or a non-negative `int`. The
+server passes them through verbatim rather than coercing them - JSON carries
+`NaN`, `Infinity` and `true`, and coercing a `true` to `1.0` would install a 1 Hz
+clock no local caller could have set. A refused value is marshalled back as the
+same `RuntimeError` as any other server-side failure, before inference runs.
+
 ## Error handling
 
 Inference failures on the server are marshalled back as an `error` message and

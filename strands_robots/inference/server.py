@@ -156,7 +156,12 @@ class PolicyServer:
 
         if msg_type == protocol.MSG_SET_CONTROL_FREQUENCY:
             with self._lock:
-                self.policy.set_control_frequency(float(message["hz"]))
+                # Forwarded verbatim: coercing here (``float(...)``) would let
+                # the wire accept a rate the in-process API refuses - a JSON
+                # ``true`` becomes ``1.0`` and installs a silent 1 Hz clock,
+                # and a quoted ``"50"`` becomes a rate no local caller could
+                # have set. The policy owns the accepted domain.
+                self.policy.set_control_frequency(message["hz"])
             return {"type": protocol.MSG_OK}
 
         if msg_type == protocol.MSG_RESET:

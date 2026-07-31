@@ -29,7 +29,11 @@ from typing import Any, Protocol, runtime_checkable
 
 import numpy as np
 
-from strands_robots.utils import positive_count_error
+from strands_robots.utils import (
+    non_negative_count_error,
+    positive_count_error,
+    positive_finite_number_error,
+)
 
 
 class Policy(ABC):
@@ -76,13 +80,23 @@ class Policy(ABC):
         chunks at any other control frequency.
 
         Args:
-            hz: Positive control frequency in Hz.
+            hz: Finite positive control frequency in Hz.
 
         Raises:
-            ValueError: If ``hz`` is not strictly positive.
+            ValueError: If ``hz`` is not a finite positive number. The rate is
+                the multiplier that converts a measured latency into a step
+                count, so it has to be checked where it arrives rather than
+                where it is read: ``nan`` and ``inf`` both survive a bare
+                ``hz <= 0`` test (neither compares ``<=`` to anything) and are
+                only discovered later, inside the provider, as a bare
+                ``ValueError``/``OverflowError`` out of the ``int()`` that
+                converts the delay - and not on the first inference, because
+                the estimator returns ``0`` until it has a latency sample.
+                ``bool`` is refused for the same reason it is everywhere else
+                in this domain: ``True`` would install a silent 1 Hz clock.
         """
-        if hz <= 0:
-            raise ValueError(f"control_frequency must be positive, got {hz}")
+        if error := positive_finite_number_error(hz, "control_frequency", "set_control_frequency"):
+            raise ValueError(error)
         self.control_frequency = float(hz)
 
     #: Number of control steps the executing loop runs between issuing an
@@ -116,11 +130,18 @@ class Policy(ABC):
                 estimate.
 
         Raises:
-            ValueError: If ``steps`` is negative.
+            ValueError: If ``steps`` is neither ``None`` nor a non-negative
+                ``int``. The count is an offset into the action chunk, so a
+                fractional value is not a smaller offset and ``bool`` is not a
+                count of one - both were previously coerced by the ``int()``
+                below into a neighbouring value the caller never asked for,
+                which moves the chunk seam silently.
         """
-        if steps is not None and steps < 0:
-            raise ValueError(f"rtc_observed_delay_steps must be >= 0, got {steps}")
-        self.rtc_observed_delay_steps = None if steps is None else int(steps)
+        if steps is not None and (
+            error := non_negative_count_error(steps, "rtc_observed_delay_steps", "set_rtc_observed_delay")
+        ):
+            raise ValueError(error)
+        self.rtc_observed_delay_steps = steps
 
     @abstractmethod
     async def get_actions(

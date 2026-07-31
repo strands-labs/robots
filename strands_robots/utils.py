@@ -498,6 +498,39 @@ def positive_count_error(value: Any, param: str, context: str) -> str | None:
     return None
 
 
+def non_negative_count_error(value: Any, param: str, context: str) -> str | None:
+    """Error text when ``value`` is not a usable non-negative integer count.
+
+    Shared domain for a discrete count whose ``0`` is a first-class value rather
+    than a degenerate one - the number of control steps a loop executes while an
+    inference request is in flight
+    (:attr:`~strands_robots.policies.base.Policy.rtc_observed_delay_steps`).
+    That count is exactly ``0`` in the dominant case: a synchronous eval loop
+    pauses the world during inference, so no step elapses. Refusing ``0`` here
+    would therefore reject the common configuration, which is why this is a
+    separate domain rather than a caller of :func:`positive_count_error`.
+
+    In every other respect it mirrors :func:`positive_count_error`: the value is
+    consumed as an offset into an action chunk, so only a true ``int`` can be
+    honored (an integral float raises ``TypeError`` at the slice rather than
+    being coerced), and ``bool`` is rejected explicitly because as an ``int``
+    subclass a bare ``value < 0`` test lets ``True`` through as a silent count
+    of one.
+
+    Args:
+        value: The caller-supplied value.
+        param: The parameter name it came from, used in the message.
+        context: Message prefix identifying the surface that received it - the
+            public method name, or the class name for a constructor parameter.
+
+    Returns:
+        An error message, or ``None`` when the value is usable.
+    """
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return f"{context}: {param} must be a non-negative integer, got {value!r}."
+    return None
+
+
 def name_list_error(value: Any, param: str, context: str) -> str | None:
     """Error text when ``value`` is not a usable list of distinct key names.
 

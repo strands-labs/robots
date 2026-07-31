@@ -218,7 +218,7 @@ class TestControlFrequency:
     @pytest.mark.parametrize("bad", [0, -1, -30.0])
     def test_set_control_frequency_rejects_non_positive(self, bad):
         p = _IdentityPolicy()
-        with pytest.raises(ValueError, match="must be positive"):
+        with pytest.raises(ValueError, match="control_frequency must be > 0"):
             p.set_control_frequency(bad)
 
     def test_control_frequency_is_per_instance(self):
@@ -257,10 +257,25 @@ class TestRTCObservedDelay:
         p.set_rtc_observed_delay(None)
         assert p.rtc_observed_delay_steps is None
 
-    def test_set_observed_delay_coerces_to_int(self):
+    def test_set_observed_delay_refuses_a_bool_rather_than_counting_it_as_one(self):
+        """A ``bool`` is not a step count, and coercing it fabricated one.
+
+        This previously asserted the coercion (``True`` -> ``1``) on the grounds
+        that ``bool`` is an ``int`` subclass. That is true of the type but not of
+        the quantity: the count is the offset at which the provider slices the
+        next action chunk, so a silent ``1`` is a seam the caller never asked
+        for, not a harmless default. Being an ``int`` subclass is precisely why
+        the old bare ``steps < 0`` test could not see it.
+        """
         p = _IdentityPolicy()
-        p.set_rtc_observed_delay(True)  # bool is an int subclass
-        assert p.rtc_observed_delay_steps == 1
+        with pytest.raises(ValueError, match="rtc_observed_delay_steps must be a non-negative integer"):
+            p.set_rtc_observed_delay(True)
+        assert p.rtc_observed_delay_steps is None
+
+    def test_set_observed_delay_stores_a_true_int(self):
+        p = _IdentityPolicy()
+        p.set_rtc_observed_delay(4)
+        assert p.rtc_observed_delay_steps == 4
         assert isinstance(p.rtc_observed_delay_steps, int)
 
     def test_set_observed_delay_rejects_negative(self):

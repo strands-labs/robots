@@ -632,6 +632,15 @@ real hardware where the arm genuinely keeps moving during inference), leave the
 override unset (`None`) and the policy falls back to the wall-clock p95 estimate,
 which is the right proxy there.
 
+The override is an offset into the action chunk, so it accepts `None` or a
+non-negative `int` and nothing else. A fractional count is not a smaller offset
+and `True` is not a count of one - both used to be coerced into a neighbouring
+value, which moves the seam silently. The control rate the estimator multiplies
+by (`set_control_frequency(hz)`) is a finite positive number for the same
+reason: `nan` and `inf` survive a `hz <= 0` test but not the `int()` that turns
+a latency into a step count, so they are refused where they arrive rather than
+part-way through a rollout.
+
 ## See also
 
 - [MolmoAct2 (SO-100/101)](molmoact2.md) - action contract, units, and motion diagnostics

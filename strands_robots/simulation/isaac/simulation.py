@@ -646,6 +646,12 @@ class IsaacSimulation(IsaacRecordingMixin, SimEngine):
 
         # Entity tracking
         self._robots: dict[str, _RobotState] = {}
+        # Per-robot task-space action controllers (install_action_controller).
+        # When a robot has one, dict actions handed to send_action are first
+        # converted to joint-name targets via compute_joint_targets -- the
+        # Isaac counterpart of the MuJoCo backend's
+        # ``world._backend_state["action_controller"]`` seam (#1812).
+        self._action_controllers: dict[str, Any] = {}
         self._cameras: dict[str, _CameraState] = {}
         self._objects: dict[str, _ObjectState] = {}
         self._prim_registry: list[str] = []  # track all created prims for cleanup
@@ -1117,6 +1123,7 @@ class IsaacSimulation(IsaacRecordingMixin, SimEngine):
 
             # Clear entity tracking
             self._robots.clear()
+            self._action_controllers.clear()
             self._cameras.clear()
             self._objects.clear()
             self._prim_registry.clear()
@@ -2444,6 +2451,9 @@ class IsaacSimulation(IsaacRecordingMixin, SimEngine):
             prim_path = self._robots[name].prim_path
             self._prim_registry = [p for p in self._prim_registry if not p.startswith(prim_path)]
             del self._robots[name]
+            # A controller closed over this robot's articulation is stale
+            # the moment the robot is gone; drop it with the robot.
+            self._action_controllers.pop(name, None)
             logger.info("Removed robot '%s' (prim=%s)", name, prim_path)
             return {
                 "status": "success",
@@ -2645,6 +2655,207 @@ class IsaacSimulation(IsaacRecordingMixin, SimEngine):
 
             return obs
 
+    def physics_timestep(self) -> float | None:
+        """Return the fixed physics integration timestep in seconds.
+
+        Isaac's ``World`` steps at :attr:`IsaacConfig.physics_dt`.
+        Reporting it lets :class:`PolicyRunner` derive the physics substeps
+        per control step (``round(1 / control_frequency / physics_dt)``) so
+        a PD position-servo arm tracks each action's target for the full
+        control period -- without this override the base class returned
+        ``None`` and every applied action got a single ~8 ms step (#1812).
+        """
+        return float(self._config.physics_dt)
+
+    def install_action_controller(self, robot_name: str, controller: Any) -> dict[str, Any]:
+        """Install a task-space action controller for a robot.
+
+        Once installed, every dict action handed to :meth:`send_action` for
+        ``robot_name`` is first converted by
+        ``controller.compute_joint_targets(action)`` into a
+        ``{joint_name: position_target}`` dict, which then flows through the
+        normal name-resolution / ``ArticulationAction`` path. This is the
+        Isaac counterpart of the MuJoCo backend's
+        ``world._backend_state["action_controller"]`` seam that
+        ``LiberoAdapter._install_action_controller`` uses to route GR00T's
+        delta-EEF actions (#1812) -- see
+        :class:`~strands_robots.simulation.isaac.delta_eef.IsaacDeltaEEFController`.
+
+        Args:
+            robot_name: Robot previously added via ``add_robot``.
+            controller: Object exposing a callable
+                ``compute_joint_targets(action: Mapping) -> dict[str, float]``.
+
+        Returns:
+            Standard ``{"status", "content": [{"text"}]}`` envelope.
+        """
+        with self._lock:
+            if robot_name not in self._robots:
+                return {
+                    "status": "error",
+                    "content": [{"text": f"Robot '{robot_name}' not found. Available: {sorted(self._robots)}"}],
+                }
+            if not callable(getattr(controller, "compute_joint_targets", None)):
+                return {
+                    "status": "error",
+                    "content": [
+                        {
+                            "text": (
+                                "Controller must expose a callable compute_joint_targets(action) "
+                                f"method; got {type(controller).__name__}."
+                            )
+                        }
+                    ],
+                }
+            self._action_controllers[robot_name] = controller
+            logger.info(
+                "Installed action controller %s for robot '%s'",
+                type(controller).__name__,
+                robot_name,
+            )
+            return {
+                "status": "success",
+                "content": [{"text": f"Action controller installed for '{robot_name}'."}],
+            }
+
+    def uninstall_action_controller(self, robot_name: str) -> dict[str, Any]:
+        """Remove a previously installed action controller.
+
+        Idempotent: removing a robot with no controller succeeds (the
+        post-state is the same), so per-episode re-install loops don't have
+        to track whether an install ever happened.
+        """
+        with self._lock:
+            removed = self._action_controllers.pop(robot_name, None)
+            text = (
+                f"Action controller removed from '{robot_name}'."
+                if removed is not None
+                else f"No action controller installed for '{robot_name}'."
+            )
+            return {"status": "success", "content": [{"text": text}]}
+
+    def get_jacobian(
+        self,
+        body_name: str | None = None,
+        site_name: str | None = None,
+        geom_name: str | None = None,
+        robot_name: str | None = None,
+    ) -> dict[str, Any]:
+        """Compute the world-frame spatial Jacobian for a robot link.
+
+        Signature-parity with the MuJoCo backend's ``get_jacobian``
+        (:meth:`strands_robots.simulation.mujoco.physics.PhysicsMixin.get_jacobian`):
+        returns positional (3 x ndof) and rotational (3 x ndof) Jacobians in
+        a ``json`` content block. Isaac has no sites/geoms as Jacobian
+        targets, so ``site_name`` / ``geom_name`` are rejected loudly rather
+        than silently ignored.
+
+        Args:
+            body_name: Link (rigid body) name on the articulation, e.g.
+                ``panda_hand``.
+            site_name: Unsupported on Isaac; passing it returns an error.
+            geom_name: Unsupported on Isaac; passing it returns an error.
+            robot_name: Robot to query; auto-picked when exactly one robot
+                is loaded.
+
+        Returns:
+            ``{"status": "success", "content": [{"text"}, {"json": {"jacp",
+            "jacr", "nv"}}]}`` on success, an error envelope otherwise.
+        """
+        if site_name is not None or geom_name is not None:
+            return {
+                "status": "error",
+                "content": [
+                    {
+                        "text": (
+                            "The Isaac backend computes Jacobians for articulation links only; "
+                            "site_name/geom_name are unsupported. Pass body_name (a link name)."
+                        )
+                    }
+                ],
+            }
+        if not body_name:
+            return {"status": "error", "content": [{"text": "Specify body_name (a link name)."}]}
+        with self._lock:
+            if robot_name is None:
+                if len(self._robots) == 1:
+                    robot_name = next(iter(self._robots))
+                else:
+                    return {
+                        "status": "error",
+                        "content": [{"text": f"Specify robot_name; available robots: {sorted(self._robots)}"}],
+                    }
+            if robot_name not in self._robots:
+                return {"status": "error", "content": [{"text": f"Robot '{robot_name}' not found."}]}
+            try:
+                jac = self._link_jacobian(self._robots[robot_name], body_name)
+            except (RuntimeError, ValueError) as e:
+                return {"status": "error", "content": [{"text": str(e)}]}
+        return {
+            "status": "success",
+            "content": [
+                {"text": f"Jacobian for link '{body_name}': pos=(3, {jac.shape[1]}), rot=(3, {jac.shape[1]})"},
+                {"json": {"jacp": jac[:3].tolist(), "jacr": jac[3:].tolist(), "nv": jac.shape[1]}},
+            ],
+        }
+
+    def _link_jacobian(self, robot: _RobotState, link_name: str) -> np.ndarray:
+        """Return the ``(6, num_dof)`` world-frame Jacobian for one link.
+
+        Rows are ``[linear(3); angular(3)]`` (PhysX convention), columns are
+        the articulation DOFs in ``robot.joint_names`` order. Reads the
+        PhysX tensor buffers via the articulation view --
+        ``SingleArticulation`` exposes no public Jacobian accessor in Isaac
+        Sim 6.0, only its wrapped ``Articulation`` view does
+        (``_articulation_view.get_jacobians()``), so this is the one place
+        that private attribute is touched.
+
+        Raises:
+            RuntimeError: If the articulation/physics view is not available
+                yet, the robot is floating-base (unsupported layout), or the
+                buffers cannot be read.
+            ValueError: If ``link_name`` is not a link on the articulation.
+        """
+        articulation = robot.articulation
+        if articulation is None:
+            raise RuntimeError(f"Robot '{robot.name}' has no articulation handle; was the robot fully loaded?")
+        view = getattr(articulation, "_articulation_view", None)
+        if view is None:
+            raise RuntimeError(
+                f"Robot '{robot.name}': articulation exposes no _articulation_view; "
+                "cannot read Jacobians on this Isaac Sim version."
+            )
+
+        body_names = list(getattr(view, "body_names", None) or [])
+        if link_name not in body_names:
+            raise ValueError(f"Link '{link_name}' not found on robot '{robot.name}'. Links: {body_names}")
+
+        jacobians = view.get_jacobians()
+        if jacobians is None:
+            raise RuntimeError(
+                "Articulation view returned no Jacobians (physics simulation view not created yet); "
+                "step the world at least once before reading Jacobians."
+            )
+        jac = jacobians.cpu().numpy() if hasattr(jacobians, "cpu") else np.asarray(jacobians)
+        # Shape (num_articulations, num_links, 6, num_dof). Fixed-base
+        # articulations exclude the root link from the link dimension, so a
+        # link's Jacobian row is its body index minus one. A floating base
+        # would instead carry num_bodies rows and 6 extra root DOF columns;
+        # LIBERO's Franka imports fix_base=True, so refuse the layout we
+        # have not verified instead of guessing column semantics.
+        jac = jac[0]
+        n_dof = len(robot.joint_names)
+        if jac.shape[0] == len(body_names) - 1 and jac.shape[2] == n_dof:
+            row = body_names.index(link_name) - 1
+            if row < 0:
+                raise ValueError(f"Link '{link_name}' is the articulation root; it has no Jacobian.")
+        else:
+            raise RuntimeError(
+                f"Unsupported Jacobian layout {jac.shape} for robot '{robot.name}' "
+                f"({len(body_names)} links, {n_dof} DOFs). Only fixed-base articulations are supported."
+            )
+        return np.asarray(jac[row], dtype=np.float64)
+
     def send_action(
         self,
         action: dict[str, Any] | np.ndarray | list,
@@ -2656,7 +2867,11 @@ class IsaacSimulation(IsaacRecordingMixin, SimEngine):
         Parameters
         ----------
         action : dict or array-like
-            Joint targets. If dict, keyed by joint name.
+            Joint targets. If dict, keyed by joint name -- unless the robot
+            has a controller installed via :meth:`install_action_controller`,
+            in which case the dict is first converted by the controller
+            (e.g. GR00T task-space delta-EEF keys to joint position
+            targets) and the converted dict is what gets resolved.
         robot_name : str, optional
             Robot to control.
         n_substeps : int
@@ -2700,6 +2915,30 @@ class IsaacSimulation(IsaacRecordingMixin, SimEngine):
                 return {"status": "error", "content": [{"text": f"Robot '{robot_name}' not found."}]}
 
             robot = self._robots[robot_name]
+
+            # Route a dict action through the robot's installed task-space
+            # controller (install_action_controller), which converts e.g.
+            # GR00T's delta-EEF keys ({x, y, z, roll, pitch, yaw, gripper})
+            # into {joint_name: position_target}. A conversion failure is a
+            # hard error envelope, never a silent fall-through to the raw
+            # name-lookup path -- the raw path would drop every task-space
+            # key and the robot would sit still while the eval reads green
+            # (#1812).
+            controller = self._action_controllers.get(robot_name)
+            if controller is not None and isinstance(action, dict):
+                try:
+                    action = controller.compute_joint_targets(action)
+                except (RuntimeError, ValueError, TypeError) as e:
+                    return {
+                        "status": "error",
+                        "content": [
+                            {
+                                "text": (
+                                    f"Action controller for '{robot_name}' failed to convert the task-space action: {e}"
+                                )
+                            }
+                        ],
+                    }
 
             # Convert action to array, tracking dict keys that don't name a
             # joint so unresolved commands surface in the envelope rather than

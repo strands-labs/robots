@@ -894,6 +894,13 @@ def main() -> None:
                 n_episodes=args.n_episodes,
                 seed=args.seed,
                 on_frame=on_frame,
+                # GR00T-N1.7-LIBERO was trained at 20 Hz control (#168).
+                # On MuJoCo the OSC controller owns its 25-substep loop, so
+                # the runner's rate never mattered there; on Isaac the
+                # delta-EEF controller (#1812) relies on the runner to step
+                # a full 1/20 s per action (physics_dt=1/120 -> 6 substeps)
+                # so the PD drives actually track each joint target.
+                control_frequency=20.0,
                 **policy_kwargs,
             )
         finally:
