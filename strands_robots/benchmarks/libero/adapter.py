@@ -3220,13 +3220,23 @@ class LiberoAdapter(BenchmarkProtocol):
            scene MJCF; on Isaac it is a separately-loaded USD spawned at
            the origin, inside the footprint of the scene's
            origin-anchored static fixtures).
-        5. Teleport each realized dynamic prim via ``sim.move_object``.
+        5. Write the decoded arm + gripper qpos into the articulation via
+           :meth:`_apply_scene_arm_qpos` (#1828): the scene names the
+           joints with robosuite prefixes (``robot0_joint1`` /
+           ``gripper0_finger_joint1``) while the USD articulation names
+           them ``panda_joint1`` / ``panda_finger_joint1``, so the
+           prefix-stripped names are mapped onto articulation DOFs by
+           longest-suffix match (ambiguity fatal). Without this the arm
+           starts every episode at the USD default (all-zero, upright)
+           instead of LIBERO's Panda ready pose, so the policy's first
+           observation is OOD relative to its training distribution.
+        6. Teleport each realized dynamic prim via ``sim.move_object``.
            The prim is a box at the body's collision-AABB centre, so the
            prim pose is ``xpos + R(xquat) @ offset`` with the body-frame
            ``offset`` recorded by :func:`load_mjcf_scene_objects`.
            Static fixtures keep their MJCF poses (they have no free
            joint; ``qpos`` cannot move them on MuJoCo either).
-        6. Settle a few physics steps so PhysX resolves residual contact
+        7. Settle a few physics steps so PhysX resolves residual contact
            from the teleports before the first observation. The settle
            runs HERE, after the poses are legal -- ``load_scene`` itself
            must not step, because its objects still sit at the MJCF
@@ -3331,6 +3341,11 @@ class LiberoAdapter(BenchmarkProtocol):
         else:
             logger.debug("LiberoAdapter: sim has no set_robot_pose(); skipping robot base alignment")
 
+        # The robot's other half (#1828): write the decoded arm + gripper
+        # qpos into the articulation so the arm starts the episode at
+        # LIBERO's Panda ready pose rather than the USD default.
+        self._apply_scene_arm_qpos(sim, model, data, _mj)
+
         moved = 0
         for obj in load_mjcf_scene_objects(scene_path):
             if obj.is_static:
@@ -3377,6 +3392,135 @@ class LiberoAdapter(BenchmarkProtocol):
         # "episode 1+" and gets RNG-sampled selection (parity with
         # _apply_init_state_branch).
         self._episode_count += 1
+
+    def _apply_scene_arm_qpos(self, sim: SimEngine, model: Any, data: Any, mj: Any) -> None:
+        """Arm-qpos half of :meth:`_apply_object_pose_state` (#1828).
+
+        The init state's object poses and robot *base* pose land on Isaac
+        via ``move_object`` / ``set_robot_pose`` (#1820), but the arm qpos
+        slice (LIBERO's Panda ready pose ``[0, -0.161, 0, -2.444, 0,
+        2.227, pi/4]`` + gripper) stayed unapplied: the USD Franka
+        articulation started every episode at its USD default (all-zero,
+        upright), so the policy's first observation was OOD relative to
+        the LIBERO training distribution. This writes the decoded arm +
+        gripper joint values into the articulation via
+        ``sim.set_joint_positions`` (a kinematic state + PD-target write
+        on Isaac, so the pose holds through the settle steps).
+
+        The decode model names joints with robosuite prefixes
+        (``robot0_joint1..7`` / ``gripper0_finger_joint1..2``) while the
+        Isaac USD articulation names them ``panda_joint1..7`` /
+        ``panda_finger_joint1..2``. Plain suffix matching is ambiguous
+        (``joint1`` is a suffix of both ``panda_joint1`` and
+        ``panda_finger_joint1``), so the prefix-stripped scene names are
+        mapped onto articulation DOF names via
+        :func:`_map_scene_joints_to_articulation` -- each DOF claims its
+        LONGEST matching scene suffix, and any scene joint left unclaimed
+        or claimed by several DOFs raises. No silent partial writes: a
+        mapping failure raises ``RuntimeError`` BEFORE anything is
+        written, and a failed engine write raises too.
+
+        Scene-side conventions match :meth:`_write_libero_arm_home_qpos`
+        (#168): arm joints carry ``self._scene_robot_prefix``, gripper
+        joints carry ``self._scene_gripper_prefix`` and are filtered to
+        ``finger_joint`` names.
+
+        Best-effort preconditions (debug-log + skip, preserving the
+        graceful-degradation contract of the enclosing branch): a scene
+        without prefixed robot joints (robot-less probe scenes), a sim
+        that exposes no ``set_joint_positions`` / ``robot_joint_names`` /
+        ``list_robots`` seam (arbitrary model-less sims), or a sim with
+        no robot registered yet. Multiple robots raise -- the write
+        target is ambiguous, matching ``set_robot_pose``'s contract.
+        """
+        # 1. Collect prefix-stripped scene joint values from the decode
+        # model (qpos already carries the selected init-state row).
+        single_dof_types = (int(mj.mjtJoint.mjJNT_HINGE), int(mj.mjtJoint.mjJNT_SLIDE))
+        scene_values: dict[str, float] = {}
+        njnt = int(getattr(model, "njnt", 0))
+        for i in range(njnt):
+            jname = mj.mj_id2name(model, mj.mjtObj.mjOBJ_JOINT, i)
+            if not isinstance(jname, str):
+                continue
+            if jname.startswith(self._scene_robot_prefix) and not jname.startswith(self._scene_gripper_prefix):
+                bare = jname[len(self._scene_robot_prefix) :]
+            elif jname.startswith(self._scene_gripper_prefix) and "finger_joint" in jname:
+                # Finger joints only -- matches the #168 convention used
+                # by _write_libero_arm_home_qpos.
+                bare = jname[len(self._scene_gripper_prefix) :]
+            else:
+                continue
+            if int(model.jnt_type[i]) not in single_dof_types:
+                raise RuntimeError(
+                    f"LiberoAdapter: scene robot joint {jname!r} is not a 1-DOF hinge/slide joint; "
+                    f"its qpos cannot map onto a single articulation DOF. The scene MJCF diverges "
+                    f"from the robosuite convention this mapping assumes (#1828)."
+                )
+            if bare in scene_values:
+                raise RuntimeError(
+                    f"LiberoAdapter: two scene robot joints strip to the same name {bare!r} "
+                    f"(prefixes {self._scene_robot_prefix!r} / {self._scene_gripper_prefix!r}); "
+                    f"one value would silently overwrite the other (#1828)."
+                )
+            scene_values[bare] = float(data.qpos[int(model.jnt_qposadr[i])])
+
+        if not scene_values:
+            logger.debug("LiberoAdapter: scene has no prefixed robot joints; skipping arm-qpos apply")
+            return
+
+        # 2. Duck-typed engine seam probe, mirroring
+        # _try_install_isaac_action_controller: an engine lacking any of
+        # these callables is simply not an articulated-robot engine.
+        # Typed ``Any``: SimEngine's base surface declares none of these
+        # backend-specific seams.
+        set_joint_positions: Any = getattr(sim, "set_joint_positions", None)
+        robot_joint_names: Any = getattr(sim, "robot_joint_names", None)
+        list_robots: Any = getattr(sim, "list_robots", None)
+        if not all(callable(f) for f in (set_joint_positions, robot_joint_names, list_robots)):
+            logger.debug("LiberoAdapter: sim exposes no joint-write seam; skipping arm-qpos apply")
+            return
+        robots = list(list_robots())
+        if not robots:
+            logger.debug("LiberoAdapter: no robot registered on the sim; skipping arm-qpos apply")
+            return
+        if len(robots) > 1:
+            raise RuntimeError(
+                f"LiberoAdapter: arm-qpos apply is ambiguous with {len(robots)} robots present "
+                f"({sorted(robots)}); cannot pick a write target (#1828)."
+            )
+        robot_name = robots[0]
+        dof_names = list(robot_joint_names(robot_name))
+        if not dof_names:
+            raise RuntimeError(
+                f"LiberoAdapter: robot {robot_name!r} reports no articulation DOF names; the decoded "
+                f"init-state arm qpos ({sorted(scene_values)}) has nowhere to land and the arm would "
+                f"silently start at the USD default pose (#1828)."
+            )
+
+        # 3. Map and write. Mapping failures raise BEFORE the write, so
+        # there is never a partial application.
+        try:
+            mapped = _map_scene_joints_to_articulation(scene_values, dof_names)
+        except ValueError as e:
+            raise RuntimeError(
+                f"LiberoAdapter: cannot apply the init-state arm qpos to robot {robot_name!r}: {e} "
+                f"An unmapped arm joint would leave the articulation at the USD default pose and the "
+                f"policy's first observation OOD relative to its training distribution (#1828)."
+            ) from e
+        result = set_joint_positions(mapped, robot_name=robot_name)
+        if isinstance(result, dict) and result.get("status") == "error":
+            text = (result.get("content") or [{}])[0].get("text", "")
+            raise RuntimeError(
+                f"LiberoAdapter: writing the init-state arm qpos to robot {robot_name!r} failed "
+                f"({text}). The arm would start the episode at the USD default pose instead of "
+                f"LIBERO's ready pose (#1828)."
+            )
+        logger.debug(
+            "LiberoAdapter: applied init-state arm qpos to robot %r (%d joints: %s)",
+            robot_name,
+            len(mapped),
+            sorted(mapped),
+        )
 
     def _apply_keyframe_branch(
         self,
@@ -3900,6 +4044,86 @@ def _quat_wxyz_to_rpy_xyz(quat_wxyz: list[float]) -> tuple[float, float, float]:
 
 
 # Scene-generation helpers (#164)
+
+
+def _is_joint_name_suffix(dof_name: str, bare_name: str) -> bool:
+    """True when ``bare_name`` is a whole-token suffix of ``dof_name``.
+
+    ``panda_joint1`` ends with ``joint1`` at a ``_`` boundary -> match;
+    ``arm_pjoint1`` also ends with ``joint1`` but at an alphanumeric
+    boundary -> no match (it names a different joint that merely shares
+    a tail). Exact equality matches too (an articulation converted
+    straight from the MJCF keeps the bare names).
+    """
+    if dof_name == bare_name:
+        return True
+    if not dof_name.endswith(bare_name):
+        return False
+    return not dof_name[-len(bare_name) - 1].isalnum()
+
+
+def _map_scene_joints_to_articulation(
+    scene_values: dict[str, float],
+    dof_names: list[str],
+) -> dict[str, float]:
+    """Map prefix-stripped scene joint values onto articulation DOF names.
+
+    The LIBERO scene MJCF names robot joints with robosuite prefixes
+    (``robot0_joint1``, ``gripper0_finger_joint1``) while the Isaac USD
+    Franka articulation names them ``panda_joint1`` /
+    ``panda_finger_joint1``. With the prefixes stripped, plain suffix
+    matching is still ambiguous: bare ``joint1`` is a suffix of BOTH
+    ``panda_joint1`` and ``panda_finger_joint1``. So the match runs in
+    the DOF -> scene direction with longest-suffix-wins semantics
+    (#1828): each articulation DOF claims the LONGEST bare scene name
+    that is a whole-token suffix of it (``panda_finger_joint1`` claims
+    ``finger_joint1`` over ``joint1``; equal-length suffixes of one
+    string are identical, so the per-DOF winner is always unique).
+
+    Parameters
+    ----------
+    scene_values : dict[str, float]
+        Prefix-stripped scene joint name -> decoded init-state qpos value.
+    dof_names : list[str]
+        Articulation DOF names in engine order.
+
+    Returns
+    -------
+    dict[str, float]
+        ``{dof_name: value}`` covering every entry of ``scene_values``
+        exactly once. DOFs with no matching scene joint are simply not
+        written (they keep their current value).
+
+    Raises
+    ------
+    ValueError
+        When any scene joint is claimed by zero DOFs (unmappable) or by
+        several DOFs (ambiguous, e.g. a dual-arm articulation where
+        ``left_joint1`` and ``right_joint1`` both claim ``joint1``).
+        Raised before anything is written -- no silent partial writes.
+    """
+    claims: dict[str, list[str]] = {}
+    for dof in dof_names:
+        candidates = [bare for bare in scene_values if _is_joint_name_suffix(dof, bare)]
+        if not candidates:
+            continue
+        best = max(candidates, key=len)
+        claims.setdefault(best, []).append(dof)
+
+    unmapped = sorted(bare for bare in scene_values if bare not in claims)
+    ambiguous = {bare: dofs for bare, dofs in claims.items() if len(dofs) > 1}
+    if unmapped or ambiguous:
+        problems = []
+        if unmapped:
+            problems.append(f"unmappable scene joints (no articulation DOF suffix-matches them): {unmapped}")
+        if ambiguous:
+            detail = "; ".join(f"{bare!r} -> {sorted(dofs)}" for bare, dofs in sorted(ambiguous.items()))
+            problems.append(f"ambiguous scene joints (claimed by several DOFs): {detail}")
+        raise ValueError(
+            f"cannot map scene joints onto articulation DOFs: {'; '.join(problems)}. "
+            f"Articulation DOFs present: {list(dof_names)}."
+        )
+    return {dofs[0]: scene_values[bare] for bare, dofs in claims.items()}
 
 
 def _default_scene_cache_dir() -> Path:
