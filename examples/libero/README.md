@@ -18,7 +18,7 @@ real-asset (USD/URDF) robot loading, and an explicit `add_camera(...)` call
 | [`run_isaac.py`](run_isaac.py) | LIBERO eval on Isaac Sim: `create_simulation("isaac")` -> `create_world` -> `add_robot` (real Franka USD) -> `add_camera` -> `evaluate_benchmark`, with a synchronous rollout-MP4 recorder. Emits two grep-stable lines for the backend matrix. |
 | [`run_isaac_agent.py`](run_isaac_agent.py) | Same eval, driven by a Strands `Agent` in natural language via a single `@tool`-wrapped `evaluate_isaac_benchmark`. |
 | [`libero_backend_matrix.py`](libero_backend_matrix.py) | Runs one LIBERO task across whichever per-backend driver scripts the host can execute (subprocess-and-parse) and prints a side-by-side `success_rate` / `wall_time` table. Missing drivers show `unavailable`; hosts without Isaac Sim show `skip`. |
-| [`gr00t_server_deterministic_wrapper.py`](gr00t_server_deterministic_wrapper.py) | Docker-mountable wrapper for `run_gr00t_server` that enforces strict-determinism torch flags + a per-episode reseed. Runs *inside* the GR00T container (imports `gr00t.*`, `torch`, `tyro`), not on the host. |
+| [`gr00t_server_deterministic_wrapper.py`](gr00t_server_deterministic_wrapper.py) | Back-compat shim: the determinism wrapper moved into the package (`strands_robots/policies/groot/server_wrapper.py`, shipped in the wheel). Prefer `gr00t_inference(..., deterministic=True)` (or `run_mujoco.py --deterministic`), which mounts and runs it for you; mount the packaged file by hand only for custom container setups. |
 
 ## Install
 
@@ -96,4 +96,7 @@ evaluates the `mujoco` and Isaac single-env (`isaac-1`) rows.
 - `HF_TOKEN` (or `HUGGING_FACE_HUB_TOKEN`) - HuggingFace token for the gated
   GR00T checkpoint download (`--policy groot`).
 - `STRANDS_GR00T_SERVER_SEED` / `STRANDS_GR00T_STRICT_DETERMINISTIC` - consumed
-  by `gr00t_server_deterministic_wrapper.py` inside the GR00T container.
+  by the packaged determinism wrapper
+  (`strands_robots/policies/groot/server_wrapper.py`) inside the GR00T
+  container; forwarded there automatically by
+  `gr00t_inference(..., deterministic=True)` / `run_mujoco.py --deterministic`.

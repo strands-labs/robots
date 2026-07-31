@@ -180,6 +180,7 @@ def test_library_surface_the_drivers_depend_on() -> None:
         "embodiment_tag",
         "protocol",
         "use_sim_policy_wrapper",
+        "deterministic",
         "port",
     ):
         assert kwarg in tool_params, f"gr00t_inference lost the {kwarg!r} kwarg the LIBERO drivers pass"

@@ -79,18 +79,20 @@ Optional server-side determinism wrapper
 -----------------------------------------
 
 For users who need bit-exact run-to-run reproducibility (e.g. CI
-pinning a specific success_rate), a drop-in docker wrapper is
-available at ``examples/libero/gr00t_server_deterministic_wrapper.py``.
-It sets ``cudnn.deterministic=True`` + ``cudnn.benchmark=False`` +
-``CUBLAS_WORKSPACE_CONFIG=":4096:8"`` server-side and monkey-patches
-``Gr00tPolicy.reset`` to apply the client-supplied per-episode seed.
-The example file works WITHOUT this wrapper (verified at 4/5 above) -
-it's only needed when you want the GPU's CUDA backend to produce
-identical actions across re-runs of the same seed.
+pinning a specific success_rate), pass ``--deterministic``: the
+auto-server lifecycle then mounts the packaged determinism wrapper
+(``strands_robots/policies/groot/server_wrapper.py``) into the
+container and runs the server through it (``cudnn.deterministic=True``
++ ``cudnn.benchmark=False`` + ``CUBLAS_WORKSPACE_CONFIG=":4096:8"`` +
+a per-episode reseed of the server RNG from the client-forwarded
+seed). The eval works WITHOUT it (verified at 4/5 above) - it's only
+needed when you want the GPU's CUDA backend to produce identical
+actions across re-runs of the same seed.
 
-Mount with::
+Escape hatch for hand-managed containers (``--no-auto-server``)::
 
-    docker run … -v examples/libero/gr00t_server_deterministic_wrapper.py:/srv_wrap.py \\
+    WRAP=$(python -c "import strands_robots.policies.groot.server_wrapper as m; print(m.__file__)")
+    docker run … -v "$WRAP":/srv_wrap.py:ro \\
         gr00t:latest python /srv_wrap.py --model-path … --use-sim-policy-wrapper --port 8000
 """
 
@@ -258,6 +260,16 @@ def main() -> None:
         "`start_container` mount guard, which refuses to bind-mount any path "
         "under `/home`.",
     )
+    p.add_argument(
+        "--deterministic",
+        action="store_true",
+        default=False,
+        help="(--auto-server only) Run the GR00T server through the packaged "
+        "determinism wrapper (per-episode server-side reseed + strict cuDNN/"
+        "cuBLAS flags) for bit-exact run-to-run reproducibility at a fixed "
+        "--seed. See the 'Optional server-side determinism wrapper' section "
+        "in the module docstring.",
+    )
     args = p.parse_args()
 
     suite = _suite_for_task(args.task)
@@ -310,6 +322,7 @@ def main() -> None:
             embodiment_tag="libero_sim",
             protocol="n1.7",
             use_sim_policy_wrapper=True,
+            deterministic=args.deterministic,
             port=args.port,
         )
         if result.get("status") != "success":
