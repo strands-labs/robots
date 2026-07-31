@@ -205,10 +205,17 @@ class TestOnlyTheOptionsAnActionReadsAreValidated:
 
         assert result["status"] != "error" or "width" not in _text(result)
 
-    def test_record_does_not_refuse_a_timeout_it_never_reads(
+    def test_a_synchronous_recording_does_not_refuse_a_budget_it_never_reads(
         self, recorder: _Recorder, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """``_record_video_sequence`` passes a fixed timeout to its async read."""
+        """The synchronous read takes no timeout, so ``record`` must accept any value here.
+
+        This case reads as it always did, but its reason has changed: the budget
+        used to be inert on ``record`` at every value because the handler was
+        never passed it. It is now inert only because this call leaves
+        ``async_mode`` off, which is the same reason it is inert on every other
+        action - and the asynchronous recording refuses the value.
+        """
         writer = type("_W", (), {"write": lambda self, f: None, "release": lambda self: None})()
         monkeypatch.setattr(cam_mod.cv2, "VideoWriter", lambda *a, **k: writer)
         monkeypatch.setattr(cam_mod.cv2, "VideoWriter_fourcc", lambda *a, **k: 0, raising=False)

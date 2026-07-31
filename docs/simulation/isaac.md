@@ -64,7 +64,7 @@ about, so run this exact sequence:
 pip install 'isaacsim[all,extscache]==6.0.*' --extra-index-url https://pypi.nvidia.com
 
 # 2. Repair the coverage downgrade (see below):
-pip install 'coverage>=7.6'
+pip install 'coverage>=7.6.1'
 
 # 3. Accept the EULA for non-interactive first import:
 export OMNI_KIT_ACCEPT_EULA=YES
@@ -77,7 +77,7 @@ Known collateral (observed with isaacsim 6.0.0.1 and 6.0.1.0):
   coverage. numba's tracer probe then fails, and the first visible symptom is
   far from the cause - robosuite's OSC controller import dies inside the LIBERO
   adapter with `module 'coverage.types' has no attribute 'Tracer'`. Verified
-  remedy: `pip install 'coverage>=7.6'` after the isaacsim install. The reverse
+  remedy: `pip install 'coverage>=7.6.1'` after the isaacsim install. The reverse
   pip conflict warning (`isaacsim-kernel requires coverage==7.4.4`) is cosmetic:
   coverage is test tooling for the kit, not a runtime dependency.
 - **torch stack bump vs lerobot pins.** The isaacsim install upgrades

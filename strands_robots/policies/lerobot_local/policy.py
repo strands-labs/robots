@@ -399,7 +399,10 @@ class LerobotLocalPolicy(Policy):
         rtc_enabled: Enable Real-Time Chunking for flow-matching policies.
             Auto-detected from model config if None.
         rtc_execution_horizon: Number of timesteps from the prefix to use for
-            guidance. Defaults to model config value or 10.
+            guidance - with RTC active this is the re-query interval
+            :attr:`~strands_robots.policies.base.Policy.execution_horizon`
+            resolves, so it must be a positive whole number. ``None`` (the
+            default) adopts the model config value, else 10.
         rtc_max_guidance_weight: Maximum guidance weight for RTC correction.
             Defaults to model config value or 10.0.
         camera_key_map: Optional explicit mapping of robot/sim camera name
@@ -566,6 +569,17 @@ class LerobotLocalPolicy(Policy):
         # RTC state
         self._rtc_requested = rtc_enabled
         self._rtc_enabled = False
+        # Same domain and the same reason as ``actions_per_step`` above: with RTC
+        # active this IS the re-query interval ``execution_horizon`` resolves,
+        # through the same ``max(1, int(...))`` floor, and a value other than
+        # ``None`` also suppresses ``_init_rtc``'s adoption of the checkpoint's
+        # own ``rtc_config.execution_horizon``. ``None`` is the documented
+        # "adopt the model's value" request rather than a count, so only a
+        # supplied one is checked. See ``chunk_count_error``.
+        if rtc_execution_horizon is not None:
+            error = chunk_count_error(rtc_execution_horizon, "rtc_execution_horizon", "lerobot_local")
+            if error:
+                raise ValueError(error)
         self._rtc_execution_horizon = rtc_execution_horizon
         self._rtc_max_guidance_weight = rtc_max_guidance_weight
         self._rtc_prev_chunk: torch.Tensor | None = None
@@ -655,7 +669,11 @@ class LerobotLocalPolicy(Policy):
         * otherwise -> ``actions_per_step`` (the trained chunk, consumed whole).
 
         Falls back to ``actions_per_step`` when RTC is enabled but the horizon
-        was never resolved (defensive; ``_init_rtc`` always sets it).
+        was never resolved (defensive; ``_init_rtc`` always sets it). A
+        ``rtc_execution_horizon`` the consumer cannot execute reached this
+        fallback too, so RTC silently collapsed to the open-loop replay the
+        paragraph above describes; the constructor now refuses such a value, so
+        the horizon read here always matches the one the model is given.
         """
         if self._rtc_enabled and self._rtc_execution_horizon:
             return max(1, int(self._rtc_execution_horizon))
@@ -1413,9 +1431,9 @@ class LerobotLocalPolicy(Policy):
         or when the embodiment name/spec cannot be resolved (``create_policy``
         surfaces that error authoritatively).
 
-        The parameter-shape guards below (``actions_per_step``, ``image_keys``)
-        run before that early-return, because both are honored whether or not an
-        embodiment is configured.
+        The parameter-shape guards below (``actions_per_step``, ``image_keys``,
+        ``rtc_execution_horizon``) run before that early-return, because all
+        three are honored whether or not an embodiment is configured.
 
         Args:
             observation_keys: Runtime observation keys (joint + camera names).
@@ -1423,8 +1441,9 @@ class LerobotLocalPolicy(Policy):
                 ``obs_rename_override``, ...).
 
         Raises:
-            ValueError: When ``actions_per_step`` is not a positive whole number,
-                when ``image_keys`` is not a list of distinct non-blank names,
+            ValueError: When ``actions_per_step`` or ``rtc_execution_horizon``
+                is not a positive whole number, when ``image_keys`` is not a
+                list of distinct non-blank names,
                 when a model image feature has no satisfiable source camera key
                 in ``observation_keys``, or when an explicit ``image_keys``
                 withholds a feature the embodiment feeds.
@@ -1447,6 +1466,15 @@ class LerobotLocalPolicy(Policy):
         supplied_image_keys = policy_config.get("image_keys")
         if supplied_image_keys and (err := name_list_error(supplied_image_keys, "image_keys", "preflight")):
             raise ValueError(err)
+
+        # The RTC re-query count, on the same domain as ``actions_per_step``: it
+        # replaces that horizon whenever RTC is active, which the model config
+        # decides, so it cannot be scoped to an embodiment either. Checked for a
+        # supplied value only - ``None`` asks for the checkpoint's own horizon.
+        if policy_config.get("rtc_execution_horizon") is not None:
+            error = chunk_count_error(policy_config["rtc_execution_horizon"], "rtc_execution_horizon", "lerobot_local")
+            if error:
+                raise ValueError(error)
 
         spec = policy_config.get("embodiment")
         if spec is None:

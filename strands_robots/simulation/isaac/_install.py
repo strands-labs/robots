@@ -46,7 +46,7 @@ ISAAC_SIM_PIP_INSTALL: str = "pip install 'isaacsim[all,extscache]==6.0.*' --ext
 #: AttributeError; and the first non-interactive import hangs on the EULA
 #: prompt without the env var.
 ISAAC_SIM_PIP_CAVEATS: str = (
-    "then reinstall 'pip install coverage>=7.6' and set OMNI_KIT_ACCEPT_EULA=YES for the first import"
+    "then reinstall 'pip install coverage>=7.6.1' and set OMNI_KIT_ACCEPT_EULA=YES for the first import"
 )
 
 #: Pip extra users install to pull our Python helpers alongside an

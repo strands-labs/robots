@@ -389,6 +389,13 @@ ollama = [
 inference = [
     "websockets>=12.0",
 ]
+# rosbridge WebSocket transport: drive ROS1 (or remote ROS 2) robots from a host
+# with no ROS install at all. Pure-pip `roslibpy` speaks the rosbridge JSON
+# protocol over a WebSocket. See strands_robots/tools/use_rosbridge.py and
+# docs/rosbridge-integration.md.
+rosbridge = [
+    "roslibpy>=1.7.0,<2.0.0",
+]
 all = [
     "strands-robots[groot-service]",
     "strands-robots[moveit2]",
@@ -403,6 +410,7 @@ all = [
     "strands-robots[molmoact2]",
     "strands-robots[ollama]",
     "strands-robots[inference]",
+    "strands-robots[rosbridge]",
 ]
 dev = [
     "pytest>=6.0,<10.0.0",
@@ -543,7 +551,7 @@ ignore_missing_imports = false
 
 # Third-party libs without type stubs
 [[tool.mypy.overrides]]
-module = ["lerobot.*", "gr00t.*", "draccus.*", "msgpack.*", "websockets", "websockets.*", "zmq.*", "huggingface_hub.*", "serial.*", "psutil.*", "torch.*", "torchvision.*", "transformers.*", "einops.*", "robot_descriptions.*", "mujoco.*", "imageio.*", "pyarrow", "pyarrow.*", "libero.*", "zenoh.*", "boto3", "boto3.*", "awscrt", "awscrt.*", "awsiot", "awsiot.*", "botocore.*", "strands_robots.policies.cosmos3._msgpack_numpy", "diffusers", "diffusers.*", "accelerate", "accelerate.*", "openpi_client", "openpi_client.*", "openpi_server", "openpi_server.*", "openpi", "openpi.*", "device_connect_edge", "device_connect_edge.*", "device_connect_agent_tools", "device_connect_agent_tools.*", "rclpy", "rclpy.*", "cyclonedds", "cyclonedds.*", "rosidl_runtime_py", "rosidl_runtime_py.*", "moveit", "moveit.*", "moveit_configs_utils", "moveit_configs_utils.*", "geometry_msgs", "geometry_msgs.*", "mink", "mink.*", "qpsolvers", "qpsolvers.*", "onnxruntime", "onnxruntime.*", "motionbricks", "motionbricks.*", "trimesh", "trimesh.*", "stable_baselines3", "stable_baselines3.*", "strands_robots_sim", "strands_robots_sim.*", "isaacsim", "isaacsim.*", "omni", "omni.*", "gsplat", "gsplat.*", "plyfile", "plyfile.*"]
+module = ["lerobot.*", "gr00t.*", "tyro", "draccus.*", "msgpack.*", "websockets", "websockets.*", "zmq.*", "huggingface_hub.*", "serial.*", "psutil.*", "torch.*", "torchvision.*", "transformers.*", "einops.*", "robot_descriptions.*", "mujoco.*", "imageio.*", "pyarrow", "pyarrow.*", "libero.*", "zenoh.*", "boto3", "boto3.*", "awscrt", "awscrt.*", "awsiot", "awsiot.*", "botocore.*", "strands_robots.policies.cosmos3._msgpack_numpy", "diffusers", "diffusers.*", "accelerate", "accelerate.*", "openpi_client", "openpi_client.*", "openpi_server", "openpi_server.*", "openpi", "openpi.*", "device_connect_edge", "device_connect_edge.*", "device_connect_agent_tools", "device_connect_agent_tools.*", "rclpy", "rclpy.*", "cyclonedds", "cyclonedds.*", "roslibpy", "roslibpy.*", "rosidl_runtime_py", "rosidl_runtime_py.*", "moveit", "moveit.*", "moveit_configs_utils", "moveit_configs_utils.*", "geometry_msgs", "geometry_msgs.*", "mink", "mink.*", "qpsolvers", "qpsolvers.*", "onnxruntime", "onnxruntime.*", "motionbricks", "motionbricks.*", "trimesh", "trimesh.*", "stable_baselines3", "stable_baselines3.*", "strands_robots_sim", "strands_robots_sim.*", "isaacsim", "isaacsim.*", "omni", "omni.*", "gsplat", "gsplat.*", "plyfile", "plyfile.*"]
 ignore_missing_imports = true
 
 # Device Connect drivers - thin wrappers over the untyped device_connect_edge

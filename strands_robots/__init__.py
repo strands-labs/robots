@@ -75,6 +75,7 @@ if TYPE_CHECKING:
     from strands_robots.tools.train_policy import train_policy
     from strands_robots.tools.use_lerobot import use_lerobot
     from strands_robots.tools.use_ros import use_ros
+    from strands_robots.tools.use_rosbridge import use_rosbridge
     from strands_robots.tools.use_rtps import use_rtps
 
 # ------------------------------------------------------------------
@@ -132,6 +133,7 @@ _LAZY_IMPORTS: dict[str, tuple[str, str]] = {
     "train_policy": ("strands_robots.tools.train_policy", "train_policy"),
     "use_lerobot": ("strands_robots.tools.use_lerobot", "use_lerobot"),
     "use_ros": ("strands_robots.tools.use_ros", "use_ros"),
+    "use_rosbridge": ("strands_robots.tools.use_rosbridge", "use_rosbridge"),
     "use_rtps": ("strands_robots.tools.use_rtps", "use_rtps"),
     # Robot mesh coordination tool (Device Connect dispatch + mesh fallback)
     "robot_mesh": ("strands_robots.tools.robot_mesh", "robot_mesh"),
@@ -188,6 +190,7 @@ __all__ = [
     "train_policy",
     "use_lerobot",
     "use_ros",
+    "use_rosbridge",
     "use_rtps",
     "pose_tool",
     "robot_mesh",

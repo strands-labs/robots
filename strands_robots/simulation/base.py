@@ -3249,7 +3249,23 @@ class SimEngine(ABC):
         raise NotImplementedError("set_obs_noise not implemented by this backend")
 
     def get_contacts(self) -> dict[str, Any]:
-        """Get contact information. Override per backend."""
+        """Get contact information. Override per backend.
+
+        Returns:
+            The agent-tool envelope -- ``{"status": ..., "content": [...]}`` --
+            whose ``json`` content block carries ``contacts``, a list of
+            per-contact records. The payload lives in that block, not on the
+            envelope itself, so a caller reading ``result["contacts"]``
+            directly always misses. The predicate DSL's ``contact_*``
+            factories (see
+            :mod:`strands_robots.simulation.predicates`) are the supported
+            readers; ``success_fn="contact"`` on
+            :meth:`~strands_robots.simulation.policy_runner.PolicyRunner.evaluate`
+            shares them.
+
+        Raises:
+            NotImplementedError: Backends that expose no contact list.
+        """
         raise NotImplementedError("get_contacts not implemented by this backend")
 
     # Raw-frame render APIs (programmatic, not tool-envelope). Optional per

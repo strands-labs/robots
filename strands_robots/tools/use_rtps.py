@@ -51,7 +51,7 @@ from typing import Any
 
 from strands import tool
 
-from strands_robots.utils import positive_count_error, positive_finite_number_error
+from strands_robots.tools._numeric_options import numeric_option_error
 
 logger = logging.getLogger(__name__)
 
@@ -147,40 +147,6 @@ def _err(text: str) -> dict[str, Any]:
     return {"status": "error", "content": [{"text": f"use_rtps: {text}"}]}
 
 
-def _numeric_option_error(action: str, timeout: Any, count: Any, rate: Any) -> str | None:
-    """Error text for the first numeric option ``action`` consumes but cannot honor.
-
-    ``timeout``, ``count`` and ``rate`` are agent-supplied, so each is checked
-    against the shared domain for its kind before any DDS entity is created:
-    ``count`` is a ``range()`` bound (:func:`~strands_robots.utils.positive_count_error`)
-    and ``timeout`` / ``rate`` are a span of seconds and a frequency in Hz
-    (:func:`~strands_robots.utils.positive_finite_number_error`). Reusing those
-    helpers is what keeps this tool and ``use_ros`` - two transports onto the
-    same ROS 2 graph - from disagreeing about which values are publishable.
-
-    Args:
-        action: The requested action; decides which options are effective.
-        timeout: Seconds to wait, as supplied.
-        count: Message/sample count, as supplied.
-        rate: Publish rate in Hz, as supplied.
-
-    Returns:
-        An error message naming the action and the option, or ``None`` when
-        every option this action reads is usable.
-    """
-    consumed = _ACTION_NUMERIC_OPTIONS.get(action, ())
-    for param, value, check in (
-        ("timeout", timeout, positive_finite_number_error),
-        ("count", count, positive_count_error),
-        ("rate", rate, positive_finite_number_error),
-    ):
-        if param in consumed:
-            error = check(value, param, action)
-            if error:
-                return error
-    return None
-
-
 def _sample_to_dict(sample: Any) -> Any:
     """Recursively convert an IDL dataclass sample to a plain dict."""
     if dataclasses.is_dataclass(sample) and not isinstance(sample, type):
@@ -269,7 +235,7 @@ def use_rtps(
     # backend probe, so the same caller mistake is reported identically whether
     # or not cyclonedds is installed - and so a refusal happens before a writer
     # joins the graph.
-    numeric_error = _numeric_option_error(action, timeout, count, rate)
+    numeric_error = numeric_option_error(action, _ACTION_NUMERIC_OPTIONS, timeout=timeout, count=count, rate=rate)
     if numeric_error:
         return _err(numeric_error)
 

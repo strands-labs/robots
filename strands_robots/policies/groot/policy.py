@@ -669,9 +669,10 @@ class Gr00tPolicy(Policy):
         endpoint that maps to ``policy.reset(options=...)`` (see
         ``server_client.py:94``). The default ``Gr00tPolicy.reset`` upstream
         is a no-op; deployments that need per-episode RNG control should
-        either patch the server (see
-        ``examples/gr00t_server_deterministic_wrapper.py`` in robots-sim)
-        or use the ``Robot()`` factory which auto-mounts the wrapper.
+        start the server through the packaged determinism wrapper
+        (:mod:`strands_robots.policies.groot.server_wrapper`), which the
+        ``gr00t_inference`` container-lifecycle tool mounts for you when
+        called with ``deterministic=True``.
 
         In LOCAL mode, applies the same client-side reseed
         ``set_eval_seed`` would (Python / NumPy / torch / cuDNN), which

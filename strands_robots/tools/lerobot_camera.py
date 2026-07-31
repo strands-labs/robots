@@ -80,14 +80,13 @@ def _frame_to_image_content(frame: np.ndarray, format: str = "jpg") -> dict[str,
 # Which numeric options each action actually consumes. Every action that opens a
 # camera is configured with the caller's geometry, so width/height/fps are
 # effective for all of them; each duration knob drives exactly one loop, and
-# "discover"/"list" open no camera with caller-supplied geometry at all.
-# "record" is deliberately absent from the timeout_ms rows: its asynchronous read
-# passes a fixed timeout rather than the caller's, so refusing a value that
-# action never consumes would be a false rejection.
+# "discover"/"list" open no camera with caller-supplied geometry at all. Every
+# handler that selects the asynchronous read hands the caller's timeout_ms to it,
+# so each of those actions carries that row.
 _ACTION_NUMERIC_OPTIONS: dict[str, tuple[str, ...]] = {
     "capture": ("width", "height", "fps", "timeout_ms"),
     "capture_batch": ("width", "height", "fps", "timeout_ms"),
-    "record": ("width", "height", "fps", "capture_duration"),
+    "record": ("width", "height", "fps", "capture_duration", "timeout_ms"),
     "preview": ("width", "height", "fps", "preview_duration", "timeout_ms"),
     "test": ("width", "height", "fps", "timeout_ms"),
     "configure": ("width", "height", "fps"),
@@ -296,6 +295,7 @@ def lerobot_camera(
                 rotation,
                 capture_duration,
                 async_mode,
+                timeout_ms,
                 warmup,
             )
         elif action == "preview":
@@ -712,6 +712,7 @@ def _record_video_sequence(
     rotation: str,
     capture_duration: float,
     async_mode: bool,
+    timeout_ms: float,
     warmup: bool,
 ) -> dict[str, Any]:
     """Record a video sequence from camera."""
@@ -742,7 +743,7 @@ def _record_video_sequence(
         try:
             while frames_captured < target_frames:
                 if async_mode:
-                    frame = camera.async_read(timeout_ms=1000)
+                    frame = camera.async_read(timeout_ms=timeout_ms)
                 else:
                     frame = camera.read()
 

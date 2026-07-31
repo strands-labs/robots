@@ -491,10 +491,12 @@ def chunk_count_error(value: object, param: str, provider: str) -> str | None:
     """Error text when a per-inference chunk count is not one a policy can execute.
 
     Shared domain for the counts that describe one inference chunk - how many
-    actions a provider emits (``actions_per_chunk``) and how many of them a
-    consumer executes before re-querying (``actions_per_step``). Both are
-    consumed as slice bounds over the action chunk, so only a true positive
-    ``int`` can be honored; :func:`~strands_robots.utils.positive_count_error`
+    actions a provider emits (``actions_per_chunk``), how many of them a
+    consumer executes before re-querying (``actions_per_step``), and the
+    Real-Time Chunking override of that re-query interval
+    (``rtc_execution_horizon``, which replaces ``actions_per_step`` whenever RTC
+    is active). All are consumed as slice bounds over the action chunk, so only
+    a true positive ``int`` can be honored; :func:`~strands_robots.utils.positive_count_error`
     supplies that domain (and rejects ``bool``, which as an ``int`` subclass
     would otherwise pass as a silent count of one).
 

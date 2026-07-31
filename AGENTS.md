@@ -133,6 +133,28 @@ hatch run format            # ruff check --fix, ruff format
      mutation returned that error and the squash was already on `main`. Confirm
      with `state`/`merged`, or `git log origin/main`, before concluding a merge
      failed and redoing the work.
+   - *And on `main` afterwards.* A rollup of `FAILURE` on a merge commit is not
+     evidence that the squash broke anything: a **cancelled** check aggregates
+     into `FAILURE`. `pr-and-push.yml` keys its concurrency group on
+     `github.event.pull_request.number || github.ref`, and on a push there is no
+     PR number, so every push to `refs/heads/main` shares one group under
+     `cancel-in-progress: true` - each merge kills the run of the merge before
+     it. Read each context's own `conclusion` before you believe the rollup.
+     Four PRs merged in the 22 minutes from 03:03:44 to 03:25:25 left three
+     consecutive commits - #1788, #1794, #1796 - each reporting rollup
+     `FAILURE` whose only non-`SUCCESS` context was
+     `call-test-lint / Test and Lint` = `CANCELLED`, killed at 1m07s, 15m00s
+     and 5m38s into their runs. Nothing had failed. See #1800.
+
+     The same timings carry a cost that is not a misread: that suite had not
+     finished in 15m00s, so merging faster than it runs leaves **only the tip
+     verified** and no intermediate commit attributable. A batch is still
+     defensible - each of those four was individually green, passed
+     `Detect an untested overlap with the base branch`, and touched a file set
+     disjoint from the others - but price it knowingly: a red tip then costs a
+     manual bisect, and an intermediate commit's green is not available to lean
+     on. Do not read the intermediate `FAILURE`s as the culprit; they are the
+     batching, not a defect.
    And before merging, `reviewDecision: APPROVED` alone is not the gate: poll
    `statusCheckRollup.state == SUCCESS` and `mergeStateStatus == CLEAN`
    together, since `reviewDecision` flips before the checks finish.
@@ -153,12 +175,79 @@ hatch run format            # ruff check --fix, ruff format
    about meaning. This is cheap: the check that would have caught the above was
    one `pytest` invocation on two files.
 
+   Read that run as a **delta, not an absolute**. The environment you verify in
+   is almost never the one CI uses, and a partial one fails tests for reasons
+   that have nothing to do with the merge. Composing #1786 and #1804 - both
+   approved, both `CLEAN`, both editing `simulation/predicates.py`, neither ever
+   compiled with the other - the affected suite reported **376 failed, 34
+   errors** on the composition, which on its own reads as a broken merge and a
+   reason to stop. The same command on the unmerged base reported the same
+   **376 failed, 34 errors**, and 4185 passed against the composition's 4229:
+   every failure pre-existed (a hosted runner has no GPU and only software
+   OSMesa, so the rendering tests fail there whatever the diff), and the whole
+   effect of the merge was **+44 passes** - exactly the 24 + 20 tests the two
+   branches add. The reading matters in both directions: an absolute count can
+   invent a regression and cost a good merge, and it can equally hide a real one
+   inside the noise. Run the same command on the base *before* you read the
+   number, and compare the two.
+
+   Then confirm the tree you verified is the tree that landed -
+   `git diff --name-only <local-composition> origin/main -- strands_robots/ tests/`
+   should be empty. Squash rewrites the commits, so nothing but that equivalence
+   ties your local run to `main`; and on a batch, where only the tip's
+   `call-test-lint` survives the concurrency group above, it is the sole evidence
+   the intermediate commits were ever compiled together.
+
    Fixing forward beats reverting here - the two production changes were both
    correct, and only an assertion and its justification were stale. Prefer a
    narrow follow-up that re-pins the invalidated premise over reverting a
    reviewed change. If a premise test is invalidated by a fix landing, replace it
    rather than deleting it: the conclusion it supported usually still holds for a
    different reason, and that reason is what the next reader needs.
+
+   The converse happens too: every signal above satisfied, and the PR still
+   refuses to merge with no field naming the reason. #1722 carried one current
+   `APPROVED` review that post-dated its head commit, all four review threads
+   resolved, `call-test-lint` `SUCCESS` - and `reviewDecision`
+   `REVIEW_REQUIRED`. The `default` branch ruleset sets
+   `require_last_push_approval: true`, so the most recent push must be approved
+   by **someone other than whoever pushed it**, and the agent had pushed that
+   head commit with `PAT_TOKEN`. GitHub attributes a push to the token's
+   *owner*, which was the same account that then approved. No number of further
+   approvals from that account can clear it.
+
+   What makes this worth writing down is that the commit metadata asserts the
+   opposite. `d938686`'s author *and* committer are `strands-robots`, an
+   identity distinct from the approver, so reading the commit list says the rule
+   is satisfied. The pusher is in none of the fields you would check:
+   `reviewDecision` is `REVIEW_REQUIRED` and `mergeStateStatus` is `BLOCKED`,
+   which is also exactly what a PR with no approval at all looks like. The one
+   place it is legible:
+
+   ```
+   GET /repos/{owner}/{repo}/actions/runs?head_sha=<head>  ->  triggering_actor
+   ```
+
+   #1035 is the control - same author, same fork, same `strands_robots/mesh/`
+   files, one approval from the same account post-dating its head commit,
+   threads clear, checks green, and no CODEOWNERS file in the tree to make
+   `require_code_owner_review` bite. It differs in exactly one input, and reads
+   `APPROVED`:
+
+   | PR | commit author | `triggering_actor` | approver | `reviewDecision` |
+   |---|---|---|---|---|
+   | #1035 | the contributor | the contributor | the maintainer | `APPROVED` |
+   | #1722 | `strands-robots` | the maintainer | the maintainer | `REVIEW_REQUIRED` |
+
+   So **pushing a fix to a contributor's branch consumes the approval of
+   whoever owns the token you push with**, turning a PR one maintainer could
+   merge into one that needs a second. It compounds with
+   `dismiss_stale_reviews_on_push`, which drops the existing approval in the
+   same motion that disqualifies that account from re-supplying it. Prefer
+   leaving the change for the contributor to push, so they stay the last
+   pusher; when the agent must push, that PR now requires a second approver,
+   and saying so is the difference between a one-line request and a branch that
+   never merges.
 
    The general rule behind all three: **a decision recorded only in a PR or
    issue comment is not durable** - the next contributor will not read the same

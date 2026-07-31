@@ -31,6 +31,33 @@ _DEFAULT_REPO_TAG = "n1.7-release"
 _DEFAULT_IMAGE_NAME = "gr00t:latest"
 _DEFAULT_CONTAINER_COMMAND = "tail -f /dev/null"
 
+# Fixed in-container path the determinism wrapper is mounted at when
+# ``deterministic=True``. Constant on purpose: the agent never chooses the
+# container path, and ``_build_inference_command`` execs it verbatim.
+_DETERMINISTIC_WRAPPER_CONTAINER_PATH = "/srv_wrap.py"
+
+# Operator env vars forwarded into the container when ``deterministic=True``
+# so the wrapper honors them exactly as it does under the manual
+# ``docker run -e ...`` recipe. Values come from the operator's host
+# environment, never from the agent.
+_DETERMINISTIC_ENV_PASSTHROUGH: tuple[str, ...] = (
+    "STRANDS_GR00T_SERVER_SEED",
+    "STRANDS_GR00T_STRICT_DETERMINISTIC",
+)
+
+
+def _server_wrapper_host_path() -> Path:
+    """Host path of the packaged GR00T determinism wrapper.
+
+    Resolved from the installed ``strands_robots`` package (the wrapper ships
+    in the wheel as :mod:`strands_robots.policies.groot.server_wrapper`), so
+    the mount source is library-controlled - never caller-supplied. This is
+    what keeps the ``deterministic=True`` flag inside the tool's security
+    posture: it toggles between two operator-blessed container configurations
+    instead of opening a volume parameter to the agent.
+    """
+    return Path(__file__).resolve().parent.parent / "policies" / "groot" / "server_wrapper.py"
+
 
 # --- container hardening: image allowlist + dangerous-mount guard -------
 #
@@ -344,6 +371,7 @@ def gr00t_inference(
     api_token: str | None = None,
     protocol: str = "n1.5",
     use_sim_policy_wrapper: bool = False,
+    deterministic: bool = False,
     hf_repo: str | None = None,
     hf_subfolder: str | None = None,
     hf_local_dir: str | None = None,
@@ -504,6 +532,25 @@ def gr00t_inference(
             evaluation (LIBERO, RoboCasa, …) - the wrapper translates
             simulator-side observations into the format the policy expects.
             Ignored for N1.5 / N1.6 (no equivalent flag).
+        deterministic: Run the server through the packaged determinism
+            wrapper (:mod:`strands_robots.policies.groot.server_wrapper`)
+            instead of the bare ``run_gr00t_server`` entrypoint. The wrapper
+            sets ``cudnn.deterministic=True`` / ``cudnn.benchmark=False`` /
+            ``CUBLAS_WORKSPACE_CONFIG=":4096:8"`` and patches the server-side
+            ``Gr00tPolicy.reset`` (a no-op upstream) to reseed torch / numpy /
+            random per episode from the client-forwarded seed - required for
+            bit-exact run-to-run reproducibility (e.g. CI pinning a
+            success_rate). ``start_container`` bind-mounts the wrapper
+            read-only at a fixed container path; the mount source is
+            library-resolved, never caller-supplied, so the tool's volume
+            lockdown holds. Requires ``protocol="n1.7"`` (the wrapper hands
+            off to the N1.7 entrypoint) - other protocols fail closed rather
+            than silently dropping the flag. Honors the operator env vars
+            ``STRANDS_GR00T_SERVER_SEED`` (default seed, 42) and
+            ``STRANDS_GR00T_STRICT_DETERMINISTIC=1`` (strict torch
+            deterministic-algorithms mode) by forwarding them into the
+            container. Default ``False`` - byte-identical to the previous
+            behavior.
 
     Container lifecycle args (used by ``build_image``, ``download_checkpoint``,
     ``start_container``, ``lifecycle``):
@@ -600,6 +647,20 @@ def gr00t_inference(
             "message": f"Unknown protocol {protocol!r}. Valid: {list(valid_protocols)}",
         }
 
+    # deterministic=True swaps the N1.7 entrypoint for the packaged
+    # determinism wrapper; it has no meaning for the legacy N1.5/N1.6
+    # entrypoint. Fail closed rather than silently dropping the flag
+    # (silent drops are bugs masquerading as features).
+    if deterministic and protocol != "n1.7":
+        return {
+            "status": "error",
+            "message": (
+                f"deterministic=True requires protocol='n1.7' (got {protocol!r}): the "
+                "determinism wrapper hands off to the N1.7 `run_gr00t_server` entrypoint "
+                "and does not exist for the legacy inference_service.py."
+            ),
+        }
+
     # Boundary guard: hf_local_dir is an untrusted agent string that reaches
     # two host-fs sinks (checkpoint download writes to it directly; container
     # start bind-mounts it). Validate once here -- before any action branch
@@ -671,6 +732,7 @@ def gr00t_inference(
             hf_token=hf_token,
             container_command=_DEFAULT_CONTAINER_COMMAND,
             hf_local_dir=hf_local_dir,
+            deterministic=deterministic,
             force=force,
         )
     elif action == "lifecycle":
@@ -721,6 +783,7 @@ def gr00t_inference(
             api_token=api_token,
             protocol=protocol,
             use_sim_policy_wrapper=use_sim_policy_wrapper,
+            deterministic=deterministic,
         )
     elif action == "start":
         if checkpoint_path is None:
@@ -747,6 +810,7 @@ def gr00t_inference(
             api_token=api_token,
             protocol=protocol,
             use_sim_policy_wrapper=use_sim_policy_wrapper,
+            deterministic=deterministic,
         )
     elif action == "restart":
         if checkpoint_path is None:
@@ -773,6 +837,7 @@ def gr00t_inference(
             api_token=api_token,
             protocol=protocol,
             use_sim_policy_wrapper=use_sim_policy_wrapper,
+            deterministic=deterministic,
         )
     else:
         return {"status": "error", "message": f"Unknown action: {action}"}
@@ -945,6 +1010,7 @@ def _build_inference_command(
     api_token: str | None,
     protocol: str,
     use_sim_policy_wrapper: bool,
+    deterministic: bool = False,
 ) -> list[str]:
     """Build the ``docker exec`` argv for the inference service.
 
@@ -962,6 +1028,12 @@ def _build_inference_command(
     ``--embodiment-tag``, ``--api-token``, and the TensorRT flag set.
     The split keeps the ``protocol`` branch shallow - one ``if`` per
     diverging flag rather than two parallel command-builder functions.
+
+    ``deterministic=True`` (N1.7 only, validated at the dispatch boundary)
+    swaps the module entrypoint for the packaged determinism wrapper that
+    ``_start_container`` bind-mounted at a fixed path; the wrapper consumes
+    the exact same flag set and hands off to ``run_gr00t_server`` after
+    configuring torch determinism + the per-episode reseed patch.
     """
     if protocol == "n1.7":
         # The N1.7 entrypoint (``python -m gr00t.eval.run_gr00t_server``)
@@ -970,14 +1042,28 @@ def _build_inference_command(
         # and the inference process exits before binding the port. The
         # legacy N1.5/N1.6 ``inference_service.py`` did take ``--server``;
         # keeping the flag there preserves back-compat for older images.
+        if deterministic:
+            # The wrapper parses the same ServerConfig via tyro, so every
+            # flag below carries through unchanged ("$@" expands them all).
+            # `docker exec -d` detaches the process from the docker logging
+            # driver, so the wrapper's banner and per-episode reseed lines
+            # would otherwise be lost; route its output to PID 1's stdout
+            # (the container's log stream) so `docker logs <container>`
+            # shows them - that is the observable contract of this flag.
+            entrypoint = [
+                "sh",
+                "-c",
+                f'exec python {_DETERMINISTIC_WRAPPER_CONTAINER_PATH} "$@" >> /proc/1/fd/1 2>&1',
+                "srv_wrap",
+            ]
+        else:
+            entrypoint = ["python", "-m", "gr00t.eval.run_gr00t_server"]
         cmd = [
             "docker",
             "exec",
             "-d",
             container_name,
-            "python",
-            "-m",
-            "gr00t.eval.run_gr00t_server",
+            *entrypoint,
             "--model-path",
             checkpoint_path,
             "--port",
@@ -1056,6 +1142,7 @@ def _start_service(
     api_token: str | None,
     protocol: str = "n1.5",
     use_sim_policy_wrapper: bool = False,
+    deterministic: bool = False,
 ) -> dict[str, Any]:
     """Start GR00T inference service using Isaac-GR00T's native inference service."""
     try:
@@ -1088,6 +1175,7 @@ def _start_service(
             api_token=api_token,
             protocol=protocol,
             use_sim_policy_wrapper=use_sim_policy_wrapper,
+            deterministic=deterministic,
         )
 
         # Start service
@@ -1117,6 +1205,7 @@ def _start_service(
                     response["denoising_steps"] = denoising_steps
                 else:
                     response["use_sim_policy_wrapper"] = use_sim_policy_wrapper
+                    response["deterministic"] = deterministic
                 if use_tensorrt:
                     response["tensorrt"] = {
                         "enabled": True,
@@ -1396,6 +1485,31 @@ def _download_checkpoint(
     }
 
 
+def _container_has_wrapper_mount(name: str) -> bool:
+    """True iff container ``name`` has a mount at the wrapper's container path.
+
+    Used by the ``deterministic=True`` idempotent-skip path: a container
+    started WITHOUT the wrapper mount cannot serve a deterministic ``start``
+    (the exec'd ``python /srv_wrap.py`` would die inside the container long
+    after ``start_container`` returned success), so the skip must fail fast
+    instead. Any docker invocation failure returns False, which surfaces as
+    the actionable "recreate with force=True" error rather than a silent
+    pass.
+    """
+    try:
+        result = subprocess.run(
+            ["docker", "inspect", "--format", "{{range .Mounts}}{{.Destination}}\n{{end}}", name],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            return False
+        return _DETERMINISTIC_WRAPPER_CONTAINER_PATH in result.stdout.split()
+    except (FileNotFoundError, OSError):
+        return False
+
+
 def _start_container(
     *,
     image_name: str,
@@ -1406,6 +1520,7 @@ def _start_container(
     container_command: str,
     hf_local_dir: str | None,
     force: bool,
+    deterministic: bool = False,
 ) -> dict[str, Any]:
     """``docker run -d`` the GR00T container so subsequent ``start`` actions can
     ``docker exec`` into it.
@@ -1422,6 +1537,16 @@ def _start_container(
     protected host path (root fs, system dirs, credential dirs, docker
     socket) before building the ``docker run`` argv. This closes the
     host-mount / container-escape surface even for the internal path.
+
+    ``deterministic=True`` adds exactly one extra mount to the curated set:
+    the packaged determinism wrapper (library-resolved path, never
+    caller-supplied), bind-mounted read-only at
+    ``_DETERMINISTIC_WRAPPER_CONTAINER_PATH``. It also forwards the
+    operator env vars in ``_DETERMINISTIC_ENV_PASSTHROUGH`` into the
+    container so the wrapper honors them. Like the auto-derived HF-cache
+    mount, the wrapper path is exempt from the agent-path blocklist (it is
+    operator/library-controlled and may legitimately live under ``/home``
+    in a repo checkout or venv).
     """
     if not _is_allowed_image(image_name):
         return {
@@ -1434,9 +1559,35 @@ def _start_container(
     _vol_reason = _check_volume_safety(volumes)
     if _vol_reason is not None:
         return {"status": "error", "message": _vol_reason}
+    # Fail fast, before any docker mutation (the force path removes an
+    # existing container below): the deterministic wrapper must exist on
+    # disk or the exec'd `python /srv_wrap.py` would die inside the
+    # container long after this call returned success.
+    wrapper_path: Path | None = None
+    if deterministic:
+        wrapper_path = _server_wrapper_host_path()
+        if not wrapper_path.is_file():
+            return {
+                "status": "error",
+                "message": (
+                    f"deterministic=True but the packaged determinism wrapper is missing at "
+                    f"{wrapper_path} - the strands_robots install looks broken (the wrapper "
+                    "ships in the wheel as the strands_robots.policies.groot.server_wrapper module)."
+                ),
+            }
     name = container_name or "gr00t"
     state = _container_state(name)
     if state == "running" and not force:
+        if deterministic and not _container_has_wrapper_mount(name):
+            return {
+                "status": "error",
+                "message": (
+                    f"Container {name!r} is running but was started WITHOUT the determinism "
+                    f"wrapper mount ({_DETERMINISTIC_WRAPPER_CONTAINER_PATH}); a deterministic "
+                    "server cannot start in it. Pass force=True to recreate the container "
+                    "with the wrapper mounted."
+                ),
+            }
         return {
             "status": "success",
             "container_name": name,
@@ -1496,6 +1647,17 @@ def _start_container(
     for host_path, container_path in effective_volumes.items():
         cmd.extend(["-v", f"{host_path}:{container_path}"])
 
+    # deterministic=True: mount the packaged determinism wrapper read-only at
+    # the fixed container path and forward the operator determinism env vars.
+    # This is the ONLY mount the flag adds, and its source is
+    # library-resolved (never caller-supplied) - see _server_wrapper_host_path.
+    if deterministic and wrapper_path is not None:
+        cmd.extend(["-v", f"{wrapper_path}:{_DETERMINISTIC_WRAPPER_CONTAINER_PATH}:ro"])
+        for env_var in _DETERMINISTIC_ENV_PASSTHROUGH:
+            value = os.environ.get(env_var)
+            if value is not None:
+                cmd.extend(["-e", f"{env_var}={value}"])
+
     token = hf_token or os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
     if token:
         cmd.extend(["-e", f"HF_TOKEN={token}"])
@@ -1511,7 +1673,7 @@ def _start_container(
     except subprocess.CalledProcessError as e:
         return {"status": "error", "message": f"docker run failed: {e.stderr or e}"}
 
-    return {
+    response: dict[str, Any] = {
         "status": "success",
         "container_name": name,
         "image_name": image_name,
@@ -1520,6 +1682,14 @@ def _start_container(
         "skipped": False,
         "message": f"Started container {name!r} from {image_name!r}",
     }
+    if deterministic and wrapper_path is not None:
+        response["deterministic"] = True
+        response["deterministic_wrapper"] = {
+            "host_path": str(wrapper_path),
+            "container_path": _DETERMINISTIC_WRAPPER_CONTAINER_PATH,
+            "read_only": True,
+        }
+    return response
 
 
 def _remove_container(*, name: str, remove_volumes: bool) -> dict[str, Any]:
@@ -1595,6 +1765,7 @@ def _lifecycle(
     api_token: str | None,
     protocol: str,
     use_sim_policy_wrapper: bool,
+    deterministic: bool = False,
 ) -> dict[str, Any]:
     """Orchestrate the four-step setup or tear down a previously-started container.
 
@@ -1667,6 +1838,7 @@ def _lifecycle(
         hf_token=hf_token,
         container_command=container_command,
         hf_local_dir=resolved_local_dir,
+        deterministic=deterministic,
         force=force,
     )
     steps.append({"step": "start_container", "result": container_result})
@@ -1715,6 +1887,7 @@ def _lifecycle(
         api_token=api_token,
         protocol=protocol,
         use_sim_policy_wrapper=use_sim_policy_wrapper,
+        deterministic=deterministic,
     )
     steps.append({"step": "start", "result": start_result})
 

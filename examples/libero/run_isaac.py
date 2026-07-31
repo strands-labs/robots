@@ -286,6 +286,16 @@ def _build_parser() -> argparse.ArgumentParser:
         "the Isaac URDF importer.",
     )
     p.add_argument(
+        "--eef-body-name",
+        default=_ISAAC_FRANKA_EEF_BODY_NAME,
+        help="Robot link whose pose feeds the LIBERO state.x/y/z/roll/pitch/yaw "
+        "keys via IsaacSimulation.get_body_state (the MuJoCo defaults "
+        "gripper0_grip_site / robot0_right_hand don't exist on the Isaac "
+        "Franka USD). Default 'panda_hand' resolves on the bundled Franka; "
+        "override when --robot-usd / --robot-urdf loads an asset with "
+        "different link names.",
+    )
+    p.add_argument(
         "--auto-server",
         dest="auto_server",
         action="store_true",
@@ -428,7 +438,7 @@ def _orchestrate_groot_server(args: argparse.Namespace, suite: str) -> dict | No
     return result
 
 
-def _resolve_task(suite: str, requested_task: str) -> str:
+def _resolve_task(suite: str, requested_task: str, adapter_kwargs: dict | None = None) -> str:
     """Register the LIBERO suite and resolve ``requested_task``.
 
     Identical fallback-to-first-registered semantics as the MuJoCo
@@ -437,10 +447,13 @@ def _resolve_task(suite: str, requested_task: str) -> str:
     task name; if the user passes the default and it doesn't resolve,
     fall back to the first registered task with a clear note.
     Explicitly-supplied unknown tasks still error loudly.
+
+    ``adapter_kwargs`` configures every adapter's backend-specific state
+    sources (#1802) -- see :func:`_isaac_adapter_kwargs`.
     """
     from strands_robots.benchmarks.libero import load_libero_suite
 
-    registered = load_libero_suite(suite)
+    registered = load_libero_suite(suite, adapter_kwargs=adapter_kwargs)
     if not registered:
         raise RuntimeError(
             f"load_libero_suite({suite!r}) registered 0 tasks. "
@@ -491,6 +504,60 @@ _FRANKA_USD_SUBPATHS = (
     "Isaac/Robots/FrankaRobotics/FrankaPanda/franka.usd",  # Isaac Sim 6.0+
     "Isaac/Robots/Franka/franka.usd",  # Isaac Sim 4.x and earlier
 )
+
+# --- EEF state-source calibration for the bundled Isaac Franka USD (#1802) --
+#
+# The libero_panda GR00T data-config requires state.x/y/z/roll/pitch/yaw/
+# gripper, which LiberoAdapter injects from RoboSuite's split source:
+# position from the gripper0_grip_site (gripper tip), orientation from the
+# robot0_right_hand body (wrist). Neither name exists on the Isaac Franka
+# USD, so the adapter reads the wrist body via IsaacSimulation.get_body_state
+# and applies a site-equivalent correction, configured here.
+#
+# Measured on this repo's Isaac 6.0 + MuJoCo backends (2026-07-31), both
+# robots at the episode-0 canonical init config of the first libero_spatial
+# task, poses compared base-relative (panda_link0 vs robot0_link0):
+#
+#   * Isaac's `panda_hand` frame COINCIDES with RoboSuite's
+#     `robot0_right_hand` frame: relative rotation 0.03 deg, position
+#     delta < 0.6 mm (both within position-controller settle error).
+#     No quaternion correction is therefore applied (`eef_quat_offset`
+#     omitted = identity); the residual is quantified above rather than
+#     hand-waved (#168's success rates are sensitive to exactly this).
+#   * The grip-site offset in the hand frame measured [0, 0, 0.097] m on
+#     MuJoCo (exact to 1e-15 -- it is the authored site transform) and
+#     [3.8e-5, -6.5e-6, 0.0964] via the cross-sim derivation; we use the
+#     authored value, valid on Isaac because the frames coincide.
+#
+# Gripper: the Isaac Franka USD drives BOTH fingers positive (URDF mimic
+# convention, panda_finger_joint2 in [0, 0.04]) while RoboSuite trains
+# state.gripper with opposite signs ([+q, -q]); the [1, -1] signs restore
+# the trained convention.
+_ISAAC_FRANKA_EEF_BODY_NAME = "panda_hand"
+_ISAAC_FRANKA_EEF_POS_OFFSET = [0.0, 0.0, 0.097]
+_ISAAC_FRANKA_GRIPPER_JOINT = "panda_finger_joint1"
+_ISAAC_FRANKA_STATE_GRIPPER_JOINTS = ["panda_finger_joint1", "panda_finger_joint2"]
+_ISAAC_FRANKA_STATE_GRIPPER_SIGNS = [1.0, -1.0]
+
+
+def _isaac_adapter_kwargs(args: argparse.Namespace) -> dict:
+    """LiberoAdapter kwargs that make EEF state injection work on Isaac (#1802).
+
+    Forwarded through ``load_libero_suite(adapter_kwargs=...)`` to every
+    registered task. ``eef_state_site_name=""`` is the adapter's documented
+    "no site available" sentinel -- Isaac has no MuJoCo sites, so the
+    body-fallback (``get_body_state`` + the offsets above) is the only
+    source and we say so explicitly rather than letting the site lookup
+    fail per step.
+    """
+    return {
+        "eef_body_name": args.eef_body_name,
+        "eef_state_site_name": "",
+        "eef_pos_offset": list(_ISAAC_FRANKA_EEF_POS_OFFSET),
+        "gripper_joint_name": _ISAAC_FRANKA_GRIPPER_JOINT,
+        "state_gripper_joint_names": list(_ISAAC_FRANKA_STATE_GRIPPER_JOINTS),
+        "state_gripper_signs": list(_ISAAC_FRANKA_STATE_GRIPPER_SIGNS),
+    }
 
 
 def _resolve_default_franka_usd(assets_root: str) -> str:
@@ -678,6 +745,28 @@ def main() -> None:
         if result.get("status") != "success":
             raise RuntimeError(f"add_camera failed: {result}")
 
+        # The libero_panda data-config ALSO requires a ``wrist_image`` video
+        # key. Pre-add it here -- at the same static fallback vantage
+        # ``LiberoAdapter.LIBERO_CAMERAS`` declares -- rather than letting the
+        # adapter install it inside ``on_episode_start`` (#1802): an RTX
+        # camera added AFTER the LIBERO scene prims are on the stage never
+        # accumulates a frame on Isaac 6.0 (its Replicator render product
+        # returns a 0-D buffer through 100+ step/update ticks; verified on
+        # this host), whereas the same camera added before scene-load warms
+        # in one step. The adapter's install step skips cameras that already
+        # exist, so pre-adding is the supported path.
+        wrist_camera = "wrist_image"
+        result = sim.add_camera(
+            name=wrist_camera,
+            position=[0.0, 0.0, 1.4],
+            target=[0.0, 0.0, 0.85],
+            fov=60.0,
+            width=256,
+            height=256,
+        )
+        if result.get("status") != "success":
+            raise RuntimeError(f"add_camera failed: {result}")
+
         # Warm up the RTX render product before recording. A camera added
         # after the last world step has an empty render product: its first
         # `get_rgba()` returns a malformed `(0,)` buffer and `render()`
@@ -695,21 +784,22 @@ def main() -> None:
         # render product accumulates samples each iteration. Bounded so a host
         # that never populates fails loudly instead of recording blank frames.
         _RTX_WARMUP_MAX_ITERS = 10
-        warmed_up = False
-        for _ in range(_RTX_WARMUP_MAX_ITERS):
-            sim.step(1)
-            probe = sim.render(camera_name=recording_camera)
-            if probe.get("status") == "success":
-                warmed_up = True
-                break
-        if not warmed_up:
-            raise RuntimeError(
-                f"RTX render product for camera {recording_camera!r} never "
-                f"accumulated a frame after {_RTX_WARMUP_MAX_ITERS} warm-up "
-                "step+render iterations; recording would produce a 0-frame "
-                f"(dropped) mp4. Last render probe: {probe}"
-            )
-        print(f"[setup] RTX camera {recording_camera!r} warmed up; render product populated")
+        for cam_name in (recording_camera, wrist_camera):
+            warmed_up = False
+            for _ in range(_RTX_WARMUP_MAX_ITERS):
+                sim.step(1)
+                probe = sim.render(camera_name=cam_name)
+                if probe.get("status") == "success":
+                    warmed_up = True
+                    break
+            if not warmed_up:
+                raise RuntimeError(
+                    f"RTX render product for camera {cam_name!r} never "
+                    f"accumulated a frame after {_RTX_WARMUP_MAX_ITERS} warm-up "
+                    "step+render iterations; recording would produce a 0-frame "
+                    f"(dropped) mp4. Last render probe: {probe}"
+                )
+            print(f"[setup] RTX camera {cam_name!r} warmed up; render product populated")
 
         # Keep the CLI-requested task distinct from the resolved one. The
         # default placeholder transparently falls back to the first registered
@@ -719,7 +809,7 @@ def main() -> None:
         # change behaviour (the fallback wouldn't fire). ``resolved_task`` is
         # what actually executes and what the filename / benchmark call use.
         requested_task = args.task
-        resolved_task = _resolve_task(suite, args.task)
+        resolved_task = _resolve_task(suite, args.task, adapter_kwargs=_isaac_adapter_kwargs(args))
         args.task = resolved_task
 
         # Filename convention matches run_mujoco.py so the matrix
