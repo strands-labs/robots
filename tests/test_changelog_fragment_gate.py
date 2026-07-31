@@ -582,3 +582,67 @@ def test_no_emoji_in_the_script_or_its_output() -> None:
         text = path.read_text(encoding="utf-8")
         offenders = [(index, char) for index, char in enumerate(text) if ord(char) > 0x7F]
         assert not offenders, f"{path.name} holds non-ASCII characters: {offenders[:5]}"
+
+
+# --- the tree the gate is read from ---------------------------------------------
+
+
+def test_the_verdict_does_not_depend_on_the_checked_out_tree(repo: Path) -> None:
+    """Same commits, same verdict, whichever tree happens to be checked out.
+
+    This is the property that lets CI run the script from the *base* checkout while
+    judging the branch, and CI must: a branch that forked before this check landed
+    carries no copy of the script, so running it out of the head tree exits 2 before
+    the check begins -- a red X indistinguishable from exit 1, which the script
+    reserves for a real unaccounted entry. Measured on #1786, whose head forked one
+    commit before the gate it failed; see issue #1791.
+
+    It holds because nothing here reads the working tree: ``file_at`` is
+    ``git show <rev>:<path>`` and ``deleted_fragments`` is ``git diff <a>..<b>``, so
+    only reachability matters and the checkout is irrelevant to the answer.
+    """
+    _branch(repo)
+    _append_to_unreleased(repo, _APPENDED)
+    head = _commit(repo, "append straight to the log")
+
+    # The branch checked out, as the workflow used to do.
+    assert _run(repo, head) == 1
+
+    # The base checked out, as the workflow now does. The appended entry is not in
+    # the tree on disk at all, and it is still found and still refused.
+    _git(repo, "checkout", "-q", "main")
+    appended_heading = _APPENDED.splitlines()[0]
+    assert appended_heading not in (repo / "CHANGELOG.md").read_text(encoding="utf-8")
+    assert _run(repo, head) == 1
+
+
+def test_a_recorded_change_still_passes_from_the_base_checkout(repo: Path) -> None:
+    """The other direction: reading from the base does not fail every branch.
+
+    Without this, the test above is satisfied by a check that refuses everything.
+    """
+    _branch(repo)
+    _write(repo, "changelog.d/1791-a-recorded-change.md", _APPENDED)
+    head = _commit(repo, "record the change as a fragment")
+
+    _git(repo, "checkout", "-q", "main")
+    assert _run(repo, head) == 0
+
+
+def test_the_workflow_reads_the_script_from_the_base_and_names_the_head() -> None:
+    """The workflow must not require its own script in the tree under review.
+
+    A ``pull_request`` workflow definition is read from the merge commit, so this job
+    runs against heads that contain neither it nor the script -- #1786's head
+    ``2c98cfb6`` carries neither, and the check ran against it regardless. Checking
+    such a head out and invoking ``scripts/check_changelog_fragment.py`` from it is
+    what produced the exit 2 in issue #1791.
+    """
+    workflow = (_REPO_ROOT / ".github" / "workflows" / "changelog-fragment.yml").read_text(encoding="utf-8")
+
+    assert "ref: ${{ github.base_ref }}" in workflow, "the gate's script must come from the base branch"
+    assert "ref: ${{ github.event.pull_request.head.sha }}" not in workflow, (
+        "checking the head out is what made the script's presence a precondition"
+    )
+    assert "HEAD_SHA: ${{ github.event.pull_request.head.sha }}" in workflow
+    assert '--head "$HEAD_SHA"' in workflow, "the commit under test is named, not checked out"

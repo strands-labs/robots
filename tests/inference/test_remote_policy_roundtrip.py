@@ -156,7 +156,7 @@ def test_set_control_frequency_forwarded_and_validated(served_recording):
     _server, policy, client = served_recording
     client.set_control_frequency(50.0)
     assert policy.control_frequency == 50.0
-    with pytest.raises(ValueError, match="must be positive"):
+    with pytest.raises(ValueError, match="control_frequency must be > 0"):
         client.set_control_frequency(0.0)
 
 

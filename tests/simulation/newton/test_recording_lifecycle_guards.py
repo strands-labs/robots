@@ -53,14 +53,16 @@ class TestStartRecordingGuards:
     def test_missing_lerobot_extra_returns_actionable_error(self, monkeypatch):
         # When the lerobot extra is absent, start_recording must not dead-end in
         # dataset creation - it returns an error that names the install extra.
-        monkeypatch.setattr(dataset_recorder, "has_lerobot_dataset", lambda: False)
+        reason = "lerobot is not installed (ModuleNotFoundError: No module named 'lerobot'). Install lerobot >= 0.6.0 with: pip install 'strands-robots[lerobot]'"
+        monkeypatch.setattr(dataset_recorder, "lerobot_dataset_import_error", lambda: reason)
         engine = _make_engine(_world_with_robot())
 
         result = engine.start_recording(repo_id="local/sim_recording")
 
         assert result["status"] == "error"
         text = result["content"][0]["text"]
-        assert "lerobot" in text
+        # Surfaced verbatim, so the caller sees which dependency is missing.
+        assert reason in text
         assert "strands-robots[lerobot]" in text
 
     def test_no_world_returns_error(self):

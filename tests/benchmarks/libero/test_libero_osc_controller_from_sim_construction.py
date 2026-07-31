@@ -15,7 +15,7 @@ without needing a real robosuite install:
 
 * robosuite genuinely missing -> ``_ControllerDependencyMissing`` (the caller
   degrades gracefully; requiring robosuite as a hard dep would break installs).
-* the known numba / coverage>=7 import clash -> the base
+* the known numba / coverage import clash -> the base
   ``_ControllerInstallError`` (a FIXABLE setup bug the caller surfaces strictly,
   never silently dropping every action).
 * a fully-formed Panda scene -> a constructed controller with the discovered
@@ -138,13 +138,15 @@ def _make_panda_sim():
     return _StubSim(_StubWorld(model, data)), model, data
 
 
-def _install_fake_robosuite(monkeypatch, *, clash: bool = False):
+def _install_fake_robosuite(monkeypatch, *, clash: bool = False, clash_message: str | None = None):
     """Register a fake ``robosuite`` package so ``from_sim`` gets past its
     lazy import.
 
-    With ``clash=True`` the ``robosuite.controllers`` from-import raises the
-    ``coverage.types`` ``Tracer`` ``AttributeError`` that models the #522
-    numba/coverage>=7 incompatibility.
+    With ``clash=True`` the ``robosuite.controllers`` from-import raises
+    ``clash_message`` (defaulting to the ``coverage.types`` ``Tracer``
+    signature) so the caller exercises the #522 numba/coverage clash branch.
+    Pass the coverage-6.x spelling to exercise the other real shape of the
+    same clash.
     """
     rs = types.ModuleType("robosuite")
     controllers = types.ModuleType("robosuite.controllers")
@@ -154,14 +156,17 @@ def _install_fake_robosuite(monkeypatch, *, clash: bool = False):
     if clash:
         # Model the #522 clash: importing the robosuite OSC path pulls in
         # numba, whose coverage-support shim references the ``coverage.types``
-        # ``Tracer`` that coverage>=7 removed. We raise on attribute access
+        # ``Tracer`` that coverage only provides from 7.6.1 onward. We raise
+        # on attribute access
         # with that signature so ``_is_numba_coverage_clash`` recognises it.
         # (CPython's IMPORT_FROM swallows an AttributeError and re-wraps it,
         # discarding the message, so we raise an ImportError - the production
         # code catches ImportError and AttributeError alike and classifies
         # purely by message.)
+        message = clash_message or "module 'coverage.types' has no attribute 'Tracer'"
+
         def _clash_getattr(name):
-            raise ImportError("module 'coverage.types' has no attribute 'Tracer'")
+            raise ImportError(message)
 
         setattr(controllers, "__getattr__", _clash_getattr)  # PEP 562 module __getattr__
     else:
@@ -204,7 +209,7 @@ class TestFromSimDependencyClassification:
             _from_sim(sim)
 
     def test_numba_coverage_clash_surfaces_as_install_error(self, monkeypatch):
-        """The numba/coverage>=7 clash is a FIXABLE setup bug: it must raise the
+        """The numba/coverage clash is a FIXABLE setup bug: it must raise the
         base _ControllerInstallError, NOT the dependency-missing subclass, so
         the caller surfaces it in strict mode (#522)."""
         _install_fake_robosuite(monkeypatch, clash=True)
@@ -215,6 +220,9 @@ class TestFromSimDependencyClassification:
         # Must be the base class, not the degrade-gracefully subclass.
         assert not isinstance(exc.value, _ControllerDependencyMissing)
         assert "coverage" in str(exc.value).lower()
+        # #1803: the message carries the one-line verified remedy so the user
+        # is not left correlating a coverage version with a robosuite import.
+        assert "coverage>=7.6" in str(exc.value)
 
 
 def _force_mujoco_import_error(monkeypatch, exc: BaseException):
@@ -240,7 +248,7 @@ def _force_mujoco_import_error(monkeypatch, exc: BaseException):
 class TestFromSimMujocoImportClassification:
     """The lazy ``import mujoco`` in from_sim runs before robosuite and must
     classify its own failures the same way (#522): a genuinely-absent mujoco
-    degrades gracefully, but the numba/coverage>=7 clash is a fixable setup bug
+    degrades gracefully, but the numba/coverage clash is a fixable setup bug
     the caller surfaces strictly rather than silently dropping every action."""
 
     def test_missing_mujoco_degrades_as_dependency_missing(self, monkeypatch):
@@ -265,6 +273,8 @@ class TestFromSimMujocoImportClassification:
         # Must be the base class, not the degrade-gracefully subclass.
         assert not isinstance(exc.value, _ControllerDependencyMissing)
         assert "clash" in str(exc.value).lower()
+        # #1803: the clash message carries the one-line verified remedy.
+        assert "coverage>=7.6" in str(exc.value)
 
     def test_other_mujoco_import_error_degrades_as_dependency_missing(self, monkeypatch):
         """A mujoco ``ImportError`` that is NOT the clash (e.g. a broken native

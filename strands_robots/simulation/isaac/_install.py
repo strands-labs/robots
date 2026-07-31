@@ -33,6 +33,22 @@ ISAAC_SIM_DOCKER_IMAGE: str = "nvcr.io/nvidia/isaac-sim:6.0"
 #: string so callers don't have to assemble it.
 ISAAC_LAB_BOOTSTRAP: str = "git clone IsaacLab && ./isaaclab.sh -i"
 
+#: Pip install command for the Isaac Sim runtime itself. Viable since the
+#: cp312 wheels shipped for Isaac Sim 6.0.x (#1803); the ``extscache``
+#: extra is REQUIRED - the bare ``isaacsim[all]`` metapackage omits the
+#: ``isaacsim-extscache-*`` packages and ``SimulationApp`` aborts resolving
+#: its extension graph without them.
+ISAAC_SIM_PIP_INSTALL: str = "pip install 'isaacsim[all,extscache]==6.0.*' --extra-index-url https://pypi.nvidia.com"
+
+#: Caveats that apply only to the pip route (#1803): isaacsim-kernel
+#: downgrades ``coverage`` to 7.4.4, which breaks numba (and hence
+#: robosuite/LIBERO) with a red-herring ``coverage.types.Tracer``
+#: AttributeError; and the first non-interactive import hangs on the EULA
+#: prompt without the env var.
+ISAAC_SIM_PIP_CAVEATS: str = (
+    "then reinstall 'pip install coverage>=7.6.1' and set OMNI_KIT_ACCEPT_EULA=YES for the first import"
+)
+
 #: Pip extra users install to pull our Python helpers alongside an
 #: out-of-band Isaac Sim install.
 PIP_EXTRA: str = "pip install 'strands-robots[sim-isaac]'"
@@ -49,6 +65,7 @@ def install_options_block(indent: str = "  - ") -> str:
     runtime error stay in lockstep.
     """
     lines = [
+        f"{indent}pip (Python 3.12): {ISAAC_SIM_PIP_INSTALL} ({ISAAC_SIM_PIP_CAVEATS})",
         f"{indent}NVIDIA Omniverse Launcher (Isaac Sim {ISAAC_SIM_MIN_VERSION}+)",
         f"{indent}Isaac Lab: {ISAAC_LAB_BOOTSTRAP}",
         f"{indent}Docker: {ISAAC_SIM_DOCKER_IMAGE}",
@@ -64,7 +81,8 @@ def install_options_inline() -> str:
     awkwardly inside a single sentence.
     """
     return (
-        "Isaac Sim must be installed via Omniverse Launcher, "
+        "Isaac Sim must be installed first - via pip "
+        "(isaacsim[all,extscache], Python 3.12), Omniverse Launcher, "
         f"Isaac Lab ({ISAAC_LAB_BOOTSTRAP.split(' && ')[-1]}), "
         f"or Docker ({ISAAC_SIM_DOCKER_IMAGE})."
     )
@@ -77,7 +95,7 @@ def not_importable_reason() -> str:
     """
     return (
         "omni.isaac.kit.SimulationApp / isaacsim.SimulationApp not importable. "
-        "Isaac Sim must be installed separately (not via pip). Options:\n"
+        f"Install Isaac Sim {ISAAC_SIM_MIN_VERSION}+ via one of:\n"
         f"{install_options_block()}\n"
         f"Then install the Python helpers: {PIP_EXTRA}"
     )
@@ -94,6 +112,8 @@ __all__ = [
     "ISAAC_SIM_MIN_VERSION",
     "ISAAC_SIM_DOCKER_IMAGE",
     "ISAAC_LAB_BOOTSTRAP",
+    "ISAAC_SIM_PIP_INSTALL",
+    "ISAAC_SIM_PIP_CAVEATS",
     "PIP_EXTRA",
     "install_options_block",
     "install_options_inline",

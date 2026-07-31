@@ -331,16 +331,27 @@ def test_field_gating_passes_through_when_lerobot_unimportable(
     assert "--policy.gradient_checkpointing=true" in cmd
 
 
-def test_val_episodes_reserves_last_n_episodes(tmp_path: Path) -> None:
+def test_val_episodes_reserves_last_n_episodes_as_an_evaluated_split(tmp_path: Path) -> None:
+    """Reserving episodes must yield a validation loss, not only a smaller train set.
+
+    This previously asserted ``--dataset.episodes=[0..6]``, which restricts the
+    TRAINING set and leaves the reserved episodes unused by either half: lerobot
+    builds its eval dataloader from ``dataset.eval_split``, so an episode
+    restriction produces no validation signal at all. The corrected contract
+    emits the split plus the cadence that evaluates it.
+    """
     root = _write_dataset(tmp_path / "ds", total_episodes=10)
     cmd = build_train_command(
         dataset_root=str(root),
         policy_type="act",
         output_dir=str(tmp_path / "out"),
+        save_freq=500,
         val_episodes=3,
     )
-    # 10 total, reserve last 3 -> train on 0..6.
-    assert "--dataset.episodes=[0,1,2,3,4,5,6]" in cmd
+    # 10 total, reserve last 3: ceil(10 * 0.25) == 3.
+    assert "--dataset.eval_split=0.25" in cmd
+    assert "--eval_steps=500" in cmd
+    assert not [c for c in cmd if c.startswith("--dataset.episodes=")]
 
 
 def test_val_episodes_rejects_reserving_whole_dataset(tmp_path: Path) -> None:

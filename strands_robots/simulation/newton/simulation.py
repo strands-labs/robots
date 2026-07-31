@@ -237,6 +237,10 @@ class NewtonSimEngine(DomainRandomizationMixin, NewtonRecordingMixin, SimEngine)
 
         logger.info("Newton simulation engine initialised (solver=%s)", self._solver_name)
 
+        # Construction complete - the finalizer may now release what we hold.
+        # See SimEngine._init_complete: this must be the final statement.
+        self._init_complete = True
+
     # World lifecycle
 
     def create_world(

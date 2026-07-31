@@ -105,7 +105,7 @@ class TestPackageLazyExport:
         import strands_robots.simulation.isaac as isaac_pkg
 
         # Everything promised by __all__ is resolvable through the package.
-        assert set(isaac_pkg.__all__) == {"IsaacSimulation", "IsaacConfig"}
+        assert set(isaac_pkg.__all__) == {"IsaacSimulation", "IsaacConfig", "IsaacDeltaEEFController"}
         for name in isaac_pkg.__all__:
             assert getattr(isaac_pkg, name) is not None
 
@@ -474,3 +474,28 @@ class TestInstallMetadata:
         reason = _install.not_importable_reason()
         assert "Omniverse" in reason
         assert _install.ISAAC_SIM_DOCKER_IMAGE in reason
+
+    def test_not_importable_reason_lists_pip_route_with_caveats(self):
+        """#1803: cp312 pip wheels made ``isaacsim`` pip-installable; the
+        availability probe's guidance must list the pip route first, with
+        the coverage-reinstall and EULA caveats that the pip route needs."""
+        from strands_robots.simulation.isaac import _install
+
+        reason = _install.not_importable_reason()
+        # The stale "not via pip" guidance must be gone.
+        assert "not via pip" not in reason
+        # Pip route present, listed before the Launcher option.
+        assert _install.ISAAC_SIM_PIP_INSTALL in reason
+        assert "isaacsim[all,extscache]" in reason
+        assert reason.index("pypi.nvidia.com") < reason.index("Omniverse")
+        # Pip-route caveats: coverage reinstall + EULA env var.
+        assert "coverage>=7.6" in reason
+        assert "OMNI_KIT_ACCEPT_EULA=YES" in reason
+
+    def test_inline_install_options_mention_pip_route(self):
+        from strands_robots.simulation.isaac import _install
+
+        inline = _install.install_options_inline()
+        assert "pip" in inline
+        assert "isaacsim[all,extscache]" in inline
+        assert _install.ISAAC_SIM_DOCKER_IMAGE in inline

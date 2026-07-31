@@ -157,7 +157,8 @@ from strands_robots.dataset_recorder import DatasetRecorder, has_lerobot_dataset
 | `recorder.clear_episode_buffer()` | Discard buffer. |
 | `recorder.finalize()` | Flush and close. |
 | `recorder.push_to_hub(tags=None, private=False)` | Upload to HuggingFace. |
-| `has_lerobot_dataset()` | Cached import check. |
+| `has_lerobot_dataset()` | Cached import check (True if `LeRobotDataset` imports). |
+| `lerobot_dataset_import_error()` | `None` if it imports, else why not - names the missing package and the install that supplies it. Use this when reporting to a human. |
 
 See [Recording](recording.md).
 

@@ -26,6 +26,7 @@ _LAZY_IMPORTS: dict[str, tuple[str, str]] = {
     "train_policy": (".train_policy", "train_policy"),
     "use_lerobot": (".use_lerobot", "use_lerobot"),
     "use_ros": (".use_ros", "use_ros"),
+    "use_rosbridge": (".use_rosbridge", "use_rosbridge"),
     "use_rtps": (".use_rtps", "use_rtps"),
 }
 

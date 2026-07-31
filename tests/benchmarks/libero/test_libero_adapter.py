@@ -3666,7 +3666,7 @@ class TestInstallActionController:
 
     def test_install_dependency_clash_always_raises(self, monkeypatch):
         """#522: A dependency-clash failure (ImportError / AttributeError
-        from the import chain, e.g. the numba/coverage>=7 incompatibility)
+        from the import chain, e.g. the numba/coverage incompatibility)
         is ALWAYS re-raised with a remediation hint, even in non-strict
         mode - it is fixable environment breakage, not a legitimate "no
         controller needed" condition."""
@@ -3696,6 +3696,9 @@ class TestInstallActionController:
         # Remediation hint names the numba/coverage clash.
         assert "numba" in str(excinfo.value)
         assert "coverage" in str(excinfo.value)
+        # #1803: and carries the one-line verified remedy (pip-installed Isaac
+        # Sim's isaacsim-kernel downgrades coverage to 7.4.4).
+        assert "coverage>=7.6" in str(excinfo.value)
         assert adapter._action_controller_error is not None
         assert "action_controller" not in sim._world._backend_state
 
@@ -3807,7 +3810,7 @@ class TestInstallActionController:
         assert "action_controller" not in sim._world._backend_state
 
     def test_is_numba_coverage_clash_detection(self):
-        """#522: ``_is_numba_coverage_clash`` recognises the coverage>=7
+        """#522: ``_is_numba_coverage_clash`` recognises the coverage
         signature both directly and through the exception chain (the
         AttributeError is often re-wrapped by an ImportError upstream)."""
         from strands_robots.benchmarks.libero.adapter import _is_numba_coverage_clash

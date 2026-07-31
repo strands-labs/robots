@@ -31,6 +31,7 @@ nav:
 - Device Connect: device-connect.md
 - Multi-robot Mesh: mesh.md
 - ROS 2 Integration: ros2-integration.md
+- rosbridge Integration: rosbridge-integration.md
 - Pure-RTPS ROS 2: rtps-integration.md
 - Policy Providers:
   - Overview: policies/overview.md

@@ -21,6 +21,7 @@ Usage:
     recorder.push_to_hub()
 """
 
+import importlib.util
 import json
 import logging
 import re
@@ -30,6 +31,8 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+
+from strands_robots.utils import lerobot_version
 
 logger = logging.getLogger(__name__)
 
@@ -326,22 +329,133 @@ def _huggingface_hub_version_error() -> str | None:
 _HAS_LEROBOT_DATASET: list[bool] = []
 
 
-def has_lerobot_dataset() -> bool:
-    """Return True if lerobot's ``LeRobotDataset`` can be imported.
+#: The packages ``lerobot[dataset]`` installs and that
+#: ``lerobot.datasets.lerobot_dataset`` imports at module scope. Named in the
+#: install hint so a single command fixes every one of them at once; the
+#: authoritative set is lerobot's own extra, so this is a hint for a human, not
+#: a second source of truth strands-robots probes against.
+_LEROBOT_DATASET_PACKAGES = "datasets, pandas, pyarrow, av, torchcodec"
+
+#: The module strands-robots imports to record a LeRobotDataset. Named in the
+#: drift diagnosis so a caller can check it against their lerobot directly.
+_LEROBOT_DATASET_MODULE = "lerobot.datasets.lerobot_dataset"
+
+
+def _lerobot_installed() -> bool:
+    """Whether the ``lerobot`` package itself is present.
+
+    Uses a spec lookup rather than an import so it has no side effects and does
+    not pay lerobot's import cost just to answer a question about an error
+    message.
+    """
+    if "lerobot" in sys.modules:
+        return True
+    try:
+        return importlib.util.find_spec("lerobot") is not None
+    except (ImportError, ValueError):
+        return False
+
+
+def _describe_lerobot_import_failure(exc: BaseException) -> str:
+    """Turn an import failure into the diagnosis a caller can act on.
+
+    Four unrelated failures reach here and they need four different
+    instructions, so the message has to say which one happened:
+
+    * lerobot itself is absent -- installing the extra is the fix;
+    * lerobot is present but a package its dataset stack needs is not
+      (``datasets``, ``pandas``, ``pyarrow``, ``av``, ...). Plain ``pip install
+      lerobot`` does not pull those in, so "install lerobot" is not a usable
+      instruction here: the package it names is already installed;
+    * lerobot is present but does not provide what strands-robots imports -- an
+      out-of-range or from-source lerobot that moved or renamed the module;
+    * the import failed without any module being missing (``ValueError`` /
+      ``RuntimeError``, typically a pandas built against a different numpy).
+      Nothing is absent, so no install fixes it.
+
+    Only a non-``ImportError`` may claim that nothing is missing: an
+    ``ImportError`` whose ``name`` is unset still reports a failed import, and
+    telling that caller to reconcile binary versions would send them after a
+    conflict they may not have.
+
+    Args:
+        exc: The exception raised while importing ``LeRobotDataset``.
+
+    Returns:
+        An actionable diagnosis naming the cause and the install that fixes it.
+    """
+    detail = f"{type(exc).__name__}: {exc}"
+
+    if not _lerobot_installed():
+        return (
+            f"lerobot is not installed ({detail}). Install lerobot >= 0.6.0 with: pip install 'strands-robots[lerobot]'"
+        )
+
+    version = lerobot_version()
+
+    if not isinstance(exc, ImportError):
+        return (
+            f"lerobot {version} is installed and no module is missing, but importing its dataset "
+            f"stack failed ({detail}). That is a conflict between installed packages -- commonly a "
+            f"pandas built against a different numpy -- so no install of lerobot or its extra fixes "
+            f"it; reconcile the conflicting packages instead."
+        )
+
+    missing = getattr(exc, "name", None) or ""
+    if missing and missing.split(".")[0] != "lerobot":
+        return (
+            f"lerobot {version} is installed, but {missing!r}, which its dataset stack needs, is "
+            f"not ({detail}). Install that whole set with: pip install 'lerobot[dataset]' "
+            f"-- {_LEROBOT_DATASET_PACKAGES}. Installing lerobot without that extra does not pull "
+            f"them in, so reinstalling lerobot alone will not fix this."
+        )
+
+    return (
+        f"lerobot {version} is installed, but it does not provide "
+        f"{_LEROBOT_DATASET_MODULE} ({detail}). strands-robots supports "
+        f"lerobot >= 0.6.0,<0.7.0; an out-of-range or from-source lerobot can move or rename "
+        f"that module. Install a supported one with: pip install 'strands-robots[lerobot]'"
+    )
+
+
+def lerobot_dataset_import_error() -> str | None:
+    """Return None if lerobot's ``LeRobotDataset`` imports, else why it does not.
+
+    This is the probe :func:`has_lerobot_dataset` answers yes/no from, and the
+    one a caller should use when it has to tell a human what to do: the reason
+    is what distinguishes "install the lerobot extra" from the cases that
+    instruction cannot fix.
 
     A successful probe is cached; a failed probe is intentionally re-attempted
     on the next call so a transient import failure does not permanently disable
     recording for the process.
+
+    Returns:
+        ``None`` when ``LeRobotDataset`` is importable, otherwise a
+        ready-to-display diagnosis naming the cause and the install that fixes
+        it (see :func:`_describe_lerobot_import_failure`).
     """
     if _HAS_LEROBOT_DATASET:
-        return True
+        return None
     try:
         from lerobot.datasets.lerobot_dataset import LeRobotDataset  # noqa: F401
     except (ImportError, ValueError, RuntimeError) as exc:
-        logger.debug("lerobot not available: %s", exc)
-        return False
+        reason = _describe_lerobot_import_failure(exc)
+        logger.debug("lerobot dataset stack unavailable: %s", reason)
+        return reason
     _HAS_LEROBOT_DATASET.append(True)
-    return True
+    return None
+
+
+def has_lerobot_dataset() -> bool:
+    """Return True if lerobot's ``LeRobotDataset`` can be imported.
+
+    A thin predicate over :func:`lerobot_dataset_import_error` so the two cannot
+    disagree about whether recording is available. Callers that must explain the
+    unavailability to a human should use that function instead: a bare False
+    cannot say which of several unrelated causes applied.
+    """
+    return lerobot_dataset_import_error() is None
 
 
 def _get_lerobot_dataset_class():

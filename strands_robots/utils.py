@@ -110,6 +110,33 @@ def require_optionals(
     raise ImportError("\n".join(parts)) from None
 
 
+def lerobot_version() -> str:
+    """Return the installed lerobot version, or ``"unknown"`` if undeterminable.
+
+    Best-effort and never raises: it exists for error messages, where naming the
+    installed version is what distinguishes "lerobot is missing" from "lerobot
+    is present but something it needs is not". Lives here rather than beside one
+    of its callers because those callers sit in different modules
+    (:mod:`strands_robots.dataset_recorder` and
+    :mod:`strands_robots.streaming_dataset`) and must not report the version
+    differently.
+
+    ``except ImportError`` is deliberately the whole handler. ``version`` signals
+    an unresolvable distribution with ``PackageNotFoundError``, which subclasses
+    ``ModuleNotFoundError`` and so already *is* an ``ImportError``. Naming it in
+    the handler as well would bind it as a local that the ``import`` above may
+    never reach, and evaluating the handler would then raise
+    ``UnboundLocalError`` out of a function documented never to raise - on
+    precisely the failure the second name looked like it was covering.
+    """
+    try:
+        from importlib.metadata import version
+
+        return version("lerobot")
+    except ImportError:
+        return "unknown"
+
+
 #
 # Path resolution - single source of truth for all strands-robots paths
 #
@@ -471,6 +498,76 @@ def positive_count_error(value: Any, param: str, context: str) -> str | None:
     return None
 
 
+def tcp_port_error(value: Any, param: str, context: str) -> str | None:
+    """Error text when ``value`` cannot address a TCP port.
+
+    Shared domain for every caller-supplied port number: the agent tools that
+    reach a service over TCP (``use_rosbridge``'s WebSocket,
+    ``gr00t_inference``'s inference service) and the mesh bridges that construct
+    one. A port is an index into the 16-bit TCP port space, so only an ``int``
+    in ``[1, 65535]`` names one: ``0`` asks the kernel for an ephemeral port
+    rather than naming a port, and a value outside the range has nothing to bind
+    or connect to.
+
+    It lives here rather than beside one of its callers for the same reason
+    :func:`positive_count_error` does: those callers sit in different layers
+    (:mod:`strands_robots.tools` and :mod:`strands_robots.mesh` must not depend
+    on each other) and the accepted domain must not diverge between them - the
+    same port cannot be refused by one transport onto a service and accepted by
+    the next.
+
+    ``bool`` is rejected explicitly. It is an ``int`` subclass, so a bare
+    ``1 <= value <= 65535`` test lets ``True`` through as a silent port 1 - a
+    privileged port the caller never named.
+
+    Args:
+        value: The caller-supplied value.
+        param: The parameter name it came from, used in the message.
+        context: Message prefix identifying the surface that received it - the
+            requested action for an agent tool, or the class name for a
+            constructor parameter.
+
+    Returns:
+        An error message, or ``None`` when the value is usable.
+    """
+    if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 65535:
+        return f"{context}: invalid {param}: {value!r} (expected 1-65535)"
+    return None
+
+
+def non_negative_count_error(value: Any, param: str, context: str) -> str | None:
+    """Error text when ``value`` is not a usable non-negative integer count.
+
+    Shared domain for a discrete count whose ``0`` is a first-class value rather
+    than a degenerate one - the number of control steps a loop executes while an
+    inference request is in flight
+    (:attr:`~strands_robots.policies.base.Policy.rtc_observed_delay_steps`).
+    That count is exactly ``0`` in the dominant case: a synchronous eval loop
+    pauses the world during inference, so no step elapses. Refusing ``0`` here
+    would therefore reject the common configuration, which is why this is a
+    separate domain rather than a caller of :func:`positive_count_error`.
+
+    In every other respect it mirrors :func:`positive_count_error`: the value is
+    consumed as an offset into an action chunk, so only a true ``int`` can be
+    honored (an integral float raises ``TypeError`` at the slice rather than
+    being coerced), and ``bool`` is rejected explicitly because as an ``int``
+    subclass a bare ``value < 0`` test lets ``True`` through as a silent count
+    of one.
+
+    Args:
+        value: The caller-supplied value.
+        param: The parameter name it came from, used in the message.
+        context: Message prefix identifying the surface that received it - the
+            public method name, or the class name for a constructor parameter.
+
+    Returns:
+        An error message, or ``None`` when the value is usable.
+    """
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return f"{context}: {param} must be a non-negative integer, got {value!r}."
+    return None
+
+
 def name_list_error(value: Any, param: str, context: str) -> str | None:
     """Error text when ``value`` is not a usable list of distinct key names.
 
@@ -784,3 +881,63 @@ def entity_name_error(method: str, param_name: str, name: Any) -> str | None:
             "and the model would disagree about the entity's name."
         )
     return None
+
+
+def validation_split_fraction(val_episodes: int, total_episodes: int) -> float:
+    """``dataset.eval_split`` that holds out exactly ``val_episodes`` episodes.
+
+    lerobot builds its held-out validation set by taking
+    ``ceil(n_episodes * eval_split)`` episodes from each task's tail, so every
+    fraction in ``((N - 1) / total, N / total]`` holds out exactly ``N``. This
+    returns the MIDPOINT of that interval rather than its ``N / total`` upper
+    bound, because the bound is not float-safe: ``25 * (7 / 25)`` evaluates to
+    ``7.000000000000001``, whose ceiling is 8 - one episode more than the caller
+    asked to reserve. The midpoint leaves half an episode of slack on either
+    side, so the requested count survives the round trip at every dataset size.
+
+    Args:
+        val_episodes: Number of episodes to hold out. Must be positive and
+            smaller than ``total_episodes``; callers validate that themselves so
+            they can name their own parameter in the error.
+        total_episodes: Episode count of the dataset being split.
+
+    Returns:
+        The fraction to pass as lerobot's ``--dataset.eval_split``.
+    """
+    return (val_episodes - 0.5) / total_episodes
+
+
+def validation_split_error(val_episodes: int, total_tasks: Any, context: str) -> str | None:
+    """Error text when a global episode COUNT cannot be honored as a split.
+
+    lerobot expresses a validation split as one ``eval_split`` FRACTION and
+    applies ``ceil(n_episodes * eval_split)`` to each task independently, so a
+    single fraction reproduces a global episode count only on a single-task
+    dataset. With ``T > 1`` tasks the ceiling is taken ``T`` times and the total
+    held out is generally not the requested ``N`` - reserving 1 episode of a
+    two-task dataset would hold out 2. Rather than quietly reserve a different
+    number of episodes than asked, callers refuse and point at the fraction,
+    which addresses the per-task behaviour directly.
+
+    A ``total_tasks`` of 0 or ``None`` means the dataset does not record a task
+    count (lerobot's own field defaults to 0), which is treated as single-task.
+
+    Args:
+        val_episodes: The requested held-out episode count, for the message.
+        total_tasks: ``total_tasks`` from the dataset's ``meta/info.json``.
+        context: Caller label the message is prefixed with.
+
+    Returns:
+        The error text, or None when the count can be honored exactly.
+    """
+    if not isinstance(total_tasks, int) or isinstance(total_tasks, bool) or total_tasks <= 1:
+        return None
+    return (
+        f"{context}: val_episodes={val_episodes} cannot be reserved exactly on a "
+        f"dataset with {total_tasks} tasks. A validation split is a per-task "
+        "fraction in lerobot (it holds out ceil(episodes_in_task * eval_split) "
+        "from every task), so a single global count is not expressible: the "
+        "ceiling would be applied once per task. Pass the fraction directly, "
+        "e.g. extra_flags={'dataset.eval_split': 0.1, 'eval_steps': 1000}, and "
+        "the split will hold out a tenth of each task."
+    )

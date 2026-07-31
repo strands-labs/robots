@@ -52,12 +52,14 @@ class TestStartRecordingErrorWithoutLerobot:
     def test_extra_absent_points_to_start_cameras_recording(self, sim, monkeypatch):
         import strands_robots.dataset_recorder as dr
 
-        monkeypatch.setattr(dr, "has_lerobot_dataset", lambda: False)
+        reason = "lerobot is not installed (ModuleNotFoundError: No module named 'lerobot'). Install lerobot >= 0.6.0 with: pip install 'strands-robots[lerobot]'"
+        monkeypatch.setattr(dr, "lerobot_dataset_import_error", lambda: reason)
         result = sim.start_recording(repo_id="local/test_rec")
         assert result["status"] == "error"
         text = result["content"][0]["text"]
         assert "start_cameras_recording" in text
-        assert "lerobot" in text.lower()
+        # Surfaced verbatim, so the caller sees which dependency is missing.
+        assert reason in text
 
     def test_broken_import_falls_through_to_structured_error(self, sim, monkeypatch):
         import strands_robots.dataset_recorder as dr

@@ -95,6 +95,30 @@ def test_result_line_matches_backend_matrix_parser() -> None:
     assert float(match.group("wt")) == pytest.approx(wt)
 
 
+def test_result_line_with_extra_fields_matches_backend_matrix_parser() -> None:
+    """run_isaac.py's result line (extra key=value fields) must also parse.
+
+    ``run_isaac.py`` inserts ``resolved_task=`` between ``task=`` and
+    ``success_rate=`` when the placeholder default task falls back, and
+    appends ``backend=isaac`` after ``videos=``. The pre-fix ``_RE_RESULT``
+    required strict adjacency of the shared keys, so the isaac matrix row
+    ran green end-to-end yet printed ``--`` cells (empty success_rate) -
+    observed live on the first Isaac backend validation. Pin that extra
+    fields between the anchors stay tolerated.
+    """
+    matrix = _load_example("libero_backend_matrix.py")
+    sr, wt = 0.5, 64.8
+    line = (
+        "policy=mock  task=libero-spatial-pick_up_the_red_cube  "
+        "resolved_task=libero-spatial-pick_up_the_black_bowl_between_the_plate_and_the_ramekin_and_place_it_on_the_plate  "
+        f"success_rate={sr:.2f}  wall_time={wt:.1f}s  videos=rollouts/x.mp4  backend=isaac"
+    )
+    match = matrix._RE_RESULT.search(line)
+    assert match is not None, f"_RE_RESULT failed to parse run_isaac.py's result-line shape: {line!r}"
+    assert float(match.group("sr")) == pytest.approx(sr)
+    assert float(match.group("wt")) == pytest.approx(wt)
+
+
 def test_backend_matrix_has_mujoco_row() -> None:
     """The first matrix row must point at run_mujoco.py, and the file it
     references must exist (pre-migration it printed `unavailable`)."""
@@ -180,6 +204,7 @@ def test_library_surface_the_drivers_depend_on() -> None:
         "embodiment_tag",
         "protocol",
         "use_sim_policy_wrapper",
+        "deterministic",
         "port",
     ):
         assert kwarg in tool_params, f"gr00t_inference lost the {kwarg!r} kwarg the LIBERO drivers pass"

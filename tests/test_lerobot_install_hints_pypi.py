@@ -58,6 +58,46 @@ class TestMolmoAct2VersionHint:
         assert "git+" not in msg
 
 
+class TestDatasetRecorderHints:
+    """The recording path's hints obey the same currency contract.
+
+    ``start_recording``'s diagnosis has two branches that tell a caller to
+    install a lerobot, and those must name the >=0.6 PyPI floor like every other
+    hint here. Its other two branches deliberately do NOT recommend a lerobot
+    install - a missing dataset dependency and a binary conflict are not fixed by
+    one - so they are held to the opposite contract.
+    """
+
+    def test_absent_lerobot_hint_uses_currency_hint(self, monkeypatch) -> None:
+        from strands_robots import dataset_recorder as dr
+
+        monkeypatch.setattr(dr, "_lerobot_installed", lambda: False)
+        text = dr._describe_lerobot_import_failure(ModuleNotFoundError("nope", name="lerobot"))
+        _assert_currency(text)
+        assert "strands-robots[lerobot]" in text
+
+    def test_moved_module_hint_uses_currency_hint(self, monkeypatch) -> None:
+        from strands_robots import dataset_recorder as dr
+
+        monkeypatch.setattr(dr, "_lerobot_installed", lambda: True)
+        monkeypatch.setattr(dr, "lerobot_version", lambda: "0.6.0")
+        text = dr._describe_lerobot_import_failure(ImportError("gone", name="lerobot.datasets.lerobot_dataset"))
+        _assert_currency(text)
+        assert "strands-robots[lerobot]" in text
+
+    def test_transitive_dep_hint_does_not_send_the_caller_to_reinstall_lerobot(self, monkeypatch) -> None:
+        from strands_robots import dataset_recorder as dr
+
+        monkeypatch.setattr(dr, "_lerobot_installed", lambda: True)
+        monkeypatch.setattr(dr, "lerobot_version", lambda: "0.6.0")
+        text = dr._describe_lerobot_import_failure(ModuleNotFoundError("nope", name="pyarrow"))
+        # Remedy is the dataset extra that supplies it, not a lerobot reinstall.
+        assert "pip install 'lerobot[dataset]'" in text
+        assert "strands-robots" not in text
+        for token in _STALE:
+            assert token not in text
+
+
 class TestRewardModelHints:
     def test_load_reward_model_missing_rewards_uses_currency_hint(self, monkeypatch) -> None:
         from strands_robots.training import reward as reward_mod

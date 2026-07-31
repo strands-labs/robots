@@ -362,6 +362,10 @@ class MuJoCoSimEngine(
         self._mj = _ensure_mujoco()
         logger.info("MuJoCo simulation tool '%s' initialized", tool_name)
 
+        # Construction complete - the finalizer may now release what we hold.
+        # See SimEngine._init_complete: this must be the final statement.
+        self._init_complete = True
+
     # Public Properties - read-only introspection.
     # WARNING: callers MUST NOT mutate the returned objects without holding
     # self._lock. Prefer using action methods which serialize automatically.
@@ -5101,12 +5105,6 @@ class MuJoCoSimEngine(
 
     def __exit__(self, *exc: object) -> None:
         self.cleanup()
-
-    def __del__(self) -> None:
-        try:
-            self.cleanup()
-        except Exception:
-            pass
 
 
 # Backward-compatible aliases (PR #85 shipped as ``Simulation``)

@@ -96,7 +96,7 @@ Newton backend, so a rollout rig can be enumerated instead of guessed.
 | `step` | `n_steps=1` (max 100 000/call) |
 | `set_gravity` | `gravity=[x,y,z]` or a scalar z-component |
 | `set_timestep` | `timestep` |
-| `get_contacts` / `get_contact_forces` | - |
+| `get_contacts` / `get_contact_forces` | - . `get_contacts` lists every geom pair inside the detection range (`margin` + `gap`) and marks each one `active` - MuJoCo hands only the pairs inside `margin` to the solver, so a pair between the two thresholds is a proximity report carrying no force. Contact predicates count only `active` pairs; `get_contact_forces` gives the load a touching pair carries |
 | `apply_force` | `body_name`, `force`, `torque`, `point` - latched on that body and re-applied every step until the next `apply_force` for it, so several bodies can hold wrenches at once (`force=[0,0,0]` stops one, `reset()` stops all) |
 | `get_jacobian` | `body_name` *or* `site_name` *or* `geom_name` |
 | `get_mass_matrix` | - |
@@ -125,6 +125,8 @@ Newton backend, so a rollout rig can be enumerated instead of guessed.
 | ordered numeric vector (`list` / `tuple` / 1-D `numpy` array) | bound positionally to `robot_action_keys(robot_name)` (the robot's actuator keys) in declaration order - the same convention `replay_episode` uses |
 
 A vector lets a policy's raw action chunk drive the arm directly without first zipping it into a dict. It binds to `robot_action_keys` (not `robot_joint_names`) because those are the keys `send_action` resolves and the ordering the `LeRobotDataset` recorder writes the `action` column in; the two coincide unless a robot has passive/mimic joints or a tendon gripper. The vector length must match the robot's actuator count exactly; a mismatch (or a non-numeric / scalar / string `action`) returns a structured `status="error"` dict naming the actuator count and order, rather than crashing or silently truncating commands. Use a mapping to target a subset of actuators.
+
+Each action *value* must be a finite number, and must not be a boolean. `nan` / `inf` are refused because they are not clamped into the actuator's range - MuJoCo discards the step and resets every robot in the scene while reporting success. A `bool` (or `numpy.bool_`) is refused because `float(True)` is `1.0`, and each drive reads 1.0 in its own units: a 1-radian target on a joint-position drive, a full-travel command on a normalized or tendon drive (a `[0, 255]` tendon gripper reads it as fully open), and an out-of-range value that is silently clamped where `ctrlrange` excludes 1 - so the same `True` commands a different pose on every actuator. Send the command in the actuator's own units; for a binary gripper, its endpoint value rather than a flag. This is the domain the teleop wire validator already enforces on an input frame, and `InputReceiver` applies those frames through `send_action`.
 
 ## Policy
 

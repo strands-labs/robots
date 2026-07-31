@@ -19,10 +19,22 @@ have executed the trained 100. It also flipped
 :meth:`~strands_robots.policies.base.Policy.is_chunk_emitting` to ``False``,
 silently disabling the async-RTC latency masking for a chunk-emitting model.
 
+``rtc_execution_horizon`` is the same count once more. With Real-Time Chunking
+active it *is* the re-query interval, replacing ``actions_per_step`` in the very
+same property, and it was stored verbatim. ``0`` was the sharpest spelling: it is
+falsy, so the property fell through to the full trained chunk - the open-loop
+replay its own docstring says collapses RTC - while ``_init_rtc`` skipped
+adopting the checkpoint's ``rtc_config.execution_horizon`` because ``0`` is not
+``None``, and the model was handed the ``0`` verbatim. Consumer and model
+disagreed about the horizon for every unusable value, which is exactly the
+agreement RTC's cross-chunk blend rests on.
+
 These tests pin:
 
 * the degraded regime is unreachable, against a measured control showing what
   the default does with the same checkpoint;
+* the RTC re-query horizon shares that domain, and an accepted one is the same
+  number the consumer executes and the model is told;
 * every value outside the domain is refused by both providers, with parity
   between them apart from the one documented asymmetry (``None`` is
   ``lerobot_async``'s "use ``actions_per_chunk``" and not a count at all);
@@ -53,6 +65,11 @@ REJECTED: list[Any] = [0, -5, False, True, 2.7, "4", float("nan"), float("inf"),
 # The trained chunk length of the checkpoint the fixtures below emulate.
 TRAINED_CHUNK = 100
 
+# The RTC re-query horizon that same checkpoint declares in its ``rtc_config``.
+# Deliberately unequal to TRAINED_CHUNK: the RTC horizon exists to re-query
+# mid-chunk, so a fixture where they matched could not tell the two apart.
+MODEL_RTC_HORIZON = 10
+
 # Annotated ``Any`` so mypy does not narrow the splat against the mixed-type
 # signature; the two required identifiers are strings.
 ASYNC_REQUIRED: dict[str, Any] = {"policy_type": "act", "pretrained_name_or_path": "acme/act-cube"}
@@ -70,6 +87,28 @@ class _ChunkTrainedModel:
     config = _ChunkTrainedConfig()
 
 
+class _RtcConfig:
+    """The RTC block a flow-matching checkpoint (Pi0, SmolVLA) carries."""
+
+    enabled = True
+    execution_horizon = MODEL_RTC_HORIZON
+    max_guidance_weight = 10.0
+
+
+class _RtcTrainedConfig(_ChunkTrainedConfig):
+    """The same trained chunk, on a checkpoint that also enables RTC."""
+
+    rtc_config = _RtcConfig()
+
+
+class _RtcTrainedModel:
+    config = _RtcTrainedConfig()
+
+    def predict_action_chunk(self, *args: Any, **kwargs: Any) -> Any:
+        """Present so ``_init_rtc`` sees a flow-matching policy; never called."""
+        raise AssertionError("inference is out of scope for these tests")
+
+
 def _local(**config: Any) -> LerobotLocalPolicy:
     """Build a ``lerobot_local`` policy with the model load stubbed out."""
     with patch.object(LerobotLocalPolicy, "_load_model"):
@@ -81,6 +120,24 @@ def _regime(policy: LerobotLocalPolicy) -> tuple[Any, int, bool]:
     policy._policy = _ChunkTrainedModel()
     policy._auto_detect_actions_per_step()
     return policy.actions_per_step, policy.execution_horizon, policy.is_chunk_emitting()
+
+
+def _rtc_horizons(**config: Any) -> tuple[int, Any]:
+    """Resolve (what the consumer executes, what the model is told) under RTC.
+
+    Loads the RTC-enabled checkpoint emulation so ``_init_rtc`` runs its
+    adoption branch. The second element is the value
+    :mod:`strands_robots.policies.lerobot_local.policy` forwards to the model as
+    ``rtc_kwargs["execution_horizon"]``; RTC's cross-chunk blend is only correct
+    while the two agree, so the tests below compare them rather than reading
+    either alone.
+    """
+    policy = _local(**config)
+    policy._policy = _RtcTrainedModel()
+    policy._loaded = True
+    policy._init_rtc()
+    assert policy.supports_rtc, "fixture must reach the RTC path for these assertions to mean anything"
+    return policy.execution_horizon, policy._rtc_execution_horizon
 
 
 class TestTheDegradedRegimeIsUnreachable:
@@ -223,6 +280,106 @@ class TestTheAsyncChunkLength:
         """
         with pytest.raises(ValueError, match="actions_per_step must be a positive integer"):
             _local(actions_per_step=None)
+
+
+class TestTheRtcReQueryHorizon:
+    """``rtc_execution_horizon`` replaces the step count, so it shares its domain."""
+
+    def test_omitting_it_adopts_the_checkpoints_own_rtc_horizon(self) -> None:
+        """Control, and the premise the refusals below are measured against."""
+        consumer, model = _rtc_horizons()
+
+        assert consumer == MODEL_RTC_HORIZON
+        assert model == MODEL_RTC_HORIZON
+
+    def test_a_supplied_horizon_overrides_the_checkpoints(self) -> None:
+        """Control: an executable override is honored, not merely tolerated."""
+        consumer, model = _rtc_horizons(rtc_execution_horizon=8)
+
+        assert consumer == 8
+        assert model == 8
+
+    def test_a_zero_horizon_cannot_collapse_rtc_to_open_loop_replay(self) -> None:
+        """``0`` is refused rather than silently disabling the feature it configures.
+
+        Pre-fix this constructed. ``0`` is falsy, so ``execution_horizon`` fell
+        through to ``actions_per_step`` and the consumer executed the whole
+        trained chunk before re-querying - the open-loop replay that keeps the
+        blended tail empty - while ``_init_rtc`` skipped adopting the
+        checkpoint's own horizon (``0`` is not ``None``) and the model was told
+        ``0``. Measured on this fixture: consumer 100, model 0, against 10/10
+        for the same call with the parameter omitted.
+        """
+        with pytest.raises(ValueError, match="rtc_execution_horizon must be a positive integer"):
+            _local(rtc_execution_horizon=0)
+
+    @pytest.mark.parametrize("value", REJECTED, ids=repr)
+    def test_an_unusable_horizon_is_refused_where_it_arrives(self, value: Any) -> None:
+        """Not on the read path, which is a property read inside the rollout loop.
+
+        ``nan``, ``inf`` and a list surfaced there as a bare
+        ``ValueError``/``OverflowError``/``TypeError`` mid-rollout; the rest were
+        floored or truncated into a horizon the caller never asked for.
+        """
+        with pytest.raises(ValueError, match="rtc_execution_horizon must be a positive integer"):
+            _local(rtc_execution_horizon=value)
+
+    def test_none_is_the_adopt_request_and_not_a_count(self) -> None:
+        """The documented default: take the checkpoint's own horizon.
+
+        Unlike ``actions_per_step``, whose signature declares ``int = 1``, this
+        parameter declares ``int | None = None``, so ``None`` must stay valid.
+        """
+        assert _local(rtc_execution_horizon=None)._rtc_execution_horizon is None
+
+    def test_the_refusal_precedes_the_checkpoint_load(self) -> None:
+        loads: list[int] = []
+
+        def record(self: LerobotLocalPolicy) -> None:
+            loads.append(1)
+
+        with patch.object(LerobotLocalPolicy, "_load_model", record):
+            with pytest.raises(ValueError, match="rtc_execution_horizon"):
+                LerobotLocalPolicy(pretrained_name_or_path="acme/pi0-cube", rtc_execution_horizon=0)
+
+        assert loads == [], "the checkpoint load must not be reached for a refused horizon"
+
+    def test_preflight_refuses_it_with_no_embodiment_configured(self) -> None:
+        """RTC is decided by the model config, so this cannot be embodiment-scoped."""
+        with pytest.raises(ValueError, match="rtc_execution_horizon must be a positive integer"):
+            LerobotLocalPolicy.preflight(set(), rtc_execution_horizon=0)
+
+    def test_the_provider_preflight_entry_point_refuses_it(self) -> None:
+        """The structured-error path the rollout entry points run first."""
+        with pytest.raises(ValueError, match="rtc_execution_horizon must be a positive integer"):
+            preflight_policy("lerobot_local", {"joint_1", "front"}, rtc_execution_horizon=-5)
+
+    def test_preflight_passes_an_executable_horizon_and_the_adopt_request(self) -> None:
+        preflight_policy("lerobot_local", {"joint_1", "front"}, rtc_execution_horizon=10)
+        preflight_policy("lerobot_local", {"joint_1", "front"}, rtc_execution_horizon=None)
+
+    @pytest.mark.parametrize("value", REJECTED, ids=repr)
+    def test_it_shares_the_verdict_with_the_step_count_it_replaces(self, value: Any) -> None:
+        """Parity: one horizon cannot be refused under one name and accepted under the other."""
+
+        def verdict(build: Any) -> str:
+            try:
+                build()
+            except ValueError as exc:
+                return "refused" if "must be a positive integer" in str(exc) else "other-error"
+            return "accepted"
+
+        as_step_count = verdict(lambda: _local(actions_per_step=value))
+        as_rtc_horizon = verdict(lambda: _local(rtc_execution_horizon=value))
+        assert as_step_count == as_rtc_horizon, f"verdicts differ for horizon={value!r}"
+
+    @pytest.mark.parametrize("value", [1, 8, MODEL_RTC_HORIZON, TRAINED_CHUNK])
+    def test_an_accepted_horizon_is_the_one_both_sides_use(self, value: int) -> None:
+        """The invariant the unusable values broke, pinned for the whole domain."""
+        consumer, model = _rtc_horizons(rtc_execution_horizon=value)
+
+        assert consumer == value
+        assert model == value
 
 
 class TestTheDuckTypedFloorIsUntouched:

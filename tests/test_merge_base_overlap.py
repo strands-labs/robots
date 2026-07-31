@@ -122,8 +122,13 @@ def _land_on_main_editing_shared(repo: Path) -> None:
     _git(repo, "checkout", "-q", "pr")
 
 
+def _run_at(repo: Path, head: str) -> int:
+    """Check a named commit, which is what CI does: the head SHA, never ``HEAD``."""
+    return int(check.main(["--repo", str(repo), "--base-ref", "main", "--head", head]))
+
+
 def _run(repo: Path) -> int:
-    return int(check.main(["--repo", str(repo), "--base-ref", "main", "--head", "HEAD"]))
+    return _run_at(repo, "HEAD")
 
 
 # --- the incident, replayed -----------------------------------------------------
@@ -346,3 +351,64 @@ def test_no_emoji_in_the_script_or_its_output() -> None:
     source = _SCRIPT_PATH.read_text(encoding="utf-8")
     offenders = [(index, char) for index, char in enumerate(source) if ord(char) > 0x7F]
     assert offenders == [], f"non-ASCII in {_SCRIPT_PATH.name}: {offenders[:5]}"
+
+
+# --- the tree the gate is read from ---------------------------------------------
+
+
+def test_the_overlap_does_not_depend_on_the_checked_out_tree(repo: Path) -> None:
+    """Same commits, same overlap, whichever tree happens to be checked out.
+
+    This is the property that lets CI run the script from the *base* checkout while
+    judging the branch, and CI must: a branch that forked before a gate landed
+    carries no copy of that gate's script, so running it out of the head tree exits
+    2 before the check begins -- a red X indistinguishable from exit 1, which the
+    script reserves for a real untested overlap. That failure was measured on the
+    sibling changelog gate in issue #1791; this one shares its shape and is latent
+    only because every currently open branch happens to postdate it.
+
+    It holds because nothing here reads the working tree: the path sets come from
+    ``git diff --name-only <a>..<b>``, so only reachability matters.
+    """
+    _branch_editing_shared(repo)
+    _land_on_main_editing_shared(repo)
+    head = _git(repo, "rev-parse", "HEAD").strip()
+
+    # The branch checked out, as the workflow used to do.
+    assert _run_at(repo, head) == 1
+
+    # The base checked out, as the workflow now does. The branch's edit is not in
+    # the tree on disk, and the overlap is still reported.
+    _git(repo, "checkout", "-q", "main")
+    assert "line 40  # edited by the pull request" not in (repo / _SHARED).read_text(encoding="utf-8")
+    assert _run_at(repo, head) == 1
+
+
+def test_a_branch_with_no_overlap_still_passes_from_the_base_checkout(repo: Path) -> None:
+    """The other direction: reading from the base does not fail every branch.
+
+    Without this, the test above is satisfied by a check that refuses everything.
+    """
+    _branch_editing_shared(repo)
+    head = _git(repo, "rev-parse", "HEAD").strip()
+
+    _git(repo, "checkout", "-q", "main")
+    assert _run_at(repo, head) == 0
+
+
+def test_the_workflow_reads_the_script_from_the_base_and_names_the_head() -> None:
+    """The workflow must not require its own script in the tree under review.
+
+    A ``pull_request`` workflow definition is read from the merge commit, so a gate
+    runs against heads that contain neither it nor its script. The sibling changelog
+    gate exited 2 for exactly that reason (issue #1791); this workflow had the same
+    shape.
+    """
+    workflow = (_REPO_ROOT / ".github" / "workflows" / "merge-base-overlap.yml").read_text(encoding="utf-8")
+
+    assert "ref: ${{ github.base_ref }}" in workflow, "the gate's script must come from the base branch"
+    assert "ref: ${{ github.event.pull_request.head.sha }}" not in workflow, (
+        "checking the head out is what made the script's presence a precondition"
+    )
+    assert "HEAD_SHA: ${{ github.event.pull_request.head.sha }}" in workflow
+    assert '--head "$HEAD_SHA"' in workflow, "the commit under test is named, not checked out"

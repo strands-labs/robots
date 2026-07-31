@@ -122,7 +122,8 @@ def train_policy(
         lora_r / lora_alpha / lora_target_modules: LoRA hyperparameters.
         tune: Fine-grained component toggles for GR00T
             (``{"llm","visual","projector","diffusion"}``).
-        val_episodes: Hold out the LAST N episodes for validation.
+        val_episodes: Hold out the LAST N episodes for validation; the run
+            logs an eval loss over them at the checkpoint cadence.
         augmentation: Backend-specific augmentation dict.
         fps: Dataset control rate (when a backend needs it).
         extra: Backend-specific passthrough. lerobot: ``policy_type``,

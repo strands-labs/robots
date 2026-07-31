@@ -23,6 +23,8 @@ import sys
 from collections.abc import Callable
 from typing import Any
 
+from strands_robots.utils import lerobot_version
+
 logger = logging.getLogger(__name__)
 
 
@@ -75,16 +77,6 @@ def _get_streaming_cls() -> Any:
             "For proprio-only streaming without torchcodec, use drop_videos=True "
             "with a delta_timestamps covering the non-video keys you need."
         ) from exc
-
-
-def _lerobot_version() -> str:
-    """Best-effort installed lerobot version string for error messages."""
-    try:
-        from importlib.metadata import PackageNotFoundError, version
-
-        return version("lerobot")
-    except (ImportError, PackageNotFoundError):
-        return "unknown"
 
 
 class StreamingDatasetReader:
@@ -155,7 +147,7 @@ class StreamingDatasetReader:
         if repo_type != "dataset" and not (accepts_var_kw or "repo_type" in init_sig):
             raise RuntimeError(
                 f"repo_type={repo_type!r} is not supported by any released lerobot "
-                f"(installed: {_lerobot_version()}): StreamingLeRobotDataset does not "
+                f"(installed: {lerobot_version()}): StreamingLeRobotDataset does not "
                 "accept a repo_type parameter (the versioned-dataset vs bucket storage "
                 "split is not upstream), and silently falling back to the 'dataset' "
                 "namespace would stream from a different storage system. Pass "
@@ -194,7 +186,7 @@ class StreamingDatasetReader:
                 "(lerobot %s) does not accept return_uint8, so frames stream as "
                 "float32 (~4x the bandwidth of uint8). Policies still normalize "
                 "correctly; upgrade lerobot for uint8 streaming.",
-                _lerobot_version(),
+                lerobot_version(),
             )
 
         kwargs: dict[str, Any] = {"repo_id": repo_id}

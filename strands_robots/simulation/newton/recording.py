@@ -139,24 +139,30 @@ class NewtonRecordingMixin(DatasetRecordingMixin):
             return error
 
         _DatasetRecorder: Any = None
-        _has_lerobot = False
+        unavailable: str | None = None
         try:
             from strands_robots.dataset_recorder import DatasetRecorder as _DatasetRecorder
-            from strands_robots.dataset_recorder import has_lerobot_dataset as _check_lerobot
+            from strands_robots.dataset_recorder import lerobot_dataset_import_error
 
-            _has_lerobot = _check_lerobot()
-        except ImportError:
-            # lerobot extra not installed; handled by the _has_lerobot guard below.
-            pass
+            unavailable = lerobot_dataset_import_error()
+        except ImportError as exc:
+            # strands_robots.dataset_recorder itself did not import (a partial or
+            # drifted install); report that rather than blaming the lerobot extra.
+            unavailable = f"strands_robots.dataset_recorder is unavailable ({exc})."
+        if unavailable is None and _DatasetRecorder is None:
+            unavailable = "strands_robots.dataset_recorder did not provide DatasetRecorder."
 
-        if not _has_lerobot or _DatasetRecorder is None:
+        if unavailable is not None:
             return {
                 "status": "error",
                 "content": [
                     {
                         "text": (
-                            "start_recording produces a LeRobotDataset (parquet + video) and "
-                            "requires the lerobot extra: pip install 'strands-robots[lerobot]'.\n"
+                            "start_recording produces a LeRobotDataset (parquet + video), which "
+                            "needs lerobot's dataset stack:\n"
+                            "\n"
+                            f"  {unavailable}\n"
+                            "\n"
                             "For plain MP4 video, pass video={'path': ...} to run_policy instead."
                         )
                     }

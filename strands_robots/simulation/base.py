@@ -272,6 +272,100 @@ def _non_finite_action_error(label: str, value: Any) -> dict[str, Any] | None:
     }
 
 
+_BOOLEAN_ACTION_REASON = (
+    "A boolean cannot express an actuator command. float(True) is 1.0, and each "
+    "drive reads 1.0 in its own units: a 1-radian target on a joint-position "
+    "drive, a full-travel command on a normalized or tendon drive (a [0, 255] "
+    "tendon gripper reads 1.0 as fully open), and an out-of-range value that is "
+    "silently clamped on a drive whose ctrlrange excludes 1. The same True "
+    "therefore commands a different pose on every actuator. Pass the command in "
+    "the actuator's own units - for a binary gripper, the endpoint value rather "
+    "than a flag."
+)
+
+
+def _unwrap_single_element_action_value(value: Any) -> Any:
+    """Unwrap a length-1 sequence action value to its scalar, else return it as-is.
+
+    The ``Policy.get_actions -> list[dict]`` contract emits ``list[float]`` for
+    vector-valued keys, which for a 1-DOF key yields a length-1 list (GR00T's
+    service unpack emits ``{"x": [0.05], ...}`` for the LIBERO delta-EEF
+    layout). Such a value carries exactly one scalar and is unambiguous, so it
+    is unwrapped rather than rejected.
+
+    A 0-d numpy array (``np.array(True)``, ``np.mean(...)``) declares
+    ``__len__`` and ``__getitem__`` but raises ``TypeError`` from ``len()``, so
+    probing the length directly escapes ``send_action``'s structured-error
+    contract with a bare ``len() of unsized object``. It already holds exactly
+    one scalar, so there is nothing to unwrap and it is returned unchanged for
+    the value checks to read.
+    """
+    if isinstance(value, (str, bytes, Mapping)):
+        return value
+    if not hasattr(value, "__len__") or not hasattr(value, "__getitem__"):
+        return value
+    try:
+        length = len(value)
+    except TypeError:
+        return value
+    return value[0] if length == 1 else value
+
+
+def _is_boolean(value: Any) -> bool:
+    """Return True when ``value`` is a python or a numpy boolean.
+
+    ``numpy.bool_`` is not a ``bool`` subclass, so ``isinstance(value, bool)``
+    alone misses the boolean a policy produces from a comparison
+    (``gripper > 0.5``). Unwrapping through ``.item()`` first - the mechanism
+    :func:`strands_robots.mesh.security.validate_input_frame` already uses for
+    the same gate - yields a python ``bool`` for a numpy boolean scalar or 0-d
+    array while leaving every numeric scalar reported as non-boolean.
+    """
+    if isinstance(value, bool):
+        return True
+    item = getattr(value, "item", None)
+    if callable(item):
+        try:
+            return isinstance(item(), bool)
+        except (TypeError, ValueError):  # a multi-element array has no single item
+            return False
+    return False
+
+
+def _boolean_action_error(label: str, value: Any) -> dict[str, Any] | None:
+    """Structured error when an action value is a python or numpy boolean.
+
+    ``bool`` is an ``int`` subclass and ``numpy.bool_`` coerces the same way, so
+    a scalar-coercion check admits both and they reach the actuator command as a
+    silent ``1.0``/``0.0``. The teleop wire validator
+    (:func:`strands_robots.mesh.security.validate_input_frame`, which
+    ``InputReceiver`` applies through ``send_action``) already refuses a boolean
+    for exactly that reason, so a remote peer's frame is held to a stricter
+    domain than the local call it is applied through; this is the same rule for
+    the actuator-command path, applied to both accepted action shapes so a
+    mapping value and a vector entry cannot diverge.
+
+    Args:
+        label: How to name the offending element in the message - the caller
+            supplies it because a mapping names a key while a vector names a
+            position and the actuator key it binds to.
+        value: The raw value, before scalar coercion (``float(True)`` is 1.0, so
+            the boolean is unrecoverable once coerced).
+
+    Returns:
+        A structured ``{"status": "error", ...}`` dict, or ``None`` when the
+        value is not a boolean and is therefore usable as a command.
+    """
+    if not _is_boolean(value):
+        return None
+    return {
+        "status": "error",
+        "content": [
+            {"text": (f"send_action: {label} must be a number, not a bool (got {value!r}). {_BOOLEAN_ACTION_REASON}")}
+        ],
+    }
+
+
 class SimEngine(ABC):
     """Abstract base class for simulation engines.
 
@@ -313,7 +407,24 @@ class SimEngine(ABC):
 
         # Cleanup
         sim.destroy()
+
+    Concrete engines must set ``self._init_complete = True`` as the final
+    statement of their ``__init__``. :meth:`__del__` consults it and skips an
+    instance that never finished construction, so a half-built engine is never
+    reported as a cleanup failure.
     """
+
+    # Whether ``__init__`` ran to completion, i.e. whether this instance holds
+    # engine resources that need releasing. :meth:`__del__` reads it to tell
+    # "never acquired anything" from "failed to release something": on a
+    # ``__new__`` skeleton, or an ``__init__`` that raised part-way, the class
+    # attribute below answers False and the finalizer skips ``cleanup()``
+    # instead of reporting whichever attribute ``__init__`` had not reached yet
+    # as a cleanup failure. Declared on the class rather than assigned in an
+    # ABC ``__init__`` so the read itself can never raise, and so lightweight
+    # subclasses and test doubles need not thread ``super().__init__()``
+    # through (the same constraint :meth:`_init_ros_bridge` documents).
+    _init_complete: bool = False
 
     def _init_ros_bridge(self, *, ros2_bridge: bool = False, ros2_domain: int = 0) -> None:
         """Initialize the optional ROS 2 telemetry bridge state.
@@ -861,10 +972,24 @@ class SimEngine(ABC):
         clamped into ``ctrlrange``, i.e. silently rewritten into a full-travel
         command. The sibling state writers (:meth:`set_joint_positions` /
         :meth:`set_joint_velocities`) already refuse a non-finite value, so this
-        holds the actuator-command path to the same rule. The domain is finiteness
-        alone: a numeric string is an accepted spelling of a scalar here, and a
-        finite magnitude outside ``ctrlrange`` is a units question already
-        surfaced by the clamp warning.
+        holds the actuator-command path to the same rule.
+
+        A value must additionally not be a **boolean**. ``bool`` is an ``int``
+        subclass and ``numpy.bool_`` coerces identically, so the scalar check
+        admits both and they reach the actuator as ``1.0``/``0.0`` - and 1.0 is
+        not one command: it is a 1-radian target on a joint-position drive, a
+        full-travel command on a normalized or tendon drive, and an out-of-range
+        value that is silently clamped where ``ctrlrange`` excludes 1. A boolean
+        is the conventional binary-gripper action, so the value arrives at this
+        surface routinely rather than as a typo. The teleop wire validator
+        (:func:`strands_robots.mesh.security.validate_input_frame`) already
+        refuses a boolean so it "can't masquerade as a 1.0/0.0 command", and it
+        applies frames through ``send_action`` - so refusing it here holds the
+        local call to the domain its own remote surface enforces.
+
+        Otherwise the domain is finiteness: a numeric string is an accepted
+        spelling of a scalar here, and a finite magnitude outside ``ctrlrange``
+        is a units question already surfaced by the clamp warning.
 
         Args:
             action: A ``{name: value}`` mapping, or an ordered numeric vector
@@ -900,13 +1025,12 @@ class SimEngine(ABC):
             # atomically.
             normalized: dict[str, Any] = {}
             for key, value in action.items():
-                if (
-                    not isinstance(value, (str, bytes, Mapping))
-                    and hasattr(value, "__len__")
-                    and hasattr(value, "__getitem__")
-                    and len(value) == 1
-                ):
-                    value = value[0]
+                value = _unwrap_single_element_action_value(value)
+                # Before the scalar coercion: ``float(True)`` succeeds, so the
+                # coercion below cannot see a boolean and the value would reach
+                # the actuator as a silent 1.0/0.0 command.
+                if error := _boolean_action_error(f"action value for key '{key}'", value):
+                    return None, error
                 try:
                     float(value)
                 except (TypeError, ValueError):
@@ -945,7 +1069,10 @@ class SimEngine(ABC):
             }
 
         try:
-            values = [float(v) for v in action]
+            # Keep the raw entries: ``float`` erases a boolean into 1.0/0.0, so
+            # the bool gate below has to see the value the caller passed.
+            raw_entries = list(action)
+            values = [float(v) for v in raw_entries]
         except (TypeError, ValueError) as exc:
             return None, {
                 "status": "error",
@@ -968,8 +1095,11 @@ class SimEngine(ABC):
                 ],
             }
         bound: dict[str, Any] = {}
-        for idx, (name, value) in enumerate(zip(action_keys, values)):
-            if error := _non_finite_action_error(f"action vector entry {idx} ('{name}')", value):
+        for idx, (name, raw, value) in enumerate(zip(action_keys, raw_entries, values, strict=True)):
+            label = f"action vector entry {idx} ('{name}')"
+            if error := _boolean_action_error(label, raw):
+                return None, error
+            if error := _non_finite_action_error(label, value):
                 return None, error
             bound[name] = value
         return bound, None
@@ -1762,24 +1892,91 @@ class SimEngine(ABC):
                 why the rollout ended via ``stopped_reason``.
 
         Returns:
-            Standard status dict with an agent-consumable ``{"json": {...}}``
-            content block alongside the human-readable ``text``. The json block
-            carries the rollout facts as typed fields (``n_steps``,
-            ``steps_used``, ``elapsed_s``, ``stopped_early``,
-            ``stopped_reason`` (``"predicate"`` | ``"budget"`` |
-            ``"cancelled"``; ``"error"`` on error results - so an agent
-            deciding whether to retry knows WHY the rollout ended),
-            ``action_errors``, ``video_path``,
-            ``video_frames``, ``positional_fallback_used``,
-            ``generic_state_keys_used``, ``missing_state_keys_used``, ...) so callers can self-correct
-            programmatically without parsing the text. The two routing-
-            degradation flags are True when the driving policy could not bind
-            the observation to the model's inputs by name and silently fell
-            back (a camera routed to a model image slot positionally, or
-            ``observation.state`` composed from the observation's own scalar
-            keys because none of ``robot_state_keys`` matched). A True flag on
-            an otherwise ``success`` run is the signature of the robot moving
-            on meaningless inputs. Mirrors :meth:`eval_policy`.
+            The standard agent-tool envelope
+            ``{"status": "success"|"error", "content": [{"text": ...},
+            {"json": {...}}]}``. The ``json`` block is the machine-readable
+            rollout report; ``text`` carries the same facts for humans.
+
+            Read the json block by SCANNING ``content`` for the first block
+            with a ``"json"`` key, never by a fixed index::
+
+                report = next(b["json"] for b in result["content"] if "json" in b)
+
+            An early caller-error return (a rejected ``duration``, an unknown
+            robot) carries a ``text`` block ONLY, so a hardcoded
+            ``content[1]`` raises ``IndexError`` on exactly the results a
+            caller most needs to read.
+
+            IMPORTANT - ``status`` is not the rollout verdict. It reports
+            whether the CALL was accepted and the loop ran; it does not say the
+            robot did anything useful. A rollout that drove only a SUBSET of
+            the robot's actuators is deliberately ``success`` (it is
+            operational), so ``status`` alone cannot see it: a policy driving 1
+            of a Panda's 8 actuators returns ``status="success"`` with
+            ``action_errors=0`` and ``partial_action_failure_rate=0.875``. Gate
+            on ``partial_action_failure_rate`` and the binding-degradation
+            flags below to decide whether a rollout is worth anything. A TOTAL
+            failure - no emitted key resolving to any actuator - is reported as
+            ``status="error"``.
+
+            Fields in the json block:
+
+            Identity: ``robot_name``, ``policy`` (the driving policy's class
+            name), ``instruction``.
+
+            Horizon: ``n_steps`` (control steps executed), ``steps_used``
+            (alias of ``n_steps`` under the retry-loop name), ``elapsed_s``,
+            ``sim_time_s`` (when the backend reports sim time),
+            ``stopped_early``, ``stopped_reason`` (``"predicate"`` - the
+            ``stop_when`` condition fired; ``"budget"`` - the step/duration
+            horizon was exhausted; ``"cancelled"`` - a cooperative stop, e.g.
+            ``stop_policy``; ``"error"`` on error results - so an agent
+            deciding whether to retry knows WHY the rollout ended).
+
+            Action health: ``action_errors`` (steps where at least one emitted
+            key did not resolve), ``action_resolution_rate`` (an
+            ``{actuator_name: fraction_of_steps_driven}`` map, so a joint stuck
+            at ``0.0`` names the actuator the policy never drove) and
+            ``partial_action_failure_rate`` (the mean fraction of the robot's
+            DOF never driven; ``0.0`` == every actuator moved every step,
+            ``~0.83`` == only 1 of 6 actuators ever moved).
+
+            Video: ``video_path`` (``None`` when no MP4 was written) and
+            ``video_frames``.
+
+            Episodes: ``n_episodes_requested``, ``n_episodes_completed``,
+            ``episodes_saved`` and ``dataset_episode_indices`` (the dataset
+            episode indices this call flushed, empty without a recording).
+
+            Policy binding: ``positional_fallback_used``,
+            ``generic_state_keys_used`` and ``missing_state_keys_used``. True
+            means the driving policy could not bind the observation to the
+            model's inputs by name and silently fell back (a camera routed to a
+            model image slot positionally, or ``observation.state`` composed
+            from the observation's own scalar keys because none of
+            ``robot_state_keys`` matched). A True flag on an otherwise
+            ``success`` run is the signature of a robot moving on meaningless
+            inputs.
+
+            Policy load: ``policy_load_time_s``, ``policy_load_cache_hit``
+            (``False`` on episode 2+ of a loop is a smell that the caller
+            rebuilt the policy instead of reusing ``policy_object=``) and
+            ``policy_resident_rss_mb``.
+
+            Async-RTC telemetry, so latency masking is provable from the
+            payload instead of from logs: ``rtc_async_enabled``,
+            ``rtc_chunks_acquired``, ``rtc_prefetch_hits``,
+            ``rtc_prefetch_blocks``, ``rtc_avg_inference_ms`` and
+            ``rtc_max_inference_ms``.
+
+            Fail-fast: if EVERY action step in the opening probe window drives
+            zero actuators - none of the policy's emitted keys resolve to any of
+            the robot's actuators - the rollout can never move the robot, so it
+            returns ``status="error"`` at the probe boundary instead of running
+            the full episode (and every remaining model inference call +
+            recording write). The error enumerates the unresolved keys and the
+            robot's valid actuator names. A PARTIAL failure runs to completion,
+            surfaced via ``partial_action_failure_rate``.
         """
         from strands_robots.policies import create_policy
 
@@ -2682,6 +2879,49 @@ class SimEngine(ABC):
         ``eval_ep1.mp4``, ...) so episodes never overwrite each other, and the
         written files are returned in the result json ``video_paths``. Recording
         is unsupported on the benchmark (``evaluate_benchmark``) path.
+
+        Returns:
+            The standard agent-tool envelope
+            ``{"status": "success"|"error", "content": [{"text": ...},
+            {"json": {...}}]}``, read the same way as :meth:`run_policy`'s -
+            by scanning ``content`` for the first block with a ``"json"`` key,
+            never by a fixed index (an early caller-error return carries a
+            ``text`` block only).
+
+            ``status`` reports whether the evaluation RAN, not whether the
+            policy succeeded: an evaluation in which every episode failed is
+            still ``status="success"`` with ``success_rate=0.0``. Read
+            ``success_measured`` first - it is ``False`` when no
+            ``success_fn`` / benchmark spec was supplied, in which case
+            ``success_rate`` is ``0.0`` for every policy regardless of what it
+            did and measures nothing.
+
+            Fields in the json block:
+
+            Outcome: ``success_rate``, ``n_success``, ``success_measured``,
+            ``episodes_completed``, ``episodes`` (the per-episode records) and
+            ``avg_steps``.
+
+            Horizon: ``n_episodes``, ``max_steps`` (the values the evaluation
+            ran with) and ``stopped_early``.
+
+            Video: ``video_paths`` (one MP4 per episode, empty when no
+            recording was requested).
+
+            Policy binding: ``positional_fallback_used``,
+            ``generic_state_keys_used`` and ``missing_state_keys_used`` - True
+            means the policy silently fell back to positional camera routing or
+            to observation-derived state keys, so the robot moved on
+            meaningless inputs and the success rate measures nothing about the
+            policy. See :meth:`run_policy` for the full contract.
+
+            Policy load: ``policy_load_time_s``, ``policy_load_cache_hit`` and
+            ``policy_resident_rss_mb``.
+
+            Async-RTC telemetry: ``rtc_async_enabled``,
+            ``rtc_chunks_acquired``, ``rtc_prefetch_hits``,
+            ``rtc_prefetch_blocks``, ``rtc_avg_inference_ms`` and
+            ``rtc_max_inference_ms``.
         """
         robots = self.list_robots()
         if not robots:
@@ -3139,7 +3379,23 @@ class SimEngine(ABC):
         raise NotImplementedError("set_obs_noise not implemented by this backend")
 
     def get_contacts(self) -> dict[str, Any]:
-        """Get contact information. Override per backend."""
+        """Get contact information. Override per backend.
+
+        Returns:
+            The agent-tool envelope -- ``{"status": ..., "content": [...]}`` --
+            whose ``json`` content block carries ``contacts``, a list of
+            per-contact records. The payload lives in that block, not on the
+            envelope itself, so a caller reading ``result["contacts"]``
+            directly always misses. The predicate DSL's ``contact_*``
+            factories (see
+            :mod:`strands_robots.simulation.predicates`) are the supported
+            readers; ``success_fn="contact"`` on
+            :meth:`~strands_robots.simulation.policy_runner.PolicyRunner.evaluate`
+            shares them.
+
+        Raises:
+            NotImplementedError: Backends that expose no contact list.
+        """
         raise NotImplementedError("get_contacts not implemented by this backend")
 
     # Raw-frame render APIs (programmatic, not tool-envelope). Optional per
@@ -3593,7 +3849,14 @@ class SimEngine(ABC):
         }
 
     def cleanup(self) -> None:
-        """Release all resources. Called on __del__ / context exit."""
+        """Release all resources.
+
+        Called on context exit, and best-effort from :meth:`__del__` for an
+        engine whose ``__init__`` ran to completion. Implementations are
+        written against a fully-constructed instance: a caller whose
+        ``__init__`` raised part-way must release whatever it acquired itself
+        rather than relying on the finalizer.
+        """
         pass
 
     def __enter__(self) -> SimEngine:
@@ -3603,6 +3866,13 @@ class SimEngine(ABC):
         self.cleanup()
 
     def __del__(self) -> None:
+        if not self._init_complete:
+            # ``__init__`` never finished, so this instance holds no engine
+            # resources. Calling cleanup() here would raise on whichever
+            # attribute ``__init__`` had not reached yet and report that name
+            # as a cleanup failure - noise indistinguishable from a real leak,
+            # and a red herring for whoever reads it.
+            return
         try:
             self.cleanup()
         except Exception as e:
