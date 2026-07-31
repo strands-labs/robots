@@ -40,6 +40,7 @@ from strands_robots.utils import (
     finite_number_error,
     positive_finite_number_error,
     positive_whole_number_error,
+    tcp_port_error,
 )
 
 _TWIST_TYPE = "geometry_msgs/Twist"
@@ -95,8 +96,8 @@ class RosbridgeRobot:
         self.scan_topic = _check_topic("scan_topic", scan_topic) if scan_topic else None
         if not host or not _HOST_RE.match(host):
             raise ValueError(f"invalid host: {host!r}")
-        if not isinstance(port, int) or isinstance(port, bool) or not 1 <= port <= 65535:
-            raise ValueError(f"invalid port: {port!r} (expected 1-65535)")
+        if (port_error := tcp_port_error(port, "port", type(self).__name__)) is not None:
+            raise ValueError(port_error)
         self.host = host
         self.port = port
         self.cmd_vel_type = cmd_vel_type

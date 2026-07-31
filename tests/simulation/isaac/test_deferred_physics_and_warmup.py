@@ -34,6 +34,7 @@ The tests drive the REAL ``IsaacSimulation`` methods on a ``__new__`` skeleton
 
 from __future__ import annotations
 
+import logging
 import sys
 import types
 
@@ -205,13 +206,53 @@ class _WarmupWorld:
         return self._remaining == 0
 
 
-def _skeleton_sim(world: _WarmupWorld) -> IsaacSimulation:
-    """Minimal ``__new__`` skeleton for the real ``_warmup_camera`` body."""
+class _FakeApp:
+    """Stub ``SimulationApp`` whose ``update()`` is render-only.
+
+    ``_refresh_all_render_products`` prefers ``SimulationApp.update()`` and
+    falls back to ``world.step(render=True)``. The real ``update()`` flushes
+    the secondary render products WITHOUT advancing physics, so this double
+    only counts calls: it must not tick the timeline or advance camera
+    readiness, or a secondary flush would masquerade as a warm-up step.
+    """
+
+    def __init__(self) -> None:
+        self.update_calls = 0
+
+    def update(self) -> None:
+        self.update_calls += 1
+
+
+def _skeleton_sim(
+    world: _WarmupWorld,
+    *,
+    camera_names: tuple[str, ...] = ("front",),
+) -> IsaacSimulation:
+    """``__new__`` skeleton carrying every attribute ``_warmup_camera`` reads.
+
+    ``camera_names`` populates the camera registry, which the loop *sizes* to
+    decide whether the secondary render products need an explicit flush
+    (``len(self._cameras) > 1``). Pass the real two-camera shape - a
+    pre-existing ``image`` plus the LIBERO adapter's late ``wrist_image`` - to
+    exercise that branch; a single name keeps the primary-product-only path.
+
+    Every attribute here is one the real ``__init__`` always sets, so the
+    skeleton stays a faithful stand-in rather than a shape the production code
+    is bent to accept: the loop reads ``_cameras``, ``_refresh_all_render_products``
+    reads ``_world_created`` and ``_app``, and ``__repr__`` reads
+    ``_world_created`` (an incomplete skeleton makes every assertion failure in
+    this file carry a misleading ``AttributeError`` from ``repr()``).
+    """
     sim = IsaacSimulation.__new__(IsaacSimulation)
     sim._config = IsaacConfig(headless=True, num_envs=1)
     sim._world = world
+    sim._world_created = True
     sim._sim_time = 0.0
     sim._step_count = 0
+    # Values are irrelevant - the loop only takes len() - but the keys mirror
+    # the live registry so a reader sees which scenario is under test.
+    sim._cameras = dict.fromkeys(camera_names, None)  # type: ignore[assignment]
+    sim._app = _FakeApp()  # type: ignore[assignment]
 
     def _render(camera_name: str = "default", width=None, height=None):  # noqa: ANN001, ARG001
         if world.camera_ready:
@@ -235,11 +276,14 @@ class TestWarmupCameraResumesTimeline:
         """
         fake_timeline._playing = False
         world = _WarmupWorld(fake_timeline, frames_until_ready=2)
-        sim = _skeleton_sim(world)
+        sim = _skeleton_sim(world, camera_names=("image", "wrist_image"))
 
         assert sim._warmup_camera("wrist_image", n_steps=5) is True
         assert fake_timeline.play_calls >= 1
         assert world.render_steps_while_playing >= 2
+        # The late second camera is exactly the #1802 shape, so the loop must
+        # also have flushed the secondary render products.
+        assert sim._app.update_calls >= 1
 
     def test_reasserts_play_when_queued_stop_lands_mid_loop(self, fake_timeline) -> None:
         """A stale ``is_playing() == True`` with a stop in flight.
@@ -252,7 +296,7 @@ class TestWarmupCameraResumesTimeline:
         fake_timeline._playing = True
         fake_timeline.stop()  # queued; lands on the first world.step tick
         world = _WarmupWorld(fake_timeline, frames_until_ready=2)
-        sim = _skeleton_sim(world)
+        sim = _skeleton_sim(world, camera_names=("image", "wrist_image"))
 
         assert sim._warmup_camera("wrist_image", n_steps=5) is True
         assert fake_timeline.play_calls >= 1
@@ -265,3 +309,110 @@ class TestWarmupCameraResumesTimeline:
 
         assert sim._warmup_camera("front", n_steps=3) is True
         assert fake_timeline.play_calls == 0
+
+
+class _RaisingWorld(_WarmupWorld):
+    """``_WarmupWorld`` whose ``step`` raises on the ``raise_on``-th call.
+
+    Models the failure the loop's own comment anticipates - "stepping /
+    rendering a partially-initialised stage can raise on surface drift" - so
+    the loop breaks with budget left over.
+    """
+
+    def __init__(self, timeline: _FakeTimeline, *, raise_on: int, exc: Exception) -> None:
+        super().__init__(timeline, frames_until_ready=10**6)
+        self._raise_on = raise_on
+        self._exc = exc
+        self.step_calls = 0
+
+    def step(self, render: bool = False) -> None:
+        self.step_calls += 1
+        if self.step_calls == self._raise_on:
+            raise self._exc
+        super().step(render=render)
+
+
+def _warnings(caplog) -> str:  # noqa: ANN001 - pytest fixture
+    """Every WARNING message the warm-up emitted, joined."""
+    return "\n".join(r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING)
+
+
+class TestWarmupCameraFailureReportNamesTheCause:
+    """A ``False`` must say WHICH failure happened - the remedies differ.
+
+    An exhausted budget means the render product never accumulated, so
+    stepping/waiting longer can help. An early abort means the loop stopped on
+    an exception with budget left, so waiting cannot help until that exception
+    is fixed. Reporting an abort with the exhaustion text (the pre-fix
+    behaviour, with the exception itself DEBUG-only) points the operator at
+    the renderer for what is really a surface or attribute error.
+    """
+
+    def test_an_abort_names_the_step_reached_and_the_cause(self, fake_timeline, caplog) -> None:
+        """Abort on step 1 of 5: report the step reached and the exception."""
+        fake_timeline._playing = True
+        world = _RaisingWorld(fake_timeline, raise_on=1, exc=AttributeError("no attribute '_cameras'"))
+        sim = _skeleton_sim(world)
+
+        with caplog.at_level(logging.WARNING):
+            assert sim._warmup_camera("front", n_steps=5) is False
+
+        text = _warnings(caplog)
+        assert "aborted on step 1 of 5" in text
+        assert "AttributeError" in text
+        assert "no attribute '_cameras'" in text
+        # It must NOT claim the render product was given the whole budget.
+        assert "did not produce a valid frame" not in text
+
+    def test_the_reported_step_count_is_the_steps_taken(self, fake_timeline, caplog) -> None:
+        """A mid-loop abort reports where it stopped, not the budget."""
+        fake_timeline._playing = True
+        world = _RaisingWorld(fake_timeline, raise_on=3, exc=RuntimeError("stage surface drift"))
+        sim = _skeleton_sim(world)
+
+        with caplog.at_level(logging.WARNING):
+            assert sim._warmup_camera("front", n_steps=6) is False
+
+        assert "aborted on step 3 of 6" in _warnings(caplog)
+
+    def test_an_exhausted_budget_still_points_at_the_render_product(self, fake_timeline, caplog) -> None:
+        """No exception, never ready: the original exhaustion report stands."""
+        fake_timeline._playing = True
+        world = _WarmupWorld(fake_timeline, frames_until_ready=10**6)
+        sim = _skeleton_sim(world)
+
+        with caplog.at_level(logging.WARNING):
+            assert sim._warmup_camera("front", n_steps=3) is False
+
+        text = _warnings(caplog)
+        assert "did not produce a valid frame after 3 warm-up step(s)" in text
+        assert "aborted" not in text
+        assert world.render_steps_while_playing == 3, "the whole budget must really have been spent"
+
+
+class TestWarmupCameraSecondaryRenderProducts:
+    """The ``len(self._cameras) > 1`` flush from #1802, exercised.
+
+    ``world.step(render=True)`` reliably refreshes only the PRIMARY render
+    product, so a camera added next to an existing one needs an explicit
+    secondary flush before the frame check. The registry size is what selects
+    that branch.
+    """
+
+    def test_a_second_camera_flushes_the_secondary_render_products(self, fake_timeline) -> None:
+        """Two registered cameras -> the secondary products are flushed."""
+        fake_timeline._playing = True
+        world = _WarmupWorld(fake_timeline, frames_until_ready=2)
+        sim = _skeleton_sim(world, camera_names=("image", "wrist_image"))
+
+        assert sim._warmup_camera("wrist_image", n_steps=5) is True
+        assert sim._app.update_calls >= 1
+
+    def test_a_single_camera_needs_no_secondary_flush(self, fake_timeline) -> None:
+        """One registered camera -> stepping alone refreshes it, no flush."""
+        fake_timeline._playing = True
+        world = _WarmupWorld(fake_timeline, frames_until_ready=2)
+        sim = _skeleton_sim(world, camera_names=("front",))
+
+        assert sim._warmup_camera("front", n_steps=5) is True
+        assert sim._app.update_calls == 0

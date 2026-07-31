@@ -51,6 +51,7 @@ from typing import Any
 from strands import tool
 
 from strands_robots.tools._numeric_options import numeric_option_error
+from strands_robots.utils import tcp_port_error
 
 logger = logging.getLogger(__name__)
 
@@ -263,8 +264,8 @@ def use_rosbridge(
 
     if not host or not _HOST_RE.match(host):
         return _err(f"invalid host: {host!r}")
-    if not isinstance(port, int) or isinstance(port, bool) or not 1 <= port <= 65535:
-        return _err(f"invalid port: {port!r} (expected 1-65535)")
+    if (port_error := tcp_port_error(port, "port", action)) is not None:
+        return _err(port_error)
     if topic is not None and not _NAME_RE.match(topic):
         return _err(f"invalid topic name: {topic!r}")
     if service is not None and not _NAME_RE.match(service):
