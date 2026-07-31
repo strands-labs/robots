@@ -41,6 +41,7 @@ import os
 from typing import Any
 
 from strands_robots.policies.base import Policy
+from strands_robots.utils import tcp_port_error
 
 from .client import MoveIt2InferenceClient
 
@@ -64,7 +65,9 @@ class MoveIt2Policy(Policy):
     Args:
         host: Sidecar hostname. Default ``"127.0.0.1"`` (loopback only -
             users opt into network exposure).
-        port: Sidecar port.
+        port: Sidecar port, an ``int`` in ``[1, 65535]``. A value outside
+            the range is refused rather than interpolated into
+            ``tcp://<host>:<port>``.
         planning_group: Default MoveIt2 planning-group name. Per-call
             ``planning_group`` kwargs override this.
         timeout_ms: ZMQ socket timeout (send + recv) in milliseconds.
@@ -101,6 +104,13 @@ class MoveIt2Policy(Policy):
         api_token: str | None = None,
         **kwargs: Any,
     ) -> None:
+        # ``port`` addresses the moveit_py sidecar this client dials, so a
+        # value that cannot name one is refused before it reaches
+        # ``tcp://<host>:<port>``. The domain is the shared one the sibling
+        # transports use, so the same port cannot be refused onto a service by
+        # one and accepted by the next.
+        if (port_error := tcp_port_error(port, "port", type(self).__name__)) is not None:
+            raise ValueError(port_error)
         self.host = host
         self.port = port
         self.planning_group = planning_group

@@ -503,11 +503,18 @@ def tcp_port_error(value: Any, param: str, context: str) -> str | None:
 
     Shared domain for every caller-supplied port number: the agent tools that
     reach a service over TCP (``use_rosbridge``'s WebSocket,
-    ``gr00t_inference``'s inference service) and the mesh bridges that construct
-    one. A port is an index into the 16-bit TCP port space, so only an ``int``
-    in ``[1, 65535]`` names one: ``0`` asks the kernel for an ephemeral port
-    rather than naming a port, and a value outside the range has nothing to bind
-    or connect to.
+    ``gr00t_inference``'s inference service), the mesh bridges that construct
+    one, and the policy providers that dial one (``groot``, ``moveit2``,
+    ``cosmos3``, ``lerobot_async``). A port is an index into the 16-bit TCP port
+    space, so only an ``int`` in ``[1, 65535]`` names one: ``0`` asks the kernel
+    for an ephemeral port rather than naming a port, and a value outside the
+    range has nothing to bind or connect to.
+
+    A lazily-connecting transport makes the range load-bearing at the boundary
+    rather than at the socket: ZMQ's ``connect`` accepts ``tcp://host:99999``
+    and a WebSocket/gRPC target is only resolved on first use, so a port outside
+    the range is not refused by the transport - it fails much later as an
+    unreachable service, implicating the server rather than the port.
 
     It lives here rather than beside one of its callers for the same reason
     :func:`positive_count_error` does: those callers sit in different layers

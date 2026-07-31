@@ -58,7 +58,7 @@ from typing import Any
 import numpy as np
 
 from strands_robots.policies.base import Policy, align_action_values, chunk_count_error
-from strands_robots.utils import require_optional
+from strands_robots.utils import require_optional, tcp_port_error
 
 logger = logging.getLogger(__name__)
 
@@ -115,7 +115,9 @@ class LerobotAsyncPolicy(Policy):
             takes precedence over ``host``/``port``. A ``grpc://`` scheme is
             stripped if present.
         host: Server host (used when ``server_address`` is not given).
-        port: Server port (used when ``server_address`` is not given).
+        port: Server port (used when ``server_address`` is not given), an
+            ``int`` in ``[1, 65535]``. A value outside the range is refused
+            rather than interpolated into the gRPC target.
         policy_type: lerobot policy type the server should load (one of
             :data:`SUPPORTED_POLICY_TYPES`). Required.
         pretrained_name_or_path: HuggingFace model id or path the server loads.
@@ -174,6 +176,12 @@ class LerobotAsyncPolicy(Policy):
         pad_short_actions: bool = False,
         **ignored_kwargs: Any,
     ) -> None:
+        # ``port`` addresses the lerobot PolicyServer this client dials, so a
+        # value that cannot name one is refused before it is interpolated into
+        # the gRPC target. ``server_address`` supersedes ``host``/``port``, so
+        # the port is validated only when it is the effective spelling.
+        if not server_address and (port_error := tcp_port_error(port, "port", type(self).__name__)) is not None:
+            raise ValueError(port_error)
         address = server_address or f"{host}:{port}"
         if "://" in address:
             address = address.split("://", 1)[1]

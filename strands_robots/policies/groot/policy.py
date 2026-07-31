@@ -27,6 +27,7 @@ from typing import Any
 import numpy as np
 
 from strands_robots.policies.base import Policy
+from strands_robots.utils import tcp_port_error
 
 from .client import Gr00tInferenceClient
 from .data_config import Gr00tDataConfig, load_data_config
@@ -356,7 +357,10 @@ class Gr00tPolicy(Policy):
     Args:
         data_config: Config name or :class:`Gr00tDataConfig`.
         host: Service host.
-        port: Service port.
+        port: Service port, an ``int`` in ``[1, 65535]``. Only read in
+            service mode; ``model_path`` selects local mode, which never
+            dials. A value outside the range is refused rather than
+            interpolated into ``tcp://<host>:<port>``.
         model_path: HF model ID or local path (triggers local mode).
         embodiment_tag: Embodiment tag string.
         device: ``"cuda"`` or ``"cpu"``.
@@ -435,6 +439,15 @@ class Gr00tPolicy(Policy):
             self._init_mappings()
         else:
             self._mode = "service"
+            # ``port`` addresses the inference service this client dials, so a
+            # value that cannot name one is refused here rather than
+            # interpolated into ``tcp://<host>:<port>``. ZMQ's ``connect`` is
+            # lazy, so an out-of-range or fractional port is accepted by the
+            # socket and only surfaces later as an inference timeout that
+            # implicates the server rather than the port. Local mode never
+            # dials, so the port is validated only on the branch that reads it.
+            if (port_error := tcp_port_error(port, "port", type(self).__name__)) is not None:
+                raise ValueError(port_error)
             logger.info("GR00T service mode, %s:%s", host, port)
             # Resolve api_token from env var if not provided as parameter
             resolved_token = api_token or os.environ.get("GROOT_API_TOKEN")

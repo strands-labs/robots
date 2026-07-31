@@ -65,6 +65,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 
 from strands_robots.policies.base import Policy
+from strands_robots.utils import tcp_port_error
 
 from .client import Cosmos3WebsocketClient
 from .embodiments import (
@@ -106,7 +107,10 @@ class Cosmos3Policy(Policy):
         embodiment: Embodiment key/alias (``"droid"``, ``"umi"``, ``"av"``,
             ``"bridge"``). Selects domain, action layout, and defaults.
         host: Policy-server hostname.
-        port: Policy-server WebSocket port.
+        port: Policy-server WebSocket port, an ``int`` in ``[1, 65535]``.
+            Read only when this constructor builds the client; an injected
+            ``client`` owns its own address. A value outside the range is
+            refused rather than interpolated into ``ws://<host>:<port>``.
         action_space: ``"joint_pos"`` or ``"midtrain"`` - must match how the
             server was launched (DROID default = ``joint_pos``).
         observation_mapping: ``{robot_obs_key: "observation/<server_key>"}``.
@@ -289,6 +293,13 @@ class Cosmos3Policy(Policy):
                 mode,
             )
         else:
+            # ``port`` addresses the RoboLab policy server this client dials, so
+            # a value that cannot name one is refused before it reaches
+            # ``ws://<host>:<port>``. An injected ``client`` owns its own
+            # address, so the port is validated only when this constructor is
+            # the one that builds the endpoint.
+            if not client and (port_error := tcp_port_error(port, "port", type(self).__name__)) is not None:
+                raise ValueError(port_error)
             self._client = client or Cosmos3WebsocketClient(host=host, port=port, api_key=api_key, transport=transport)
             logger.info(
                 "Cosmos3Policy ready [embodiment=%s domain=%s action_space=%s chunk=%d backend=service ws://%s:%d]",
