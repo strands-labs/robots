@@ -2472,12 +2472,14 @@ class LiberoAdapter(BenchmarkProtocol):
         """
         if _is_numba_coverage_clash(error):
             return (
-                "This is the known numba/coverage>=7 incompatibility: numba's "
+                "This is the known numba/coverage incompatibility (#522): numba's "
                 "coverage_support module subclasses coverage.types.Tracer, which "
-                "coverage>=7 removed. Remediation: uninstall the conflicting "
-                "coverage from the eval environment ('pip uninstall coverage'), or "
-                "pin coverage<7, or upgrade numba to a release that no longer "
-                "imports coverage.types.Tracer."
+                "some coverage releases (notably the coverage==7.4.4 that a "
+                "pip-installed Isaac Sim pins via isaacsim-kernel) do not "
+                f"provide. {_COVERAGE_CLASH_REMEDY} Alternatively, uninstall "
+                "coverage from the eval environment ('pip uninstall coverage') "
+                "or upgrade numba to a release that no longer imports "
+                "coverage.types.Tracer."
             )
         return (
             "Ensure the OSC controller dependencies (robosuite and its "
@@ -3620,6 +3622,20 @@ def _is_numba_coverage_clash(error: BaseException) -> bool:
     return False
 
 
+#: One-line verified remedy for the numba/coverage clash, appended to every
+#: ``_ControllerInstallError`` raised for it so the user is not left
+#: correlating a coverage version with a robosuite import by hand (#1803).
+#: The canonical trigger today is a pip-installed Isaac Sim: its
+#: ``isaacsim-kernel`` package pins ``coverage==7.4.4``, silently
+#: downgrading modern coverage in the same environment.
+_COVERAGE_CLASH_REMEDY = (
+    "Remedy: pip install 'coverage>=7.6'. (A pip-installed Isaac Sim pins "
+    "coverage==7.4.4 via isaacsim-kernel, which numba's tracer probe cannot "
+    "handle; the resulting pip conflict warning against isaacsim-kernel is "
+    "cosmetic - coverage is kit test tooling, not a runtime dependency.)"
+)
+
+
 class _LiberoOSCController:
     """OSC_POSE controller wrapper for GR00T-LIBERO action dispatch (#168).
 
@@ -3804,7 +3820,9 @@ class _LiberoOSCController:
             raise _ControllerDependencyMissing(f"mujoco not available: {e}") from e
         except ImportError as e:
             if _is_numba_coverage_clash(e):
-                raise _ControllerInstallError(f"mujoco import hit the numba/coverage clash: {e}") from e
+                raise _ControllerInstallError(
+                    f"mujoco import hit the numba/coverage clash: {e}. {_COVERAGE_CLASH_REMEDY}"
+                ) from e
             raise _ControllerDependencyMissing(f"mujoco import failed (treated as unavailable): {e}") from e
         try:
             from robosuite.controllers import (  # type: ignore[import-not-found]
@@ -3824,7 +3842,9 @@ class _LiberoOSCController:
             #      as a hard dependency would break installs without the
             #      optional extras.
             if _is_numba_coverage_clash(e):
-                raise _ControllerInstallError(f"robosuite OSC import hit the numba/coverage clash: {e}") from e
+                raise _ControllerInstallError(
+                    f"robosuite OSC import hit the numba/coverage clash: {e}. {_COVERAGE_CLASH_REMEDY}"
+                ) from e
             raise _ControllerDependencyMissing(
                 f"robosuite OSC controller imports unavailable: {type(e).__name__}: {e}"
             ) from e
