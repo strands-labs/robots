@@ -212,6 +212,12 @@ def _skeleton_sim(world: _WarmupWorld) -> IsaacSimulation:
     sim._world = world
     sim._sim_time = 0.0
     sim._step_count = 0
+    # _warmup_camera flushes secondary render products when more than one
+    # camera is registered (#1802); a single-camera skeleton keeps that
+    # branch out of these timeline pins.
+    sim._cameras = {}
+    # SimEngine.__del__ -> cleanup() consults _world_created at GC time.
+    sim._world_created = False
 
     def _render(camera_name: str = "default", width=None, height=None):  # noqa: ANN001, ARG001
         if world.camera_ready:
