@@ -53,6 +53,7 @@ from strands_robots.benchmarks.libero.bddl_parser import (
     parse_bddl_file,
 )
 from strands_robots.simulation.benchmark import BenchmarkProtocol, StepInfo
+from strands_robots.simulation.isaac.delta_eef import IsaacDeltaEEFController
 from strands_robots.simulation.models import SimCamera, SimRobot
 from strands_robots.utils import get_base_dir, require_optional
 
@@ -60,6 +61,17 @@ if TYPE_CHECKING:
     from strands_robots.simulation.base import SimEngine
 
 logger = logging.getLogger(__name__)
+
+# #1812 - LIBERO-on-Isaac Franka joint/link names. The Isaac eval path
+# (``examples/libero/run_isaac.py``) loads Isaac Sim's bundled Franka USD,
+# whose articulation DOFs are named ``panda_joint1..7`` (arm) plus
+# ``panda_finger_joint1/2`` (0..0.04 m prismatic fingers), with the
+# end-effector link ``panda_hand``. LIBERO is a Franka-only benchmark, so
+# these are constants rather than constructor knobs; a robot that lacks
+# them is a setup error surfaced through ``_ControllerInstallError``.
+_ISAAC_FRANKA_ARM_JOINTS: tuple[str, ...] = tuple(f"panda_joint{i}" for i in range(1, 8))
+_ISAAC_FRANKA_GRIPPER_JOINTS: tuple[str, ...] = ("panda_finger_joint1", "panda_finger_joint2")
+_ISAAC_FRANKA_EEF_LINK = "panda_hand"
 
 
 class LiberoAdapter(BenchmarkProtocol):
@@ -563,6 +575,13 @@ class LiberoAdapter(BenchmarkProtocol):
         # clears the tag.
         self._strict_action_controller = bool(strict_action_controller)
         self._action_controller_error: str | None = None
+        # #1812 - name of the robot an Isaac-side delta-EEF action
+        # controller was installed for (via
+        # ``IsaacSimulation.install_action_controller``), or ``None`` when
+        # the MuJoCo OSC path (or no path) is active. Used by the
+        # post-install settle step in :meth:`on_episode_start`, which
+        # otherwise only fires for the MuJoCo ``backend_state`` seam.
+        self._isaac_action_controller_robot: str | None = None
 
         # #168 - diagnostic logging gate for the STATE side
         # of the policy interface. Set ``STRANDS_LIBERO_STATE_LOG=1`` to
@@ -1048,20 +1067,23 @@ class LiberoAdapter(BenchmarkProtocol):
         # settle to avoid raising - the eval will still run, just at
         # the un-settled init pose.
         if scene_was_loaded:
-            world = getattr(sim, "_world", None)
-            if world is not None:
-                backend_state = getattr(world, "_backend_state", None)
-                if isinstance(backend_state, dict) and "action_controller" in backend_state:
-                    send_action = getattr(sim, "send_action", None)
-                    if callable(send_action):
-                        try:
-                            send_action({})
-                        except Exception as e:  # noqa: BLE001 - never abort eval on settle failure
-                            logger.warning(
-                                "LiberoAdapter.on_episode_start: settle send_action({}) raised %s; "
-                                "first observation will be at raw init_state instead of init_state+1step",
-                                e,
-                            )
+            controller_installed = self._isaac_action_controller_robot is not None
+            if not controller_installed:
+                world = getattr(sim, "_world", None)
+                if world is not None:
+                    backend_state = getattr(world, "_backend_state", None)
+                    controller_installed = isinstance(backend_state, dict) and "action_controller" in backend_state
+            if controller_installed:
+                send_action = getattr(sim, "send_action", None)
+                if callable(send_action):
+                    try:
+                        send_action({})
+                    except Exception as e:  # noqa: BLE001 - never abort eval on settle failure
+                        logger.warning(
+                            "LiberoAdapter.on_episode_start: settle send_action({}) raised %s; "
+                            "first observation will be at raw init_state instead of init_state+1step",
+                            e,
+                        )
 
         # #168 - reset per-episode state-log counter so each
         # episode emits its own first N STATE_LOG lines (matches the
@@ -2551,8 +2573,10 @@ class LiberoAdapter(BenchmarkProtocol):
         ``prewarm`` or another ``on_episode_start`` cycle.
         """
         # Clear any prior-episode failure tag - a re-install that now
-        # succeeds must not leave a stale error around.
+        # succeeds must not leave a stale error around. Same for the
+        # Isaac-path marker: it is re-set below if that path installs.
         self._action_controller_error = None
+        self._isaac_action_controller_robot = None
         try:
             controller = _LiberoOSCController.from_sim(
                 sim,
@@ -2579,13 +2603,34 @@ class LiberoAdapter(BenchmarkProtocol):
             logger.warning("LiberoAdapter._install_action_controller: %s", msg)
             return
         except _ControllerDependencyMissing as e:
-            # An optional dep (mujoco / robosuite) is genuinely absent.
-            # This is environmental, not a fixable setup bug, so degrade
-            # gracefully even in strict mode: requiring robosuite as a
-            # hard dep would break installs without the optional extras.
+            # The MuJoCo OSC path is unavailable - either an optional dep
+            # (mujoco / robosuite) is genuinely absent or the engine has no
+            # compiled MuJoCo model (e.g. the Isaac backend). Before
+            # degrading to the no-op name-lookup path, try the Isaac-side
+            # delta-EEF differential-IK controller (#1812); the duck-typed
+            # probe returns False on engines that expose no Isaac action
+            # seam, so non-Isaac environments keep the pre-existing
+            # warn-and-degrade behaviour.
+            try:
+                if self._try_install_isaac_action_controller(sim):
+                    return
+            except _ControllerInstallError as isaac_err:
+                msg = f"{isaac_err}. GR00T actions would no-op without the Isaac delta-EEF action controller."
+                self._action_controller_error = msg
+                if self._strict_action_controller:
+                    logger.error("LiberoAdapter._install_action_controller: %s", msg)
+                    raise _ControllerInstallError(msg) from isaac_err
+                logger.warning(
+                    "LiberoAdapter._install_action_controller: %s "
+                    "Running in non-strict mode: GR00T actions will no-op until this is resolved "
+                    "(set strict_action_controller=True to surface this as an eval error).",
+                    msg,
+                )
+                return
             msg = (
-                f"{e}. GR00T actions will no-op: the OSC controller's optional "
-                "dependencies (robosuite + mujoco) are not available in this environment."
+                f"{e}. GR00T actions will no-op: neither the MuJoCo OSC controller's "
+                "optional dependencies (robosuite + mujoco) nor an Isaac-side action "
+                "path are available in this environment."
             )
             self._action_controller_error = msg
             logger.warning("LiberoAdapter._install_action_controller: %s", msg)
@@ -2635,6 +2680,122 @@ class LiberoAdapter(BenchmarkProtocol):
             len(controller.arm_actuator_ids),
             len(controller.gripper_actuator_ids),
         )
+
+    def _try_install_isaac_action_controller(self, sim: SimEngine) -> bool:
+        """Install the Isaac delta-EEF differential-IK action controller.
+
+        Isaac counterpart of the robosuite ``OSC_POSE`` install (#1812): the
+        Isaac backend has no compiled MuJoCo model, so GR00T's task-space
+        delta-EEF action keys resolve to no joint and every action lands in
+        ``send_action``'s ``unresolved_keys`` - a 946-second video of a
+        perfectly still Franka. This builds an
+        :class:`~strands_robots.simulation.isaac.delta_eef.IsaacDeltaEEFController`
+        over the engine's public seams (``get_jacobian`` /
+        ``get_observation`` / ``install_action_controller``) so
+        ``send_action`` converts each delta into joint position targets.
+
+        Duck-typed engine probe, mirroring how the MuJoCo path probes
+        ``sim._world._model``: an engine that lacks any of the required
+        callables is simply not an Isaac engine and gets ``False`` back (the
+        caller then keeps the pre-existing warn-and-degrade behaviour).
+
+        Returns:
+            ``True`` when the controller was installed, ``False`` when the
+            engine exposes no Isaac action seam.
+
+        Raises:
+            _ControllerInstallError: The engine IS an Isaac engine but the
+                setup is broken - zero or multiple robots, missing Franka
+                joints, unreadable Jacobian, or a rejected install. These are
+                fixable setup bugs, so the caller applies the same
+                strict/non-strict policy as the MuJoCo path.
+        """
+        # Typed ``Any``: SimEngine's base surface declares none of these
+        # backend-specific seams, so ``getattr`` would otherwise narrow the
+        # results to ``None`` and mypy would reject the calls below.
+        install: Any = getattr(sim, "install_action_controller", None)
+        get_jacobian: Any = getattr(sim, "get_jacobian", None)
+        list_robots: Any = getattr(sim, "list_robots", None)
+        robot_joint_names: Any = getattr(sim, "robot_joint_names", None)
+        get_observation: Any = getattr(sim, "get_observation", None)
+        if not all(callable(f) for f in (install, get_jacobian, list_robots, robot_joint_names, get_observation)):
+            return False
+
+        robots = list(list_robots())
+        if len(robots) != 1:
+            raise _ControllerInstallError(
+                f"Isaac delta-EEF controller needs exactly one robot to bind to, found {robots!r}"
+            )
+        robot_name = robots[0]
+        joint_names = list(robot_joint_names(robot_name))
+        required = list(_ISAAC_FRANKA_ARM_JOINTS) + list(_ISAAC_FRANKA_GRIPPER_JOINTS)
+        missing = [j for j in required if j not in joint_names]
+        if missing:
+            raise _ControllerInstallError(
+                f"Isaac robot '{robot_name}' lacks the LIBERO Franka joints {missing}; "
+                f"articulation DOFs present: {joint_names}"
+            )
+
+        arm_joints = list(_ISAAC_FRANKA_ARM_JOINTS)
+        arm_indices = [joint_names.index(j) for j in arm_joints]
+
+        def jacobian_fn() -> np.ndarray:
+            result = get_jacobian(body_name=_ISAAC_FRANKA_EEF_LINK, robot_name=robot_name)
+            if result.get("status") != "success":
+                raise RuntimeError(result["content"][0]["text"])
+            payload = result["content"][1]["json"]
+            jac = np.asarray(payload["jacp"] + payload["jacr"], dtype=np.float64)
+            return jac[:, arm_indices]
+
+        def joint_positions_fn() -> np.ndarray:
+            obs = get_observation(robot_name, skip_images=True)
+            try:
+                return np.array([float(obs[j]) for j in arm_joints], dtype=np.float64)
+            except KeyError as missing_joint:
+                raise RuntimeError(
+                    f"Observation for robot '{robot_name}' is missing arm joint {missing_joint}; "
+                    f"observation keys: {sorted(obs)}"
+                ) from missing_joint
+
+        # Probe the Jacobian once at install time so a broken kinematics
+        # read surfaces as a loud install error at episode start (where the
+        # strict/non-strict policy applies) instead of as one error
+        # envelope per action mid-eval. The physics tensor view exists by
+        # now: the runner's warm-up and the scene load have stepped the
+        # world.
+        try:
+            probe = jacobian_fn()
+        except RuntimeError as e:
+            raise _ControllerInstallError(
+                f"Isaac delta-EEF controller cannot read the '{_ISAAC_FRANKA_EEF_LINK}' Jacobian: {e}"
+            ) from e
+        if probe.shape != (6, len(arm_joints)):
+            raise _ControllerInstallError(
+                f"Isaac Jacobian probe returned shape {probe.shape}; expected (6, {len(arm_joints)})"
+            )
+
+        controller = IsaacDeltaEEFController(
+            arm_joint_names=arm_joints,
+            gripper_joint_names=list(_ISAAC_FRANKA_GRIPPER_JOINTS),
+            joint_positions_fn=joint_positions_fn,
+            jacobian_fn=jacobian_fn,
+        )
+        result = install(robot_name, controller)
+        if result.get("status") != "success":
+            raise _ControllerInstallError(
+                f"IsaacSimulation.install_action_controller refused the controller: {result['content'][0]['text']}"
+            )
+        controller.reset()
+        self._isaac_action_controller_robot = robot_name
+        logger.info(
+            "LiberoAdapter: installed Isaac delta-EEF action controller for robot '%s' "
+            "(eef_link=%r, arm_joints=%d, gripper_joints=%d)",
+            robot_name,
+            _ISAAC_FRANKA_EEF_LINK,
+            len(arm_joints),
+            len(_ISAAC_FRANKA_GRIPPER_JOINTS),
+        )
+        return True
 
     @staticmethod
     def _action_controller_remediation(error: BaseException) -> str:

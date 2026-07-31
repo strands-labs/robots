@@ -105,7 +105,7 @@ class TestPackageLazyExport:
         import strands_robots.simulation.isaac as isaac_pkg
 
         # Everything promised by __all__ is resolvable through the package.
-        assert set(isaac_pkg.__all__) == {"IsaacSimulation", "IsaacConfig"}
+        assert set(isaac_pkg.__all__) == {"IsaacSimulation", "IsaacConfig", "IsaacDeltaEEFController"}
         for name in isaac_pkg.__all__:
             assert getattr(isaac_pkg, name) is not None
 
