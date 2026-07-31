@@ -34,6 +34,7 @@ import hashlib
 import importlib
 import json
 import logging
+import math
 import os
 import random
 import re
@@ -145,8 +146,11 @@ class LiberoAdapter(BenchmarkProtocol):
         cameras: dict[str, dict[str, Any]] | None = None,
         eef_body_name: str | None = None,
         eef_state_site_name: str | None = None,
+        eef_pos_offset: list[float] | None = None,
+        eef_quat_offset: list[float] | None = None,
         gripper_joint_name: str | None = None,
         state_gripper_joint_names: list[str] | None = None,
+        state_gripper_signs: list[float] | None = None,
         inject_eef_state: bool = True,
         auto_generate_scene: bool = True,
         scene_cache_dir: str | None = None,
@@ -220,6 +224,28 @@ class LiberoAdapter(BenchmarkProtocol):
                 deltas. The site is preferred; the body is used as a
                 fallback when the site doesn't exist (non-RoboSuite
                 scenes).
+            eef_pos_offset: Optional ``[x, y, z]`` offset (metres),
+                expressed in the EEF *body's local frame*, added to the
+                position read via the ``get_body_state`` fallback path.
+                Backends without the RoboSuite grip site (e.g. Isaac,
+                whose Franka USD has no ``gripper0_grip_site``) can only
+                report the wrist-body pose, which sits ~9.7 cm behind
+                the gripper tip that ``state.x/y/z`` was trained on
+                (#168). This offset translates the body read to the
+                site-equivalent point: ``pos + R(body_quat) @ offset``.
+                ``None`` (default) applies no offset. Never applied to
+                the direct MuJoCo site read (that source IS the site).
+            eef_quat_offset: Optional ``[w, x, y, z]`` unit quaternion,
+                right-multiplied onto the orientation read via the
+                ``get_body_state`` fallback path (a constant local-frame
+                correction: ``quat = body_quat * offset``). Use when the
+                backend's EEF body frame differs from RoboSuite's
+                ``robot0_right_hand`` frame by a fixed rotation (the
+                frames are rigidly attached to the same physical link,
+                so the correction is configuration-independent). ``None``
+                (default) applies no correction. The position offset is
+                applied using the RAW body orientation, before this
+                correction.
             gripper_joint_name: Joint name whose ``qpos`` is read for the
                 LIBERO ``state.gripper`` key. ``None`` (default) triggers
                 auto-resolution from the scene at episode start using
@@ -231,6 +257,17 @@ class LiberoAdapter(BenchmarkProtocol):
                 is ``"finger_joint1"``. The Menagerie Panda's two-finger
                 MJCF equality constraint mirrors the value to the second
                 finger, so reading just one is sufficient.
+            state_gripper_signs: Optional 2-element sign/scale vector
+                multiplied elementwise onto the ``state.gripper``
+                2-vector, whatever source produced it. RoboSuite's
+                training data records the two Panda finger qpos with
+                OPPOSITE signs (``finger_joint1`` in ``[0, +0.04]``,
+                ``finger_joint2`` in ``[-0.04, 0]``); backends whose
+                gripper model drives both fingers positive (e.g. the
+                Isaac Franka USD, whose ``panda_finger_joint2`` follows
+                the URDF ``[0, 0.04]`` mimic convention) must pass
+                ``[1.0, -1.0]`` to restore the trained sign convention.
+                ``None`` (default) leaves values as read.
             inject_eef_state: When ``True`` (default), the adapter's
                 :meth:`augment_observation` injects ``x`` / ``y`` / ``z``
                 / ``roll`` / ``pitch`` / ``yaw`` / ``gripper`` keys
@@ -439,7 +476,26 @@ class LiberoAdapter(BenchmarkProtocol):
         self._user_state_gripper_joint_names: list[str] | None = (
             [str(n) for n in state_gripper_joint_names] if state_gripper_joint_names is not None else None
         )
+        # #1802 - EEF source corrections for backends without the RoboSuite
+        # grip site (Isaac). Validated eagerly: a malformed offset silently
+        # feeding GR00T garbage state is exactly the failure class #168
+        # spent 30 rounds bisecting.
+        self._eef_pos_offset: list[float] | None = _validated_float_vector(eef_pos_offset, 3, "eef_pos_offset")
+        self._eef_quat_offset: list[float] | None = _validated_float_vector(eef_quat_offset, 4, "eef_quat_offset")
+        if self._eef_quat_offset is not None:
+            norm = float(np.linalg.norm(self._eef_quat_offset))
+            if not (0.99 < norm < 1.01):
+                raise ValueError(f"eef_quat_offset must be a unit quaternion (wxyz); got norm={norm:.4f}")
+        self._state_gripper_signs: list[float] | None = _validated_float_vector(
+            state_gripper_signs, 2, "state_gripper_signs"
+        )
         self._inject_eef_state = bool(inject_eef_state)
+        # #1802 - loud-error latch for augment_observation: when EEF state
+        # injection is enabled but produces no state keys, the failure used
+        # to surface only as the GR00T server's cryptic "State key 'state.x'
+        # must be in observation" rejection. Log ERROR once per adapter
+        # instead (once: augment_observation runs per control step).
+        self._eef_state_missing_logged = False
         self._auto_generate_scene = bool(auto_generate_scene)
         self._scene_cache_dir = scene_cache_dir
         # Default camera-name alias map matches RoboSuite/LIBERO's two
@@ -555,8 +611,11 @@ class LiberoAdapter(BenchmarkProtocol):
         cameras: dict[str, dict[str, Any]] | None = None,
         eef_body_name: str | None = None,
         eef_state_site_name: str | None = None,
+        eef_pos_offset: list[float] | None = None,
+        eef_quat_offset: list[float] | None = None,
         gripper_joint_name: str | None = None,
         state_gripper_joint_names: list[str] | None = None,
+        state_gripper_signs: list[float] | None = None,
         inject_eef_state: bool = True,
         auto_generate_scene: bool = True,
         scene_cache_dir: str | None = None,
@@ -584,8 +643,11 @@ class LiberoAdapter(BenchmarkProtocol):
             cameras=cameras,
             eef_body_name=eef_body_name,
             eef_state_site_name=eef_state_site_name,
+            eef_pos_offset=eef_pos_offset,
+            eef_quat_offset=eef_quat_offset,
             gripper_joint_name=gripper_joint_name,
             state_gripper_joint_names=state_gripper_joint_names,
+            state_gripper_signs=state_gripper_signs,
             inject_eef_state=inject_eef_state,
             auto_generate_scene=auto_generate_scene,
             scene_cache_dir=scene_cache_dir,
@@ -611,8 +673,11 @@ class LiberoAdapter(BenchmarkProtocol):
         cameras: dict[str, dict[str, Any]] | None = None,
         eef_body_name: str | None = None,
         eef_state_site_name: str | None = None,
+        eef_pos_offset: list[float] | None = None,
+        eef_quat_offset: list[float] | None = None,
         gripper_joint_name: str | None = None,
         state_gripper_joint_names: list[str] | None = None,
+        state_gripper_signs: list[float] | None = None,
         inject_eef_state: bool = True,
         auto_generate_scene: bool = True,
         scene_cache_dir: str | None = None,
@@ -635,8 +700,11 @@ class LiberoAdapter(BenchmarkProtocol):
             cameras=cameras,
             eef_body_name=eef_body_name,
             eef_state_site_name=eef_state_site_name,
+            eef_pos_offset=eef_pos_offset,
+            eef_quat_offset=eef_quat_offset,
             gripper_joint_name=gripper_joint_name,
             state_gripper_joint_names=state_gripper_joint_names,
+            state_gripper_signs=state_gripper_signs,
             inject_eef_state=inject_eef_state,
             auto_generate_scene=auto_generate_scene,
             scene_cache_dir=scene_cache_dir,
@@ -1521,12 +1589,18 @@ class LiberoAdapter(BenchmarkProtocol):
         # deltas across rounds 23-32 of #168.
         #
         # Read both finger qpos directly from ``data.qpos[jnt_qposadr]``
-        # using the canonical RoboSuite joint names. Falls back to the
-        # legacy single-joint duplicate-packing for non-RoboSuite
-        # scenes that don't ship two named finger joints.
+        # using the canonical RoboSuite joint names. On backends without
+        # a direct MuJoCo model (Isaac), fall back to reading both
+        # configured finger joints from the observation dict itself
+        # (#1802), then to the legacy single-joint duplicate-packing for
+        # scenes that don't ship two named finger joints. Whatever source
+        # produced the 2-vector, ``state_gripper_signs`` restores the
+        # RoboSuite sign convention when configured.
         gripper_qpos = self._read_gripper_qpos(sim)
+        if gripper_qpos is None:
+            gripper_qpos = self._read_gripper_qpos_from_obs(obs)
         if gripper_qpos is not None:
-            merged.setdefault("gripper", gripper_qpos)
+            merged.setdefault("gripper", self._apply_gripper_signs(gripper_qpos))
         else:
             # Legacy fallback - read one joint from obs and duplicate
             # (preserves pre-#168 behaviour for non-RoboSuite
@@ -1540,7 +1614,7 @@ class LiberoAdapter(BenchmarkProtocol):
                         gripper_value = val
                         break
             if isinstance(gripper_value, (int, float)) and not isinstance(gripper_value, bool):
-                merged.setdefault("gripper", [float(gripper_value), float(gripper_value)])
+                merged.setdefault("gripper", self._apply_gripper_signs([float(gripper_value), float(gripper_value)]))
             else:
                 logger.debug(
                     "LiberoAdapter: gripper joints %s not found via direct mujoco lookup, "
@@ -1588,6 +1662,37 @@ class LiberoAdapter(BenchmarkProtocol):
             cam_value = merged.get(cam_key)
             if isinstance(cam_value, np.ndarray) and cam_value.ndim >= 2:
                 merged[cam_key] = np.ascontiguousarray(cam_value[::-1, :])
+
+        # #1802 - loud, actionable failure when injection was requested
+        # but produced nothing. Before this check the only symptom was
+        # the GR00T server's per-call rejection ("State key 'state.x'
+        # must be in observation") after a silent DEBUG skip here -
+        # useless for diagnosing WHICH source failed. Logged once per
+        # adapter (augment_observation runs every control step).
+        if self._inject_eef_state and not self._eef_state_missing_logged:
+            missing = [k for k in ("x", "y", "z", "roll", "pitch", "yaw", "gripper") if k not in merged]
+            if missing:
+                self._eef_state_missing_logged = True
+                has_body_state = getattr(sim, "get_body_state", None) is not None
+                logger.error(
+                    "LiberoAdapter.augment_observation: could not inject EEF state key(s) %s "
+                    "(sim=%s, get_body_state=%s, eef_state_site_name=%r, eef_body_name=%r, "
+                    "gripper_joint_name=%r, state_gripper_joint_names=%s). A policy data-config "
+                    "that requires 'state.*' keys (e.g. libero_panda) will reject every "
+                    "observation with \"State key 'state.x' must be in observation\". Fix: pass "
+                    "eef_body_name= / gripper joint names that resolve on this backend (for the "
+                    "bundled Isaac Franka: eef_body_name='panda_hand', state_gripper_joint_names="
+                    "['panda_finger_joint1', 'panda_finger_joint2']), or set "
+                    "inject_eef_state=False if the backend supplies these keys natively. "
+                    "This error is logged once per adapter.",
+                    missing,
+                    type(sim).__name__,
+                    "available" if has_body_state else "NOT IMPLEMENTED",
+                    self.eef_state_site_name,
+                    self._eef_body_name,
+                    self._gripper_joint_name,
+                    self.state_gripper_joint_names,
+                )
 
         # #168 - emit one structured STATE_LOG line per
         # ``augment_observation`` call when STRANDS_LIBERO_STATE_LOG=1.
@@ -1733,6 +1838,25 @@ class LiberoAdapter(BenchmarkProtocol):
                 logger.debug("LiberoAdapter: get_body_state(%r) raised: %s", self._eef_body_name, e)
                 state_result = None
             fallback_pos, fallback_quat = _extract_pose(state_result)
+            # #1802 - site-equivalent corrections for backends whose only
+            # EEF source is the wrist body (Isaac has no RoboSuite grip
+            # site). The position offset is expressed in the body's local
+            # frame and therefore rotated by the RAW body orientation -
+            # before the quaternion correction, which realigns the frame
+            # to RoboSuite's ``robot0_right_hand`` convention afterwards.
+            if self._eef_pos_offset is not None and fallback_pos is not None:
+                if fallback_quat is not None:
+                    delta = _quat_wxyz_rotate_vec(fallback_quat, self._eef_pos_offset)
+                    fallback_pos = [p + d for p, d in zip(fallback_pos, delta)]
+                else:
+                    logger.debug(
+                        "LiberoAdapter: eef_pos_offset configured but get_body_state(%r) "
+                        "reported no orientation; cannot express the body-frame offset - "
+                        "using the uncorrected position",
+                        self._eef_body_name,
+                    )
+            if self._eef_quat_offset is not None and fallback_quat is not None:
+                fallback_quat = _quat_wxyz_multiply(fallback_quat, self._eef_quat_offset)
         else:
             logger.debug("LiberoAdapter: sim has no get_body_state(); skipping EEF state injection")
 
@@ -1813,6 +1937,56 @@ class LiberoAdapter(BenchmarkProtocol):
                 )
                 return None
         return finger_qposes
+
+    def _read_gripper_qpos_from_obs(self, obs: dict[str, Any]) -> list[float] | None:
+        """Read both finger qpos from the observation dict itself (#1802).
+
+        Backends without a direct MuJoCo model (Isaac) still key their
+        observations by joint name, so the two joints named by
+        :attr:`state_gripper_joint_names` can be read straight from
+        ``obs``. Tries the bare key first, then the ``.../<name>``
+        namespaced-suffix convention (same convention as the legacy
+        single-joint fallback).
+
+        Returns the 2-element ``[finger1.qpos, finger2.qpos]`` vector, or
+        ``None`` if ANY configured joint is missing / non-numeric - whole
+        vector or nothing, same contract as :meth:`_read_gripper_qpos`.
+        """
+        joint_names = self.state_gripper_joint_names
+        if not joint_names:
+            return None
+        values: list[float] = []
+        for jname in joint_names:
+            value = obs.get(jname)
+            if value is None:
+                for key, val in obs.items():
+                    if isinstance(key, str) and key.endswith("/" + jname):
+                        value = val
+                        break
+            if not isinstance(value, (int, float)) or isinstance(value, bool):
+                return None
+            values.append(float(value))
+        return values
+
+    def _apply_gripper_signs(self, gripper_qpos: list[float]) -> list[float]:
+        """Apply the configured ``state_gripper_signs`` to a gripper 2-vector.
+
+        No-op (returns the input unchanged) when signs weren't configured
+        or the vector length doesn't match - a mismatch means the caller
+        produced a shape this adapter wasn't configured for, and mangling
+        a partial application would be worse than leaving it as read.
+        """
+        if self._state_gripper_signs is None:
+            return gripper_qpos
+        if len(gripper_qpos) != len(self._state_gripper_signs):
+            logger.warning(
+                "LiberoAdapter: state_gripper_signs has %d elements but the gripper "
+                "vector has %d; leaving state.gripper unsigned",
+                len(self._state_gripper_signs),
+                len(gripper_qpos),
+            )
+            return gripper_qpos
+        return [v * s for v, s in zip(gripper_qpos, self._state_gripper_signs)]
 
     def is_success(self, sim: SimEngine) -> bool:
         """Check whether the LIBERO task goal is satisfied.
@@ -2629,6 +2803,16 @@ class LiberoAdapter(BenchmarkProtocol):
         if isinstance(cameras_attr, dict):
             names.update(cameras_attr.keys())
 
+        # Isaac registry-side (#1802): IsaacSimulation tracks cameras on
+        # ``sim._cameras`` (its ``_world`` is the Isaac ``World`` handle,
+        # which has no ``cameras`` dict). Without this check the install
+        # step re-attempts ``add_camera`` for the pre-added ``image`` /
+        # ``wrist_image`` every episode and logs a duplicate-name WARNING
+        # per camera per episode.
+        sim_cameras_attr = getattr(sim, "_cameras", None)
+        if isinstance(sim_cameras_attr, dict):
+            names.update(sim_cameras_attr.keys())
+
         # Model-side: cameras declared in a loaded scene MJCF.
         model = getattr(world, "_model", None) if world is not None else None
         if model is None:
@@ -3212,6 +3396,48 @@ def _extract_pose(state: dict[str, Any] | None) -> tuple[list[float] | None, lis
         if isinstance(raw_quat, list) and len(raw_quat) == 4 and all(isinstance(c, (int, float)) for c in raw_quat):
             quat = [float(c) for c in raw_quat]
     return (pos, quat)
+
+
+def _validated_float_vector(value: Any, n: int, param: str) -> list[float] | None:
+    """Validate an optional length-``n`` float vector constructor argument.
+
+    Returns ``None`` untouched; otherwise a fresh ``list[float]`` of exactly
+    ``n`` finite elements. Raises :class:`ValueError` on any shape / dtype
+    problem - state-side config errors must fail at construction, not feed
+    the policy silently-wrong observations (#168's failure class).
+    """
+    if value is None:
+        return None
+    try:
+        vec = [float(c) for c in value]
+    except (TypeError, ValueError) as e:
+        raise ValueError(f"{param} must be a sequence of {n} numbers; got {value!r}") from e
+    if len(vec) != n or not all(math.isfinite(c) for c in vec):
+        raise ValueError(f"{param} must be {n} finite numbers; got {value!r}")
+    return vec
+
+
+def _quat_wxyz_multiply(a: list[float], b: list[float]) -> list[float]:
+    """Hamilton product ``a * b`` of two wxyz quaternions."""
+    aw, ax, ay, az = a
+    bw, bx, by, bz = b
+    return [
+        aw * bw - ax * bx - ay * by - az * bz,
+        aw * bx + ax * bw + ay * bz - az * by,
+        aw * by - ax * bz + ay * bw + az * bx,
+        aw * bz + ax * by - ay * bx + az * bw,
+    ]
+
+
+def _quat_wxyz_rotate_vec(quat_wxyz: list[float], vec: list[float]) -> list[float]:
+    """Rotate ``vec`` by the (normalized) wxyz quaternion: ``R(q) @ vec``."""
+    q = np.asarray(quat_wxyz, dtype=np.float64)
+    norm = float(np.linalg.norm(q)) or 1.0
+    w, x, y, z = q / norm
+    u = np.array([x, y, z], dtype=np.float64)
+    v = np.asarray(vec, dtype=np.float64)
+    rotated = v + 2.0 * np.cross(u, np.cross(u, v) + w * v)
+    return [float(c) for c in rotated]
 
 
 def _fmt_state_value(value: Any) -> str:
