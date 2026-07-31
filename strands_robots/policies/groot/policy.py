@@ -668,10 +668,18 @@ class Gr00tPolicy(Policy):
         The standard ``gr00t.eval.run_gr00t_server`` registers a ``reset``
         endpoint that maps to ``policy.reset(options=...)`` (see
         ``server_client.py:94``). The default ``Gr00tPolicy.reset`` upstream
-        is a no-op; deployments that need per-episode RNG control should
-        either patch the server (see
-        ``examples/gr00t_server_deterministic_wrapper.py`` in robots-sim)
-        or use the ``Robot()`` factory which auto-mounts the wrapper.
+        is a no-op, so the forwarded seed does nothing unless the server is
+        patched. Deployments that need per-episode RNG control must run the
+        server through the determinism wrapper at
+        ``examples/libero/gr00t_server_deterministic_wrapper.py``, mounted
+        manually into the container (``docker run ...
+        -v .../gr00t_server_deterministic_wrapper.py:/srv_wrap.py ...
+        python /srv_wrap.py ...``) - see the wrapper's module docstring and
+        the "Optional server-side determinism wrapper" section of
+        ``examples/libero/run_mujoco.py``. Nothing in this library mounts
+        the wrapper automatically; a curated ``deterministic=`` mount on the
+        ``gr00t_inference`` lifecycle is tracked as a follow-up (issue
+        #1790).
 
         In LOCAL mode, applies the same client-side reseed
         ``set_eval_seed`` would (Python / NumPy / torch / cuDNN), which
