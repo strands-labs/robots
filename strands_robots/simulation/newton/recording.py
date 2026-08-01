@@ -98,7 +98,15 @@ class NewtonRecordingMixin(DatasetRecordingMixin):
                 is read from LeRobot's own ``HF_LEROBOT_HOME`` constant, so
                 relocating it moves both this recording and where
                 ``LeRobotDataset`` later reads the dataset back from.
-            task: Default task description recorded with every frame.
+            task: Task description for frames that do not carry their own. It
+                is the middle of a three-level chain owned by
+                :meth:`~strands_robots.dataset_recorder.DatasetRecorder.add_frame`:
+                the task passed with a frame wins, then this value, then the
+                literal ``"untitled"``. Every rollout hook passes
+                ``run_policy(instruction=...)`` as the frame task, so a non-empty
+                instruction overrides this value; supply neither and each frame is
+                annotated ``"untitled"``, which conditions a
+                language-conditioned policy on a constant instruction.
             fps: Recording frame rate. Must be a positive whole number;
                 a rate no dataset can be written at is rejected up front. When
                 an existing dataset is RESUMED (``overwrite=False``) it must

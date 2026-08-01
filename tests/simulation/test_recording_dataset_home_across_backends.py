@@ -38,6 +38,19 @@ describing ``root`` as overriding "the repo_id cache-path resolution" without
 naming the cache or that it is configurable -- so the resolution had one owner in
 code and three partial restatements in prose, which is the arrangement that
 drifted in the first place.
+
+That documentation half then generalized past the dataset directory, because
+``start_recording`` applies a second multi-level contract it does not own:
+``add_frame`` decides a frame's ``task``, and the session's ``task=`` is only the
+middle level of it. Two backends described that parameter as the value "recorded
+with every frame" -- which is what it is *not*, since every rollout hook passes
+``run_policy(instruction=...)`` as the frame task and a non-empty instruction
+wins -- and the third documented neither ``task`` nor ``push_to_hub`` at all. The
+terminal level, the literal ``"untitled"``, was named nowhere: record with neither
+set and every frame carries it, which is a constant instruction for the
+language-conditioned policies this repo targets. So the assertions below cover
+both contracts: what a caller is told about *where* a recording lands, and about
+*what* each of its frames is annotated with.
 """
 
 from __future__ import annotations
@@ -345,6 +358,31 @@ def _docstring(module: str, method: str) -> str:
     return doc
 
 
+def _arg_entry(module: str, method: str, param: str) -> str:
+    """The ``param:`` entry of ``module::method``'s Args block, or ``""`` if absent.
+
+    Read per parameter rather than over the whole docstring, because the claims
+    below are about what *this* entry says: a docstring-wide search would let a
+    correct sentence about some other parameter satisfy an assertion about
+    ``task``, and would let a wrong claim in the ``task`` entry be excused by a
+    right one elsewhere. An entry runs from its ``param:`` line to the next line
+    indented no deeper, which is how these Args blocks are already written.
+    """
+    lines = _docstring(module, method).splitlines()
+    for index, line in enumerate(lines):
+        if line.strip().startswith(f"{param}:"):
+            indent = len(line) - len(line.lstrip())
+            entry = [line.strip()]
+            for follow in lines[index + 1 :]:
+                if not follow.strip():
+                    continue
+                if len(follow) - len(follow.lstrip()) <= indent:
+                    break
+                entry.append(follow.strip())
+            return " ".join(entry)
+    return ""
+
+
 class TestStartRecordingDocumentsWhereTheDatasetLands:
     """The resolution has one owner in code; its documentation needs one too.
 
@@ -427,4 +465,118 @@ class TestStartRecordingDocumentsWhereTheDatasetLands:
         assert not offenders, (
             f"{', '.join(offenders)} names ~/.strands_robots/datasets as a dataset location; "
             "recordings land under $HF_LEROBOT_HOME (see resolve_dataset_dir)"
+        )
+
+
+_PER_FRAME_CLAIMS = (
+    "recorded with every frame",
+    "recorded with each frame",
+    "recorded on every frame",
+    "written to every frame",
+    "written with every frame",
+    "applied to every frame",
+    "used for every frame",
+)
+
+
+class TestStartRecordingDocumentsTheTaskThatLandsOnAFrame:
+    """The other multi-level contract ``start_recording`` applies and does not own.
+
+    ``add_frame`` is the whole rule -- ``task or self.default_task or "untitled"``
+    -- and ``start_recording(task=...)`` feeds only the middle term, via
+    ``create(task=...)`` / ``resume(task=...)``. Which term supplies the value a
+    dataset is annotated with therefore depends on an argument to a *different*
+    method: every rollout hook passes ``run_policy(instruction=...)`` as the frame
+    task, and that argument defaults to empty.
+
+    Two of the three backends described the parameter as the value "recorded with
+    every frame", which asserts it is the per-frame term rather than the middle
+    one. That failure mode is quiet in a way an omission is not: a caller who sets
+    ``task="pick up the red cube"`` and then runs
+    ``run_policy(..., instruction="place the cube in the bin")`` gets every frame
+    annotated with the second string, and both strings are plausible, so the
+    dataset reads as correctly annotated. The third backend documented neither
+    ``task`` nor ``push_to_hub``.
+
+    The assertions pin the two facts a caller cannot infer plus the claim that is
+    wrong, rather than the prose, so the rule keeps the single owner #1865
+    established for the directory resolution.
+    """
+
+    @pytest.mark.parametrize("module", _START_RECORDING_BACKENDS)
+    @pytest.mark.parametrize("param", ["task", "push_to_hub"])
+    def test_every_backend_documents_the_two_remaining_parameters(self, module, param):
+        """``start_recording`` takes eight parameters on all three backends.
+
+        Six were documented everywhere after #1865 completed the MuJoCo block
+        with ``repo_id``; these are the two it deferred, and MuJoCo's Args block
+        is where they were missing. Asserted across all three so the next backend
+        cannot ship a seven-of-eight block either.
+        """
+        assert _arg_entry(module, "start_recording", param), f"{module}::start_recording documents no {param} entry"
+
+    @pytest.mark.parametrize("module", _START_RECORDING_BACKENDS)
+    def test_every_task_entry_names_the_terminal_fallback(self, module):
+        """Set neither this nor an instruction and every frame reads ``"untitled"``.
+
+        That is the silent case, and it was documented nowhere: the task string is
+        the conditioning signal for every language-conditioned policy this repo
+        targets, so a dataset recorded with neither set trains against a constant
+        instruction. ``start_recording``'s own success text hints at the coupling
+        with "(set per policy)", which names the override but not where an unset
+        instruction actually lands.
+        """
+        entry = _arg_entry(module, "start_recording", "task")
+        assert "untitled" in entry, (
+            f"{module}::start_recording's task entry never names the untitled fallback, "
+            "so a dataset annotated entirely with it reads as unexplained"
+        )
+
+    @pytest.mark.parametrize("module", _START_RECORDING_BACKENDS)
+    def test_every_task_entry_names_what_overrides_it(self, module):
+        """The override is an argument to another method, so it cannot be inferred.
+
+        ``run_policy(instruction=...)`` is what every rollout hook passes as the
+        frame task; nothing about ``start_recording``'s own signature says that a
+        rollout can displace the value it was given.
+        """
+        entry = _arg_entry(module, "start_recording", "task")
+        assert "instruction" in entry, (
+            f"{module}::start_recording's task entry never names run_policy(instruction=...), "
+            "so the value it documents reads as the one that wins"
+        )
+
+    @pytest.mark.parametrize("module", _START_RECORDING_BACKENDS)
+    def test_no_task_entry_claims_it_is_the_per_frame_value(self, module):
+        """The non-vacuous one: this fails on two backends as they stood.
+
+        #1865's ``documents_both_parameters`` check passed on Isaac and Newton
+        precisely because their blocks were already complete -- completeness is
+        not accuracy, and a wording that is present but wrong needs its own
+        assertion. Phrasings rather than one literal string, so the claim cannot
+        come back reworded.
+        """
+        entry = _arg_entry(module, "start_recording", "task").lower()
+        claimed = [claim for claim in _PER_FRAME_CLAIMS if claim in entry]
+        assert not claimed, (
+            f"{module}::start_recording's task entry claims to be {claimed[0]!r}; "
+            "it is the middle of add_frame's chain, overridden by run_policy(instruction=...)"
+        )
+
+    def test_the_owner_states_the_whole_chain(self):
+        """A cross-reference is only worth following if the target answers it.
+
+        The three entries above cite
+        ``DatasetRecorder.add_frame`` for the precedence, which is the same
+        arrangement #1865 used for ``resolve_dataset_dir`` -- with one difference:
+        that resolver already documented its own rules, while ``add_frame``'s task
+        entry read "uses default if None" and named neither the session default it
+        means nor the terminal fallback. So the owner is pinned too, or the
+        cross-references point at nothing.
+        """
+        entry = _arg_entry("strands_robots/dataset_recorder.py", "add_frame", "task")
+        missing = [term for term in ("default_task", "untitled", "instruction") if term not in entry]
+        assert not missing, (
+            f"DatasetRecorder.add_frame's task entry names no {', '.join(missing)} - "
+            "the backends cite it for the precedence it is supposed to own"
         )

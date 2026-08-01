@@ -1140,7 +1140,18 @@ class DatasetRecorder:
             observation: Raw observation dict from robot/sim
                 (joint_name → float, camera_name → np.ndarray)
             action: Action dict (joint_name → float)
-            task: Task description (uses default if None)
+            task: Task description written to this frame's ``task`` column.
+                This argument is the top of a three-level chain and the only
+                place it is stated: it falls back to the recorder's
+                ``default_task`` (set from ``create(task=...)`` /
+                ``resume(task=...)``, which is what a backend's
+                ``start_recording(task=...)`` supplies) and then to the literal
+                ``"untitled"``. Every simulation rollout hook passes
+                ``run_policy(instruction=...)`` here, so a non-empty instruction
+                overrides the recording session's task, and a rollout driven with
+                neither annotates its frames ``"untitled"`` - a constant
+                instruction for any language-conditioned policy trained on the
+                result.
             camera_keys: Which keys in observation are camera images
             required_action_keys: Action column names this frame must
                 supply a value for - typically the action keys of the robot

@@ -90,6 +90,15 @@ class RecordingMixin(DatasetRecordingMixin):
                 is read from LeRobot's own ``HF_LEROBOT_HOME`` constant, so
                 relocating it moves both this recording and where
                 ``LeRobotDataset`` later reads the dataset back from.
+            task: Task description for frames that do not carry their own. It
+                is the middle of a three-level chain owned by
+                :meth:`~strands_robots.dataset_recorder.DatasetRecorder.add_frame`:
+                the task passed with a frame wins, then this value, then the
+                literal ``"untitled"``. Every rollout hook passes
+                ``run_policy(instruction=...)`` as the frame task, so a non-empty
+                instruction overrides this value; supply neither and each frame is
+                annotated ``"untitled"``, which conditions a
+                language-conditioned policy on a constant instruction.
             fps: Dataset frame rate recorded in the LeRobot metadata. Must be a
                 positive whole number - a fractional or non-numeric rate cannot
                 be written and is rejected up front rather than aborting the
@@ -109,6 +118,7 @@ class RecordingMixin(DatasetRecordingMixin):
                 the ``repo_id`` resolution above rather than being joined to it.
                 See :func:`~strands_robots.dataset_recorder.resolve_dataset_dir`
                 for the full precedence.
+            push_to_hub: Publish to the Hub at ``stop_recording``.
             overwrite: When True, wipe any existing dataset at the resolved
                 directory and record from scratch. When False (default) an
                 existing dataset is RESUMED (episodes appended), a pre-existing
