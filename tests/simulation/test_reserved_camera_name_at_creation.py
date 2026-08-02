@@ -63,7 +63,7 @@ import ast
 import pathlib
 import threading
 import types
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -228,11 +228,37 @@ class TestMujocoAddCamera:
 # Newton - the backend the rule came from                                     #
 # --------------------------------------------------------------------------- #
 def _newton_stub() -> types.SimpleNamespace:
-    """A stand-in for ``self`` carrying only what ``add_camera`` reads."""
+    """A stand-in for ``self`` carrying only what ``add_camera`` reads.
+
+    ``add_camera`` touches ``self._world`` (its ``cameras`` dict), ``self._model``
+    (its ``body_label`` list) and ``self._lock``. None of those need Newton, so a
+    namespace with the three lets the guard run without the optional
+    ``newton`` / ``warp`` packages or a GPU.
+    """
     return types.SimpleNamespace(
         _world=types.SimpleNamespace(cameras={}),
         _model=types.SimpleNamespace(body_label=("ground", "ball")),
         _lock=threading.RLock(),
+    )
+
+
+def _newton_add_camera(stub: types.SimpleNamespace, name: Any) -> dict[str, Any]:
+    """Call the unbound ``add_camera`` with the stand-in for ``self``.
+
+    The stand-in is deliberately not a ``NewtonSimEngine``: the point is to reach
+    the guard without the optional solver packages, and the guard runs before the
+    method touches one. Funnelling every call through one boundary states that
+    once - the shape the sibling
+    ``tests/simulation/newton/test_add_camera_numeric_validation.py`` uses -
+    instead of repeating it at each call site. A narrow ``cast`` rather than a
+    suppression, so the argument stays checked at every real call.
+    """
+    # Unbound, with the stand-in supplied as ``self`` - a bound call would look
+    # ``add_camera`` up on the namespace, which does not carry it. The ``cast`` is
+    # a no-op at runtime and only tells the checker what the argument stands in
+    # for, which keeps the boundary explicit without suppressing the check.
+    return NewtonSimEngine.add_camera(
+        cast(NewtonSimEngine, stub), name, position=[1.0, 1.0, 1.0], target=[0.0, 0.0, 0.0]
     )
 
 
@@ -247,7 +273,7 @@ class TestSameVerdictAsTheNewtonSibling:
     @pytest.mark.parametrize("name", _ADDRESSABLE_TOKENS)
     def test_newton_refuses_it(self, name: str) -> None:
         stub = _newton_stub()
-        result = NewtonSimEngine.add_camera(stub, name, position=[1.0, 1.0, 1.0], target=[0.0, 0.0, 0.0])
+        result = _newton_add_camera(stub, name)
         assert result["status"] == "error", (name, result)
         assert "reserved" in result["content"][0]["text"]
         assert stub._world.cameras == {}
@@ -255,7 +281,7 @@ class TestSameVerdictAsTheNewtonSibling:
     @pytest.mark.parametrize("name", _ADDRESSABLE_TOKENS)
     def test_the_two_refusals_are_the_same_sentence(self, sim, name: str) -> None:
         stub = _newton_stub()
-        newton = NewtonSimEngine.add_camera(stub, name, position=[1.0, 1.0, 1.0], target=[0.0, 0.0, 0.0])
+        newton = _newton_add_camera(stub, name)
         mujoco_result = sim.add_camera(name, position=[1.0, 1.0, 1.0], target=[0.0, 0.0, 0.0])
         assert newton["status"] == mujoco_result["status"] == "error"
         assert newton["content"][0]["text"] == mujoco_result["content"][0]["text"]
@@ -263,7 +289,7 @@ class TestSameVerdictAsTheNewtonSibling:
     @pytest.mark.parametrize("name", _GOOD_NAMES)
     def test_both_accept_the_same_good_names(self, sim, name: str) -> None:
         stub = _newton_stub()
-        newton = NewtonSimEngine.add_camera(stub, name, position=[1.0, 1.0, 1.0], target=[0.0, 0.0, 0.0])
+        newton = _newton_add_camera(stub, name)
         mujoco_result = sim.add_camera(name, position=[1.0, 1.0, 1.0], target=[0.0, 0.0, 0.0])
         assert newton["status"] == mujoco_result["status"] == "success", (name, newton, mujoco_result)
 
