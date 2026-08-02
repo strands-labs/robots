@@ -9,9 +9,11 @@ one ``create_world`` then ``add_object(<name>, shape="box", size=[0.06]*3)``):
   under MuJoCo's own sentinel for *unnamed*: ``mj_name2id(model, BODY, "")``
   returns ``-1``, so ``get_body_state(body_name="")`` answered
   ``Body '' not found``. Through ``add_camera`` it is worse - ``render`` routes
-  ``camera_name in (None, "", "default", "free")`` to the free camera by an
-  explicit token check, so a camera created as ``""`` can never be rendered
-  from.
+  ``camera_name in FREE_CAMERA_TOKENS`` to the free camera by an explicit
+  token check, so a camera created as ``""`` can never be rendered from. The
+  other two members of that set are addressable strings and so are outside this
+  domain; they are refused as reserved names, in
+  ``test_reserved_camera_name_at_creation.py``.
 * ``"a\\x00b"`` -> ``status="success"``, registry key ``'a\\x00b'``, compiled
   body ``'a'``. MuJoCo compares names only up to the NUL, so
   ``mj_name2id(..., "a\\x00b")`` and ``mj_name2id(..., "a")`` returned the SAME
@@ -72,7 +74,7 @@ import pytest
 from strands_robots.simulation.base import SimEngine
 from strands_robots.simulation.isaac.simulation import IsaacConfig, IsaacSimulation
 from strands_robots.simulation.newton.simulation import NewtonSimEngine
-from strands_robots.utils import entity_name_error
+from strands_robots.utils import FREE_CAMERA_TOKENS, entity_name_error
 
 # --------------------------------------------------------------------------- #
 # Probe sets                                                                  #
@@ -268,14 +270,30 @@ class TestMujocoAddCamera:
         sim.add_camera(name, position=[1.0, 1.0, 1.0])
         assert sim._world.cameras == before
 
-    def test_the_empty_name_collided_with_the_render_routing_token(self, sim):
+    def test_the_empty_name_collides_with_a_render_routing_token(self, sim):
         """Pin the premise for refusing ``""`` on a camera specifically.
 
         ``render``/``get_frame`` select the FREE camera for ``camera_name`` in
-        this token set, so a camera registered under ``""`` was unreachable by
+        this token set, so a camera registered under ``""`` is unreachable by
         construction - not merely awkward to address.
+
+        This replaces a pin that asserted only ``"" in (None, "", "default",
+        "free")`` against a copy of the tuple written here. That was true by
+        inspection and therefore vacuous, and by restating the set locally it
+        recorded the routing rule in a place that could not notice the rule
+        moving. It now reads the one definition the routing itself reads, so the
+        premise is checked rather than transcribed.
+
+        The premise is *wider* than the conclusion drawn here: ``"default"`` and
+        ``"free"`` are the same kind of unreachable and are refused as reserved
+        names, which ``entity_name_error`` cannot express because they are
+        perfectly addressable strings. That half lives in
+        ``test_reserved_camera_name_at_creation.py``; this test keeps only the
+        part that belongs to the addressability domain.
         """
-        assert "" in (None, "", "default", "free")
+        assert "" in FREE_CAMERA_TOKENS
+        # And the domain under test here is what refuses it, not the reserved rule.
+        assert entity_name_error("add_camera", "name", "") is not None
 
     def test_an_addressable_camera_still_registers(self, sim):
         assert sim.add_camera("wrist", position=[0.5, 0.0, 0.4], target=[0.0, 0.0, 0.0])["status"] == "success"

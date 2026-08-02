@@ -7,7 +7,7 @@ import numbers
 import os
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 logger = logging.getLogger(__name__)
 
@@ -1500,6 +1500,83 @@ def coerce_size_vector(method: str, param_name: str, size: Any) -> tuple[list[fl
             f"omission - omit '{param_name}' to take the default extent."
         )
     return [float(component) for component in size], None
+
+
+#: Camera names that a backend's render entry points resolve to the FREE camera
+#: instead of looking up, by an explicit token check rather than a registry miss.
+#: ``None`` and ``""`` mean "no camera was named"; ``"default"`` and ``"free"``
+#: are spellings of the free view that :meth:`describe` advertises as always
+#: available, so ``render(camera_name="default")`` is a documented call.
+#:
+#: It lives here, beside :func:`entity_name_error` and :func:`camera_fov_error`,
+#: because it is read from two sides that must agree: the render entry points
+#: that route it, and the ``add_camera`` guard that refuses it as a *name*. Those
+#: two lived as eleven separate copies of the same tuple literal across
+#: ``mujoco/rendering.py``, ``mujoco/simulation.py``, ``newton/simulation.py`` and
+#: ``base.py`` - one of them written in a different order - and the MuJoCo
+#: ``add_camera`` had the set in a comment but not in code, which is exactly the
+#: drift that made a reserved name accepted there while Newton refused it.
+FREE_CAMERA_TOKENS: Final[tuple[str | None, ...]] = (None, "", "default", "free")
+
+
+def reserved_camera_name_error(method: str, param_name: str, name: Any) -> str | None:
+    """Return an error message if ``name`` is a free-camera routing token.
+
+    The creation-site counterpart to :data:`FREE_CAMERA_TOKENS`. A backend whose
+    ``render`` / ``render_depth`` / ``get_frame`` select the free camera for a
+    token cannot also let ``add_camera`` *claim* that token: the camera is
+    registered, compiled into the scene and advertised by ``list_cameras``, and
+    every render of it silently returns the free view instead. Nothing reports an
+    error at any point, so the caller reads a success and a plausible frame.
+
+    Measured on MuJoCo 3.11.0, one ``create_world`` then
+    ``add_camera("free", position=[8, 8, 8], target=[0, 0, 0])``:
+
+    * ``status="success"``, text ``Camera 'free' added at [8.0, 8.0, 8.0]``;
+    * ``world.cameras`` holds ``'free'`` and ``mj_name2id(model, CAMERA, "free")``
+      resolves it, so the camera really is in the compiled model;
+    * ``list_cameras()`` answers ``['default', 'free']``, offering the name as
+      renderable;
+    * and ``render(camera_name="free")`` takes the ``cam_id = -1`` branch with
+      label ``"free (default)"`` - the camera at ``[8, 8, 8]`` is unreachable
+      through the very API that created it.
+
+    ``"default"`` reached the same end by a worse route. It is refused there only
+    as a *duplicate*, because ``create_world`` registers the built-in free view
+    under that name, and the refusal prescribes a remedy that completes the
+    defect: ``remove_camera("default")`` succeeds, the following
+    ``add_camera("default", ...)`` succeeds, and the scene is left with an
+    unreachable camera where the advertised free-view alias used to be.
+
+    This guard is why the domain is stated as a name rule rather than left to the
+    duplicate-name test: a duplicate is a fact about what is registered, and a
+    reserved token is a fact about what can be addressed.
+
+    Only a backend that *routes* the tokens applies it. The Isaac backend's
+    ``get_frame`` looks its camera up in ``self._cameras`` directly with no token
+    check, so ``"default"`` there is an ordinary addressable name - and is that
+    backend's documented signature default - which is coherent and must not be
+    broken by this rule.
+
+    Returns ``None`` for every name that is not a routing token, including a
+    value that is not a string at all: an unaddressable name is
+    :func:`entity_name_error`'s domain, and that guard runs first at every call
+    site, so this one is only ever reached with a genuine ``str``.
+    """
+    if not isinstance(name, str):
+        return None
+    if name not in FREE_CAMERA_TOKENS:
+        return None
+    # Through the shared renderer like every other guard here, even though this
+    # one has narrowed to ``str`` and could interpolate safely: a ``str``
+    # subclass owes its ``__repr__`` nothing, and the rule that no guard renders
+    # a caller value directly is worth more than the exception would save.
+    rendered = _refusal_repr(name)
+    return (
+        f"{method}: {rendered} is reserved; pick a distinct camera name. "
+        f"render/get_frame resolve {param_name}={rendered} to the free camera by an "
+        f"explicit token check, so a camera created under it could never be rendered from."
+    )
 
 
 def camera_fov_error(method: str, param_name: str, value: Any) -> str | None:

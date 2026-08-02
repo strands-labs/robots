@@ -50,6 +50,7 @@ if TYPE_CHECKING:
 # annotations`` (already in effect) makes that a no-op at runtime.
 from strands_robots.simulation.policy_runner import PolicyRunner, VideoConfig
 from strands_robots.utils import (
+    FREE_CAMERA_TOKENS,
     is_boolean,
     positive_count_error,
     positive_finite_number_error,
@@ -3771,7 +3772,7 @@ class SimEngine(ABC):
         # One label per camera: every free-camera token (None / "" / "free" /
         # "default") reports as "default", so the same camera never appears
         # under two names across calls.
-        camera_label = "default" if camera_name in (None, "", "free", "default") else str(camera_name)
+        camera_label = "default" if camera_name in FREE_CAMERA_TOKENS else str(camera_name)
         if not valid_points:
             return _err(
                 f"get_world_point found no valid depth at any of the {len(parsed)} requested pixels via "

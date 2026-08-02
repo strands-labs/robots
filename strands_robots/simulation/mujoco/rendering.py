@@ -27,7 +27,7 @@ from strands_robots.simulation.safe_output import (
     validate_output_path,
     video_sandbox_args,
 )
-from strands_robots.utils import name_list_error
+from strands_robots.utils import FREE_CAMERA_TOKENS, name_list_error
 
 logger = logging.getLogger(__name__)
 
@@ -954,11 +954,7 @@ class RenderingMixin:
         # with get_observation, which already keys off the per-camera config.
         # The free camera ("default"/"free") and model-only cameras that have no
         # SimCamera entry fall back to the engine default.
-        cam_cfg = (
-            registry_entry(self._world.cameras, camera_name)
-            if camera_name not in (None, "", "default", "free")
-            else None
-        )
+        cam_cfg = registry_entry(self._world.cameras, camera_name) if camera_name not in FREE_CAMERA_TOKENS else None
         w = (cam_cfg.width if cam_cfg is not None else self.default_width) if width is None else width
         h = (cam_cfg.height if cam_cfg is not None else self.default_height) if height is None else height
         if err := self._validate_render_dims(w, h):
@@ -983,7 +979,7 @@ class RenderingMixin:
             # Special 'default' / 'free' tokens route to the free camera; any
             # other name MUST resolve or we error (prevents the LLM from
             # believing it rendered viewpoint X while actually getting free-cam).
-            if camera_name in (None, "", "default", "free"):
+            if camera_name in FREE_CAMERA_TOKENS:
                 cam_id = -1
                 label = "free (default)"
             else:
@@ -1095,11 +1091,7 @@ class RenderingMixin:
         # frame render() produces for the same camera (and with get_observation).
         # The free camera and model-only cameras with no SimCamera entry fall
         # back to the engine default.
-        cam_cfg = (
-            registry_entry(self._world.cameras, camera_name)
-            if camera_name not in (None, "", "default", "free")
-            else None
-        )
+        cam_cfg = registry_entry(self._world.cameras, camera_name) if camera_name not in FREE_CAMERA_TOKENS else None
         w = (cam_cfg.width if cam_cfg is not None else self.default_width) if width is None else width
         h = (cam_cfg.height if cam_cfg is not None else self.default_height) if height is None else height
         if err := self._validate_render_dims(w, h):
@@ -1107,7 +1099,7 @@ class RenderingMixin:
 
         try:
             # strict camera validation (same policy as render())
-            if camera_name in (None, "", "default", "free"):
+            if camera_name in FREE_CAMERA_TOKENS:
                 cam_id = -1
                 label = "free (default)"
             else:
@@ -1296,11 +1288,7 @@ class RenderingMixin:
             raise RuntimeError(_NO_WORLD_MSG)
 
         mj = _ensure_mujoco()
-        cam_cfg = (
-            registry_entry(self._world.cameras, camera_name)
-            if camera_name not in (None, "", "default", "free")
-            else None
-        )
+        cam_cfg = registry_entry(self._world.cameras, camera_name) if camera_name not in FREE_CAMERA_TOKENS else None
         w = (cam_cfg.width if cam_cfg is not None else self.default_width) if width is None else width
         h = (cam_cfg.height if cam_cfg is not None else self.default_height) if height is None else height
         if err := self._validate_render_dims(w, h):
@@ -1315,7 +1303,7 @@ class RenderingMixin:
                     "Rendering unavailable (no OpenGL context). "
                     "Install EGL or OSMesa for offscreen rendering: apt-get install libosmesa6-dev"
                 )
-            if camera_name in (None, "", "default", "free"):
+            if camera_name in FREE_CAMERA_TOKENS:
                 cam_id = -1
             else:
                 cam_id = mj_name_to_id(self._world._model, mj.mjtObj.mjOBJ_CAMERA, camera_name)
@@ -1412,7 +1400,7 @@ class RenderingMixin:
         model = self._world._model
         # The free camera is not a model camera: it has no name to resolve and
         # no SimCamera entry, so its resolution and default size differ.
-        free_camera = camera_name in (None, "", "default", "free")
+        free_camera = camera_name in FREE_CAMERA_TOKENS
         cam_cfg = None if free_camera else registry_entry(self._world.cameras, camera_name)
 
         w = (cam_cfg.width if cam_cfg is not None else self.default_width) if width is None else width

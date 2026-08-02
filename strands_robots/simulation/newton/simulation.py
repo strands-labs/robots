@@ -59,6 +59,7 @@ from strands_robots.simulation.newton.randomization import DomainRandomizationMi
 from strands_robots.simulation.newton.recording import NewtonRecordingMixin
 from strands_robots.simulation.terrain import validate_difficulty
 from strands_robots.utils import (
+    FREE_CAMERA_TOKENS,
     camera_fov_error,
     coerce_pose_vector,
     coerce_rgba,
@@ -69,6 +70,7 @@ from strands_robots.utils import (
     positive_count_error,
     positive_whole_number_error,
     require_optional,
+    reserved_camera_name_error,
     step_aborted_msg,
 )
 
@@ -1369,11 +1371,11 @@ class NewtonSimEngine(DomainRandomizationMixin, NewtonRecordingMixin, SimEngine)
         for _param, _value in (("width", width), ("height", height)):
             if (e := positive_count_error(_value, _param, "add_camera")) is not None:
                 return {"status": "error", "content": [{"text": e}]}
-        if name in (None, "", "default", "free"):
-            return {
-                "status": "error",
-                "content": [{"text": f"add_camera: '{name}' is reserved; pick a distinct camera name."}],
-            }
+        # Refuse a name this backend's own render entry points would resolve past.
+        # Shared with the MuJoCo sibling, which routes the same tokens and until
+        # now refused none of them, so the two cannot state the rule differently.
+        if (reserved_err := reserved_camera_name_error("add_camera", "name", name)) is not None:
+            return {"status": "error", "content": [{"text": reserved_err}]}
         if name in self._world.cameras:
             return {
                 "status": "error",
@@ -1468,7 +1470,7 @@ class NewtonSimEngine(DomainRandomizationMixin, NewtonRecordingMixin, SimEngine)
         if self._world is None or self._model is None:
             return {"status": "error", "content": [{"text": "No world. Call create_world first."}]}
 
-        is_default = camera_name in (None, "", "default", "free")
+        is_default = camera_name in FREE_CAMERA_TOKENS
         label = "default" if is_default else camera_name
         try:
             eye, target, fov_deg, w, h = self._resolve_camera_view(camera_name, width, height)
@@ -1704,7 +1706,7 @@ class NewtonSimEngine(DomainRandomizationMixin, NewtonRecordingMixin, SimEngine)
         for param, value in (("width", width), ("height", height)):
             if value is not None and (text := positive_count_error(value, param, "render")) is not None:
                 raise ValueError(text)
-        if camera_name in (None, "", "default", "free"):
+        if camera_name in FREE_CAMERA_TOKENS:
             return (
                 (0.6, 0.6, 0.5),
                 (0.0, 0.0, 0.15),

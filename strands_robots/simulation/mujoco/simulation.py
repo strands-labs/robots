@@ -116,6 +116,7 @@ from strands_robots.utils import (
     non_negative_whole_number_error,
     pose_vector_error,
     positive_whole_number_error,
+    reserved_camera_name_error,
     sequence_length,
     step_aborted_msg,
 )
@@ -3095,11 +3096,20 @@ class MuJoCoSimEngine(
         mount points before placing a camera; robot bodies are namespaced
         ``<robot>/<body>`` (e.g. ``so101/gripper`` is the SO101 wrist mount).
 
-        Validation: ``name`` must be a non-empty ``str`` containing no NUL -
-        ``render``/``get_frame`` route ``camera_name`` in ``(None, "",
-        "default", "free")`` to the free camera, so a camera registered under
-        ``""`` could never be rendered from, and a non-string name is not
-        addressable through the agent-tool surface. ``position`` and ``target``
+        Validation: ``name`` must be a non-empty ``str`` containing no NUL, and
+        must not be one of the free-camera routing tokens
+        (:data:`~strands_robots.utils.FREE_CAMERA_TOKENS` - ``None``, ``""``,
+        ``"default"``, ``"free"``). ``render``/``render_depth``/``get_frame``
+        resolve every one of them to the free camera by an explicit token check,
+        so a camera created under any of them could never be rendered from even
+        though it is registered, compiled into the model and listed by
+        ``list_cameras``; a non-string name is additionally not addressable
+        through the agent-tool surface. This is the same set the Newton backend's
+        ``add_camera`` refuses, on the shared
+        :func:`~strands_robots.utils.reserved_camera_name_error` domain, because
+        that backend routes the same tokens. The Isaac backend does not route
+        them - its ``get_frame`` looks the name up directly - so ``"default"``
+        there is an ordinary camera name and stays accepted. ``position`` and ``target``
         must each be 3 finite numbers (a list, tuple or NumPy array; NumPy
         scalar elements accepted). Omit a vector to take its default - an empty
         vector is a wrong-length request and is rejected rather than silently
@@ -3125,6 +3135,26 @@ class MuJoCoSimEngine(
         # ``add_object`` - that test is partial for an unhashable name.
         if (name_err := entity_name_error("add_camera", "name", name)) is not None:
             return {"status": "error", "content": [{"text": name_err}]}
+
+        # Refuse a name this backend's own render entry points resolve past. The
+        # three of them (``render`` / ``render_depth`` / ``get_frame``) select the
+        # free camera for every ``FREE_CAMERA_TOKENS`` member by an explicit token
+        # check, so claiming one produced a camera that is registered, compiled
+        # into the model and offered by ``list_cameras`` - and that every render
+        # of silently answers with the free view instead, under a success result.
+        # ``entity_name_error`` above covers only the two falsy tokens, which is
+        # why this is a second guard rather than a widening of that domain: the
+        # other two are perfectly addressable *names* that this backend alone
+        # cannot address as *cameras*.
+        #
+        # It precedes the duplicate-name test because that test answered for
+        # ``"default"`` and answered misleadingly: ``create_world`` registers the
+        # built-in free view under that name, so the refusal was "already exists.
+        # Remove it first." - and following that prescription succeeded, leaving
+        # the scene with an unreachable camera where the advertised free-view
+        # alias had been.
+        if (reserved_err := reserved_camera_name_error("add_camera", "name", name)) is not None:
+            return {"status": "error", "content": [{"text": reserved_err}]}
 
         # Validate position / target shape before we bake them into XML.
         # Membership, not truthiness: ``position or <default>`` raised a bare
