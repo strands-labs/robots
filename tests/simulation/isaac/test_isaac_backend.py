@@ -20,6 +20,7 @@ real Isaac Sim + a CUDA device.
 
 from __future__ import annotations
 
+import concurrent.futures
 import sys
 import threading
 
@@ -512,38 +513,33 @@ class TestMainThreadAffinityGuard:
         sim._world = None
 
     @staticmethod
-    def _call_from_worker(fn):
-        """Run ``fn`` on a worker thread; return (result, exception)."""
-        box = {}
+    def _future_from_worker(fn):
+        """Run ``fn`` on a worker thread; return the completed Future.
 
-        def _target():
-            try:
-                box["result"] = fn()
-            except Exception as exc:  # noqa: BLE001 - surfaced to the assertion
-                box["exc"] = exc
-
-        t = threading.Thread(target=_target)
-        t.start()
-        t.join(timeout=10)
-        assert not t.is_alive(), "worker-thread call did not return: the deadlock this guard removes"
-        return box.get("result"), box.get("exc")
+        ``__exit__`` joins the worker (``shutdown(wait=True)``), so the future
+        is done on return and ``future.result()`` re-raises whatever the worker
+        raised - ``SystemExit`` included - with identity preserved. No
+        exception-translating handler exists here on purpose (review on #1899):
+        the assertions do the catching via ``pytest.raises``. A genuine
+        regression to the #1896 deadlock blocks in ``__exit__`` until the
+        suite-wide pytest-timeout (``--timeout=120`` in addopts) kills it.
+        """
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(fn)
 
     def test_worker_thread_reset_without_pump_raises_actionable_error(self, sim_and_world):
         sim, world = sim_and_world
-        result, exc = self._call_from_worker(sim.reset)
-        assert result is None
-        assert isinstance(exc, RuntimeError)
+        future = self._future_from_worker(sim.reset)
         # The error must carry the recipe, not just a refusal.
-        assert "run_pump_forever" in str(exc)
-        assert "run_on_main" in str(exc)
+        with pytest.raises(RuntimeError, match=r"run_pump_forever.*run_on_main"):
+            future.result()
         assert world.reset_calls == []  # world never touched off-thread
 
     def test_worker_thread_step_without_pump_raises_actionable_error(self, sim_and_world):
         sim, world = sim_and_world
-        result, exc = self._call_from_worker(lambda: sim.step(3))
-        assert result is None
-        assert isinstance(exc, RuntimeError)
-        assert "run_pump_forever" in str(exc)
+        future = self._future_from_worker(lambda: sim.step(3))
+        with pytest.raises(RuntimeError, match="run_pump_forever"):
+            future.result()
         assert world.step_calls == []
 
     def test_worker_thread_reset_with_pump_running_is_marshalled_to_main(self, sim_and_world):
@@ -581,8 +577,7 @@ class TestMainThreadAffinityGuard:
         from strands_robots.simulation.isaac.simulation import IsaacSimulation
 
         sim = IsaacSimulation(num_envs=1, headless=True)
-        result, exc = self._call_from_worker(sim.reset)
-        assert exc is None
+        result = self._future_from_worker(sim.reset).result()  # re-raises if the worker raised
         assert result["status"] == "error"
         assert "No world created" in result["content"][0]["text"]
 
