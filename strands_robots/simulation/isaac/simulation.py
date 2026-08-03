@@ -35,6 +35,7 @@ import numpy as np
 
 from strands_robots.simulation.base import SimEngine
 from strands_robots.simulation.isaac.config import IsaacConfig
+from strands_robots.simulation.isaac.joint_names import demangle_usd_joint_names, urdf_joint_names
 from strands_robots.simulation.isaac.recording import IsaacRecordingMixin
 from strands_robots.simulation.models import registered, registry_entry
 from strands_robots.simulation.terrain import validate_difficulty
@@ -466,6 +467,7 @@ class _RobotState:
         articulation: Any = None,
         actual_prim_path: str | None = None,
         data_config: str | None = None,
+        usd_to_urdf_joint_names: dict[str, str] | None = None,
     ):
         self.name = name
         self.prim_path = prim_path
@@ -475,6 +477,16 @@ class _RobotState:
         # Recorded as the LeRobotDataset ``robot_type`` so datasets collected
         # on Isaac carry the same embodiment metadata as MuJoCo/Newton ones.
         self.data_config = data_config
+        # USD-mangled DOF name -> URDF joint name, for robots loaded from a
+        # URDF whose joint names are not valid USD identifiers (e.g. the
+        # ``robotstudio_so101`` URDF's ``"1"``..``"6"``, imported as
+        # ``tn__1_``..``tn__6_``). ``joint_names`` above already carries the
+        # translated (URDF) vocabulary - see
+        # :mod:`strands_robots.simulation.isaac.joint_names` (#1900) - so
+        # this map is diagnostics-only: it correlates the public names with
+        # the prim names an on-stage USD walk would encounter. Empty when
+        # nothing was mangled.
+        self.usd_to_urdf_joint_names = dict(usd_to_urdf_joint_names or {})
         # The prim path the URDF importer / USD reference actually
         # placed the robot at, which can differ from ``prim_path`` when
         # the importer ignores the requested destination (Isaac Sim 4.5
@@ -1679,6 +1691,7 @@ class IsaacSimulation(IsaacRecordingMixin, SimEngine):
                     articulation=articulation,
                     actual_prim_path=getattr(articulation, "_strands_actual_prim_path", None),
                     data_config=data_config,
+                    usd_to_urdf_joint_names=getattr(articulation, "_strands_usd_to_urdf_joint_names", None),
                 )
                 self._robots[name] = robot_state
 
@@ -4709,7 +4722,11 @@ class IsaacSimulation(IsaacRecordingMixin, SimEngine):
         4. Extracts joint names from ``articulation.dof_names``,
            coercing ``None`` to ``[]`` so a URDF with no actuated
            joints surfaces as the documented empty-joint-list mode
-           rather than a ``TypeError`` on iteration.
+           rather than a ``TypeError`` on iteration, then translates
+           any USD-mangled name back to the URDF's own joint name via
+           :func:`strands_robots.simulation.isaac.joint_names.demangle_usd_joint_names`
+           (#1900) so the public joint vocabulary matches the MuJoCo
+           backend's for the same URDF.
         5. Returns ``(joint_names, articulation)`` -- same shape as
            ``_load_usd_robot`` so the ``add_robot`` URDF branch can
            reuse the same envelope shape.
@@ -4886,8 +4903,46 @@ class IsaacSimulation(IsaacRecordingMixin, SimEngine):
         if position is not None and any(p != 0.0 for p in position):
             articulation.set_world_pose(position=np.asarray(position, dtype=float))
 
-        # Step 4-5: joint names + return.
+        # Step 4-5: joint names + return. The importer transcodes any URDF
+        # joint name that is not a valid USD identifier (a purely numeric
+        # name like the robotstudio_so101's "1" imports as "tn__1_"), and
+        # before #1900 that mangled form leaked through every public surface
+        # keyed by joint name - robot_joint_names, get_observation keys,
+        # send_action resolution - so the same URDF spoke different joint
+        # vocabularies on Isaac vs MuJoCo. Every articulation read/write is
+        # positional (index into dof_names order), so translating here, once,
+        # makes the whole backend speak the URDF names. The usd->urdf map is
+        # stashed as a sidecar (same pattern as _strands_actual_prim_path)
+        # for _RobotState diagnostics. Best-effort: a URDF the stdlib parse
+        # cannot re-read (the importer accepted it, so this is surface drift,
+        # not a bad file) keeps the importer's names - Isaac stays
+        # self-consistent, which is the pre-#1900 behaviour.
         joint_names = list(articulation.dof_names) if articulation.dof_names else []
+        usd_to_urdf: dict[str, str] = {}
+        try:
+            urdf_declared = urdf_joint_names(os.path.abspath(urdf_path))
+        except (OSError, ValueError) as e:
+            logger.warning(
+                "Could not re-parse %s for joint-name translation (%s); keeping the importer's joint names %s.",
+                urdf_path,
+                e,
+                joint_names,
+            )
+        else:
+            joint_names, usd_to_urdf = demangle_usd_joint_names(joint_names, urdf_declared)
+            if usd_to_urdf:
+                logger.info(
+                    "Translated %d USD-mangled joint names back to their URDF names: %s",
+                    len(usd_to_urdf),
+                    usd_to_urdf,
+                )
+        try:
+            articulation._strands_usd_to_urdf_joint_names = usd_to_urdf  # type: ignore[attr-defined]
+        except (AttributeError, TypeError):
+            # Same fallback as _strands_actual_prim_path above: the caller
+            # then records an empty map, and the public names still carry
+            # the translated vocabulary via the returned joint_names.
+            pass
 
         logger.info(
             "Loaded URDF robot at %s from %s (%d joints, articulation=initialized)",
