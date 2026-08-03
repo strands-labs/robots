@@ -173,6 +173,7 @@ Notes
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import datetime as _dt
 import os
 import threading
@@ -854,37 +855,39 @@ def main() -> None:
         # the same pump-on-main + worker-callers architecture as
         # examples/isaac_gs/app.py (Gradio in a daemon thread). This also
         # keeps every RTX render on the owning thread, which the thread-bound
-        # recorder requires. A prompt Agent(...) failure (e.g. no model
-        # credentials, see Requires above) sets `agent_done` in the side
-        # thread's finally, so the pump exits promptly and the error is
-        # re-raised below rather than hanging the pump loop.
+        # recorder requires.
+        #
+        # The side thread is a ThreadPoolExecutor rather than a hand-rolled
+        # Thread + result box (review on #1899): since we create this thread
+        # ourselves, `Future.result()` re-raises the agent's exception --
+        # RuntimeError, SystemExit and KeyboardInterrupt alike -- with object
+        # identity preserved, whereas a manual `except BaseException` box is
+        # only obliged when marshalling onto an *existing* foreign thread
+        # (run_on_main). The done-callback fires on success, exception and
+        # cancellation, so a prompt Agent(...) failure (e.g. no model
+        # credentials, see Requires above) still sets `agent_done` and the
+        # pump exits promptly rather than hanging. One caveat vs. the old
+        # daemon thread: executor threads are non-daemon and joined by
+        # concurrent.futures' atexit hook, so `shutdown(wait=False,
+        # cancel_futures=True)` on an interrupted-pump exit defers to that
+        # hook instead of abandoning the thread; on the normal path it is
+        # moot -- the callback only fires once the agent call has returned.
         agent_done = threading.Event()
-        agent_box: dict[str, Any] = {}
-
-        def _run_agent() -> None:
-            try:
-                agent_box["result"] = agent(prompt)
-            except BaseException as exc:  # noqa: BLE001 - re-raised on the main thread below
-                agent_box["exc"] = exc
-            finally:
-                agent_done.set()
-
         t0 = time.time()
-        agent_thread = threading.Thread(target=_run_agent, name="strands-agent", daemon=True)
-        agent_thread.start()
+        pool = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="strands-agent")
         try:
-            _sim.run_pump_forever(stop_event=agent_done)
+            future = pool.submit(agent, prompt)
+            future.add_done_callback(lambda _f: agent_done.set())
+            try:
+                _sim.run_pump_forever(stop_event=agent_done)
+            finally:
+                stop = _sim.stop_cameras_recording()
+                print(f"[recording] {stop['content'][0]['text']}")
+            # Re-raises the agent's exception, identity intact.
+            result = future.result()
         finally:
-            # `agent_done` is set in _run_agent's finally, so a normal pump
-            # exit means the agent call has already returned -- the join is a
-            # bounded formality (an interrupted pump leaves a daemon thread).
-            agent_thread.join(timeout=10.0)
-            stop = _sim.stop_cameras_recording()
-            print(f"[recording] {stop['content'][0]['text']}")
+            pool.shutdown(wait=False, cancel_futures=True)
         wall_time = time.time() - t0
-        if "exc" in agent_box:
-            raise agent_box["exc"]
-        result = agent_box.get("result")
         print(result)
 
         # Fail-fast (non-zero exit) if the agent's eval tool call errored.
