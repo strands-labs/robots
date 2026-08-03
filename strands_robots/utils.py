@@ -1562,6 +1562,13 @@ def _read_pose_vector(method: str, param_name: str, vec: Any, expected_len: int)
     What this returns is therefore the *element* read, the one the coercion used
     to duplicate.
 
+    That probe answers a *reported* length, and the read below produces the
+    components, so the accepted count is checked a second time against what the
+    read actually yielded (#1909). The two are independent reads and nothing
+    obliges them to agree; the length gate keeps its position, because refusing a
+    wrong reported length without producing an element is worth keeping, and the
+    re-check is the same question asked of the components that exist.
+
     Args:
         method: Calling method name, used in error text.
         param_name: Parameter name, used in error text.
@@ -1591,7 +1598,24 @@ def _read_pose_vector(method: str, param_name: str, vec: Any, expected_len: int)
             f"{method}: '{param_name}' must be a {expected_len}-element vector, "
             f"got {length} ({_refusal_container_repr(vec)})"
         )
-    return _read_finite_vector(method, param_name, vec)
+    floats, err = _read_finite_vector(method, param_name, vec)
+    if err is not None:
+        return floats, err
+    # The gate above accepted a length the value *reported*; these are the
+    # components it *produced*. A ``__len__`` of 4 over a read yielding 3 passed
+    # that gate and returned a 3-component vector where a wxyz quaternion was
+    # promised - reaching the bare ``ValueError`` inside the ``data.qpos``
+    # assignment this guard exists to prevent, through the guard rather than
+    # around it (#1909). The refusal quotes the components, since they are what
+    # disagrees with the count; ``length`` is named too, because "got 3" alone
+    # would not say that the value's own length claimed otherwise.
+    if len(floats) != expected_len:
+        return floats, (
+            f"{method}: '{param_name}' must be a {expected_len}-element vector, "
+            f"got {len(floats)}: {floats}. Its length reported {length}, so the "
+            f"components it produced are not the vector its length promised."
+        )
+    return floats, None
 
 
 def pose_vector_error(method: str, param_name: str, vec: Any, expected_len: int) -> str | None:
@@ -1648,9 +1672,10 @@ def coerce_pose_vector(
 
     Returns:
         ``(None, None)`` when ``vec`` is ``None`` (omitted - the caller applies
-        its own default), ``(floats, None)`` for an acceptable vector, or
-        ``(None, error_message)`` for a wrong length, a non-numeric element or a
-        ``nan``/``inf`` component.
+        its own default), ``(floats, None)`` for an acceptable vector - always
+        ``expected_len`` components, whether counted from the value's length or
+        from the read - or ``(None, error_message)`` for a wrong length, a
+        non-numeric element or a ``nan``/``inf`` component.
     """
     if vec is None:
         return None, None
@@ -1696,7 +1721,9 @@ def coerce_rgba(method: str, param_name: str, color: Any) -> tuple[list[float] |
     (annotated ``list[float]``) and echoed in agent-visible status text, so a
     surviving ``np.float64`` would leak ``np.float64(1.0)`` into it - and makes
     the ``color[:3]`` reads the shape builders do well-defined by construction
-    rather than by the caller's discipline.
+    rather than by the caller's discipline. Both counts above are counts of the
+    components this function read, so "exactly 4" holds for any value, not only
+    for one whose ``__len__`` agrees with its contents (#1909).
 
     Args:
         method: Calling method name, used in error text.
@@ -1711,8 +1738,11 @@ def coerce_rgba(method: str, param_name: str, color: Any) -> tuple[list[float] |
     """
     if color is None:
         return None, None
-    length = sequence_length(color)
-    if length is None:
+    # Asked only as "is this a sized sequence at all", the question this probe
+    # owns and cannot raise answering (#1888). It is what refuses a generator,
+    # whose components a read would consume before anything could count them. The
+    # component count is not taken from it - see below.
+    if sequence_length(color) is None:
         return None, f"{method}: '{param_name}' must be a sequence of numbers, got {_refusal_container_repr(color)}"
     # One read: the floats quoted by the component-count refusal below are the ones
     # the domain checks examined. They used to come from a second, unguarded read,
@@ -1721,15 +1751,24 @@ def coerce_rgba(method: str, param_name: str, color: Any) -> tuple[list[float] |
     floats, err = _read_finite_vector(method, param_name, color)
     if err is not None:
         return None, err
-    if length not in RGBA_ACCEPTED_LENGTHS:
+    # The count is the read's, not the value's ``__len__``. Those were two
+    # independent reads and nothing obliged them to agree: a ``__len__`` of 4 over
+    # a read yielding 3 skipped the alpha completion below and returned a
+    # 3-component rgba under a success result - breaking this function's stated
+    # promise of exactly 4 finite floats, and with it the ``color[:3]`` reads the
+    # shape builders do - while the refusal named a count from one read beside
+    # components from the other (#1909). Counting the list that is returned makes
+    # the promise true by construction rather than by the two reads agreeing.
+    count = len(floats)
+    if count not in RGBA_ACCEPTED_LENGTHS:
         expected = " or ".join(str(n) for n in RGBA_ACCEPTED_LENGTHS)
         return None, (
             f"{method}: '{param_name}' must have exactly {expected} "
-            f"component(s) ({RGBA_LAYOUT}), got {length}: {floats}. Pass every "
+            f"component(s) ({RGBA_LAYOUT}), got {count}: {floats}. Pass every "
             f"component - a partial '{param_name}' cannot be applied "
             "without inventing the missing values."
         )
-    return (floats if length == 4 else [*floats, 1.0]), None
+    return (floats if count == 4 else [*floats, 1.0]), None
 
 
 def coerce_size_vector(method: str, param_name: str, size: Any) -> tuple[list[float] | None, str | None]:
@@ -1793,12 +1832,16 @@ def coerce_size_vector(method: str, param_name: str, size: Any) -> tuple[list[fl
     floats, err = _read_finite_vector(method, param_name, size)
     if err is not None:
         return None, err
-    length = sequence_length(size)
-    if length is None:
+    if sequence_length(size) is None:
         # Reachable only for something iterable but unsized - a generator, which
         # the check above has now consumed, so there is nothing left to store.
         return None, f"{method}: '{param_name}' must be a list/tuple of numbers, got {_refusal_container_repr(size)}"
-    if length == 0:
+    # Empty means the read produced no component, not that ``__len__`` reported
+    # zero: the two are independent reads (#1909), and it is the absence of an
+    # extent to write that makes the value unusable. A value whose length reports
+    # three and whose read yields nothing has no extent, and one reporting zero
+    # whose read yields components has one.
+    if not floats:
         return None, (
             f"{method}: '{param_name}' must have at least one component, got an empty "
             f"vector ({_refusal_container_repr(size)}). An empty '{param_name}' is a component count, not an "

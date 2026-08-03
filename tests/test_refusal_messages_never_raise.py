@@ -1290,6 +1290,190 @@ class TestTheCoercionsReadTheirValueOnce:
         assert utils.name_list_error(FailsOnItsSecondNumericRead("top", "wrist"), "cameras", "render_all") is None
 
 
+class OverstatesItsLength(Sequence[Any]):
+    """``__len__`` reports one more component than the read produces.
+
+    A ``Sequence`` owes its two protocols no agreement, and this is the shape the
+    coercions' two reads disagreed on (#1909): the count came from ``__len__`` and
+    the components from the element read.
+    """
+
+    def __init__(self, *values: Any) -> None:
+        self.values = list(values)
+        self.element_reads = 0
+
+    def __len__(self) -> int:
+        return len(self.values) + 1
+
+    def __getitem__(self, index: Any) -> Any:
+        self.element_reads += 1
+        return self.values[index]
+
+
+class UnderstatesItsLength(Sequence[Any]):
+    """``__len__`` reports two components; the read produces however many it holds."""
+
+    def __init__(self, *values: Any) -> None:
+        self.values = list(values)
+        self.element_reads = 0
+
+    def __len__(self) -> int:
+        return 2
+
+    def __getitem__(self, index: Any) -> Any:
+        self.element_reads += 1
+        return self.values[index]
+
+
+class YieldsNoComponent(Sequence[Any]):
+    """``__len__`` reports three components and the read produces none."""
+
+    def __len__(self) -> int:
+        return 3
+
+    def __getitem__(self, index: Any) -> Any:
+        raise IndexError(index)
+
+
+class TestTheCoercionsCountTheComponentsTheyRead:
+    """A coercion's component count comes from the read that produced them (#1909).
+
+    #1906 made each coercion read its value's *components* once. The count beside
+    them was still a second, independent read - ``sequence_length(value)``, i.e.
+    ``__len__`` - and a ``Sequence`` is not obliged to answer the two the same way.
+    Two of the rows below are contract breaks rather than message defects, which is
+    why this is a change in verdict and not only in text.
+
+    :func:`~strands_robots.utils.sequence_length` stays where it answers its own
+    question - *is this a sized sequence at all*, which is what refuses a generator
+    on both coercions - and the pose path keeps its length gate ahead of the element
+    read, so a wrong reported length is still refused without producing a component.
+    """
+
+    def test_rgba_returns_four_components_for_a_value_that_overstates_its_length(self) -> None:
+        """The documented promise, previously true only of a value that agreed with itself.
+
+        ``coerce_rgba`` returns "exactly 4 finite floats" so the ``color[:3]`` reads
+        the shape builders do are well-defined by construction. The alpha completion
+        was gated on the *reported* count, so a ``__len__`` of 4 over a read yielding
+        3 skipped it and returned a 3-element rgba under a success result.
+        """
+        assert utils.coerce_rgba("add_object", "color", OverstatesItsLength(0.1, 0.2, 0.3)) == (
+            [0.1, 0.2, 0.3, 1.0],
+            None,
+        )
+
+    def test_rgba_accepts_the_components_it_read_when_the_length_understates_them(self) -> None:
+        """The other direction, and a deliberate change of verdict.
+
+        Three readable RGB components are a colour whatever the value's ``__len__``
+        says; refusing them "got 2" while quoting three was the refusal that
+        contradicted itself in one sentence.
+        """
+        assert utils.coerce_rgba("add_object", "color", UnderstatesItsLength(0.1, 0.2, 0.3)) == (
+            [0.1, 0.2, 0.3, 1.0],
+            None,
+        )
+
+    def test_every_rgba_this_guard_accepts_carries_four_components(self) -> None:
+        """The promise as a property over the disagreeing shapes, not one example."""
+        for color in (
+            [0.1, 0.2, 0.3],
+            [0.1, 0.2, 0.3, 0.5],
+            OverstatesItsLength(0.1, 0.2, 0.3),
+            OverstatesItsLength(0.1, 0.2, 0.3, 0.5),
+            UnderstatesItsLength(0.1, 0.2, 0.3),
+        ):
+            floats, err = utils.coerce_rgba("add_object", "color", color)
+            assert err is None
+            assert floats is not None
+            assert len(floats) == 4
+
+    def test_the_rgba_refusal_counts_the_components_it_quotes(self) -> None:
+        """The count named and the components quoted are one read's.
+
+        A refusal reading ``got 2: [0.1, 0.2, 0.3, 0.4, 0.5]`` names a count from
+        one read beside components from the other, and a reader cannot tell which
+        of the two the guard acted on.
+        """
+        floats, err = utils.coerce_rgba("add_object", "color", UnderstatesItsLength(0.1, 0.2, 0.3, 0.4, 0.5))
+        assert floats is None
+        assert err is not None
+        assert "got 5: [0.1, 0.2, 0.3, 0.4, 0.5]" in err
+
+    def test_a_pose_vector_shorter_than_its_reported_length_is_refused(self) -> None:
+        """A 3-component quaternion reached ``data.qpos`` through the guard.
+
+        The length gate accepted the reported 4, the read produced 3, and the
+        coercion returned them - the bare ``ValueError`` inside the numpy
+        assignment that :func:`~strands_robots.utils.pose_vector_error` exists to
+        prevent, reached through the guard rather than around it.
+        """
+        floats, err = utils.coerce_pose_vector("add_object", "position", OverstatesItsLength(0.1, 0.2, 0.3), 4)
+        assert floats is None
+        assert err is not None
+        assert "'position' must be a 4-element vector, got 3: [0.1, 0.2, 0.3]" in err
+        assert "length reported 4" in err
+
+    def test_no_accepted_pose_vector_has_the_wrong_component_count(self) -> None:
+        """The property behind the row above, over both directions of disagreement."""
+        for vec in (
+            [0.1, 0.2, 0.3],
+            OverstatesItsLength(0.1, 0.2, 0.3),
+            UnderstatesItsLength(0.1, 0.2, 0.3),
+            YieldsNoComponent(),
+        ):
+            for expected_len in (3, 4):
+                floats, err = utils.coerce_pose_vector("add_object", "position", vec, expected_len)
+                assert (floats is None) is (err is not None)
+                if floats is not None:
+                    assert len(floats) == expected_len
+
+    def test_a_wrong_reported_length_is_still_refused_before_any_element_is_read(self) -> None:
+        """The gate's position is deliberate and unchanged.
+
+        Refusing a wrong reported length without producing a component is worth
+        keeping - the re-check above is an addition to it, not a replacement, and a
+        re-check alone would read every element of a vector already known to be the
+        wrong length.
+        """
+        vec = UnderstatesItsLength(0.1, 0.2, 0.3)
+        floats, err = utils.coerce_pose_vector("add_object", "position", vec, 3)
+        assert floats is None
+        assert err is not None
+        assert "must be a 3-element vector, got 2" in err
+        assert vec.element_reads == 0
+
+    def test_size_takes_its_component_count_from_the_read(self) -> None:
+        """``size`` counts extents, and an extent it cannot read is not one it has.
+
+        The per-shape count is #1858's decision and not this one; what is decided
+        here is only which read the count comes from. A value whose length reports
+        three extents and whose read yields none has no extent to write, so it is
+        the empty-vector refusal - not an accepted ``size`` of three.
+        """
+        assert utils.coerce_size_vector("add_object", "size", OverstatesItsLength(0.1, 0.2, 0.3)) == (
+            [0.1, 0.2, 0.3],
+            None,
+        )
+        floats, err = utils.coerce_size_vector("add_object", "size", YieldsNoComponent())
+        assert floats is None
+        assert err is not None
+        assert "must have at least one component" in err
+
+    def test_the_probes_disagree_with_themselves(self) -> None:
+        """Non-vacuity: probes that had started agreeing would pass everything above."""
+        over = OverstatesItsLength(0.1, 0.2, 0.3)
+        assert len(over) == 4
+        assert [float(component) for component in over] == [0.1, 0.2, 0.3]
+        under = UnderstatesItsLength(0.1, 0.2, 0.3)
+        assert len(under) == 2
+        assert [float(component) for component in under] == [0.1, 0.2, 0.3]
+        nothing = YieldsNoComponent()
+        assert len(nothing) == 3
+        assert list(nothing) == []
+
+
 #: A guard that reads the caller's value straight into its message, appended to
 #: ``utils.py``'s own source so the scan is shown to reach a function it has never
 #: seen. Kept beside the tests that use it rather than inlined, because both the
