@@ -519,7 +519,7 @@ class TestMainThreadAffinityGuard:
         def _target():
             try:
                 box["result"] = fn()
-            except BaseException as exc:  # noqa: BLE001 - surfaced to the assertion
+            except Exception as exc:  # noqa: BLE001 - surfaced to the assertion
                 box["exc"] = exc
 
         t = threading.Thread(target=_target)
