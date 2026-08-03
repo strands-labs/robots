@@ -387,6 +387,14 @@ def _newton_stub() -> tuple[Any, dict[str, list[Any]]]:
         _write_targets=lambda: calls["write"].append(True),
         _advance=lambda n: calls["advance"].append(n),
     )
+    # ``send_action`` resolves the keys it will accept through
+    # ``robot_action_keys`` (a floating base's free joint is a joint but not a
+    # commandable scalar), so the stand-in resolves it through the real
+    # implementation rather than restating the rule. Restating it here would put
+    # a second copy of the vocabulary in the tree, which is the drift this
+    # indirection exists to remove.
+    stub.robot_joint_names = lambda name: NewtonSimEngine.robot_joint_names(stub, name)
+    stub.robot_action_keys = lambda name: NewtonSimEngine.robot_action_keys(stub, name)
     return stub, calls
 
 

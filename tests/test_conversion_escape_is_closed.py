@@ -595,48 +595,45 @@ class TestNoConvertingGuardConvertsUnprotected:
         assert _unguarded_float_calls(planted) == []
 
 
-class TestTheRemainingConversionsRunOnlyOnTheAcceptedPath:
+class TestTheModuleConvertsOnlyInsideAGuardedRead:
     """The scan run over the whole module, not over a list of names.
 
-    Replaces ``TestTheModuleHasExactlyOneRemainingConversionSurface`` rather than
-    deleting it: the boundary that class drew is still the useful statement and
-    has simply moved. It reported the four **container** guards as the remaining
-    unprotected conversions and pinned them raising, tracked as #1875. #1875 is
-    now closed, and ``finite_vector_error`` - the one of the four that converts a
-    value it has not yet accepted - has left the set, because it asks
-    :func:`_beyond_float_range` first and then converts inside a ``try``, exactly
-    as the scalar guards do.
+    Replaces ``TestTheRemainingConversionsRunOnlyOnTheAcceptedPath`` rather than
+    deleting it, which is the second time this boundary has moved rather than gone:
+    that class replaced ``TestTheModuleHasExactlyOneRemainingConversionSurface``,
+    which reported the four container guards and pinned them raising (#1875).
 
-    Three names remain, and they are a different statement from the one this
-    class used to make. ``coerce_pose_vector``, ``coerce_rgba`` and
-    ``coerce_size_vector`` convert only **after** ``finite_vector_error`` has
-    accepted every element - which is to say after that guard has already
-    converted each one successfully - so their ``float()`` provably cannot raise.
-    That is a real guarantee, but it is an upstream one rather than a local
-    ``try``, so the lexical scan cannot see it and reports them.
+    Its statement was that three names remain - ``coerce_pose_vector``,
+    ``coerce_rgba`` and ``coerce_size_vector`` - whose ``float()`` the lexical scan
+    reports and whose safety is an **upstream** guarantee: ``finite_vector_error``
+    had already converted every element successfully, so theirs provably could not
+    raise. Since the scan could not see that, the three were pinned with the
+    validating call asserted to come first.
 
-    Wrapping those three in a ``try`` to empty the scan would be worse: the
-    ``except`` clause could never run, so it would be untestable dead code
-    asserting a danger that does not exist. Stating the invariant and pinning it -
-    structurally, that the validating call precedes the conversion, and
-    behaviourally, that all four guards now answer an outsized element - is the
-    honest form.
+    The three no longer convert at all. #1906 moved the element read into
+    ``_read_finite_vector``, which returns the floats it built inside its own
+    ``try``, so each coercion now keeps a list this module made instead of reading
+    the caller's value a second time - which also closed the escape that second
+    read was: a value that answered the checked read and refused the next one
+    raised out of the coercion, including out of ``coerce_rgba``'s wrong-length
+    refusal.
+
+    So the scan's output is empty, and an empty output is also what a scanner
+    matching nothing produces. Two statements below are what keep it a
+    measurement: the conversions are gone, *and* the floats still come from the
+    guarded read - a coercion that stopped producing floats would satisfy the
+    first alone.
     """
 
     #: Not names this change chose to skip - this is the scan's output, asserted
-    #: so it can neither grow nor be quietly narrowed.
-    EXPECTED_REMAINING = frozenset(
-        {
-            "coerce_pose_vector",
-            "coerce_rgba",
-            "coerce_size_vector",
-        }
-    )
+    #: so it can neither grow nor be quietly narrowed. Empty since #1906.
+    EXPECTED_REMAINING: frozenset[str] = frozenset()
 
-    #: The guard whose acceptance makes the three conversions above safe. Two
-    #: spellings, because ``coerce_pose_vector`` reaches it through the
-    #: fixed-length wrapper.
-    VALIDATORS = frozenset({"finite_vector_error", "pose_vector_error"})
+    #: The coercions that used to convert, and the guarded reads they now take
+    #: their floats from. Two spellings, because ``coerce_pose_vector`` reaches the
+    #: element read through the fixed-length wrapper.
+    COERCIONS = ("coerce_pose_vector", "coerce_rgba", "coerce_size_vector")
+    GUARDED_READS = frozenset({"_read_finite_vector", "_read_pose_vector"})
 
     @staticmethod
     def _converting_unprotected() -> set[str]:
@@ -647,7 +644,7 @@ class TestTheRemainingConversionsRunOnlyOnTheAcceptedPath:
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and _unguarded_float_calls_in(node)
         }
 
-    def test_the_remaining_surface_is_exactly_the_post_validation_conversions(self) -> None:
+    def test_no_function_in_the_module_converts_unprotected(self) -> None:
         assert self._converting_unprotected() == set(self.EXPECTED_REMAINING)
 
     def test_no_scalar_guard_is_among_them(self) -> None:
@@ -655,33 +652,45 @@ class TestTheRemainingConversionsRunOnlyOnTheAcceptedPath:
         assert self._converting_unprotected().isdisjoint({guard.name for guard in CONVERTING})
 
     def test_the_vector_guard_no_longer_converts_unprotected(self) -> None:
-        """#1875's half of the claim: the one guard that converts a *new* value."""
-        assert "finite_vector_error" not in self._converting_unprotected()
+        """#1875's half of the claim, followed to where the conversion now lives.
 
-    @pytest.mark.parametrize("name", sorted(EXPECTED_REMAINING))
-    def test_each_remaining_conversion_is_preceded_by_the_validating_call(self, name: str) -> None:
-        """The structural half of the invariant the docstring above claims.
+        Asserting it of ``finite_vector_error`` alone would be vacuous since #1906:
+        that function converts nothing at all now, so the guarantee has to be
+        asserted of the helper it delegates its read to, which is the function that
+        classifies magnitude and then converts inside a ``try``.
+        """
+        converting = self._converting_unprotected()
+        assert "finite_vector_error" not in converting
+        assert "_read_finite_vector" not in converting
 
-        A conversion that is safe *because* something upstream already made it
-        safe is only safe while that call is still there, and still first. So the
-        validating call is asserted to appear in the function, and to appear on an
-        earlier line than any conversion the scan flagged. Reordering the two, or
-        dropping the guard, fails here rather than at a caller.
+    @pytest.mark.parametrize("name", COERCIONS)
+    def test_each_coercion_takes_its_floats_from_the_guarded_read(self, name: str) -> None:
+        """What replaces the ordering pin, and why the empty scan is not vacuous.
+
+        The ordering assertion said: the validating call is present, and earlier
+        than the conversion. There is no longer a conversion to order against, so
+        the two halves are stated directly - the coercion calls a guarded read, and
+        makes no ``float()`` call of its own. Dropping the read, or converting the
+        caller's value again beside it, fails here rather than at a caller.
         """
         fn = ast.parse(inspect.getsource(getattr(utils, name)).lstrip())
-        validated = [
-            node.lineno
-            for node in ast.walk(fn)
-            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in self.VALIDATORS
-        ]
-        converted = [
-            node.lineno
-            for node in ast.walk(fn)
-            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "float"
-        ]
-        assert validated, f"{name} converts without calling any of {sorted(self.VALIDATORS)}"
-        assert converted, f"{name} was flagged as converting but no float() call was found"
-        assert min(validated) < min(converted), f"{name} converts before it validates"
+        called = {
+            node.func.id for node in ast.walk(fn) if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        }
+        assert called & self.GUARDED_READS, f"{name} builds its floats without a guarded read"
+        assert "float" not in called, f"{name} converts the caller's value itself"
+
+    def test_the_module_scan_still_reports_a_planted_conversion(self) -> None:
+        """Control for the empty output above, which no other row can supply.
+
+        The behavioural scanner controls sit on ``_unguarded_float_calls``; this is
+        the node-level form the module scan actually runs, so an
+        ``_unguarded_float_calls_in`` that had stopped matching would leave
+        ``EXPECTED_REMAINING`` empty and every assertion above passing.
+        """
+        planted = ast.parse("def planted(value: Any) -> float:\n    return float(value)\n")
+        fn = next(node for node in ast.walk(planted) if isinstance(node, ast.FunctionDef))
+        assert _unguarded_float_calls_in(fn)
 
     #: Each container guard called with an outsized element, through the public
     #: entry point a caller actually reaches: ``coerce_pose_vector`` is reached

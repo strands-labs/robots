@@ -497,6 +497,58 @@ def _describe_unrenderable(value: Any) -> str:
     return f"<unrepresentable {type(value).__name__}>"
 
 
+def _describe_failed_read(exc: Exception) -> str:
+    """``RuntimeError: no keys for you`` for a read a refusal could not complete.
+
+    The one spelling of a failed read in this module's refusal text, shared by
+    the guard that reports a read whose *verdict* it became
+    (:func:`_read_name_list`) and the read a message makes only to *quote*
+    something (:func:`_read_to_quote`). Named rather than repeated for the reason
+    :func:`_describe_unrenderable` is shared between the two render forms: a
+    refusal degraded on one path must not describe the same failure differently
+    from another.
+
+    ``exc`` goes through :func:`_refusal_str` rather than being interpolated: a
+    value hostile enough to raise from its own read is not one whose exception is
+    assumed to have a working ``__str__``, which would be the #1873 escape
+    reintroduced inside a message built to avoid it.
+
+    Args:
+        exc: The exception the read raised.
+
+    Returns:
+        Its type name and text, which cannot itself raise.
+    """
+    return f"{type(exc).__name__}: {_refusal_str(exc)}"
+
+
+def _read_to_quote(value: Any) -> tuple[list[Any] | None, str | None]:
+    """The elements of ``value`` for a refusal to quote, or why they could not be read.
+
+    The read a refusal makes for its own *text*, which is a different job from
+    :func:`_read_name_list`'s and needs the opposite answer. There the verdict
+    depends on the read, so a read that fails becomes the verdict. Here the
+    verdict is settled *before* the read happens - a mapping is refused whatever
+    its keys say, and a string whatever its characters are - so a read that fails
+    must not replace it: the caller passed a mapping, and that is the mistake
+    worth reporting even when its keys cannot be quoted. The failure is therefore
+    described for the message to carry rather than returned as a message of its
+    own (#1903).
+
+    Args:
+        value: The caller-supplied value a refusal wants to quote.
+
+    Returns:
+        ``(elements, None)`` when the read finished, or ``(None, description)``
+        when it did not. Exactly one side is ever populated, so a caller holding
+        a ``None`` description holds the elements.
+    """
+    try:
+        return list(value), None
+    except Exception as exc:
+        return None, _describe_failed_read(exc)
+
+
 def _refusal_container_repr(value: Any) -> str:
     """``repr(value)`` for a refusal that reports a whole container, elementwise if it must.
 
@@ -1084,6 +1136,80 @@ def non_negative_count_error(value: Any, param: str, context: str) -> str | None
     return None
 
 
+def _read_name_list(value: object, param: str, context: str) -> tuple[list[Any], str | None]:
+    """Read ``value`` into a list once, or return why the read could not finish.
+
+    The single read every verdict in :func:`name_list_error` is then computed
+    from. It exists because that guard used to read the caller's value on each
+    branch that needed it - the entry walk, the duplicate walk, and the
+    duplicate message's own ``list(value)`` - and none of those reads was
+    guarded. An acceptable value was read twice and a repeated one three times,
+    so a value that answers a read at all could break the guard on any of them.
+
+    Reading once is not only about the escape. The reads were independent, so
+    nothing required them to agree, and a value whose contents differ between
+    two of them was refused on the strength of a list no check had examined: a
+    two-entry ``Sequence`` yielding ``["top", "wrist"]`` and then ``["top",
+    "top"]`` cleared the per-entry domain checks against the first and was
+    refused as a repeat against the second, in a message rendering a third. One
+    read makes the verdict and the text it quotes the same list by construction.
+
+    The read is still element by element rather than ``list(value)``, which
+    matters for the same reason it does in :func:`finite_vector_error`: a
+    materialising call raises before any element has been examined, so its
+    verdict could not name how far the read got. Here the whole value is
+    collected either way - a repeat cannot be ruled out without reading every
+    entry, so there is no verdict this guard could reach by stopping early -
+    but the *index* is what distinguishes a value that produced two good names
+    from one that produced none, and that is worth keeping.
+
+    Both stems are the ones :func:`finite_vector_error` already uses, with this
+    guard's own unquoted ``{param}[{i}]`` index style and a remedy worded for
+    names rather than numbers. A read that never began is reported without an
+    index, because there is no element to name; the index is the measurement.
+
+    The exception is rendered by :func:`_describe_failed_read`, which is also what
+    a refusal that could only not *quote* something reports (#1903), so the two
+    cannot describe one failure two ways.
+
+    Args:
+        value: The caller-supplied value, already known to be a
+            :class:`~collections.abc.Sequence` by the check above the call.
+        param: The parameter name it came from, used in the message.
+        context: Message prefix identifying the surface that received it.
+
+    Returns:
+        The entries read and ``None``, or the entries read so far and the
+        message naming why the read stopped.
+    """
+    try:
+        elements = iter(value)  # type: ignore[call-overload]
+    except Exception as exc:
+        return [], (
+            f"{context}: {param} could not be iterated: "
+            f"{_describe_failed_read(exc)} (got {_refusal_container_repr(value)}). "
+            f"Pass a list or tuple of names."
+        )
+    entries: list[Any] = []
+    while True:
+        # ``next()`` is called explicitly because a ``for`` cannot guard the call
+        # it makes, so an exception raised while *producing* an entry would escape
+        # this guard exactly as one from ``__iter__`` would. ``StopIteration`` is
+        # the read finishing normally; an empty value is accepted as before,
+        # emptiness meaning "not supplied" to every caller of this function.
+        try:
+            entry = next(elements)
+        except StopIteration:
+            return entries, None
+        except Exception as exc:
+            return entries, (
+                f"{context}: {param}[{len(entries)}] could not be read: "
+                f"{_describe_failed_read(exc)} (got {_refusal_container_repr(value)}). "
+                f"Pass a list or tuple of names."
+            )
+        entries.append(entry)
+
+
 def name_list_error(value: Any, param: str, context: str) -> str | None:
     """Error text when ``value`` is not a usable list of distinct key names.
 
@@ -1138,7 +1264,10 @@ def name_list_error(value: Any, param: str, context: str) -> str | None:
     Only a :class:`~collections.abc.Sequence` is accepted, which excludes
     one-shot iterators. That matters on the LeRobot path, where the value is
     read twice - once by the pre-flight check and again at load - so a generator
-    exhausted by the first read would present as empty to the second.
+    exhausted by the first read would present as empty to the second. That is a
+    statement about the *consumers*: this function itself reads the value once,
+    through :func:`_read_name_list`, and a read that cannot finish is answered
+    with a message rather than raising out of the guard.
 
     Callers gate this check on a truthy value, because in both consumers a falsy
     ``image_keys`` (``None``, or an empty list) already means "not supplied" and
@@ -1156,20 +1285,50 @@ def name_list_error(value: Any, param: str, context: str) -> str | None:
         An error message, or ``None`` when the value is usable.
     """
     if isinstance(value, str | bytes):
-        shown = value.decode(errors="replace") if isinstance(value, bytes) else value
+        # One read builds the whole consequence clause. ``bytes.decode`` is
+        # overridable and a ``str`` subclass owns its own ``__iter__`` and
+        # ``__len__``, so producing the characters and counting them are both
+        # reads of the caller's value - and taking the count from the same read
+        # that produced the characters is #1897's property applied to a message,
+        # rather than a second read the first is not obliged to agree with.
+        shown: Any = value
+        characters: list[Any] | None = None
+        unreadable: str | None = None
+        try:
+            shown = value.decode(errors="replace") if isinstance(value, bytes) else value
+        except Exception as exc:
+            unreadable = _describe_failed_read(exc)
+        else:
+            characters, unreadable = _read_to_quote(shown)
+        if characters is None:
+            consequence = (
+                f"A string is iterable per character, so this would be read as one name per "
+                f"character; its own characters could not be read to quote them here ({unreadable})."
+            )
+        else:
+            consequence = (
+                f"A string is iterable per character, so this would be read as "
+                f"{_refusal_container_repr(characters[:6])}{' ...' if len(characters) > 6 else ''} "
+                f"({len(characters)} name(s))."
+            )
         return (
             f"{context}: {param} must be a list of names, not a single string, "
-            f"got {_refusal_container_repr(value)}. "
-            f"A string is iterable per character, so this would be read as "
-            f"{[c for c in shown][:6]}{' ...' if len(shown) > 6 else ''} "
-            f"({len(shown)} name(s)). Wrap it in a list: [{_refusal_repr(shown)}]."
+            f"got {_refusal_container_repr(value)}. {consequence} "
+            f"Wrap it in a list: [{_refusal_repr(shown)}]."
         )
     if isinstance(value, Mapping):
+        # The verdict is not in doubt on this branch, so a key read that fails
+        # degrades the remedy and leaves the verdict standing (#1903).
+        names, unquotable = _read_to_quote(value)
+        remedy = (
+            f"pass the names as a list; its own keys could not be read to quote them here ({unquotable})."
+            if names is None
+            else f"pass the names as a list: {_refusal_container_repr(names)}."
+        )
         return (
             f"{context}: {param} must be a list of names, not a mapping, "
             f"got {_refusal_container_repr(value)}. "
-            f"A mapping is iterable over its keys, so its values would be discarded - "
-            f"pass the names as a list: {_refusal_container_repr(list(value))}."
+            f"A mapping is iterable over its keys, so its values would be discarded - {remedy}"
         )
     if not isinstance(value, Sequence):
         return (
@@ -1177,20 +1336,27 @@ def name_list_error(value: Any, param: str, context: str) -> str | None:
             f"({_refusal_container_repr(value)}). Pass a list or tuple; a one-shot iterator cannot be used "
             f"because the value is read more than once."
         )
-    for i, entry in enumerate(value):
+    # One read, and every verdict below is about the list it produced. A
+    # ``Sequence`` is not obliged to answer two reads the same way, so the
+    # per-entry checks and the duplicate check have to see the same entries for
+    # their verdicts to be about the same value - see :func:`_read_name_list`.
+    entries, unread = _read_name_list(value, param, context)
+    if unread is not None:
+        return unread
+    for i, entry in enumerate(entries):
         if not isinstance(entry, str):
             return f"{context}: {param}[{i}] must be a name (str), got {type(entry).__name__} ({_refusal_repr(entry)})."
         if not entry.strip():
             return f"{context}: {param}[{i}] must be a non-blank name, got {_refusal_repr(entry)}."
     seen: set[str] = set()
     repeated: set[str] = set()
-    for entry in value:
+    for entry in entries:
         if entry in seen:
             repeated.add(entry)
         seen.add(entry)
     if repeated:
         return (
-            f"{context}: {param} must not repeat a name, got {_refusal_container_repr(list(value))} "
+            f"{context}: {param} must not repeat a name, got {_refusal_container_repr(entries)} "
             f"({_refusal_container_repr(sorted(repeated))} appears more than once)."
         )
     return None
@@ -1208,6 +1374,139 @@ BOOLEAN_VECTOR_REASON = (
 )
 
 
+def _read_finite_vector(method: str, param_name: str, vec: Any) -> tuple[list[float], str | None]:
+    """Read ``vec`` into floats once, or return why it is unusable.
+
+    The single read every verdict in :func:`finite_vector_error` is computed
+    from, together with the floats that read produced.
+
+    It exists because the three coercions built on that guard validated their
+    value with it and then read the value *again*, unguarded, to build their
+    floats. Two consequences, and the second is the one that reaches a stated
+    contract. A value that answers the checked read and refuses the next one
+    raised straight out of the coercion (#1906) - including out of
+    :func:`coerce_rgba`'s wrong-length refusal, whose whole purpose is to answer
+    an unusable colour with text. And the reads were independent, so nothing
+    obliged them to agree: the components a refusal quoted need not have been
+    the components any check examined. Returning the read makes the verdict and
+    the floats the caller keeps one list by construction.
+
+    This is :func:`_read_name_list`'s shape (#1897) on the numeric guards. The
+    read moves rather than the signature: :func:`finite_vector_error` and
+    :func:`pose_vector_error` have 24 call sites across four modules that want a
+    verdict and nothing else, so they stay as they were and this is what they
+    are now computed from.
+
+    Args:
+        method: Calling method name, used in error text.
+        param_name: Parameter name, used in error text.
+        vec: The caller-supplied value.
+
+    Returns:
+        The floats read and ``None``, or the floats read so far and the message
+        naming why the value is unusable - the same text
+        :func:`finite_vector_error` has always returned.
+    """
+    # Collected as the read proceeds, so every refusal below can report the
+    # components read before the one that stopped it, and an accepted value can
+    # be returned without a second read of it.
+    floats: list[float] = []
+    # ``TypeError`` is what "not iterable" means in Python and the only exception
+    # a well-behaved ``__iter__`` raises, but a guard whose whole purpose is to
+    # answer an unusable input with a message cannot assume good behaviour of the
+    # value it was handed: any other exception escaping here would be the same
+    # defect as the rendering (#1873), scalar-conversion (#1874) and
+    # container-conversion (#1875) escapes, on the one path that must not raise.
+    # It gets its own text because the two verdicts are not the same measurement -
+    # a value whose iteration raised may well have been a list/tuple of numbers,
+    # and this guard never found out, so reporting it as "must be a list/tuple of
+    # numbers" would state something unmeasured (#1878).
+    #
+    # The iterator is bound and then iterated, rather than ``iter(vec)`` being
+    # called for its exception and ``vec`` iterated again: one ``__iter__`` call
+    # is what the probe is asking about, and a second one is free to answer
+    # differently than the one that was checked.
+    #
+    # This clause answers for ``__iter__`` only, and a success here says nothing
+    # about the read that follows (#1889): CPython synthesises the iterator for a
+    # legacy ``__getitem__`` sequence *without* calling ``__getitem__``, and
+    # ``iter()`` of a generator cannot fail at all, so a value that fails part-way
+    # through its own iteration arrives past this line intact. The element loop
+    # below guards the call that produces each element for that reason. A
+    # materialising ``list(vec)`` would cover both in one clause and is declined
+    # for a stronger reason than the memory it holds: it raises before any element
+    # has been examined, so its verdict could not say how far the read got - the
+    # one thing that distinguishes a part-way failure from an outright refusal.
+    # ``exc`` is rendered through ``_refusal_str`` rather than interpolated: a
+    # value hostile enough to raise a non-``TypeError`` from ``__iter__`` is not
+    # a value whose exception is assumed to have a working ``__str__``, and that
+    # is the #1873 escape reintroduced inside the fix for this one.
+    try:
+        elements = iter(vec)
+    except TypeError:
+        return floats, f"{method}: '{param_name}' must be a list/tuple of numbers, got {_refusal_container_repr(vec)}"
+    except Exception as exc:
+        return floats, (
+            f"{method}: '{param_name}' could not be iterated: "
+            f"{type(exc).__name__}: {_refusal_str(exc)} (got {_refusal_container_repr(vec)}). "
+            f"Pass a list or tuple of numbers."
+        )
+    while True:
+        # ``next()`` is called explicitly because a ``for`` cannot guard the call
+        # it makes: an exception raised while *producing* an element is the
+        # ``__iter__`` escape one level in, on the same path that must not raise.
+        # It is reported against the element's own index, the convention every
+        # other guard here that names one already uses (``{param}[{i}]``), so the
+        # message states both what failed and what was read before it.
+        # ``StopIteration`` is the read finishing normally; an empty ``vec`` is
+        # accepted exactly as before, a component count not being this guard's
+        # question.
+        try:
+            _elem = next(elements)
+        except StopIteration:
+            break
+        except Exception as exc:
+            return floats, (
+                f"{method}: '{param_name}[{len(floats)}]' could not be read: "
+                f"{type(exc).__name__}: {_refusal_str(exc)} (got {_refusal_container_repr(vec)}). "
+                f"Pass a list or tuple of numbers."
+            )
+        # ``numbers.Real`` accepts a numpy scalar (``np.float32`` / ``np.int64``
+        # are registered) and rejects a string, ``None`` or a nested list.
+        # ``bool`` is an ``int`` subclass, so it would otherwise pass as a
+        # silent ``1.0`` - a ``True`` coordinate placing a body 1 m out. The
+        # agent-tool router already refuses a bool component, so refusing it
+        # here keeps the direct API and the tool surface in step.
+        if is_boolean(_elem):
+            return floats, (
+                f"{method}: '{param_name}' elements must be numbers, not a bool "
+                f"(got {_refusal_container_repr(vec)}). {BOOLEAN_VECTOR_REASON}"
+            )
+        if not isinstance(_elem, numbers.Real):
+            return floats, f"{method}: '{param_name}' elements must be numbers, got {_refusal_container_repr(vec)}"
+        # An element past the float64 range is a *magnitude* complaint and gets
+        # its own reason, exactly as the scalar guards give one (#1874). The
+        # order matters: ``_beyond_float_range`` answers only ``OverflowError``,
+        # so a registered ``numbers.Real`` with no working ``__float__`` falls
+        # through to the not-a-number text below rather than being mis-reported
+        # as out of range.
+        if _beyond_float_range(_elem):
+            return floats, (
+                f"{method}: '{param_name}' must contain numbers within the range of a 64-bit float, "
+                f"got {_refusal_container_repr(vec)}"
+            )
+        try:
+            numeric = float(_elem)
+        except Exception:
+            return floats, f"{method}: '{param_name}' elements must be numbers, got {_refusal_container_repr(vec)}"
+        if not math.isfinite(numeric):
+            return floats, (
+                f"{method}: '{param_name}' must contain finite numbers (no nan/inf), got {_refusal_container_repr(vec)}"
+            )
+        floats.append(numeric)
+    return floats, None
+
+
 def finite_vector_error(method: str, param_name: str, vec: Any) -> str | None:
     """Return an error message if any element of ``vec`` is not a finite number.
 
@@ -1223,11 +1522,15 @@ def finite_vector_error(method: str, param_name: str, vec: Any) -> str | None:
       either poisons the physics state on the next ``mj_forward`` or aborts the
       spec recompile with a cryptic "spec recompile refused", reporting a
       success/garbage result instead of an actionable error.
-    * A value whose ``__iter__`` raises something other than ``TypeError``
+    * A value whose iteration raises something other than ``TypeError`` -
+      from ``__iter__``, or from ``__next__`` once the read is under way -
       otherwise propagates that exception out of the guard, which is the same
       contract break by a different route - the caller asked for a verdict and
-      got a traceback. Reported as its own "could not be iterated" refusal,
-      because whether it held numbers is precisely what could not be determined.
+      got a traceback. Both are reported, and not in the same words, because the
+      two are not the same measurement: a refusing ``__iter__`` yields "could not
+      be iterated", since whether it held numbers is precisely what could not be
+      determined, while a read that fails part-way names the element it stopped
+      at, the components before it having been read and found finite.
 
     A numpy real scalar per element is accepted (``np.float64`` and friends are
     registered as ``numbers.Real``), matching the "accept NumPy scalar
@@ -1238,72 +1541,81 @@ def finite_vector_error(method: str, param_name: str, vec: Any) -> str | None:
     :func:`pose_vector_error` for a fixed length, or :func:`coerce_rgba` for a
     colour, whose count the rgba row it is written into defines. Returns ``None``
     when every element is a finite real number.
+
+    The read itself is :func:`_read_finite_vector`, which returns the floats it
+    built alongside this verdict; this is the verdict half, for the callers that
+    want only a message. Both are one read of ``vec`` (#1906).
     """
-    # ``TypeError`` is what "not iterable" means in Python and the only exception
-    # a well-behaved ``__iter__`` raises, but a guard whose whole purpose is to
-    # answer an unusable input with a message cannot assume good behaviour of the
-    # value it was handed: any other exception escaping here would be the same
-    # defect as the rendering (#1873), scalar-conversion (#1874) and
-    # container-conversion (#1875) escapes, on the one path that must not raise.
-    # It gets its own text because the two verdicts are not the same measurement -
-    # a value whose iteration raised may well have been a list/tuple of numbers,
-    # and this guard never found out, so reporting it as "must be a list/tuple of
-    # numbers" would state something unmeasured (#1878).
-    #
-    # The iterator is bound and then iterated, rather than ``iter(vec)`` being
-    # called for its exception and ``vec`` iterated again: one ``__iter__`` call
-    # is what the probe is asking about, and a second one is free to answer
-    # differently than the one that was checked. It stays lazy - a materialising
-    # ``list(vec)`` would answer for ``__next__`` too, but at the cost of holding
-    # a whole vector that the element loop below only ever needs one at a time.
-    # ``exc`` is rendered through ``_refusal_str`` rather than interpolated: a
-    # value hostile enough to raise a non-``TypeError`` from ``__iter__`` is not
-    # a value whose exception is assumed to have a working ``__str__``, and that
-    # is the #1873 escape reintroduced inside the fix for this one.
-    try:
-        elements = iter(vec)
-    except TypeError:
-        return f"{method}: '{param_name}' must be a list/tuple of numbers, got {_refusal_container_repr(vec)}"
-    except Exception as exc:
-        return (
-            f"{method}: '{param_name}' could not be iterated: "
-            f"{type(exc).__name__}: {_refusal_str(exc)} (got {_refusal_container_repr(vec)}). "
-            f"Pass a list or tuple of numbers."
+    return _read_finite_vector(method, param_name, vec)[1]
+
+
+def _read_pose_vector(method: str, param_name: str, vec: Any, expected_len: int) -> tuple[list[float], str | None]:
+    """Read ``vec`` into ``expected_len`` floats once, or say why it is unusable.
+
+    :func:`pose_vector_error`'s read, split out for the reason
+    :func:`_read_finite_vector` is (#1906): :func:`coerce_pose_vector` validated
+    the pose through the guard and then read it again to build the floats.
+
+    The length probe is unchanged and still runs before any element is produced,
+    so a wrong-length vector is still refused without reading one - it is
+    :func:`sequence_length`, which answers from ``__len__`` and cannot raise.
+    What this returns is therefore the *element* read, the one the coercion used
+    to duplicate.
+
+    That probe answers a *reported* length, and the read below produces the
+    components, so the accepted count is checked a second time against what the
+    read actually yielded (#1909). The two are independent reads and nothing
+    obliges them to agree; the length gate keeps its position, because refusing a
+    wrong reported length without producing an element is worth keeping, and the
+    re-check is the same question asked of the components that exist.
+
+    Args:
+        method: Calling method name, used in error text.
+        param_name: Parameter name, used in error text.
+        vec: The caller-supplied value.
+        expected_len: Component count the target buffer defines.
+
+    Returns:
+        The floats read and ``None``, or the floats read so far (none, when the
+        length was refused) and the message :func:`pose_vector_error` returns.
+    """
+    # Read through the shared probe rather than a second ``len()`` here. The
+    # rule "how many components is this?" has one owner (:func:`sequence_length`)
+    # precisely so it cannot be answered two ways, and this call site answered it
+    # a second way: an ``except TypeError`` clause, which is the gap that owner
+    # closed - a ``__len__`` refusing any other way, or returning a negative or
+    # an oversized ``int`` that CPython itself refuses to convert, escaped this
+    # guard and the structured contract its callers document. Both verdicts below
+    # are unchanged, including the text for a value carrying no readable length.
+    length = sequence_length(vec)
+    if length is None:
+        return [], (
+            f"{method}: '{param_name}' must be a list/tuple of {expected_len} numbers, "
+            f"got {_refusal_container_repr(vec)}"
         )
-    for _elem in elements:
-        # ``numbers.Real`` accepts a numpy scalar (``np.float32`` / ``np.int64``
-        # are registered) and rejects a string, ``None`` or a nested list.
-        # ``bool`` is an ``int`` subclass, so it would otherwise pass as a
-        # silent ``1.0`` - a ``True`` coordinate placing a body 1 m out. The
-        # agent-tool router already refuses a bool component, so refusing it
-        # here keeps the direct API and the tool surface in step.
-        if is_boolean(_elem):
-            return (
-                f"{method}: '{param_name}' elements must be numbers, not a bool "
-                f"(got {_refusal_container_repr(vec)}). {BOOLEAN_VECTOR_REASON}"
-            )
-        if not isinstance(_elem, numbers.Real):
-            return f"{method}: '{param_name}' elements must be numbers, got {_refusal_container_repr(vec)}"
-        # An element past the float64 range is a *magnitude* complaint and gets
-        # its own reason, exactly as the scalar guards give one (#1874). The
-        # order matters: ``_beyond_float_range`` answers only ``OverflowError``,
-        # so a registered ``numbers.Real`` with no working ``__float__`` falls
-        # through to the not-a-number text below rather than being mis-reported
-        # as out of range.
-        if _beyond_float_range(_elem):
-            return (
-                f"{method}: '{param_name}' must contain numbers within the range of a 64-bit float, "
-                f"got {_refusal_container_repr(vec)}"
-            )
-        try:
-            numeric = float(_elem)
-        except Exception:
-            return f"{method}: '{param_name}' elements must be numbers, got {_refusal_container_repr(vec)}"
-        if not math.isfinite(numeric):
-            return (
-                f"{method}: '{param_name}' must contain finite numbers (no nan/inf), got {_refusal_container_repr(vec)}"
-            )
-    return None
+    if length != expected_len:
+        return [], (
+            f"{method}: '{param_name}' must be a {expected_len}-element vector, "
+            f"got {length} ({_refusal_container_repr(vec)})"
+        )
+    floats, err = _read_finite_vector(method, param_name, vec)
+    if err is not None:
+        return floats, err
+    # The gate above accepted a length the value *reported*; these are the
+    # components it *produced*. A ``__len__`` of 4 over a read yielding 3 passed
+    # that gate and returned a 3-component vector where a wxyz quaternion was
+    # promised - reaching the bare ``ValueError`` inside the ``data.qpos``
+    # assignment this guard exists to prevent, through the guard rather than
+    # around it (#1909). The refusal quotes the components, since they are what
+    # disagrees with the count; ``length`` is named too, because "got 3" alone
+    # would not say that the value's own length claimed otherwise.
+    if len(floats) != expected_len:
+        return floats, (
+            f"{method}: '{param_name}' must be a {expected_len}-element vector, "
+            f"got {len(floats)}: {floats}. Its length reported {length}, so the "
+            f"components it produced are not the vector its length promised."
+        )
+    return floats, None
 
 
 def pose_vector_error(method: str, param_name: str, vec: Any, expected_len: int) -> str | None:
@@ -1324,27 +1636,11 @@ def pose_vector_error(method: str, param_name: str, vec: Any, expected_len: int)
     model, and their accepted domain must not diverge - a pose either backend
     entry point refuses must be refused by the other. Returns ``None`` when
     ``vec`` is acceptable.
+
+    The read itself is :func:`_read_pose_vector`, for the same reason
+    :func:`finite_vector_error` defers to :func:`_read_finite_vector` (#1906).
     """
-    # Read through the shared probe rather than a second ``len()`` here. The
-    # rule "how many components is this?" has one owner (:func:`sequence_length`)
-    # precisely so it cannot be answered two ways, and this call site answered it
-    # a second way: an ``except TypeError`` clause, which is the gap that owner
-    # closed - a ``__len__`` refusing any other way, or returning a negative or
-    # an oversized ``int`` that CPython itself refuses to convert, escaped this
-    # guard and the structured contract its callers document. Both verdicts below
-    # are unchanged, including the text for a value carrying no readable length.
-    length = sequence_length(vec)
-    if length is None:
-        return (
-            f"{method}: '{param_name}' must be a list/tuple of {expected_len} numbers, "
-            f"got {_refusal_container_repr(vec)}"
-        )
-    if length != expected_len:
-        return (
-            f"{method}: '{param_name}' must be a {expected_len}-element vector, "
-            f"got {length} ({_refusal_container_repr(vec)})"
-        )
-    return finite_vector_error(method, param_name, vec)
+    return _read_pose_vector(method, param_name, vec, expected_len)[1]
 
 
 def coerce_pose_vector(
@@ -1376,15 +1672,20 @@ def coerce_pose_vector(
 
     Returns:
         ``(None, None)`` when ``vec`` is ``None`` (omitted - the caller applies
-        its own default), ``(floats, None)`` for an acceptable vector, or
-        ``(None, error_message)`` for a wrong length, a non-numeric element or a
-        ``nan``/``inf`` component.
+        its own default), ``(floats, None)`` for an acceptable vector - always
+        ``expected_len`` components, whether counted from the value's length or
+        from the read - or ``(None, error_message)`` for a wrong length, a
+        non-numeric element or a ``nan``/``inf`` component.
     """
     if vec is None:
         return None, None
-    if (err := pose_vector_error(method, param_name, vec, expected_len)) is not None:
+    # One read, through the guard's own: the floats returned here are the ones the
+    # domain checks examined, rather than the product of a second read nothing
+    # required to agree with the first (#1906).
+    floats, err = _read_pose_vector(method, param_name, vec, expected_len)
+    if err is not None:
         return None, err
-    return [float(v) for v in vec], None
+    return floats, None
 
 
 #: The component counts a 4-component RGBA row can be built from. Alpha is the
@@ -1420,7 +1721,9 @@ def coerce_rgba(method: str, param_name: str, color: Any) -> tuple[list[float] |
     (annotated ``list[float]``) and echoed in agent-visible status text, so a
     surviving ``np.float64`` would leak ``np.float64(1.0)`` into it - and makes
     the ``color[:3]`` reads the shape builders do well-defined by construction
-    rather than by the caller's discipline.
+    rather than by the caller's discipline. Both counts above are counts of the
+    components this function read, so "exactly 4" holds for any value, not only
+    for one whose ``__len__`` agrees with its contents (#1909).
 
     Args:
         method: Calling method name, used in error text.
@@ -1435,21 +1738,37 @@ def coerce_rgba(method: str, param_name: str, color: Any) -> tuple[list[float] |
     """
     if color is None:
         return None, None
-    length = sequence_length(color)
-    if length is None:
+    # Asked only as "is this a sized sequence at all", the question this probe
+    # owns and cannot raise answering (#1888). It is what refuses a generator,
+    # whose components a read would consume before anything could count them. The
+    # component count is not taken from it - see below.
+    if sequence_length(color) is None:
         return None, f"{method}: '{param_name}' must be a sequence of numbers, got {_refusal_container_repr(color)}"
-    if (err := finite_vector_error(method, param_name, color)) is not None:
+    # One read: the floats quoted by the component-count refusal below are the ones
+    # the domain checks examined. They used to come from a second, unguarded read,
+    # so a colour that answered the checked read and refused this one raised out of
+    # the branch whose purpose is to answer an unusable colour with text (#1906).
+    floats, err = _read_finite_vector(method, param_name, color)
+    if err is not None:
         return None, err
-    floats = [float(component) for component in color]
-    if length not in RGBA_ACCEPTED_LENGTHS:
+    # The count is the read's, not the value's ``__len__``. Those were two
+    # independent reads and nothing obliged them to agree: a ``__len__`` of 4 over
+    # a read yielding 3 skipped the alpha completion below and returned a
+    # 3-component rgba under a success result - breaking this function's stated
+    # promise of exactly 4 finite floats, and with it the ``color[:3]`` reads the
+    # shape builders do - while the refusal named a count from one read beside
+    # components from the other (#1909). Counting the list that is returned makes
+    # the promise true by construction rather than by the two reads agreeing.
+    count = len(floats)
+    if count not in RGBA_ACCEPTED_LENGTHS:
         expected = " or ".join(str(n) for n in RGBA_ACCEPTED_LENGTHS)
         return None, (
             f"{method}: '{param_name}' must have exactly {expected} "
-            f"component(s) ({RGBA_LAYOUT}), got {length}: {floats}. Pass every "
+            f"component(s) ({RGBA_LAYOUT}), got {count}: {floats}. Pass every "
             f"component - a partial '{param_name}' cannot be applied "
             "without inventing the missing values."
         )
-    return (floats if length == 4 else [*floats, 1.0]), None
+    return (floats if count == 4 else [*floats, 1.0]), None
 
 
 def coerce_size_vector(method: str, param_name: str, size: Any) -> tuple[list[float] | None, str | None]:
@@ -1510,20 +1829,27 @@ def coerce_size_vector(method: str, param_name: str, size: Any) -> tuple[list[fl
     # this helper's own, because MuJoCo reaches that case through its per-shape
     # count instead and so states a count the shape needs rather than the
     # omission the caller probably meant.
-    if (err := finite_vector_error(method, param_name, size)) is not None:
+    floats, err = _read_finite_vector(method, param_name, size)
+    if err is not None:
         return None, err
-    length = sequence_length(size)
-    if length is None:
+    if sequence_length(size) is None:
         # Reachable only for something iterable but unsized - a generator, which
         # the check above has now consumed, so there is nothing left to store.
         return None, f"{method}: '{param_name}' must be a list/tuple of numbers, got {_refusal_container_repr(size)}"
-    if length == 0:
+    # Empty means the read produced no component, not that ``__len__`` reported
+    # zero: the two are independent reads (#1909), and it is the absence of an
+    # extent to write that makes the value unusable. A value whose length reports
+    # three and whose read yields nothing has no extent, and one reporting zero
+    # whose read yields components has one.
+    if not floats:
         return None, (
             f"{method}: '{param_name}' must have at least one component, got an empty "
             f"vector ({_refusal_container_repr(size)}). An empty '{param_name}' is a component count, not an "
             f"omission - omit '{param_name}' to take the default extent."
         )
-    return [float(component) for component in size], None
+    # The floats the component checks above examined, not a second read of the
+    # caller's value (#1906).
+    return floats, None
 
 
 #: Camera names that a backend's render entry points resolve to the FREE camera

@@ -217,6 +217,47 @@ hatch run format            # ruff check --fix, ruff format
    `BLOCKED` while the required check runs, then `UNSTABLE` - mergeable, with an
    advisory context red - or `CLEAN`.
 
+   That trust has a reader attached to it, which the sentence above does not say.
+   `mergeStateStatus` answers *can the viewer merge this pull request*, so it is
+   scoped to the token that asks - and on a pull request editing
+   `.github/workflows/**` the Actions `GITHUB_TOKEN` can never read anything but
+   `BLOCKED`, because an installation token is refused writes to workflow files
+   and therefore genuinely cannot perform that merge. **Read the gate with
+   `PAT_TOKEN`.** A control pair, both approved with no unresolved thread and
+   `call-test-lint` `SUCCESS`, read minutes apart:
+
+   | PR | edits `.github/workflows/**` | `GITHUB_TOKEN` | `PAT_TOKEN` | truth |
+   |---|---|---|---|---|
+   | #1915 | yes (`pr-and-push.yml`) | `BLOCKED` | `CLEAN` | merged clean, `f4dfde6` |
+   | #1902 | no | `CLEAN` | `CLEAN` | merged clean, `6cf0470` |
+
+   The mechanism isolates to one variable - same token, same scratch branch, same
+   instant, via `PUT /repos/{owner}/{repo}/contents/{path}`:
+
+   ```
+   zz_probe.txt                    GITHUB_TOKEN -> created
+   .github/workflows/zz_probe.yml  GITHUB_TOKEN -> Resource not accessible by integration
+   .github/workflows/zz_probe.yml  PAT_TOKEN    -> created
+   ```
+
+   So a `BLOCKED` read that way is neither a bug nor staleness; it is the honest
+   answer to the question the field asks. Staleness is separately ruled out:
+   `mergeable_state` on #1899 and #1035 reads `unknown` first and the settled
+   value second **for both tokens identically**, so the lazy first read is
+   per-PR, not per-viewer. `mergeable` agrees across tokens throughout - a text
+   conflict is viewer-independent, and only mergeability-*by-you* is not.
+
+   What makes this expensive is that the wrong answer is indistinguishable from a
+   right one. On a genuinely blocked PR both tokens read `blocked`, so their
+   agreement proves nothing, and the Actions token's answer on a
+   workflow-touching PR is always blocked-or-unknown. No reading of the field
+   separates the two cases. The agent then polls the gate exactly as documented,
+   correctly declines to merge, and reports the PR as waiting on a reviewer -
+   which is the presentation #1905 records for a different cause, and which had
+   stood in eight consecutive scheduled scan summaries as "reviewer bandwidth is
+   the sole constraint". It bites CI and process pull requests specifically,
+   because those are the ones carrying workflow edits. See #1917.
+
    This is worth the words because the failure mode is silent and expensive in the
    opposite direction from the usual one. Treating an advisory red as a merge
    blocker does not look like a mistake; it looks like diligence, and it costs a
@@ -507,9 +548,112 @@ Corrections from code review that apply to all future contributions:
   network exposure.
 
 ### CI Security Baseline
-- **CodeQL findings are not PR-blocking but ARE actionable** - check the Security
-  tab after pushing to a branch. False-positives get dismissed with a reason;
-  real findings get fixed.
+- **A CodeQL alert gates the merge; the CodeQL *check* does not.** These are two
+  objects and only one of them is advisory. The `CodeQL` context is not in the
+  required set (above), so it can sit at `NEUTRAL` indefinitely without blocking
+  anything - but the alert also opens a `github-advanced-security` **review
+  thread**, and the `default` ruleset sets
+  `required_review_thread_resolution: true`, so the merge waits on that thread
+  whatever the alert's severity. This file used to assert the opposite - that a
+  finding does not block a pull request - which is the half that is false and the
+  sentence #1810 was filed about; `.github/workflows/codeql.yml` carries the
+  corrected wording and `tests/test_codeql_query_filters.py` pins it for both
+  files. #1890 measured both halves at once: required check `SUCCESS`, `CodeQL`
+  `NEUTRAL`, `APPROVED` - and it sat for 53 minutes on one unresolved
+  note-severity thread, then merged 8 seconds after that thread was resolved.
+- **Clearing an alert has three tools and they are not interchangeable.**
+  - *Fix it.* The default for anything under `strands_robots/`, and the only
+    option for a real finding.
+  - *Dismiss it with a reason* when the flagged construct is deliberate and
+    test-only: the Security tab, or `PATCH /code-scanning/alerts/{n}` with
+    `dismissed_reason` and `dismissed_comment`. That comment is capped at **280
+    characters** and the endpoint needs `PAT_TOKEN`, so the argument goes in the
+    review thread and the dismissal points at it. This is the usual answer for a
+    hostile fixture, and it is a repeat: alert 590 (`_HostileRobot.__getattr__`)
+    and alert 852 (`GetItemOnly.__getitem__`, #1890) are the same rule,
+    `py/unexpected-raise-in-special-method`, dismissed for the same reason. Then
+    resolve the thread with a reply carrying the reasoning - dismissing alone
+    leaves the gate closed.
+  - *Filter the rule* in `.github/codeql/codeql-config.yml` only when **every**
+    instance in the tree is an idiom the codebase is obliged to use. The set is
+    two, `tests/test_codeql_query_filters.py` pins it, and appending a rule id is
+    otherwise the cheapest way to clear any alert - which is how a filter file
+    ends up quietly opting out of the whole suite.
+
+  Rewriting the flagged code to satisfy the query is the tempting fourth option
+  and the one that costs: #1879 spent a round removing a `__float__` from a test
+  fixture for a finding that gated nothing. It can also destroy the measurement
+  the code exists for. On #1890 the query asked for a `LookupError`; the one it
+  names first, `IndexError`, is what CPython's `seqiter` *clears* to terminate
+  legacy-protocol iteration, so taking the suggestion would have left the fixture
+  raising nothing and the test asserting nothing, still green.
+- **One alert class clears under none of the three, and the question that settles
+  it is which thread you marshal onto.** `py/catch-base-exception` never fires on
+  cleanup-and-reraise: the query accepts a handler that re-raises *lexically*, and
+  six of the tree's seven `except BaseException` handlers do, so they have never
+  been flagged.
+
+  | handler | ends in | flagged |
+  |---|---|---|
+  | `robot.py:368` | `sim.destroy()`, bare `raise` | no |
+  | `policies/persistent.py:193` | `handoff.abandon()`, bare `raise` | no |
+  | `simulation/safe_output.py:185` | `os.unlink(tmp)`, bare `raise` | no |
+  | `hardware_robot.py:1865` | `self._release_task()`, bare `raise` | no |
+  | `tests/policies/lerobot_local/test_list_policy_types.py:70` | `raise AssertionError(...) from exc` | no |
+  | `tests/policies/lerobot_local/test_vla_jepa.py:164` | `raise AssertionError(...) from exc` | no |
+  | `simulation/isaac/simulation.py:5125` | `box["exc"] = exc`, no lexical raise | **yes** |
+
+  The rule's entire alert surface here is therefore one construct: a
+  **cross-thread exception-marshal box**, which parks the exception for *another*
+  thread to re-raise, where the query cannot follow the control flow.
+
+  Narrowing it to `Exception` is not the safe default it looks like, and the worst
+  case is silent. What the *caller* thread observes:
+
+  | raised on the worker | `except BaseException` | `except Exception` |
+  |---|---|---|
+  | `RuntimeError` | `RuntimeError` | `RuntimeError` |
+  | `SystemExit` | `SystemExit` | **`None`, no traceback at all** |
+  | `KeyboardInterrupt` | `KeyboardInterrupt` | `None`, plus unhandled-exception noise |
+
+  Both escapes reach `threading.excepthook`, whose default ignores `SystemExit`
+  specifically - so that one writes nothing at all to stderr, where an escaping
+  `RuntimeError` prints a full traceback. Narrowing therefore does not relocate
+  the exception, it deletes it silently, and the caller re-raises nothing. That is
+  the no-silent-defaults rule, reached from an exception clause.
+
+  So decide by direction, because the box is obliged in one and avoidable in the
+  other:
+
+  - *Marshalling onto an existing foreign thread* - `IsaacSimulation.run_on_main`
+    handing a job to the thread that owns the Kit pump. `concurrent.futures`
+    cannot target an already-running foreign thread, so the hand-rolled box is
+    the only implementation there is. Obliged: dismiss with a reason and resolve
+    the thread pointing at it, per the bullet above.
+  - *Marshalling off a new thread you create* - running an agent off-main, or a
+    test helper that calls into a worker. `concurrent.futures` **is** that
+    pattern, and the `except BaseException` then belongs to CPython
+    (`concurrent/futures/thread.py`, `_WorkItem.run`) rather than to this tree.
+    `Future.result()` re-raises `RuntimeError`, `SystemExit` and
+    `KeyboardInterrupt` with object *identity* preserved (`got is exc` for all
+    three), so delegating is strictly better than the box rather than merely
+    quieter. Not obliged: delegate, and the handler, the alert and the blocking
+    review thread go at once.
+
+  Do not reach for the filter. Its test is that *every* instance is an obliged
+  idiom, and the second bullet is a standing counter-example, so this rule id
+  must keep failing the two-id set `tests/test_codeql_query_filters.py` pins.
+
+  What makes the class worth naming is that both answers are live right now and
+  nothing else records why they differ. Alert #691 - `run_on_main`'s box at
+  `simulation/isaac/simulation.py:5125` - has been open on `refs/heads/main` since
+  2026-07-07 at note severity, gating nothing, carrying only a
+  `# noqa: BLE001` that CodeQL does not read. Alerts #853 and #854 are the same
+  idiom raised on a branch, one of them in that same file, and each opened a
+  review thread, so under `required_review_thread_resolution` they gate the
+  merge. Identical construct, opposite consequence, separated only by having
+  arrived on a branch - and two rounds were spent arguing the idiom rather than
+  applying the second bullet. See #1919.
 - **Dependency Review hard-fails on high/critical CVEs in new deps.** If a PR
   needs a dep with a known critical CVE, the conversation is "do we need this
   dep" not "let's bypass the check."

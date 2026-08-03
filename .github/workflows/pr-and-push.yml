@@ -1,9 +1,20 @@
 name: Pull Request and Push Action
 
 on:
+  # No 'types' override: the default (opened, synchronize, reopened) is exactly
+  # the set that can change 'pull_request.head.sha', which is the ref handed to
+  # the reusable workflow below. Subscribing to an event that cannot change it -
+  # this workflow was also started by ready_for_review, review_requested and
+  # review_request_removed - cannot produce a new verdict, and because the
+  # concurrency group below cancels in progress, it discards the in-flight run of
+  # the repository's one required check to recompute the same commit. Measured on
+  # #1899, #1901 and #1902: requesting two reviewers seconds after opening left
+  # each head sha carrying both a CANCELLED and a SUCCESS
+  # 'call-test-lint / Test and Lint', and the roll-up state computed from that
+  # pair does not settle between reads (#1914). Pinned by
+  # tests/test_pull_request_trigger_types.py.
   pull_request:
     branches: [ main, dev ]
-    types: [opened, synchronize, reopened, ready_for_review, review_requested, review_request_removed]
   push:
     branches: [ main, dev ]
 concurrency:
