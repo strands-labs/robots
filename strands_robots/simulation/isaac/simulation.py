@@ -1222,6 +1222,15 @@ class IsaacSimulation(IsaacRecordingMixin, SimEngine):
 
             if self._world is not None:
                 self._world.reset()
+                # ``world.reset()`` on the pip Isaac Sim 6.0.x wheels
+                # invalidates the physics-tensor view the per-robot
+                # ``SingleArticulation`` handles hold (the #1798
+                # invalidate-on-stop family, articulation edition), so
+                # without an explicit revive every post-reset
+                # ``get_joint_positions()`` returns ``None`` and
+                # ``get_observation`` degrades to its documented
+                # silent-empty mode (#1895).
+                self._revive_articulations_after_reset()
 
             self._sim_time = 0.0
             self._step_count = 0
@@ -1232,6 +1241,56 @@ class IsaacSimulation(IsaacRecordingMixin, SimEngine):
                 msg = f"Partial reset complete for {len(env_ids)} envs."
 
             return {"status": "success", "content": [{"text": msg}]}
+
+    def _revive_articulations_after_reset(self) -> None:
+        """Re-initialize robot articulation handles ``world.reset()`` killed.
+
+        On the pip Isaac Sim 6.0.x wheels (verified live on ``isaacsim``
+        6.0.0.1, 2026-08-03), ``world.reset()`` tears down and rebuilds the
+        physics-tensor simulation view, and the per-robot
+        ``SingleArticulation`` handles are left holding the torn-down view -
+        ``get_joint_positions()`` returns ``None`` and every joint read /
+        action apply after ANY reset silently degrades (#1895). This is the
+        articulation edition of the #1798 invalidate-on-stop family: #1798
+        fixed the scene-object path (``_stop_timeline_for_deferred_physics``
+        invalidates synchronously; :meth:`load_scene` rebuilds and re-inits),
+        this covers the wrapper handles our ``_RobotState`` bookkeeping owns.
+
+        Mirrors #1798's prevent-and-revive approach rather than catching the
+        downstream ``None``s: each registered robot's handle is probed
+        (``get_joint_positions() is not None``), and only a dead handle is
+        re-initialized against the fresh view - a probe-alive handle is left
+        untouched, so builds whose reset keeps handles live (e.g. binary
+        Isaac installs) pay one cheap read and nothing else.
+
+        Best-effort per robot, matching :meth:`load_scene`'s re-init error
+        tolerance: a robot without a handle (Phase-1 procedural / load stub)
+        is skipped, and a failed re-init is logged loudly because joint
+        observations for that robot WILL be empty afterwards.
+
+        Concurrency: caller holds ``self._lock`` (called from ``reset()``
+        only, after ``world.reset()`` completes).
+        """
+        for robot in self._robots.values():
+            if robot.articulation is None:
+                continue
+            try:
+                if robot.articulation.get_joint_positions() is not None:
+                    continue  # handle survived the reset; leave it alone
+            except (RuntimeError, ValueError, AttributeError, TypeError):
+                # A dead handle may raise instead of returning None on some
+                # SDK surfaces; either way it needs the re-init below.
+                pass
+            try:
+                robot.articulation.initialize(getattr(self._world, "physics_sim_view", None))
+            except (RuntimeError, ValueError, AttributeError, TypeError) as e:
+                logger.warning(
+                    "reset: re-initializing articulation for robot %r after world.reset() "
+                    "failed (%s); joint observations for this robot will be EMPTY until "
+                    "the handle is re-initialized.",
+                    robot.name,
+                    e,
+                )
 
     def step(self, n_steps: int = 1) -> dict[str, Any]:
         """Advance simulation by n physics steps.

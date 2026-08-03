@@ -93,6 +93,16 @@ class TestIsaacDatasetRecording:
             sim.reset()
             sim.step(2)
 
+            # Post-reset joint state must be readable (#1895): on the pip
+            # Isaac Sim 6.0.x wheels ``world.reset()`` invalidates the
+            # articulation physics handles, and pre-fix this observation was
+            # ``{}`` (get_observation's documented silent-empty mode) - the
+            # exact read every reset_between recording flow makes after
+            # episode 1.
+            obs = sim.get_observation("franka", skip_images=True)
+            joint_keys = [k for k, v in obs.items() if isinstance(v, float)]
+            assert joint_keys, f"post-reset observation carries no joint state: {sorted(obs)}"
+
             r = sim.start_recording(repo_id="local/isaac_gpu_rec", root=root, fps=10, overwrite=True)
             assert r["status"] == "success", f"start_recording: {r}"
 
