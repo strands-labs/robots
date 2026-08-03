@@ -392,7 +392,7 @@ def _mujoco_stub() -> tuple[Any, dict[str, int]]:
 
 def _isaac_stub() -> tuple[Any, dict[str, int]]:
     calls = {"n": 0}
-    stub = types.SimpleNamespace(
+    stub: Any = types.SimpleNamespace(
         _lock=threading.RLock(),
         _world_created=True,
         _STEPS_PER_BATCH=IsaacSimulation._STEPS_PER_BATCH,
@@ -400,7 +400,15 @@ def _isaac_stub() -> tuple[Any, dict[str, int]]:
         _sim_time=0.0,
         _step_count=0,
         _world=types.SimpleNamespace(step=lambda render=False: calls.__setitem__("n", calls["n"] + 1)),
+        # Main-thread-affinity state (#1896): the stub is "created" on the
+        # test's own thread with no pump, so the genuinely-bound marshal
+        # helper takes the inline path - the same seam the real engine
+        # exercises on the headless smoke path.
+        _main_tid=threading.get_ident(),
+        _pump_running=False,
     )
+    stub._on_main_thread = lambda: IsaacSimulation._on_main_thread(stub)
+    stub._marshal_main_thread_affine = lambda name, fn: IsaacSimulation._marshal_main_thread_affine(stub, name, fn)
     return stub, calls
 
 
