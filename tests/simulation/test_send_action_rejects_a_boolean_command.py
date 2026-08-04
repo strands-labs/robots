@@ -311,10 +311,15 @@ class TestEveryBackendInheritsTheGuard:
     """The guard lives in the shared coercion, so no backend can ship without it."""
 
     def test_send_action_is_defined_once_and_routes_through_the_shared_coercion(self) -> None:
+        from strands_robots.simulation.isaac import simulation as isaac_simulation
         from strands_robots.simulation.mujoco import simulation as mujoco_simulation
         from strands_robots.simulation.newton import simulation as newton_simulation
 
-        for module in (mujoco_simulation, newton_simulation):
+        # Every backend, not the two that happened to be written first: this
+        # class asserts that no backend can ship without the guard, and the
+        # Isaac backend shipped its own conversion for exactly as long as it was
+        # missing from this loop.
+        for module in (mujoco_simulation, newton_simulation, isaac_simulation):
             tree = ast.parse(inspect.getsource(module))
             sends = [
                 node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef) and node.name == "send_action"

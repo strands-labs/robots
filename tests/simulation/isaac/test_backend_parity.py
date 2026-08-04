@@ -122,6 +122,16 @@ class TestSendActionPartialDict:
         assert list(np.asarray(act.joint_positions)) == pytest.approx([0.1, 0.2, 0.3, 0.04])
 
     def test_vector_action_addresses_all_joints(self, fake_isaacsim_types):
+        """A full-width vector commands every joint, in order.
+
+        The assertion is on which DOFs are addressed rather than on how that is
+        spelled. It used to require ``joint_indices is None`` -- the "all DOFs"
+        shorthand the raw vector path happened to use -- which made this and
+        ``test_full_dict_commands_all_joints`` pin two different spellings of one
+        outcome. The vector is now bound to ``robot_action_keys`` by the shared
+        coercion, so both arrive as a mapping over every joint and name the DOFs
+        explicitly; ``[0, 1, 2, 3]`` and ``None`` address the same articulation.
+        """
         sim = IsaacSimulation()
         art = _FakeArticulation()
         _seed_running_world(sim, self.JOINTS, art)
@@ -129,8 +139,7 @@ class TestSendActionPartialDict:
         result = sim.send_action([0.1, 0.2, 0.3, 0.04], robot_name="arm")
         assert result["status"] == "success", result
         act = art.last_action
-        # A positional vector addresses every joint -> joint_indices None (all).
-        assert act.joint_indices is None
+        assert list(np.asarray(act.joint_indices)) == list(range(len(self.JOINTS)))
         assert list(np.asarray(act.joint_positions)) == pytest.approx([0.1, 0.2, 0.3, 0.04])
 
 

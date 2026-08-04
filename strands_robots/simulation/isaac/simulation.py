@@ -29,6 +29,7 @@ import os
 import queue
 import threading
 import time
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, TypedDict
 
 import numpy as np
@@ -3136,7 +3137,7 @@ class IsaacSimulation(IsaacRecordingMixin, SimEngine):
 
     def send_action(
         self,
-        action: dict[str, Any] | np.ndarray | list,
+        action: dict[str, Any] | Sequence[float],
         robot_name: str | None = None,
         n_substeps: int = 1,
     ) -> dict[str, Any]:
@@ -3150,6 +3151,17 @@ class IsaacSimulation(IsaacRecordingMixin, SimEngine):
             in which case the dict is first converted by the controller
             (e.g. GR00T task-space delta-EEF keys to joint position
             targets) and the converted dict is what gets resolved.
+            Values are on the shared action-value domain
+            (:meth:`~strands_robots.simulation.base.SimEngine._coerce_action`)
+            every backend applies: a value must coerce to a finite scalar
+            number, a boolean is refused rather than written as a 1.0/0.0
+            target, and a single-element sequence -- the ``list[float]`` a 1-DoF
+            key carries under the ``Policy.get_actions`` contract -- is
+            unwrapped to its scalar. An ordered vector is bound positionally to
+            :meth:`robot_action_keys` and its width must match that list
+            exactly; a mismatch is refused rather than applied to whichever DOFs
+            it covers. The controller conversion above runs first, so it is the
+            controller's output that is checked.
         robot_name : str, optional
             Robot to control.
         n_substeps : int
@@ -3241,34 +3253,47 @@ class IsaacSimulation(IsaacRecordingMixin, SimEngine):
                         ],
                     }
 
-            # Convert action to array, tracking dict keys that don't name a
-            # joint so unresolved commands surface in the envelope rather than
-            # being silently dropped (parity with the MuJoCo backend).
-            unresolved: list[str] = []
-            action_array: np.ndarray
+            # Every value that reaches an actuator clears the shared
+            # action-value domain first (:meth:`SimEngine._coerce_action`),
+            # which is also what binds an ordered action *vector* positionally
+            # to ``robot_action_keys`` and refuses a width that does not match
+            # it. This backend hand-rolled its own conversion instead, so it
+            # wrote a boolean as a 1.0/0.0 target, wrote a non-finite target no
+            # solver can honor, applied a mismatched vector to whichever DOFs it
+            # happened to cover, and raised ``TypeError`` straight past this
+            # envelope for the single-element rows the
+            # ``Policy.get_actions -> list[dict]`` contract emits for a 1-DoF
+            # key. The coercion runs here rather than before the lock (where the
+            # MuJoCo and Newton backends call it) because the task-space
+            # controller above may rewrite the action and it is the controller's
+            # *output* that is applied; ``self._lock`` is an ``RLock``, so the
+            # ``robot_action_keys`` read inside the coercion re-enters safely.
+            action_map, coerce_error = self._coerce_action(action, robot_name)
+            if coerce_error is not None:
+                return coerce_error
+            assert action_map is not None  # narrow for mypy: no error implies a mapping
+
+            # Track keys that don't name a joint so unresolved commands surface
+            # in the envelope rather than being silently dropped (parity with
+            # the MuJoCo backend).
+            joint_set = set(robot.joint_names)
+            unresolved = [k for k in action_map if k not in joint_set]
             # ``joint_indices`` restricts an ``ArticulationAction`` to a subset
-            # of the articulation's DOFs; ``None`` addresses every joint. For a
-            # dict action we command ONLY the named joints and leave the rest at
-            # their current PD targets (parity with the MuJoCo/Newton backends).
-            # A full zero-filled ``joint_positions`` vector would instead drive
-            # every unnamed joint to 0.0 -- e.g. ``send_action({"gripper": 0.04})``
-            # would slam the whole arm to its home pose.
-            joint_indices: np.ndarray | None
-            if isinstance(action, dict):
-                joint_set = set(robot.joint_names)
-                unresolved = [k for k in action if k not in joint_set]
-                named = [i for i, jname in enumerate(robot.joint_names) if jname in action]
-                action_array = np.array(
-                    [float(action[robot.joint_names[i]]) for i in named],
-                    dtype=np.float32,
-                )
-                joint_indices = np.array(named, dtype=np.int32)
-            elif isinstance(action, np.ndarray):
-                action_array = action.astype(np.float32).flatten()
-                joint_indices = None
-            else:
-                action_array = np.array(action, dtype=np.float32)
-                joint_indices = None
+            # of the articulation's DOFs. Command ONLY the named joints and
+            # leave the rest at their current PD targets (parity with the
+            # MuJoCo/Newton backends). A full zero-filled ``joint_positions``
+            # vector would instead drive every unnamed joint to 0.0 -- e.g.
+            # ``send_action({"gripper": 0.04})`` would slam the whole arm to its
+            # home pose. A full-width vector action arrives here as a mapping
+            # over every joint, so the indices then address every DOF in
+            # articulation order - what the raw vector path expressed by passing
+            # ``None``.
+            named = [i for i, jname in enumerate(robot.joint_names) if jname in action_map]
+            action_array: np.ndarray = np.array(
+                [float(action_map[robot.joint_names[i]]) for i in named],
+                dtype=np.float32,
+            )
+            joint_indices: np.ndarray = np.array(named, dtype=np.int32)
 
             # Apply to articulation. Isaac Sim 6.0's articulation
             # (``isaacsim.core.prims.SingleArticulation``) drives PD position
@@ -3310,7 +3335,7 @@ class IsaacSimulation(IsaacRecordingMixin, SimEngine):
                 self._step_count += 1
 
         if unresolved:
-            applied = [k for k in action if k not in unresolved]
+            applied = [k for k in action_map if k not in unresolved]
             return {
                 "status": "error",
                 "content": [
