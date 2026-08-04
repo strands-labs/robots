@@ -697,11 +697,22 @@ class MotionPrimitivesMixin:
             steps: Control ticks to hold the set-point (1..10000); each tick
                 advances a few physics substeps so the fingers actually travel.
 
+        The set-points come from the actuator's ``ctrlrange``. When an MJCF
+        omits it (MuJoCo then reports ``ctrlrange == (0, 0)`` with
+        ``ctrllimited == 0``, meaning *unlimited* rather than *empty*), a
+        JOINT-transmission position servo falls back to the driven joint's own
+        ``jnt_range`` - for such an actuator ``ctrl`` IS the joint target, so
+        the joint limits are the open/close set-points, which is what
+        ``inheritrange="1"`` would have compiled the ctrlrange to. A TENDON
+        actuator is excluded from that fallback: its ctrlrange is a normalised
+        command space, not joint units.
+
         Returns:
             ``{"status": "success", ...}`` with a json block
             ``{state, actuators, targets, gripper_joint_positions}``;
-            structured error when the gripper cannot be resolved or the
-            ctrlrange gives no usable set-points. Never raises.
+            structured error when the gripper cannot be resolved or neither the
+            ctrlrange nor a limited joint range gives usable set-points. Never
+            raises.
         """
         if state not in ("open", "close"):
             return _err(f'set_gripper: \'state\' must be "open" or "close", got {state!r}.')
@@ -757,13 +768,48 @@ class MotionPrimitivesMixin:
             for act_id in gripper_acts:
                 lo = float(model.actuator_ctrlrange[act_id][0])
                 hi = float(model.actuator_ctrlrange[act_id][1])
+                source = "ctrlrange"
                 if not (hi > lo):
-                    act_name = mj.mj_id2name(model, mj.mjtObj.mjOBJ_ACTUATOR, act_id)
-                    return _err(
-                        f"set_gripper: actuator '{act_name}' has no usable ctrlrange "
-                        f"({lo}, {hi}); cannot infer open/close set-points. Drive it directly "
-                        "with action='send_action'."
+                    # An unlimited actuator (MuJoCo reports ctrlrange (0, 0) with
+                    # ctrllimited=0 when the MJCF omits `ctrlrange`/`inheritrange`)
+                    # is not a gripper we cannot drive - for a JOINT-transmission
+                    # position servo, ctrl IS the joint target, so the driven
+                    # joint's own limits are the open/close set-points. This is
+                    # the same substitution move_to and rotate_wrist already make
+                    # (they read jnt_range under jnt_limited), and it is what
+                    # `inheritrange="1"` would have compiled the ctrlrange to.
+                    # SO-101 ships exactly this MJCF (SO-100 sets inheritrange
+                    # and so has always worked), so set_gripper refused on an arm
+                    # whose registry metadata named the right actuator.
+                    #
+                    # Scope, deliberately narrow: JOINT/JOINTINPARENT transmission
+                    # only. A TENDON actuator's ctrlrange is a normalised command
+                    # space (the Franka split gripper's [0, 255]), not joint units,
+                    # so substituting a joint range there would command the wrong
+                    # quantity - those keep refusing.
+                    jnt_id = jnt_by_act.get(act_id)
+                    jlo, jhi = (
+                        (float(model.jnt_range[jnt_id][0]), float(model.jnt_range[jnt_id][1]))
+                        if jnt_id is not None and bool(model.jnt_limited[jnt_id])
+                        else (0.0, 0.0)
                     )
+                    if not bool(model.actuator_ctrllimited[act_id]) and jhi > jlo:
+                        lo, hi, source = jlo, jhi, "joint range"
+                    else:
+                        act_name = mj.mj_id2name(model, mj.mjtObj.mjOBJ_ACTUATOR, act_id)
+                        return _err(
+                            f"set_gripper: actuator '{act_name}' has no usable ctrlrange "
+                            f"({lo}, {hi}) and no limited joint range to fall back on; cannot "
+                            "infer open/close set-points. Drive it directly with "
+                            "action='send_action'."
+                        )
+                logger.debug(
+                    "set_gripper: actuator %d open/close set-points from %s [%.4f, %.4f]",
+                    act_id,
+                    source,
+                    lo,
+                    hi,
+                )
                 targets[act_id] = hi if end == "high" else lo
 
         for _ in range(steps):

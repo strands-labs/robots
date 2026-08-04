@@ -159,6 +159,46 @@ SO101_STYLE_XML = """
 </mujoco>
 """
 
+# so101's REAL shipped MJCF shape: the jaw's position servo declares neither
+# `ctrlrange` nor `inheritrange="1"`, so MuJoCo compiles it as an UNLIMITED
+# actuator and reports ctrlrange == (0, 0) with ctrllimited == 0. so100's MJCF
+# sets inheritrange="1" on every actuator, which is why set_gripper worked
+# there and refused here. Verified against the downloaded assets: so101's
+# actuator "6" reports ctrllimited=False ctrlrange=(0.0, 0.0) with
+# jnt_range=(-0.1745, 1.7453); so100's "Jaw" reports ctrllimited=True
+# ctrlrange=(-0.174, 1.75).
+NO_CTRLRANGE_XML = SO101_STYLE_XML.replace('"so101_style_arm"', '"so101_no_ctrlrange_arm"').replace(
+    '<position name="6" joint="6" kp="2" dampratio="1" ctrlrange="-0.2 1.5"/>',
+    '<position name="6" joint="6" kp="2" dampratio="1"/>',
+)
+assert '<position name="6" joint="6" kp="2" dampratio="1"/>' in NO_CTRLRANGE_XML  # jaw ctrlrange dropped
+
+# Same missing ctrlrange, but the jaw is driven through a TENDON. A tendon
+# actuator's ctrl is a normalised command space (the Franka split gripper's
+# shipped [0, 255]), NOT joint units, so the driven joint's range is the wrong
+# quantity to substitute and the fallback must not apply.
+TENDON_NO_CTRLRANGE_XML = (
+    NO_CTRLRANGE_XML.replace('"so101_no_ctrlrange_arm"', '"so101_tendon_arm"')
+    .replace(
+        "  <actuator>",
+        '  <tendon>\n    <fixed name="jaw_tendon">\n      <joint joint="6" coef="1"/>\n'
+        "    </fixed>\n  </tendon>\n  <actuator>",
+    )
+    .replace(
+        '<position name="6" joint="6" kp="2" dampratio="1"/>',
+        '<position name="6" tendon="jaw_tendon" kp="2" dampratio="1"/>',
+    )
+)
+assert 'tendon="jaw_tendon"' in TENDON_NO_CTRLRANGE_XML
+
+# Missing ctrlrange AND an unlimited driven joint: there is no range anywhere
+# to infer set-points from, so this must still refuse.
+NO_RANGE_ANYWHERE_XML = NO_CTRLRANGE_XML.replace('"so101_no_ctrlrange_arm"', '"so101_no_range_arm"').replace(
+    '<joint name="6" type="hinge" axis="0 0 1" range="-0.2 1.5" armature="0.01" damping="0.1"/>',
+    '<joint name="6" type="hinge" axis="0 0 1" limited="false" armature="0.01" damping="0.1"/>',
+)
+assert 'limited="false"' in NO_RANGE_ANYWHERE_XML
+
 # GH #1661's second failure mode (fallback shift): the most distal arm joint
 # is named ``finger_camera_roll`` - the raw heuristic excluded it from the
 # wrist candidate set, shifting the last-non-gripper-hinge fallback onto the
@@ -652,6 +692,105 @@ class TestGripperRegistryMetadata:
         result = _dispatch(sim, "set_gripper", robot_name="arm", state="close", steps=5)
         assert result["status"] == "success", result
         assert _json_block(result)["actuators"] == ["jaw"]
+
+
+class TestSetGripperUnlimitedCtrlrange:
+    """set_gripper resolves set-points on an MJCF that omits ``ctrlrange``.
+
+    ``actuator_ctrlrange == (0, 0)`` with ``actuator_ctrllimited == 0`` is how
+    MuJoCo reports an UNLIMITED actuator, not an empty one - and set_gripper
+    read the range alone, so it refused. That is live on a shipped robot:
+    so101's sim MJCF declares neither ``ctrlrange`` nor ``inheritrange="1"``
+    on its position servos, so ``set_gripper`` errored on an arm whose registry
+    metadata named the right actuator (``actuators: ["6"]``) and whose
+    ``move_to`` / ``rotate_wrist`` both worked. so100 sets
+    ``inheritrange="1"``, which is the only reason it was unaffected.
+
+    For a JOINT-transmission position servo ``ctrl`` IS the joint target, so
+    the driven joint's own ``jnt_range`` is the correct substitution - the same
+    one ``move_to`` and ``rotate_wrist`` already make, and exactly what
+    ``inheritrange="1"`` would have compiled the ctrlrange to. The fallback is
+    scoped to that transmission class and to a genuinely unlimited actuator;
+    the three cases that must keep refusing are pinned below.
+    """
+
+    def _sim(self, tmp_path, xml, name):
+        path = tmp_path / f"{name}.xml"
+        path.write_text(xml)
+        s = Simulation(tool_name=f"test_{name}", mesh=False)
+        assert s.create_world(gravity=[0, 0, 0])["status"] == "success"
+        assert s.add_robot("arm", urdf_path=str(path), data_config="so101")["status"] == "success"
+        return s
+
+    @pytest.fixture
+    def no_ctrlrange_sim(self, tmp_path):
+        s = self._sim(tmp_path, NO_CTRLRANGE_XML, "no_ctrlrange")
+        yield s
+        s.cleanup(policy_stop_timeout=2.0)
+
+    def test_close_uses_joint_range_low_end(self, no_ctrlrange_sim):
+        """The regression: pre-fix this errored with 'no usable ctrlrange'."""
+        result = _dispatch(no_ctrlrange_sim, "set_gripper", robot_name="arm", state="close", steps=80)
+        assert result["status"] == "success", result
+        payload = _json_block(result)
+        assert payload["actuators"] == ["6"], payload
+        assert payload["targets"]["6"] == pytest.approx(-0.2)  # the JOINT's low end
+        assert payload["gripper_joint_positions"]["6"] < -0.15  # and it traveled there
+
+    def test_open_uses_joint_range_high_end(self, no_ctrlrange_sim):
+        result = _dispatch(no_ctrlrange_sim, "set_gripper", robot_name="arm", state="open", steps=80)
+        assert result["status"] == "success", result
+        payload = _json_block(result)
+        assert payload["targets"]["6"] == pytest.approx(1.5)  # the JOINT's high end
+        assert payload["gripper_joint_positions"]["6"] > 1.4
+
+    def test_tendon_transmission_still_refuses(self, tmp_path):
+        """A tendon actuator's ctrl is a normalised command space, not joint
+        units, so substituting the driven joint's range would command the wrong
+        quantity. Refusing is the correct outcome, not a missed case."""
+        s = self._sim(tmp_path, TENDON_NO_CTRLRANGE_XML, "tendon_no_ctrlrange")
+        try:
+            result = _dispatch(s, "set_gripper", robot_name="arm", state="close", steps=10)
+            assert result["status"] == "error", result
+            assert "no usable ctrlrange" in result["content"][0]["text"]
+        finally:
+            s.cleanup(policy_stop_timeout=2.0)
+
+    def test_unlimited_joint_too_still_refuses(self, tmp_path):
+        """No ctrlrange and an unlimited driven joint: nothing to infer from."""
+        s = self._sim(tmp_path, NO_RANGE_ANYWHERE_XML, "no_range_anywhere")
+        try:
+            result = _dispatch(s, "set_gripper", robot_name="arm", state="open", steps=10)
+            assert result["status"] == "error", result
+            assert "no limited joint range to fall back on" in result["content"][0]["text"]
+        finally:
+            s.cleanup(policy_stop_timeout=2.0)
+
+    def test_explicitly_limited_degenerate_range_still_refuses(self, no_ctrlrange_sim):
+        """``ctrllimited == 1`` with a degenerate range is an authored claim
+        that the actuator accepts nothing, which the fallback must respect -
+        unlike ``ctrllimited == 0``, which means unlimited. Set on the compiled
+        model because MuJoCo rejects ``ctrlrange="0 0"`` with
+        ``ctrllimited="true"`` at compile time ('invalid control range')."""
+        import mujoco  # noqa: PLC0415 - local: the module-level importorskip gates this file
+
+        model = no_ctrlrange_sim._world._model
+        act_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, "arm/6")
+        assert act_id >= 0
+        model.actuator_ctrllimited[act_id] = 1
+        model.actuator_ctrlrange[act_id] = [0.0, 0.0]
+
+        result = _dispatch(no_ctrlrange_sim, "set_gripper", robot_name="arm", state="close", steps=10)
+        assert result["status"] == "error", result
+        assert "no usable ctrlrange" in result["content"][0]["text"]
+
+    def test_so100_style_ctrlrange_is_unaffected(self, sim):
+        """The ctrlrange path is untouched: ARM_XML declares an explicit jaw
+        ctrlrange and still resolves from it (identical to so100's shipped
+        ``inheritrange="1"`` MJCF, which compiles a real ctrlrange)."""
+        result = _dispatch(sim, "set_gripper", robot_name="arm", state="close", steps=40)
+        assert result["status"] == "success", result
+        assert _json_block(result)["targets"]["jaw"] == pytest.approx(-0.2)
 
 
 class TestRotateWristRegistryMetadata:
