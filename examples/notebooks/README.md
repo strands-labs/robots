@@ -12,10 +12,13 @@ uv pip install "strands-robots[sim-mujoco,lerobot]" jupyterlab
 jupyter lab
 ```
 
-> **Notebook 5's bucket path needs `strands-robots >= 0.4.2`** (the
-> `stop_recording(bucket=...)` / `stream_dataset(..., repo_type="bucket")`
-> APIs are not in the 0.4.1 PyPI release). Until v0.4.2 is on PyPI, install
-> from git instead:
+> **Notebook 5's bucket path needs `strands-robots >= 0.5.1`**, which is the
+> first release whose `[lerobot]` extra floors LeRobot at the `>= 0.6.1` that
+> serves `stream_dataset(..., repo_type="bucket")`. The bucket APIs themselves
+> ship in 0.5.0, but that release floors LeRobot at `0.6.0`, whose
+> `StreamingLeRobotDataset` takes no `repo_type` - so a resolver is free to pair
+> 0.5.0 with a LeRobot that refuses the bucket read. Until v0.5.1 is on PyPI,
+> install from git instead:
 > `uv pip install "strands-robots[sim-mujoco,lerobot] @ git+https://github.com/strands-labs/robots"`
 
 On macOS the notebooks set `MUJOCO_GL=cgl` for offscreen rendering; everywhere
@@ -28,14 +31,32 @@ always wins.
 |---|----------|---------------|
 | 1 | [`01_getting_started.ipynb`](01_getting_started.ipynb) | `Robot("so100")`, run a policy, read joint state, `create_policy()` |
 | 2 | [`02_record_and_stream.ipynb`](02_record_and_stream.ipynb) | Record a LeRobotDataset, then stream it back with `stream_dataset()` |
-| 3 | [`03_record_train_deploy.ipynb`](03_record_train_deploy.ipynb) | The full loop: record, train an ACT policy on CPU, export, and load it back |
+| 3 | [`03_record_train_deploy.ipynb`](03_record_train_deploy.ipynb) | The full loop: record, train an ACT policy on CPU, export, and load it back (training needs `lerobot[training]`) |
 | 4 | [`04_discover_lerobot.ipynb`](04_discover_lerobot.ipynb) | Discover the LeRobot API with `use_lerobot`: list robots, policies, teleoperators, cameras, and inspect any class |
-| 5 | [`05_streaming_data_loop.ipynb`](05_streaming_data_loop.ipynb) | The streaming data loop: record, render, stream back, train, and load, in one notebook (the optional Storage Bucket sync needs `strands-robots >= 0.4.2` + LeRobot >= 0.6.1; an optional final step reruns the loop on the Isaac backend with `backend="isaac"` when an RTX GPU + `sim-isaac` are present) |
+| 5 | [`05_streaming_data_loop.ipynb`](05_streaming_data_loop.ipynb) | The streaming data loop: record, render, stream back, train, and load, in one notebook (training needs `lerobot[training]`; the optional Storage Bucket sync needs `strands-robots >= 0.5.1` + LeRobot >= 0.6.1; an optional final step reruns the loop on the Isaac backend with `backend="isaac"` when an RTX GPU + `sim-isaac` are present) |
 | 6 | [`06_fleet_orchestration.ipynb`](06_fleet_orchestration.ipynb) | Drive a heterogeneous fleet from one goal: read each robot's capability tags, decompose the goal into per-robot tasks (rule-based, with an optional Strands agent planner), dispatch them together through `run_multi_policy`, and re-plan when a robot drops offline |
 
 Read them in order; each builds on the previous one. Notebook 3 trains a real
 policy on CPU with a tiny dataset and two steps - raise the step count and run on
 a GPU for a production checkpoint; the code path is identical.
+
+## Training needs `lerobot[training]`, on CPU too
+
+Notebooks 3 and 5 both train, and `lerobot`'s `train()` calls
+`require_package("accelerate", extra="training")` before it branches on device,
+so a CPU run needs the extra just as a GPU run does. No Strands Robots extra
+pulls it in:
+
+```bash
+uv pip install "lerobot[training]"
+```
+
+Both training cells check `result.status` and raise with `result.message`, which
+carries lerobot's own install remedy. `trainer.train()` converts any failure into
+a `TrainResult` rather than raising, so an unchecked call would print
+`status="error"`, hand on a `checkpoint_dir` of `None`, and let the next cell
+fail with `TypeError: argument of type 'NoneType' is not iterable` - a message
+that names neither the missing package nor the fix.
 
 ## Notebook 3 and GPUs
 

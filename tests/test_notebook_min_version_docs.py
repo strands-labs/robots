@@ -1,13 +1,17 @@
 """Pin the minimum ``strands-robots`` version in the bucket-streaming docs.
 
 The streaming-data-loop notebook (and the storage-buckets blog post drafted
-from it) demonstrates the bucket path: ``stop_recording(bucket=...)``,
-``sync_to_bucket``, and ``stream_dataset(..., repo_type="bucket")``. None of
-those exist on the 0.4.1 PyPI release -- on 0.4.1
-``StreamingDatasetReader.open()`` has no ``repo_type`` parameter, so the
-notebook's headline snippet raises ``TypeError``. The docs must therefore
-state the minimum ``strands-robots`` version (>= 0.4.2, the first tag that
-includes the bucket path) instead of implying that any PyPI install works.
+from it) demonstrates the bucket path: ``sync_to_bucket`` and
+``stream_dataset(..., repo_type="bucket")``.
+
+The floor is 0.5.1 rather than 0.5.0, which is when those APIs landed. 0.5.0
+floors lerobot at ``>=0.6.0``, and 0.6.0's ``StreamingLeRobotDataset`` takes no
+``repo_type`` -- so a resolver may pair 0.5.0 with a lerobot that cannot serve a
+bucket read, and the runtime guard in
+:mod:`strands_robots.streaming_dataset` refuses it. 0.5.1 is the first release
+whose ``[lerobot]`` extra floors lerobot at the ``0.6.1`` recorded in
+``BUCKET_STREAMING_MIN_LEROBOT``, which makes the notebook's headline snippet
+resolver-guaranteed rather than luck of the resolver picking the newest lerobot.
 
 These assertions forbid the version-less install guidance from creeping back
 into the notebook or the notebooks index (issue #1500).
@@ -22,7 +26,7 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 _NOTEBOOK = _REPO_ROOT / "examples" / "notebooks" / "05_streaming_data_loop.ipynb"
 _NOTEBOOKS_README = _REPO_ROOT / "examples" / "notebooks" / "README.md"
 
-_MIN_VERSION = "strands-robots >= 0.4.2"
+_MIN_VERSION = "strands-robots >= 0.5.1"
 
 
 def _notebook_markdown() -> str:
@@ -34,8 +38,8 @@ def test_streaming_notebook_states_min_strands_robots_version() -> None:
     md = _notebook_markdown()
     assert _MIN_VERSION in md, (
         f"{_NOTEBOOK.name} must state the minimum strands-robots version "
-        f"({_MIN_VERSION!r}) - the bucket APIs it demonstrates are not in the "
-        "0.4.1 PyPI release (issue #1500)."
+        f"({_MIN_VERSION!r}) - it is the first release whose [lerobot] extra "
+        "floors lerobot at the 0.6.1 that serves a bucket read (issue #1500)."
     )
 
 
@@ -43,8 +47,9 @@ def test_streaming_notebook_does_not_offer_bare_pypi_install_as_requirements() -
     md = _notebook_markdown()
     assert '**Requirements:** `pip install "strands-robots' not in md, (
         f"{_NOTEBOOK.name} presents a version-less PyPI install as its "
-        "requirements line; on PyPI 0.4.1 the notebook's bucket snippet "
-        "crashes with TypeError (issue #1500). State the minimum version."
+        "requirements line; a resolve that lands below the declared floor "
+        "refuses the notebook's bucket snippet (issue #1500). State the "
+        "minimum version."
     )
 
 
@@ -83,6 +88,33 @@ def test_streaming_notebook_reads_the_bucket_path_it_wrote() -> None:
     assert "run_id=RUN_ID" in code, (
         "notebook must pin the sync's run_id to RUN_ID so the write and read sides cannot drift apart."
     )
+
+
+def test_training_notebooks_check_the_train_status_they_print() -> None:
+    """A failed ``train()`` must surface its own message, not a ``None`` downstream.
+
+    ``Trainer.train`` converts any failure into a ``TrainResult`` rather than
+    raising, and only ``result.message`` carries the cause -- including lerobot's
+    ``'accelerate' is required but not installed`` remedy, which no Strands
+    Robots extra satisfies. A cell that prints ``status`` and moves on therefore
+    hands the next cell a ``checkpoint_dir`` of ``None``, and
+    ``create_policy(None)`` fails with ``TypeError: argument of type 'NoneType'
+    is not iterable`` -- naming neither the missing package nor the fix.
+    """
+    for notebook in (_REPO_ROOT / "examples" / "notebooks" / "03_record_train_deploy.ipynb", _NOTEBOOK):
+        nb = json.loads(notebook.read_text())
+        code = "\n".join("".join(c["source"]) for c in nb["cells"] if c["cell_type"] == "code")
+        assert "trainer.train(spec)" in code, f"{notebook.name} no longer trains; update this test"
+        assert 'result.status != "success"' in code, (
+            f"{notebook.name} must check the status of trainer.train() before using "
+            "its checkpoint_dir; train() reports failure in its result rather than "
+            "raising, so an unchecked call fails one cell later on a None (issue #1500)."
+        )
+        assert "result.message" in code, (
+            f"{notebook.name} must re-raise result.message -- it is the only field "
+            "carrying the cause, including lerobot's own install remedy for the "
+            "missing 'accelerate' (issue #1500)."
+        )
 
 
 def test_streaming_notebook_records_at_the_rate_it_rolls_out_at() -> None:
