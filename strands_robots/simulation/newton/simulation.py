@@ -673,6 +673,39 @@ class NewtonSimEngine(DomainRandomizationMixin, NewtonRecordingMixin, SimEngine)
             return []
         return list(self._world.robots[robot_name].joint_names)
 
+    def robot_action_keys(self, robot_name: str) -> list[str]:
+        """Return the scalar joint targets ``send_action`` resolves for ``robot_name``.
+
+        Overrides :meth:`SimEngine.robot_action_keys`, whose default mirrors
+        :meth:`robot_joint_names`. Newton's joint list carries a floating base's
+        6-DoF free joint, which is not a commandable scalar: its coordinates are
+        ``[xyz, quat_xyzw]``, so there is no single target to write. Every scalar
+        surface on this backend already skips it and surfaces the base as the
+        structured ``base_pos`` / ``base_quat`` / ``base_lin_vel`` /
+        ``base_ang_vel`` signals instead - :meth:`get_observation`,
+        :meth:`get_robot_state` and the recording schema
+        (``_collect_recording_schema``). This method is the action-side half of
+        that same exclusion.
+
+        Leaving it in was silent on all four surfaces that read this list. It
+        made ``send_action({free_joint: 0.5})`` write a scalar target for a
+        6-DoF joint under a success result; it made the vector form reject an
+        action of the width a recording actually holds (the recorded columns
+        exclude the free joint, so the counts differed by one); and it left
+        ``PolicyRunner.replay`` binding one more key than the recorded vector
+        carries, which aborts a floating-base episode on frame 0 - so such a
+        recording could be written but never replayed.
+
+        A fixed-base robot has no free root, so this returns its joint names
+        unchanged.
+        """
+        # ``getattr`` rather than a direct read: the recording paths already
+        # reach this list on engines built via ``__new__`` (the solver-free test
+        # harness), which never run ``__init__``. Mirrors
+        # ``_collect_recording_schema``'s read of the same map.
+        base_joint = getattr(self, "_robot_free_base_joint", {}).get(robot_name)
+        return [jn for jn in self.robot_joint_names(robot_name) if jn != base_joint]
+
     # Object management
 
     def add_object(
@@ -1074,9 +1107,12 @@ class NewtonSimEngine(DomainRandomizationMixin, NewtonRecordingMixin, SimEngine)
 
         ``action`` may be a ``{joint name: target}`` mapping or an ordered
         numeric vector (``list`` / ``tuple`` / 1-D ``numpy`` array) bound
-        positionally to ``robot_joint_names(robot_name)`` - the same positional
+        positionally to ``robot_action_keys(robot_name)`` - the same positional
         convention :meth:`replay_episode` uses. A vector whose length does not
-        match the robot's joint count is rejected with an actionable error.
+        match that action-key count is rejected with an actionable error. Those
+        keys are the robot's scalar joints; a floating base's 6-DoF free joint is
+        not among them (see :meth:`robot_action_keys`), so it is neither bound
+        positionally nor accepted as a mapping key.
 
         Args:
             action: Mapping of short joint name to target position (radians).
@@ -1123,7 +1159,13 @@ class NewtonSimEngine(DomainRandomizationMixin, NewtonRecordingMixin, SimEngine)
             return coerce_error
         assert action_map is not None  # narrow for mypy: no error implies a mapping
 
-        valid = set(self._world.robots[robot_name].joint_names)
+        # Resolved through ``robot_action_keys``, not the raw joint list: a
+        # floating base's free joint is in the latter and is not a commandable
+        # scalar (see robot_action_keys). Reading the raw list here accepted
+        # ``{free_joint: 0.5}`` under a success result and wrote a scalar target
+        # for a 6-DoF joint, while every read surface skipped it - so the value
+        # named no signal the backend reports and no column it records.
+        valid = set(self.robot_action_keys(robot_name))
         unresolved = [k for k in action_map if k not in valid]
         applied = [k for k in action_map if k in valid]
         with self._lock:
@@ -1138,7 +1180,7 @@ class NewtonSimEngine(DomainRandomizationMixin, NewtonRecordingMixin, SimEngine)
                 "content": [
                     {
                         "text": (
-                            f"Action partially applied: keys {unresolved} are not joints on "
+                            f"Action partially applied: keys {unresolved} are not commandable joints on "
                             f"'{robot_name}'. Applied: {applied}. Valid keys: {sorted(valid)}"
                         )
                     },

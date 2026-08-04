@@ -759,9 +759,14 @@ class SimEngine(ABC):
         actuators never move and the robot silently no-ops.
 
         The default mirrors :meth:`robot_joint_names` for backends whose
-        actuator set matches their joint set. Backends with a distinct
-        actuator namespace (e.g. MuJoCo tendon grippers) override this to
-        return the actuator short-names instead.
+        actuator set matches their joint set. Two kinds of backend override it.
+        One has a distinct actuator *namespace* (MuJoCo tendon grippers) and
+        returns actuator short-names instead. The other shares the namespace but
+        commands a *subset* of it: the Newton engine drops a floating base's
+        6-DoF free joint, which is a joint and not a commandable scalar, so its
+        action keys are the joint names minus that one. An override may
+        therefore rename or narrow this list, and a caller must not assume it
+        has the same width as :meth:`robot_joint_names`.
         """
         return self.robot_joint_names(robot_name)
 

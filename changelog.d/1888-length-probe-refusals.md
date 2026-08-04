@@ -52,11 +52,14 @@ second owner cannot be added beside the first again.
 `coerce_size_vector` was never affected: its iteration guard runs first and
 refuses a value with no iteration before any length is read.
 
-One escape of this shape is deliberately left open and pinned rather than
-silent. `finite_vector_error` guards `iter(vec)` and walks the iterator in an
-unguarded loop, so an exception raised while producing an element still escapes -
-`iter()` cannot fail for a generator, and for a value with `__getitem__` and no
-`__iter__` CPython builds the iterator without calling it. Closing that trades
-away the laziness the guard's comment defends, and its refusal cannot reuse the
-existing "could not be iterated" text, since a vector that failed at element 4 of
-7 had four components read and found fine. It is tracked separately.
+One escape of this shape was left open here and tracked separately, then closed
+in this same release cycle by #1898. `finite_vector_error` guarded `iter(vec)` and
+walked the iterator in an unguarded loop, so an exception raised while producing
+an element still escaped - `iter()` cannot fail for a generator, and for a value
+with `__getitem__` and no `__iter__` CPython builds the iterator without calling
+it. Its refusal indeed could not reuse the existing "could not be iterated" text,
+since a vector that failed at element 4 of 7 had four components read and found
+fine, so it names the element it stopped at instead. The laziness this paragraph
+expected it to trade away was kept: the read is still one component at a time,
+because a materialising `list(vec)` raises before any element has been examined
+and so could not report how far the read got.

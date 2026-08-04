@@ -13,6 +13,14 @@ additionally see privileged simulation-only keys via ``critic_obs_keys``
 (asymmetric actor-critic). Each key is a scalar entry of
 ``SimEngine.get_observation`` (e.g. a joint position ``"Elbow"`` or velocity
 ``"Elbow.vel"``); the vector is the keys concatenated in the given order.
+
+The action contract is the other half: ``step`` sends a numeric vector, which
+``SimEngine.send_action`` binds positionally to
+``robot_action_keys(robot_name)``. Those are the robot's *actuators*, which are
+not always its joints - a tendon-driven gripper is one actuator over two finger
+joints, and the Newton backend's floating base is a joint with no commandable
+scalar - so the action head is sized from the action keys and a checkpoint
+records them as ``action_keys``. Pass ``action_dim`` to override the width.
 """
 
 from __future__ import annotations
@@ -39,7 +47,9 @@ class SimEnv:
             float``); the step reward is their sum. Build them with the
             predicate DSL (e.g. ``_joint_progress``, ``_distance_neg``).
         action_dim: Size of the action vector sent to ``engine.send_action``.
-            Defaults to the number of joints of ``robot_name``.
+            Defaults to ``len(engine.robot_action_keys(robot_name))`` - the
+            actuator count ``send_action`` binds a vector against, which is not
+            always the robot's joint count.
         robot_name: Robot to observe / drive. Defaults to the engine's first
             registered robot.
         critic_obs_keys: Optional privileged keys appended to the critic
@@ -99,7 +109,15 @@ class SimEnv:
         if action_dim is not None:
             self.num_actions = int(action_dim)
         elif self.robot_name is not None:
-            self.num_actions = len(engine.robot_joint_names(self.robot_name))
+            # ``robot_action_keys``, not ``robot_joint_names``: ``step`` sends a
+            # numeric vector, and ``send_action`` binds a vector positionally to
+            # the action keys. The two lists coincide only when a robot's
+            # actuator set matches its joint set; a tendon gripper (one actuator
+            # driving two finger joints) or a Newton floating base (a 6-DoF free
+            # joint with no scalar target) makes the joint list wider, and a
+            # vector of that width is refused - so every step wrote no target
+            # while the reward was still collected.
+            self.num_actions = len(engine.robot_action_keys(self.robot_name))
         else:
             raise ValueError("action_dim must be given when the engine has no registered robot")
 

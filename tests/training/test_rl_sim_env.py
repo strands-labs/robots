@@ -30,6 +30,13 @@ class _OneJointEngine:
     def robot_joint_names(self, robot_name: str) -> list[str]:
         return ["J"]
 
+    def robot_action_keys(self, robot_name: str) -> list[str]:
+        # These fakes are duck-typed rather than ``SimEngine`` subclasses, so
+        # they do not inherit the default that mirrors the joint names. This
+        # robot's one joint is its one actuator, so the two vocabularies agree -
+        # which is the shape ``SimEnv`` sizes its action head from.
+        return ["J"]
+
     def reset(self) -> dict:
         return {"status": "success"}
 
@@ -51,8 +58,9 @@ def _engine(obj: object) -> SimEngine:
     """Present a duck-typed fake as a ``SimEngine`` for the ``SimEnv`` constructor.
 
     ``SimEngine`` is a nominal ABC, but ``SimEnv`` only touches the handful of
-    methods the fakes implement (list_robots / robot_joint_names / reset /
-    get_observation / send_action), so the cast is safe for these unit tests.
+    methods the fakes implement (list_robots / robot_joint_names /
+    robot_action_keys / reset / get_observation / send_action), so the cast is
+    safe for these unit tests.
     """
     return cast(SimEngine, obj)
 
@@ -78,8 +86,9 @@ def test_rejects_nonpositive_n_substeps() -> None:
         )
 
 
-def test_infers_action_dim_from_robot_joints() -> None:
-    # No action_dim given -> derived from the robot's joint count (one joint -> 1).
+def test_infers_action_dim_from_robot_action_keys() -> None:
+    # No action_dim given -> derived from the robot's action-key count, which
+    # send_action binds a vector against (one actuator -> 1).
     env = SimEnv(_engine(_OneJointEngine()), actor_obs_keys=["J"], reward_terms=[lambda e: 1.0])
     assert env.num_actions == 1
 

@@ -427,7 +427,12 @@ class FastSacTrainer(BaseRLAlgo):
             "num_critic_obs": self.env.num_critic_obs,
             "num_actions": self.env.num_actions,
             "actor_obs_keys": self.env.actor_obs_keys,
-            "joint_names": (self.env.engine.robot_joint_names(self.env.robot_name) if self.env.robot_name else []),
+            # ``action_keys``, not a joint list: the field names what the
+            # ``num_actions`` outputs above it drive, so it must be the same
+            # vocabulary ``send_action`` binds a vector against. A tendon
+            # gripper's actuator has no matching joint name at all, and a
+            # Newton floating base is a joint with no commandable scalar.
+            "action_keys": (self.env.engine.robot_action_keys(self.env.robot_name) if self.env.robot_name else []),
             "hidden_dims": list(self.spec.hidden_dims),
             "iteration": iteration,
         }

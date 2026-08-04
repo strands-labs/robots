@@ -180,7 +180,7 @@ def _isaac_stub(lock: CountingLock, tick: Any = None, batch: int | None = None) 
         if tick is not None:
             tick()
 
-    stub = types.SimpleNamespace(
+    stub: Any = types.SimpleNamespace(
         _lock=lock,
         _world_created=True,
         _STEPS_PER_BATCH=IsaacSimulation._STEPS_PER_BATCH if batch is None else batch,
@@ -188,7 +188,16 @@ def _isaac_stub(lock: CountingLock, tick: Any = None, batch: int | None = None) 
         _sim_time=0.0,
         _step_count=0,
         _world=types.SimpleNamespace(step=world_step),
+        # Main-thread-affinity opt-out (#1896): these tests measure lock
+        # scheduling, not kit-thread affinity, and the interleave case
+        # deliberately drives ``step`` from a worker thread while a contender
+        # takes the lock. Declaring whichever thread runs the call as the
+        # owning thread keeps the genuinely-bound marshal helper on its
+        # inline path so the lock schedule stays the measurement.
+        _on_main_thread=lambda: True,
+        _pump_running=False,
     )
+    stub._marshal_main_thread_affine = lambda name, fn: IsaacSimulation._marshal_main_thread_affine(stub, name, fn)
     return stub, calls
 
 

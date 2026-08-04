@@ -221,7 +221,11 @@ def test_ppo_smoke_train_produces_loadable_checkpoint(tmp_path) -> None:  # type
         meta = json.load(f)
     assert meta["num_actions"] == 6
     assert meta["actor_obs_keys"] == ["Elbow", "Elbow.vel"]
-    assert meta["joint_names"]  # non-empty
+    # The field names what the ``num_actions`` outputs drive, so its width is
+    # part of the contract - a length that disagreed would mis-bind a
+    # deployment's outputs onto the robot.
+    assert meta["action_keys"]  # non-empty
+    assert len(meta["action_keys"]) == meta["num_actions"]
 
     # latest_checkpoint discovers the saved artifact.
     assert trainer.latest_checkpoint(str(tmp_path)) == result.checkpoint_dir

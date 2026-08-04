@@ -93,7 +93,15 @@ print(result.metrics)              # mean_reward, mean_episode_return, surrogate
 - `policy.pt` - the actor-critic + observation-normalizer state (the loadable
   artifact returned by `result.exported_model`).
 - `policy_meta.json` - deployable-policy metadata: `num_actions`,
-  `actor_obs_keys`, `joint_names`, `hidden_dims`.
+  `actor_obs_keys`, `action_keys`, `hidden_dims`.
+
+`action_keys` names what the `num_actions` outputs drive, in order, and is the
+robot's `robot_action_keys` - the vocabulary `send_action` binds an action
+vector against. It is not the joint list: a tendon-driven gripper is one
+actuator over two finger joints (so a Panda has 9 joints and 8 action keys), and
+the Newton backend's floating base is a joint with no commandable scalar. `SimEnv`
+sizes `num_actions` from the same list, so `len(action_keys) == num_actions`
+always holds. Pass `action_dim` to `SimEnv` to override the width.
 
 `PpoTrainer` trains fine on CPU (its `hardware_floor` declares no GPU
 requirement); MuJoCo stepping dominates, not the network.

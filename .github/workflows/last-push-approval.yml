@@ -1,0 +1,120 @@
+# .github/workflows/last-push-approval.yml
+#
+# Names a pull request whose only approvals come from the account that pushed
+# its head commit. The `default` BRANCH ruleset sets
+# `require_last_push_approval: true`, so such an approval does not count and the
+# pull request cannot merge until a *different* account reviews it.
+#
+# This exists because that state is invisible. It presents as
+# `reviewDecision: REVIEW_REQUIRED` and `mergeStateStatus: BLOCKED` -- byte for
+# byte what a pull request nobody has reviewed yet looks like -- so a status
+# sweep reads it as waiting on a reviewer and reports the repository healthy
+# with a backlog. It stood that way in eight consecutive scheduled scan
+# summaries as "reviewer bandwidth is the sole constraint" while #1722 and #1035
+# sat permanently unmergeable. More reviewing by the same reviewer cannot fix
+# either one. See issue #1905 and scripts/check_last_push_approval.py.
+#
+# It runs on `pull_request_review` as well as `pull_request`, because the
+# condition is only decidable once an approval exists and approvals do not
+# arrive with a push. A `pull_request`-only trigger would evaluate every branch
+# at the one moment it is guaranteed to have no approval, and always pass.
+#
+# That trigger also *pollutes the signal the script reads*, which is worth
+# knowing before adding another one. A run started by a review is attributed to
+# the reviewer, so the newest run on the head sha named the approver as the
+# pusher and the check reported a deadlock on every approved pull request --
+# observed on #1921, its own. The script counts only runs whose event a push
+# produces (`PUSH_ATTRIBUTING_EVENTS`); any trigger added here that is not
+# caused by a push must stay outside that set.
+#
+# Whether a finding blocks a merge is a branch-protection decision, not a
+# property of this file, and this one is deliberately not in the required set.
+# Unlike merge-base-overlap.yml the remedy here is not self-clearing: it needs a
+# second human, so the pull request author cannot turn the check green by
+# working. A gate a branch cannot clear by doing anything is a report, and
+# reporting is what this does -- the exit status is 1 so the finding is visible
+# in the checks list, and nothing consumes it as a gate.
+#
+
+name: Last Push Approval Check
+
+on:
+  pull_request:
+    branches: [main, dev]
+  pull_request_review:
+    types: [submitted, dismissed]
+
+# Keyed on the event as well as the pull request, so a review run and a push run
+# never cancel one another. Both read live API state rather than the checked-out
+# tree, and a stale read of exactly this state is the failure mode the check
+# exists to prevent: a review arriving mid-run must not be able to cancel the
+# run that would have seen it and leave the earlier, approval-free answer
+# standing. Within one event type the later run supersedes the earlier as usual.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}-${{ github.event_name }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: read
+  # For GET /actions/runs?head_sha=<head>, which is the only place the identity
+  # of the pusher is legible. Commit metadata is not a substitute: #1920's head
+  # was committed under an identity with no linked GitHub account, so its
+  # commit.author.login is null while its triggering_actor is correct.
+  actions: read
+
+jobs:
+  last-push-approval:
+    name: Detect an approval the last pusher cannot supply
+    runs-on: ubuntu-latest
+
+    steps:
+      # The BASE branch, for the reason merge-base-overlap.yml documents at
+      # length: a branch that forked before this check landed does not carry the
+      # script, and running it from the head tree would die with exit 2 before
+      # computing anything, rendering in the checks UI as the same red X as a
+      # real finding. Checking out the base costs no fidelity here because the
+      # script reads nothing from the working tree -- every input comes from the
+      # API, and the pull request is named by --pr instead.
+      - name: Checkout the base branch
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.base.ref }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
+        with:
+          python-version: '3.12'
+
+      # Standard library only, so there is nothing to install. The head SHA is
+      # passed explicitly rather than left to the script's own lookup so that
+      # the commit judged is the one this event fired for.
+      #
+      # The guard is the bootstrapping case, and it is not hypothetical: this
+      # workflow failed on the very pull request that introduced it. Checking out
+      # the base is what keeps a branch forked before the gate from dying on a
+      # missing script (#1791), and it has the mirror-image hole -- the base does
+      # not carry the script either until this lands, so the step exited 2 with
+      # `can't open file`, which the checks UI renders as the same red X as a real
+      # finding. Passing here is the same rule the script already applies to an
+      # undetermined pusher and to a failed API lookup: a check that cannot
+      # compute an answer reports nothing rather than accusing a branch of a
+      # state it never observed. It is a no-op exactly once, on this pull request
+      # and on any branch whose base predates the script, and correct after.
+      # Pinned by tests/test_last_push_approval.py::test_the_workflow_passes_when_the_base_lacks_the_script
+      - name: Check who pushed the head against who approved
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          if [ ! -f scripts/check_last_push_approval.py ]; then
+            echo "check_last_push_approval: not present on ${BASE_REF}, so there is nothing to report."
+            echo "The base branch predates this check. Reporting nothing rather than exiting 2,"
+            echo "which the checks UI cannot tell apart from a real finding."
+            exit 0
+          fi
+          python3 scripts/check_last_push_approval.py --repo "$GITHUB_REPOSITORY"

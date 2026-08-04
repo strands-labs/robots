@@ -194,6 +194,44 @@ hatch run format            # ruff check --fix, ruff format
      problem below, which is independent of dismissal and does not care that the
      merge was clean. Ask the contributor to absorb `main` so they stay the last
      pusher; #1827 was left alone for that reason.
+   - *And that the mutation named the object you meant.* A mutation
+     names its subject by node ID and by nothing else - `createIssue` takes a
+     `repositoryId`, not an owner and a name - so a well-formed ID that is wrong
+     does not fail. It succeeds against whatever object it *does* name. Filing
+     an issue for this repository with a `repositoryId` carried over from an
+     earlier response rather than queried - `R_kgDOD1WOFw` for `R_kgDORUMiZg` -
+     created issue #1 in an unrelated third-party repository and returned
+     success. The only clue was the `url` in the response, and there is no undo:
+     `deleteIssue` needs admin on the *target*, so the stray issue could only be
+     closed as `NOT_PLANNED` with an apology. See #1916.
+
+     **A node ID is not opaque, which is what makes this checkable before the
+     write.** It is `<TypePrefix>_<urlsafe-base64(msgpack array)>`, where a
+     repository is `[0, databaseId]` and anything a repository owns is
+     `[0, repository databaseId, own databaseId]` - so the type and the target
+     repository are both readable with no network call:
+
+     | node ID | decodes to | target |
+     |---|---|---|
+     | `R_kgDORUMiZg` | `[0, 1162027622]` | this repository |
+     | `R_kgDOD1WOFw` | `[0, 257265175]` | the stray one |
+     | `PR_kwDOD1WOF87DdSjQ` | `[0, 257265175, 3279235280]` | **the same stray one** |
+
+     That third row is the finding. All three guessed IDs in that run carried
+     one wrong repository, so a single stale value contaminated every mutation,
+     and the two that failed did so only because their own databaseId happened
+     not to exist there - `Could not resolve to a node`. Failing closed was luck
+     about the guess, not a property of the API, and the guess that got lucky the
+     other way is the one that wrote.
+
+     So resolve every ID from a query in the same run whose owner and name are
+     written out literally; check the prefix against the parameter, since a
+     `PR_...` handed to a `repositoryId` is wrong by type alone; and read the
+     `url` in the response back before treating the write as done.
+     `tests/test_graphql_node_id_targeting.py` decodes this repository's own node
+     IDs against the `databaseId`s the API publishes beside them, so the claim
+     that the check is available offline fails loudly rather than quietly if the
+     envelope ever changes.
    And before merging, `reviewDecision: APPROVED` alone is not the gate: poll
    the **required** contexts' own conclusions and `mergeStateStatus == CLEAN`
    together, since `reviewDecision` flips before the checks finish.
@@ -216,6 +254,47 @@ hatch run format            # ruff check --fix, ruff format
    accounts for the required set, which is why it is the one to trust:
    `BLOCKED` while the required check runs, then `UNSTABLE` - mergeable, with an
    advisory context red - or `CLEAN`.
+
+   That trust has a reader attached to it, which the sentence above does not say.
+   `mergeStateStatus` answers *can the viewer merge this pull request*, so it is
+   scoped to the token that asks - and on a pull request editing
+   `.github/workflows/**` the Actions `GITHUB_TOKEN` can never read anything but
+   `BLOCKED`, because an installation token is refused writes to workflow files
+   and therefore genuinely cannot perform that merge. **Read the gate with
+   `PAT_TOKEN`.** A control pair, both approved with no unresolved thread and
+   `call-test-lint` `SUCCESS`, read minutes apart:
+
+   | PR | edits `.github/workflows/**` | `GITHUB_TOKEN` | `PAT_TOKEN` | truth |
+   |---|---|---|---|---|
+   | #1915 | yes (`pr-and-push.yml`) | `BLOCKED` | `CLEAN` | merged clean, `f4dfde6` |
+   | #1902 | no | `CLEAN` | `CLEAN` | merged clean, `6cf0470` |
+
+   The mechanism isolates to one variable - same token, same scratch branch, same
+   instant, via `PUT /repos/{owner}/{repo}/contents/{path}`:
+
+   ```
+   zz_probe.txt                    GITHUB_TOKEN -> created
+   .github/workflows/zz_probe.yml  GITHUB_TOKEN -> Resource not accessible by integration
+   .github/workflows/zz_probe.yml  PAT_TOKEN    -> created
+   ```
+
+   So a `BLOCKED` read that way is neither a bug nor staleness; it is the honest
+   answer to the question the field asks. Staleness is separately ruled out:
+   `mergeable_state` on #1899 and #1035 reads `unknown` first and the settled
+   value second **for both tokens identically**, so the lazy first read is
+   per-PR, not per-viewer. `mergeable` agrees across tokens throughout - a text
+   conflict is viewer-independent, and only mergeability-*by-you* is not.
+
+   What makes this expensive is that the wrong answer is indistinguishable from a
+   right one. On a genuinely blocked PR both tokens read `blocked`, so their
+   agreement proves nothing, and the Actions token's answer on a
+   workflow-touching PR is always blocked-or-unknown. No reading of the field
+   separates the two cases. The agent then polls the gate exactly as documented,
+   correctly declines to merge, and reports the PR as waiting on a reviewer -
+   which is the presentation #1905 records for a different cause, and which had
+   stood in eight consecutive scheduled scan summaries as "reviewer bandwidth is
+   the sole constraint". It bites CI and process pull requests specifically,
+   because those are the ones carrying workflow edits. See #1917.
 
    This is worth the words because the failure mode is silent and expensive in the
    opposite direction from the usual one. Treating an advisory red as a merge
@@ -367,6 +446,30 @@ hatch run format            # ruff check --fix, ruff format
    distinct from the approver, which reads as the rule being satisfied when it is
    not; #1035's head names the maintainer outright. Same `REVIEW_REQUIRED`,
    opposite metadata. Only `triggering_actor` is load-bearing.
+
+   All of the above was documented here and enforced by nothing, which is the
+   same shape as the changelog rule in step 3 before #1784. It is now surfaced by
+   `.github/workflows/last-push-approval.yml`, which names the pusher and the
+   approvers on every review event and fails when they are the same single
+   account. The point of automating it is not that the check is clever - it is
+   that the state it reports is *invisible*: `REVIEW_REQUIRED` / `BLOCKED` is
+   byte for byte what an unreviewed pull request looks like, so the two are
+   indistinguishable in every field a sweep reads and they need opposite actions.
+   Verified against six pull requests, three outcomes, no false positive:
+
+   | pull request | pushed by | approved by | outcome |
+   |---|---|---|---|
+   | #1722, #1035 | the maintainer | the maintainer | `pusher-only-approval` |
+   | #1894, #1920 | either | a second account | `satisfied` |
+   | #1899, #1901 | the author | nobody yet | `awaiting-first-review` |
+
+   `awaiting-first-review` is a pass on purpose. It is the ordinary state of an
+   open pull request and is already visible, so making it red would put a red X
+   on every branch in the repository and the finding would stop meaning
+   anything. Unlike the overlap check in step 8 this one is **not** self-clearing
+   - its remedy is a second human, and no work the author does turns it green -
+   so it reports and is deliberately absent from the required set. A gate a
+   branch cannot clear by doing anything is a report, whatever it is wired to.
 
    The general rule behind all three: **a decision recorded only in a PR or
    issue comment is not durable** - the next contributor will not read the same
@@ -546,6 +649,73 @@ Corrections from code review that apply to all future contributions:
   names first, `IndexError`, is what CPython's `seqiter` *clears* to terminate
   legacy-protocol iteration, so taking the suggestion would have left the fixture
   raising nothing and the test asserting nothing, still green.
+- **One alert class clears under none of the three, and the question that settles
+  it is which thread you marshal onto.** `py/catch-base-exception` never fires on
+  cleanup-and-reraise: the query accepts a handler that re-raises *lexically*, and
+  six of the tree's seven `except BaseException` handlers do, so they have never
+  been flagged.
+
+  | handler | ends in | flagged |
+  |---|---|---|
+  | `robot.py:368` | `sim.destroy()`, bare `raise` | no |
+  | `policies/persistent.py:193` | `handoff.abandon()`, bare `raise` | no |
+  | `simulation/safe_output.py:185` | `os.unlink(tmp)`, bare `raise` | no |
+  | `hardware_robot.py:1865` | `self._release_task()`, bare `raise` | no |
+  | `tests/policies/lerobot_local/test_list_policy_types.py:70` | `raise AssertionError(...) from exc` | no |
+  | `tests/policies/lerobot_local/test_vla_jepa.py:164` | `raise AssertionError(...) from exc` | no |
+  | `simulation/isaac/simulation.py:5125` | `box["exc"] = exc`, no lexical raise | **yes** |
+
+  The rule's entire alert surface here is therefore one construct: a
+  **cross-thread exception-marshal box**, which parks the exception for *another*
+  thread to re-raise, where the query cannot follow the control flow.
+
+  Narrowing it to `Exception` is not the safe default it looks like, and the worst
+  case is silent. What the *caller* thread observes:
+
+  | raised on the worker | `except BaseException` | `except Exception` |
+  |---|---|---|
+  | `RuntimeError` | `RuntimeError` | `RuntimeError` |
+  | `SystemExit` | `SystemExit` | **`None`, no traceback at all** |
+  | `KeyboardInterrupt` | `KeyboardInterrupt` | `None`, plus unhandled-exception noise |
+
+  Both escapes reach `threading.excepthook`, whose default ignores `SystemExit`
+  specifically - so that one writes nothing at all to stderr, where an escaping
+  `RuntimeError` prints a full traceback. Narrowing therefore does not relocate
+  the exception, it deletes it silently, and the caller re-raises nothing. That is
+  the no-silent-defaults rule, reached from an exception clause.
+
+  So decide by direction, because the box is obliged in one and avoidable in the
+  other:
+
+  - *Marshalling onto an existing foreign thread* - `IsaacSimulation.run_on_main`
+    handing a job to the thread that owns the Kit pump. `concurrent.futures`
+    cannot target an already-running foreign thread, so the hand-rolled box is
+    the only implementation there is. Obliged: dismiss with a reason and resolve
+    the thread pointing at it, per the bullet above.
+  - *Marshalling off a new thread you create* - running an agent off-main, or a
+    test helper that calls into a worker. `concurrent.futures` **is** that
+    pattern, and the `except BaseException` then belongs to CPython
+    (`concurrent/futures/thread.py`, `_WorkItem.run`) rather than to this tree.
+    `Future.result()` re-raises `RuntimeError`, `SystemExit` and
+    `KeyboardInterrupt` with object *identity* preserved (`got is exc` for all
+    three), so delegating is strictly better than the box rather than merely
+    quieter. Not obliged: delegate, and the handler, the alert and the blocking
+    review thread go at once.
+
+  Do not reach for the filter. Its test is that *every* instance is an obliged
+  idiom, and the second bullet is a standing counter-example, so this rule id
+  must keep failing the two-id set `tests/test_codeql_query_filters.py` pins.
+
+  What makes the class worth naming is that both answers are live right now and
+  nothing else records why they differ. Alert #691 - `run_on_main`'s box at
+  `simulation/isaac/simulation.py:5125` - has been open on `refs/heads/main` since
+  2026-07-07 at note severity, gating nothing, carrying only a
+  `# noqa: BLE001` that CodeQL does not read. Alerts #853 and #854 are the same
+  idiom raised on a branch, one of them in that same file, and each opened a
+  review thread, so under `required_review_thread_resolution` they gate the
+  merge. Identical construct, opposite consequence, separated only by having
+  arrived on a branch - and two rounds were spent arguing the idiom rather than
+  applying the second bullet. See #1919.
 - **Dependency Review hard-fails on high/critical CVEs in new deps.** If a PR
   needs a dep with a known critical CVE, the conversation is "do we need this
   dep" not "let's bypass the check."

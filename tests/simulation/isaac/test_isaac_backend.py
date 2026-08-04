@@ -20,7 +20,9 @@ real Isaac Sim + a CUDA device.
 
 from __future__ import annotations
 
+import concurrent.futures
 import sys
+import threading
 
 import pytest
 
@@ -460,6 +462,124 @@ class TestLoaders:
         urdf.write_text('<?xml version="1.0"?><robot name="empty"></robot>')
         with pytest.raises(ValueError):
             load_urdf(str(urdf))
+
+
+class TestMainThreadAffinityGuard:
+    """Worker-thread calls into Isaac's main-thread-affine entry points.
+
+    Isaac's kit runtime only pumps updates on the thread that created
+    ``SimulationApp``, so ``reset()`` / ``step()`` called from a worker thread
+    used to block **forever** with zero signal (#1896: a Strands ``Agent``
+    ran ``evaluate_benchmark`` on a tool-executor thread while the main
+    thread waited on the tool future; ``SimulationContext.stop()`` never
+    returned). These tests pin the guard that replaces the deadlock:
+
+      * worker thread + NO pump -> loud ``RuntimeError`` naming the
+        run_on_main / run_pump_forever recipe, world untouched;
+      * worker thread + pump running -> auto-marshalled onto the owning
+        thread via ``run_on_main`` (the recording facade's schema-probe
+        pattern);
+      * owning thread -> runs inline, unchanged.
+
+    Stub-based - no Isaac Sim required. The world stub records which thread
+    each call landed on so the marshalling is asserted, not inferred.
+    """
+
+    class _StubWorld:
+        def __init__(self):
+            self.reset_calls: list[int] = []
+            self.step_calls: list[int] = []
+
+        def reset(self):
+            self.reset_calls.append(threading.get_ident())
+
+        def step(self, render=False):
+            self.step_calls.append(threading.get_ident())
+
+    @pytest.fixture()
+    def sim_and_world(self):
+        from strands_robots.simulation.isaac.simulation import IsaacSimulation
+
+        sim = IsaacSimulation(num_envs=1, headless=True)
+        world = self._StubWorld()
+        # The minimal live-world state reset()/step() consult. No SimulationApp
+        # boots here: the stub stands in for the kit-affine World handle.
+        sim._world_created = True
+        sim._world = world
+        yield sim, world
+        # Detach the stub before GC so SimEngine.__del__ -> cleanup() ->
+        # destroy() never runs real teardown against it.
+        sim._world_created = False
+        sim._world = None
+
+    @staticmethod
+    def _future_from_worker(fn):
+        """Run ``fn`` on a worker thread; return the completed Future.
+
+        ``__exit__`` joins the worker (``shutdown(wait=True)``), so the future
+        is done on return and ``future.result()`` re-raises whatever the worker
+        raised - ``SystemExit`` included - with identity preserved. No
+        exception-translating handler exists here on purpose (review on #1899):
+        the assertions do the catching via ``pytest.raises``. A genuine
+        regression to the #1896 deadlock blocks in ``__exit__`` until the
+        suite-wide pytest-timeout (``--timeout=120`` in addopts) kills it.
+        """
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(fn)
+
+    def test_worker_thread_reset_without_pump_raises_actionable_error(self, sim_and_world):
+        sim, world = sim_and_world
+        future = self._future_from_worker(sim.reset)
+        # The error must carry the recipe, not just a refusal.
+        with pytest.raises(RuntimeError, match=r"run_pump_forever.*run_on_main"):
+            future.result()
+        assert world.reset_calls == []  # world never touched off-thread
+
+    def test_worker_thread_step_without_pump_raises_actionable_error(self, sim_and_world):
+        sim, world = sim_and_world
+        future = self._future_from_worker(lambda: sim.step(3))
+        with pytest.raises(RuntimeError, match="run_pump_forever"):
+            future.result()
+        assert world.step_calls == []
+
+    def test_worker_thread_reset_with_pump_running_is_marshalled_to_main(self, sim_and_world):
+        sim, world = sim_and_world
+        sim._pump_running = True  # what run_pump_forever sets while it owns the renderer
+        main_ident = threading.get_ident()
+
+        worker_box = {}
+
+        def _worker():
+            worker_box["result"] = sim.reset()
+
+        t = threading.Thread(target=_worker)
+        t.start()
+        # Play the pump's role: execute the job the worker enqueued via
+        # run_on_main on this (owning) thread.
+        job = sim._main_jobs.get(timeout=10)
+        job()
+        t.join(timeout=10)
+        assert not t.is_alive()
+        assert worker_box["result"]["status"] == "success"
+        assert world.reset_calls == [main_ident]  # ran HERE, not on the worker
+
+    def test_main_thread_reset_and_step_run_inline(self, sim_and_world):
+        sim, world = sim_and_world
+        main_ident = threading.get_ident()
+        assert sim.reset()["status"] == "success"
+        assert sim.step(2)["status"] == "success"
+        assert world.reset_calls == [main_ident]
+        assert world.step_calls == [main_ident, main_ident]
+
+    def test_worker_thread_reset_without_world_keeps_structured_error(self):
+        # No world -> nothing kit-affine can run, so the documented
+        # structured error dict wins over the threading lecture.
+        from strands_robots.simulation.isaac.simulation import IsaacSimulation
+
+        sim = IsaacSimulation(num_envs=1, headless=True)
+        result = self._future_from_worker(sim.reset).result()  # re-raises if the worker raised
+        assert result["status"] == "error"
+        assert "No world created" in result["content"][0]["text"]
 
 
 class TestInstallMetadata:

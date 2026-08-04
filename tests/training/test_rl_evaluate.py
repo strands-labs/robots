@@ -32,6 +32,13 @@ class _FakeEngine:
     def robot_joint_names(self, robot_name: str) -> list[str]:
         return ["J"]
 
+    def robot_action_keys(self, robot_name: str) -> list[str]:
+        # These fakes are duck-typed rather than ``SimEngine`` subclasses, so
+        # they do not inherit the default that mirrors the joint names. This
+        # robot's one joint is its one actuator, so the two vocabularies agree -
+        # which is the shape ``SimEnv`` sizes its action head from.
+        return ["J"]
+
     def reset(self) -> dict:
         self._j = 0.0
         self._vel = 0.0

@@ -35,6 +35,7 @@ import numpy as np
 
 from strands_robots.simulation.base import SimEngine
 from strands_robots.simulation.isaac.config import IsaacConfig
+from strands_robots.simulation.isaac.joint_names import demangle_usd_joint_names, urdf_joint_names
 from strands_robots.simulation.isaac.recording import IsaacRecordingMixin
 from strands_robots.simulation.models import registered, registry_entry
 from strands_robots.simulation.terrain import validate_difficulty
@@ -466,6 +467,7 @@ class _RobotState:
         articulation: Any = None,
         actual_prim_path: str | None = None,
         data_config: str | None = None,
+        usd_to_urdf_joint_names: dict[str, str] | None = None,
     ):
         self.name = name
         self.prim_path = prim_path
@@ -475,6 +477,16 @@ class _RobotState:
         # Recorded as the LeRobotDataset ``robot_type`` so datasets collected
         # on Isaac carry the same embodiment metadata as MuJoCo/Newton ones.
         self.data_config = data_config
+        # USD-mangled DOF name -> URDF joint name, for robots loaded from a
+        # URDF whose joint names are not valid USD identifiers (e.g. the
+        # ``robotstudio_so101`` URDF's ``"1"``..``"6"``, imported as
+        # ``tn__1_``..``tn__6_``). ``joint_names`` above already carries the
+        # translated (URDF) vocabulary - see
+        # :mod:`strands_robots.simulation.isaac.joint_names` (#1900) - so
+        # this map is diagnostics-only: it correlates the public names with
+        # the prim names an on-stage USD walk would encounter. Empty when
+        # nothing was mangled.
+        self.usd_to_urdf_joint_names = dict(usd_to_urdf_joint_names or {})
         # The prim path the URDF importer / USD reference actually
         # placed the robot at, which can differ from ``prim_path`` when
         # the importer ignores the requested destination (Isaac Sim 4.5
@@ -1215,32 +1227,49 @@ class IsaacSimulation(IsaacRecordingMixin, SimEngine):
         -------
         dict
             Status dict.
+
+        Concurrency: main-thread affine. ``world.reset()`` drives Isaac's kit
+        runtime (``SimulationContext.stop()``/``play()``), which only pumps
+        updates on the thread that created ``SimulationApp``. Off that thread
+        the call is marshalled via :meth:`run_on_main` when
+        :meth:`run_pump_forever` is engaged, and raises ``RuntimeError``
+        (rather than blocking forever) when it is not. See
+        :meth:`_marshal_main_thread_affine`.
         """
         with self._lock:
             if not self._world_created:
                 return {"status": "error", "content": [{"text": "No world created."}]}
 
-            if self._world is not None:
-                self._world.reset()
-                # ``world.reset()`` on the pip Isaac Sim 6.0.x wheels
-                # invalidates the physics-tensor view the per-robot
-                # ``SingleArticulation`` handles hold (the #1798
-                # invalidate-on-stop family, articulation edition), so
-                # without an explicit revive every post-reset
-                # ``get_joint_positions()`` returns ``None`` and
-                # ``get_observation`` degrades to its documented
-                # silent-empty mode (#1895).
-                self._revive_articulations_after_reset()
+        def _reset_impl() -> dict[str, Any]:
+            with self._lock:
+                # Re-checked under the lock: a pump-marshalled call may race a
+                # concurrent destroy() between the public check above and here.
+                if not self._world_created:
+                    return {"status": "error", "content": [{"text": "No world created."}]}
 
-            self._sim_time = 0.0
-            self._step_count = 0
+                if self._world is not None:
+                    self._world.reset()
+                    # ``world.reset()`` on the pip Isaac Sim 6.0.x wheels
+                    # invalidates the physics-tensor view the per-robot
+                    # ``SingleArticulation`` handles hold (the #1798
+                    # invalidate-on-stop family, articulation edition), so
+                    # without an explicit revive every post-reset
+                    # ``get_joint_positions()`` returns ``None`` and
+                    # ``get_observation`` degrades to its documented
+                    # silent-empty mode (#1895).
+                    self._revive_articulations_after_reset()
 
-            if env_ids is None:
-                msg = "Full reset complete."
-            else:
-                msg = f"Partial reset complete for {len(env_ids)} envs."
+                self._sim_time = 0.0
+                self._step_count = 0
 
-            return {"status": "success", "content": [{"text": msg}]}
+                if env_ids is None:
+                    msg = "Full reset complete."
+                else:
+                    msg = f"Partial reset complete for {len(env_ids)} envs."
+
+                return {"status": "success", "content": [{"text": msg}]}
+
+        return self._marshal_main_thread_affine("reset", _reset_impl)
 
     def _revive_articulations_after_reset(self) -> None:
         """Re-initialize robot articulation handles ``world.reset()`` killed.
@@ -1310,6 +1339,13 @@ class IsaacSimulation(IsaacRecordingMixin, SimEngine):
             world exists, ``n_steps`` is outside that domain, or the world was
             destroyed on a batch boundary mid-run - in which case the error
             names the steps completed, since some were.
+
+        Concurrency: main-thread affine. ``world.step()`` drives Isaac's kit
+        runtime, which only pumps updates on the thread that created
+        ``SimulationApp``. Off that thread the batched loop is marshalled via
+        :meth:`run_on_main` when :meth:`run_pump_forever` is engaged, and
+        raises ``RuntimeError`` (rather than blocking forever) when it is not.
+        See :meth:`_marshal_main_thread_affine`.
         """
         # Guarded before the lock is taken and before any world tick: a
         # negative count made ``range()`` empty, so the call reported success
@@ -1327,51 +1363,59 @@ class IsaacSimulation(IsaacRecordingMixin, SimEngine):
             if self._world is None:
                 return {"status": "error", "content": [{"text": "World not initialized."}]}
 
-        t0 = time.perf_counter()
-        # Batched so the lock is released every ``_STEPS_PER_BATCH`` ticks.
-        # Previously the whole count ran under one acquisition, so a worker
-        # thread's ``get_state`` / ``get_observation`` - and the pump's own
-        # queue drain - blocked for the duration: measured, ``step(100_001)``
-        # called ``world.step`` 100_001 times inside a single hold, which at a
-        # ~2 ms tick is over three minutes with nothing able to interleave.
-        #
-        # The per-batch re-check is the other half of that release, not a
-        # separate concern: with the lock dropped between batches a concurrent
-        # ``destroy`` / ``cleanup`` becomes reachable mid-call, so each batch confirms
-        # the world it is about to advance still exists and aborts naming the
-        # steps completed rather than stepping a torn-down stage.
-        remaining = n_steps
-        while remaining > 0:
-            batch = min(remaining, self._STEPS_PER_BATCH)
-            with self._lock:
-                if not self._world_created or self._world is None:
-                    return {
-                        "status": "error",
-                        "content": [{"text": step_aborted_msg(n_steps - remaining, n_steps)}],
+        # Nested (not a separate method) so the batching loop remains part of
+        # ``step``'s own body: the cross-backend batch-and-recheck contract is
+        # enforced structurally by scanning each concrete ``step`` for
+        # ``_STEPS_PER_BATCH`` and ``step_aborted_msg`` references, and a
+        # helper method would hide them from that scan.
+        def _step_impl() -> dict[str, Any]:
+            t0 = time.perf_counter()
+            # Batched so the lock is released every ``_STEPS_PER_BATCH`` ticks.
+            # Previously the whole count ran under one acquisition, so a worker
+            # thread's ``get_state`` / ``get_observation`` - and the pump's own
+            # queue drain - blocked for the duration: measured, ``step(100_001)``
+            # called ``world.step`` 100_001 times inside a single hold, which at a
+            # ~2 ms tick is over three minutes with nothing able to interleave.
+            #
+            # The per-batch re-check is the other half of that release, not a
+            # separate concern: with the lock dropped between batches a concurrent
+            # ``destroy`` / ``cleanup`` becomes reachable mid-call, so each batch confirms
+            # the world it is about to advance still exists and aborts naming the
+            # steps completed rather than stepping a torn-down stage.
+            remaining = n_steps
+            while remaining > 0:
+                batch = min(remaining, self._STEPS_PER_BATCH)
+                with self._lock:
+                    if not self._world_created or self._world is None:
+                        return {
+                            "status": "error",
+                            "content": [{"text": step_aborted_msg(n_steps - remaining, n_steps)}],
+                        }
+                    render = self._config.render_mode != "headless"
+                    for _ in range(batch):
+                        self._world.step(render=render)
+                        self._sim_time += self._config.physics_dt
+                        self._step_count += 1
+                remaining -= batch
+
+            elapsed = time.perf_counter() - t0
+            steps_per_sec = n_steps / elapsed if elapsed > 0 else float("inf")
+
+            return {
+                "status": "success",
+                "content": [
+                    {
+                        "text": (
+                            f"Stepped {n_steps}x. "
+                            f"sim_time={self._sim_time:.4f}s, "
+                            f"wall={elapsed * 1000:.1f}ms, "
+                            f"{steps_per_sec:.0f} steps/sec"
+                        )
                     }
-                render = self._config.render_mode != "headless"
-                for _ in range(batch):
-                    self._world.step(render=render)
-                    self._sim_time += self._config.physics_dt
-                    self._step_count += 1
-            remaining -= batch
+                ],
+            }
 
-        elapsed = time.perf_counter() - t0
-        steps_per_sec = n_steps / elapsed if elapsed > 0 else float("inf")
-
-        return {
-            "status": "success",
-            "content": [
-                {
-                    "text": (
-                        f"Stepped {n_steps}x. "
-                        f"sim_time={self._sim_time:.4f}s, "
-                        f"wall={elapsed * 1000:.1f}ms, "
-                        f"{steps_per_sec:.0f} steps/sec"
-                    )
-                }
-            ],
-        }
+        return self._marshal_main_thread_affine("step", _step_impl)
 
     def get_state(self) -> dict[str, Any]:
         """Get full simulation state summary.
@@ -1738,6 +1782,7 @@ class IsaacSimulation(IsaacRecordingMixin, SimEngine):
                     articulation=articulation,
                     actual_prim_path=getattr(articulation, "_strands_actual_prim_path", None),
                     data_config=data_config,
+                    usd_to_urdf_joint_names=getattr(articulation, "_strands_usd_to_urdf_joint_names", None),
                 )
                 self._robots[name] = robot_state
 
@@ -4768,7 +4813,11 @@ class IsaacSimulation(IsaacRecordingMixin, SimEngine):
         4. Extracts joint names from ``articulation.dof_names``,
            coercing ``None`` to ``[]`` so a URDF with no actuated
            joints surfaces as the documented empty-joint-list mode
-           rather than a ``TypeError`` on iteration.
+           rather than a ``TypeError`` on iteration, then translates
+           any USD-mangled name back to the URDF's own joint name via
+           :func:`strands_robots.simulation.isaac.joint_names.demangle_usd_joint_names`
+           (#1900) so the public joint vocabulary matches the MuJoCo
+           backend's for the same URDF.
         5. Returns ``(joint_names, articulation)`` -- same shape as
            ``_load_usd_robot`` so the ``add_robot`` URDF branch can
            reuse the same envelope shape.
@@ -4945,8 +4994,46 @@ class IsaacSimulation(IsaacRecordingMixin, SimEngine):
         if position is not None and any(p != 0.0 for p in position):
             articulation.set_world_pose(position=np.asarray(position, dtype=float))
 
-        # Step 4-5: joint names + return.
+        # Step 4-5: joint names + return. The importer transcodes any URDF
+        # joint name that is not a valid USD identifier (a purely numeric
+        # name like the robotstudio_so101's "1" imports as "tn__1_"), and
+        # before #1900 that mangled form leaked through every public surface
+        # keyed by joint name - robot_joint_names, get_observation keys,
+        # send_action resolution - so the same URDF spoke different joint
+        # vocabularies on Isaac vs MuJoCo. Every articulation read/write is
+        # positional (index into dof_names order), so translating here, once,
+        # makes the whole backend speak the URDF names. The usd->urdf map is
+        # stashed as a sidecar (same pattern as _strands_actual_prim_path)
+        # for _RobotState diagnostics. Best-effort: a URDF the stdlib parse
+        # cannot re-read (the importer accepted it, so this is surface drift,
+        # not a bad file) keeps the importer's names - Isaac stays
+        # self-consistent, which is the pre-#1900 behaviour.
         joint_names = list(articulation.dof_names) if articulation.dof_names else []
+        usd_to_urdf: dict[str, str] = {}
+        try:
+            urdf_declared = urdf_joint_names(os.path.abspath(urdf_path))
+        except (OSError, ValueError) as e:
+            logger.warning(
+                "Could not re-parse %s for joint-name translation (%s); keeping the importer's joint names %s.",
+                urdf_path,
+                e,
+                joint_names,
+            )
+        else:
+            joint_names, usd_to_urdf = demangle_usd_joint_names(joint_names, urdf_declared)
+            if usd_to_urdf:
+                logger.info(
+                    "Translated %d USD-mangled joint names back to their URDF names: %s",
+                    len(usd_to_urdf),
+                    usd_to_urdf,
+                )
+        try:
+            articulation._strands_usd_to_urdf_joint_names = usd_to_urdf  # type: ignore[attr-defined]
+        except (AttributeError, TypeError):
+            # Same fallback as _strands_actual_prim_path above: the caller
+            # then records an empty map, and the public names still carry
+            # the translated vocabulary via the returned joint_names.
+            pass
 
         logger.info(
             "Loaded URDF robot at %s from %s (%d joints, articulation=initialized)",
@@ -5137,6 +5224,49 @@ class IsaacSimulation(IsaacRecordingMixin, SimEngine):
         if "exc" in box:
             raise box["exc"]
         return box.get("result")
+
+    def _marshal_main_thread_affine(self, method_name: str, fn: Any) -> Any:
+        """Run ``fn`` on the SimulationApp-owning thread, or fail loudly.
+
+        ``reset`` / ``step`` drive Isaac's kit runtime (``world.reset()`` /
+        ``world.step()``), and kit only pumps updates on the thread that
+        created ``SimulationApp``. Called from a worker thread those entry
+        points do not error - they block **forever** waiting for a pump the
+        worker thread can never run. Observed shape (#1896): a Strands
+        ``Agent`` executed its tool on a worker thread, the tool ran
+        ``evaluate_benchmark`` -> ``reset()`` -> ``SimulationContext.stop()``,
+        and that call never returned because the main thread was itself
+        parked waiting on the tool future.
+
+        Three cases:
+
+        * On the owning thread: run ``fn`` inline - the headless / smoke
+          path is unchanged.
+        * Off it with :meth:`run_pump_forever` engaged: marshal through
+          :meth:`run_on_main` so the pump executes ``fn`` on the owning
+          thread (the same auto-marshal the recording facade uses for its
+          schema probe, see ``IsaacRecordingMixin._probe_recording_observation``).
+        * Off it with NO pump running: raise ``RuntimeError`` naming the
+          recipe. This is a raise, not a structured error dict, on purpose:
+          it is a caller threading-contract violation (some internal call
+          sites - e.g. the per-episode ``sim.reset()`` in the policy runner -
+          do not inspect the envelope, so a dict here would silently skip
+          the reset), and the alternative behavior is an indefinite,
+          signal-free deadlock.
+        """
+        if self._on_main_thread():
+            return fn()
+        if self._pump_running:
+            return self.run_on_main(fn)
+        raise RuntimeError(
+            f"IsaacSimulation.{method_name}() was called from a worker thread with no "
+            "main-thread pump running. Isaac Sim only pumps kit updates on the thread "
+            "that created SimulationApp, so this call would block forever. Either call "
+            "it from the owning thread, or have the owning thread run "
+            "`run_pump_forever(stop_event=...)` and submit the call from the worker via "
+            "`run_on_main(lambda: ...)` (see examples/libero/run_isaac_agent.py for the "
+            "agent-driven shape)."
+        )
 
     # --- joint targets / kinematic teleport --------------------------------
 
