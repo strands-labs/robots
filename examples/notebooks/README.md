@@ -31,6 +31,7 @@ always wins.
 | 3 | [`03_record_train_deploy.ipynb`](03_record_train_deploy.ipynb) | The full loop: record, train an ACT policy on CPU, export, and load it back |
 | 4 | [`04_discover_lerobot.ipynb`](04_discover_lerobot.ipynb) | Discover the LeRobot API with `use_lerobot`: list robots, policies, teleoperators, cameras, and inspect any class |
 | 5 | [`05_streaming_data_loop.ipynb`](05_streaming_data_loop.ipynb) | The streaming data loop: record, render, stream back, train, and load, in one notebook (the optional Storage Bucket sync needs `strands-robots >= 0.4.2` + LeRobot >= 0.6.1; an optional final step reruns the loop on the Isaac backend with `backend="isaac"` when an RTX GPU + `sim-isaac` are present) |
+| 6 | [`06_fleet_orchestration.ipynb`](06_fleet_orchestration.ipynb) | Drive a heterogeneous fleet from one goal: read each robot's capability tags, decompose the goal into per-robot tasks (rule-based, with an optional Strands agent planner), dispatch them together through `run_multi_policy`, and re-plan when a robot drops offline |
 
 Read them in order; each builds on the previous one. Notebook 3 trains a real
 policy on CPU with a tiny dataset and two steps - raise the step count and run on
