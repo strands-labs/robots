@@ -93,6 +93,56 @@ hatch run format            # ruff check --fix, ruff format
    request reached `APPROVED` / `SUCCESS` / `CLEAN` having appended to the log.
 4. All tests must pass, lint must be clean
 5. Open PR from your fork, address all review comments
+
+   **Check whether you are already the thread's last author before replying.**
+   "Address all review comments" is a per-*concern* obligation, not a
+   per-*cycle* one, and an agent that rebuilds its context each run cannot tell
+   those apart from the thread alone. On #1899 a single thread collected **12
+   consecutive author replies** between 21:46 and 01:30, every one of them
+   announcing the same commit (`35ee25d2`):
+
+   | reply | posted (UTC) | thread state when posted |
+   |---|---|---|
+   | 1st | 21:46 | open, question unanswered |
+   | 2nd | 21:52 | resolved *by this reply* |
+   | 3rd - 12th | 22:28 - 01:30 | `isResolved: true`, `isOutdated: true` |
+
+   The branch's last push was 22:37, so every reply from the 3rd on described
+   work that was already complete and already announced twice - and they were
+   still arriving hourly after the PR was green and waiting on nothing but a
+   reviewer.
+
+   The loop is self-feeding, which is why it does not decay on its own:
+   replying makes the thread the most recently active thing on the PR, so it is
+   the first thing the next cycle reads, and an agent's own prior reply is
+   indistinguishable from context it has not yet acted on. The reviewer's
+   question is still sitting there verbatim in the serialised thread. Nothing
+   in the payload says "answered".
+
+   So gate on authorship and state, not on whether a question is present:
+
+   - Thread's last non-bot comment is **yours** -> do not reply. You have
+     already said it. If there is code to push, push it; the push is the
+     message.
+   - Thread is **`isResolved` or `isOutdated`** -> do not reply. Resolution is
+     terminal. Reopening it to restate a landed fix reads as noise, not
+     diligence.
+   - Last comment is **someone else's** and your existing replies do not answer
+     it -> reply once, then resolve.
+
+   The authorship check is the cheap one, and it would have prevented ten of
+   those twelve comments on its own: no semantic comparison, just the author of
+   the last comment. Both `isResolved` and the comment authors are already in
+   the context payload - they were fetched and not read.
+
+   What makes this worth writing down is that the previous rule was *satisfied*
+   by all twelve. "Address all review comments", and "reply when a thread asks
+   a direct question", are both still true of a thread you have already
+   answered, because answering does not remove the question. The cost lands on
+   the next reader: the signal that the thread was settled at 21:52 is buried
+   under ten paragraphs restating it, and a reviewer must scroll all of them to
+   learn nothing changed. Same shape as #1919 - the policy was not wrong, it
+   was silent on a case that recurs every scheduled cycle.
 6. Track follow-up items as issues on the [project board](https://github.com/orgs/strands-labs/projects/2)
 
    **Read the board with `PAT_TOKEN`, not the Actions `GITHUB_TOKEN`.** An
