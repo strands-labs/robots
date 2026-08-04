@@ -36,6 +36,13 @@ documents the field as one of the "universal" ones. It is separate from
 :func:`validate_train_inputs` because that gate answers a different question
 (is this value safe to interpolate into a config or an argv token) from this one
 (can this value be honored at all).
+
+:func:`launch_topology_problems` is the fourth, on the *launch topology* axis:
+``num_gpus`` and ``num_nodes``, the two process counts every distributed launch
+is sized from. It is scoped like :func:`run_size_problems` rather than like
+:func:`learning_rate_problems` - only the three supervised backends read either
+field (they become a ``torchrun``/``elastic_launch`` ``nproc_per_node`` /
+``nnodes``), so a backend that ignores them must not report on them.
 """
 
 from __future__ import annotations
@@ -133,6 +140,53 @@ def run_size_problems(spec: TrainSpec, *, context: str) -> list[str]:
     """
     problems: list[str] = []
     for param, value in (("steps", spec.steps), ("global_batch_size", spec.global_batch_size)):
+        error = positive_count_error(value, param, context)
+        if error is not None:
+            problems.append(error)
+    return problems
+
+
+def launch_topology_problems(spec: TrainSpec, *, context: str) -> list[str]:
+    """Return launch-topology problems for a :class:`TrainSpec`.
+
+    ``num_gpus`` and ``num_nodes`` are the two process counts a distributed run
+    is sized from. Each is consumed as a discrete count in three places: a
+    ``spec.num_gpus > 1`` / ``spec.num_nodes > 1`` test that selects between the
+    single-process and the multi-process launch path, a ``nproc_per_node`` /
+    ``nnodes`` argument to torch's ``elastic_launch``, and a
+    ``--nproc_per_node=`` / ``--nnodes=`` / ``--num_gpus=`` argv token. Only a
+    positive integer can be honored, and each of the three ways a bad value
+    fails is silent or late:
+
+    * ``0``, a negative, ``nan`` and ``True`` all read as *not* greater than one
+      -- ``nan`` compares false against everything -- so the selector routes
+      them to the single-process path and the run proceeds on one process under
+      a successful result. The topology the caller asked for is simply not the
+      one that ran, and for ``num_nodes`` that also slips past the multi-node
+      refusal the backends raise for an unsupported topology.
+    * ``2.7`` and ``inf`` *are* greater than one, so they select the
+      multi-process path and reach ``elastic_launch`` as the worker count.
+      ``LaunchConfig`` accepts both without complaint, so nothing downstream
+      rejects them either.
+    * A string, ``None`` or a list raises ``TypeError`` out of the comparison
+      itself -- from inside a :meth:`Trainer.validate` that is documented to
+      *return* problems.
+
+    Both are therefore checked against the one shared
+    :func:`~strands_robots.utils.positive_count_error` domain, the same one
+    :func:`run_size_problems` uses, rather than by a local comparison.
+
+    Args:
+        spec: The spec to check.
+        context: Caller identity for the message prefix - the backend's
+            :attr:`~strands_robots.training.base.Trainer.provider_name`, so a
+            problem names the backend that refused the value.
+
+    Returns:
+        One problem per unusable field; empty when both are usable counts.
+    """
+    problems: list[str] = []
+    for param, value in (("num_gpus", spec.num_gpus), ("num_nodes", spec.num_nodes)):
         error = positive_count_error(value, param, context)
         if error is not None:
             problems.append(error)

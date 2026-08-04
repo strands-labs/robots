@@ -116,7 +116,9 @@ def train_policy(
             checkpoint of ``NaN``, and no backend reports either.
         save_freq: Checkpoint cadence in steps.
         num_gpus: GPUs on this node (``>1`` -> accelerate/torchrun multi-GPU).
-        num_nodes: Nodes (Cosmos HSDP / torchrun ``--nnodes``).
+            A positive integer; anything else is refused by preflight.
+        num_nodes: Nodes (Cosmos HSDP / torchrun ``--nnodes``). A positive
+            integer; anything else is refused by preflight.
         resume: Resume from the latest checkpoint under ``output_dir``.
         seed: Master seed.
         method: Tuning strategy - ``"full"`` | ``"lora"`` | ``"expert_only"`` |

@@ -156,6 +156,7 @@ class Cosmos3Trainer(Trainer):
             )
         problems.extend(self._run_size_problems(spec))
         problems.extend(self._learning_rate_problems(spec))
+        problems.extend(self._launch_topology_problems(spec))
 
         if not spec.extra.get("sft_toml"):
             problems.append(

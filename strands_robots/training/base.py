@@ -95,8 +95,14 @@ class TrainSpec:
         save_freq: Checkpoint cadence in steps.
         num_gpus: GPUs on this node. ``>1`` runs the backend under torch's
             in-process ``elastic_launch`` (the engine behind ``torchrun``).
+            A positive integer; a non-positive, fractional, non-finite or
+            ``bool`` process count cannot be honored - the ``>1`` selector
+            would silently route it to a single-process run, or hand it to
+            ``elastic_launch`` as the worker count - so it is refused by
+            :meth:`Trainer.validate` before a run starts.
         num_nodes: Nodes for multi-node training (Cosmos HSDP /
-            ``torchrun --nnodes``).
+            ``torchrun --nnodes``). Same positive-integer domain as
+            ``num_gpus``, and for the same reason.
         resume: Resume from the latest checkpoint under ``output_dir`` when
             one exists.
         seed: Master seed (best-effort; not all backends expose it).
@@ -289,6 +295,33 @@ class Trainer(ABC):
         from strands_robots.training._validate import learning_rate_problems
 
         return learning_rate_problems(spec, context=self.provider_name)
+
+    def _launch_topology_problems(self, spec: TrainSpec) -> list[str]:
+        """Launch-topology preflight shared by every backend that consumes it.
+
+        Returns problems for :attr:`TrainSpec.num_gpus` /
+        :attr:`TrainSpec.num_nodes` - the two process counts a distributed
+        launch is sized from - against the same shared positive-count domain
+        :meth:`_run_size_problems` uses. A :meth:`validate` implementation that
+        reads either field MUST call this instead of comparing the value
+        itself: the ``> 1`` test that selects the multi-process launch path
+        reads ``0``, a negative, ``nan`` and ``True`` as "not more than one" and
+        silently runs on a single process, passes ``2.7`` and ``inf`` through to
+        ``elastic_launch`` (which accepts them), and raises ``TypeError`` for a
+        string or ``None`` - from a method documented to *return* problems.
+
+        A backend that launches from neither field MUST NOT call this: per
+        :class:`TrainSpec`, a backend ignores the fields it does not support, so
+        reporting on one it never reads would be a false rejection. That is why
+        this is a separate gate from :meth:`_learning_rate_problems`, which
+        every backend does call.
+
+        Imported lazily for the same reason as :meth:`_security_problems` - to
+        keep the ``base -> _validate`` import one-way at runtime.
+        """
+        from strands_robots.training._validate import launch_topology_problems
+
+        return launch_topology_problems(spec, context=self.provider_name)
 
     def prepare(self, spec: TrainSpec) -> None:
         """Optional one-time setup before :meth:`train`. Default no-op.

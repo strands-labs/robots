@@ -155,8 +155,14 @@ class Gr00tTrainer(Trainer):
             )
         problems.extend(self._run_size_problems(spec))
         problems.extend(self._learning_rate_problems(spec))
+        # Captured rather than extended blind: the multi-node refusal below
+        # compares num_nodes, which is only a meaningful comparison once this
+        # gate has established it IS a count - a string or None would raise out
+        # of the comparison instead of being reported.
+        topology_problems = self._launch_topology_problems(spec)
+        problems.extend(topology_problems)
 
-        if spec.num_nodes > 1:
+        if not topology_problems and spec.num_nodes > 1:
             problems.append(
                 f"num_nodes={spec.num_nodes}: multi-node GR00T needs a per-node "
                 "rendezvous launcher; this in-process trainer runs single-node only. "
