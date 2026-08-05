@@ -8,9 +8,17 @@ credentials**. They are the notebook companions to the numbered scripts in
 ## Install and launch
 
 ```bash
-uv pip install "strands-robots[sim-mujoco,lerobot]" jupyterlab
+uv pip install -U "strands-robots[sim-mujoco,lerobot]" jupyterlab
 jupyter lab
 ```
+
+The `-U` matters in an environment that already carries an older release. Without
+it `pip` reports `Requirement already satisfied` and leaves, say, 0.4.1 in place -
+whose `StreamingDatasetReader.open` has no `repo_type` parameter and no
+`**kwargs`, so notebook 5's bucket read fails with `TypeError: open() got an
+unexpected keyword argument 'repo_type'`. Pinning the floor
+(`"strands-robots[sim-mujoco,lerobot]>=0.5.1"`) upgrades without `-U` too; either
+form is enough, a bare install of the extras is not.
 
 > **Notebook 5's bucket path needs `strands-robots >= 0.5.1`**, which is the
 > first release whose `[lerobot]` extra floors LeRobot at the `>= 0.6.1` that

@@ -53,6 +53,43 @@ def test_streaming_notebook_does_not_offer_bare_pypi_install_as_requirements() -
     )
 
 
+def test_notebook_install_lines_upgrade_a_stale_environment() -> None:
+    """An install line must be able to *replace* an older release, not skip it.
+
+    ``pip install "strands-robots[extras]"`` against an environment that already
+    carries an older release reports ``Requirement already satisfied`` and
+    upgrades nothing -- extras do not make a requirement unsatisfied. The reader
+    then runs a notebook against, say, 0.4.1, whose
+    ``StreamingDatasetReader.open`` has neither a ``repo_type`` parameter nor
+    ``**kwargs``, so the bucket read fails with ``TypeError: open() got an
+    unexpected keyword argument 'repo_type'`` -- a message that names the keyword
+    rather than the stale install behind it.
+
+    Either form fixes it: ``-U`` (upgrade), or a version floor on the requirement
+    (``"strands-robots[...]>=0.5.1"``), which makes the installed release
+    genuinely unsatisfying. A git/URL requirement re-resolves on its own, but is
+    only reinstalled with ``-U``, so it is held to the same rule.
+    """
+    notebooks = sorted((_REPO_ROOT / "examples" / "notebooks").glob("0*.ipynb"))
+    assert notebooks, "no notebooks found; update this test"
+    offenders: list[str] = []
+    for path in notebooks:
+        nb = json.loads(path.read_text())
+        for cell in nb["cells"]:
+            for line in "".join(cell["source"]).splitlines():
+                if "pip install" not in line or "strands-robots[" not in line:
+                    continue
+                upgrades = " -U " in line or " --upgrade " in line
+                pinned = ">=" in line.split("strands-robots[", 1)[1]
+                if not (upgrades or pinned):
+                    offenders.append(f"{path.name}: {line.strip()}")
+    assert not offenders, (
+        "these install lines leave a pre-existing older strands-robots in place "
+        "(pip reports 'Requirement already satisfied'); add -U or a >= floor so a "
+        "stale environment is upgraded rather than silently kept:\n  " + "\n  ".join(offenders)
+    )
+
+
 def test_notebooks_readme_states_min_version_for_bucket_path() -> None:
     text = _NOTEBOOKS_README.read_text()
     assert _MIN_VERSION in text, (

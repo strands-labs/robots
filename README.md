@@ -375,6 +375,12 @@ Requires the `hf` CLI with the `buckets`/`sync` subcommands
 first ship in 1.5.0; every earlier release, including 1.0–1.4.x, installs an
 `hf` entry point without them).
 
+The bucket **read** side (`stream_dataset(..., repo_type="bucket")`) needs
+`strands-robots >= 0.5.1`, so upgrade with `-U` rather than a bare
+`pip install "strands-robots[...]"` — pip reports `Requirement already satisfied`
+against a pre-existing older release and upgrades nothing, and on 0.4.1 the read
+raises `TypeError: open() got an unexpected keyword argument 'repo_type'`.
+
 Any on-disk dataset directory can be synced (or daily re-synced) without a live
 recording session — one recorded earlier in the process, or on hardware via
 `lerobot-record`:
