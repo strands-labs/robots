@@ -130,13 +130,33 @@ def _eval_flags(cmd: list[str]) -> list[str]:
     return [c for c in cmd if "eval_split" in c or "eval_steps" in c]
 
 
+def _raising_tool(exc: BaseException) -> Any:
+    """A ``build_train_command`` stand-in that raises, so the width is observable."""
+
+    def tool(**_kwargs: Any) -> list[str]:
+        raise exc
+
+    return tool
+
+
 def _tool_verdict(dataset_root: pathlib.Path, value: Any) -> str:
-    """``refused`` / ``accepted`` for the tool that writes the same flag."""
+    """``refused`` / ``accepted`` for the tool that writes the same flag.
+
+    The returned string is *compared* as an answer about ``val_episodes``, so
+    the handler catches :class:`Exception` and stops there. A library failure is
+    one of the answers being collected - the tool raising instead of refusing is
+    part of what this file pins - so it must not abort the comparison. An
+    interrupt is not an answer about the field, though: recording one as "the
+    tool did not refuse this value" and comparing it against the backend turns an
+    operator's Ctrl-C into a verdict. ``pytest``'s own ``skip`` and ``fail``
+    outcomes derive from ``BaseException`` for the same reason, so they have to
+    reach the runner rather than becoming a verdict.
+    """
     try:
         build_train_command(dataset_root=str(dataset_root), policy_type="act", val_episodes=value)
     except ValueError as exc:
         return "refused" if "val_episodes" in str(exc) else f"other-error: {exc}"
-    except BaseException as exc:  # noqa: BLE001 - an escape is itself the finding
+    except Exception as exc:  # noqa: BLE001 - a library failure is a verdict, control flow is not
         return f"raised {type(exc).__name__}: {exc}"
     return "accepted"
 
@@ -325,6 +345,56 @@ class TestBothWritersOfTheSplitShareOneDomain:
         """The domain does not depend on the metadata, so it is checked first."""
         with pytest.raises(ValueError, match="val_episodes must be a positive integer"):
             build_train_command(dataset_root=str(tmp_path / "absent"), policy_type="act", val_episodes=value)
+
+
+class TestTheParityClassifierCollectsFailuresWithoutSwallowingControlFlow:
+    """``_tool_verdict`` must catch a library failure and only a library failure.
+
+    The classifier turns "what did the tool do with this value" into the string
+    the two parity tests above compare against ``refused`` / ``accepted``. A raise
+    is one of the answers it has to collect - a non-numeric count really does
+    raise out of the tool - so a library failure cannot be allowed to abort the
+    comparison. An interrupt is not an answer about the field, though: recording
+    one as a verdict and then comparing it against the backend turns an operator's
+    Ctrl-C into a claim about ``val_episodes``. Both halves are pinned here
+    because the correct handler is the one that satisfies both.
+    """
+
+    @pytest.mark.parametrize(
+        "exc",
+        [
+            TypeError("'>=' not supported between instances of 'str' and 'int'"),
+            FileNotFoundError("meta/info.json"),
+        ],
+        ids=["TypeError", "FileNotFoundError"],
+    )
+    def test_a_library_failure_is_collected_as_the_verdict(
+        self, monkeypatch: pytest.MonkeyPatch, dataset: pathlib.Path, exc: Exception
+    ) -> None:
+        """Dropping the catch-all would let these escape instead of being recorded."""
+        monkeypatch.setattr(f"{__name__}.build_train_command", _raising_tool(exc))
+        assert _tool_verdict(dataset, 3) == f"raised {type(exc).__name__}: {exc}"
+
+    @pytest.mark.parametrize(
+        "exc",
+        [
+            KeyboardInterrupt(),
+            SystemExit(1),
+            pytest.skip.Exception("the lerobot extra is not installed"),
+            pytest.fail.Exception("the dataset fixture is incomplete"),
+        ],
+        ids=["KeyboardInterrupt", "SystemExit", "pytest.skip", "pytest.fail"],
+    )
+    def test_control_flow_reaches_the_runner_instead_of_becoming_a_verdict(
+        self, monkeypatch: pytest.MonkeyPatch, dataset: pathlib.Path, exc: BaseException
+    ) -> None:
+        # Executable premise: each of these derives from BaseException without
+        # deriving from Exception, which is the whole reason the handler width
+        # is observable at all.
+        assert not isinstance(exc, Exception), f"{type(exc).__name__} no longer tests the handler width"
+        monkeypatch.setattr(f"{__name__}.build_train_command", _raising_tool(exc))
+        with pytest.raises(type(exc)):
+            _tool_verdict(dataset, 3)
 
 
 class TestABackendThatIgnoresTheFieldReportsNothing:
