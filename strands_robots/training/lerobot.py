@@ -609,7 +609,14 @@ class LerobotTrainer(Trainer):
                 "launcher and cannot run in-process; use num_nodes=1."
             )
 
-        if spec.val_episodes is not None and spec.dataset_root:
+        # Captured rather than extended blind, for the same reason as the
+        # topology gate above: the two dataset-dependent checks below compare
+        # val_episodes and interpolate it into a split fraction, and both are
+        # only meaningful once this gate has established that it IS a count.
+        val_problems = self._validation_episodes_problems(spec)
+        problems.extend(val_problems)
+
+        if not val_problems and spec.val_episodes is not None and spec.dataset_root:
             total = self._dataset_total_episodes(spec.dataset_root)
             if total is not None and spec.val_episodes >= total:
                 problems.append(f"val_episodes={spec.val_episodes} >= total_episodes={total}")

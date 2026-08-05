@@ -128,7 +128,10 @@ def train_policy(
         tune: Fine-grained component toggles for GR00T
             (``{"llm","visual","projector","diffusion"}``).
         val_episodes: Hold out the LAST N episodes for validation; the run
-            logs an eval loss over them at the checkpoint cadence.
+            logs an eval loss over them at the checkpoint cadence. A positive
+            integer below the dataset's episode count, or None for no held-out
+            set - the split is a fraction lerobot takes the ceiling of, so a
+            fractional count would reserve a different number of episodes.
         augmentation: Backend-specific augmentation dict.
         fps: Dataset control rate (when a backend needs it).
         extra: Backend-specific passthrough. lerobot: ``policy_type``,

@@ -237,7 +237,7 @@ class TestTheScopeIsNoWiderThanTheDefect:
         """The guards that already existed are untouched."""
         with pytest.raises(ValueError, match="num_gpus must be >= 1"):
             _build(num_gpus=0)
-        with pytest.raises(ValueError, match="val_episodes must be positive"):
+        with pytest.raises(ValueError, match="val_episodes must be a positive integer"):
             _build(val_episodes=0)
 
 

@@ -43,6 +43,16 @@ is sized from. It is scoped like :func:`run_size_problems` rather than like
 :func:`learning_rate_problems` - only the three supervised backends read either
 field (they become a ``torchrun``/``elastic_launch`` ``nproc_per_node`` /
 ``nnodes``), so a backend that ignores them must not report on them.
+
+:func:`seed_problems` is the fifth, on the reproducibility axis, and
+:func:`validation_episodes_problems` the sixth, on the *evaluation* axis:
+``val_episodes``, the episode count a caller reserves as a held-out validation
+set. It is scoped like :func:`run_size_problems` - only the LeRobot backend
+reads the field (GR00T, Cosmos and the RL trainers never do), so a backend that
+ignores it must not report on it. What makes a shared gate the right home
+rather than a local test is the conversion: the count becomes a real-valued
+split fraction whose ceiling lerobot takes, so a comparison admits values that
+reserve a different number of episodes than the one asked for.
 """
 
 from __future__ import annotations
@@ -303,4 +313,59 @@ def seed_problems(spec: TrainSpec, *, context: str) -> list[str]:
     if spec.seed is None:
         return []
     error = non_negative_count_error(spec.seed, "seed", context)
+    return [] if error is None else [error]
+
+
+def validation_episodes_problems(spec: TrainSpec, *, context: str) -> list[str]:
+    """Return held-out-validation-set problems for a :class:`TrainSpec`.
+
+    ``val_episodes`` is the count of episodes a caller reserves from the tail of
+    the dataset to validate on. It is not read straight into a loop bound like
+    :func:`run_size_problems`' fields: the LeRobot backend converts it into
+    lerobot's ``dataset.eval_split`` FRACTION via
+    :func:`~strands_robots.utils.validation_split_fraction`, and lerobot then
+    holds out ``ceil(episodes_in_task * eval_split)``. That conversion is what
+    makes a local comparison unsafe in both directions at once:
+
+    * A non-positive value is *silently dropped*. The fraction is only computed
+      for a count in ``(0, total)``, so ``val_episodes=0`` (or a negative)
+      produces no ``eval_split`` and no ``eval_steps`` at all: the run trains on
+      the whole dataset, records no validation loss, and reports no problem. The
+      caller asked for a validation set and got a run without one.
+    * A value that merely *compares* as positive is silently rewritten, because
+      the fraction is real-valued and lerobot takes its ceiling: ``True``
+      reserves 1 episode and ``2.7`` reserves 3 - a whole number the caller never
+      named. ``0.5`` is the sharpest of these: it clears the ``0 < count <
+      total`` test, so it emits ``eval_split=0.0`` - a held-out set of zero
+      episodes - *together with* an ``eval_steps`` cadence, asking lerobot to
+      validate periodically on nothing.
+    * A non-numeric value raises out of the comparison itself, from a
+      :meth:`~strands_robots.training.base.Trainer.validate` documented to
+      *return* problems.
+
+    Only a positive integer strictly below the dataset's episode count can be
+    honored, so the type and floor are checked here against the same shared
+    :func:`~strands_robots.utils.positive_count_error` domain that
+    :func:`run_size_problems` uses. The upper bound is dataset-dependent (it needs
+    ``total_episodes`` from ``meta/info.json``) and stays with the backend that
+    reads the metadata, which also owns the per-task-fraction refusal in
+    :func:`~strands_robots.utils.validation_split_error`.
+
+    ``None`` is the documented sentinel for "train on every episode, no held-out
+    set" and is therefore not a problem, exactly as it is not one for
+    :func:`seed_problems` or :func:`learning_rate_problems`.
+
+    Args:
+        spec: The spec to check.
+        context: Caller identity for the message prefix - the backend's
+            :attr:`~strands_robots.training.base.Trainer.provider_name`, so a
+            problem names the backend that refused the value.
+
+    Returns:
+        A single problem when ``val_episodes`` is supplied and unusable as a
+        count; empty otherwise.
+    """
+    if spec.val_episodes is None:
+        return []
+    error = positive_count_error(spec.val_episodes, "val_episodes", context)
     return [] if error is None else [error]

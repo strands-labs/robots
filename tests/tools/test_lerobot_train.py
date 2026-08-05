@@ -729,10 +729,17 @@ def test_list_reports_no_active_sessions_when_empty(tmp_path: Path) -> None:
     assert "No active sessions" in _texts(result)
 
 
-def test_build_command_rejects_nonpositive_val_episodes(tmp_path: Path) -> None:
-    """val_episodes <= 0 is rejected before the dataset is even read."""
-    with pytest.raises(ValueError, match="val_episodes must be positive"):
-        build_train_command(dataset_root=str(_write_dataset(tmp_path / "ds")), val_episodes=0)
+def test_build_command_rejects_a_val_episodes_that_is_not_a_count(tmp_path: Path) -> None:
+    """The shared positive-count domain is applied before the dataset is read.
+
+    Was ``val_episodes <= 0``, whose message ("must be positive") was false for
+    the values that slipped through it: ``2.7`` and ``True`` both compare as
+    positive and reserved a whole number the caller never named.
+    """
+    root = str(_write_dataset(tmp_path / "ds"))
+    for value in (0, -5, True, 2.7, float("nan"), "5"):
+        with pytest.raises(ValueError, match="val_episodes must be a positive integer"):
+            build_train_command(dataset_root=root, val_episodes=value)  # type: ignore[arg-type]
 
 
 def test_read_total_episodes_raises_on_missing_and_bad_metadata(tmp_path: Path) -> None:

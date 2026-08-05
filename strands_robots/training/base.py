@@ -122,6 +122,13 @@ class TrainSpec:
             produce a validation signal, not merely shrink the training set;
             the lerobot backend maps it onto ``--dataset.eval_split`` plus a
             non-zero ``--eval_steps`` so an eval loss is logged periodically.
+            Must be a positive integer below the dataset's episode count, or
+            ``None`` to train on every episode. Because the count is converted
+            into a real-valued split fraction whose ceiling lerobot takes, a
+            backend MUST check it with
+            :meth:`Trainer._validation_episodes_problems` rather than compare it
+            itself: a non-positive value produces no split at all, and ``True``
+            / ``2.7`` / ``0.5`` reserve 1 / 3 / 0 episodes respectively.
         augmentation: Backend-specific data augmentation (GR00T
             ``color_jitter_params`` / ``random_rotation_angle``; Cosmos
             dataset filter dict).
@@ -349,6 +356,39 @@ class Trainer(ABC):
         from strands_robots.training._validate import seed_problems
 
         return seed_problems(spec, context=self.provider_name)
+
+    def _validation_episodes_problems(self, spec: TrainSpec) -> list[str]:
+        """Held-out-validation preflight shared by every backend that reads it.
+
+        Returns a problem when :attr:`TrainSpec.val_episodes` is supplied and is
+        not a usable positive integer, against the same shared positive-count
+        domain :meth:`_run_size_problems` uses. A :meth:`validate`
+        implementation that reads the field MUST call this instead of comparing
+        the value itself, because the count is converted into a real-valued
+        split fraction and the comparison is wrong at both ends: a non-positive
+        value produces no split and no evaluation cadence at all - the run
+        trains on the whole dataset and records no validation loss, with nothing
+        reported - while ``True`` reserves one episode, ``2.7`` reserves three,
+        and ``0.5`` emits an evaluation cadence over a held-out set of zero
+        episodes. A non-numeric value raises out of the comparison from a method
+        documented to *return* problems.
+
+        The dataset-dependent upper bound (``val_episodes`` must leave training
+        data behind) stays with the backend, which is the side that reads
+        ``total_episodes`` from the dataset metadata.
+
+        A backend that does not read the field MUST NOT call this: per
+        :class:`TrainSpec`, a backend ignores the fields it does not support, so
+        reporting on one it never reads would be a false rejection. That is why
+        this is a separate gate from :meth:`_learning_rate_problems`, which
+        every backend does call.
+
+        Imported lazily for the same reason as :meth:`_security_problems` - to
+        keep the ``base -> _validate`` import one-way at runtime.
+        """
+        from strands_robots.training._validate import validation_episodes_problems
+
+        return validation_episodes_problems(spec, context=self.provider_name)
 
     def prepare(self, spec: TrainSpec) -> None:
         """Optional one-time setup before :meth:`train`. Default no-op.
