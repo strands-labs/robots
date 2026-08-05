@@ -11,6 +11,7 @@ description: Error → fix table for the most common gotchas across install, sim
 | `ModuleNotFoundError: mujoco` | Missing `[sim-mujoco]` | `uv pip install "strands-robots[sim-mujoco]"` |
 | `move_to: IK bridge unavailable: ... No module named 'mink'` | Missing `[sim-mujoco]` (the extra declares the IK solver) | `uv pip install "strands-robots[sim-mujoco]"` |
 | `ModuleNotFoundError: lerobot` | Missing `[lerobot]` | `uv pip install "strands-robots[lerobot]"` |
+| `training failed: 'accelerate' is required but not installed` | Missing LeRobot's `[training]` extra. `strands-robots[lerobot]` does not pull `accelerate` in, and `train()` requires it on CPU as well as GPU | `uv pip install "lerobot[training]"` |
 | `ImportError: cannot import name '...' from 'lerobot'` | LeRobot version skew | `uv pip install "strands-robots[lerobot]"` (pins `lerobot>=0.6.1,<0.7.0`) |
 | `ImportError: cannot import name 'MolmoAct2Policy'` | `lerobot < 0.6` (`MolmoAct2Policy` ships in lerobot >= 0.6) | `uv pip install "strands-robots[molmoact2]"` |
 | pyav build fails on Jetson/aarch64 | No prebuilt wheel for sm_110 | Use `--no-build-isolation` or install `torchcodec>=0.7` and skip pyav. See [installation](getting-started/installation.md#molmoact2-on-jetson) |

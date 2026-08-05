@@ -322,3 +322,97 @@ def test_wbc_extra_huggingface_hub_floor_is_at_least_1_0() -> None:
     assert ">=0.20.0" not in spec, f"[wbc] still pins the dead pre-1.0 huggingface_hub floor: {spec!r}"
     # keep the MAJOR cap (<2.0.0) per repo convention (>=1.0 deps cap the major)
     assert "<2.0.0" in spec, f"[wbc] huggingface_hub pin lost its <2.0.0 major cap: {spec!r}"
+
+
+# --- negative contract: the training docs must name a stack that can actually
+#     train. LeRobot's ``train()`` calls
+#     ``require_package("accelerate", extra="training")`` *before* it branches on
+#     device, so "no GPU" does not mean "no extra" -- and nothing on the
+#     ``lerobot_local`` path pulls ``accelerate`` in (the ``[lerobot]`` extra is
+#     exactly ``lerobot[feetech,dataset]``). ``docs/training/overview.md`` called
+#     that row "works out of the box", which is false for the one thing the page
+#     is about: a reader following it gets ``'accelerate' is required but not
+#     installed`` on the first ``train()``, on CPU and GPU alike, and -- because
+#     ``train()`` reports the failure in its ``TrainResult`` rather than raising --
+#     an unchecked call passes a ``checkpoint_dir`` of ``None`` on instead.
+#
+#     The notebooks state the requirement (pinned by
+#     ``tests/test_notebook_min_version_docs.py``); the canonical training page
+#     contradicted them. These keep both it and the troubleshooting table from
+#     drifting back. ---
+
+# every extra a `lerobot_local` user could install to reach `trainer.train(...)`
+_LEROBOT_PATH_EXTRAS = ("lerobot", "lerobot-async", "molmoact2", "all")
+
+
+def _extras_declaring_accelerate() -> set[str]:
+    return {
+        name
+        for name, reqs in _extras().items()
+        if any(Requirement(r).name.replace("-", "_").lower() == "accelerate" for r in reqs)
+    }
+
+
+def test_no_lerobot_path_extra_declares_accelerate() -> None:
+    """The premise the docs' ``lerobot[training]`` instruction rests on.
+
+    If a ``strands-robots`` extra on this path ever *does* vendor ``accelerate``
+    -- the deferred ``training`` extra that would layer ``lerobot[training]`` the
+    way ``lerobot-async`` layers ``lerobot[async]`` -- then the instruction is
+    obsolete and the docs must be re-cut to name that extra instead. Failing here
+    is the signal to do that, not to loosen the assertion.
+    """
+    declaring = _extras_declaring_accelerate()
+    # non-vacuity: the matcher really does find `accelerate` where it is declared,
+    # so the emptiness below is a fact about these extras and not a broken parse.
+    assert declaring, "no extra declares accelerate at all - the requirement matcher is not matching"
+    available = _extras()
+    for name in _LEROBOT_PATH_EXTRAS:
+        assert name in available, f"[{name}] extra vanished from pyproject; update _LEROBOT_PATH_EXTRAS"
+        assert name not in declaring, (
+            f"[{name}] now declares accelerate, so `pip install 'strands-robots[{name}]'` can train "
+            "on its own; docs/training/overview.md and docs/troubleshooting.md must stop instructing "
+            "`lerobot[training]` and name this extra instead"
+        )
+
+
+def _unwrapped(text: str) -> str:
+    """Collapse whitespace runs so a prose assertion survives a reflow.
+
+    Markdown joins the lines of a paragraph when it renders, so where a sentence
+    happens to wrap is not semantic -- and a pin that reads the raw file cannot
+    tell "the claim was removed" from "the paragraph was re-filled one column
+    narrower". Only the rendered wording is asserted below.
+    """
+    return " ".join(text.split())
+
+
+def test_training_overview_names_the_trainer_extra() -> None:
+    text = _unwrapped(_TRAINING_OVERVIEW.read_text())
+    # the false claim: [lerobot] alone cannot run train() on any device
+    assert "works out of the box" not in text, (
+        "docs/training/overview.md calls the lerobot_local ACT/diffusion install "
+        "'works out of the box', but train() refuses without accelerate, which no "
+        "extra on that path declares"
+    )
+    assert "extra is enough for **ACT / diffusion from" not in text, (
+        "docs/training/overview.md still claims the [lerobot] extra alone is enough to train from scratch"
+    )
+    # the remedy, and why it applies with no GPU in sight
+    assert "lerobot[training]" in text, "docs/training/overview.md lost the lerobot[training] requirement"
+    assert 'require_package("accelerate", extra="training")' in text, (
+        "docs/training/overview.md should name the call that refuses, so the "
+        "'CPU needs it too' claim is checkable rather than asserted"
+    )
+    assert "on CPU as well as GPU" in text
+
+
+def test_troubleshooting_has_a_remedy_for_the_missing_trainer_extra() -> None:
+    text = _unwrapped(_TROUBLESHOOTING.read_text())
+    # the symptom a reader actually sees, verbatim from lerobot's require_package
+    assert "'accelerate' is required but not installed" in text, (
+        "docs/troubleshooting.md has no row for the missing-accelerate training failure"
+    )
+    assert 'uv pip install "lerobot[training]"' in text, (
+        "docs/troubleshooting.md names the accelerate symptom without the lerobot[training] remedy"
+    )
