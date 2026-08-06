@@ -127,16 +127,20 @@ def test_the_single_pass_scan_defers_exactly_what_the_per_node_predicates_do():
     written for shows up here. Keeping them called is also what makes the
     docstring above checkable instead of merely asserted.
     """
-    # A spread wide enough to cover the constructs that decide a deferral:
-    # module-level imports, TYPE_CHECKING blocks, and imports deferred inside
-    # functions, methods and nested functions. Each of these modules defers at
-    # least one import, which the non-vacuity assertion below requires.
+    # Chosen for construct coverage, not for size. Each of these carries both a
+    # TYPE_CHECKING import and a function-deferred one, so each exercises both
+    # predicates and satisfies the non-vacuity assertion below - and together
+    # they span a module, a package __init__ and a submodule. Deliberately not
+    # the largest modules in the tree: the predicates being compared against are
+    # the quadratic ones, so their cost here is set by the node count of whatever
+    # this list names. The five biggest modules cost ~1.4s of pure predicate
+    # time, several times that under coverage tracing, to reach the same verdict
+    # these do for a fraction of it.
     for rel in (
+        "policies/__init__.py",
+        "training/reward.py",
+        "teleoperator.py",
         "robot.py",
-        "utils.py",
-        "simulation/base.py",
-        "simulation/policy_runner.py",
-        "simulation/mujoco/simulation.py",
     ):
         tree = ast.parse((PKG / rel).read_text())
         imports = [n for n in ast.walk(tree) if isinstance(n, (ast.Import, ast.ImportFrom))]
