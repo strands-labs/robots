@@ -1,6 +1,6 @@
 ### Docs: the notebook install lines upgrade a stale environment instead of skipping it
 
-Every notebook install line was a bare `pip install "strands-robots[extras]"`.
+Every notebook install line was a bare `pip install "strands-robots[...]"`.
 Extras do not make a requirement unsatisfied, so against an environment that
 already carried an older release pip reported `Requirement already satisfied`
 and upgraded nothing:
