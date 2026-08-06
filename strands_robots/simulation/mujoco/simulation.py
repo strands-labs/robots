@@ -422,8 +422,19 @@ class MuJoCoSimEngine(
             return {}
         if skip_images and self._world is not None and self._world._backend_state.get("recording"):
             # T26: dataset recording needs every frame's image obs. Override
-            # the policy's skip hint when an active recorder is attached.
-            skip_images = False
+            # the policy's skip hint when an active recorder is attached -- but
+            # only when the recorder actually keeps images. A recording scoped
+            # to no cameras (``start_recording(cameras=[])``) writes a dataset
+            # with no image features at all, and the frame hook drops every
+            # image array through ``_drop_unrecorded_cameras`` before add_frame.
+            # Overriding the hint there renders every scene camera once per
+            # control step only to discard the pixels, which on a robot like
+            # ``aloha`` (7 scene cameras) is the dominant cost of an
+            # action-only rollout. ``None`` means "record every camera" (the
+            # legacy default), so it still forces the render.
+            rec_cams = self._world._backend_state.get("recording_cameras")
+            if rec_cams is None or len(rec_cams) > 0:
+                skip_images = False
         with self._lock:
             obs = self._get_sim_observation(robot_name, skip_images=skip_images)
         # Additive sensor noise (set_obs_noise). Exact no-op / same dict when

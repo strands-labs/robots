@@ -69,6 +69,31 @@ def _is_inside_function(tree: ast.Module, target: ast.AST) -> bool:
     return False
 
 
+def _deferred_import_nodes(tree: ast.Module) -> set[int]:
+    """ids of the import nodes ``_build_import_graph`` must ignore.
+
+    An import is ignored when it sits inside an ``if TYPE_CHECKING:`` block or a
+    function/method body, exactly as :func:`_is_in_type_checking` and
+    :func:`_is_inside_function` decide it one node at a time. Those two answer
+    for a single target by re-walking the whole module, so asking them per
+    import node makes the scan quadratic in module size; this collects every
+    answer in one pass instead. A class body is NOT deferred - a class-level
+    import executes at module import time - which is why only ``FunctionDef`` /
+    ``AsyncFunctionDef`` open a deferred region here.
+    """
+    deferred: set[int] = set()
+    for node in ast.walk(tree):
+        is_type_checking_block = isinstance(node, ast.If) and (
+            (isinstance(node.test, ast.Name) and node.test.id == "TYPE_CHECKING")
+            or (isinstance(node.test, ast.Attribute) and node.test.attr == "TYPE_CHECKING")
+        )
+        if is_type_checking_block or isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            for child in ast.walk(node):
+                if isinstance(child, (ast.Import, ast.ImportFrom)):
+                    deferred.add(id(child))
+    return deferred
+
+
 def _build_import_graph(root: Path) -> nx.DiGraph:
     G: nx.DiGraph = nx.DiGraph()
     for p in root.rglob("*.py"):
@@ -80,22 +105,77 @@ def _build_import_graph(root: Path) -> nx.DiGraph:
             tree = ast.parse(p.read_text(errors="ignore"))
         except SyntaxError:
             continue
+        deferred = _deferred_import_nodes(tree)
         for n in ast.walk(tree):
+            if id(n) in deferred:
+                continue
             if isinstance(n, ast.ImportFrom) and n.module and n.module.startswith("strands_robots"):
-                if _is_in_type_checking(tree, n):
-                    continue
-                if _is_inside_function(tree, n):
-                    continue
                 G.add_edge(mod, n.module)
             elif isinstance(n, ast.Import):
-                if _is_in_type_checking(tree, n):
-                    continue
-                if _is_inside_function(tree, n):
-                    continue
                 for alias in n.names:
                     if alias.name.startswith("strands_robots"):
                         G.add_edge(mod, alias.name)
     return G
+
+
+def test_the_single_pass_scan_defers_exactly_what_the_per_node_predicates_do():
+    """``_deferred_import_nodes`` must agree with the two predicates it replaces.
+
+    The predicates are the readable statement of the rule - one target, one
+    answer - and this pins the batched scan to them over real modules rather
+    than over a fixture, so a module in the tree using a construct neither was
+    written for shows up here. Keeping them called is also what makes the
+    docstring above checkable instead of merely asserted.
+    """
+    # A spread wide enough to cover the constructs that decide a deferral:
+    # module-level imports, TYPE_CHECKING blocks, and imports deferred inside
+    # functions, methods and nested functions. Each of these modules defers at
+    # least one import, which the non-vacuity assertion below requires.
+    for rel in (
+        "robot.py",
+        "utils.py",
+        "simulation/base.py",
+        "simulation/policy_runner.py",
+        "simulation/mujoco/simulation.py",
+    ):
+        tree = ast.parse((PKG / rel).read_text())
+        imports = [n for n in ast.walk(tree) if isinstance(n, (ast.Import, ast.ImportFrom))]
+        assert imports, f"{rel} has no imports - it cannot exercise the comparison"
+
+        fast = _deferred_import_nodes(tree)
+        slow = {id(n) for n in imports if _is_in_type_checking(tree, n) or _is_inside_function(tree, n)}
+        assert fast == slow, f"the batched scan and the per-node predicates disagree on {rel}"
+
+        # Non-vacuity: agreeing on "nothing is deferred" would prove nothing.
+        assert fast, f"{rel} defers no import - pick a module that does"
+
+
+def test_a_class_level_import_is_not_deferred():
+    """A class-body import executes at module import time, so it stays in the graph.
+
+    This is the one deferral boundary no module in the tree exercises - there
+    are no class-body imports in ``strands_robots`` - so it is stated over
+    source here rather than left to a module that happens not to have one. It
+    is also the case a batched scan is easiest to get wrong, since a class body
+    looks like a function body in every respect but this one.
+    """
+    tree = ast.parse(
+        "import strands_robots.a\n"
+        "class C:\n"
+        "    import strands_robots.b\n"
+        "    def m(self):\n"
+        "        import strands_robots.c\n"
+    )
+    by_name = {n.names[0].name: n for n in ast.walk(tree) if isinstance(n, ast.Import)}
+
+    deferred = _deferred_import_nodes(tree)
+    assert id(by_name["strands_robots.a"]) not in deferred, "a module-level import was deferred"
+    assert id(by_name["strands_robots.b"]) not in deferred, "a class-body import was deferred"
+    assert id(by_name["strands_robots.c"]) in deferred, "a method-body import was not deferred"
+
+    # The predicates being replaced agree, which is what makes this a shared rule.
+    assert not _is_inside_function(tree, by_name["strands_robots.b"])
+    assert _is_inside_function(tree, by_name["strands_robots.c"])
 
 
 def test_no_runtime_import_cycles():

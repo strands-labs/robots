@@ -256,3 +256,61 @@ def test_cameras_raw_and_schema_safe_names_are_equivalent(sim_with_namespaced_ca
     # Raw request collapses to the same schema-safe feature key as the ``__`` form.
     assert _recorder_image_features(sim) == {"observation.images.arm0__wrist_cam"}
     assert sim._world._backend_state["recording_cameras"] == {"arm0/wrist_cam"}
+
+
+class TestARecordingThatKeepsNoImagesRendersNoCameras:
+    """A ``cameras=[]`` recording must not force the render it then discards.
+
+    ``get_observation`` overrides a policy's ``requires_images=False`` hint
+    whenever a recorder is attached, because a dataset recording normally needs
+    every frame's image obs. Scoped to the empty set that premise inverts: the
+    dataset declares no image features, and ``_drop_unrecorded_cameras``
+    discards every image array before ``add_frame`` ever sees it. Rendering
+    each scene camera once per control step to throw the pixels away is then
+    pure cost - and it is paid per step, so it dominates an action-only
+    rollout on any robot carrying several cameras.
+
+    Pinning the render count rather than a duration keeps the assertion
+    deterministic: the pre-fix behaviour renders on every call, so a wall-clock
+    threshold would be the only alternative and would be flaky on a loaded
+    runner.
+    """
+
+    def test_no_camera_is_rendered_while_recording_no_cameras(self, sim_with_cameras, tmp_path):
+        sim = sim_with_cameras
+        res = sim.start_recording(
+            repo_id="local/scope_none",
+            root=str(tmp_path / "none"),
+            cameras=[],
+            overwrite=True,
+        )
+        assert res["status"] == "success"
+        # Premise: nothing image-shaped is declared, so nothing can be recorded.
+        assert _recorder_image_features(sim) == set()
+        assert sim._world._backend_state["recording_cameras"] == set()
+
+        obs = sim.get_observation("arm", skip_images=True)
+        # The skip hint survives the recording override: no image array is
+        # produced, while the scalar joint state is unaffected.
+        assert not [k for k, v in obs.items() if isinstance(v, np.ndarray) and v.ndim >= 2]
+        assert "shoulder_pan" in obs
+
+    def test_a_scoped_recording_still_renders_the_cameras_it_keeps(self, sim_with_cameras, tmp_path):
+        """The override still applies when the recorder does keep an image.
+
+        Guards the fix from over-reaching: a recording scoped to a real camera
+        must keep forcing the render, or the recorded frame loses the very view
+        the caller asked for.
+        """
+        sim = sim_with_cameras
+        res = sim.start_recording(
+            repo_id="local/scope_one_cam",
+            root=str(tmp_path / "one"),
+            cameras=["cam_a"],
+            overwrite=True,
+        )
+        assert res["status"] == "success"
+        obs = sim.get_observation("arm", skip_images=True)
+        # skip_images is overridden, so cam_a is rendered despite the hint.
+        assert isinstance(obs.get("cam_a"), np.ndarray)
+        assert obs["cam_a"].ndim == 3
