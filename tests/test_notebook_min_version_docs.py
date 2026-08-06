@@ -56,7 +56,7 @@ def test_streaming_notebook_does_not_offer_bare_pypi_install_as_requirements() -
 def test_notebook_install_lines_upgrade_a_stale_environment() -> None:
     """An install line must be able to *replace* an older release, not skip it.
 
-    ``pip install "strands-robots[extras]"`` against an environment that already
+    ``pip install "strands-robots[...]"`` against an environment that already
     carries an older release reports ``Requirement already satisfied`` and
     upgrades nothing -- extras do not make a requirement unsatisfied. The reader
     then runs a notebook against, say, 0.4.1, whose
