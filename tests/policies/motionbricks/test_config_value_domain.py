@@ -1,4 +1,4 @@
-"""Value-domain contracts for :class:`MotionBricksConfig`'s synthesis knobs.
+"""Value-domain contracts for :class:`MotionBricksConfig`'s knobs and its path.
 
 ``__post_init__`` has always *had* a check for ``fps`` and ``generate_dt``. What
 it had was a COMPARISON, and a comparison is not a domain: ``nan < 1`` and
@@ -44,11 +44,25 @@ verdict. These tests pin that domain through each public surface a caller
 reaches (the constructor, ``from_dict``, ``from_file``), pin the consequence the
 domain exists to prevent, and pin the values that stay first-class so the guard
 cannot creep into refusing a generator a caller may legitimately ask for.
+
+``result_dir`` is the second axis, and it is a different question rather than a
+smaller one: the values it must refuse are not out of range, they are not paths.
+Its check was ``if not self.result_dir``, which asserts truthiness - so ``123``
+and ``["out"]`` were accepted for being truthy and ``0`` refused for being falsy,
+by a message about an empty *path*, about a number. The values sorted by a
+property the field does not have. Its domain is now "a value a path can be read
+from" (``str`` or :class:`os.PathLike`), normalised to the ``str`` the field
+declares, and ``TestResultDirPathDomain`` pins that alongside the two
+consequences the truthiness test carried beyond the eventual ``Path(...)``:
+a ``Path`` was stored unnormalised, so a config built from one compared unequal
+to the identical config built from a ``str``, and a list left this frozen -
+therefore hashable - dataclass unhashable.
 """
 
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -58,6 +72,7 @@ import pytest
 
 from strands_robots.policies.motionbricks import MotionBricksConfig, MotionBricksPolicy
 from strands_robots.policies.motionbricks.config import NUM_REGEN_FRAMES
+from strands_robots.policies.motionbricks.observation import resolve_mode
 
 # Values no numeric knob of this config can be honored as, whatever its sign
 # rule: a non-finite one poisons or collapses the horizon it scales, a boolean
@@ -249,6 +264,129 @@ class TestWhyTheseDomainsAreWhatTheyAre:
         assert agent.horizons[0] == pytest.approx(NUM_REGEN_FRAMES / 60.0 * 0.5)
 
 
+class TestResultDirPathDomain:
+    """``result_dir`` names a location, so its domain is path-ness not truthiness.
+
+    Measured on ``89410ad``, one ``MotionBricksConfig(result_dir=<value>)`` per
+    row, no ``motionbricks`` install:
+
+    ==================== ============================ ==========================
+    value                pre-fix verdict              consequence
+    ==================== ============================ ==========================
+    ``123``              accepted, stored ``123``     ``Path(123)`` -> TypeError
+    ``True``             accepted, stored ``True``    as above
+    ``b"out"``           accepted, stored ``b'out'``  as above; pathlib refuses
+                                                      bytes too
+    ``["out"]``          accepted, stored ``['out']`` as above, AND
+                                                      ``hash(config)`` raised
+                                                      ``unhashable type: 'list'``
+    ``0``                refused                      by the truthiness test, so
+                                                      the message says "non-empty
+                                                      path" about a number
+    ``Path("out")``      accepted, stored as a        unequal to the identical
+                         ``PosixPath``                 config built from ``"out"``
+    ==================== ============================ ==========================
+
+    The first four are the defect this closes; the last two are why the remedy is
+    a normalising domain rather than an ``isinstance(str)`` gate, which would have
+    refused the ``Path`` a caller is most likely to be holding.
+    """
+
+    @pytest.mark.parametrize("value", [123, 0, 3.5, True, False, None, b"out", ["out"], ("out",), {"dir": "out"}])
+    def test_a_value_no_path_can_be_read_from_is_refused(self, value: Any) -> None:
+        with pytest.raises(ValueError, match=r"result_dir must be a str or os\.PathLike"):
+            _config(result_dir=value)
+
+    def test_the_refusal_names_the_value_its_type_and_where_it_would_have_failed(self) -> None:
+        with pytest.raises(
+            ValueError,
+            match=(
+                r"MotionBricksConfig\.result_dir must be a str or os\.PathLike path to the 'out/' "
+                r"checkpoint tree, got 123 \(int\); it is read as Path\(result_dir\) when the generator "
+                r"is built, which raises TypeError there rather than here\."
+            ),
+        ):
+            _config(result_dir=123)
+
+    def test_an_empty_result_dir_is_still_refused_as_an_empty_path(self) -> None:
+        # Unchanged, and deliberately a separate message from the one above: an
+        # empty string IS a path-shaped value, it just names nothing.
+        with pytest.raises(ValueError, match=r"result_dir must be a non-empty path"):
+            _config(result_dir="")
+
+    @pytest.mark.parametrize("value", ["out", "~/out", "/srv/ckpt/out", "out/version_1"])
+    def test_a_usable_path_string_still_builds_unchanged(self, value: str) -> None:
+        assert _config(result_dir=value).result_dir == value
+
+    def test_a_whitespace_only_path_stays_first_class(self) -> None:
+        # A directory named with spaces is a legal path, so refusing it is an
+        # allowlist decision rather than a path-ness one. Pinned so this guard
+        # cannot creep into being one.
+        assert _config(result_dir="  ").result_dir == "  "
+
+    def test_a_path_is_accepted_and_normalised_to_the_str_the_field_declares(self) -> None:
+        config = _config(result_dir=Path("~/out"))
+        assert config.result_dir == "~/out"
+        assert type(config.result_dir) is str
+
+    def test_any_pathlike_is_accepted_not_only_pathlib(self) -> None:
+        class _CheckpointTree:
+            def __fspath__(self) -> str:
+                return "out"
+
+        assert _config(result_dir=_CheckpointTree()).result_dir == "out"
+
+    def test_a_pathlike_whose_fspath_is_not_a_path_is_refused_not_raised_from_fspath(self) -> None:
+        # ``os.PathLike`` is a duck-typed ABC, so this satisfies ``isinstance``
+        # and ``os.fspath`` then raises. The refusal is the channel this check
+        # answers on, so that raise must not escape past it.
+        class _Broken:
+            def __fspath__(self) -> str:
+                return 5  # type: ignore[return-value]
+
+        with pytest.raises(ValueError, match=r"result_dir must be a str or os\.PathLike"):
+            _config(result_dir=_Broken())
+
+    def test_two_configs_naming_the_same_tree_are_equal_and_hash_equal(self) -> None:
+        # Pre-fix the ``Path`` was stored verbatim, so these compared unequal
+        # while naming one directory - and this dataclass is frozen, so a caller
+        # may legitimately put it in a set or a dict key.
+        assert _config(result_dir=Path("out")) == _config(result_dir="out")
+        assert hash(_config(result_dir=Path("out"))) == hash(_config(result_dir="out"))
+
+    def test_an_empty_path_object_is_beyond_this_guards_reach(self) -> None:
+        # Recorded as a limit, not an endorsement: ``Path("")`` IS ``Path(".")``
+        # before any of this runs, so the empty string never arrives here as a
+        # path object, and refusing the value that does arrive would mean
+        # refusing ``Path(".")``.
+        assert os.fspath(Path("")) == "."
+        assert _config(result_dir=Path("")).result_dir == "."
+
+    @pytest.mark.parametrize("value", [123, True, ["out"], b"out"])
+    def test_a_refused_value_would_have_raised_out_of_the_generator_build(
+        self, value: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Out of the real ``_build_agent``, applied to a namespace, for the same
+        # reason ``_horizon`` is: a config carrying these values can no longer be
+        # built. ``require_optional`` is the only thing between the config and
+        # ``Path(result_dir)``, and it fails first only because the extra is
+        # absent here - on a host with it installed the TypeError is what a
+        # caller got.
+        monkeypatch.setattr(
+            "strands_robots.policies.motionbricks.policy.require_optional",
+            lambda *a, **k: None,
+        )
+        with pytest.raises(TypeError, match=r"argument should be a str or an os\.PathLike"):
+            MotionBricksPolicy._build_agent(SimpleNamespace(), SimpleNamespace(result_dir=value))  # type: ignore[arg-type]
+
+    def test_the_policy_result_dir_shortcut_reaches_the_same_domain(self) -> None:
+        # ``MotionBricksPolicy(result_dir=...)`` builds the config through
+        # ``from_dict``, so the convenience shortcut is not a second door.
+        shortcut: dict[str, Any] = {"result_dir": 123}
+        with pytest.raises(ValueError, match=r"result_dir must be a str or os\.PathLike"):
+            MotionBricksPolicy(motion_agent=_RecordingAgent(), **shortcut)
+
+
 class TestTheConfigFilePathIsCovered:
     """A checkpoint's ``config.json`` reaches the same domain as the constructor."""
 
@@ -260,11 +398,21 @@ class TestTheConfigFilePathIsCovered:
             {"generate_dt": float("nan")},
             {"speed_scale": [float("nan"), 1.0]},
             {"speed_scale": ["1", "2"]},
+            {"result_dir": 123},
+            {"result_dir": None},
         ],
     )
     def test_from_dict_refuses_an_unusable_knob(self, bad: dict[str, Any]) -> None:
         with pytest.raises(ValueError):
             MotionBricksConfig.from_dict({"result_dir": "out", **bad})
+
+    def test_from_file_refuses_a_result_dir_no_path_can_be_read_from(self, tmp_path: Path) -> None:
+        # JSON carries a number natively, so a checkpoint's ``config.json`` can
+        # hold one where a path belongs.
+        path = tmp_path / "config.json"
+        path.write_text(json.dumps({"result_dir": 123}))
+        with pytest.raises(ValueError, match=r"result_dir must be a str or os\.PathLike"):
+            MotionBricksConfig.from_file(path)
 
     def test_from_file_refuses_an_unusable_knob(self, tmp_path: Path) -> None:
         path = tmp_path / "config.json"
@@ -294,30 +442,40 @@ class TestTheUpstreamDefaultsStayFirstClass:
 
 
 class TestNeighbouringConfigFieldsStayOutOfScope:
-    """The identity/path fields are NOT part of this numeric domain.
+    """The enumeration fields are NOT part of the path domain above.
 
-    A pin of current behaviour, not an endorsement of it: ``result_dir=123`` is
-    accepted today and reaches ``Path(...)`` downstream. It is a string-identity
-    question rather than a numeric one, so settling it here would make this two
-    changes; tracked in #2008. Per the premise-test guidance in ``AGENTS.md``
-    this boundary should be REPLACED rather than deleted when that lands.
+    A pin of current behaviour, not an endorsement of it: ``device=5`` and
+    ``clips="g1"`` are both accepted today and fail inside ``torch`` or upstream
+    ``motionbricks``. A non-empty-string check is not the rule they want - it
+    would refuse the first and accept the second, which are the two rows a
+    caller is most likely to write - because the useful domain here is
+    membership, and where the member list lives is a decision rather than a
+    copy. Tracked in #2010; per the premise-test guidance in ``AGENTS.md`` this
+    boundary should be REPLACED rather than deleted when that lands.
+
+    ``style`` is pinned here for the opposite reason: it is not silently
+    honored downstream, so the config admitting it costs nothing.
     """
 
-    @pytest.mark.parametrize("value", [123, True, ["out"]])
-    def test_a_non_string_result_dir_is_still_accepted(self, value: Any) -> None:
-        assert _config(result_dir=value).result_dir == value
-
-    def test_an_empty_result_dir_is_still_refused_by_its_own_local_check(self) -> None:
-        with pytest.raises(ValueError, match=r"result_dir must be a non-empty path"):
-            _config(result_dir="")
-
     @pytest.mark.parametrize("field", ["device", "clips", "exp"])
-    def test_a_non_string_identity_field_is_still_accepted(self, field: str) -> None:
+    def test_a_non_string_enumeration_field_is_still_accepted(self, field: str) -> None:
         assert getattr(_config(**{field: 5}), field) == 5
+
+    def test_a_mistyped_member_name_is_still_accepted(self) -> None:
+        # The row a type check would not have caught either: ``"G1"`` is the only
+        # shipped clip set.
+        assert _config(clips="g1").clips == "g1"
 
     def test_the_style_check_is_unchanged(self) -> None:
         # ``style`` admits an int index OR a str name, so it is neither a numeric
-        # domain nor a string one and keeps its own local check.
+        # domain nor a path one and keeps its own local check.
         with pytest.raises(ValueError, match=r"style must be an int mode index or a str mode name"):
             _config(style=3.5)
         assert _config(style=True).style is True
+
+    def test_a_bool_style_is_refused_where_the_mode_is_resolved(self) -> None:
+        # Which is why the row above is not an open defect: the check that can
+        # see the live clip list is the one placed to refuse it, and it names the
+        # field and lists the modes.
+        with pytest.raises(ValueError, match=r"style must be a mode index or name, not a bool"):
+            resolve_mode(_config(style=True).style, ["idle", "walk"])

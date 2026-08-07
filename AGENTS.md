@@ -75,6 +75,16 @@ hatch run format            # ruff check --fix, ruff format
 8. **Integration tests required** - each policy needs `tests_integ/` tests with real inference
 9. **Test behavior, not implementation** - assert on outputs, not internal state
 10. **No dead code** - if it's not called and not part of base class, delete it
+11. **A value-domain guard becomes shared when it has a second caller** - the guards
+    in `strands_robots/utils.py` (`positive_finite_number_error` and friends) exist so
+    the refusal for a rate, a count or a name is identical everywhere rather than
+    merely equivalent in verdict, and each one has between 5 and 123 call sites. Do
+    not add one for a single field. Keep the rule local to the config that needs it,
+    state the domain in that field's docstring, and lift it into `utils.py` when a
+    second caller appears - two copies are the evidence that a shared name is the
+    right one, and one caller is evidence of nothing. #2008 asked this for a path
+    field and the answer was local: the only other `if not self.<path field>` in the
+    tree (`training/_inproc.py`) is a branch that skips logging, not a validation.
 
 ## PR Workflow
 

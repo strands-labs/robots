@@ -21,9 +21,23 @@ for ``fps``, :func:`~strands_robots.utils.positive_finite_number_error` for
 comparison, because a comparison is not a domain: ``fps < 1`` and
 ``generate_dt <= 0`` are both ``False`` for ``nan``, and every value they let
 through reached :attr:`MotionBricksConfig.controller_dt` and from there the
-generator's ``generate_new_frames``. The path/identity fields (``result_dir``,
-``device``, ``clips``, ``exp``, ``style``) keep their own local checks and are
-not part of that numeric domain - see #2008.
+generator's ``generate_new_frames``.
+
+``result_dir`` takes a domain of its own rather than a share of that one,
+because what it must refuse is not out of range - it is not a path. It is held
+to "a value a path can be read from" (a ``str`` or an :class:`os.PathLike`) and
+normalised to the ``str`` the field declares, the same shape as the
+``speed_scale`` normalisation below. That rule stays local rather than becoming
+a shared ``non_empty_string_error`` beside the numeric guards: each of those has
+between 5 and 123 callers in this tree and this would have exactly one, since
+the only other ``if not self.<path field>`` here
+(:mod:`strands_robots.training._inproc`) is a branch that skips logging rather
+than a validation. Lift it when a second config needs it.
+
+The remaining identity fields (``device``, ``clips``, ``exp``) are enumerations,
+for which a type check is not the useful rule - it would refuse ``device=5`` and
+accept ``clips="g1"`` - and ``style`` is already refused for a bool and
+range-checked against the live clip list where the mode is resolved. See #2010.
 
 No checkpoints are bundled: ``result_dir`` must point at the upstream ``out/``
 checkpoint tree (``motionbricks_pose`` / ``motionbricks_root`` /
@@ -34,6 +48,8 @@ NVIDIA license.
 from __future__ import annotations
 
 import json
+import os
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -66,9 +82,14 @@ class MotionBricksConfig:
         result_dir: Path to the upstream ``out/`` checkpoint tree (contains
             ``motionbricks_pose`` / ``motionbricks_root`` / ``motionbricks_vqvae``
             ``version_1/`` dirs + ``G1-clip.ckpt``). Required to build the real
-            generator; not validated for existence here (the stub seam builds a
-            policy without checkpoints) - existence is checked when the agent is
-            constructed.
+            generator. Accepts a ``str`` or any :class:`os.PathLike` - a caller
+            holding a :class:`~pathlib.Path` is doing what every consumer of
+            this field does - and stores ``os.fspath`` of it, so two configs
+            naming the same tree compare and hash equal. A value no path can be
+            read from is refused here rather than at ``Path(result_dir)`` in the
+            generator build. Existence is still not validated here (the stub
+            seam builds a policy without checkpoints) - it is checked when the
+            agent is constructed.
         skeleton_xml: Path to the G1 skeleton MuJoCo XML (upstream
             ``assets/skeletons/g1/g1.xml``). ``None`` lets the builder derive it
             from the package install.
@@ -120,6 +141,26 @@ class MotionBricksConfig:
     def __post_init__(self) -> None:
         # Fail-fast on bad synthesis knobs (AGENTS.md #5: raise on fatal config,
         # never carry a value that will misbehave deep inside the generator).
+        # ``result_dir`` names a location, so its domain is path-ness. ``if not
+        # self.result_dir`` asserted truthiness instead, which sorts these values
+        # by a property the field does not have: ``123`` and ``["out"]`` were
+        # accepted for being truthy, ``0`` was refused for being falsy - by a
+        # message about an empty *path*, about a number - and a ``Path`` was
+        # accepted but stored unnormalised, so a config built from one compared
+        # unequal to the identical config built from a ``str`` and
+        # ``result_dir=["out"]`` left this frozen dataclass unhashable.
+        if isinstance(self.result_dir, os.PathLike):
+            # ``os.fspath`` raises when ``__fspath__`` returns a non-path, so
+            # leave the value unconverted on that: it then falls to the refusal
+            # below, which is the channel a bad value is reported on here.
+            with suppress(TypeError):
+                object.__setattr__(self, "result_dir", os.fspath(self.result_dir))
+        if not isinstance(self.result_dir, str):
+            raise ValueError(
+                f"MotionBricksConfig.result_dir must be a str or os.PathLike path to the 'out/' checkpoint "
+                f"tree, got {self.result_dir!r} ({type(self.result_dir).__name__}); it is read as "
+                "Path(result_dir) when the generator is built, which raises TypeError there rather than here."
+            )
         if not self.result_dir:
             raise ValueError("MotionBricksConfig.result_dir must be a non-empty path to the 'out/' checkpoint tree")
         # The synthesis knobs go through the shared numeric domains rather than a
