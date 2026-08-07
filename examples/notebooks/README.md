@@ -22,12 +22,8 @@ form is enough, a bare install of the extras is not.
 
 > **Notebook 5's bucket path needs `strands-robots >= 0.5.1`**, which is the
 > first release whose `[lerobot]` extra floors LeRobot at the `>= 0.6.1` that
-> serves `stream_dataset(..., repo_type="bucket")`. The bucket APIs themselves
-> ship in 0.5.0, but that release floors LeRobot at `0.6.0`, whose
-> `StreamingLeRobotDataset` takes no `repo_type` - so a resolver is free to pair
-> 0.5.0 with a LeRobot that refuses the bucket read. Until v0.5.1 is on PyPI,
-> install from git instead:
-> `uv pip install "strands-robots[sim-mujoco,lerobot] @ git+https://github.com/strands-labs/robots"`
+> serves `stream_dataset(..., repo_type="bucket")`. Below that floor a resolver
+> is free to pair Strands Robots with a LeRobot that refuses the bucket read.
 
 On macOS the notebooks set `MUJOCO_GL=cgl` for offscreen rendering; everywhere
 else (e.g. headless Linux) they default to `egl`. An exported `MUJOCO_GL`
