@@ -119,15 +119,25 @@ WBC reads locomotion commands from `**kwargs`, sharing the non-VLA goal
 vocabulary so a command can flow through `run_policy` / mesh `tell()` without
 coupling to a backend:
 
-| Key | Type | Meaning |
-|-----|------|---------|
-| `target_velocity` | `list[float]` | Locomotion command `[vx, vy, omega]` (m/s, m/s, rad/s). Scaled by `cmd_scale` (`[2.0, 2.0, 0.5]`) into the observation's command block. |
-| `target_orientation` | `list[float]` | Target base `[roll, pitch, yaw]` (rad), written to command slots `[4:7]`. Defaults to the config `rpy_cmd` (`[0,0,0]`). |
-| `height` | `float` | Target base height (m), written to command slot `[3]`. Defaults to the config `height_cmd` (`0.74`). |
+| Key | Type | Accepted | Meaning |
+|-----|------|----------|---------|
+| `target_velocity` | `list[float]` | numeric, >= 3 entries, every component finite | Locomotion command `[vx, vy, omega]` (m/s, m/s, rad/s). Scaled by `cmd_scale` (`[2.0, 2.0, 0.5]`) into the observation's command block. |
+| `target_orientation` | `list[float]` | numeric sequence, finite per component | Target base `[roll, pitch, yaw]` (rad), written to command slots `[4:7]`. Defaults to the config `rpy_cmd` (`[0,0,0]`). |
+| `height` | `float` | finite | Target base height (m), written to command slot `[3]`. Defaults to the config `height_cmd` (`0.74`). |
 
 A per-call `target_velocity` overrides the constructor-time default. With no
 command at all the controller holds a standing balance (zero velocity, default
-height + level orientation).
+height + level orientation). Omitting a key (or passing `None`) selects the next
+source in the precedence chain, so `None` is how a kwarg spells "not supplied".
+
+Each key's accepted domain is the one `WBCConfig` enforces for the field it
+overrides - `height` for `height_cmd`, `target_orientation` for `rpy_cmd` - so a
+value the config refuses is not reachable through the kwarg documented to take
+precedence over it. The command block is the observation's first `command_dim`
+entries, so a non-finite component is not one wrong slot: the network is dense,
+so it reaches all `num_actions` joint targets, every one is then refused by
+`send_action`, and the rollout aborts reporting *"100% unresolved keys ... the
+robot has not moved"* - a message about the embodiment, for a bad `height`.
 
 ## Control contract
 

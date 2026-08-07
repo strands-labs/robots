@@ -63,7 +63,7 @@ from typing import Any
 import numpy as np
 
 from strands_robots.policies.base import Policy
-from strands_robots.utils import require_optional, sequence_length
+from strands_robots.utils import finite_number_error, require_optional, sequence_length
 
 from .config import WBCConfig
 from .control import compute_targets, pd_control, projected_gravity
@@ -493,6 +493,12 @@ class WBCPolicy(Policy):
         - ``target_orientation = [roll, pitch, yaw]`` -> rpy command slots.
         - ``height`` -> the height command slot.
 
+        Every caller-supplied component is validated on the domain
+        :class:`~strands_robots.policies.wbc.config.WBCConfig` enforces for the
+        field it overrides - a command block goes into the observation the
+        network is given, so a value the config refuses must not reach it
+        through the kwarg documented to take precedence over the config.
+
         Returns:
             ``(command, raw_velocity)`` where ``command`` is the ``command_dim``-
             wide (default 7) observation block with ``cmd_scale`` already applied
@@ -523,13 +529,17 @@ class WBCPolicy(Policy):
         # Slot [3]: target base height (per-call ``height`` overrides the config).
         if c > 3:
             height = kwargs.get("height")
-            command[3] = float(height) if height is not None else float(self._config.height_cmd)
+            command[3] = self._validate_height(height) if height is not None else float(self._config.height_cmd)
 
         # Slots [4:7]: target roll/pitch/yaw (per-call ``target_orientation``
         # overrides the config ``rpy_cmd``).
         if c > 4:
             rpy_src = kwargs.get("target_orientation")
-            rpy = np.asarray(rpy_src if rpy_src is not None else self._config.rpy_cmd, dtype=np.float64).ravel()
+            rpy = (
+                self._validate_orientation(rpy_src)
+                if rpy_src is not None
+                else np.asarray(self._config.rpy_cmd, dtype=np.float64).ravel()
+            )
             n_rpy = min(c - 4, rpy.shape[0])
             command[4 : 4 + n_rpy] = rpy[:n_rpy]
 
@@ -1019,6 +1029,67 @@ class WBCPolicy(Policy):
         for i, v in enumerate(arr):
             if math.isnan(v) or math.isinf(v):
                 raise ValueError(f"target_velocity[{i}]={v!r} must be finite")
+        return arr
+
+    @staticmethod
+    def _validate_height(height: Any) -> float:
+        """Validate a per-call ``height`` command (the ``height_cmd`` override).
+
+        Adopts the domain :class:`~strands_robots.policies.wbc.config.WBCConfig`
+        enforces for ``height_cmd`` verbatim, so the two spellings of one field
+        cannot diverge: a target base height the config refuses must not be
+        reachable through the kwarg documented to override it. Signed, because
+        the slot is an absolute height in metres and only finiteness is
+        constrained; a non-finite one is written straight into the observation
+        block the network is given.
+
+        Args:
+            height: The caller-supplied value.
+
+        Returns:
+            The value as a ``float``.
+
+        Raises:
+            ValueError: If it is not a usable finite number.
+        """
+        if error := finite_number_error(height, "height", "WBCPolicy"):
+            raise ValueError(error)
+        return float(height)
+
+    @staticmethod
+    def _validate_orientation(rpy_src: Any) -> np.ndarray:
+        """Validate a per-call ``target_orientation`` (the ``rpy_cmd`` override).
+
+        Mirrors the per-component rule
+        :class:`~strands_robots.policies.wbc.config.WBCConfig` applies to
+        ``rpy_cmd``, and the numeric-sequence rule :meth:`_validate_velocity`
+        applies to the sibling command component, so a roll/pitch/yaw target the
+        config refuses is not reachable through the kwarg that overrides it.
+        Without it a non-numeric sequence surfaces as NumPy's own
+        ``could not convert string to float`` - which names neither the kwarg nor
+        the policy - and a non-finite component reaches the network.
+
+        Args:
+            rpy_src: The caller-supplied ``[roll, pitch, yaw]`` sequence.
+
+        Returns:
+            The flattened ``float64`` array.
+
+        Raises:
+            ValueError: If it is not a numeric sequence, or any component is not
+                a usable finite number.
+        """
+        try:
+            arr = np.asarray(rpy_src, dtype=np.float64).ravel()
+        except (TypeError, ValueError) as e:
+            raise ValueError(f"target_orientation must be a numeric sequence, got {rpy_src!r}") from e
+        # Inspect the ORIGINAL elements, not ``arr``: the float coercion above
+        # turns a ``True`` into a silent 1.0, and the config refuses a bool
+        # component of ``rpy_cmd``. An object view keeps the two spellings of the
+        # field on the same domain.
+        for index, component in enumerate(np.asarray(rpy_src, dtype=object).ravel()):
+            if error := finite_number_error(component, f"target_orientation[{index}]", "WBCPolicy"):
+                raise ValueError(error)
         return arr
 
 

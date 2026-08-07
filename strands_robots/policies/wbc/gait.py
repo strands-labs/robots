@@ -52,6 +52,8 @@ from typing import Any
 import numpy as np
 from numpy.typing import NDArray
 
+from strands_robots.utils import positive_finite_number_error
+
 from .config import WBCConfig
 from .control import compute_targets, projected_gravity
 from .policy import WBCPolicy
@@ -313,8 +315,9 @@ class WBCGaitPolicy(WBCPolicy):
             rejected at construction.
         target_velocity: Optional constructor-time default ``[vx, vy, omega]``.
         gait_frequency: Optional constructor-time default step frequency
-            (``freq_cmd``). Per-call ``gait_frequency`` kwarg overrides it, which
-            overrides ``config.freq_cmd``.
+            (``freq_cmd``), in steps/s. Per-call ``gait_frequency`` kwarg
+            overrides it, which overrides ``config.freq_cmd``. Must be a finite
+            number ``> 0`` (see :meth:`_validate_gait_frequency`).
         allow_missing_models: Test/CI seam (see :class:`WBCPolicy`).
         **kwargs: Forward-compatibility absorber (ignored unknown kwargs).
     """
@@ -329,7 +332,11 @@ class WBCGaitPolicy(WBCPolicy):
         **kwargs: Any,
     ) -> None:
         self._gait_clock = GaitClock()
-        self._gait_frequency = float(gait_frequency) if gait_frequency is not None else None
+        # Before ``super().__init__`` - which loads the ONNX session(s) - so a
+        # frequency the gait clock cannot honor is reported here rather than on
+        # the first ``get_actions`` tick of a started rollout. Mirrors the
+        # constructor-time ``target_velocity`` check the base policy already does.
+        self._gait_frequency = self._validate_gait_frequency(gait_frequency) if gait_frequency is not None else None
         # The gait variant is a single-policy controller: force walk=False so the
         # base loader fetches only policy.onnx (no walk_policy.onnx).
         super().__init__(
@@ -354,7 +361,10 @@ class WBCGaitPolicy(WBCPolicy):
         single policy). Any resolved config whose dims disagree with the gait
         layout is rejected up front (AGENTS.md #5: fail fast on a fatal config) -
         loading a non-gait config into the gait observation builder would
-        misplace the clock/torso slots.
+        misplace the clock/torso slots. ``freq_cmd`` is held to the gait clock's
+        stricter ``> 0`` domain here for the same reason: the config's own rule
+        is finiteness, which is all the non-gait variant (with no step-frequency
+        slot) can require.
         """
         cfg = super()._resolve_config(config, checkpoint)
         if config is None and cfg.single_obs_dim == 86 and cfg.command_dim == 7:
@@ -374,6 +384,13 @@ class WBCGaitPolicy(WBCPolicy):
                 f"{GAIT_SINGLE_OBS_DIM}, command_dim={GAIT_COMMAND_DIM}), but the resolved config has "
                 f"single_obs_dim={cfg.single_obs_dim}, command_dim={cfg.command_dim}. "
                 "Use WBCPolicy for the non-gait (86-dim, two-policy) family, or supply a gait config."
+            )
+        # The gait clock needs freq_cmd > 0 (WBCConfig only requires finite,
+        # because the non-gait command block has no step-frequency slot to read).
+        if error := positive_finite_number_error(cfg.freq_cmd, "config.freq_cmd", "WBCGaitPolicy"):
+            raise ValueError(
+                f"{error} The gait clock advances the phase by dt * freq_cmd and warms up over "
+                "0.5 / freq_cmd, so a non-positive step frequency cannot be honored by this variant."
             )
         return cfg
 
@@ -395,6 +412,12 @@ class WBCGaitPolicy(WBCPolicy):
         Note the ``freq_cmd`` slot at index 4 (absent in the non-gait 7-wide
         command) pushes rpy to slots [5:8]. Frequency precedence: per-call
         ``gait_frequency`` kwarg > constructor default > ``config.freq_cmd``.
+
+        Every source in that chain is validated on the same domain, so the
+        spelling that wins the precedence contest cannot accept a value the
+        spelling that loses it would refuse: the per-call kwargs here, the
+        constructor default in :meth:`__init__`, and ``config.freq_cmd`` in
+        :meth:`_resolve_config`.
 
         Returns:
             ``(command, raw_velocity)`` - the 8-wide command block with
@@ -420,21 +443,63 @@ class WBCGaitPolicy(WBCPolicy):
 
         if c > 3:
             height = kwargs.get("height")
-            command[3] = float(height) if height is not None else float(self._config.height_cmd)
+            command[3] = self._validate_height(height) if height is not None else float(self._config.height_cmd)
 
         if c > 4:
             freq = kwargs.get("gait_frequency")
-            if freq is None:
-                freq = self._gait_frequency if self._gait_frequency is not None else self._config.freq_cmd
+            if freq is not None:
+                freq = self._validate_gait_frequency(freq)
+            elif self._gait_frequency is not None:
+                freq = self._gait_frequency
+            else:
+                freq = self._config.freq_cmd
             command[4] = float(freq)
 
         if c > 5:
             rpy_src = kwargs.get("target_orientation")
-            rpy = np.asarray(rpy_src if rpy_src is not None else self._config.rpy_cmd, dtype=np.float64).ravel()
+            rpy = (
+                self._validate_orientation(rpy_src)
+                if rpy_src is not None
+                else np.asarray(self._config.rpy_cmd, dtype=np.float64).ravel()
+            )
             n_rpy = min(c - 5, rpy.shape[0])
             command[5 : 5 + n_rpy] = rpy[:n_rpy]
 
         return command, raw_velocity
+
+    @staticmethod
+    def _validate_gait_frequency(freq: Any) -> float:
+        """Validate a step-frequency command (the ``freq_cmd`` override).
+
+        :meth:`GaitClock.update` documents the domain - ``freq`` "must be
+        strictly positive", because it sets both the phase increment and the
+        warm-up window ``0.5 / freq`` - and enforces it, but only once the
+        command block has been built and handed to it from inside
+        :meth:`get_actions`. Deciding it where the caller's value arrives turns a
+        mid-rollout :class:`ValueError` naming an internal method into one naming
+        the parameter that was supplied.
+
+        The rule is stricter than the ``finite_number_error`` domain
+        :class:`~strands_robots.policies.wbc.config.WBCConfig` applies to
+        ``freq_cmd``, and deliberately so: the non-gait 7-wide command block has
+        no step-frequency slot, so a ``freq_cmd`` of ``0`` is inert for
+        :class:`~strands_robots.policies.wbc.policy.WBCPolicy` and the config
+        cannot demand positivity on its behalf. The gait variant reads the slot,
+        so the positivity rule belongs here - the same place the gait layout
+        itself is enforced.
+
+        Args:
+            freq: The caller-supplied step frequency (steps/s).
+
+        Returns:
+            The value as a ``float``.
+
+        Raises:
+            ValueError: If it is not a usable finite number ``> 0``.
+        """
+        if error := positive_finite_number_error(freq, "gait_frequency", "WBCGaitPolicy"):
+            raise ValueError(error)
+        return float(freq)
 
     async def get_actions(
         self, observation_dict: dict[str, Any], instruction: str, **kwargs: Any

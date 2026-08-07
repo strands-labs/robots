@@ -11,6 +11,12 @@ NVIDIA's reference repo ships **two** MuJoCo G1 controllers. The non-gait pair
 - A **95-dim** observation frame, stacked x6 -> a `[batch, 570]` network input.
 - An **8-wide command** block with a `freq_cmd` step-frequency slot inserted at
   index 4 (so rpy moves to slots `[5:8]`), set via the `gait_frequency` kwarg.
+  Frequency precedence is per-call kwarg > constructor default > `config.freq_cmd`,
+  and every source in that chain must be a finite number `> 0`: the gait clock
+  advances the phase by `dt * freq` and warms up over `0.5 / freq`, so a
+  non-positive step frequency cannot be honored. That is stricter than the
+  `finite`-only domain `WBCConfig` applies to `freq_cmd`, which the non-gait
+  7-wide command block ignores entirely.
 - A 2-dim **bipedal phase clock** (`[clock_FL, clock_FR]`) appended to each
   frame - the locomotion rhythm the network steps to.
 
