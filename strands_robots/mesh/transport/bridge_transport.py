@@ -44,6 +44,7 @@ import hashlib
 import heapq
 import json
 import logging
+import math
 import os
 import threading
 import time
@@ -269,13 +270,28 @@ def _resolve_dedup_ttl() -> float:
 
     NOTE: read once at ``BridgeTransport`` construction; mid-process
     env-var changes require a bridge restart to take effect.
+
+    A non-finite value falls back like any other unusable one, and the
+    finiteness test is not implied by the positivity test beside it.
+    ``float("inf")`` - and ``float("1e999")``, which overflows to it - is
+    greater than zero, so it was returned as the resolved TTL, and the
+    deduplicator's ``cutoff = now - inf`` then leaves every entry in its cache.
+    Under the ``_MAX_DEDUP_ENTRIES`` cap that turns the window into "for the
+    life of the process", so a heartbeat that legitimately recurs with the same
+    canonical triple is deduplicated away on its second delivery instead of
+    after the TTL. ``nan`` already fell back here because ``nan > 0`` is
+    ``False``, which is what made the hole one-sided and easy to miss.
+
+    The other env-float resolvers in this package all test finiteness; see
+    :func:`~strands_robots.mesh.core._parse_positive_float_env` for the same
+    rule and the reasoning behind it.
     """
     raw = os.getenv("STRANDS_MESH_DEDUP_TTL")
     if raw is None:
         return _DEFAULT_DEDUP_TTL_S
     try:
         v = float(raw)
-        return v if v > 0 else _DEFAULT_DEDUP_TTL_S
+        return v if math.isfinite(v) and v > 0 else _DEFAULT_DEDUP_TTL_S
     except ValueError:
         logger.warning("[bridge] STRANDS_MESH_DEDUP_TTL=%r invalid -- using default", raw)
         return _DEFAULT_DEDUP_TTL_S

@@ -12,6 +12,7 @@ import hashlib
 import hmac
 import json
 import logging
+import math
 import os
 import re
 import socket
@@ -67,6 +68,39 @@ def _parse_positive_float_env(name: str, default: str, *, minimum: float = 0.0) 
     Catches the case where an operator sets ``STRANDS_MESH_RESUME_FRESHNESS_S=abc``
     or a negative value. The module would otherwise fail to import with an opaque
     ``ValueError`` (found by running the module under bad env locally).
+
+    A non-finite value falls back too, and that test cannot be folded into the
+    range check below: ``float`` accepts ``"nan"``, ``"inf"`` and ``"1e999"``
+    (which overflows to ``inf``), and ``nan < minimum`` is ``False``, so a
+    ``nan`` passed a bare range test and was returned as the resolved knob.
+
+    Every knob resolved here is one side of a comparison on a safety path, and
+    a ``nan`` does not widen those comparisons but removes them. It makes the
+    presence stale/future test (``age > window or age < -skew``) ``False`` for
+    **every** envelope, so a year-old presence is accepted. It reaches
+    :func:`_evict_replay_cache` as ``ttl_s``, where ``cutoff = now - nan``
+    leaves every stale replay entry in the cache. And it reaches the resume
+    brute-force cooldown as ``locked_until = monotonic() + nan``, which no
+    later ``now < locked_until`` test can satisfy, so the throttle protecting
+    the E-stop override code never engages. ``inf`` fails open on the first two
+    and closed on the third: that cooldown never expires, so a resume can never
+    be granted again.
+
+    This is the rule :func:`~strands_robots.mesh.security._env_pos_float`
+    already documents and applies for the teleop input bound, and which
+    :func:`~strands_robots.mesh._zenoh_config._float_env` and
+    :func:`~strands_robots.mesh.session.hz_from_env` also apply. Those three
+    resolvers and this one answer the same question about the same kind of
+    operator input, so what counts as usable must not differ between them.
+
+    The floor is deliberately left alone: ``0`` is still accepted (``minimum``
+    defaults to ``0.0``) because what a zero means differs per knob - a zero
+    backoff is arguably "no cooldown" while a zero freshness window drops every
+    envelope - and that is a per-knob decision rather than this domain's.
+
+    The companion :func:`_parse_positive_int_env` needs no such test: ``int``
+    refuses ``"nan"``, ``"inf"`` and ``"1e999"`` outright, so every non-finite
+    spelling already reaches its ``ValueError`` fallback.
     """
     raw = os.getenv(name, default)
     try:
@@ -76,6 +110,14 @@ def _parse_positive_float_env(name: str, default: str, *, minimum: float = 0.0) 
             "Invalid %s=%r (not a float); falling back to default %r.",
             name,
             raw,
+            default,
+        )
+        return float(default)
+    if not math.isfinite(value):
+        logger.warning(
+            "Invalid %s=%r (must be finite); falling back to default %r.",
+            name,
+            value,
             default,
         )
         return float(default)
