@@ -30,6 +30,14 @@ refuses it, and what a zero means differs per knob - a zero resume backoff
 is arguably "no cooldown", a zero freshness window drops every envelope.
 That is a per-knob decision, and :class:`TestTheZeroFloorIsUnchanged` pins
 it so this change is not read as having settled it.
+
+One more property is pinned here, about this module rather than the mesh: its
+own node ids. ``FLOAT_KNOBS`` parametrizes over resolver *function objects*,
+and any id generator that stringifies its argument renders one as
+``<function _resume_backoff_s at 0x...>`` - an address that belongs to the
+process. pytest's default already resolves a function to its ``__name__``, so
+:class:`TestTheNodeIdsAreReproducible` pins that the ids stay address-free and
+keep naming the resolver.
 """
 
 from __future__ import annotations
@@ -38,6 +46,8 @@ import ast
 import inspect
 import math
 import pathlib
+import subprocess
+import sys
 import time
 
 import pytest
@@ -58,10 +68,14 @@ FLOAT_KNOBS = [
 ]
 
 
+#: The test whose parametrization carries the resolver function objects.
+TARGET_TEST = "test_resolver_returns_the_documented_default"
+
+
 class TestEveryResumeKnobFallsBackForANonFiniteValue:
     """A non-finite env value resolves to the documented default."""
 
-    @pytest.mark.parametrize(("env_var", "resolver", "default"), FLOAT_KNOBS, ids=lambda v: str(v))
+    @pytest.mark.parametrize(("env_var", "resolver", "default"), FLOAT_KNOBS)
     @pytest.mark.parametrize("raw", NON_FINITE)
     def test_resolver_returns_the_documented_default(self, monkeypatch, env_var, resolver, default, raw):
         monkeypatch.setenv(env_var, raw)
@@ -321,3 +335,71 @@ class TestEveryEnvFloatResolverTestsFiniteness:
             encoding="utf-8",
         )
         assert _scan(tmp_path) == {}
+
+
+@pytest.fixture(scope="module")
+def collected_node_ids() -> list[str]:
+    """This module's node ids, as a child process reports them.
+
+    ``-q -q`` nets out the ``-v`` in the project's ``addopts`` so the output is
+    the flat ``path::Class::test[id]`` form - the node id a caller pastes back
+    to re-run one case, which is the thing whose reproducibility is under test.
+    The two assertions are the non-vacuity guard: a collection that errored, or
+    an output read that matched nothing, must not let the checks below pass by
+    default.
+    """
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            str(pathlib.Path(__file__).resolve()),
+            "--collect-only",
+            "-q",
+            "-q",
+            "--no-cov",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert proc.returncode == 0, f"collection failed:\n{proc.stdout}\n{proc.stderr}"
+    ids = [line.strip() for line in proc.stdout.splitlines() if "::" in line]
+    parametrized = [i for i in ids if TARGET_TEST in i]
+    expected = len(NON_FINITE) * len(FLOAT_KNOBS)
+    assert len(parametrized) == expected, f"read {len(parametrized)} ids for {TARGET_TEST}, expected {expected}"
+    return ids
+
+
+class TestTheNodeIdsAreReproducible:
+    """This module's own node ids must survive a change of process.
+
+    ``FLOAT_KNOBS`` carries resolver function objects, so ``ids=str``, the
+    package's usual ``ids=repr``, or a lambda wrapping either all render one as
+    ``<function _resume_backoff_s at 0x...>``. Measured over two collections of
+    identical code, 27 of this module's 128 ids differed, so none of the 27
+    could be pasted back to re-run one case and ``--last-failed`` could not
+    match them across runs. Letting pytest's default apply resolves each
+    function to its ``__name__`` instead; these tests pin that the ids stay
+    address-free *and* keep naming the resolver, because an id generator that
+    merely dropped the parameter would satisfy the first without the second.
+    """
+
+    def test_no_node_id_embeds_an_object_address(self, collected_node_ids):
+        offenders = sorted(node_id for node_id in collected_node_ids if " at 0x" in node_id)
+        assert offenders == [], (
+            f"{len(offenders)} node id(s) embed a process-local address, so they change every "
+            f"run and cannot be re-run; first: {offenders[0] if offenders else ''}"
+        )
+
+    def test_the_resolver_is_still_named_in_the_node_id(self, collected_node_ids):
+        """Address-free is not enough. Without the resolver's name a failure
+        reports an env var and a default with no clue which of the three
+        functions produced it.
+        """
+        parametrized = [node_id for node_id in collected_node_ids if TARGET_TEST in node_id]
+        for _env_var, resolver, _default in FLOAT_KNOBS:
+            assert any(resolver.__name__ in node_id for node_id in parametrized), (
+                f"{resolver.__name__} is named in no node id"
+            )
