@@ -38,6 +38,7 @@ from strands_robots.utils import (
     name_list_error,
     non_negative_whole_number_error,
     positive_count_error,
+    positive_whole_number_error,
     sequence_length,
 )
 
@@ -892,7 +893,15 @@ class DatasetRecorder:
 
         Args:
             repo_id: HuggingFace dataset ID (e.g. "user/my_dataset")
-            fps: Recording frame rate
+            fps: Recording frame rate, as a positive whole number of frames per
+                second. This is the rate the dataset is DECLARED at (it is
+                written into ``meta/info.json`` and every frame timestamp is
+                derived from it), not a rate anything is throttled to. The domain
+                is the shared one every backend's ``start_recording`` applies to
+                the ``fps`` it forwards here
+                (:func:`~strands_robots.utils.positive_whole_number_error`), so
+                the facade and this method cannot disagree about which rates are
+                usable.
             robot_type: Robot type string (e.g. "so100", "panda")
             robot_features: Dict of observation feature names → types
                 (from robot.observation_features or sim joint names)
@@ -981,7 +990,8 @@ class DatasetRecorder:
                 cannot be honored - ``camera_dims`` is not a mapping, is keyed by
                 a name ``camera_keys`` does not declare, or holds anything but a
                 ``(height, width)`` pair of positive integers, or
-                ``video_width`` / ``video_height`` is not a positive integer.
+                ``video_width`` / ``video_height`` is not a positive integer;
+                or ``fps`` is not a positive whole number.
                 Refused before the on-disk target is touched, so an
                 ``overwrite=True`` call that is refused leaves an existing
                 dataset intact.
@@ -1026,6 +1036,30 @@ class DatasetRecorder:
         # so ``camera_keys`` is known to be a list of distinct names before it is
         # used as the authoritative set of camera names.
         if text := _frame_shape_error(camera_dims, camera_keys, video_width, video_height):
+            raise ValueError(text)
+        # ``fps`` is the recording RATE the same declaration fixes - it is written
+        # into the dataset metadata and every timestamp is derived from it - so it
+        # is refused here too, in the same block and ahead of the same two side
+        # effects as the names and the shape above.
+        #
+        # The domain is deliberately the one the facades already apply, and via the
+        # same function rather than a restatement of it: every backend's
+        # ``start_recording`` calls ``dataset_recording_option_error``, which is a
+        # thin ``{"status": "error"}`` envelope around
+        # ``positive_whole_number_error``, and then forwards ``fps`` here
+        # unchanged. Any narrower rule at this depth would refuse a value those
+        # facades had already reported usable, turning a returned error envelope
+        # into a ``ValueError`` raised out of a method that returns one.
+        #
+        # Direct callers were the only ones left unguarded, and an unusable rate
+        # cost them the episode silently: LeRobot rejects only ``fps <= 0``, so a
+        # fractional ``2.7``, a ``nan`` or an ``inf`` created the dataset and then
+        # saved ZERO frames with ``create``, ``add_frame``, ``save_episode`` and
+        # ``finalize`` all returning normally; ``fps=True`` recorded a 1 fps
+        # dataset (an ``int`` subclass acting as a 1); and ``fps="30"`` dead-ended
+        # in a bare ``TypeError: '<=' not supported between instances of 'str' and
+        # 'int'`` naming neither the parameter nor the method.
+        if text := positive_whole_number_error(fps, "fps", "DatasetRecorder.create"):
             raise ValueError(text)
 
         # Lazy import - this is where we actually need lerobot

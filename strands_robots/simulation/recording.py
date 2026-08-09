@@ -48,6 +48,14 @@ def dataset_recording_option_error(method: str, fps: Any) -> dict[str, Any] | No
     (:func:`~strands_robots.utils.positive_whole_number_error`):
     a positive whole number.
 
+    The ``fps`` reaching this guard is forwarded to
+    :meth:`~strands_robots.dataset_recorder.DatasetRecorder.create` unchanged, and
+    that method applies the same shared domain to its direct callers - so this is
+    the envelope-returning half of one rule, not a rule of its own. Any narrowing
+    belongs in the shared domain rather than here: a value refused only deeper
+    would raise ``ValueError`` out of a ``start_recording`` that had already
+    reported it usable.
+
     Without this guard an unusable ``fps`` was reported as ``status="success"``
     and then cost the caller the episode: LeRobot only rejects ``fps <= 0``, so
     a fractional ``2.7`` or a ``nan`` created the dataset, killed the video

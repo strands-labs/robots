@@ -377,19 +377,31 @@ class TestGuardPlacement:
 class TestNeighbouringSurfacesStayOutOfScope:
     """Premise pins, so a follow-up is not closed by accident.
 
-    ``fps`` is the recorder's other unvalidated schema option, but it is a rate
-    rather than a frame shape and it already has a named owner one layer up
-    (``dataset_recording_option_error``, applied by every backend's
-    ``start_recording``). It is deliberately untouched here; these assert the
-    behaviour that ships so the difference is recorded rather than implied.
+    ``fps`` was the recorder's other unvalidated schema option when this module
+    landed, and these pins asserted that it still reached the dataset unchecked -
+    so that #2068 could not be closed by accident. It has since been refused on
+    its own shared domain (a rate, not a frame shape:
+    :func:`~strands_robots.utils.positive_whole_number_error`), so the pins are
+    REPLACED by the opposite statement rather than deleted. What they are here to
+    say either way is that the two quantities are guarded independently: neither
+    refusal can be what makes the other's test pass.
     """
 
     @pytest.mark.parametrize("value", [2.7, math.nan, math.inf, True])
-    def test_an_unusable_fps_is_still_accepted_by_the_recorder(
-        self, fake_lerobot: type[_FakeLeRobotDataset], value: Any
-    ) -> None:
-        _create(repo_id="local/probe", camera_keys=["image"], fps=value)
-        assert len(fake_lerobot.calls) == 1
+    def test_an_unusable_fps_is_refused_without_naming_the_frame_shape(self, no_lerobot: None, value: Any) -> None:
+        """Refused on the rate domain - see tests/test_dataset_recorder_fps_domain.py."""
+        with pytest.raises(ValueError) as excinfo:
+            _create(repo_id="local/probe", camera_keys=["image"], fps=value)
+        text = str(excinfo.value)
+        assert "fps must be a positive whole number" in text, text
+        assert "camera_dims" not in text, text
+        assert "video_width" not in text, text
+
+    def test_a_usable_fps_leaves_the_shape_refusals_intact(self, no_lerobot: None) -> None:
+        """The control: a usable rate does not shadow the frame-shape refusal."""
+        with pytest.raises(ValueError) as excinfo:
+            _create(repo_id="local/probe", camera_keys=["image"], video_width=0, fps=30)
+        assert "video_width" in str(excinfo.value)
 
     def test_a_camera_less_create_does_not_read_the_pair(self, fake_lerobot: type[_FakeLeRobotDataset]) -> None:
         """With no camera declared the pair decides nothing, so it is left alone."""

@@ -543,6 +543,34 @@ caused it:
 `camera_dims=None` and `{}` still mean "not supplied" - every camera then takes
 the global pair. Passing the shape as a list rather than a tuple is accepted.
 
+### The recording rate must be a usable frame count
+
+`fps` is the rate the dataset is **declared** at - it is written into
+`meta/info.json` and every timestamp is derived from it positionally - so
+`create()` holds it to the same positive-whole-number domain every backend's
+`start_recording(fps=...)` already applies to the rate it forwards here:
+
+```python
+DatasetRecorder.create(repo_id="user/d", fps=2.7)    # ValueError: fps must be a positive whole number
+DatasetRecorder.create(repo_id="user/d", fps=float("nan"))   # same refusal
+DatasetRecorder.create(repo_id="user/d", fps=True)   # refused, not read as 1 fps
+```
+
+LeRobot rejects only `fps <= 0`, so everything above used to be accepted by the
+direct API and cost the caller the episode without reporting anything: a
+fractional `2.7`, a `nan` or an `inf` created the dataset and then saved **zero
+frames**, with `create`, `add_frame`, `save_episode` and `finalize` all returning
+normally. `fps=True` recorded a 1 fps dataset (an `int` subclass acting as a 1),
+and `fps="30"` dead-ended in a bare `TypeError` naming neither the parameter nor
+the method.
+
+The rule is the facades' rule by construction - one shared domain, reached from
+both - so a rate `start_recording` accepts cannot be refused deeper. A rate that
+disagrees with a rollout's `control_frequency` is a separate check that only the
+facades can make (see [`fps` must equal the rollout's
+`control_frequency`](#fps-must-equal-the-rollouts-control_frequency)); `create()`
+judges the rate on its own terms.
+
 ### Re-recording into an existing `repo_id`
 
 `DatasetRecorder.create()` builds a **fresh** dataset. If the resolved dataset
