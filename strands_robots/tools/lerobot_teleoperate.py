@@ -132,15 +132,24 @@ def _numeric_option_error(mode: str, supplied: dict[str, Any]) -> str | None:
 # ``[]`` took the other branch just as silently, without ever being a declared
 # spelling of it.
 #
-# ``replay`` is absent because it emits no flag at all - its argv is unchanged by
-# every flag in this module, so refusing one there would be a false rejection,
-# the same scoping rule :data:`_MODE_NUMERIC_OPTIONS` encodes. ``play_sounds`` is
-# in no tuple for that same reason: nothing reads it anywhere (#2072), so it is
-# excluded here by construction rather than by an exemption.
+# ``teleoperate`` is the one mode that emits no ``play_sounds``: lerobot's
+# ``TeleoperateConfig`` does not declare the field, and its CLI exits with
+# ``unrecognized arguments: --play_sounds`` when it is passed one. ``RecordConfig``,
+# ``ReplayConfig`` and ``RolloutConfig`` each declare it, so those three modes emit
+# it and are checked for it here - the same scoping rule
+# :data:`_MODE_NUMERIC_OPTIONS` encodes, driven by what each entry point accepts
+# rather than by an exemption.
 _MODE_FLAG_OPTIONS: dict[str, tuple[str, ...]] = {
-    "record": ("record_resume", "dataset_push_to_hub", "dataset_video", "display_data"),
+    "record": ("record_resume", "dataset_push_to_hub", "dataset_video", "display_data", "play_sounds"),
+    "replay": ("play_sounds",),
     "teleoperate": ("display_data",),
-    "dagger": ("dagger_record_autonomous", "dataset_push_to_hub", "dataset_video", "display_data"),
+    "dagger": (
+        "dagger_record_autonomous",
+        "dataset_push_to_hub",
+        "dataset_video",
+        "display_data",
+        "play_sounds",
+    ),
 }
 
 
@@ -428,6 +437,12 @@ def build_lerobot_command(
             (resolved from ``dataset_repo_id``) so lerobot HEAD's repo_id
             timestamp-stamping never relocates the on-disk dataset.
         replay_episode: Episode index to replay (``--dataset.episode``).
+        play_sounds: Emit ``--play_sounds true|false`` for the audio cues lerobot
+            speaks between episodes. Emitted explicitly, like ``dataset_video``,
+            so this signature's own default is what the session runs with rather
+            than whatever the lerobot config happens to default to. Plain
+            teleoperation omits it: ``TeleoperateConfig`` does not declare the
+            field and that CLI refuses the flag outright.
 
     Returns:
         The argv list, beginning with ``["python", "-m", "lerobot.scripts...."]``.
@@ -461,11 +476,14 @@ def build_lerobot_command(
         "dataset_video": dataset_video,
         "display_data": display_data,
         "dagger_record_autonomous": dagger_record_autonomous,
+        "play_sounds": play_sounds,
     }
     if action == "replay":
         if not dataset_repo_id:
             raise ValueError("dataset_repo_id is required for replay action")
         if error := _numeric_option_error("replay", numeric_options):
+            raise ValueError(error)
+        if error := _flag_error("replay", flag_options):
             raise ValueError(error)
         cmd = ["python", "-m", "lerobot.scripts.lerobot_replay"]
         cmd.extend(
@@ -475,6 +493,7 @@ def build_lerobot_command(
         if dataset_root:
             cmd.extend(["--dataset.root", dataset_root])
         cmd.extend(["--dataset.fps", str(int(dataset_fps))])
+        cmd.extend(["--play_sounds", "true" if play_sounds else "false"])
         return cmd
 
     if action == "start":
@@ -513,6 +532,7 @@ def build_lerobot_command(
             cmd.extend(["--dataset.video", "true" if dataset_video else "false"])
             if display_data:
                 cmd.extend(["--display_data", "true"])
+            cmd.extend(["--play_sounds", "true" if play_sounds else "false"])
             return cmd
 
         # Simple teleoperation mode -> lerobot-teleoperate.
@@ -593,6 +613,7 @@ def build_lerobot_command(
         cmd.extend(["--fps", str(int(fps))])
         if display_data:
             cmd.extend(["--display_data", "true"])
+        cmd.extend(["--play_sounds", "true" if play_sounds else "false"])
         return cmd
 
     raise ValueError(f"Unknown action: {action}")
