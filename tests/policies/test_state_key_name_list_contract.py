@@ -60,6 +60,17 @@ pinned behaviourally below so the classification cannot hide a silent accept.
 
 ``None`` and an empty list keep their existing "auto-detect" meaning: like every
 other consumer of the shared domain, the check is gated on a truthy value.
+
+The AST classifier below proves that each of the nine owning surfaces CALLS
+the shared domain. It cannot prove that any of them RAISES: a body keeping the
+``name_list_error(...)`` call and dropping the ``raise`` satisfies it unchanged.
+Only ``MockPolicy`` and ``RemotePolicy`` were driven behaviourally, so on the
+other seven the refusal was asserted structurally and had never fired - measured
+with coverage over the suite, the ``raise ValueError(error)`` line was unexecuted
+in ``cosmos3``, ``curobo``, ``groot``, ``lerobot_async``, ``lerobot_local``,
+``moveit2`` and ``vera``. Each is now constructed and driven directly, and the
+table that does so is derived from ``_MUST_VALIDATE`` so a provider added later
+cannot quietly join the structurally-only half.
 """
 
 from __future__ import annotations
@@ -67,6 +78,7 @@ from __future__ import annotations
 import ast
 import asyncio
 import pathlib
+from collections.abc import Callable
 from typing import Any
 
 import pytest
@@ -77,6 +89,7 @@ from strands_robots.policies.composite import CompositePolicy
 from strands_robots.policies.mock import MockPolicy
 from strands_robots.policies.motionbricks.policy import MotionBricksPolicy
 from strands_robots.policies.wbc.policy import WBCConfig, WBCPolicy
+from strands_robots.utils import name_list_error
 
 _PACKAGE = pathlib.Path(strands_robots.__file__).parent
 
@@ -253,8 +266,6 @@ def test_the_state_keys_handler_forwards_the_wire_value_verbatim() -> None:
 
 def test_list_of_a_bare_string_would_pass_the_domain() -> None:
     """Why the coercion had to go: its output is indistinguishable from valid input."""
-    from strands_robots.utils import name_list_error
-
     assert name_list_error("wrist", "robot_state_keys", "c") is not None
     assert name_list_error(list("wrist"), "robot_state_keys", "c") is None
 
@@ -475,3 +486,150 @@ def test_the_by_name_providers_still_tolerate_a_repeated_name() -> None:
     keys = ["floating_base_joint", *WBC_G1_ALL_JOINTS, "left_hip_pitch_joint"]
     policy.set_robot_state_keys(keys)
     assert policy._robot_state_keys == keys
+
+
+# --------------------------------------------------------------------------
+# Behaviour on every provider that owns the check, not only MockPolicy
+# --------------------------------------------------------------------------
+
+
+def _cosmos3() -> Any:
+    """Service backend: the constructor records host/port and dials nothing."""
+    from strands_robots.policies.cosmos3.policy import Cosmos3Policy
+
+    return Cosmos3Policy(backend="service")
+
+
+def _curobo() -> Any:
+    """An injected planner keeps cuRobo itself out of the construction."""
+    from strands_robots.policies.curobo.policy import CuroboPolicy
+
+    return CuroboPolicy(motion_gen=object(), warmup=False)
+
+
+def _groot() -> Any:
+    """Service mode: the ZMQ socket is opened on first inference, not here."""
+    from strands_robots.policies.groot.policy import Gr00tPolicy
+
+    return Gr00tPolicy()
+
+
+def _lerobot_async() -> Any:
+    """Both required kwargs supplied; the inference client connects lazily."""
+    from strands_robots.policies.lerobot_async.policy import LerobotAsyncPolicy
+
+    return LerobotAsyncPolicy(policy_type="act", pretrained_name_or_path="unused/checkpoint")
+
+
+def _lerobot_local() -> Any:
+    """An empty checkpoint path leaves the model unloaded."""
+    from strands_robots.policies.lerobot_local.policy import LerobotLocalPolicy
+
+    return LerobotLocalPolicy()
+
+
+def _moveit2() -> Any:
+    """Service mode: the ZMQ socket is opened on the first plan request."""
+    from strands_robots.policies.moveit2.policy import MoveIt2Policy
+
+    return MoveIt2Policy()
+
+
+def _vera() -> Any:
+    """An injected client with no auto-launch keeps VERA out of the process."""
+    from strands_robots.policies.vera.provider import VeraPolicy
+
+    client: Any = object()  # dependency injection: nothing dials in these tests
+    return VeraPolicy(auto_launch_server=False, client=client)
+
+
+# (surface id as classified above, factory, the attribute the setter binds into,
+# the import its constructor needs). A ``None`` attribute means the provider
+# validates without storing; a ``None`` import means it needs no extra.
+_Surface = tuple[str, "Callable[[], Any]", str | None, str | None]
+
+_OWNING_SURFACES: list[_Surface] = [
+    ("policies/cosmos3/policy.py::Cosmos3Policy", _cosmos3, "robot_state_keys", None),
+    ("policies/curobo/policy.py::CuroboPolicy", _curobo, "_robot_state_keys", None),
+    ("policies/groot/policy.py::Gr00tPolicy", _groot, None, "zmq"),
+    ("policies/lerobot_async/policy.py::LerobotAsyncPolicy", _lerobot_async, "robot_state_keys", None),
+    ("policies/lerobot_local/policy.py::LerobotLocalPolicy", _lerobot_local, "robot_state_keys", "torch"),
+    ("policies/moveit2/policy.py::MoveIt2Policy", _moveit2, "_robot_state_keys", "zmq"),
+    ("policies/vera/provider.py::VeraPolicy", _vera, "_robot_state_keys", None),
+]
+_OWNING_IDS = [surface.split("::")[1] for surface, *_ in _OWNING_SURFACES]
+
+_STORING_SURFACES = [entry for entry in _OWNING_SURFACES if entry[2] is not None]
+_STORING_IDS = [surface.split("::")[1] for surface, *_ in _STORING_SURFACES]
+
+
+def _build(entry: _Surface) -> Any:
+    """Construct the provider, skipping cleanly when its extra is absent."""
+    _, factory, _, requires = entry
+    if requires is not None:
+        pytest.importorskip(requires, reason=f"{requires} needed to construct this provider")
+    return factory()
+
+
+def test_the_behavioural_table_covers_every_surface_that_owns_the_check() -> None:
+    """Derived, so a provider added later cannot skip the behavioural half.
+
+    ``MockPolicy`` and ``RemotePolicy`` are driven by the sections above; these
+    seven are the remainder. A tenth owning surface fails here rather than
+    joining the set whose refusal only the AST classifier ever sees.
+    """
+    driven_above = {"policies/mock.py::MockPolicy", "inference/client.py::RemotePolicy"}
+    assert {entry[0] for entry in _OWNING_SURFACES} | driven_above == _MUST_VALIDATE
+
+
+@pytest.mark.parametrize("entry", _OWNING_SURFACES, ids=_OWNING_IDS)
+def test_every_owning_provider_refuses_the_bare_string(entry: _Surface) -> None:
+    """The headline mistake, refused with the shared domain's message verbatim.
+
+    Equality rather than a substring: the provider has to return the shared
+    verdict, not a locally re-worded copy that could drift from the other eight.
+    """
+    policy = _build(entry)
+    with pytest.raises(ValueError) as excinfo:
+        policy.set_robot_state_keys("shoulder_pan.pos")
+    assert str(excinfo.value) == name_list_error("shoulder_pan.pos", "robot_state_keys", "set_robot_state_keys")
+
+
+@pytest.mark.parametrize("entry", _OWNING_SURFACES, ids=_OWNING_IDS)
+def test_every_owning_provider_refuses_a_non_string_entry(entry: _Surface) -> None:
+    """A second shape, so the claim is about the surface rather than one value."""
+    policy = _build(entry)
+    with pytest.raises(ValueError, match="robot_state_keys"):
+        policy.set_robot_state_keys(["elbow", 2.5])
+
+
+@pytest.mark.parametrize("entry", _STORING_SURFACES, ids=_STORING_IDS)
+def test_a_refusal_leaves_the_previously_bound_layout(entry: _Surface) -> None:
+    """No half-applied layout: for the stored keys the refused call is a no-op."""
+    policy = _build(entry)
+    attribute = entry[2]
+    assert attribute is not None  # _STORING_SURFACES is filtered on this
+    policy.set_robot_state_keys(["elbow", "wrist"])
+    with pytest.raises(ValueError):
+        policy.set_robot_state_keys("gripper")
+    assert getattr(policy, attribute) == ["elbow", "wrist"]
+
+
+def test_the_validate_only_provider_stores_nothing_either_way() -> None:
+    """Gr00t translates keys through its own mappings, so it binds none of them.
+
+    Its setter exists to reach the same verdict as the others rather than to
+    record anything, which is why it has no attribute to check above.
+    """
+    policy = _build(("", _groot, None, "zmq"))
+    with pytest.raises(ValueError, match="robot_state_keys"):
+        policy.set_robot_state_keys("shoulder_pan.pos")
+    policy.set_robot_state_keys(["elbow", "wrist"])
+    assert not hasattr(policy, "robot_state_keys")
+
+
+@pytest.mark.parametrize("entry", _OWNING_SURFACES, ids=_OWNING_IDS)
+def test_every_owning_provider_accepts_a_distinct_list(entry: _Surface) -> None:
+    """The over-reach control: only what the domain names is refused."""
+    policy = _build(entry)
+    policy.set_robot_state_keys(["elbow", "wrist", "shoulder_pan.pos"])
