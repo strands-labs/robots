@@ -546,7 +546,7 @@ def _vera() -> Any:
 # (surface id as classified above, factory, the attribute the setter binds into,
 # the import its constructor needs). A ``None`` attribute means the provider
 # validates without storing; a ``None`` import means it needs no extra.
-_Surface = tuple[str, "Callable[[], Any]", str | None, str | None]
+_Surface = tuple[str, Callable[[], Any], str | None, str | None]
 
 _OWNING_SURFACES: list[_Surface] = [
     ("policies/cosmos3/policy.py::Cosmos3Policy", _cosmos3, "robot_state_keys", None),
