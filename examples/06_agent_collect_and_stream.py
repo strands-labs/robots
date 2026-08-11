@@ -44,10 +44,15 @@ agent(
 #    same object that recorded it. Camera frames are decoded on the fly from
 #    the MP4 shards (torchcodec, shipped by the [lerobot] extra); state/action
 #    come from the parquet shards. Nothing is re-materialized to disk.
+#    shuffle=False only fixes the seed; the reader re-shards and yields from a
+#    random reservoir, so max_num_shards=1 + buffer_size=1 are what make this
+#    read capture order. Drop all three to train (the shuffle is wanted there).
 reader = sim.stream_dataset(
     REPO_ID,
     root=DATASET_ROOT,
     shuffle=False,
+    max_num_shards=1,
+    buffer_size=1,
 )
 
 print(f"\nStreaming {reader.num_episodes} episode(s), {reader.num_frames} frames @ {reader.fps} fps")
