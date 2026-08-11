@@ -388,6 +388,30 @@ class TestPoseVectorDomain:
         assert values is None
         assert error and error.startswith("m: 'position'")
 
+    @pytest.mark.parametrize("text", ["box", "cube", "0.1,0.2,0.3", "123", b"abc"])
+    def test_a_string_is_refused_on_its_type_not_its_length(self, text):
+        """A string names its own type in the refusal, whatever its length.
+
+        Every one of these was already refused, so this pins WHICH question the
+        caller is sent to fix. A string carries a length, so before the type guard
+        the verdict was picked by that length: at ``expected_len`` 3, ``"box"``
+        drew ``elements must be numbers``, ``"cube"`` drew a wrong element *count*
+        of 4, and ``"0.1,0.2,0.3"`` drew a count of 11 - one mistake reported three
+        ways, two of them describing the string's characters as though they were
+        pose components. ``add_camera(target="cube")`` is the call that found it,
+        a camera aimed at a named body being what the parameter looks like it takes.
+        """
+        values, error = coerce_pose_vector("add_camera", "target", text, 3)
+        assert values is None
+        assert error is not None
+        assert error.startswith("add_camera: 'target' must be a list/tuple of 3 numbers")
+        assert type(text).__name__ in error
+        # The character count must not appear as a component count. "123" would
+        # make this vacuous by containing its own digits, so it is checked on the
+        # phrase the length gate produces rather than on the number.
+        assert "-element vector" not in error
+        assert "elements must be numbers" not in error
+
 
 class TestLerobotVersion:
     """``lerobot_version`` degrades instead of raising.

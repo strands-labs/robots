@@ -1777,6 +1777,34 @@ def _read_pose_vector(method: str, param_name: str, vec: Any, expected_len: int)
     # an oversized ``int`` that CPython itself refuses to convert, escaped this
     # guard and the structured contract its callers document. Both verdicts below
     # are unchanged, including the text for a value carrying no readable length.
+    # A str/bytes is refused on TYPE, before its length is asked for, because it
+    # carries one and the answer is meaningless: it counts characters, not
+    # components. ``add_camera(target="cube")`` - a plausible call, since a camera
+    # aimed at a named body is what the parameter looks like it takes - was refused
+    # as ``'target' must be a 3-element vector, got 4 ('cube')``, which reports the
+    # string's character count as though it were a component count and points the
+    # caller at fixing the length rather than the type.
+    #
+    # Every string is refused either way - ``"123"`` reaches the element read and is
+    # refused there, on its characters - so this changes no verdict, only which
+    # question the caller is sent to fix. That is the whole point: the two refusals
+    # a string currently draws are picked by its LENGTH, so the same mistake reads
+    # as three unrelated problems. At ``expected_len`` 3, ``target="box"`` reports
+    # ``elements must be numbers``, ``target="cube"`` reports a wrong element
+    # *count*, and ``target="0.1,0.2,0.3"`` reports a count of 11. One of those
+    # names the actual error and the other two describe the string's characters as
+    # though they were components.
+    #
+    # :func:`image_keys_error` already refuses str/bytes this way on the name-list
+    # path next door, for the same reason (a string is iterable per character), so
+    # this is one library rule applied to the surface that was missing it.
+    if isinstance(vec, str | bytes):
+        return [], (
+            f"{method}: '{param_name}' must be a list/tuple of {expected_len} numbers, "
+            f"got {type(vec).__name__} {_refusal_container_repr(vec)}. A string carries a "
+            f"length, but it counts characters rather than components, so it cannot be read "
+            f"as a pose - pass the {expected_len} numbers themselves."
+        )
     length = sequence_length(vec)
     if length is None:
         return [], (
