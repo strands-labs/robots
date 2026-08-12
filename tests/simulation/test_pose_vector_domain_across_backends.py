@@ -657,8 +657,14 @@ def _scan_placement_methods(root: pathlib.Path) -> tuple[set[tuple[str, str]], l
                     found.add((backend, fn.name))
                     routed = any(
                         isinstance(node, ast.Call)
-                        and isinstance(node.func, ast.Name)
-                        and node.func.id == "coerce_pose_vector"
+                        and (
+                            (isinstance(node.func, ast.Name) and node.func.id == "coerce_pose_vector")
+                            # Routing through the backend-agnostic core counts:
+                            # MotionPrimitivesCore._validate_move_to_args wraps
+                            # coerce_pose_vector (pinned non-vacuously by
+                            # test_the_shared_core_validator_uses_the_shared_helper).
+                            or (isinstance(node.func, ast.Attribute) and node.func.attr == "_validate_move_to_args")
+                        )
                         for node in ast.walk(fn)
                     )
                     if not routed:
@@ -695,6 +701,21 @@ class TestNoPlacementMethodDrifts:
         assert found == {("newton", "place")}
         assert len(unguarded) == 1
         assert "Engine.place" in unguarded[0]
+
+    def test_the_shared_core_validator_uses_the_shared_helper(self):
+        """The indirection the scan accepts must end at ``coerce_pose_vector``.
+
+        ``move_to`` routes its pose parameters through
+        ``MotionPrimitivesCore._validate_move_to_args`` (the backend-agnostic
+        core extracted in #2153), so the scan accepts that call as routed.
+        That acceptance is only sound while the core validator itself calls
+        the shared helper - this pins the second hop, so the chain cannot be
+        broken by editing the module the scan does not walk.
+        """
+        from strands_robots.simulation.motion_primitives_base import MotionPrimitivesCore
+
+        source = inspect.getsource(MotionPrimitivesCore._validate_move_to_args)
+        assert "coerce_pose_vector" in source
 
     def test_a_module_level_spec_helper_is_out_of_scope_by_construction(self):
         """``reposition_body_in_scene`` is not a public method and takes no envelope.

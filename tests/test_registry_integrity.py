@@ -197,7 +197,7 @@ def test_rebot_b601_family_is_drivable_real(registry: dict) -> None:
 
 # Valid values for gripper.closed / gripper.open: which END of the gripper's
 # set-point range the state maps to. Kept in sync with
-# strands_robots/simulation/mujoco/motion_primitives.py::_CTRLRANGE_ENDS.
+# strands_robots/simulation/motion_primitives_base.py::_CTRLRANGE_ENDS.
 _GRIPPER_ENDS = {"low", "high"}
 
 

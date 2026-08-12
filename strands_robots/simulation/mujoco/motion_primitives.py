@@ -49,79 +49,48 @@ from __future__ import annotations
 
 import logging
 import math
-import numbers
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
 from strands_robots.registry.robots import get_robot
 from strands_robots.simulation.models import registered, registry_entry
+
+# The backend-agnostic half (parameter domains, registry gripper metadata,
+# shared envelopes and name-hint constants) lives in
+# :mod:`strands_robots.simulation.motion_primitives_base` (GH #2123) so the
+# Isaac adapter answers identically. The redundant aliases re-export the
+# moved names at their historical import path.
+from strands_robots.simulation.motion_primitives_base import (
+    _GRIPPER_HINTS as _GRIPPER_HINTS,
+)
+from strands_robots.simulation.motion_primitives_base import (
+    _IK_RESTART_SEEDS as _IK_RESTART_SEEDS,
+)
+from strands_robots.simulation.motion_primitives_base import (
+    _WRIST_HINTS as _WRIST_HINTS,
+)
+from strands_robots.simulation.motion_primitives_base import (
+    MotionPrimitivesCore,
+    _err,
+)
+from strands_robots.simulation.motion_primitives_base import (
+    _is_finite_real as _is_finite_real,
+)
 from strands_robots.simulation.mujoco.backend import _NO_WORLD_MSG, mj_name_to_id
-from strands_robots.utils import coerce_pose_vector
 
 logger = logging.getLogger(__name__)
-
-# Name hints (lowercased substring match on the namespace-stripped actuator /
-# joint name) used to resolve the gripper DOF when the robot registry carries
-# no gripper metadata for the robot's ``data_config``. Matches the existing
-# runtime precedent (vera provider / cosmos3 policy use gripper|finger;
-# SO-100's gripper joint is the "Jaw"). Registry metadata
-# (``robots.json`` -> ``<robot>.gripper``, GH #1658) is authoritative when
-# present; the heuristic is the zero-config fallback for user URDFs / injected
-# MJCF, and an unresolvable gripper returns a structured error listing the
-# actuators so the agent can fall back to send_action.
-_GRIPPER_HINTS = ("gripper", "finger", "jaw")
-
-# Valid values for the registry gripper metadata ``closed`` / ``open`` fields:
-# which END of the gripper's set-point range the state maps to (that range is
-# normally the actuator ctrlrange; see _gripper_setpoint_range for the driven-
-# joint substitution). The registry integrity tests shape-check the shipped
-# robots.json against the same two values.
-_CTRLRANGE_ENDS = ("low", "high")
-
-# Wrist-yaw joint hints, most-specific first. Fallback: the last non-gripper
-# hinge joint in the robot's chain (the distal roll joint on most serial
-# arms). "Non-gripper" is decided by the shared registry-metadata-first
-# classification (_resolve_gripper_actuators), not by _GRIPPER_HINTS alone.
-_WRIST_HINTS = ("wrist_roll", "wrist_yaw", "wrist_rotate", "wrist")
 
 # Physics substeps per control tick. Each move_to/rotate_wrist "step" (and each
 # set_gripper "step") re-asserts ctrl then advances this many mj_step calls, so
 # the default budgets stay bounded: move_to(max_steps=200) is at most
 # 200 * 5 = 1000 physics steps (2 s of sim time at the 0.002 s default).
+# Deliberately NOT in motion_primitives_base: it is a MuJoCo physics-substep
+# detail, not part of the backend-agnostic primitive contract.
 _SUBSTEPS_PER_TICK = 5
 
-# Hard ceiling on max_steps / steps to prevent unbounded primitive runtime.
-_MAX_PRIMITIVE_STEPS = 10_000
 
-# Workspace sanity radius: a move_to target further than this from the robot's
-# spawn position is rejected up front (meters). Generous on purpose - it guards
-# against unit mistakes (mm vs m), not reachability; true reachability is
-# checked by the IK residual.
-_WORKSPACE_SANITY_RADIUS_M = 5.0
-
-# Deterministic IK restart seeds tried when the direct solve from the live
-# configuration stalls in a local minimum (see move_to). Bounded so the worst
-# case is still a sub-second solve budget.
-_IK_RESTART_SEEDS = 8
-
-
-def _is_finite_real(value: Any) -> bool:
-    """True when ``value`` is a real, finite scalar (bool rejected)."""
-    if isinstance(value, bool) or not isinstance(value, numbers.Real):
-        return False
-    return math.isfinite(float(value))
-
-
-def _err(text: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Structured error tool-result, optionally with a json details block."""
-    content: list[dict[str, Any]] = [{"text": text}]
-    if payload is not None:
-        content.append({"json": payload})
-    return {"status": "error", "content": content}
-
-
-class MotionPrimitivesMixin:
+class MotionPrimitivesMixin(MotionPrimitivesCore):
     """Analytic motion primitives mixed into ``Simulation``.
 
     **Coupling** (see the :mod:`simulation` top-level docstring): reaches into
@@ -323,44 +292,16 @@ class MotionPrimitivesMixin:
             return name[len(namespace) :]
         return name or ""
 
-    def _registry_gripper_metadata(self, robot: Any) -> tuple[dict[str, Any] | None, str | None]:
-        """Registry ``gripper`` block for *robot*'s ``data_config``, shape-checked.
+    @staticmethod
+    def _get_registry_robot(data_config: str) -> dict[str, Any] | None:
+        """Registry lookup seam (see ``MotionPrimitivesCore._get_registry_robot``).
 
-        Returns ``(metadata, None)`` when the robot's ``data_config`` resolves
-        to a registry entry with a well-formed ``gripper`` block,
-        ``(None, None)`` when there is no metadata (heuristic fallback
-        applies), and ``(None, reason)`` when a block exists but is malformed
-        (possible via the user-local registry overlay; the shipped
-        ``robots.json`` is shape-checked by tests). A malformed block is a
-        loud error, never a silent heuristic fallback - half-applying it
-        could reintroduce the silent-DOF bug this metadata exists to fix.
+        Resolves through this module's ``get_robot`` global so the historical
+        patch point
+        (``strands_robots.simulation.mujoco.motion_primitives.get_robot``)
+        keeps working for tests and user code.
         """
-        data_config = getattr(robot, "data_config", None)
-        if not data_config:
-            return None, None
-        info = get_robot(data_config)
-        if not info or "gripper" not in info:
-            return None, None
-        meta = info["gripper"]
-        actuators = meta.get("actuators") if isinstance(meta, dict) else None
-        closed_end = meta.get("closed", "low") if isinstance(meta, dict) else None
-        open_end = meta.get("open", "high") if isinstance(meta, dict) else None
-        if (
-            isinstance(actuators, list)
-            and actuators
-            and all(isinstance(a, str) and a for a in actuators)
-            and closed_end in _CTRLRANGE_ENDS
-            and open_end in _CTRLRANGE_ENDS
-            and closed_end != open_end
-        ):
-            return meta, None
-        return None, (
-            f"registry gripper metadata for data_config '{data_config}' is malformed: {meta!r}. "
-            "Expected {'actuators': [non-empty names], 'closed': 'low'|'high', "
-            "'open': 'low'|'high'} with 'closed' != 'open'. Fix the registry entry "
-            "(user overlay: user_robots.json), or drive the gripper directly with "
-            "action='send_action'."
-        )
+        return get_robot(data_config)
 
     def _resolve_gripper_actuators(
         self, model: Any, robot: Any
@@ -516,30 +457,13 @@ class MotionPrimitivesMixin:
             or servo convergence times out. Never raises.
         """
         # ---- parameter validation (before touching the world) ----
-        if position is None:
-            return _err("move_to requires 'position' ([x, y, z] target in meters).")
-        # Same guard the scene-construction entry points use, so a pose
-        # `add_object`/`move_object` refuses is refused here too. `len()` on a
-        # value with no length (a scalar, an iterator) raises a bare TypeError,
-        # which would escape this method's documented never-raises contract.
-        position, pos_err = coerce_pose_vector("move_to", "position", position, 3)
-        if pos_err is not None:
-            return _err(pos_err)
-        assert position is not None  # non-None input yields a non-None result
-        orientation, quat_err = coerce_pose_vector("move_to", "orientation", orientation, 4)
-        if quat_err is not None:
-            return _err(quat_err)
-        if orientation is not None:
-            quat_norm = float(np.linalg.norm(np.asarray(orientation, dtype=np.float64)))
-            if quat_norm < 1e-8:
-                return _err("move_to: 'orientation' quaternion has ~zero norm; pass a valid [w, x, y, z].")
-        if not _is_finite_real(tol) or float(tol) <= 0.0:
-            return _err(f"move_to: 'tol' must be a positive number of meters, got {tol!r}.")
-        err = self._validate_step_budget("move_to", "max_steps", max_steps)
-        if err is not None:
-            return err
-        max_steps = int(max_steps)
-        target = np.asarray(position, dtype=np.float64)
+        # Shared with the Isaac adapter (motion_primitives_base): same
+        # pose-vector rule the scene-construction calls use, same tol /
+        # max_steps domains, same wording.
+        target, target_quat, max_steps, arg_err = self._validate_move_to_args(position, orientation, tol, max_steps)
+        if arg_err is not None:
+            return arg_err
+        assert target is not None  # no error implies a coerced target
 
         # ---- setup under the lock: guards, EE frame, IK solve ----
         with self._lock:
@@ -554,13 +478,9 @@ class MotionPrimitivesMixin:
             namespace = robot.namespace or ""
 
             base = np.asarray(robot.position or (0.0, 0.0, 0.0), dtype=np.float64)
-            base_dist = float(np.linalg.norm(target - base))
-            if base_dist > _WORKSPACE_SANITY_RADIUS_M:
-                return _err(
-                    f"move_to: target {target.tolist()} is {base_dist:.2f} m from robot "
-                    f"'{robot_name}' base - outside the {_WORKSPACE_SANITY_RADIUS_M:.0f} m workspace "
-                    "sanity box. Check units (meters, world frame)."
-                )
+            sanity_err = self._workspace_sanity_error(robot_name, target, base)
+            if sanity_err is not None:
+                return sanity_err
 
             from strands_robots.simulation.ik import discover_ee_frame
 
@@ -613,7 +533,7 @@ class MotionPrimitivesMixin:
                     model,
                     frame_name,
                     frame_type,
-                    orientation_cost=1.0 if orientation is not None else 0.0,
+                    orientation_cost=1.0 if target_quat is not None else 0.0,
                     max_iters=200,
                 )
             except (ImportError, RuntimeError, ValueError) as e:
@@ -622,9 +542,8 @@ class MotionPrimitivesMixin:
             q0 = np.array(data.qpos, dtype=np.float64, copy=True)
             target_pose = np.eye(4, dtype=np.float64)
             target_pose[:3, 3] = target
-            if orientation is not None:
-                quat = np.asarray(orientation, dtype=np.float64)
-                quat = quat / np.linalg.norm(quat)
+            if target_quat is not None:
+                quat = target_quat / np.linalg.norm(target_quat)
                 rot = np.zeros(9, dtype=np.float64)
                 self._mj.mju_quat2Mat(rot, quat)
                 target_pose[:3, :3] = rot.reshape(3, 3)
@@ -724,36 +643,19 @@ class MotionPrimitivesMixin:
                 reached = True
                 break
 
-        payload = {
-            "reached": reached,
-            "steps": steps_used,
-            "position_error_m": position_error,
-            "ik_residual_m": ik_residual,
-            "ee_position": [float(v) for v in ee_pos],
-            "ee_orientation_wxyz": [float(v) for v in ee_quat],
-            "frame": frame_name,
-            "frame_type": frame_type,
-        }
-        if reached:
-            return {
-                "status": "success",
-                "content": [
-                    {
-                        "text": (
-                            f"move_to: '{robot_name}' EE ({frame_type} '{frame_name}') reached "
-                            f"{target.tolist()} within {float(tol)} m in {steps_used} steps "
-                            f"(error {position_error:.4f} m)."
-                        )
-                    },
-                    {"json": payload},
-                ],
-            }
-        return _err(
-            f"move_to: '{robot_name}' did not reach {target.tolist()} within tol={float(tol)} m "
-            f"after max_steps={max_steps} (residual {position_error:.4f} m; IK residual was "
-            f"{ik_residual:.4f} m). The servo may need more steps, or the pose fights joint "
-            "limits/contacts.",
-            payload,
+        return self._move_to_result(
+            robot_name,
+            target,
+            float(tol),
+            max_steps,
+            reached=reached,
+            steps_used=steps_used,
+            position_error=position_error,
+            ik_residual=ik_residual,
+            ee_pos=ee_pos,
+            ee_quat=ee_quat,
+            frame_name=frame_name,
+            frame_type=frame_type,
         )
 
     def set_gripper(
@@ -794,12 +696,10 @@ class MotionPrimitivesMixin:
             cannot be resolved or no source gives usable set-points. Never
             raises.
         """
-        if state not in ("open", "close"):
-            return _err(f'set_gripper: \'state\' must be "open" or "close", got {state!r}.')
-        err = self._validate_step_budget("set_gripper", "steps", steps)
-        if err is not None:
-            return err
-        steps = int(steps)
+        steps, arg_err = self._validate_set_gripper_args(state, steps)
+        if arg_err is not None:
+            return arg_err
+        assert state is not None  # narrowed by the shared validator
 
         with self._lock:
             robot_name_resolved, error = self._primitive_resolve_robot("set_gripper", robot_name)
@@ -834,15 +734,11 @@ class MotionPrimitivesMixin:
                     "Drive it directly with action='send_action' instead."
                 )
 
-            # Which END of the set-point range each state maps to: the registry metadata's
-            # `closed`/`open` fields when present, else the open=HIGH /
-            # close=LOW convention (correct for SO-100/SO-101 and Franka, but
-            # a convention, not a law - the metadata field exists to remove
-            # that sign trap for robots with an inverted gripper).
-            if grip_meta is not None:
-                end = grip_meta.get("open", "high") if state == "open" else grip_meta.get("closed", "low")
-            else:
-                end = "high" if state == "open" else "low"
+            # Which END of the set-point range each state maps to: shared
+            # registry-metadata-first mapping (open=HIGH / close=LOW
+            # convention when no metadata; see
+            # MotionPrimitivesCore._gripper_state_end).
+            end = self._gripper_state_end(state, grip_meta)
 
             targets: dict[int, float] = {}
             setpoint_sources: dict[int, str] = {}
@@ -875,22 +771,15 @@ class MotionPrimitivesMixin:
             act_names = [
                 self._short_name(mj.mj_id2name(model, mj.mjtObj.mjOBJ_ACTUATOR, a), namespace) for a in gripper_acts
             ]
-        payload = {
-            "state": state,
-            "actuators": act_names,
-            "targets": {n: targets[a] for n, a in zip(act_names, gripper_acts, strict=True)},
-            "setpoint_sources": {n: setpoint_sources[a] for n, a in zip(act_names, gripper_acts, strict=True)},
-            "gripper_joint_positions": joint_positions,
-        }
-        return {
-            "status": "success",
-            "content": [
-                {
-                    "text": f"set_gripper: '{robot_name}' gripper commanded {state} ({steps} ticks, actuators {act_names})."
-                },
-                {"json": payload},
-            ],
-        }
+        return self._set_gripper_result(
+            robot_name,
+            state,
+            steps,
+            act_names,
+            {n: targets[a] for n, a in zip(act_names, gripper_acts, strict=True)},
+            {n: setpoint_sources[a] for n, a in zip(act_names, gripper_acts, strict=True)},
+            joint_positions,
+        )
 
     def rotate_wrist(
         self,
@@ -931,17 +820,9 @@ class MotionPrimitivesMixin:
             the target is out of range, or servo convergence times out.
             Never raises.
         """
-        if target_yaw is None:
-            return _err("rotate_wrist requires 'target_yaw' (wrist joint set-point in radians).")
-        if not _is_finite_real(target_yaw):
-            return _err(f"rotate_wrist: 'target_yaw' must be a finite number of radians, got {target_yaw!r}.")
-        if not _is_finite_real(tol) or float(tol) <= 0.0:
-            return _err(f"rotate_wrist: 'tol' must be a positive number of radians, got {tol!r}.")
-        err = self._validate_step_budget("rotate_wrist", "max_steps", max_steps)
-        if err is not None:
-            return err
-        max_steps = int(max_steps)
-        target_yaw = float(target_yaw)
+        target_yaw, max_steps, arg_err = self._validate_rotate_wrist_args(target_yaw, tol, max_steps)
+        if arg_err is not None:
+            return arg_err
 
         with self._lock:
             robot_name_resolved, error = self._primitive_resolve_robot("rotate_wrist", robot_name)
@@ -1033,40 +914,14 @@ class MotionPrimitivesMixin:
                 reached = True
                 break
 
-        payload = {
-            "reached": reached,
-            "steps": steps_used,
-            "wrist_joint": wrist_name,
-            "target_yaw": target_yaw,
-            "final_yaw": final_yaw,
-            "yaw_error_rad": yaw_error,
-        }
-        if reached:
-            return {
-                "status": "success",
-                "content": [
-                    {
-                        "text": (
-                            f"rotate_wrist: '{robot_name}' joint '{wrist_name}' reached "
-                            f"{target_yaw:.3f} rad within {float(tol)} rad in {steps_used} steps."
-                        )
-                    },
-                    {"json": payload},
-                ],
-            }
-        return _err(
-            f"rotate_wrist: '{robot_name}' joint '{wrist_name}' did not reach {target_yaw:.3f} rad "
-            f"within tol={float(tol)} rad after max_steps={max_steps} (residual {yaw_error:.4f} rad).",
-            payload,
+        return self._rotate_wrist_result(
+            robot_name,
+            float(tol),
+            max_steps,
+            reached=reached,
+            steps_used=steps_used,
+            wrist_name=wrist_name,
+            target_yaw=target_yaw,
+            final_yaw=final_yaw,
+            yaw_error=yaw_error,
         )
-
-    # -- validation helpers ---------------------------------------------------
-
-    @staticmethod
-    def _validate_step_budget(action: str, param: str, value: Any) -> dict[str, Any] | None:
-        """Validate an integer control-tick budget (1..``_MAX_PRIMITIVE_STEPS``)."""
-        if isinstance(value, bool) or not isinstance(value, numbers.Integral):
-            return _err(f"{action}: '{param}' must be an integer, got {type(value).__name__}.")
-        if not (1 <= int(value) <= _MAX_PRIMITIVE_STEPS):
-            return _err(f"{action}: '{param}' must be between 1 and {_MAX_PRIMITIVE_STEPS}, got {int(value)}.")
-        return None
