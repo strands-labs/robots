@@ -315,7 +315,10 @@ def main(argv: list[str] | None = None) -> int:
             dashboard.tick()
             time.sleep(args.interval)
     except KeyboardInterrupt:
-        pass
+        # Ctrl+C is the documented way to stop the dashboard; announce the
+        # shutdown so the interrupt is visibly handled, then fall through to
+        # the mesh.stop() cleanup below.
+        print("dashboard interrupted; detaching from the mesh")
     finally:
         mesh.stop()
     return 0

@@ -43,7 +43,7 @@ os.environ.setdefault("MUJOCO_GL", "egl")
 
 import argparse
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -54,7 +54,6 @@ if str(_FLEET_DIR) not in sys.path:
     sys.path.insert(0, str(_FLEET_DIR))
 
 from capabilities import (  # noqa: E402
-    CapabilityManifest,
     StepRequirement,
     feasible_robots,
     manifest_from_dict,
