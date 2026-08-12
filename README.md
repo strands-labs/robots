@@ -971,8 +971,13 @@ backend's install, usage, config, and `STRANDS_ISAAC_*` env vars.
 </p>
 
 Every `Robot()` and `Simulation()` is automatically a peer on a local Zenoh
-mesh - no setup. Peers on the same LAN discover each other via multicast
-scouting, sharing a single ref-counted `zenoh.Session` per process.
+mesh - no setup. Peers on the same host discover each other out of the box
+(gossip scouting plus a shared local endpoint), sharing a single ref-counted
+`zenoh.Session` per process. Cross-host discovery is deliberately explicit:
+point peers at each other with `ZENOH_CONNECT` (e.g. `tcp/10.0.0.1:7447`).
+Multicast scouting is **off by default** - it lets any device on the LAN
+enumerate and attract the fleet - and is opt-in via
+`STRANDS_MESH_MULTICAST=true`, which logs a loud warning.
 
 ```python
 from strands_robots import Robot
@@ -1097,6 +1102,7 @@ touches ROS 2.
 | `STRANDS_MESH_PORT` | TCP port for the local Zenoh router | `7447` |
 | `ZENOH_CONNECT` | Comma-separated remote Zenoh endpoints to connect to | unset |
 | `ZENOH_LISTEN` | Comma-separated endpoints for the local Zenoh listener | unset |
+| `STRANDS_MESH_MULTICAST` | Opt in to multicast scouting for LAN discovery. Off by default: any device on the LAN can enumerate and attract the fleet, so enabling it logs a WARNING. Prefer explicit `ZENOH_CONNECT` endpoints | `false` |
 | `STRANDS_MESH_AUDIT_DIR` | Directory for the safety audit log (`mesh_audit.jsonl`) | `~/.strands_robots/` |
 | `STRANDS_MESH_CA_PINS` | Additional SHA-256 CA pins (comma-separated 64-char hex) | unset |
 | `STRANDS_MESH_DISABLE_CA_PIN` | Skip CA pin check on download path (break-glass) | `false` |
