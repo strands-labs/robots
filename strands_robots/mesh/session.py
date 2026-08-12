@@ -15,7 +15,11 @@ Connection strategy (when no explicit endpoint is configured):
    first process the local router.
 2. If the port is already bound, fall back to **client** mode and connect to the
    same endpoint.
-3. Zenoh scouting (multicast) handles LAN discovery automatically.
+3. Zenoh gossip scouting propagates peers reachable through those endpoints.
+   Multicast scouting is **disabled by default** (LAN discovery attack
+   surface); operators on a controlled LAN can opt in with
+   ``STRANDS_MESH_MULTICAST=true``. Cross-host peers otherwise need explicit
+   ``ZENOH_CONNECT`` endpoints.
 
 Environment variables
 ---------------------
@@ -27,6 +31,9 @@ Environment variables
     Local auto-mesh port (default ``7447``).
 ``STRANDS_MESH``
     Set to ``false`` to disable mesh globally.
+``STRANDS_MESH_MULTICAST``
+    ``true`` to opt into LAN multicast scouting (logs a warning).
+    Default ``false``.
 """
 
 from __future__ import annotations
