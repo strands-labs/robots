@@ -78,6 +78,31 @@ _BASE_XML = """<mujoco model="probe_base">
   </worldbody>
 </mujoco>"""
 
+# Floating base whose ``<freejoint/>`` carries NO NAME -- the standard MJCF idiom
+# for a floating base, and what the Unitree Go2 and LeKiwi ship. An unnamed joint
+# is absent from ``robot.joint_names``, so it is invisible to every name-keyed
+# pass over the scene: the robot-scoped reset and the keyframe apply both walk
+# names, which leaves its 7 ``qpos`` entries to whatever the recompile's tail
+# holds. The named ``_BASE_XML`` above cannot reach that path at all. The hinge
+# and the keyframe are what separate the two halves of the reported failure --
+# the hinge angle is applied by name while the base pose is dropped.
+_UNNAMED_BASE_XML = """<mujoco model="probe_unnamed_base">
+  <compiler angle="radian"/>
+  <worldbody>
+    <body name="chassis" pos="0.4 0 0.35">
+      <freejoint/>
+      <geom type="box" size="0.1 0.08 0.05"/>
+      <body name="mast" pos="0 0 0.05">
+        <joint name="yaw" type="hinge" axis="0 0 1" range="-2 2" limited="true" damping="1"/>
+        <geom type="capsule" fromto="0 0 0 0 0 0.12" size="0.02"/>
+      </body>
+    </body>
+  </worldbody>
+  <keyframe>
+    <key name="home" qpos="0.4 0 0.35 1 0 0 0 0.8"/>
+  </keyframe>
+</mujoco>"""
+
 # Gripper driven through a FIXED TENDON: the standard MJCF idiom for coupled
 # fingers, and a transmission the driven-joint rule cannot address at all. Its
 # ``ctrl`` entry is therefore the one a robot-scoped reset would miss wherever the
@@ -120,7 +145,9 @@ def models(tmp_path: pathlib.Path) -> dict[str, str]:
     base.write_text(_BASE_XML)
     gripper = tmp_path / "gripper.xml"
     gripper.write_text(_GRIPPER_XML)
-    return {"arm": str(arm), "base": str(base), "gripper": str(gripper)}
+    unnamed = tmp_path / "unnamed_base.xml"
+    unnamed.write_text(_UNNAMED_BASE_XML)
+    return {"arm": str(arm), "base": str(base), "gripper": str(gripper), "unnamed_base": str(unnamed)}
 
 
 @pytest.fixture
@@ -402,3 +429,183 @@ def test_a_parked_arm_survives_the_steps_after_a_tendon_gripper_is_added(sim, mo
     sim.step(800)
 
     assert _joints(sim, "a") == pytest.approx(parked, abs=1e-3)
+
+
+@pytest.fixture
+def hostile_pose_leftovers(monkeypatch):
+    """Make the recompile's undefined POSITION entries deterministically zero.
+
+    Same reasoning as :func:`hostile_leftovers`, for the other buffer: what the
+    entries past the old ``nq`` contain is whatever the fresh allocation was
+    handed, so reading them tests the host's heap. Measured on ``go2`` spawned
+    with ``keyframe="home"``, the same call produced ``qpos0`` (base upright at
+    ``z=0.445``) with one robot already in the world and zeros with two -- which
+    is why the defect presents as an order dependence rather than as a bug.
+
+    Zero is the value that was actually observed, and it is a state no compiler
+    or reset writes: the quaternion slice comes out ``[0, 0, 0, 0]``, which has
+    no norm and so is not a rotation at all. Writing it deliberately turns "the
+    tail is undefined" into a repeatable condition.
+    """
+    real_recompile = mj.MjSpec.recompile
+
+    def poisoning_recompile(self, model, data):
+        new_model, new_data = real_recompile(self, model, data)
+        if new_model.nq > model.nq:
+            new_data.qpos[model.nq :] = 0.0
+        return new_model, new_data
+
+    monkeypatch.setattr(mj.MjSpec, "recompile", poisoning_recompile)
+
+
+@pytest.mark.parametrize("prior_arms", [1, 2])
+def test_an_unnamed_floating_base_is_added_at_its_spawn_pose(sim, models, hostile_pose_leftovers, prior_arms):
+    """A base whose ``<freejoint/>`` has no name is placed at its declared spawn.
+
+    No name-keyed pass can reach an unnamed joint, so this pose is owed entirely
+    to the recompile defining the buffer it grew. Reported as an order
+    dependence -- correct with one robot already in the world, dropped to the
+    floor with two -- because the number of robots is what decides where the new
+    joint lands in ``qpos`` and therefore which leftover memory it inherits;
+    both counts are pinned here so neither can regress alone.
+
+    The quaternion is checked for unit norm as well as for value: the observed
+    corruption was an all-zero quaternion, which is not a rotation, and a test
+    that only compared positions would accept it.
+    """
+    for i in range(prior_arms):
+        assert sim.add_robot(name=f"a{i}", urdf_path=models["arm"])["status"] == "success"
+    parked = _park(sim, "a0")
+
+    assert sim.add_robot(name="rover", urdf_path=models["unnamed_base"])["status"] == "success"
+
+    pose = _json(sim.get_body_state(body_name="rover/chassis"))
+    assert [float(v) for v in pose["position"]] == pytest.approx([0.4, 0.0, 0.35], abs=1e-6)
+    quat = [float(v) for v in pose["quaternion"]]
+    assert math.isclose(sum(v * v for v in quat), 1.0, abs_tol=1e-9), quat
+    assert [float(v) for v in pose["linear_velocity"]] == pytest.approx([0.0, 0.0, 0.0], abs=1e-9)
+    # Defining the tail reached only the tail: the arm parked before the add is
+    # still where it was, so the repair is not a world-wide reset in disguise.
+    assert _joints(sim, "a0") == pytest.approx(parked, abs=1e-6)
+
+
+def test_a_keyframe_spawn_applies_the_hinges_AND_keeps_the_unnamed_base_pose(sim, models, hostile_pose_leftovers):
+    """Both halves of the reported failure, which came apart in exactly this way.
+
+    ``keyframe=`` is applied by joint name, so it reached the hinge and not the
+    unnamed free joint: the mast read its declared ``0.8`` while the chassis it
+    is mounted on sat at the origin. Asserting the hinge alone therefore passes
+    on the defect, and the free joint is the half no controller can recover --
+    a joint-space hold at the same keyframe angles cannot lift a base that
+    started on the floor.
+    """
+    assert sim.add_robot(name="a", urdf_path=models["arm"])["status"] == "success"
+    assert sim.add_robot(name="b", urdf_path=models["arm"])["status"] == "success"
+
+    assert sim.add_robot(name="rover", urdf_path=models["unnamed_base"], keyframe="home")["status"] == "success"
+
+    # The half that was already working ...
+    assert float(sim.get_observation(robot_name="rover")["yaw"]) == pytest.approx(0.8, abs=1e-6)
+    # ... and the half that was silently dropped.
+    pose = _json(sim.get_body_state(body_name="rover/chassis"))
+    assert [float(v) for v in pose["position"]] == pytest.approx([0.4, 0.0, 0.35], abs=1e-6)
+
+
+def test_a_settled_object_survives_the_recompile_that_defines_a_new_pose_tail(sim, models, hostile_pose_leftovers):
+    """Over-reach control: the tail write stops at the entries the transfer missed.
+
+    A free body that has fallen to rest keeps its ``qpos`` below the old ``nq``,
+    and adding a robot must not reach it. Writing ``qpos0`` over the whole buffer
+    instead of the grown tail would satisfy every assertion above and teleport
+    this crate back to its spawn, so this is the control that separates them.
+    """
+    assert (
+        sim.add_object(name="crate", shape="box", size=[0.08, 0.08, 0.08], position=[0.7, 0.0, 0.5])["status"]
+        == "success"
+    )
+    sim.step(600)
+    settled = [float(v) for v in _json(sim.get_body_state(body_name="crate"))["position"]]
+    # Non-vacuity: it has to have left its spawn for the check to mean anything.
+    assert abs(settled[2] - 0.5) > 0.1, settled
+
+    assert sim.add_robot(name="rover", urdf_path=models["unnamed_base"])["status"] == "success"
+
+    after = [float(v) for v in _json(sim.get_body_state(body_name="crate"))["position"]]
+    assert after == pytest.approx(settled, abs=1e-6)
+
+
+@pytest.mark.parametrize("prior_arms", [0, 1, 2, 3])
+def test_an_unnamed_floating_base_spawns_where_declared_at_every_layout(sim, models, prior_arms):
+    """The same spawn, with nothing poisoned, at four different buffer layouts.
+
+    The tests above write the observed corruption deliberately, which is what makes
+    them repeatable -- but it also means none of them reads the tail the allocator
+    actually hands over. This one does, so the defect is pinned in the shape it was
+    reported in: an order dependence, where the number of robots already in the
+    world decides where the new joint lands in ``qpos`` and therefore which
+    leftovers it inherits. On ``main`` the count decides the answer -- three of
+    these four cases fail there and the fourth passes -- so a value that is only
+    right in the small scene cannot pass here.
+    """
+    for i in range(prior_arms):
+        assert sim.add_robot(name=f"a{i}", urdf_path=models["arm"])["status"] == "success"
+
+    assert sim.add_robot(name="rover", urdf_path=models["unnamed_base"])["status"] == "success"
+
+    pose = _json(sim.get_body_state(body_name="rover/chassis"))
+    assert [float(v) for v in pose["position"]] == pytest.approx([0.4, 0.0, 0.35], abs=1e-6)
+    quat = [float(v) for v in pose["quaternion"]]
+    assert math.isclose(sum(v * v for v in quat), 1.0, abs_tol=1e-9), quat
+
+
+def test_every_position_and_velocity_entry_the_recompile_grows_is_defined(sim, models, hostile_pose_leftovers):
+    """The rule stated positionally, over the whole tail rather than one base pose.
+
+    The transfer is positional, so the obligation is too: every index at or past
+    the old size is an entry the old model had no value for, whatever joint owns it
+    and whether or not that joint has a name. Asserting the tail as a whole is what
+    makes the guarantee cover a joint this fixture does not happen to contain, and
+    it is the only place ``qvel`` -- defined by the same change, on the same
+    reasoning -- is read at all.
+
+    Both halves are asserted so neither can be met by the other: the new entries
+    are defined, AND the state already in the scene is untouched. Writing ``qpos0``
+    over the whole buffer would satisfy the first and fail the second.
+    """
+    assert sim.add_robot(name="a", urdf_path=models["arm"])["status"] == "success"
+    parked = _park(sim, "a")
+    preserved = list(sim._world._data.qpos)
+    old_nq = int(sim._world._model.nq)
+    old_nv = int(sim._world._model.nv)
+    # Non-vacuity: an all-zero head would make the preservation half unfalsifiable.
+    assert max(abs(v) for v in preserved) > 0.1, preserved
+
+    assert sim.add_robot(name="rover", urdf_path=models["unnamed_base"])["status"] == "success"
+
+    model, data = sim._world._model, sim._world._data
+    assert model.nq > old_nq and model.nv > old_nv
+    assert list(data.qpos[old_nq:]) == pytest.approx(list(model.qpos0[old_nq:]), abs=1e-12)
+    assert list(data.qvel[old_nv:]) == [0.0] * (model.nv - old_nv)
+    assert list(data.qpos[:old_nq]) == pytest.approx(preserved, abs=1e-12)
+    assert _joints(sim, "a") == pytest.approx(parked, abs=1e-6)
+
+
+def test_the_unnamed_base_joint_is_in_none_of_the_robots_own_joint_sets(sim, models):
+    """The premise the fix's placement rests on, measured rather than argued.
+
+    ``joint_names`` and the ``joint_ids`` resolved from them are keyed by name, so
+    a joint the model leaves unnamed is in neither while every hinge is in both.
+    That is why defining the slice belongs to the recompile, which knows the
+    positional extent of what it left unwritten, and not to a pass over the joints
+    a robot owns -- and it is what would start failing first if the probe model
+    ever acquired a name for its base.
+    """
+    assert sim.add_robot(name="rover", urdf_path=models["unnamed_base"])["status"] == "success"
+
+    robot = sim._world.robots["rover"]
+    model = sim._world._model
+    free = [j for j in range(model.njnt) if int(model.jnt_type[j]) == int(mj.mjtJoint.mjJNT_FREE)]
+    assert len(free) == 1, free
+    assert mj.mj_id2name(model, mj.mjtObj.mjOBJ_JOINT, free[0]) is None
+    assert free[0] not in robot.joint_ids
+    assert robot.joint_names == ["yaw"], robot.joint_names

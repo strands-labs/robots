@@ -227,17 +227,31 @@ def _recompile_preserving_state(world: SimWorld, spec: Any, *, raise_on_refusal:
 
     That transfer is POSITIONAL, not by name: the new buffers receive the old
     values for the indices both models share, and the entries past the old size
-    are whatever the fresh allocation happened to contain. For ``qpos`` (filled
-    from ``qpos0``), ``qvel`` and ``act`` the compiler defines them; for
-    ``ctrl`` it does not, so a recompile that grows ``nu`` -- adding a robot,
-    adding actuators to one -- leaves the new setpoints undefined. That is not
-    a harmless nonsense number: MuJoCo's ``mj_checkCtrl`` disables actuation for
-    the WHOLE model on any step where a single ``ctrl`` entry is non-finite, so
-    one uninitialized entry can silently release every held pose in the scene,
-    only on the runs where the leftover memory happens to be NaN. This function
-    therefore defines the new tail as zero -- the value a reset writes, and the
-    only setpoint a caller who has not commanded the new actuators can mean --
-    before the forward pass below reads it.
+    are whatever the fresh allocation happened to contain. The compiler does not
+    define that tail, so every buffer this recompile grows is defined here --
+    ``qpos`` from ``qpos0`` and ``qvel``/``ctrl``/``act`` as zero, which is what
+    a reset writes and the only state a caller who has not touched the new
+    entries can mean -- before the forward pass below reads it.
+
+    The tail is not a harmless nonsense number in either buffer:
+
+    * ``ctrl`` -- MuJoCo's ``mj_checkCtrl`` disables actuation for the WHOLE
+      model on any step where a single entry is non-finite, so one uninitialized
+      entry can silently release every held pose in the scene, only on the runs
+      where the leftover memory happens to be NaN.
+    * ``qpos`` -- a new joint that no name-keyed pass reaches keeps the tail as
+      its pose. The robot-scoped reset in
+      :meth:`~strands_robots.simulation.mujoco.MuJoCoSimEngine._reset_robot_to_reference`
+      walks ``robot.joint_ids``, which is resolved by joint NAME, so an
+      UNNAMED ``<freejoint/>`` -- the standard MJCF idiom for a floating base,
+      used by the Unitree Go2 and by LeKiwi -- is invisible to it and to the
+      keyframe apply beside it. Measured on ``go2`` spawned with
+      ``keyframe="home"``: with one robot already in the world the tail happened
+      to hold ``qpos0`` and the base stood at ``z=0.445``, and with two it held
+      zeros -- including an all-zero quaternion, which is not a pose any
+      compiler or reset writes -- dropping the base to the floor. The hinges
+      were applied either way, so the only symptom was a quadruped lying down
+      under a ``"status": "success"``.
 
     Also re-discovers per-robot joint and actuator IDs (they may have shifted
     as new bodies were inserted earlier in the body tree). Returns True on
@@ -256,6 +270,8 @@ def _recompile_preserving_state(world: SimWorld, spec: Any, *, raise_on_refusal:
     mj = _ensure_mujoco()
     # Sizes of the buffers being handed to the compiler: everything at or past
     # these indices in the new data is an entry the old model had no value for.
+    old_nq = int(world._model.nq) if world._model is not None else 0
+    old_nv = int(world._model.nv) if world._model is not None else 0
     old_nu = int(world._model.nu) if world._model is not None else 0
     old_na = int(world._model.na) if world._model is not None else 0
     try:
@@ -268,10 +284,15 @@ def _recompile_preserving_state(world: SimWorld, spec: Any, *, raise_on_refusal:
         return False
 
     install_compiled_model(world, new_model, new_data)
-    # Define the control entries the positional transfer left untouched (see the
-    # docstring). ``act`` is measurably zero-filled today, but it comes out of
-    # the same allocation as ``ctrl`` and carries an actuator's activation -- its
-    # effective command -- so it is defined here too rather than by luck.
+    # Define every entry the positional transfer left untouched (see the
+    # docstring). ``qvel`` and ``act`` are measurably zero-filled today, but they
+    # come out of the same allocation as ``qpos`` and ``ctrl`` and carry a new
+    # joint's velocity and an actuator's activation -- its effective command --
+    # so they are defined here too rather than by luck.
+    if new_model.nq > old_nq:
+        new_data.qpos[old_nq:] = new_model.qpos0[old_nq:]
+    if new_model.nv > old_nv:
+        new_data.qvel[old_nv:] = 0.0
     if new_model.nu > old_nu:
         new_data.ctrl[old_nu:] = 0.0
     if new_model.na > old_na:

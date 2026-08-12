@@ -11,6 +11,7 @@ backend at all, and that the module imports without MuJoCo installed - the
 property the Isaac adapter (GH #2123) builds on.
 """
 
+import inspect
 import subprocess
 import sys
 from types import SimpleNamespace
@@ -210,3 +211,207 @@ class TestRegistryGripperMetadata:
         meta = {"actuators": ["Jaw"], "closed": "high", "open": "low"}
         assert core._gripper_state_end("open", meta) == "low"
         assert core._gripper_state_end("close", meta) == "high"
+
+
+def _move_to_envelope(**overrides: object) -> dict:
+    """``_move_to_result`` on plain values; each override patches one field.
+
+    Defaults are a real converging run measured on the MuJoCo suite's inline
+    arm (43 ticks, 19.8 mm final error, 1.7 mm IK residual), so the not-reached
+    variants below differ from a genuine success in exactly the field under
+    test.
+    """
+    kwargs: dict = {
+        "reached": True,
+        "steps_used": 43,
+        "position_error": 0.0198,
+        "ik_residual": 0.0017,
+        "ee_pos": [0.19, 0.10, 0.19],
+        "ee_quat": [1.0, 0.0, 0.0, 0.0],
+        "frame_name": "arm/ee_site",
+        "frame_type": "site",
+    }
+    kwargs.update(overrides)
+    return MotionPrimitivesCore._move_to_result("arm", np.array([0.2, 0.1, 0.2]), 0.02, 400, **kwargs)
+
+
+def _rotate_wrist_envelope(**overrides: object) -> dict:
+    """``_rotate_wrist_result`` on plain values; each override patches one field."""
+    kwargs: dict = {
+        "reached": True,
+        "steps_used": 76,
+        "wrist_name": "wrist_roll",
+        "target_yaw": 0.3,
+        "final_yaw": 0.2807,
+        "yaw_error": 0.0193,
+    }
+    kwargs.update(overrides)
+    return MotionPrimitivesCore._rotate_wrist_result("arm", 0.02, 300, **kwargs)
+
+
+def _payload(result: dict) -> dict:
+    """The json details block every envelope carries."""
+    blocks = [b["json"] for b in result["content"] if "json" in b]
+    assert len(blocks) == 1, f"expected exactly one json block, got {result['content']}"
+    return blocks[0]
+
+
+class TestMoveToResultEnvelope:
+    """``_move_to_result`` - both halves of the envelope the backends hand back.
+
+    The module docstring names the result envelopes as part of what the core
+    owns. The reached half is exercised through the MuJoCo mixin by the
+    live-world suites; the not-reached half was exercised nowhere, and it is
+    the half an agent has to act on - it is what decides whether to retry with
+    a larger budget, and that decision reads the json block rather than the
+    sentence.
+    """
+
+    def test_reached_is_a_success_envelope_carrying_the_payload(self) -> None:
+        result = _move_to_envelope()
+        assert result["status"] == "success"
+        text = result["content"][0]["text"]
+        assert "reached" in text and "[0.2, 0.1, 0.2]" in text
+        payload = _payload(result)
+        assert payload["reached"] is True
+        assert payload["steps"] == 43
+        assert payload["frame"] == "arm/ee_site"
+        assert payload["frame_type"] == "site"
+
+    def test_not_reached_is_an_error_naming_the_budget_it_spent(self) -> None:
+        result = _move_to_envelope(reached=False, steps_used=2, position_error=0.1815)
+        assert result["status"] == "error"
+        text = result["content"][0]["text"]
+        assert "did not reach" in text
+        assert "tol=0.02" in text and "max_steps=400" in text
+        assert "0.1815" in text and "0.0017" in text
+
+    def test_not_reached_still_carries_the_json_details(self) -> None:
+        """The refusal is what an agent retries from, so it keeps the payload.
+
+        An error whose only content were the sentence would force the caller to
+        parse prose to find out how far off it was.
+        """
+        payload = _payload(_move_to_envelope(reached=False, steps_used=2, position_error=0.1815))
+        assert payload["reached"] is False
+        assert payload["steps"] == 2
+        assert payload["position_error_m"] == 0.1815
+
+    def test_the_two_residuals_stay_separate_fields(self) -> None:
+        """``position_error_m`` and ``ik_residual_m`` answer different questions.
+
+        A small IK residual beside a large position error says the pose is
+        solvable and the servo merely ran out of steps; a large IK residual says
+        the pose is out of reach. Collapsing them would erase that distinction.
+        """
+        payload = _payload(_move_to_envelope(reached=False, position_error=0.1815, ik_residual=0.0017))
+        assert payload["position_error_m"] == 0.1815
+        assert payload["ik_residual_m"] == 0.0017
+
+    def test_both_halves_carry_the_same_payload_keys(self) -> None:
+        """One reader shape for success and failure, so the caller need not branch."""
+        assert sorted(_payload(_move_to_envelope())) == sorted(
+            _payload(_move_to_envelope(reached=False, position_error=0.1815))
+        )
+
+
+class TestRotateWristResultEnvelope:
+    """``_rotate_wrist_result`` - the second converging primitive's envelope."""
+
+    def test_reached_is_a_success_envelope_carrying_the_payload(self) -> None:
+        result = _rotate_wrist_envelope()
+        assert result["status"] == "success"
+        assert "reached" in result["content"][0]["text"]
+        payload = _payload(result)
+        assert payload["reached"] is True
+        assert payload["wrist_joint"] == "wrist_roll"
+        assert payload["steps"] == 76
+
+    def test_not_reached_is_an_error_naming_the_budget_it_spent(self) -> None:
+        result = _rotate_wrist_envelope(reached=False, steps_used=1, final_yaw=0.0016, yaw_error=0.2984)
+        assert result["status"] == "error"
+        text = result["content"][0]["text"]
+        assert "did not reach" in text
+        assert "tol=0.02" in text and "max_steps=300" in text
+        assert "0.2984" in text
+        assert "wrist_roll" in text
+
+    def test_not_reached_still_carries_the_json_details(self) -> None:
+        payload = _payload(_rotate_wrist_envelope(reached=False, steps_used=1, yaw_error=0.2984))
+        assert payload["reached"] is False
+        assert payload["steps"] == 1
+        assert payload["yaw_error_rad"] == 0.2984
+
+    def test_both_halves_carry_the_same_payload_keys(self) -> None:
+        assert sorted(_payload(_rotate_wrist_envelope())) == sorted(
+            _payload(_rotate_wrist_envelope(reached=False, yaw_error=0.2984))
+        )
+
+
+class TestSetGripperResultEnvelope:
+    """``_set_gripper_result`` - the third envelope, and the one with no failure half.
+
+    ``set_gripper`` drives the gripper open-loop and measures no convergence,
+    so success is its only outcome. Pinned here so that asymmetry with
+    ``move_to`` / ``rotate_wrist`` is recorded rather than inferred from the
+    absence of a branch.
+    """
+
+    def test_success_envelope_reports_state_actuators_and_ticks(self) -> None:
+        result = MotionPrimitivesCore._set_gripper_result(
+            "arm",
+            "close",
+            5,
+            ["Jaw"],
+            {"Jaw": 0.0},
+            {"Jaw": "ctrlrange-low"},
+            {"jaw": 0.0012},
+        )
+        assert result["status"] == "success"
+        text = result["content"][0]["text"]
+        assert "close" in text and "5 ticks" in text and "Jaw" in text
+        payload = _payload(result)
+        assert payload["state"] == "close"
+        assert payload["actuators"] == ["Jaw"]
+        assert payload["setpoint_sources"] == {"Jaw": "ctrlrange-low"}
+        assert payload["gripper_joint_positions"] == {"jaw": 0.0012}
+
+    def test_there_is_no_not_reached_half(self) -> None:
+        source = inspect.getsource(MotionPrimitivesCore._set_gripper_result)
+        assert "reached" not in source, source
+
+
+class TestRegistryLookupSeamDefault:
+    """``_get_registry_robot`` - the default body a non-overriding backend inherits.
+
+    The seam's own docstring records that an adapter may override it to keep a
+    historical patch point alive, and the MuJoCo mixin does; so does the
+    ``_RegistryCore`` stand-in above, which is how every existing exercise of
+    ``_registry_gripper_metadata`` bypasses the default. That left the default -
+    the one a new backend adapter gets for free - resolving through this
+    module's own ``get_robot`` with nothing checking that it does.
+    """
+
+    @staticmethod
+    def _robot(data_config: str) -> SimpleNamespace:
+        return SimpleNamespace(name="arm", data_config=data_config)
+
+    def test_default_seam_resolves_a_shipped_registry_entry(self) -> None:
+        """so100 ships a gripper block, so the default lookup must find it."""
+        core = MotionPrimitivesCore()
+        meta, reason = core._registry_gripper_metadata(self._robot("so100"))
+        assert reason is None
+        assert meta is not None
+        assert meta["actuators"] == ["Jaw"]
+
+    def test_default_seam_falls_back_for_an_unknown_robot(self) -> None:
+        """An unregistered ``data_config`` is the heuristic's cue, not an error."""
+        core = MotionPrimitivesCore()
+        assert core._registry_gripper_metadata(self._robot("not-a-shipped-robot")) == (None, None)
+
+    def test_the_mujoco_adapter_overrides_the_seam(self) -> None:
+        """Why the default body needs its own test: no shipped backend runs it."""
+        pytest.importorskip("mujoco")
+        from strands_robots.simulation.mujoco.motion_primitives import MotionPrimitivesMixin
+
+        assert MotionPrimitivesMixin._get_registry_robot is not MotionPrimitivesCore._get_registry_robot

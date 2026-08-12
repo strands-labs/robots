@@ -290,6 +290,81 @@ def test_world_point_correct_on_explicit_intrinsics_camera(tmp_path) -> None:
         sim.destroy()
 
 
+# A scene whose FREE camera is orthographic. MuJoCo rasterizes it normally --
+# ``get_frame`` returns a full RGB + depth pair -- but an orthographic
+# projection has no pinhole ``K``, so ``get_camera_params`` refuses. That makes
+# it the reachable real-world instance of a failure that arrives AFTER a
+# successful render, on pixels ``get_world_point`` has already accepted.
+_ORTHOGRAPHIC_SCENE = """
+<mujoco model="orthographic_free_camera">
+  <visual><global orthographic="true" fovy="0.35"/></visual>
+  <worldbody>
+    <light pos="0.4 -0.6 1.2" dir="-0.2 0.4 -1"/>
+    <body name="cube" pos="0.4 0 0.05">
+      <geom name="cube_g" type="box" size="0.1 0.1 0.05" rgba="0.9 0.4 0.1 1"/>
+    </body>
+  </worldbody>
+</mujoco>
+"""
+
+
+def _load_scene_sim(tmp_path, scene_xml: str, name: str):
+    """Fresh sim with *scene_xml* loaded, mirroring the intrinsics fixture."""
+    from strands_robots.simulation import Simulation
+
+    scene = tmp_path / name
+    scene.write_text(scene_xml)
+    sim = Simulation(mesh=False)
+    assert sim.create_world(ground_plane=False)["status"] == "success"
+    assert sim.load_scene(str(scene))["status"] == "success", "load_scene failed"
+    return sim
+
+
+@requires_gl
+def test_orthographic_free_camera_renders_but_reports_unreadable_intrinsics(tmp_path) -> None:
+    """The camera-params read fails on a frame that rendered fine.
+
+    ``get_world_point`` makes two backend reads. This pins the second one
+    failing while the first succeeded, through a documented MJCF option rather
+    than a mock: the pixels are valid, the depth buffer is real, and the call
+    still has to report -- never raise, and never return a point derived from
+    intrinsics it could not read. The reported text has to carry MuJoCo's own
+    actionable reason, because nothing else in the result names the cause.
+    """
+    sim = _load_scene_sim(tmp_path, _ORTHOGRAPHIC_SCENE, "orthographic.xml")
+    try:
+        # The frame read succeeds: this is not a rendering failure.
+        rgb, depth = sim.get_frame("default")
+        assert depth is not None and depth.shape[:2] == rgb.shape[:2]
+
+        result = sim.get_world_point("default", pixels=[[320, 240]])
+        assert result["status"] == "error"
+        text = result["content"][0]["text"]
+        assert "camera parameters" in text, text
+        assert "orthographic" in text, text
+        # The remedy has to survive into the envelope, not just the exception.
+        assert "add_camera" in text, text
+        # ... and it must be the params read being reported, not the render.
+        assert "render camera frame" not in text, text
+    finally:
+        sim.destroy()
+
+
+@requires_gl
+def test_a_perspective_free_camera_on_the_same_scene_still_grounds(tmp_path) -> None:
+    """Control for the case above: the identical scene, camera and pixel
+    ground successfully once the projection is perspective, so the refusal is
+    the projection and not the fixture."""
+    perspective = _ORTHOGRAPHIC_SCENE.replace('orthographic="true" fovy="0.35"', 'fovy="45"')
+    sim = _load_scene_sim(tmp_path, perspective, "perspective.xml")
+    try:
+        data = _json_block(sim.get_world_point("default", pixels=[[320, 240]]))
+        assert data["n_valid"] == 1
+        assert len(data["point"]) == 3
+    finally:
+        sim.destroy()
+
+
 # ----- Tool surface (no GL required) ----- #
 
 
