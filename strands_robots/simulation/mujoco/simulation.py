@@ -49,7 +49,7 @@ import os
 import re
 import threading
 import time
-from collections.abc import AsyncGenerator, Callable, Mapping, Sequence
+from collections.abc import AsyncGenerator, Callable, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
@@ -4545,8 +4545,8 @@ class MuJoCoSimEngine(
 
         if self._world is None or self._world._model is None or self._world._data is None:
             return {"status": "error", "content": [{"text": _NO_WORLD_MSG}]}
-        if not policies:
-            return {"status": "error", "content": [{"text": "run_multi_policy: 'policies' is empty."}]}
+        if err := self._validate_multi_policies(policies, "run_multi_policy"):
+            return err
 
         # Validate every robot exists.
         for rname in policies:
@@ -4564,45 +4564,16 @@ class MuJoCoSimEngine(
                 "content": [{"text": f"run_multi_policy: policy already running on {names}. Stop it first."}],
             }
 
-        # Normalize instructions to a per-robot mapping. A mapping key that
-        # names no robot in this call is a caller error: read with .get(r, "")
-        # it was silently discarded, so a typo'd robot name ran the whole
-        # episode on an empty instruction and still reported success. A value
-        # that is neither a string nor a mapping reached .get() and surfaced as
-        # a bare AttributeError past the tool-envelope contract.
-        if isinstance(instructions, str):
-            instr_map = {r: instructions for r in policies}
-        elif isinstance(instructions, Mapping):
-            if err := self._validate_per_robot_mapping(instructions, policies, "instructions", "run_multi_policy"):
-                return err
-            instr_map = {r: instructions.get(r, "") for r in policies}
-        else:
-            return {
-                "status": "error",
-                "content": [
-                    {
-                        "text": "run_multi_policy: 'instructions' must be a string applied to all robots or a "
-                        f"{{robot_name: instruction}} mapping, got {type(instructions).__name__}."
-                    }
-                ],
-            }
-
-        # LeRobot stores ONE task string per frame. If the caller supplied
-        # distinct per-robot instructions (e.g. {alice: 'pour', bob: 'catch'})
-        # only the first robot's task is recorded -- a downstream pipeline that
-        # splits by task string would mis-attribute the other robots' frames.
-        # Surface this as a known limitation rather than losing it silently.
-        _distinct_tasks = {t for t in instr_map.values() if t}
-        if len(_distinct_tasks) > 1:
-            logger.warning(
-                "run_multi_policy: %d distinct per-robot instructions supplied (%s) but "
-                "LeRobot records one task per frame; only '%s' (robot '%s') will be stored. "
-                "Per-robot task columns are not yet supported.",
-                len(_distinct_tasks),
-                sorted(_distinct_tasks),
-                instr_map[next(iter(policies))],
-                next(iter(policies)),
-            )
+        # Normalize instructions to a per-robot mapping through the shared
+        # base helper (one refusal text for every backend), passing this
+        # module's logger so the distinct-instructions one-task-per-frame
+        # warning stays attributed to the MuJoCo loop that records the frame.
+        instr_map, err = self._normalize_multi_policy_instructions(
+            policies, instructions, "run_multi_policy", warn_logger=logger
+        )
+        if err is not None:
+            return err
+        assert instr_map is not None  # for the type checker: err is None <=> instr_map is not None
 
         # Resolve horizon (n_steps / max_steps override duration) through the
         # shared helpers, so this loop guards the same domain as run_policy: a
@@ -4622,26 +4593,15 @@ class MuJoCoSimEngine(
             if err := self._validate_duration(duration, "run_multi_policy"):
                 return err
 
-        # Normalize action_horizon to a per-robot mapping. >=1 actions are
-        # consumed open-loop from each policy's chunk before re-querying, so the
-        # value is validated through the same shared guard run_policy /
-        # start_policy / eval_policy / evaluate_benchmark use. This loop instead
-        # coerced with max(1, int(...)): 0 / -5 silently became a 1-action
-        # horizon (the caller's cadence was never run), 2.7 was truncated, and
-        # nan / None / "x" reached int() and surfaced as a bare ValueError /
-        # TypeError instead of the structured error dict the API contracts.
-        if isinstance(action_horizon, Mapping):
-            if err := self._validate_per_robot_mapping(action_horizon, policies, "action_horizon", "run_multi_policy"):
-                return err
-            for rname, value in action_horizon.items():
-                if err := self._validate_action_horizon(value, "run_multi_policy", f"action_horizon[{rname!r}]"):
-                    return err
-            # A robot omitted from the mapping keeps the signature default.
-            horizon_map = {r: int(action_horizon.get(r, _DEFAULT_ACTION_HORIZON)) for r in policies}
-        else:
-            if err := self._validate_action_horizon(action_horizon, "run_multi_policy"):
-                return err
-            horizon_map = {r: int(action_horizon) for r in policies}
+        # Normalize action_horizon to a per-robot mapping through the shared
+        # base helper, which validates every horizon on the same positive-int
+        # domain run_policy / start_policy / eval_policy use.
+        horizon_map, err = self._normalize_multi_policy_horizons(
+            policies, action_horizon, "run_multi_policy", default_horizon=_DEFAULT_ACTION_HORIZON
+        )
+        if err is not None:
+            return err
+        assert horizon_map is not None  # for the type checker: err is None <=> horizon_map is not None
 
         # Bind robot_state_keys for each policy (per-robot action keys -- the
         # actuators send_action resolves, not the joints; see robot_action_keys).

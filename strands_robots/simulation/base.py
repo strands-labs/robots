@@ -2718,6 +2718,233 @@ class SimEngine(ABC):
             if controller_cleanup is not None:
                 controller_cleanup()
 
+    def run_multi_policy(
+        self,
+        policies: dict[str, Policy],
+        instructions: dict[str, str] | str = "",
+        duration: float = 10.0,
+        control_frequency: float = 50.0,
+        action_horizon: int | dict[str, int] = 8,
+        n_steps: int | None = None,
+        max_steps: int | None = None,
+    ) -> dict[str, Any]:
+        """Drive MULTIPLE robots, each with its own policy, in ONE synchronized loop.
+
+        The backend-agnostic contract for concurrent multi-robot rollout
+        (e.g. two arms doing a handover, or a bimanual setup). A backend that
+        implements it must honour every clause below - they are what
+        distinguishes this driver from launching one :meth:`start_policy`
+        thread per robot, which steps physics per robot and interleaves
+        single-robot recording frames:
+
+        - **Per-robot policies**: ``policies`` maps each driven robot to its
+          own :class:`~strands_robots.policies.Policy`. Every key must name a
+          robot in the scene; ``policies`` order defines the merged
+          state/action column order.
+        - **Per-robot instructions**: ``instructions`` is either one string
+          applied to all robots or a ``{robot_name: instruction}`` mapping.
+          A mapping key naming no driven robot is rejected rather than
+          silently dropped; a robot omitted from the mapping gets an empty
+          instruction (see :meth:`_normalize_multi_policy_instructions`).
+        - **Per-robot action_horizon**: ``action_horizon`` is either one int
+          applied to all robots or a ``{robot_name: horizon}`` mapping. Every
+          horizon must be a positive integer, and the effective per-robot
+          chunk length is resolved through
+          :func:`~strands_robots.policies.base.resolve_chunk_length` exactly
+          as :meth:`run_policy` resolves its own (see
+          :meth:`_normalize_multi_policy_horizons`).
+        - **Shared control_frequency**: one target Hz for every robot's
+          policy queries, so the robots stay phase-aligned.
+        - **Lockstep physics**: each loop iteration applies EVERY robot's
+          control, then steps physics ONCE - regardless of each robot's
+          individual re-query cadence.
+        - **One merged recording frame per timestep**: when a dataset
+          recording is active, each timestep records a single frame carrying
+          ALL robots' prefixed state/action (``alice__shoulder_pan`` ...)
+          plus all camera images - never one interleaved frame per robot.
+
+        The step horizon follows :meth:`run_policy`'s resolution: ``n_steps``
+        (then its legacy alias ``max_steps``) overrides ``duration``, via
+        :meth:`_resolve_horizon` on the shared positive-count domain.
+
+        This base implementation is a documented refusal, not a fallback: a
+        backend that has no synchronized multi-robot loop must say so rather
+        than silently driving robots one at a time (which would interleave
+        frames and break the merged-frame contract above). The MuJoCo backend
+        overrides it with a full implementation; backends that do not yet
+        (Isaac, Newton) inherit this structured error.
+
+        Args:
+            policies: Mapping ``{robot_name: Policy}`` of the robots to drive.
+            instructions: Single instruction string for all robots, or a
+                ``{robot_name: instruction}`` mapping (see contract above).
+            duration: Episode length in seconds (steps = duration x freq).
+                Used only when no ``n_steps`` / ``max_steps`` is given. Must
+                be a finite positive number.
+            control_frequency: Target Hz for policy queries / physics. Must
+                be a positive number.
+            action_horizon: Actions consumed from each policy's chunk before
+                re-querying it, as one int or a per-robot mapping (see
+                contract above).
+            n_steps: Exact step horizon (overrides ``duration`` when set).
+            max_steps: Legacy alias for ``n_steps``.
+
+        Returns:
+            A structured ``{"status": "error", ...}`` dict naming this
+            backend class and stating that it does not implement synchronized
+            multi-robot rollout. Implementing backends return the standard
+            status dict with per-robot step counts.
+        """
+        return {
+            "status": "error",
+            "content": [
+                {
+                    "text": f"run_multi_policy: {type(self).__name__} does not implement synchronized "
+                    "multi-robot rollout (per-robot policies driven in one lockstep physics loop with "
+                    "one merged recording frame per timestep). Use the MuJoCo backend, or drive robots "
+                    "individually with run_policy / start_policy (frames are then interleaved per robot, "
+                    "not merged)."
+                }
+            ],
+        }
+
+    @staticmethod
+    def _validate_multi_policies(policies: Mapping[str, Any], method: str) -> dict[str, Any] | None:
+        """Reject an empty ``policies`` mapping at a multi-robot entry point.
+
+        ``policies`` names the robots a synchronized multi-robot driver will
+        drive, so an empty mapping is a caller error: a loop over zero robots
+        would run zero steps and still report ``status="success"`` (the same
+        degenerate-success shape :meth:`_validate_positive_int` exists to
+        refuse). Shared by every backend's ``run_multi_policy`` so the refusal
+        text is identical everywhere.
+
+        Args:
+            policies: The caller-supplied ``{robot_name: Policy}`` mapping.
+            method: Public method name, used to prefix the error message.
+
+        Returns:
+            A structured ``{"status": "error", ...}`` dict, or ``None`` when
+            at least one robot is named.
+        """
+        if not policies:
+            return {"status": "error", "content": [{"text": f"{method}: 'policies' is empty."}]}
+        return None
+
+    @staticmethod
+    def _normalize_multi_policy_instructions(
+        policies: Mapping[str, Any],
+        instructions: Mapping[str, str] | str,
+        method: str,
+        warn_logger: logging.Logger | None = None,
+    ) -> tuple[dict[str, str] | None, dict[str, Any] | None]:
+        """Normalize ``instructions`` to a complete per-robot mapping.
+
+        A single string broadcasts to every driven robot. A mapping is an
+        override layer keyed by robot name: a key that names no robot in this
+        call is a caller error (read with ``.get(r, "")`` it was silently
+        discarded, so a typo'd robot name ran the whole episode on an empty
+        instruction and still reported success - see
+        :meth:`_validate_per_robot_mapping`), while a robot omitted from the
+        mapping legitimately gets an empty instruction. A value that is
+        neither a string nor a mapping is refused up front rather than
+        reaching ``.get()`` and surfacing as a bare ``AttributeError`` past
+        the tool-envelope contract.
+
+        LeRobot stores ONE task string per frame, so when the normalized
+        mapping carries distinct non-empty instructions (e.g. ``{alice:
+        'pour', bob: 'catch'}``) only the first robot's task is recorded - a
+        downstream pipeline that splits by task string would mis-attribute
+        the other robots' frames. That is surfaced here as a
+        ``logger.warning`` (a known limitation, not lost silently).
+
+        Args:
+            policies: ``{robot_name: Policy}`` mapping naming the driven
+                robots (the authoritative key set).
+            instructions: Caller-supplied single string or per-robot mapping.
+            method: Public method name, used to prefix error messages.
+            warn_logger: Logger for the distinct-instructions warning, so the
+                warning is attributed to the calling backend's module rather
+                than to this one. Defaults to this module's logger.
+
+        Returns:
+            ``(instr_map, None)`` with one entry per driven robot, or
+            ``(None, error_dict)``.
+        """
+        if isinstance(instructions, str):
+            instr_map = {r: instructions for r in policies}
+        elif isinstance(instructions, Mapping):
+            if err := SimEngine._validate_per_robot_mapping(instructions, policies, "instructions", method):
+                return None, err
+            instr_map = {r: instructions.get(r, "") for r in policies}
+        else:
+            return None, {
+                "status": "error",
+                "content": [
+                    {
+                        "text": f"{method}: 'instructions' must be a string applied to all robots or a "
+                        f"{{robot_name: instruction}} mapping, got {type(instructions).__name__}."
+                    }
+                ],
+            }
+
+        distinct_tasks = {t for t in instr_map.values() if t}
+        if len(distinct_tasks) > 1:
+            (warn_logger or logger).warning(
+                "%s: %d distinct per-robot instructions supplied (%s) but "
+                "LeRobot records one task per frame; only '%s' (robot '%s') will be stored. "
+                "Per-robot task columns are not yet supported.",
+                method,
+                len(distinct_tasks),
+                sorted(distinct_tasks),
+                instr_map[next(iter(policies))],
+                next(iter(policies)),
+            )
+        return instr_map, None
+
+    @staticmethod
+    def _normalize_multi_policy_horizons(
+        policies: Mapping[str, Any],
+        action_horizon: int | Mapping[str, int],
+        method: str,
+        default_horizon: int = 8,
+    ) -> tuple[dict[str, int] | None, dict[str, Any] | None]:
+        """Normalize ``action_horizon`` to a complete per-robot mapping.
+
+        A single int broadcasts to every driven robot; a ``{robot_name:
+        horizon}`` mapping overrides per robot, with a key naming no driven
+        robot refused (see :meth:`_validate_per_robot_mapping`) and a robot
+        omitted from the mapping keeping ``default_horizon``. Every horizon
+        is validated through :meth:`_validate_action_horizon` - the same
+        guard ``run_policy`` / ``start_policy`` / ``eval_policy`` enforce -
+        rather than coerced: a ``max(1, int(...))`` clamp used to turn ``0``
+        / ``-5`` into a silent 1-action horizon, truncate ``2.7``, and let
+        ``nan`` / ``None`` / ``"x"`` reach ``int()`` as a bare ``ValueError``
+        / ``TypeError`` past the tool-envelope contract.
+
+        Args:
+            policies: ``{robot_name: Policy}`` mapping naming the driven
+                robots (the authoritative key set).
+            action_horizon: Caller-supplied single int or per-robot mapping.
+            method: Public method name, used to prefix error messages.
+            default_horizon: Horizon for robots omitted from a mapping.
+
+        Returns:
+            ``(horizon_map, None)`` with one entry per driven robot, or
+            ``(None, error_dict)``.
+        """
+        if isinstance(action_horizon, Mapping):
+            if err := SimEngine._validate_per_robot_mapping(action_horizon, policies, "action_horizon", method):
+                return None, err
+            for rname, value in action_horizon.items():
+                if err := SimEngine._validate_action_horizon(value, method, f"action_horizon[{rname!r}]"):
+                    return None, err
+            # A robot omitted from the mapping keeps the signature default.
+            return {r: int(action_horizon.get(r, default_horizon)) for r in policies}, None
+        if err := SimEngine._validate_action_horizon(action_horizon, method):
+            return None, err
+        return {r: int(action_horizon) for r in policies}, None
+
     def _stop_when_unresolved_error(self, stop_when: dict[str, Any]) -> dict[str, Any] | None:
         """Structured error if a ``stop_when`` clause references unresolvable entities.
 
