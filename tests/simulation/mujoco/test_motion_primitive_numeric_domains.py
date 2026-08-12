@@ -33,10 +33,8 @@ import pytest
 
 pytest.importorskip("mujoco")
 
-from strands_robots.simulation.mujoco.motion_primitives import (  # noqa: E402
-    MotionPrimitivesMixin,
-    _is_finite_real,
-)
+from strands_robots.simulation.motion_primitives_base import _is_finite_real  # noqa: E402
+from strands_robots.simulation.mujoco.motion_primitives import MotionPrimitivesMixin  # noqa: E402
 from strands_robots.simulation.mujoco.simulation import Simulation  # noqa: E402
 
 from .test_motion_primitives import ARM_XML, REACHABLE  # noqa: E402

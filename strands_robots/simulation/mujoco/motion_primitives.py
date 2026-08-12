@@ -74,9 +74,6 @@ from strands_robots.simulation.motion_primitives_base import (
     MotionPrimitivesCore,
     _err,
 )
-from strands_robots.simulation.motion_primitives_base import (
-    _is_finite_real as _is_finite_real,
-)
 from strands_robots.simulation.mujoco.backend import _NO_WORLD_MSG, mj_name_to_id
 
 logger = logging.getLogger(__name__)
