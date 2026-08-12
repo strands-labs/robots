@@ -3581,10 +3581,18 @@ class IsaacSimulation(IsaacMotionPrimitivesMixin, IsaacRecordingMixin, SimEngine
         entry point reports it in the tool envelope instead). No lock is
         held across a marshal hop; each hop takes ``self._lock`` itself.
 
-        **Recording is not implemented here yet**: the merged-frame recording
-        path is a follow-up to #2158. A call arriving while a dataset
-        recording is active is refused rather than silently producing an
-        unrecorded rollout the session's frame count would misreport.
+        **Recording**: when a dataset recording session is active
+        (:meth:`~strands_robots.simulation.isaac.recording.IsaacRecordingMixin.start_recording`),
+        each loop iteration records exactly ONE merged frame containing every
+        driven robot's prefixed state/action columns (``alice__shoulder_pan``
+        ...) plus all camera images - mirroring the MuJoCo merged-frame
+        semantics (:meth:`strands_robots.simulation.mujoco.simulation.Simulation.run_multi_policy`),
+        so a 2-robot dataset has both arms co-observed in every frame.
+        Cameras are scene-global and read once per step (from the first
+        robot's observation), not once per robot. LeRobot stores one task per
+        frame, so the recorded task is the FIRST robot's instruction; the
+        shared instruction normalizer already warns when distinct per-robot
+        instructions are given.
 
         Args:
             policies: Mapping ``{robot_name: Policy}`` of the robots to drive.
@@ -3612,7 +3620,10 @@ class IsaacSimulation(IsaacMotionPrimitivesMixin, IsaacRecordingMixin, SimEngine
             RuntimeError: Mid-loop on a policy that returns an empty action
                 chunk or an action that cannot be applied (see
                 :meth:`_apply_lockstep_action`) - never a zero-valued
-                substitute action.
+                substitute action. When recording, the partially-recorded
+                frames of the failed episode are discarded so the next episode
+                starts at frame 0 rather than appending to a dangling
+                half-episode (mirrors the MuJoCo loop).
         """
         from collections import deque
 
@@ -3659,23 +3670,13 @@ class IsaacSimulation(IsaacMotionPrimitivesMixin, IsaacRecordingMixin, SimEngine
                 ],
             }
 
-        # The merged-frame recording path is a follow-up to #2158; refusing is
-        # the alternative to silently running an unrecorded rollout inside an
-        # active session (Key Conventions #5/#6).
-        if self._is_recording():
-            return {
-                "status": "error",
-                "content": [
-                    {
-                        "text": (
-                            "run_multi_policy: a dataset recording is active, but the Isaac "
-                            "synchronized multi-robot loop does not record yet (the merged-frame "
-                            "recording path is a follow-up to #2158). Stop the recording first, or "
-                            "record a multi-robot rollout on the MuJoCo backend."
-                        )
-                    }
-                ],
-            }
+        # Latch the active recording session ONCE (MuJoCo parity): every loop
+        # iteration below records exactly one merged frame into this recorder.
+        # A session started mid-rollout is deliberately not picked up - the
+        # schema probe and the rollout must observe the same scene.
+        rec_state = self._recording_state()
+        recorder = rec_state.get("dataset_recorder") if rec_state is not None else None
+        recording = rec_state is not None and bool(rec_state.get("recording", False)) and recorder is not None
 
         # Thread affinity (#1896): off the owning thread every marshal hop
         # below would block forever without a pump. step()/reset() raise for
@@ -3713,6 +3714,11 @@ class IsaacSimulation(IsaacMotionPrimitivesMixin, IsaacRecordingMixin, SimEngine
         # by it).
         if err := self._validate_positive_frequency(control_frequency, "run_multi_policy"):
             return err
+        # Reject a rollout whose rate the active recording cannot describe
+        # (MuJoCo parity): every frame below is timestamped at the dataset's
+        # fps, so a disagreeing control_frequency would mislabel the episode.
+        if err := self._validate_recording_rate(control_frequency, "run_multi_policy"):
+            return err
         duration, n_steps, horizon_error = self._resolve_horizon(
             n_steps, max_steps, control_frequency, duration, "run_multi_policy"
         )
@@ -3739,10 +3745,36 @@ class IsaacSimulation(IsaacMotionPrimitivesMixin, IsaacRecordingMixin, SimEngine
             except Exception as exc:  # noqa: BLE001 - non-fatal, mirrors run_policy defensiveness
                 logger.debug("set_robot_state_keys(%s) failed: %s", rname, exc)
 
+        # Merged-frame recording wiring (MuJoCo parity). Namespacing follows
+        # the schema start_recording declared: prefixed ``robot__column`` when
+        # the WORLD holds more than one robot (not merely this call), so the
+        # merged frame always matches the declared columns. Every robot driven
+        # here contributes to the one merged frame, so the merged action owes a
+        # value for each of their actuators - resolved once rather than per
+        # frame, and only when a recorder will consume it (robot_action_keys is
+        # best-effort for unrecorded rollouts; where a recording is attached
+        # the keys are load-bearing, so a raise here correctly fails the call).
+        multi_robot = len(self._robots) > 1
+        merged_required_action_keys = (
+            [f"{rname}__{key}" if multi_robot else key for rname in policies for key in self.robot_action_keys(rname)]
+            if recording
+            else []
+        )
+        # Camera frames ride the observation keyed by RAW camera name; the
+        # schema declared the safe names (``/`` -> ``__``), scoped to
+        # start_recording(cameras=...). Same rename+scope the single-robot
+        # on_frame hook applies.
+        raw_to_safe: dict[str, str] = (
+            {src: safe for src, safe, _w, _h in rec_state.get("recording_cameras", [])}
+            if recording and rec_state is not None
+            else {}
+        )
+
         # Renders are expensive; skip camera readback when no policy needs
-        # images (recording, which would force them on, is refused above).
+        # images AND no recording is active (recorded frames must carry the
+        # camera images the schema declared).
         any_needs_images = any(getattr(p, "requires_images", True) for p in policies.values())
-        skip_images = not any_needs_images
+        skip_images = not (any_needs_images or recording)
         render_on = self._config.render_mode != "headless"
         physics_dt = float(getattr(self._config, "physics_dt", 0.0) or 0.0)
 
@@ -3789,6 +3821,13 @@ class IsaacSimulation(IsaacMotionPrimitivesMixin, IsaacRecordingMixin, SimEngine
 
         step_count = 0
         stopped_early = False
+        # Tracks whether the loop finished without an unexpected error. A
+        # normal completion and a cooperative stop both leave a VALID
+        # partial/complete episode the caller will save; any other exception
+        # (e.g. an empty action chunk) leaves a dangling partial episode we
+        # must discard so the next recording starts at frame 0 rather than
+        # appending to a half-episode (MuJoCo parity).
+        completed_cleanly = False
         try:
             while step_count < total_steps:
                 # --- 1. Observe every robot (one main-thread hop). No lock is
@@ -3829,25 +3868,67 @@ class IsaacSimulation(IsaacMotionPrimitivesMixin, IsaacRecordingMixin, SimEngine
                 # (one main-thread hop; the hop takes self._lock itself).
                 self.run_on_main(lambda acts=per_robot_action: _apply_all_and_step(acts))
 
+                # --- 5. Record ONE merged frame (all robots + all cameras),
+                # off the main thread: add_frame writes to LeRobot's
+                # image-writer queue and parquet buffer, never to Kit/USD, and
+                # the consistent state snapshot was already taken inside the
+                # two hops above.
+                if recording and recorder is not None:
+                    merged_obs: dict[str, Any] = {}
+                    merged_act: dict[str, Any] = {}
+                    for rname in policies:
+                        if multi_robot:
+                            for k, v in per_robot_obs[rname].items():
+                                merged_obs[f"{rname}__{k}"] = v
+                            for k, v in per_robot_action[rname].items():
+                                merged_act[f"{rname}__{k}"] = v
+                        else:
+                            merged_obs.update(per_robot_obs[rname])
+                            merged_act.update(per_robot_action[rname])
+                    # Cameras are scene-global: rename raw -> schema-safe and
+                    # drop any outside the start_recording(cameras=...) scope.
+                    for k, v in camera_imgs.items():
+                        safe = raw_to_safe.get(k)
+                        if safe is not None:
+                            merged_obs[safe] = v
+                    # LeRobot stores ONE task per frame: the first robot's
+                    # instruction (the shared normalizer already warned when
+                    # per-robot instructions are distinct).
+                    recorder.add_frame(
+                        observation=merged_obs,
+                        action=merged_act,
+                        task=instr_map[next(iter(policies))],
+                        required_action_keys=merged_required_action_keys,
+                    )
+
                 step_count += 1
                 for rname in policies:
                     self._robots[rname].policy_steps = step_count
 
                 if action_sleep:
                     time.sleep(action_sleep)
+
+            completed_cleanly = True
         except CooperativeStop:
             # A cooperative stop is a normal, user-requested halt.
             stopped_early = True
+            completed_cleanly = True
         finally:
             for rname in policies:
                 if registered(self._robots, rname):
                     self._robots[rname].policy_running = False
+            # Bailed mid-episode on an unexpected error (e.g. empty action
+            # chunk): drop the partially-recorded frames so the next episode
+            # begins at frame 0 instead of appending to a dangling half-episode.
+            if not completed_cleanly and recording and recorder is not None:
+                recorder.clear_episode_buffer()
 
         per_robot_steps = {rname: int(self._robots[rname].policy_steps) for rname in policies}
         text = (
             f"{'stopped early' if stopped_early else 'completed'}: "
             f"run_multi_policy on {len(policies)} robots ({', '.join(policies)}) - "
             f"{step_count} synchronized steps"
+            f"{' (recorded)' if recording else ''}"
         )
         return {
             "status": "success",
