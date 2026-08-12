@@ -2770,9 +2770,9 @@ class SimEngine(ABC):
         This base implementation is a documented refusal, not a fallback: a
         backend that has no synchronized multi-robot loop must say so rather
         than silently driving robots one at a time (which would interleave
-        frames and break the merged-frame contract above). The MuJoCo backend
-        overrides it with a full implementation; backends that do not yet
-        (Isaac, Newton) inherit this structured error.
+        frames and break the merged-frame contract above). The MuJoCo and
+        Isaac backends override it with full implementations; backends that
+        do not yet (Newton) inherit this structured error.
 
         Args:
             policies: Mapping ``{robot_name: Policy}`` of the robots to drive.

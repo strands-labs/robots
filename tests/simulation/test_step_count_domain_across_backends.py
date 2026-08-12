@@ -720,6 +720,7 @@ _KNOWN_STEP_COUNT_SURFACES: dict[tuple[str, str], tuple[str, ...]] = {
     ("mujoco", "run_multi_policy"): ("_resolve_horizon",),
     ("newton", "step"): ("non_negative_whole_number_error",),
     ("isaac", "step"): ("non_negative_whole_number_error",),
+    ("isaac", "run_multi_policy"): ("_resolve_horizon",),
 }
 
 #: The surfaces this change owns: every backend's public ``step``.

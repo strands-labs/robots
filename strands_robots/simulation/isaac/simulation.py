@@ -58,6 +58,7 @@ from strands_robots.utils import (
 )
 
 if TYPE_CHECKING:
+    from strands_robots.policies.base import Policy
     from strands_robots.rendering import CameraParams
 
 logger = logging.getLogger(__name__)
@@ -522,6 +523,17 @@ class _RobotState:
         # ``/World/Robots/arm`` being requested). Used by
         # ``gripper_frame_pose`` to walk the actual robot subtree.
         self.actual_prim_path = actual_prim_path or prim_path
+        # Rollout bookkeeping, mirroring the MuJoCo per-robot record: the
+        # policy-driving loops (:meth:`IsaacSimulation.run_multi_policy`, the
+        # recording hook in
+        # :meth:`~strands_robots.simulation.isaac.recording.IsaacRecordingMixin._make_run_policy_hook`)
+        # set these while a rollout drives this robot. ``policy_running`` is
+        # both the busy guard (a robot already driven by one loop must not be
+        # double-stepped by another) and the cooperative-stop flag (flipping
+        # it False ends the loop cleanly).
+        self.policy_running = False
+        self.policy_instruction = ""
+        self.policy_steps = 0
 
 
 def _cameras_recording_option_error(
@@ -3445,6 +3457,397 @@ class IsaacSimulation(IsaacRecordingMixin, SimEngine):
         return {
             "status": "success",
             "content": [{"text": f"Action applied to '{robot_name}', {n_substeps} substeps."}],
+        }
+
+    # --- SimEngine: Synchronized multi-robot rollout -------------------------
+
+    def _apply_lockstep_action(self, robot_name: str, action: dict[str, Any], warned_unresolved: set[str]) -> None:
+        """Apply one robot's action WITHOUT stepping physics (lockstep half of send_action).
+
+        The synchronized loop in :meth:`run_multi_policy` writes every robot's
+        joint targets first and then steps physics ONCE, so it cannot use
+        :meth:`send_action` (whose contract steps physics per call). This is
+        the apply-only half of that method: task-space controller routing
+        (#1812), the shared action-value coercion
+        (:meth:`~strands_robots.simulation.base.SimEngine._coerce_action`), and
+        the named-joints-only ``ArticulationAction`` application.
+
+        Runs inside the loop's apply-and-step main-thread hop with
+        ``self._lock`` held by the caller.
+
+        Raises:
+            RuntimeError: On a controller conversion failure, a refused action
+                value, or an articulation apply failure. Mid-loop failures
+                raise rather than returning an envelope because applying a
+                zero/partial substitute and stepping anyway would advance a
+                trajectory no policy commanded (Key Conventions #5/#6); the
+                loop's ``finally`` clears the running flags.
+        """
+        robot = self._robots[robot_name]
+
+        # Route through an installed task-space controller first, so the
+        # controller's *output* is what clears the value domain (parity with
+        # send_action, #1812).
+        controller = registry_entry(self._action_controllers, robot_name)
+        if controller is not None and isinstance(action, dict):
+            try:
+                action = controller.compute_joint_targets(action)
+            except (RuntimeError, ValueError, TypeError) as e:
+                raise RuntimeError(
+                    f"run_multi_policy: action controller for '{robot_name}' failed to "
+                    f"convert the task-space action: {e}"
+                ) from e
+
+        action_map, coerce_error = self._coerce_action(action, robot_name)
+        if coerce_error is not None:
+            raise RuntimeError(f"run_multi_policy: action for '{robot_name}' refused: {self._first_text(coerce_error)}")
+        assert action_map is not None  # narrow for mypy: no error implies a mapping
+
+        # A key naming no joint is surfaced once per (robot, key) rather than
+        # silently dropped (parity with the MuJoCo loop's warn-once unresolved
+        # reporting) or spammed at the control rate.
+        joint_set = set(robot.joint_names)
+        for key in action_map:
+            if key not in joint_set and (tag := f"{robot_name}:{key}") not in warned_unresolved:
+                warned_unresolved.add(tag)
+                logger.warning(
+                    "run_multi_policy: action key %r resolves to no joint on '%s' and is not applied. Valid keys: %s",
+                    key,
+                    robot_name,
+                    robot.joint_names,
+                )
+
+        # Command ONLY the named joints (see send_action for why a full
+        # zero-filled vector would slam unnamed joints to 0.0).
+        named = [i for i, jname in enumerate(robot.joint_names) if jname in action_map]
+        if robot.articulation is None or not named:
+            return
+        action_array: np.ndarray = np.array(
+            [float(action_map[robot.joint_names[i]]) for i in named],
+            dtype=np.float32,
+        )
+        joint_indices: np.ndarray = np.array(named, dtype=np.int32)
+        try:
+            from isaacsim.core.utils.types import (  # type: ignore[import-not-found]
+                ArticulationAction,
+            )
+
+            robot.articulation.apply_action(
+                ArticulationAction(joint_positions=action_array, joint_indices=joint_indices)
+            )
+        except (RuntimeError, ValueError, AttributeError, ImportError) as e:
+            # Same expected-failure set as send_action's apply path; a failed
+            # apply mid-lockstep must halt the loop, not leave this robot
+            # coasting on stale targets while its siblings advance.
+            raise RuntimeError(f"run_multi_policy: failed to set joint targets on '{robot_name}': {e}") from e
+
+    def run_multi_policy(
+        self,
+        policies: dict[str, Policy],
+        instructions: dict[str, str] | str = "",
+        duration: float = 10.0,
+        control_frequency: float = 50.0,
+        action_horizon: int | dict[str, int] = 8,
+        n_steps: int | None = None,
+        max_steps: int | None = None,
+        *,
+        reset_between: bool = False,
+    ) -> dict[str, Any]:
+        """Drive MULTIPLE robots with their own policies in ONE synchronized control loop.
+
+        The Isaac implementation of the
+        :meth:`~strands_robots.simulation.base.SimEngine.run_multi_policy`
+        contract (#2158, part of the #2122 MuJoCo-parity work), for the fleet
+        topology ``add_robot`` already supports: one stage, one env, multiple
+        articulations. Per loop iteration it (1) observes every robot once,
+        (2) re-queries each robot's policy only when that robot's buffered
+        action chunk drains (chunk length via
+        :func:`~strands_robots.policies.base.resolve_chunk_length`, exactly as
+        the single-policy runner sizes it), (3) applies every robot's joint
+        targets, then (4) steps physics ONCE - so all robots stay
+        phase-aligned regardless of their individual re-query cadence.
+
+        **Threading**: all Kit/USD/physics interaction is marshalled through
+        :meth:`run_on_main` in two batched hops per timestep (observe-all,
+        then apply-all-and-step); policy inference runs between the hops on
+        the calling thread, never on the Kit main thread. Called on the
+        owning thread the hops run inline; called from a worker thread the
+        owning thread must be running :meth:`run_pump_forever` (the #1896
+        contract :meth:`step` / :meth:`reset` enforce by raising - this
+        entry point reports it in the tool envelope instead). No lock is
+        held across a marshal hop; each hop takes ``self._lock`` itself.
+
+        **Recording is not implemented here yet**: the merged-frame recording
+        path is a follow-up to #2158. A call arriving while a dataset
+        recording is active is refused rather than silently producing an
+        unrecorded rollout the session's frame count would misreport.
+
+        Args:
+            policies: Mapping ``{robot_name: Policy}`` of the robots to drive.
+            instructions: Single instruction string for all robots, or a
+                ``{robot_name: instruction}`` mapping.
+            duration: Episode length in seconds (steps = duration x freq).
+                Used only when no ``n_steps`` / ``max_steps`` is given.
+            control_frequency: Target Hz for policy queries / physics steps.
+            action_horizon: Actions consumed from each policy's chunk before
+                re-querying it, as one int or a per-robot mapping.
+            n_steps: Exact step horizon (overrides ``duration`` when set).
+            max_steps: Legacy alias for ``n_steps``.
+            reset_between: Forward-compat with :meth:`run_policy`'s
+                multi-episode semantics. Must be ``False``: on the pip Isaac
+                Sim wheels :meth:`reset` tears down the articulation
+                physics-tensor views (#1895), so a mid-run reset would leave
+                every robot unobservable; requesting one returns a structured
+                error rather than silently skipping the reset.
+
+        Returns:
+            The standard status dict; on success ``content`` carries a text
+            summary plus ``{"json": {"steps": N, "per_robot_steps": {...}}}``.
+
+        Raises:
+            RuntimeError: Mid-loop on a policy that returns an empty action
+                chunk or an action that cannot be applied (see
+                :meth:`_apply_lockstep_action`) - never a zero-valued
+                substitute action.
+        """
+        from collections import deque
+
+        from strands_robots._async_utils import _resolve_coroutine
+        from strands_robots.policies.base import resolve_chunk_length
+        from strands_robots.simulation.policy_runner import CooperativeStop
+
+        if not getattr(self, "_world_created", False) or self._world is None:
+            return {"status": "error", "content": [{"text": "No world created. Use action='create_world' first."}]}
+        if err := self._validate_multi_policies(policies, "run_multi_policy"):
+            return err
+
+        # Validate every robot exists.
+        for rname in policies:
+            if not registered(self._robots, rname):
+                return {"status": "error", "content": [{"text": self._unknown_robot_msg(rname)}]}
+
+        # Reject a robot another loop is already driving (double-stepping
+        # physics on it), mirroring the MuJoCo busy check. Isaac has no
+        # background start_policy futures to prune; ``policy_running`` is the
+        # per-robot flag every Isaac policy-driving loop sets.
+        busy = [r for r in policies if getattr(self._robots[r], "policy_running", False)]
+        if busy:
+            names = ", ".join(f"'{n}'" for n in busy)
+            return {
+                "status": "error",
+                "content": [{"text": f"run_multi_policy: policy already running on {names}. Stop it first."}],
+            }
+
+        if reset_between:
+            return {
+                "status": "error",
+                "content": [
+                    {
+                        "text": (
+                            "run_multi_policy: reset_between=True is not supported on the Isaac "
+                            "backend: reset() tears down the articulation physics-tensor views on "
+                            "the pip Isaac Sim wheels (#1895), so a mid-run reset would leave every "
+                            "robot unobservable. Pass reset_between=False (the default) and reset "
+                            "explicitly between calls, or use the MuJoCo backend for multi-episode "
+                            "multi-robot rollouts."
+                        )
+                    }
+                ],
+            }
+
+        # The merged-frame recording path is a follow-up to #2158; refusing is
+        # the alternative to silently running an unrecorded rollout inside an
+        # active session (Key Conventions #5/#6).
+        if self._is_recording():
+            return {
+                "status": "error",
+                "content": [
+                    {
+                        "text": (
+                            "run_multi_policy: a dataset recording is active, but the Isaac "
+                            "synchronized multi-robot loop does not record yet (the merged-frame "
+                            "recording path is a follow-up to #2158). Stop the recording first, or "
+                            "record a multi-robot rollout on the MuJoCo backend."
+                        )
+                    }
+                ],
+            }
+
+        # Thread affinity (#1896): off the owning thread every marshal hop
+        # below would block forever without a pump. step()/reset() raise for
+        # this; a tool-facing driver reports it in the envelope instead.
+        if not self._on_main_thread() and not self._pump_running:
+            return {
+                "status": "error",
+                "content": [
+                    {
+                        "text": (
+                            "run_multi_policy was called from a worker thread with no main-thread "
+                            "pump running. Isaac Sim only pumps kit updates on the thread that "
+                            "created SimulationApp, so the per-step observe/apply hops would block "
+                            "forever. Either call it from the owning thread, or have the owning "
+                            "thread run `run_pump_forever(stop_event=...)` and call this from the "
+                            "worker (the loop marshals each hop via run_on_main itself)."
+                        )
+                    }
+                ],
+            }
+
+        # Normalize instructions through the shared base helper (one refusal
+        # text for every backend), attributing the distinct-instructions
+        # warning to this module's logger.
+        instr_map, err = self._normalize_multi_policy_instructions(
+            policies, instructions, "run_multi_policy", warn_logger=logger
+        )
+        if err is not None:
+            return err
+        assert instr_map is not None  # for the type checker: err is None <=> instr_map is not None
+
+        # Resolve the step horizon through the shared helpers so this loop
+        # guards the same domain as run_policy (n_steps / max_steps override
+        # duration; frequency validated first because _resolve_horizon divides
+        # by it).
+        if err := self._validate_positive_frequency(control_frequency, "run_multi_policy"):
+            return err
+        duration, n_steps, horizon_error = self._resolve_horizon(
+            n_steps, max_steps, control_frequency, duration, "run_multi_policy"
+        )
+        if horizon_error is not None:
+            return horizon_error
+        if n_steps is None:
+            if err := self._validate_duration(duration, "run_multi_policy"):
+                return err
+
+        # Normalize action_horizon to a per-robot mapping on the shared
+        # positive-int domain.
+        horizon_map, err = self._normalize_multi_policy_horizons(
+            policies, action_horizon, "run_multi_policy", default_horizon=8
+        )
+        if err is not None:
+            return err
+        assert horizon_map is not None  # for the type checker: err is None <=> horizon_map is not None
+
+        # Bind each policy's action keys (best-effort, mirrors run_policy).
+        for rname, pol in policies.items():
+            try:
+                pol.set_robot_state_keys(self.robot_action_keys(rname))
+                self.bind_policy_sim_context(pol, rname)
+            except Exception as exc:  # noqa: BLE001 - non-fatal, mirrors run_policy defensiveness
+                logger.debug("set_robot_state_keys(%s) failed: %s", rname, exc)
+
+        # Renders are expensive; skip camera readback when no policy needs
+        # images (recording, which would force them on, is refused above).
+        any_needs_images = any(getattr(p, "requires_images", True) for p in policies.values())
+        skip_images = not any_needs_images
+        render_on = self._config.render_mode != "headless"
+        physics_dt = float(getattr(self._config, "physics_dt", 0.0) or 0.0)
+
+        total_steps = int(duration * control_frequency)
+        action_sleep = 1.0 / control_frequency if control_frequency > 0 else 0.0
+
+        # Mark all robots as running so a cooperative stop can interrupt the
+        # loop, and so a concurrent driver is refused by the busy check above.
+        for rname in policies:
+            r = self._robots[rname]
+            r.policy_running = True
+            r.policy_instruction = instr_map[rname]
+            r.policy_steps = 0
+
+        # Per-robot action queue: actions remaining from the last chunk query.
+        # A policy is only re-queried when its queue is empty, so expensive VLA
+        # inference amortizes over up to ``horizon_map[robot]`` steps.
+        action_queues: dict[str, deque] = {r: deque() for r in policies}
+        warned_unresolved: set[str] = set()
+
+        def _observe_all() -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
+            """Main-thread hop 1: observe every robot, read cameras ONCE."""
+            per_obs: dict[str, dict[str, Any]] = {}
+            cams: dict[str, Any] = {}
+            first = True
+            for rname in policies:
+                obs = self.get_observation(robot_name=rname, skip_images=(skip_images or not first))
+                # Split scalars (joints) from ndarrays (camera images);
+                # cameras are scene-global, so one readback serves all robots.
+                per_obs[rname] = {k: v for k, v in obs.items() if not isinstance(v, np.ndarray)}
+                if first:
+                    cams = {k: v for k, v in obs.items() if isinstance(v, np.ndarray)}
+                    first = False
+            return per_obs, cams
+
+        def _apply_all_and_step(per_robot_action: dict[str, dict[str, Any]]) -> None:
+            """Main-thread hop 2: apply EVERY robot's targets, step physics ONCE."""
+            with self._lock:
+                for rname, act in per_robot_action.items():
+                    self._apply_lockstep_action(rname, act, warned_unresolved)
+                self._world.step(render=render_on)
+                self._sim_time += physics_dt
+                self._step_count += 1
+
+        step_count = 0
+        stopped_early = False
+        try:
+            while step_count < total_steps:
+                # --- 1. Observe every robot (one main-thread hop). No lock is
+                # held across the marshal (#1896); get_observation takes it.
+                per_robot_obs, camera_imgs = self.run_on_main(_observe_all)
+
+                # --- 2. Resolve each robot's action for THIS step, off the
+                # main thread. Re-query a policy ONLY when its buffered chunk
+                # drains (open-loop chunk execution).
+                per_robot_action: dict[str, dict[str, Any]] = {}
+                for rname, pol in policies.items():
+                    # Cooperative stop check.
+                    if not self._robots[rname].policy_running:
+                        raise CooperativeStop(f"Policy stopped on '{rname}'")
+                    if not action_queues[rname]:
+                        pol_obs = dict(per_robot_obs[rname])
+                        pol_obs.update(camera_imgs)
+                        coro = pol.get_actions(pol_obs, instr_map[rname])
+                        acts = _resolve_coroutine(coro)
+                        # Size the chunk via the shared ChunkedPolicy rule so a
+                        # chunk-emitting policy keeps its full trained chunk
+                        # here exactly as the single-policy runner does.
+                        _chunk = resolve_chunk_length(pol, horizon_map[rname])
+                        for a in acts[:_chunk]:
+                            action_queues[rname].append(a)
+                    if not action_queues[rname]:
+                        # Emitting a zero-valued substitute here would advance
+                        # a trajectory no policy commanded. Fail loudly
+                        # instead (Key Conventions #6).
+                        raise RuntimeError(
+                            f"Policy for robot '{rname}' returned an empty action chunk; "
+                            "cannot advance the synchronized loop. Check the policy's "
+                            "get_actions() output."
+                        )
+                    per_robot_action[rname] = action_queues[rname].popleft()
+
+                # --- 3+4. Apply ALL robots' targets, then step physics ONCE
+                # (one main-thread hop; the hop takes self._lock itself).
+                self.run_on_main(lambda acts=per_robot_action: _apply_all_and_step(acts))
+
+                step_count += 1
+                for rname in policies:
+                    self._robots[rname].policy_steps = step_count
+
+                if action_sleep:
+                    time.sleep(action_sleep)
+        except CooperativeStop:
+            # A cooperative stop is a normal, user-requested halt.
+            stopped_early = True
+        finally:
+            for rname in policies:
+                if registered(self._robots, rname):
+                    self._robots[rname].policy_running = False
+
+        per_robot_steps = {rname: int(self._robots[rname].policy_steps) for rname in policies}
+        text = (
+            f"{'stopped early' if stopped_early else 'completed'}: "
+            f"run_multi_policy on {len(policies)} robots ({', '.join(policies)}) - "
+            f"{step_count} synchronized steps"
+        )
+        return {
+            "status": "success",
+            "content": [{"text": text}, {"json": {"steps": step_count, "per_robot_steps": per_robot_steps}}],
         }
 
     # --- SimEngine: Rendering -----------------------------------------------
