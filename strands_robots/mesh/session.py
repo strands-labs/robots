@@ -31,6 +31,9 @@ Environment variables
     Local auto-mesh port (default ``7447``).
 ``STRANDS_MESH``
     Set to ``false`` to disable mesh globally.
+``STRANDS_MESH_MULTICAST``
+    ``true`` to opt into LAN multicast scouting (logs a warning).
+    Default ``false``.
 """
 
 from __future__ import annotations
