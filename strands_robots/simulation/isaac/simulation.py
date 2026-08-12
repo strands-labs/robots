@@ -40,6 +40,7 @@ import numpy as np
 from strands_robots.simulation.base import SimEngine, unknown_kwargs_error
 from strands_robots.simulation.isaac.config import IsaacConfig
 from strands_robots.simulation.isaac.joint_names import demangle_usd_joint_names, urdf_joint_names
+from strands_robots.simulation.isaac.motion_primitives import IsaacMotionPrimitivesMixin
 from strands_robots.simulation.isaac.recording import IsaacRecordingMixin
 from strands_robots.simulation.models import registered, registry_entry
 from strands_robots.simulation.terrain import validate_difficulty
@@ -603,7 +604,7 @@ class _ObjectState:
         self.handle = handle
 
 
-class IsaacSimulation(IsaacRecordingMixin, SimEngine):
+class IsaacSimulation(IsaacMotionPrimitivesMixin, IsaacRecordingMixin, SimEngine):
     """GPU-native simulation backend built on NVIDIA Isaac Sim.
 
     Implements the ``SimEngine`` ABC. Provides photorealistic rendering,
@@ -611,6 +612,9 @@ class IsaacSimulation(IsaacRecordingMixin, SimEngine):
     LeRobotDataset recording (``start_recording`` / ``save_episode`` /
     ``stop_recording`` / ``stream_dataset``) comes from
     :class:`~strands_robots.simulation.isaac.recording.IsaacRecordingMixin`,
+    and the joint-space motion primitives (``set_gripper`` /
+    ``rotate_wrist``) from
+    :class:`~strands_robots.simulation.isaac.motion_primitives.IsaacMotionPrimitivesMixin`,
     matching the MuJoCo and Newton backends.
 
     Parameters
@@ -6264,6 +6268,20 @@ class IsaacSimulation(IsaacRecordingMixin, SimEngine):
                     "# raw per-camera MP4 capture (no lerobot dependency)"
                 ),
                 "stop_cameras_recording": "() -> dict  # finalize the raw MP4 capture",
+                # Joint-space motion primitives (GH #2154, Isaac half of the
+                # GH #1645 vocabulary; shared contract in
+                # strands_robots.simulation.motion_primitives_base).
+                "set_gripper": (
+                    "(robot_name=None, state='open'|'close', steps=12) -> dict  # "
+                    "drive the gripper joint(s) to the open/close set-point "
+                    "(registry gripper metadata when present, else open=HIGH / "
+                    "close=LOW end of the joint's limit range)"
+                ),
+                "rotate_wrist": (
+                    "(robot_name=None, target_yaw, tol=0.02, max_steps=200) -> dict  "
+                    "# rotate the wrist joint to a set-point (radians) while the "
+                    "other joints hold their current positions"
+                ),
             }
         )
         return desc
