@@ -265,17 +265,10 @@ class TestGuards:
 
     # MuJoCo parity: all three primitives refuse while a policy runs on the
     # robot (tests/simulation/mujoco/test_motion_primitives.py::TestGuards::
-    # test_refused_while_policy_running). On Isaac only move_to carries the
-    # guard (pinned in test_move_to_ik.py::TestGuards::
-    # test_running_policy_refuses_up_front); set_gripper / rotate_wrist
-    # currently succeed and race the policy loop on the articulation's PD
-    # targets. Real behavioral divergence, filed as GH #2231 per #2156's
-    # constraints (test-only PR: file, don't patch). strict xfail so the fix
-    # XPASS-fails here and this marker gets removed, leaving the MuJoCo pin.
-    @pytest.mark.xfail(
-        reason="GH #2231: Isaac set_gripper/rotate_wrist do not refuse while a policy runs (move_to does)",
-        strict=True,
-    )
+    # test_refused_while_policy_running). On Isaac move_to's guard is pinned
+    # in test_move_to_ik.py::TestGuards::test_running_policy_refuses_up_front;
+    # set_gripper / rotate_wrist gained the same refusal in
+    # _primitive_resolve_robot (GH #2231, fixed by #2235), pinned here.
     @pytest.mark.parametrize(
         ("action", "fields"),
         [

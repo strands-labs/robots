@@ -12,9 +12,10 @@ preservation and the move_to halves of the metadata cases. MuJoCo-only
 mechanisms (the AgentTool dispatch router, `data.ctrl` interplay,
 `_SUBSTEPS_PER_TICK`) are noted as deliberate omissions rather than ported
 emptily. Writing the suite exposed one real divergence - Isaac `set_gripper`
-/ `rotate_wrist` do not refuse while a policy runs on the robot (`move_to`
-does) - filed as #2231 and carried here as a strict xfail rather than
-patched in a test-only change.
+/ `rotate_wrist` did not refuse while a policy ran on the robot (`move_to`
+did) - filed as #2231 rather than patched in a test-only change; #2235 closed
+it, and the guard pair here now pins the refusal outright (the strict xfail
+it briefly carried is gone).
 
 `tests_integ/simulation/test_isaac_motion_primitives_gpu.py` drives the same
 entry points against a real SimulationApp/Kit runtime (verified on GPU
