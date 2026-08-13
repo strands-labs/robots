@@ -955,12 +955,23 @@ class SimEngine(ABC):
                 ``create_policy``.
             policy_config: Provider kwargs (the policy_config).
 
+        An unresolvable ``policy_provider`` is reported here too. That check
+        runs before the observation lookup below: a robot whose observation is
+        not yet available would otherwise take the early return and let the
+        unresolvable name reach ``create_policy``, whose raise escapes the
+        ``status=error`` envelope this method exists to produce.
+
         Returns:
             A ``status=error`` dict (for the caller to return) when the
-            provider's preflight rejects the configuration; ``None`` when the
-            check passes, is a no-op, or the observation is not yet available.
+            provider cannot be resolved or its preflight rejects the
+            configuration; ``None`` when the check passes, is a no-op, or the
+            observation is not yet available.
         """
-        from strands_robots.policies import preflight_policy
+        from strands_robots.policies import policy_provider_error, preflight_policy
+
+        reason = policy_provider_error(policy_provider, **(policy_config or {}))
+        if reason is not None:
+            return {"status": "error", "content": [{"text": reason}]}
 
         obs = self.get_observation(robot_name)
         if not isinstance(obs, dict) or not obs:
@@ -970,6 +981,34 @@ class SimEngine(ABC):
         except ValueError as e:
             return {"status": "error", "content": [{"text": str(e)}]}
         return None
+
+    def _unresolvable_policy_provider_error(
+        self,
+        policy_provider: str,
+        policy_config: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        """Report an unresolvable ``policy_provider`` as a structured error.
+
+        For surfaces that cannot use :meth:`_preflight_policy_config` because
+        they build the policy elsewhere -- notably a ``start_policy`` that
+        submits the rollout to a worker thread -- this gives the same verdict
+        synchronously, so the caller is refused instead of being told a
+        rollout started that could never build its policy.
+
+        Args:
+            policy_provider: Provider name / smart string.
+            policy_config: Provider kwargs (the policy_config).
+
+        Returns:
+            A ``status=error`` dict when the provider cannot be resolved;
+            ``None`` when it resolves.
+        """
+        from strands_robots.policies import policy_provider_error
+
+        reason = policy_provider_error(policy_provider, **(policy_config or {}))
+        if reason is None:
+            return None
+        return {"status": "error", "content": [{"text": reason}]}
 
     # Object management
 

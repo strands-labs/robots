@@ -255,7 +255,7 @@
     },
     "output_path": {
       "type": "string",
-      "description": "Trajectory/video export path"
+      "description": "Destination file path. render: PNG still, confined to the render sandbox (~/.strands_robots/renders, or STRANDS_ROBOTS_RENDER_ROOT); set STRANDS_ROBOTS_RENDER_ALLOW_ABS=1 to write outside it. export_xml: MJCF scene, any absolute path accepted. run_policy/start_policy/eval_policy/evaluate_benchmark: rollout MP4. Every sink rejects '..' traversal, a symlinked target, backslash separators and shell metacharacters."
     },
     "fps": {
       "type": "integer",

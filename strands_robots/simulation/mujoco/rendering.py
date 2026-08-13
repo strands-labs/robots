@@ -927,7 +927,10 @@ class RenderingMixin:
         ``~/.strands_robots/renders``); paths with shell metacharacters,
         backslash separators, ``..`` escapes, or a symlinked target, and PNGs
         larger than ``STRANDS_ROBOTS_RENDER_MAX_BYTES`` (default 50 MB) are
-        rejected with ``status=error``. Set ``STRANDS_ROBOTS_RENDER_ALLOW_ABS=1``
+        rejected with ``status=error``. A bare filename (``"frame.png"``) is
+        written INTO the sandbox rather than resolved against the process CWD,
+        so it needs no directory to succeed. Set
+        ``STRANDS_ROBOTS_RENDER_ALLOW_ABS=1``
         to permit absolute paths outside the sandbox. The write is atomic
         (temp file + ``os.replace``), so a crash mid-write cannot corrupt an
         existing file at the destination.

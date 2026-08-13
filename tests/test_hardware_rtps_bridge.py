@@ -419,3 +419,20 @@ def test_invalid_joint_limits_raise_at_construction(fake_cyclonedds: dict[str, A
         _bridge(_FakeRobot(), joint_limits={"a": (1.0, -1.0)})
     with pytest.raises(ValueError, match="must be a"):
         _bridge(_FakeRobot(), joint_limits={"a": 5.0})  # type: ignore[dict-item]
+
+
+def test_start_poll_is_idempotent(fake_cyclonedds: dict[str, Any]) -> None:
+    """A second start while the poll thread is alive spawns no second thread.
+
+    The cyclonedds mirror of ``test_start_spin_is_idempotent``: two threads on
+    one reader would each ``take()`` and split the command stream between them.
+    """
+    b = _bridge(_FakeRobot())  # enable_commands default -> poll thread started
+    first = b._poll_thread
+    assert first is not None and first.is_alive()
+
+    b._start_poll()
+    assert b._poll_thread is first
+
+    b.shutdown()
+    assert b._poll_thread is None

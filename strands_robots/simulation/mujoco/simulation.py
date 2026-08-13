@@ -41,6 +41,7 @@ dedup).
 So: the split is honest about being for file-size, not for decoupling.
 """
 
+import contextlib
 import inspect
 import json
 import logging
@@ -4324,6 +4325,13 @@ class MuJoCoSimEngine(
         # frames separately, which is correct for live control but interleaves
         # for a shared recorder. start_policy while recording is left to the
         # caller's intent (run_multi_policy is the recommended recording path).
+        # Resolve the provider synchronously. run_policy performs this check
+        # too, but it runs on the worker below: a raise there is captured in
+        # the future and this method would still report "Policy started",
+        # leaving the caller with a success for a rollout that never began.
+        if err := self._unresolvable_policy_provider_error(policy_provider, policy_config):
+            return err
+
         future = self._executor.submit(
             self.run_policy,
             robot_name,
@@ -5234,6 +5242,14 @@ class MuJoCoSimEngine(
                 stale-pointer window step 2 exists to close, so the safe budget
                 is the honest reading of "no usable preference". Teardown always
                 completes; see :func:`_resolve_policy_stop_timeout`.
+
+        Note:
+            Every name this method needs is bound at module scope. A
+            finalizer calls this during interpreter shutdown, where the
+            import system is already gone, so a function-local import here
+            raises before the first teardown step and the ``__del__`` safety
+            net releases nothing at all - reported only as a warning naming
+            the interpreter rather than anything the caller can act on.
         """
         # Detach from the mesh network first (if attached). A truthy
         # ``self.mesh`` is any object exposing ``.stop()``; falsy values
@@ -5252,12 +5268,10 @@ class MuJoCoSimEngine(
         # (TeleopMixin) before mesh teardown. Best-effort.
         # Tear down the ROS 2 telemetry bridge (if any) before other teardown
         # so external subscribers see the node leave cleanly.
-        import contextlib as _cl
-
-        with _cl.suppress(Exception):
+        with contextlib.suppress(Exception):
             self._shutdown_ros_bridge()
         if getattr(self, "_teleop_running", False) or getattr(self, "_teleops", None):
-            with _cl.suppress(Exception):
+            with contextlib.suppress(Exception):
                 self.stop_teleoperate()
         if self._world is not None:
             for r in list(self._world.robots.values()):

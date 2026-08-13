@@ -248,7 +248,10 @@ class RosTelemetryBase:
         empty sample (a DDS dispose / keep-alive, which is not a real actuation
         request) is dropped silently; an empty or length-mismatched message is
         otherwise rejected with a warning rather than partially applied, so a
-        malformed command never drives the arm to a surprising pose.
+        malformed command never drives the arm to a surprising pose. A position
+        that is not a readable number rejects the message the same way - it is
+        reported and returns ``None`` rather than raising, so the failure costs
+        exactly the one message on either transport.
 
         When ``joint_limits`` is supplied (``{motor: (min, max)}``), the command
         is range-checked against the declared bounds: if ANY commanded joint
@@ -275,7 +278,29 @@ class RosTelemetryBase:
                 len(positions),
             )
             return None
-        action = {name: float(pos) for name, pos in zip(names, positions)}
+        action: dict[str, float] = {}
+        for name, pos in zip(names, positions):
+            try:
+                action[name] = float(pos)
+            except (TypeError, ValueError):
+                # A position this cannot read is a malformed command, not a
+                # reason to raise: this method's contract is an action dict or
+                # None. Refusing the message WHOLE matches the length-mismatch
+                # and out-of-range branches - no partial application - and it
+                # keeps the failure inside the parser, where it costs exactly
+                # the one message. Escaping instead reached each transport's
+                # loop tolerance, and the cyclonedds loop has already taken a
+                # batch by then, so the samples behind this one were dropped
+                # with it. Finiteness is deliberately not checked here: a nan
+                # position is a readable number that ``send_action`` refuses
+                # naming the joint.
+                logger.warning(
+                    "%s: ignoring joint_command with a non-numeric position for %r: %r",
+                    type(self).__name__,
+                    name,
+                    pos,
+                )
+                return None
         if joint_limits:
             for name, pos in action.items():
                 bounds = joint_limits.get(name)

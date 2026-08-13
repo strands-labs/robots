@@ -36,6 +36,7 @@ from strands_robots.simulation.mujoco.scene_ops import (
     persist_geom_properties,
     refresh_body_inertial_from_geometry,
 )
+from strands_robots.simulation.safe_output import atomic_write_bytes, validate_output_path
 from strands_robots.utils import BOOLEAN_VECTOR_REASON, coerce_rgba, is_boolean
 
 logger = logging.getLogger(__name__)
@@ -2338,6 +2339,14 @@ class PhysicsMixin:
         ``replace_scene_mjcf`` / ``patch_scene_mjcf`` / the ``inject_*``
         helpers all do this). The serialised XML reflects any runtime
         mutation, so no extra caching or round-tripping is needed.
+
+        ``output_path`` is treated as untrusted (LLM-callable tool): a ``..``
+        traversal segment, a symlinked target, shell metacharacters, and
+        backslash separators are rejected with ``status=error``. An absolute
+        destination is accepted (the historic contract for this sink). The
+        write is atomic and the success text reports the RESOLVED path. A
+        destination the filesystem cannot accept (a directory, an unwritable
+        parent) is reported the same way; a missing parent is created.
         """
         if self._world is None or self._world._model is None:
             return {"status": "error", "content": [{"text": _NO_WORLD_MSG}]}
@@ -2364,9 +2373,32 @@ class PhysicsMixin:
             return {"status": "error", "content": [{"text": f"spec.to_xml() failed: {e}"}]}
 
         if output_path:
-            with open(output_path, "w") as f:
-                f.write(xml)
-            return {"status": "success", "content": [{"text": f"Model exported to {output_path}"}]}
+            # output_path is LLM-supplied (export_xml is an agent-callable
+            # action): reject traversal, a symlinked target, and shell
+            # metacharacters before writing. Guards-only (no sandbox root) keeps
+            # the historic contract that an absolute destination is accepted -
+            # unlike render(), whose output_path is documented as a newer,
+            # sandboxed-by-design feature. The write is atomic so a crash
+            # mid-export cannot truncate an existing file at the destination.
+            try:
+                safe = validate_output_path(output_path, sandbox_root=None, allow_abs=True)
+            except ValueError as e:
+                return {"status": "error", "content": [{"text": f"export_xml: {e}"}]}
+            try:
+                atomic_write_bytes(safe, xml.encode("utf-8"))
+            except OSError as e:
+                # A destination the caller supplied but the filesystem cannot
+                # accept (a directory, an unwritable parent) is the same class
+                # of caller error as an unsafe path, so it is reported through
+                # the envelope rather than raised past it. strerror keeps the
+                # internal temp filename out of the message.
+                return {
+                    "status": "error",
+                    "content": [{"text": f"export_xml: cannot write {safe}: {e.strerror or e}"}],
+                }
+            # Report the RESOLVED path: the raw argument can normalize to a
+            # different location, so echoing it would name a file we did not write.
+            return {"status": "success", "content": [{"text": f"Model exported to {safe}"}]}
 
         return {
             "status": "success",

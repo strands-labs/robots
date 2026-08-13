@@ -30,9 +30,13 @@ from __future__ import annotations
 
 import ast
 import gc
+import importlib.util
 import inspect
 import logging
+import os
 import pathlib
+import subprocess
+import sys
 from typing import Any
 
 import pytest
@@ -43,6 +47,7 @@ from strands_robots.simulation.mujoco.simulation import MuJoCoSimEngine
 
 _BASE_LOGGER = "strands_robots.simulation.base"
 _CLEANUP_WARNING = "Cleanup error during __del__"
+_MUJOCO_SPEC = importlib.util.find_spec("mujoco")
 
 
 def _cleanup_warnings(caplog: pytest.LogCaptureFixture) -> list[str]:
@@ -383,3 +388,215 @@ class TestEveryBackendDeclaresConstructionComplete:
             "        self._init_complete = True\n"
         )
         assert _engines_missing_the_sentinel(compliant) == []
+
+
+# The finalizer runs during interpreter shutdown, where imports no longer work.
+
+_SHUTDOWN_PROBE = """\
+import os
+import sys
+
+from strands_robots.simulation.mujoco.simulation import MuJoCoSimEngine
+
+fd = os.open(sys.argv[1], os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+
+# ``os.write`` and the descriptor are bound as default arguments so the wrapper
+# needs neither a module global nor an import once the interpreter has started
+# clearing module dictionaries - the window the finalizer runs in.
+_real = MuJoCoSimEngine._close_main_thread_renderers
+
+
+def _traced(self, *a, _r=_real, _w=os.write, _fd=fd, **k):
+    _w(_fd, b"renderers\\n")
+    return _r(self, *a, **k)
+
+
+MuJoCoSimEngine._close_main_thread_renderers = _traced
+
+engine = MuJoCoSimEngine(tool_name="finalizer_shutdown_probe")
+if len(sys.argv) > 2 and sys.argv[2] == "explicit":
+    engine.cleanup()
+# Fall off the end holding a reference: CPython finalizes it during shutdown.
+"""
+
+
+def _run_at_shutdown(tmp_path: pathlib.Path, *, explicit_cleanup: bool = False) -> tuple[int, list[str]]:
+    """Build an engine in a child interpreter and let shutdown finalize it.
+
+    Real shutdown cannot be emulated in-process: setting ``sys.meta_path`` to
+    ``None`` is not enough, because a module already in ``sys.modules`` needs no
+    finder. Only a genuine exit clears the module dictionaries the import
+    machinery reads, so the child process is the instrument.
+
+    ``PYTHONPATH`` is pinned to the tree this test was imported from, so the
+    child measures the same working copy rather than whichever installation
+    happens to be first on the default path.
+
+    Args:
+        tmp_path: Per-test directory for the script and its trace file.
+        explicit_cleanup: Call ``cleanup()`` before exiting, modelling a caller
+            who released everything correctly.
+
+    Returns:
+        ``(cleanup_warning_count, teardown_steps_reached)``.
+    """
+    script = tmp_path / "shutdown_probe.py"
+    script.write_text(_SHUTDOWN_PROBE, encoding="utf-8")
+    trace = tmp_path / "trace.txt"
+    tree = pathlib.Path(inspect.getfile(SimEngine)).parents[2]
+    argv = [sys.executable, str(script), str(trace)]
+    if explicit_cleanup:
+        argv.append("explicit")
+    completed = subprocess.run(  # noqa: S603 - fixed argv, no shell
+        argv,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env={**os.environ, "PYTHONPATH": str(tree)},
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    steps = trace.read_text(encoding="utf-8").split() if trace.exists() else []
+    return completed.stderr.count(_CLEANUP_WARNING), steps
+
+
+@pytest.mark.skipif(_MUJOCO_SPEC is None, reason="mujoco is not installed")
+class TestTheFinalizerCompletesAtInterpreterShutdown:
+    """The third direction of this module's contract: the ordinary exit path.
+
+    The two halves above cover an engine that never acquired anything and one
+    whose ``cleanup`` raises. Neither covers a fully constructed engine being
+    finalized by interpreter shutdown - which is what happens to every engine a
+    script does not explicitly release, and where the report was least true:
+    ``cleanup()`` opened with a function-local ``import contextlib``, so the
+    import raised before the first teardown step and the safety net released
+    nothing while reporting a failure that named the interpreter.
+    """
+
+    def test_the_teardown_steps_are_reached(self, tmp_path: pathlib.Path) -> None:
+        """A statement that runs before the teardown must not be able to skip it."""
+        _warnings, steps = _run_at_shutdown(tmp_path)
+        assert steps == ["renderers"], (
+            "the finalizer did not reach the renderer teardown, so nothing it guards was released at exit"
+        )
+
+    def test_no_cleanup_failure_is_reported(self, tmp_path: pathlib.Path) -> None:
+        count, _steps = _run_at_shutdown(tmp_path)
+        assert count == 0, f"{count} spurious cleanup warning(s) on a teardown that succeeded"
+
+    def test_a_caller_who_released_everything_is_told_nothing_failed(self, tmp_path: pathlib.Path) -> None:
+        """The correct path must be silent.
+
+        ``cleanup()`` is idempotent, so the finalizer runs it a second time on
+        an engine the caller already released. That second run has nothing left
+        to do and must therefore report nothing - one warning per engine here
+        would accuse the caller who did exactly the right thing.
+        """
+        count, _steps = _run_at_shutdown(tmp_path, explicit_cleanup=True)
+        assert count == 0, f"{count} cleanup warning(s) after an explicit cleanup()"
+
+
+# Structural: nothing a finalizer calls may need the import system.
+
+_FINALIZER_METHODS = frozenset({"cleanup", "destroy", "__del__"})
+
+
+def _teardown_stdlib_imports(source: str, label: str = "<source>") -> list[str]:
+    """Function-local standard-library imports inside finalizer-reachable methods.
+
+    ``SimEngine.__del__`` calls ``cleanup()``, which calls ``destroy()``, so
+    these three names are the methods CPython can run while it is dismantling
+    the interpreter. An import there is unserviceable at that point: the failure
+    is reported as a cleanup error and every step below it is skipped.
+
+    Only the standard library is flagged. An *optional dependency* is imported
+    lazily on purpose - ``IsaacSimulation.destroy`` reaches for ``omni.usd``
+    inside a guarded block so the module stays importable without Isaac Sim -
+    and that import is not what a finalizer needs to release local resources.
+    A stdlib module has no such reason and belongs at module scope, where the
+    name is already bound.
+    """
+    offenders: list[str] = []
+    for class_node in (n for n in ast.walk(ast.parse(source)) if isinstance(n, ast.ClassDef)):
+        for method in class_node.body:
+            if not isinstance(method, ast.FunctionDef | ast.AsyncFunctionDef):
+                continue
+            if method.name not in _FINALIZER_METHODS:
+                continue
+            for node in ast.walk(method):
+                if isinstance(node, ast.Import):
+                    names = [alias.name for alias in node.names]
+                elif isinstance(node, ast.ImportFrom):
+                    names = [node.module or ""]
+                else:
+                    continue
+                for name in names:
+                    top = name.split(".")[0]
+                    if top in sys.stdlib_module_names:
+                        offenders.append(f"{label}:{node.lineno} {class_node.name}.{method.name} imports {top!r}")
+    return offenders
+
+
+def _package_sources() -> dict[str, str]:
+    """Every module of the installed package, keyed by its path relative to it."""
+    root = pathlib.Path(inspect.getfile(SimEngine)).parents[1]
+    return {str(p.relative_to(root)): p.read_text(encoding="utf-8") for p in sorted(root.rglob("*.py"))}
+
+
+class TestNoFinalizerReachableTeardownNeedsTheImportSystem:
+    def test_the_scan_covers_the_package(self) -> None:
+        """An empty scan would pass the check below vacuously."""
+        sources = _package_sources()
+        assert len(sources) > 100, len(sources)
+        assert "simulation/base.py" in sources
+        assert "simulation/mujoco/simulation.py" in sources
+
+    def test_the_known_teardown_methods_are_found(self) -> None:
+        """The scan is worthless if its method filter matches nothing."""
+        found = {
+            f"{c.name}.{m.name}"
+            for source in _package_sources().values()
+            for c in (n for n in ast.walk(ast.parse(source)) if isinstance(n, ast.ClassDef))
+            for m in c.body
+            if isinstance(m, ast.FunctionDef | ast.AsyncFunctionDef) and m.name in _FINALIZER_METHODS
+        }
+        assert {
+            "SimEngine.__del__",
+            "SimEngine.cleanup",
+            "SimEngine.destroy",
+            "MuJoCoSimEngine.cleanup",
+            "MuJoCoSimEngine.destroy",
+        } <= found, sorted(found)
+
+    @pytest.mark.parametrize("relative_path", sorted(_package_sources()))
+    def test_no_teardown_method_imports_a_stdlib_module(self, relative_path: str) -> None:
+        offenders = _teardown_stdlib_imports(_package_sources()[relative_path], relative_path)
+        assert offenders == [], (
+            f"{offenders} - move the import to module scope. A finalizer runs "
+            f"these methods during interpreter shutdown, where the import fails "
+            f"and every teardown step below it is skipped"
+        )
+
+    def test_the_scan_detects_a_planted_import(self) -> None:
+        """A scanner that silently matched nothing would look like a clean tree."""
+        plain = "class Broken:\n    def cleanup(self):\n        import contextlib\n        return contextlib\n"
+        from_form = "class AlsoBroken:\n    def __del__(self):\n        from json import dumps\n        return dumps\n"
+        assert [o.split()[1] for o in _teardown_stdlib_imports(plain)] == ["Broken.cleanup"]
+        assert [o.split()[1] for o in _teardown_stdlib_imports(from_form)] == ["AlsoBroken.__del__"]
+
+    def test_a_lazy_optional_dependency_is_not_flagged(self) -> None:
+        """Importing an absent third-party stack lazily is the documented idiom."""
+        optional = (
+            "class Fine:\n"
+            "    def destroy(self):\n"
+            "        try:\n"
+            "            import omni.usd\n"
+            "        except ImportError:\n"
+            "            return None\n"
+            "        return omni.usd\n"
+        )
+        assert _teardown_stdlib_imports(optional) == []
+
+    def test_a_module_scope_import_is_not_flagged(self) -> None:
+        compliant = "import contextlib\n\n\nclass Fine:\n    def cleanup(self):\n        return contextlib\n"
+        assert _teardown_stdlib_imports(compliant) == []

@@ -152,6 +152,57 @@ def test_invalid_topic_rejected(bad: str) -> None:
     assert "invalid topic" in _texts(result)
 
 
+@pytest.mark.parametrize("bad", ["/cmd vel", "/x|y", "../etc", "/a$(x)"])
+def test_invalid_service_rejected(bad: str) -> None:
+    """A mistyped service name is refused, naming the parameter that is wrong.
+
+    ``service`` is matched against the same ``_NAME_RE`` as ``topic``, so the
+    correcting error a mistyped topic already gets is owed to a mistyped service
+    too. Without it the name is carried into a rosbridge service call that
+    cannot resolve it, and the caller reads a transport failure instead of the
+    spelling mistake that caused it.
+    """
+    result = use_rosbridge(action="service_call", service=bad, type="std_srvs/Empty")
+    assert result["status"] == "error"
+    assert "invalid service name" in _texts(result)
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["/cmd vel", "/x|y", "../etc", "/a$(x)", "/gazebo/reset_world", "~private"],
+)
+def test_topic_and_service_are_held_to_one_name_rule(name: str, fake_roslibpy: _types.ModuleType) -> None:
+    """The two name parameters cannot drift apart on what a name may contain.
+
+    Comparing the two verdicts rather than restating the pattern is what makes
+    this survive a change to ``_NAME_RE``: whatever the rule becomes, both
+    parameters must still answer alike. A name neither refuses goes on to fail
+    for an unrelated reason, which is the same outcome on both sides.
+    """
+    topic_result = use_rosbridge(action="echo", topic=name)
+    service_result = use_rosbridge(action="service_call", service=name, type="std_srvs/Empty")
+
+    topic_refused = "invalid topic name" in _texts(topic_result)
+    service_refused = "invalid service name" in _texts(service_result)
+    assert topic_refused == service_refused, f"{name!r}: topic and service disagree on one name rule"
+
+
+def test_an_invalid_service_name_is_refused_before_the_bridge_is_dialed(
+    fake_roslibpy: _types.ModuleType,
+) -> None:
+    """The name checks run ahead of the backend probe, so nothing is opened.
+
+    This tool caches one client per ``(host, port)``, so dialing on the way to a
+    refusal would leave a connection registered for a call that never ran.
+    """
+    result = use_rosbridge(action="service_call", service="/bad name", type="std_srvs/Empty")
+
+    assert result["status"] == "error"
+    assert "invalid service name" in _texts(result)
+    assert fake_roslibpy.Ros.instances == []  # type: ignore[attr-defined]
+    assert rb_mod._backend._connections == {}
+
+
 def test_ros1_two_segment_type_enforced() -> None:
     # ROS1 types are pkg/Name; a ROS2-style pkg/msg/Name must be rejected so
     # agents get a correcting error instead of a silent rosbridge failure.
@@ -462,3 +513,42 @@ def test_publish_rejects_nonpositive_count(fake_roslibpy: _types.ModuleType) -> 
     result = use_rosbridge(action="publish", topic="/cmd_vel", type="geometry_msgs/Twist", count=0)
     assert result["status"] == "error"
     assert "count" in _texts(result)
+
+
+@pytest.mark.parametrize(
+    "supplied",
+    [
+        pytest.param({"topic": "/cmd_vel"}, id="type-missing"),
+        pytest.param({"type": "geometry_msgs/Twist"}, id="topic-missing"),
+        pytest.param({}, id="both-missing"),
+    ],
+)
+def test_publish_requires_topic_and_type(fake_roslibpy: _types.ModuleType, supplied: dict[str, Any]) -> None:
+    """A publish missing either half of its address is refused, not attempted.
+
+    ``publish`` is the one action in this family that writes to the robot, and a
+    message cannot be built without both the topic to advertise and the
+    interface type to build it from.
+    """
+    result = use_rosbridge(action="publish", **supplied)
+    assert result["status"] == "error"
+    assert "publish requires topic and type" in _texts(result)
+
+
+def test_an_incomplete_publish_advertises_no_publisher(fake_roslibpy: _types.ModuleType) -> None:
+    """The refusal lands before the publisher is advertised.
+
+    An advertisement is state on the bridge rather than a local call, so a
+    publisher advertised on the way to a refusal outlives the call that never
+    published and leaves the bridge carrying a topic this tool has no message
+    type for. The complete publish that follows is what makes the empty topic
+    list mean "refused before advertising" rather than "never advertises".
+    """
+    refused = use_rosbridge(action="publish", topic="/cmd_vel")
+    assert refused["status"] == "error"
+    ros = fake_roslibpy.Ros.instances[0]  # type: ignore[attr-defined]
+    assert ros.topics == []
+
+    honored = use_rosbridge(action="publish", topic="/cmd_vel", type="geometry_msgs/Twist", count=1)
+    assert honored["status"] == "success"
+    assert [(t.name, t.advertised, t.unadvertised) for t in ros.topics] == [("/cmd_vel", True, True)]
