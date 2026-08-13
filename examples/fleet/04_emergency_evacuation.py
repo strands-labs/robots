@@ -513,7 +513,7 @@ class ScriptedEvacuationWorld:
         self._proxy = [x, y]
 
     def settle(self, n: int) -> None:
-        del n  # kinematic world: nothing integrates
+        """No-op: a kinematic world integrates nothing, so a tick advances nothing."""
 
     # Benchmark engine surface (plain non-envelope payloads).
     def get_body_state(self, body_name: str) -> dict[str, Any]:
