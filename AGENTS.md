@@ -1013,9 +1013,14 @@ hatch run format            # ruff check --fix, ruff format
    lands in the step summary and in a `Needs an approver who did not push the
    head` annotation, because a red X drags `statusCheckRollup.state` to
    `FAILURE`, where it cannot be told apart from the branch's own tests failing -
-   measured on #1722, whose rollup read `FAILURE` with every required context
-   `SUCCESS` and this check as the only non-`SUCCESS` context, and misread as a
-   broken diff four times. Red on that job now means the check itself could not
+   measured on #1722 at head `3a32a14`, whose rollup read `FAILURE` with every
+   required context `SUCCESS` and this check as the only non-`SUCCESS` context,
+   and misread as a broken diff four times. Cite that head, because the citation
+   no longer reproduces from the pull request: on `741f4057` this job reads
+   `SUCCESS` under its present name, and #1722's rollup is still `FAILURE` for an
+   unrelated producer - a cancelled duplicate of the closing-reference check
+   (#2216). The decision rests on the `3a32a14` measurement; re-deriving it from
+   #1722 today finds this job green and the reasoning apparently unfounded. Red on that job now means the check itself could not
    compute an answer. The check row is named `Report the last-push-approval
    state` for the same reason: green must not assert the absence of a finding. The point of automating it is not that the check is clever - it is
    that the state it reports is *invisible*: `REVIEW_REQUIRED` / `BLOCKED` is

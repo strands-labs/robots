@@ -7,7 +7,7 @@ no config server, no manual IP lists.
 
 Dependencies: pip install "strands-robots[sim-mujoco,mesh]"
 Expected output: Prints local robot info and discovered peer list.
-Runtime: ~3 seconds.
+Runtime: ~3 seconds (the script exits; it releases the mesh session).
 
 Note: Set STRANDS_MESH_LOCAL_DEV=1 to skip TLS for local development.
       Set STRANDS_MESH=0 to disable mesh entirely (the example still runs
@@ -39,7 +39,10 @@ print(f"Discovered mesh peers: {len(peers)}")
 for peer in peers:
     print(f"  {peer.get('peer_id', '?')}: type={peer.get('peer_type', '?')}")
 
-# Cleanup
-mesh = getattr(sim, "_mesh", None)
+# Cleanup. Release the Zenoh session through the attribute the Robot factory
+# assigns (`sim.mesh`) - the same one strands_robots.robot's own teardown reads.
+# The session runs on non-daemon threads, so a cleanup that silently reads a
+# name the SDK never sets leaves this script running forever.
+mesh = getattr(sim, "mesh", None)
 if mesh:
     mesh.stop()

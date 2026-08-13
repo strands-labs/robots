@@ -51,6 +51,14 @@ camera names the runtime observation must contain.
    sim.add_camera(name="wrist", parent_body="so101/gripper")
    ```
 
+   `parent_body` mounts the camera ON a body so the wrist view rides with the
+   arm. It is supported on the **mujoco** and **newton** backends; the isaac
+   backend refuses it with an error naming this alternative, because it parents
+   camera prims to the stage camera scope rather than to an articulation link.
+   On isaac, place the wrist camera in world coordinates (omit `parent_body`)
+   and accept that it does not track the arm, or run the wrist-stream policy on
+   mujoco/newton.
+
 2. **Keep your names and override** - `obs_rename_override` merges OVER the
    embodiment's `obs_rename`, so a custom camera name routes onto the model's
    image feature without renaming:

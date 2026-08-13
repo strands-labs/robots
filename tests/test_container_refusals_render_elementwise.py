@@ -992,6 +992,25 @@ class TestTheIterationIsAnsweredNotEscaped:
         assert _refusal_container_repr(HostileIteration()) == "<unrepresentable HostileIteration>"
 
 
+class LazySizedVector:
+    """A legacy sequence: a readable ``__len__`` and components read one at a time.
+
+    ``GetItemOnly`` below is the failing counterpart. This one succeeds, so it is
+    what shows the element loop accepting a complete lazy read - the property a
+    generator used to carry here before an unreadable length became part of the
+    verdict (#2200).
+    """
+
+    def __init__(self, *values: float) -> None:
+        self._values = values
+
+    def __len__(self) -> int:
+        return len(self._values)
+
+    def __getitem__(self, index: int) -> float:
+        return self._values[index]
+
+
 class GetItemOnly:
     """A sequence by the legacy protocol: ``__getitem__``, no ``__iter__``.
 
@@ -1169,12 +1188,19 @@ class TestElementProductionIsAnsweredNotEscaped:
     def test_an_acceptable_lazy_vector_is_still_accepted(self) -> None:
         """The rewritten loop must not refuse what the ``for`` accepted.
 
-        A generator of finite numbers, and an empty one - the ``StopIteration``
-        that ends the read is the read finishing, not a failure.
+        The ``StopIteration`` that ends the read is the read finishing, not a
+        failure, and this is the property that pins it. The vehicle is a legacy
+        sequence rather than a generator because the two are not the same claim: a
+        generator also has no readable length, and the guard refuses that
+        separately - its callers count the components by reading the value again,
+        which a consumed value cannot answer (#2200). ``LazySizedVector`` is read
+        one component at a time through ``__getitem__``, so it exercises the same
+        loop and the same ``StopIteration`` while leaving that second question
+        answerable. An empty one is here for the same reason it was before: zero
+        components is a complete read.
         """
-        assert finite_vector_error("raycast", "origin", (v for v in (0.1, 0.2, 0.3))) is None
-        empty: tuple[float, ...] = ()
-        assert finite_vector_error("raycast", "origin", (v for v in empty)) is None
+        assert finite_vector_error("raycast", "origin", LazySizedVector(0.1, 0.2, 0.3)) is None
+        assert finite_vector_error("raycast", "origin", LazySizedVector()) is None
 
     def test_the_index_is_a_position_and_not_a_constant(self) -> None:
         """Non-vacuity of the index: three values, three different positions.

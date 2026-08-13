@@ -38,6 +38,20 @@ raising nothing at all and its ``__len__`` returning an ordinary ``int``. And
 carried the same gap. Every unreadable length now reports as ``None`` from one
 probe, which is what the guards' callers document, and the tests below pin that
 domain at the owner rather than at each of its readers.
+
+"Every surface that reads a caller-supplied length" turned out to exclude the one
+that reads no length at all. :func:`~strands_robots.utils.finite_vector_error` is
+the verdict half of the shared component read - it returns a message rather than
+the floats, so its callers count the components themselves, by reading the value
+again. A value with no readable length cannot be read twice, and the read behind
+the verdict consumes it, so the caller's own count saw an empty vector. The guard
+asked nothing, and both of its live call sites reported the consequence instead
+of the cause: ``add_object`` described a three-component extent as ``got 0
+(size=[])`` and ``patch_scene_mjcf`` carried ``object of type 'generator' has no
+len()`` into its envelope. The last two classes below pin that probe and the two
+surfaces, and their values are the other shape of "unreadable" - a value that
+reads cleanly and only then cannot be counted, rather than one the read never
+reaches.
 """
 
 from __future__ import annotations
@@ -45,7 +59,9 @@ from __future__ import annotations
 import ast
 import asyncio
 import inspect
+import re
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -56,7 +72,13 @@ from strands_robots.policies.mock import MockPolicy
 from strands_robots.policies.wbc.policy import WBCPolicy
 from strands_robots.rendering.video import mjpeg_frames
 from strands_robots.simulation.mujoco.simulation import MuJoCoSimEngine
-from strands_robots.utils import coerce_rgba, pose_vector_error, sequence_length
+from strands_robots.utils import (
+    coerce_rgba,
+    coerce_size_vector,
+    finite_vector_error,
+    pose_vector_error,
+    sequence_length,
+)
 
 # A 0-d array: declares ``__len__``, raises from it, holds exactly one scalar.
 UNSIZED = np.array(0.5)
@@ -689,3 +711,230 @@ class TestTheLengthRuleHasOneOwner:
             "def guard(value: Any) -> str:\n    missing = [value]\n    return 'is' if len(missing) == 1 else 'are'\n"
         )
         assert _own_length_probes(planted) == []
+
+
+# --------------------------------------------------------------------------- #
+# The other half of "unreadable": a value that reads cleanly and then has no
+# length. Every row of UNREADABLE_LENGTHS above is a value the component read
+# never reaches - a 0-d array is not iterable at all, and the three hostile
+# ``__len__`` rows are legacy sequences whose ``__getitem__`` never stops, so
+# they are refused before any component is produced. A generator is the opposite
+# shape: it yields finite components and only then cannot say how many there
+# were. Factories, because each of these is one-shot - a generator handed to two
+# guards is already empty for the second (#1906's reason, applied to the fixture).
+# --------------------------------------------------------------------------- #
+class _RefusingLengthIterable:
+    """Iterates cleanly to completion and refuses to report a length.
+
+    The unsized-iterable counterpart of :class:`_RefusingLength`: that one is
+    read through ``__getitem__`` and never terminates, this one is a genuine
+    iterable whose read finishes normally, so it reaches the point where the
+    length matters.
+    """
+
+    def __iter__(self) -> Iterator[float]:
+        return iter((0.1, 0.2, 0.3))
+
+    def __len__(self) -> int:
+        raise RuntimeError("length unavailable")
+
+
+class _LazySizedVector:
+    """A legacy sequence: readable ``__len__``, components produced one at a time.
+
+    The over-reach control for the rule below. Laziness is not what makes a value
+    unusable here - being unable to answer "how many components?" is - so a value
+    that is read a component at a time and *can* answer must keep working.
+    """
+
+    def __len__(self) -> int:
+        return 3
+
+    def __getitem__(self, index: int) -> float:
+        if index >= 3:
+            raise IndexError(index)
+        return 0.1 * (index + 1)
+
+
+def _without_object_ids(message: str) -> str:
+    """Mask CPython object addresses so two verdicts can be compared byte for byte.
+
+    These values are one-shot, so each guard is handed its own instance and the
+    ``repr`` the refusal quotes carries a different address. The addresses are the
+    only part that may differ; masking them is what lets the comparison below be
+    an equality rather than a substring.
+    """
+    return re.sub(r"0x[0-9a-fA-F]+", "0xADDR", message)
+
+
+UNSIZED_ITERABLES: list[Any] = [
+    pytest.param(lambda: (component for component in (0.1, 0.2, 0.3)), id="generator"),
+    pytest.param(lambda: iter([0.1, 0.2, 0.3]), id="list_iterator"),
+    pytest.param(lambda: map(float, (1, 2, 3)), id="map"),
+    pytest.param(_RefusingLengthIterable, id="refusing_len_iterable"),
+]
+
+# Values whose components read as finite and whose length *is* readable. The
+# accepted side of the same rule, so a guard cannot satisfy it by refusing
+# everything lazy.
+SIZED_VECTORS: list[Any] = [
+    pytest.param(lambda: [0.1, 0.2, 0.3], id="list"),
+    pytest.param(lambda: (0.1, 0.2, 0.3), id="tuple"),
+    pytest.param(lambda: np.array([0.1, 0.2, 0.3]), id="np_array"),
+    pytest.param(lambda: range(3), id="range"),
+    pytest.param(_LazySizedVector, id="lazy_sized_sequence"),
+]
+
+
+class TestTheVerdictHalfAnswersAnUnreadableLength:
+    """The two guards over the shared read, and what their callers do next.
+
+    :func:`~strands_robots.utils.finite_vector_error` is the verdict half: it
+    returns a message and not the floats, so a caller holding one counts the
+    components by reading the value a second time. It documents deferring that
+    count, and deferring it is exactly what makes a *readable* length part of the
+    verdict - a value with no length cannot be read twice, because the read
+    behind the verdict consumed it.
+
+    It was the one guard in the family not asking. Its own coercing sibling over
+    the same read (:func:`~strands_robots.utils.coerce_size_vector`),
+    :func:`~strands_robots.utils.coerce_rgba` and
+    :func:`~strands_robots.utils.pose_vector_error` all refuse an unreadable
+    length, the middle one with a comment naming this precise value class - "it
+    is what refuses a generator, whose components a read would consume before
+    anything could count them". The verdict half accepted it, and both of its
+    real call sites then read the consumed value: ``add_object`` reported a
+    three-component extent as ``got 0 (size=[])``, and ``patch_scene_mjcf``
+    raised ``object of type 'generator' has no len()`` into its envelope - naming
+    neither the field nor the method, while the sibling fields of that same op
+    named both.
+    """
+
+    @pytest.mark.parametrize("make_value", UNSIZED_ITERABLES)
+    def test_the_verdict_half_reports_an_unreadable_length(self, make_value: Any) -> None:
+        """A message naming the parameter, not ``None`` and not a raise."""
+        message = finite_vector_error("add_object", "size", make_value())
+        assert message is not None, "a value with no readable length passed the verdict"
+        assert "add_object: 'size' must be a list/tuple of numbers" in message
+
+    @pytest.mark.parametrize("make_value", UNSIZED_ITERABLES)
+    def test_the_coercing_half_reports_it_in_the_same_words(self, make_value: Any) -> None:
+        """One value, one verdict: the two guards over one read must not disagree.
+
+        Byte equality rather than a substring, because the point is that neither
+        guard states the rule in its own words - a second wording is how two
+        halves of one contract drift apart.
+        """
+        verdict = finite_vector_error("add_object", "size", make_value())
+        _floats, coerced = coerce_size_vector("add_object", "size", make_value())
+        assert verdict is not None and coerced is not None
+        assert _without_object_ids(verdict) == _without_object_ids(coerced)
+
+    @pytest.mark.parametrize("make_value", SIZED_VECTORS)
+    def test_a_lazily_read_value_with_a_readable_length_is_still_accepted(self, make_value: Any) -> None:
+        """Over-reach control: laziness is not the defect, an unanswerable count is.
+
+        ``_LazySizedVector`` is read one component at a time through the legacy
+        protocol and reports its length, so it must keep passing - otherwise the
+        rule would be "refuse anything not already a list", which is not the rule
+        the sibling guards apply.
+        """
+        assert finite_vector_error("add_object", "size", make_value()) is None
+        floats, reason = coerce_size_vector("add_object", "size", make_value())
+        assert reason is None
+        assert floats is not None and len(floats) == 3
+
+    def test_every_refusal_this_guard_already_gave_is_unchanged(self) -> None:
+        """Non-regression, stated as the exact texts rather than as prose.
+
+        A value whose ``__iter__`` raises, or whose read fails part-way, has no
+        readable length either. Those verdicts describe what actually happened,
+        and reporting them as "not a list/tuple" would claim a domain check that
+        never ran (#1875, #1878) - which is why the length probe runs after the
+        component read and not before it.
+        """
+
+        def fails_part_way() -> Iterator[float]:
+            yield 0.1
+            raise RuntimeError("stream truncated")
+
+        class HostileIter:
+            def __iter__(self) -> Iterator[float]:
+                raise RuntimeError("no iteration for you")
+
+        part_way = finite_vector_error("raycast", "origin", fails_part_way())
+        never_started = finite_vector_error("raycast", "origin", HostileIter())
+        assert part_way is not None and "'origin[1]' could not be read" in part_way
+        assert never_started is not None and "'origin' could not be iterated" in never_started
+        for message in (part_way, never_started):
+            assert "must be a list/tuple of numbers" not in message
+        # The plain non-iterable and the non-numeric element are untouched too.
+        assert finite_vector_error("m", "size", 0.5) == "m: 'size' must be a list/tuple of numbers, got 0.5"
+        assert finite_vector_error("m", "size", ["a"]) == "m: 'size' elements must be numbers, got ['a']"
+        assert finite_vector_error("m", "size", [0.1, float("nan")]) == (
+            "m: 'size' must contain finite numbers (no nan/inf), got [0.1, nan]"
+        )
+
+
+class TestTheCallersThatCountByReadingAgain:
+    """End to end: the two live surfaces that hold only the verdict.
+
+    Both take the message, then count the components themselves - the one thing a
+    consumed value cannot answer. These pin what each reported instead, so a
+    guard that stops asking about the length is caught at the surface a caller
+    actually touches and not only at the helper.
+    """
+
+    def test_add_object_reports_the_extent_it_was_given(self) -> None:
+        """It must not report a supplied extent as an omitted one.
+
+        ``add_object`` counts ``size`` against the shape after the verdict, by
+        reading it again. For a consumed value that count is zero, so the refusal
+        said ``got 0 (size=[])`` - describing a caller who passed nothing, about a
+        caller who passed three components.
+        """
+        engine = MuJoCoSimEngine(tool_name="unsized_size_add_object", mesh=False)
+        assert engine.create_world()["status"] == "success"
+        # Bound through ``Any`` rather than suppressed: ``size`` is declared
+        # ``list[float] | None`` and the measurement is what the runtime does with a
+        # value outside that declaration, which is the caller mistake this guards.
+        unsized: Any = (edge for edge in (0.3, 0.3, 0.3))
+        result = engine.add_object(name="crate", shape="box", size=unsized, position=[0.0, 0.0, 0.4])
+        assert result["status"] == "error"
+        message = _text(result)
+        assert "'size' must be a list/tuple of numbers" in message
+        assert "got 0" not in message, "a supplied extent was reported as an empty one"
+        assert "size=[]" not in message
+
+    def test_a_patch_op_size_field_answers_like_its_sibling_fields(self) -> None:
+        """The op's four numeric fields must not answer in two different ways.
+
+        ``size`` is the only field in the patch-op domain table held by the
+        verdict half; ``pos``, ``quat`` and ``rgba`` are held by guards that
+        already refuse an unreadable length. Without the probe, ``size`` reached
+        the compiler's own ``len()`` and the envelope carried ``object of type
+        'generator' has no len()`` - a message naming neither the field nor the op,
+        beside a sibling field naming both.
+        """
+        engine = MuJoCoSimEngine(tool_name="unsized_size_patch_op", mesh=False)
+        assert engine.create_world()["status"] == "success"
+
+        def op(field: str, value: Any) -> dict[str, Any]:
+            base: dict[str, Any] = {
+                "op": "add_geom",
+                "body": "world",
+                "name": f"patched_{field}",
+                "type": "box",
+                "size": [0.2, 0.2, 0.2],
+                "pos": [1.0, 0.0, 0.3],
+            }
+            base[field] = value
+            return base
+
+        size_result = engine.patch_scene_mjcf(ops=[op("size", (edge for edge in (0.25, 0.25, 0.25)))])
+        pos_result = engine.patch_scene_mjcf(ops=[op("pos", (axis for axis in (1.5, 0.0, 0.3)))])
+        size_message, pos_message = _text(size_result), _text(pos_result)
+        assert size_result["status"] == "error" and pos_result["status"] == "error"
+        assert "has no len()" not in size_message, "the compiler's own TypeError reached the envelope"
+        for field, message in (("size", size_message), ("pos", pos_message)):
+            assert f"add_geom: '{field}' must be a list/tuple of" in message, message

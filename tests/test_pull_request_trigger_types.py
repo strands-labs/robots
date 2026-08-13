@@ -64,12 +64,32 @@ event that changes either. It is also the event that check's own remedy produces
 moving a closing keyword out of the title and into the body changes no sha, so
 without ``edited`` the report would ask for a fix it could never observe.
 
-The measured harm cannot follow from it either, and that is a premise rather than
-an assurance: cancellation is per concurrency group, ``pr-and-push.yml`` keys its
-group on its own ``github.workflow`` name and does not subscribe to ``edited``,
-so an edit starts no run in that group. Both halves are read back by
-``test_an_exempt_workflow_cannot_cancel_the_required_check``, so an exemption
-cannot outlive the reasoning that admitted it.
+The measured harm cannot reach the *required check* from it either, and that is a
+premise rather than an assurance: cancellation is per concurrency group,
+``pr-and-push.yml`` keys its group on its own ``github.workflow`` name and does
+not subscribe to ``edited``, so an edit starts no run in that group. Both halves
+are read back by ``test_an_exempt_workflow_cannot_cancel_the_required_check``, so
+an exemption cannot outlive the reasoning that admitted it.
+
+That premise is true and it was the wrong group to check. The run an exempt event
+cancels first is the exempt workflow's **own**, which shares both a workflow name
+and a pull request number with the run already in flight. Being exempt is exactly
+what makes this reachable -- an exempt workflow is the only kind that can be
+started twice on one head sha -- so unlike the ``main`` case above the cancelled
+context lands on the *live* head. #2216 measured it on #1722 and #2205: each head
+carried ``Refuse a closing keyword that only appears in the title`` as ``SUCCESS``
+and ``CANCELLED`` together, with every other context ``SUCCESS``, and #2205's
+roll-up read ``SUCCESS``, then ``FAILURE``, then ``SUCCESS`` across three reads of
+one unchanged sha -- the same instability this module records for #1901 and #1902,
+reintroduced by the exemption it granted. Whether it happens is a race and the
+inter-arrival gap does not predict it: #2204's two runs are 40 s apart and both
+completed, #2205's are 71 s apart and one was cancelled.
+
+So an exemption needs a second premise, read back by
+``test_an_exempt_workflow_cannot_cancel_its_own_run``: an exempt workflow must not
+cancel in progress at all. It is the same conclusion this module already reaches
+for the required check -- remove the producer rather than read around it --
+applied to the workflow the exemption is granted to.
 
 ``test_no_workflow_gates_on_draft_status`` is the premise behind dropping
 ``ready_for_review`` specifically: nothing in the fleet skips a draft pull
@@ -289,4 +309,46 @@ def test_no_workflow_gates_on_draft_status() -> None:
     assert not gating, (
         f"these workflows mention 'draft': {gating}. If one now skips draft pull requests, "
         "re-derive whether ready_for_review must start it"
+    )
+
+
+def test_an_exempt_workflow_cannot_cancel_its_own_run() -> None:
+    """The second premise every entry in :data:`_INPUT_IS_NOT_THE_TREE` rests on.
+
+    ``test_an_exempt_workflow_cannot_cancel_the_required_check`` establishes that
+    an exempt event cannot reach ``pr-and-push.yml``'s concurrency group. That is
+    necessary and not sufficient: the run an exempt event cancels first is the
+    exempt workflow's own, which shares a workflow name and a pull request number
+    with the run already in flight, so a group keyed on either holds both.
+
+    Being exempt is what makes it reachable -- an exempt workflow is the only kind
+    that can be started twice on one head sha -- and the cancelled context then
+    sits on the live head rather than on a superseded one, where the roll-up reads
+    it. Measured on #1722 and #2205 (#2216), each carrying its check as
+    ``SUCCESS`` and ``CANCELLED`` at once with every other context ``SUCCESS``.
+
+    Asserted of the table rather than of the single file in it, so a future
+    exemption inherits the requirement instead of rediscovering it the same way.
+    """
+    assert _INPUT_IS_NOT_THE_TREE, "the exemption table is empty; this pin has nothing to check"
+
+    offenders: dict[str, list[str]] = {}
+    for name in _INPUT_IS_NOT_THE_TREE:
+        path = _WORKFLOW_DIR / name
+        assert path.exists(), f"{name} is exempt but does not exist"
+        cancelling = [
+            line.strip()
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if not line.lstrip().startswith("#") and line.strip().startswith("cancel-in-progress:")
+        ]
+        if cancelling:
+            offenders[name] = cancelling
+
+    assert not offenders, (
+        f"these workflows are exempted for a sha-invariant activity type and still cancel in "
+        f"progress: {offenders}. An exempt workflow can be started twice on one head sha, so its "
+        "own in-flight run is what it cancels, and the cancelled check run is permanent, sits on "
+        "the live head and drags statusCheckRollup.state to FAILURE from behind a same-named "
+        "SUCCESS. Drop the concurrency block: a superseded head is the only case cancelling helps "
+        "with, and a sha-invariant trigger does not produce one."
     )
