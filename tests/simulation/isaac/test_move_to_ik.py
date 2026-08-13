@@ -172,6 +172,18 @@ ARM_XML = """
 
 MJCF_JOINTS = ["shoulder_pan", "shoulder_lift", "elbow", "wrist_roll", "jaw"]
 
+# The GH #1658 regression arm (MuJoCo-parity, #2156): same kinematics, but the
+# base pan joint is named ``finger_camera_pan`` (contains the "finger" hint -
+# the name heuristic misclassifies it as a gripper DOF) and the real gripper
+# matches so100's registry metadata vocabulary (``Jaw``). REACHABLE_LOCAL has
+# a nonzero y component, so the EE target is only reachable when the pan DOF
+# is available to the IK solve: with the heuristic in charge, move_to holds
+# the pan at 0 and the target is unreachable.
+HINT_COLLIDER_XML = ARM_XML.replace('"prim_arm"', '"hint_collider_arm"').replace("shoulder_pan", "finger_camera_pan")
+assert HINT_COLLIDER_XML.count("finger_camera_pan") == 1  # the joint def
+HINT_COLLIDER_XML = HINT_COLLIDER_XML.replace('"jaw"', '"Jaw"')
+HINT_COLLIDER_JOINTS = ["finger_camera_pan", "shoulder_lift", "elbow", "wrist_roll", "Jaw"]
+
 # Reachable for the arm above in its OWN (model) frame; same point the MuJoCo
 # suite verified against the real solver. UNREACHABLE is inside the sanity
 # box but outside the workspace.
@@ -187,6 +199,18 @@ def arm_xml_path(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "strands_robots.simulation.isaac.motion_primitives.resolve_model",
         lambda name: str(path) if name == "prim_arm" else None,
+    )
+    return str(path)
+
+
+@pytest.fixture()
+def hint_collider_xml_path(tmp_path, monkeypatch):
+    """The #1658 hint-collider IK model, registered for data_config 'so100'."""
+    path = tmp_path / "hint_collider_arm.xml"
+    path.write_text(HINT_COLLIDER_XML)
+    monkeypatch.setattr(
+        "strands_robots.simulation.isaac.motion_primitives.resolve_model",
+        lambda name: str(path) if name == "so100" else None,
     )
     return str(path)
 
@@ -518,6 +542,94 @@ class TestMoveTo:
         again = sim.move_to(robot_name="arm", position=REACHABLE_LOCAL, tol=0.02, max_steps=400)
         assert again["status"] == "success", again
         assert _json_block(again)["reached"] is True
+
+
+class TestGraspPreservation:
+    """``move_to`` must never command the gripper (review on #1654, MuJoCo parity).
+
+    The gripper DOF is kinematically irrelevant to the EE task, so the solver
+    passes its seed value straight through; the pre-fix MuJoCo restart loop
+    randomized the jaw over its full range and the stage -> close -> transport
+    sequence silently dropped whatever it held. The direct-path pin lives in
+    ``TestMoveTo::test_gripper_is_held_not_commanded``; this class pins the
+    RESTART branch, whose seeding is the half that randomizes.
+    """
+
+    def test_restart_path_move_to_preserves_closed_gripper(self, arm_xml_path):
+        # A target the direct solve misses (restart branch engaged) must not
+        # move a closed jaw. [-0.3, 0.0, 0.25] has a direct-solve residual of
+        # ~0.65 m on this arm from the zero seed - the exact repro from the
+        # MuJoCo review, on the same IK model.
+        pytest.importorskip("mink")
+        jaw_closed = -0.2
+        sim, art = _make_sim(positions=[0.0, 0.0, 0.0, 0.0, jaw_closed])
+        result = sim.move_to(robot_name="arm", position=[-0.3, 0.0, 0.25], tol=0.03, max_steps=400)
+        assert result["status"] == "success", result
+        assert _json_block(result)["reached"] is True
+        for action in art.applied:
+            held = dict(
+                zip(
+                    (int(i) for i in np.asarray(action.joint_indices)),
+                    (float(v) for v in np.asarray(action.joint_positions)),
+                )
+            )
+            assert held[4] == pytest.approx(jaw_closed, abs=1e-6), (
+                "the restart path commanded the jaw away from its held position"
+            )
+        assert art.positions[4] == pytest.approx(jaw_closed, abs=1e-6)
+
+
+class TestGripperRegistryMetadata:
+    """Registry gripper metadata beats the name heuristic in the IK split (GH #1658).
+
+    The move_to half of the MuJoCo parity class: the MJCF-side arm/gripper
+    split (:meth:`_mjcf_articulation_joint_map`) and the articulation-side
+    hold set (:meth:`_resolve_gripper_dofs`) share the registry-metadata-first
+    classification, so a hint-colliding ARM joint stays in the solve and stale
+    metadata refuses move_to exactly as it refuses set_gripper. Uses the REAL
+    shipped so100 registry entry (``actuators: ["Jaw"]``) - no metadata
+    patching.
+    """
+
+    def test_move_to_keeps_hint_colliding_arm_dof_in_ik(self, hint_collider_xml_path):
+        # The off-axis target NEEDS the base pan DOF (REACHABLE_LOCAL has a
+        # nonzero y). Pre-#1658 the heuristic classified 'finger_camera_pan'
+        # as a gripper drive, excluded it from the solve and held it at 0 -
+        # unreachable. Metadata keeps the DOF usable while the real gripper
+        # stays held (grasp preservation intact).
+        pytest.importorskip("mink")
+        jaw_before = 0.9
+        sim, art = _make_sim(
+            joint_names=HINT_COLLIDER_JOINTS,
+            data_config="so100",
+            positions=[0.0, 0.0, 0.0, 0.0, jaw_before],
+        )
+        result = sim.move_to(robot_name="arm", position=REACHABLE_LOCAL, tol=0.03, max_steps=400)
+        assert result["status"] == "success", result
+        assert _json_block(result)["reached"] is True
+        # The pan joint moved (it was solved, not held) ...
+        assert abs(art.positions[0]) > 0.05, "the hint-colliding base pan joint never moved - it was excluded from IK"
+        # ... and the jaw did not (held at its live position).
+        assert art.positions[4] == pytest.approx(jaw_before, abs=1e-6), "move_to moved the gripper"
+
+    def test_stale_metadata_is_a_loud_error_not_a_heuristic_fallback(self, hint_collider_xml_path, monkeypatch):
+        # Metadata naming a joint absent from the articulation refuses with
+        # the articulation's actual joint list - silently degrading to the
+        # heuristic would reintroduce the misclassification the metadata
+        # prevents (same contract as set_gripper's, pinned per action because
+        # move_to reaches it through the joint-map split).
+        pytest.importorskip("mujoco")
+        monkeypatch.setattr(
+            "strands_robots.simulation.isaac.motion_primitives.get_robot",
+            lambda name: {"gripper": {"actuators": ["no_such_actuator"], "closed": "low", "open": "high"}},
+        )
+        sim, art = _make_sim(joint_names=HINT_COLLIDER_JOINTS, data_config="so100")
+        result = sim.move_to(robot_name="arm", position=REACHABLE_LOCAL)
+        assert result["status"] == "error", result
+        text = _text(result)
+        assert "no_such_actuator" in text
+        assert "Jaw" in text
+        assert art.applied == []
 
 
 class TestMidRunAbort:
