@@ -423,6 +423,35 @@ class TestMoveTo:
         assert "IK bridge unavailable" in result["content"][0]["text"]
         assert "mink" in result["content"][0]["text"]
 
+    def test_servo_timeout_reports_the_residual_and_a_budget_that_fixes_it(self, sim):
+        """A solvable pose the servo cannot reach inside the step budget.
+
+        Distinct from ``test_unreachable_target_...`` above: there the IK cannot
+        solve the pose at all and the pre-flight refuses before a single tick,
+        so there is no measured position error to report. Here the IK residual
+        is small - the pose IS solvable - and the servo simply runs out of
+        steps, which is why the envelope's advice ("the servo may need more
+        steps") is the actionable one. Verified by following it: the identical
+        call with a real budget converges.
+        """
+        pytest.importorskip("mink")
+        short = _dispatch(sim, "move_to", robot_name="arm", position=REACHABLE, tol=0.02, max_steps=2)
+        assert short["status"] == "error", short
+        text = short["content"][0]["text"]
+        assert "did not reach" in text, text
+        assert "max_steps=2" in text, text
+        payload = _json_block(short)
+        assert payload["reached"] is False
+        assert payload["steps"] == 2
+        # The two residuals are separate fields precisely so the agent can tell
+        # "needs more steps" from "unreachable": here the IK solved the pose.
+        assert payload["position_error_m"] > 0.02
+        assert payload["ik_residual_m"] <= 0.02
+
+        again = _dispatch(sim, "move_to", robot_name="arm", position=REACHABLE, tol=0.02, max_steps=400)
+        assert again["status"] == "success", again
+        assert _json_block(again)["reached"] is True
+
 
 class TestGraspPreservation:
     """``move_to`` must never command the gripper (review on #1654).
@@ -530,6 +559,29 @@ class TestRotateWrist:
         result = _dispatch(sim, "rotate_wrist", robot_name="arm")
         assert result["status"] == "error"
         assert "target_yaw" in result["content"][0]["text"]
+
+    def test_servo_timeout_reports_the_residual_and_a_budget_that_fixes_it(self, sim):
+        """An in-range yaw the servo cannot settle on inside the step budget.
+
+        Distinct from ``test_out_of_range_target_rejected``: that target is
+        refused up front against the joint range, so no tick runs. Here the
+        target is legal and only the budget is short, so the refusal reports
+        how far off the joint ended and stays retryable - verified by retrying.
+        """
+        short = _dispatch(sim, "rotate_wrist", robot_name="arm", target_yaw=0.3, tol=0.02, max_steps=1)
+        assert short["status"] == "error", short
+        text = short["content"][0]["text"]
+        assert "did not reach" in text, text
+        assert "max_steps=1" in text, text
+        payload = _json_block(short)
+        assert payload["reached"] is False
+        assert payload["steps"] == 1
+        assert payload["wrist_joint"] == "wrist_roll"
+        assert payload["yaw_error_rad"] > 0.02
+
+        again = _dispatch(sim, "rotate_wrist", robot_name="arm", target_yaw=0.3, tol=0.02, max_steps=300)
+        assert again["status"] == "success", again
+        assert _json_block(again)["reached"] is True
 
 
 class TestGripperRegistryMetadata:

@@ -2770,9 +2770,9 @@ class SimEngine(ABC):
         This base implementation is a documented refusal, not a fallback: a
         backend that has no synchronized multi-robot loop must say so rather
         than silently driving robots one at a time (which would interleave
-        frames and break the merged-frame contract above). The MuJoCo backend
-        overrides it with a full implementation; backends that do not yet
-        (Isaac, Newton) inherit this structured error.
+        frames and break the merged-frame contract above). The MuJoCo and
+        Isaac backends override it with full implementations; backends that
+        do not yet (Newton) inherit this structured error.
 
         Args:
             policies: Mapping ``{robot_name: Policy}`` of the robots to drive.
@@ -4340,8 +4340,16 @@ class SimEngine(ABC):
             samples and ``points`` is aligned with the input ``pixels``
             (``None`` where the pixel had no valid depth). Backends without a
             metric-depth path (Newton), all-invalid pixel sets, out-of-bounds
-            pixels, and malformed input all return
-            ``{"status": "error", "content": [{"text": ...}]}``.
+            pixels, malformed input, and a failed frame render or
+            camera-params read all return
+            ``{"status": "error", "content": [{"text": ...}]}``, with the
+            two backend reads reporting distinguishable text so a caller
+            knows which one failed. The camera-params read can fail on input
+            this call already accepted and a frame it already rendered --
+            most notably a camera whose projection no pinhole ``K`` can
+            represent, such as MuJoCo's orthographic free camera, which
+            renders normally but has no intrinsics. So check ``status``
+            rather than inferring success from a valid pixel set.
         """
         # numpy stays TYPE_CHECKING-only at this module's top level; import at
         # use time like the backends' render paths do.

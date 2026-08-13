@@ -206,7 +206,10 @@ uniform `kp=500` gain that overrides SONIC's tuned per-joint PD - so driving
 those servos directly diverges and the robot falls. To make this quickstart
 just work, `run_policy` auto-detects a `WBCPolicy` on a position-servo scene and
 installs the torque shim (the `WBCTorqueController` PD->torque loop) for the
-duration of the call, then restores the actuators afterwards. With the real
+duration of the call, then hands the world back afterwards: the controller is
+deregistered from the action-controller seam **and** the actuators are restored,
+so a second `run_policy` on the same sim installs a fresh shim and behaves
+exactly like the first. With the real
 `GR00T-WholeBodyControl-{Balance,Walk}.onnx` weights and `target_velocity =
 [0.5, 0, 0]` the base advances ~1.9 m over 5 s while holding pelvis height
 ~0.75 m and staying upright. Pass `wbc_install_torque_control=False` to opt out

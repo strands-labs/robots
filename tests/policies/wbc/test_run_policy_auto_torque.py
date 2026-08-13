@@ -17,18 +17,36 @@ These run WITHOUT real SONIC weights (stub ONNX session, real config + joint
 mapping) on the real torque/position-servo G1 model. The end-to-end "does it
 actually WALK" validation needs real weights and lives in the gated
 integration suite.
+
+``TestAutoInstallHook`` drives the install path and every no-op condition the
+hook documents: no ``[wbc]`` extra, a non-WBC policy, no compiled world, a
+controller already registered, and ``wbc_uses_position_servo`` reporting no
+position-servo actuator - which it does for two distinct scenes (actuators
+already flipped to torque, and a scene holding none of the WBC joints). Those
+last three matter because a no-op is indistinguishable from a hook that never
+ran: each one is the difference between leaving a scene alone and silently
+converting somebody else's actuators.
 """
 
 from __future__ import annotations
 
+import ast
+import inspect
 import logging
+import sys
+import textwrap
 from typing import cast
 
 import numpy as np
 import pytest
 
 from strands_robots.policies import MockPolicy
-from strands_robots.policies.wbc import WBCConfig, WBCPolicy, wbc_uses_position_servo
+from strands_robots.policies.wbc import (
+    WBCConfig,
+    WBCPolicy,
+    WBCTorqueController,
+    wbc_uses_position_servo,
+)
 from strands_robots.simulation.base import SimEngine
 
 mujoco = pytest.importorskip("mujoco", reason="mujoco not installed")
@@ -90,6 +108,38 @@ def _mujoco_sim_with_world(model, data):  # type: ignore[no-untyped-def]
     return sim
 
 
+# A scene holding none of the WBC joints: ``wbc_uses_position_servo`` cannot
+# resolve a driven joint against it and conservatively reports False. Declared
+# here rather than imported so this module needs no G1 assets for that case.
+_XML_NO_WBC_JOINTS = """
+<mujoco>
+  <worldbody>
+    <body name="b">
+      <joint name="unrelated_joint" type="hinge" axis="0 0 1"/>
+      <geom type="box" size="0.1 0.1 0.1"/>
+    </body>
+  </worldbody>
+</mujoco>
+"""
+
+
+def _hook_no_op_guards() -> int:
+    """Count the hook's ``return None`` early-outs by AST.
+
+    The hook's only other exit returns the cleanup callable, so this is exactly
+    the number of conditions under which it declines to touch the scene.
+    """
+    from strands_robots.simulation.mujoco.simulation import Simulation
+
+    src = textwrap.dedent(inspect.getsource(Simulation._maybe_install_wbc_torque_control))
+    fn = ast.parse(src).body[0]
+    return sum(
+        1
+        for node in ast.walk(fn)
+        if isinstance(node, ast.Return) and isinstance(node.value, ast.Constant) and node.value.value is None
+    )
+
+
 # ---------------------------------------------------------------------------
 # wbc_uses_position_servo predicate
 # ---------------------------------------------------------------------------
@@ -148,6 +198,59 @@ class TestAutoInstallHook:
         first = controller.leg_waist_actuator_ids[0]
         assert int(model.actuator_biastype[first]) == int(mujoco.mjtBias.mjBIAS_AFFINE)
 
+    def test_cleanup_unregisters_so_a_second_rollout_gets_the_shim(self) -> None:
+        """The cleanup must undo the registry write as well as the gains.
+
+        ``install_wbc_torque_control`` flips the driven actuators to torque
+        *and* registers the controller for ``_apply_sim_action``;
+        ``WBCTorqueController.uninstall`` only restores the gains. A cleanup
+        that stopped there left the controller registered on a scene whose
+        actuators were back to position servos - so it kept dispatching PD
+        torques into servos that read them as position targets - and the
+        "a manually-installed controller wins" check above then declined to
+        install on the next ``run_policy``, leaving the second rollout without
+        the shim the first one needed.
+        """
+        model, data = _build_g1_model()
+        sim = _mujoco_sim_with_world(model, data)
+
+        cleanup = sim._maybe_install_wbc_torque_control(_g1_policy(), "unitree_g1")
+        assert callable(cleanup)
+        controller = sim._world._backend_state["action_controller"]
+        driven = controller.leg_waist_actuator_ids[0]
+        assert int(model.actuator_biastype[driven]) == int(mujoco.mjtBias.mjBIAS_NONE)
+
+        cleanup()
+
+        # Both halves undone, not just the gains.
+        assert int(model.actuator_biastype[driven]) == int(mujoco.mjtBias.mjBIAS_AFFINE)
+        assert "action_controller" not in sim._world._backend_state
+
+        # ... so the next rollout on the same sim installs the shim again.
+        again = sim._maybe_install_wbc_torque_control(_g1_policy(), "unitree_g1")
+        assert callable(again), "the second rollout must get the shim too"
+        assert int(model.actuator_biastype[driven]) == int(mujoco.mjtBias.mjBIAS_NONE)
+        again()
+
+    def test_cleanup_leaves_a_controller_it_did_not_install(self) -> None:
+        """Only the entry this hook wrote is removed.
+
+        A manual installation that happens to be registered while an
+        auto-installed cleanup runs must survive it - the cleanup owns exactly
+        what its own ``install_wbc_torque_control`` call wrote.
+        """
+        model, data = _build_g1_model()
+        sim = _mujoco_sim_with_world(model, data)
+
+        cleanup = sim._maybe_install_wbc_torque_control(_g1_policy(), "unitree_g1")
+        assert callable(cleanup)
+        sentinel = object()
+        sim._world._backend_state["action_controller"] = sentinel
+
+        cleanup()
+
+        assert sim._world._backend_state["action_controller"] is sentinel
+
     def test_skips_when_controller_already_installed(self) -> None:
         model, data = _build_g1_model()
         sim = _mujoco_sim_with_world(model, data)
@@ -159,3 +262,74 @@ class TestAutoInstallHook:
         sim = _mujoco_sim_with_world(model, data)
         assert sim._maybe_install_wbc_torque_control(MockPolicy(), "unitree_g1") is None
         assert "action_controller" not in sim._world._backend_state
+
+    def test_skips_when_the_wbc_extra_is_absent(self, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+        # A minimal install has no [wbc] extra, so the hook's import fails and
+        # run_policy must carry on unchanged rather than raise out of binding.
+        premise = _mujoco_sim_with_world(*_build_g1_model())
+        assert callable(premise._maybe_install_wbc_torque_control(_g1_policy(), "unitree_g1")), (
+            "premise: this pair installs the shim while [wbc] is importable"
+        )
+
+        sim = _mujoco_sim_with_world(*_build_g1_model())
+        policy = _g1_policy()  # built while the extra is still importable
+        monkeypatch.setitem(sys.modules, "strands_robots.policies.wbc", None)
+        assert sim._maybe_install_wbc_torque_control(policy, "unitree_g1") is None
+        assert "action_controller" not in sim._world._backend_state
+
+    def test_skips_without_a_world(self) -> None:
+        from strands_robots.simulation.mujoco.simulation import Simulation
+
+        sim = Simulation()
+        assert sim._world is None, "premise: a bare engine has no world yet"
+        assert sim._maybe_install_wbc_torque_control(_g1_policy(), "unitree_g1") is None
+
+    def test_skips_when_the_world_has_no_compiled_model(self) -> None:
+        from strands_robots.simulation.mujoco.simulation import Simulation
+
+        sim = Simulation()
+        # Built directly rather than through _mujoco_sim_with_world, whose
+        # namespace probe needs a compiled model. Held in a local so the
+        # assertions read the world under test rather than the engine's
+        # SimWorld | None attribute.
+        world = _FakeWorld(None, None, "")
+        sim._world = world  # type: ignore[assignment]
+        assert world._model is None
+        assert sim._maybe_install_wbc_torque_control(_g1_policy(), "unitree_g1") is None
+        assert "action_controller" not in world._backend_state
+
+    def test_skips_when_the_driven_actuators_are_already_torque_motors(self) -> None:
+        model, data = _build_g1_model()
+        sim = _mujoco_sim_with_world(model, data)
+        # from_sim is install_wbc_torque_control minus the registry write, so
+        # this is the "already torque mode" scene rather than the "controller
+        # already registered" one test_skips_when_controller_already_installed
+        # covers - the two conditions are checked separately and in that order.
+        controller = WBCTorqueController.from_sim(cast(SimEngine, sim), _g1_policy(), "unitree_g1")
+        assert "action_controller" not in sim._world._backend_state
+        assert controller.leg_waist_actuator_ids, "premise: driven actuators resolved"
+        for ai in controller.leg_waist_actuator_ids:
+            assert int(model.actuator_biastype[ai]) == int(mujoco.mjtBias.mjBIAS_NONE)
+        assert wbc_uses_position_servo(cast(SimEngine, sim), _g1_policy(), "unitree_g1") is False
+
+        assert sim._maybe_install_wbc_torque_control(_g1_policy(), "unitree_g1") is None
+        assert "action_controller" not in sim._world._backend_state
+
+    def test_skips_when_no_wbc_joint_resolves_in_the_scene(self) -> None:
+        model = mujoco.MjModel.from_xml_string(_XML_NO_WBC_JOINTS)
+        sim = _mujoco_sim_with_world(model, mujoco.MjData(model))
+        assert wbc_uses_position_servo(cast(SimEngine, sim), _g1_policy(), "unitree_g1") is False
+
+        assert sim._maybe_install_wbc_torque_control(_g1_policy(), "unitree_g1") is None
+        assert "action_controller" not in sim._world._backend_state
+
+
+class TestEveryNoOpConditionIsDriven:
+    def test_the_hook_declines_in_exactly_the_five_ways_this_module_drives(self) -> None:
+        """A sixth no-op guard is a condition nothing above exercises.
+
+        The five, in check order: no ``[wbc]`` extra; a non-WBC policy; no
+        compiled world; a controller already registered; no position-servo
+        actuator. Adding a guard without a test fails here.
+        """
+        assert _hook_no_op_guards() == 5

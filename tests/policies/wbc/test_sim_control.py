@@ -9,7 +9,11 @@ Two units are covered, both runnable without real SONIC weights:
   and explicit values always win.
 * ``WBCTorqueController`` - flips the robot's actuators to torque mode (restored
   on uninstall), declares ``owns_stepping``, and on ``apply`` writes PD torques
-  to ``data.ctrl`` and advances physics by the decimation count.
+  to ``data.ctrl`` and advances physics by the decimation count. ``uninstall``
+  releases *both* things ``install_wbc_torque_control`` acquires - the
+  registration in ``world._backend_state["action_controller"]`` and the gains -
+  so the documented manual install/uninstall pair hands the world back as
+  completely as ``run_policy``'s auto-install does.
 
 The end-to-end "does it actually WALK through run_policy" validation needs real
 weights and lives in the gated integration suite.
@@ -322,3 +326,87 @@ class TestWbcUsesPositionServo:
         model = _model_from_xml(_XML_NO_WBC_JOINTS)
         sim = _FakeSim(_FakeWorld(model, mujoco.MjData(model), ""))
         assert wbc_uses_position_servo(cast(SimEngine, sim), _g1_policy(), "unitree_g1") is False
+
+
+class TestUninstallReleasesBothHalvesOfTheInstall:
+    """The documented manual pair: ``install_wbc_torque_control`` then ``uninstall``.
+
+    ``run_policy``'s auto-install path is covered by the hook's own suite; this
+    is the public API a caller drives directly, and it has to hand the world
+    back just as completely - otherwise the registration outlives the rollout and
+    the hook reads it as a manual install that wins.
+    """
+
+    def test_uninstall_deregisters_the_controller_it_registered(self) -> None:
+        from strands_robots.policies.wbc import install_wbc_torque_control
+
+        model, data = _build_min_g1()
+        sim = _FakeSim(_FakeWorld(model, data, _namespace_for(model)))
+        ctrl = install_wbc_torque_control(cast(SimEngine, sim), _g1_policy(), "unitree_g1")
+        assert sim._world._backend_state["action_controller"] is ctrl
+
+        ctrl.uninstall()
+
+        assert "action_controller" not in sim._world._backend_state, (
+            "uninstall left its registration behind; the next run_policy reads it as an "
+            "already-installed controller and dispatches through a finished shim"
+        )
+
+    def test_uninstall_drops_the_registration_before_restoring_the_gains(self) -> None:
+        """Ordering: a failure restoring gains must not leave a live registration.
+
+        The gain restore is the part that can fail, so the registry entry goes
+        first - a controller still registered against actuators that are already
+        position servos again is the state this whole teardown exists to avoid.
+        """
+        from strands_robots.policies.wbc import install_wbc_torque_control
+
+        model, data = _build_min_g1()
+        sim = _FakeSim(_FakeWorld(model, data, _namespace_for(model)))
+        ctrl = install_wbc_torque_control(cast(SimEngine, sim), _g1_policy(), "unitree_g1")
+
+        seen: list[bool] = []
+        saved = ctrl._saved_actuator_gains
+
+        class _Boom(dict):  # type: ignore[type-arg]
+            def items(self):  # type: ignore[no-untyped-def]
+                seen.append("action_controller" in sim._world._backend_state)
+                raise RuntimeError("gain restore failed")
+
+        ctrl._saved_actuator_gains = _Boom(saved)  # type: ignore[assignment]
+        with pytest.raises(RuntimeError, match="gain restore failed"):
+            ctrl.uninstall()
+
+        assert seen == [False], "the registration was still live when the gain restore ran"
+        assert "action_controller" not in sim._world._backend_state
+
+    def test_uninstall_leaves_a_controller_installed_since_alone(self) -> None:
+        """Release only what this install acquired.
+
+        The LIBERO adapter shares the same seam, so a later install has to
+        survive an earlier controller's teardown.
+        """
+        from strands_robots.policies.wbc import install_wbc_torque_control
+
+        model, data = _build_min_g1()
+        sim = _FakeSim(_FakeWorld(model, data, _namespace_for(model)))
+        ctrl = install_wbc_torque_control(cast(SimEngine, sim), _g1_policy(), "unitree_g1")
+        newer = object()
+        sim._world._backend_state["action_controller"] = newer
+
+        ctrl.uninstall()
+
+        assert sim._world._backend_state["action_controller"] is newer
+
+    def test_a_never_registered_controller_deregisters_nothing(self) -> None:
+        """``from_sim`` builds without registering, so its teardown has nothing to drop."""
+        from strands_robots.policies.wbc import WBCTorqueController
+
+        model, data = _build_min_g1()
+        sim = _FakeSim(_FakeWorld(model, data, _namespace_for(model)))
+        ctrl = WBCTorqueController.from_sim(cast(SimEngine, sim), _g1_policy(), "unitree_g1")
+        assert "action_controller" not in sim._world._backend_state
+
+        ctrl.uninstall()  # must not raise
+
+        assert "action_controller" not in sim._world._backend_state

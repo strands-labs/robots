@@ -62,8 +62,11 @@ class WBCTorqueController:
     ``owns_stepping = True`` so :meth:`_apply_sim_action` does not double-step.
 
     Construct via :meth:`from_sim`, which resolves the actuators by name and
-    flips them to torque mode. Call :meth:`uninstall` to restore the original
-    actuator gains (e.g. when reusing the world for a non-WBC policy).
+    flips them to torque mode. Call :meth:`uninstall` to hand the world back: it
+    drops this controller from ``world._backend_state["action_controller"]`` and
+    restores the original actuator gains (e.g. when reusing the world for a
+    non-WBC policy). Releasing both is what makes that reuse real -- see
+    :meth:`uninstall`.
     """
 
     # Tell the SimEngine this controller advances physics itself (one apply()
@@ -83,6 +86,7 @@ class WBCTorqueController:
         saved_actuator_gains: dict[int, tuple[Any, Any, Any, Any, Any]],
         model: Any,
         physics_substeps_per_control: int = _CONTROL_DECIMATION,
+        world: Any = None,
     ) -> None:
         self.policy = policy
         self.leg_waist_actuator_ids = list(leg_waist_actuator_ids)
@@ -93,6 +97,11 @@ class WBCTorqueController:
         self.arm_dof_addrs = list(arm_dof_addrs)
         self._saved_actuator_gains = dict(saved_actuator_gains)
         self._model = model
+        # The world whose ``_backend_state`` registered us, so :meth:`uninstall`
+        # can release that registration too. ``None`` when built through the
+        # constructor directly: nothing registered it, so there is nothing to
+        # release.
+        self._world = world
         self.physics_substeps_per_control = max(1, int(physics_substeps_per_control))
         # The default-angle hold target, used until the policy returns its first
         # action (a stable first step: PD against the init pose -> ~0 torque).
@@ -236,10 +245,35 @@ class WBCTorqueController:
             arm_dof_addrs=arm_dof,
             saved_actuator_gains=saved,
             model=model,
+            world=world,
         )
 
     def uninstall(self) -> None:
-        """Restore the original actuator gains saved at install time."""
+        """Release both halves of the install: the registration, then the gains.
+
+        :func:`install_wbc_torque_control` acquires two things - it flips the
+        driven actuators to torque mode *and* registers this controller in
+        ``world._backend_state["action_controller"]``, the seam
+        ``_apply_sim_action`` dispatches through. Restoring only the gains leaves
+        the registration behind, and that leftover is not inert: it is the value
+        ``MuJoCoSimEngine._maybe_install_wbc_torque_control`` reads to decide a
+        controller is already present, where a present controller is treated as
+        a manual install that wins. The next rollout on the same world therefore
+        skips the install and dispatches every action through this finished
+        controller - writing PD torques into actuators whose position-servo gains
+        this method has just restored.
+
+        The registration goes first, so a failure restoring the gains cannot
+        leave a controller dispatching into actuators that are already servos
+        again. Only *this* controller's registration is dropped: one installed
+        since (a manual install, or the LIBERO adapter, which shares the seam)
+        is never clobbered.
+        """
+        backend_state = getattr(self._world, "_backend_state", None) if self._world is not None else None
+        deregistered = False
+        if isinstance(backend_state, dict) and backend_state.get("action_controller") is self:
+            del backend_state["action_controller"]
+            deregistered = True
         model = self._model
         for ai, (gaintype, biastype, gainprm, biasprm, ctrlrange) in self._saved_actuator_gains.items():
             model.actuator_gaintype[ai] = gaintype
@@ -247,7 +281,11 @@ class WBCTorqueController:
             model.actuator_gainprm[ai] = gainprm
             model.actuator_biasprm[ai] = biasprm
             model.actuator_ctrlrange[ai] = ctrlrange
-        logger.debug("WBCTorqueController uninstalled: restored %d actuator gains.", len(self._saved_actuator_gains))
+        logger.debug(
+            "WBCTorqueController uninstalled: restored %d actuator gains, deregistered=%s.",
+            len(self._saved_actuator_gains),
+            deregistered,
+        )
 
     # ------------------------------------------------------------------
     # Action-controller hook
@@ -362,8 +400,9 @@ def install_wbc_torque_control(sim: SimEngine, policy: WBCPolicy, robot_name: st
     Use ``control_frequency=50.0`` in ``run_policy`` to match the controller's
     physics step (dt=0.005) x decimation (4).
 
-    Returns the installed controller (call :meth:`WBCTorqueController.uninstall`
-    to restore the original actuators).
+    Returns the installed controller. Call
+    :meth:`WBCTorqueController.uninstall` to undo *both* halves of this install:
+    it drops the registration made here and restores the original actuators.
 
     Raises:
         RuntimeError: If the world is absent or the actuators cannot be resolved.

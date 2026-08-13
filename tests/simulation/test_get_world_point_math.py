@@ -3,9 +3,13 @@
 """Backend-agnostic ``SimEngine.get_world_point`` contract (issue #1647).
 
 ``get_world_point`` is pure math over ``get_frame`` + ``get_camera_params``,
-so its unprojection, median robustness, invalid-pixel handling, and input
-validation are all pinned here against a pure-Python stub engine -- no MuJoCo,
-no GL, no GPU. Backend-specific accuracy lives in
+so its unprojection, median robustness, invalid-pixel handling, input
+validation, and the failure arms of BOTH backend reads are all pinned here
+against a pure-Python stub engine -- no MuJoCo, no GL, no GPU. The two reads
+fail independently: ``get_camera_params`` is called after a frame has already
+rendered, so its failure is not reachable by making ``get_frame`` fail, and
+the two must stay distinguishable in the reported text. Backend-specific
+accuracy lives in
 ``tests/simulation/mujoco/test_get_world_point.py`` (regression against a box
 at a known pose) and the gated Isaac GPU test.
 """
@@ -191,6 +195,99 @@ def test_base_facade_without_raw_frames_is_a_structured_error() -> None:
     result = _NoFrames(_flat_depth()).get_world_point("default", pixels=[[1, 1]])
     assert result["status"] == "error"
     assert "get_frame" in result["content"][0]["text"]
+
+
+def test_base_facade_without_camera_params_is_a_structured_error() -> None:
+    """The mirror of the ``get_frame`` case one backend read later: an engine
+    that renders frames but never implemented ``get_camera_params`` gets a
+    clear error dict naming the missing path, not a ``NotImplementedError``
+    out of a method documented never to raise.
+
+    ``NotImplementedError`` subclasses ``RuntimeError``, so the handled tuple
+    below this arm would catch it too and still return an envelope. The
+    dedicated arm therefore earns its place on the WORDING -- "this backend
+    has no camera-params path" instead of a generic read failure carrying the
+    exception text -- which is what these assertions pin. Checking only
+    ``status``, or only that the method name appears somewhere in the text,
+    passes either way.
+    """
+
+    class _NoParams(_StubSim):
+        def get_camera_params(self, camera_name="default", width=None, height=None):
+            raise NotImplementedError("get_camera_params not implemented by this backend")
+
+    result = _NoParams(_flat_depth()).get_world_point("default", pixels=[[1, 1]])
+    assert result["status"] == "error"
+    text = result["content"][0]["text"]
+    assert "has no camera-params path" in text, text
+    assert "get_camera_params" in text, text
+    # Only the dedicated arm produces the wording above; the tuple arm would
+    # report a generic read failure instead.
+    assert "failed to read camera parameters" not in text, text
+    # The frame read succeeded, so a test that only checked ``status`` could
+    # be satisfied by the WRONG read being reported. Pin that it was not.
+    assert "get_frame" not in text
+    assert "render camera frame" not in text
+
+
+def test_the_missing_path_stubs_reproduce_the_base_defaults() -> None:
+    """Premise for the two missing-path cases above: :class:`SimEngine`'s own
+    defaults raise exactly what those stubs raise, so they exercise the arm
+    rather than an invented exception."""
+    naked = _StubSim.__new__(_StubSim)
+    for method in ("get_frame", "get_camera_params"):
+        with pytest.raises(NotImplementedError, match=method):
+            getattr(SimEngine, method)(naked)
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        KeyError("camera 'front' not found"),
+        ValueError("no pinhole K for an orthographic projection"),
+        RuntimeError("renderer went away between the two reads"),
+        TypeError("camera name must be a string"),
+    ],
+    ids=["KeyError", "ValueError", "RuntimeError", "TypeError"],
+)
+def test_a_failed_camera_params_read_reports_its_reason(exc: Exception) -> None:
+    """Every member of the handled tuple is reported, with the backend's own
+    reason carried through -- the caller cannot act on "it failed" alone, and
+    the render already succeeded so nothing else names the cause."""
+
+    class _ParamsRaise(_StubSim):
+        def get_camera_params(self, camera_name="default", width=None, height=None):
+            raise exc
+
+    result = _ParamsRaise(_flat_depth()).get_world_point("default", pixels=[[1, 1]])
+    assert result["status"] == "error"
+    text = result["content"][0]["text"]
+    assert "camera parameters" in text
+    assert str(exc.args[0]) in text
+
+
+def test_the_two_backend_reads_are_distinguishable() -> None:
+    """One failure per read, same exception type, different text: a caller
+    that has to fix the camera must be able to tell a bad render from
+    unreadable intrinsics. The success control shares the fixture, so the
+    difference is the failing read and nothing else."""
+    boom = RuntimeError("backend went away")
+
+    class _FrameRaise(_StubSim):
+        def get_frame(self, camera_name="default", width=None, height=None):
+            raise boom
+
+    class _ParamsRaise(_StubSim):
+        def get_camera_params(self, camera_name="default", width=None, height=None):
+            raise boom
+
+    depth = _flat_depth()
+    assert _StubSim(depth).get_world_point("default", pixels=[[1, 1]])["status"] == "success"
+    frame_text = _FrameRaise(depth).get_world_point("default", pixels=[[1, 1]])["content"][0]["text"]
+    params_text = _ParamsRaise(depth).get_world_point("default", pixels=[[1, 1]])["content"][0]["text"]
+    assert frame_text != params_text
+    assert "render camera frame" in frame_text and "camera parameters" not in frame_text
+    assert "camera parameters" in params_text and "render camera frame" not in params_text
 
 
 # ----- Input validation ----- #
