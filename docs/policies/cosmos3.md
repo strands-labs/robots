@@ -207,6 +207,38 @@ trajectory tracks to **mean ≈ 11.5 mm / max ≈ 42.8 mm** — the bar pinned b
 de-normalized deltas are scaled past the ~0.85 m Franka reach — a workspace
 concern, not an IK one.)
 
+#### De-normalization stats are per domain
+
+The de-normalize step needs that domain's own `q01`/`q99` quantiles. Two domains
+ship them bundled; the other two registered embodiments do not:
+
+| embodiment | domain | raw dim | bundled stats |
+|---|---|---|---|
+| `droid` | `droid_lerobot` | 10 | yes |
+| `bridge` | `bridge_orig_lerobot` | 10 | yes |
+| `umi` | `umi` | 10 | no |
+| `av` | `av` | 9 | no |
+
+`nvidia/Cosmos3-Edge` documents its forward-dynamics example on `umi` and its
+inverse-dynamics example on `av` — exactly the two without bundled quantiles — so
+driving the sim bridge from Edge means supplying that domain's stats yourself:
+
+```python
+out = decode_cosmos_chunk_to_targets(
+    raw_chunk, get_embodiment("umi"), bridge, q_init,
+    stats={"q01": q01, "q99": q99},   # this domain's own quantiles
+    stats_domain="umi",               # required: which domain they describe
+)
+```
+
+`stats_domain` is required whenever `stats` is passed, and must match the
+embodiment's domain. It is not bookkeeping: `umi`, `droid_lerobot` and
+`bridge_orig_lerobot` are all 10 columns, so the width check cannot tell one
+domain's quantiles from another's, and the two bundled domains disagree by up to
+**2.77x** on the physical translation they decode from the same normalized
+action. Substituting another domain's stats would rescale every commanded pose
+delta with nothing reported.
+
 > **The Cosmos "modes" are not FK/IK.** `policy` / `forward_dynamics` /
 > `inverse_dynamics` are world-model *conditioning* modes (video↔action), not a
 > kinematics solve. Joint-space IK is this separate geometric layer applied

@@ -140,9 +140,13 @@ def test_grasp_less_embodiment_yields_no_gripper_column():
     chunk = _reachable_chunk(d, t=6)
     # ``av`` ships no bundled stats; supply a unit quantile range explicitly so
     # the test exercises only the grasp-split branch, not the Hub loader.
+    # ``stats_domain`` declares which domain those quantiles stand in for -
+    # required because several domains share an action width.
     stats = {"q01": np.full(d, -1.0, dtype=np.float32), "q99": np.full(d, 1.0, dtype=np.float32)}
 
-    out = sim_ik.decode_cosmos_chunk_to_targets(chunk, emb, bridge, np.zeros(7), stats=stats)
+    out = sim_ik.decode_cosmos_chunk_to_targets(
+        chunk, emb, bridge, np.zeros(7), stats=stats, stats_domain=emb.domain_name
+    )
 
     assert out["gripper"] is None
     assert out["poses"].shape == (6, 4, 4)
@@ -164,7 +168,9 @@ def test_explicit_stats_override_bypasses_bundled_stats(monkeypatch):
     stats = {"q01": np.full(d, -1.0, dtype=np.float32), "q99": np.full(d, 1.0, dtype=np.float32)}
     chunk = _reachable_chunk(d, t=5)
 
-    out = sim_ik.decode_cosmos_chunk_to_targets(chunk, emb, _FakeBridge(home=_home_pose()), np.zeros(7), stats=stats)
+    out = sim_ik.decode_cosmos_chunk_to_targets(
+        chunk, emb, _FakeBridge(home=_home_pose()), np.zeros(7), stats=stats, stats_domain=emb.domain_name
+    )
 
     assert out["qpos"].shape == (5, 7)
 

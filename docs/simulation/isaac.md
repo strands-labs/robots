@@ -195,6 +195,10 @@ open a window.
 - **Objects** - `add_object` (`cuboid` / `sphere` / `cylinder` / `capsule`,
   dynamic or static), `remove_object`.
 - **Cameras & rendering** - `add_camera` (look-at, FOV), `render` (RGB + depth).
+  World-fixed only: `parent_body` (a body-mounted wrist camera, supported on
+  mujoco/newton) is refused here with an error naming those backends, because
+  camera prims are parented to the stage camera scope rather than to an
+  articulation link.
 - **Loaders** - `load_urdf` / `load_mjcf` / `load_usd` resolve to a
   `ProceduralRobot` dataclass.
 

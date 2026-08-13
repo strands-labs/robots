@@ -1,11 +1,11 @@
-"""Joint-space motion primitives for the Isaac backend - ``set_gripper`` / ``rotate_wrist``.
+"""Motion primitives for the Isaac backend - ``move_to`` / ``set_gripper`` / ``rotate_wrist``.
 
 The Isaac half of the analytic motion primitives (GH #1645; Isaac parity work
-GH #2123, this module is #2154). Before this module the only motion path on
-Isaac was the raw kinematic ``set_joint_positions`` write - no blocking move,
-no timeout/abort-reason contract, no registry-driven gripper semantics. The
-two joint-space primitives now share their backend-neutral half with the
-MuJoCo reference implementation
+GH #2123: the joint-space pair is #2154, the IK-backed ``move_to`` is #2155).
+Before this module the only motion path on Isaac was the raw kinematic
+``set_joint_positions`` write - no blocking move, no timeout/abort-reason
+contract, no registry-driven gripper semantics. The primitives share their
+backend-neutral half with the MuJoCo reference implementation
 (:mod:`strands_robots.simulation.mujoco.motion_primitives`) through
 :class:`~strands_robots.simulation.motion_primitives_base.MotionPrimitivesCore`:
 parameter domains, registry gripper metadata (``closed``/``open`` ->
@@ -15,8 +15,15 @@ agent reading a refusal or a result payload sees the same sentence and the
 same json keys whichever backend produced it (AGENTS.md: "Match docstrings to
 semantics").
 
-``move_to`` (IK-backed, Cartesian) is deliberately not here - it lands in a
-follow-up child of #2123.
+``move_to`` reuses the shared damped-least-squares IK bridge
+(:class:`strands_robots.simulation.ik.MinkIKBridge`), which operates on the
+MuJoCo model of the robot: Isaac registry robots carry MJCF sources, so the
+kinematic model the solve runs on is resolved from the robot's
+``data_config``. The Isaac articulation's joint ordering/namespacing is
+reconciled with the MJCF-side solution through an explicit NAME-KEYED map
+(MJCF joint name -> articulation DOF index); a solved joint that cannot be
+mapped is a structured refusal, never a positional/flat-index write
+(AGENTS.md: "Per-name state copy, not flat index").
 
 What this adapter owns (the backend-specific half):
 
@@ -55,9 +62,11 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 
 from strands_robots.registry.robots import get_robot
+from strands_robots.simulation.model_registry import resolve_model
 from strands_robots.simulation.models import registered, registry_entry
 from strands_robots.simulation.motion_primitives_base import (
     _GRIPPER_HINTS,
+    _IK_RESTART_SEEDS,
     _WRIST_HINTS,
     MotionPrimitivesCore,
     _err,
@@ -354,7 +363,512 @@ class IsaacMotionPrimitivesMixin(MotionPrimitivesCore):
         matched = [i for i, short in enumerate(short_names) if any(h in short.lower() for h in _GRIPPER_HINTS)]
         return matched, None, None
 
+    # -- move_to kinematics plumbing ---------------------------------------------
+
+    @staticmethod
+    def _articulation_base_pose(articulation: Any) -> tuple[np.ndarray, np.ndarray] | None:
+        """World pose of the articulation base: ``(position (3,), quat wxyz (4,))`` or ``None``.
+
+        Reads ``articulation.get_world_pose()`` - the read counterpart of the
+        write :meth:`IsaacSimulation.set_robot_pose` drives - tolerating torch
+        tensors and the exception set a torn-down articulation raises.
+        ``None`` means "could not be read"; callers must answer that loudly,
+        never by substituting an origin base (a wrong base makes every
+        world-frame target silently wrong). The returned quaternion is
+        normalized.
+        """
+        try:
+            pose = articulation.get_world_pose()
+        except (RuntimeError, ValueError, AttributeError, TypeError):
+            return None
+        if pose is None:
+            return None
+        try:
+            pos_raw, quat_raw = pose
+        except (TypeError, ValueError):
+            return None
+        if pos_raw is None or quat_raw is None:
+            return None
+        pos_arr = pos_raw.cpu().numpy() if hasattr(pos_raw, "cpu") else pos_raw
+        quat_arr = quat_raw.cpu().numpy() if hasattr(quat_raw, "cpu") else quat_raw
+        pos = np.asarray(pos_arr, dtype=np.float64).reshape(-1)
+        quat = np.asarray(quat_arr, dtype=np.float64).reshape(-1)
+        if pos.size != 3 or quat.size != 4:
+            return None
+        if not (np.all(np.isfinite(pos)) and np.all(np.isfinite(quat))):
+            return None
+        norm = float(np.linalg.norm(quat))
+        if norm < 1e-8:
+            return None
+        return pos, quat / norm
+
+    def _load_ik_mjcf(self, robot: Any) -> tuple[Any, Any, dict[str, Any] | None]:
+        """Compile the MuJoCo model the IK solve runs on: ``(mujoco, model, None)`` or an error.
+
+        The shared IK bridge (:class:`strands_robots.simulation.ik.MinkIKBridge`)
+        operates on a compiled ``mujoco.MjModel``; Isaac registry robots carry
+        MJCF sources, so the kinematic model is resolved from the robot's
+        ``data_config`` through the same
+        :func:`~strands_robots.simulation.model_registry.resolve_model` lookup
+        the MuJoCo backend's ``add_robot`` uses (this module's ``resolve_model``
+        global is the patch point for tests). Every failure - no
+        ``data_config``, nothing resolves, ``mujoco`` not importable, the file
+        does not compile - is a structured error naming the remedy, never a
+        raise or a silent identity model.
+        """
+        data_config = getattr(robot, "data_config", None)
+        if not data_config:
+            return (
+                None,
+                None,
+                _err(
+                    f"move_to: robot '{robot.name}' has no data_config, so the registry MJCF the "
+                    "IK solve runs on cannot be resolved. Re-add the robot with data_config=..., "
+                    "or drive the joints directly with action='send_action'."
+                ),
+            )
+        path = resolve_model(data_config)
+        if path is None:
+            return (
+                None,
+                None,
+                _err(
+                    f"move_to: no MJCF/URDF model resolves for data_config '{data_config}', so "
+                    "there is no kinematic model for the IK solve. Register one "
+                    "(strands_robots.simulation.model_registry.register_urdf), or drive the "
+                    "joints directly with action='send_action'."
+                ),
+            )
+        try:
+            import mujoco as mj
+        except ImportError:
+            return (
+                None,
+                None,
+                _err(
+                    "move_to: the IK solve runs on the MuJoCo model of the robot and needs the "
+                    "'mujoco' + 'mink' stack, which is not importable. Install the sim extra: "
+                    "uv pip install 'strands-robots[sim-mujoco]'."
+                ),
+            )
+        try:
+            model = mj.MjModel.from_xml_path(path)
+        except (ValueError, OSError, RuntimeError, mj.FatalError) as e:
+            return (
+                None,
+                None,
+                _err(f"move_to: could not compile the IK model for data_config '{data_config}' from {path}: {e}"),
+            )
+        return mj, model, None
+
+    def _mjcf_articulation_joint_map(
+        self, mj: Any, model: Any, robot: Any
+    ) -> tuple[dict[int, int], dict[int, int], dict[str, Any] | None]:
+        """Name-keyed map from MJCF joints onto articulation DOF indices.
+
+        The key risk of running the IK on the MJCF while writing targets to
+        the Isaac articulation is joint ORDER (#2123): the URDF importer and
+        the MJCF compiler need not agree on DOF ordering, so the solved
+        configuration is reconciled per NAME - MJCF joint name (namespace
+        stripped on both sides, see :meth:`_short_joint_name`) -> articulation
+        DOF index - and a solved joint that cannot be mapped is a structured
+        refusal, never a positional/flat-index write (AGENTS.md: "Per-name
+        state copy, not flat index").
+
+        Returns ``(arm_map, grip_map, error)``: ``arm_map`` / ``grip_map`` map
+        MJCF joint id -> articulation DOF index for the hinge/slide joints,
+        split by the shared registry-metadata-first gripper classification
+        (same vocabulary on both sides, so the split cannot disagree with
+        :meth:`_resolve_gripper_dofs`). Every ARM joint must map - the solve
+        commands them all; a gripper joint with no counterpart merely stays at
+        the model default in the FK reads (it is held on the articulation
+        side, not commanded from the solve). Callers must hold ``self._lock``.
+        """
+        short_names = [self._short_joint_name(n) for n in robot.joint_names]
+        dof_by_name: dict[str, int] = {}
+        for i, short in enumerate(short_names):
+            dof_by_name.setdefault(short, i)
+
+        meta, malformed_reason = self._registry_gripper_metadata(robot)
+        if malformed_reason is not None:
+            return {}, {}, _err(f"Cannot resolve the gripper for '{robot.name}': {malformed_reason}")
+        wanted = {str(a).lower() for a in meta["actuators"]} if meta is not None else None
+
+        def _is_gripper(short: str) -> bool:
+            if wanted is not None:
+                return short.lower() in wanted
+            return any(h in short.lower() for h in _GRIPPER_HINTS)
+
+        settable = {int(mj.mjtJoint.mjJNT_HINGE), int(mj.mjtJoint.mjJNT_SLIDE)}
+        arm_map: dict[int, int] = {}
+        grip_map: dict[int, int] = {}
+        unmapped: list[str] = []
+        for jnt_id in range(int(model.njnt)):
+            if int(model.jnt_type[jnt_id]) not in settable:
+                continue
+            jname = mj.mj_id2name(model, mj.mjtObj.mjOBJ_JOINT, jnt_id) or ""
+            short = self._short_joint_name(jname)
+            dof = dof_by_name.get(short)
+            if _is_gripper(short):
+                if dof is not None:
+                    grip_map[jnt_id] = dof
+                continue
+            if dof is None:
+                unmapped.append(short or f"<unnamed joint {jnt_id}>")
+                continue
+            arm_map[jnt_id] = dof
+        if unmapped:
+            return (
+                {},
+                {},
+                _err(
+                    f"move_to: the IK model for '{robot.name}' (data_config '{robot.data_config}') "
+                    f"has joints {unmapped} with no articulation counterpart. Joint targets are "
+                    "written per NAME, never by flat index, so a solved joint that cannot be "
+                    f"mapped is refused. Articulation joints: {short_names}."
+                ),
+            )
+        if not arm_map:
+            return (
+                {},
+                {},
+                _err(
+                    f"move_to: the IK model for '{robot.name}' (data_config '{robot.data_config}') "
+                    "has no non-gripper hinge/slide joints to solve - nothing can move the "
+                    "end-effector."
+                ),
+            )
+        return arm_map, grip_map, None
+
+    @staticmethod
+    def _quat_wxyz_to_mat(mj: Any, quat: np.ndarray) -> np.ndarray:
+        """``(3, 3)`` rotation matrix for a wxyz quaternion (MuJoCo convention)."""
+        rot = np.zeros(9, dtype=np.float64)
+        mj.mju_quat2Mat(rot, np.asarray(quat, dtype=np.float64))
+        return rot.reshape(3, 3)
+
     # -- primitives --------------------------------------------------------------
+
+    def move_to(
+        self,
+        robot_name: str | None = None,
+        position: list[float] | None = None,
+        orientation: list[float] | None = None,
+        tol: float = 0.01,
+        max_steps: int = 200,
+    ) -> dict[str, Any]:
+        """Move the end-effector to a world-frame Cartesian target via IK.
+
+        Composite analytic primitive (the staging/transport verb), same public
+        API and result semantics as the MuJoCo backend's
+        :meth:`~strands_robots.simulation.mujoco.motion_primitives.MotionPrimitivesMixin.move_to`:
+        solves inverse kinematics to the target with the shared mink
+        damped-least-squares bridge
+        (:class:`strands_robots.simulation.ik.MinkIKBridge`; position-only
+        when no orientation is given - important for 5-DOF arms like SO-101),
+        then drives PD position targets on the Kit loop until the
+        end-effector is within ``tol`` meters of the target or ``max_steps``
+        control ticks elapse. Deterministic restart seeds
+        (:data:`~strands_robots.simulation.motion_primitives_base._IK_RESTART_SEEDS`)
+        retry a stalled direct solve; an unreachable target returns the IK
+        residual in a structured error, never a raise.
+
+        The bridge operates on the MuJoCo model of the robot, resolved from
+        the robot's ``data_config`` (Isaac registry robots carry MJCF
+        sources; see :meth:`_load_ik_mjcf`). The solve is seeded from the
+        articulation's CURRENT joint positions and its result is reconciled
+        with the articulation through an explicit NAME-KEYED joint map
+        (:meth:`_mjcf_articulation_joint_map`) - a solved joint that cannot
+        be mapped by name is a structured refusal, never a positional write.
+        The world-frame target is mapped into the model frame through the
+        articulation's live base pose (``get_world_pose``), which is read
+        once at setup: the arm's base is assumed fixed for the duration of
+        the move.
+
+        CONVERGENCE MEASUREMENT: the EE pose is computed per tick by forward
+        kinematics of the live joint readback through the SAME bridge frame
+        the solver optimized (then mapped back to world through the base
+        pose). Measuring a different frame (e.g. the USD gripper-link
+        heuristic) could leave the solver and the convergence check watching
+        points that never agree - the same trap the MuJoCo mixin's
+        ``_frame_world_pose`` documents.
+
+        GRASP PRESERVATION (contract): gripper DOFs (resolved by the same
+        registry-metadata-first classification ``set_gripper`` uses, see
+        :meth:`_resolve_gripper_dofs`) are excluded from the IK solve and its
+        restart seeding, and are HELD at their live position for the whole
+        servo descent - ``set_gripper("close") -> move_to(...)`` carries the
+        held object rather than releasing it.
+
+        REFUSES WHILE A POLICY RUNS on the same robot: ``policy_running`` is
+        the per-robot flag every Isaac policy-driving loop sets
+        (:meth:`IsaacSimulation.run_multi_policy`, the recording rollout
+        hook), so it is this backend's counterpart of the MuJoCo
+        ``_require_no_running_policy`` guard - checked up front and per
+        control tick (a policy starting mid-run aborts the primitive).
+
+        NOT collision-aware: the straight servo descent can sweep through
+        obstacles - the same contract as the MuJoCo backend, which
+        deliberately hides the solver so a collision-aware upgrade cannot
+        change this surface.
+
+        Args:
+            robot_name: Robot to move; defaults to the single robot in the
+                world (errors if ambiguous).
+            position: World-frame target ``[x, y, z]`` in meters (required).
+                Validated by the same rule the scene-construction calls use
+                (:func:`strands_robots.utils.coerce_pose_vector`): three finite
+                real components, a NumPy array accepted, a ``bool`` refused.
+            orientation: Optional target orientation quaternion ``[w, x, y, z]``
+                in the world frame, validated the same way and normalized
+                before it enters the solve. When omitted the solve is
+                position-only - the right choice for arms with fewer than
+                6 DOF (e.g. SO-100/SO-101).
+            tol: Position convergence tolerance in meters (> 0).
+            max_steps: Max control ticks before returning a not-reached error
+                (1..10000).
+
+        Returns:
+            ``{"status": "success", ...}`` with a json block
+            ``{reached, steps, position_error_m, ik_residual_m, ee_position,
+            ee_orientation_wxyz, frame, frame_type}`` on arrival;
+            ``{"status": "error", ...}`` with the same json block (including
+            the residual) when the target is unreachable (IK residual > tol)
+            or servo convergence times out. Never raises.
+        """
+        # ---- parameter validation (before touching the world) ----
+        # Shared with the MuJoCo adapter (motion_primitives_base): same
+        # pose-vector rule the scene-construction calls use, same tol /
+        # max_steps domains, same wording.
+        target, target_quat, max_steps, arg_err = self._validate_move_to_args(position, orientation, tol, max_steps)
+        if arg_err is not None:
+            return arg_err
+        assert target is not None  # no error implies a coerced target
+        # Rebound under a plain-ndarray name for the closure below (mypy does
+        # not carry an Optional narrowing across a closure boundary).
+        target_world: np.ndarray = target
+
+        def _move() -> dict[str, Any]:
+            # ---- setup under the lock: guards, IK model, joint map, solve ----
+            # Runs on the Kit-owning thread (see _run_primitive_on_kit), so the
+            # articulation reads that seed the solve happen on the Kit loop.
+            with self._lock:
+                robot_name_resolved, robot, error = self._primitive_resolve_robot(robot_name)
+                if error is not None:
+                    return error
+                assert robot_name_resolved is not None and robot is not None
+                name: str = robot_name_resolved
+                if robot.policy_running:
+                    return _err(
+                        f"Cannot 'move_to' on '{name}' while its policy is running - a primitive "
+                        "and the policy loop would race on the articulation's PD targets. Wait "
+                        "for the rollout to finish (Isaac policy loops clear the flag on exit)."
+                    )
+                articulation = robot.articulation
+                short_names = [self._short_joint_name(n) for n in robot.joint_names]
+
+                base = self._articulation_base_pose(articulation)
+                if base is None:
+                    return _err(
+                        f"move_to: could not read the articulation base pose for '{name}', so the "
+                        "world-frame target cannot be mapped into the robot's model frame."
+                    )
+                base_pos, base_quat = base
+                sanity_err = self._workspace_sanity_error(name, target_world, base_pos)
+                if sanity_err is not None:
+                    return sanity_err
+
+                mj, model, load_err = self._load_ik_mjcf(robot)
+                if load_err is not None:
+                    return load_err
+
+                from strands_robots.simulation.ik import discover_ee_frame
+
+                # The registry MJCF is a standalone robot model, so discovery
+                # runs un-namespaced (unlike the MuJoCo backend's shared
+                # multi-robot world model).
+                frame = discover_ee_frame(model, None)
+                if frame is None:
+                    return _err(
+                        f"move_to: could not auto-discover an end-effector frame in the IK model "
+                        f"for '{name}' (data_config '{robot.data_config}'). The model has no "
+                        "TCP-like site or hand/tool body to track."
+                    )
+                frame_name, frame_type = frame
+
+                arm_map, grip_map, map_err = self._mjcf_articulation_joint_map(mj, model, robot)
+                if map_err is not None:
+                    return map_err
+                full_map = {**arm_map, **grip_map}
+
+                # Articulation-side gripper DOFs, HELD at their live position
+                # below (grasp preservation). Same shared classification as
+                # the MJCF-side split, so the two cannot disagree.
+                grip_dofs, _, grip_err = self._resolve_gripper_dofs(robot)
+                if grip_err is not None:
+                    return grip_err
+
+                q_live = self._read_joint_positions(articulation)
+                if q_live is None or q_live.size < len(short_names):
+                    return _err(
+                        f"move_to: could not read joint positions from '{name}' - the "
+                        "articulation did not report a usable joint-position vector."
+                    )
+
+                try:
+                    from strands_robots.simulation.ik import MinkIKBridge
+
+                    # max_iters is raised well above the bridge default (20)
+                    # for the same reason as the MuJoCo mixin: move_to jumps
+                    # from the current pose to an arbitrary workspace point in
+                    # one solve and needs the extra integration budget.
+                    bridge = MinkIKBridge(
+                        model,
+                        frame_name,
+                        frame_type,
+                        orientation_cost=1.0 if target_quat is not None else 0.0,
+                        max_iters=200,
+                    )
+                except (ImportError, RuntimeError, ValueError) as e:
+                    return _err(f"move_to: IK bridge unavailable: {e}")
+
+                # World -> model-frame transform through the live base pose.
+                base_rot = self._quat_wxyz_to_mat(mj, base_quat)
+                target_local = base_rot.T @ (target_world - base_pos)
+
+                # Seed the MJCF configuration from the LIVE articulation
+                # state, scattered per NAME (never flat-index).
+                q0 = np.array(model.qpos0, dtype=np.float64).reshape(-1).copy()
+                for jnt_id, dof in full_map.items():
+                    q0[int(model.jnt_qposadr[jnt_id])] = float(q_live[dof])
+
+                target_pose = np.eye(4, dtype=np.float64)
+                target_pose[:3, 3] = target_local
+                if target_quat is not None:
+                    quat = target_quat / np.linalg.norm(target_quat)
+                    # The requested orientation is world-frame; express it in
+                    # the model frame the bridge solves in.
+                    target_pose[:3, :3] = base_rot.T @ self._quat_wxyz_to_mat(mj, quat)
+                else:
+                    # Position-only: keep the current EE orientation in the
+                    # target pose (the zero orientation cost makes it a soft
+                    # no-op).
+                    target_pose[:3, :3] = bridge.ee_pose(q0)[:3, :3]
+
+                q_star = bridge.solve(target_pose, q0)
+                ik_residual = float(np.linalg.norm(bridge.ee_pose(q_star)[:3, 3] - target_local))
+
+                # Damped-least-squares IK is a local method: from a distant
+                # seed it can stall in a joint-limit / elbow-branch local
+                # minimum even for a reachable target. Same deterministic
+                # restart schedule as the MuJoCo mixin: the model's home
+                # keyframe first when one exists, then uniform draws over the
+                # ARM joints' ranges from a per-call fixed-seed RNG (identical
+                # calls draw identical seeds - reproducibility, not a bug).
+                # Gripper DOFs and everything else stay at the live state.
+                if ik_residual > float(tol):
+                    rng = np.random.default_rng(0)
+                    settable_qadr = [int(model.jnt_qposadr[jnt_id]) for jnt_id in arm_map]
+                    ranges = [
+                        (float(model.jnt_range[jnt_id][0]), float(model.jnt_range[jnt_id][1]))
+                        if bool(model.jnt_limited[jnt_id])
+                        else (-np.pi, np.pi)
+                        for jnt_id in arm_map
+                    ]
+                    for restart in range(_IK_RESTART_SEEDS):
+                        q_seed = q0.copy()
+                        if restart == 0 and int(model.nkey) > 0:
+                            for qadr in settable_qadr:
+                                q_seed[qadr] = float(model.key_qpos[0][qadr])
+                        else:
+                            for qadr, (lo, hi) in zip(settable_qadr, ranges, strict=True):
+                                q_seed[qadr] = rng.uniform(lo, hi)
+                        q_try = bridge.solve(target_pose, q_seed)
+                        residual_try = float(np.linalg.norm(bridge.ee_pose(q_try)[:3, 3] - target_local))
+                        if residual_try < ik_residual:
+                            q_star, ik_residual = q_try, residual_try
+                        if ik_residual <= float(tol):
+                            break
+
+                if ik_residual > float(tol):
+                    return _err(
+                        f"move_to: target {target_world.tolist()} is unreachable for '{name}' "
+                        f"within tol={float(tol)} m - best IK solution leaves a residual of "
+                        f"{ik_residual:.4f} m. Choose a closer target or loosen tol.",
+                        {
+                            "reached": False,
+                            "steps": 0,
+                            "ik_residual_m": ik_residual,
+                            "frame": frame_name,
+                            "frame_type": frame_type,
+                        },
+                    )
+
+                # Command ARM DOFs to the solve, per name; HOLD gripper DOFs
+                # at their live position (grasp preservation - and every
+                # commanded channel is re-asserted per tick, mirroring the
+                # MuJoCo mixin).
+                targets: dict[int, float] = {
+                    dof: float(q_star[int(model.jnt_qposadr[jnt_id])]) for jnt_id, dof in arm_map.items()
+                }
+                for dof in grip_dofs:
+                    targets[dof] = float(q_live[dof])
+
+            # ---- servo loop: self-locking per control tick ----
+            steps_used = 0
+            reached = False
+            position_error = math.inf
+            ee_pos_world: np.ndarray = np.array(target_world, dtype=np.float64, copy=True)
+            ee_quat_world = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
+            q_fk = q0.copy()
+            for _ in range(max_steps):
+                with self._lock:
+                    abort = self._primitive_abort_reason("move_to", name)
+                    if abort is not None:
+                        return abort
+                    live = registry_entry(self._robots, name)
+                    if live is not None and live.policy_running:
+                        return _err(f"move_to: a policy started on '{name}' mid-run; aborting.")
+                    apply_err = self._apply_position_targets("move_to", name, articulation, targets)
+                    if apply_err is not None:
+                        return apply_err
+                    self._primitive_tick()
+                    q = self._read_joint_positions(articulation)
+                if q is None or q.size < len(short_names):
+                    return _err(f"move_to: could not read joint positions from '{name}' mid-run; aborting.")
+                steps_used += 1
+                # FK of the live joint readback through the SAME bridge frame
+                # the solver optimized, scattered per NAME, mapped to world
+                # through the base pose (see the docstring's convergence-
+                # measurement contract).
+                for jnt_id, dof in full_map.items():
+                    q_fk[int(model.jnt_qposadr[jnt_id])] = float(q[dof])
+                ee_local = bridge.ee_pose(q_fk)
+                ee_pos_world = base_pos + base_rot @ ee_local[:3, 3]
+                quat_out = np.zeros(4, dtype=np.float64)
+                mj.mju_mat2Quat(quat_out, np.ascontiguousarray(base_rot @ ee_local[:3, :3]).reshape(9))
+                ee_quat_world = quat_out
+                position_error = float(np.linalg.norm(ee_pos_world - target_world))
+                if position_error <= float(tol):
+                    reached = True
+                    break
+
+            return self._move_to_result(
+                name,
+                target_world,
+                float(tol),
+                max_steps,
+                reached=reached,
+                steps_used=steps_used,
+                position_error=position_error,
+                ik_residual=ik_residual,
+                ee_pos=ee_pos_world,
+                ee_quat=ee_quat_world,
+                frame_name=frame_name,
+                frame_type=frame_type,
+            )
+
+        return self._run_primitive_on_kit("move_to", _move)
 
     def set_gripper(
         self,

@@ -43,7 +43,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from strands_robots.simulation.isaac.config import IsaacConfig
     from strands_robots.simulation.isaac.simulation import IsaacSimulation
-    from strands_robots.simulation.mujoco.simulation import Simulation
+    from strands_robots.simulation.mujoco.simulation import MuJoCoSimEngine, Simulation
     from strands_robots.simulation.mujoco.simulation import Simulation as MuJoCoSimulation
     from strands_robots.simulation.mujoco.spec_builder import SpecBuilder
 

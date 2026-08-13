@@ -416,11 +416,47 @@ def test_the_gate_passes_when_the_base_carries_no_copy_of_the_check() -> None:
     assert _SCRIPT.exists()
 
 
-def test_the_title_reaches_the_script_through_the_environment() -> None:
-    """Author-controlled text interpolated into a shell would be an injection seam."""
+def test_the_title_is_not_handed_to_the_script_by_the_workflow() -> None:
+    """#2216: the payload's title outranks the API's, and would go stale.
+
+    ``main()`` resolves ``title = args.title or api_title``, so a ``PR_TITLE``
+    from the event payload wins for the life of the run that received it. The
+    workflow cancels nothing (it carries no ``concurrency`` block, pinned by
+    ``test_the_gate_does_not_cancel_its_own_run``), so a run started by
+    ``synchronize`` can still be going when an ``edited`` run passes; handed the
+    payload title it would report the pre-edit verdict afterwards and strand a red
+    context on a head that had already cleared.
+
+    Not passing it makes ``resolve_pull_request``'s copy authoritative, so any run
+    on a pull request computes the current verdict and two runs on one head agree.
+    The script keeps reading ``PR_TITLE`` and ``--title`` for the command line,
+    which is what the tests above exercise; this pin is about the workflow.
+    """
     workflow = _workflow()
-    assert "PR_TITLE: ${{ github.event.pull_request.title }}" in workflow
+    setters = [
+        line.strip()
+        for line in workflow.splitlines()
+        if not line.lstrip().startswith("#") and re.match(r"^\s*PR_TITLE\s*:", line)
+    ]
+    assert not setters, f"the workflow still hands the script a title: {setters}"
 
     invocation = [line for line in workflow.splitlines() if "check_closing_reference.py" in line]
     assert invocation
     assert all("${{" not in line for line in invocation)
+
+
+def test_the_gate_does_not_cancel_its_own_run() -> None:
+    """The premise the pin above leans on, and #2216's own finding.
+
+    This workflow is the only one here started by an activity type that cannot
+    change the head sha, so it is the only one that can have two runs on one head
+    -- and a concurrency group keyed on the pull request number would hold both.
+    Cancelling one leaves a permanent ``CANCELLED`` context on a head that
+    satisfies the check, which is unclearable without a push and so defeats the
+    self-clearing property ``test_the_gate_reruns_when_the_title_or_body_is_edited``
+    exists to protect. The fleet-wide form of this rule is
+    ``test_an_exempt_workflow_cannot_cancel_its_own_run``.
+    """
+    workflow = _workflow()
+    assert not re.search(r"^concurrency:", workflow, re.MULTILINE)
+    assert not re.search(r"^\s*cancel-in-progress:", workflow, re.MULTILINE)

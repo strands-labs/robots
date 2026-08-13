@@ -7,9 +7,13 @@ its buffered action chunk drains, applies every robot's joint targets, then
 steps physics exactly ONCE. These tests pin that behaviour - plus the loop's
 Isaac-specific contracts: every Kit-touching hop is marshalled through
 ``run_on_main`` (#1896), a worker-thread call with no pump is refused in the
-tool envelope, ``reset_between=True`` is refused citing #1895, and a call
-during an active recording session is refused (the merged-frame recording path
-is a follow-up to #2158).
+tool envelope, ``reset_between=True`` is refused citing #1895, and a rollout
+whose ``control_frequency`` disagrees with an active recording's fps is
+refused up front (the shared rate guard every rollout entry point applies).
+
+The merged-frame recording path (one ``add_frame`` per timestep with every
+robot's namespaced columns, #2159) is pinned separately in
+``test_run_multi_policy_recording.py``.
 
 The engine is a skeleton ``IsaacSimulation`` built with ``__new__`` (the
 established pattern from ``test_dataset_recording.py``) so the loop runs
@@ -406,18 +410,32 @@ def test_run_multi_policy_reset_between_returns_the_1895_error(sim_two_robots):
     assert sim._world.step_calls == 0
 
 
-def test_run_multi_policy_refuses_during_an_active_recording(sim_two_robots):
-    """A call during an active recording session is refused, not silently unrecorded.
+def test_run_multi_policy_refuses_rate_the_recording_cannot_describe(sim_two_robots):
+    """A control_frequency the active recording's fps cannot describe is refused.
 
-    The merged-frame recording path is a follow-up to #2158; running the loop
-    anyway inside an open session would leave a rollout the session's frame
-    count misreports.
+    Replaces the pre-#2159 premise test (a blanket refusal while any recording
+    was active): the loop now records merged frames, so what remains refusable
+    is the shared rate disagreement every rollout entry point guards -
+    LeRobot timestamps frames positionally at the dataset fps, so a differing
+    capture rate cannot be honored, only mislabelled. Refused before any
+    physics advances (the same ``_validate_recording_rate`` contract as
+    ``run_policy`` / MuJoCo's ``run_multi_policy``).
     """
     sim = sim_two_robots
-    sim._recording_state_dict = {"recording": True, "dataset_recorder": object()}
-    r = sim.run_multi_policy(policies={"alpha": MockPolicy(), "beta": MockPolicy()}, n_steps=2)
+
+    class _RecorderAt30:
+        class dataset:  # noqa: N801 - attribute surface of DatasetRecorder
+            fps = 30
+
+    sim._recording_state_dict = {"recording": True, "dataset_recorder": _RecorderAt30()}
+    r = sim.run_multi_policy(
+        policies={"alpha": MockPolicy(), "beta": MockPolicy()},
+        n_steps=2,
+        control_frequency=50.0,
+    )
     assert r["status"] == "error", r
-    assert "recording" in r["content"][0]["text"]
+    msg = r["content"][0]["text"]
+    assert "30" in msg and "50" in msg
     assert sim._world.step_calls == 0
 
 

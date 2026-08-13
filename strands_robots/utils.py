@@ -1735,8 +1735,39 @@ def finite_vector_error(method: str, param_name: str, vec: Any) -> str | None:
     The read itself is :func:`_read_finite_vector`, which returns the floats it
     built alongside this verdict; this is the verdict half, for the callers that
     want only a message. Both are one read of ``vec`` (#1906).
+
+    Deferring the count is what makes a *readable* length part of this verdict.
+    A caller holding only a message counts the components by reading ``vec``
+    again, and a value with no readable length cannot be read twice - the read
+    behind this verdict consumes it, so the caller's own count sees nothing. That
+    is a different question from the count itself ("how many components is this?"
+    versus "is that answerable at all"), and it is the one
+    :func:`sequence_length` owns and cannot raise answering (#1888). Refusing it
+    is the rule :func:`coerce_size_vector` - this function's own sibling over the
+    same read - :func:`coerce_rgba` and :func:`_read_pose_vector` already apply,
+    in the same words and for the same reason. Without it a generator of finite
+    numbers passed this verdict and then reached the caller's count as an empty
+    vector, so ``add_object`` reported a three-component extent as ``got 0
+    (size=[])`` and ``patch_scene_mjcf`` raised ``object of type 'generator' has
+    no len()`` into its envelope, naming neither the field nor the method while
+    the sibling fields of that same op named both.
+
+    The probe runs *after* the component read rather than before it, which is the
+    order :func:`coerce_size_vector` uses and the reason every refusal this guard
+    already gave is unchanged: a value whose ``__iter__`` raises, or whose read
+    fails part-way, has no readable length either, and those verdicts say what
+    actually happened instead of reporting a domain check that never ran (#1875,
+    #1878).
     """
-    return _read_finite_vector(method, param_name, vec)[1]
+    err = _read_finite_vector(method, param_name, vec)[1]
+    if err is not None:
+        return err
+    if sequence_length(vec) is None:
+        # The components were read and were finite; what the value cannot supply
+        # is a length for the caller to count. Same words as the sibling
+        # coercions, because it is the same verdict about the same value.
+        return f"{method}: '{param_name}' must be a list/tuple of numbers, got {_refusal_container_repr(vec)}"
+    return None
 
 
 def _read_pose_vector(method: str, param_name: str, vec: Any, expected_len: int) -> tuple[list[float], str | None]:
