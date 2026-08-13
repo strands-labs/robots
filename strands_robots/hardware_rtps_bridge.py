@@ -123,7 +123,10 @@ class HardwareRtpsBridge(RosTelemetryBase):
             into a busy-spin with no bound - and ``inf`` raises
             ``OverflowError`` out of it, killing the loop while the bridge
             reports a successful construction.
-        joint_limits: Optional ``{motor: (min, max)}`` clamp ranges. When set,
+        joint_limits: Optional ``{motor: (min, max)}`` clamp ranges. Each bound
+            must be a finite number - a non-finite one declares a range that
+            admits nothing, so the bridge refuses it at construction rather than
+            dropping every inbound command for that joint mid-run. When set,
             an inbound ``joint_command`` whose ANY commanded joint falls outside
             its declared range is rejected whole (no partial application), so a
             single out-of-range joint can never drive part of the arm.

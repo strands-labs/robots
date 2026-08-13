@@ -31,7 +31,7 @@ import logging
 import os
 from typing import TYPE_CHECKING, Any
 
-from strands_robots.utils import dds_domain_id_error, require_optional
+from strands_robots.utils import dds_domain_id_error, finite_number_error, require_optional
 
 if TYPE_CHECKING:
     import numpy as np
@@ -124,7 +124,7 @@ class RosTelemetryBase:
 
         Raises:
             ValueError: If ``joint_limits`` is not a mapping of name to a
-                ``(min, max)`` numeric pair with ``min <= max``.
+                ``(min, max)`` pair of finite numbers with ``min <= max``.
         """
         if joint_limits is None:
             return None
@@ -134,9 +134,26 @@ class RosTelemetryBase:
         for name, bounds in joint_limits.items():
             try:
                 low, high = bounds
-                low, high = float(low), float(high)
             except (TypeError, ValueError):
                 raise ValueError(f"joint_limits[{name!r}] must be a (min, max) numeric pair, got {bounds!r}") from None
+            # Each bound goes through the shared signed-scalar domain before the
+            # ordering comparison below, which cannot see a non-finite bound:
+            # every comparison against ``nan`` is False, so ``(low, nan)`` passes
+            # ``low > high`` and then makes the ``low <= pos <= high`` test in
+            # :meth:`_command_action` False for every position - the bridge drops
+            # EVERY inbound command for that joint, which is the silent mid-run
+            # rejection this validator exists to surface at construction.
+            # ``(inf, inf)`` and ``(-inf, -inf)`` pass the ordering check the same
+            # way and admit nothing either. The domain also answers for an int
+            # past the float64 range, which raised ``OverflowError`` out of the
+            # ``float()`` below rather than the documented ``ValueError``. The
+            # sibling declaration of this parameter,
+            # :class:`~strands_robots.simulation.isaac.delta_eef.IsaacDeltaEEFController`,
+            # refuses a non-finite bound for the same reason.
+            for side, bound in (("min", low), ("max", high)):
+                if error := finite_number_error(bound, side, f"joint_limits[{name!r}]"):
+                    raise ValueError(error)
+            low, high = float(low), float(high)
             if low > high:
                 raise ValueError(f"joint_limits[{name!r}] has min {low} > max {high}")
             normalized[str(name)] = (low, high)

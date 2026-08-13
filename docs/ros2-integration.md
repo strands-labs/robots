@@ -268,7 +268,9 @@ harden it (both threaded through `Robot()`):
 - `joint_limits={motor: (min, max)}` range-checks every inbound command; if any
   commanded joint is outside its declared range the **entire** command is
   rejected (no partial application). Joints without a declared bound are
-  unconstrained. Available on both transports.
+  unconstrained. Every bound must be a finite number - a non-finite one declares
+  a range that admits nothing, so it is refused at construction. Available on
+  both transports.
 - For the pure-RTPS transport (`ros2_transport="rtps"`), a `dds_security_config`
   (or the explicit `STRANDS_ROS2_BRIDGE_I_KNOW_THIS_IS_INSECURE=1` opt-out) is
   **required** to expose the command surface - see the

@@ -24,6 +24,7 @@ from strands_robots.ros_telemetry import (
     ROS2_INSECURE_ENV,
     RosTelemetryBase,
 )
+from strands_robots.utils import finite_number_error
 
 
 class _Msg:
@@ -56,11 +57,17 @@ def test_non_dict_joint_limits_are_rejected() -> None:
     [
         {"a": (0.0,)},  # too few values to unpack
         {"a": (0.0, 1.0, 2.0)},  # too many values to unpack
-        {"a": ("low", "high")},  # non-numeric bound
         {"a": 5.0},  # not a pair at all
     ],
 )
 def test_malformed_bound_pairs_are_rejected_naming_the_joint(bad: dict[str, object]) -> None:
+    """A value that is not a two-element pair is reported on its shape.
+
+    A pair whose *elements* are unusable (non-numeric, non-finite, past the
+    float64 range) is reported per side instead - see
+    :class:`TestANonFiniteBoundIsRefusedAtConstruction`, which names ``min`` or
+    ``max`` rather than the pair as a whole.
+    """
     with pytest.raises(ValueError, match=r"joint_limits\['a'\] must be a \(min, max\) numeric pair"):
         RosTelemetryBase._validate_joint_limits(bad)  # type: ignore[arg-type]
 
@@ -183,3 +190,116 @@ def test_out_of_range_command_is_dropped_whole(caplog: pytest.LogCaptureFixture)
     assert action is None
     # An unbounded joint alongside bounded ones is accepted when all are in range.
     assert base._command_action(_Msg(["a", "c"], [0.5, 99.0]), joint_limits=limits) == {"a": 0.5, "c": 99.0}
+
+
+# --- a non-finite bound the ordering check cannot see ------------------------
+
+
+_NAN = float("nan")
+_INF = float("inf")
+
+
+class TestANonFiniteBoundIsRefusedAtConstruction:
+    """A bound that cannot bound anything refuses the bridge, not every command.
+
+    ``_validate_joint_limits`` exists so a malformed bound surfaces at
+    construction rather than as a silent mid-run rejection. Its ordering check
+    (``low > high``) cannot see a non-finite bound, because every comparison
+    against ``nan`` is ``False`` and ``inf > inf`` is ``False`` too. Such a pair
+    used to be accepted, and then the ``low <= pos <= high`` test in
+    :meth:`~strands_robots.ros_telemetry.RosTelemetryBase._command_action` was
+    ``False`` for every position - so the bridge came up clean and dropped every
+    inbound ``joint_command`` for that joint, which is exactly the failure the
+    validator was written to prevent.
+
+    Each bound now goes through :func:`strands_robots.utils.finite_number_error`,
+    the shared domain for a signed physical quantity, so the wording matches
+    every other caller and cannot drift. The sibling declaration of this same
+    parameter,
+    :class:`~strands_robots.simulation.isaac.delta_eef.IsaacDeltaEEFController`,
+    already refused a non-finite bound for the same reason.
+    """
+
+    def test_the_ordering_check_cannot_see_a_non_finite_bound(self) -> None:
+        """The premise: why ``low > high`` admits a bound that admits nothing."""
+        assert (1.9 > _NAN) is False
+        assert (_NAN > _NAN) is False
+        assert (_INF > _INF) is False
+        assert (-_INF > -_INF) is False
+        # ... and the range test in _command_action is False for every position,
+        # which is how an accepted bound became a rejection of every command.
+        assert (-1.9 <= 0.5 <= _NAN) is False
+        assert (_INF <= 0.5 <= _INF) is False
+
+    @pytest.mark.parametrize("side", ["min", "max"])
+    @pytest.mark.parametrize("bound", [_NAN, _INF, -_INF], ids=["nan", "+inf", "-inf"])
+    def test_a_non_finite_bound_on_either_side_is_refused(self, bound: float, side: str) -> None:
+        bounds = (bound, 1.9) if side == "min" else (-1.9, bound)
+        with pytest.raises(ValueError, match=rf"joint_limits\['shoulder_pan'\]: {side} must be a finite number"):
+            RosTelemetryBase._validate_joint_limits({"shoulder_pan": bounds})
+
+    @pytest.mark.parametrize(
+        "bounds",
+        [(_NAN, _NAN), (_INF, _INF), (-_INF, -_INF)],
+        ids=["nan-nan", "inf-inf", "neginf-neginf"],
+    )
+    def test_a_pair_that_passes_the_ordering_check_is_still_refused(self, bounds: tuple[float, float]) -> None:
+        """These three are the pairs ``low > high`` is blind to on both sides."""
+        assert (bounds[0] > bounds[1]) is False, "fixture no longer passes the ordering check"
+        with pytest.raises(ValueError, match="must be a finite number"):
+            RosTelemetryBase._validate_joint_limits({"j": bounds})
+
+    def test_the_refusal_is_the_shared_domain_verdict_verbatim(self) -> None:
+        """One wording for this domain, so it cannot drift from its other callers."""
+        with pytest.raises(ValueError) as excinfo:
+            RosTelemetryBase._validate_joint_limits({"elbow": (-1.9, _NAN)})
+        assert str(excinfo.value) == finite_number_error(_NAN, "max", "joint_limits['elbow']")
+
+    def test_finiteness_is_decided_before_the_ordering_comparison(self) -> None:
+        """``(inf, -inf)`` trips both checks; the finite reason is the actionable one."""
+        with pytest.raises(ValueError) as excinfo:
+            RosTelemetryBase._validate_joint_limits({"j": (_INF, -_INF)})
+        message = str(excinfo.value)
+        assert "min must be a finite number" in message
+        assert "> max" not in message
+
+    def test_a_bound_past_the_float64_range_answers_rather_than_overflowing(self) -> None:
+        """``float()`` raised ``OverflowError`` here, outside the documented contract."""
+        huge = 10**400
+        with pytest.raises(ValueError, match="min must be within the range of a 64-bit float"):
+            RosTelemetryBase._validate_joint_limits({"j": (huge, 1.0)})
+
+    def test_an_infinite_bound_is_refused_rather_than_read_as_an_open_side(self) -> None:
+        """A half-infinite pair declares protection it does not provide.
+
+        ``(-1.9, inf)`` and ``(-inf, 1.9)`` did admit in-range commands before
+        this rule, so refusing them is a deliberate narrowing rather than a
+        no-op: a ``{motor: (min, max)}`` clamp range is a bounded interval, an
+        unbounded joint is expressed by omitting it (documented: "Joints without
+        a declared bound are not constrained"), and the sibling declaration of
+        this parameter refuses ``inf`` too - one parameter name must not carry
+        two domains.
+        """
+        for bounds in ((-1.9, _INF), (-_INF, 1.9), (-_INF, _INF)):
+            with pytest.raises(ValueError, match="must be a finite number"):
+                RosTelemetryBase._validate_joint_limits({"j": bounds})
+
+    def test_a_finite_range_still_admits_and_still_rejects(self) -> None:
+        """The over-reach control: the feature the bounds exist for is untouched."""
+        limits = RosTelemetryBase._validate_joint_limits({"shoulder_pan": (-1.9, 1.9)})
+        assert limits == {"shoulder_pan": (-1.9, 1.9)}
+        base = RosTelemetryBase()
+        assert base._command_action(_Msg(["shoulder_pan"], [0.5]), joint_limits=limits) == {"shoulder_pan": 0.5}
+        assert base._command_action(_Msg(["shoulder_pan"], [2.5]), joint_limits=limits) is None
+        # A degenerate single-point range is still a range: it admits its own value.
+        single = RosTelemetryBase._validate_joint_limits({"j": (1.9, 1.9)})
+        assert base._command_action(_Msg(["j"], [1.9]), joint_limits=single) == {"j": 1.9}
+
+    def test_both_hardware_bridges_inherit_the_validated_surface(self) -> None:
+        """One validator covers both transports, so neither can drift."""
+        from strands_robots.hardware_ros_bridge import HardwareRosBridge
+        from strands_robots.hardware_rtps_bridge import HardwareRtpsBridge
+
+        for bridge in (HardwareRosBridge, HardwareRtpsBridge):
+            assert issubclass(bridge, RosTelemetryBase)
+            assert bridge._validate_joint_limits is RosTelemetryBase._validate_joint_limits

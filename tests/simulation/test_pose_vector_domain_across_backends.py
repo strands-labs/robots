@@ -385,11 +385,28 @@ class TestIsaacAddObject:
         assert "'orientation'" in result["content"][0]["text"]
 
     def test_a_string_position_is_no_longer_read_per_character(self):
-        """``list("abc")`` produced the 3-"component" position ``['a','b','c']``."""
+        """``list("abc")`` produced the 3-"component" position ``['a','b','c']``.
+
+        This asserted ``"must be numbers"``, which was the ELEMENT read's verdict
+        and so held only for a string whose length happened to equal the component
+        count: ``"abc"`` reached that read, while ``"cube"`` was refused one gate
+        earlier as a wrong-length *vector*. A string is now refused on its type
+        before its length is consulted, so the property this test is named for -
+        the characters are never read as components - is checked on the property
+        itself rather than on whichever downstream guard the length routed it to.
+        """
         stub = _isaac_stub()
-        result = IsaacSimulation.add_object(stub, "crate", position="abc")
-        assert result["status"] == "error"
-        assert "must be numbers" in result["content"][0]["text"]
+        for text in ("abc", "cube", "0.1,0.2,0.3"):
+            result = IsaacSimulation.add_object(stub, "crate", position=text)
+            assert result["status"] == "error", (text, result)
+            message = result["content"][0]["text"]
+            assert "'position'" in message
+            assert "str" in message
+            # No character of the string may appear as a component, and no count of
+            # them as a component count.
+            assert "-element vector" not in message
+            assert "must be numbers" not in message
+            assert stub._objects == {}
 
     def test_a_numpy_pose_is_accepted_and_echoed_as_plain_floats(self):
         stub = _isaac_stub()

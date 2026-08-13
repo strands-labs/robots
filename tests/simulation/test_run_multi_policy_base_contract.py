@@ -9,7 +9,7 @@ Promoting ``run_multi_policy`` from a MuJoCo-only method to the
   error naming its own class - never ``AttributeError`` (there was no
   contract), never a silent per-robot fallback (which would interleave
   recording frames and break the merged-frame contract the docstring
-  documents). Isaac and Newton inherit this today; MuJoCo overrides it.
+  documents). Newton inherits this today; MuJoCo and Isaac override it.
 
 * **The validation/normalization is shared, not duplicated.** The
   backend-independent first phase of the MuJoCo loop - empty-``policies``
@@ -54,7 +54,7 @@ def _text(result: dict[str, Any]) -> str:
 class TestTheBaseDefaultRefuses:
     """A backend without the synchronized loop says so in the tool envelope."""
 
-    @pytest.mark.parametrize("engine_cls", [IsaacSimulation, NewtonSimEngine])
+    @pytest.mark.parametrize("engine_cls", [NewtonSimEngine])
     def test_a_backend_without_an_override_returns_the_structured_error(self, engine_cls: type[SimEngine]) -> None:
         """``__new__`` skeleton: the refusal must precede any engine state."""
         engine = engine_cls.__new__(engine_cls)
@@ -70,6 +70,22 @@ class TestTheBaseDefaultRefuses:
         text = _text(engine.run_multi_policy(policies={"alpha": MockPolicy()}))
         assert text.startswith("run_multi_policy: NewtonSimEngine does not implement")
         assert not text.startswith("run_multi_policy: SimEngine ")
+
+    def test_isaac_overrides_the_default(self) -> None:
+        """The Isaac synchronized loop (#2158) must not fall through to the refusal."""
+        assert IsaacSimulation.run_multi_policy is not SimEngine.run_multi_policy
+
+    def test_isaac_signature_extends_the_base_contract(self) -> None:
+        """Isaac keeps the base parameters (names, order, defaults) and adds only
+        the keyword-only ``reset_between`` (its #1895 forward-compat guard)."""
+        base = inspect.signature(SimEngine.run_multi_policy).parameters
+        override = inspect.signature(IsaacSimulation.run_multi_policy).parameters
+        assert list(override)[: len(base)] == list(base)
+        assert {n: p.default for n, p in base.items()} == {n: override[n].default for n in base}
+        extras = {n: p for n, p in override.items() if n not in base}
+        assert list(extras) == ["reset_between"]
+        assert extras["reset_between"].kind is inspect.Parameter.KEYWORD_ONLY
+        assert extras["reset_between"].default is False
 
     def test_mujoco_overrides_the_default(self) -> None:
         """The reference implementation must not fall through to the refusal."""
