@@ -624,7 +624,7 @@ class IsaacSimulation(IsaacMotionPrimitivesMixin, IsaacRecordingMixin, SimEngine
     LeRobotDataset recording (``start_recording`` / ``save_episode`` /
     ``stop_recording`` / ``stream_dataset``) comes from
     :class:`~strands_robots.simulation.isaac.recording.IsaacRecordingMixin`,
-    and the joint-space motion primitives (``set_gripper`` /
+    and the motion primitives (``move_to`` / ``set_gripper`` /
     ``rotate_wrist``) from
     :class:`~strands_robots.simulation.isaac.motion_primitives.IsaacMotionPrimitivesMixin`,
     matching the MuJoCo and Newton backends.
@@ -6671,9 +6671,15 @@ class IsaacSimulation(IsaacMotionPrimitivesMixin, IsaacRecordingMixin, SimEngine
                     "# raw per-camera MP4 capture (no lerobot dependency)"
                 ),
                 "stop_cameras_recording": "() -> dict  # finalize the raw MP4 capture",
-                # Joint-space motion primitives (GH #2154, Isaac half of the
-                # GH #1645 vocabulary; shared contract in
-                # strands_robots.simulation.motion_primitives_base).
+                # Motion primitives (GH #2154 joint-space pair + GH #2155
+                # move_to, Isaac half of the GH #1645 vocabulary; shared
+                # contract in strands_robots.simulation.motion_primitives_base).
+                "move_to": (
+                    "(robot_name=None, position=[x,y,z], orientation=None, tol=0.01, "
+                    "max_steps=200) -> dict  # IK-solve (shared mink bridge on the "
+                    "registry MJCF) then servo the end-effector to a world-frame "
+                    "Cartesian target; position-only when orientation is omitted"
+                ),
                 "set_gripper": (
                     "(robot_name=None, state='open'|'close', steps=12) -> dict  # "
                     "drive the gripper joint(s) to the open/close set-point "

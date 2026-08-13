@@ -652,6 +652,7 @@ _KNOWN_PLACEMENT_METHODS = {
     ("isaac", "add_object"),
     ("isaac", "add_robot"),
     ("isaac", "move_object"),
+    ("isaac", "move_to"),
     ("isaac", "set_robot_pose"),
 }
 
