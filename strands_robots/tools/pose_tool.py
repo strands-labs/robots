@@ -308,6 +308,14 @@ def _joint_delta_error(action: str, motor_name: str | None, delta: Any) -> str |
     remains the last resort for a target computed from a live position reading
     rather than supplied by the caller.
 
+    A motor absent from :data:`_DEFAULT_MOTOR_CONFIGS` has no travel to bound a
+    displacement against, so this domain defers exactly as
+    :func:`_joint_target_error` does. What it defers to is the action itself:
+    ``incremental_move`` needs a current position before it can compute anything,
+    and neither ``read_motor_position`` nor ``move_motor`` can address a motor
+    absent from that table, so the move is refused before any ``Goal_Position``
+    is written.
+
     Args:
         action: The requested action, used as the message prefix.
         motor_name: The motor the displacement is for.

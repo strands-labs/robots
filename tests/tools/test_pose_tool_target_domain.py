@@ -21,6 +21,12 @@ conversion instead of only asserting on them:
   ``"Moved shoulder_pan to nan deg"`` for a move to +180. That is the property
   ``TestTheBusIsNotTouched`` pins: a refused target produces no write at all.
 
+The two deferrals on the ``delta`` path are pinned here as well, because each is
+only sound if the thing it defers TO refuses. An unknown motor has no travel to
+bound a displacement against, and ``incremental_move``'s own position read is
+what refuses it; a displacement *inside* the travel can still compute an absolute
+target outside the range, and ``degrees_to_position``'s clamp is what bounds that.
+
 The domain itself is delegated to :func:`~strands_robots.utils.finite_number_error`
 so an off-type or non-finite target is reported in the words every other surface
 uses; only the per-joint bounds are decided in this module, because they are a
@@ -40,15 +46,20 @@ import math
 from typing import Any
 
 import pytest
+import serial
 
 from strands_robots.tools.pose_tool import (
     _DEFAULT_MOTOR_CONFIGS,
     _TARGET_OPTION_BY_ACTION,
     MotorController,
+    _joint_delta_error,
+    _joint_target_error,
     _pose_target_error,
     pose_tool,
 )
 from strands_robots.utils import finite_number_error
+
+from .conftest import FakeSerial
 
 _PORT = "/dev/fake-pose-target"
 
@@ -329,10 +340,12 @@ class TestNeighbouringTargetProducersStayOutOfScope:
       carries ``safety_bounds``;
     * ``reset_to_home`` supplies its own literal targets, which are in range.
 
-    ``degrees_to_position`` therefore keeps its clamp: it is unreachable from
-    ``move_motor`` / ``move_multiple`` / ``incremental_move`` now, and removing
-    it would turn those other two paths into raises, which is a separate
-    concern.
+    ``degrees_to_position`` therefore keeps its clamp. It is unreachable from
+    ``move_motor`` / ``move_multiple``, whose targets are absolute and are held
+    to the joint's endpoints - but NOT from ``incremental_move``, whose delta is
+    held to the full travel instead, so a displacement inside that travel can
+    still compute an absolute target outside the range.
+    ``TestTheComputedTargetDeferralHolds`` measures that path.
     """
 
     def test_the_clamp_is_still_present_for_the_paths_that_rely_on_it(self):
@@ -355,3 +368,140 @@ class TestNeighbouringTargetProducersStayOutOfScope:
             _pose_target_error("move_motor", motor_name="no_such_joint", position=math.nan, delta=None, positions=None)
             is not None
         )
+
+
+def _position_packet(raw: int) -> bytes:
+    """A Feetech read response encoding ``raw`` at bytes 5/6."""
+    return bytes([0xFF, 0xFF, 0x01, 0x04, 0x00, raw & 0xFF, (raw >> 8) & 0xFF, 0, 0, 0])
+
+
+# A joint parked near the upper end of its travel, and a displacement inside the
+# full span but *larger than either endpoint*. That is the value only the travel
+# rule accepts, so it distinguishes this domain from one written against the
+# endpoints; together they also compute an absolute target outside the range,
+# which is the case the delta domain deliberately does not bound.
+_NEAR_UPPER_RAW = 3980
+_INSIDE_TRAVEL_DELTA = 300
+
+
+class _ReadingSerial(FakeSerial):
+    """A ``FakeSerial`` that always answers a read with a decodable position.
+
+    ``incremental_move`` reads the current position before commanding anything,
+    so a source that never answers refuses every motor - configured or not - and
+    an assertion that an unknown motor reached no servo would hold for the wrong
+    reason.
+    """
+
+    def read(self, n: int = 1) -> bytes:
+        return _position_packet(_NEAR_UPPER_RAW)
+
+
+@pytest.fixture
+def reading_serial(monkeypatch: pytest.MonkeyPatch) -> list[_ReadingSerial]:
+    """Patch ``serial.Serial`` with an always-answering position source."""
+    instances: list[_ReadingSerial] = []
+
+    def _ctor(port: str, baudrate: int, timeout: float = 1.0) -> _ReadingSerial:
+        fs = _ReadingSerial(port, baudrate, timeout)
+        instances.append(fs)
+        return fs
+
+    monkeypatch.setattr(serial, "Serial", _ctor)
+    return instances
+
+
+def _goal_positions(instances: list[_ReadingSerial]) -> list[int]:
+    """Every ``Goal_Position`` value that reached the bus, decoded from the packets.
+
+    A goal write is ``INST_WRITE`` (``0x03``) whose first parameter is the
+    ``Goal_Position`` address (``0x2A``), with the value little-endian after it.
+    Reads share the bus, so the payload is what distinguishes a command from a
+    query.
+
+    Args:
+        instances: The recording serial stand-ins the fixture handed out.
+
+    Returns:
+        The commanded goal positions, in the order they were written.
+    """
+    goals: list[int] = []
+    for fake in instances:
+        for packet in fake.writes:
+            if len(packet) >= 9 and packet[4] == 0x03 and packet[5] == 0x2A:
+                goals.append(packet[6] | (packet[7] << 8))
+    return goals
+
+
+class TestTheUnknownMotorDeferralHolds:
+    """A displacement for a motor with no configured travel, and what refuses it.
+
+    :func:`_joint_delta_error` returns ``None`` for a motor absent from
+    ``_DEFAULT_MOTOR_CONFIGS``: there is no travel to bound a displacement
+    against, so it has nothing to say and defers - exactly as its sibling
+    :func:`_joint_target_error` does for an absolute target.
+
+    A deferral is only sound if the thing it defers TO refuses, and that half
+    was unasserted. The branch itself was unexecuted by the whole suite, so a
+    change making an unconfigured motor commandable through the delta path would
+    have left every test green.
+    """
+
+    def test_an_unknown_motor_has_no_travel_to_bound_the_delta_against(self):
+        """The domain defers rather than inventing a bound it cannot know."""
+        assert _joint_delta_error("incremental_move", "no_such_joint", 5000) is None
+
+    def test_both_helpers_defer_for_the_same_absent_configuration(self):
+        """Whatever the domain does here it does for the absolute target too."""
+        assert _joint_target_error("move_motor", "position", "no_such_joint", 5000) is None
+        assert _joint_delta_error("incremental_move", "no_such_joint", 5000) is None
+
+    def test_finiteness_still_applies_without_a_configured_range(self):
+        """Only the per-joint bound needs a configuration; the shared domain does not."""
+        assert _joint_delta_error("incremental_move", "no_such_joint", math.nan) is not None
+
+    def test_the_action_refuses_the_unknown_motor_without_commanding_it(self, reading_serial, cwd_tmp):
+        """The deferral's target: a read that cannot address an unconfigured motor."""
+        result = _call(action="incremental_move", motor_name="no_such_joint", delta=5000, port=_PORT)
+        assert result["status"] == "error"
+        assert "no_such_joint" in _texts(result)
+        assert _goal_positions(reading_serial) == []
+
+    def test_a_configured_motor_takes_the_same_call_to_the_servo(self, reading_serial, cwd_tmp):
+        """The refusal above is about the motor, not about the reading source."""
+        result = _call(action="incremental_move", motor_name=_JOINT, delta=-90, port=_PORT)
+        assert result["status"] == "success"
+        assert _goal_positions(reading_serial) != []
+
+
+class TestTheComputedTargetDeferralHolds:
+    """A displacement inside the travel can still compute a target outside the range.
+
+    The delta is bounded by the joint's *full travel* rather than by its
+    endpoints, because a displacement is relative and the endpoints are not. So
+    ``current + delta`` can leave the configured range for a delta this domain
+    accepts, and ``degrees_to_position``'s clamp is what bounds it - making
+    ``incremental_move`` the one caller-driven path from which that clamp is
+    still reachable.
+    """
+
+    def test_a_displacement_inside_the_full_travel_is_accepted(self):
+        """The premise: this delta is one the domain has no reason to refuse."""
+        span = _JOINT_RANGE[1] - _JOINT_RANGE[0]
+        assert abs(_INSIDE_TRAVEL_DELTA) < span
+        # And larger than either endpoint, so a domain written against those
+        # would refuse it: this is what makes the travel rule observable.
+        assert abs(_INSIDE_TRAVEL_DELTA) > _JOINT_RANGE[1]
+        assert _joint_delta_error("incremental_move", _JOINT, _INSIDE_TRAVEL_DELTA) is None
+
+    def test_the_computed_absolute_target_leaves_the_configured_range(self):
+        """And the premise for the clamp: the sum is outside the endpoints."""
+        start = MotorController(_PORT).position_to_degrees(_JOINT, _NEAR_UPPER_RAW)
+        assert start + _INSIDE_TRAVEL_DELTA > _JOINT_RANGE[1]
+
+    def test_the_clamp_bounds_it_while_the_caller_is_told_it_moved(self, reading_serial, cwd_tmp):
+        """So the end stop is commanded, and the text still echoes the request."""
+        result = _call(action="incremental_move", motor_name=_JOINT, delta=_INSIDE_TRAVEL_DELTA, port=_PORT)
+        assert result["status"] == "success"
+        assert _goal_positions(reading_serial) == [_goal_position(_JOINT, _JOINT_RANGE[1])]
+        assert f"+{_INSIDE_TRAVEL_DELTA}" in _texts(result)

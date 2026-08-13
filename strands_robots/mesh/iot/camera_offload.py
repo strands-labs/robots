@@ -19,10 +19,11 @@ JPEG bytes in MQTT we:
 3. Subscribers GET the frame from the presigned URL directly - no MQTT
    payload size pressure.
 
-The Zenoh path (LAN multicast) keeps publishing inline JPEG frames on
-``strands/{peer_id}/camera/{cam}`` as before. Visual-servo control loops
-in the same process / LAN can keep polling those without touching the
-cloud. This is exactly the §4.2 design from the original research doc.
+The Zenoh path (LAN peers, gossip-scouted by default) keeps publishing
+inline JPEG frames on ``strands/{peer_id}/camera/{cam}`` as before.
+Visual-servo control loops in the same process / LAN can keep polling
+those without touching the cloud. This is exactly the §4.2 design from
+the original research doc.
 
 Hooking in
 ----------

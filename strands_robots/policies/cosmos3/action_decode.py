@@ -63,8 +63,11 @@ def load_action_stats(domain_name: str) -> dict[str, np.ndarray]:
             f"No bundled Cosmos 3 action stats for domain {domain_name!r}. "
             f"Bundled domains: {available}. The de-normalization quantiles "
             "(q01/q99) are required to turn the model's [-1, 1] action into "
-            "physical EE-pose deltas; pass stats explicitly or use a bundled "
-            "embodiment."
+            "physical EE-pose deltas. Either use a bundled embodiment, or pass "
+            "this domain's own quantiles to decode_cosmos_chunk_to_targets as "
+            f"stats=... together with stats_domain={domain_name!r} - another "
+            "domain's stats are not a substitute even when the action width "
+            "matches."
         )
     with path.open("r") as f:
         raw = json.load(f)

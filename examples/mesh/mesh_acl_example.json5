@@ -125,6 +125,43 @@
       permission: "allow",
       key_exprs: ["**"],
     },
+    {
+      // Dashboard subscribe is OBSERVE-ONLY: presence, health, safety
+      // events, camera frames, state and rollout streams - everything a
+      // read-only fleet dashboard (examples/fleet/dashboard.py, epic
+      // #2179) renders. It deliberately does NOT include `**/cmd`,
+      // `**/broadcast` or `**/response/**`: a dashboard has no
+      // operational need to observe the command/RPC plane, and this
+      // role must never be a quiet path to it.
+      id: "dashboard_subscribe_observe",
+      messages: ["declare_subscriber"],
+      flows: ["egress"],
+      permission: "allow",
+      key_exprs: [
+        "**/presence",
+        "**/health",
+        "**/safety/**",
+        "**/camera/**",
+        "**/state/**",
+        "**/stream",
+        "**/pose",
+      ],
+    },
+    {
+      // The dashboard's ONLY publish grant: announcing its own presence
+      // so operators can see it on the mesh. Zenoh 1.x key_exprs cannot
+      // interpolate the peer's cert CN (see the header), so this is the
+      // presence topic CLASS - the role still cannot publish commands,
+      // broadcasts or safety traffic, which is the boundary that makes
+      // it read-only where it matters.
+      id: "dashboard_publish_presence",
+      messages: ["put"],
+      flows: ["ingress"],
+      permission: "allow",
+      key_exprs: [
+        "**/presence",
+      ],
+    },
   ],
 
   subjects: [
@@ -145,6 +182,14 @@
         // Add more operators...
       ],
     },
+    {
+      id: "dashboard_peer",
+      // Read-only observers: fleet dashboards, wall displays, replay
+      // recorders. ENUMERATE each one's exact cert CN.
+      cert_common_names: [
+        "dashboard-1",
+      ],
+    },
   ],
 
   policies: [
@@ -157,6 +202,13 @@
       // Operators: publish commands + broad observe (intentional).
       rules: ["operator_publish_cmds", "operator_subscribe_all"],
       subjects: ["operator_peer"],
+    },
+    {
+      // Dashboards: observe-only. May watch the fleet and announce their
+      // own presence; may NOT publish commands, broadcasts or safety
+      // traffic - a compromised dashboard cert can watch, not actuate.
+      rules: ["dashboard_subscribe_observe", "dashboard_publish_presence"],
+      subjects: ["dashboard_peer"],
     },
   ],
 }

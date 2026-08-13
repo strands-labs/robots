@@ -56,11 +56,38 @@ on:
     # name, so an edit starts no run in that group and cancels nothing. Both
     # halves of that premise are pinned there, so this exemption cannot outlive
     # its justification.
+    #
+    # That premise is checked against the wrong concurrency group, and #2216
+    # measured what it costs. It asks whether an edit can cancel the *required*
+    # check, which it cannot. It never asks whether an edit can cancel *this*
+    # workflow's own in-flight run, which it can: that run shares a workflow name
+    # and a pull request number with the one already going, so a group keyed on
+    # either holds both. Being exempt is what makes it reachable -- an exempt
+    # workflow is the only kind that can be started twice on one head sha -- so
+    # the cancelled context lands on the live head instead of a superseded one.
+    # Measured on #1722 and #2205: each head carried this check as `SUCCESS` and
+    # `CANCELLED` together, every other context `SUCCESS`, and #2205's roll-up
+    # read SUCCESS, then FAILURE, then SUCCESS across three reads of one
+    # unchanged sha. That is why this file now carries no `concurrency` block.
     types: [opened, synchronize, reopened, edited]
 
-concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
+# No `concurrency` block, deliberately, and this is the one workflow here for
+# which that is the right spelling (#2216).
+#
+# Cancelling is a saving only when a newer head supersedes an older run, and in
+# that case the cancelled context attaches to a sha that is no longer the head,
+# where nobody reads it. Every other `pull_request` workflow in this repository
+# takes GitHub's default activity types, so a superseded head is the only case any
+# of them can produce and `cancel-in-progress: true` is correct in all of them.
+# This one also subscribes to `edited`, so two of its runs can share one head, and
+# cancelling either leaves a red context on a pull request that satisfies the
+# check -- unclearable without a push, which is the one thing a self-clearing
+# report must not require.
+#
+# What is given up is seconds of runner time: a checkout, a `setup-python`, and
+# one standard-library script with nothing to install. Overlapping runs are
+# idempotent, because neither reads the tree and neither is handed the title (see
+# the step below), so both resolve the same verdict from the API.
 
 permissions:
   contents: read
@@ -100,11 +127,22 @@ jobs:
 
       # Standard library only, so there is nothing to install.
       #
-      # The title goes through the environment rather than into the command line,
-      # because it is author-controlled text and `${{ }}` interpolation of it
-      # would be a shell-injection seam in a job that holds a token. The script
-      # reads PR_TITLE itself; it also falls back to the API's copy of the title,
-      # so a workflow that stopped setting it would still check the right string.
+      # The title is deliberately not passed in, and that is load-bearing for the
+      # absent `concurrency` block above rather than a tidy-up. `main()` resolves
+      # `title = args.title or api_title`, so a `PR_TITLE` taken from the event
+      # payload outranks `resolve_pull_request`'s copy for the whole life of that
+      # run. Once runs are no longer cancelled, a run started by `synchronize` can
+      # still be going when an `edited` run passes, and with the payload's title it
+      # would report the pre-edit verdict afterwards -- stranding a red context on
+      # a head that had already cleared, which is the same harm #2216 removed by
+      # one route arriving by another. Reading the title from the API is what makes
+      # two runs on one head agree.
+      #
+      # It also retires an injection seam instead of documenting one. The payload
+      # title is author-controlled text, and the reason it travelled through the
+      # environment at all was that `${{ }}` interpolation of it into a shell in a
+      # job holding a token is a risk. Not interpolating it anywhere is stronger
+      # than interpolating it carefully.
       #
       # The absence guard is the residual case #1791 could not cover. Checking out
       # the base fixes a head that predates the script; it cannot fix a *base*
@@ -129,7 +167,6 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-          PR_TITLE: ${{ github.event.pull_request.title }}
         run: |
           if [ ! -f scripts/check_closing_reference.py ]; then
             echo "::notice title=No closing-reference rule on this base::The base branch carries no scripts/check_closing_reference.py, so there is no rule here to enforce."

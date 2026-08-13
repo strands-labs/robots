@@ -18,6 +18,17 @@ Or via the top-level alias::
     from strands_robots.simulation import Simulation  # → MuJoCoSimEngine
 """
 
+from typing import TYPE_CHECKING
+
+# TYPE_CHECKING-only eager imports so a type-checker resolves the names below
+# to the concrete class instead of the dynamic __getattr__ return type, and so
+# every __all__ entry is statically defined. PEP 562.
+if TYPE_CHECKING:
+    from strands_robots.simulation.mujoco.simulation import MuJoCoSimEngine
+    from strands_robots.simulation.mujoco.simulation import (
+        MuJoCoSimEngine as MuJoCoSimulation,
+    )
+
 __all__ = [
     "MuJoCoSimEngine",
     "MuJoCoSimulation",  # backward-compat alias

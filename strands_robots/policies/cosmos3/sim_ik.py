@@ -99,6 +99,7 @@ def decode_cosmos_chunk_to_targets(
     q_init: np.ndarray,
     *,
     stats: dict[str, np.ndarray] | None = None,
+    stats_domain: str | None = None,
     reanchor: bool = True,
 ) -> dict[str, Any]:
     """Turn a Cosmos 3 raw action chunk into MuJoCo joint targets via IK.
@@ -138,6 +139,14 @@ def decode_cosmos_chunk_to_targets(
             kinematics and each IK solve warm-starts from the previous step.
         stats: Optional explicit ``{"q01", "q99"}`` stats override. When ``None``
             the bundled per-domain stats are loaded for ``embodiment.domain_name``.
+            When supplied, ``stats_domain`` must name the domain they were
+            measured on: several Cosmos 3 domains share an action width
+            (``umi``, ``droid_lerobot`` and ``bridge_orig_lerobot`` are all 10
+            columns), so the width check in
+            :func:`~strands_robots.policies.cosmos3.action_decode.denormalize_quantile`
+            cannot tell one domain's quantiles from another's.
+        stats_domain: Domain the explicit ``stats`` describe. Required whenever
+            ``stats`` is supplied and must equal ``embodiment.domain_name``.
         reanchor: When ``True`` (default) re-anchor each decoded pose delta on
             the arm's achieved EE pose (closed loop), bounding tracking error.
             When ``False`` use the legacy open-loop decode (targets integrated
@@ -152,7 +161,11 @@ def decode_cosmos_chunk_to_targets(
 
     Raises:
         ValueError: If ``embodiment.normalization`` is not ``"quantile"`` (the
-            only method the current Cosmos 3 domains and bundled stats use).
+            only method the current Cosmos 3 domains and bundled stats use), if
+            ``stats`` is supplied without ``stats_domain``, or if
+            ``stats_domain`` names a domain other than
+            ``embodiment.domain_name`` - de-normalizing with another domain's
+            quantiles silently rescales every commanded pose delta.
     """
     from .action_decode import (
         decode_pose_delta,
@@ -172,6 +185,24 @@ def decode_cosmos_chunk_to_targets(
 
     if stats is None:
         stats = load_action_stats(embodiment.domain_name)
+    elif stats_domain is None:
+        raise ValueError(
+            "decode_cosmos_chunk_to_targets: explicit stats= must declare the domain "
+            "they were measured on via stats_domain=. Cosmos 3 domains share action "
+            "widths (umi, droid_lerobot and bridge_orig_lerobot are all 10 columns), "
+            "so a width check cannot tell one domain's quantiles from another's, and "
+            f"de-normalizing a {embodiment.domain_name!r} action with the wrong "
+            "domain's quantiles silently rescales every commanded pose delta. Pass "
+            f"stats_domain={embodiment.domain_name!r}."
+        )
+    elif stats_domain != embodiment.domain_name:
+        raise ValueError(
+            f"decode_cosmos_chunk_to_targets: stats_domain={stats_domain!r} does not "
+            f"describe embodiment {embodiment.name!r} (domain "
+            f"{embodiment.domain_name!r}). Quantile stats are per-domain physical "
+            "ranges, so using another domain's would rescale every commanded pose "
+            "delta while the action width still matches."
+        )
     denorm = denormalize_quantile(action_chunk, stats["q01"], stats["q99"])
 
     # Split off a trailing grasp/gripper column when the layout has one.
