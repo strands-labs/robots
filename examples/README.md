@@ -21,6 +21,7 @@ live at the top level. Everything else is grouped by topic:
 - [`locomotion/`](locomotion/) - G1 locomotion and the VLA-on-G1 record→tune→deploy workflow
 - [`training/`](training/) - from-scratch RL trainers (PPO, FastSAC)
 - [`mesh/`](mesh/) - Zenoh mesh ACL config templates
+- [`fleet/`](fleet/) - fleet orchestration suite: work-order ingress onto capability manifests (epic #2179)
 - [`registry/`](registry/) - robot / hardware catalog discovery
 - [`lerobot/`](lerobot/) - LeRobot hub-to-hardware companion scripts
 - [`ros2/`](ros2/) - ROS 2 bridge demos
@@ -75,6 +76,7 @@ record→train→deploy loop) as Jupyter notebooks - all CPU-only, no hardware o
 | [`vla/cosmos3_sim_rollout.py`](vla/cosmos3_sim_rollout.py) | Cosmos 3 VLA in MuJoCo with WebSocket policy server |
 | [`wbc/wbc_g1_torque_deploy.py`](wbc/wbc_g1_torque_deploy.py) | GR00T-WBC (SONIC) locomotion on the Unitree G1 via the torque-control deploy loop |
 | [`lerobot/hub_to_hardware.py`](lerobot/hub_to_hardware.py) | Full agent-driven pipeline: record, train, deploy |
+| [`fleet/05_work_order_dispatch.py`](fleet/05_work_order_dispatch.py) | Structured work-order ingress (JSONL queue) mapped onto per-site capability manifests: deterministic feasibility filter + NACK, mesh dispatch behind HITL, order_id threaded through the signed audit log. **GPU: No** (`--dry-run` is dependency-free) |
 | [`so101_curobo/`](so101_curobo/) | SO-101 tabletop pick-and-place: cuRobo motion planning + LeRobot dataset capture. Backend-agnostic (`SimEngine`): MuJoCo today, Isaac when `strands-robots[sim-isaac]` is installed. **GPU: Optional** (cuRobo / Isaac) |
 | [`libero/run_mujoco.py`](libero/run_mujoco.py) | LIBERO benchmark eval on the default MuJoCo backend with whole-run MP4 recording. **GPU: Optional** (`--policy mock` is CPU-only; `--policy groot` needs Docker + NVIDIA GPU) |
 | [`libero/run_mujoco_agent.py`](libero/run_mujoco_agent.py) | LIBERO-on-MuJoCo driven by a Strands `Agent` in natural language. **GPU: Optional** (needs LLM API) |

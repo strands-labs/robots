@@ -1,0 +1,4 @@
+{"order_id": "WO-1001", "material": "wafer_lot", "operation": "inspect", "qty": 1, "from": "site-a/litho", "to": "site-a/litho", "due": "2026-08-20T18:00:00Z"}
+{"order_id": "WO-1002", "material": "tote", "operation": "transfer", "qty": 1, "from": "site-b/receiving", "to": "site-b/stock", "due": "2026-08-21T09:00:00Z"}
+{"order_id": "WO-1003", "material": "wafer_lot", "operation": "process", "qty": 1, "from": "site-a/litho", "to": "site-a/etch", "due": "2026-08-22T12:00:00Z"}
+{"order_id": "WO-1004", "material": "tote", "operation": "transfer", "qty": 3, "from": "site-a/stock", "to": "site-a/litho", "due": "2026-08-23T08:00:00Z"}
