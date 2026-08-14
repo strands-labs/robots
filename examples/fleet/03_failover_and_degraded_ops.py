@@ -453,7 +453,7 @@ def _wait_for(predicate: Callable[[], bool], *, timeout_s: float, what: str, pol
     raise RuntimeError(f"timed out after {timeout_s:.0f}s waiting for {what}")
 
 
-def _run_live(n_steps: int) -> tuple[dict[str, Any], dict[str, Any]]:
+def _run_live(n_steps: int) -> tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]]]:
     """Live choreography: sim + mesh, both failure drills, then the re-sync."""
     from strands_robots.mesh import init_mesh
 
@@ -528,17 +528,18 @@ def _run_live(n_steps: int) -> tuple[dict[str, Any], dict[str, Any]]:
                 timeout_s=15.0,
                 what="presence discovery after the orchestrator restart",
             )
-            resync = resync_after_restart(orch_mesh2.peers, read_audit_log(since=run_start - 1.0))
+            records = read_audit_log(since=run_start - 1.0)
+            resync = resync_after_restart(orch_mesh2.peers, records)
         finally:
             orch_mesh2.stop()
         if not any(resync["lockouts"].get(robot) for robot in others):
             raise RuntimeError(f"re-sync did not recover the estop lockout from the audit log: {resync}")
-        return failover_summary, resync
+        return failover_summary, resync, records
     finally:
         cleanup()
 
 
-def _run_dry() -> tuple[dict[str, Any], dict[str, Any]]:
+def _run_dry() -> tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]]]:
     """Dry-run choreography: scripted presence + loopback transport.
 
     Part 1 runs the full failover core. Part 2 runs the re-sync core against
@@ -562,11 +563,9 @@ def _run_dry() -> tuple[dict[str, Any], dict[str, Any]]:
 
     print("\npart 2 - dispatcher restart re-sync (estop drill is live-mode only)")
     peers_now = [fleet.get_peer(robot) for robot in ROBOT_EMBODIMENT]
-    resync = resync_after_restart(
-        [p for p in peers_now if p is not None],
-        read_audit_log(since=run_start - 1.0),
-    )
-    return failover_summary, resync
+    records = read_audit_log(since=run_start - 1.0)
+    resync = resync_after_restart([p for p in peers_now if p is not None], records)
+    return failover_summary, resync, records
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -579,9 +578,9 @@ def main(argv: list[str] | None = None) -> int:
     print(f"fleet: {', '.join(f'{m.robot}@{m.site}' for m in manifests)}")
 
     if args.dry_run:
-        failover_summary, resync = _run_dry()
+        failover_summary, resync, records = _run_dry()
     else:
-        failover_summary, resync = _run_live(args.n_steps)
+        failover_summary, resync, records = _run_live(args.n_steps)
 
     print(f"\nfailover summary: {failover_summary}")
     print("re-sync after restart (presence + audit log):")
@@ -589,7 +588,10 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  lockouts:  {resync['lockouts']} (estop issuer: {resync['estop_issuer']})")
     for task_id, chain in sorted(resync["tasks"].items()):
         print(f"  {task_id}: {' -> '.join(chain)}")
-    integrity = verify_audit_integrity()
+    # Attest the records this run reported on, not the developer's whole audit
+    # log: an unscoped verify_audit_integrity() would count (and fail on) prior
+    # unsigned history that the table above never shows.
+    integrity = verify_audit_integrity(records)
     print(f"audit integrity: ok={integrity['ok']} (signed={integrity['signed']}/{integrity['total']})")
     return 0
 
