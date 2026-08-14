@@ -39,7 +39,6 @@ import ast
 import inspect
 import pathlib
 import threading
-from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import numpy as np
@@ -49,6 +48,7 @@ import strands_robots.hardware_robot as hardware_robot
 from strands_robots.hardware_robot import Robot as HwRobot
 from strands_robots.hardware_robot import RobotTaskState, TaskStatus
 from strands_robots.utils import tcp_port_error
+from tests._daemon_executor import DaemonThreadExecutor
 from tests.test_hardware_control_loop_rate_guard import _FakeArm
 
 # Ports no policy can be built from. ``0`` asks the kernel for an ephemeral port
@@ -111,7 +111,7 @@ def hw() -> Any:
     robot.control_frequency = 50.0
     robot.action_sleep_time = 1.0 / 50.0
     robot._task_state = RobotTaskState()
-    robot._executor = ThreadPoolExecutor(max_workers=1)
+    robot._executor = DaemonThreadExecutor(max_workers=1, thread_name_prefix="test_arm_executor")
     robot._shutdown_event = threading.Event()
     robot._stop_requested = threading.Event()
     robot._task_admission = threading.Lock()

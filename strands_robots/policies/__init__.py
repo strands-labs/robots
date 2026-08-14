@@ -54,6 +54,7 @@ from strands_robots.policies.factory import (
     create_policy,
     list_providers,
     policy_mapping_error,
+    policy_provider_error,
     preflight_policy,
     register_policy,
 )
@@ -76,6 +77,7 @@ __all__ = [
     "CompositePolicy",
     "create_policy",
     "preflight_policy",
+    "policy_provider_error",
     "policy_mapping_error",
     "register_policy",
     "list_providers",

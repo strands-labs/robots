@@ -95,3 +95,26 @@ def test_render_rejects_unsafe_output_path_without_writing(sandbox) -> None:
         assert not (sandbox.parent / "escape.png").exists()
     finally:
         sim.cleanup()
+
+
+@_requires_mujoco
+def test_render_bare_filename_writes_into_the_sandbox(sandbox) -> None:
+    """``output_path="frame.png"`` persists the PNG without naming a directory.
+
+    A bare name is the most natural call an agent makes. It carries no directory
+    intent, so it is anchored to the render sandbox rather than resolved against
+    the process CWD (which, under confinement, could only be refused).
+    """
+    from strands_robots import Robot
+
+    sim = Robot("so101", mesh=False)
+    try:
+        result = sim.render(camera_name="default", width=64, height=48, output_path="frame.png")
+        assert result["status"] == "success", result
+        saved = _json_block(result)["saved_path"]
+        assert saved == str(sandbox / "frame.png")
+        written = sandbox / "frame.png"
+        assert written.is_file(), f"no file at {written}"
+        assert written.read_bytes() == _png_block(result)
+    finally:
+        sim.cleanup()

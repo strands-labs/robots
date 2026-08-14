@@ -26,7 +26,7 @@ import shutil
 import threading
 import time
 from collections.abc import AsyncGenerator, Mapping
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import Executor, Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -530,7 +530,10 @@ class Robot(TeleopMixin, AgentTool):
 
         # Task execution state
         self._task_state = RobotTaskState()
-        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"{tool_name}_executor")
+        # Annotated with the base class rather than the concrete pool: the two
+        # uses below are ``submit`` and ``shutdown``, so a caller substituting a
+        # different Executor is honouring the contract, not evading it.
+        self._executor: Executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"{tool_name}_executor")
         self._shutdown_event = threading.Event()
         # A stop request that arrived for the current task. An Event rather
         # than a task-state field because ``stop_task`` is called from the
@@ -1925,18 +1928,34 @@ class Robot(TeleopMixin, AgentTool):
                 n_steps=n_steps,
             )
 
-        # Use asyncio.run only if no loop is running, otherwise run in existing loop
+        # Probe for a running loop separately from dispatching onto one. An
+        # ``except RuntimeError`` wrapped around both answers failures it cannot
+        # serve: ``stream(action="execute")`` reaches this from a running loop,
+        # so the nested branch below is that surface's live path, and a
+        # ``RuntimeError`` from it (a thread the pool cannot start, an executor
+        # already shut down) used to land in the handler - whose own
+        # ``asyncio.run`` is invalid by construction on exactly that branch. The
+        # caller was told "asyncio.run() cannot be called from a running event
+        # loop" instead of the cause, and the ``task_runner`` coroutine the
+        # handler built was left un-awaited. Only the probe's own
+        # ``RuntimeError`` means "no loop is running", so only it is caught.
         try:
-            # Try to get the current event loop
             asyncio.get_running_loop()
-            # If we're already in an event loop, we need to run in a thread
+        except RuntimeError:
+            on_a_running_loop = False
+        else:
+            on_a_running_loop = True
+
+        if on_a_running_loop:
+            # Already on a loop: ``asyncio.run`` would refuse, so the rollout
+            # gets its own loop on a worker thread. A failure here propagates
+            # with its own cause rather than being retried on this thread.
             import concurrent.futures
 
-            with concurrent.futures.ThreadPoolExecutor() as exec:
-                future = exec.submit(lambda: asyncio.run(task_runner()))
-                future.result()  # Wait for completion
-        except RuntimeError:
-            # No event loop running - safe to create one
+            with concurrent.futures.ThreadPoolExecutor() as pool:
+                pool.submit(lambda: asyncio.run(task_runner())).result()
+        else:
+            # No event loop running - safe to create one.
             asyncio.run(task_runner())
 
         # Return final status

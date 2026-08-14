@@ -41,6 +41,12 @@ __all__ = [
 
 _INSECURE_TRUE = ("true", "1", "yes")
 
+# ``init_device_connect_sync`` bounds the background bring-up: the awaited half
+# constructs a ``DeviceRuntime``, which can block on a broker, so the wrapper
+# must not hang its caller forever. Expiry is a failed bring-up, not a slow one
+# that later succeeds -- the wrapper has already returned by then.
+_INIT_TIMEOUT_S: float = 30.0
+
 
 def resolve_allow_insecure(
     explicit: bool | None = None,
@@ -213,6 +219,14 @@ def init_device_connect_sync(
     The runtime stays alive as long as the process (daemon thread).
 
     Same parameters as :func:`init_device_connect`.
+
+    Raises:
+        Exception: Whatever :func:`init_device_connect` raised on the
+            background thread, re-raised here so a failed bring-up reaches
+            the caller rather than being confined to a thread it cannot see.
+        TimeoutError: If the bring-up does not finish within the wrapper's
+            budget. The runtime is not returned in that case, so the caller
+            is never handed ``None`` in place of a ``DeviceRuntime``.
     """
     loop = asyncio.new_event_loop()
     ready = threading.Event()
@@ -243,10 +257,19 @@ def init_device_connect_sync(
 
     thread = threading.Thread(target=_run, daemon=True, name="device-connect-runtime")
     thread.start()
-    ready.wait(timeout=30.0)
+    started = ready.wait(timeout=_INIT_TIMEOUT_S)
 
+    # The recorded failure first: ``_start``'s ``finally`` sets the event on both
+    # paths, so a bring-up that failed inside the budget arrives with ``started``
+    # true and its own exception, which names the cause better than the budget.
     if error_holder[0] is not None:
         raise error_holder[0]
+    if not started:
+        raise TimeoutError(
+            f"init_device_connect_sync: the Device Connect runtime did not come up "
+            f"within {_INIT_TIMEOUT_S:g}s. The bring-up is still running on its "
+            f"background thread; check that the messaging URL / broker is reachable."
+        )
 
     runtime = runtime_holder[0]
     if runtime is not None:

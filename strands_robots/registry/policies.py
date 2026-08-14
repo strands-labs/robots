@@ -182,6 +182,46 @@ def resolve_policy(policy: str, **extra_kwargs) -> tuple[str, dict[str, Any]]:
     return "lerobot_local", kwargs
 
 
+def _provider_import_error(provider: str, exc: ImportError, extra: str | None) -> ImportError:
+    """Translate a failed provider-module import into an actionable error.
+
+    A policy provider's module may import an optional dependency at import time
+    (e.g. ``lerobot_local`` imports ``torch``). When that dependency is absent
+    the import machinery raises a bare ``ModuleNotFoundError: No module named
+    'torch'`` which names neither the provider the caller asked for nor the way
+    to fix it -- so a caller who asked for one provider is left holding an error
+    about a package they never mentioned.
+
+    Every other provider defers its heavy import and reports the remedy through
+    :func:`~strands_robots.utils.require_optional` /
+    :func:`~strands_robots.utils.require_optionals`, which name the extra that
+    ships the dependency. This is the same report for the providers whose
+    dependency is needed to import the module at all, so the remedy does not
+    depend on WHERE a provider happens to import its dependency.
+
+    Args:
+        provider: Canonical provider name the caller asked for.
+        exc: The ``ImportError`` raised while importing the provider's module.
+        extra: ``pyproject.toml`` extras group that ships the dependency, as
+            declared by the provider's ``extra`` field in ``policies.json``.
+            ``None`` when the provider declares none, in which case the missing
+            module is named without an install command for a specific extra.
+
+    Returns:
+        An ``ImportError`` naming the provider, the missing module and the
+        remedy. The caller should ``raise ... from exc`` to keep the original
+        traceback.
+    """
+    missing = getattr(exc, "name", None) or "an optional dependency"
+    if extra:
+        remedy = f"Install the extra that ships it:\n  uv pip install 'strands-robots[{extra}]'"
+    else:
+        remedy = f"Install {missing!r} (or the strands-robots extra that ships it) and retry."
+    return ImportError(
+        f"Policy provider {provider!r} needs an optional dependency that is not installed:\n  {exc}\n\n{remedy}"
+    )
+
+
 def import_policy_class(provider: str) -> type:
     """Dynamically import and return the Policy class for a provider.
 
@@ -195,8 +235,12 @@ def import_policy_class(provider: str) -> type:
         The Policy subclass.
 
     Raises:
-        ValueError: If provider not found.
-        ImportError: If the module can't be imported.
+        ValueError: If the provider does not exist.
+        ImportError: If the provider exists but its module cannot be imported,
+            naming the provider, the missing module and the remedy (see
+            :func:`_provider_import_error`). A provider whose module is present
+            but whose optional dependency is missing reports that rather than
+            being misreported as an unknown provider.
     """
     config = get_policy_provider(provider)
     if config:
@@ -206,7 +250,14 @@ def import_policy_class(provider: str) -> type:
         canonical = alias_map.get(provider, provider)
         config = reg.get("providers", {}).get(canonical, config)
 
-        mod = importlib.import_module(config["module"])
+        try:
+            mod = importlib.import_module(config["module"])
+        except ImportError as exc:
+            # A provider whose module needs an optional dependency at import
+            # time (lerobot_local imports torch) otherwise raises a bare
+            # "No module named 'torch'" naming neither this provider nor the
+            # remedy - the dead end _provider_import_error exists to close.
+            raise _provider_import_error(canonical, exc, config.get("extra")) from exc
         return getattr(mod, config["class"])
 
     # Auto-discovery fallback
@@ -221,8 +272,13 @@ def import_policy_class(provider: str) -> type:
             attr = getattr(mod, attr_name)
             if isinstance(attr, type) and issubclass(attr, Policy) and attr is not Policy:
                 return attr
-    except ImportError:
-        pass
+    except ImportError as exc:
+        # Distinguish "this provider does not exist" from "it exists but its
+        # optional dependency is missing". Only the former is an unknown
+        # provider; reporting the latter that way sends the caller to check a
+        # name that was correct.
+        if getattr(exc, "name", None) != f"strands_robots.policies.{provider}":
+            raise _provider_import_error(provider, exc, None) from exc
 
     raise ValueError(f"Unknown policy provider: '{provider}'. Available: {list_policy_providers()}")
 

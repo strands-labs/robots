@@ -59,7 +59,6 @@ import asyncio
 import logging
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import pytest
@@ -67,6 +66,7 @@ from lerobot.utils.errors import DeviceAlreadyConnectedError, DeviceNotConnected
 
 from strands_robots.hardware_robot import Robot as HwRobot
 from strands_robots.hardware_robot import RobotTaskState
+from tests._daemon_executor import DaemonThreadExecutor
 
 #: Upper bound on any wait, so a broken contract fails instead of hanging.
 DEADLINE = 10.0
@@ -233,7 +233,7 @@ def _make_robot(driver: Any) -> HwRobot:
     hw.control_frequency = 1000.0
     hw.action_sleep_time = 0.001
     hw._task_state = RobotTaskState()
-    hw._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="test_arm_executor")
+    hw._executor = DaemonThreadExecutor(max_workers=1, thread_name_prefix="test_arm_executor")
     hw._shutdown_event = threading.Event()
     hw._stop_requested = threading.Event()
     hw.mesh = None
