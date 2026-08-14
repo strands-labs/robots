@@ -449,10 +449,10 @@ def process_queue(
     return summary
 
 
-def reconstruct_audit_trail(since: float) -> dict[str, list[str]]:
+def reconstruct_audit_trail(records: list[dict[str, Any]]) -> dict[str, list[str]]:
     """Group this run's dispatcher audit records into per-order event chains."""
     chains: dict[str, list[str]] = {}
-    for record in read_audit_log(since=since):
+    for record in records:
         payload = record.get("payload")
         if record.get("peer_id") != DISPATCHER_ID or not isinstance(payload, dict):
             continue
@@ -587,9 +587,13 @@ def main(argv: list[str] | None = None) -> int:
     print(f"events queue: {args.events}")
 
     print("\naudit reconstruction (order -> dispatch -> action -> completion):")
-    for order_ref, chain in sorted(reconstruct_audit_trail(since=run_start - 1.0).items()):
+    # One scoped read feeds both the trail and the verdict, so the integrity
+    # line attests exactly the records shown - never the developer's whole
+    # ~/.strands_robots/mesh_audit.jsonl, which is mostly other runs.
+    records = read_audit_log(since=run_start - 1.0)
+    for order_ref, chain in sorted(reconstruct_audit_trail(records).items()):
         print(f"  {order_ref}: {' -> '.join(chain)}")
-    integrity = verify_audit_integrity()
+    integrity = verify_audit_integrity(records)
     print(f"audit integrity: ok={integrity['ok']} (signed={integrity['signed']}/{integrity['total']})")
     return 0
 
