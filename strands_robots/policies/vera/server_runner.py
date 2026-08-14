@@ -1,7 +1,8 @@
 """Managed VERA policy-server subprocess.
 
 Launches ``python -m vera.server.start_vera_server`` with **list args** (never a
-shell string - see PR #621 feedback), health-checks the websocket before
+shell string, so no argument is ever word-split or glob-expanded by a shell),
+health-checks the websocket before
 returning, streams the server's stdout/stderr to the logger, and shuts the
 process down cleanly on :meth:`stop`.
 

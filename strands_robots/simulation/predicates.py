@@ -703,7 +703,7 @@ def _body_on(
     ``get_contacts`` (e.g. test stubs, custom engines), the contact
     check is skipped and only the geometric check fires. This
     preserves backwards compatibility - engines without contact
-    support get the pre-#171 behaviour. LIBERO benchmarks running on
+    support get the geometric-only verdict. LIBERO benchmarks running on
     ``MuJoCoSimEngine`` (which implements ``get_contacts``) get the
     strict upstream-matching semantics.
 
@@ -725,7 +725,7 @@ def _body_on(
         if require_contact:
             in_contact = _body_contact(sim, body_a, body_b)
             # ``None`` ⇒ engine doesn't support contacts; fall back to
-            # geometric-only verdict (preserves pre-#171 behaviour).
+            # geometric-only verdict.
             # ``False`` ⇒ engine reports no contact ⇒ predicate False.
             # ``True`` ⇒ contact confirmed ⇒ predicate True (combined
             # with the passing geometric check above).
