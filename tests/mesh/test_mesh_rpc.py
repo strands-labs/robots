@@ -642,3 +642,97 @@ class TestCommandDispatchErrorAudit:
         payload = next(d for k, d in captured_puts if k == "strands/alice/response/me/t4")
         assert payload["type"] == "error"
         assert payload["error"] == "dispatch error"
+
+
+def _spy_exec(m: Mesh) -> tuple[list[dict[str, Any]], list[threading.Thread], threading.Event]:
+    """Wrap ``_exec_cmd`` so a dispatch is observable without replacing it.
+
+    The spy records the payload it was handed and the thread it ran on, then
+    delegates -- so the accept arm still publishes its response while the
+    reject arms can be asserted against an empty record.  The event lets a
+    test wait for the dispatch thread deterministically instead of sleeping
+    for a fixed span, and capturing ``current_thread()`` from inside the
+    target avoids patching the stdlib ``threading`` module, which would also
+    intercept thread creation unrelated to this dispatch.
+    """
+    seen: list[dict[str, Any]] = []
+    threads: list[threading.Thread] = []
+    done = threading.Event()
+    real = m._exec_cmd
+
+    def _wrapped(data: dict[str, Any]) -> None:
+        seen.append(data)
+        threads.append(threading.current_thread())
+        try:
+            real(data)
+        finally:
+            done.set()
+
+    m._exec_cmd = _wrapped  # type: ignore[method-assign]
+    return seen, threads, done
+
+
+def test_on_cmd_dispatches_a_foreign_command_to_exec(
+    started_mesh: Mesh, captured_puts: list[tuple[str, dict[str, Any]]]
+) -> None:
+    """A well-formed command from another peer reaches ``_exec_cmd`` and answers.
+
+    The two neighbouring ``_on_cmd`` cases pin the arms that DROP a sample
+    (a self echo, an undecodable payload).  This pins the arm that accepts
+    one, driven through the wire seam rather than by calling ``_exec_cmd``
+    directly: a regression that stopped dispatching would leave the mesh
+    silently deaf to every inbound command while the direct-drive cases
+    still passed.
+    """
+    seen, _, done = _spy_exec(started_mesh)
+    payload = {"sender_id": "peer-b", "turn_id": "t1", "command": {"action": "status"}}
+    started_mesh._on_cmd(_make_sample(payload))
+
+    assert done.wait(timeout=5.0), "the inbound command was never dispatched"
+    assert seen == [payload], "the dispatched payload is not the decoded sample"
+    responses = [k for k, _ in captured_puts if k == "strands/peer-b/response/peer-a/t1"]
+    assert responses, f"no response on the requester's turn-scoped key: {captured_puts}"
+
+
+@pytest.mark.parametrize(
+    "decoded",
+    [[1, 2, 3], "hello", 42, None],
+    ids=["json-array", "json-string", "json-number", "json-null"],
+)
+def test_on_cmd_drops_a_non_mapping_payload(
+    started_mesh: Mesh, captured_puts: list[tuple[str, dict[str, Any]]], decoded: Any
+) -> None:
+    """Valid JSON that is not an object is dropped rather than dispatched.
+
+    ``json.loads`` accepts arrays, strings, numbers and ``null``, so decoding
+    successfully does not make a sample a command.  Without the mapping check
+    the payload would reach ``.get("sender_id")`` and raise inside the Zenoh
+    callback thread, where nothing can report it.
+    """
+    seen, _, _ = _spy_exec(started_mesh)
+    started_mesh._on_cmd(_make_sample(decoded))
+    # Give a wrongly-spawned dispatch thread time to run before asserting.
+    time.sleep(0.05)
+
+    assert seen == [], f"a non-mapping payload was dispatched as a command: {seen}"
+    assert [k for k, _ in captured_puts if "response" in k] == []
+
+
+def test_on_cmd_dispatch_thread_is_a_daemon(started_mesh: Mesh) -> None:
+    """The per-command dispatch thread cannot hold the interpreter at exit.
+
+    Each inbound command runs on its own thread.  A non-daemon thread wedged
+    in a long-running command would be joined by the interpreter's exit hook,
+    so a single peer could keep this process alive by sending one command.
+    The thread is also named after the peer, so a stack dump attributes a
+    wedged command to the mesh that accepted it.
+    """
+    _, threads, done = _spy_exec(started_mesh)
+    started_mesh._on_cmd(_make_sample({"sender_id": "peer-b", "turn_id": "t1", "command": {"action": "status"}}))
+
+    assert done.wait(timeout=5.0), "the inbound command was never dispatched"
+    assert len(threads) == 1, f"expected one dispatch thread, got {len(threads)}"
+    thread = threads[0]
+    assert thread is not threading.main_thread(), "the command ran on the callback thread, not its own"
+    assert thread.daemon is True, "a wedged inbound command would block interpreter exit"
+    assert started_mesh.peer_id in thread.name, f"dispatch thread is not peer-scoped: {thread.name!r}"
