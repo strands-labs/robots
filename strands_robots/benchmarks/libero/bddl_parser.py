@@ -206,7 +206,7 @@ def _on_kwargs(args: list[str]) -> dict[str, Any]:
     # "mug-suspended-above-plate" placement states produce BDDL false
     # positives (mug 5 cm above plate, xy-aligned, no contact yet).
     # Graceful degradation: engines without ``get_contacts`` skip the
-    # check (preserves pre-#171 behaviour).
+    # check and fall back to the geometric-only verdict.
     return {
         "body_a": args[0],
         "body_b": args[1],

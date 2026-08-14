@@ -212,8 +212,8 @@ MAX_WORLD_UPDATE_BYTES: int = 65536
 #: Charset for entries in ``STRANDS_MESH_HF_REPO_ALLOW``. Operator-supplied
 #: HuggingFace org / ``<org>/<repo>`` prefixes; rejects shell metacharacters,
 #: whitespace, NUL bytes, and any byte outside the printable ASCII subset.
-#: Symmetric with :data:`_POLICY_HOST_ENTRY_RE` so a reviewer reading this
-#: module sees a uniform fail-loud-on-misconfig posture across every
+#: Symmetric with :data:`_POLICY_HOST_ENTRY_RE` so this module presents a
+#: uniform fail-loud-on-misconfig posture across every
 #: operator-extensible env-var allowlist.
 _HF_REPO_ENTRY_RE = re.compile(r"^[A-Za-z0-9_./\-]+$")
 

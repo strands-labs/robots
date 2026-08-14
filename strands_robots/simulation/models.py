@@ -35,7 +35,7 @@ class SimStatus(Enum):
 class SimRobot:
     """A robot instance within the simulation.
 
-    ``mesh`` / ``peer_id`` (post-PR #101): when the parent ``Simulation`` is
+    ``mesh`` / ``peer_id``: when the parent ``Simulation`` is
     itself attached to a Zenoh mesh, every robot added via ``add_robot``
     auto-joins as its own peer so the agent can address it directly
     (e.g. ``robot_mesh tell target=<peer_id>``) instead of having to talk to
@@ -107,7 +107,7 @@ class SimObject:
 class SimCamera:
     """A camera in the simulation.
 
-    ``origin_robot`` (post-PR #85): when the camera was discovered inside a
+    ``origin_robot``: when the camera was discovered inside a
     robot's URDF during ``add_robot``, this is set to the robot's name so the
     scene builder knows NOT to re-add the camera at the top level (it'll be
     re-introduced via ``spec.attach(robot_spec)``). For user-added cameras
@@ -189,9 +189,9 @@ class SimWorld:
     # (``_recording``, ``_trajectory``, ``_dataset_recorder``), caches, etc.
     # Prefer this over adding new fields to ``SimWorld``.
     _backend_state: dict[str, Any] = field(default_factory=dict)
-    # Physics state checkpoints (used by save_state/restore_state in PR #85).
-    # Kept as a top-level field - requested by @yinsong1986 during review to
-    # avoid monkey-patching when ``reset()`` creates a fresh ``SimWorld``.
+    # Physics state checkpoints read and written by save_state / load_state.
+    # A top-level field rather than a ``_backend_state`` entry so ``reset()``
+    # can build a fresh ``SimWorld`` without monkey-patching it back in.
     _checkpoints: dict[str, Any] = field(default_factory=dict)
     # Monotonically-incremented generation counter bumped whenever ``_model`` is
     # swapped, by the one function that installs it

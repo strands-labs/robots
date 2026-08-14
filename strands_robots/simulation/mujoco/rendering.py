@@ -1449,8 +1449,8 @@ class RenderingMixin:
         ``resolution``). MuJoCo then rasterizes with that intrinsic model -
         ``fovy`` is ignored, pixels may be non-square (``fx != fy``), and the
         principal point moves off the image center - so deriving ``K`` from
-        ``fovy`` silently misplaces every unprojected point (~25 cm on the
-        review's repro camera). This helper builds ``K`` the way MuJoCo
+        ``fovy`` silently misplaces every unprojected point (~25 cm on a
+        wide off-centre camera). This helper builds ``K`` the way MuJoCo
         actually draws.
 
         Sign conventions were calibrated empirically against MuJoCo 3.8.1 by

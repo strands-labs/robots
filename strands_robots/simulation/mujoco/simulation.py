@@ -5258,7 +5258,7 @@ class MuJoCoSimEngine(
         # peer-visible state is torn down cleanly even if the policy
         # teardown below hits the fallback ``wait=False`` path.
         #
-        # PR #101 follow-up: each robot added via ``add_robot`` may have
+        # Each robot added via ``add_robot`` may have
         # its own per-peer mesh (see ``_attach_robot_to_mesh``). Stop those
         # FIRST so external peers see them leave before the sim container
         # itself goes down - leaving the inverse order ("sim drops, robots
@@ -5380,6 +5380,6 @@ class MuJoCoSimEngine(
         self.cleanup()
 
 
-# Backward-compatible aliases (PR #85 shipped as ``Simulation``)
+# Backward-compatible aliases (this engine originally shipped as ``Simulation``)
 Simulation = MuJoCoSimEngine
 MuJoCoSimulation = MuJoCoSimEngine

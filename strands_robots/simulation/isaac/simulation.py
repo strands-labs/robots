@@ -5583,8 +5583,8 @@ class IsaacSimulation(IsaacMotionPrimitivesMixin, IsaacRecordingMixin, SimEngine
         # stashed as a sidecar (same pattern as _strands_actual_prim_path)
         # for _RobotState diagnostics. Best-effort: a URDF the stdlib parse
         # cannot re-read (the importer accepted it, so this is surface drift,
-        # not a bad file) keeps the importer's names - Isaac stays
-        # self-consistent, which is the pre-#1900 behaviour.
+        # not a bad file) keeps the importer's names, leaving Isaac
+        # self-consistent on its own mangled names.
         joint_names = list(articulation.dof_names) if articulation.dof_names else []
         usd_to_urdf: dict[str, str] = {}
         try:

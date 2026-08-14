@@ -127,8 +127,8 @@ def demangle_usd_joint_names(
     DOF - and is removed from the pool when claimed, so translated names are
     disjoint from pass-through names and from each other. An ambiguous
     decode (two URDF joints that mangle to the same DOF name) is refused
-    and the DOF name kept, which leaves the pre-#1900 behaviour for that
-    joint: Isaac self-consistent on its own mangled name.
+    and the DOF name kept, which leaves that joint untranslated: Isaac
+    stays self-consistent on its own mangled name.
 
     Parameters
     ----------
