@@ -49,6 +49,26 @@ no trajectory for a policy to act on - and the contact is resolved 45x worse,
 the box coming to rest almost 5 mm inside the ground plane. Both under
 ``status="success"``, reported as ``Timestep: 1.0s (1Hz)``.
 
+The world builders were pinned the same way - by claim rather than by measurement.
+Every backend's ``create_world`` validates the *effective* dt (the argument, or
+the engine default when the argument is omitted) and names whichever knob it came
+from: ``default_timestep`` on MuJoCo and Newton, ``physics_dt`` on Isaac. That is
+six cells, and only the two MuJoCo ones were driven - by
+``tests/simulation/mujoco/test_create_world_physics_param_validation.py``, which
+is ``importorskip("mujoco")``-gated and MuJoCo-only by construction. The scan
+below covered ``set_timestep`` alone, so the sentence above ("all three
+backends' ``create_world`` route through it") was structurally unenforced for
+every backend and behaviourally unmeasured for two.
+
+The effective-dt check is load-bearing there rather than defensive, because
+neither of those two backends fully validates its engine default at construction:
+``NewtonSimEngine.__init__`` stores ``default_timestep`` raw, and
+``IsaacConfig.__post_init__`` tests ``physics_dt <= 0`` - a bare comparison,
+which is False for ``nan`` and ``inf`` and lets a boolean through. So
+``IsaacConfig(physics_dt=float("nan"))`` constructs, and ``create_world()`` is
+the only thing between that object and a world built on a dt no integrator can
+advance by.
+
 Solver-free: ``NewtonSimEngine.set_timestep`` validates and writes before it
 touches the solver, so the engine here is built via ``__new__`` with only the
 attributes that path reads. The pre-existing Newton pins for this method live in
@@ -63,6 +83,7 @@ import ast
 import inspect
 import pathlib
 import threading
+import types
 from typing import Any
 
 import numpy as np
@@ -98,6 +119,14 @@ UNUSABLE = [
 USABLE = [0.002, 0.5, np.float64(0.002), "0.002"]
 
 BOOLEANS = [True, np.True_, np.bool_(True)]
+
+# ``None`` is the documented "use the engine default" sentinel for the
+# ``create_world(timestep=...)`` ARGUMENT, so it is not unusable there - the
+# MuJoCo module pinning the same builder excludes it for the same reason. It
+# stays unusable as the engine DEFAULT (there is nothing further to fall back
+# to), and as a setter argument (the setter has no sentinel); both asymmetries
+# are pinned in TestTheEngineDefaultSentinelIsArgumentOnly.
+UNUSABLE_ARGUMENTS = [value for value in UNUSABLE if value is not None]
 
 
 def _newton_engine() -> NewtonSimEngine:
@@ -240,10 +269,17 @@ def _backend_dir() -> pathlib.Path:
     return pathlib.Path(inspect.getfile(SimEngine)).parent
 
 
-def _setters_missing_the_shared_domain(root: pathlib.Path) -> dict[str, list[str]]:
-    """Backend ``set_timestep`` methods that do not call the shared domain.
+# Every public surface that installs a physics timestep. ``create_world`` writes
+# the same field the setter does - before any setter can be called - so the two
+# belong to one domain, which is this module's subject.
+_TIMESTEP_SURFACES = ("set_timestep", "create_world")
 
-    Keyed by ``<backend>/<module>.py`` so a failure names the file to fix.
+
+def _surfaces_missing_the_shared_domain(root: pathlib.Path) -> dict[str, list[str]]:
+    """Timestep-installing methods that do not call the shared domain.
+
+    Keyed by ``<backend>/<module>.py`` so a failure names the file to fix, with
+    ``<Class>.<method>`` naming the surface.
     """
     found: dict[str, list[str]] = {}
     for backend in ("mujoco", "newton", "isaac"):
@@ -253,7 +289,7 @@ def _setters_missing_the_shared_domain(root: pathlib.Path) -> dict[str, list[str
                 if not isinstance(node, ast.ClassDef):
                     continue
                 for member in ast.iter_child_nodes(node):
-                    if not isinstance(member, ast.FunctionDef) or member.name != "set_timestep":
+                    if not isinstance(member, ast.FunctionDef) or member.name not in _TIMESTEP_SURFACES:
                         continue
                     calls = {
                         call.func.attr
@@ -261,35 +297,41 @@ def _setters_missing_the_shared_domain(root: pathlib.Path) -> dict[str, list[str
                         if isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute)
                     }
                     if "_validate_timestep" not in calls:
-                        found.setdefault(f"{backend}/{module.name}", []).append(node.name)
+                        found.setdefault(f"{backend}/{module.name}", []).append(f"{node.name}.{member.name}")
     return found
 
 
-def _setters_present(root: pathlib.Path) -> set[str]:
+def _surfaces_present(root: pathlib.Path) -> set[str]:
     present = set()
     for backend in ("mujoco", "newton", "isaac"):
         for module in sorted((root / backend).glob("*.py")):
-            if "def set_timestep(" in module.read_text(encoding="utf-8"):
-                present.add(f"{backend}/{module.name}")
+            text = module.read_text(encoding="utf-8")
+            for surface in _TIMESTEP_SURFACES:
+                if f"def {surface}(" in text:
+                    present.add(f"{backend}/{module.name}::{surface}")
     return present
 
 
 class TestNoBackendCanShipAnUnsharedTimestepDomain:
-    def test_every_backend_setter_calls_the_shared_domain(self) -> None:
-        assert _setters_missing_the_shared_domain(_backend_dir()) == {}
+    def test_every_timestep_surface_calls_the_shared_domain(self) -> None:
+        assert _surfaces_missing_the_shared_domain(_backend_dir()) == {}
 
-    def test_the_scan_sees_the_setters_it_claims_to_cover(self) -> None:
+    def test_the_scan_sees_the_surfaces_it_claims_to_cover(self) -> None:
         """Non-vacuity: name the surfaces, so a mis-rooted scan cannot pass.
 
-        Isaac exposes no ``set_timestep``; if it gains one it joins this set and
-        the guard above starts checking it.
+        This is the matrix the module asserts in prose: three world builders and
+        two setters. Isaac exposes no ``set_timestep``; if it gains one it joins
+        this set and the guard above starts checking it.
         """
-        assert _setters_present(_backend_dir()) == {
-            "mujoco/simulation.py",
-            "newton/simulation.py",
+        assert _surfaces_present(_backend_dir()) == {
+            "mujoco/simulation.py::create_world",
+            "mujoco/simulation.py::set_timestep",
+            "newton/simulation.py::create_world",
+            "newton/simulation.py::set_timestep",
+            "isaac/simulation.py::create_world",
         }
 
-    def test_the_scan_detects_a_setter_that_hand_rolls_the_domain(self, tmp_path: pathlib.Path) -> None:
+    def test_the_scan_detects_a_surface_that_hand_rolls_the_domain(self, tmp_path: pathlib.Path) -> None:
         """A planted copy of the defect must be found, or a clean result is luck."""
         for backend in ("mujoco", "newton", "isaac"):
             (tmp_path / backend).mkdir()
@@ -302,4 +344,214 @@ class TestNoBackendCanShipAnUnsharedTimestepDomain:
             "        self._world.timestep = timestep\n",
             encoding="utf-8",
         )
-        assert _setters_missing_the_shared_domain(tmp_path) == {"newton/simulation.py": ["NewtonSimEngine"]}
+        assert _surfaces_missing_the_shared_domain(tmp_path) == {
+            "newton/simulation.py": ["NewtonSimEngine.set_timestep"]
+        }
+
+
+def _isaac_engine(physics_dt: Any) -> Any:
+    """An Isaac engine whose config carries ``physics_dt``, without an Isaac install.
+
+    ``create_world`` reads exactly ``self._config.physics_dt`` before the shared
+    timestep domain, and the refusal returns before the lock and before any
+    stage work, so the engine is built via ``__new__`` with only that attribute.
+    The config is a real :class:`IsaacConfig` wherever it will construct one, so
+    the value under test is one a caller can really hold.
+    """
+    from strands_robots.simulation.isaac.config import IsaacConfig
+    from strands_robots.simulation.isaac.simulation import IsaacSimulation
+
+    engine = IsaacSimulation.__new__(IsaacSimulation)
+    try:
+        engine._config = IsaacConfig(physics_dt=physics_dt)
+    except (TypeError, ValueError):
+        # ``IsaacConfig`` refuses part of the domain itself (see
+        # TestTheConfigGuardCannotSeeEveryUnusableDefault). Where it does, hold
+        # the value directly so ``create_world`` is still measured on it.
+        engine._config = types.SimpleNamespace(physics_dt=physics_dt)
+    return engine
+
+
+def _newton_world_builder(default_timestep: Any) -> NewtonSimEngine:
+    """A Newton engine with no world yet, carrying ``default_timestep``.
+
+    ``__init__`` stores ``default_timestep`` raw (nothing validates it there) and
+    then imports Newton/Warp to build a solver. ``create_world`` validates the
+    effective dt before it takes the lock, so ``__new__`` plus the two attributes
+    that path reads is enough - and mirrors what ``__init__`` assigns.
+    """
+    engine = NewtonSimEngine.__new__(NewtonSimEngine)
+    engine._world = None
+    engine._lock = threading.RLock()
+    engine.default_timestep = default_timestep
+    return engine
+
+
+def _create_world(engine: Any, **kwargs: Any) -> dict[str, Any]:
+    """Call ``create_world`` with deliberately off-type values.
+
+    One funnel so the off-domain values, which the ``float`` annotation does not
+    describe, need a single documented ``Any`` instead of a suppression per call.
+    """
+    return engine.create_world(**kwargs)
+
+
+class TestEveryWorldBuilderRefusesWhatNoIntegratorCanHonor:
+    """The explicit ``timestep=`` argument, on each backend's ``create_world``.
+
+    The module docstring's claim is that all three route through the shared
+    domain. Only MuJoCo's refusal was ever driven
+    (``tests/simulation/mujoco/test_create_world_physics_param_validation.py``,
+    which is MuJoCo-only by construction), so the two backends whose builders
+    were added later were pinned structurally and never behaviourally.
+    """
+
+    @pytest.mark.parametrize("value", UNUSABLE_ARGUMENTS, ids=repr)
+    def test_newton_refuses_the_argument(self, value: Any) -> None:
+        result = _create_world(_newton_world_builder(_DEFAULT_DT), timestep=value)
+        assert result["status"] == "error"
+        assert "timestep" in _text(result)
+
+    @pytest.mark.parametrize("value", UNUSABLE_ARGUMENTS, ids=repr)
+    def test_isaac_refuses_the_argument(self, value: Any) -> None:
+        result = _create_world(_isaac_engine(_DEFAULT_DT), timestep=value)
+        assert result["status"] == "error"
+        assert "timestep" in _text(result)
+
+    @pytest.mark.parametrize("value", UNUSABLE_ARGUMENTS, ids=repr)
+    def test_the_three_backends_return_the_same_verdict(self, value: Any) -> None:
+        """A dt one builder refuses cannot be accepted by another.
+
+        The shared domain exists so the accepted set is one set; this compares
+        the two skeleton-backed builders against the MuJoCo builder that has
+        always been pinned, rather than against the staticmethod they all call.
+        """
+        pytest.importorskip("mujoco")
+        from strands_robots import Simulation
+
+        newton_refuses = _create_world(_newton_world_builder(_DEFAULT_DT), timestep=value)["status"] == "error"
+        isaac_refuses = _create_world(_isaac_engine(_DEFAULT_DT), timestep=value)["status"] == "error"
+
+        sim = Simulation(backend="mujoco", mesh=False)
+        try:
+            mujoco_refuses = _create_world(sim, timestep=value)["status"] == "error"
+        finally:
+            sim.destroy()
+
+        assert newton_refuses == mujoco_refuses == isaac_refuses, (
+            f"{value!r}: mujoco refuses={mujoco_refuses}, "
+            f"newton refuses={newton_refuses}, isaac refuses={isaac_refuses}"
+        )
+
+
+class TestAnUnusableEngineDefaultIsNamedUnderItsOwnKnob:
+    """``create_world()`` validates the EFFECTIVE dt, not just the argument.
+
+    Each backend's comment says so in the same words - *"so an unusable engine
+    default is reported under its own name instead of compiling into the
+    world"* - and each names a different knob: ``default_timestep`` on MuJoCo and
+    Newton, ``physics_dt`` on Isaac. A caller who never passed ``timestep`` must
+    be told which knob is wrong, so the message naming the knob is the contract,
+    not an incidental detail. Only the MuJoCo half was pinned.
+    """
+
+    @pytest.mark.parametrize("value", UNUSABLE, ids=repr)
+    def test_newton_names_default_timestep(self, value: Any) -> None:
+        result = _create_world(_newton_world_builder(value))
+        assert result["status"] == "error"
+        assert "default_timestep" in _text(result)
+
+    @pytest.mark.parametrize("value", UNUSABLE, ids=repr)
+    def test_isaac_names_physics_dt(self, value: Any) -> None:
+        result = _create_world(_isaac_engine(value))
+        assert result["status"] == "error"
+        assert "physics_dt" in _text(result)
+        # The knob the caller did not touch must not be blamed instead.
+        assert "default_timestep" not in _text(result)
+
+
+class TestTheConfigGuardCannotSeeEveryUnusableDefault:
+    """Why the effective-dt check is load-bearing rather than defensive.
+
+    Neither non-MuJoCo backend fully validates its engine default at
+    construction: ``NewtonSimEngine.__init__`` stores ``default_timestep`` raw,
+    and ``IsaacConfig.__post_init__`` tests ``physics_dt <= 0`` - a bare
+    comparison, which is False for ``nan`` and for ``inf``, and True-for-neither
+    of the booleans. So an unusable default really can be held by a constructed
+    object, and ``create_world``'s effective-dt check is the only thing between
+    it and a world built on a dt no integrator can advance by.
+    """
+
+    @pytest.mark.parametrize("value", [float("nan"), float("inf"), True], ids=repr)
+    def test_isaac_config_admits_a_default_create_world_then_refuses(self, value: Any) -> None:
+        from strands_robots.simulation.isaac.config import IsaacConfig
+
+        config = IsaacConfig(physics_dt=value)  # constructs: the `<= 0` test cannot see it
+        # Identity rather than equality: the claim is that the field is stored with
+        # no coercion at all, which `nan == nan` being False would otherwise hide.
+        assert config.physics_dt is value
+
+        engine = _isaac_engine(value)
+        result = _create_world(engine)
+        assert result["status"] == "error"
+        assert "physics_dt" in _text(result)
+
+    def test_the_newton_constructor_stores_the_default_unvalidated(self) -> None:
+        """Source fact behind the fixture: ``__init__`` only assigns it."""
+        source = inspect.getsource(NewtonSimEngine.__init__)
+        assert "self.default_timestep = default_timestep" in source
+        assert "_validate_timestep" not in source
+
+
+class TestARefusedWorldBuilderCostsNoSolverWork:
+    """A refusal returns before the lock; an accepted value proceeds past it.
+
+    Both skeletons deliberately omit the attributes the post-guard body reads
+    (Newton's Warp handle, Isaac's lock). A refused value therefore returns a
+    structured error, while a value the domain accepts raises ``AttributeError``
+    reaching for that state - which is what shows the guard runs first rather
+    than after the world is under construction.
+    """
+
+    @pytest.mark.parametrize("value", UNUSABLE_ARGUMENTS, ids=repr)
+    def test_a_refused_value_never_reaches_the_solver(self, value: Any) -> None:
+        assert _create_world(_newton_world_builder(_DEFAULT_DT), timestep=value)["status"] == "error"
+        assert _create_world(_isaac_engine(_DEFAULT_DT), timestep=value)["status"] == "error"
+
+    def test_an_accepted_value_proceeds_past_the_guard(self) -> None:
+        with pytest.raises(AttributeError):
+            _create_world(_newton_world_builder(_DEFAULT_DT), timestep=0.004)
+        with pytest.raises(AttributeError, match="_lock"):
+            _create_world(_isaac_engine(_DEFAULT_DT), timestep=0.004)
+
+
+class TestTheEngineDefaultSentinelIsArgumentOnly:
+    """``timestep=None`` means "use the engine default" - and only as an argument.
+
+    The same value therefore has three different verdicts on one field, which is
+    why it needs pinning rather than assuming: as a ``create_world`` argument it
+    selects the engine default and the call proceeds; as the engine default it is
+    refused (nothing remains to fall back to); as a ``set_timestep`` argument it
+    is refused (that surface has no sentinel).
+    """
+
+    def test_none_as_the_argument_selects_the_engine_default(self) -> None:
+        # Accepted: the call proceeds past the guard into solver state the
+        # skeletons deliberately lack, rather than returning a refusal.
+        with pytest.raises(AttributeError):
+            _create_world(_newton_world_builder(_DEFAULT_DT), timestep=None)
+        with pytest.raises(AttributeError, match="_lock"):
+            _create_world(_isaac_engine(_DEFAULT_DT), timestep=None)
+
+    def test_none_as_the_engine_default_is_refused_under_its_own_name(self) -> None:
+        newton = _create_world(_newton_world_builder(None))
+        assert newton["status"] == "error"
+        assert "default_timestep" in _text(newton)
+
+        isaac = _create_world(_isaac_engine(None))
+        assert isaac["status"] == "error"
+        assert "physics_dt" in _text(isaac)
+
+    def test_none_is_still_refused_by_the_setter(self) -> None:
+        """The setter has no sentinel, so its domain is the stricter one."""
+        assert _set(_newton_engine(), None)["status"] == "error"

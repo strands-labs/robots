@@ -350,13 +350,28 @@ def score_evacuation(
     return verdict
 
 
-def build_incident_report(records: list[dict[str, Any]], integrity: dict[str, Any]) -> str:
+def build_incident_report(records: list[dict[str, Any]], integrity: dict[str, Any] | None = None) -> str:
     """Deterministic incident report from the signed audit trail.
 
     Structured post-event reconstruction - the LLM stays outside the safety
     path; pass the result to an agent for a narrative if you want one
     (``--agent-report``), but the record of what happened is this.
+
+    The integrity verdict attests exactly ``records``, because the header and
+    the timeline below it have to describe the same records to be read
+    together. Leave ``integrity`` unset and this pairs them for you; pass a
+    verdict computed over some other record set and the report says two
+    different things. ``verify_audit_integrity()`` with no argument is that
+    other set - it re-reads the whole log, which on any machine that has run
+    the mesh before is mostly other runs.
+
+    Args:
+        records: The audit records to report on, already scoped to this run.
+        integrity: Optional pre-computed verdict for ``records``. Defaults to
+            attesting ``records`` themselves.
     """
+    if integrity is None:
+        integrity = verify_audit_integrity(records)
     lines = [
         "# Evacuation incident report",
         "",
@@ -946,7 +961,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"clearances at muster: {summary['clearances']}")
 
     records = read_audit_log(since=run_start - 1.0)
-    report = build_incident_report(records, verify_audit_integrity())
+    report = build_incident_report(records)
     print("\n" + report)
     if args.agent_report:
         # Post-event narration only - the LLM never touches the safety path.

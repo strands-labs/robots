@@ -654,6 +654,11 @@ def lerobot_train(
             a validation loss beside it.
         num_gpus: Number of GPUs; >1 launches via accelerate --multi_gpu.
         push_to_hub: Push the trained checkpoint to the HF Hub at the end.
+            Publishing is an outward-facing action, so a true value requires
+            operator approval through ``tool_context`` (or an explicit
+            STRANDS_TRAIN_EXTRA_FLAGS_ALLOW entry) exactly as the
+            ``extra_flags={'push_to_hub': True}`` spelling already does. The
+            default false value emits the flag unchanged and is not gated.
         resume: Resume from the latest checkpoint under output_dir when present.
         action: One of start, status, stop, list.
         session_name: Session identifier (auto-generated on start; required for
@@ -718,6 +723,11 @@ def lerobot_train(
 
             if pretrained_path:
                 gate_err = _gate_extra_flags({"policy.pretrained_path": pretrained_path}, tool_context)
+                if gate_err:
+                    return gate_err
+
+            if push_to_hub:
+                gate_err = _gate_extra_flags({"policy.push_to_hub": push_to_hub}, tool_context)
                 if gate_err:
                     return gate_err
 

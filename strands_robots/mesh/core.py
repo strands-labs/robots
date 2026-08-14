@@ -3266,6 +3266,13 @@ class Mesh(SensorLoopsMixin):
         path falls back to the body-level HMAC binding alone -- the
         cross-session-forgery defence is Zenoh-specific because only
         Zenoh exposes a TLS-bound publisher identity.
+
+        Also returns ``None`` if the session module import fails. That arm is
+        defence in depth rather than a reachable configuration: this module
+        imports ``strands_robots.mesh.session`` at module scope, so by the time
+        any method runs the module is already resolved and the local import
+        cannot raise. It is kept so a future refactor that drops the
+        module-scope import degrades here instead of raising on the safety path.
         """
         try:
             from strands_robots.mesh.session import _current_zenoh_session_directly
@@ -3288,10 +3295,12 @@ class Mesh(SensorLoopsMixin):
         """Return the wire ``source_zid`` a safety envelope on *key* will carry.
 
         Returns the local Zenoh session ZID only when the full native
-        publish path is ready (session open, publisher declarable, and the
-        ``zenoh.SourceInfo`` constructor present). Returns ``None`` when the
-        SourceInfo-less fallback ``put()`` path -- which strips ``source_zid``
-        from the body -- will be taken instead.
+        publish path is ready (session open, publisher declarable, ``zenoh``
+        importable, and the ``zenoh.SourceInfo`` constructor present). Returns
+        ``None`` when the SourceInfo-less fallback ``put()`` path -- which
+        strips ``source_zid`` from the body -- will be taken instead. An install
+        without the ``mesh`` extra has no ``zenoh`` to import, so every envelope
+        there is bound to, and published as, a zid-less body.
 
         This is the single decision point an issuer must consult BEFORE
         binding ``source_zid`` into an HMAC (the resume override proof) so the
@@ -3332,9 +3341,11 @@ class Mesh(SensorLoopsMixin):
           predictably; a replay across the same session is bounded by
           our own ``_safety_sn`` counter (bound into ``source_sn``).
 
-        Returns ``None`` for non-Zenoh transports or when no session
-        is currently open. The caller falls back to the legacy
-        ``put()`` path in that case.
+        Returns ``None`` for non-Zenoh transports, when no session is
+        currently open, and when ``declare_publisher`` fails. The caller falls
+        back to the legacy ``put()`` path in that case. A failing session
+        module import is handled the same way, but is defence in depth rather
+        than a reachable configuration -- see :meth:`_local_session_zid`.
         """
         try:
             from strands_robots.mesh.session import _current_zenoh_session_directly
@@ -3416,6 +3427,8 @@ class Mesh(SensorLoopsMixin):
         * no Zenoh session is currently open,
         * ``declare_publisher`` failed for any reason (logged at
           WARNING by ``_safety_publisher_for``),
+        * ``zenoh`` is not importable at all -- an install without the
+          ``mesh`` extra still publishes the envelope, stripped,
         * the ``zenoh.SourceInfo`` constructor is unavailable on the
           installed zenoh-python version.
 

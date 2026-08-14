@@ -11,6 +11,12 @@ jobs:
   test-lint:
     name: Test and Lint
     runs-on: ubuntu-latest
+    # The suite is tightly distributed - 19-27 min over the last 20 successful
+    # runs, max 26.5 - so 45 is ~1.7x the observed ceiling and costs a healthy
+    # run nothing. Without it this job inherits the 6-hour default, which is how
+    # a test that had already printed its verdict at 18 min went on to hold the
+    # runner for another 82 (#2239).
+    timeout-minutes: 45
     permissions:
       contents: read
     steps:

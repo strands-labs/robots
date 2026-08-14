@@ -19,7 +19,6 @@ import pkgutil
 import sys
 import threading
 import types
-from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import pytest
@@ -27,6 +26,7 @@ import pytest
 from strands_robots.hardware_robot import Robot as HwRobot
 from strands_robots.hardware_robot import RobotTaskState, TaskStatus
 from strands_robots.policies.base import Policy
+from tests._daemon_executor import DaemonThreadExecutor
 from tests.tool_result_contract import tool_json
 
 
@@ -98,7 +98,7 @@ def _make_robot(fake: _FakeLeRobot | None = None, control_frequency: float = 100
     hw.control_frequency = control_frequency
     hw.action_sleep_time = 1.0 / control_frequency
     hw._task_state = RobotTaskState()
-    hw._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="test_arm_executor")
+    hw._executor = DaemonThreadExecutor(max_workers=1, thread_name_prefix="test_arm_executor")
     hw._shutdown_event = threading.Event()
     hw._stop_requested = threading.Event()
     hw._task_admission = threading.Lock()

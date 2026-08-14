@@ -313,9 +313,10 @@ def _rate_limit_check(action: str) -> str | None:
     """Return None if a slot is available, else the rejection message.
 
     Inspects the sliding-window history but does NOT consume a slot.
-    Use :func:`_rate_limit_record` after a fleet-wide action's HITL
-    approval is positively granted (or unconditionally for actions
-    that do not require approval).
+    Use :func:`_rate_limit_check_and_record` once the action is known to
+    run - after a HITL approval is positively granted, or directly for an
+    action the operator has taken out of the gated set. Reserving through
+    that helper is what keeps this check from being a TOCTOU.
 
     Splitting check from record means a *declined* HITL approval no
     longer consumes a slot - without the split, three nuisance LLM
@@ -344,26 +345,6 @@ def _rate_limit_check(action: str) -> str | None:
     return None
 
 
-def _rate_limit_record(action: str) -> None:
-    """Append a slot to *action*'s sliding-window history.
-
-    Call this only after a HITL-required action's approval is granted,
-    or unconditionally for actions that do not require an interrupt.
-    Pairs with :func:`_rate_limit_check`.
-    """
-    cfg = _RATE_LIMITS.get(action)
-    if cfg is None:
-        return
-    _, window = cfg
-    now = time.monotonic()
-    with _RATE_LOCK:
-        bucket = _RATE_HISTORY.setdefault(action, collections.deque())
-        cutoff = now - window
-        while bucket and bucket[0] < cutoff:
-            bucket.popleft()
-        bucket.append(now)
-
-
 def _reset_rate_limits() -> None:
     """Test helper: clear sliding-window history."""
     with _RATE_LOCK:
@@ -373,16 +354,18 @@ def _reset_rate_limits() -> None:
 def _rate_limit_check_and_record(action: str) -> str | None:
     """Atomic check+record under a single _RATE_LOCK acquisition.
 
-    Used on the post-HITL-approval path to close the TOCTOU between
-    :func:`_rate_limit_check` (called BEFORE the operator interrupt) and
-    :func:`_rate_limit_record` (called AFTER). Without this, two
-    concurrent emergency_stop or broadcast invocations could each pass
-    the pre-interrupt check, both get operator-approved on different
-    threads, and both record -- briefly exceeding the configured limit.
+    This is the only way a slot is consumed. It closes the TOCTOU left by
+    :func:`_rate_limit_check`, which reports whether a slot is free without
+    taking it: without an atomic reservation two concurrent invocations
+    could each pass that check and each record, briefly exceeding the
+    configured limit. Both gate paths reserve through here - the approved
+    path after the operator interrupt returns, and the ungated path for an
+    action outside ``STRANDS_MESH_HITL_ACTIONS`` - so neither an operator
+    wait nor the validation work in between can be raced past.
 
-    Returns None if the slot was atomically reserved, else the
-    rejection message (caller should treat as 'rate limit raced past us
-    while we were waiting on the operator interrupt; reject this one').
+    Returns None if the slot was atomically reserved, else the rejection
+    message (caller should treat as 'another call took the last slot after
+    our check; reject this one').
     """
     cfg = _RATE_LIMITS.get(action)
     if cfg is None:
@@ -398,7 +381,7 @@ def _rate_limit_check_and_record(action: str) -> str | None:
             wait = window - (now - bucket[0])
             return (
                 f"rate limit exceeded for action '{action}' between check "
-                f"and record (concurrent approval raced past): max {max_calls} "
+                f"and record (a concurrent call raced past): max {max_calls} "
                 f"calls per {window:.0f}s window. Try again in {wait:.1f}s."
             )
         bucket.append(now)
@@ -922,7 +905,7 @@ def robot_mesh(
 
     # Check the per-action rate limit before doing any work - but
     # do NOT consume a slot until we know the action is going to run.
-    # See _rate_limit_check / _rate_limit_record for rationale.
+    # See _rate_limit_check / _rate_limit_check_and_record for rationale.
     rl_err = _rate_limit_check(action)
     if rl_err is not None:
         _audit_tool_action(action, target, False, f"rate_limit: {rl_err}")
@@ -1083,10 +1066,17 @@ def robot_mesh(
             return _err(rl_race_err)
         _audit_tool_action(action, target, True, f"operator approved: {response!r}")
     else:
-        # No interrupt required for this action - consume the slot
-        # unconditionally (matches the pre-split behaviour for
-        # non-fleet-wide actions like ``tell``, ``send``, ``stop``).
-        _rate_limit_record(action)
+        # No interrupt required for this action - reserve the slot with the
+        # same atomic check+record the approved path uses above. The pre-gate
+        # check does not consume a slot, so a concurrent invocation can take
+        # the last one in between; recording unconditionally here would let
+        # both callers past a full bucket. Once ``STRANDS_MESH_HITL_ACTIONS``
+        # narrows the gated set this limit is the only bound left on
+        # LLM-driven actuation, so it has to hold on this path too.
+        rl_race_err = _rate_limit_check_and_record(action)
+        if rl_race_err is not None:
+            _audit_tool_action(action, target, False, f"rate_limit_race: {rl_race_err}")
+            return _err(rl_race_err)
 
     # ── Device Connect dispatch (primary networking layer) ─────────────────
     # Every safety gate above (rate limit, HITL approval, broadcast

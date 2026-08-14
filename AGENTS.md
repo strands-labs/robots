@@ -147,6 +147,25 @@ hatch run format            # ruff check --fix, ruff format
     the call site. `tests_integ/` records real datasets and is out of scope.
     Pinned by tests/test_recording_root_is_not_the_shared_cache.py.
 
+16. **An example attests the records it shows, not the whole audit log** -
+    `verify_audit_integrity()` with no argument re-reads the entire log, and an
+    example's log is the developer's real `~/.strands_robots/mesh_audit.jsonl`,
+    because examples deliberately do not redirect `STRANDS_MESH_AUDIT_DIR`. So
+    an example that scopes its read to the run (`read_audit_log(since=...)`)
+    and then attests everything prints one document describing two record sets.
+    Measured on `e4fe2f9` with 4000 records of prior history in the log,
+    `examples/fleet/04_emergency_evacuation.py` rendered
+    `Audit integrity: ok=False (signed=5/4005)` above a five-row timeline. The
+    `ok` value is the worse half: history written before a PSK was configured is
+    unsigned, and an unsigned record is a forgery by definition once a PSK is
+    set at verification time, so a completely successful run reports tamper
+    evidence. Scoped to the records shown the same run reports
+    `ok=True (signed=5/5)`. Pass the records (`verify_audit_integrity(records)`),
+    or have the report pair them itself so the caller cannot get it wrong.
+    `tests/` is exempt mechanically rather than by trust - a test redirects the
+    audit dir to `tmp_path`, so there the whole log *is* the record set it
+    means. Pinned by tests/test_examples_attest_only_what_they_report.py.
+
 ## PR Workflow
 
 1. Create the feature branch **on your fork**. Branch creation in the base
@@ -427,6 +446,25 @@ hatch run format            # ruff check --fix, ruff format
      mutation returned that error and the squash was already on `main`. Confirm
      with `state`/`merged`, or `git log origin/main`, before concluding a merge
      failed and redoing the work.
+
+     Read that error as uninformative rather than rare. #2249 and #2250 were
+     squashed thirty seconds apart, each by a single `mergePullRequest` call
+     carrying `expectedHeadOid` - so a stale oid is ruled out - against a pull
+     request reading `CLEAN` / `MERGEABLE` / `APPROVED` with every required
+     context `SUCCESS`. Both calls returned `Pull Request is not mergeable` beside
+     `mergePullRequest: null`, and both squashes were already on `main`:
+     `926beb9` at 19:24:50 and `07a759d` at 19:25:20. Three for three with
+     #1756's `4bf139c`, and the payload carries no field that separates a refusal
+     from a success, so only the read-back can tell you which one you got.
+
+     The read-back also names the likely cause, in the field the error is worded
+     about: after the merge #2249 reports `mergeStateStatus` and `mergeable` as
+     `UNKNOWN`, consistent with the mutation re-reading a pull request it has just
+     closed. That makes the retry the expensive reflex rather than the safe one -
+     a second call against #2249 after it had merged returned the identical error
+     beside the identical `null`, so retrying manufactures a second confirmation
+     of a failure that never happened. Pinned by
+     tests/test_merge_mutation_error_is_not_a_verdict.py.
    - *And on `main` afterwards.* A rollup of `FAILURE` on a merge commit is not
      evidence that the squash broke anything: a **cancelled** check aggregates
      into `FAILURE`. `pr-and-push.yml` keys its concurrency group on
@@ -858,6 +896,60 @@ hatch run format            # ruff check --fix, ruff format
    genuinely gone (a force-push, a deleted fork) is uncomparable - and the status
    code does not separate them. Qualify first, then read a `404` on the
    *qualified* form as the uncomparable one.
+
+   **Both readings above are per-branch, and neither can see the open set.**
+   `M..base` is empty by construction whenever `M` is the base the branch was
+   evaluated against, which is every run, so two pull requests that are both
+   still open are invisible to each other: the intersection contains neither, the
+   overlap check reports clean on both, and the first tree in which the two are
+   compiled together is `main`. That is the #1763/#1766 topology arriving from the
+   open set rather than from a merged base. It also does not clear itself over
+   time - stale *approvals* are dismissed on push, a stale *pass* has no
+   equivalent, and a pull request idle in review never re-runs - so the exposure
+   runs until that branch's next push rather than until the sibling merges.
+   `--all-open` is the caller for both, exactly as for the sweep in step 12:
+
+   ```
+   python3 scripts/check_merge_base_overlap.py --github-repo <owner/name> --all-open
+   ```
+
+   Run it when reporting repository health. It reads the open set from the API and
+   computes the same intersection twice per pull request - once against each
+   sibling's `M..head`, once against what has landed on the base since its own
+   `M` - so the two modes cannot disagree about what counts as an overlap or as
+   prose. Measured on the queue the day it was added: 10 open non-draft pull
+   requests, 45 pairs, one pair sharing a behaviour-bearing path (#1035 + #1722 on
+   `strands_robots/mesh/__init__.py`) and one stale base 62 commits deep (#1722 on
+   `strands_robots/mesh/ros_bridge.py`), neither of which any per-branch signal
+   was reporting - both read `mergeStateStatus: CLEAN`.
+
+   Three properties of that sweep are worth knowing before leaning on it. A
+   truncated path set is named as unevaluated rather than intersected: a capped
+   list is indistinguishable from a complete one in the payload, and this check's
+   failure mode is a *missed* overlap, so quietly intersecting a truncated set is
+   how one goes missing. The two sides differ in how far away that is - the head
+   side is read from the paginated `pulls/{n}/files` endpoint and stops at 3000
+   entries, while the base side has no paginated equivalent and keeps the compare
+   endpoint's 300 - and the head side is the input to the pairwise mode, so it is
+   the one that must not drop a large diff.
+   And the two path sets skip apart: the base-side set is the one that grows
+   without bound, so it is the one that hits its cap - #1035 was 265 commits
+   behind - and dropping the whole pull request for it would discard the pairwise
+   finding this mode exists to make.
+
+   Both sides collect `previous_filename` alongside `filename`, so a rename
+   intersects a sibling still editing the old name. Without it the two share no
+   path, while git - which does detect the rename - applies the sibling's edit to
+   the new name and merges with no conflict marker, which is the exact silence
+   this sweep exists to break. That is what keeps the two modes agreeing: the
+   single-branch one reaches the same set with `--no-renames` (#2246).
+
+   A file carrying a `strict=True` xfail is the highest-value overlap candidate
+   there is, because its whole purpose is to fail when a sibling change lands: it
+   breaks a composition that git merges without a single conflict marker. #2233
+   pinned a defect that way and #2235 fixed it; composed, the tree was red with
+   nothing to resolve, which is why `mergeStateStatus: CLEAN` is not merely
+   unhelpful here but actively reassuring.
 
    Read that run as a **delta, not an absolute**. The environment you verify in
    is almost never the one CI uses, and a partial one fails tests for reasons

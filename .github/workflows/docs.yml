@@ -28,6 +28,7 @@ jobs:
   # Build on every PR/push to catch broken nav, links, and config early.
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: read
     steps:

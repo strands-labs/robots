@@ -21,6 +21,7 @@ jobs:
   scan:
     name: Scan agent-callable code for unvalidated LLM input
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
         with:

@@ -473,3 +473,105 @@ def test_multi_robot_namespaced_schema(tmp_path) -> None:
     assert stopped["status"] == "success", stopped
     info = read_dataset_episode_indices(root)
     assert info["total_episodes"] == 2
+
+
+def _namespaced_camera_engine(fill: int = 11) -> IsaacSimulation:
+    """Engine whose cameras include a namespaced one, so raw != schema-safe.
+
+    ``arm0/wrist`` sanitizes to ``arm0__wrist``, which is what makes the two
+    request spellings distinguishable; ``overview`` is the unscoped sibling
+    that must be excluded when the namespaced one is selected.
+    """
+    return _make_engine(
+        robots={"so100": _robot()},
+        cameras={
+            "arm0/wrist": _camera("arm0/wrist", fill=fill),
+            "overview": _camera("overview", fill=fill + 1),
+        },
+    )
+
+
+def test_start_recording_accepts_schema_safe_camera_name(tmp_path) -> None:
+    """A namespaced camera can be scoped by its schema-safe ``__`` form.
+
+    ``start_recording`` documents ``cameras=`` names as either raw
+    (``arm0/wrist``) or already schema-safe (``arm0__wrist``), "parity with
+    MuJoCo/Newton". Both siblings pin the alias spelling; this pins it here.
+    Driving one hook step is what makes the alias branch's *raw* resolution
+    load-bearing: the per-step capture maps observation keys through the raw
+    source name, so an alias that kept the schema-safe spelling as its source
+    would declare the column and then never fill it.
+    """
+    root = str(tmp_path / "isaac_safe_name")
+    engine = _namespaced_camera_engine()
+    assert "arm0/wrist".replace("/", "__") != "arm0/wrist", "fixture must make the two spellings differ"
+
+    started = engine.start_recording(
+        repo_id="local/isaac_safe_name", root=root, fps=30, overwrite=True, cameras=["arm0__wrist"]
+    )
+    assert started["status"] == "success", started
+
+    recorder = engine._recording_state_dict["dataset_recorder"]
+    image_feats = {k for k in recorder.dataset.features if k.startswith("observation.images.")}
+    assert image_feats == {"observation.images.arm0__wrist"}, image_feats
+    # The hook renders the RAW scene camera and writes the schema-safe column.
+    assert engine._recording_state_dict["recording_cameras"] == [("arm0/wrist", "arm0__wrist", 64, 48)]
+
+    _drive_episode(engine, "so100", "alias", 1)
+    assert recorder.frame_count == 1, "the aliased column must actually receive frames"
+
+
+def test_start_recording_raw_and_schema_safe_names_are_equivalent(tmp_path) -> None:
+    """Scoping by raw or schema-safe name yields the same schema and sources.
+
+    Mirrors the MuJoCo equivalence pin: the two spellings are aliases of one
+    camera, so neither the declared columns nor the rendered source set may
+    depend on which one the caller wrote.
+    """
+    outcomes = []
+    for label, requested in (("raw", "arm0/wrist"), ("safe", "arm0__wrist")):
+        engine = _namespaced_camera_engine()
+        started = engine.start_recording(
+            repo_id=f"local/isaac_equiv_{label}",
+            root=str(tmp_path / label),
+            fps=30,
+            overwrite=True,
+            cameras=[requested],
+        )
+        assert started["status"] == "success", (label, started)
+        recorder = engine._recording_state_dict["dataset_recorder"]
+        outcomes.append(
+            (
+                frozenset(k for k in recorder.dataset.features if k.startswith("observation.images.")),
+                tuple(engine._recording_state_dict["recording_cameras"]),
+            )
+        )
+
+    assert outcomes[0] == outcomes[1], outcomes
+    assert outcomes[0][0] == frozenset({"observation.images.arm0__wrist"}), outcomes[0]
+
+
+def test_start_recording_dedupes_both_spellings_of_one_camera(tmp_path) -> None:
+    """Requesting a camera by BOTH spellings records it once, not twice.
+
+    The two names resolve to one scene camera, so the schema must carry a
+    single column: a per-spelling column would declare a duplicate feature
+    that the capture hook can only fill once.
+    """
+    root = str(tmp_path / "isaac_dedup")
+    engine = _namespaced_camera_engine()
+
+    started = engine.start_recording(
+        repo_id="local/isaac_dedup",
+        root=root,
+        fps=30,
+        overwrite=True,
+        cameras=["arm0/wrist", "arm0__wrist"],
+    )
+    assert started["status"] == "success", started
+
+    recorder = engine._recording_state_dict["dataset_recorder"]
+    image_feats = [k for k in recorder.dataset.features if k.startswith("observation.images.")]
+    assert image_feats == ["observation.images.arm0__wrist"], image_feats
+    assert engine._recording_state_dict["recording_cameras"] == [("arm0/wrist", "arm0__wrist", 64, 48)]
+    assert "2 cameras" not in started["content"][0]["text"], started["content"][0]["text"]

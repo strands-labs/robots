@@ -11,6 +11,14 @@ tool envelope, ``reset_between=True`` is refused citing #1895, and a rollout
 whose ``control_frequency`` disagrees with an active recording's fps is
 refused up front (the shared rate guard every rollout entry point applies).
 
+The four caller knobs the pre-flight block routes through base helpers
+shared with MuJoCo - ``control_frequency``, ``duration``, ``instructions``
+and ``action_horizon`` - are driven through THIS entry point below, each
+asserted to return the shared helper's envelope verbatim. The helpers
+themselves are unit-tested on the base; the behavioural coverage that
+module delegates to an entry point runs on the default backend, so these
+are what make Isaac's delegation to them a checked property.
+
 The merged-frame recording path (one ``add_frame`` per timestep with every
 robot's namespaced columns, #2159) is pinned separately in
 ``test_run_multi_policy_recording.py``.
@@ -352,6 +360,120 @@ def test_run_multi_policy_rejects_nonpositive_n_steps(sim_two_robots):
     )
     assert r["status"] == "error"
     assert "n_steps must be a positive integer" in r["content"][0]["text"]
+
+
+# --------------------------------------------------------------------------- #
+# The four shared knob domains, driven through THIS entry point               #
+# --------------------------------------------------------------------------- #
+# The pre-flight block above the loop routes four caller knobs -
+# ``control_frequency``, ``duration``, ``instructions`` and ``action_horizon`` -
+# through base helpers shared with MuJoCo, and its own comments state the
+# intent four times ("one refusal text for every backend", "guards the same
+# domain as run_policy", "MuJoCo parity", "the shared positive-int domain").
+# Those helpers are unit-tested on the base in
+# ``tests/simulation/test_run_multi_policy_base_contract.py``, and the
+# behavioural coverage that module delegates to an entry point runs on
+# ``create_simulation()`` - the default backend - so no test drove these four
+# refusals through the Isaac loop. Each one is asserted here to return the
+# shared helper's own envelope verbatim, which is what makes "cannot drift
+# from MuJoCo's refusal texts" a checked property rather than an intention,
+# and needs neither MuJoCo nor a Kit runtime to state.
+
+
+def _both() -> dict[str, Any]:
+    """The two-robot policy mapping the fixture's engine drives."""
+    return {"alpha": MockPolicy(), "beta": MockPolicy()}
+
+
+def _cost_nothing(sim: IsaacSimulation) -> None:
+    """Assert a refusal advanced no physics and applied no joint targets."""
+    assert sim._world.step_calls == 0
+    for name, robot in sim._robots.items():
+        assert robot.articulation.applied == [], name
+        assert getattr(robot, "policy_running", False) is False, name
+
+
+@pytest.mark.parametrize("bad", [0.0, -5.0, float("nan")], ids=["zero", "negative", "nan"])
+def test_run_multi_policy_rejects_a_frequency_it_cannot_divide_by(sim_two_robots, bad: float) -> None:
+    """``control_frequency`` is refused with the shared helper's own envelope.
+
+    It is validated before ``_resolve_horizon`` because that helper divides by
+    it. The assertion is envelope EQUALITY rather than a substring: it pins
+    that the loop returns the shared verdict, not a locally re-worded copy
+    that could drift from the sibling backends.
+    """
+    sim = sim_two_robots
+    result = sim.run_multi_policy(policies=_both(), n_steps=4, control_frequency=bad)
+
+    assert result == IsaacSimulation._validate_positive_frequency(bad, "run_multi_policy")
+    assert result["status"] == "error"
+    _cost_nothing(sim)
+
+
+@pytest.mark.parametrize("bad", [0.0, -1.0, True], ids=["zero", "negative", "bool"])
+def test_run_multi_policy_rejects_a_duration_it_cannot_honor(sim_two_robots, bad: Any) -> None:
+    """``duration`` - the horizon when no step count is given - is refused too."""
+    sim = sim_two_robots
+    result = sim.run_multi_policy(policies=_both(), duration=bad, control_frequency=500.0)
+
+    assert result == IsaacSimulation._validate_duration(bad, "run_multi_policy")
+    assert result["status"] == "error"
+    _cost_nothing(sim)
+
+
+def test_run_multi_policy_checks_duration_only_when_it_is_the_effective_horizon(sim_two_robots) -> None:
+    """A step count supersedes ``duration``, so an unusable one stays inert.
+
+    The mirror of the test above. ``_resolve_horizon`` REBINDS ``duration`` to
+    ``n_steps / control_frequency`` (measured: 0.0 in, 0.008 out), so the
+    caller's unusable value never reaches ``_validate_duration`` and the
+    ``if n_steps is None`` gate above it is belt-and-braces rather than the
+    thing that makes this pass - removing that gate is behaviour-preserving.
+    What this pins is the caller-visible contract, that an ignored knob is not
+    a refusal, which is what breaks if a later change validates the ARGUMENT
+    instead of the resolved horizon.
+    """
+    sim = sim_two_robots
+    result = sim.run_multi_policy(policies=_both(), n_steps=4, duration=0.0, control_frequency=500.0)
+
+    assert result["status"] == "success", result
+    assert sim._world.step_calls == 4
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [{"nosuch": "pick the cube"}, ["pick", "hold"]],
+    ids=["undriven-robot", "non-mapping"],
+)
+def test_run_multi_policy_rejects_instructions_the_shared_helper_refuses(sim_two_robots, bad: Any) -> None:
+    """``instructions`` normalization refuses with the shared helper's envelope."""
+    sim = sim_two_robots
+    policies = _both()
+    _, expected = IsaacSimulation._normalize_multi_policy_instructions(policies, bad, "run_multi_policy")
+    assert expected is not None, "probe value must be outside the shared domain"
+
+    result = sim.run_multi_policy(policies=policies, instructions=bad, n_steps=4)
+
+    assert result == expected
+    _cost_nothing(sim)
+
+
+@pytest.mark.parametrize("bad", [0, {"nosuch": 4}], ids=["nonpositive-scalar", "undriven-robot"])
+def test_run_multi_policy_rejects_an_action_horizon_the_shared_helper_refuses(sim_two_robots, bad: Any) -> None:
+    """``action_horizon`` normalization refuses with the shared helper's envelope.
+
+    ``default_horizon=8`` mirrors the value the loop passes, so the expected
+    envelope is the one the production call really produces.
+    """
+    sim = sim_two_robots
+    policies = _both()
+    _, expected = IsaacSimulation._normalize_multi_policy_horizons(policies, bad, "run_multi_policy", default_horizon=8)
+    assert expected is not None, "probe value must be outside the shared domain"
+
+    result = sim.run_multi_policy(policies=policies, action_horizon=bad, n_steps=4)
+
+    assert result == expected
+    _cost_nothing(sim)
 
 
 def test_run_multi_policy_requires_world():
