@@ -313,10 +313,13 @@ def use_rosbridge(
             ``echo``, ``publish``, ``service_call``.
         host: rosbridge server hostname or IP.
         port: rosbridge WebSocket port (default 9090).
-        topic: Topic name (``echo``, ``publish``).
-        service: Service name (``service_call``).
+        topic: Topic name (``echo``, ``publish``). Held to the same name rule
+            as ``service``.
+        service: Service name (``service_call``). Held to the same name rule
+            as ``topic``.
         type: ROS1 two-segment interface type, e.g. ``geometry_msgs/Twist``.
-            Auto-resolved for ``echo`` when omitted.
+            Required for ``publish`` - a message cannot be built without it -
+            and auto-resolved for ``echo`` when omitted.
         fields: JSON field dict (``publish`` message / ``service_call`` request).
         timeout: Seconds for the WebSocket dial, sample collection, or a
             service call. A positive finite number of seconds; every action

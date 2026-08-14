@@ -36,6 +36,7 @@ jobs:
   check-agent-api:
     name: Detect AgentTool API Breaking Changes
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     steps:
       - name: Checkout PR

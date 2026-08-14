@@ -40,6 +40,7 @@ jobs:
   overlap:
     name: Detect an untested overlap with the base branch
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     steps:
       # The BASE branch, not the pull request head. This job reads two different

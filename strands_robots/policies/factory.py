@@ -247,3 +247,57 @@ def preflight_policy(provider: str, observation_keys: set[str], **kwargs) -> Non
         # Provider did not override the default no-op preflight.
         return
     PolicyClass.preflight(set(observation_keys), **resolved_kwargs)
+
+
+def policy_provider_error(provider: str, **kwargs) -> str | None:
+    """Return why ``provider`` cannot be resolved to a policy class, or ``None``.
+
+    Probes the SAME resolution path :func:`create_policy` uses, without
+    instantiating anything, so every spelling that provider accepts -- a
+    registered name, a HuggingFace model ID, a ``zmq://`` / ``ws://`` URL, a
+    ``host:port`` pair -- resolves here too. Only a name no spelling can reach
+    yields a reason.
+
+    This is the agent-tool companion to :func:`preflight_policy`, which
+    deliberately swallows resolution failures on the stated grounds that
+    "create_policy raises the authoritative error". That premise holds for a
+    library caller, which sees the raise. It does not hold for the simulation's
+    agent-tool surfaces: a raise out of ``run_policy`` / ``eval_policy``
+    escapes the ``status=error`` envelope those tools are documented to return,
+    and ``start_policy`` builds the policy on a worker thread, so the raise is
+    never surfaced at all and the caller is told the policy started. Returning
+    the reason lets each surface report it on its own channel instead.
+
+    The returned message names every registered provider, so a caller that
+    guessed a name gets the available set back rather than a traceback.
+
+    A non-string ``provider`` is refused here too: resolution indexes the
+    registry with it, so it would otherwise arrive as a bare ``TypeError``
+    naming neither the parameter nor the problem.
+
+    Args:
+        provider: Provider name, HF model ID, or server URL (as passed to
+            ``create_policy``).
+        **kwargs: Provider-specific parameters (the policy_config), forwarded
+            so resolution sees exactly what ``create_policy`` will.
+
+    Returns:
+        The resolution failure message, or ``None`` when ``provider`` resolves.
+    """
+    if not isinstance(provider, str):
+        # Resolution indexes the registry with this value, so a non-string
+        # reaches it as a bare TypeError naming neither the parameter nor the
+        # problem ("argument of type 'NoneType' is not iterable").
+        return (
+            f"policy_provider must be a string, got {type(provider).__name__}. "
+            "Pass a provider name (list_providers() reports them), a HuggingFace "
+            "model ID, or a server URL."
+        )
+    try:
+        _resolve_policy_class(provider, **kwargs)
+    except ValueError as e:
+        # ValueError is the unresolvable-NAME verdict. A missing optional
+        # dependency (ImportError) and the trust-remote-code gate are separate
+        # concerns with their own reporting, and are deliberately not caught.
+        return str(e)
+    return None

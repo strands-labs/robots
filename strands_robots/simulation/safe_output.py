@@ -4,6 +4,7 @@ Several simulation entry points persist an artifact to a caller-chosen
 filesystem path that originates from an untrusted (LLM tool-call) source:
 
 * ``render(output_path=...)`` - a PNG still,
+* ``export_xml(output_path=...)`` - the scene as canonical MJCF,
 * ``run_policy(video={"path": ...})`` - a rollout MP4,
 * ``start_cameras_recording(output_dir=..., name=...)`` - per-camera MP4s.
 
@@ -19,7 +20,8 @@ Two confinement policies are supported, selected per sink:
   (used by ``render``, whose ``output_path`` is a newer, sandboxed-by-design
   feature). Pass a non-``None`` ``sandbox_root`` with ``allow_abs=False``.
 * **Guards-only (opt-in sandbox)** - absolute paths are permitted (the historic
-  video/recording contract) but the metacharacter, backslash, symlink, and
+  video/recording contract, and ``export_xml``'s) but the metacharacter,
+  backslash, symlink, and
   name-traversal guards still apply. Pass ``sandbox_root=None`` (or
   ``allow_abs=True``); callers opt in to confinement by supplying a root.
 """
@@ -76,6 +78,15 @@ def validate_output_path(
     target. Normalizes ``..`` via ``resolve()``. When ``sandbox_root`` is given
     and ``allow_abs`` is False, the resolved path must live under it.
 
+    A bare filename (one component, no separator, e.g. ``"frame.png"``) is
+    anchored to ``sandbox_root`` rather than the process CWD whenever
+    confinement is active. Without that, the most natural call a caller can
+    make is refused for naming a CWD path it never supplied. The anchoring
+    cannot widen the sandbox: it applies only to a single-component name, and
+    every guard above still runs against the anchored destination. In
+    guards-only mode (``sandbox_root=None`` or ``allow_abs=True``) a relative
+    name stays CWD-relative, preserving the historic video/recording contract.
+
     Args:
         output_path: Caller-supplied destination path.
         sandbox_root: Directory the path must resolve under, or ``None`` to skip
@@ -98,6 +109,17 @@ def validate_output_path(
     # directory, while plain absolute paths without ".." remain permitted.
     if ".." in raw.parts:
         raise ValueError(f"unsafe {label}: path traversal")
+    # A bare filename ("frame.png") names no directory, so resolving it against
+    # the process CWD is a guess - and under confinement it is a guess that
+    # always fails, refusing the call with a CWD-absolute path the caller never
+    # supplied. Anchor it to the sandbox root instead: a one-component name
+    # cannot escape it, and ".." is refused above by a check that scans every
+    # part (so it holds for the joined path too). Done BEFORE the symlink probe
+    # below because that guard must inspect the destination actually opened -
+    # after it, a link planted inside the sandbox would be probed at the CWD
+    # path instead and followed.
+    if sandbox_root is not None and not allow_abs and not raw.is_absolute() and len(raw.parts) == 1:
+        raw = sandbox_root / raw
     # Refuse to follow a symlink planted at the target (arbitrary-write vector).
     if raw.is_symlink():
         raise ValueError(f"{label} {output_path!r} is a symlink - refusing to follow")

@@ -76,6 +76,22 @@ _INFERS_REPOSITORY: tuple[str, ...] = tuple(
     )
 )
 
+#: The flag that names the API repository, and the argv marker that makes naming it
+#: required, for each script that can infer one from ``GITHUB_REPOSITORY``.
+#:
+#: ``check_merge_base_overlap.py`` differs on both axes and is why this is a mapping
+#: rather than a blanket ``--repo`` test. Its own ``--repo`` is the local checkout
+#: path, so the API repository needs a distinct spelling; and only ``--all-open``
+#: reaches the API at all, its single-branch mode being local git with nothing to
+#: infer. Requiring the flag of that mode would be the same false rejection this
+#: scope exists to avoid.
+_NAMES_REPOSITORY: dict[str, tuple[str, str | None]] = {
+    "check_closing_reference.py": ("--repo", None),
+    "check_duplicate_claim.py": ("--repo", None),
+    "check_last_push_approval.py": ("--repo", None),
+    "check_merge_base_overlap.py": ("--github-repo", "--all-open"),
+}
+
 
 def _documented_intake_argv(issue: int) -> list[str]:
     """Return the intake command step 1 prints, as an ``argv`` list."""
@@ -638,17 +654,31 @@ class TestNoDocumentedInvocationLeavesTheRepositoryInferred:
     it with no arguments, where the environment is correct by construction. Scoped to
     the scripts that can *infer* a repository, since the local-git checks have nothing
     to infer and requiring a flag of them would be a false rejection.
+
+    The scope is per *invocation*, not per script: :data:`_NAMES_REPOSITORY` carries
+    both the flag each script spells the repository with and the argv marker that makes
+    naming it required, because one script's ``--repo`` means a local checkout path and
+    one of its two modes never reaches the API.
     """
 
     def test_the_inferring_scripts_are_the_ones_measured(self) -> None:
         """Non-vacuity: the scope is a real set, and this script is in it."""
         assert "check_duplicate_claim.py" in _INFERS_REPOSITORY, _INFERS_REPOSITORY
-        assert len(_INFERS_REPOSITORY) == 3, _INFERS_REPOSITORY
+        assert set(_INFERS_REPOSITORY) == set(_NAMES_REPOSITORY), (
+            "a script that can infer the repository must declare how it names one",
+            _INFERS_REPOSITORY,
+            sorted(_NAMES_REPOSITORY),
+        )
 
     def test_every_documented_invocation_names_the_repository(self) -> None:
         invocations = _documented_check_invocations()
         assert len(invocations) >= 3, invocations
-        inferring = [(script, rest) for script, rest in invocations if script in _INFERS_REPOSITORY]
+        inferring = [(script, rest) for script, rest in invocations if script in _NAMES_REPOSITORY]
         assert inferring, invocations
-        missing = [f"{script}{rest}" for script, rest in inferring if "--repo" not in rest]
+        missing = [
+            f"{script}{rest}"
+            for script, rest in inferring
+            for flag, marker in (_NAMES_REPOSITORY[script],)
+            if (marker is None or marker in rest) and flag not in rest
+        ]
         assert not missing, missing

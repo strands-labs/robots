@@ -129,8 +129,10 @@ class IsaacMotionPrimitivesMixin(MotionPrimitivesCore):
         """
         return (name or "").rsplit("/", 1)[-1]
 
-    def _primitive_resolve_robot(self, robot_name: str | None) -> tuple[str | None, Any | None, dict[str, Any] | None]:
-        """Common primitive preamble: world + robot + articulation guards.
+    def _primitive_resolve_robot(
+        self, action: str, robot_name: str | None
+    ) -> tuple[str | None, Any | None, dict[str, Any] | None]:
+        """Common primitive preamble: world + robot + articulation + policy guards.
 
         Returns ``(robot_name, robot_state, None)`` on success or
         ``(None, None, error_dict)``. Callers must hold ``self._lock`` (the
@@ -138,6 +140,13 @@ class IsaacMotionPrimitivesMixin(MotionPrimitivesCore):
         (``send_action`` / ``set_joint_positions`` established it) - robot and
         world resolution is the half of the primitives that stays
         backend-specific, per the ``MotionPrimitivesCore`` split.
+
+        The no-running-policy refusal lives here so *every* primitive carries
+        it, at the same point the MuJoCo mixin's preamble calls
+        ``_require_no_running_policy``: a primitive and the policy loop would
+        race on the articulation's PD targets, and ``policy_running`` is the
+        per-robot flag every Isaac policy-driving loop sets
+        (:meth:`IsaacSimulation.run_multi_policy`, the recording rollout hook).
         """
         if not self._world_created or self._world is None:
             return None, None, _err("No world created.")
@@ -157,24 +166,36 @@ class IsaacMotionPrimitivesMixin(MotionPrimitivesCore):
         robot = self._robots[robot_name]
         if robot.articulation is None:
             return None, None, _err(f"Robot {robot_name!r} not initialized.")
+        if robot.policy_running:
+            return (
+                None,
+                None,
+                _err(
+                    f"Cannot '{action}' on '{robot_name}' while its policy is running - a primitive "
+                    "and the policy loop would race on the articulation's PD targets. Wait "
+                    "for the rollout to finish (Isaac policy loops clear the flag on exit)."
+                ),
+            )
         return robot_name, robot, None
 
     def _primitive_abort_reason(self, action: str, robot_name: str) -> dict[str, Any] | None:
         """Mid-loop cancellation check (call under ``self._lock``).
 
         The primitive loops release the lock between control ticks, so the
-        world can legitimately be destroyed or the robot removed while a
-        primitive runs. Either aborts the primitive with a structured error -
-        the same abort contract as the MuJoCo mixin - rather than stepping a
-        torn-down stage. (Isaac has no in-place model recompile, and policy
-        rollouts are driven externally by ``PolicyRunner``, so those MuJoCo
-        abort branches have no Isaac counterpart.)
+        world can legitimately be destroyed, the robot removed, or a policy
+        started while a primitive runs. Each of those aborts the primitive with
+        a structured error - the same abort contract as the MuJoCo mixin -
+        rather than stepping a torn-down stage or writing PD targets the policy
+        loop is also writing. (Isaac has no in-place model recompile, so that
+        MuJoCo abort branch alone has no Isaac counterpart.)
         """
         if not self._world_created or self._world is None:
             return _err(f"{action}: world was destroyed mid-run; aborting.")
         robot = registry_entry(self._robots, robot_name)
         if robot is None or robot.articulation is None:
             return _err(f"{action}: robot '{robot_name}' was removed mid-run; aborting.")
+        if robot.policy_running:
+            return _err(f"{action}: a policy started on '{robot_name}' mid-run; aborting.")
         return None
 
     def _run_primitive_on_kit(self, action: str, fn: Any) -> dict[str, Any]:
@@ -653,17 +674,11 @@ class IsaacMotionPrimitivesMixin(MotionPrimitivesCore):
             # Runs on the Kit-owning thread (see _run_primitive_on_kit), so the
             # articulation reads that seed the solve happen on the Kit loop.
             with self._lock:
-                robot_name_resolved, robot, error = self._primitive_resolve_robot(robot_name)
+                robot_name_resolved, robot, error = self._primitive_resolve_robot("move_to", robot_name)
                 if error is not None:
                     return error
                 assert robot_name_resolved is not None and robot is not None
                 name: str = robot_name_resolved
-                if robot.policy_running:
-                    return _err(
-                        f"Cannot 'move_to' on '{name}' while its policy is running - a primitive "
-                        "and the policy loop would race on the articulation's PD targets. Wait "
-                        "for the rollout to finish (Isaac policy loops clear the flag on exit)."
-                    )
                 articulation = robot.articulation
                 short_names = [self._short_joint_name(n) for n in robot.joint_names]
 
@@ -826,9 +841,6 @@ class IsaacMotionPrimitivesMixin(MotionPrimitivesCore):
                     abort = self._primitive_abort_reason("move_to", name)
                     if abort is not None:
                         return abort
-                    live = registry_entry(self._robots, name)
-                    if live is not None and live.policy_running:
-                        return _err(f"move_to: a policy started on '{name}' mid-run; aborting.")
                     apply_err = self._apply_position_targets("move_to", name, articulation, targets)
                     if apply_err is not None:
                         return apply_err
@@ -889,6 +901,13 @@ class IsaacMotionPrimitivesMixin(MotionPrimitivesCore):
         result semantics as the MuJoCo backend's
         :meth:`~strands_robots.simulation.mujoco.motion_primitives.MotionPrimitivesMixin.set_gripper`.
 
+        REFUSES WHILE A POLICY RUNS on the same robot: ``policy_running`` is
+        the per-robot flag every Isaac policy-driving loop sets
+        (:meth:`IsaacSimulation.run_multi_policy`, the recording rollout
+        hook), so it is this backend's counterpart of the MuJoCo
+        ``_require_no_running_policy`` guard - checked up front and per
+        control tick (a policy starting mid-run aborts the primitive).
+
         Args:
             robot_name: Robot whose gripper to drive; defaults to the single
                 robot in the world (errors if ambiguous).
@@ -914,7 +933,7 @@ class IsaacMotionPrimitivesMixin(MotionPrimitivesCore):
         gripper_state: str = state
 
         with self._lock:
-            robot_name_resolved, robot, error = self._primitive_resolve_robot(robot_name)
+            robot_name_resolved, robot, error = self._primitive_resolve_robot("set_gripper", robot_name)
             if error is not None:
                 return error
             assert robot_name_resolved is not None and robot is not None
@@ -1011,6 +1030,13 @@ class IsaacMotionPrimitivesMixin(MotionPrimitivesCore):
         backend's
         :meth:`~strands_robots.simulation.mujoco.motion_primitives.MotionPrimitivesMixin.rotate_wrist`.
 
+        REFUSES WHILE A POLICY RUNS on the same robot: ``policy_running`` is
+        the per-robot flag every Isaac policy-driving loop sets
+        (:meth:`IsaacSimulation.run_multi_policy`, the recording rollout
+        hook), so it is this backend's counterpart of the MuJoCo
+        ``_require_no_running_policy`` guard - checked up front and per
+        control tick (a policy starting mid-run aborts the primitive).
+
         Args:
             robot_name: Robot whose wrist to rotate; defaults to the single
                 robot in the world (errors if ambiguous).
@@ -1033,7 +1059,7 @@ class IsaacMotionPrimitivesMixin(MotionPrimitivesCore):
             return arg_err
 
         with self._lock:
-            robot_name_resolved, robot, error = self._primitive_resolve_robot(robot_name)
+            robot_name_resolved, robot, error = self._primitive_resolve_robot("rotate_wrist", robot_name)
             if error is not None:
                 return error
             assert robot_name_resolved is not None and robot is not None

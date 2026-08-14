@@ -55,18 +55,24 @@ sim.destroy()
 
 ## Solvers
 
-Pass `solver=` to `create_simulation("newton", solver=...)`. The rigid-body
-solvers used by articulated robots are:
+Pass `solver=` to `create_simulation("newton", solver=...)`. The solvers that
+integrate a rigid articulated robot are:
 
 | Name | Newton class | Notes |
 |------|--------------|-------|
 | `mujoco` (default) | `SolverMuJoCo` | MuJoCo-Warp; requires `mujoco-warp` |
 | `featherstone` | `SolverFeatherstone` | Reduced-coordinate articulated-body |
-| `xpbd` | `SolverXPBD` | Position-based dynamics |
-| `semi_implicit` | `SolverSemiImplicit` | Explicit semi-implicit integrator |
+| `kamino` | `SolverKamino` | Rigid-body contact solver |
 
-`vbd`, `style3d`, `mpm`, and `kamino` are also resolvable for soft-body /
-particle scenes but are not exercised by rigid robot arms.
+Newton resolves five more names -- `vbd`, `style3d`, `mpm`, `xpbd` and
+`semi_implicit` -- that belong to other physics families and have nothing to
+integrate in a rigid robot scene. Naming one is refused when the engine is
+constructed, with the reason and the list above, because the alternatives are
+worse than a refusal: `vbd`, `style3d` and `mpm` raise from inside Newton
+naming a `ModelBuilder` the caller never touched, and `xpbd` and
+`semi_implicit` build and step without moving a joint, so `add_robot`,
+`send_action` and `step` all report success over a frozen world.
+`describe()["available_solvers"]` reports the accepted names only.
 
 `SolverMuJoCo` requires at least one joint in the model; an empty world (ground
 plane only) defers solver creation until a robot is added, and stepping is a

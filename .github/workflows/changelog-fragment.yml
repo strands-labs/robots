@@ -68,6 +68,7 @@ jobs:
   fragment:
     name: Refuse a changelog entry that breaks the fragment convention
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     steps:
       # The BASE branch, not the pull request head. This job reads two different

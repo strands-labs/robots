@@ -13,6 +13,9 @@ jobs:
   analyze:
     name: Analyze (Python)
     runs-on: ubuntu-latest
+    # 3.8 min median / 4.1 max over the last 49 runs; CodeQL scales with the tree,
+    # so the headroom is deliberate.
+    timeout-minutes: 20
     permissions:
       security-events: write
       contents: read
