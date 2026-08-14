@@ -13,9 +13,9 @@ runs, 16 falsely marked OK) is that the LLM dispatches **one** giant
 recorder sees one mega-episode of ``20x60=1200`` frames and writes
 ``info.json:total_episodes=1``.
 
-PR #716 fixed the *recorder* side (per-episode ``save_episode`` boundaries
-are now wired in ``PolicyRunner.evaluate`` / ``_evaluate_with_spec``). This
-tool fixes the *exposure* side: it surfaces ``n_episodes`` explicitly and
+The *recorder* side is already handled: per-episode ``save_episode``
+boundaries are wired in ``PolicyRunner.evaluate`` / ``_evaluate_with_spec``.
+This tool fixes the *exposure* side: it surfaces ``n_episodes`` explicitly and
 drives the episode loop in deterministic Python - no LLM in the loop.
 
 The tool also returns **parquet-truth**, not agent self-report: after the
@@ -37,8 +37,8 @@ Design notes (the contract this tool pins):
   exactly ``n_episodes`` times, and the parquet-truth gate at the end
   catches any divergence.
 * The episode loop calls ``simulation.run_policy(...)`` per iteration and
-  invokes the ``PolicyRunner._finalize_recorder_episode`` helper (added
-  in PR #716) between rollouts so each episode lands in its own parquet
+  invokes the ``PolicyRunner._finalize_recorder_episode`` helper between
+  rollouts so each episode lands in its own parquet
   row. The trailing ``stop_recording`` flushes the final episode and
   closes the dataset.
 * Recording is OPTIONAL. When ``dataset_root`` is provided we drive a full
@@ -129,8 +129,7 @@ def run_policy(
     1. **Explicit ``n_episodes``** - the loop iterates exactly N times,
        no narrated counts.
     2. **Per-episode ``save_episode``** - each rollout lands in its own
-       parquet row via ``PolicyRunner._finalize_recorder_episode``
-       (wired by PR #716).
+       parquet row via ``PolicyRunner._finalize_recorder_episode``.
     3. **Parquet-truth return** - final payload carries
        ``total_episodes`` / ``total_frames`` read from
        ``meta/info.json`` AFTER ``stop_recording`` returns, NOT
@@ -428,7 +427,7 @@ def run_policy(
                 ep_record["steps_used"] = rollout_json.get("steps_used")
             episodes.append(ep_record)
 
-            # Per-episode parquet boundary. PR #716 wired this helper inside
+            # Per-episode parquet boundary. This helper is wired inside
             # PolicyRunner.evaluate() / _evaluate_with_spec(), but bare
             # run_policy does NOT call it (single-rollout APIs assume the
             # caller owns episode framing). We do it here because we ARE the
@@ -555,7 +554,7 @@ def _episode_video_config(
 def _finalize_episode(simulation: Any) -> None:
     """Invoke ``PolicyRunner._finalize_recorder_episode`` for ``simulation``.
 
-    PR #716 added this helper as the canonical per-episode boundary on
+    This helper is the canonical per-episode boundary on
     ``PolicyRunner`` (it reads the active recorder out of
     ``sim._world._backend_state["dataset_recorder"]`` and calls its
     ``save_episode``). Bare ``run_policy`` does not invoke it - it assumes

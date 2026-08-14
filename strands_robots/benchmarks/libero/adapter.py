@@ -175,11 +175,11 @@ class LiberoAdapter(BenchmarkProtocol):
             ``MultiStepConfig.max_episode_steps`` for LIBERO eval -
             see ``Isaac-GR00T/gr00t/eval/rollout_policy.py``). Override
             per-task by passing ``max_steps=`` to the constructor or
-            mutating the attribute after construction. Pre-#168 we used the LIBERO repository's lifelong-learning
-            convention of 300; that was too short for libero_10's
-            longer-horizon manipulation tasks (e.g. multi-step pick-
-            and-place chains) and was contributing to ``success_rate=0``
-            on tasks that needed more time. 720 matches the canonical
+            mutating the attribute after construction. The LIBERO
+            repository's lifelong-learning convention of 300 is too short
+            for libero_10's longer-horizon manipulation tasks (e.g.
+            multi-step pick-and-place chains) and drives ``success_rate=0``
+            on tasks that need more time. 720 matches the canonical
             GR00T-N1.7-LIBERO eval setup.
         problem: The parsed :class:`BDDLProblem`. Stored for introspection
             (agents may read ``problem.language`` as the instruction).
@@ -390,7 +390,7 @@ class LiberoAdapter(BenchmarkProtocol):
                 generator. The generated XML is cached on disk so
                 subsequent episodes / processes reuse it without
                 re-running ``libero``. Set to ``False`` to keep the
-                pre-#164 behaviour of running against a bare Panda when
+                fallback behaviour of running against a bare Panda when
                 no ``scene_path`` is provided.
             scene_cache_dir: Filesystem location for the generated-scene
                 cache. Defaults to ``$STRANDS_BASE_DIR/scene_cache/libero/``
@@ -502,7 +502,7 @@ class LiberoAdapter(BenchmarkProtocol):
                 missing robosuite, missing site/actuator IDs) is no longer
                 indistinguishable from a bad *policy* scoring
                 ``success_rate=0`` on a green run (#522). Set to ``False``
-                to restore the pre-#522 best-effort behaviour (log + run
+                to restore the best-effort behaviour (log + run
                 with actions no-op'd); the failure is still recorded on
                 :attr:`action_controller_error` so callers/CI can tag the
                 result. Dependency-clash failures (``ImportError`` /
@@ -577,11 +577,11 @@ class LiberoAdapter(BenchmarkProtocol):
         # State-side gripper joint names (#168). LIBERO trains
         # ``state.gripper`` on a 2-element vector ``[finger1.qpos, finger2.qpos]``
         # - the two fingers have OPPOSITE-sign qpos by physical
-        # convention (they move apart). Pre-#168 we read ONE
-        # finger from ``obs[gripper_joint_name]`` and packed it as
-        # ``[v, v]`` (both positive), which is structurally
-        # out-of-distribution for GR00T-LIBERO and produced the
-        # near-zero deltas observed across earlier iterations. The current implementation
+        # convention (they move apart). Reading ONE finger from
+        # ``obs[gripper_joint_name]`` and packing it as ``[v, v]``
+        # (both positive) is structurally out-of-distribution for
+        # GR00T-LIBERO and produces near-zero policy deltas.
+        # The current implementation
         # reads both finger qpos directly from ``data.qpos[jnt_qposadr]``.
         # Default auto-derives ``["<gripper_prefix>finger_joint1",
         # "<gripper_prefix>finger_joint2"]`` (i.e.
@@ -903,8 +903,8 @@ class LiberoAdapter(BenchmarkProtocol):
         #168: LIBERO trains ``state.gripper`` on a 2-element
         vector ``[finger1.qpos, finger2.qpos]`` whose elements have
         OPPOSITE signs by physical convention (the two fingers move
-        apart). Pre-#168 we read ONE finger and packed it as
-        ``[v, v]`` (both positive), which fed GR00T structurally
+        apart). Reading ONE finger and packing it as
+        ``[v, v]`` (both positive) feeds GR00T structurally
         out-of-distribution state. The property returns the names in
         the order they appear in the trained state vector.
         """
@@ -1415,8 +1415,8 @@ class LiberoAdapter(BenchmarkProtocol):
         # ``start_cameras_recording`` has its own
         # ``threading.local`` Renderer instance, but some driver-
         # level state (compiled shaders, texture caches, GLContext
-        # bind state) is process-shared. The reviewer's variant-B
-        # verification (#168) showed that without a main-thread
+        # bind state) is process-shared. Verification showed that
+        # without a main-thread
         # render after prewarm, the recorder thread's first ~15
         # render calls return GL clear-colour gradient even when
         # ``mj_forward`` has populated ``data.xpos / xmat``. A single
@@ -1664,8 +1664,8 @@ class LiberoAdapter(BenchmarkProtocol):
         2. Fall back to the BODY path via
            ``sim.get_body_state(self._eef_body_name)`` for non-RoboSuite
            scenes that don't ship the canonical site (e.g. bare
-           Menagerie Panda). The fallback path matches the pre-#168
-           behaviour exactly.
+           Menagerie Panda). The fallback path reads the body pose
+           directly.
         3. Convert the site/body's rotation matrix or quaternion to
            extrinsic XYZ Euler ``(roll, pitch, yaw)`` to match the
            LIBERO/RoboSuite ``mat2euler(..., axes='sxyz')`` convention
@@ -1711,11 +1711,11 @@ class LiberoAdapter(BenchmarkProtocol):
         # ``[gripper0_finger_joint1.qpos, gripper0_finger_joint2.qpos]``.
         # The two fingers have OPPOSITE-sign qpos by physical
         # convention (they move apart); typical at-rest values are
-        # ``[+0.0208, -0.0208]``. Pre-#168 we read only one finger
-        # via ``obs[self._gripper_joint_name]`` and packed it as
-        # ``[v, v]`` (both positive), which fed GR00T structurally
-        # out-of-distribution state - manifest as near-zero policy
-        # deltas across rounds 23-32 of #168.
+        # ``[+0.0208, -0.0208]``. Reading only one finger via
+        # ``obs[self._gripper_joint_name]`` and packing it as
+        # ``[v, v]`` (both positive) feeds GR00T structurally
+        # out-of-distribution state, which manifests as near-zero
+        # policy deltas.
         #
         # Read both finger qpos directly from ``data.qpos[jnt_qposadr]``
         # using the canonical RoboSuite joint names. On backends without
@@ -1732,7 +1732,7 @@ class LiberoAdapter(BenchmarkProtocol):
             merged.setdefault("gripper", self._apply_gripper_signs(gripper_qpos))
         else:
             # Legacy fallback - read one joint from obs and duplicate
-            # (preserves pre-#168 behaviour for non-RoboSuite
+            # (the documented fallback for non-RoboSuite
             # scenes; the duplicate-packing is wrong for LIBERO but
             # there's no better default for unknown gripper layouts).
             gripper_value = obs.get(self._gripper_joint_name)
@@ -2010,9 +2010,9 @@ class LiberoAdapter(BenchmarkProtocol):
         finger joints; their values have OPPOSITE signs by physical
         convention (the Panda gripper's two-finger MJCF puts each
         finger on its own joint with mirrored ranges, e.g.
-        ``[0, +0.04]`` and ``[-0.04, 0]``). Pre-#168 the adapter
-        read ONE finger's value and packed it as ``[v, v]`` (both
-        positive), which is structurally OOD from training.
+        ``[0, +0.04]`` and ``[-0.04, 0]``). Reading ONE finger's value
+        and packing it as ``[v, v]`` (both positive) is structurally
+        OOD from training.
 
         Returns ``None`` (and the caller falls back to the legacy
         single-joint duplicate path) if any of:
@@ -2225,7 +2225,7 @@ class LiberoAdapter(BenchmarkProtocol):
         # * Upstream hides collision capsules at the *renderer* level via
         #   ``mjvOption.geomgroup[0] = 0``, not via MJCF rgba edits.
         #   Same approach for site / joint / actuator markers
-        #   (the red dot + green line the reviewer caught are
+        #   (the red dot + green line visible in agentview are
         #   ``gripper0_ft_frame`` / ``gripper0_grip_site_cylinder``
         #   sites in ``site_group=1``).
         #
@@ -2450,7 +2450,7 @@ class LiberoAdapter(BenchmarkProtocol):
         attributes, ``mj_name2id`` raising) is caught and logged at
         DEBUG, leaving the legacy bare-Panda defaults
         (``"hand"`` / ``"finger_joint1"``) in place. That preserves the
-        pre-#166 behaviour for non-MuJoCo backends.
+        documented fallback for non-MuJoCo backends.
         """
         prefix = self._scene_robot_prefix
         gprefix = self._scene_gripper_prefix
@@ -2550,8 +2550,8 @@ class LiberoAdapter(BenchmarkProtocol):
           ``gripper0_ft_frame`` (red dot - force-torque frame),
           ``gripper0_grip_site`` (semi-transparent red sphere),
           ``gripper0_grip_site_cylinder`` (green line - grasp-axis
-          cylinder). Default ``sitegroup`` shows them; reviewer caught
-          them as "red dot + green line in the middle of agentview".
+          cylinder). Default ``sitegroup`` shows them, which reads as a
+          "red dot + green line in the middle of agentview".
         * Joint visualisations (``mjVIS_JOINT = 0``). Hides the
           axis-arrow widgets MuJoCo draws on each ``<joint>`` definition.
         * Actuator visualisations (``mjVIS_ACTUATOR = 0``). Hides the
@@ -2663,7 +2663,7 @@ class LiberoAdapter(BenchmarkProtocol):
         * When ``False``, the failure is logged at WARNING and recorded
           on :attr:`_action_controller_error` (so callers can still tag
           the result) before falling through to the no-op name-lookup
-          path - the pre-#522 best-effort behaviour.
+          path - the best-effort behaviour.
         * Dependency-clash failures (``ImportError`` / ``AttributeError``
           from the import chain - e.g. the ``numba`` / ``coverage``
           incompatibility) are ALWAYS re-raised with a remediation hint,
@@ -3107,7 +3107,7 @@ class LiberoAdapter(BenchmarkProtocol):
 
         Backends without a MuJoCo-compiled model (or with mujoco not
         importable) fall back to the registry-only check - that's the
-        pre-#166-review behaviour, retained as a defensive fallback for
+        registry-only fallback, retained for
         non-MuJoCo engines that still want LIBERO eval.
 
         Critical for #166: :meth:`Simulation.load_scene` creates a fresh
@@ -3182,7 +3182,7 @@ class LiberoAdapter(BenchmarkProtocol):
            scene compile (after ``super().on_episode_start`` and
            ``_install_libero_cameras`` have run); restore the cached
            snapshot on every subsequent episode. The procedurally-
-           generated MJCFs from :meth:`_generate_scene_from_bddl` (PR #165)
+           generated MJCFs from :meth:`_generate_scene_from_bddl`
            don't carry a keyframe, so this branch fires when init_states
            is also None (e.g. adapters built directly from a BDDL file
            without going through :func:`load_libero_suite`).
@@ -4382,7 +4382,7 @@ def _rename_mjcf_cameras(xml: str, aliases: dict[str, str]) -> str:
 # the upgrade.
 #
 # History:
-# * ``v1``: implicit (pre-#168, alias map alone in cache key).
+# * ``v1``: implicit (alias map alone in the cache key).
 # * ``v2``: #168 (initial attempt) - applied ``_apply_libero_visual_fixes`` (rgba alpha=0 on
 #   collision geoms + custom ``<visual>`` block with stacked ``<headlight>``).
 #   Empirically wrong direction (washed out contrast); reverted in v3.
@@ -5141,10 +5141,10 @@ class _LiberoOSCController:
         # Missing keys default to 0 (no-op delta). Each per-key value
         # may be either a scalar or a 2-element list / array - GR00T-
         # LIBERO packs ALL action channels (x/y/z/roll/pitch/yaw/gripper)
-        # to match the training-data shape, same convention PR #162
-        # introduced for state.gripper. _to_scalar handles both forms
-        # (and defensive against unexpected shapes) - #168 only
-        # fixed gripper; #168 applies the same fix to every key.
+        # to match the training-data shape, the same convention used
+        # for state.gripper. _to_scalar handles both forms (and is
+        # defensive against unexpected shapes) and is applied to
+        # every action key, not just the gripper.
         delta = np.array(
             [
                 _to_scalar(action_dict.get("x", 0.0)),
@@ -5193,11 +5193,11 @@ class _LiberoOSCController:
         #   gripper_in = 0.5             → -sign(0)  =  0 (no motion)
         #   gripper_in = 1.0 (RLDS open)  → -sign(+1) = -1 (LIBERO open)  [ok]
         #
-        # Pre-#168 we passed the raw model output to our OSC's
-        # ``np.sign(gripper_value)`` directly. Since the model's typical
-        # outputs are in [0, 1], every "open" intent (model output ≈ 1)
-        # collapsed to ``sign=+1``, which our OSC interprets as CLOSE - so
-        # the gripper consistently went CLOSED for OPEN commands and
+        # Passing the raw model output to our OSC's
+        # ``np.sign(gripper_value)`` directly is wrong: the model's typical
+        # outputs are in [0, 1], so every "open" intent (model output ≈ 1)
+        # collapses to ``sign=+1``, which our OSC interprets as CLOSE - the
+        # gripper then goes CLOSED for OPEN commands and
         # vice-versa. This is the action-side counterpart to #168's
         # observation-side V-flip bug; both rounds together close the
         # client-pipeline parity gap that left ``success_rate=0`` after
@@ -5251,7 +5251,7 @@ class _LiberoOSCController:
         # #168 - capture pre-step state for diagnostic log.
         # Gated on ``STRANDS_LIBERO_ACTION_LOG=1`` so production eval
         # incurs zero cost (single bool check). The full diagnostic
-        # answers PR #168's "what scale, what frame, what key
+        # answers the "what scale, what frame, what key
         # naming, does motion track delta" questions in one log line
         # per step.
         log_now = self._action_log_enabled and self._action_log_step < self._action_log_max
@@ -5298,7 +5298,7 @@ class _LiberoOSCController:
             #   ctrl = bias + weight * current_action
             # Without this, +1 (close) writes 0.04 to finger1 (range
             # [0, 0.04]) which actually OPENS finger1, breaking every
-            # grasp. See PR #168 investigation.
+            # grasp.
             self._gripper_current_action = np.clip(
                 self._gripper_current_action + ramp_step,
                 -1.0,
@@ -5312,7 +5312,7 @@ class _LiberoOSCController:
 
         # #168 - emit one structured log line per apply()
         # while inside the captured-step window. Captures everything a
-        # reviewer needs to bisect the residual bug: action key names,
+        # needed to bisect a residual tracking bug: action key names,
         # delta scale, gripper polarity end-to-end, EEF tracking
         # (delta vs actual EEF motion), and qpos/ctrl deltas.
         if log_now:
@@ -5570,9 +5570,9 @@ def _to_scalar(value: Any) -> float:
 
     Handles GR00T's training-shape packing where each per-key
     value may be either a scalar (legacy) or a 2-element list /
-    array / ndarray (current GR00T-LIBERO convention - same pattern
-    PR #162 introduced for ``state.gripper``, applied to every
-    action channel).
+    array / ndarray (current GR00T-LIBERO convention - the same
+    pattern used for ``state.gripper``, applied to every action
+    channel).
 
     An earlier commit in #168 fixed only ``gripper``; subsequent
     verification showed the same ``float(list)`` bug raises on

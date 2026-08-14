@@ -402,7 +402,7 @@ class _RolloutVideoWriter:
 
     Extracted from :meth:`PolicyRunner.run` so the multi-episode evaluation loop
     (:meth:`PolicyRunner.evaluate`) records rollout video identically - one
-    source of truth for the security-sensitive path validation (see PR #930)
+    source of truth for the security-sensitive path validation
     and the frame-capture cadence, rather than two copies that can drift.
     """
 
@@ -2268,7 +2268,7 @@ class PolicyRunner:
           ``is_success`` / ``is_failure`` hooks, cumulative dense reward,
           robot-compatibility validation. ``max_steps`` from the spec wins.
         * **``success_fn=``**: legacy sparse-success path kept for
-          backwards compatibility with PR #85. Equivalent to a
+          backwards compatibility. Equivalent to a
           ``BenchmarkProtocol`` whose ``on_step`` always returns
           ``StepInfo(reward=0.0, done=False)``.
 
@@ -2945,9 +2945,9 @@ class PolicyRunner:
                 # starts from the same RNG state regardless of what happened
                 # in episodes 0..N-1.
                 #
-                # Validated on libero-10/SCENE5: pre-#179 5-ep eval ranged
-                # 0.40-1.00 across runs; post-#179 the same eval is bit-stable
-                # (same successes list every run).
+                # Validated on libero-10/SCENE5: without the per-episode
+                # reseed a 5-episode eval ranged 0.40-1.00 across runs; with
+                # it the same eval is bit-stable (same successes every run).
                 set_eval_seed(episode_seed)
 
                 # #187 - for SERVICE-mode policies (e.g. Gr00tPolicy over
