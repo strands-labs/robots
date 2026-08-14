@@ -462,8 +462,8 @@ def default_acl(namespace: str) -> dict[str, Any]:
         #
         # Earlier versions of this default mixed default_permission='deny'
         # with two key_exprs=['**'] allow-rules; the effective behaviour was
-        # identical (allow-any) but the code-vs-doc surface was confusing
-        # and review-flagged 5x. Code now matches docs.
+        # identical (allow-any) but the code-vs-doc surface was confusing.
+        # Code now matches docs.
         "default_permission": "allow",
         "rules": [],
         "subjects": [],

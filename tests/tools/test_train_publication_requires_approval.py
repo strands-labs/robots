@@ -20,6 +20,10 @@ already covered elsewhere):
    ``push_to_hub=False`` is not gated.
 4. A parity net over the blocklist: any blocked flag that is also a named
    parameter must be gated, or be named in this module's documented exemption.
+5. Which allowlist entry clears which spelling: push_to_hub is the one
+   blocked flag named twice in the blocklist, so a headless run's
+   STRANDS_TRAIN_EXTRA_FLAGS_ALLOW value has to match the spelling the call
+   used -- and the description an agent reads has to say which.
 
 Everything here is hardware-, GPU- and network-free: ``subprocess.Popen`` is
 replaced by a recorder, so "launched" means "the tool would have started
@@ -31,6 +35,7 @@ from __future__ import annotations
 import ast
 import inspect
 import json
+import re
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
@@ -273,3 +278,101 @@ class TestBlockedFlagsThatAreAlsoNamedParametersAreGated:
         for name in _UNGATED_BY_DESIGN:
             assert name in params, f"exempt name {name!r} is not a parameter any more"
             assert name in blocked_tails, f"exempt name {name!r} is not blocklisted any more"
+
+
+def _push_to_hub_description() -> str:
+    """The ``push_to_hub`` description an agent reads, from the tool's own schema."""
+    props = lerobot_train.tool_spec["inputSchema"]["json"]["properties"]
+    return str(props["push_to_hub"]["description"])
+
+
+def _allow_key_from_schema() -> str:
+    """The allowlist entry the schema tells a headless caller to set."""
+    match = re.search(r"STRANDS_TRAIN_EXTRA_FLAGS_ALLOW=([A-Za-z0-9_.]+)", _push_to_hub_description())
+    assert match, "the description must name the allowlist entry that clears this parameter"
+    return match.group(1)
+
+
+class TestWhichAllowlistEntryClearsWhichSpelling:
+    """One flag, two spellings, two allowlist entries -- and the schema says which.
+
+    ``push_to_hub`` is the only blocked flag the blocklist names twice, bare and
+    ``policy.``-prefixed. The named parameter is gated under the prefixed key
+    because that is the only spelling LeRobot accepts; the bare key covers the raw
+    ``extra_flags`` passthrough. So the ``STRANDS_TRAIN_EXTRA_FLAGS_ALLOW`` value a
+    headless run needs depends on how the call named the publish, and the
+    description an agent reads has to say which one -- an unattended run that
+    pre-approves the wrong spelling gets an approval prompt with nobody there to
+    answer it.
+    """
+
+    @pytest.mark.parametrize(
+        ("allow", "parameter_publishes", "expected_flag"),
+        [
+            ("policy.push_to_hub", True, "--policy.push_to_hub=true"),
+            # The passthrough echoes the caller's own literal, hence the capital T:
+            # the named parameter lowercases the bool, ``extra_flags`` does not.
+            ("push_to_hub", False, "--push_to_hub=True"),
+        ],
+        ids=["prefixed-entry-clears-the-parameter", "bare-entry-clears-the-passthrough"],
+    )
+    def test_an_allowlist_entry_clears_only_its_own_spelling(
+        self,
+        launcher: dict[str, Any],
+        monkeypatch: pytest.MonkeyPatch,
+        allow: str,
+        parameter_publishes: bool,
+        expected_flag: str,
+    ) -> None:
+        monkeypatch.setenv(_ALLOW_ENV, allow)
+
+        named = _start(launcher, session_name="named", push_to_hub=True)
+        smuggled = _start(launcher, session_name="smuggled", extra_flags={"push_to_hub": True})
+
+        assert (named["status"] == "success") is parameter_publishes, _texts(named)
+        assert (smuggled["status"] == "success") is (not parameter_publishes), _texts(smuggled)
+
+        assert len(launcher["launched"]) == 1, "one entry clears exactly one spelling"
+        assert expected_flag in launcher["launched"][0]
+
+    def test_following_the_schema_pre_approves_the_named_parameter(
+        self, launcher: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The key the agent-facing description names really clears this parameter.
+
+        This is the remedy the description prescribes, executed rather than
+        restated: it fails if the description ever names a key the gate does not
+        honour, whatever the wording around it.
+        """
+        monkeypatch.setenv(_ALLOW_ENV, _allow_key_from_schema())
+
+        result = _start(launcher, push_to_hub=True)
+
+        assert result["status"] == "success", _texts(result)
+        assert "--policy.push_to_hub=true" in launcher["launched"][0]
+
+    def test_the_description_does_not_claim_the_spellings_share_an_opt_out(self) -> None:
+        """The two spellings share the approval prompt, not the allowlist entry."""
+        description = _push_to_hub_description()
+        assert "policy.push_to_hub" in description, "the description must name the key it is gated under"
+        assert "exactly as" not in description, (
+            "the parameter and the extra_flags passthrough are gated under different keys, "
+            "so the description must not claim one opt-out covers both"
+        )
+
+    def test_only_the_prefixed_spelling_is_a_lerobot_flag(self) -> None:
+        """``push_to_hub`` is a policy-config field, so ``--policy.`` is the only spelling.
+
+        This is what makes the asymmetry correct rather than accidental: the named
+        parameter has to synthesize the prefixed key because a bare
+        ``--push_to_hub`` is not a flag LeRobot's parser knows, which leaves the
+        bare blocklist entry covering the raw passthrough alone.
+        """
+        pytest.importorskip("lerobot")
+        import dataclasses
+
+        from lerobot.configs.policies import PreTrainedConfig
+        from lerobot.configs.train import TrainPipelineConfig
+
+        assert "push_to_hub" not in {field.name for field in dataclasses.fields(TrainPipelineConfig)}
+        assert "push_to_hub" in {field.name for field in dataclasses.fields(PreTrainedConfig)}

@@ -843,8 +843,8 @@ class Gr00tPolicy(Policy):
         # Match Isaac-GR00T training preprocessing for embodiments that need
         # it (#169) - same rotation that ``_build_service_observation``
         # applies, kept consistent so LOCAL and SERVICE inference modes
-        # see identical observations. Pre-#169 the rotation was service-
-        # only, which silently fed local-mode users upside-down or
+        # see identical observations. Applying it on only one of the two
+        # transports silently feeds local-mode users upside-down or
         # reversed-direction images relative to training. The helper
         # operates on the 5D ``(1, 1, H, W, C)`` tensor directly via
         # negative-axis flips so the rotation always lands on H/W.
@@ -1201,8 +1201,8 @@ def _apply_image_rotation_180_inplace(obs: dict[str, Any], video_keys: list[str]
 
     Called from BOTH service-mode (``_build_service_observation``) and
     local-mode (``_prepare_observation``) paths so the rotation is
-    applied consistently regardless of inference transport. Pre-#169 it
-    was service-only, which made the LOCAL path silently OOD relative
+    applied consistently regardless of inference transport. Applying it
+    on only one transport makes the LOCAL path silently OOD relative
     to training (engine outputs OpenGL convention, policy applies no
     rotation → upside-down input).
     """

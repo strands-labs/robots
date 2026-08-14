@@ -108,6 +108,10 @@ _BLOCKED_EXTRA_FLAGS = frozenset(
         "wandb.api_key",
         "dataset.root",
         "policy.pretrained_path",
+        # Blocked in both spellings, and the pair is not a duplicate: the named
+        # push_to_hub parameter is gated under the policy.-prefixed key (the only
+        # one LeRobot accepts), while the bare key covers the raw extra_flags
+        # passthrough. The allowlist entry that clears one does not clear the other.
         "push_to_hub",
         "policy.push_to_hub",
         "hub_repo_id",
@@ -655,9 +659,14 @@ def lerobot_train(
         num_gpus: Number of GPUs; >1 launches via accelerate --multi_gpu.
         push_to_hub: Push the trained checkpoint to the HF Hub at the end.
             Publishing is an outward-facing action, so a true value requires
-            operator approval through ``tool_context`` (or an explicit
-            STRANDS_TRAIN_EXTRA_FLAGS_ALLOW entry) exactly as the
-            ``extra_flags={'push_to_hub': True}`` spelling already does. The
+            operator approval through ``tool_context``. A headless run
+            pre-approves it with
+            ``STRANDS_TRAIN_EXTRA_FLAGS_ALLOW=policy.push_to_hub``: this
+            parameter is gated under the ``policy.``-prefixed key, the only
+            spelling LeRobot accepts (``push_to_hub`` is a field of its policy
+            config, not of the train config). The bare ``push_to_hub``
+            allowlist entry clears the raw ``extra_flags={'push_to_hub': True}``
+            passthrough instead -- one flag, two spellings, two entries. The
             default false value emits the flag unchanged and is not gated.
         resume: Resume from the latest checkpoint under output_dir when present.
         action: One of start, status, stop, list.
