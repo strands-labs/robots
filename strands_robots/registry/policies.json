@@ -55,6 +55,7 @@
       "module": "strands_robots.policies.lerobot_local",
       "class": "LerobotLocalPolicy",
       "description": "Direct HuggingFace inference (no server)",
+      "extra": "lerobot",
       "requires": [],
       "config_keys": [
         "pretrained_name_or_path",

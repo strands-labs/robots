@@ -257,6 +257,72 @@ class TestGuards:
         assert "run_pump_forever" in result["content"][0]["text"]
         assert art.applied == []
 
+    # -- no-running-policy: the shared preamble's guard, every primitive ----
+
+    @pytest.mark.parametrize(
+        ("primitive", "kwargs"),
+        [("set_gripper", {"state": "open"}), ("rotate_wrist", {"target_yaw": 0.4})],
+    )
+    def test_refused_while_a_policy_runs_on_the_robot(self, primitive, kwargs):
+        # A primitive and the policy loop write the same articulation's PD
+        # targets, so the primitive refuses rather than interleaving. The
+        # refusal names the primitive the caller called and the reason.
+        sim, art = _make_sim()
+        sim._robots["arm"].policy_running = True
+        result = getattr(sim, primitive)(robot_name="arm", **kwargs)
+        assert result["status"] == "error"
+        text = result["content"][0]["text"]
+        assert f"Cannot '{primitive}' on 'arm' while its policy is running" in text
+        assert "race on the articulation's PD targets" in text
+        # Nothing reached the articulation: the guard runs before the drive loop.
+        assert art.applied == []
+        assert sim._world.steps == 0
+
+    def test_the_policy_refusal_is_one_rule_across_the_primitives(self):
+        # The guard lives in the shared preamble, so the three primitives cannot
+        # drift apart on the wording: the refusals differ only in the action
+        # name. Driving the preamble directly keeps this independent of what
+        # each primitive needs to set up after it.
+        sim, _ = _make_sim()
+        sim._robots["arm"].policy_running = True
+        texts = {}
+        for action in ("move_to", "set_gripper", "rotate_wrist"):
+            name, robot, error = sim._primitive_resolve_robot(action, "arm")
+            assert (name, robot) == (None, None)
+            assert error is not None
+            texts[action] = error["content"][0]["text"]
+        normalized = {t.replace(f"'{a}'", "'<action>'", 1) for a, t in texts.items()}
+        assert len(normalized) == 1, texts
+
+    def test_a_policy_on_another_robot_does_not_refuse(self):
+        # Per-robot scope: Isaac policy loops set the flag per robot and write
+        # disjoint articulations, so a rollout elsewhere must not block this arm.
+        sim, art = _make_sim()
+        other_art = _FakeArticulation(["a", "b_gripper"], [(-1.0, 1.0), (0.0, 1.0)])
+        sim._robots["other"] = _RobotState(
+            name="other",
+            prim_path="/World/Robots/other",
+            joint_names=["a", "b_gripper"],
+            articulation=other_art,
+        )
+        sim._robots["other"].policy_running = True
+        assert sim.set_gripper(robot_name="arm", state="close")["status"] == "success"
+        assert art.applied != []
+        assert other_art.applied == []
+
+    def test_an_uninitialized_articulation_reports_its_own_reason(self):
+        # Guard order: the policy check is the last one in the preamble, so a
+        # robot that is not initialized still reports that rather than being
+        # masked by a stale policy flag.
+        sim, _ = _make_sim()
+        sim._robots["arm"].articulation = None
+        sim._robots["arm"].policy_running = True
+        result = sim.set_gripper(robot_name="arm", state="open")
+        assert result["status"] == "error"
+        text = result["content"][0]["text"]
+        assert "not initialized" in text
+        assert "policy is running" not in text
+
 
 # ---------------------------------------------------------------------------
 # set_gripper: resolution, range-end mapping, payload.
@@ -498,6 +564,50 @@ class TestMidRunAbort:
         assert result == _err("set_gripper: world was destroyed mid-run; aborting.")
         # One tick ran before the abort became observable, no more.
         assert sim._world.steps == 1
+
+    @pytest.mark.parametrize(
+        ("primitive", "kwargs"),
+        [("set_gripper", {"state": "open", "steps": 50}), ("rotate_wrist", {"target_yaw": 0.7, "max_steps": 50})],
+    )
+    def test_a_policy_started_mid_run_aborts(self, primitive, kwargs):
+        # The loops release the lock per tick, so a rollout can start under a
+        # running primitive. That aborts with the policy reason rather than
+        # driving on and reporting a convergence timeout for a race.
+        sim_box: dict[str, IsaacSimulation] = {}
+
+        def _start_policy():
+            sim_box["sim"]._robots["arm"].policy_running = True
+
+        sim, art = _make_sim(servo_rate=0.0, on_step=_start_policy)
+        sim_box["sim"] = sim
+        result = getattr(sim, primitive)(robot_name="arm", **kwargs)
+        assert result == _err(f"{primitive}: a policy started on 'arm' mid-run; aborting.")
+        # One tick ran before the flag became observable, no more - so the race
+        # window is one control tick rather than the whole requested budget.
+        assert sim._world.steps == 1
+        assert len(art.applied) == 1
+
+    def test_the_mid_run_policy_abort_is_one_rule_across_the_primitives(self):
+        # Same shared-helper claim as the up-front guard: the abort check lives
+        # in _primitive_abort_reason, so the three primitives report identically.
+        sim, _ = _make_sim()
+        sim._robots["arm"].policy_running = True
+        texts = {}
+        for action in ("move_to", "set_gripper", "rotate_wrist"):
+            abort = sim._primitive_abort_reason(action, "arm")
+            assert abort is not None
+            texts[action] = abort["content"][0]["text"]
+        normalized = {t.replace(f"{a}:", "<action>:", 1) for a, t in texts.items()}
+        assert len(normalized) == 1, texts
+
+    def test_a_removed_robot_reports_removal_not_a_policy(self):
+        # Guard order in the abort check mirrors the preamble's: a robot that
+        # disappeared reports that, even with a stale flag left behind.
+        sim, _ = _make_sim()
+        sim._robots["arm"].policy_running = True
+        sim._robots["arm"].articulation = None
+        abort = sim._primitive_abort_reason("set_gripper", "arm")
+        assert abort == _err("set_gripper: robot 'arm' was removed mid-run; aborting.")
 
 
 class TestDiscoverySurface:

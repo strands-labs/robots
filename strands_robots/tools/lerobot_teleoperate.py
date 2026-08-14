@@ -887,8 +887,10 @@ def lerobot_teleoperate(
             behalf, by writing two newlines into the process's stdin shortly
             after it starts. Withhold it (``False``) to answer the prompt
             yourself; nothing reports that stdin was written to, so an
-            unintended acceptance is not visible afterwards. Must be a boolean,
-            on the same reasoning as ``background``.
+            unintended acceptance is not visible afterwards. A write that
+            *fails* is reported at WARNING, since by then the start result
+            has already told the caller the session started. Must be a
+            boolean, on the same reasoning as ``background``.
 
         dagger_record_autonomous: Record the autonomous rollout episodes into the
             corrections dataset as well, rather than only the teleoperated
@@ -1016,8 +1018,22 @@ def lerobot_teleoperate(
                             proc.stdin.write("\n")  # Send another ENTER (for robot calibration)
                             proc.stdin.flush()
                             proc.stdin.close()  # Close stdin after sending responses
-                        except Exception:
-                            pass  # Ignore errors if process has already finished
+                        except Exception as exc:
+                            # Report it. The start result above has already told the
+                            # caller the session started, so this record is the only
+                            # signal that the prompt went unanswered. Every other
+                            # handler in this tool reports its failure - one even
+                            # surfaces a log-read failure into the caller's content -
+                            # and the write this guards is the whole job of
+                            # ``auto_accept_calibration``. WARNING rather than DEBUG
+                            # because the visible report is a success.
+                            logger.warning(
+                                "[teleop] session %r: auto-accept did not complete (%s); "
+                                "the calibration prompt may be unanswered - check "
+                                "action='status' and the session log",
+                                session_name,
+                                exc,
+                            )
 
                     threading.Thread(target=auto_respond, daemon=True).start()
                 else:

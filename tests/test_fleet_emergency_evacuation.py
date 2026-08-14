@@ -253,6 +253,57 @@ def test_incident_report_is_a_deterministic_timeline_with_integrity(example):
     assert "dropped" not in report  # an unreadable timestamp row is skipped, not guessed
 
 
+def test_the_report_attests_the_records_it_shows_and_not_the_whole_log(example):
+    """The header and the timeline must describe one record set.
+
+    ``main`` scopes its read to this run (``read_audit_log(since=...)``) and
+    renders those records as the timeline. The integrity verdict has to be
+    about the same records, or the report states two things at once: a header
+    counting the developer's entire history above a table showing one run.
+
+    The prior-run records planted here are unsigned, which is what a log
+    written before ``STRANDS_MESH_AUDIT_PSK`` was configured looks like. With
+    a PSK set at verification time an unsigned record is a forgery by
+    definition, so an unscoped verdict does not merely inflate ``total`` - it
+    reports ``ok=False`` on a run in which nothing went wrong.
+    """
+    import time
+
+    from strands_robots.mesh.audit import audit_log_path, log_safety_event, read_audit_log, verify_audit_integrity
+
+    # A machine that has used the mesh before, from runs this report is not about.
+    log_file = Path(audit_log_path())
+    log_file.parent.mkdir(parents=True, exist_ok=True)
+    with log_file.open("a") as handle:
+        for i in range(120):
+            handle.write(
+                json.dumps(
+                    {"ts": 1000.0 + i, "event": "some_earlier_run", "peer_id": "prior-run", "seq": i + 1, "payload": {}}
+                )
+                + "\n"
+            )
+
+    run_start = time.time()
+    for event in ("evacuation_alarm", "evacuation_path_clear", "evacuation_scored"):
+        log_safety_event(event, example.COORDINATOR_ID, {"phase": event})
+
+    records = read_audit_log(since=run_start - 1.0)
+    report = example.build_incident_report(records)
+
+    # The header counts exactly the rows below it.
+    rows = [line for line in report.splitlines() if line.startswith("| +")]
+    assert len(rows) == len(records)
+    assert f"(signed={len(records)}/{len(records)})" in report
+    assert "Audit integrity: ok=True" in report
+
+    # Non-vacuity: the planted history is really in the log, and an unscoped
+    # verdict really would have reported on it. Without this the assertions
+    # above would also hold on a log that happened to contain only this run.
+    unscoped = verify_audit_integrity()
+    assert unscoped["total"] > len(records)
+    assert unscoped["ok"] is False
+
+
 # Phase 3 -- lockout + HMAC resume, asserted through the real safety handlers.
 
 

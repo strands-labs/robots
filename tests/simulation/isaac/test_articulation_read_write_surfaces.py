@@ -1,10 +1,12 @@
 """Isaac articulation read/write surfaces - the fallback limit source and every I/O failure.
 
 :mod:`strands_robots.simulation.isaac.motion_primitives` lists what its adapter
-half owns, and two of those bullets are the articulation layer: resolving the
-gripper / wrist DOFs against the articulation's own limits, and asserting PD
-position targets on them. Both are documented to tolerate more than one surface
-and to answer a surface that cannot be read *loudly*:
+half owns, and the articulation layer runs through three of those surfaces:
+resolving the gripper / wrist DOFs against the articulation's own limits,
+asserting PD position targets on them, and reading the articulation's own base
+pose - the frame ``move_to`` maps every world-frame target through. Each is
+documented to tolerate more than one surface and to answer a surface that
+cannot be read *loudly*:
 
   * :meth:`_articulation_dof_limits` documents TWO sources - the
     ``dof_properties`` structured array (authoritative, honoring ``hasLimits``
@@ -16,15 +18,22 @@ and to answer a surface that cannot be read *loudly*:
     surfaces and returns ``None`` for "could not be read", which callers "must
     answer loudly, never by substituting zeros";
   * :meth:`_apply_position_targets` documents a narrow exception set and turns
-    a failed write into a structured error.
+    a failed write into a structured error;
+  * :meth:`_articulation_base_pose` documents the plain-array and torch-tensor
+    surfaces, seven "could not be read" routes and a normalized quaternion, and
+    returns ``None`` for a pose callers "must answer loudly, never by
+    substituting an origin base (a wrong base makes every world-frame target
+    silently wrong)".
 
 ``tests/simulation/isaac/test_motion_primitives.py`` pins the contracts its own
 docstring enumerates - resolution, convergence, timeout and abort - and its
-``_FakeArticulation`` always supplies ``dof_properties`` and always answers a
-read. So the *authoritative* source is exercised and the *fallback* source is
-not, and every read/write failure report is unreached. This module drives the
-other source and every failure arm, on the plain-data surfaces plus through the
-two primitives that consume them.
+``_FakeArticulation`` always supplies ``dof_properties``, always answers a read,
+and carries no ``get_world_pose`` at all. So the *authoritative* limit source is
+exercised and the *fallback* source is not, every read/write failure report is
+unreached, and of the base-pose readback's seven routes
+``tests/simulation/isaac/test_move_to_ik.py`` drives one - a pose that answers
+``None``. This module drives the other source and every failure arm, on the
+plain-data surfaces plus through the primitives that consume them.
 
 Like its sibling this needs no NVIDIA Isaac Sim: the articulation, the world and
 the one lazily imported ``ArticulationAction`` type are faked, so every cell
@@ -39,6 +48,8 @@ from __future__ import annotations
 import ast
 import inspect
 import pathlib
+import textwrap
+import types
 from typing import Any
 
 import numpy as np
@@ -213,6 +224,7 @@ def _sim_with(art, joint_names: list[str] = ARM_JOINTS, robot_name: str = "arm",
 REAL_LIMITS: list[tuple[float, float]] = [s for s in ARM_LIMITS if s is not None]
 _limits = IsaacMotionPrimitivesMixin._articulation_dof_limits
 _read = IsaacMotionPrimitivesMixin._read_joint_positions
+_base_pose = IsaacMotionPrimitivesMixin._articulation_base_pose
 
 
 # ---------------------------------------------------------------------------
@@ -369,6 +381,131 @@ class TestApplyPositionTargets:
 
 
 # ---------------------------------------------------------------------------
+# The base-pose readback: every documented "could not be read" route.
+# ---------------------------------------------------------------------------
+
+GOOD_BASE_POS = np.array([0.4, -0.2, 0.1])
+GOOD_BASE_QUAT = np.array([1.0, 0.0, 0.0, 0.0])
+# Inside the workspace sanity box measured from GOOD_BASE_POS.
+WORLD_TARGET = [0.45, -0.2, 0.25]
+
+
+def _pose_raising(exc: BaseException) -> Any:
+    """A ``get_world_pose`` that raises - the torn-down articulation."""
+
+    def _get_world_pose() -> Any:
+        raise exc
+
+    return _get_world_pose
+
+
+def _pose_returning(value: Any) -> Any:
+    """A ``get_world_pose`` that answers *value*."""
+
+    def _get_world_pose() -> Any:
+        return value
+
+    return _get_world_pose
+
+
+# One entry per documented "could not be read" route. The count is pinned
+# against the readback's own arms below, so a route added to the production
+# helper fails this module until it is driven here.
+_UNREADABLE_BASE_POSES: dict[str, Any] = {
+    "read-raises": _pose_raising(RuntimeError("physics view is invalid")),
+    "pose-is-None": _pose_returning(None),
+    "pose-does-not-unpack": _pose_returning((GOOD_BASE_POS, GOOD_BASE_QUAT, GOOD_BASE_QUAT)),
+    "a-component-is-None": _pose_returning((GOOD_BASE_POS, None)),
+    "wrong-component-count": _pose_returning((GOOD_BASE_POS[:2], GOOD_BASE_QUAT)),
+    "a-component-is-non-finite": _pose_returning((GOOD_BASE_POS, np.array([np.inf, 0.0, 0.0, 0.0]))),
+    "quaternion-has-no-direction": _pose_returning((GOOD_BASE_POS, np.zeros(4))),
+}
+_ROUTES = sorted(_UNREADABLE_BASE_POSES)
+
+
+class _BasePoseArticulation:
+    """Articulation whose base-pose surface is stated here, wrapping the fake.
+
+    Composed rather than subclassed for the reason
+    :class:`TestTheLimitSourceFakeComposesRatherThanInherits` records, and for
+    one more: the joint-space fake carries no ``get_world_pose`` at all, so
+    assigning one onto it would state a surface its class does not declare.
+    Wrapping states the surface once and leaves the base the sole owner of
+    everything it does build.
+    """
+
+    def __init__(self, joint_names: list[str], limits: list[tuple[float, float] | None], get_world_pose: Any):
+        self._inner = _FakeArticulation(joint_names, limits)
+        self.get_world_pose = get_world_pose
+
+    def __getattr__(self, name: str) -> Any:
+        # ``_inner`` is listed so a missing wrapper state reports itself
+        # rather than recursing here.
+        if name in ("get_world_pose", "_inner"):
+            raise AttributeError(name)
+        return getattr(self._inner, name)
+
+
+def _sim_with_base(pose_fn: Any) -> tuple[Any, Any]:
+    """A sim whose articulation answers *pose_fn* and whose robot has no ``data_config``."""
+    art = _BasePoseArticulation(ARM_JOINTS, ARM_LIMITS, pose_fn)
+    return _sim_with(art), art
+
+
+class TestTheBasePoseReadbackAnswersEveryUnreadableRoute:
+    """``None`` for every route, the documented surfaces, and a normalized quaternion."""
+
+    @pytest.mark.parametrize("route", _ROUTES)
+    def test_an_unreadable_pose_reports_none(self, route):
+        art = types.SimpleNamespace(get_world_pose=_UNREADABLE_BASE_POSES[route])
+        assert _base_pose(art) is None
+
+    @pytest.mark.parametrize(
+        "exc",
+        [RuntimeError("torn down"), ValueError("bad shape"), AttributeError("surface drift"), TypeError("wrong type")],
+        ids=["RuntimeError", "ValueError", "AttributeError", "TypeError"],
+    )
+    def test_every_exception_a_torn_down_articulation_raises_reports_none(self, exc):
+        art = types.SimpleNamespace(get_world_pose=_pose_raising(exc))
+        assert _base_pose(art) is None
+
+    def test_a_torch_tensor_pose_is_read_through_cpu_numpy(self):
+        pose = (_TorchTensor(GOOD_BASE_POS), _TorchTensor(GOOD_BASE_QUAT))
+        read = _base_pose(types.SimpleNamespace(get_world_pose=_pose_returning(pose)))
+        assert read is not None
+        pos, quat = read
+        assert pos.tolist() == pytest.approx(GOOD_BASE_POS.tolist())
+        assert quat.tolist() == pytest.approx(GOOD_BASE_QUAT.tolist())
+
+    def test_a_non_unit_quaternion_is_normalized_without_turning_the_base(self):
+        pose = (GOOD_BASE_POS, GOOD_BASE_QUAT * 7.0)
+        read = _base_pose(types.SimpleNamespace(get_world_pose=_pose_returning(pose)))
+        assert read is not None
+        _, quat = read
+        assert float(np.linalg.norm(quat)) == pytest.approx(1.0)
+        assert quat.tolist() == pytest.approx(GOOD_BASE_QUAT.tolist())
+
+    def test_the_base_pose_fake_delegates_every_other_surface(self):
+        """The write log the refusal cases read is the wrapped fake's own."""
+        art = _BasePoseArticulation(ARM_JOINTS, ARM_LIMITS, _pose_returning(None))
+        assert not isinstance(art, _FakeArticulation)
+        assert art.applied is art._inner.applied
+        assert np.asarray(art.positions).tolist() == np.asarray(art._inner.positions).tolist()
+
+    def test_every_route_the_readback_documents_has_a_case(self):
+        """A route added to the readback fails here until it is driven above."""
+        arms = [
+            node
+            for node in ast.walk(ast.parse(textwrap.dedent(inspect.getsource(_base_pose))))
+            if isinstance(node, ast.Return) and isinstance(node.value, ast.Constant) and node.value.value is None
+        ]
+        assert arms, "no `return None` arm found - the scan did not resolve the readback"
+        assert len(arms) == len(_UNREADABLE_BASE_POSES), (
+            f"the readback has {len(arms)} `could not be read` routes but {len(_UNREADABLE_BASE_POSES)} are driven here"
+        )
+
+
+# ---------------------------------------------------------------------------
 # The consumers answer a failed read or write loudly.
 # ---------------------------------------------------------------------------
 
@@ -424,6 +561,36 @@ class TestThePrimitivesReportAFailedReadOrWrite:
         text = result["content"][0]["text"]
         assert "none match a joint on the articulation" in text
         assert "stale for this robot" in text
+        assert art.applied == []
+
+
+class TestMoveToRefusesAnUnreadableBaseRatherThanSubstitutingTheOrigin:
+    """The readback's ``None`` reaches the caller as a refusal that commands nothing.
+
+    The robot deliberately carries no ``data_config``, which is the *next*
+    thing ``move_to`` needs after the base pose. A run that substituted an
+    origin base would carry on and fail there instead, so "``data_config`` is
+    not mentioned" is what separates a refusal from a substitution - the same
+    discriminator ``test_move_to_ik.py`` uses to prove the sanity box measures
+    from the base rather than the origin.
+    """
+
+    def test_a_readable_base_carries_on_past_the_readback(self):
+        sim, _ = _sim_with_base(_pose_returning((GOOD_BASE_POS, GOOD_BASE_QUAT)))
+        result = sim.move_to(robot_name="arm", position=WORLD_TARGET)
+        assert result["status"] == "error"
+        text = result["content"][0]["text"]
+        assert "data_config" in text
+        assert "base pose" not in text
+
+    @pytest.mark.parametrize("route", _ROUTES)
+    def test_an_unreadable_base_is_refused_and_commands_nothing(self, route):
+        sim, art = _sim_with_base(_UNREADABLE_BASE_POSES[route])
+        result = sim.move_to(robot_name="arm", position=WORLD_TARGET)
+        assert result["status"] == "error"
+        text = result["content"][0]["text"]
+        assert "could not read the articulation base pose" in text
+        assert "data_config" not in text
         assert art.applied == []
 
 

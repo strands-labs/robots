@@ -54,7 +54,13 @@ from strands_robots.simulation.models import (
     registered,
     registry_entry,
 )
-from strands_robots.simulation.newton.backend import ensure_newton, resolve_solver_class, solver_registry
+from strands_robots.simulation.newton.backend import (
+    articulated_solver_error,
+    articulated_solvers,
+    ensure_newton,
+    resolve_solver_class,
+    solver_registry,
+)
 from strands_robots.simulation.newton.randomization import DomainRandomizationMixin
 from strands_robots.simulation.newton.recording import NewtonRecordingMixin
 from strands_robots.simulation.terrain import validate_difficulty
@@ -186,7 +192,7 @@ class NewtonSimEngine(DomainRandomizationMixin, NewtonRecordingMixin, SimEngine)
 
         Args:
             solver: Friendly solver name. One of
-                :func:`~strands_robots.simulation.newton.backend.solver_registry`
+                :func:`~strands_robots.simulation.newton.backend.articulated_solvers`
                 (default ``"mujoco"``, i.e. MuJoCo-Warp).
             default_timestep: Physics integration timestep in seconds.
             substeps: Physics substeps per :meth:`step` call.
@@ -221,6 +227,12 @@ class NewtonSimEngine(DomainRandomizationMixin, NewtonRecordingMixin, SimEngine)
         self._nt, self._wp = ensure_newton()
         if solver.lower() not in solver_registry():
             raise ValueError(f"Unknown Newton solver {solver!r}. Available: {sorted(solver_registry())}")
+        # A solver Newton resolves is not automatically one that can drive a
+        # robot. Reported here, where the caller names it, so the refusal
+        # arrives before any world, model or solver is built rather than as a
+        # Newton-internal error or a frozen world behind a successful add_robot.
+        if solver_error := articulated_solver_error(solver):
+            raise ValueError(solver_error)
         self._solver_name = solver.lower()
         self.default_timestep = default_timestep
         self.substeps = substeps
@@ -2278,7 +2290,8 @@ class NewtonSimEngine(DomainRandomizationMixin, NewtonRecordingMixin, SimEngine)
         """Return a discovery surface describing this backend's capabilities.
 
         Returns:
-            Dict with the backend name, active solver, available solvers,
+            Dict with the backend name, active solver, the solvers that can
+            drive an articulated robot (the accepted domain of ``solver=``),
             device, and current robot / object counts.
         """
         device = str(self._wp.get_device(self.device)) if self.device else str(self._wp.get_device())
@@ -2286,7 +2299,7 @@ class NewtonSimEngine(DomainRandomizationMixin, NewtonRecordingMixin, SimEngine)
         return {
             "backend": "newton",
             "solver": self._solver_name,
-            "available_solvers": sorted(solver_registry()),
+            "available_solvers": sorted(articulated_solvers()),
             "device": device,
             "robots": self.list_robots(),
             "objects": list(self._world.objects) if self._world else [],

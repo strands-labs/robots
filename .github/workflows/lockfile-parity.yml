@@ -113,6 +113,7 @@ jobs:
   lockfile:
     name: Refuse a lockfile that does not resolve the manifest
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     steps:
       # Default ref: the pull request's merge commit. See "WHY THE MERGE COMMIT

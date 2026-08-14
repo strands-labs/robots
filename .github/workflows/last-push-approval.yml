@@ -96,6 +96,7 @@ jobs:
   last-push-approval:
     name: Report the last-push-approval state
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     steps:
       # The BASE branch, for the reason merge-base-overlap.yml documents at
