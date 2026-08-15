@@ -320,6 +320,43 @@ class Policy(ABC):
         return True
 
     @property
+    def required_bodies(self) -> tuple[str, ...]:
+        """Named rigid bodies whose world pose this policy needs in its observation.
+
+        Default ``()`` - most policies are driven by joint state alone and pay
+        nothing for this. A whole-body **motion-mimic tracker** (ProtoMotions
+        GTP, PHC, OmniH2O and the text-to-motion pipelines built on them) is the
+        motivating case: its network consumes the world orientation of a single
+        *anchor* link - ``torso_link`` on a Unitree G1 - which is NOT derivable
+        from the observation's floating-base signals. ``base_quat`` is the
+        pelvis, and the torso differs from it by the three waist joints, so a
+        tracker written against ``base_quat`` silently feeds the network the
+        wrong frame whenever the waist is not neutral.
+
+        Declaring the bodies here is the same "policy declares, runtime
+        supplies" contract as :attr:`requires_images`: the runtime
+        (:class:`~strands_robots.simulation.policy_runner.PolicyRunner`)
+        resolves the names ONCE before the rollout and merges the pose of each
+        into every observation it hands to :meth:`get_actions`, under the keys
+        documented on
+        :meth:`~strands_robots.simulation.base.SimEngine.get_observation`::
+
+            body.<name>.pos      # world x, y, z (m)
+            body.<name>.quat     # world orientation w, x, y, z
+            body.<name>.lin_vel  # world linear velocity x, y, z (m/s)
+            body.<name>.ang_vel  # world angular velocity x, y, z (rad/s)
+
+        A policy that declares a body the scene does not contain fails at the
+        start of the rollout with the available body names, rather than reading
+        a missing key as a zero pose on every tick.
+
+        Returns:
+            Ordered, de-duplicated body names. Empty (the default) means the
+            observation is left exactly as the backend produced it.
+        """
+        return ()
+
+    @property
     def execution_horizon(self) -> int:
         """Number of actions the SIM consumes from one ``get_actions`` chunk before re-querying.
 

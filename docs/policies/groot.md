@@ -40,11 +40,11 @@ Gr00tPolicy(
 
 ## Strict key matching
 
-When no explicit `observation_mapping`/`action_mapping` is given, GR00T
-auto-infers the robot<->model key mapping: exact name matches first, then
-positional fallback for any leftover keys (with a log line). On a
-multi-camera or multi-DOF rig, positional fallback can silently bind the
-wrong camera or action column. Pass `strict_keys=True` to raise a
+When no explicit `observation_mapping`/`action_mapping` is given, a
+**local-mode** policy auto-infers the robot<->model key mapping: exact name
+matches first, then positional fallback for any leftover keys (with a log
+line). On a multi-camera or multi-DOF rig, positional fallback can silently
+bind the wrong camera or action column. Pass `strict_keys=True` to raise a
 `ValueError` (listing the unmatched robot keys vs available model keys)
 instead of guessing:
 
@@ -55,6 +55,16 @@ policy = create_policy("groot", data_config="so100_dualcam",
 
 `strict_keys` defaults to `False` (positional fallback preserved) and is a
 no-op when an explicit mapping is supplied.
+
+Auto-inference is local-mode only, because it reads the checkpoint's modality
+configs and service mode cannot introspect the remote server. A service-mode
+policy given no mapping therefore infers nothing and sends the keys its
+`data_config` declares, and `strict_keys` has nothing to be strict about
+there. An *explicit* mapping needs no model metadata - the video/state split
+comes from the `video.` / `state.` prefixes of the caller's own values - so it
+is parsed and honoured in **either** mode. What service mode cannot do is
+cross-check it: a mapping naming a key the server does not have surfaces as a
+server-side error rather than a constructor refusal.
 
 ## Versions
 

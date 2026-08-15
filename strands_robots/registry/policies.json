@@ -301,6 +301,31 @@
         "motion_bricks"
       ]
     },
+    "kimodo": {
+      "module": "strands_robots.policies.kimodo",
+      "class": "KimodoPolicy",
+      "description": "NVIDIA Kimodo text-to-motion diffusion for the Unitree G1 (prompt-driven kinematic motion, HuggingFace)",
+      "requires": [],
+      "config_keys": [
+        "config",
+        "model_id",
+        "diffusion_steps",
+        "guidance_scale",
+        "num_frames",
+        "native_fps",
+        "tracker_fps",
+        "device",
+        "dtype",
+        "seed",
+        "motion_agent"
+      ],
+      "defaults": {},
+      "shorthands": [
+        "kimodo",
+        "kimodo_g1",
+        "text2motion"
+      ]
+    },
     "remote": {
       "module": "strands_robots.inference.client",
       "class": "RemotePolicy",

@@ -65,8 +65,53 @@ Aliases and shorthands are validated on load: each must be unique across provide
 | `set_robot_state_keys(keys)` | yes | - |
 | `provider_name` (property) | yes | - |
 | `requires_images` (property) | no | `True` |
+| `required_bodies` (property) | no | `()` |
 | `reset(seed=None)` | no | no-op |
 | `get_actions_sync(...)` | no | sync wrapper |
+
+## Declaring body poses your policy needs
+
+`get_actions` receives per-joint state plus, for a floating-base robot, the base
+pose (`base_pos`, `base_quat`, `base_lin_vel`, `base_ang_vel`). A whole-body
+**motion-mimic tracker** needs more than that: its network is conditioned on the
+world orientation of one *anchor* link -- `torso_link` on a Unitree G1 -- and
+`base_quat` is the **pelvis**, separated from the torso by the three waist
+joints. Reading `base_quat` as if it were the anchor feeds the network the wrong
+frame whenever the waist is not neutral (measured on a G1 sweeping its waist:
+the two diverge by up to 42 degrees).
+
+Declare the links you need and the runtime supplies them:
+
+```python
+class MyTracker(Policy):
+    @property
+    def required_bodies(self) -> tuple[str, ...]:
+        return ("torso_link",)
+
+    async def get_actions(self, obs, instruction="", **kw):
+        anchor_quat = obs["body.torso_link.quat"]   # world w, x, y, z
+        ...
+```
+
+For each declared body the observation gains four keys:
+
+| Key | Contents |
+|---|---|
+| `body.<name>.pos` | world position x, y, z (m) |
+| `body.<name>.quat` | world orientation w, x, y, z |
+| `body.<name>.lin_vel` | world linear velocity x, y, z (m/s) |
+| `body.<name>.ang_vel` | world angular velocity x, y, z (rad/s) |
+
+Notes:
+
+- Names are resolved once, before the rollout. A body the scene does not contain
+  raises there -- listing what is available -- rather than going missing from
+  every observation and being read as a zero pose.
+- Declaring nothing (the default) leaves the observation exactly as the backend
+  produced it, so policies that do not need a link pay no extra read.
+- In a multi-robot scene MuJoCo body names carry the robot's namespace prefix
+  (`alice/Lower_Arm`), the same spelling `get_body_state` resolves.
+- Requires a backend that implements `get_body_state` (MuJoCo, Isaac).
 
 ## Action value convention
 

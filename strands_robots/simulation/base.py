@@ -1102,6 +1102,17 @@ class SimEngine(ABC):
               (w,x,y,z), ``"base_lin_vel"`` and ``"base_ang_vel"``, matching
               :meth:`get_robot_state`'s ``"base"`` entry. Absent for fixed-base
               arms.
+            - ``"body.<name>.pos"`` / ``".quat"`` / ``".lin_vel"`` /
+              ``".ang_vel"`` (list[float]): World pose + twist of a NAMED body,
+              present only when the running policy declared that body in
+              :attr:`~strands_robots.policies.base.Policy.required_bodies`.
+              Backends do not emit these from ``get_observation`` itself - the
+              runtime (:class:`~strands_robots.simulation.policy_runner.PolicyRunner`)
+              merges them in from :meth:`get_body_state` for the declared bodies
+              only, so the default observation is unchanged and nothing pays for
+              a link nobody asked for. Motion-mimic trackers need them because
+              their anchor link (``torso_link`` on a G1) is separated from
+              ``base_quat`` (the pelvis) by the waist joints.
 
         Single-camera rendering is :meth:`render`'s job, not this method's.
         For batched multi-robot observation (future Isaac / Newton), add a

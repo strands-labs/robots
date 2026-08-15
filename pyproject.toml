@@ -172,6 +172,22 @@ motionbricks = [
     "pytorch-lightning>=2.0.0,<3.0.0",
     "scipy>=1.10.0",
 ]
+kimodo = [
+    # Kimodo (`nvidia/Kimodo-G1-RP-v1`) text-conditioned motion diffusion
+    # for the Unitree G1. Loads via HuggingFace `diffusers` with
+    # `trust_remote_code=True` (gated by STRANDS_TRUST_REMOTE_CODE at the
+    # factory layer). Weights are fetched on demand; nothing bundled.
+    # See strands_robots/policies/kimodo/ and docs/policies/kimodo.md.
+    "torch>=2.0.0",
+    "diffusers>=0.30.0",
+    "transformers>=4.40.0",
+    # Same >=1.5 floor and MAJOR-only cap as [wbc]: the documented bucket-sync
+    # guidance needs the `hf buckets`/`hf sync` CLI subcommands, which first
+    # ship in huggingface_hub 1.5.0. See the [wbc] comment for the full reason.
+    "huggingface_hub>=1.5,<2.0.0",
+    "accelerate>=0.30.0",
+    "scipy>=1.10.0",
+]
 lerobot = [
     # [dataset] bundles the read-back stack the streaming data loop needs:
     # datasets + pandas + pyarrow (parquet streaming) + av + torchcodec
@@ -423,6 +439,7 @@ all = [
     "strands-robots[device-connect]",
     "strands-robots[wbc]",
     "strands-robots[motionbricks]",
+    "strands-robots[kimodo]",
     "strands-robots[molmoact2]",
     "strands-robots[ollama]",
     "strands-robots[inference]",

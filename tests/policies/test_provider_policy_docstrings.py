@@ -6,13 +6,13 @@
 :mod:`tests.policies.test_builtin_policy_docstrings` already pins that guard for
 the dependency-free built-ins (``MockPolicy`` / ``CompositePolicy`` /
 ``PersistentPolicy``). The backend providers - GR00T, cuRobo, cosmos3, the two
-lerobot providers, MotionBricks, MoveIt2, VERA and the two WBC controllers -
-each override public members such as ``provider_name``, ``get_actions``,
-``requires_images`` and ``config``. An agent picking a provider reads those
-docstrings to learn which one it is holding and what it needs, so every public
-override needs its own docstring rather than silently leaning on the inherited
-one (a ``provider_name`` override still has to state the registry key it maps
-to).
+lerobot providers, MotionBricks, Kimodo, MoveIt2, VERA and the two WBC
+controllers - each override public members such as ``provider_name``,
+``get_actions``, ``requires_images`` and ``config``. An agent picking a
+provider reads those docstrings to learn which one it is holding and what it
+needs, so every public override needs its own docstring rather than silently
+leaning on the inherited one (a ``provider_name`` override still has to state
+the registry key it maps to).
 
 This guard walks the provider policy modules by AST (no import), so it never
 needs any optional policy backend (``[groot]`` / ``[cosmos3]`` / ``[vera]`` /
@@ -48,6 +48,7 @@ _PROVIDER_POLICIES = {
     "wbc/gait.py": "WBCGaitPolicy",
     "vera/provider.py": "VeraPolicy",
     "motionbricks/policy.py": "MotionBricksPolicy",
+    "kimodo/policy.py": "KimodoPolicy",
 }
 
 # Built-in policy classes documented by test_builtin_policy_docstrings; the

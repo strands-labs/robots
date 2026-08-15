@@ -21,7 +21,7 @@ mappings.  No positional guessing.  One step in, one step out.
 import importlib.util
 import logging
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 import numpy as np
@@ -264,11 +264,17 @@ def _match_keys(ours: list[str], model: list[str], label: str, strict_keys: bool
 # Parse user-provided flat mapping dicts
 
 
-def _parse_observation_mapping(
-    flat: dict[str, str],
-    modality_configs: dict | None = None,
-) -> ObservationMapping:
-    """Parse ``{robot_key: "video.X" | "state.X"}`` → ObservationMapping."""
+def _parse_observation_mapping(flat: dict[str, str]) -> ObservationMapping:
+    """Parse ``{robot_key: "video.X" | "state.X"}`` → ObservationMapping.
+
+    Splits on the caller's own value prefixes and nothing else, so this needs
+    no model metadata and runs in service mode as well as local.
+    ``language_key`` is deliberately left at its default here: which key the
+    instruction is sent under has more sources than this dict (an explicit
+    override, the model, the data config), and
+    :meth:`Gr00tPolicy._resolve_language_key` is the one place that orders
+    them.
+    """
     video: dict[str, str] = {}
     state: dict[str, str] = {}
 
@@ -280,11 +286,7 @@ def _parse_observation_mapping(
         else:
             raise ValueError(f"Mapping value must start with 'video.' or 'state.', got '{model_key}' for '{robot_key}'")
 
-    lang = "task"
-    if modality_configs is not None:
-        lang = modality_configs["language"].modality_keys[0]
-
-    return ObservationMapping(video=video, state=state, language_key=lang)
+    return ObservationMapping(video=video, state=state)
 
 
 def _parse_action_mapping(flat: dict[str, str]) -> ActionMapping:
@@ -367,9 +369,18 @@ class Gr00tPolicy(Policy):
         groot_version: Force ``"n1.5"`` or ``"n1.6"``.
         strict: Strict input validation.
         api_token: ZMQ auth token. Falls back to ``GROOT_API_TOKEN`` env var if not provided.
-        observation_mapping: ``{robot_key: "video.X" | "state.X"}``.
-        action_mapping: ``{"action.X": "robot_key"}``.
-        language_key: Override the model's language key.
+        observation_mapping: ``{robot_key: "video.X" | "state.X"}``. Honoured in
+            either mode: the video/state split comes from the caller's own value
+            prefixes, so no model metadata is needed. Service mode cannot
+            cross-check it against the server, so a key the server does not have
+            surfaces there as a server-side error rather than a refusal here.
+        action_mapping: ``{"action.X": "robot_key"}``. Honoured in either mode,
+            on the same terms.
+        language_key: Override the key the instruction is sent under. Otherwise
+            the model's own language key is used when a local checkpoint is
+            loaded, and in service mode - where there is no model to ask - the
+            key declared by ``data_config``, falling back to ``"task"`` when it
+            declares none.
         strict_keys: When True, raise (instead of warning + positional fallback)
             if auto-inferred observation/action keys cannot be matched to the
             model by exact name. Defaults to False (positional fallback). Ignored
@@ -436,7 +447,6 @@ class Gr00tPolicy(Policy):
             self._mode = "local"
             logger.info("GR00T local mode, model=%s", model_path)
             self._load_local_policy(model_path, embodiment_tag, device)
-            self._init_mappings()
         else:
             self._mode = "service"
             # ``port`` addresses the inference service this client dials, so a
@@ -452,6 +462,10 @@ class Gr00tPolicy(Policy):
             # Resolve api_token from env var if not provided as parameter
             resolved_token = api_token or os.environ.get("GROOT_API_TOKEN")
             self._client = Gr00tInferenceClient(host=host, port=port, api_token=resolved_token)
+
+        # Runs in BOTH modes: a caller-supplied mapping needs no model
+        # metadata, so service mode must reach it too (#2265).
+        self._init_mappings()
 
         logger.info(
             "GR00T ready [mode=%s, version=%s, config=%s]",
@@ -475,37 +489,82 @@ class Gr00tPolicy(Policy):
 
     # Mapping initialization
 
-    def _init_mappings(self) -> None:
-        """Initialize observation/action mappings after model load."""
-        if self._local_policy is None:
-            return
+    def _resolve_language_key(self, modality_configs: dict | None) -> str:
+        """Language key for the observation payload, most specific source first.
 
-        mmc = self._get_modality_configs()
-        if mmc is None:
+        ``language_key=`` wins outright. Failing that the model's own modality
+        config is authoritative, but only a local checkpoint exposes one; a
+        service-mode policy cannot introspect the remote server, so it falls
+        back to this data config's own declaration - the same key
+        :meth:`_build_service_observation` sends on the unmapped path, which is
+        what keeps the mapped and unmapped service payloads addressed to the
+        same place. The ``"task"`` default is last, for a config declaring no
+        language key at all.
+        """
+        if self._language_key_override:
+            return self._language_key_override
+        if modality_configs is not None:
+            return str(modality_configs["language"].modality_keys[0])
+        if self.data_config.language_keys:
+            return self.data_config.language_keys[0]
+        return "task"
+
+    def _init_mappings(self) -> None:
+        """Parse the caller's mappings, and infer/validate what needs the model.
+
+        Both parsers are pure over the caller's own flat dict - the video/state
+        split and the action renaming come from the ``video.`` / ``state.`` /
+        ``action.`` prefixes of its values - so a supplied mapping is parsed
+        here whether or not a model is loaded. It used to be parsed only after
+        a successful local load, which stranded both mappings as raw dicts
+        nothing read: a service-mode request went out carrying the task string
+        and no observation at all, and the already-written mapped arms in
+        :meth:`_service_get_actions` and :meth:`_unpack_service_actions` were
+        unreachable (#2265).
+
+        What needs the model is everything that *cross-checks* a mapping
+        against it: ``validate()``, :meth:`_discover_model_state_dof`, and the
+        auto-inference used when a mapping is omitted. So without modality
+        configs a supplied mapping is honoured as written - a key the server
+        does not have surfaces as a server-side error rather than a constructor
+        refusal - and an omitted one deliberately stays ``None`` rather than
+        acquiring an inferred mapping that could not be validated. ``None`` is
+        the value both service consumers already treat as "send bare model
+        keys", so omitting a mapping keeps today's behaviour exactly.
+        """
+        # Parsed in either mode. A malformed value raises from here, so service
+        # mode now refuses one at construction as local mode always has.
+        if self._raw_obs_mapping is not None:
+            self._obs_mapping = _parse_observation_mapping(self._raw_obs_mapping)
+        if self._raw_action_mapping is not None:
+            self._action_mapping = _parse_action_mapping(self._raw_action_mapping)
+
+        mmc = self._get_modality_configs() if self._local_policy is not None else None
+        if self._local_policy is not None and mmc is None:
             logger.warning("Could not read model modality configs")
+
+        if mmc is None:
+            if self._obs_mapping is not None:
+                self._obs_mapping = replace(self._obs_mapping, language_key=self._resolve_language_key(None))
+            logger.info(
+                "Mappings [no modality configs, unvalidated]: obs_video=%s, obs_state=%s, actions=%s",
+                self._obs_mapping.video if self._obs_mapping is not None else None,
+                self._obs_mapping.state if self._obs_mapping is not None else None,
+                self._action_mapping.actions if self._action_mapping is not None else None,
+            )
             return
 
         self._discover_model_state_dof(mmc)
 
-        # Observation mapping
-        if self._raw_obs_mapping is not None:
-            self._obs_mapping = _parse_observation_mapping(self._raw_obs_mapping, mmc)
-        else:
+        # Observation mapping - a supplied one is already parsed above.
+        if self._obs_mapping is None:
             self._obs_mapping = _auto_infer_observation_mapping(self.data_config, mmc, strict_keys=self._strict_keys)
 
-        if self._language_key_override:
-            self._obs_mapping = ObservationMapping(
-                video=self._obs_mapping.video,
-                state=self._obs_mapping.state,
-                language_key=self._language_key_override,
-            )
-
+        self._obs_mapping = replace(self._obs_mapping, language_key=self._resolve_language_key(mmc))
         self._obs_mapping.validate(mmc)
 
-        # Action mapping
-        if self._raw_action_mapping is not None:
-            self._action_mapping = _parse_action_mapping(self._raw_action_mapping)
-        else:
+        # Action mapping - a supplied one is already parsed above.
+        if self._action_mapping is None:
             self._action_mapping = _auto_infer_action_mapping(self.data_config, mmc, strict_keys=self._strict_keys)
 
         self._action_mapping.validate(mmc)

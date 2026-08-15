@@ -818,6 +818,152 @@ class PolicyRunner:
     def __init__(self, sim: SimEngine):
         self.sim = sim
 
+    #: Observation key prefix for a named body's world pose, merged in by
+    #: :meth:`_observe` for every body a policy declares in
+    #: :attr:`~strands_robots.policies.base.Policy.required_bodies`.
+    _BODY_KEY_PREFIX = "body."
+
+    #: ``get_body_state`` json field -> observation key suffix. The backend
+    #: reports a body's pose under its own field names; the observation spells
+    #: them like the floating-base signals already in the schema
+    #: (``base_pos`` / ``base_quat`` / ``base_lin_vel`` / ``base_ang_vel``) so a
+    #: policy reads one convention for the base and for any other link.
+    _BODY_POSE_FIELDS: tuple[tuple[str, str], ...] = (
+        ("position", "pos"),
+        ("quaternion", "quat"),
+        ("linear_velocity", "lin_vel"),
+        ("angular_velocity", "ang_vel"),
+    )
+
+    def _resolve_required_bodies(self, policy: Policy | None) -> tuple[str, ...]:
+        """Validate a policy's declared ``required_bodies`` once, before the rollout.
+
+        Resolving up front is the whole point: a mimic tracker reads its anchor
+        link on EVERY tick, so a name the scene does not contain has to fail
+        here - with the available body names - rather than 300 steps of a
+        silently absent key that the policy reads as a zero pose.
+
+        Args:
+            policy: The policy about to be rolled out. ``None`` (replay) and a
+                policy that declares nothing both resolve to ``()``.
+
+        Returns:
+            Ordered, de-duplicated body names to merge into each observation.
+
+        Raises:
+            TypeError: If ``required_bodies`` is not a sequence of non-empty
+                strings. A bare ``str`` is refused explicitly rather than
+                iterated into one entry per character.
+            RuntimeError: If the backend exposes no ``get_body_state``, or a
+                declared body does not resolve in the current scene. Raised
+                rather than returned for the reason this layer raises
+                everywhere else: ``PolicyRunner`` is drivable directly and a
+                direct caller has no envelope to read a refusal from.
+        """
+        declared = getattr(policy, "required_bodies", ()) or ()
+        if not declared:
+            return ()
+        if isinstance(declared, str):
+            raise TypeError(
+                f"{type(policy).__name__}.required_bodies must be a sequence of body names, "
+                f"not a bare str ({declared!r}) - a str iterates into one entry per character. "
+                f"Use a tuple: ('{declared}',)."
+            )
+        bodies: list[str] = []
+        for name in declared:
+            if not isinstance(name, str) or not name.strip():
+                raise TypeError(
+                    f"{type(policy).__name__}.required_bodies entries must be non-empty "
+                    f"body-name strings, got {name!r}."
+                )
+            if name not in bodies:
+                bodies.append(name)
+
+        probe = getattr(self.sim, "get_body_state", None)
+        if not callable(probe):
+            raise RuntimeError(
+                f"{type(policy).__name__} declares required_bodies={tuple(bodies)}, but backend "
+                f"{type(self.sim).__name__} exposes no get_body_state() to read a named body's "
+                f"pose from. Run this policy on a backend that implements it (MuJoCo, Isaac)."
+            )
+        for name in bodies:
+            result = probe(name)
+            if not isinstance(result, dict) or result.get("status") != "success":
+                detail = ""
+                if isinstance(result, dict):
+                    detail = " ".join(
+                        str(block.get("text", "")) for block in result.get("content", []) if isinstance(block, dict)
+                    ).strip()
+                raise RuntimeError(
+                    f"{type(policy).__name__} declares required_bodies entry {name!r}, which does "
+                    f"not resolve to a body in the current scene. {detail}".rstrip()
+                )
+        return tuple(bodies)
+
+    def _observe(
+        self,
+        robot_name: str | None,
+        *,
+        skip_images: bool,
+        bodies: tuple[str, ...] = (),
+    ) -> dict[str, Any]:
+        """Fetch one observation, merging the world pose of each declared body.
+
+        The single point where every rollout loop in this module reads state, so
+        the ``required_bodies`` contract holds identically on the synchronous,
+        chunked and RTC paths instead of only whichever one was patched.
+
+        Args:
+            robot_name: Robot to observe, forwarded verbatim to the backend.
+            skip_images: Backend's camera-render hint (from ``requires_images``).
+            bodies: Pre-resolved names from :meth:`_resolve_required_bodies`.
+                Empty (the default) returns the backend's dict untouched, so a
+                policy that declares nothing pays no extra backend call.
+
+        Returns:
+            The observation dict, plus ``body.<name>.{pos,quat,lin_vel,ang_vel}``
+            for each requested body.
+        """
+        obs = self.sim.get_observation(robot_name=robot_name, skip_images=skip_images)
+        if not bodies:
+            return obs
+        for name in bodies:
+            state = self._body_pose(name)
+            for field, suffix in self._BODY_POSE_FIELDS:
+                value = state.get(field)
+                if value is not None:
+                    obs[f"{self._BODY_KEY_PREFIX}{name}.{suffix}"] = [float(v) for v in value]
+        return obs
+
+    def _body_pose(self, body_name: str) -> dict[str, Any]:
+        """Read one body's pose json out of the backend's ``get_body_state`` envelope.
+
+        Args:
+            body_name: Body name, already validated by
+                :meth:`_resolve_required_bodies`.
+
+        Returns:
+            The backend's pose json block.
+
+        Raises:
+            RuntimeError: If the body stopped resolving mid-rollout (a scene
+                replace can remove it) or the envelope carries no json block.
+                The pose feeds the policy's network input, so an absent one is
+                fatal - not a key to quietly omit from this tick's observation.
+        """
+        result = self.sim.get_body_state(body_name)  # type: ignore[attr-defined]
+        if isinstance(result, dict) and result.get("status") == "success":
+            for block in result.get("content", []):
+                if not isinstance(block, dict):
+                    continue
+                pose = block.get("json")
+                if isinstance(pose, dict):
+                    return pose
+        raise RuntimeError(
+            f"required body {body_name!r} no longer resolves to a pose in the scene; "
+            f"a policy declaring it via required_bodies cannot be stepped."
+        )
+
     def _control_substeps(self, control_frequency: float, override: int | None = None) -> int:
         """Physics steps per applied action so a position-servo arm tracks the
         full control period (1/control_frequency), not a single physics dt.
@@ -1321,6 +1467,11 @@ class PolicyRunner:
         stop_predicate_fired = False
         # T26: skip camera rendering when the policy does not need images.
         _skip_images = not getattr(policy, "requires_images", True)
+        # Named-body poses the policy declared it needs (mimic trackers read an
+        # anchor link). Resolved once here so an unknown name fails before the
+        # loop instead of being read as a zero pose on every tick; () for the
+        # overwhelming majority of policies, which adds no backend call.
+        _bodies = self._resolve_required_bodies(policy)
         # Open-loop chunk replay consumes H actions from ONE observation. That
         # observation is the correct PRE-action state for the FIRST action only;
         # the sim advances as the chunk drains. When a dataset recording is
@@ -1620,7 +1771,7 @@ class PolicyRunner:
 
                 executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="rtc-prefetch")
                 try:
-                    cur_obs = self.sim.get_observation(robot_name=robot_name, skip_images=_skip_images)
+                    cur_obs = self._observe(robot_name, skip_images=_skip_images, bodies=_bodies)
                     cur_chunk = _query_chunk(cur_obs)
                     rtc_chunks_acquired += 1
                     if not cur_chunk:
@@ -1642,7 +1793,7 @@ class PolicyRunner:
                             else:
                                 # Chunk was too short to trigger a prefetch;
                                 # fall back to a synchronous re-query.
-                                cur_obs = self.sim.get_observation(robot_name=robot_name, skip_images=_skip_images)
+                                cur_obs = self._observe(robot_name, skip_images=_skip_images, bodies=_bodies)
                                 cur_chunk = _query_chunk(cur_obs)
                             rtc_chunks_acquired += 1
                             if not cur_chunk:
@@ -1655,7 +1806,7 @@ class PolicyRunner:
                                     "async-RTC chunk arrived empty; falling back to one "
                                     "synchronous re-query before erroring."
                                 )
-                                cur_obs = self.sim.get_observation(robot_name=robot_name, skip_images=_skip_images)
+                                cur_obs = self._observe(robot_name, skip_images=_skip_images, bodies=_bodies)
                                 cur_chunk = _query_chunk(cur_obs)
                                 rtc_chunks_acquired += 1
                                 if not cur_chunk:
@@ -1670,7 +1821,7 @@ class PolicyRunner:
                         # Fire the next inference once we are ~50% through the
                         # current chunk, on a fresh mid-chunk observation.
                         if prefetch is None and idx >= prefetch_trigger:
-                            prefetch_obs = self.sim.get_observation(robot_name=robot_name, skip_images=_skip_images)
+                            prefetch_obs = self._observe(robot_name, skip_images=_skip_images, bodies=_bodies)
                             # The prefetched chunk first applies after the
                             # remaining steps of the current chunk drain - a
                             # known integer, independent of how long inference
@@ -1688,7 +1839,7 @@ class PolicyRunner:
                         # unaffected - it already consumed cur_obs to produce
                         # this chunk.
                         if _record_per_step_obs:
-                            step_obs = self.sim.get_observation(robot_name=robot_name, skip_images=_skip_images)
+                            step_obs = self._observe(robot_name, skip_images=_skip_images, bodies=_bodies)
                         else:
                             step_obs = cur_obs
                         _apply(step_obs, cur_chunk[idx])
@@ -1709,7 +1860,7 @@ class PolicyRunner:
                     executor.shutdown(wait=True)
             else:
                 while step_count < total_steps:
-                    observation = self.sim.get_observation(robot_name=robot_name, skip_images=_skip_images)
+                    observation = self._observe(robot_name, skip_images=_skip_images, bodies=_bodies)
                     chunk = _query_chunk(observation)
                     for chunk_idx, action_dict in enumerate(chunk):
                         if step_count >= total_steps:
@@ -1722,7 +1873,7 @@ class PolicyRunner:
                         # the freshly-queried observation (no re-render, sim has
                         # not stepped yet). Inference is unaffected.
                         if _record_per_step_obs and chunk_idx > 0:
-                            step_obs = self.sim.get_observation(robot_name=robot_name, skip_images=_skip_images)
+                            step_obs = self._observe(robot_name, skip_images=_skip_images, bodies=_bodies)
                         else:
                             step_obs = observation
                         _apply(step_obs, action_dict)
@@ -2513,6 +2664,11 @@ class PolicyRunner:
 
         # T26: skip camera rendering when the policy does not need images.
         _skip_images = not getattr(policy, "requires_images", True)
+        # Named-body poses the policy declared it needs (mimic trackers read an
+        # anchor link). Resolved once here so an unknown name fails before the
+        # loop instead of being read as a zero pose on every tick; () for the
+        # overwhelming majority of policies, which adds no backend call.
+        _bodies = self._resolve_required_bodies(policy)
         # Step physics for the full control period per action, same derivation
         # as run(). The default n_substeps=1 made eval rollouts under-step.
         n_substeps = self._control_substeps(control_frequency, control_substeps)
@@ -2543,7 +2699,7 @@ class PolicyRunner:
         rtc_prefetch_blocks = 0
 
         def _observation_fn() -> dict[str, Any]:
-            return self.sim.get_observation(robot_name=robot_name, skip_images=_skip_images)
+            return self._observe(robot_name, skip_images=_skip_images, bodies=_bodies)
 
         def _query_chunk(observation: dict[str, Any], observed_delay: int = 0) -> list[dict[str, Any]]:
             # Tell latency-sensitive (RTC) policies how many control steps
@@ -2861,6 +3017,11 @@ class PolicyRunner:
 
         # T26: skip camera rendering when the policy does not need images.
         _skip_images = not getattr(policy, "requires_images", True)
+        # Named-body poses the policy declared it needs (mimic trackers read an
+        # anchor link). Resolved once here so an unknown name fails before the
+        # loop instead of being read as a zero pose on every tick; () for the
+        # overwhelming majority of policies, which adds no backend call.
+        _bodies = self._resolve_required_bodies(policy)
         # Full control-period substeps per action (see run() / evaluate()).
         n_substeps = self._control_substeps(control_frequency, control_substeps)
         policy.set_control_frequency(control_frequency)
@@ -2998,7 +3159,7 @@ class PolicyRunner:
                 last_info: dict[str, Any] = {}
 
                 for _ in range(max_steps):
-                    observation = self.sim.get_observation(robot_name=robot_name, skip_images=_skip_images)
+                    observation = self._observe(robot_name, skip_images=_skip_images, bodies=_bodies)
                     # Hook: benchmarks may bridge the sim's observation schema
                     # (typically joint-space) to whatever the policy was trained
                     # on (e.g. LIBERO's Cartesian state.x/y/z/roll/pitch/yaw/gripper).
