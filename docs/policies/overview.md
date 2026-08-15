@@ -1,5 +1,5 @@
 ---
-description: The Policy ABC and every provider that ships - mock, groot, lerobot_local, lerobot_async, cosmos3, vera, remote, curobo, moveit2, wbc, wbc_gait, motionbricks.
+description: The Policy ABC and every provider that ships - mock, groot, lerobot_local, lerobot_async, cosmos3, vera, remote, curobo, moveit2, wbc, wbc_gait, motionbricks, kimodo.
 ---
 
 # Policy providers
@@ -9,7 +9,7 @@ truth - list every provider that `create_policy("<name>")` accepts with:
 
 ```bash
 python -c 'from strands_robots.policies import list_providers; print(list_providers())'
-# ['cosmos3', 'curobo', 'groot', 'lerobot_async', 'lerobot_local', 'mock', 'motionbricks', 'moveit2', 'remote', 'vera', 'wbc', 'wbc_gait']
+# ['cosmos3', 'curobo', 'groot', 'kimodo', 'lerobot_async', 'lerobot_local', 'mock', 'motionbricks', 'moveit2', 'remote', 'vera', 'wbc', 'wbc_gait']
 ```
 
 ```python
@@ -45,6 +45,7 @@ is kept in sync with `list_providers()` by a regression test
 | [`wbc`](wbc.md) | `WBCPolicy` | `wbc` | NVIDIA GR00T Whole-Body-Control (SONIC) Unitree G1 humanoid locomotion, in-process ONNX, no GPU (non-VLA) |
 | [`wbc_gait`](wbc_gait.md) | `WBCGaitPolicy` | `wbc` | WBC gait-clock variant: single ONNX policy, 95-dim obs + bipedal phase clock (non-VLA) |
 | [`motionbricks`](motionbricks.md) | `MotionBricksPolicy` | `motionbricks` | Generative kinematic Unitree G1 motion (style-driven: walk/stealth_walk/...), in-process torch (non-VLA) |
+| [`kimodo`](kimodo.md) | `KimodoPolicy` | `kimodo` | Text-to-motion diffusion for the Unitree G1 (free-form prompt -> kinematic qpos), in-process torch (non-VLA) |
 
 ## Policy ABC
 
@@ -113,4 +114,5 @@ structured error naming the parameter, before any policy is created.
 - [WBC](wbc.md) - GR00T Whole-Body-Control (SONIC) G1 locomotion (non-VLA, in-process ONNX).
 - [WBC gait-clock variant](wbc_gait.md) - single-ONNX gait-clock G1 controller (non-VLA).
 - [MotionBricks](motionbricks.md) - generative kinematic G1 motion (non-VLA, in-process torch).
+- [Kimodo](kimodo.md) - text-to-motion diffusion for the G1 (non-VLA, in-process torch).
 - [Custom policies](custom-policies.md) - implement the ABC.

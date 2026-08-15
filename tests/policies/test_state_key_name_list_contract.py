@@ -2,7 +2,7 @@
 
 ``robot_state_keys`` names the actuators a policy emits actions for - they are the
 keys ``send_action`` resolves - so the list decides which actuator each action
-value is sent to. Fourteen ``set_robot_state_keys`` surfaces accept it (twelve
+value is sent to. Fifteen ``set_robot_state_keys`` surfaces accept it (thirteen
 providers, the remote client, and the abstract declaration on ``Policy``) and
 none of them validated its shape.
 
@@ -47,16 +47,21 @@ rate the in-process API refuses"), so ``MSG_SET_STATE_KEYS`` now forwards
 verbatim too. ``RemotePolicy`` validates before its own ``list(...)`` for the
 same reason, on the outbound side.
 
-Two providers needed no guard and deliberately did not get one. ``WBCPolicy``
-and ``MotionBricksPolicy`` resolve every G1 joint they drive BY NAME inside the
-caller's list, so a bare string, a mapping, a one-shot iterator, and non-string
-or blank entries all fail that membership check already - measured, all five
-refused with a message naming the missing joints. They also tolerate a repeated
-name on purpose: ``test_flat_state_name_resolved_first_occurrence_wins`` pins
-that a duplicate resolves to its FIRST occurrence and must not shift the
-resolved slot, which is a reviewed decision this change does not reopen. They
-are therefore classified as already-total rather than exempted, and the claim is
-pinned behaviourally below so the classification cannot hide a silent accept.
+Three providers needed no guard and deliberately did not get one.
+``WBCPolicy``, ``MotionBricksPolicy`` and ``KimodoPolicy`` resolve every G1 joint
+they drive BY NAME inside the caller's list, so a bare string, a mapping, a
+one-shot iterator, and non-string or blank entries all fail that membership
+check already - measured, all five refused with a message naming the missing
+joints. They also tolerate a repeated name on purpose: for the two
+index-resolved ones, ``test_flat_state_name_resolved_first_occurrence_wins``
+pins that a duplicate resolves to its FIRST occurrence and must not shift the
+resolved slot, which is a reviewed decision this change does not reopen.
+``KimodoPolicy`` is total for a second, stronger reason: it keys the emitted
+action dict off the canonical ``KIMODO_G1_JOINTS`` tuple rather than off the
+caller's list, so the width this file is about cannot be narrowed by a
+duplicate at all - pinned below. All three are therefore classified as
+already-total rather than exempted, and each claim is pinned behaviourally so
+the classification cannot hide a silent accept.
 
 ``None`` and an empty list keep their existing "auto-detect" meaning: like every
 other consumer of the shared domain, the check is gated on a truthy value.
@@ -111,9 +116,12 @@ _MUST_VALIDATE = {
 
 # Already total without the shared domain: every joint they drive is resolved by
 # name inside the caller's list, so a malformed shape fails that check instead.
-# They deliberately tolerate a repeated name (first occurrence wins), so wiring
-# them to the shared domain would reopen a reviewed decision.
+# The two index-resolved ones deliberately tolerate a repeated name (first
+# occurrence wins), so wiring them to the shared domain would reopen a reviewed
+# decision; KimodoPolicy keys its action dict off the canonical joint tuple, so
+# a duplicate cannot narrow the emitted width either way.
 _TOTAL_BY_MEMBERSHIP = {
+    "policies/kimodo/policy.py::KimodoPolicy",
     "policies/motionbricks/policy.py::MotionBricksPolicy",
     "policies/wbc/policy.py::WBCPolicy",
 }
@@ -486,6 +494,92 @@ def test_the_by_name_providers_still_tolerate_a_repeated_name() -> None:
     keys = ["floating_base_joint", *WBC_G1_ALL_JOINTS, "left_hip_pitch_joint"]
     policy.set_robot_state_keys(keys)
     assert policy._robot_state_keys == keys
+
+
+class _RampAgent:
+    """A motion agent returning a per-joint ramp, so no sampler is needed.
+
+    ``KimodoPolicy`` takes its agent by injection, so the construction below is
+    the real class with a real config - not a bare ``object.__new__`` instance.
+    """
+
+    def sample(
+        self,
+        prompt: str,
+        num_frames: int,
+        diffusion_steps: int,
+        guidance_scale: float,
+        seed: int | None,
+    ) -> Any:
+        import numpy as np
+
+        from strands_robots.policies.kimodo.policy import KIMODO_G1_JOINTS
+
+        out = np.zeros((num_frames, 7 + len(KIMODO_G1_JOINTS)), dtype=np.float32)
+        out[:, 6] = 1.0  # identity quaternion
+        out[:, 7:] = np.linspace(0.0, 1.0, len(KIMODO_G1_JOINTS))
+        return out
+
+
+def _kimodo_policy() -> Any:
+    """A Kimodo policy with an injected agent: no diffusers, weights, or CUDA."""
+    from strands_robots.policies.kimodo.policy import KimodoConfig, KimodoPolicy
+
+    return KimodoPolicy(
+        config=KimodoConfig(num_frames=4, native_fps=30, tracker_fps=30),
+        motion_agent=_RampAgent(),
+    )
+
+
+@pytest.mark.parametrize(
+    "label,value",
+    [
+        ("bare string", "left_hip_pitch_joint"),
+        ("mapping", {"left_hip_pitch_joint": 1.0}),
+        ("non-string entry", [1, 2.5, None]),
+        ("blank name", ["", "  "]),
+    ],
+)
+def test_kimodo_refuses_a_malformed_list_through_its_by_name_check(label: str, value: Any) -> None:
+    """Third by-name provider, same verdict, so the same exemption is justified."""
+    with pytest.raises(ValueError, match="missing expected G1 joints"):
+        _kimodo_policy().set_robot_state_keys(value)
+
+
+def test_kimodo_refuses_a_one_shot_iterator_too() -> None:
+    """Consumed by the ``list(...)``, then it fails membership rather than binding."""
+    with pytest.raises(ValueError, match="missing expected G1 joints"):
+        _kimodo_policy().set_robot_state_keys(iter(["left_hip_pitch_joint"]))
+
+
+def test_kimodo_refusal_leaves_the_previous_joint_list_bound() -> None:
+    """Refusal binds nothing: no half-applied layout, as on every other surface."""
+    from strands_robots.policies.kimodo.policy import KIMODO_G1_JOINTS
+
+    policy = _kimodo_policy()
+    good = ["floating_base_joint", *KIMODO_G1_JOINTS]
+    policy.set_robot_state_keys(good)
+    with pytest.raises(ValueError):
+        policy.set_robot_state_keys("left_hip_pitch_joint")
+    assert policy._robot_state_keys == good
+
+
+def test_kimodo_emits_all_29_joints_even_when_the_caller_repeats_a_name() -> None:
+    """The width this file is about cannot be narrowed by a duplicate here.
+
+    The other two by-name providers tolerate a repeated name because they
+    resolve a slot by index. ``KimodoPolicy`` keys the emitted action dict off
+    the canonical ``KIMODO_G1_JOINTS`` tuple instead of off the caller's list,
+    so a duplicate cannot collapse the emitted keys - the failure mode that
+    motivated the shared domain is unreachable rather than merely tolerated.
+    """
+    from strands_robots.policies.kimodo.policy import KIMODO_G1_JOINTS
+
+    policy = _kimodo_policy()
+    policy.set_robot_state_keys(["floating_base_joint", *KIMODO_G1_JOINTS, "left_hip_pitch_joint"])
+    (action,) = asyncio.run(policy.get_actions({}, "walk forward"))
+    assert sorted(action) == sorted(KIMODO_G1_JOINTS)
+    assert len(action) == len(KIMODO_G1_JOINTS) == 29
 
 
 # --------------------------------------------------------------------------

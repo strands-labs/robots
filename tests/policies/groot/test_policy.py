@@ -503,16 +503,21 @@ class TestParsing:
     def test_obs(self):
         m = _parse_observation_mapping(
             {"cam": "video.ego_view_bg_crop_pad_res256_freq20", "j": "state.left_arm"},
-            GR1_MMC,
         )
         assert m.video == {"cam": "ego_view_bg_crop_pad_res256_freq20"}
         assert m.state == {"j": "left_arm"}
-        assert m.language_key == "task"
 
-    def test_obs_default_lang_without_mmc(self):
-        """Without modality_configs, language_key defaults to 'task'."""
+    def test_obs_leaves_the_language_key_at_its_default(self):
+        """The parser does not resolve the language key.
+
+        It has more sources than this dict - an explicit ``language_key=``, the
+        model's modality config, the data config's declaration - so ordering them
+        belongs to ``_resolve_language_key`` and this helper leaves the field at
+        the ``ObservationMapping`` default rather than deciding it a second time.
+        """
         m = _parse_observation_mapping({"c": "video.cam"})
         assert m.language_key == "task"
+        assert m.language_key == ObservationMapping().language_key
 
     def test_bad_prefix(self):
         with pytest.raises(ValueError, match="must start with"):
@@ -1867,3 +1872,233 @@ class TestInitMappings:
         assert p._obs_mapping is None
         assert p._action_mapping is None
         assert "modality configs" in caplog.text
+
+
+# (section)
+# Service mode honours a caller-supplied mapping (#2265)
+# (section)
+
+
+# A robot whose observation keys match none of the conventional patterns, so
+# auto-inference could never bridge them and an explicit mapping is the only
+# route. ``language_keys`` is a realistic non-"task" key, which is what makes
+# the language-addressing assertion below able to fail.
+_NONCONVENTIONAL = Gr00tDataConfig(
+    name="nonconventional",
+    video_keys=["video.wrist"],
+    state_keys=["state.arm"],
+    action_keys=["action.arm"],
+    language_keys=["annotation.human.action.task_description"],
+)
+
+_ROBOT_OBS = {
+    "wrist_cam": np.zeros((8, 8, 3), dtype=np.uint8),
+    "arm_joints": [0.1, 0.2, 0.3],
+}
+_OBS_MAP = {"wrist_cam": "video.wrist", "arm_joints": "state.arm"}
+_ACTION_MAP = {"action.arm": "joints"}
+
+
+def _service_policy(**kwargs):
+    """A real service-mode policy - constructed through ``__init__``.
+
+    Deliberately not the ``__new__`` bypass the local-mode helpers above use:
+    the defect was that ``_init_mappings`` was never *called* on this branch,
+    so a test that hand-sets the resolved mappings, or that calls
+    ``_init_mappings`` itself, cannot observe it. The constructor is the
+    subject here.
+    """
+    return Gr00tPolicy(data_config=_NONCONVENTIONAL, host="localhost", port=19999, **kwargs)
+
+
+def _capture_wire_payload(policy, chunk=None):
+    """Run one service inference, returning ``(wire_payload, actions)``."""
+    captured = {}
+
+    def fake_get_action(obs):
+        captured["obs"] = obs
+        return chunk if chunk is not None else {"action.arm": np.zeros((4, 3), dtype=np.float32)}
+
+    policy._client.get_action = fake_get_action
+    actions = policy._service_get_actions(_ROBOT_OBS, "pick the cube")
+    return captured["obs"], actions
+
+
+class TestServiceModeHonoursSuppliedMappings:
+    """Pin that a mapping supplied to a *service*-mode policy reaches the wire.
+
+    ``observation_mapping`` / ``action_mapping`` were stored raw and parsed only
+    after a successful local model load, so in service mode both were discarded:
+    the request carried the task string and no observation at all, and the
+    already-written mapped arms in ``_service_get_actions`` (video/state) and
+    ``_unpack_service_actions`` (action renaming) were unreachable. Both parsers
+    are pure over the caller's flat dict, so neither ever needed the model.
+
+    Each test below is annotated with what it does on the pre-fix tree. The
+    omitted-mapping and local-mode cases are over-reach controls: they pass
+    either way, and are here to fail if the fix reaches further than the
+    supplied-mapping case it is scoped to.
+    """
+
+    def test_mapped_request_carries_the_mapped_video_and_state_keys(self):
+        """Pre-fix: 0 video and 0 state keys on the wire. The headline defect."""
+        p = _service_policy(observation_mapping=_OBS_MAP)
+        wire, _ = _capture_wire_payload(p)
+
+        assert sorted(wire["video"]) == ["wrist"]
+        assert sorted(wire["state"]) == ["arm"]
+        # The caller's own keys are what got mapped, not coincidentally-named ones.
+        assert p._obs_mapping.video == {"wrist_cam": "wrist"}
+        assert p._obs_mapping.state == {"arm_joints": "arm"}
+
+    def test_mapped_service_actions_are_renamed_to_robot_keys(self):
+        """Pre-fix: the chunk comes back under the bare model key ``arm``.
+
+        The action half fails one layer further on than the observation half:
+        ``_unpack_service_actions`` guards the renaming loop on a truthy
+        ``_action_mapping``, so an unparsed mapping is skipped rather than
+        asserted against.
+        """
+        p = _service_policy(action_mapping=_ACTION_MAP)
+        _, actions = _capture_wire_payload(p)
+
+        assert [sorted(step) for step in actions] == [["joints"]] * 4
+        assert p._action_mapping.actions == {"arm": "joints"}
+
+    def test_malformed_observation_mapping_is_refused_at_construction(self):
+        """Pre-fix: accepted silently in service mode, refused in local mode.
+
+        Parsing on both branches means the refusal is now shared, so the
+        message a service-mode caller gets is the one local mode has always
+        produced.
+        """
+        with pytest.raises(ValueError, match="must start with 'video.' or 'state.'"):
+            _service_policy(observation_mapping={"wrist_cam": "audio.mic"})
+
+    def test_language_is_addressed_to_the_same_key_as_the_unmapped_path(self):
+        """Pre-fix: fails on shape - the unmapped arm emits flat prefixed keys,
+        so there is no ``wire["language"]`` at all.
+
+        Also the pin against the narrower fix of parsing with no language
+        resolution: ``_parse_observation_mapping`` defaults ``language_key`` to
+        ``"task"`` when given no modality config, and this server's config
+        declares ``annotation.human.action.task_description``. That fix would
+        land video and state on the wire and leave the instruction addressed to
+        a key nothing reads - a quieter version of the same defect.
+        """
+        declared = _NONCONVENTIONAL.language_keys[0]
+
+        mapped_wire, _ = _capture_wire_payload(_service_policy(observation_mapping=_OBS_MAP))
+        unmapped_wire, _ = _capture_wire_payload(_service_policy())
+
+        assert sorted(mapped_wire["language"]) == [declared]
+        # The unmapped path is flat, and addresses the instruction identically.
+        assert [k for k in unmapped_wire if k == declared] == [declared]
+
+    def test_mapped_payload_is_the_nested_shape_a_live_server_accepts(self):
+        """Pin the payload *shape* the mapped arm sends, not just its keys.
+
+        The mapped arm routes through ``_prepare_observation``, which emits the
+        model's native nested observation. That is the shape
+        ``tests_integ/groot/test_groot_integration.py`` sends to a **real**
+        ``nvidia/GR00T-N1.6-3B`` server and asserts a usable action chunk back
+        from - nested ``video``/``state``/``language`` dicts, video
+        ``(B=1, T=1, H, W, C)`` uint8, state ``(B=1, T=1, D)`` float32,
+        language ``{key: [[instruction]]}``.
+
+        This is the pin against the alternative fix of applying the mapping
+        inside ``_build_service_observation`` and deleting the mapped arm.
+        That builder documents itself as being for *legacy* servers, and for
+        n1.6 it emits video as ``(B, H, W, C)`` with no time axis - a different
+        rank from the one the live server is pinned against. It is also what
+        makes the #187 LOCAL-vs-SERVICE wire diff meaningful: that diagnostic
+        exists to ``np.allclose`` the two modes' payloads against each other,
+        which is only possible while a mapped service request and a local one
+        agree on shape.
+        """
+        p = _service_policy(observation_mapping=_OBS_MAP)
+        wire, _ = _capture_wire_payload(p)
+
+        assert set(wire) == {"video", "state", "language"}
+
+        video = wire["video"]["wrist"]
+        assert video.shape == (1, 1, 8, 8, 3)
+        assert video.dtype == np.uint8
+
+        state = wire["state"]["arm"]
+        assert state.shape == (1, 1, 3)
+        assert state.dtype == np.float32
+
+        assert wire["language"] == {_NONCONVENTIONAL.language_keys[0]: [["pick the cube"]]}
+
+    def test_language_key_override_wins_in_service_mode(self):
+        """Pre-fix: ``_obs_mapping`` is None, so ``language_key=`` was dropped
+        with the rest of the mapping."""
+        p = _service_policy(observation_mapping=_OBS_MAP, language_key="annotation.custom")
+        wire, _ = _capture_wire_payload(p)
+
+        assert p._obs_mapping.language_key == "annotation.custom"
+        assert sorted(wire["language"]) == ["annotation.custom"]
+
+    def test_task_default_when_the_data_config_declares_no_language_key(self):
+        """The documented ``"task"`` default is the last resort, not the first:
+        it applies only when neither an override nor a declared key exists."""
+        cfg = Gr00tDataConfig(name="nolang", video_keys=["video.wrist"], state_keys=["state.arm"])
+        p = Gr00tPolicy(data_config=cfg, host="localhost", port=19999, observation_mapping=_OBS_MAP)
+
+        assert p._obs_mapping.language_key == "task"
+
+    def test_omitting_the_mapping_leaves_the_service_path_unchanged(self):
+        """Over-reach control: passes pre-fix and post-fix.
+
+        An omitted mapping must stay ``None`` rather than acquiring an inferred
+        one. Auto-inference needs modality configs a service policy cannot read,
+        so an inferred mapping here could never be validated - and ``None`` is
+        already the value both service consumers read as "send bare model keys".
+        """
+        p = _service_policy()
+        wire, actions = _capture_wire_payload(p)
+
+        assert p._obs_mapping is None
+        assert p._action_mapping is None
+        # Still the flat legacy payload, not the nested mapped one.
+        assert "video" not in wire and "state" not in wire
+        assert [sorted(step) for step in actions] == [["arm"]] * 4
+
+    def test_local_mode_still_validates_a_supplied_mapping_against_the_model(self):
+        """Over-reach control: passes pre-fix and post-fix.
+
+        Parsing early must not have moved ``validate()`` earlier with it - a
+        mapping naming a model key the checkpoint does not have is still
+        refused at construction in local mode, which is the cross-check service
+        mode has no model to perform.
+        """
+        p = _mapping_policy(
+            local_policy=_MappingPolicy(direct=SO100_MMC),
+            raw_obs={"cam": "video.no_such_camera"},
+        )
+        with pytest.raises(ValueError, match="model only has"):
+            p._init_mappings()
+
+    def test_supplied_mapping_survives_unreadable_modality_configs(self):
+        """Pre-fix: both mappings dropped to None, and inference then died on
+        ``assert self._obs_mapping is not None``.
+
+        Same defect as the service branch, reached from the other direction: a
+        local policy whose modality configs cannot be read returned before
+        parsing. It is not validated - there is nothing to validate against -
+        so an unusable key surfaces at inference rather than at construction.
+        """
+        p = _mapping_policy(
+            local_policy=_MappingPolicy(),
+            raw_obs={"cam": "video.webcam", "arm": "state.single_arm"},
+            raw_action={"action.single_arm": "arm"},
+        )
+        p._init_mappings()
+
+        assert p._obs_mapping.video == {"cam": "webcam"}
+        assert p._obs_mapping.state == {"arm": "single_arm"}
+        assert p._action_mapping.actions == {"single_arm": "arm"}
+        # No model to read a language key from, so the data config's own
+        # declaration stands.
+        assert p._obs_mapping.language_key == "annotation.human.task_description"

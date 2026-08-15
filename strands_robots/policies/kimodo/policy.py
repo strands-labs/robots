@@ -1,0 +1,418 @@
+"""KimodoPolicy - text-to-motion diffusion for the Unitree G1.
+
+Clean-room :class:`Policy` provider wrapping NVIDIA's Kimodo
+(``nvidia/Kimodo-G1-RP-v1``) text-conditioned motion diffusion model. Kimodo
+takes a natural-language prompt (e.g. ``"walking forward with confident
+strides"``) and samples per-frame full-body ``qpos`` sequences for the Unitree
+G1 via a diffusion process. This policy adapts that sequence into the
+per-tick action-dict contract the rest of ``strands_robots`` expects.
+
+Where it sits in the stack (identical seat to
+:class:`~strands_robots.policies.motionbricks.MotionBricksPolicy`):
+
+* Kimodo emits **motion targets** (kinematic ``qpos``).
+* A tracking controller (WBC / PD) turns those targets into joint torques
+  under physics via :class:`~strands_robots.policies.composite.CompositePolicy`.
+* Standalone, calling the policy in a MuJoCo sim without a tracker sets
+  ``qpos`` directly - this is the faithful visualisation of a kinematic
+  generator.
+
+Contract:
+
+* ``requires_images = False`` - the sampler is driven by a text prompt,
+  never a camera frame.
+* ``get_actions(obs, instruction, **kwargs)`` reads the prompt from the
+  well-known keys (``instruction`` / ``text_prompt``) and sampling knobs from
+  ``kwargs`` (``diffusion_steps``, ``guidance_scale``, ``seed``). The instance
+  synthesises ONCE on first call (or when the prompt changes) then streams
+  per-frame targets on subsequent calls, one frame per call, synchronously.
+* Output is a dict of joint-name -> target angle for the G1's 29 leg + waist
+  + arm joints, keyed by :data:`KIMODO_G1_JOINTS` (the canonical WBC ordering)
+  so the tracker sees identical names.
+
+Model injection seam: pass a ``motion_agent`` implementing
+:class:`KimodoMotionAgent` to unit-test the frame -> action-dict mapping
+WITHOUT diffusers, weights, or CUDA. A missing install or checkpoint raises
+``RuntimeError`` with an install hint - no silent fallback (AGENTS.md #5/#6).
+
+Requires the ``[kimodo]`` extra; weights are fetched on demand from
+HuggingFace under the NVIDIA Open Model License.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import logging
+from typing import Any, Protocol, runtime_checkable
+
+import numpy as np
+from numpy.typing import NDArray
+
+from strands_robots.policies.base import Policy
+from strands_robots.policies.wbc.policy import WBC_G1_ALL_JOINTS
+
+from .config import KimodoConfig
+
+logger = logging.getLogger(__name__)
+
+
+# The 29 leg+waist+arm joints Kimodo drives, in the sampler's ``qpos[7:]``
+# order. Verified identical to the canonical WBC/MotionBricks ordering so a
+# Kimodo reference and a WBC/PD tracker name the same joints - they compose
+# without a remapping table.
+KIMODO_G1_JOINTS: tuple[str, ...] = WBC_G1_ALL_JOINTS
+
+
+# qpos layout: [root_pos(3), root_quat(4), joint_angles(njoints)]. First 7
+# entries are the free-flying base (not actuator targets).
+_NUM_ROOT_QPOS = 7
+
+
+@runtime_checkable
+class KimodoMotionAgent(Protocol):
+    """Injection seam for the Kimodo sampler (``motion_agent=`` arg).
+
+    The real agent (built from diffusers weights) and unit-test stubs both
+    satisfy this protocol, so the policy's mapping logic is testable without
+    torch/diffusers/CUDA/checkpoints.
+    """
+
+    def sample(
+        self,
+        prompt: str,
+        num_frames: int,
+        diffusion_steps: int,
+        guidance_scale: float,
+        seed: int | None,
+    ) -> NDArray[np.float32]:
+        """Sample a motion. Returns ``(num_frames, 7+29)`` float32 qpos."""
+        ...
+
+
+def _slerp_upsample(
+    qpos: NDArray[np.float32],
+    native_fps: int,
+    target_fps: int,
+) -> NDArray[np.float32]:
+    """Upsample a qpos sequence from ``native_fps`` to ``target_fps``.
+
+    Linear interpolation on joint angles, SLERP on the root quaternion (indices
+    3-6). Position (indices 0-2) is linearly interpolated. Kimodo native is
+    30 Hz and the G1 tracker consumes at 50 Hz, so this widens 120 frames ->
+    ~200 frames without introducing joint discontinuities.
+    """
+    if target_fps == native_fps:
+        return qpos
+    n_in = qpos.shape[0]
+    duration_s = (n_in - 1) / native_fps if n_in > 1 else 0.0
+    n_out = max(1, int(round(duration_s * target_fps)) + 1)
+    t_in = np.linspace(0.0, 1.0, n_in, dtype=np.float32)
+    t_out = np.linspace(0.0, 1.0, n_out, dtype=np.float32)
+    out = np.zeros((n_out, qpos.shape[1]), dtype=np.float32)
+    # Position + joints - linear.
+    for j in list(range(3)) + list(range(7, qpos.shape[1])):
+        out[:, j] = np.interp(t_out, t_in, qpos[:, j])
+    # Quaternion - SLERP. Vectorised across output frames.
+    q_in = qpos[:, 3:7]
+    # Normalise safety.
+    q_in = q_in / np.linalg.norm(q_in, axis=1, keepdims=True).clip(min=1e-8)
+    for i, t in enumerate(t_out):
+        idx = np.clip(np.searchsorted(t_in, t) - 1, 0, n_in - 2)
+        alpha = (t - t_in[idx]) / max(t_in[idx + 1] - t_in[idx], 1e-8)
+        q0, q1 = q_in[idx], q_in[idx + 1]
+        dot = float(np.dot(q0, q1))
+        if dot < 0.0:
+            q1 = -q1
+            dot = -dot
+        if dot > 0.9995:
+            q = q0 + alpha * (q1 - q0)
+        else:
+            theta_0 = float(np.arccos(dot))
+            sin_theta_0 = float(np.sin(theta_0))
+            theta = theta_0 * alpha
+            s0 = float(np.sin(theta_0 - theta)) / sin_theta_0
+            s1 = float(np.sin(theta)) / sin_theta_0
+            q = s0 * q0 + s1 * q1
+        out[i, 3:7] = q / max(float(np.linalg.norm(q)), 1e-8)
+    return out
+
+
+class KimodoPolicy(Policy):
+    """Text-to-motion diffusion policy for the Unitree G1.
+
+    Args:
+        config: A :class:`KimodoConfig` instance. Constructed via
+            ``KimodoConfig()`` for defaults or ``KimodoConfig.from_dict(...)``
+            from user config.
+        motion_agent: Optional :class:`KimodoMotionAgent` (injection seam for
+            tests). If ``None``, the real diffusers-backed agent is lazily
+            constructed on first call - which requires the ``[kimodo]`` extra
+            plus a working CUDA runtime.
+        **kwargs: Passed to :class:`Policy` base class (e.g. ``robot_name``).
+
+    Example (in a MuJoCo sim):
+
+        >>> from strands_robots import Robot
+        >>> sim = Robot("g1", mesh=False)
+        >>> sim.run_policy(
+        ...     robot_name="g1",
+        ...     policy_provider="kimodo",
+        ...     policy_config={
+        ...         "diffusion_steps": 100,
+        ...         "guidance_scale": 7.5,
+        ...         "num_frames": 120,
+        ...     },
+        ...     instruction="a person walking forward with confident strides",
+        ...     n_steps=200,
+        ...     control_frequency=50,
+        ... )
+    """
+
+    #: This policy does not consume image observations - text prompt drives it.
+    requires_images: bool = False
+
+    def __init__(
+        self,
+        config: KimodoConfig | dict[str, Any] | None = None,
+        *,
+        motion_agent: KimodoMotionAgent | None = None,
+        model_id: str | None = None,
+        diffusion_steps: int | None = None,
+        guidance_scale: float | None = None,
+        num_frames: int | None = None,
+        native_fps: int | None = None,
+        tracker_fps: int | None = None,
+        device: str | None = None,
+        dtype: str | None = None,
+        seed: int | None = None,
+    ) -> None:
+        """Build the policy from a config object and/or per-field overrides.
+
+        Every field the registry advertises in ``config_keys`` is an explicit
+        parameter here, so ``create_policy("kimodo", diffusion_steps=25)``
+        configures the sampler instead of failing on an unexpected keyword.
+        There is deliberately no ``**kwargs``: an unknown knob raises
+        ``TypeError`` at construction rather than being swallowed by a
+        parameter nothing reads.
+
+        Args:
+            config: A :class:`KimodoConfig`, a plain dict of its fields, or
+                ``None`` for the dataclass defaults.
+            motion_agent: Injected sampler, for driving the frame -> action-dict
+                mapping without diffusers, weights, or CUDA.
+            model_id: HuggingFace model id override.
+            diffusion_steps: Denoising steps override.
+            guidance_scale: Classifier-free-guidance weight override.
+            num_frames: Motion length override, in native frames.
+            native_fps: Sampler output rate override.
+            tracker_fps: Tracker consumption rate override.
+            device: torch device string override.
+            dtype: Sampler dtype override (``"fp16"``/``"bf16"``/``"fp32"``).
+            seed: Sampling seed override.
+
+        Raises:
+            ValueError: If a resolved field is outside its domain, as validated
+                by :class:`KimodoConfig`.
+        """
+        self.config: KimodoConfig = self._resolve_config(
+            config,
+            model_id=model_id,
+            diffusion_steps=diffusion_steps,
+            guidance_scale=guidance_scale,
+            num_frames=num_frames,
+            native_fps=native_fps,
+            tracker_fps=tracker_fps,
+            device=device,
+            dtype=dtype,
+            seed=seed,
+        )
+        self._motion_agent: KimodoMotionAgent | None = motion_agent
+
+        # Streaming state - filled by _synthesise() and drained by get_actions().
+        self._current_prompt: str | None = None
+        self._motion_buffer: NDArray[np.float32] | None = None
+        self._frame_cursor: int = 0
+        self._joint_names: tuple[str, ...] = KIMODO_G1_JOINTS
+        self._robot_state_keys: list[str] = list(KIMODO_G1_JOINTS)
+
+    # -----------------------------------------------------------------
+    # Policy interface (abstract members from base.Policy)
+    # -----------------------------------------------------------------
+    @property
+    def provider_name(self) -> str:
+        """Registry key for this provider (``"kimodo"``)."""
+        return "kimodo"
+
+    def set_robot_state_keys(self, robot_state_keys: list[str]) -> None:
+        """Resolve the G1's 29 leg+waist+arm joints BY NAME in the robot's key list.
+
+        Kimodo emits ``qpos[7:]`` in :data:`KIMODO_G1_JOINTS` order; we locate
+        each of those names inside ``robot_state_keys`` rather than assuming a
+        fixed position (the sim may prepend the free floating-base joint and
+        namespace joints). Resolving by name means the action-dict keys match
+        the robot's actuators regardless of ordering.
+
+        Raises:
+            ValueError: If any expected G1 joint name is absent.
+        """
+        keys = list(robot_state_keys)
+        key_set = set(keys)
+        missing = [name for name in KIMODO_G1_JOINTS if name not in key_set]
+        if missing:
+            raise ValueError(
+                "KimodoPolicy: the robot's joint list is missing expected G1 joints: "
+                f"{missing}.\n"
+                f"  expected (qpos[7:] order): {list(KIMODO_G1_JOINTS)}\n"
+                f"  robot provided:            {keys}\n"
+                "Kimodo drives the 29-DOF G1; load the full unitree_g1 model."
+            )
+        self._robot_state_keys = keys
+        self._joint_names = tuple(KIMODO_G1_JOINTS)
+
+    async def get_actions(
+        self,
+        observation_dict: dict[str, Any],
+        instruction: str,
+        **kwargs: Any,
+    ) -> list[dict[str, Any]]:
+        """Return the next per-frame G1 joint targets for the current prompt.
+
+        Args:
+            observation_dict: Sim observation (ignored - Kimodo is open-loop
+                kinematic).
+            instruction: Text prompt for motion synthesis. If it changes across
+                calls, the sampler re-runs and the frame cursor resets.
+            **kwargs: Optional overrides for this call:
+                ``text_prompt`` (alias for ``instruction``),
+                ``diffusion_steps``, ``guidance_scale``, ``seed``.
+
+        Returns:
+            A single-element list containing a dict mapping each of
+            :data:`KIMODO_G1_JOINTS` to its target angle (float, radians).
+            The single-element list matches the base ``Policy.get_actions``
+            contract (chunked policies return more than one). At the end of the
+            sampled buffer the last frame is held (tracker keeps servoing).
+        """
+        prompt = kwargs.get("text_prompt") or instruction
+        if not prompt or not prompt.strip():
+            raise ValueError(
+                "KimodoPolicy requires a non-empty 'instruction' or 'text_prompt' "
+                "(natural-language motion description)."
+            )
+
+        # (Re)sample if prompt changed or first call.
+        if self._motion_buffer is None or prompt != self._current_prompt:
+            self._synthesise(
+                prompt=prompt,
+                diffusion_steps=int(kwargs.get("diffusion_steps", self.config.diffusion_steps)),
+                guidance_scale=float(kwargs.get("guidance_scale", self.config.guidance_scale)),
+                seed=kwargs.get("seed", self.config.seed),
+            )
+
+        assert self._motion_buffer is not None  # narrowed by _synthesise
+        idx = min(self._frame_cursor, self._motion_buffer.shape[0] - 1)
+        frame = self._motion_buffer[idx]
+        self._frame_cursor += 1
+
+        joint_angles = frame[_NUM_ROOT_QPOS:]
+        action = {name: float(v) for name, v in zip(self._joint_names, joint_angles)}
+        return [action]
+
+    def reset(self, seed: int | None = None) -> None:
+        """Reset the frame cursor. ``seed`` is stored for the next resample."""
+        self._frame_cursor = 0
+        if seed is not None:
+            # Store on config-shadow so next _synthesise picks it up.
+            object.__setattr__(self.config, "seed", seed)
+
+    # -----------------------------------------------------------------
+    # Internals
+    # -----------------------------------------------------------------
+    def _synthesise(
+        self,
+        prompt: str,
+        diffusion_steps: int,
+        guidance_scale: float,
+        seed: int | None,
+    ) -> None:
+        """Sample a fresh motion buffer for ``prompt`` and reset the cursor."""
+        agent = self._motion_agent or self._build_real_agent()
+        raw = agent.sample(
+            prompt=prompt,
+            num_frames=self.config.num_frames,
+            diffusion_steps=diffusion_steps,
+            guidance_scale=guidance_scale,
+            seed=seed,
+        )
+        if raw.ndim != 2 or raw.shape[1] != _NUM_ROOT_QPOS + len(KIMODO_G1_JOINTS):
+            raise RuntimeError(
+                f"Kimodo agent returned qpos with shape {raw.shape}, expected "
+                f"(*, {_NUM_ROOT_QPOS + len(KIMODO_G1_JOINTS)})"
+            )
+        # Upsample native 30Hz -> tracker 50Hz for smooth control.
+        self._motion_buffer = _slerp_upsample(
+            raw.astype(np.float32),
+            native_fps=self.config.native_fps,
+            target_fps=self.config.tracker_fps,
+        )
+        self._current_prompt = prompt
+        self._frame_cursor = 0
+        # The prompt is caller-supplied, so it is identified by digest rather
+        # than echoed: interpolating the text would let a prompt containing a
+        # newline forge an additional log record. The digest still correlates
+        # repeated samples of the same prompt across a run.
+        logger.info(
+            "Kimodo: sampled %d frames @ %dHz for prompt sha256:%s (%d chars)",
+            self._motion_buffer.shape[0],
+            self.config.tracker_fps,
+            hashlib.sha256(prompt.encode("utf-8")).hexdigest()[:12],
+            len(prompt),
+        )
+
+    @staticmethod
+    def _resolve_config(
+        config: KimodoConfig | dict[str, Any] | None,
+        **overrides: Any,
+    ) -> KimodoConfig:
+        """Merge a base config with per-field overrides, explicit values winning.
+
+        Precedence is override > ``config`` field > dataclass default. The merge
+        goes back through :class:`KimodoConfig` rather than
+        ``dataclasses.replace`` so ``__post_init__`` re-validates the merged
+        result: an override is checked exactly like a directly-constructed
+        field instead of bypassing the domain.
+
+        Args:
+            config: Base config, a dict of its fields, or ``None`` for defaults.
+            **overrides: Per-field values, where ``None`` means "not supplied".
+
+        Returns:
+            The merged, validated config.
+        """
+        if config is None:
+            base: dict[str, Any] = {}
+        elif isinstance(config, dict):
+            base = dict(config)
+        else:
+            base = {name: getattr(config, name) for name in config.__dataclass_fields__}
+        base.update({key: value for key, value in overrides.items() if value is not None})
+        return KimodoConfig.from_dict(base)
+
+    def _build_real_agent(self) -> KimodoMotionAgent:
+        """Lazy-construct the real diffusers-backed sampler agent.
+
+        Kept out of ``__init__`` so unit tests can construct the policy with an
+        injected ``motion_agent`` without needing torch/diffusers/CUDA on the
+        import path.
+        """
+        try:
+            from ._diffusers_agent import DiffusersKimodoAgent  # local, optional
+        except ImportError as exc:  # pragma: no cover - env-dependent
+            raise RuntimeError(
+                "KimodoPolicy requires the '[kimodo]' extra. Install with:\n"
+                "  pip install 'strands-robots[kimodo]'\n"
+                "or provide a custom motion_agent= for offline testing."
+            ) from exc
+        agent = DiffusersKimodoAgent(self.config)
+        self._motion_agent = agent
+        return agent

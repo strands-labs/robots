@@ -57,6 +57,7 @@ class UntrustedRemoteCodeError(RuntimeError):
 _HF_REMOTE_CODE_PROVIDERS: frozenset[str] = frozenset(
     {
         "lerobot_local",
+        "kimodo",
     }
 )
 
