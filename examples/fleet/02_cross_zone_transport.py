@@ -390,6 +390,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--n-steps", type=int, default=25, help="policy steps per dispatched leg (live mode)")
     parser.add_argument("--dry-run", action="store_true", help="no simulator, no mesh: loopback transport seam")
     args = parser.parse_args(argv)
+    if args.n_steps <= 0:
+        raise SystemExit("--n-steps must be a positive number of policy steps")
 
     for zone_id, zone in ZONES.items():
         robots = ", ".join(m["robot"] for m in zone["manifests"])

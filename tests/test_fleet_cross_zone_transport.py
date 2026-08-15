@@ -228,6 +228,12 @@ def test_hitl_gate_auto_approves_only_under_the_documented_env_opt_out(example, 
     assert "auto-approved" in capsys.readouterr().out
 
 
+@pytest.mark.parametrize("n_steps", ["0", "-5"])
+def test_a_non_positive_n_steps_is_refused_before_anything_starts(example, n_steps):
+    with pytest.raises(SystemExit, match="--n-steps must be a positive number of policy steps"):
+        example.main(["--dry-run", "--n-steps", n_steps])
+
+
 def test_handoff_writes_a_signed_custody_chain_to_the_audit_log(example):
     from strands_robots.mesh.audit import read_audit_log, verify_audit_integrity
 

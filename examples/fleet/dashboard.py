@@ -12,10 +12,14 @@ resume / HITL decisions, as recorded in the audit trail).
 READ-ONLY is enforced, not narrated: ``restrict_to_subscribe_only`` replaces
 every command-capable method on the peer (``send`` / ``tell`` / ``broadcast``
 / ``emergency_stop`` / ``publish_step``) with a refusal, and confines raw
-``publish`` to the peer's own presence namespace - so the dashboard cannot
-publish a command, an estop, or a resume even if compromised code asks it
-to. HITL approvals stay in the operator terminal; a write-capable UI is an
-explicit epic non-goal.
+``publish`` to the peer's own presence namespace - so a command, an estop or
+a resume cannot be published from this peer by accident. This is a guard
+against misuse, not a security boundary: the refusals are instance
+attributes, so code that deliberately reaches for the class attribute is not
+contained by them (``restrict_to_subscribe_only`` itself does exactly that,
+via ``type(mesh).publish``, to keep the confined path working). HITL
+approvals stay in the operator terminal; a write-capable UI is an explicit
+epic non-goal.
 
 Dependencies: pip install "strands-robots[mesh]"
               (rendering upgrades from terminal to Rerun when rerun-sdk is
