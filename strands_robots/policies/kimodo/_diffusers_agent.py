@@ -18,6 +18,7 @@ joint angles.
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 import numpy as np
 from numpy.typing import NDArray
@@ -25,6 +26,23 @@ from numpy.typing import NDArray
 from .config import KimodoConfig
 
 logger = logging.getLogger(__name__)
+
+
+def _output_field_names(output: Any) -> str:
+    """Name the fields a pipeline output carries, for a refusal message.
+
+    Args:
+        output: Whatever the diffusion pipeline returned.
+
+    Returns:
+        A comma-separated field listing, or a short phrase when none is
+        readable. Never raises - it only ever builds an error message.
+    """
+    if isinstance(output, dict):
+        names = sorted(str(key) for key in output)
+    else:
+        names = sorted(str(name) for name in getattr(output, "__dict__", {}))
+    return "fields " + ", ".join(names) if names else "no readable fields"
 
 
 class DiffusersKimodoAgent:
@@ -83,13 +101,21 @@ class DiffusersKimodoAgent:
             generator=gen,
         )
         # Upstream returns `output.motion` as a torch tensor of shape
-        # (num_frames, 7+29) already in qpos convention.
+        # (num_frames, 7+29) already in qpos convention. Read the mapping form
+        # with ``get`` rather than a subscript: a diffusers pipeline output is a
+        # ``BaseOutput``, which subclasses ``OrderedDict``, so a subscript for a
+        # field the checkpoint does not carry raises ``KeyError`` before the
+        # refusal below can name the model and the remedy.
         motion = getattr(output, "motion", None)
+        if motion is None and isinstance(output, dict):
+            motion = output.get("motion")
         if motion is None:
-            # Fallback: some versions use `output["motion"]`.
-            motion = output["motion"] if isinstance(output, dict) else None
-        if motion is None:
-            raise RuntimeError("Kimodo pipeline output missing 'motion' field; is the checkpoint version compatible?")
+            raise RuntimeError(
+                f"Kimodo pipeline output for model_id '{self.config.model_id}' carries no 'motion' "
+                f"field: got {type(output).__name__} with {_output_field_names(output)}. Kimodo emits "
+                "per-frame qpos under 'motion' - point model_id at a Kimodo checkpoint, or pass "
+                "motion_agent= to adapt a sampler that names its output differently."
+            )
         arr = motion.detach().to("cpu").float().numpy().astype(self._np_dtype)
         # Some checkpoints return (B, T, D) with B=1 - squeeze.
         if arr.ndim == 3 and arr.shape[0] == 1:

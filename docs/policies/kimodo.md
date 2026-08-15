@@ -115,6 +115,26 @@ merged value is re-validated by `KimodoConfig`, so `diffusion_steps=0` is
 refused whichever way it arrives. There is no `**kwargs`: a misspelled knob
 raises `TypeError` at construction instead of being silently ignored.
 
+## When the checkpoint is not a Kimodo checkpoint
+
+`model_id` is accepted verbatim so an alternate Kimodo revision can be pinned,
+which also means a `model_id` pointing at some other diffusers pipeline loads
+fine and only fails at the first sample. Kimodo emits per-frame `qpos` under a
+`motion` field; a pipeline that names its output something else is refused with
+a `RuntimeError` naming the `model_id` and the fields the output *did* carry:
+
+```text
+RuntimeError: Kimodo pipeline output for model_id 'acme/not-kimodo' carries no
+'motion' field: got _SampleOutput with fields sample. Kimodo emits per-frame
+qpos under 'motion' - point model_id at a Kimodo checkpoint, or pass
+motion_agent= to adapt a sampler that names its output differently.
+```
+
+The remedies are the two the message names: point `model_id` at a Kimodo
+checkpoint, or pass a `motion_agent=` adapter that reads the sampler's own
+output field and returns the `(num_frames, 7+29)` `qpos` array this policy
+expects.
+
 ## Unit testing without weights
 
 Inject a `KimodoMotionAgent` stub — no torch/diffusers/CUDA needed. See
