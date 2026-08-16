@@ -112,8 +112,13 @@ class IsaacConfig:
         Rendering timestep in seconds. Default 1/30 s.
     render_mode : str
         Rendering pipeline: ``"headless"`` (no rendering),
-        ``"rtx_realtime"`` (fast, rasterization-based),
-        ``"rtx_pathtracing"`` (slow, photorealistic). Default ``"headless"``.
+        ``"rtx_realtime"`` (fast, rasterization-based ``RayTracedLighting``),
+        ``"rtx_pathtracing"`` (slow, photorealistic ``PathTracing``).
+        Default ``"headless"``. The two RTX modes select the corresponding
+        ``renderer`` in the ``SimulationApp`` launch config; because
+        SimulationApp is a create-once process-wide singleton, the renderer
+        is fixed by whichever world is created first in the process, and a
+        later differing request is reported (warning) rather than applied.
         ``STRANDS_ISAAC_RTX_PATHTRACING`` set to one of
         ``("1", "true", "yes", "on")`` overrides this field with
         ``"rtx_pathtracing"``; one of ``("0", "false", "no", "off")``, empty or
