@@ -132,6 +132,24 @@ def _build_parser() -> argparse.ArgumentParser:
         default=True,
         help="Skip writing the per-frame PNG stills (only emit the assembled clip).",
     )
+    p.add_argument(
+        "--no-ibl",
+        dest="ibl",
+        action="store_false",
+        default=True,
+        help="Keep the legacy hardcoded key/dome lights instead of deriving "
+        "the lighting from the background scene (an environment map baked "
+        "from the 3DGS scene / the panorama image textures the dome light "
+        "and aims the key light).",
+    )
+    p.add_argument(
+        "--no-shadow-catcher",
+        dest="shadow_catcher",
+        action="store_false",
+        default=True,
+        help="Skip the matte shadow-catcher plane (the robot then casts no "
+        "contact shadow onto the backdrop).",
+    )
     return p
 
 
@@ -234,16 +252,41 @@ def main() -> None:
     # rtx_realtime so render() takes the RTX frame path (not headless blanks).
     sim = create_simulation("isaac", headless=True, num_envs=1, render_mode="rtx_realtime")
     try:
+        # The background is resolved before the scene so its baked environment
+        # map can light the robot (issue #2323): the dome light is textured
+        # with the room the robot stands in, and the key light aims the way
+        # the room's dominant light falls.
+        background = _make_background(args)
+        env_map_path = None
+        if args.ibl:
+            from examples.isaac_gs.background import resolve_ibl_env_map
+
+            env_map_path = resolve_ibl_env_map(
+                background,
+                gsplat_ply=args.gsplat_ply,
+                gsplat_scene=args.gsplat_scene,
+                panorama=args.panorama,
+            )
+
         build = build_default_scene(
             sim,
             robot_usd=args.robot_usd,
             camera_name="front",
             camera_width=args.width,
             camera_height=args.height,
+            env_map_path=env_map_path,
+            shadow_catcher=args.shadow_catcher,
         )
         print(f"[scene] robot={build.robot_name} joints={build.robot_joint_count} objects={build.object_names}")
 
-        compositor = IsaacHybridCompositor(sim, background=_make_background(args))
+        compositor = IsaacHybridCompositor(
+            sim,
+            background=background,
+            # The scene reports the catcher plane's height; the compositor
+            # turns that plane's shading into a shadow on the backdrop
+            # (None when --no-shadow-catcher / the plane failed to add).
+            shadow_plane_z=build.shadow_plane_z,
+        )
 
         want_video = _want_video(args)
         rendered = []

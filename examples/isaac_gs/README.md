@@ -157,8 +157,22 @@ requests marshal to the main thread via a queue.
   occluding the backdrop everywhere.
 * **Explicit lights** (`_add_lighting`): Isaac's default lighting rides with
   the default ground plane we omit, so the scene authors its own distant key
-  + dome fill light via `UsdLux` — otherwise the robot renders as an unlit
-  black silhouette.
+  + dome light via `UsdLux` — otherwise the robot renders as an unlit
+  black silhouette. By default those lights are **derived from the
+  background scene** (issue #2323): an equirect environment map is baked from
+  the 3DGS scene at the robot's position
+  (`strands_robots.rendering.bake_environment_map`) and textures the dome
+  light (image-based lighting), and the key light's direction + color come
+  from the map's dominant light (`derive_key_light`). `--no-ibl` keeps the
+  old hardcoded warm key + untextured dome.
+* **Shadow catcher** (`_add_shadow_catcher`, default on): a matte white plane
+  at the support surface (world z=0 — the curated skybox alignments seat the
+  robot's support there) receives the arm's RTX contact shadow. The
+  compositor recognizes the plane's pixels analytically
+  (`HybridCompositor(shadow_plane_z=...)`) and multiplies their shading onto
+  the backdrop in linear light instead of painting the plane, so the arm
+  grounds itself with a contact shadow on the photoreal counter.
+  `--no-shadow-catcher` disables it.
 * **Fixed-base Franka + static cube**: with no ground plane, the Franka stays
   up (fixed base) and the cube is `is_static=True` so it doesn't fall through.
 * **Depth mask**: a pixel is foreground iff the RTX camera saw finite,
@@ -209,8 +223,12 @@ a known Isaac issue, unrelated to this example's correctness.)
   full-res stills.
 * **DC-term GS color only** (inherited from the reused `GsplatBackground`) — no
   view-dependent spherical-harmonics.
-* **No view-dependent background relighting** — the captured 3DGS scene is a
-  fixed backdrop; the sim robot is lit by Isaac's RTX scene lights.
+* **LDR, static IBL** — the robot *is* lit by the captured scene (a baked
+  equirect environment map on the dome light + a key light aimed at the
+  map's dominant light), but the bake is an 8-bit LDR image rendered once
+  from a fixed point above the robot's base: no HDR radiance, no re-bake as
+  the robot moves, and the backdrop itself is still a fixed capture (nothing
+  the robot does relights the *background*).
 
 ## License
 
