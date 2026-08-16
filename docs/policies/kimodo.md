@@ -6,10 +6,10 @@ full-body `qpos` sequences for the Unitree G1 in a single diffusion pass, then
 streams them one frame per tick as G1 joint targets.
 
 Kimodo sits in the same seat as [`MotionBricksPolicy`](./motionbricks.md) — it
-is a *kinematic motion generator* that emits motion targets, not torques. A
-tracking controller (WBC / PD) turns those into physics — see
-[`WBC`](./wbc.md) or compose via `policy_provider="composite"` (see
-[Custom Policies](./custom-policies.md)).
+is a *kinematic motion generator* that emits motion targets, not torques — a
+whole-body reference over all 29 leg + waist + arm joints. Applying that
+reference under physics needs a controller that *tracks* it; see
+[Tracking the reference under physics](#tracking-the-reference-under-physics).
 
 ## When to use
 
@@ -27,8 +27,10 @@ tracking controller (WBC / PD) turns those into physics — see
 pip install "strands-robots[kimodo]"
 ```
 
-Kimodo requires `trust_remote_code=True` at load time. The factory gates this
-behind an explicit opt-in:
+The extra installs the `diffusers` loader, which drives any checkpoint published
+in *diffusers pipeline layout*. `trust_remote_code=True` is forwarded for a
+pipeline that ships custom code, and the factory gates it behind an explicit
+opt-in:
 
 ```bash
 export STRANDS_TRUST_REMOTE_CODE=1
@@ -36,6 +38,15 @@ export STRANDS_TRUST_REMOTE_CODE=1
 
 Weights are fetched from HuggingFace on first use under the NVIDIA Open Model
 License; nothing is bundled with `strands_robots`.
+
+!!! important "`nvidia/Kimodo-G1-RP-v1` is not a diffusers pipeline"
+
+    NVIDIA publishes the Kimodo weights bare — `config.yaml`,
+    `model.safetensors` and `stats/`, with `library_name: kimodo` on the Hub.
+    There is no `model_index.json`, so `DiffusionPipeline.from_pretrained`
+    cannot load it and the default `model_id` is refused at construction. To
+    run the NVIDIA checkpoint, supply its sampler through `motion_agent=` — see
+    [Driving the NVIDIA checkpoint](#driving-the-nvidia-checkpoint).
 
 ## Quick start
 
@@ -63,24 +74,36 @@ sim.run_policy(
 )
 ```
 
-## Composing with a physics tracker
+## Tracking the reference under physics
 
-Kimodo is kinematic. To close the loop through physics, compose it with WBC:
+Kimodo is kinematic: it emits joint *targets* for all 29 DOFs, not torques. Run
+standalone (the example above) those targets are applied directly, which is the
+faithful visualisation of the generated motion.
 
-```python
-sim.run_policy(
-    robot_name="g1",
-    policy_provider="composite",
-    policy_config={
-        "layers": [
-            {"provider": "kimodo", "config": {"diffusion_steps": 100}},
-            {"provider": "wbc"},
-        ],
-    },
-    instruction="walking forward",
-    n_steps=500,
-)
+Making the robot follow that motion under physics requires a controller that
+**tracks the reference** — the 29 targets are the tracker's input. Generator and
+tracker therefore run in **series over the same joints**:
+
+```text
+prompt -> Kimodo -> 29 joint targets -> reference tracker -> torques -> robot
 ```
+
+That is a cascade, and `CompositePolicy` does not express it.
+[`CompositePolicy`](./custom-policies.md) merges two policies over **disjoint**
+joint groups (locomotion legs+waist plus manipulation arms, each joint owned by
+exactly one child); handing it a whole-body generator and a whole-body controller
+gives both children the same joints, so one child's output is discarded entirely.
+That configuration is refused with an error naming the shadowed joints rather
+than silently returning one child's commands.
+
+[`WBCPolicy`](./wbc.md) in particular is **not** a reference tracker: its only
+command input is a target base velocity (`target_velocity`, plus optional
+orientation and height), it has no reference-pose input, and it drives 15 of the
+same 29 joints Kimodo drives. Composing the two cannot track a Kimodo motion.
+
+`strands_robots` does not currently ship a whole-body reference tracker. A
+tracker matched to the generator's motion distribution (an RL tracker trained on
+it, or a tuned PD law) is required, and is out of scope for this provider.
 
 ## Config reference
 
@@ -115,13 +138,58 @@ merged value is re-validated by `KimodoConfig`, so `diffusion_steps=0` is
 refused whichever way it arrives. There is no `**kwargs`: a misspelled knob
 raises `TypeError` at construction instead of being silently ignored.
 
+## When the sampler runs again
+
+One `sample()` call produces a motion buffer that `get_actions` then drains one
+frame per control tick, holding the last frame once the buffer is exhausted. The
+buffer is identified by the four inputs that determine it - the prompt plus
+`diffusion_steps`, `guidance_scale` and `seed` - so the sampler runs again as
+soon as any of them differs from the values that produced the buffer in hand,
+and otherwise the buffered frames are reused:
+
+```python
+await policy.get_actions({}, "walking forward")                     # samples
+await policy.get_actions({}, "walking forward")                     # drains
+await policy.get_actions({}, "waving")                              # samples
+await policy.get_actions({}, "waving", diffusion_steps=25)          # samples
+policy.reset()                                                      # rewinds
+policy.reset(seed=7); await policy.get_actions({}, "waving")        # samples
+```
+
+This is what makes a multi-episode `eval_policy` meaningful for a stochastic
+policy. `PolicyRunner.evaluate` derives a distinct seed per episode and forwards
+it to `policy.reset(seed=...)`, so each episode samples its own motion while the
+whole run stays reproducible: re-running at the same master `seed=` replays the
+same per-episode motions. Repeating a seed replays the buffered motion rather
+than re-running the sampler for identical frames, and `reset()` without a seed
+only rewinds - neither pays for a diffusion run.
+
 ## When the checkpoint is not a Kimodo checkpoint
 
-`model_id` is accepted verbatim so an alternate Kimodo revision can be pinned,
-which also means a `model_id` pointing at some other diffusers pipeline loads
-fine and only fails at the first sample. Kimodo emits per-frame `qpos` under a
-`motion` field; a pipeline that names its output something else is refused with
-a `RuntimeError` naming the `model_id` and the fields the output *did* carry:
+`model_id` is accepted verbatim so an alternate revision can be pinned. Two
+distinct refusals guard that freedom.
+
+**At load time**, a target carrying no `model_index.json` is not a diffusers
+pipeline at all, so no amount of sampling will help. Rather than surface a bare
+404 for a file that will never exist, the loader names the layout mismatch and
+the remedy:
+
+```text
+RuntimeError: Kimodo model_id 'nvidia/Kimodo-G1-RP-v1' is not a diffusers
+pipeline: it carries no model_index.json, so DiffusionPipeline.from_pretrained
+cannot load it. NVIDIA's Kimodo checkpoints publish bare weights (config.yaml
+plus model.safetensors) for their own runtime - the Hub declares library_name
+'kimodo', not 'diffusers'. Pass motion_agent= with a sampler that loads this
+checkpoint through its own runtime and returns a (num_frames, 7+29) qpos array,
+or point model_id at a checkpoint published in diffusers pipeline layout.
+```
+
+A transport failure is *not* reported this way — a 401 or a 503 re-raises
+untouched, so a network problem is never misread as a layout problem.
+
+**At sample time**, a pipeline that loaded but names its output something other
+than `motion` is refused with a `RuntimeError` naming the `model_id` and the
+fields the output *did* carry:
 
 ```text
 RuntimeError: Kimodo pipeline output for model_id 'acme/not-kimodo' carries no
@@ -134,6 +202,106 @@ The remedies are the two the message names: point `model_id` at a Kimodo
 checkpoint, or pass a `motion_agent=` adapter that reads the sampler's own
 output field and returns the `(num_frames, 7+29)` `qpos` array this policy
 expects.
+
+## Driving the NVIDIA checkpoint
+
+`nvidia/Kimodo-G1-RP-v1` loads through NVIDIA's own `kimodo` runtime, which is
+distributed with the model rather than on PyPI. Wrap it in a `KimodoMotionAgent`
+and hand the policy to `run_policy` as a built object:
+
+```python
+import numpy as np
+import torch
+
+from strands_robots.policies.kimodo import KimodoPolicy
+
+
+class NativeKimodoAgent:
+    """Samples through NVIDIA's kimodo runtime instead of diffusers."""
+
+    def __init__(self, device: str = "cuda") -> None:
+        from kimodo.exports.mujoco import MujocoQposConverter
+        from kimodo.model.load_model import load_model
+
+        self._model = load_model("kimodo-g1-rp", device=device)
+        self._converter = MujocoQposConverter(self._model.skeleton)
+        self._device = device
+
+    def sample(self, prompt, num_frames, diffusion_steps, guidance_scale, seed):
+        if seed is not None:
+            torch.manual_seed(seed)
+        output = self._model(
+            [prompt.strip().rstrip(".") + "."],
+            [num_frames],
+            num_denoising_steps=diffusion_steps,
+            num_samples=1,
+            return_numpy=True,
+        )
+        qpos = np.asarray(self._converter.dict_to_qpos(output, self._device))
+        return qpos[0].astype(np.float32) if qpos.ndim == 3 else qpos.astype(np.float32)
+
+
+sim.run_policy(
+    robot_name="g1",
+    policy_object=KimodoPolicy(motion_agent=NativeKimodoAgent()),
+    instruction="a person walking forward with confident strides",
+    n_steps=200,
+    control_frequency=50,
+)
+```
+
+The runtime emits a dict of rotation matrices and root positions, so the
+`MujocoQposConverter` step is what produces the `(num_frames, 7+29)` qpos array
+the agent protocol expects. `guidance_scale` has no counterpart in that runtime
+(its classifier-free-guidance knob is a per-stage `cfg_weight` list) and is
+ignored by this adapter.
+
+`seed` is applied with `torch.manual_seed` because the runtime draws its initial
+noise from the global torch generator and accepts no generator or seed argument
+of its own. Seeding is what makes the agent reproducible, and it is what an
+adapter is most likely to leave out: an agent that accepts `seed` and ignores it
+still satisfies the protocol, so nothing raises, but every request samples fresh
+noise. That silently defeats the per-episode seed, since `eval_policy` derives
+one seed per episode and hands it to `reset()`, and the policy re-samples
+whenever a sampler input changes. Every episode would then get an independent
+motion no seed can reproduce.
+## Driving the real robot
+
+Kimodo names its joint targets the way the URDF does (`left_hip_pitch_joint`);
+lerobot's `UnitreeG1` driver names its action keys after its own joint enum
+(`kLeftHipPitch.q`). The two vocabularies name the same 29 joints, so the
+hardware path is a key rename applied between the policy and the driver:
+
+```python
+from strands_robots.policies.kimodo.hardware import build_lerobot_g1_action_dict
+
+for policy_action in await policy.get_actions(observation, instruction):
+    robot.send_action(build_lerobot_g1_action_dict(policy_action))
+```
+
+`get_joint_map()` returns the table itself (`{"left_hip_pitch_joint":
+"kLeftHipPitch.q", ...}`) if you would rather rename in your own loop. Both are
+lerobot-only helpers: `pip install "strands-robots[lerobot]"`. Commanding the
+physical robot additionally needs Unitree's `unitree_sdk2` runtime, which
+lerobot documents separately for its `unitree_g1` robot.
+
+The table pairs joints by name, never by position in the driver enum. That
+matters because the driver applies only the action keys it recognises and leaves
+every other motor on its previous command, so a key paired with the wrong joint
+— or spelled in a way the driver does not know — raises nothing at all and the
+robot simply moves wrong. Pairing by name means a driver-side reorder cannot
+move a target, and a driver-side rename or DOF change is refused with the
+unmatched joints named on both sides instead of being taken on trust:
+
+```text
+RuntimeError: Unitree G1 joint sets disagree between the policy and lerobot's
+driver. Joints the policy commands that the driver does not name:
+['waist_yaw_joint']. Joints the driver names that the policy does not command:
+['kTorsoYaw.q']. ...
+```
+
+The rename is one-way. The driver's `get_observation()` already reports
+`<motor>.q` keys, so the read path needs no inverse table.
 
 ## Unit testing without weights
 

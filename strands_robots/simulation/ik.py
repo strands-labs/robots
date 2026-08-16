@@ -29,6 +29,7 @@ class attributes so the error a user sees names the extra they actually need.
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, ClassVar
 
@@ -358,6 +359,11 @@ class MinkIKBridge:
 # ee-frame, so we discover it from the compiled ``mujoco.MjModel`` with a
 # robust, namespace-aware heuristic - making Cartesian control zero-config.
 #
+# Hints match name *components*, not bare substrings (see
+# :func:`hint_matches_name`),
+# so the short hints cannot fire inside an unrelated word - a ``knee`` or a
+# ``wheel`` is not an end-effector just because ``ee`` occurs in its name.
+#
 # Heuristic (first match wins), scoped to the robot's ``namespace``:
 #   1. A **site** whose name hints at the tool point (``attachment_site`` /
 #      ``grasp`` / ``tcp`` / ...) - the conventional MuJoCo IK targets (e.g.
@@ -367,10 +373,82 @@ class MinkIKBridge:
 #      ``wrist`` / ...).
 #   3. The **leaf body** of the robot's kinematic chain (the descendant of the
 #      robot's joints with no child body) - the last link, where a tool mounts.
+#
+# Rung 1 searches the end-effector vocabulary of rung 2 as well, after its own
+# TCP-specific names. The two rungs describe the same physical part of the robot
+# in different words, so a token that identifies the end effector as a body
+# identifies it as a site too - and a site is the more precise frame, because it
+# is placed at the tool point while the body origin sits at the link's mount.
+# Searching sites for TCP names only made a model that publishes its tool point
+# as a site lose to the link of the same name: ``so101`` names both ``gripper``
+# and resolved to the body, 98 mm behind its own fingertips.
 # --------------------------------------------------------------------------
 
 _SITE_HINTS = ("attachment_site", "attachment", "grasp", "pinch", "tcp", "ee_site", "ee", "flange")
 _BODY_HINTS = ("hand", "gripper", "tool", "tcp", "ee", "wrist", "flange", "end_effector", "eef")
+# Rung 1's search order: TCP-specific site names first, then the end-effector
+# names rung 2 matches on bodies. Order-preserving dedupe, because the two
+# tuples share tokens and the first occurrence is the one that decides.
+_SITE_SEARCH_HINTS = tuple(dict.fromkeys((*_SITE_HINTS, *_BODY_HINTS)))
+
+# Hints name *components* of an element name, so they are matched on word
+# boundaries rather than as bare substrings. A bare-substring match makes the
+# short hints ("ee", "eef", "tcp") fire inside unrelated words - "ee" occurs in
+# "knee", "wheel" and "unitree" - which resolved a leg or a drive wheel as a
+# robot's end-effector. Names are split into lowercase tokens on separators
+# ("_", "-", "/", "."), on camelCase boundaries ("wristYawLeft") and between
+# letters and digits ("tool0"), and a hint matches when its own tokens appear
+# as a consecutive run. Multi-token hints ("attachment_site", "end_effector")
+# therefore still match, and so does a hint that is one token of a longer name
+# ("ee" in "ee_link").
+_TOKEN_BOUNDARY = re.compile(r"[^a-z0-9]+|(?<=[a-z])(?=[0-9])|(?<=[0-9])(?=[a-z])")
+_CAMEL_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+
+
+def _name_tokens(name: str) -> list[str]:
+    """Split a MuJoCo element name into its lowercase word tokens.
+
+    Args:
+        name: A body/site name, or a hint to match against one.
+
+    Returns:
+        The name's tokens, lowercased, with empty tokens dropped -
+        ``"left_knee_link"`` -> ``["left", "knee", "link"]``,
+        ``"wristYawLeft"`` -> ``["wrist", "yaw", "left"]``,
+        ``"tool0"`` -> ``["tool", "0"]``.
+    """
+    return [tok for tok in _TOKEN_BOUNDARY.split(_CAMEL_BOUNDARY.sub("_", name).lower()) if tok]
+
+
+def hint_matches_name(hint: str, name: str) -> bool:
+    """True when ``hint``'s tokens occur as a consecutive token run in ``name``.
+
+    Matching a hint on word boundaries keeps a short hint from firing inside an
+    unrelated word: ``"ee"`` matches ``"ee_link"`` and ``"gripper_ee"`` but not
+    ``"left_knee_link"`` or ``"wheel_hub_back_link"``.
+
+    This is the one matcher for every surface that answers "which element names
+    an end-effector" - :func:`discover_ee_frame` here, and the ``gripper_body``
+    each backend's ``list_bodies`` advertises - so the same name cannot be an
+    end-effector to one surface and not to another. Each caller keeps its own
+    hint vocabulary; only the matching rule is shared.
+
+    Args:
+        hint: An end-effector hint word, e.g. one of :data:`_SITE_HINTS` /
+            :data:`_BODY_HINTS`. A multi-token hint (``"end_effector"``)
+            matches as a phrase.
+        name: The candidate element name, with any robot namespace already
+            stripped - a namespace must not supply a match.
+
+    Returns:
+        Whether the hint names a component of ``name``.
+    """
+    hint_tokens = _name_tokens(hint)
+    if not hint_tokens:
+        return False
+    name_tokens = _name_tokens(name)
+    span = len(hint_tokens)
+    return any(name_tokens[i : i + span] == hint_tokens for i in range(len(name_tokens) - span + 1))
 
 
 def _names_of(model: Any, obj_type: Any) -> list[tuple[int, str]]:
@@ -406,6 +484,12 @@ def _basename(name: str, namespace: str | None) -> str:
 def discover_ee_frame(model: Any, namespace: str | None = None) -> tuple[str, str] | None:
     """Discover an IK end-effector frame ``(name, type)`` for a robot.
 
+    Resolution is first-match-wins over three rungs: a site whose name denotes
+    the tool point or the end effector, else a body whose name denotes the end
+    effector, else the leaf body of the namespace's kinematic chain. A site
+    outranks a body even when both carry the same name, because a site is placed
+    at the tool point while the body origin sits at the link's mount.
+
     Args:
         model: The compiled ``mujoco.MjModel`` (the shared world model).
         namespace: The robot's body/site namespace prefix (e.g. ``"panda/"``).
@@ -421,11 +505,11 @@ def discover_ee_frame(model: Any, namespace: str | None = None) -> tuple[str, st
         logger.debug("mujoco not importable; cannot auto-discover ee-frame")
         return None
 
-    # 1) Prefer a TCP-like SITE.
+    # 1) Prefer a SITE: a TCP-like name first, then an end-effector name.
     sites = [(i, n) for i, n in _names_of(model, _site_obj()) if _scoped(n, namespace)]
-    for hint in _SITE_HINTS:
+    for hint in _SITE_SEARCH_HINTS:
         for _i, name in sites:
-            if hint in _basename(name, namespace).lower():
+            if hint_matches_name(hint, _basename(name, namespace)):
                 logger.info("ee-frame: site %r (hint %r)", name, hint)
                 return name, "site"
 
@@ -433,7 +517,7 @@ def discover_ee_frame(model: Any, namespace: str | None = None) -> tuple[str, st
     bodies = [(i, n) for i, n in _names_of(model, _body_obj()) if _scoped(n, namespace)]
     for hint in _BODY_HINTS:
         for _i, name in bodies:
-            if hint in _basename(name, namespace).lower():
+            if hint_matches_name(hint, _basename(name, namespace)):
                 logger.info("ee-frame: body %r (hint %r)", name, hint)
                 return name, "body"
 

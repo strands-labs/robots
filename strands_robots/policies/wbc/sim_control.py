@@ -20,8 +20,12 @@ When installed it:
    and advances physics by ``control_decimation`` substeps, recomputing the PD
    torque each substep (``owns_stepping = True``).
 
-The arm joints WBC does not drive are held at their nominal pose with a light PD,
-matching the reference deploy loop. With this controller installed,
+The arm joints WBC does not drive track whatever target the action dict names for
+them, under a light PD, and hold their nominal pose while unnamed - so the same
+controller carries the upper body of a
+:class:`~strands_robots.policies.composite.CompositePolicy` (legs+waist from WBC,
+arms from a manipulation policy) instead of overriding it. With this controller
+installed,
 ``sim.run_policy(robot_name="unitree_g1", policy_object=WBCPolicy(...), ...)``
 produces a real walking / balancing gait on the standard ``Robot("unitree_g1")``
 model - no upstream model swap, no mesh download.
@@ -33,6 +37,7 @@ upright; zero command -> balanced standing (< 0.1 m drift).
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -48,8 +53,9 @@ logger = logging.getLogger(__name__)
 # (50 Hz control). The PD->torque law runs every physics substep.
 _SIM_DT = 0.005
 _CONTROL_DECIMATION = 4
-# Arm joints (not driven by WBC) are held at nominal 0 with a light PD so they
-# do not flail; matches the reference deploy loop's arm hold.
+# Arm joints (not driven by WBC) run a light PD toward their commanded target,
+# defaulting to the nominal 0 hold of the reference deploy loop when nothing
+# commands them.
 _ARM_KP = 100.0
 _ARM_KD = 0.5
 
@@ -111,6 +117,13 @@ class WBCTorqueController:
         self._target_q = np.asarray(policy.default_angles, dtype=np.float64).copy()
         if self._target_q.shape[0] != n:
             self._target_q = np.zeros(n, dtype=np.float64)
+        # Arm targets, in ``arm_actuator_ids`` order. Zero is the nominal hold of
+        # the reference deploy loop, and stays the target for any arm joint no
+        # action dict ever names - so a bare WBC rollout is unchanged.
+        self._arm_target_q = np.zeros(len(self.arm_actuator_ids), dtype=np.float64)
+        # Bare joint names of the held arm joints, positionally aligned with
+        # ``_arm_target_q`` (WBC drives ``num_actions``; the rest are the arms).
+        self._arm_joint_names: tuple[str, ...] = tuple(WBC_G1_ALL_JOINTS[n : n + len(self.arm_actuator_ids)])
 
     # ------------------------------------------------------------------
     # Install / teardown
@@ -291,6 +304,28 @@ class WBCTorqueController:
     # Action-controller hook
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _refresh_targets(
+        action_dict: dict[str, Any],
+        names: Sequence[str],
+        targets: np.ndarray,
+    ) -> None:
+        """Overwrite ``targets`` in place from the values ``action_dict`` names.
+
+        ``names`` is positionally aligned with ``targets``. A name the action
+        dict omits, or whose value is not a number, keeps its previous target:
+        one bad or absent key degrades to a hold rather than aborting the whole
+        control step, and the rest of the action still applies.
+        """
+        for i, name in enumerate(names):
+            v = action_dict.get(name)
+            if v is None:
+                continue
+            try:
+                targets[i] = float(v)
+            except (TypeError, ValueError):
+                continue
+
     def apply(
         self,
         action_dict: dict[str, Any],
@@ -300,12 +335,18 @@ class WBCTorqueController:
     ) -> None:
         """Convert WBC position targets to torques and advance physics.
 
-        ``action_dict`` maps the WBC leg+waist joint names to absolute position
-        targets (the policy's output). We update the held target, then run the
-        SONIC PD law (:meth:`WBCPolicy.compute_torques`) every physics substep
-        for ``physics_substeps_per_control`` steps, recomputing the torque from
-        the integrated state each substep. The arm joints are held at nominal 0
-        with a light PD.
+        ``action_dict`` maps joint names to absolute position targets (the
+        policy's output). We update the held targets, then run the SONIC PD law
+        (:meth:`WBCPolicy.compute_torques`) every physics substep for
+        ``physics_substeps_per_control`` steps, recomputing the torque from the
+        integrated state each substep.
+
+        Arm joints - the ones WBC does not drive - track any target the action
+        dict names for them under a light PD, and hold their previous target
+        (nominal 0 until something commands them) otherwise. That is what lets
+        one :class:`~strands_robots.policies.composite.CompositePolicy` put WBC
+        on the legs and a manipulation policy on the arms: pinning the arms to 0
+        here would discard every upper-body command without a word.
 
         ``owns_stepping = True`` tells the SimEngine not to call ``mj_step``
         after this returns - we have advanced physics by the full control step.
@@ -315,16 +356,10 @@ class WBCTorqueController:
         # Refresh the target from this step's action (bare joint-name keys, in
         # WBC output order). Missing keys keep the previous target.
         driven_names = WBC_G1_ALL_JOINTS[: len(self.leg_waist_actuator_ids)]
-        for i, name in enumerate(driven_names):
-            v = action_dict.get(name)
-            if v is not None:
-                try:
-                    self._target_q[i] = float(v)
-                except (TypeError, ValueError):
-                    # Non-numeric action value for this joint: keep the previous
-                    # target rather than aborting the whole control step (one bad
-                    # key degrades to a hold, the rest of the action still applies).
-                    continue
+        self._refresh_targets(action_dict, driven_names, self._target_q)
+        # Same refresh for the arm joints, so an upper-body policy composed on
+        # top of WBC reaches the actuators instead of being overwritten.
+        self._refresh_targets(action_dict, self._arm_joint_names, self._arm_target_q)
 
         leg_q_adr = np.asarray(self.leg_waist_qpos_addrs, dtype=int)
         leg_d_adr = np.asarray(self.leg_waist_dof_addrs, dtype=int)
@@ -342,7 +377,7 @@ class WBCTorqueController:
             if arm_act:
                 qa = data.qpos[arm_q_adr]
                 dqa = data.qvel[arm_d_adr]
-                arm_tau = -qa * _ARM_KP - dqa * _ARM_KD
+                arm_tau = (self._arm_target_q - qa) * _ARM_KP - dqa * _ARM_KD
                 for ai, t in zip(arm_act, arm_tau, strict=True):
                     data.ctrl[ai] = float(t)
             mj.mj_step(model, data)

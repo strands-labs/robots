@@ -15,8 +15,10 @@ Numeric domains follow the shared helpers in :mod:`strands_robots.utils`:
 * ``num_frames`` - positive integer bounded by the model's max sequence length
   (196 for RP-v1)
 
-The default ``model_id`` targets the RP-v1 checkpoint. Alternate model ids
-are accepted verbatim; the loader defers validation to ``from_pretrained``.
+The default ``model_id`` targets the RP-v1 checkpoint. Alternate model ids are
+accepted verbatim; the loader defers validation to ``from_pretrained``. Note
+that ``nvidia/Kimodo-G1-RP-v1`` publishes bare weights rather than a diffusers
+pipeline, so a real-model run supplies its sampler through ``motion_agent=``.
 """
 
 from __future__ import annotations
@@ -102,9 +104,12 @@ class KimodoConfig:
             ``"fp32"`` for reproducibility.
         cache_dir: Optional local HF cache override; ``None`` uses
             ``$HF_HOME``.
-        trust_remote_code: Passed to ``from_pretrained``. Kimodo ships a custom
-            sampler class, so this must be True at load time; gated by
-            ``STRANDS_TRUST_REMOTE_CODE`` at the factory layer.
+        trust_remote_code: Forwarded to ``from_pretrained`` so a checkpoint that
+            ships custom pipeline code can load; gated by
+            ``STRANDS_TRUST_REMOTE_CODE`` at the factory layer. This only
+            applies to a ``model_id`` published in diffusers pipeline layout -
+            NVIDIA's own Kimodo checkpoints are not, and are refused at load
+            time in favour of a ``motion_agent=`` sampler.
         seed: RNG seed for reproducible sampling. ``None`` = fresh each call.
     """
 

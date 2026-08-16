@@ -6788,9 +6788,10 @@ class IsaacSimulation(IsaacMotionPrimitivesMixin, IsaacRecordingMixin, SimEngine
                 # contract in strands_robots.simulation.motion_primitives_base).
                 "move_to": (
                     "(robot_name=None, position=[x,y,z], orientation=None, tol=0.01, "
-                    "max_steps=200) -> dict  # IK-solve (shared mink bridge on the "
-                    "registry MJCF) then servo the end-effector to a world-frame "
-                    "Cartesian target; position-only when orientation is omitted"
+                    "max_steps=200, orientation_tol=None) -> dict  # IK-solve (shared mink "
+                    "bridge on the registry MJCF) then servo the end-effector to a world-frame "
+                    "Cartesian target; position-only when orientation is omitted, otherwise "
+                    "converged to within orientation_tol radians (default 0.1) as well"
                 ),
                 "set_gripper": (
                     "(robot_name=None, state='open'|'close', steps=12) -> dict  # "

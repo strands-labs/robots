@@ -313,6 +313,44 @@ class _CsrOnlyMjData:
         return getattr(self._data, attr)
 
 
+class _NoSym2DenseShim:
+    """mujoco proxy of a build with the CSR buffers but no ``mju_sym2dense``.
+
+    MuJoCo exports that conversion only from 3.10, while the CSR inertia and
+    its index arrays ship from 3.5, so every build in between reaches the CSR
+    rung with nothing to call. ``mj_fullM`` is refused too, which is what puts
+    the helper on that rung in the first place.
+    """
+
+    def __getattr__(self, attr):
+        if attr == "mju_sym2dense":
+            raise AttributeError(attr)
+        return getattr(mj, attr)
+
+    @staticmethod
+    def mj_fullM(m, a, b):
+        raise TypeError("mj_fullM unavailable in this binding")
+
+
+class _RecordingSym2DenseShim:
+    """mujoco proxy whose ``mju_sym2dense`` records the call it is handed."""
+
+    def __init__(self, reference, calls):
+        self._reference = reference
+        self._calls = calls
+
+    def __getattr__(self, attr):
+        return getattr(mj, attr)
+
+    @staticmethod
+    def mj_fullM(m, a, b):
+        raise TypeError("mj_fullM unavailable in this binding")
+
+    def mju_sym2dense(self, dst, values, rownnz, rowadr, colind):
+        self._calls.append((dst, values, rownnz, rowadr, colind))
+        dst[...] = self._reference
+
+
 class _NoInertiaMjData:
     """MjData proxy exposing the joint-space inertia under neither name."""
 
@@ -451,6 +489,53 @@ class TestFullMassMatrixSignatureDrift:
         assert M.flags["C_CONTIGUOUS"]
         assert M.dtype == np.float64
 
+    def test_helper_expands_csr_inertia_when_the_conversion_binding_is_absent(self, sim):
+        # MuJoCo exports mju_sym2dense only from 3.10, but the CSR inertia and
+        # its M_rownnz / M_rowadr / M_colind index arrays ship from 3.5. Every
+        # build in between therefore reaches the CSR rung with no conversion to
+        # call, and the package supports mujoco>=3.2.0. The helper must expand
+        # the stored lower triangle through those index arrays rather than
+        # reaching for a symbol that release range does not export.
+        model, data = sim._world._model, sim._world._data
+        mj.mj_forward(model, data)
+        reference = _full_mass_matrix(mj, model, data)
+        if not hasattr(data, "M"):
+            pytest.skip("installed mujoco predates the CSR data.M inertia")
+
+        M = _full_mass_matrix(_NoSym2DenseShim(), model, _CsrOnlyMjData(data))
+
+        # The index-array expansion is exact, not an approximation: it must
+        # reproduce mj_fullM bit for bit, both triangles filled.
+        assert np.array_equal(M, reference)
+        assert np.array_equal(M, M.T)
+        assert M.flags["C_CONTIGUOUS"]
+        assert M.dtype == np.float64
+
+    def test_helper_prefers_the_native_conversion_where_the_binding_has_it(self, sim):
+        # Where MuJoCo does export mju_sym2dense it stays the conversion used,
+        # called with the documented argument order (dst, values, rownnz,
+        # rowadr, colind), so the index-array expansion is a fallback for the
+        # builds that lack it rather than a second implementation shadowing it.
+        model, data = sim._world._model, sim._world._data
+        mj.mj_forward(model, data)
+        reference = _full_mass_matrix(mj, model, data)
+        if not hasattr(data, "M"):
+            pytest.skip("installed mujoco predates the CSR data.M inertia")
+        calls: list = []
+
+        M = _full_mass_matrix(_RecordingSym2DenseShim(reference, calls), model, _CsrOnlyMjData(data))
+
+        assert len(calls) == 1
+        dst, values, rownnz, rowadr, colind = calls[0]
+        assert dst.shape == (model.nv, model.nv)
+        assert dst.flags["WRITEABLE"] and dst.flags["C_CONTIGUOUS"]
+        assert values.dtype == np.float64 and values.flags["C_CONTIGUOUS"]
+        assert np.array_equal(values, np.asarray(data.M, dtype=np.float64))
+        assert np.array_equal(np.asarray(rownnz), np.asarray(model.M_rownnz))
+        assert np.array_equal(np.asarray(rowadr), np.asarray(model.M_rowadr))
+        assert np.array_equal(np.asarray(colind), np.asarray(model.M_colind))
+        assert np.array_equal(M, reference)
+
     def test_helper_names_both_buffers_when_neither_exists(self, sim):
         # Nothing left to read: fail with a message naming both spellings and
         # the installed version, rather than an opaque AttributeError raised by
@@ -485,6 +570,56 @@ class TestFullMassMatrixSignatureDrift:
         assert np.allclose(M, reference)
         assert np.allclose(M, M.T)
         assert np.all(np.linalg.eigvalsh(M) > 0)
+
+    def test_csr_expansion_is_exact_on_a_branching_tree(self):
+        # The chained fixture stores a full lower triangle, so its CSR rows are
+        # dense and the index arrays are trivially ordered. A branching tree is
+        # the case the expansion can actually get wrong: two sibling limbs do
+        # not couple, so rows are shorter than their row index and the column
+        # indices skip DoFs. Pin the expansion against mj_fullM there.
+        model = mj.MjModel.from_xml_string(
+            """
+            <mujoco>
+              <worldbody>
+                <body name="trunk">
+                  <freejoint/>
+                  <geom type="box" size="0.1 0.1 0.1"/>
+                  <body name="left" pos="0.1 0 0">
+                    <joint type="hinge" axis="0 1 0"/>
+                    <geom type="capsule" size="0.03" fromto="0 0 0 0 0 0.2"/>
+                    <body name="left_tip" pos="0 0 0.2">
+                      <joint type="hinge" axis="1 0 0"/>
+                      <geom type="sphere" size="0.04"/>
+                    </body>
+                  </body>
+                  <body name="right" pos="-0.1 0 0">
+                    <joint type="hinge" axis="0 1 0"/>
+                    <geom type="capsule" size="0.03" fromto="0 0 0 0 0 0.2"/>
+                    <body name="right_tip" pos="0 0 0.2">
+                      <joint type="hinge" axis="1 0 0"/>
+                      <geom type="sphere" size="0.04"/>
+                    </body>
+                  </body>
+                </body>
+              </worldbody>
+            </mujoco>
+            """
+        )
+        data = mj.MjData(model)
+        data.qpos[7:] = 0.4
+        mj.mj_forward(model, data)
+        if not hasattr(data, "M"):
+            pytest.skip("installed mujoco predates the CSR data.M inertia")
+        # The tree really is sparse: fewer stored values than a full triangle.
+        assert model.nM < model.nv * (model.nv + 1) // 2
+
+        reference = _full_mass_matrix(mj, model, data)
+        M = _full_mass_matrix(_NoSym2DenseShim(), model, _CsrOnlyMjData(data))
+
+        assert np.array_equal(M, reference)
+        # Sibling limbs share no inertial coupling, so the expansion must leave
+        # those entries zero rather than smear a stored value across the row.
+        assert np.count_nonzero(reference) < reference.size
 
     def test_helper_returns_empty_for_zero_dof(self):
         # A model with no DoFs must return a well-typed (0, 0) array, never

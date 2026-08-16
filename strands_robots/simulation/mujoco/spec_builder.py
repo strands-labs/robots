@@ -562,19 +562,13 @@ class SpecBuilder:
         # leaves an orphan body behind.
         material_name = SpecBuilder._build_material(spec, obj) if obj.material is not None else None
 
-        # ``add_body(name=...)`` raises ``repeated name`` on a collision with an
-        # existing scene body BUT still inserts the duplicate, and the steps
-        # after it (the geom type lookup, ``add_geom``) can raise as well. Any
-        # raise in this block must undo only what THIS call inserted, then
-        # re-raise so the caller reports the real reason. Deleting by name
-        # (``spec.body(name)`` / :meth:`remove_body`) is unsafe on the collision
-        # path: that accessor resolves the ORIGINAL body present at the last
-        # compile, so it would delete the pre-existing healthy body and leave
-        # the empty orphan holding its name - a silent scene corruption. Instead
-        # record how many bodies already carry this name and, on failure, delete
-        # only the surplus this call produced (the orphan is appended, so it is
-        # the tail of that run). This can never touch a body it did not create.
-        pre_count = sum(1 for b in spec.bodies if b.name == obj.name)
+        # ``add_body(name=...)`` inserts the duplicate even when the name
+        # collides with an existing scene body, and the steps after it (the geom
+        # type lookup, ``add_geom``) can raise as well. Any raise in this block
+        # must undo only what THIS call inserted, then re-raise so the caller
+        # reports the real reason - hence the body count taken before the insert
+        # and :meth:`remove_surplus_bodies` after it, never a delete by name.
+        pre_count = SpecBuilder.count_bodies_named(spec, obj.name)
         try:
             body = spec.worldbody.add_body(
                 name=obj.name,
@@ -632,8 +626,7 @@ class SpecBuilder:
 
             body.add_geom(**geom_kwargs)
         except (ValueError, RuntimeError):
-            for surplus in [b for b in spec.bodies if b.name == obj.name][pre_count:]:
-                spec.delete(surplus)
+            SpecBuilder.remove_surplus_bodies(spec, obj.name, pre_count)
             raise
 
     # material build
@@ -762,6 +755,14 @@ class SpecBuilder:
 
         If ``cam.target`` is set, the look-at direction is converted to a
         quaternion via :func:`_target_quat`.
+
+        ``add_camera(name=...)`` inserts the duplicate even when the name
+        collides with a camera the scene already declares, so - exactly as in
+        :meth:`add_object` - a raise from the insert rolls only the cameras THIS
+        call appended back out (:meth:`remove_surplus_cameras`) before
+        re-raising. Without that, a refused camera left an orphan in the spec and
+        every later scene mutation kept failing to recompile on the duplicate
+        name, bricking the world after one bad add.
         """
         mujoco = _ensure_mujoco()
         pos = list(cam.position)
@@ -787,9 +788,16 @@ class SpecBuilder:
                     f"add_camera: parent_body {parent_name!r} not found in scene. "
                     "Pass the fully-qualified body name (e.g. 'so101/gripper')."
                 )
-            parent.add_camera(**kwargs)
+            attach_to = parent
         else:
-            spec.worldbody.add_camera(**kwargs)
+            attach_to = spec.worldbody
+
+        pre_count = SpecBuilder.count_cameras_named(spec, cam.name)
+        try:
+            attach_to.add_camera(**kwargs)
+        except (ValueError, RuntimeError):
+            SpecBuilder.remove_surplus_cameras(spec, cam.name, pre_count)
+            raise
 
     # deferred (body-mounted) cameras
     @staticmethod
@@ -858,6 +866,100 @@ class SpecBuilder:
             return False
         spec.delete(body)
         return True
+
+    # surplus rollback (identify what THIS call inserted, never by name)
+    @staticmethod
+    def count_bodies_named(spec: Any, name: str) -> int:
+        """Count the bodies in ``spec`` that carry ``name``.
+
+        Take this BEFORE an insert that may have to be rolled back, and pass it
+        as the ``keep`` argument of :meth:`remove_surplus_bodies`. A plain count
+        rather than a membership test because a spec can legitimately hold two
+        bodies under one name between an insert and the compile that refuses it.
+
+        Args:
+            spec: The ``mjSpec`` to enumerate.
+            name: The body name to count.
+
+        Returns:
+            How many bodies currently carry ``name`` (0 when none do).
+        """
+        return sum(1 for body in getattr(spec, "bodies", ()) if body.name == name)
+
+    @staticmethod
+    def count_cameras_named(spec: Any, name: str) -> int:
+        """Count the cameras in ``spec`` that carry ``name``.
+
+        The camera-side counterpart of :meth:`count_bodies_named`; pair it with
+        :meth:`remove_surplus_cameras`.
+
+        Args:
+            spec: The ``mjSpec`` to enumerate.
+            name: The camera name to count.
+
+        Returns:
+            How many cameras currently carry ``name`` (0 when none do).
+        """
+        return sum(1 for camera in getattr(spec, "cameras", ()) if camera.name == name)
+
+    @staticmethod
+    def remove_surplus_bodies(spec: Any, name: str, keep: int) -> int:
+        """Delete the bodies named ``name`` beyond the first ``keep`` of them.
+
+        This is the rollback a refused insert needs, and it is deliberately NOT
+        :meth:`remove_body`. A scene injection mutates the live spec before the
+        compile that validates it, so at rollback time a colliding name is
+        carried by TWO bodies: the healthy pre-existing one and the orphan the
+        refused call appended. ``remove_body`` resolves the name through
+        ``spec.body(name)``, which answers with the body present at the last
+        compile - the ORIGINAL - so using it to roll back deleted the healthy
+        body and left the orphan holding its name. The scene then recompiled
+        successfully with the original geometry gone: a rejected add silently
+        rewrote the scene.
+
+        Identifying the surplus by position instead can never touch a body this
+        call did not create. MuJoCo appends new elements, so the bodies to delete
+        are the tail of the run carrying ``name``; ``keep`` is the count taken
+        before the insert (:meth:`count_bodies_named`). ``keep`` at or above the
+        current count is a no-op, so a rollback is safe to attempt on a path that
+        may not have inserted anything.
+
+        Args:
+            spec: The ``mjSpec`` to mutate.
+            name: The body name whose surplus copies to delete.
+            keep: How many bodies with that name to leave in place.
+
+        Returns:
+            The number of bodies deleted.
+        """
+        surplus = [body for body in getattr(spec, "bodies", ()) if body.name == name][keep:]
+        for body in surplus:
+            spec.delete(body)
+        return len(surplus)
+
+    @staticmethod
+    def remove_surplus_cameras(spec: Any, name: str, keep: int) -> int:
+        """Delete the cameras named ``name`` beyond the first ``keep`` of them.
+
+        The camera-side counterpart of :meth:`remove_surplus_bodies`, and for the
+        same reason: :meth:`remove_camera` deletes the FIRST camera carrying the
+        name, which on a collision is the one the scene already declared, so
+        rolling a refused camera back with it moved the scene's camera to the
+        rejected pose. Every later render from that name then answered with a
+        view the caller was told had been refused.
+
+        Args:
+            spec: The ``mjSpec`` to mutate.
+            name: The camera name whose surplus copies to delete.
+            keep: How many cameras with that name to leave in place.
+
+        Returns:
+            The number of cameras deleted.
+        """
+        surplus = [camera for camera in getattr(spec, "cameras", ()) if camera.name == name][keep:]
+        for camera in surplus:
+            spec.delete(camera)
+        return len(surplus)
 
     # camera remove
     @staticmethod

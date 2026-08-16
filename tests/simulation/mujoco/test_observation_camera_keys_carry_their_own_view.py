@@ -17,10 +17,17 @@ and the agent-tool observation all received the wrong view under a success
 result, with nothing to distinguish it from the camera they asked for. Two short
 keys on one robot were byte-identical to each other for the same reason.
 
-The same branch answered for a key that names no compiled camera at all, which
-``remove_robot`` leaves behind: it deletes the entries whose ``origin_robot`` is
-the departing robot, and a key registered against a different robot survives
-pointing at a camera that left with the model.
+The same branch answered for a key that names no compiled camera at all.
+``replace_scene_mjcf`` produces that state by documented contract: it swaps the
+compiled scene while leaving the python-side registries untouched, so a robot's
+camera keys outlive the compiled cameras they name. (These tests originally
+manufactured the stranded key through ``remove_robot``, which back then left
+behind a duplicate entry that ``add_robot`` had mis-registered against a later
+robot. That route closed when ``add_robot`` started registering only the
+robot's OWN cameras, each carrying ``origin_robot``, so removal now takes every
+one of its keys with it - pinned in ``test_add_robot_camera_ownership.py`` -
+and the registry-outlives-the-scene contract of ``replace_scene_mjcf`` is the
+route that remains.)
 
 So the contract is one sentence - an observation key that names a camera carries
 that camera's view, or is absent - and it is pinned here from both directions:
@@ -84,22 +91,26 @@ TWO_CAMERA_ROBOT_XML = """
 </mujoco>
 """
 
-# A second robot with no camera of its own. Adding it is what gives the world a
-# camera key owned by a robot other than the one whose model declares it, and
-# removing the camera-bearing robot is what strands that key.
-CAMERALESS_ROBOT_XML = """
-<mujoco model="cameraless_arm">
+# The scene ``replace_scene_mjcf`` swaps in for the stranded-key tests below.
+# It keeps the robot's namespaced joint (so proprioception still has something
+# to report) and a compiled camera named ``default`` (so the observation still
+# carries an image, making "the stranded key is absent" non-vacuous), but none
+# of the robot's cameras - while the registry entries for those cameras survive
+# the swap by ``replace_scene_mjcf``'s documented contract.
+REPLACED_SCENE_XML = """
+<mujoco model="replaced_scene">
   <compiler angle="radian" autolimits="true"/>
   <option timestep="0.002"/>
   <worldbody>
-    <light name="fill_light" pos="1 0 3" dir="0 0 -1"/>
-    <body name="rod" pos="0.5 0 0.2">
-      <joint name="elbow" type="hinge" axis="0 1 0" range="-1.0 1.0"/>
-      <geom name="rod_geom" type="capsule" size="0.03" fromto="0 0 0 0 0 0.3" rgba="0.1 0.1 0.9 1"/>
+    <light name="key_light" pos="0 0 3" dir="0 0 -1"/>
+    <camera name="default" pos="1.5 1.5 1.2" xyaxes="-0.707 0.707 0 -0.4 -0.4 0.82"/>
+    <body name="arm0/link" pos="0 0 0.3">
+      <joint name="arm0/shoulder" type="hinge" axis="0 1 0" range="-1.57 1.57"/>
+      <geom name="arm0/link_geom" type="box" size="0.05 0.05 0.25" rgba="0.9 0.1 0.1 1"/>
     </body>
   </worldbody>
   <actuator>
-    <position name="elbow_act" joint="elbow" kp="20"/>
+    <position name="arm0/shoulder_act" joint="arm0/shoulder" kp="20"/>
   </actuator>
 </mujoco>
 """
@@ -204,25 +215,49 @@ def test_two_short_keys_carry_two_different_views(sim: Simulation) -> None:
     assert _view_shown(images["side"], views) == "arm0/side"
 
 
+def _stranded_camera_keys(engine: Simulation) -> list[str]:
+    """The registry keys the compiled model cannot answer for.
+
+    Mirrors the render loop's two-step resolution: a key is stranded only when
+    neither the key itself nor the ``name`` its ``SimCamera`` carries resolves
+    to a compiled camera.
+    """
+    import mujoco as mj
+
+    world = engine._world
+    assert world is not None
+    model = world._model
+    return [
+        key
+        for key, cam in world.cameras.items()
+        if mj.mj_name2id(model, mj.mjtObj.mjOBJ_CAMERA, key) < 0
+        and mj.mj_name2id(model, mj.mjtObj.mjOBJ_CAMERA, cam.name) < 0
+    ]
+
+
 @requires_gl
 def test_key_naming_no_compiled_camera_is_absent(sim: Simulation) -> None:
     """A camera key the compiled model cannot answer for is omitted, not filled in.
 
-    ``remove_robot`` drops the entries owned by the departing robot, so the
-    duplicate key another robot owns outlives the camera it names. There is no
-    view to report under it, and the overview is not a stand-in.
+    The stranded key comes from ``replace_scene_mjcf``, whose documented
+    contract is to leave the python-side registries untouched: the robot's
+    camera keys survive the swap while the compiled cameras they name do not.
+    There is no view to report under such a key, and the overview is not a
+    stand-in. The ``default`` key is the control: the replacement scene
+    compiles a camera it CAN answer for, so its presence shows the loop
+    rendered and only the stranded keys were dropped.
     """
     assert sim.add_robot("arm0", urdf_path=_write(TWO_CAMERA_ROBOT_XML))["status"] == "success"
-    assert sim.add_robot("arm1", urdf_path=_write(CAMERALESS_ROBOT_XML))["status"] == "success"
-    assert sim.remove_robot("arm0")["status"] == "success"
+    assert sim.replace_scene_mjcf(REPLACED_SCENE_XML)["status"] == "success"
 
-    world = sim._world
-    assert world is not None
-    stranded = [key for key, cam in world.cameras.items() if key.startswith("arm0/")]
-    assert stranded, "premise: removing the camera-bearing robot strands a camera key"
+    stranded = _stranded_camera_keys(sim)
+    assert set(stranded) == {"wrist", "side"}, (
+        "premise: the robot's camera keys outlive the compiled cameras they name across replace_scene_mjcf"
+    )
 
-    observation = sim.get_observation()
+    observation = sim.get_observation("arm0")
     images = _image_keys(observation)
+    assert "default" in images, "control: a key the compiled model answers for still renders"
     for key in stranded:
         assert key not in images, (
             f"observation[{key!r}] names a camera that is no longer in the model, so it must be "
@@ -251,12 +286,14 @@ def test_joint_state_survives_a_key_with_no_compiled_camera(sim: Simulation) -> 
 
     Control: the loop's whole reason for tolerating a per-camera failure is that
     proprioception must still be reported, so omitting an image must be as
-    survivable as the render failure the loop already handled.
+    survivable as the render failure the loop already handled. The replacement
+    scene keeps the robot's namespaced joint, so the joint state has a real
+    value to report while the robot's camera keys go unanswered.
     """
     assert sim.add_robot("arm0", urdf_path=_write(TWO_CAMERA_ROBOT_XML))["status"] == "success"
-    assert sim.add_robot("arm1", urdf_path=_write(CAMERALESS_ROBOT_XML))["status"] == "success"
-    assert sim.remove_robot("arm0")["status"] == "success"
+    assert sim.replace_scene_mjcf(REPLACED_SCENE_XML)["status"] == "success"
+    assert _stranded_camera_keys(sim), "premise: at least one camera key goes unanswered by the compiled model"
 
-    observation = sim.get_observation("arm1")
-    assert observation["elbow"] == pytest.approx(0.0, abs=1e-6)
-    assert "elbow.vel" in observation
+    observation = sim.get_observation("arm0")
+    assert observation["shoulder"] == pytest.approx(0.0, abs=1e-6)
+    assert "shoulder.vel" in observation

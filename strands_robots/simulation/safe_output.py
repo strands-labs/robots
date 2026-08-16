@@ -36,6 +36,13 @@ from pathlib import Path
 # shell and serve no purpose in a legitimate filesystem path.
 PATH_BAD_CHARS = frozenset({";", "|", "$", "`", ">", "<", "\n", "\r", "\x00"})
 
+# Environment variable that re-permits absolute paths for the video / camera-
+# recording sinks. Named here so :func:`video_sandbox_args` can hand the exact
+# spelling to :func:`validate_output_path`, which quotes it in the refusal: a
+# caller told only that "a *_ALLOW_ABS variable" exists has to grep the package
+# to act on the message.
+_VIDEO_ALLOW_ABS_ENV = "STRANDS_ROBOTS_VIDEO_ALLOW_ABS"
+
 
 def env_flag(name: str) -> bool:
     """Return True when env var ``name`` is a truthy opt-in (``1``/``true``/``yes``)."""
@@ -71,6 +78,7 @@ def validate_output_path(
     sandbox_root: Path | None,
     allow_abs: bool,
     label: str = "output_path",
+    allow_abs_env: str | None = None,
 ) -> Path:
     """Validate and resolve an LLM-supplied output path (file or directory).
 
@@ -94,6 +102,11 @@ def validate_output_path(
         allow_abs: When True, skip the sandbox confinement check even if
             ``sandbox_root`` is provided (explicit absolute-path opt-in).
         label: Noun used in error messages (e.g. ``"output_path"``/``"output_dir"``).
+        allow_abs_env: Name of the environment variable that sets ``allow_abs``
+            for this sink, quoted verbatim in the confinement refusal so the
+            caller can act on the message without searching for the spelling.
+            Every sink that establishes confinement supplies it; ``None`` (a
+            sink with no opt-in variable) falls back to naming the convention.
 
     Returns:
         The fully-resolved destination ``Path``.
@@ -132,15 +145,25 @@ def validate_output_path(
         try:
             resolved.relative_to(sandbox_root)
         except ValueError as e:
+            # Name the variable that lifts this refusal. The glob this replaced
+            # ("set the corresponding *_ALLOW_ABS env var") told the caller a
+            # pattern rather than a name, so acting on the message meant
+            # grepping the package for the sink's actual spelling -- a dead end
+            # in the one place the caller most needs a next step. Every
+            # confining sink knows its own variable, so the message can state
+            # it, matching the sibling env-var refusal in
+            # ``strands_robots.simulation.isaac.config`` (which interpolates the
+            # variable name it read).
+            opt_in = f"set {allow_abs_env}=1" if allow_abs_env else "set this sink's *_ALLOW_ABS env var"
             raise ValueError(
                 f"{label} {resolved} is outside the sandbox {sandbox_root} "
-                "(set the corresponding *_ALLOW_ABS env var to permit absolute paths)"
+                f"({opt_in} to permit absolute paths, or pass a path under the sandbox)"
             ) from e
     return resolved
 
 
-def video_sandbox_args() -> tuple[Path | None, bool]:
-    """Return ``(sandbox_root, allow_abs)`` for video / recording output paths.
+def video_sandbox_args() -> tuple[Path | None, bool, str]:
+    """Return ``(sandbox_root, allow_abs, allow_abs_env)`` for video / recording paths.
 
     Unlike ``render``, the video and camera-recording sinks have historically
     accepted arbitrary absolute paths, so confinement is OPT-IN: when
@@ -148,14 +171,17 @@ def video_sandbox_args() -> tuple[Path | None, bool]:
     ``STRANDS_ROBOTS_VIDEO_ALLOW_ABS`` re-permits absolute paths inside that
     mode); otherwise absolute paths are allowed. The metacharacter, backslash,
     symlink, and traversal guards in :func:`validate_output_path` apply in
-    either mode.
+    either mode. The third element is the opt-in variable's name, passed
+    through to :func:`validate_output_path` so a confinement refusal quotes the
+    exact spelling instead of a ``*_ALLOW_ABS`` pattern.
     """
     if os.getenv("STRANDS_ROBOTS_VIDEO_ROOT"):
         return (
             resolve_sandbox_root("STRANDS_ROBOTS_VIDEO_ROOT", "videos"),
-            env_flag("STRANDS_ROBOTS_VIDEO_ALLOW_ABS"),
+            env_flag(_VIDEO_ALLOW_ABS_ENV),
+            _VIDEO_ALLOW_ABS_ENV,
         )
-    return None, True
+    return None, True, _VIDEO_ALLOW_ABS_ENV
 
 
 def sanitize_name_component(name: str, *, label: str = "name") -> str:

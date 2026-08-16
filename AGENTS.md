@@ -467,26 +467,40 @@ hatch run format            # ruff check --fix, ruff format
      tests/test_merge_mutation_error_is_not_a_verdict.py.
    - *And on `main` afterwards.* A rollup of `FAILURE` on a merge commit is not
      evidence that the squash broke anything: a **cancelled** check aggregates
-     into `FAILURE`. `pr-and-push.yml` keys its concurrency group on
-     `github.event.pull_request.number || github.ref`, and on a push there is no
-     PR number, so every push to `refs/heads/main` shares one group under
-     `cancel-in-progress: true` - each merge kills the run of the merge before
-     it. Read each context's own `conclusion` before you believe the rollup.
-     Four PRs merged in the 22 minutes from 03:03:44 to 03:25:25 left three
-     consecutive commits - #1788, #1794, #1796 - each reporting rollup
-     `FAILURE` whose only non-`SUCCESS` context was
-     `call-test-lint / Test and Lint` = `CANCELLED`, killed at 1m07s, 15m00s
-     and 5m38s into their runs. Nothing had failed. See #1800.
+     into `FAILURE` and the rollup carries no reason, so read each context's own
+     `conclusion` before you believe it.
 
-     The same timings carry a cost that is not a misread: that suite had not
-     finished in 15m00s, so merging faster than it runs leaves **only the tip
-     verified** and no intermediate commit attributable. A batch is still
-     defensible - each of those four was individually green, passed
-     `Detect an untested overlap with the base branch`, and touched a file set
-     disjoint from the others - but price it knowingly: a red tip then costs a
-     manual bisect, and an intermediate commit's green is not available to lean
-     on. Do not read the intermediate `FAILURE`s as the culprit; they are the
-     batching, not a defect.
+     The producer this used to name is gone. `pr-and-push.yml` keyed its
+     concurrency group on `github.event.pull_request.number || github.ref`, and a
+     push carries no PR number, so every push to `refs/heads/main` shared one
+     group under `cancel-in-progress: true` and each merge killed the run of the
+     merge before it. Four PRs merged in the 22 minutes from 03:03:44 to 03:25:25
+     left three consecutive commits - #1788, #1794, #1796 - each reporting rollup
+     `FAILURE` whose only non-`SUCCESS` context was
+     `call-test-lint / Test and Lint` = `CANCELLED`, killed at 1m07s, 15m00s and
+     5m38s into their runs. Nothing had failed. See #1800.
+
+     Counting the whole branch is what turned that from a wrong colour into a
+     wrong answer: of the last 25 commits on `main`, 24 had a settled rollup, 11
+     of those read `FAILURE`, and **9 of the 11 had no failing check at all**
+     (#2304). A commit on `main` is immutable and already merged, so unlike a
+     branch it gets no next push to clear the answer - and a burst of merges
+     destroys the evidence for *which* commit in it broke `main` in the same act
+     as creating the fault, which is the read #2303 had to make. The group now
+     keys on `github.sha`, so each pushed commit gets its own group and runs its
+     own suite to completion. Pinned by tests/test_push_concurrency_group.py.
+
+     Two things survive that fix. A `main` commit can still carry a cancelled
+     context from `docs.yml`, which keys on the ref and holds a `build` (a
+     per-commit verdict, where cancelling has the same defect) in the same group
+     as a `deploy` (a shared resource, where superseding is wanted) - three of
+     #2304's eleven are that, and splitting the two is #2305. And a batch of N
+     merges now runs N suites rather than 1, which is what buys each commit its
+     own answer; what it no longer costs is a manual bisect after a red tip,
+     because an intermediate commit's own green is available to lean on. A batch
+     is still defensible on the same grounds as before - each PR individually
+     green, passing `Detect an untested overlap with the base branch`, and
+     touching a file set disjoint from the others.
    - *And when `main` itself is red, a re-run cannot clear the PRs it blocked.*
      `pr-and-push.yml` checks out the PR **head commit**, not
      `refs/pull/N/merge` - the job log reads `HEAD is now at <branch head>` - so
@@ -1267,6 +1281,7 @@ Corrections from code review that apply to all future contributions:
 ### Naming & Module Organization
 - **`robot.py` is for the `Robot()` factory**, the user-facing entry point. Hardware-specific code lives in `hardware_robot.py`. Don't have two files both named "robot something" with different responsibilities.
 - **Reference module names, not filenames, in docstrings** - `strands_robots.hardware_robot` not `robot.py`. Filenames change; module paths are the public contract.
+- **Keep a cross-reference target on one line** - a `:class:`/`:func:`/`:meth:` path is only a dotted path while it is contiguous. Wrapping `:class:`~strands_robots.policies.protomotions.motion_utils.MotionPlayer`` over a line break leaves a token carrying a newline and the next line's indentation, which imports nowhere. Break the prose before the role and give the path its own line.
 
 ### Unicode & String Hygiene
 - **No emojis in user-facing strings** - this is a project rule. Tool result dicts (`{"content": [{"text": ...}]}`), log messages, error messages: plain ASCII only. Agents read these strings programmatically; emojis just add tokenizer noise.

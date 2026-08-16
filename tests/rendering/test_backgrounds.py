@@ -751,6 +751,100 @@ class TestBakeGsplatPanorama:
         assert result == out
         assert out.read_bytes() == b"cached-panorama"
 
+    # ----- the cache must answer only the request it was baked for ----- #
+    #
+    # Baking is six splat renders, so a warm output short-circuits the pass.
+    # The short-circuit is keyed on the output *path*, so the default path has
+    # to identify the panorama it holds: ``equi_w`` / ``equi_h`` / ``face_size``
+    # all change the pixels, and a path that ignores them makes the second
+    # caller's geometry a no-op.
+
+    def _stub_render_boundary(self, monkeypatch, tmp_path):
+        """Double the CUDA-bound splat boundary; return the per-face render log."""
+        torch = pytest.importorskip("torch")
+
+        from strands_robots.rendering import backgrounds as bg
+
+        rng = np.random.default_rng(0)
+        means = np.column_stack([rng.uniform(-4, 4, 512), rng.uniform(-2, 2, 512), rng.uniform(-0.1, 0.1, 512)]).astype(
+            np.float32
+        )
+        rendered: list[tuple[int, int]] = []
+
+        def fake_load(inner_self) -> None:
+            inner_self._splats = {"means": torch.from_numpy(means)}
+
+        def fake_render(inner_self, cam):
+            rendered.append((cam.width, cam.height))
+            return (
+                np.full((cam.height, cam.width, 3), 128, np.uint8),
+                np.zeros((cam.height, cam.width), np.float32),
+            )
+
+        monkeypatch.setattr(bg.GsplatBackground, "_load", fake_load)
+        monkeypatch.setattr(bg.GsplatBackground, "render", fake_render)
+        ply = tmp_path / "scene.ply"
+        ply.write_bytes(b"placeholder")
+        return bg, ply, rendered
+
+    @staticmethod
+    def _panorama_size(path) -> tuple[int, int]:
+        """Return the (width, height) of a baked panorama, closing the file."""
+        from PIL import Image
+
+        with Image.open(path) as img:
+            return img.size
+
+    def test_a_new_equirect_resolution_is_rendered_not_served_from_the_cache(self, tmp_path, monkeypatch) -> None:
+        # The headline defect: bake small, then ask for a bigger panorama. The
+        # second request used to return the first call's small image with zero
+        # renders, so the caller silently got a backdrop at a resolution it had
+        # not asked for (and then sampled that as if it were the big one).
+        bg, ply, rendered = self._stub_render_boundary(monkeypatch, tmp_path)
+
+        first = bg.bake_gsplat_panorama(ply, face_size=16, equi_w=64, equi_h=32, device="cpu")
+        first_size = self._panorama_size(first)
+        assert first_size == (64, 32)
+
+        rendered.clear()
+        second = bg.bake_gsplat_panorama(ply, face_size=16, equi_w=128, equi_h=64, device="cpu")
+        second_size = self._panorama_size(second)
+        first_size_after = self._panorama_size(first)
+
+        assert second_size == (128, 64), "the requested equirect size must be honored"
+        assert rendered, "a new resolution must re-render rather than reuse the cached panorama"
+        assert second != first, "distinct requests must not collide on one cache path"
+        # The first panorama is still intact for whoever asked for that size.
+        assert first_size_after == (64, 32)
+
+    def test_a_new_face_size_is_rendered_not_served_from_the_cache(self, tmp_path, monkeypatch) -> None:
+        # face_size changes the sharpness of the cube faces the panorama is
+        # reprojected from, not the output dimensions -- so a cache keyed on the
+        # output size alone would still wrongly serve the coarser bake.
+        bg, ply, rendered = self._stub_render_boundary(monkeypatch, tmp_path)
+
+        bg.bake_gsplat_panorama(ply, face_size=16, equi_w=64, equi_h=32, device="cpu")
+
+        rendered.clear()
+        bg.bake_gsplat_panorama(ply, face_size=64, equi_w=64, equi_h=32, device="cpu")
+
+        assert rendered, "a new face_size must re-render rather than reuse the cached panorama"
+        assert {size for size in rendered} == {(64, 64)}, "the requested face_size must be honored"
+
+    def test_repeating_one_request_reuses_the_cached_panorama(self, tmp_path, monkeypatch) -> None:
+        # Control: the cache still exists. Asking twice for the same geometry
+        # renders once, so the expensive path is not re-run per call.
+        bg, ply, rendered = self._stub_render_boundary(monkeypatch, tmp_path)
+
+        first = bg.bake_gsplat_panorama(ply, face_size=16, equi_w=64, equi_h=32, device="cpu")
+        assert rendered, "the first bake must render"
+
+        rendered.clear()
+        second = bg.bake_gsplat_panorama(ply, face_size=16, equi_w=64, equi_h=32, device="cpu")
+
+        assert second == first
+        assert not rendered, "an identical request must be served from the cache"
+
 
 # --------------------------------------------------------------------------- #
 # GsplatBackground._load -- splat load + alignment wiring (no gsplat/CUDA)

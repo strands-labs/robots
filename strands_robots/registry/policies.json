@@ -326,6 +326,26 @@
         "text2motion"
       ]
     },
+    "protomotions": {
+      "module": "strands_robots.policies.protomotions",
+      "class": "ProtoMotionsPolicy",
+      "description": "ProtoMotions Generalist Tracking Policy (ONNX, BeyondMimic-trained) for the Unitree G1 — consumes a MotionPlayer reference and emits PD joint targets",
+      "requires": [],
+      "config_keys": [
+        "onnx_path",
+        "yaml_path",
+        "motion",
+        "session",
+        "providers",
+        "history_length"
+      ],
+      "shorthands": [
+        "protomotions",
+        "gtp",
+        "gtp_g1",
+        "protomotions_g1"
+      ]
+    },
     "remote": {
       "module": "strands_robots.inference.client",
       "class": "RemotePolicy",

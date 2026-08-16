@@ -60,6 +60,7 @@ from strands.types._events import ToolResultEvent
 from strands.types.tools import ToolSpec, ToolUse
 
 from strands_robots.simulation.base import SimEngine, close_match_hint, reject_setup_kwargs
+from strands_robots.simulation.ik import hint_matches_name
 from strands_robots.simulation.model_registry import (
     count_sim_robots,
     list_available_models,
@@ -180,6 +181,34 @@ def _jnt_dof_width(mj: Any, jnt_type: int) -> int:
     return 1
 
 
+def _compiled_geom_extent(mj: Any, model: Any, geom_name: str) -> list[float] | None:
+    """Full extent in meters of a compiled geom's local bounding box.
+
+    Reads MuJoCo's own ``geom_aabb`` row (centre plus half-extent per local
+    axis) rather than re-deriving the extent from the request, so the number
+    describes the geometry that actually compiled. For a primitive that
+    reproduces the caller's ``size``; for a mesh it is the asset's own extent,
+    which no request component defines.
+
+    Args:
+        mj: the cached ``mujoco`` module, for the ``mjtObj`` enum.
+        model: a compiled ``MjModel``.
+        geom_name: name of the geom to measure. Resolved through
+            :func:`~strands_robots.simulation.mujoco.backend.mj_name_to_id`, so a
+            name that is not a string reports no extent rather than reaching the
+            binding.
+
+    Returns:
+        ``[x, y, z]`` full extents, or ``None`` when ``geom_name`` resolves to
+        no geom -- a caller then reports no extent rather than a wrong one.
+    """
+    geom_id = mj_name_to_id(model, mj.mjtObj.mjOBJ_GEOM, geom_name)
+    if geom_id < 0:
+        return None
+    aabb = model.geom_aabb[geom_id]
+    return [round(float(2.0 * aabb[3 + axis]), 4) for axis in range(3)]
+
+
 def _validated_mesh_handle(mesh: Any) -> Any:
     """Normalize the constructor ``mesh`` argument to a stoppable client or None.
 
@@ -267,6 +296,13 @@ def _resolve_policy_stop_timeout(policy_stop_timeout: float | None, default: flo
 # when the caller gives no per-robot override. Single-sourced so the signature
 # default and the per-robot mapping fallback cannot drift apart.
 _DEFAULT_ACTION_HORIZON = 8
+
+# Hint words for the best-guess gripper/EEF mount ``list_bodies`` advertises.
+# Matched on word boundaries by
+# :func:`~strands_robots.simulation.ik.hint_matches_name` - the same rule
+# :func:`~strands_robots.simulation.ik.discover_ee_frame` applies - so the short
+# hint "ee" cannot fire inside "knee" or "wheel".
+_GRIPPER_BODY_HINTS = ("gripper", "hand", "ee", "tool")
 
 
 _TOOL_SPEC_PATH = Path(__file__).parent / "tool_spec.json"
@@ -1935,15 +1971,26 @@ class MuJoCoSimEngine(
         :func:`~strands_robots.policies.wbc.install_wbc_torque_control` and
         returns its :meth:`uninstall` so the scene is restored after the run.
 
+        ``policy`` may be the ``WBCPolicy`` itself or any wrapper that declares
+        it through :attr:`~strands_robots.policies.base.Policy.children` - a
+        :class:`~strands_robots.policies.composite.CompositePolicy` driving the
+        legs from WBC and the arms from a manipulation policy, or a
+        :class:`~strands_robots.policies.persistent.PersistentPolicy` holding it
+        warm. The shim is resolved by walking that tree
+        (:func:`~strands_robots.policies.base.iter_policy_tree`), because the
+        physics it corrects is a property of the WBC policy driving the joints,
+        not of the type of object handed to ``run_policy``.
+
         Returns ``None`` (no-op) in five cases, in the order they are checked:
-        ``[wbc]`` is not installed; ``policy`` is not a ``WBCPolicy``; the sim
-        has no compiled world; a controller is already registered (a manual
-        install always wins); or
+        ``[wbc]`` is not installed; no ``WBCPolicy`` appears in ``policy``'s
+        tree; the sim has no compiled world; a controller is already registered
+        (a manual install always wins); or
         :func:`~strands_robots.policies.wbc.wbc_uses_position_servo` finds no
         position-servo actuator, meaning the driven actuators are already torque
         motors or none of the WBC joints resolve in this scene.
         """
         try:
+            from strands_robots.policies.base import iter_policy_tree
             from strands_robots.policies.wbc import (
                 WBCPolicy,
                 install_wbc_torque_control,
@@ -1952,7 +1999,11 @@ class MuJoCoSimEngine(
         except ImportError:
             return None
 
-        if not isinstance(policy, WBCPolicy):
+        # The shim is keyed on the WBC policy actually driving the joints, which
+        # may sit inside a wrapper (composite / persistent) that is not itself a
+        # WBCPolicy. Walk the declared tree instead of type-testing the argument.
+        wbc_policy = next((p for p in iter_policy_tree(policy) if isinstance(p, WBCPolicy)), None)
+        if wbc_policy is None:
             return None
         world = self._world
         if world is None or world._model is None:
@@ -1960,10 +2011,10 @@ class MuJoCoSimEngine(
         backend_state = getattr(world, "_backend_state", None)
         if isinstance(backend_state, dict) and backend_state.get("action_controller") is not None:
             return None  # a manually-installed controller wins
-        if not wbc_uses_position_servo(self, policy, robot_name):
+        if not wbc_uses_position_servo(self, wbc_policy, robot_name):
             return None
 
-        controller = install_wbc_torque_control(self, policy, robot_name)
+        controller = install_wbc_torque_control(self, wbc_policy, robot_name)
         logger.info(
             "run_policy: auto-installed WBC torque control on %r (position-servo "
             "actuators detected). WBC emits joint-position targets the stock servo "
@@ -2069,10 +2120,13 @@ class MuJoCoSimEngine(
         # transport/release vocabulary around a learned policy (Harness VLA).
         base["methods"]["move_to"] = (
             "(robot_name=None, position, orientation=None, tol=0.01, "
-            "max_steps=200) -> dict  # move the end-effector to a world-frame "
-            "[x, y, z] target via IK (position-only when orientation is "
-            "omitted - right for <6-DOF arms); NOT collision-aware; returns "
-            "reached/residual, structured error when unreachable"
+            "max_steps=200, orientation_tol=None) -> dict  # move the "
+            "end-effector to a world-frame [x, y, z] target via IK "
+            "(position-only when orientation is omitted - right for <6-DOF "
+            "arms); an orientation is CONVERGED to within orientation_tol "
+            "radians (default 0.1), not just fed to the solver; NOT "
+            "collision-aware; returns reached/residuals, structured error "
+            "naming the out-of-reach component when the pose is unreachable"
         )
         base["methods"]["set_gripper"] = (
             "(robot_name=None, state='open'|'close', steps=12) -> dict  # "
@@ -2617,8 +2671,12 @@ class MuJoCoSimEngine(
             ``bodies`` is the ordered list of body names; the ``text`` block
             mirrors it for human display. When ``robot_name`` is given the
             json also carries ``"gripper_body"`` -- the best-guess gripper/
-            end-effector mount (a body whose short name contains ``gripper``,
-            ``hand``, ``ee``, or ``tool``), or ``null`` if none matches.
+            end-effector mount (a body one of whose *name components* is
+            ``gripper``, ``hand``, ``ee``, or ``tool``), or ``null`` if none
+            matches. Hints match components rather than bare substrings, so a
+            short hint cannot fire inside an unrelated word: a ``knee`` or a
+            drive ``wheel`` is not an end-effector because ``ee`` occurs in its
+            name.
         """
         if self._world is None or self._world._model is None or self._world._data is None:
             return {"status": "error", "content": [{"text": _NO_WORLD_MSG}]}
@@ -2652,8 +2710,8 @@ class MuJoCoSimEngine(
         if robot_name is not None:
             gripper_body: str | None = None
             for name in bodies:
-                short = name.rsplit("/", 1)[-1].lower()
-                if any(tok in short for tok in ("gripper", "hand", "ee", "tool")):
+                short = name.rsplit("/", 1)[-1]
+                if any(hint_matches_name(hint, short) for hint in _GRIPPER_BODY_HINTS):
                     gripper_body = name
                     break
             json_payload["gripper_body"] = gripper_body
@@ -2699,7 +2757,9 @@ class MuJoCoSimEngine(
         * ``plane``: ``size[0]`` / ``size[1]`` are visual half-widths; planes are
           infinite for collision and are forced static.
         * ``mesh``: ``size`` is ignored -- the asset's own units define the
-          extent (requires ``mesh_path``).
+          extent (requires ``mesh_path``). Because no component is consumed, the
+          success text reports the compiled extent read back off the geom
+          instead of echoing the request.
 
         A free (non-static) body rests on a horizontal support at
         ``rest_z = support_top + size_z / 2`` -- e.g. a 5 cm cube on a table
@@ -2752,7 +2812,15 @@ class MuJoCoSimEngine(
             is_static: Fix the body in the world. ``shape="plane"`` forces this
                 True; other shapes default to dynamic.
             mesh_path: Mesh asset path; required and only used when
-                ``shape="mesh"``.
+                ``shape="mesh"``. The asset defines the geom's extent, and
+                MuJoCo collides a mesh geom as its **convex hull** -- not as the
+                triangles that render. For a convex asset the two coincide; for
+                a concave one (a room shell, a tray, a shelf, a bowl) the hull
+                fills every cavity, so an object dropped "inside" rests on the
+                filled hull and a camera still shows the open interior. To get
+                load-bearing concave geometry, decompose the asset into convex
+                parts and add one mesh object per part. The success text names
+                the hull for this reason.
             material: Optional MuJoCo material for the object's geom, given as
                 a mapping of material attribute to value. The accepted keys are
                 ``builtin``, ``reflectance``, ``rgb1``, ``rgb2``, ``shininess``,
@@ -2973,11 +3041,27 @@ class MuJoCoSimEngine(
                 "content": [{"text": f"Failed to inject '{name}' into live scene: {e}"}],
             }
 
+        # A mesh consumes no 'size' component (``_SIZE_LAYOUT["mesh"]`` is 0),
+        # so echoing the request back reports an extent this add never applied:
+        # the default read as a 5 cm object for an asset of any size, and an
+        # explicit vector read as honoured. Report what compiled instead -- the
+        # asset's own extent, and the collision geometry, which for every mesh
+        # geom is its convex hull rather than the surface that renders. Both are
+        # what a caller placing a robot or an object against the asset needs, and
+        # neither is derivable from the request. Primitive shapes keep echoing
+        # ``size``: there it is the extent, and the geom compiles to it.
+        if shape == "mesh":
+            extent = _compiled_geom_extent(self._mj, self._world._model, f"{name}_geom")
+            geometry = "extent unavailable" if extent is None else f"extent={extent}m from the asset"
+            detail = f"{geometry} (collision uses its convex hull)"
+        else:
+            detail = f"size={obj.size}"
+
         return {
             "status": "success",
             "content": [
                 {
-                    "text": f"'{name}' added: {shape} at {obj.position}, size={obj.size}, {'static' if is_static else f'{mass}kg'}"
+                    "text": f"'{name}' added: {shape} at {obj.position}, {detail}, {'static' if is_static else f'{mass}kg'}"
                 }
             ],
         }
@@ -3200,8 +3284,12 @@ class MuJoCoSimEngine(
 
         Naming: ``add_object(name="X", ...)`` injects its geom as
         ``"X_geom"`` in MJCF, so cameras share the name table only with
-        other cameras and body names - not with object geoms. Duplicate
-        camera names are rejected upfront.
+        other cameras and body names - not with object geoms. A name this
+        engine already registered is rejected upfront; a name the loaded
+        scene's MJCF declares is invisible to that check (``load_scene``
+        replaces the registry, not the MJCF) and is refused by the compiler
+        instead - either way the add is refused and the camera the scene
+        already had keeps its own pose.
 
         Orientation: ``target`` is baked into the camera's ``xyaxes``
         attribute so the rendered view looks at that point (not just

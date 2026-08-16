@@ -355,3 +355,75 @@ class TestAddCameraInjectionRollback:
         text = result["content"][0]["text"]
         assert "into live scene" in text
         assert "camera spec exploded" in text
+
+
+class TestRefusedCameraLeavesTheSceneCameraAlone:
+    """A camera name the loaded scene already declares costs one refused add.
+
+    ``add_camera``'s duplicate-name test consults the engine's own camera
+    registry, and ``load_scene`` replaces that registry with a fresh one while
+    the scene's MJCF keeps every ``<camera>`` it declares. A name from the XML is
+    therefore invisible to the test, so the insert reaches MuJoCo and the spec
+    ends up holding two cameras under one name. The rollback that follows has to
+    delete the one THIS call appended, which is why it counts the name before
+    inserting instead of deleting by name: ``SpecBuilder.remove_camera`` removes
+    the FIRST camera carrying the name - the scene's own.
+
+    Both observables below are the same defect, and which one is visible depends
+    on when the MuJoCo build in use validates a repeated name. Builds that defer
+    it to compile (< 3.6) let the rollback run and it deleted the scene's camera,
+    leaving the refused pose holding the name: every later render of that camera
+    answered with the view the caller was told had been rejected. Builds that
+    validate it on insert (>= 3.6) raise before the rollback runs at all, so the
+    orphan stayed in the spec and every later scene mutation kept failing to
+    recompile on the duplicate name - one bad add bricked the world.
+    """
+
+    @pytest.fixture
+    def scene_sim(self, tmp_path):
+        scene = tmp_path / "scene.xml"
+        scene.write_text(
+            '<mujoco model="s"><worldbody>'
+            '<body name="table" pos="1 2 0.5"><geom type="box" size="0.2 0.2 0.2"/></body>'
+            '<camera name="overview" pos="3 3 3" xyaxes="-1 1 0 0 0 1"/>'
+            "</worldbody></mujoco>"
+        )
+        s = Simulation(tool_name="devx_scene_camera_collision", mesh=False)
+        s.create_world()
+        s.load_scene(str(scene))
+        try:
+            yield s
+        finally:
+            s.cleanup(policy_stop_timeout=0.5)
+
+    @staticmethod
+    def _camera_pos(sim, name):
+        import mujoco
+
+        model = sim._world._model
+        cam_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, name)
+        assert cam_id >= 0, f"camera {name!r} vanished from the compiled model"
+        return list(model.cam_pos[cam_id])
+
+    def test_the_scene_camera_keeps_its_own_pose(self, scene_sim):
+        pos_before = self._camera_pos(scene_sim, "overview")
+
+        collide = scene_sim.add_camera(name="overview", position=[0.0, 0.0, 9.0], target=[0.0, 0.0, 0.0])
+        assert collide["status"] == "error", collide
+
+        # A later unrelated mutation forces the recompile that publishes whatever
+        # the spec now holds under the name.
+        assert scene_sim.add_object("cube", shape="box", position=[0.3, 0.0, 0.6], mass=1.0)["status"] == "success"
+        assert self._camera_pos(scene_sim, "overview") == pos_before
+
+    def test_a_later_scene_mutation_still_recompiles(self, scene_sim):
+        collide = scene_sim.add_camera(name="overview", position=[0.0, 0.0, 9.0], target=[0.0, 0.0, 0.0])
+        assert collide["status"] == "error", collide
+
+        # A leaked orphan would make every later mutation fail on the duplicate
+        # name, so the refused add would cost the whole scene rather than itself.
+        later = scene_sim.add_object("cube", shape="box", position=[0.3, 0.0, 0.6], mass=1.0)
+        assert later["status"] == "success", later
+        assert (
+            scene_sim.add_camera(name="wrist", position=[0.5, 0.0, 0.5], target=[0.0, 0.0, 0.1])["status"] == "success"
+        )

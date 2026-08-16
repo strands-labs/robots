@@ -701,10 +701,25 @@ def bake_gsplat_panorama(
     "just works" without per-camera viewpoint alignment (the trade-off is no
     parallax -- the backdrop sits at infinity).
 
-    Returns the path to the written panorama ``.jpg`` (cached next to the ply).
+    Baking is expensive (six gaussian-splat renders), so a non-empty output
+    file short-circuits the whole pass. The default output path therefore
+    encodes the geometry that determines the pixels -- ``equi_w``, ``equi_h``
+    and ``face_size`` -- as ``<stem>_pano_<equi_w>x<equi_h>_f<face_size>.jpg``.
+    Without that, every bake of one scene shared a single ``<stem>_pano.jpg``
+    and a later call asking for a different resolution silently returned the
+    first call's image: the caller's ``equi_w`` / ``equi_h`` / ``face_size``
+    were accepted and then dropped. An explicit ``out_path`` is caller-owned
+    and is honored verbatim -- the caller named the file, so the caller owns
+    what it holds.
+
+    Returns the path to the written panorama ``.jpg`` (cached next to the ply
+    unless ``out_path`` says otherwise).
     """
     ply_path = Path(ply_path)
-    out = Path(out_path) if out_path else ply_path.with_name(ply_path.stem + "_pano.jpg")
+    if out_path is not None:
+        out = Path(out_path)
+    else:
+        out = ply_path.with_name(f"{ply_path.stem}_pano_{equi_w}x{equi_h}_f{face_size}.jpg")
     if out.exists() and out.stat().st_size > 0:
         return out
 

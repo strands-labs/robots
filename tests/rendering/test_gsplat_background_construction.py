@@ -115,11 +115,13 @@ def test_render_without_the_sim_gs_extra_fails_loud_with_an_install_hint() -> No
 
 def test_bake_panorama_returns_cached_image_without_loading_splats(tmp_path) -> None:
     # The bake helper is CUDA-heavy, but a warm cache hit (an existing non-empty
-    # panorama next to the .ply) must short-circuit before any gsplat load.
+    # panorama next to the .ply for the *same* requested geometry) must
+    # short-circuit before any gsplat load. The default path encodes the
+    # geometry, so the cache file is named for the request it answers.
     ply = tmp_path / "scene.ply"
     ply.write_bytes(b"placeholder")
-    cached = ply.with_name(ply.stem + "_pano.jpg")
+    cached = ply.with_name("scene_pano_64x32_f16.jpg")
     cached.write_bytes(b"\xff\xd8\xff\xe0cached-jpeg")
 
-    out = bake_gsplat_panorama(ply)
+    out = bake_gsplat_panorama(ply, face_size=16, equi_w=64, equi_h=32)
     assert out == cached

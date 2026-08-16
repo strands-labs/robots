@@ -27,11 +27,21 @@ commits and ``AGENTS.md`` > PR Workflow tells a reader to consult each context's
 own ``conclusion`` before believing the roll-up. What that entry describes is a
 *different producer* of the symptom -- pushes to ``main`` share one concurrency
 group because a push carries no pull request number, so each merge kills the
-previous merge's run. That producer is arguably wanted (a superseded ``main`` run
-is of no interest) and is not touched here.
+previous merge's run. That producer read as wanted when this module was written -- a
+superseded ``main`` run is of no interest -- and was left alone here.
 
-This one is on pull request head shas, and unlike the ``main`` case it discards
-work for no possible gain, so it is removable rather than merely readable-around.
+It is gone now, for a reason that only shows up once the commits are counted: #2304
+measured 24 settled rollups on ``main``, of which 11 read ``FAILURE`` and **9 had no
+failing check at all**, and a commit on ``main`` is immutable and already merged, so
+unlike a branch it gets no next push to clear the wrong answer. Worse, a burst of
+merges destroys the evidence for which commit in it broke ``main`` in the same act
+as creating the fault. The push side is now keyed on ``github.sha``, which leaves
+the pull-request operand this module is about untouched; it is pinned by rendering
+the group in ``tests/test_push_concurrency_group.py``.
+
+This one is on pull request head shas, and it discards work for no possible gain,
+which is why it was removable here first: cancelling on ``main`` at least superseded
+something, while an event that cannot change the head sha supersedes nothing.
 Measured twice, ten minutes apart, no new run in between::
 
     19:35Z   #1899 FAILURE   #1901 FAILURE   #1902 FAILURE
@@ -75,8 +85,9 @@ That premise is true and it was the wrong group to check. The run an exempt even
 cancels first is the exempt workflow's **own**, which shares both a workflow name
 and a pull request number with the run already in flight. Being exempt is exactly
 what makes this reachable -- an exempt workflow is the only kind that can be
-started twice on one head sha -- so unlike the ``main`` case above the cancelled
-context lands on the *live* head. #2216 measured it on #1722 and #2205: each head
+started twice on one head sha -- so unlike the ``main`` case above, whose cancelled
+context sat on an immutable commit nobody was reviewing, it lands on the *live*
+head. #2216 measured it on #1722 and #2205: each head
 carried ``Refuse a closing keyword that only appears in the title`` as ``SUCCESS``
 and ``CANCELLED`` together, with every other context ``SUCCESS``, and #2205's
 roll-up read ``SUCCESS``, then ``FAILURE``, then ``SUCCESS`` across three reads of
@@ -289,10 +300,20 @@ def test_the_required_check_discards_its_in_flight_run() -> None:
     away the required check's progress, and the pin above would be a
     cost-control rule rather than a correctness one. Either way the reasoning
     above needs to be re-read, which is what this failing would say.
+
+    Only the pull-request operand is asserted. The fallback operand is the push
+    side, which #2304 changed from ``github.ref`` to ``github.sha``, and pinning
+    the whole expression here would put a second copy of that decision in a file
+    that does not reason about it -- so the push half is asserted by rendering the
+    group in ``tests/test_push_concurrency_group.py`` instead.
     """
     text = _REQUIRED_CHECK_WORKFLOW.read_text(encoding="utf-8")
     assert "cancel-in-progress: true" in text
-    assert "group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}" in text
+    assert "group: ${{ github.workflow }}-${{ github.event.pull_request.number ||" in text, (
+        "the concurrency group no longer keys on the pull request number, so two runs over one "
+        "pull request need not share a group and the cost this module is about disappears; "
+        "re-derive the pins above"
+    )
 
 
 def test_no_workflow_gates_on_draft_status() -> None:

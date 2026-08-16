@@ -330,7 +330,11 @@
     },
     "tol": {
       "type": "number",
-      "description": "move_to / rotate_wrist convergence tolerance: meters for move_to (EE position, default 0.01), radians for rotate_wrist (joint angle, default 0.02)"
+      "description": "move_to / rotate_wrist convergence tolerance: meters for move_to (EE POSITION only - use orientation_tol for the rotation, default 0.01), radians for rotate_wrist (joint angle, default 0.02)"
+    },
+    "orientation_tol": {
+      "type": "number",
+      "description": "move_to orientation convergence tolerance in RADIANS (default 0.1, about 5.7 deg). Bounds the rotational half of a pose request, which 'tol' (meters) cannot: when 'orientation' is given, move_to converges to within tol meters AND orientation_tol radians and reports both errors. Only valid alongside 'orientation' - passing it for a position-only move is refused, not ignored"
     },
     "state": {
       "type": "string",

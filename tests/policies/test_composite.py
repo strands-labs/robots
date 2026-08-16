@@ -156,6 +156,105 @@ class TestErrorPaths:
         with pytest.raises(ValueError, match="upper policy"):
             _run(c)
 
+    def test_upper_fully_shadowed_by_lower_raises(self):
+        # Both children drive the SAME joints, so lower precedence leaves the
+        # upper policy contributing nothing: the composite commands exactly what
+        # the lower policy alone would. Silently returning that reads as
+        # "composed" while half the pipeline has no effect.
+        lower = StubPolicy([{j: 1.0 for j in LEG_JOINTS}], name="generator")
+        upper = StubPolicy([{j: 2.0 for j in LEG_JOINTS}], name="tracker")
+        c = CompositePolicy(lower, upper)
+        with pytest.raises(ValueError) as excinfo:
+            _run(c)
+        message = str(excinfo.value)
+        # The refusal names the shadowed child, the count, and every joint the
+        # lower policy already drives, so the caller can fix the ownership.
+        assert "upper policy 'tracker'" in message
+        assert "none of them reached the merged action" in message
+        assert "lower policy 'generator'" in message
+        for joint in LEG_JOINTS:
+            assert joint in message
+        assert "lower_joints" in message and "upper_joints" in message
+
+    def test_partially_shadowed_upper_still_merges(self):
+        # The refusal is scoped to a child that contributes NOTHING. Lower
+        # precedence on a shared name, with the upper still contributing its own,
+        # is the documented default and must keep working.
+        lower = StubPolicy([{"hip": 1.0, "shared": 1.0}])
+        upper = StubPolicy([{"shared": 99.0, "shoulder": 2.0}])
+        assert _run(CompositePolicy(lower, upper))[0] == {"hip": 1.0, "shared": 1.0, "shoulder": 2.0}
+
+    def test_child_commanding_nothing_is_not_a_dropped_command(self):
+        # An empty action DICT (not an empty chunk) is a child commanding no
+        # joint this tick. There is no command to drop, so it is not refused.
+        lower = StubPolicy([{"hip": 1.0}])
+        upper = StubPolicy([{}])
+        assert _run(CompositePolicy(lower, upper))[0] == {"hip": 1.0}
+
+    @pytest.mark.parametrize("role", ["lower", "upper"])
+    def test_joint_group_matching_no_emitted_name_raises(self, role):
+        # A group whose names do not exist in the child's output silently routed
+        # that child to nothing. Name the mismatch instead of dropping it.
+        emitted = {"hip": 1.0} if role == "lower" else {"shoulder": 2.0}
+        groups = {f"{role}_joints": ["typo_joint"]}
+        if role == "upper":
+            groups["lower_joints"] = ["hip"]
+        c = CompositePolicy(
+            StubPolicy([{"hip": 1.0}], name="lo"),
+            StubPolicy([emitted], name="up"),
+            **groups,
+        )
+        with pytest.raises(ValueError, match=f"{role}_joints group"):
+            _run(c)
+
+
+class TestWholeBodyGeneratorIsNotComposable:
+    """A whole-body generator and a whole-body controller cannot be composed.
+
+    ``KimodoPolicy`` / ``MotionBricksPolicy`` emit joint targets for ALL 29 G1
+    leg+waist+arm joints, and ``WBCPolicy`` drives 15 of those same joints. The
+    two therefore claim overlapping joints rather than disjoint groups, so a
+    composite of the pair is one child alone - the generator's reference is never
+    tracked, or the controller is never consulted. Refusing that configuration is
+    what keeps the mistake from looking like a working pipeline.
+    """
+
+    def test_generator_over_locomotion_controller_is_refused(self):
+        from strands_robots.policies.kimodo.policy import KIMODO_G1_JOINTS
+        from strands_robots.policies.wbc.policy import WBC_G1_LEG_WAIST_JOINTS
+
+        # Every joint the controller drives is also driven by the generator.
+        assert set(WBC_G1_LEG_WAIST_JOINTS) <= set(KIMODO_G1_JOINTS)
+
+        generator = StubPolicy([{j: 0.5 for j in KIMODO_G1_JOINTS}], name="kimodo")
+        controller = StubPolicy([{j: -0.9 for j in WBC_G1_LEG_WAIST_JOINTS}], name="wbc")
+
+        with pytest.raises(ValueError) as excinfo:
+            _run(CompositePolicy(generator, controller))
+        message = str(excinfo.value)
+        assert f"commanded {len(WBC_G1_LEG_WAIST_JOINTS)} joint(s)" in message
+        assert "DISJOINT joint groups" in message
+
+    def test_disjoint_groups_on_the_same_robot_still_compose(self):
+        # The pattern CompositePolicy exists for: locomotion owns legs+waist,
+        # manipulation owns the arms, each joint owned exactly once.
+        from strands_robots.policies.wbc.policy import WBC_G1_ALL_JOINTS, WBC_G1_LEG_WAIST_JOINTS
+
+        arm_joints = WBC_G1_ALL_JOINTS[len(WBC_G1_LEG_WAIST_JOINTS) :]
+        lower = StubPolicy([{j: -0.9 for j in WBC_G1_LEG_WAIST_JOINTS}], name="wbc")
+        upper = StubPolicy([{j: 0.3 for j in arm_joints}], name="manipulation")
+        c = CompositePolicy(
+            lower,
+            upper,
+            lower_joints=WBC_G1_LEG_WAIST_JOINTS,
+            upper_joints=arm_joints,
+        )
+
+        merged = _run(c)[0]
+        assert set(merged) == set(WBC_G1_ALL_JOINTS)
+        assert all(merged[j] == -0.9 for j in WBC_G1_LEG_WAIST_JOINTS)
+        assert all(merged[j] == 0.3 for j in arm_joints)
+
 
 class TestForwarding:
     """The composite forwards lifecycle calls and obs subsets to both children."""

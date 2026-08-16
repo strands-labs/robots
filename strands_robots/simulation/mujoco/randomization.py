@@ -91,8 +91,14 @@ class RandomizationMixin:
 
         "No flags" means "nothing is randomized" - the call is a no-op. This
         matches the LLM ergonomics principle: explicit is better than implicit.
-        Randomization IS destructive (writes to ``model.geom_*`` / ``body_*``
-        arrays and to ``data.qpos``); recompile the scene to undo.
+        Randomization IS destructive; recompile the scene to undo. Every axis
+        persists for the rest of the scene's life, including across
+        :meth:`reset`: the colour, friction and mass axes write ``model``
+        arrays, and the position axis writes ``model.qpos0`` (the pose a reset
+        restores) alongside the live ``data.qpos``. That uniformity is what
+        makes the axis usable from a rollout entry point at all -- ``run_policy``
+        and ``eval_policy`` reset before an episode's first step, so an axis a
+        reset undoes would never reach a rollout.
 
         Args:
             randomize_colors:     Re-sample every non-ground geom's RGB (and
@@ -108,7 +114,16 @@ class RandomizationMixin:
                                   positions. A finite non-negative number: a
                                   NaN half-width writes NaN into ``qpos`` and
                                   poisons every later step, a negative one
-                                  inverts the sampling bounds.
+                                  inverts the sampling bounds. The offset is
+                                  measured from each dynamic object's commanded
+                                  pose (what ``add_object`` / ``move_object``
+                                  placed it at), so repeated calls draw
+                                  independent offsets inside this bound instead
+                                  of compounding into a random walk, and it
+                                  becomes both the live pose and the pose a
+                                  reset restores. Static objects have no pose
+                                  DOF and are skipped; the result text reports
+                                  how many objects were actually perturbed.
             color_range:          (lo, hi) for uniform RGB sampling.
             friction_range:       (lo, hi) multiplicative scale on friction[0].
             mass_range:           (lo, hi) multiplicative scale on body_mass.
@@ -231,15 +246,43 @@ class RandomizationMixin:
                 changes.append(f"   mass_scales={mass_scales}")
 
             if randomize_positions:
+                # Two writes per object, because a start pose lives in two
+                # places and the axis is only useful if it reaches both:
+                #   * ``data.qpos`` -- the live pose, and
+                #   * ``model.qpos0`` -- the pose ``mj_resetData`` restores.
+                # Every rollout entry point resets before an episode's first
+                # step (``PolicyRunner.evaluate`` resets at the top of each
+                # episode), so a qpos-only write is undone before the policy
+                # ever observes it, while the three model-array axes above
+                # persist. Writing both makes this axis behave like colour,
+                # friction and mass: it survives a reset and is undone by a
+                # recompile.
+                #
+                # The offset is measured from the object's COMMANDED pose --
+                # what ``add_object`` / ``move_object`` last placed it at, which
+                # is what the registry holds -- not from the live pose. The
+                # registry pose is a fixed reference, so each call draws an
+                # independent offset bounded by ``position_noise``; measuring
+                # from the live pose instead compounds every call into a random
+                # walk (50 episodes at a 0.03 m half-width reach 0.12 m and put
+                # a table-top object under the floor).
+                n_moved = 0
                 for obj_name, obj in self._world.objects.items():
-                    if not obj.is_static:
-                        jnt_name = f"{obj_name}_joint"
-                        jnt_id = mj_name_to_id(model, mj.mjtObj.mjOBJ_JOINT, jnt_name)
-                        if jnt_id >= 0:
-                            qpos_addr = model.jnt_qposadr[jnt_id]
-                            noise = rng.uniform(-position_noise, position_noise, size=3)
-                            data.qpos[qpos_addr : qpos_addr + 3] += noise
-                changes.append(f"Positions: ±{position_noise}m noise on dynamic objects")
+                    if obj.is_static:
+                        continue
+                    jnt_id = mj_name_to_id(model, mj.mjtObj.mjOBJ_JOINT, f"{obj_name}_joint")
+                    if jnt_id < 0:
+                        continue
+                    qpos_addr = model.jnt_qposadr[jnt_id]
+                    noise = rng.uniform(-position_noise, position_noise, size=3)
+                    start = np.asarray(obj.position, dtype=np.float64) + noise
+                    data.qpos[qpos_addr : qpos_addr + 3] = start
+                    model.qpos0[qpos_addr : qpos_addr + 3] = start
+                    n_moved += 1
+                # Report the count actually perturbed, as the colour axis does:
+                # a scene whose objects are all static perturbs nothing, and
+                # naming the axis without a count reads as work done.
+                changes.append(f"Positions: {n_moved} dynamic objects perturbed by ±{position_noise}m")
 
             # Recompute derived state so the sim is left render-ready. Several
             # randomization axes mutate model arrays whose rendered/simulated

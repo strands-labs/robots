@@ -298,6 +298,28 @@ joint) is raised, never silently resolved. The merged chunk length is the
 shorter of the two, so a per-tick controller (WBC, `execution_horizon == 1`) is
 never starved by a slower chunk-emitting manipulation policy.
 
+Run the composite the same way as a bare policy - the goal payload goes in
+`policy_kwargs`, and the torque shim
+([In simulation](#in-simulation)) is auto-installed for the
+`WBCPolicy` inside the composite just as it is for a bare one:
+
+```python
+sim.run_policy(
+    robot_name="unitree_g1",
+    policy_object=policy,
+    policy_kwargs={"target_velocity": [0.5, 0.0, 0.0]},
+    control_frequency=50.0,
+    n_steps=500,
+)
+```
+
+The shim drives the legs+waist with SONIC's PD law and runs a light position PD
+(`kp = 100`, `kd = 0.5`) on each arm joint toward whatever target the upper
+policy commands for it, holding the nominal pose for any arm joint left
+unnamed. The same applies to a `WBCPolicy` held warm by a `PersistentPolicy`:
+the shim follows the policy that drives the joints, not the type of the object
+passed to `run_policy`.
+
 [`examples/wbc/wbc_g1_composite.py`](https://github.com/strands-labs/robots/blob/main/examples/wbc/wbc_g1_composite.py)
 runs the composite in the torque-deploy loop with a zero-dependency scripted
 arm-wave as the upper body (swap in `--upper-port` for a real GR00T server):

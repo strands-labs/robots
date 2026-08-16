@@ -12,10 +12,11 @@ movement/facing command, and like the rest of the non-VLA family:
 * ``get_actions`` reads the goal from the well-known ``**kwargs`` keys
   (``style`` / ``mode``, ``target_velocity``, ``target_heading``).
 * The output is the G1's 29 leg+waist+arm joint targets, keyed by
-  :data:`MOTIONBRICKS_G1_JOINTS` (the canonical WBC joint ordering), so it
-  composes with :class:`~strands_robots.policies.wbc.WBCPolicy` (MotionBricks
-  emits motion targets, WBC tracks them) via
-  :class:`~strands_robots.policies.composite.CompositePolicy`.
+  :data:`MOTIONBRICKS_G1_JOINTS` (the canonical WBC joint ordering), so a
+  downstream tracker names the same joints without a remapping table. Tracking
+  is a cascade (the 29 targets are the tracker's input), NOT a
+  :class:`~strands_robots.policies.composite.CompositePolicy` layer - that class
+  merges disjoint joint groups.
 
 Requires the ``[motionbricks]`` extra and the upstream checkpoints (git-LFS,
 NVIDIA Open Model License); no weights are bundled. See ``docs/policies/motionbricks.md``.

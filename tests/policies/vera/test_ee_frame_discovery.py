@@ -5,9 +5,15 @@ namespace-aware heuristic that resolves an IK target frame from a compiled
 ``mujoco.MjModel`` so eef-delta / cartesian-delta embodiments stay zero-config.
 
 The heuristic is a first-match-wins ladder:
-  1. a TCP-like *site* (``attachment_site`` / ``grasp`` / ``tcp`` / ...),
+  1. a *site* named for the tool point (``attachment_site`` / ``grasp`` /
+     ``tcp`` / ...) or for the end effector itself (``gripper`` / ``hand`` /
+     ``tool`` / ...),
   2. otherwise a hand/tool *body* (``gripper`` / ``hand`` / ``wrist`` / ...),
   3. otherwise the *leaf body* of the robot's kinematic chain.
+
+Rung 1 covers rung 2's vocabulary after its own, so a site wins over a body of
+the same name; that ordering is pinned in
+``tests/simulation/test_ee_frame_site_outranks_same_named_body.py``.
 
 Discovery is scoped to a body/site namespace prefix so multi-robot worlds
 resolve the right arm, and hint matching runs on the namespace-stripped

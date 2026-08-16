@@ -184,12 +184,14 @@ _INTRINSICS_SCENE = """
 
 
 class TestExplicitIntrinsicsK:
-    """``_explicit_intrinsics_K`` formula pins (no GL: model compile only).
+    """Sensor-derived ``K`` pins on the installed MuJoCo (no GL: no render).
 
-    Expected values were calibrated against MuJoCo's rasterizer by
-    least-squares fitting depth-blob centroids of spheres at known
-    camera-frame positions (six positions per configuration); a positive
-    MJCF ``principal`` offset shifts the principal point toward NEGATIVE u/v.
+    ``fx``/``fy`` are the sensor's own pixel pitch and ``cx`` follows MuJoCo's
+    horizontal frustum, so all three are pinned exactly here. The vertical
+    offset's magnitude is pinned too, but not which side of the image center it
+    falls on: MuJoCo 3.6.0 changed the vertical frustum convention, so that
+    side is a property of the build. Which frustum maps to which ``cy`` is
+    pinned for both conventions by the frustum-mapping tests.
     """
 
     @staticmethod
@@ -206,8 +208,10 @@ class TestExplicitIntrinsicsK:
         </mujoco>
         """
         model = mujoco.MjModel.from_xml_string(xml)
+        data = mujoco.MjData(model)
+        mujoco.mj_forward(model, data)
         cam_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, "c")
-        return RenderingMixin._explicit_intrinsics_K(np, model, cam_id, w, h)
+        return RenderingMixin._explicit_intrinsics_K(mujoco, np, model, data, cam_id, w, h)
 
     def test_offset_principal_point(self) -> None:
         K = self._K(
@@ -219,7 +223,8 @@ class TestExplicitIntrinsicsK:
         assert K[0, 0] == pytest.approx(300.0)
         assert K[1, 1] == pytest.approx(300.0)
         assert K[0, 2] == pytest.approx(85.0)
-        assert K[1, 2] == pytest.approx(80.0)
+        # 0.8 mm on a 4.8 mm sensor over 240 rows = 40 px off the center.
+        assert abs(K[1, 2] - 120.0) == pytest.approx(40.0)
 
     def test_non_square_sensor(self) -> None:
         K = self._K('sensorsize="0.008 0.0048" focal="0.006 0.006" resolution="320 240"', 320, 240)
@@ -239,7 +244,8 @@ class TestExplicitIntrinsicsK:
         assert K[0, 0] == pytest.approx(200.0)
         assert K[1, 1] == pytest.approx(300.0)
         assert K[0, 2] == pytest.approx(210.0)
-        assert K[1, 2] == pytest.approx(60.0)
+        # 1.2 mm on a 4.8 mm sensor over 240 rows = 60 px off the center.
+        assert abs(K[1, 2] - 120.0) == pytest.approx(60.0)
 
     def test_scales_linearly_with_render_size(self) -> None:
         """The sensor fixes the frustum; a 2x viewport doubles K per axis

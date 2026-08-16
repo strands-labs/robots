@@ -46,11 +46,18 @@ WBCPolicy / GEAR-SONIC  <- tracks the targets: joint torques / position targets
 robot (sim or hardware)
 ```
 
-The two compose through
-[`CompositePolicy`](https://github.com/strands-labs/robots/blob/main/strands_robots/policies/composite.py):
-MotionBricks emits the joint references, WBC tracks them. The 29 joints are
-keyed by the **same canonical ordering as WBC** (`MOTIONBRICKS_G1_JOINTS` is
-`WBC_G1_ALL_JOINTS`), so the two name the same joints without a remapping table.
+The two stages run in **series**: MotionBricks emits the joint references and a
+tracker consumes them as its input. The 29 joints are keyed by the **same
+canonical ordering as WBC** (`MOTIONBRICKS_G1_JOINTS` is `WBC_G1_ALL_JOINTS`), so
+the tracker names the same joints without a remapping table.
+
+That cascade is *not*
+[`CompositePolicy`](https://github.com/strands-labs/robots/blob/main/strands_robots/policies/composite.py),
+which merges two policies over **disjoint** joint groups. A whole-body generator
+and a whole-body tracker claim the same joints, so composing them discards one
+child's output entirely — a configuration `CompositePolicy` refuses. Note also
+that `WBCPolicy` is a velocity-commanded locomotion controller with no
+reference-pose input, so it cannot track a MotionBricks reference.
 
 Standalone, the policy's output is a kinematic reference - the faithful way to
 visualise a kinematic generator is to set the synthesised `qpos`
