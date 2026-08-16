@@ -30,7 +30,8 @@ policy = create_policy(
     gait_frequency=1.5,               # freq_cmd (steps/s)
 )
 sim.run_policy(robot_name="unitree_g1", policy_object=policy,
-               target_velocity=[0.5, 0.0, 0.0], gait_frequency=1.5,
+               policy_kwargs={"target_velocity": [0.5, 0.0, 0.0],
+                              "gait_frequency": 1.5},
                duration=5.0, control_frequency=50.0)
 ```
 

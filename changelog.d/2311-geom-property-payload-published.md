@@ -1,0 +1,3 @@
+### Fixed
+
+- `simulation/mujoco`: the agent-facing tool schema now publishes `set_geom_properties`' full payload. `friction` had no property at all, so a schema-constrained decoder could not pass the coefficients the action validates and applies, and `size` was described only for `add_object` - the two actions take that one field under different conventions (full extents vs the compiled geom's own `geom_size`), so `size=[0.2, 0.2, 0.2]` builds a 20 cm box through one and resizes that same box to 40 cm through the other under `status="success"`. Both conventions and `friction`'s component order are now published.

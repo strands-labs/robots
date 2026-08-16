@@ -108,7 +108,7 @@ Assets cache under `~/.strands_robots/assets/`.
 | `MUJOCO_GL` | GL backend | auto |
 | `STRANDS_TRUST_REMOTE_CODE` | Allow HF `trust_remote_code=True` | `false` |
 | `STRANDS_ROBOT_MODE` | Default `Robot()` mode | `sim` |
-| `STRANDS_MESH` | Mesh enabled by default; set to `false` to disable globally | `true` (enabled) |
+| `STRANDS_MESH` | Set to `true` to opt a bare `Robot()` into the mesh; `false` disables it globally | unset (mesh off) |
 | `GROOT_API_TOKEN` | GR00T service API token (falls back from `api_token=` kwarg) | unset |
 
 ## See also

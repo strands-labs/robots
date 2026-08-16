@@ -816,10 +816,13 @@ actions = policy.get_actions_sync(
 )
 ```
 
-Agents share one goal vocabulary across VLA and planner providers:
-`Robot.start_task(..., policy_provider="curobo", target_pose=[...])` and
-`mesh.tell(peer, "...", policy_provider="curobo", target_pose=[...])` flow the
-same `target_pose` / `target_joints` / `world_update` kwargs through.
+`mesh.tell(peer, "...", policy_provider="curobo", target_pose=[...])` forwards
+the same `target_pose` / `target_joints` / `world_update` vocabulary to a sim
+peer. In-process, the goal goes to `run_policy(policy_kwargs={...})`, which the
+runner hands to every `get_actions()` call - `run_policy` itself has no
+`target_pose` parameter. `Robot.start_task` takes no goal payload: its
+parameters are `instruction`, `policy_port`, `policy_host`, `policy_provider`
+and `duration`.
 
 </details>
 
@@ -1089,7 +1092,7 @@ touches ROS 2.
 | `STRANDS_ISAAC_RTX_PATHTRACING` | Isaac Sim backend: on (`1`/`true`/`yes`/`on`) enables RTX path-tracing (photorealistic, slow) instead of the default render mode; off leaves the render mode alone, any other spelling is refused | unset |
 | `STRANDS_ISAAC_NUCLEUS_URL` | Isaac Sim backend: override the Omniverse Nucleus asset-server URL | unset (Isaac default) |
 | `GROOT_API_TOKEN` | API token for the GR00T inference service | unset |
-| `STRANDS_MESH` | Set `false` to disable Zenoh mesh globally | `true` |
+| `STRANDS_MESH` | Opt a bare `Robot()` into the Zenoh mesh: `true`/`1`/`yes` turns it on. `false`/`0`/`no` is a hard kill switch that also overrides an explicit `mesh=True` | unset (mesh off) |
 | `STRANDS_MESH_LOCAL_DEV` | Set `1` for a one-var localhost preset (auth `none`, no second factor needed) | unset |
 | `STRANDS_ROS2_BRIDGE_I_KNOW_THIS_IS_INSECURE` | Second factor to expose a `Robot(ros2_transport="rtps")` inbound `joint_command` surface with no `dds_security_config` (DDS Security). Truthy: `1`/`true`/`yes` | unset |
 <details>
@@ -1160,7 +1163,7 @@ other spelling is refused. See
 |----------|-------------|---------|
 | `STRANDS_LIBERO_ACTION_LOG` / `_MAX` | Per-step OSC controller diagnostics | unset / `50` |
 | `STRANDS_LIBERO_STATE_LOG` / `_MAX` | Per-step state values fed to GR00T | unset / `50` |
-| `STRANDS_GROOT_WIRE_LOG` / `_MAX_CALLS` | Dump pre/post inference payloads to verify LOCAL vs SERVICE parity | unset / `10` |
+| `STRANDS_GROOT_WIRE_LOG` / `_MAX_CALLS` | Directory to dump pre/post inference payloads to, e.g. `/tmp/groot-wire`, to verify LOCAL vs SERVICE parity | unset / `10` |
 
 </details>
 

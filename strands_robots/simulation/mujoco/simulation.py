@@ -1194,26 +1194,88 @@ class MuJoCoSimEngine(
 
     @staticmethod
     def _unknown_model_msg(requested: str) -> str:
-        """Build a helpful 'no model found' error with close-match suggestions.
+        """Build the 'model could not be resolved' error for a robot name.
 
-        Friction fix: instead of a bare "use list_urdfs", we name the closest
-        known registry keys (difflib) so the caller can usually fix the typo
-        in-place without a discovery round-trip.
+        Two conditions reach this message and they have different remedies, so
+        it diagnoses which one it is instead of reporting both as a bad name:
+
+        * The registry does not know ``requested`` - a typo or an unknown robot.
+          Names the closest registry keys via :func:`close_match_hint` so the
+          caller can fix it in place without a discovery round-trip.
+        * The registry knows ``requested`` and its model XML is simply not on
+          disk. Here the name is already correct, so spelling suggestions are
+          the wrong advice - ``difflib`` ranks an exact match first, so this was
+          the one case that got told "Did you mean: <the name it just
+          refused>". Names the asset path the resolver looked for and the
+          remedy, split on the entry's own ``auto_download`` posture: an entry
+          with ``auto_download: false`` is never fetched automatically (the
+          asset has to be placed by hand), any other entry had a download
+          attempted by :func:`~strands_robots.assets.manager.resolve_model_path`
+          before it gave up, so retrying it through the ``download_assets``
+          tool is what surfaces why. Mirrors the registration-time wording in
+          :func:`~strands_robots.registry.user_registry.register_robot`, which
+          already reports a missing asset directory this way.
+
+        Suggestions and the asset probe are both best-effort: a registry that
+        cannot be read degrades to the bare form rather than propagating.
         """
-        suggestions: list[str] = []
+        known: list[str] = []
         try:
-            import difflib
-
             from strands_robots.registry import list_robots as _list_robots
 
             known = [r.get("name", "") for r in _list_robots() if r.get("name")]
-            suggestions = difflib.get_close_matches(requested, known, n=3, cutoff=0.4)
         except Exception:  # noqa: BLE001 - suggestions are best-effort
-            suggestions = []
+            known = []
+
+        # Probed independently of the suggestion list so an unreadable registry
+        # listing cannot mask the more specific diagnosis, and vice versa.
+        asset_gap: tuple[str, str, str, bool, list[str]] | None = None
+        try:
+            from strands_robots.assets.manager import get_search_paths, is_robot_asset_present
+            from strands_robots.registry import get_robot as _get_robot
+            from strands_robots.registry import resolve_name as _resolve_name
+
+            # ``requested`` may be an alias; resolve to the canonical key the
+            # asset entry hangs off. No type test on ``requested`` here - a name
+            # that cannot be a registry key raises and is caught, which keeps
+            # the availability listing above ungated on the name's type.
+            canonical = _resolve_name(requested)
+            asset = ((_get_robot(canonical) or {}) if canonical else {}).get("asset") or {}
+            if asset and not is_robot_asset_present(canonical):
+                asset_gap = (
+                    canonical,
+                    str(asset.get("dir", "")),
+                    str(asset.get("model_xml", "")),
+                    asset.get("auto_download") is False,
+                    [str(path) for path in get_search_paths()],
+                )
+        except Exception:  # noqa: BLE001 - the diagnosis is best-effort
+            asset_gap = None
+
+        if asset_gap is not None:
+            canonical, asset_dir, model_xml, never_downloads, search_paths = asset_gap
+            relative = f"{asset_dir}/{model_xml}"
+            searched = ", ".join(f"'{path}'" for path in search_paths)
+            msg = (
+                f"Robot '{requested}' is registered but its model file is not on disk: "
+                f"no '{relative}' under {searched}."
+                if search_paths
+                else (
+                    f"Robot '{requested}' is registered but its model file is not on disk "
+                    f"(expected '{relative}' on an asset search path)."
+                )
+            )
+            if never_downloads:
+                msg += (
+                    f" This entry declares auto_download=false, so its asset is never fetched "
+                    f"automatically - create that directory and place '{model_xml}' inside it."
+                )
+            else:
+                msg += f" Fetch it with the download_assets tool (robots='{canonical}')."
+            return msg
 
         msg = f"No model found for '{requested}'."
-        if suggestions:
-            msg += " Did you mean: " + ", ".join(suggestions) + "?"
+        msg += close_match_hint(requested, known)
         msg += " Use action='list_urdfs' to see all available robots."
         return msg
 

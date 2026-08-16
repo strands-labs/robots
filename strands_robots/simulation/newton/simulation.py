@@ -2366,7 +2366,7 @@ class NewtonSimEngine(DomainRandomizationMixin, NewtonRecordingMixin, SimEngine)
                 "list_urdfs": "() -> dict (registry + robot_descriptions URDF long tail; json.robot_descriptions_urdf)",
                 "register_urdf": "(data_config: str, urdf_path: str) -> dict",
                 "set_gravity": "(gravity: list[float] | float) -> dict",
-                "set_timestep": "(dt: float) -> dict",
+                "set_timestep": "(timestep: float) -> dict (seconds; takes effect on the next step)",
                 "render": "(camera_name='default', width=None, height=None) -> dict (named camera or 'default')",
                 "add_camera": (
                     "(name: str, position=None, target=None, fov=60.0, width=640, height=480, "

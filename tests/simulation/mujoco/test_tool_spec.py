@@ -739,3 +739,202 @@ class TestTheRouterDispatchesOnlyPublishedOrDeclaredActions:
 
         assert self._unaccounted(_EngineWithANewCapability) == {"teleport_everything"}
         assert not self._unaccounted(), "the real engine must stay accounted for"
+
+
+# The geom-property payload contract
+#
+# ``set_geom_properties`` is the one published action whose entire purpose is
+# writing geom payload vectors, and the flat property dict described it as if
+# ``add_object`` were the only consumer. Two consequences, both invisible to the
+# router: it validates a call against the *method signature*, so a payload the
+# schema never published still dispatches when a Python caller passes it, and a
+# schema-constrained decoder cannot emit it at all.
+#
+# ``friction`` was published nowhere, so the coefficients the method validates,
+# documents and applies were unreachable from the model-facing surface.
+#
+# ``size`` is worse than unreachable, because two actions consume that one wire
+# field under different conventions: ``add_object`` takes full extents, and
+# ``set_geom_properties`` takes the compiled geom's own ``geom_size``
+# components, which are half-extents for a box. The published description named
+# only ``add_object`` and stated the other convention was explicitly not what
+# the field meant, so a caller who follows it either doubles a box under
+# ``status="success"`` or is refused for a component the same text calls unused.
+
+
+def _geom_property_params() -> set[str]:
+    """The payload parameters ``set_geom_properties`` accepts."""
+    signature = inspect.signature(Simulation.set_geom_properties)
+    return {name for name in signature.parameters if name != "self"}
+
+
+def _compiled_geom_id(sim: Simulation, geom_name: str) -> int:
+    """The live model's id for ``geom_name``, so a write can be read back."""
+    import mujoco
+
+    geom_id = int(mujoco.mj_name2id(sim.mj_model, mujoco.mjtObj.mjOBJ_GEOM, geom_name))
+    assert geom_id >= 0, f"no geom named {geom_name!r}"
+    return geom_id
+
+
+@pytest.fixture
+def world_sim(sim: Simulation) -> Simulation:
+    """A session with a world, ready for scene mutation."""
+    assert sim.create_world()["status"] == "success"
+    return sim
+
+
+class TestTheGeomPropertyPayloadIsPublished:
+    """Every payload ``set_geom_properties`` accepts is reachable from the schema."""
+
+    def test_every_geom_property_parameter_is_reachable_in_the_schema(self) -> None:
+        """A payload absent from the schema is unreachable for a model.
+
+        The router binds against the method signature rather than the schema, so
+        an unpublished payload is not refused - it is simply never emitted, and
+        the capability reads as missing rather than as undiscoverable. This is
+        the parameter-level form of the action-level accounting above, scoped to
+        the one action whose whole purpose is writing these vectors.
+        """
+        published = set(_tool_spec_properties())
+        aliases_by_param = {target: field for field, target in Simulation._FIELD_ALIASES.items()}
+
+        unreachable = sorted(
+            param for param in _geom_property_params() if not ({param, aliases_by_param.get(param, param)} & published)
+        )
+        assert not unreachable, (
+            "set_geom_properties accepts these payloads but tool_spec publishes no property for "
+            f"them, so a schema-constrained decoder cannot pass them: {unreachable}"
+        )
+
+    def test_the_published_friction_carries_the_arity_and_order_the_geom_defines(self) -> None:
+        """Three coefficients in a fixed order, so a count alone cannot pin it.
+
+        MuJoCo's friction triple is ordered (sliding, torsional, rolling) and the
+        three are not interchangeable: swapping them passes every arity check and
+        applies a different contact model under ``status="success"``. Published in
+        the same shape ``orientation`` uses for its component order, and for the
+        same reason.
+        """
+        friction = _tool_spec_properties()["friction"]
+        assert friction["type"] == "array"
+        assert friction.get("minItems") == 3 and friction.get("maxItems") == 3, (
+            "friction takes exactly three coefficients; publish the count rather than leaving a "
+            f"decoder to guess it. Got: {friction!r}"
+        )
+        description = friction.get("description", "")
+        for coefficient in ("sliding", "torsional", "rolling"):
+            assert coefficient in description, (
+                f"friction must publish its component order; {coefficient!r} is missing from {description!r}"
+            )
+
+    def test_a_friction_the_schema_publishes_is_applied(self, world_sim: Simulation) -> None:
+        """The published payload reaches the model, end to end through the router."""
+        assert (
+            world_sim(action="add_object", name="crate", shape="box", position=[0, 0, 0.1], size=[0.1, 0.1, 0.1])[
+                "status"
+            ]
+            == "success"
+        )
+
+        result = world_sim(action="set_geom_properties", geom_name="crate", friction=[0.6, 0.01, 0.001])
+
+        assert result["status"] == "success", result
+        geom_id = _compiled_geom_id(world_sim, "crate_geom")
+        applied = [float(component) for component in world_sim.mj_model.geom_friction[geom_id][:3]]
+        assert applied == [0.6, 0.01, 0.001], f"the published payload must reach the model, got {applied}"
+
+    def test_a_partial_friction_is_refused_with_the_count_it_wanted(self, world_sim: Simulation) -> None:
+        """The published bounds match the refusal, so the schema is honest.
+
+        Bounds a caller can satisfy and still be refused would be worse than no
+        bounds, so the arity the property advertises is the arity the action
+        enforces.
+        """
+        world_sim(action="add_object", name="crate", shape="box", position=[0, 0, 0.1], size=[0.1, 0.1, 0.1])
+
+        result = world_sim(action="set_geom_properties", geom_name="crate", friction=[0.6, 0.01])
+
+        assert result["status"] == "error"
+        assert "3 component" in result["content"][0]["text"]
+
+
+class TestTheSharedSizeFieldPublishesBothConventions:
+    """One wire field, two scales - so the schema names both."""
+
+    @staticmethod
+    def _geom_size(sim: Simulation, geom_name: str) -> list[float]:
+        """The compiled ``geom_size`` of ``geom_name``, read from the live model."""
+        geom_id = _compiled_geom_id(sim, geom_name)
+        return [float(component) for component in sim.mj_model.geom_size[geom_id][:3]]
+
+    def test_one_size_vector_scales_a_box_differently_through_the_two_actions(self, world_sim: Simulation) -> None:
+        """The divergence, measured, and the disclosure it requires.
+
+        ``size=[0.2, 0.2, 0.2]`` is a 20 cm box through ``add_object`` and a 40 cm
+        box through ``set_geom_properties``, because one takes full extents and the
+        other takes the geom's own half-extents. Nothing refuses the mismatch -
+        both calls report ``status="success"`` - so the only place a caller can
+        learn it is the property that carries the field.
+        """
+        world_sim(action="add_object", name="crate", shape="box", position=[0, 0, 0.5], size=[0.2, 0.2, 0.2])
+        built = self._geom_size(world_sim, "crate_geom")
+
+        assert world_sim(action="set_geom_properties", geom_name="crate", size=[0.2, 0.2, 0.2])["status"] == "success"
+        resized = self._geom_size(world_sim, "crate_geom")
+
+        assert built == [0.1, 0.1, 0.1], f"premise: add_object takes full extents, got {built}"
+        assert resized == [0.2, 0.2, 0.2], f"premise: set_geom_properties takes half-extents, got {resized}"
+
+        description = _tool_spec_properties()["size"]["description"]
+        assert "add_object" in description and "set_geom_properties" in description, (
+            "size means different things to two actions, so the property must name both rather "
+            f"than describing one of them. Got: {description!r}"
+        )
+        assert "half-extent" in description.lower(), (
+            "the resize convention is half-extents; a description that only states the full-extent "
+            f"convention doubles every box it is followed for. Got: {description!r}"
+        )
+
+    def test_the_capsule_layout_the_field_publishes_for_add_object_is_refused_by_the_resize(
+        self, world_sim: Simulation
+    ) -> None:
+        """A refusal that blames a value the other convention calls unused.
+
+        ``add_object`` spells a capsule ``[diameter, unused, height]``, and the
+        middle component is genuinely ignored there. The resize wants
+        ``[radius, half-length]``, so following the published layout is refused
+        for the zero in the slot the layout itself calls unused - a caller cannot
+        get from that message to the two-component form.
+        """
+        world_sim(action="add_object", name="rod", shape="capsule", position=[0, 0, 0.5], size=[0.1, 0.0, 0.4])
+
+        refused = world_sim(action="set_geom_properties", geom_name="rod", size=[0.1, 0.0, 0.4])
+        accepted = world_sim(action="set_geom_properties", geom_name="rod", size=[0.1, 0.4])
+
+        assert refused["status"] == "error", "premise: the add_object capsule layout is not accepted here"
+        assert accepted["status"] == "success", accepted
+
+        description = _tool_spec_properties()["size"]["description"]
+        assert "radius" in description, (
+            "the resize takes a capsule as [radius, half-length]; publish it so the add_object "
+            f"triple is not the only layout a caller can read. Got: {description!r}"
+        )
+
+    def test_a_shared_field_both_actions_scale_alike_needs_no_disclosure(self, world_sim: Simulation) -> None:
+        """``color`` is the control: one convention, so one description.
+
+        Shared by the same two actions and meaning the same thing in both, which
+        is why its description names neither. Without this the class above would
+        read as a rule about every shared field rather than about the one whose
+        meaning changes with the action.
+        """
+        world_sim(action="add_object", name="crate", shape="box", position=[0, 0, 0.1], size=[0.1, 0.1, 0.1])
+
+        assert world_sim(action="set_geom_properties", geom_name="crate", color=[0.8, 0.2, 0.2])["status"] == "success"
+
+        description = _tool_spec_properties()["color"]["description"]
+        assert "add_object" not in description and "set_geom_properties" not in description, (
+            "color means one thing to both actions, so it needs no per-action split; a mention "
+            f"here would say the conventions diverge when they do not. Got: {description!r}"
+        )

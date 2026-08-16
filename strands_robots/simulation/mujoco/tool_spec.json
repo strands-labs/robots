@@ -162,7 +162,7 @@
       "items": {
         "type": "number"
       },
-      "description": "Object size for add_object, as FULL extents in meters per axis (not MuJoCo half-extents). Pass every component the shape consumes: box/ellipsoid [x,y,z], cylinder/capsule [diameter,unused,height], sphere [diameter], plane [x] or [x,y] half-widths; mesh ignores it. At most 3 components. A partial vector (e.g. [0.5] for a box) is rejected, not padded - omit size entirely for the 5 cm default."
+      "description": "Vector extent. The convention differs per action and the two are not interchangeable. add_object: FULL extents in meters per axis (not MuJoCo half-extents), as the shape consumes them - box/ellipsoid [x,y,z], cylinder/capsule [diameter,unused,height], sphere [diameter], plane [x] or [x,y] half-widths; mesh ignores it; at most 3 components; a partial vector (e.g. [0.5] for a box) is rejected, not padded - omit size entirely for the 5 cm default. set_geom_properties: the compiled geom's own MuJoCo geom_size components, exactly as many as its type defines and each > 0 - sphere [radius], capsule/cylinder [radius, half-length], box [three half-extents], ellipsoid [three semi-axes], plane [x half-extent, y half-extent, grid spacing]; mesh/height-field/SDF geoms define none, so size is refused for them. The same value therefore means different things: size=[0.2,0.2,0.2] builds a 20 cm box via add_object and resizes that same box to 40 cm via set_geom_properties, and add_object's [diameter,unused,height] capsule triple is refused there (pass [radius, half-length])."
     },
     "color": {
       "type": "array",
@@ -380,6 +380,15 @@
     "geom_id": {
       "type": "integer",
       "description": "Geom ID (alternative to geom_name)"
+    },
+    "friction": {
+      "type": "array",
+      "items": {
+        "type": "number"
+      },
+      "minItems": 3,
+      "maxItems": 3,
+      "description": "set_geom_properties only: the geom's three MuJoCo friction coefficients [sliding, torsional, rolling], each finite and >= 0. Pass all three - a partial vector is rejected, not padded, since there is no value to invent for an omitted coefficient. Takes effect on the next step."
     },
     "force": {
       "type": "array",

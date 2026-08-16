@@ -192,11 +192,11 @@ LIBERO task suites, BDDL parser. Install: `uv pip install "strands-robots[benchm
 | `STRANDS_ASSETS_DIR` | Robot model asset cache | `~/.strands_robots/assets/` |
 | `STRANDS_ROBOT_MODE` | Force `Robot()` mode | (kwarg honoured) |
 | `STRANDS_TRUST_REMOTE_CODE` | Allow HF `trust_remote_code=True` | unset → blocked |
-| `STRANDS_MESH` | Disable mesh globally when `false` | `true` |
+| `STRANDS_MESH` | `true` opts a bare `Robot()` into the mesh; `false` is a hard kill switch | unset (mesh off) |
 | `STRANDS_MESH_AUDIT_DIR` | Safety event audit log | `~/.strands_robots/` |
 | `MUJOCO_GL` | GL backend for MuJoCo | auto |
 | `GROOT_API_TOKEN` | GR00T cloud inference token | (unset) |
-| `STRANDS_GROOT_WIRE_LOG` | Log raw ZMQ frames when `1` | (unset) |
+| `STRANDS_GROOT_WIRE_LOG` | Directory to dump pre/post-inference payloads to, e.g. `/tmp/groot-wire`; covers the in-process path as well as the service path, capped by `STRANDS_GROOT_WIRE_LOG_MAX_CALLS` | (unset) |
 
 ## See also
 

@@ -19,7 +19,7 @@ description: Device Connect — the device-aware networking layer (discovery, RP
 uv pip install "strands-robots[device-connect]"   # device-connect-edge + device-connect-agent-tools
 ```
 
-Without the extra, `import strands_robots` still works — everything falls back to the built-in Zenoh mesh.
+Without the extra, `import strands_robots` still works — everything falls back to the built-in Zenoh mesh. The one exception is `Robot().run()` below, which serves over Device Connect only.
 
 ## Server mode — `Robot().run()`
 
@@ -31,6 +31,8 @@ r.run()              # serve on Device Connect (blocks until Ctrl+C)
 ```
 
 `.run()` stops the auto-started built-in mesh and serves the robot over Device Connect (D2D Zenoh multicast, no broker). Without `.run()` the robot is **agent-controlled** — discovered and invoked remotely via `robot_mesh` / `discover()`.
+
+Because the mesh is stopped *for* Device Connect, a bring-up that fails leaves the process on no transport at all — so `.run()` logs the cause (naming the extra when that is what is missing) and prints `<peer-id> is NOT online` instead of announcing a device that is not there. It keeps running, so a broker that comes back is not a lost process.
 
 !!! warning "Secure by default"
     Device Connect does not enable unencrypted transport implicitly. To run authenticated + encrypted, point it at a bundled credentials file (`MESSAGING_CREDENTIALS_FILE` — a single `*.creds.json` with the CA, cert and key) — this works **broker-less (D2D) or brokered**, they're independent choices. For a quick trial on a **trusted, isolated LAN** you can instead skip auth (a warning is logged while active):

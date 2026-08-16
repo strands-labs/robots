@@ -350,8 +350,9 @@ surfaces their signatures.
 
 ## Mesh objects
 
-`add_object` accepts triangle-mesh assets in addition to primitives, at parity
-with the MuJoCo backend:
+`add_object` accepts triangle-mesh assets in addition to primitives, as the
+MuJoCo backend does - but not under the same `size` contract, so a
+`shape="mesh"` call is not portable between the two (below):
 
 ```python
 sim.add_object(name="tool", shape="mesh", mesh_path="/abs/path/widget.obj",
@@ -364,3 +365,11 @@ sim.add_object(name="tool", shape="mesh", mesh_path="/abs/path/widget.obj",
 scale (default `[1, 1, 1]`, the mesh's own units). `move_object` and
 `remove_object` work on mesh objects, and `list_objects()` reports the mesh
 path. Mesh loading requires the `sim-newton` extra (which ships `trimesh`).
+
+`size` is where the two backends part. This backend consumes it as that scale;
+the MuJoCo backend discards it for a mesh and takes the extent from the asset
+alone. So `size=[2, 2, 2]` doubles the asset here and is dropped there, with
+both calls reporting success - the one portable mesh add is one that omits
+`size` and ships the asset already in metric units. Which meaning `size` should
+carry for a mesh is an open contract decision, tracked in
+[#2300](https://github.com/strands-labs/robots/issues/2300).

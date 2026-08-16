@@ -1818,7 +1818,10 @@ class PhysicsMixin:
             friction: The three MuJoCo friction coefficients (sliding,
                 torsional, rolling), each ``>= 0``.
             size: The geom's half-extents, with exactly as many components as
-                its type defines, each ``> 0``.
+                its type defines, each ``> 0``. This is the compiled
+                ``geom_size``, not ``add_object``'s full extents - the same
+                vector resizes a box to twice what ``add_object`` builds
+                from it.
 
         Returns:
             A tool-result dict; ``status="error"`` if the world is missing, a
