@@ -1,0 +1,3 @@
+### Fixed
+
+- **Newton discovery surface**: `describe()` on the Newton backend now advertises every base-contract method it delivers. Because it builds its surface from scratch instead of extending `SimEngine.describe()`, six methods it implements or inherits unchanged were absent from `describe()["methods"]` and therefore undiscoverable there - `remove_robot`, `list_robots`, `eval_policy`, `start_policy`, `replay_episode` and `register_builtin_benchmarks`. The two base-contract methods the backend does not implement, `get_contacts` and `load_scene`, remain unadvertised so the surface never points a caller at a `NotImplementedError`.
