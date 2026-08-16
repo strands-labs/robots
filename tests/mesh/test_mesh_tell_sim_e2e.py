@@ -16,6 +16,8 @@ contract; this module pins that the contract holds against the real
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from strands_robots.mesh import Mesh
@@ -89,27 +91,34 @@ def test_dispatch_start_then_status_on_real_simulation(real_sim) -> None:
     assert out["status"] == "success", out
 
 
-def test_well_known_kwargs_reach_policy_config_on_real_simulation(real_sim) -> None:
-    """Issue #300 well-known kwargs land in the ``policy_config`` of ``create_policy``.
+def test_the_goal_payload_reaches_get_actions_on_a_real_simulation(real_sim) -> None:
+    """The issue #300 goal arrives at the call that reads it, not at the constructor.
 
-    We intercept ``create_policy`` to capture the kwargs the dispatcher
-    forwards, then let the rest of ``run_policy`` proceed against the
-    real sim with a ``MockPolicy``.
+    Every provider reads the goal inside ``get_actions(**kwargs)``, so this
+    wraps the built policy's ``get_actions`` and asserts the payload is present
+    on every call the real ``MuJoCoSimEngine.run_policy`` makes. The constructor
+    kwargs are captured too, as the control: a goal key there would have been
+    handed to a forward-compatibility absorber that ignores it, leaving the
+    provider to refuse the request that carried it.
     """
     from unittest.mock import patch
 
     from strands_robots.policies import create_policy as real_create_policy
 
-    captured: dict[str, object] = {}
+    constructor_kwargs: dict[str, object] = {}
+    per_call_kwargs: list[dict[str, object]] = []
 
     def _spy(provider: str, **kwargs):
-        captured["provider"] = provider
-        captured.update(kwargs)
-        # Strip planner-only kwargs MockPolicy does not accept; the
-        # dispatch layer's contract is to forward them, the policy's
-        # contract (per #300) is to ignore unknown kwargs at construction.
-        # MockPolicy ignores **kwargs in __init__ so we can pass them all.
-        return real_create_policy(provider, **kwargs)
+        constructor_kwargs.update(kwargs)
+        policy: Any = real_create_policy(provider, **kwargs)
+        inner = policy.get_actions
+
+        async def recording(observation, instruction, **goal):
+            per_call_kwargs.append(dict(goal))
+            return await inner(observation, instruction, **goal)
+
+        policy.get_actions = recording
+        return policy
 
     target_pose = [0.3, 0.0, 0.4, 1.0, 0.0, 0.0, 0.0]
     target_joints = {"joint_0": 0.5}
@@ -129,6 +138,13 @@ def test_well_known_kwargs_reach_policy_config_on_real_simulation(real_sim) -> N
             }
         )
     assert out["status"] == "success", out
-    assert captured["provider"] == "mock"
-    assert captured["target_pose"] == target_pose
-    assert captured["target_joints"] == target_joints
+
+    assert per_call_kwargs, "run_policy never queried the policy, so nothing was delivered"
+    for goal in per_call_kwargs:
+        assert goal["target_pose"] == target_pose
+        assert goal["target_joints"] == target_joints
+
+    for key in ("target_pose", "target_joints", "world_update"):
+        assert key not in constructor_kwargs, (
+            f"{key} was expanded into the Policy constructor, where providers ignore it"
+        )

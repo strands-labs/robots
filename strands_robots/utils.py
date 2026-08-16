@@ -21,6 +21,7 @@ def require_optional(
     pip_install: str | None = None,
     extra: str | None = None,
     purpose: str = "",
+    system_install: str | None = None,
 ) -> object:
     """Import an optional dependency, raising a clear error if missing.
 
@@ -31,6 +32,13 @@ def require_optional(
         pip_install: Explicit pip package name if it differs from *module_name*.
         extra: ``pyproject.toml`` extras group (e.g. ``"groot-service"``).
         purpose: Human-readable description shown in the error message.
+        system_install: Remedy for a module that arrives with a system package
+            rather than from an index - the ROS 2 client libraries are the case
+            in this package. Replaces the ``pip install`` block entirely, and
+            *pip_install* / *extra* are then not consulted, because a pip
+            command for such a module is a remedy the caller can follow to no
+            effect: it either installs something that leaves the module exactly
+            as missing, or fails outright.
 
     Returns:
         The imported module object.
@@ -46,14 +54,19 @@ def require_optional(
         _lazy_modules[module_name] = module
         return module
     except ImportError:
-        install_hint = pip_install or module_name
         parts = [f"'{module_name}' is required"]
         if purpose:
             parts[0] += f" for {purpose}"
-        parts.append("Install with:")
-        if extra:
-            parts.append(f"  pip install 'strands-robots[{extra}]'")
-        parts.append(f"  pip install {install_hint}")
+        if system_install is not None:
+            # No pip line at all: naming one here would hand the caller an
+            # instruction that reports success without supplying the module.
+            parts.append(system_install)
+        else:
+            install_hint = pip_install or module_name
+            parts.append("Install with:")
+            if extra:
+                parts.append(f"  pip install 'strands-robots[{extra}]'")
+            parts.append(f"  pip install {install_hint}")
         raise ImportError("\n".join(parts)) from None
 
 

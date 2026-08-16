@@ -181,10 +181,12 @@ ros2 topic list | grep so101          # /so101/joint_states, /so101/<cam>/image_
 ros2 topic echo /so101/joint_states   # live joint positions, updated every step
 ```
 
-`rclpy` is an optional, system-provided dependency (the `[ros2]` extra). When it
-is missing, `ros2_bridge=True` raises a clear `ImportError` at construction;
-`ros2_bridge=False` (the default) never touches ROS 2, so the base sim install
-stays lightweight. The bridge node is torn down cleanly on `destroy()`.
+`rclpy` is an optional, system-provided dependency: it arrives with a sourced ROS
+2 distro, not with the `[ros2]` extra (which installs only the cyclonedds RMW
+binding, as above). When it is missing, `ros2_bridge=True` raises an `ImportError`
+at construction naming the `source /opt/ros/<distro>/setup.bash` step that
+supplies it; `ros2_bridge=False` (the default) never touches ROS 2, so the base
+sim install stays lightweight. The bridge node is torn down cleanly on `destroy()`.
 
 See `examples/ros2/sim_bridge_demo.py` for a runnable end-to-end script.
 
@@ -256,7 +258,10 @@ ros2 topic echo /so101/joint_states   # live joint positions from the real arm
 The bridge is **opt-in**: `ros2_bridge=False` (the default) never touches ROS 2,
 so a robot only becomes a ROS 2 device when an operator explicitly asks for it -
 the same safety stance as `Robot(mode="sim")` being the default. When `rclpy` is
-missing, `ros2_bridge=True` raises a clear `ImportError` at construction. The
+missing, `ros2_bridge=True` raises an `ImportError` at construction naming both
+routes forward: sourcing a ROS 2 distro, or `ros2_transport="rtps"`, which
+publishes the same topics over the pip-installable cyclonedds binding and needs
+no distro at all. The
 inbound command path is on by default (`ros2_commands=True`); set
 `ros2_commands=False` for a read-only telemetry bridge that publishes but cannot
 be driven. A daemon thread spins the node so inbound commands are serviced

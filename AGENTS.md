@@ -984,9 +984,24 @@ hatch run format            # ruff check --fix, ruff format
    Then confirm the tree you verified is the tree that landed -
    `git diff --name-only <local-composition> origin/main -- strands_robots/ tests/`
    should be empty. Squash rewrites the commits, so nothing but that equivalence
-   ties your local run to `main`; and on a batch, where only the tip's
-   `call-test-lint` survives the concurrency group above, it is the sole evidence
-   the intermediate commits were ever compiled together.
+   ties your local run to `main`.
+
+   **On a batch that equivalence is still the check to run, but no longer because
+   the intermediate commits go untested - they do not.** Since the push
+   concurrency group keys on `github.sha` (above), every commit in a batch runs
+   its own suite to completion, and a commit on `main` carries merges 1..N of the
+   batch, so its own green *is* a verdict on the partial composition it is.
+   Measured on the six merges that took `main` from `239f24ab` to `0d811084` in
+   about 53 seconds - #2320, #2327, #2329, #2333, #2334, #2335 - all six report
+   `call-test-lint / Test and Lint` `success`, where before #2304 only the tip's
+   would have survived. What the equivalence buys instead is the whole batch in
+   one read: the tree-sha comparison below is scoped to `behind_by == 0`, and in
+   a batch only the *first* pull request can satisfy that - every later one is
+   behind by the merges ahead of it, so its squash tree differs from its head
+   tree for entirely correct reasons and the comparison does not apply at all.
+   Diffing the composition against the final tip is the one form that answers for
+   all N at once, and dropping the path scoping costs nothing and catches more
+   (that batch's unscoped diff was empty too).
 
    **Comparing the two commits' tree shas is the same claim without the clone,
    and a stronger one.** That `git diff` needs the local composition to still

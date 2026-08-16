@@ -1102,3 +1102,146 @@ def test_the_lockfile_pins_a_diffusers_that_ships_the_omni_pipeline() -> None:
             f"uv.lock pins diffusers {version}, which ships no Cosmos3OmniPipeline; "
             f"run `uv lock` after raising the floor"
         )
+
+
+# ---------------------------------------------------------------------------
+# Naming an extra that exists is not the same as naming one that supplies the
+# module.
+#
+# The guard above pins that every `require_optional(extra=...)` names a declared
+# extra. `[ros2]` is declared, so `require_optional("rclpy", extra="ros2")`
+# passed it -- and still emitted a refusal whose every line was a dead end:
+#
+#     'rclpy' is required for the ROS 2 telemetry bridge (ros2_bridge=True)
+#     Install with:
+#       pip install 'strands-robots[ros2]'
+#       pip install rclpy
+#
+# `pip install 'strands-robots[ros2]'` exits 0 having installed only the
+# cyclonedds RMW binding, leaving rclpy exactly as missing -- verbatim the
+# failure mode the comment above describes, an install that reported success and
+# changed nothing. `pip install rclpy` fails outright ("No matching distribution
+# found for rclpy"). So the operator who asked for `ros2_bridge=True` was handed
+# two instructions and no way forward, while pyproject.toml, the `[ros2]` block
+# in docs/ros2-integration.md, the `ros_telemetry` module docstring and the
+# `use_ros` tool's own hint all already stated the remedy that works: source a
+# system ROS 2 distro.
+#
+# pyproject.toml names the libraries this applies to verbatim -- "rclpy /
+# rosidl_runtime_py ... are NOT distributed on PyPI ... and cannot be `pip
+# install`ed" -- so the inventory below records that statement rather than making
+# a new judgement. `sensor_msgs` is deliberately absent: its hint is the template
+# `ros-<distro>-sensor-msgs`, and `ros-jazzy-sensor-msgs` does resolve on PyPI,
+# so that hint is a hole for the reader to fill, not a dead end.
+# ---------------------------------------------------------------------------
+
+_SYSTEM_PROVIDED_MODULES = frozenset({"rclpy", "rosidl_runtime_py"})
+
+
+def _require_optional_call_sites() -> list[tuple[str, int, str, set[str]]]:
+    """Every ``require_optional``/``require_optionals`` call site in the package.
+
+    Returns:
+        One ``(relative path, line number, module name, keyword names)`` tuple
+        per requested module -- the aggregate helper takes a list, so a single
+        call can request several.
+    """
+    sites: list[tuple[str, int, str, set[str]]] = []
+    for path in sorted((_REPO_ROOT / "strands_robots").rglob("*.py")):
+        if "__pycache__" in path.parts:
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
+            if name not in {"require_optional", "require_optionals"} or not node.args:
+                continue
+            first = node.args[0]
+            if isinstance(first, ast.Constant) and isinstance(first.value, str):
+                modules = [first.value]
+            elif isinstance(first, ast.List | ast.Tuple):
+                modules = [e.value for e in first.elts if isinstance(e, ast.Constant) and isinstance(e.value, str)]
+            else:
+                continue
+            keywords = {kw.arg for kw in node.keywords if kw.arg}
+            rel = path.relative_to(_REPO_ROOT).as_posix()
+            sites.extend((rel, node.lineno, module, keywords) for module in modules)
+    return sites
+
+
+def test_require_optional_offers_no_pip_remedy_for_a_system_provided_module() -> None:
+    """A module pip cannot supply must be refused with ``system_install=``.
+
+    ``pip_install``/``extra`` both render a ``pip install`` line, and for these
+    libraries every such line is an instruction the caller can follow to no
+    effect. ``system_install`` replaces the block with the step that does supply
+    the module, so passing it is what makes the refusal actionable.
+    """
+    offenders: list[str] = []
+    checked = 0
+    for rel, lineno, module, keywords in _require_optional_call_sites():
+        if module.split(".")[0] not in _SYSTEM_PROVIDED_MODULES:
+            continue
+        checked += 1
+        pip_remedies = sorted(keywords & {"pip_install", "extra"})
+        if pip_remedies:
+            offenders.append(f"{rel}:{lineno} requests {module!r} but passes {', '.join(pip_remedies)}")
+        elif "system_install" not in keywords:
+            offenders.append(f"{rel}:{lineno} requests {module!r} with no system_install= remedy")
+    assert checked, (
+        f"no require_optional site requests any of {sorted(_SYSTEM_PROVIDED_MODULES)}; "
+        f"the sweep has stopped seeing them and would pass vacuously"
+    )
+    assert not offenders, (
+        "these sites refuse for want of a library that ships with a system ROS 2 install and is "
+        "not on PyPI, yet hand the caller a pip command: an extra that installs something else "
+        "and exits 0, or a distribution name that does not resolve. Pass "
+        "system_install=ROS2_SYSTEM_INSTALL_HINT instead.\n" + "\n".join(offenders)
+    )
+
+
+def test_the_rclpy_refusals_name_the_step_that_supplies_it() -> None:
+    """Both rclpy refusals must point at sourcing a distro, not at installing it.
+
+    Asserted on the messages the two production sites really raise, with the
+    import forced to fail so the check holds whether or not the interpreter
+    running the suite happens to have a ROS 2 distro sourced.
+    """
+    from strands_robots import utils
+
+    class _BlockRclpy:
+        """Meta-path finder that makes ``import rclpy`` fail."""
+
+        def find_spec(self, name: str, path: object = None, target: object = None) -> None:
+            """Refuse ``rclpy`` and defer every other name to the real finders."""
+            if name == "rclpy" or name.startswith("rclpy."):
+                raise ImportError("rclpy blocked for this test")
+            return None
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(sys, "meta_path", [_BlockRclpy(), *sys.meta_path])
+        # A fresh cache, restored on exit: require_optional short-circuits on a
+        # module it has already resolved.
+        patch.setattr(utils, "_lazy_modules", {})
+
+        from strands_robots.hardware_robot import Robot
+        from strands_robots.ros_telemetry import RosTelemetryBridge
+
+        messages = {}
+        with pytest.raises(ImportError) as bridge_error:
+            RosTelemetryBridge(domain_id=0)
+        messages["RosTelemetryBridge()"] = str(bridge_error.value)
+        with pytest.raises(ImportError) as robot_error:
+            Robot._check_ros2_bridge_deps(ros2_transport="rclpy")
+        messages["Robot(ros2_bridge=True)"] = str(robot_error.value)
+
+    for label, message in messages.items():
+        assert "source /opt/ros/" in message, f"{label} names no way to obtain rclpy:\n{message}"
+        assert "pip install rclpy" not in message, (
+            f"{label} tells the caller to install a distribution that does not exist:\n{message}"
+        )
+        assert "Install with:\n  pip install 'strands-robots[ros2]'" not in message, (
+            f"{label} leads with an extra that installs the cyclonedds binding and leaves rclpy missing:\n{message}"
+        )
