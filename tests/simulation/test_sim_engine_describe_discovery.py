@@ -13,6 +13,7 @@ it from the discovery surface rather than the API carrying a second name.
 import ast
 import inspect
 import re
+import textwrap
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -1203,4 +1204,188 @@ class TestDescribeSignaturesAgreeWithTheMethodsOnEveryBackend:
         assert not violations, (
             f"{label}: describe() omits parameters the method requires: {sorted(violations)}. "
             "A call built from the advertised signature alone must be a complete call."
+        )
+
+
+def _describe_merges_the_base_surface(engine_cls: type) -> bool:
+    """Whether ``engine_cls.describe()`` extends the base surface or replaces it.
+
+    A backend that calls ``super().describe()`` inherits every method the base
+    contract advertises; a backend that returns a fresh dict literal advertises
+    only what it lists itself.
+
+    Args:
+        engine_cls: The engine class whose ``describe()`` to inspect.
+
+    Returns:
+        True when the override calls ``super().describe()``.
+    """
+    source_file = inspect.getsourcefile(engine_cls)
+    assert source_file is not None, f"no source file for {engine_cls.__name__}"
+    module = ast.parse(Path(source_file).read_text(encoding="utf-8"))
+    for class_def in [
+        node for node in ast.walk(module) if isinstance(node, ast.ClassDef) and node.name == engine_cls.__name__
+    ]:
+        for describe in [
+            node for node in ast.walk(class_def) if isinstance(node, ast.FunctionDef) and node.name == "describe"
+        ]:
+            for node in ast.walk(describe):
+                if (
+                    isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Attribute)
+                    and node.func.attr == "describe"
+                    and isinstance(node.func.value, ast.Call)
+                    and isinstance(node.func.value.func, ast.Name)
+                    and node.func.value.func.id == "super"
+                ):
+                    return True
+    return False
+
+
+def _advertised_methods(engine_cls: type) -> set[str]:
+    """Method names a caller finds in ``engine_cls.describe()["methods"]``.
+
+    Args:
+        engine_cls: The engine class whose discovery surface to resolve.
+
+    Returns:
+        The effective set: the names the class lists itself, plus the base
+        contract's names when the override merges the base surface.
+    """
+    from strands_robots.simulation.base import SimEngine
+
+    names = set(_describe_signature_strings(engine_cls))
+    if engine_cls is not SimEngine and _describe_merges_the_base_surface(engine_cls):
+        names |= set(_describe_signature_strings(SimEngine))
+    return names
+
+
+def _refuses(engine_cls: type, method_name: str) -> bool | None:
+    """Whether ``method_name`` resolves to an unimplemented-on-this-backend stub.
+
+    The base class declares some contract methods as bodies that do nothing but
+    ``raise NotImplementedError`` for backends that cannot support them (there
+    is no contact list on every engine, for instance). A backend delivers such a
+    method only by overriding it with a real body.
+
+    Args:
+        engine_cls: The engine class the method is resolved on.
+        method_name: The contract method to classify.
+
+    Returns:
+        True when the resolved implementation is a bare ``NotImplementedError``
+        raise, False when it is a real implementation, and None when the name
+        does not resolve on this class at all -- the base surface advertises the
+        whole engine contract including the accessors every concrete backend
+        supplies but the ABC does not declare, so an unresolvable name says
+        nothing about whether the capability is delivered.
+    """
+    function = getattr(engine_cls, method_name, None)
+    if not callable(function):
+        return None
+    body = list(ast.parse(textwrap.dedent(inspect.getsource(function))).body[0].body)  # type: ignore[attr-defined]
+    if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant):
+        body = body[1:]  # drop the docstring
+    return len(body) == 1 and isinstance(body[0], ast.Raise) and "NotImplementedError" in ast.dump(body[0])
+
+
+class TestEveryDeliveredContractMethodIsOnTheBackendSurface:
+    """A backend must advertise every base-contract method it actually delivers.
+
+    The class above pins that an advertised signature is *correct*; this pins
+    that a delivered capability is advertised *at all*. The base ``describe()``
+    is where the contract is stated, and three of its entries were added there
+    on the argument that a caller enumerating ``describe()["methods"]`` cannot
+    otherwise find them: ``remove_robot`` as the inverse of ``add_robot``
+    (mirroring the advertised ``add_object`` / ``remove_object`` pair), and the
+    scene-variation and world-lifecycle families.
+
+    A backend that extends the base surface with ``super().describe()`` inherits
+    those additions. A backend that returns a fresh dict literal does not, and
+    every later addition to the contract silently misses it -- so the same
+    capability is discoverable on one backend and invisible on another.
+
+    The rule is deliberately one-directional: it requires a delivered method to
+    be advertised, and says nothing about a method the backend refuses. Merging
+    the base surface wholesale is therefore not a shortcut past it -- a backend
+    that inherits an advertisement for a capability it raises
+    ``NotImplementedError`` for would satisfy this rule while dead-ending the
+    caller, which is what the Newton control below pins.
+    """
+
+    def test_the_contract_and_the_refusal_detector_are_both_non_vacuous(self):
+        """Guard the guard: a clean sweep must mean something.
+
+        If the base surface stopped being readable, or the refusal detector
+        classified everything as refused, the parametrized test below would
+        pass while checking nothing.
+        """
+        from strands_robots.simulation.base import SimEngine
+
+        contract = _describe_signature_strings(SimEngine)
+        assert len(contract) >= 20, f"base contract surface looks unreadable: {sorted(contract)}"
+        # The detector separates a real implementation from a bare raise.
+        assert _refuses(SimEngine, "get_contacts") is True
+        assert _refuses(SimEngine, "eval_policy") is False
+        # At least one backend delivers something the base only declares.
+        newton = _describe_backend("newton")
+        assert _refuses(newton, "randomize") is False, "Newton mixes in real domain randomization"
+
+    @pytest.mark.parametrize("label", sorted(_DESCRIBE_BACKENDS))
+    def test_every_delivered_contract_method_is_advertised(self, label):
+        """A capability the backend delivers must be findable on its surface.
+
+        An agent's only guess-free route to a method name is
+        ``describe()["methods"]``. A backend that implements a contract method
+        but never lists it makes that capability invisible: the caller can add a
+        robot but not discover how to remove one, or run a policy but not
+        discover how to score it over episodes.
+        """
+        from strands_robots.simulation.base import SimEngine
+
+        engine_cls = _describe_backend(label)
+        advertised = _advertised_methods(engine_cls)
+        hidden = sorted(
+            name
+            for name in _describe_signature_strings(SimEngine)
+            if _refuses(engine_cls, name) is False and name not in advertised
+        )
+        assert not hidden, (
+            f"{label}: describe() omits base-contract methods this backend delivers: {hidden}. "
+            "Advertise each one on this backend's surface (with a signature string accurate for "
+            "this backend), or the capability is undiscoverable here while being discoverable on "
+            "the backends that merge the base surface."
+        )
+
+    def test_a_backend_never_advertises_a_capability_it_refuses(self):
+        """Newton must not gain its missing entries by inheriting refusals.
+
+        Newton returns a fresh surface, so the cheap way to satisfy the test
+        above is to merge the base surface with ``super().describe()``. That
+        would also advertise ``get_contacts`` and ``load_scene``, which Newton
+        does not implement -- turning an invisible capability into an advertised
+        one that raises ``NotImplementedError`` when called. The entries have to
+        be the ones Newton delivers.
+        """
+        newton = _describe_backend("newton")
+        advertised = _advertised_methods(newton)
+        refused_but_advertised = sorted(
+            name for name in ("get_contacts", "load_scene") if _refuses(newton, name) and name in advertised
+        )
+        assert not refused_but_advertised, (
+            f"Newton's describe() advertises methods it raises NotImplementedError for: {refused_but_advertised}."
+        )
+
+    def test_the_reference_backend_needs_no_exception(self):
+        """MuJoCo is the shape the rule describes, not an exception to it.
+
+        MuJoCo merges the base surface and then re-states each method with its
+        own concrete signature, so it satisfies the rule with nothing special
+        added. Pinning that here keeps the rule readable as the house
+        convention rather than as a Newton-specific patch.
+        """
+        mujoco_engine = _describe_backend("mujoco")
+        assert _describe_merges_the_base_surface(mujoco_engine) is True
+        assert not _describe_merges_the_base_surface(_describe_backend("newton")), (
+            "Newton builds its surface from scratch -- the condition that let the contract drift"
         )

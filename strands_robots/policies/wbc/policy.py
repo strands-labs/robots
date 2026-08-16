@@ -197,10 +197,12 @@ class WBCPolicy(Policy):
             through the mesh ``tell()`` / ``policy_config`` path that forwards
             only constructor kwargs. Per-call ``target_velocity`` overrides it.
         allow_missing_models: Test/CI seam. When ``True`` the ONNX sessions are
-            not loaded eagerly (so unit tests can inject a stub session via
-            :attr:`policy_session` / :attr:`walk_session`). Production callers
-            leave this ``False`` so a missing checkpoint fails loudly at
-            construction.
+            not loaded eagerly, so a caller can install one by assigning to the
+            :attr:`policy_session` / :attr:`walk_session` attributes after
+            construction. Assignment is the only route: ``**kwargs`` below
+            absorbs unknown keywords, so a session passed to this constructor is
+            dropped. Production callers leave this ``False`` so a missing
+            checkpoint fails loudly at construction.
         **kwargs: Forward-compatibility absorber for the smart-string / registry
             resolution path. Per the #300 contract, providers MUST ignore
             unknown kwargs rather than raising.
@@ -709,8 +711,11 @@ class WBCPolicy(Policy):
             # if a caller forgot to inject a session. Never silently emit zeros.
             raise RuntimeError(
                 "WBCPolicy has no ONNX session loaded. Construct with a valid "
-                "checkpoint (allow_missing_models=False), or inject a stub via "
-                "policy_session=/walk_session= in tests."
+                "checkpoint (allow_missing_models=False), or construct with "
+                "allow_missing_models=True and then assign a session to the "
+                "`policy_session` / `walk_session` attributes. The constructor "
+                "absorbs unknown keywords per the provider contract, so a "
+                "session handed to it is dropped rather than installed."
             )
 
         net_in = np.asarray(obs, dtype=np.float32).reshape(1, -1)

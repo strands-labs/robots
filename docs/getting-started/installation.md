@@ -11,7 +11,7 @@ Requires **Python >= 3.12**. Examples use [`uv`](https://docs.astral.sh/uv/) (`c
 | Extra | Pulls in | When you need it |
 |-------|----------|------------------|
 | (none) | core only - Robot factory, registry, lazy imports | Inspect the catalog, write tools |
-| `[sim]` | `robot_descriptions` | Sim asset resolution without MuJoCo |
+| `[sim]` | `robot_descriptions>=1.23.0,<2.0.0` | Sim asset resolution without MuJoCo |
 | `[sim-mujoco]` | `sim` + `mujoco`, `imageio`, `imageio-ffmpeg` | Any `Robot()` with default `mode="sim"` |
 | `[lerobot]` | `lerobot>=0.6.1,<0.7.0` | `LerobotLocalPolicy` + dataset recording |
 | `[groot-service]` | `pyzmq`, `msgpack` | `Gr00tPolicy` (ZMQ to a GR00T container) |
@@ -28,6 +28,14 @@ uv pip install "strands-robots[all]"                         # everything
 uv pip install "strands-robots[sim-mujoco,cosmos3-service]"  # Cosmos 3
 uv pip install "strands-robots[sim-mujoco,lerobot,mesh]"     # pick and choose
 ```
+
+The `[sim]` floor is set by the robot catalog rather than by an API: each entry in
+the built-in registry names the `robot_descriptions` submodule that fetches its
+MJCF and meshes, and that package gains one module per newly packaged robot.
+`robot_descriptions` 1.23.0 is the oldest release providing a module for every
+registered robot - on an older one, robots such as `so100` and `so101` have no
+module to import and no fallback, so `Robot("so101", mode="sim")` cannot resolve
+a model file.
 
 ## Platform notes
 

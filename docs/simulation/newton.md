@@ -96,8 +96,12 @@ no-op until then.
   from `list_bodies`) mounts the camera ON that body so a wrist camera tracks
   the arm. `remove_camera(name)` / `list_cameras()` round out the API and
   `describe()["cameras"]` lists every registered camera.
-- `run_policy` / `eval_policy` / `replay_episode` are inherited from the
-  `SimEngine` ABC - no backend-specific re-implementation.
+- `run_policy` / `eval_policy` / `replay_episode` / `start_policy` are
+  inherited from the `SimEngine` ABC - no backend-specific re-implementation.
+  `start_policy` is the ABC's synchronous passthrough to `run_policy` here;
+  only the MuJoCo backend runs a policy on a background thread. All four are
+  advertised in `describe()["methods"]`, as is every other base-contract
+  method this backend delivers.
 - `describe()` reports the active solver, available solvers, device, and
   the current gravity vector and timestep.
 - Gravity configured via `create_world(gravity=[x, y, z])` or `set_gravity`
@@ -260,9 +264,17 @@ sim.start_recording(repo_id="local/newton_demo", task="pick the cube", fps=50)
 for _ in range(n_episodes):
     sim.run_policy(robot_name="so100", policy_provider="mock", n_steps=200)
     sim.save_episode()          # flush this rollout as one episode
+    sim.reset()                 # next rollout starts from the scene pose
 result = sim.stop_recording()   # finalize parquet + video
 sim.verify_dataset_episodes(n_episodes)   # parquet-truth check
 ```
+
+`save_episode` cuts the episode boundary; `reset()` re-initializes the world.
+Drop the `reset()` and the dataset still has `n_episodes` episodes - so
+`verify_dataset_episodes` still passes - but every episode after the first
+starts from the previous rollout's final pose instead of the scene's, giving a
+bimodal distribution of recorded start states. `run_policy(n_episodes=...)`
+performs both steps for you.
 
 `start_recording` declares the dataset schema from the live scene - joint names
 from every robot (namespaced `robot__joint` in multi-robot scenes) plus any

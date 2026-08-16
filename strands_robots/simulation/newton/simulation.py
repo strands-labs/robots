@@ -2301,10 +2301,19 @@ class NewtonSimEngine(DomainRandomizationMixin, NewtonRecordingMixin, SimEngine)
     def describe(self) -> dict[str, Any]:
         """Return a discovery surface describing this backend's capabilities.
 
+        This surface is built from scratch rather than by extending
+        :meth:`~strands_robots.simulation.base.SimEngine.describe`, so every
+        method the base contract advertises and this backend delivers has to be
+        listed here explicitly -- including the facades inherited unchanged from
+        the ABC. Extending the base surface instead would also advertise
+        ``get_contacts`` and ``load_scene``, which this backend does not
+        implement.
+
         Returns:
             Dict with the backend name, active solver, the solvers that can
             drive an articulated robot (the accepted domain of ``solver=``),
-            device, and current robot / object counts.
+            device, current robot / object counts, and the ``methods`` mapping a
+            caller enumerates to find a capability without guessing its name.
         """
         device = str(self._wp.get_device(self.device)) if self.device else str(self._wp.get_device())
         bodies = list(self._model.body_label) if self._model is not None else []
@@ -2332,6 +2341,10 @@ class NewtonSimEngine(DomainRandomizationMixin, NewtonRecordingMixin, SimEngine)
                     "color=None, mass=0.1, is_static=False, mesh_path=None) -> dict  "
                     "(add a manipulable object -- box/sphere/.../mesh -- to the scene)"
                 ),
+                "remove_robot": (
+                    "(name: str) -> dict  (remove a robot and rebuild the world; the inverse "
+                    "of add_robot, completing the add/remove pair alongside remove_object)"
+                ),
                 "remove_object": "(name: str) -> dict  (remove a previously added object)",
                 "get_robot_state": "(robot_name: str | None = None) -> dict (per-joint position + velocity)",
                 "get_state": (
@@ -2344,11 +2357,31 @@ class NewtonSimEngine(DomainRandomizationMixin, NewtonRecordingMixin, SimEngine)
                     "  # n_substeps must be a positive whole number; use step() to advance without commanding"
                 ),
                 "run_policy": "(robot_name: str, policy_provider='mock', n_episodes=1, ...) -> dict",
+                "eval_policy": (
+                    "(robot_name: str | None = None, policy_provider='mock', n_episodes=1, "
+                    "max_steps=300, success_fn=None, seed=None, ...) -> dict  (multi-episode "
+                    "success-rate evaluation -- the scoring sibling of run_policy)"
+                ),
+                "start_policy": (
+                    "(robot_name: str | None = None, policy_provider='mock', duration=10.0, ...) -> dict  "
+                    "(the base contract's synchronous passthrough to run_policy on this backend; "
+                    "only MuJoCo runs a policy on a background thread)"
+                ),
+                "replay_episode": (
+                    "(repo_id: str, robot_name=None, episode=0, root=None, speed=1.0, "
+                    "action_key_map=None) -> dict  (replay a recorded LeRobotDataset episode "
+                    "through the sim)"
+                ),
                 "evaluate_benchmark": (
                     "(benchmark_name: str, robot_name=None, policy_provider='mock', "
                     "n_episodes=1, seed=None, video=None, ...) -> dict  (score a registered "
                     "success/failure/dense_reward benchmark over a rollout; max_steps comes "
                     "from the benchmark, not a parameter)"
+                ),
+                "register_builtin_benchmarks": (
+                    "() -> dict  (register the shipped built-in velocity-tracking locomotion "
+                    "benchmarks so they appear in list_benchmarks and can be run via "
+                    "evaluate_benchmark)"
                 ),
                 "list_benchmarks": (
                     "() -> dict  (enumerate registered benchmarks -- names, supported robots, "
@@ -2358,6 +2391,7 @@ class NewtonSimEngine(DomainRandomizationMixin, NewtonRecordingMixin, SimEngine)
                     "(benchmark_name: str, spec_path: str) -> dict  (author a declarative "
                     "success/failure/dense_reward benchmark spec as YAML/JSON at runtime and register it)"
                 ),
+                "list_robots": "() -> list[str]  (ordered robot names -- what describe() reports under 'robots')",
                 "list_robots_info": "() -> dict (pretty robot listing)",
                 "list_bodies": "(robot_name: str | None = None) -> dict (body labels + gripper_body)",
                 "list_objects": "() -> dict",
