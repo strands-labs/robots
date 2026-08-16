@@ -193,6 +193,13 @@ for i in range(5):
     )
 ```
 
+## Object shapes
+
+`shape` takes one of seven values: `box`, `sphere`, `cylinder`, `capsule`,
+`ellipsoid`, `plane` and `mesh`. All seven are offered by the agent-tool schema
+too, so a model driving the simulation can select any of them. How many `size`
+components each one consumes is in the table below.
+
 ## Object size
 
 `size` is the **full extent in meters** along each local axis - not MuJoCo's

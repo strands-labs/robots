@@ -865,7 +865,12 @@ class DatasetRecordingMixin:
             for _ in range(n_episodes):
                 sim.run_policy(robot_name=..., n_steps=...)
                 sim.save_episode()   # flush this rollout as its own episode
+                sim.reset()          # next rollout starts from the scene pose
             sim.stop_recording()
+
+        ``run_policy(n_episodes=N)`` does all three and is the first-class API
+        for the common case; drive the loop yourself only when episodes need
+        different instructions, randomization or conditional logic.
 
         Without this call, every ``run_policy`` rollout in a session appends to
         the SAME buffer, so ``stop_recording`` flushes them as a single
@@ -875,10 +880,21 @@ class DatasetRecordingMixin:
         and resets the per-episode frame buffer; ``stop_recording`` flushes any
         trailing rollout automatically, so a final ``save_episode`` is optional.
 
+        The ``reset()`` is not optional bookkeeping. This method cuts a dataset
+        episode boundary; it does not re-initialize the world. Without it the
+        next rollout begins wherever the last one left the robot, so the dataset
+        has the requested episode COUNT but a bimodal set of recorded start
+        states - episode 0 from the scene's reset pose and every later episode
+        from a pose the robot is never reset into. ``verify_dataset_episodes``
+        counts episodes and passes either way, so nothing downstream reports it.
+        (``reset()`` is itself an episode boundary while recording: it flushes
+        buffered frames before teleporting, so the explicit ``save_episode``
+        above is what makes the boundary unconditional rather than what creates
+        it - see ``docs/recording.md``.)
+
         Per-episode stats (LeRobot computes ``stats.json`` per episode, then
         aggregates) stay correct because each rollout's frames are isolated to
-        their own episode rather than being mixed across mid-session
-        ``reset()`` teleports.
+        their own episode across the ``reset()`` teleport between rollouts.
 
         Idempotent on an empty buffer: when no frames have been captured since
         the last boundary (or since ``start_recording``), it succeeds with a

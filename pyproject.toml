@@ -272,7 +272,19 @@ molmoact2 = [
     "lerobot[molmoact2]>=0.6.1,<0.7.0",
 ]
 sim = [
-    "robot_descriptions>=1.11.0,<2.0.0",
+    # 1.23.0 is the oldest release that ships a description module for every
+    # robot the built-in registry names, not merely the oldest that imports.
+    # registry/robots.json declares 57 ``asset.robot_descriptions_module``
+    # values and the package grows one module per new robot, so an older
+    # release is missing some of them outright: 1.11.0 lacks 27 (including
+    # so100 and so101), and every release below 1.23.0 lacks at least one
+    # (openarm's ``openarm_v1_mj_description`` arrives last). None of those
+    # robots declares an ``asset.source`` GitHub fallback, so
+    # assets.download.auto_download_robot has nothing to fall back to and
+    # ``Robot("so101", mode="sim")`` fails to resolve a model file.
+    # tests/test_robot_descriptions_floor_ships_the_registry_modules.py owns
+    # the number and derives it from the registry; keep the two in step.
+    "robot_descriptions>=1.23.0,<2.0.0",
 ]
 sim-mujoco = [
     "strands-robots[sim]",
