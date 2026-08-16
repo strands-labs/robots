@@ -9,14 +9,17 @@ command it synthesises per-frame full-body ``qpos`` for the G1, faster than
 real time. Upstream reference runner:
 ``motionbricks/scripts/interactive_demo_g1.py``.
 
-Where it sits in the stack (issue #466 series): MotionBricks emits the per-frame
-**motion targets**; a tracking controller (the existing
-:class:`~strands_robots.policies.wbc.WBCPolicy`) turns those into joint torques
-under physics. The two compose via
-:class:`~strands_robots.policies.composite.CompositePolicy` - MotionBricks does
-not replace WBC, it sits above it. Standalone, the policy's output is a
-kinematic reference (set ``qpos`` + forward kinematics), which is the faithful
-way to visualise a kinematic generator.
+Where it sits in the stack: MotionBricks emits the per-frame **motion targets**
+for all 29 leg + waist + arm joints - a whole-body reference. Standalone, that
+output is a kinematic reference (set ``qpos`` + forward kinematics), which is the
+faithful way to visualise a kinematic generator and what this provider supports
+today. Closing the loop through physics needs a controller that TRACKS the
+reference, taking the 29 targets as its input: generator and tracker run in
+series over the same joints. That is a cascade, not a composition, so
+:class:`~strands_robots.policies.composite.CompositePolicy` (which merges
+DISJOINT joint groups) does not express it, and
+:class:`~strands_robots.policies.wbc.WBCPolicy` cannot serve as the tracker -
+its only command input is a target base velocity, with no reference-pose input.
 
 This is a non-VLA member of the policy family (like ``wbc`` / cuRobo / MoveIt2):
 

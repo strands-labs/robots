@@ -296,7 +296,11 @@ def _full_mass_matrix(mj: Any, model: Any, data: Any) -> np.ndarray:
     - MuJoCo >= 3.11: ``data.qM`` is removed. The joint-space inertia is kept
       only as the compressed-sparse-row ``data.M``, and ``mju_sym2dense`` is
       the conversion MuJoCo's release notes prescribe for callers that used to
-      pass ``qM`` to ``mj_fullM``.
+      pass ``qM`` to ``mj_fullM``. That helper is only exported from MuJoCo
+      3.10 onwards, while the CSR buffers and their index arrays
+      (``M_rownnz`` / ``M_rowadr`` / ``M_colind``) ship from 3.5, so when the
+      helper is absent the stored lower triangle is expanded through those
+      index arrays instead.
 
     Probe the modern signature first, then the legacy orders - but only on a
     build that still exposes ``qM``, because the CSR ``data.M`` that replaced
@@ -317,7 +321,7 @@ def _full_mass_matrix(mj: Any, model: Any, data: Any) -> np.ndarray:
     Raises:
         TypeError: If no known ``mj_fullM`` signature accepts the arguments.
         AttributeError: If MjData exposes the joint-space inertia under
-            neither ``qM`` nor ``M``.
+            neither ``qM`` nor ``M`` (MuJoCo < 3.5 predates the CSR buffer).
     """
     nv = model.nv
     dst = np.zeros((nv, nv), dtype=np.float64, order="C")
@@ -340,7 +344,7 @@ def _full_mass_matrix(mj: Any, model: Any, data: Any) -> np.ndarray:
             mj.mj_fullM(model, dst, qm)
         return dst
     # MuJoCo >= 3.11: no legacy buffer to pass, so convert the CSR inertia
-    # directly. nv is taken from dst's shape by the binding.
+    # directly.
     csr = getattr(data, "M", None)
     if csr is None:
         raise AttributeError(
@@ -348,13 +352,23 @@ def _full_mass_matrix(mj: Any, model: Any, data: Any) -> np.ndarray:
             f"data.qM and data.M) on mujoco {getattr(mj, '__version__', 'unknown')}, "
             "so the dense mass matrix cannot be built."
         )
-    mj.mju_sym2dense(
-        dst,
-        np.ascontiguousarray(csr, dtype=np.float64),
-        model.M_rownnz,
-        model.M_rowadr,
-        model.M_colind,
-    )
+    values = np.ascontiguousarray(csr, dtype=np.float64)
+    sym2dense = getattr(mj, "mju_sym2dense", None)
+    if sym2dense is not None:
+        sym2dense(dst, values, model.M_rownnz, model.M_rowadr, model.M_colind)
+        return dst
+    # MuJoCo 3.5 - 3.9 ship the CSR buffers and their index arrays but not the
+    # conversion, so expand the stored lower triangle through those indices and
+    # mirror it. Same arithmetic mju_sym2dense performs, and it keeps the CSR
+    # rung working across the whole supported MuJoCo range rather than only on
+    # the builds that also export the helper.
+    rownnz, rowadr, colind = model.M_rownnz, model.M_rowadr, model.M_colind
+    for row in range(nv):
+        start = int(rowadr[row])
+        stored = values[start : start + int(rownnz[row])]
+        cols = np.asarray(colind[start : start + int(rownnz[row])], dtype=np.intp)
+        dst[row, cols] = stored
+        dst[cols, row] = stored
     return dst
 
 

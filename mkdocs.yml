@@ -44,6 +44,7 @@ nav:
   - WBC Gait-Clock Variant: policies/wbc_gait.md
   - MotionBricks (G1 generative motion): policies/motionbricks.md
   - Kimodo (G1 text-to-motion diffusion): policies/kimodo.md
+  - ProtoMotions (G1 motion tracker): policies/protomotions.md
   - LeRobot Local: policies/lerobot-local.md
   - LeRobot Async (gRPC inference): policies/lerobot-async.md
   - MolmoAct2 (SO-100/101): policies/molmoact2.md

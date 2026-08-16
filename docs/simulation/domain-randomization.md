@@ -35,6 +35,20 @@ sim.randomize(randomize_position=True)   # singular
 
 **Destructive** - writes into MuJoCo model arrays. To restore: `load_scene(...)` or recreate the sim.
 
+**Every axis survives `reset()`.** A reset restores the world's initial state,
+and each axis writes that initial state rather than only the live state - the
+colour, friction and mass axes write `model` arrays, and `randomize_positions`
+writes `model.qpos0` (the pose a reset restores) alongside the live `data.qpos`.
+This is what makes randomization reach a rollout at all: `run_policy` and
+`eval_policy` reset before an episode's first step, so an axis a reset undid
+would be gone before the policy ever saw it.
+
+`randomize_positions` measures its offset from each object's **commanded** pose -
+where `add_object` / `move_object` placed it - not from wherever physics has left
+it. The commanded pose is a fixed reference, so calling `randomize()` once per
+episode draws independent offsets that always stay inside `position_noise`
+instead of compounding into a random walk that eventually leaves the workspace.
+
 `randomize()` leaves the sim in a forwarded, render-ready state: the next `render()` / `get_observation()` reflects the perturbation immediately, with no manual `step()` in between. This matters for lighting in particular - the renderer reads light positions from the derived `data.light_xpos`, not `model.light_pos`, so a light-position jitter only reaches a render after a forward.
 
 ## Categories
@@ -44,7 +58,7 @@ sim.randomize(randomize_position=True)   # singular
 | `randomize_colors` | Object + floor RGB (alpha fixed at 1.0) | `color_range` |
 | `randomize_lighting` | Directional direction, intensity, ambient | - |
 | `randomize_physics` | Per-object mass (mult), per-geom friction (scale), joint damping | `mass_range`, `friction_range` |
-| `randomize_positions` | Object position offsets (metres) | `position_noise` |
+| `randomize_positions` | Dynamic-object position offsets (metres); static objects have no pose DOF and are skipped | `position_noise` |
 
 Defaults: `colors=True`, `lighting=True`; `physics` and `positions` default `False`.
 
@@ -52,9 +66,11 @@ Defaults: `colors=True`, `lighting=True`; `physics` and `positions` default `Fal
 
 ```python
 for episode in range(N):
-    sim.reset()
-    sim.randomize(randomize_colors=True, randomize_physics=True, seed=episode)
-    # eval_policy has no randomize= kwarg - call sim.randomize() before each episode
+    sim.randomize(randomize_colors=True, randomize_physics=True,
+                  randomize_positions=True, position_noise=0.03, seed=episode)
+    # eval_policy has no randomize= kwarg - call sim.randomize() before each episode.
+    # It resets at the start of every episode, which is why the perturbation has to
+    # survive a reset; no explicit sim.reset() is needed here.
     result = sim.eval_policy(robot_name="so100", n_episodes=1, max_steps=300,
                              success_fn=my_fn)
 ```

@@ -18,6 +18,13 @@ mapping) on the real torque/position-servo G1 model. The end-to-end "does it
 actually WALK" validation needs real weights and lives in the gated
 integration suite.
 
+``TestAutoInstallHookThroughWrappers`` pins that the shim is keyed on the WBC
+policy driving the joints rather than on the type of object handed to
+``run_policy``: the same policy inside a ``CompositePolicy`` (legs from WBC,
+arms from a manipulation policy - the composition WBC's own docs recommend) or a
+``PersistentPolicy`` needs the identical shim, because the position-servo gain
+it corrects is a property of the scene and the policy, not of the wrapper.
+
 ``TestAutoInstallHook`` drives the install path and every no-op condition the
 hook documents: no ``[wbc]`` extra, a non-WBC policy, no compiled world, a
 controller already registered, and ``wbc_uses_position_servo`` reporting no
@@ -333,3 +340,75 @@ class TestEveryNoOpConditionIsDriven:
         actuator. Adding a guard without a test fails here.
         """
         assert _hook_no_op_guards() == 5
+
+
+class TestAutoInstallHookThroughWrappers:
+    """The shim resolves a WBCPolicy declared through ``Policy.children``.
+
+    A wrapper is a different object than the policy it wraps, so the hook's
+    ``isinstance`` test saw no WBCPolicy and skipped the install - leaving the
+    composition WBC's own documentation recommends (legs+waist from WBC, arms
+    from a manipulation policy) driving the stock uniform-gain position servos
+    that override SONIC's tuned per-joint PD. The hook now walks the declared
+    policy tree, so the shim follows the policy rather than the wrapper's type.
+    """
+
+    def _sim(self):  # type: ignore[no-untyped-def]
+        model, data = _build_g1_model()
+        return _mujoco_sim_with_world(model, data)
+
+    def test_composite_wrapping_wbc_gets_the_shim(self) -> None:
+        from strands_robots.policies.composite import CompositePolicy
+
+        sim = self._sim()
+        composite = CompositePolicy(lower=_g1_policy(), upper=MockPolicy())
+        undo = sim._maybe_install_wbc_torque_control(composite, "unitree_g1")
+        assert undo is not None, "a WBCPolicy inside a CompositePolicy still needs the torque shim"
+        assert isinstance(sim._world._backend_state["action_controller"], WBCTorqueController)
+        undo()
+
+    def test_the_shim_is_built_for_the_wbc_child_not_the_wrapper(self) -> None:
+        # The controller runs the child's PD law, so it must hold that child -
+        # a controller built around the wrapper could not compute torques at all.
+        from strands_robots.policies.composite import CompositePolicy
+
+        sim = self._sim()
+        wbc = _g1_policy()
+        composite = CompositePolicy(lower=wbc, upper=MockPolicy())
+        undo = sim._maybe_install_wbc_torque_control(composite, "unitree_g1")
+        assert undo is not None
+        controller = cast(WBCTorqueController, sim._world._backend_state["action_controller"])
+        assert controller.policy is wbc
+        undo()
+
+    def test_persistent_wrapping_wbc_gets_the_shim(self) -> None:
+        from strands_robots.policies.persistent import PersistentPolicy
+
+        sim = self._sim()
+        wbc = _g1_policy()
+        undo = sim._maybe_install_wbc_torque_control(PersistentPolicy("wbc", policy_object=wbc), "unitree_g1")
+        assert undo is not None, "a WBCPolicy held warm by a PersistentPolicy still needs the torque shim"
+        assert cast(WBCTorqueController, sim._world._backend_state["action_controller"]).policy is wbc
+        undo()
+
+    def test_a_wrapper_holding_no_wbc_policy_is_still_a_no_op(self) -> None:
+        # The walk must not turn every wrapped policy into a WBC install: a
+        # composite of two non-WBC policies leaves the scene alone.
+        from strands_robots.policies.composite import CompositePolicy
+
+        sim = self._sim()
+        composite = CompositePolicy(lower=MockPolicy(), upper=MockPolicy())
+        assert sim._maybe_install_wbc_torque_control(composite, "unitree_g1") is None
+        assert "action_controller" not in sim._world._backend_state
+
+    def test_wbc_nested_two_wrappers_deep_is_still_found(self) -> None:
+        from strands_robots.policies.composite import CompositePolicy
+        from strands_robots.policies.persistent import PersistentPolicy
+
+        sim = self._sim()
+        wbc = _g1_policy()
+        nested = CompositePolicy(lower=PersistentPolicy("wbc", policy_object=wbc), upper=MockPolicy())
+        undo = sim._maybe_install_wbc_torque_control(nested, "unitree_g1")
+        assert undo is not None
+        assert cast(WBCTorqueController, sim._world._backend_state["action_controller"]).policy is wbc
+        undo()

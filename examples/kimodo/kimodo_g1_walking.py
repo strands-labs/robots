@@ -1,16 +1,29 @@
-"""Kimodo + MuJoCo end-to-end example: text prompt -> G1 walking in sim.
+"""Kimodo + MuJoCo example: text prompt -> Unitree G1 motion in sim -> MP4.
 
-The full text-to-motion-to-physics pipeline:
-  text prompt -> Kimodo diffusion -> qpos frames -> SLERP upsample ->
-  ProtoMotions GTP ONNX tracker -> G1 physics @ 1kHz -> rendered MP4
+The pipeline this script runs:
+  text prompt -> Kimodo diffusion -> 29-DOF qpos frames -> SLERP upsample to the
+  control rate -> applied as G1 joint targets -> rendered MP4
+
+Kimodo is a *kinematic* whole-body generator: it emits joint targets for all 29
+leg + waist + arm DOFs, not torques. Applied directly, as here, the result is the
+faithful visualisation of the generated motion.
+
+Making the robot FOLLOW that motion under physics is a separate stage - a
+controller that tracks the reference, with Kimodo's 29 targets as its input:
+
+    prompt -> Kimodo -> 29 joint targets -> reference tracker -> torques -> robot
+
+Generator and tracker are in series over the same joints, which is a cascade, not
+a composition. ``CompositePolicy`` merges two policies over DISJOINT joint groups
+(locomotion legs+waist plus manipulation arms) and cannot express it; handing it a
+whole-body generator plus a whole-body controller gives both children the same
+joints and discards one child's output entirely. ``WBCPolicy`` in particular is
+not a reference tracker at all - its only command input is a target base velocity
+and it has no reference-pose input. See ``docs/policies/kimodo.md``.
 
 Run:
   STRANDS_TRUST_REMOTE_CODE=1 python examples/kimodo/kimodo_g1_walking.py \
       --prompt "a person walking forward with confident strides"
-
-The tracker layer is composed via CompositePolicy: Kimodo emits motion targets,
-WBC/PD tracks them. If you don't have the tracker installed, run WITHOUT
---tracker to visualise the kinematic reference directly (sets qpos each tick).
 """
 
 from __future__ import annotations
@@ -33,11 +46,6 @@ def main() -> int:
     parser.add_argument("--n-steps", type=int, default=200)
     parser.add_argument("--control-hz", type=int, default=50)
     parser.add_argument(
-        "--tracker",
-        action="store_true",
-        help="Compose with WBC tracker (requires [wbc] extra + weights)",
-    )
-    parser.add_argument(
         "--out",
         default="kimodo_g1_walking.mp4",
         help="Output MP4 path (rendered from the sim's front camera)",
@@ -52,32 +60,16 @@ def main() -> int:
     sim = Robot("g1", mesh=False)
     sim.add_camera(name="front", position=[3.0, 0.0, 1.2], target=[0.0, 0.0, 0.8])
 
-    policy_config = {
-        "diffusion_steps": args.diffusion_steps,
-        "guidance_scale": args.guidance_scale,
-        "num_frames": args.num_frames,
-        "device": "cuda",
-        "dtype": "fp16",
-    }
-
-    provider = "kimodo"
-    if args.tracker:
-        # Composite: Kimodo emits targets, WBC tracks them.
-        provider = "composite"
-        policy_config = {
-            "layers": [
-                {
-                    "provider": "kimodo",
-                    "config": policy_config,
-                },
-                {"provider": "wbc"},
-            ]
-        }
-
     result = sim.run_policy(
         robot_name="g1",
-        policy_provider=provider,
-        policy_config=policy_config,
+        policy_provider="kimodo",
+        policy_config={
+            "diffusion_steps": args.diffusion_steps,
+            "guidance_scale": args.guidance_scale,
+            "num_frames": args.num_frames,
+            "device": "cuda",
+            "dtype": "fp16",
+        },
         instruction=args.prompt,
         n_steps=args.n_steps,
         control_frequency=args.control_hz,

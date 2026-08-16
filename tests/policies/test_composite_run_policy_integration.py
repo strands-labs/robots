@@ -102,10 +102,20 @@ def test_run_policy_names_composite_children_by_actuator_keys(sim):
     and ``CompositePolicy`` forwards those keys to both children so their
     emitted action dicts key on the same names the group filter uses. A child
     left unnamed emits placeholder keys that never resolve -> a failed rollout.
+
+    The groups are split explicitly: two children named with the same actuator
+    keys emit the same names, and a composite in which one child owns none of
+    them is refused (it would command what the other child alone commands).
     """
+    keys = list(sim.robot_action_keys("so100"))
     lower = create_policy("mock")
     upper = create_policy("mock")
-    comp = CompositePolicy(lower=lower, upper=upper)
+    comp = CompositePolicy(
+        lower=lower,
+        upper=upper,
+        lower_joints=keys[: len(keys) // 2],
+        upper_joints=keys[len(keys) // 2 :],
+    )
 
     run = sim.run_policy(
         robot_name="so100",

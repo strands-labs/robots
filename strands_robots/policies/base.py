@@ -24,7 +24,7 @@ non-VLA reference implementation.
 import asyncio
 import concurrent.futures
 from abc import ABC, abstractmethod
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from typing import Any, Protocol, runtime_checkable
 
 import numpy as np
@@ -357,6 +357,35 @@ class Policy(ABC):
         return ()
 
     @property
+    def children(self) -> tuple["Policy", ...]:
+        """The policies this one delegates to, in the order it consults them.
+
+        Default ``()`` - a leaf policy that runs its own inference. A *wrapper*
+        returns the policies it drives:
+        :class:`~strands_robots.policies.composite.CompositePolicy` its ``lower``
+        and ``upper`` children,
+        :class:`~strands_robots.policies.persistent.PersistentPolicy` the single
+        policy it holds warm.
+
+        This is the same "policy declares, runtime supplies" contract as
+        :attr:`requires_images` and :attr:`required_bodies`, applied to a
+        capability probe rather than an observation. A probe answers about the
+        object it is handed, and a wrapper is a different object than the policy
+        inside it, so an ``isinstance`` test against a wrapper reports the
+        wrapped policy's capability as absent. The MuJoCo backend's WBC torque
+        shim is the motivating case: it is required for a
+        :class:`~strands_robots.policies.wbc.WBCPolicy` to hold a stable gait on
+        a position-servo scene, and the physics does not change when that policy
+        is wrapped - only the type of the object the probe sees does. Declaring
+        the children lets one probe walk to the policy that answers, instead of
+        every probe having to learn the name of every wrapper.
+
+        Returns:
+            The child policies. Empty (the default) means this policy is a leaf.
+        """
+        return ()
+
+    @property
     def execution_horizon(self) -> int:
         """Number of actions the SIM consumes from one ``get_actions`` chunk before re-querying.
 
@@ -614,3 +643,38 @@ def chunk_count_error(value: object, param: str, provider: str) -> str | None:
     if error:
         return f"{error} Omit it to use the provider default."
     return None
+
+
+def iter_policy_tree(policy: Policy) -> Iterator[Policy]:
+    """Yield ``policy`` then every policy reachable through :attr:`Policy.children`.
+
+    Pre-order, so an outer wrapper is visited before the policies it wraps and
+    the outermost policy that answers a capability probe wins. Each object is
+    yielded at most once, so two wrappers sharing one child do not double-report
+    it and a cycle in the graph terminates instead of recursing forever.
+
+    ``children`` is read with :func:`getattr` rather than as an attribute, so a
+    duck-typed policy object that does not subclass :class:`Policy` yields
+    itself instead of raising ``AttributeError``. That input class is one the
+    surrounding call chain deliberately tolerates - ``policy_runner`` probes
+    ``is_chunk_emitting`` the same way "so a duck-typed policy_object that
+    predates is_chunk_emitting() simply stays on the synchronous path" - and
+    the callers of this walk are capability probes whose documented answer for
+    an object declaring no tree is "no match", not a crash.
+
+    Args:
+        policy: Root of the tree to walk. A leaf policy, or any object that
+            declares no ``children``, yields just itself.
+
+    Yields:
+        Each distinct policy in the tree, root first.
+    """
+    seen: set[int] = set()
+    stack = [policy]
+    while stack:
+        current = stack.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        yield current
+        stack.extend(reversed(tuple(getattr(current, "children", ()))))

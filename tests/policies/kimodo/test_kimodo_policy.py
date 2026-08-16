@@ -9,6 +9,7 @@ is covered by an integration test gated on the ``[kimodo]`` extra + HF access.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 
 import numpy as np
 import pytest
@@ -295,3 +296,120 @@ def test_the_prompt_is_logged_by_digest_and_never_echoed(caplog):
 
     digest = hashlib.sha256(prompt.encode("utf-8")).hexdigest()[:12]
     assert any(digest in message for message in logged), "the digest identifies the prompt"
+
+
+class _SeedAwareAgent:
+    """Stub whose frames depend on every sampler input, and which records them.
+
+    The real sampler is stochastic in ``seed`` and sensitive to
+    ``diffusion_steps`` / ``guidance_scale``; a stub that ignores them cannot
+    show whether an override reached it, so this one derives its frames from all
+    of them.
+    """
+
+    def __init__(self, num_joints: int = 29) -> None:
+        self.calls: list[dict[str, object]] = []
+        self.num_joints = num_joints
+
+    def sample(self, prompt, num_frames, diffusion_steps, guidance_scale, seed):
+        self.calls.append(
+            {
+                "prompt": prompt,
+                "diffusion_steps": diffusion_steps,
+                "guidance_scale": guidance_scale,
+                "seed": seed,
+            }
+        )
+        # A stable digest, not builtin hash(): PYTHONHASHSEED salts str hashing
+        # per process, which would make the reproducibility assertion below hold
+        # only within a single interpreter run.
+        material = repr((prompt, diffusion_steps, round(float(guidance_scale), 6), seed)).encode("utf-8")
+        rng = np.random.default_rng(int.from_bytes(hashlib.sha256(material).digest()[:4], "big"))
+        out = np.zeros((num_frames, 7 + self.num_joints), dtype=np.float32)
+        out[:, 6] = 1.0  # identity quaternion
+        out[:, 7:] = rng.uniform(-1.0, 1.0, size=(num_frames, self.num_joints)).astype(np.float32)
+        return out
+
+
+def _seeded_policy(**cfg_kwargs):
+    agent = _SeedAwareAgent()
+    return KimodoPolicy(config=KimodoConfig(**cfg_kwargs), motion_agent=agent), agent
+
+
+def test_a_new_episode_seed_re_samples_the_motion():
+    """``reset(seed=...)`` must reach the sampler, not just rewind the cursor.
+
+    ``PolicyRunner.evaluate`` derives one seed per episode and forwards it here;
+    a seed that is recorded but never sampled leaves every episode replaying the
+    first episode's motion.
+    """
+    policy, agent = _seeded_policy(num_frames=8, native_fps=30, tracker_fps=30)
+    first = _first_action(policy, "walk forward")
+
+    policy.reset(seed=1234)
+    after = _first_action(policy, "walk forward")
+
+    assert [call["seed"] for call in agent.calls] == [None, 1234]
+    assert any(first[joint] != after[joint] for joint in KIMODO_G1_JOINTS)
+
+
+def test_reset_without_a_seed_replays_the_motion_without_re_sampling():
+    """A plain rewind must stay cheap - no seed means no new sampler run."""
+    policy, agent = _seeded_policy(num_frames=8, native_fps=30, tracker_fps=30)
+    first = _first_action(policy, "walk forward")
+    _first_action(policy, "walk forward")
+
+    policy.reset()
+    again = _first_action(policy, "walk forward")
+
+    assert len(agent.calls) == 1
+    assert again == first
+
+
+def test_repeating_an_episode_seed_replays_instead_of_re_running_the_sampler():
+    """The same inputs identify the same motion, so the buffer is reused."""
+    policy, agent = _seeded_policy(num_frames=8, native_fps=30, tracker_fps=30)
+    policy.reset(seed=99)
+    first = _first_action(policy, "walk forward")
+
+    policy.reset(seed=99)
+    again = _first_action(policy, "walk forward")
+
+    assert len(agent.calls) == 1
+    assert again == first
+
+
+def test_each_episode_of_a_seeded_eval_samples_at_its_own_seed():
+    """Distinct per-episode seeds give distinct motions, reproducibly.
+
+    Mirrors the per-episode ``set_eval_seed`` + ``policy.reset(seed=...)`` loop
+    in ``PolicyRunner.evaluate``: episode N must not inherit episode N-1's
+    motion, and re-running the same seed sequence must reproduce it.
+    """
+    episode_seeds = [11, 22, 33]
+
+    def run_episodes():
+        policy, agent = _seeded_policy(num_frames=6, native_fps=30, tracker_fps=30)
+        motions = []
+        for episode_seed in episode_seeds:
+            policy.reset(seed=episode_seed)
+            motions.append(tuple(_first_action(policy, "walk forward")[j] for j in KIMODO_G1_JOINTS))
+        return motions, agent
+
+    motions, agent = run_episodes()
+
+    assert [call["seed"] for call in agent.calls] == episode_seeds
+    assert len(set(motions)) == len(episode_seeds), "an episode replayed another episode's motion"
+    assert run_episodes()[0] == motions, "the same seed sequence did not reproduce"
+
+
+def test_a_changed_sampler_knob_is_honoured_after_the_first_call():
+    """``diffusion_steps`` / ``guidance_scale`` are documented per-call overrides."""
+    policy, agent = _seeded_policy(num_frames=6, native_fps=30, tracker_fps=30)
+    _first_action(policy, "walk forward")
+
+    _first_action(policy, "walk forward", diffusion_steps=25)
+    _first_action(policy, "walk forward", guidance_scale=2.5)
+
+    assert [call["diffusion_steps"] for call in agent.calls] == [100, 25, 100]
+    assert [call["guidance_scale"] for call in agent.calls] == [7.5, 7.5, 2.5]

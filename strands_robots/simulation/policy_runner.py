@@ -440,10 +440,16 @@ class _RolloutVideoWriter:
         # separators, ".." traversal, and a symlinked target before we makedirs +
         # open a writer on it. Absolute paths stay allowed (the historic
         # contract); set STRANDS_ROBOTS_VIDEO_ROOT to sandbox them.
-        _sb_root, _allow_abs = video_sandbox_args()
+        _sb_root, _allow_abs, _allow_abs_env = video_sandbox_args()
         try:
             resolved = str(
-                validate_output_path(video.path, sandbox_root=_sb_root, allow_abs=_allow_abs, label="video path")
+                validate_output_path(
+                    video.path,
+                    sandbox_root=_sb_root,
+                    allow_abs=_allow_abs,
+                    label="video path",
+                    allow_abs_env=_allow_abs_env,
+                )
             )
         except ValueError as _e:
             return None, {"status": "error", "content": [{"text": f"video recording: {_e}"}]}

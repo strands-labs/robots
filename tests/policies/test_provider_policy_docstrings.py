@@ -49,6 +49,7 @@ _PROVIDER_POLICIES = {
     "vera/provider.py": "VeraPolicy",
     "motionbricks/policy.py": "MotionBricksPolicy",
     "kimodo/policy.py": "KimodoPolicy",
+    "protomotions/policy.py": "ProtoMotionsPolicy",
 }
 
 # Built-in policy classes documented by test_builtin_policy_docstrings; the

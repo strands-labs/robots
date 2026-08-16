@@ -123,6 +123,7 @@ _MUST_VALIDATE = {
 _TOTAL_BY_MEMBERSHIP = {
     "policies/kimodo/policy.py::KimodoPolicy",
     "policies/motionbricks/policy.py::MotionBricksPolicy",
+    "policies/protomotions/policy.py::ProtoMotionsPolicy",
     "policies/wbc/policy.py::WBCPolicy",
 }
 

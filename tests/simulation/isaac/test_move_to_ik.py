@@ -243,7 +243,7 @@ class TestValidationReusesTheCore:
     def test_missing_position_matches_core_wording(self):
         sim, art = _make_sim()
         result = sim.move_to(robot_name="arm")
-        _, _, _, expected = MotionPrimitivesCore()._validate_move_to_args(None, None, 0.01, 200)
+        _, _, _, _, expected = MotionPrimitivesCore()._validate_move_to_args(None, None, 0.01, 200)
         assert result == expected
         assert "position" in _text(result)
         assert art.applied == []
@@ -252,7 +252,7 @@ class TestValidationReusesTheCore:
     def test_bad_position_shape_matches_core_wording(self, position):
         sim, art = _make_sim()
         result = sim.move_to(robot_name="arm", position=position)
-        _, _, _, expected = MotionPrimitivesCore()._validate_move_to_args(position, None, 0.01, 200)
+        _, _, _, _, expected = MotionPrimitivesCore()._validate_move_to_args(position, None, 0.01, 200)
         assert result == expected
         assert result["status"] == "error"
         assert art.applied == []
@@ -260,7 +260,7 @@ class TestValidationReusesTheCore:
     def test_zero_norm_orientation_matches_core_wording(self):
         sim, _ = _make_sim()
         result = sim.move_to(robot_name="arm", position=REACHABLE_LOCAL, orientation=[0.0, 0.0, 0.0, 0.0])
-        _, _, _, expected = MotionPrimitivesCore()._validate_move_to_args(
+        _, _, _, _, expected = MotionPrimitivesCore()._validate_move_to_args(
             REACHABLE_LOCAL, [0.0, 0.0, 0.0, 0.0], 0.01, 200
         )
         assert result == expected
@@ -269,7 +269,7 @@ class TestValidationReusesTheCore:
     def test_bad_tol_matches_core_wording(self, tol):
         sim, art = _make_sim()
         result = sim.move_to(robot_name="arm", position=REACHABLE_LOCAL, tol=tol)
-        _, _, _, expected = MotionPrimitivesCore()._validate_move_to_args(REACHABLE_LOCAL, None, tol, 200)
+        _, _, _, _, expected = MotionPrimitivesCore()._validate_move_to_args(REACHABLE_LOCAL, None, tol, 200)
         assert result == expected
         assert art.applied == []
 
@@ -277,7 +277,7 @@ class TestValidationReusesTheCore:
     def test_bad_max_steps_matches_core_wording(self, max_steps):
         sim, art = _make_sim()
         result = sim.move_to(robot_name="arm", position=REACHABLE_LOCAL, max_steps=max_steps)
-        _, _, _, expected = MotionPrimitivesCore()._validate_move_to_args(REACHABLE_LOCAL, None, 0.01, max_steps)
+        _, _, _, _, expected = MotionPrimitivesCore()._validate_move_to_args(REACHABLE_LOCAL, None, 0.01, max_steps)
         assert result == expected
         assert art.applied == []
 

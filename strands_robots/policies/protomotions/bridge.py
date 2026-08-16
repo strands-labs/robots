@@ -1,0 +1,296 @@
+"""Bridge from Kimodo qpos output to a ProtoMotions MotionPlayer cache.
+
+Kimodo emits a full-body qpos trajectory of shape ``[T, 36]``: three root xyz
+translations, four ``wxyz`` root quaternion elements, then twenty-nine G1 joint
+positions in the canonical WBC joint order (which is the same as
+:data:`~strands_robots.policies.protomotions.config.GTP_G1_JOINT_NAMES`, so no
+per-joint reordering is needed).
+
+The ProtoMotions Generalist Tracking Policy consumes a
+:class:`~strands_robots.policies.protomotions.motion_utils.MotionPlayer` - a
+dict of per-frame joint states AND per-body rigid-body states (position,
+rotation, linear velocity, angular velocity). This module builds that dict by
+running MuJoCo forward-kinematics on the same G1 MJCF the tracker was trained
+on, then finite-differencing to fill the velocity channels.
+
+Runs entirely in numpy + mujoco. Reused at policy build time (a one-off cost
+in the tens of milliseconds per motion) - never on the hot path.
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+import tempfile
+import xml.etree.ElementTree as ET
+from pathlib import Path
+
+import numpy as np
+
+from strands_robots.utils import require_optional
+
+from .motion_utils import lerp, slerp
+from .state_utils import mujoco_wxyz_to_xyzw
+
+logger = logging.getLogger(__name__)
+
+__all__ = ["qpos_to_motion_data"]
+
+
+# ---------------------------------------------------------------------------
+# MJCF patching
+# ---------------------------------------------------------------------------
+
+
+def _patch_and_load_mjcf(mjcf_path: Path):
+    """Load MJCF with a floor geom + no sensors - required for FK."""
+    mujoco = require_optional(
+        "mujoco",
+        extra="sim-mujoco",
+        purpose="forward kinematics for the reference-motion bridge",
+    )
+
+    tree = ET.parse(str(mjcf_path))
+    root = tree.getroot()
+
+    # Sensors add DOFs - strip so qpos indexing stays canonical.
+    for sensor_elem in list(root.findall("sensor")):
+        root.remove(sensor_elem)
+
+    worldbody = root.find("worldbody")
+    if worldbody is not None:
+        has_ground = any(
+            "floor" in g.get("name", "").lower()
+            or "ground" in g.get("name", "").lower()
+            or g.get("type", "").lower() == "plane"
+            for g in worldbody.findall("geom")
+        )
+        if not has_ground:
+            floor = ET.SubElement(worldbody, "geom")
+            floor.set("name", "floor")
+            floor.set("type", "plane")
+            floor.set("size", "0 0 0.05")
+            floor.set("rgba", "0.7 0.7 0.7 1")
+
+    xml_str = ET.tostring(root, encoding="unicode")
+
+    # Write the patched XML back into the SAME directory so MJCF asset paths
+    # (mesh files, textures) resolve relative to the original location.
+    asset_dir = str(mjcf_path.parent)
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".xml", dir=asset_dir, delete=False) as f:
+        f.write(xml_str)
+        tmp_path = f.name
+
+    try:
+        model = mujoco.MjModel.from_xml_path(tmp_path)  # type: ignore[attr-defined]
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:  # pragma: no cover - best-effort cleanup
+            pass
+
+    data = mujoco.MjData(model)  # type: ignore[attr-defined]
+    return mujoco, model, data
+
+
+# ---------------------------------------------------------------------------
+# Angular velocity via quaternion finite diff
+# ---------------------------------------------------------------------------
+
+
+def _quat_finite_diff_ang_vel(quats_xyzw: np.ndarray, dt: float) -> np.ndarray:
+    """Approximate body angular velocities from an ``xyzw`` quaternion trajectory.
+
+    Uses ``omega ~ 2 * (q_{t+1} - q_t) * q_t^-1 / dt`` (small-angle diff),
+    then keeps the vector part. Output copies the last frame from the
+    second-to-last so shapes match the input trajectory.
+
+    Args:
+        quats_xyzw: Shape ``[T, num_bodies, 4]`` xyzw quaternions.
+        dt: Source period, seconds.
+
+    Returns:
+        Shape ``[T, num_bodies, 3]`` local-frame angular velocities.
+    """
+    T = quats_xyzw.shape[0]
+    if T < 2:
+        return np.zeros(quats_xyzw.shape[:-1] + (3,), dtype=np.float32)
+
+    q0 = quats_xyzw[:-1]
+    q1 = quats_xyzw[1:]
+    # Conjugate q0.
+    q0_conj = q0.copy()
+    q0_conj[..., :3] *= -1.0
+
+    # Hamilton product q1 * q0^-1 -> element-wise (broadcast-safe).
+    ax, ay, az, aw = q1[..., 0], q1[..., 1], q1[..., 2], q1[..., 3]
+    bx, by, bz, bw = q0_conj[..., 0], q0_conj[..., 1], q0_conj[..., 2], q0_conj[..., 3]
+    dq = np.stack(
+        [
+            aw * bx + ax * bw + ay * bz - az * by,
+            aw * by - ax * bz + ay * bw + az * bx,
+            aw * bz + ax * by - ay * bx + az * bw,
+            aw * bw - ax * bx - ay * by - az * bz,
+        ],
+        axis=-1,
+    )
+    ang_vel = 2.0 * dq[..., :3] / max(dt, 1e-8)
+    # Repeat last frame so output has same T.
+    out = np.zeros(quats_xyzw.shape[:-1] + (3,), dtype=np.float32)
+    out[:-1] = ang_vel.astype(np.float32)
+    out[-1] = out[-2]
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Public entry point
+# ---------------------------------------------------------------------------
+
+
+def qpos_to_motion_data(
+    qpos: np.ndarray,
+    fps: float,
+    proto_mjcf_path: str | Path,
+    control_dt: float = 0.02,
+) -> dict:
+    """Convert a Kimodo-style G1 ``qpos`` trajectory to a MotionPlayer cache.
+
+    Steps:
+    1. Load the ProtoMotions G1 MJCF and its FK data buffer.
+    2. For each source frame: set ``qpos``, call ``mj_forward``, read body
+       xpos + xquat.
+    3. Finite-difference for joint + body linear + body angular velocities.
+    4. Resample onto ``control_dt`` with SLERP + LERP.
+
+    Args:
+        qpos: Shape ``[T, 36]`` - ``root_xyz(3) + root_quat_wxyz(4) +
+            joints(29)``. Anything wider than 36 is truncated on the joint end
+            with a warning (some Kimodo variants emit trailing padding).
+        fps: Source frame rate in Hz (Kimodo default is 30).
+        proto_mjcf_path: Path to the ProtoMotions G1 MJCF (the caller supplies
+            it; this module ships no asset bundle).
+        control_dt: Target control period, seconds (default 0.02 = 50Hz).
+
+    Returns:
+        A dict with the keys
+        :class:`~strands_robots.policies.protomotions.motion_utils.MotionPlayer`
+        accepts.
+
+    Raises:
+        FileNotFoundError: If ``proto_mjcf_path`` does not exist.
+        ValueError: If ``qpos.shape[1]`` is not exactly 36 (after truncation).
+        RuntimeError: If MuJoCo is not installed.
+    """
+    proto_mjcf_path = Path(proto_mjcf_path)
+    if not proto_mjcf_path.exists():
+        raise FileNotFoundError(
+            f"ProtoMotions G1 MJCF not found: {proto_mjcf_path}. Supply the "
+            f"path via `proto_mjcf_path=...` - no asset is bundled."
+        )
+
+    qpos = np.asarray(qpos, dtype=np.float64)
+    if qpos.ndim != 2:
+        raise ValueError(f"qpos must be 2-D [T, 36], got shape {qpos.shape}.")
+    if qpos.shape[1] < 36:
+        raise ValueError(f"qpos must have at least 36 columns (root_xyz + root_quat + 29 joints), got {qpos.shape[1]}.")
+    if qpos.shape[1] > 36:
+        logger.warning(
+            "qpos has %d columns (>36) - truncating trailing padding.",
+            qpos.shape[1],
+        )
+        qpos = qpos[:, :36]
+
+    T = qpos.shape[0]
+    mujoco, model, data = _patch_and_load_mjcf(proto_mjcf_path)
+
+    num_bodies = model.nbody - 1  # skip world body at index 0
+    num_dofs = model.nq - 7
+
+    logger.info(
+        "qpos_to_motion_data: MJCF has %d bodies, %d dofs. Processing %d frames @ %.1f Hz.",
+        num_bodies,
+        num_dofs,
+        T,
+        fps,
+    )
+
+    body_pos = np.zeros((T, num_bodies, 3), dtype=np.float32)
+    body_rot_xyzw = np.zeros((T, num_bodies, 4), dtype=np.float32)
+    dof_pos = np.zeros((T, num_dofs), dtype=np.float32)
+
+    for t in range(T):
+        data.qpos[:] = qpos[t]
+        data.qvel[:] = 0.0
+        mujoco.mj_forward(model, data)  # type: ignore[attr-defined]
+        body_pos[t] = data.xpos[1:].astype(np.float32)
+        body_rot_xyzw[t] = mujoco_wxyz_to_xyzw(data.xquat[1:]).astype(np.float32)
+        # Root body's rot is the canonical freejoint quaternion from qpos.
+        body_rot_xyzw[t, 0] = mujoco_wxyz_to_xyzw(data.qpos[3:7].astype(np.float32))
+        dof_pos[t] = data.qpos[7:].astype(np.float32)
+
+    dt_src = 1.0 / max(fps, 1e-6)
+    dof_vel = np.zeros_like(dof_pos)
+    body_vel = np.zeros_like(body_pos)
+    body_ang_vel = _quat_finite_diff_ang_vel(body_rot_xyzw, dt_src)
+    if T > 1:
+        dof_vel[:-1] = (dof_pos[1:] - dof_pos[:-1]) / dt_src
+        dof_vel[-1] = dof_vel[-2]
+        body_vel[:-1] = (body_pos[1:] - body_pos[:-1]) / dt_src
+        body_vel[-1] = body_vel[-2]
+
+    target_fps = 1.0 / control_dt
+    if abs(fps - target_fps) < 0.5:
+        return {
+            "dof_pos": dof_pos,
+            "dof_vel": dof_vel,
+            "body_rot": body_rot_xyzw,
+            "body_pos": body_pos,
+            "body_vel": body_vel,
+            "body_ang_vel": body_ang_vel,
+            "control_dt": control_dt,
+            "num_frames": T,
+        }
+
+    # SLERP / LERP resample onto control_dt.
+    motion_length = dt_src * (T - 1)
+    num_ctrl_frames = max(1, int(round(motion_length / control_dt)) + 1)
+
+    body_pos_ctrl = np.zeros((num_ctrl_frames, num_bodies, 3), dtype=np.float32)
+    body_rot_ctrl = np.zeros((num_ctrl_frames, num_bodies, 4), dtype=np.float32)
+    body_vel_ctrl = np.zeros((num_ctrl_frames, num_bodies, 3), dtype=np.float32)
+    body_ang_vel_ctrl = np.zeros((num_ctrl_frames, num_bodies, 3), dtype=np.float32)
+    dof_pos_ctrl = np.zeros((num_ctrl_frames, num_dofs), dtype=np.float32)
+    dof_vel_ctrl = np.zeros((num_ctrl_frames, num_dofs), dtype=np.float32)
+
+    for i in range(num_ctrl_frames):
+        time_s = i * control_dt
+        phase = min(max(time_s / max(motion_length, 1e-8), 0.0), 1.0)
+        frame_f = phase * (T - 1)
+        f0 = int(frame_f)
+        f1 = min(f0 + 1, T - 1)
+        blend = np.float32(frame_f - f0)
+        body_pos_ctrl[i] = lerp(body_pos[f0], body_pos[f1], blend)
+        body_rot_ctrl[i] = slerp(body_rot_xyzw[f0], body_rot_xyzw[f1], blend)
+        body_vel_ctrl[i] = lerp(body_vel[f0], body_vel[f1], blend)
+        body_ang_vel_ctrl[i] = lerp(body_ang_vel[f0], body_ang_vel[f1], blend)
+        dof_pos_ctrl[i] = lerp(dof_pos[f0], dof_pos[f1], blend)
+        dof_vel_ctrl[i] = lerp(dof_vel[f0], dof_vel[f1], blend)
+
+    logger.info(
+        "qpos_to_motion_data: resampled %d frames @ %.1f Hz -> %d frames @ %.0f Hz.",
+        T,
+        fps,
+        num_ctrl_frames,
+        target_fps,
+    )
+
+    return {
+        "dof_pos": dof_pos_ctrl,
+        "dof_vel": dof_vel_ctrl,
+        "body_rot": body_rot_ctrl,
+        "body_pos": body_pos_ctrl,
+        "body_vel": body_vel_ctrl,
+        "body_ang_vel": body_ang_vel_ctrl,
+        "control_dt": control_dt,
+        "num_frames": num_ctrl_frames,
+    }

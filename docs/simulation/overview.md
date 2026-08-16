@@ -89,6 +89,16 @@ Newton backend, so a rollout rig can be enumerated instead of guessed.
     listed in `sim.describe()["methods"]`, so an agent can enumerate the full
     rendering surface in one call instead of guessing method names.
 
+!!! note "Camera intrinsics follow the renderer"
+    `sim.get_camera_params(camera_name)` returns the pinhole `K` of the frame
+    the renderer actually draws. A camera declaring a physical sensor (MJCF
+    `sensorsize` / `focal` / `principal` / `resolution`) has its `K` read from
+    the view frustum MuJoCo computes for that camera, so non-square pixels
+    (`fx != fy`) and an off-center principal point are honored - including the
+    vertical principal-point convention, which MuJoCo changed in 3.6.0. Every
+    other camera falls back to `fovy`: square pixels, principal point at the
+    image center.
+
 ## Physics
 
 | Action | Key params |

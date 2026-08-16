@@ -163,7 +163,10 @@ method names:
   the robots and primitive objects in the world.
 - `list_bodies(robot_name=None)` lists Newton body labels and, when scoped to
   a robot, resolves a best-guess `gripper_body` mount (a body whose trailing
-  path segment contains `gripper`, `hand`, `jaw`, `ee`, or `tool`).
+  path segment *names* `gripper`, `hand`, `jaw`, `ee`, or `tool` as one of its
+  words). Hints match on word boundaries, so a short hint cannot fire inside an
+  unrelated word - a `knee` link is not a gripper mount because `ee` occurs in
+  its name - and a robot with no gripper-like body reports `None`.
 - `move_object(name, position=None, orientation=None)` repositions an existing
   object and rebuilds the model, preserving live joint targets.
 - `get_features(robot_name=None)` reports the model's joint / body / DOF counts,

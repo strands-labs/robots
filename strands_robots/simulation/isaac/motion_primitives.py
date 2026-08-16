@@ -70,6 +70,7 @@ from strands_robots.simulation.motion_primitives_base import (
     _WRIST_HINTS,
     MotionPrimitivesCore,
     _err,
+    _quat_angle_error,
 )
 
 
@@ -577,6 +578,7 @@ class IsaacMotionPrimitivesMixin(MotionPrimitivesCore):
         orientation: list[float] | None = None,
         tol: float = 0.01,
         max_steps: int = 200,
+        orientation_tol: float | None = None,
     ) -> dict[str, Any]:
         """Move the end-effector to a world-frame Cartesian target via IK.
 
@@ -593,6 +595,20 @@ class IsaacMotionPrimitivesMixin(MotionPrimitivesCore):
         (:data:`~strands_robots.simulation.motion_primitives_base._IK_RESTART_SEEDS`)
         retry a stalled direct solve; an unreachable target returns the IK
         residual in a structured error, never a raise.
+
+        POSE CONVERGENCE (contract, shared with the MuJoCo reference): a
+        requested ``orientation`` is measured, not merely fed to the solver.
+        Both the IK accept gate and the servo descent require the position
+        within ``tol`` METERS and the orientation within ``orientation_tol``
+        RADIANS (default
+        :data:`~strands_robots.simulation.motion_primitives_base._DEFAULT_ORIENTATION_TOL_RAD`;
+        refused without an ``orientation`` rather than ignored), and the
+        rotational half of the error is reported in the json block as
+        ``orientation_error_rad`` / ``orientation_tol_rad`` /
+        ``ik_orientation_residual_rad``. An unreachable pose names the
+        out-of-reach component and reports the same point solved
+        position-only, because a damped least-squares solve trades the two
+        halves against each other.
 
         The bridge operates on the MuJoCo model of the robot, resolved from
         the robot's ``data_config`` (Isaac registry robots carry MJCF
@@ -657,29 +673,41 @@ class IsaacMotionPrimitivesMixin(MotionPrimitivesCore):
                 before it enters the solve. When omitted the solve is
                 position-only - the right choice for arms with fewer than
                 6 DOF (e.g. SO-100/SO-101).
-            tol: Position convergence tolerance in meters (> 0).
+            tol: Position convergence tolerance in meters (> 0). Bounds the
+                TRANSLATION only; ``orientation_tol`` bounds the rotation.
             max_steps: Max control ticks before returning a not-reached error
                 (1..10000).
+            orientation_tol: Orientation convergence tolerance in radians
+                (> 0), defaulting to
+                :data:`~strands_robots.simulation.motion_primitives_base._DEFAULT_ORIENTATION_TOL_RAD`.
+                Only meaningful alongside an ``orientation`` target, and
+                refused without one rather than silently ignored.
 
         Returns:
             ``{"status": "success", ...}`` with a json block
             ``{reached, steps, position_error_m, ik_residual_m, ee_position,
-            ee_orientation_wxyz, frame, frame_type}`` on arrival;
+            ee_orientation_wxyz, frame, frame_type}`` on arrival, plus
+            ``{orientation_error_rad, orientation_tol_rad,
+            ik_orientation_residual_rad}`` when an ``orientation`` was
+            requested (absent for a position-only call);
             ``{"status": "error", ...}`` with the same json block (including
-            the residual) when servo convergence times out. The unreachable
-            refusal (restricted IK residual > tol) carries
-            ``{reached, steps, ik_residual_m, unrestricted_ik_residual_m,
-            uncommanded_joints_moved, frame, frame_type}`` - the last two
-            reporting what a solve over the whole model could have reached and
-            which uncommanded joints it needed, so the caller can tell an
-            out-of-workspace target from one needing base motion. Never
-            raises.
+            the residuals) when the pose is unreachable or servo convergence
+            times out. An unreachable refusal reports two independent
+            diagnoses: ``position_only_ik_residual_m`` (the same point solved
+            with the orientation task off, so the caller can tell which half of
+            a pose is short), and ``unrestricted_ik_residual_m`` /
+            ``uncommanded_joints_moved`` (what a solve over the whole model
+            could have reached and which uncommanded joints it needed, so the
+            caller can tell an out-of-workspace target from one needing base
+            motion). Never raises.
         """
         # ---- parameter validation (before touching the world) ----
         # Shared with the MuJoCo adapter (motion_primitives_base): same
         # pose-vector rule the scene-construction calls use, same tol /
         # max_steps domains, same wording.
-        target, target_quat, max_steps, arg_err = self._validate_move_to_args(position, orientation, tol, max_steps)
+        target, target_quat, max_steps, orientation_tol, arg_err = self._validate_move_to_args(
+            position, orientation, tol, max_steps, orientation_tol
+        )
         if arg_err is not None:
             return arg_err
         assert target is not None  # no error implies a coerced target
@@ -797,8 +825,33 @@ class IsaacMotionPrimitivesMixin(MotionPrimitivesCore):
                     # no-op).
                     target_pose[:3, :3] = bridge.ee_pose(q0)[:3, :3]
 
+                # Residuals are measured in the MODEL frame the bridge
+                # solves in, against the model-frame target pose built above -
+                # comparing a model-frame readback with a world-frame target
+                # would fold the base pose into the error.
+                target_pose_quat: np.ndarray | None = None
+                if target_quat is not None:
+                    target_pose_quat = np.zeros(4, dtype=np.float64)
+                    mj.mju_mat2Quat(
+                        target_pose_quat, np.ascontiguousarray(target_pose[:3, :3], dtype=np.float64).reshape(9)
+                    )
+
+                def pose_residuals(q: np.ndarray) -> tuple[float, float | None]:
+                    """(position residual in m, orientation residual in rad) of a solve."""
+                    ee = bridge.ee_pose(q)
+                    pos_res = float(np.linalg.norm(ee[:3, 3] - target_local))
+                    if target_pose_quat is None:
+                        return pos_res, None
+                    ee_quat_solved = np.zeros(4, dtype=np.float64)
+                    mj.mju_mat2Quat(ee_quat_solved, np.ascontiguousarray(ee[:3, :3], dtype=np.float64).reshape(9))
+                    return pos_res, _quat_angle_error(target_pose_quat, ee_quat_solved)
+
                 q_star = bridge.solve(target_pose, q0)
-                ik_residual = float(np.linalg.norm(bridge.ee_pose(q_star)[:3, 3] - target_local))
+                ik_residual, ik_orientation_residual = pose_residuals(q_star)
+                # ONE scalar ranks a candidate solve against a target that is
+                # up to two independent quantities, and is <= 1 exactly when
+                # every requested component is within its own tolerance.
+                violation = self._pose_violation(ik_residual, float(tol), ik_orientation_residual, orientation_tol)
 
                 # Damped-least-squares IK is a local method: from a distant
                 # seed it can stall in a joint-limit / elbow-branch local
@@ -808,7 +861,7 @@ class IsaacMotionPrimitivesMixin(MotionPrimitivesCore):
                 # ARM joints' ranges from a per-call fixed-seed RNG (identical
                 # calls draw identical seeds - reproducibility, not a bug).
                 # Gripper DOFs and everything else stay at the live state.
-                if ik_residual > float(tol):
+                if violation > 1.0:
                     rng = np.random.default_rng(0)
                     settable_qadr = [int(model.jnt_qposadr[jnt_id]) for jnt_id in arm_map]
                     ranges = [
@@ -826,21 +879,57 @@ class IsaacMotionPrimitivesMixin(MotionPrimitivesCore):
                             for qadr, (lo, hi) in zip(settable_qadr, ranges, strict=True):
                                 q_seed[qadr] = rng.uniform(lo, hi)
                         q_try = bridge.solve(target_pose, q_seed)
-                        residual_try = float(np.linalg.norm(bridge.ee_pose(q_try)[:3, 3] - target_local))
-                        if residual_try < ik_residual:
-                            q_star, ik_residual = q_try, residual_try
-                        if ik_residual <= float(tol):
+                        residual_try, orientation_residual_try = pose_residuals(q_try)
+                        violation_try = self._pose_violation(
+                            residual_try, float(tol), orientation_residual_try, orientation_tol
+                        )
+                        if violation_try < violation:
+                            q_star, ik_residual, ik_orientation_residual, violation = (
+                                q_try,
+                                residual_try,
+                                orientation_residual_try,
+                                violation_try,
+                            )
+                        if violation <= 1.0:
                             break
 
-                if ik_residual > float(tol):
-                    # Refusal-path diagnosis only (mirrors the MuJoCo mixin):
-                    # re-solve with every model DOF free so the refusal can
-                    # tell a point outside the robot's workspace from one that
-                    # needs motion this primitive does not command.
+                # `violation` is the pose-aware miss metric: max(position/tol,
+                # orientation/orientation_tol). With no orientation requested
+                # it degenerates to position/tol, so this is exactly
+                # `ik_residual > tol` there - and with one it also catches a
+                # solve that hit the point while pointing the wrong way.
+                if violation > 1.0:
+                    # Two independent refusal-path diagnoses (mirrors the
+                    # MuJoCo mixin). Neither may turn a structured refusal into
+                    # a raise.
+                    #
+                    # (a) WHICH HALF: a pose solve trades position against
+                    # orientation, so the residual alone cannot say which half
+                    # is out of reach. Solve the same point with the
+                    # orientation task off - that residual selects the remedy
+                    # the refusal recommends.
+                    position_only_residual: float | None = None
+                    if target_quat is not None:
+                        try:
+                            reference = MinkIKBridge(model, frame_name, frame_type, orientation_cost=0.0, max_iters=200)
+                            reference_pose = np.eye(4, dtype=np.float64)
+                            reference_pose[:3, 3] = target_local
+                            reference_pose[:3, :3] = reference.ee_pose(q0)[:3, :3]
+                            position_only_residual = float(
+                                np.linalg.norm(
+                                    reference.ee_pose(reference.solve(reference_pose, q0))[:3, 3] - target_local
+                                )
+                            )
+                        except (ImportError, RuntimeError, ValueError):
+                            position_only_residual = None
+                    # (b) WHOSE REACH: re-solve with every model DOF free so
+                    # the refusal can tell a point outside the robot's
+                    # workspace from one that needs motion this primitive does
+                    # not command.
                     unrestricted_residual = math.inf
                     uncommanded: list[str] = []
                     try:
-                        reference = MinkIKBridge(
+                        reference_free = MinkIKBridge(
                             model,
                             frame_name,
                             frame_type,
@@ -850,8 +939,10 @@ class IsaacMotionPrimitivesMixin(MotionPrimitivesCore):
                     except (ImportError, RuntimeError, ValueError):  # pragma: no cover - restricted build worked
                         pass
                     else:
-                        q_free = reference.solve(target_pose, q0)
-                        unrestricted_residual = float(np.linalg.norm(reference.ee_pose(q_free)[:3, 3] - target_local))
+                        q_free = reference_free.solve(target_pose, q0)
+                        unrestricted_residual = float(
+                            np.linalg.norm(reference_free.ee_pose(q_free)[:3, 3] - target_local)
+                        )
                         uncommanded = self._uncommanded_joints_moved(mj, model, arm_map, q0, q_free)
                     return self._move_to_unreachable_error(
                         name,
@@ -860,6 +951,9 @@ class IsaacMotionPrimitivesMixin(MotionPrimitivesCore):
                         ik_residual=ik_residual,
                         frame_name=frame_name,
                         frame_type=frame_type,
+                        orientation_tol=orientation_tol,
+                        ik_orientation_residual=ik_orientation_residual,
+                        position_only_residual=position_only_residual,
                         unrestricted_residual=unrestricted_residual,
                         uncommanded_joints=uncommanded,
                     )
@@ -878,6 +972,7 @@ class IsaacMotionPrimitivesMixin(MotionPrimitivesCore):
             steps_used = 0
             reached = False
             position_error = math.inf
+            orientation_error: float | None = None if target_quat is None else math.inf
             ee_pos_world: np.ndarray = np.array(target_world, dtype=np.float64, copy=True)
             ee_quat_world = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
             q_fk = q0.copy()
@@ -906,7 +1001,12 @@ class IsaacMotionPrimitivesMixin(MotionPrimitivesCore):
                 mj.mju_mat2Quat(quat_out, np.ascontiguousarray(base_rot @ ee_local[:3, :3]).reshape(9))
                 ee_quat_world = quat_out
                 position_error = float(np.linalg.norm(ee_pos_world - target_world))
-                if position_error <= float(tol):
+                # Convergence is measured on EVERY component the caller asked
+                # for: breaking on the position alone stops the descent while
+                # the orientation is still settling.
+                if target_quat is not None:
+                    orientation_error = _quat_angle_error(target_quat, ee_quat_world)
+                if self._pose_violation(position_error, float(tol), orientation_error, orientation_tol) <= 1.0:
                     reached = True
                     break
 
@@ -923,6 +1023,9 @@ class IsaacMotionPrimitivesMixin(MotionPrimitivesCore):
                 ee_quat=ee_quat_world,
                 frame_name=frame_name,
                 frame_type=frame_type,
+                orientation_error=orientation_error,
+                orientation_tol=orientation_tol,
+                ik_orientation_residual=ik_orientation_residual,
             )
 
         return self._run_primitive_on_kit("move_to", _move)

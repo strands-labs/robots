@@ -1,0 +1,3 @@
+### Fixed
+
+- **Kimodo**: a `model_id` carrying no `model_index.json` is now refused at load time with a message naming the model, the missing index and the remedy, instead of a bare 404 for a file that will never exist. The provider's default checkpoint, `nvidia/Kimodo-G1-RP-v1`, publishes bare weights for NVIDIA's own runtime (`library_name: kimodo`) rather than a diffusers pipeline, so it is driven through a `motion_agent=` sampler. Detection is structural, so a missing pipeline component or a transport failure still re-raises untouched. The module, config and extra docs no longer state that Kimodo ships a custom `DiffusionPipeline`, and `docs/policies/kimodo.md` gains a worked `motion_agent=` recipe.

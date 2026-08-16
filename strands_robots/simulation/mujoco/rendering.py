@@ -68,13 +68,20 @@ def _max_render_bytes() -> int:
     return val
 
 
+# Environment variable that re-permits absolute ``render(output_path=...)``
+# destinations outside the render sandbox. One owner for the spelling, so the
+# value read and the name quoted in a refusal cannot drift apart.
+_RENDER_ALLOW_ABS_ENV = "STRANDS_ROBOTS_RENDER_ALLOW_ABS"
+
+
 def _validate_render_output_path(output_path: str) -> Path:
     """Validate an LLM-supplied render path, confined to the render sandbox.
 
     Thin render-specific binding over
     :func:`strands_robots.simulation.safe_output.validate_output_path`: absolute
     paths outside the sandbox are rejected unless ``STRANDS_ROBOTS_RENDER_ALLOW_ABS``
-    opts in.
+    opts in. That variable's name is passed down as well as read, so a
+    confinement refusal quotes the spelling the caller must set.
 
     Raises:
         ValueError: If the path is unsafe (the caller maps this to a tool error).
@@ -82,7 +89,8 @@ def _validate_render_output_path(output_path: str) -> Path:
     return validate_output_path(
         output_path,
         sandbox_root=_render_sandbox_root(),
-        allow_abs=env_flag("STRANDS_ROBOTS_RENDER_ALLOW_ABS"),
+        allow_abs=env_flag(_RENDER_ALLOW_ABS_ENV),
+        allow_abs_env=_RENDER_ALLOW_ABS_ENV,
     )
 
 
@@ -1377,11 +1385,11 @@ class RenderingMixin:
         so the pose maps across without correction. Intrinsics ``K``: a
         camera declared with an explicit physical sensor (MJCF
         ``sensorsize`` / ``focal`` / ``principal`` / ``resolution``) gets its
-        ``K`` from ``model.cam_intrinsic`` / ``cam_sensorsize`` /
-        ``cam_resolution`` - non-square pixels (``fx != fy``) and an
-        off-center principal point are honored, matching what MuJoCo actually
-        rasterizes (see :meth:`_explicit_intrinsics_K` for the calibrated
-        sign conventions). All other cameras fall back to the vertical FOV
+        ``K`` from the view frustum MuJoCo computes for that camera, so
+        non-square pixels (``fx != fy``) and an off-center principal point are
+        honored exactly as this MuJoCo build rasterizes them - including the
+        vertical principal-point convention, which MuJoCo 3.6.0 changed.
+        All other cameras fall back to the vertical FOV
         (``model.cam_fovy``, square pixels, principal point at the image
         center). Clip planes are
         ``model.vis.map.{znear,zfar} * model.stat.extent``.
@@ -1457,7 +1465,7 @@ class RenderingMixin:
             else:
                 R, t, fovy_deg = self._named_camera_pose(mj, model, self._world._data, camera_name)
                 cam_id = mj_name_to_id(model, mj.mjtObj.mjOBJ_CAMERA, camera_name)
-                K_explicit = self._explicit_intrinsics_K(_np, model, cam_id, w, h)
+                K_explicit = self._explicit_intrinsics_K(mj, _np, model, self._world._data, cam_id, w, h)
 
         if K_explicit is not None:
             K = K_explicit
@@ -1471,7 +1479,9 @@ class RenderingMixin:
         return CameraParams(K=K, T_world_cam=T_world_cam, width=w, height=h, znear=znear, zfar=zfar)
 
     @staticmethod
-    def _explicit_intrinsics_K(np: Any, model: Any, cam_id: int, w: int, h: int) -> "np.ndarray | None":
+    def _explicit_intrinsics_K(
+        mj: Any, np: Any, model: Any, data: Any, cam_id: int, w: int, h: int
+    ) -> "np.ndarray | None":
         """``K`` for a camera declared with explicit MJCF intrinsics, else ``None``.
 
         MJCF cameras may declare a physical sensor (``sensorsize`` +
@@ -1479,62 +1489,78 @@ class RenderingMixin:
         ``resolution``). MuJoCo then rasterizes with that intrinsic model -
         ``fovy`` is ignored, pixels may be non-square (``fx != fy``), and the
         principal point moves off the image center - so deriving ``K`` from
-        ``fovy`` silently misplaces every unprojected point (~25 cm on a
-        wide off-centre camera). This helper builds ``K`` the way MuJoCo
-        actually draws.
+        ``fovy`` silently misplaces every unprojected point (~25 cm on a wide
+        off-centre camera).
 
-        Sign conventions were calibrated empirically against MuJoCo 3.8.1 by
-        least-squares fitting blob centroids of spheres at known camera-frame
-        positions over three sensor configurations (offset principal point,
-        non-square sensor, asymmetric focal): a positive MJCF ``principal``
-        offset shifts the principal point toward NEGATIVE ``u`` and ``v``::
+        ``K`` is read back from the view frustum MuJoCo computes for this
+        camera - ``mjv_updateCamera`` fills ``mjvScene.camera[0].frustum_*``,
+        the exact numbers ``mjr_render`` hands ``glFrustum`` - rather than
+        re-derived from ``cam_intrinsic``. The renderer maps that frustum onto
+        the full viewport, so at ``near = frustum_near`` and
+        ``halfwidth = frustum_width``::
 
-            fx = focal_x / (sensor_w / res_w)     fy = focal_y / (sensor_h / res_h)
-            cx = res_w/2 - principal_x / pixel_w  cy = res_h/2 - principal_y / pixel_h
+            fx = w * near / (2 * halfwidth)
+            fy = h * near / (frustum_top - frustum_bottom)
+            cx = w * (halfwidth - frustum_center) / (2 * halfwidth)
+            cy = h * frustum_top / (frustum_top - frustum_bottom)
 
-        (fitted (fx, fy, cx, cy) = (300, 300, 85, 80) for sensorsize
-        0.0064x0.0048, focal 0.006, principal (0.0015, 0.0008) at 320x240 -
-        exact to two decimals, and the residuals of the other two
-        configurations pin both signs.) The sensor fixes the view frustum;
-        rendering into a ``(w, h)`` viewport maps that same frustum onto the
-        full viewport, so ``K`` scales linearly per axis (verified: the blob
-        centroid at 640x480 lands at exactly 2x its 320x240 coordinates).
+        Reading the frustum is what keeps the principal point on the side of
+        the image center MuJoCo actually draws it: the vertical assignment
+        differs across the supported version range. MuJoCo 3.6.0 fixed swapped
+        vertical frustum bounds for a camera with a principal-point offset, so
+        a positive MJCF ``principal`` y-offset moves the principal point DOWN
+        the image on MuJoCo <= 3.5 and UP from 3.6 on. A closed form over
+        ``cam_intrinsic`` can only match one of the two, and on the other it
+        places ``cy`` exactly as far the wrong side of the image center - a
+        silent unprojection error of twice the offset (~26 cm of world-point
+        error at a 1 m stand-off for a 0.8 mm offset on a 4.8 mm sensor).
+
+        ``frustum_width`` is zero exactly when the camera declares no physical
+        sensor: MuJoCo then derives the horizontal extent from the viewport
+        aspect ratio, which is the ``fovy`` path.
 
         Args:
+            mj: the imported ``mujoco`` module.
             np: the imported numpy module (kept off this module's top level).
             model: compiled ``MjModel``.
+            data: the ``MjData`` whose camera pose the frustum is read at.
             cam_id: camera id in ``model``.
             w: requested image width in pixels.
             h: requested image height in pixels.
 
         Returns:
             ``(3, 3)`` float64 ``K`` at ``(w, h)``, or ``None`` when the
-            camera declares no physical sensor (``cam_sensorsize`` zero -
-            the ``fovy`` path applies).
+            camera declares no physical sensor (the ``fovy`` path applies).
+
+        Raises:
+            ValueError: the camera's frustum has a non-positive vertical
+                extent, so no pinhole ``K`` describes it.
         """
-        sensor_w = float(model.cam_sensorsize[cam_id][0])
-        sensor_h = float(model.cam_sensorsize[cam_id][1])
-        if sensor_w <= 0.0 or sensor_h <= 0.0:
+        cam = mj.MjvCamera()
+        cam.type = mj.mjtCamera.mjCAMERA_FIXED
+        cam.fixedcamid = cam_id
+        # mjv_updateCamera fills only the scene's GL cameras, so the scene needs
+        # no geometry buffers - a default (model-less) mjvScene is enough.
+        scene = mj.MjvScene()
+        mj.mjv_updateCamera(model, data, cam, scene)
+        gl_cam = scene.camera[0]
+        halfwidth = float(gl_cam.frustum_width)
+        if halfwidth <= 0.0:
             return None
-        res_w = float(model.cam_resolution[cam_id][0])
-        res_h = float(model.cam_resolution[cam_id][1])
-        if res_w <= 0.0 or res_h <= 0.0:
-            # sensorsize without resolution does not compile in MuJoCo; be
-            # defensive anyway rather than dividing by zero.
-            return None
-        focal_x, focal_y, pp_x, pp_y = (float(v) for v in model.cam_intrinsic[cam_id])
-        pixel_w = sensor_w / res_w
-        pixel_h = sensor_h / res_h
-        fx = focal_x / pixel_w
-        fy = focal_y / pixel_h
-        cx = res_w / 2.0 - pp_x / pixel_w
-        cy = res_h / 2.0 - pp_y / pixel_h
-        sx = float(w) / res_w
-        sy = float(h) / res_h
-        return np.array(
-            [[fx * sx, 0.0, cx * sx], [0.0, fy * sy, cy * sy], [0.0, 0.0, 1.0]],
-            dtype=np.float64,
-        )
+        top = float(gl_cam.frustum_top)
+        bottom = float(gl_cam.frustum_bottom)
+        near = float(gl_cam.frustum_near)
+        vertical = top - bottom
+        if vertical <= 0.0:
+            raise ValueError(
+                f"Camera id {cam_id} has a non-positive vertical frustum extent "
+                f"(top {top}, bottom {bottom}), which no pinhole K describes."
+            )
+        fx = float(w) * near / (2.0 * halfwidth)
+        fy = float(h) * near / vertical
+        cx = float(w) * (halfwidth - float(gl_cam.frustum_center)) / (2.0 * halfwidth)
+        cy = float(h) * top / vertical
+        return np.array([[fx, 0.0, cx], [0.0, fy, cy], [0.0, 0.0, 1.0]], dtype=np.float64)
 
     def _named_camera_pose(
         self, mj: Any, model: Any, data: Any, camera_name: str | None
@@ -1976,9 +2002,15 @@ class RenderingMixin:
             if name is not None:
                 sanitize_name_component(name, label="name")
             if output_dir is not None:
-                _sb_root, _allow_abs = video_sandbox_args()
+                _sb_root, _allow_abs, _allow_abs_env = video_sandbox_args()
                 out_dir = str(
-                    validate_output_path(output_dir, sandbox_root=_sb_root, allow_abs=_allow_abs, label="output_dir")
+                    validate_output_path(
+                        output_dir,
+                        sandbox_root=_sb_root,
+                        allow_abs=_allow_abs,
+                        label="output_dir",
+                        allow_abs_env=_allow_abs_env,
+                    )
                 )
             else:
                 out_dir = _os.path.join(_tempfile.gettempdir(), "strands_robots", "recordings")
@@ -2425,9 +2457,15 @@ class RenderingMixin:
             if name is not None:
                 sanitize_name_component(name, label="name")
             if output_dir is not None:
-                _sb_root, _allow_abs = video_sandbox_args()
+                _sb_root, _allow_abs, _allow_abs_env = video_sandbox_args()
                 out_dir = str(
-                    validate_output_path(output_dir, sandbox_root=_sb_root, allow_abs=_allow_abs, label="output_dir")
+                    validate_output_path(
+                        output_dir,
+                        sandbox_root=_sb_root,
+                        allow_abs=_allow_abs,
+                        label="output_dir",
+                        allow_abs_env=_allow_abs_env,
+                    )
                 )
             else:
                 out_dir = _os.path.join(_tempfile.gettempdir(), "strands_robots", "recordings")

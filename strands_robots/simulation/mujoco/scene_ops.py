@@ -75,6 +75,37 @@ def _sync_cached_xml(world: SimWorld, spec: Any) -> None:
         logger.debug("spec.to_xml() failed; cached XML left stale: %s", xml_err)
 
 
+def _raise_spec_joint_damping(joint: Any, floor: float) -> None:
+    """Floor a spec joint's damping, on either MuJoCo layout of that field.
+
+    ``MjsJoint.damping`` is a per-DOF sequence on MuJoCo builds from 3.10 and a
+    plain ``float`` on the older builds this package still supports
+    (``mujoco>=3.2.0``). Reading or writing through the wrong one of those two
+    layouts raises ``TypeError``, which
+    :func:`actuate_robot_in_scene` reports as a refused spec surgery - so a
+    robot that needs a damping floor cannot be actuated at all. Both layouts are
+    handled here, once, rather than at the call site.
+
+    Existing damping larger than ``floor`` is kept, which is the floor contract
+    :meth:`strands_robots.simulation.mujoco.manipulation.ManipulationMixin.actuate_robot`
+    documents for its ``damping`` argument.
+
+    Args:
+        joint: The ``MjsJoint`` (or any object exposing a ``damping`` field in
+            one of the two layouts) to floor in place.
+        floor: Minimum damping to leave on the joint.
+    """
+    current = joint.damping
+    try:
+        first = float(current[0])
+    except TypeError:
+        # Scalar layout (mujoco < 3.10): assign the field itself.
+        joint.damping = max(float(current), floor)
+    else:
+        # Per-DOF layout: write element 0, leaving any further DOFs alone.
+        joint.damping[0] = max(first, floor)
+
+
 def _snapshot_spec(spec: Any, *, context: str) -> Any | None:
     """Deep-copy ``spec`` so a refused mutation can be rolled back losslessly.
 
@@ -766,11 +797,28 @@ def inject_object_into_scene(world: SimWorld, obj: SimObject) -> bool:
     ``False`` return, so the caller can report the actual reason - a swallowed
     ``ValueError`` left the caller with nothing but "spec recompile refused"
     while the actionable message went to the log.
+
+    Every rollback here deletes only the bodies THIS call appended, counted
+    before the insert (``SpecBuilder.count_bodies_named`` /
+    ``remove_surplus_bodies``). A delete by name is wrong on the collision path:
+    ``load_scene`` replaces the world registry, so a body declared by the scene
+    MJCF is invisible to ``add_object``'s registry check and the insert reaches
+    MuJoCo, leaving two bodies under one name. ``SpecBuilder.remove_body``
+    resolves the name to the body present at the last compile - the ORIGINAL -
+    so rolling back with it deleted the healthy scene body and left the rejected
+    one holding its name, and the next mutation recompiled cleanly with the
+    original geometry gone.
     """
     spec = _get_spec(world)
     if spec is None or world._model is None:
         logger.error("inject_object: no spec or model in world")
         return False
+
+    # How many bodies already carry this name, taken BEFORE the insert. Every
+    # rollback below deletes only the bodies beyond this count - the ones this
+    # call appended - because a delete by name resolves the pre-existing body on
+    # a collision and would remove the healthy scene body instead of the orphan.
+    pre_bodies = SpecBuilder.count_bodies_named(spec, obj.name)
 
     try:
         # Meshes need their asset registered before the geom references it.
@@ -808,11 +856,11 @@ def inject_object_into_scene(world: SimWorld, obj: SimObject) -> bool:
     try:
         recompiled = _recompile_preserving_state(world, spec, raise_on_refusal=True)
     except (ValueError, RuntimeError):
-        SpecBuilder.remove_body(spec, obj.name)
+        SpecBuilder.remove_surplus_bodies(spec, obj.name, pre_bodies)
         SpecBuilder.remove_mesh(spec, f"mesh_{obj.name}")
         raise
     if not recompiled:
-        SpecBuilder.remove_body(spec, obj.name)
+        SpecBuilder.remove_surplus_bodies(spec, obj.name, pre_bodies)
         SpecBuilder.remove_mesh(spec, f"mesh_{obj.name}")
         return False
     return True
@@ -824,11 +872,22 @@ def inject_camera_into_scene(world: SimWorld, cam: SimCamera) -> bool:
     Mirrors :func:`inject_object_into_scene`: ``SpecBuilder.add_camera`` mutates
     the spec before the validating recompile, so a refused recompile rolls the
     just-added camera back out to keep the spec compilable for later edits.
+
+    That rollback removes only the cameras THIS call appended, counted before the
+    insert. It cannot be a delete by name: when the name collides with a camera
+    the loaded scene already declares - which ``add_camera``'s registry check
+    cannot see, because ``load_scene`` replaces the registry while the MJCF keeps
+    its cameras - ``SpecBuilder.remove_camera`` deletes the FIRST camera carrying
+    the name, i.e. the scene's own. The refused camera then inherited the name and
+    every later render of it answered with the pose the caller was told had been
+    rejected.
     """
     spec = _get_spec(world)
     if spec is None or world._model is None:
         logger.error("inject_camera: no spec or model in world")
         return False
+
+    pre_cameras = SpecBuilder.count_cameras_named(spec, cam.name)
 
     try:
         SpecBuilder.add_camera(spec, cam)
@@ -837,7 +896,7 @@ def inject_camera_into_scene(world: SimWorld, cam: SimCamera) -> bool:
         return False
 
     if not _recompile_preserving_state(world, spec):
-        SpecBuilder.remove_camera(spec, cam.name)
+        SpecBuilder.remove_surplus_cameras(spec, cam.name, pre_cameras)
         return False
     return True
 
@@ -1363,7 +1422,7 @@ def actuate_robot_in_scene(
             short = joint_name[len(pfx) :]
             if short not in kp_by_joint:
                 continue
-            joint.damping[0] = max(float(joint.damping[0]), damping)
+            _raise_spec_joint_damping(joint, damping)
             joint.armature = max(float(joint.armature), armature)
 
         for short, kp in kp_by_joint.items():

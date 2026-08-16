@@ -170,6 +170,15 @@ class PersistentPolicy(Policy):
         """The wrapped policy instance."""
         return self._inner
 
+    @property
+    def children(self) -> tuple[Policy, ...]:
+        """The single wrapped policy.
+
+        Keeps the wrapper transparent to a runtime capability probe as well as to
+        the delegated :class:`Policy` operations; see :attr:`Policy.children`.
+        """
+        return (self._inner,)
+
     async def get_actions(
         self, observation_dict: dict[str, Any], instruction: str, **kwargs: Any
     ) -> list[dict[str, Any]]:

@@ -6,10 +6,11 @@ Some LeRobot-compatible checkpoints (notably the MolmoAct2 SO-100/101 family,
 Instead they carry a single ``norm_stats.json`` describing per-feature
 quantile/min-max/mean-std statistics keyed by an embodiment *tag*.
 
-Without those standard configs, :class:`~strands_robots.policies.lerobot_local
-.processor.ProcessorBridge` would build empty pipelines and pass observations
-and actions through untouched: state reaches the policy un-normalized and the
-predicted actions reach the motors un-unnormalized. That silent passthrough is
+Without those standard configs,
+:class:`~strands_robots.policies.lerobot_local.processor.ProcessorBridge`
+would build empty pipelines and pass observations and actions through
+untouched: state reaches the policy un-normalized and the predicted actions
+reach the motors un-unnormalized. That silent passthrough is
 the single biggest functional cause of off-policy arm motion on these
 checkpoints.
 

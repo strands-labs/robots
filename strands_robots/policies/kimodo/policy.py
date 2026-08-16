@@ -10,12 +10,21 @@ per-tick action-dict contract the rest of ``strands_robots`` expects.
 Where it sits in the stack (identical seat to
 :class:`~strands_robots.policies.motionbricks.MotionBricksPolicy`):
 
-* Kimodo emits **motion targets** (kinematic ``qpos``).
-* A tracking controller (WBC / PD) turns those targets into joint torques
-  under physics via :class:`~strands_robots.policies.composite.CompositePolicy`.
-* Standalone, calling the policy in a MuJoCo sim without a tracker sets
-  ``qpos`` directly - this is the faithful visualisation of a kinematic
-  generator.
+* Kimodo emits **motion targets** (kinematic ``qpos``) for all 29 leg + waist +
+  arm joints - a whole-body reference, not a joint subset.
+* Standalone, calling the policy in a MuJoCo sim without a tracker sets those
+  targets directly - the faithful visualisation of a kinematic generator, and
+  what this provider supports today.
+* Closing the loop through physics needs a controller that TRACKS this
+  reference: the 29 targets are its input, so generator and tracker run in
+  series over the same joints. That is a cascade, not a composition, and
+  :class:`~strands_robots.policies.composite.CompositePolicy` does not express
+  it - it merges two policies over DISJOINT joint groups (see its module
+  docstring). Composing Kimodo with
+  :class:`~strands_robots.policies.wbc.WBCPolicy` in particular cannot track a
+  reference at all: WBC's only command input is a target base velocity, it has
+  no reference-pose input, and it drives 15 of the 29 joints Kimodo already
+  drives.
 
 Contract:
 
@@ -229,7 +238,10 @@ class KimodoPolicy(Policy):
         self._motion_agent: KimodoMotionAgent | None = motion_agent
 
         # Streaming state - filled by _synthesise() and drained by get_actions().
-        self._current_prompt: str | None = None
+        # The buffer caches ONE sampler run; _buffer_key records the inputs that
+        # produced it so a changed prompt/knob/seed re-enters the sampler instead
+        # of draining a buffer those inputs never generated.
+        self._buffer_key: tuple[str, int, float, int | None] | None = None
         self._motion_buffer: NDArray[np.float32] | None = None
         self._frame_cursor: int = 0
         self._joint_names: tuple[str, ...] = KIMODO_G1_JOINTS
@@ -284,7 +296,11 @@ class KimodoPolicy(Policy):
                 calls, the sampler re-runs and the frame cursor resets.
             **kwargs: Optional overrides for this call:
                 ``text_prompt`` (alias for ``instruction``),
-                ``diffusion_steps``, ``guidance_scale``, ``seed``.
+                ``diffusion_steps``, ``guidance_scale``, ``seed``. Each is an
+                input to the sampler, so supplying one that differs from the
+                value that produced the buffered motion re-samples; supplying
+                the same values drains the existing buffer rather than paying
+                for a run that would return identical frames.
 
         Returns:
             A single-element list containing a dict mapping each of
@@ -300,13 +316,18 @@ class KimodoPolicy(Policy):
                 "(natural-language motion description)."
             )
 
-        # (Re)sample if prompt changed or first call.
-        if self._motion_buffer is None or prompt != self._current_prompt:
+        # (Re)sample on the first call, or whenever any input that determines
+        # the motion differs from the one that produced the buffer we hold.
+        diffusion_steps = int(kwargs.get("diffusion_steps", self.config.diffusion_steps))
+        guidance_scale = float(kwargs.get("guidance_scale", self.config.guidance_scale))
+        seed = kwargs.get("seed", self.config.seed)
+        key = self._sample_key(prompt, diffusion_steps, guidance_scale, seed)
+        if self._motion_buffer is None or key != self._buffer_key:
             self._synthesise(
                 prompt=prompt,
-                diffusion_steps=int(kwargs.get("diffusion_steps", self.config.diffusion_steps)),
-                guidance_scale=float(kwargs.get("guidance_scale", self.config.guidance_scale)),
-                seed=kwargs.get("seed", self.config.seed),
+                diffusion_steps=diffusion_steps,
+                guidance_scale=guidance_scale,
+                seed=seed,
             )
 
         assert self._motion_buffer is not None  # narrowed by _synthesise
@@ -319,7 +340,22 @@ class KimodoPolicy(Policy):
         return [action]
 
     def reset(self, seed: int | None = None) -> None:
-        """Reset the frame cursor. ``seed`` is stored for the next resample."""
+        """Rewind to the first frame, and re-seed the sampler when given a seed.
+
+        ``PolicyRunner.evaluate`` derives a distinct seed per episode and
+        forwards it here so a stochastic policy samples afresh each episode
+        while staying reproducible across re-runs at the same master seed. A
+        diffusion sample IS this policy's per-episode state, so a new seed has
+        to reach the sampler: it is recorded on the config and the next
+        :meth:`get_actions` re-samples, because the seed is part of the key
+        identifying the buffered motion.
+
+        Args:
+            seed: Sampling seed for the next episode. ``None`` rewinds only,
+                replaying the motion already held. A seed equal to the one that
+                produced the current buffer also replays it rather than
+                re-running the sampler for identical frames.
+        """
         self._frame_cursor = 0
         if seed is not None:
             # Store on config-shadow so next _synthesise picks it up.
@@ -328,6 +364,36 @@ class KimodoPolicy(Policy):
     # -----------------------------------------------------------------
     # Internals
     # -----------------------------------------------------------------
+    @staticmethod
+    def _sample_key(
+        prompt: str,
+        diffusion_steps: int,
+        guidance_scale: float,
+        seed: int | None,
+    ) -> tuple[str, int, float, int | None]:
+        """Identify a sampler run by every input that determines its output.
+
+        The buffered motion is a cache of one sampler run, and this is its cache
+        key. Comparing the full key - rather than the prompt alone - is what
+        makes ``diffusion_steps`` / ``guidance_scale`` / ``seed`` behave as the
+        per-call overrides :meth:`get_actions` documents, and what lets
+        :meth:`reset` re-seed an episode.
+
+        Both the producer (:meth:`_synthesise`) and the consumer
+        (:meth:`get_actions`) build the key here, so the two cannot disagree
+        about which inputs identify a motion.
+
+        Args:
+            prompt: Text prompt the motion was sampled for.
+            diffusion_steps: Denoising steps used.
+            guidance_scale: Classifier-free-guidance weight used.
+            seed: Sampling seed, or ``None`` for an unseeded sample.
+
+        Returns:
+            A hashable tuple identifying the run.
+        """
+        return (prompt, diffusion_steps, guidance_scale, None if seed is None else int(seed))
+
     def _synthesise(
         self,
         prompt: str,
@@ -355,7 +421,7 @@ class KimodoPolicy(Policy):
             native_fps=self.config.native_fps,
             target_fps=self.config.tracker_fps,
         )
-        self._current_prompt = prompt
+        self._buffer_key = self._sample_key(prompt, diffusion_steps, guidance_scale, seed)
         self._frame_cursor = 0
         # The prompt is caller-supplied, so it is identified by digest rather
         # than echoed: interpolating the text would let a prompt containing a

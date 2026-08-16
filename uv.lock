@@ -5038,6 +5038,11 @@ moveit2 = [
 ollama = [
     { name = "strands-agents", extra = ["ollama"] },
 ]
+protomotions = [
+    { name = "huggingface-hub" },
+    { name = "onnxruntime" },
+    { name = "pyyaml" },
+]
 ros2 = [
     { name = "cyclonedds" },
 ]
@@ -5120,6 +5125,7 @@ requires-dist = [
     { name = "gymnasium", marker = "extra == 'vera-sim'", specifier = "==0.29.1" },
     { name = "huggingface-hub", marker = "extra == 'all'", specifier = ">=1.5,<2.0.0" },
     { name = "huggingface-hub", marker = "extra == 'kimodo'", specifier = ">=1.5,<2.0.0" },
+    { name = "huggingface-hub", marker = "extra == 'protomotions'", specifier = ">=1.5,<2.0.0" },
     { name = "huggingface-hub", marker = "extra == 'wbc'", specifier = ">=1.5,<2.0.0" },
     { name = "hydra-core", marker = "extra == 'all'", specifier = ">=1.3.0,<2.0.0" },
     { name = "hydra-core", marker = "extra == 'motionbricks'", specifier = ">=1.3.0,<2.0.0" },
@@ -5152,11 +5158,11 @@ requires-dist = [
     { name = "msgpack", marker = "extra == 'cosmos3-service'", specifier = ">=1.0.0,<2.0.0" },
     { name = "msgpack", marker = "extra == 'groot-service'", specifier = ">=1.0.0,<2.0.0" },
     { name = "msgpack", marker = "extra == 'moveit2'", specifier = ">=1.0.0,<2.0.0" },
-    { name = "mujoco", marker = "extra == 'all'", specifier = ">=3.2.0,<4.0.0" },
-    { name = "mujoco", marker = "extra == 'cosmos3-sim'", specifier = ">=3.2.0,<4.0.0" },
-    { name = "mujoco", marker = "extra == 'sim-mujoco'", specifier = ">=3.2.0,<4.0.0" },
-    { name = "mujoco", marker = "extra == 'sim-newton'", specifier = ">=3.2.0,<4.0.0" },
-    { name = "mujoco", marker = "extra == 'vera-sim'", specifier = ">=3.5.0" },
+    { name = "mujoco", marker = "extra == 'all'", specifier = ">=3.5.0,<4.0.0" },
+    { name = "mujoco", marker = "extra == 'cosmos3-sim'", specifier = ">=3.5.0,<4.0.0" },
+    { name = "mujoco", marker = "extra == 'sim-mujoco'", specifier = ">=3.5.0,<4.0.0" },
+    { name = "mujoco", marker = "extra == 'sim-newton'", specifier = ">=3.5.0,<4.0.0" },
+    { name = "mujoco", marker = "extra == 'vera-sim'", specifier = ">=3.5.0,<4.0.0" },
     { name = "mujoco-warp", marker = "extra == 'sim-newton'", specifier = ">=3.8.0" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.0.0,<2.0.0" },
     { name = "newton", marker = "extra == 'sim-newton'", specifier = ">=1.3.0,<2.0.0" },
@@ -5164,6 +5170,7 @@ requires-dist = [
     { name = "omegaconf", marker = "extra == 'all'", specifier = ">=2.3.0,<3.0.0" },
     { name = "omegaconf", marker = "extra == 'motionbricks'", specifier = ">=2.3.0,<3.0.0" },
     { name = "onnxruntime", marker = "extra == 'all'", specifier = ">=1.17.0,<2.0.0" },
+    { name = "onnxruntime", marker = "extra == 'protomotions'", specifier = ">=1.17.0,<2.0.0" },
     { name = "onnxruntime", marker = "extra == 'wbc'", specifier = ">=1.17.0,<2.0.0" },
     { name = "opencv-python-headless", specifier = ">=4.5.0,<5.0.0" },
     { name = "pillow", specifier = ">=8.0.0,<13.0.0" },
@@ -5174,6 +5181,7 @@ requires-dist = [
     { name = "pytorch-lightning", marker = "extra == 'all'", specifier = ">=2.0.0,<3.0.0" },
     { name = "pytorch-lightning", marker = "extra == 'motionbricks'", specifier = ">=2.0.0,<3.0.0" },
     { name = "pyyaml", marker = "extra == 'all'", specifier = ">=5.1,<7.0.0" },
+    { name = "pyyaml", marker = "extra == 'protomotions'", specifier = ">=5.1,<7.0.0" },
     { name = "pyyaml", marker = "extra == 'wbc'", specifier = ">=5.1,<7.0.0" },
     { name = "pyzmq", marker = "extra == 'all'", specifier = ">=27.0.0,<28.0.0" },
     { name = "pyzmq", marker = "extra == 'groot-service'", specifier = ">=27.0.0,<28.0.0" },
@@ -5194,9 +5202,9 @@ requires-dist = [
     { name = "scipy", marker = "extra == 'all'", specifier = ">=1.10.0" },
     { name = "scipy", marker = "extra == 'kimodo'", specifier = ">=1.10.0" },
     { name = "scipy", marker = "extra == 'motionbricks'", specifier = ">=1.10.0" },
-    { name = "strands-agents", specifier = ">=1.0.0,<2.0.0" },
-    { name = "strands-agents", extras = ["ollama"], marker = "extra == 'all'", specifier = ">=1.0.0,<2.0.0" },
-    { name = "strands-agents", extras = ["ollama"], marker = "extra == 'ollama'", specifier = ">=1.0.0,<2.0.0" },
+    { name = "strands-agents", specifier = ">=1.7.0,<2.0.0" },
+    { name = "strands-agents", extras = ["ollama"], marker = "extra == 'all'", specifier = ">=1.7.0,<2.0.0" },
+    { name = "strands-agents", extras = ["ollama"], marker = "extra == 'ollama'", specifier = ">=1.7.0,<2.0.0" },
     { name = "torch", marker = "extra == 'all'", specifier = ">=2.0.0" },
     { name = "torch", marker = "extra == 'cosmos3-diffusers'", specifier = ">=2.0" },
     { name = "torch", marker = "extra == 'kimodo'", specifier = ">=2.0.0" },
@@ -5214,7 +5222,7 @@ requires-dist = [
     { name = "websockets", marker = "extra == 'cosmos3-service'", specifier = ">=12.0" },
     { name = "websockets", marker = "extra == 'inference'", specifier = ">=12.0" },
 ]
-provides-extras = ["all", "benchmark-libero", "cosmos3-diffusers", "cosmos3-service", "cosmos3-sim", "curobo", "dev", "device-connect", "groot-service", "inference", "kimodo", "lerobot", "lerobot-async", "mesh", "mesh-iot", "molmoact2", "motionbricks", "moveit2", "ollama", "ros2", "rosbridge", "sim", "sim-gs", "sim-isaac", "sim-mujoco", "sim-newton", "vera-sim", "wbc"]
+provides-extras = ["all", "benchmark-libero", "cosmos3-diffusers", "cosmos3-service", "cosmos3-sim", "curobo", "dev", "device-connect", "groot-service", "inference", "kimodo", "lerobot", "lerobot-async", "mesh", "mesh-iot", "molmoact2", "motionbricks", "moveit2", "ollama", "protomotions", "ros2", "rosbridge", "sim", "sim-gs", "sim-isaac", "sim-mujoco", "sim-newton", "vera-sim", "wbc"]
 
 [[package]]
 name = "sympy"

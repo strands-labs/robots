@@ -86,7 +86,7 @@ Under the old semantics the clear scene reports nothing at all, so the premise
 "a pair is reported yet carries no force" is unreachable and the
 predicate-is-False cases would pass *vacuously*, while the touching scene is
 rejected by the solver so every predicate-is-True case fails. The project's
-bound (``mujoco>=3.2.0,<4.0.0``) still admits those releases, so these fixtures
+bound (``mujoco>=3.5.0,<4.0.0``) still admits those releases, so these fixtures
 skip there rather than fail a suite the production code handles correctly: the
 ``active`` flag agrees with zero normal force on 3.8.1 too.
 """

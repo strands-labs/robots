@@ -150,25 +150,29 @@ def test_sandbox_accepts_intermediate_symlink_staying_inside(tmp_path):
 def test_video_sandbox_args_default_allows_abs(monkeypatch):
     """Without STRANDS_ROBOTS_VIDEO_ROOT, video paths are unconfined (historic contract)."""
     monkeypatch.delenv("STRANDS_ROBOTS_VIDEO_ROOT", raising=False)
-    root, allow_abs = video_sandbox_args()
+    root, allow_abs, allow_abs_env = video_sandbox_args()
     assert root is None
     assert allow_abs is True
+    # The opt-in name is reported even when nothing is confined, so a sink can
+    # quote it without re-deriving the spelling.
+    assert allow_abs_env == "STRANDS_ROBOTS_VIDEO_ALLOW_ABS"
 
 
 def test_video_sandbox_args_confines_when_root_set(monkeypatch, tmp_path):
     """Setting STRANDS_ROBOTS_VIDEO_ROOT switches to sandbox-confined mode."""
     monkeypatch.setenv("STRANDS_ROBOTS_VIDEO_ROOT", str(tmp_path / "vids"))
     monkeypatch.delenv("STRANDS_ROBOTS_VIDEO_ALLOW_ABS", raising=False)
-    root, allow_abs = video_sandbox_args()
+    root, allow_abs, allow_abs_env = video_sandbox_args()
     assert root == (tmp_path / "vids").resolve()
     assert allow_abs is False
+    assert allow_abs_env == "STRANDS_ROBOTS_VIDEO_ALLOW_ABS"
 
 
 def test_video_sandbox_args_allow_abs_override(monkeypatch, tmp_path):
     """STRANDS_ROBOTS_VIDEO_ALLOW_ABS re-permits absolute paths inside sandbox mode."""
     monkeypatch.setenv("STRANDS_ROBOTS_VIDEO_ROOT", str(tmp_path / "vids"))
     monkeypatch.setenv("STRANDS_ROBOTS_VIDEO_ALLOW_ABS", "1")
-    _, allow_abs = video_sandbox_args()
+    _, allow_abs, _env = video_sandbox_args()
     assert allow_abs is True
 
 

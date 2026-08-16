@@ -12,6 +12,7 @@ property the Isaac adapter (GH #2123) builds on.
 """
 
 import inspect
+import math
 import subprocess
 import sys
 from types import SimpleNamespace
@@ -20,7 +21,9 @@ import numpy as np
 import pytest
 
 from strands_robots.simulation.motion_primitives_base import (
+    _DEFAULT_ORIENTATION_TOL_RAD,
     MotionPrimitivesCore,
+    _quat_angle_error,
 )
 
 
@@ -62,27 +65,27 @@ class TestModuleIsBackendFree:
 
 class TestMoveToArgValidation:
     def test_missing_position_is_refused(self, core: MotionPrimitivesCore) -> None:
-        target, quat, steps, err = core._validate_move_to_args(None, None, 0.01, 200)
+        target, quat, steps, _, err = core._validate_move_to_args(None, None, 0.01, 200)
         assert (target, quat, steps) == (None, None, 0)
         assert "requires 'position'" in _error_text(err)
 
     @pytest.mark.parametrize("position", [[1.0, 2.0], [1.0, 2.0, 3.0, 4.0], "abc", [1.0, float("nan"), 3.0]])
     def test_malformed_position_is_refused(self, core: MotionPrimitivesCore, position) -> None:
-        _, _, _, err = core._validate_move_to_args(position, None, 0.01, 200)
+        _, _, _, _, err = core._validate_move_to_args(position, None, 0.01, 200)
         assert err is not None
         assert "position" in _error_text(err)
 
     def test_zero_norm_quaternion_is_refused(self, core: MotionPrimitivesCore) -> None:
-        _, _, _, err = core._validate_move_to_args([0.1, 0.2, 0.3], [0.0, 0.0, 0.0, 0.0], 0.01, 200)
+        _, _, _, _, err = core._validate_move_to_args([0.1, 0.2, 0.3], [0.0, 0.0, 0.0, 0.0], 0.01, 200)
         assert "~zero norm" in _error_text(err)
 
     @pytest.mark.parametrize("tol", [0.0, -0.01, float("nan"), float("inf"), "0.01", True])
     def test_off_domain_tol_is_refused(self, core: MotionPrimitivesCore, tol) -> None:
-        _, _, _, err = core._validate_move_to_args([0.1, 0.2, 0.3], None, tol, 200)
+        _, _, _, _, err = core._validate_move_to_args([0.1, 0.2, 0.3], None, tol, 200)
         assert "'tol' must be a positive number" in _error_text(err)
 
     def test_valid_args_coerce_to_arrays(self, core: MotionPrimitivesCore) -> None:
-        target, quat, max_steps, err = core._validate_move_to_args([0.1, 0.2, 0.3], [1, 0, 0, 0], 0.01, 200)
+        target, quat, max_steps, _, err = core._validate_move_to_args([0.1, 0.2, 0.3], [1, 0, 0, 0], 0.01, 200)
         assert err is None
         assert target is not None and quat is not None
         np.testing.assert_allclose(target, np.array([0.1, 0.2, 0.3]))
@@ -91,8 +94,95 @@ class TestMoveToArgValidation:
         assert max_steps == 200
 
     def test_orientation_is_optional(self, core: MotionPrimitivesCore) -> None:
-        target, quat, _, err = core._validate_move_to_args([0.1, 0.2, 0.3], None, 0.01, 200)
+        target, quat, _, _, err = core._validate_move_to_args([0.1, 0.2, 0.3], None, 0.01, 200)
         assert err is None and target is not None and quat is None
+
+
+class TestOrientationToleranceResolution:
+    """The rotational tolerance exists only where there is a rotation to bound."""
+
+    def test_a_position_only_call_resolves_no_orientation_tolerance(self, core: MotionPrimitivesCore) -> None:
+        """``None`` is what tells the backends to report no rotational error."""
+        _, quat, _, orientation_tol, err = core._validate_move_to_args([0.1, 0.2, 0.3], None, 0.01, 200)
+        assert err is None
+        assert quat is None
+        assert orientation_tol is None
+
+    def test_an_orientation_without_a_tolerance_takes_the_documented_default(self, core: MotionPrimitivesCore) -> None:
+        _, _, _, orientation_tol, err = core._validate_move_to_args([0.1, 0.2, 0.3], [1, 0, 0, 0], 0.01, 200)
+        assert err is None
+        assert orientation_tol == pytest.approx(_DEFAULT_ORIENTATION_TOL_RAD)
+
+    def test_an_explicit_tolerance_wins_over_the_default(self, core: MotionPrimitivesCore) -> None:
+        _, _, _, orientation_tol, err = core._validate_move_to_args([0.1, 0.2, 0.3], [1, 0, 0, 0], 0.01, 200, 0.02)
+        assert err is None
+        assert orientation_tol == pytest.approx(0.02)
+
+    def test_a_tolerance_with_nothing_to_bound_is_refused_not_dropped(self, core: MotionPrimitivesCore) -> None:
+        """Silently ignoring a tolerance the caller set is how an unmet request hides."""
+        _, _, _, orientation_tol, err = core._validate_move_to_args([0.1, 0.2, 0.3], None, 0.01, 200, 0.02)
+        assert orientation_tol is None
+        assert "'orientation_tol' only bounds an 'orientation' target" in _error_text(err)
+
+    @pytest.mark.parametrize("bad", [0.0, -0.01, float("nan"), float("inf"), "0.1", True])
+    def test_off_domain_orientation_tol_is_refused(self, core: MotionPrimitivesCore, bad) -> None:
+        _, _, _, _, err = core._validate_move_to_args([0.1, 0.2, 0.3], [1, 0, 0, 0], 0.01, 200, bad)
+        assert "'orientation_tol' must be a positive number of radians" in _error_text(err)
+
+
+class TestQuaternionAngleError:
+    """The rotational error metric both backends measure convergence with."""
+
+    def test_identical_orientations_have_no_error(self) -> None:
+        assert _quat_angle_error([1, 0, 0, 0], [1, 0, 0, 0]) == pytest.approx(0.0, abs=1e-12)
+
+    def test_a_negated_quaternion_is_the_same_rotation(self) -> None:
+        """The double cover: ``q`` and ``-q`` denote one orientation.
+
+        Without the sign fold an exactly-met orientation measures ``pi`` - the
+        maximum possible error - so every such request would be refused.
+        """
+        assert _quat_angle_error([1, 0, 0, 0], [-1, 0, 0, 0]) == pytest.approx(0.0, abs=1e-12)
+        assert _quat_angle_error([0.5, 0.5, 0.5, 0.5], [-0.5, -0.5, -0.5, -0.5]) == pytest.approx(0.0, abs=1e-9)
+
+    def test_a_quarter_turn_measures_a_quarter_turn(self) -> None:
+        half = math.sqrt(0.5)
+        assert _quat_angle_error([1, 0, 0, 0], [half, half, 0, 0]) == pytest.approx(math.pi / 2, abs=1e-9)
+
+    def test_an_unnormalized_input_is_normalized_first(self) -> None:
+        assert _quat_angle_error([2, 0, 0, 0], [0.5, 0, 0, 0]) == pytest.approx(0.0, abs=1e-12)
+
+    def test_the_metric_is_bounded_by_pi(self) -> None:
+        """A rotation and its opposite are half a turn apart, never more."""
+        assert _quat_angle_error([1, 0, 0, 0], [0, 1, 0, 0]) == pytest.approx(math.pi, abs=1e-9)
+
+
+class TestPoseViolation:
+    """One scalar over two quantities: ``<= 1`` iff every requested component fits."""
+
+    def test_a_position_only_call_ranks_by_the_position_residual(self, core: MotionPrimitivesCore) -> None:
+        """The historical ordering, preserved exactly so position-only behaviour is unchanged."""
+        assert core._pose_violation(0.005, 0.01) == pytest.approx(0.5)
+        assert core._pose_violation(0.02, 0.01) == pytest.approx(2.0)
+
+    def test_the_worse_normalized_component_decides(self, core: MotionPrimitivesCore) -> None:
+        # Position comfortably inside, orientation twice its bound: not converged.
+        assert core._pose_violation(0.001, 0.01, 0.2, 0.1) == pytest.approx(2.0)
+        # Orientation comfortably inside, position twice its bound: not converged.
+        assert core._pose_violation(0.02, 0.01, 0.01, 0.1) == pytest.approx(2.0)
+
+    def test_both_components_inside_their_own_bound_is_converged(self, core: MotionPrimitivesCore) -> None:
+        assert core._pose_violation(0.009, 0.01, 0.09, 0.1) <= 1.0
+
+    def test_metres_are_not_compared_against_radians(self, core: MotionPrimitivesCore) -> None:
+        """The normalization is the point: 0.05 rad is fine, 0.05 m is not.
+
+        Raw magnitudes would call these the same error. Each component is
+        divided by its OWN tolerance, so the same number in different units
+        lands on opposite sides of the gate.
+        """
+        assert core._pose_violation(0.001, 0.01, 0.05, 0.1) <= 1.0
+        assert core._pose_violation(0.05, 0.01, 0.001, 0.1) > 1.0
 
 
 class TestStepBudgetCap:

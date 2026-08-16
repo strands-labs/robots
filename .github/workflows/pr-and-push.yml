@@ -17,8 +17,36 @@ on:
     branches: [ main, dev ]
   push:
     branches: [ main, dev ]
+# Cancelling is right per pull request and wrong per commit, so the key differs by
+# event, and the fallback is the half that matters. On a 'pull_request' event
+# 'github.event.pull_request.number' is set: the group is per pull request, a new push
+# supersedes the previous verdict about the same branch, and discarding the in-flight
+# run is the point. That branch of the expression is untouched.
+#
+# On a push to 'main' or 'dev' the number is empty. Keyed on 'github.ref' the fallback
+# was 'refs/heads/main' for *every* commit - one group for the whole branch - so each
+# merge cancelled the previous merge's run and left the commit it was testing with a
+# permanently unfinished 'call-test-lint'. A cancelled context is not SUCCESS and one
+# non-SUCCESS context drags 'statusCheckRollup.state' to FAILURE, so that commit read
+# red forever with no failing check anywhere in it, and unlike a branch it gets no next
+# push to clear it. Measured over the last 25 commits on 'main' (#2304): 11 red, of
+# which 9 had no failing check at all. #1800 measured the same mechanism on
+# #1788/#1794/#1796 and concluded it was tolerable to read around; what #2304 adds is
+# that the misread destroys the evidence for *which* commit in a burst broke 'main', in
+# the same burst that creates the fault - #2303 read rollups along the branch to date a
+# breakage while two of the commits it read were red only from cancellation.
+#
+# 'github.sha' is the commit, so each pushed commit gets its own group and runs to
+# completion. Not interchangeable with keeping 'github.ref' and setting
+# 'cancel-in-progress: ${{ github.event_name == 'pull_request' }}': that leaves one group
+# for the branch, and GitHub holds at most one *pending* run per group, so in a burst of
+# three merges the third cancels the second while it is still queued - reproducing the
+# CANCELLED context this removes. The cost is that a burst of N merges runs N suites
+# instead of 1, which is the point: on a branch nobody rewrites, each commit is a
+# distinct artifact and 'was this commit green' is a question only its own completed run
+# can answer. Pinned by tests/test_push_concurrency_group.py.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: true
 
 jobs:
