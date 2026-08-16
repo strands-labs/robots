@@ -112,6 +112,12 @@ class SimCamera:
     scene builder knows NOT to re-add the camera at the top level (it'll be
     re-introduced via ``spec.attach(robot_spec)``). For user-added cameras
     (via the ``add_camera`` tool action) this stays empty.
+
+    A discovered camera belongs to exactly one robot: the one whose namespace
+    prefixes ``name``. Removing a robot removes its cameras and only its
+    cameras, so ``origin_robot`` must never name a robot outside ``name``'s
+    namespace - otherwise the wrong robot's departure strands or drops the
+    entry.
     """
 
     name: str

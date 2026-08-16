@@ -29,6 +29,7 @@ class attributes so the error a user sees names the extra they actually need.
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, ClassVar
 
 import numpy as np
@@ -131,10 +132,25 @@ class MinkIKBridge:
         dt: Integration timestep for each IK iteration (s).
         pos_threshold: Convergence threshold on position error (m).
         ori_threshold: Convergence threshold on orientation error (rad).
+        commanded_dofs: Velocity-space (``nv``) indices of the ONLY degrees of
+            freedom the caller can command, or ``None`` (default) to leave the
+            whole model free. ``mink`` optimizes over every DOF in ``model``,
+            so an unconstrained solve is free to satisfy the Cartesian task by
+            moving a DOF the caller will never send - a floating base, a second
+            robot sharing the world model, a gripper the caller holds - and
+            :meth:`solve` then returns, and :meth:`ee_pose` then scores, a
+            configuration that is never realized. Restricting the solve keeps
+            the returned configuration (and therefore any residual measured on
+            it) inside what the caller can actually reach. ``None`` is correct
+            only when the caller drives every DOF the frame depends on.
 
     Raises:
         ImportError: If ``mink``/``mujoco`` are not importable (with an
             actionable install hint).
+        ValueError: If ``commanded_dofs`` is empty or names an index outside
+            ``range(model.nv)`` - a solve that may move nothing, or a mask
+            built against a different model, is a caller bug rather than a
+            configuration to silently widen.
     """
 
     # Provider subclasses override these so failures name the extra the user
@@ -158,6 +174,7 @@ class MinkIKBridge:
         dt: float = 1e-2,
         pos_threshold: float = 1e-3,
         ori_threshold: float = 1e-3,
+        commanded_dofs: Sequence[int] | None = None,
     ) -> None:
         try:
             import mink
@@ -174,6 +191,11 @@ class MinkIKBridge:
         self.dt = dt
         self.pos_threshold = pos_threshold
         self.ori_threshold = ori_threshold
+
+        # Read model.nv only when a mask is asked for: the unrestricted path must
+        # touch nothing new, so a caller solving on a minimal model object is
+        # unaffected by this parameter existing.
+        self._dof_mask = None if commanded_dofs is None else self._build_dof_mask(int(model.nv), commanded_dofs)
 
         self._configuration = mink.Configuration(model)
         self._frame_task = mink.FrameTask(
@@ -193,6 +215,43 @@ class MinkIKBridge:
             self.solver,
             model.nq,
         )
+
+    @staticmethod
+    def _build_dof_mask(nv: int, commanded_dofs: Sequence[int] | None) -> np.ndarray | None:
+        """Boolean ``nv`` mask of the commandable DOFs, or ``None`` for all.
+
+        Args:
+            nv: The model's velocity-space dimension.
+            commanded_dofs: Indices to allow, or ``None`` to allow everything.
+
+        Returns:
+            A length-``nv`` boolean mask, or ``None`` when the whole model is
+            free (which keeps the unrestricted path allocation-free).
+
+        Raises:
+            ValueError: ``commanded_dofs`` is empty, holds a non-integer (a
+                ``bool`` included - it is an ``int`` subclass that would act as
+                index 0 or 1), or names an index outside ``range(nv)``.
+        """
+        if commanded_dofs is None:
+            return None
+        indices = list(commanded_dofs)
+        if not indices:
+            raise ValueError(
+                "commanded_dofs is empty, so the solve could not move any degree of freedom. "
+                "Pass the indices the caller commands, or None to leave the whole model free."
+            )
+        mask = np.zeros(nv, dtype=bool)
+        for index in indices:
+            if isinstance(index, bool) or not isinstance(index, (int, np.integer)):
+                raise ValueError(f"commanded_dofs must hold integer velocity-space indices; got {index!r}.")
+            if not 0 <= int(index) < nv:
+                raise ValueError(
+                    f"commanded_dofs index {int(index)} is outside range(model.nv) = range({nv}). "
+                    "The mask must be built against the same model this bridge solves on."
+                )
+            mask[int(index)] = True
+        return mask
 
     def ee_pose(self, qpos: np.ndarray) -> np.ndarray:
         """Forward kinematics: ``(4, 4)`` EE pose at a joint configuration.
@@ -218,6 +277,8 @@ class MinkIKBridge:
 
         Returns:
             The solved joint configuration (length ``model.nq``, ``float64``).
+            When ``commanded_dofs`` was given, every DOF outside it holds its
+            ``q_init`` value exactly, so the caller can realize the answer.
         """
         mink = self._mink
         q = np.asarray(q_init, dtype=np.float64).copy()
@@ -229,6 +290,15 @@ class MinkIKBridge:
 
         for _ in range(self.max_iters):
             velocity = mink.solve_ik(self._configuration, self._tasks, self.dt, self.solver, self.damping)
+            if self._dof_mask is not None:
+                # Project the step onto the commandable subspace before
+                # integrating. Zeroing here rather than post-filtering the
+                # solution keeps every later iteration honest: the next
+                # solve_ik sees the error that actually remains, so the loop
+                # converges to the best configuration the caller can command
+                # instead of one it can only report.
+                velocity = np.asarray(velocity, dtype=np.float64).copy()
+                velocity[~self._dof_mask] = 0.0
             self._configuration.integrate_inplace(velocity, self.dt)
             err = self._frame_task.compute_error(self._configuration)
             if np.linalg.norm(err[:3]) <= self.pos_threshold and np.linalg.norm(err[3:]) <= self.ori_threshold:

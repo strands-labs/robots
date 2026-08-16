@@ -1459,24 +1459,46 @@ class MuJoCoSimEngine(
             # ``{robot.name}/<cam_name>``. We probe the post-compile model
             # instead of the source, which avoids loading a second model
             # just for introspection.
-            pfx = robot.namespace or ""
+            #
+            # The probe walks the MERGED model, so it sees every camera in the
+            # scene - the overview camera, cameras a caller added, and the
+            # cameras of robots already attached. Only the ones under THIS
+            # robot's namespace are its own, hence the prefix test: without it
+            # a camera another robot contributed is registered a second time
+            # under its qualified name and recorded as belonging to the robot
+            # being added now, which makes ``origin_robot`` (the key
+            # ``remove_robot`` cleans up by) name the wrong robot.
+            pfx = robot.namespace or f"{name}/"
             model = self._world._model
             for i in range(model.ncam):
                 cam_name = mj.mj_id2name(model, mj.mjtObj.mjOBJ_CAMERA, i)
-                if not cam_name:
+                if not cam_name or not cam_name.startswith(pfx):
                     continue
-                # Strip the robot namespace for our Python-side key - the
-                # registry is keyed on the short name and we re-attach the
-                # namespace when passing to the renderer.
-                short = cam_name[len(pfx) :] if cam_name.startswith(pfx) else cam_name
-                if not registered(self._world.cameras, short):
-                    self._world.cameras[short] = SimCamera(
-                        name=cam_name,
-                        camera_id=i,
-                        width=self.default_width,
-                        height=self.default_height,
-                        origin_robot=name,
+                # Key on the short name - the registry is keyed on it and we
+                # re-attach the namespace when passing to the renderer. When
+                # another robot already claimed that short alias (two arms both
+                # declaring ``wrist``), key on the qualified name instead: it is
+                # unique per robot by construction, so the camera stays
+                # addressable and owned rather than being dropped.
+                short = cam_name[len(pfx) :]
+                key = short if not registered(self._world.cameras, short) else cam_name
+                if key != short:
+                    logger.info(
+                        "Robot '%s' camera '%s' registered as '%s': the short name '%s' is "
+                        "already taken by camera '%s'.",
+                        name,
+                        cam_name,
+                        key,
+                        short,
+                        getattr(registry_entry(self._world.cameras, short), "name", short),
                     )
+                self._world.cameras[key] = SimCamera(
+                    name=cam_name,
+                    camera_id=i,
+                    width=self.default_width,
+                    height=self.default_height,
+                    origin_robot=name,
+                )
 
             # Leave the freshly-added robot in a clean, deterministic state:
             # the zero configuration by default, or -- when a spawn keyframe was

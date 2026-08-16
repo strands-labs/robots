@@ -394,7 +394,13 @@ class RenderingMixin:
         (e.g. ``arm0/shoulder_pan`` in MuJoCo to allow multiple same-config
         robots), we look up the prefixed MuJoCo name but return the short
         name in the observation dict so the policy sees a stable, config-level
-        schema regardless of how many robots are in the scene.
+        schema regardless of how many robots are in the scene. That holds for
+        the robot's CAMERAS as well as its joints: ``add_robot`` registers them
+        under their short name (``wrist``) while the compiled model holds them
+        namespaced (``arm0/wrist``), and the registered ``SimCamera`` carries
+        the namespaced name the render lookup needs. A camera key that names
+        nothing in the compiled model is omitted rather than answered with the
+        free camera, per :meth:`SimEngine.get_observation`'s schema.
         """
         mj = _ensure_mujoco()
         assert self._world is not None  # callers must check
@@ -477,8 +483,35 @@ class RenderingMixin:
         for cname in cameras_to_render:
             if not cname:
                 continue
-            cam_id = mj_name_to_id(model, mj.mjtObj.mjOBJ_CAMERA, cname)
             cam_info = registry_entry(self._world.cameras, cname)
+            # Resolve the MODEL camera this observation key names. The key alone
+            # is not always that name: ``add_robot`` registers a robot's own
+            # MJCF cameras under their SHORT name - the stable, config-level
+            # schema this method documents for joints as well - while the
+            # compiled model holds them namespaced (``arm0/wrist``). The
+            # registered entry carries that namespaced name, so it answers for
+            # the keys the bare lookup cannot.
+            cam_id = mj_name_to_id(model, mj.mjtObj.mjOBJ_CAMERA, cname)
+            if cam_id < 0:
+                cam_id = mj_name_to_id(model, mj.mjtObj.mjOBJ_CAMERA, getattr(cam_info, "name", None))
+            if cam_id < 0:
+                # Nothing in the compiled model answers for this key, so there
+                # is no view to report under it. Rendering the FREE camera here
+                # instead published the scene overview under a key that names a
+                # specific camera: every consumer of this schema - a policy
+                # reading ``observation.images.<name>``, a recorded LeRobot
+                # dataset column, the agent-tool observation - was handed the
+                # wrong view under a success result, with no signal that the
+                # camera it asked for had not been rendered. An absent key is
+                # the honest answer and the one the other backends give (the
+                # Newton engine omits a camera whose render yields no frame),
+                # and it leaves the joint state intact for callers that only
+                # need proprioception.
+                logger.debug(
+                    "Camera %r names no camera in the compiled model; omitting it from the observation",
+                    cname,
+                )
+                continue
             h = cam_info.height if cam_info else self.default_height
             w = cam_info.width if cam_info else self.default_width
             try:
@@ -486,10 +519,7 @@ class RenderingMixin:
                 if renderer is None:
                     continue
                 viz_option = self._get_viz_option()
-                if cam_id >= 0:
-                    renderer.update_scene(data, camera=cam_id, scene_option=viz_option)
-                else:
-                    renderer.update_scene(data, scene_option=viz_option)
+                renderer.update_scene(data, camera=cam_id, scene_option=viz_option)
                 obs[cname] = renderer.render().copy()
             except (RuntimeError, ValueError) as e:
                 # Individual camera failure shouldn't stop joint state collection.

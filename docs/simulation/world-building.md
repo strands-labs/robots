@@ -427,6 +427,16 @@ half-applied scene. Use
 
 Free cameras look from `position` toward `target` (`fov=60.0`, `width=640`, `height=480`). Robot-URDF cameras (wrist, etc.) are auto-discovered on `add_robot` - no `add_camera` needed.
 
+A discovered camera is registered under its short MJCF name (`wrist`), and the
+compiled model also carries it namespaced (`so101/wrist`); `render` takes the
+namespaced form, `get_observation` keys on the short one. The short name is
+first-come across robots: when a second robot declares a camera whose short name
+is already taken, that camera is registered under its namespaced name instead
+(logged, naming both), so two arms that both declare `wrist` give you `wrist` and
+`arm2/wrist` rather than one of them shadowing the other. Each camera belongs to
+exactly one robot, which is what makes `remove_robot` take that robot's cameras
+with it and leave every other robot's alone.
+
 To mount a camera ON a moving body (a realistic wrist/gripper view that rides with the arm), pass `parent_body`. Body names are namespaced `<robot>/<body>`; discover the exact mount point with `list_bodies` instead of guessing:
 
 ```python
