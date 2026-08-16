@@ -244,6 +244,7 @@ def _build_spz(
     version: int,
     frac_bits: int = 12,
     sh_degree: int = 0,
+    flags: int = 0,
 ):
     """Write a minimal gzip-compressed .spz file and return its path."""
     import gzip
@@ -252,7 +253,7 @@ def _build_spz(
     from strands_robots.rendering.backgrounds import _SPZ_MAGIC
 
     n = means.shape[0]
-    header = struct.pack("<iii", _SPZ_MAGIC, version, n) + struct.pack("<BBBB", sh_degree, frac_bits, 0, 0)
+    header = struct.pack("<iii", _SPZ_MAGIC, version, n) + struct.pack("<BBBB", sh_degree, frac_bits, flags, 0)
     body = (
         _pack_positions(means, frac_bits)
         + alpha.astype(np.uint8).tobytes()
@@ -311,7 +312,9 @@ class TestSpzGaussianSplatReader:
         path = _build_spz(tmp_path, means, alpha, col, scl, rot, version=3, frac_bits=12)
 
         splats = _load_spz_splats(path, device="cpu")
-        assert set(splats) == {"means", "scales", "quats", "opacities", "colors"}
+        assert set(splats) == {"means", "scales", "quats", "opacities", "colors", "antialiased"}
+        # flags defaults to 0 here -> trained without the AA compensation.
+        assert splats["antialiased"] is False
         m = splats["means"].numpy()
         assert m.shape == (2, 3) and m.dtype == np.float32
         # 24-bit fixed point at frac_bits=12 recovers the means to sub-mm.
@@ -345,6 +348,21 @@ class TestSpzGaussianSplatReader:
         assert splats["means"].shape == (1, 3)
         assert splats["quats"].shape == (1, 4)  # w reconstructed -> 4 comps
         assert abs(float(splats["opacities"][0]) - 200.0 / 255.0) < 1e-4
+
+    def test_load_surfaces_the_antialiased_header_flag(self, tmp_path) -> None:
+        pytest.importorskip("torch")
+        from strands_robots.rendering.backgrounds import _load_spz_splats
+
+        means = np.array([[0.0, 0.0, 0.0]], np.float32)
+        alpha = np.array([200], np.uint8)
+        col = np.array([[10, 20, 30]], np.uint8)
+        scl = np.array([[128, 128, 128]], np.uint8)
+        rot = np.array([[128, 128, 128]], np.uint8)
+        # Header flags bit 0 marks an asset trained with mip-splatting AA
+        # (e.g. the curated tabletop.spz ships flags=1); the loader must
+        # surface it so the rasterizer applies the matching compensation.
+        path = _build_spz(tmp_path, means, alpha, col, scl, rot, version=2, flags=1)
+        assert _load_spz_splats(path, device="cpu")["antialiased"] is True
 
     def test_load_rejects_bad_magic(self, tmp_path) -> None:
         pytest.importorskip("torch")
@@ -979,3 +997,151 @@ class TestGsplatBackgroundLoad:
         b = bg.GsplatBackground(ply_path=tmp_path / "does_not_exist.spz", device="cpu")
         with pytest.raises(FileNotFoundError, match="Gaussian Splat not found"):
             b._load()
+
+
+# --------------------------------------------------------------------------- #
+# GsplatBackground.render -- rasterize-mode selection (no gsplat/CUDA)
+# --------------------------------------------------------------------------- #
+
+
+class TestGsplatRasterizeModeSelection:
+    """An ``.spz`` trained with the antialiased (mip-splatting) header flag
+    must be rasterized with gsplat's matching ``"antialiased"`` mode --
+    opacities trained WITH the AA compensation render wrong without it --
+    while everything else keeps the ``"classic"`` default (issue #2322).
+    Pinned by capturing the kwargs ``render()`` forwards to
+    ``gsplat.rasterization`` through a fake, so no CUDA is needed."""
+
+    @staticmethod
+    def _render_capturing_kwargs(tmp_path, monkeypatch, *, flags: int) -> dict:
+        import sys
+        import types
+
+        import torch
+
+        from strands_robots.rendering import backgrounds as bg_mod
+
+        means = np.array([[0.0, 0.0, -4.0]], np.float32)
+        alpha = np.array([255], np.uint8)
+        col = np.array([[128, 128, 128]], np.uint8)
+        scl = np.array([[128, 128, 128]], np.uint8)
+        rot = np.array([[128, 128, 128]], np.uint8)
+        path = _build_spz(tmp_path, means, alpha, col, scl, rot, version=2, flags=flags)
+
+        captured: dict = {}
+
+        def fake_rasterization(*args, **kwargs):
+            captured.update(kwargs)
+            h, w = kwargs["height"], kwargs["width"]
+            return torch.zeros(1, h, w, 4), torch.zeros(1, h, w, 1), {}
+
+        monkeypatch.setattr(bg_mod, "require_optional", lambda *a, **k: None)
+        monkeypatch.setitem(sys.modules, "gsplat", types.SimpleNamespace(rasterization=fake_rasterization))
+
+        bg = bg_mod.GsplatBackground(ply_path=path, device="cpu")
+        rgb, depth = bg.render(_cam(16, 12))
+        assert rgb.shape == (12, 16, 3)  # the fake round-trips through render()
+        assert np.all(depth == np.float32(100.0))  # zero alpha everywhere -> zfar
+        return captured
+
+    def test_aa_flagged_spz_selects_antialiased_mode(self, tmp_path, monkeypatch) -> None:
+        pytest.importorskip("torch")
+        captured = self._render_capturing_kwargs(tmp_path, monkeypatch, flags=1)
+        assert captured["rasterize_mode"] == "antialiased"
+
+    def test_unflagged_spz_keeps_the_classic_default(self, tmp_path, monkeypatch) -> None:
+        pytest.importorskip("torch")
+        captured = self._render_capturing_kwargs(tmp_path, monkeypatch, flags=0)
+        assert captured["rasterize_mode"] == "classic"
+
+
+# --------------------------------------------------------------------------- #
+# GsplatBackground.render -- partial-alpha compositing + depth (gsplat/CUDA)
+# --------------------------------------------------------------------------- #
+#
+# gsplat's RGB output is alpha-PREMULTIPLIED and its RGB+D depth output is
+# ACCUMULATED (alpha-weighted). render() must therefore composite with the
+# premultiplied over-operator (``rgb + (1 - alpha) * fill``, not
+# ``rgb * alpha + ...`` which weights splat color by alpha^2) and divide the
+# depth through by alpha to get metric depth (issue #2322: at half coverage
+# the old code darkened 2.0x and reported a 4 m splat at ~2 m, biasing the
+# compositor z-test toward the camera). Both are pinned on a single synthetic
+# gaussian -- opacity 0.5 dead-center gives accumulated alpha ~0.5, the
+# partial-coverage regime where both defects are at their measured worst --
+# with no asset download.
+
+
+def _require_cuda_rasterizer() -> None:
+    pytest.importorskip("gsplat")
+    from strands_robots.rendering.backgrounds import gsplat_rasterizer_available
+
+    ok, reason = gsplat_rasterizer_available()
+    if not ok:
+        pytest.skip(f"gsplat CUDA rasterizer unavailable: {reason}")
+
+
+class TestGsplatRenderPartialAlpha:
+    """Premultiplied-alpha compositing and alpha-normalized metric depth."""
+
+    @staticmethod
+    def _single_gaussian_background(color, bg_fill):
+        """A GsplatBackground with one injected gaussian 4 m straight ahead
+        (GS frame == world frame; camera at origin looking down -Z), at
+        opacity 0.5 so the dead-center pixel lands at alpha ~0.5."""
+        import torch
+
+        from strands_robots.rendering.backgrounds import GsplatBackground
+
+        bg = GsplatBackground(ply_path="never-loaded-splats-injected.ply", device="cuda", bg_fill=bg_fill)
+        dev = "cuda"
+        bg._splats = {
+            "means": torch.tensor([[0.0, 0.0, -4.0]], device=dev),
+            "quats": torch.tensor([[1.0, 0.0, 0.0, 0.0]], device=dev),
+            "scales": torch.full((1, 3), 0.5, device=dev),
+            "opacities": torch.tensor([0.5], device=dev),
+            "colors": torch.tensor([list(color)], device=dev),
+        }
+        return bg
+
+    def test_partial_alpha_color_is_composited_once_not_squared(self) -> None:
+        _require_cuda_rasterizer()
+        cam = _cam(64, 64)
+        bg = self._single_gaussian_background(color=(1.0, 0.0, 0.0), bg_fill=(0, 0, 0))
+
+        rgb, _ = bg.render(cam)
+
+        # A pure-red gaussian at alpha ~0.5 over a black fill must read
+        # ~0.5 * 255 at the center: gsplat's RGB is already premultiplied, so
+        # multiplying by alpha again (the pre-fix formula) yields alpha^2
+        # ~0.25 * 255 -- a 2.0x darkening of every partial-coverage pixel.
+        center_red = float(rgb[32, 32, 0]) / 255.0
+        assert 0.44 <= center_red <= 0.56
+
+    def test_partial_alpha_splat_over_matching_fill_is_invariant(self) -> None:
+        _require_cuda_rasterizer()
+        cam = _cam(64, 64)
+        bg = self._single_gaussian_background(color=(1.0, 1.0, 1.0), bg_fill=(255, 255, 255))
+
+        rgb, _ = bg.render(cam)
+
+        # Compositing a white splat over a white fill must be white at EVERY
+        # alpha -- the over-operator is affine in the fill. The alpha^2 bug
+        # broke this invariant: 255 * (a^2 + 1 - a) ~= 191 at a = 0.5,
+        # a grey halo wherever coverage is partial.
+        assert int(rgb[32, 32].min()) >= 250
+
+    def test_accumulated_depth_is_alpha_normalized_to_metric(self) -> None:
+        _require_cuda_rasterizer()
+        cam = _cam(64, 64)
+        bg = self._single_gaussian_background(color=(1.0, 0.0, 0.0), bg_fill=(0, 0, 0))
+
+        _, depth = bg.render(cam)
+
+        # The gaussian sits at 4.0 m. gsplat's RGB+D depth is accumulated
+        # (alpha-weighted), so the raw value at alpha ~0.5 is ~2.0 m; the
+        # compositor's z-test trusts this depth, so without the division a
+        # soft splat region wrongly occludes real foreground behind it.
+        assert abs(float(depth[32, 32]) - 4.0) <= 0.05
+        # Pixels the gaussian never touched report zfar, not a phantom
+        # near-camera depth from the eps-clamped division.
+        assert float(depth[0, 0]) == np.float32(cam.zfar)

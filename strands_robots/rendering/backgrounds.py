@@ -411,6 +411,10 @@ class GsplatBackground:
         # the GS surface (collision still comes from the hidden MuJoCo floor).
         self.own_floor = bool(own_floor)
         self._splats: dict[str, Any] | None = None  # lazily loaded
+        # Set at load time: ``.spz`` assets trained with mip-splatting carry an
+        # antialiased flag (header bit) and must be rasterized with the matching
+        # AA opacity compensation, not the classic mode.
+        self._rasterize_mode: str = "classic"
 
     # ----- lazy load ----- #
 
@@ -437,6 +441,12 @@ class GsplatBackground:
             self._splats = _load_spz_splats(self._ply_path, device=self._device)
         else:
             self._splats = _load_ply_splats(self._ply_path, device=self._device)
+        # Honor the SPZ antialiased training flag (header bit 0): opacities
+        # trained WITH the mip-splatting compensation must be rendered with
+        # gsplat's "antialiased" rasterize mode, or partial-coverage regions
+        # come out too opaque. Popped here so ``self._splats`` stays
+        # tensors-only (``_clip_splats`` indexes every value by mask).
+        self._rasterize_mode = "antialiased" if self._splats.pop("antialiased", False) else "classic"
         if self._skybox:
             means = self._splats["means"].detach().cpu().numpy()
             up_sign = self._up_sign if self._up_sign is not None else _auto_up_sign(means)
@@ -491,11 +501,16 @@ class GsplatBackground:
         Lazily loads the ``.ply``/``.spz`` splats on first call, builds the
         gaussian->camera view matrix (converting the stored camera->world
         MuJoCo/OpenGL pose and the scene-alignment transform into gsplat's
-        OpenCV convention), and rasterizes in ``RGB+D`` mode. Splat RGB is
-        alpha-composited over the neutral background fill so unobserved regions
-        read as plain sky/ceiling rather than black, and zero-contribution
-        pixels are promoted to ``cam.zfar`` depth so they lose the depth test
-        against any MuJoCo foreground.
+        OpenCV convention), and rasterizes in ``RGB+D`` mode (``antialiased``
+        rasterize mode when the asset was trained with it, e.g. an ``.spz``
+        with the AA header flag set; ``classic`` otherwise). gsplat returns
+        alpha-premultiplied RGB and accumulated (alpha-weighted) depth: the
+        RGB is composited over the neutral background fill with the
+        premultiplied over-operator (``rgb + (1 - alpha) * fill``) so
+        unobserved regions read as plain sky/ceiling rather than black, the
+        depth is divided by the accumulated alpha to give metric depth, and
+        zero-contribution pixels are promoted to ``cam.zfar`` depth so they
+        lose the depth test against any MuJoCo foreground.
 
         Args:
             cam: pinhole camera parameters at the desired image size.
@@ -529,8 +544,10 @@ class GsplatBackground:
         K = torch.from_numpy(cam.K).float().unsqueeze(0).to(self._device)
 
         # rasterization returns (render_colors, render_alphas, meta). With
-        # render_mode="RGB+D", render_colors is (B, H, W, 4): [..., :3] = RGB,
-        # [..., 3] = per-pixel depth (meters, in the camera frame).
+        # render_mode="RGB+D", render_colors is (B, H, W, 4): [..., :3] =
+        # alpha-premultiplied RGB (already accumulated over the splats),
+        # [..., 3] = ACCUMULATED (alpha-weighted) depth in meters, which must
+        # be divided by alpha to give metric depth.
         render_colors, render_alphas, _ = rasterization(
             means=s["means"],
             quats=s["quats"],
@@ -544,19 +561,31 @@ class GsplatBackground:
             near_plane=cam.znear,
             far_plane=cam.zfar,
             render_mode="RGB+D",
+            rasterize_mode=self._rasterize_mode,
         )
         out = render_colors[0]  # (H, W, 4)
         rgb = out[..., :3].clamp(0, 1).cpu().numpy() * 255.0
-        depth_np = out[..., 3].cpu().numpy().astype(np.float32)
-        # Composite the splat over a neutral fill using accumulated alpha, so
-        # un-observed regions (zenith/edges) read as a plain ceiling/sky rather
-        # than black. (No-op when fully covered.)
-        alpha = render_alphas[0, ..., 0].cpu().numpy().astype(np.float32)[..., None]
-        rgb = rgb * alpha + self._bg_fill[None, None, :] * (1.0 - alpha)
+        alpha = render_alphas[0, ..., 0].clamp(0, 1).cpu().numpy().astype(np.float32)
+        # Composite the splat over a neutral fill, so un-observed regions
+        # (zenith/edges) read as a plain ceiling/sky rather than black.
+        # gsplat's RGB is already premultiplied by the accumulated alpha, so
+        # the over-operator is ``rgb + (1 - alpha) * fill`` -- multiplying by
+        # alpha again would weight the splat by alpha^2 and darken every
+        # partial-coverage pixel. (No-op when fully covered.)
+        rgb = rgb + self._bg_fill[None, None, :] * (1.0 - alpha[..., None])
         rgb_np = np.clip(rgb, 0, 255).astype(np.uint8)
-        # Pixels with no gaussian contribution come back at depth 0; promote to
-        # zfar so they lose the depth test against any MuJoCo foreground.
-        depth_np = np.where(depth_np <= cam.znear, cam.zfar, depth_np)
+        # Alpha-normalize the accumulated depth to metric depth. Without the
+        # division, soft (partial-alpha) regions report depth biased toward
+        # the camera by exactly their alpha, and the compositor's z-test then
+        # wrongly occludes real foreground pixels.
+        accum_depth = out[..., 3].cpu().numpy().astype(np.float32)
+        depth_np = accum_depth / np.maximum(alpha, 1e-6)
+        # Pixels with (essentially) no gaussian contribution are promoted to
+        # zfar so they lose the depth test against any MuJoCo foreground. The
+        # emptiness test keys on alpha, not the raw depth: after the division
+        # an alpha~0 pixel would otherwise report ``accum/eps`` -- an
+        # arbitrary near-camera phantom occluder.
+        depth_np = np.where((alpha < 1e-4) | (depth_np <= cam.znear), cam.zfar, depth_np)
         return rgb_np, depth_np
 
 
@@ -957,8 +986,10 @@ def _decode_spz_rotations(rot: np.ndarray, smallest_three: bool) -> np.ndarray:
 
 def _load_spz_splats(spz_path: Path, device: str) -> dict[str, Any]:
     """Load a Niantic ``.spz`` (versions 2 & 3) into the same dict layout as
-    :func:`_load_ply_splats`. Higher-order SH is ignored (DC color is enough
-    for a backdrop)."""
+    :func:`_load_ply_splats`, plus an ``"antialiased"`` bool (header flags
+    bit 0: the asset was trained with mip-splatting AA and must be rasterized
+    with ``rasterize_mode="antialiased"``). Higher-order SH is ignored (DC
+    color is enough for a backdrop)."""
     import gzip
     import struct
 
@@ -968,7 +999,7 @@ def _load_spz_splats(spz_path: Path, device: str) -> dict[str, Any]:
     with gzip.open(str(spz_path), "rb") as f:
         raw = f.read()
     magic, version, num_points = struct.unpack_from("<iii", raw, 0)
-    sh_degree, frac_bits, _flags, _reserved = struct.unpack_from("<BBBB", raw, 12)
+    sh_degree, frac_bits, flags, _reserved = struct.unpack_from("<BBBB", raw, 12)
     if magic != _SPZ_MAGIC:
         raise ValueError(f"{spz_path}: bad SPZ magic {magic:#x}")
     if version not in (2, 3):
@@ -1003,7 +1034,14 @@ def _load_spz_splats(spz_path: Path, device: str) -> dict[str, Any]:
     colors = np.clip(0.5 + 0.28209479177387814 * f_dc, 0.0, 1.0)
     quats = _decode_spz_rotations(rot, smallest3)
 
-    logger.info("Loaded SPZ %s: v%d, %d splats, sh_degree=%d", spz_path.name, version, N, sh_degree)
+    logger.info(
+        "Loaded SPZ %s: v%d, %d splats, sh_degree=%d, antialiased=%s",
+        spz_path.name,
+        version,
+        N,
+        sh_degree,
+        bool(flags & 0x1),
+    )
 
     def to_t(a: np.ndarray, dt: Any = None) -> Any:
         return torch.from_numpy(np.ascontiguousarray(a)).to(dt or torch.float32).to(device)
@@ -1014,6 +1052,7 @@ def _load_spz_splats(spz_path: Path, device: str) -> dict[str, Any]:
         "quats": to_t(quats),
         "opacities": to_t(opac),
         "colors": to_t(colors),
+        "antialiased": bool(flags & 0x1),
     }
 
 
