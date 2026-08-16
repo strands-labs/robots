@@ -494,13 +494,22 @@ class TestPlyGaussianSplatReader:
 # without needing the ``sim-gs`` extra.
 
 
+@pytest.fixture
+def scene_ply(tmp_path):
+    """An existing placeholder scene file: construction validates the path
+    eagerly (issue #2321), while the decode stays lazy in ``_load``."""
+    ply = tmp_path / "scene.ply"
+    ply.write_bytes(b"placeholder")
+    return ply
+
+
 class TestGsplatBackgroundConfig:
     """The GsplatBackground constructor normalizes its render-mode config."""
 
-    def test_defaults_to_no_alignment_black_fill_and_lazy_splats(self) -> None:
+    def test_defaults_to_no_alignment_black_fill_and_lazy_splats(self, scene_ply) -> None:
         from strands_robots.rendering.backgrounds import GsplatBackground
 
-        bg = GsplatBackground(ply_path="/nonexistent/scene.ply")
+        bg = GsplatBackground(ply_path=scene_ply)
 
         # No skybox/backdrop alignment unless explicitly asked for.
         assert bg._skybox is False
@@ -513,29 +522,29 @@ class TestGsplatBackgroundConfig:
         # dark scene background convention).
         assert bg._bg_fill.tolist() == [0.0, 0.0, 0.0]
 
-    def test_skybox_mode_defaults_to_neutral_grey_void_fill(self) -> None:
+    def test_skybox_mode_defaults_to_neutral_grey_void_fill(self, scene_ply) -> None:
         from strands_robots.rendering.backgrounds import GsplatBackground
 
-        bg = GsplatBackground(ply_path="scene.ply", skybox=True)
+        bg = GsplatBackground(ply_path=scene_ply, skybox=True)
 
         assert bg._skybox is True
         # Unobserved zenith/edges read as a light-grey ceiling/sky, not black.
         assert bg._bg_fill.tolist() == [188.0, 188.0, 192.0]
 
-    def test_explicit_bg_fill_overrides_the_mode_default(self) -> None:
+    def test_explicit_bg_fill_overrides_the_mode_default(self, scene_ply) -> None:
         from strands_robots.rendering.backgrounds import GsplatBackground
 
-        bg = GsplatBackground(ply_path="scene.ply", skybox=True, bg_fill=(10, 20, 30))
+        bg = GsplatBackground(ply_path=scene_ply, skybox=True, bg_fill=(10, 20, 30))
 
         assert bg._bg_fill.tolist() == [10.0, 20.0, 30.0]
 
-    def test_explicit_transform_disables_skybox_and_backdrop_fits(self) -> None:
+    def test_explicit_transform_disables_skybox_and_backdrop_fits(self, scene_ply) -> None:
         from strands_robots.rendering.backgrounds import GsplatBackground
 
         transform = np.eye(4)
         transform[0, 3] = 1.5
         bg = GsplatBackground(
-            ply_path="scene.ply",
+            ply_path=scene_ply,
             transform=transform,
             skybox=True,
             auto_backdrop=True,
@@ -547,11 +556,11 @@ class TestGsplatBackgroundConfig:
         assert bg._auto_backdrop is False
         assert np.allclose(bg._transform, transform)
 
-    def test_skybox_alignment_and_clip_parameters_are_captured(self) -> None:
+    def test_skybox_alignment_and_clip_parameters_are_captured(self, scene_ply) -> None:
         from strands_robots.rendering.backgrounds import GsplatBackground
 
         bg = GsplatBackground(
-            ply_path="scene.ply",
+            ply_path=scene_ply,
             skybox=True,
             up_sign=-1.0,
             yaw_deg=30,
@@ -579,11 +588,11 @@ class TestGsplatBackgroundConfig:
         # own_floor tells the compositor to hide the MuJoCo grid ground.
         assert bg.own_floor is True
 
-    def test_backdrop_center_and_radius_are_captured(self) -> None:
+    def test_backdrop_center_and_radius_are_captured(self, scene_ply) -> None:
         from strands_robots.rendering.backgrounds import GsplatBackground
 
         bg = GsplatBackground(
-            ply_path="scene.ply",
+            ply_path=scene_ply,
             auto_backdrop=True,
             backdrop_center=(1.0, 2.0, 3.0),
             backdrop_radius=5.0,
@@ -610,11 +619,11 @@ class TestGsplatBackgroundClipSplats:
             "quats": torch.zeros(n, 4),
         }
 
-    def test_clips_below_floor_and_low_opacity(self) -> None:
+    def test_clips_below_floor_and_low_opacity(self, scene_ply) -> None:
         pytest.importorskip("torch")
         from strands_robots.rendering.backgrounds import GsplatBackground
 
-        bg = GsplatBackground(ply_path="scene.ply")
+        bg = GsplatBackground(ply_path=scene_ply)
         bg._transform = np.eye(4)
         # z:   -1.0 (below floor), 0.5, 2.0, 3.0 ; opacity: 0.9, 0.1, 0.9, 0.9
         bg._splats = self._splats(
@@ -632,11 +641,11 @@ class TestGsplatBackgroundClipSplats:
         for key in ("means", "opacities", "colors", "scales", "quats"):
             assert bg._splats[key].shape[0] == 2
 
-    def test_zero_min_opacity_disables_the_opacity_filter(self) -> None:
+    def test_zero_min_opacity_disables_the_opacity_filter(self, scene_ply) -> None:
         pytest.importorskip("torch")
         from strands_robots.rendering.backgrounds import GsplatBackground
 
-        bg = GsplatBackground(ply_path="scene.ply")
+        bg = GsplatBackground(ply_path=scene_ply)
         bg._transform = np.eye(4)
         bg._splats = self._splats([[0, 0, -1.0], [0, 0, 1.0]], [0.01, 0.01])
 
@@ -646,11 +655,11 @@ class TestGsplatBackgroundClipSplats:
         assert (kept, total) == (1, 2)
         assert bg._splats["means"].tolist() == [[0.0, 0.0, 1.0]]
 
-    def test_clip_threshold_is_applied_in_world_frame_after_transform(self) -> None:
+    def test_clip_threshold_is_applied_in_world_frame_after_transform(self, scene_ply) -> None:
         pytest.importorskip("torch")
         from strands_robots.rendering.backgrounds import GsplatBackground
 
-        bg = GsplatBackground(ply_path="scene.ply")
+        bg = GsplatBackground(ply_path=scene_ply)
         # world_from_gs lifts every gaussian by +5 in z, so gaussians that sit
         # below the floor in their own frame clear it in world coordinates.
         transform = np.eye(4)
@@ -712,8 +721,10 @@ class TestBakeGsplatPanorama:
 
         # PNG keeps the reprojection lossless so exact direction->colour
         # assertions hold (production bakes a .jpg; the format is incidental).
+        ply = tmp_path / "scene.ply"
+        ply.write_bytes(b"placeholder")
         out = bg.bake_gsplat_panorama(
-            tmp_path / "scene.ply",
+            ply,
             out_path=tmp_path / "pano.png",
             face_size=32,
             equi_w=64,
@@ -971,11 +982,26 @@ class TestGsplatBackgroundLoad:
         assert b._splats is not None
         assert b._splats["means"].detach().cpu().numpy().shape[0] == means.shape[0]
 
-    def test_missing_scene_file_raises_filenotfound(self, tmp_path, monkeypatch) -> None:
+    def test_missing_scene_file_raises_filenotfound_at_construction(self, tmp_path) -> None:
+        from strands_robots.rendering import backgrounds as bg
+
+        # Path validation is eager (issue #2321): the misconfiguration
+        # surfaces where the caller supplied the path, not at first render
+        # inside an app's catch-all.
+        with pytest.raises(FileNotFoundError, match="Gaussian Splat not found"):
+            bg.GsplatBackground(ply_path=tmp_path / "does_not_exist.spz", device="cpu")
+
+    def test_scene_file_deleted_after_construction_still_raises_in_load(self, tmp_path, monkeypatch) -> None:
         pytest.importorskip("torch")
         from strands_robots.rendering import backgrounds as bg
 
         monkeypatch.setattr(bg, "require_optional", lambda *a, **k: None)
-        b = bg.GsplatBackground(ply_path=tmp_path / "does_not_exist.spz", device="cpu")
+        # Defense in depth: construction validated an existing file, but the
+        # file can vanish before the lazy first render -- _load still fails
+        # loud rather than reaching the decoder with a missing file.
+        path = tmp_path / "scene.spz"
+        path.write_bytes(b"placeholder")
+        b = bg.GsplatBackground(ply_path=path, device="cpu")
+        path.unlink()
         with pytest.raises(FileNotFoundError, match="Gaussian Splat not found"):
             b._load()
