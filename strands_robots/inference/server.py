@@ -128,9 +128,58 @@ class PolicyServer:
         self.port = port
         self._server: Server | None = None
         self._thread: threading.Thread | None = None
+        # Set by stop() before it closes the listening socket, so the serving
+        # loop can tell a teardown apart from a genuine socket failure. See
+        # _run_accept_loop.
+        self._stopping = threading.Event()
         # Serialize inference so per-episode policy state is never interleaved
         # across connections (v1 single-client contract).
         self._lock = threading.Lock()
+
+    def _run_accept_loop(self, server: Server) -> None:
+        """Run the sync server's accept loop, absorbing the teardown race only.
+
+        :meth:`stop` ends the loop by closing the listening socket from another
+        thread, and the socket is exactly what the loop is waiting on. The
+        websockets sync server does not synchronize those two, so a stop that
+        lands while the loop is coming up raises out of ``serve_forever()``.
+
+        Both shapes come from the *same* call - ``serve_forever()`` registering
+        the listening socket with its selector - and which one surfaces depends
+        on where in that call the close lands, not on the release. ``selectors``
+        reads ``fileno()`` to build its key and then hands the descriptor to
+        ``epoll_ctl``: a close landing before the read leaves ``fileno()`` at
+        ``-1`` and raises ``ValueError: Invalid file descriptor: -1``, while a
+        close landing between the read and ``epoll_ctl`` leaves a live-looking
+        descriptor and raises ``OSError: [Errno 9] Bad file descriptor``. 12.0
+        wraps that call in nothing, so both escape it; 13.0 through 17.x wrap it
+        in ``except ValueError: return``, which absorbs the first shape and
+        leaves the second - so raising the dependency floor narrows this race
+        but does not close it.
+
+        Left unhandled that kills the serving thread, and a daemon thread reports
+        its death nowhere: ``stop()`` returns, :attr:`_server` is cleared, and the
+        server looks cleanly shut down. So the loop is only ever run through
+        here, and the exception is absorbed *only* while a stop is in progress -
+        the same failure without a stop pending is a real one and still
+        propagates, which is why this keys on :attr:`_stopping` rather than on
+        the exception type. Keying on the type would both swallow a genuine
+        socket error and encode a release-to-exception mapping that is already
+        untrue: one call raises either shape depending on scheduling, and every
+        supported release can produce the ``OSError``.
+
+        Args:
+            server: The running sync server whose accept loop to drive.
+        """
+        try:
+            server.serve_forever()
+        except (OSError, ValueError):
+            if not self._stopping.is_set():
+                raise
+            logger.debug(
+                "PolicyServer: accept loop ended while stopping (the listening socket was closed under it)",
+                exc_info=True,
+            )
 
     def _metadata(self) -> dict[str, Any]:
         """Introspection payload advertised in the ``ready`` handshake."""
@@ -238,6 +287,9 @@ class PolicyServer:
         if self._server is not None:
             raise RuntimeError("PolicyServer is already running")
 
+        # A previous stop() left the flag set; this run's teardown has not begun.
+        self._stopping.clear()
+
         from websockets.sync.server import serve
 
         # Match the client's connect() options: an observation carrying camera
@@ -254,7 +306,8 @@ class PolicyServer:
         self.port = server.socket.getsockname()[1]
         self._server = server
         self._thread = threading.Thread(
-            target=server.serve_forever,
+            target=self._run_accept_loop,
+            args=(server,),
             name=f"policy-server-{self.port}",
             daemon=True,
         )
@@ -264,6 +317,9 @@ class PolicyServer:
 
     def stop(self) -> None:
         """Stop the background server and join its thread. Safe to call twice."""
+        # Before the close, not after: the serving thread races this and reads
+        # the flag to tell a teardown apart from a real socket failure.
+        self._stopping.set()
         if self._server is not None:
             self._server.shutdown()
             self._server = None
@@ -289,7 +345,7 @@ class PolicyServer:
             self._server = server
             logger.info("PolicyServer serving on ws://%s:%d", self.host, self.port)
             try:
-                server.serve_forever()
+                self._run_accept_loop(server)
             finally:
                 self._server = None
 
