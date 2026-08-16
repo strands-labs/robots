@@ -1795,10 +1795,11 @@ class Mesh(SensorLoopsMixin):
 
     # Well-known per-call policy kwargs from issue #300 - keys that planner-
     # style providers (cuRobo, MoveIt2, MPC) consume to encode goals beyond
-    # natural-language ``instruction``. Forwarded from ``tell()`` payload
-    # into ``policy_config`` so a ``policy_provider="curobo"`` peer sees the
-    # ``target_pose`` it needs without the dispatch layer dropping it
-    # silently.
+    # natural-language ``instruction``. Forwarded from the ``tell()``
+    # payload into ``policy_kwargs`` -- the run_policy/start_policy parameter
+    # that reaches ``get_actions(obs, instruction, **policy_kwargs)`` -- so a
+    # ``policy_provider="curobo"`` peer sees the ``target_pose`` it needs
+    # without the dispatch layer dropping it silently.
     #
     # See AGENTS.md > Public API Hygiene: "Forward all advertised kwargs
     # end-to-end. Silent drops are bugs masquerading as features."
@@ -1832,12 +1833,19 @@ class Mesh(SensorLoopsMixin):
             * Otherwise return an error - ambiguous targets must be
               explicit so the agent can't accidentally drive the wrong arm.
 
-        Forwards both the existing ``extra`` constructor kwargs
-        (``model_path``, ``server_address``, ``policy_type``,
-        ``pretrained_name_or_path``) and the issue #300 well-known per-call
-        kwargs (``target_pose``, ``target_joints``, ``world_update``) via
-        ``policy_config``. Per #300 the receiving Policy ignores unknown
-        kwargs rather than raising, so VLA providers stay compatible.
+        Each forwarded payload goes to the sink that reads it. The
+        ``extra`` constructor kwargs (``model_path``, ``server_address``,
+        ``policy_type``, ``pretrained_name_or_path``) travel in
+        ``policy_config``, which ``create_policy`` hands to the Policy
+        constructor. The issue #300 well-known per-call goal
+        (``target_pose``, ``target_joints``, ``world_update``) travels in
+        ``policy_kwargs``, which the runner forwards verbatim to every
+        ``get_actions(obs, instruction, **policy_kwargs)`` call: no provider
+        names a goal key on its constructor, so ``policy_config`` would hand
+        the goal to a forward-compatibility absorber that ignores it and the
+        planner would then refuse the payload the caller supplied. Per #300
+        the receiving Policy ignores unknown per-call kwargs rather than
+        raising, so VLA providers stay compatible.
         """
         sim = self.robot
 
@@ -1865,13 +1873,13 @@ class Mesh(SensorLoopsMixin):
         if robot_name not in available:
             return {"error": f"robot_name={robot_name!r} not in sim (available: {available})"}
 
-        # Build policy_config: existing constructor kwargs + well-known
-        # per-call kwargs from #300. ``policy_config`` is the documented
-        # passthrough on SimEngine.run_policy/start_policy.
+        # Constructor kwargs and the per-call goal have different sinks:
+        # ``policy_config`` is expanded into the Policy constructor, while
+        # ``policy_kwargs`` is forwarded verbatim to every ``get_actions``
+        # call. Every provider reads the #300 goal in ``get_actions``, so
+        # routing it through the constructor drops it.
         policy_config: dict[str, Any] = dict(extra)
-        for key in self._SIM_WELL_KNOWN_POLICY_KWARGS:
-            if key in cmd:
-                policy_config[key] = cmd[key]
+        policy_kwargs: dict[str, Any] = {key: cmd[key] for key in self._SIM_WELL_KNOWN_POLICY_KWARGS if key in cmd}
 
         # Optional sim-side controls. We expose only the fields that already
         # have validator coverage in the wire schema - control_frequency,
@@ -1881,6 +1889,7 @@ class Mesh(SensorLoopsMixin):
         run_kwargs: dict[str, Any] = {
             "policy_provider": policy_provider,
             "policy_config": policy_config,
+            "policy_kwargs": policy_kwargs,
             "instruction": instruction,
             "duration": duration,
         }

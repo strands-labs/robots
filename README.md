@@ -995,10 +995,12 @@ a.mesh.tell(b.peer_id, "pick up the cube")
 a.mesh.emergency_stop()         # broadcast E-STOP, audited to disk
 ```
 
-`tell()` routes to hardware **and** sim peers. Per-call policy kwargs
-(`target_pose`, `target_joints`, `world_update`) and constructor extras are
-forwarded end-to-end via `policy_config`, so a planner-style policy on a sim
-peer sees the goal payload it needs:
+`tell()` routes to hardware **and** sim peers. Each payload is forwarded to
+the sink that reads it: constructor extras (`model_path`, `server_address`,
+...) via `policy_config`, and the per-call goal (`target_pose`,
+`target_joints`, `world_update`) via `policy_kwargs`, which the runner hands
+to every `get_actions()` call. So a planner-style policy on a sim peer sees
+the goal payload it needs:
 
 ```python
 a.mesh.tell(

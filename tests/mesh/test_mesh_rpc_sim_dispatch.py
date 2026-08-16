@@ -4,8 +4,12 @@ The HardwareRobot dispatch path is covered by ``test_mesh_rpc.py``. This
 module pins the sim-peer branch added by issue #303: ``tell()`` against a
 peer whose ``robot`` is a ``Simulation`` (or any ``SimEngine``-shaped
 object) routes ``execute`` -> ``run_policy`` and ``start`` -> ``start_policy``
-with the issue #300 well-known kwargs (``target_pose`` / ``target_joints`` /
-``world_update``) forwarded into ``policy_config``.
+with the issue #300 well-known goal payload (``target_pose`` /
+``target_joints`` / ``world_update``) forwarded into ``policy_kwargs`` - the
+runner parameter that reaches ``get_actions(obs, instruction, **kwargs)``,
+which is where every provider reads that goal. Constructor extras
+(``model_path`` / ``server_address`` / ...) keep travelling in
+``policy_config``, which is expanded into the Policy constructor.
 
 Tests are 100% mocked - no MuJoCo / Isaac install required. A
 ``_FakeSim`` exposes the SimEngine surface duck-typed minimally to what
@@ -14,6 +18,7 @@ Tests are 100% mocked - no MuJoCo / Isaac install required. A
 
 from __future__ import annotations
 
+import inspect
 from typing import Any
 
 from strands_robots.mesh import Mesh
@@ -69,8 +74,9 @@ def test_execute_routes_to_run_policy_with_default_robot() -> None:
     assert kwargs["instruction"] == "wave"
     assert kwargs["policy_provider"] == "mock"
     # Even when the caller passes no extras, we always forward an empty
-    # policy_config dict so the receiving sim sees a stable type.
+    # dict for both sinks so the receiving sim sees a stable type.
     assert kwargs["policy_config"] == {}
+    assert kwargs["policy_kwargs"] == {}
     assert sim.start_policy_calls == []
 
 
@@ -90,8 +96,15 @@ def test_start_routes_to_start_policy_async() -> None:
     assert sim.run_policy_calls == []
 
 
-def test_execute_forwards_well_known_kwargs_via_policy_config() -> None:
-    """Issue #300 well-known kwargs land in ``policy_config``, not silently dropped.
+def test_execute_forwards_the_goal_payload_via_policy_kwargs() -> None:
+    """The issue #300 goal lands in the sink the providers read it from.
+
+    Every provider reads the goal inside ``get_actions(**kwargs)``, which the
+    runner fills from ``policy_kwargs``; no provider names a goal key on its
+    constructor, so routing the goal through ``policy_config`` hands it to a
+    forward-compatibility absorber that discards it. The caller then gets the
+    planner's "requires at least one of target_pose=... / target_joints=..."
+    refusal for a request that carried exactly that.
 
     See AGENTS.md > Public API Hygiene: "Forward all advertised kwargs
     end-to-end. Silent drops are bugs masquerading as features."
@@ -114,10 +127,69 @@ def test_execute_forwards_well_known_kwargs_via_policy_config() -> None:
         }
     )
     args, kwargs = sim.run_policy_calls[0]
-    pc = kwargs["policy_config"]
-    assert pc["target_pose"] == target_pose
-    assert pc["target_joints"] == target_joints
-    assert pc["world_update"] == world_update
+    goal = kwargs["policy_kwargs"]
+    assert goal["target_pose"] == target_pose
+    assert goal["target_joints"] == target_joints
+    assert goal["world_update"] == world_update
+    # The constructor sink must not also receive it: create_policy() expands
+    # policy_config into the Policy constructor, where a goal key is an
+    # unknown kwarg the provider is required to ignore.
+    assert kwargs["policy_config"] == {}
+
+
+def test_start_forwards_the_goal_payload_via_policy_kwargs() -> None:
+    """The async ``start`` branch carries the goal, not only ``execute``.
+
+    ``start_policy`` takes the same ``policy_kwargs`` parameter as
+    ``run_policy``, so a fire-and-forget ``tell()`` must not be the one route
+    that loses the goal.
+    """
+    sim = _FakeSim(robots=["so100"])
+    m = Mesh(sim, peer_id="sim-a")
+
+    target_pose = [0.3, 0.0, 0.4, 1.0, 0.0, 0.0, 0.0]
+    m._dispatch(
+        {
+            "action": "start",
+            "instruction": "reach",
+            "policy_provider": "curobo",
+            "target_pose": target_pose,
+        }
+    )
+    kwargs = sim.start_policy_calls[0][1]
+    assert kwargs["policy_kwargs"]["target_pose"] == target_pose
+    assert kwargs["policy_config"] == {}
+
+
+def test_planner_providers_read_the_goal_per_call_not_at_construction() -> None:
+    """Pin the invariant that makes ``policy_kwargs`` the goal's only sink.
+
+    The dispatcher has two sinks and no way to ask a provider which one it
+    reads, so the choice is only correct while every provider that consumes
+    the issue #300 goal consumes it per call. A provider that grew a
+    ``target_pose`` constructor parameter would make that choice ambiguous
+    and this test says so before the dispatcher silently picks wrong.
+
+    ``tests/simulation/test_policy_kwargs_forwarding.py`` pins the other half
+    of the chain: the runner forwards ``policy_kwargs`` verbatim to every
+    ``get_actions`` call.
+    """
+    from strands_robots.policies.curobo.policy import CuroboPolicy
+    from strands_robots.policies.moveit2.policy import MoveIt2Policy
+
+    for policy_class in (CuroboPolicy, MoveIt2Policy):
+        constructor = inspect.signature(policy_class.__init__).parameters
+        named_at_construction = [key for key in Mesh._SIM_WELL_KNOWN_POLICY_KWARGS if key in constructor]
+        assert not named_at_construction, (
+            f"{policy_class.__name__}.__init__ names {named_at_construction}; the mesh dispatcher "
+            "sends the goal to get_actions, so a constructor parameter of the same name would be "
+            "filled from a different payload"
+        )
+
+        per_call = inspect.signature(policy_class.get_actions).parameters
+        assert any(p.kind is p.VAR_KEYWORD for p in per_call.values()), (
+            f"{policy_class.__name__}.get_actions takes no **kwargs, so it cannot receive the goal"
+        )
 
 
 def test_execute_forwards_constructor_extras_via_policy_config() -> None:
@@ -139,11 +211,15 @@ def test_execute_forwards_constructor_extras_via_policy_config() -> None:
             "pretrained_name_or_path": "nvidia/GR00T-N1.5",
         }
     )
-    pc = sim.run_policy_calls[0][1]["policy_config"]
+    kwargs = sim.run_policy_calls[0][1]
+    pc = kwargs["policy_config"]
     assert pc["model_path"] == "nvidia/GR00T-N1.5"
     assert pc["server_address"] == "127.0.0.1:5555"
     assert pc["policy_type"] == "groot"
     assert pc["pretrained_name_or_path"] == "nvidia/GR00T-N1.5"
+    # A constructor extra is not a per-call goal: it must not be re-sent to
+    # get_actions on every tick.
+    assert kwargs["policy_kwargs"] == {}
 
 
 def test_execute_requires_robot_name_when_multiple_robots() -> None:

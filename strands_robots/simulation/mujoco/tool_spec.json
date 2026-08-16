@@ -136,6 +136,7 @@
         "sphere",
         "cylinder",
         "capsule",
+        "ellipsoid",
         "mesh",
         "plane"
       ]

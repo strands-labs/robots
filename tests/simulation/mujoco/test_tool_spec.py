@@ -938,3 +938,143 @@ class TestTheSharedSizeFieldPublishesBothConventions:
             "color means one thing to both actions, so it needs no per-action split; a mention "
             f"here would say the conventions diverge when they do not. Got: {description!r}"
         )
+
+
+# Shape-vocabulary contract
+#
+# ``shape`` publishes an enum and nothing else - it is one of the properties with
+# no description at all, so for a schema-constrained decoder the enum *is* the
+# whole specification of the parameter. ``ellipsoid`` compiles: ``_geom_type``
+# maps it to ``mjGEOM_ELLIPSOID``, ``_SIZE_LAYOUT`` gives it a layout,
+# ``add_object``'s docstring lists it among the valid shapes, and the ``size``
+# description in this very schema names its layout twice ("box/ellipsoid
+# [x,y,z]"). The enum omitted it, so the one surface a model forms its call from
+# was the one surface that never offered it.
+#
+# Both failures the action enum was pinned against, one level down at the value:
+# prose promising something the schema rejects, and a capability reachable from
+# Python that no agent could select. The router binds against the method
+# signature rather than the schema, so an unpublished value is not refused - it
+# is simply never emitted, and the shape reads as unsupported rather than as
+# undiscoverable.
+#
+# Keyed on the live shape tables rather than a literal copy of them, so a shape
+# added to the builder fails here until it is published.
+
+
+def _shapes_the_builder_compiles() -> set[str]:
+    """Shape names ``add_object`` can compile a geom for.
+
+    ``_GEOM_TYPE_CACHE`` is populated lazily on first use so importing the
+    builder does not require mujoco, so it is warmed through the public mapping
+    before being read.
+    """
+    from strands_robots.simulation.mujoco import spec_builder
+
+    spec_builder._geom_type("box")
+    assert spec_builder._GEOM_TYPE_CACHE is not None
+    return set(spec_builder._GEOM_TYPE_CACHE)
+
+
+def _published_shapes() -> list[str]:
+    return list(_tool_spec_properties()["shape"]["enum"])
+
+
+class TestTheSchemaPublishesEveryShapeAddObjectCompiles:
+    """The ``shape`` enum enumerates exactly the builder's shape vocabulary."""
+
+    def test_every_shape_the_builder_compiles_is_offered_in_the_enum(self) -> None:
+        """This is the direction that broke.
+
+        A shape absent from the enum is not rejected by the router, so nothing
+        fails and the capability is simply never selected. ``ellipsoid`` was
+        added to the builder, given a ``_SIZE_LAYOUT`` row, documented on
+        ``add_object`` and named in the ``size`` description, and stayed out of
+        the enum - reachable from Python and unreachable for an agent.
+        """
+        unpublished = sorted(_shapes_the_builder_compiles() - set(_published_shapes()))
+
+        assert not unpublished, (
+            "add_object compiles these shapes but the schema's 'shape' enum does not offer them, "
+            "so a schema-constrained caller can never select them (the enum is the whole "
+            f"specification - the property carries no description): {unpublished}"
+        )
+
+    def test_the_enum_offers_no_shape_the_builder_refuses(self) -> None:
+        """The converse, and the reason publishing is not simply widening.
+
+        An enum entry the builder cannot compile is the worse failure of the two:
+        the model is told to emit a value that is refused on arrival. Nothing is
+        wrong in this direction today, which is what makes it the control - it
+        pins that the fix published a value the builder honours rather than a
+        name.
+        """
+        unsupported = sorted(set(_published_shapes()) - _shapes_the_builder_compiles())
+
+        assert not unsupported, (
+            "the schema's 'shape' enum offers these values but add_object refuses them, so a "
+            f"model following the schema is rejected on arrival: {unsupported}"
+        )
+
+    def test_the_size_description_names_no_shape_the_enum_omits(self) -> None:
+        """The schema may not contradict itself about its own vocabulary.
+
+        Independent of the code: ``size`` publishes a per-shape layout table, and
+        a shape named there that ``shape`` does not offer sends a model to a
+        value the same schema rejects. This is the value-level form of the
+        action-level accounting above, and it failed for the same shape.
+        """
+        description = _tool_spec_properties()["size"]["description"]
+        named = {
+            shape for shape in _shapes_the_builder_compiles() if re.search(rf"\b{re.escape(shape)}\b", description)
+        }
+        assert named, "premise: the 'size' description publishes a per-shape layout table"
+
+        unpublished = sorted(named - set(_published_shapes()))
+        assert not unpublished, (
+            "the 'size' description gives a layout for these shapes but the 'shape' enum does not "
+            "offer them, so the schema promises a value it also rejects; publish them in the enum "
+            f"or drop them from the description: {unpublished}"
+        )
+
+    def test_every_published_shape_has_a_size_layout_to_quote(self) -> None:
+        """A published shape whose ``size`` count is unknown refuses silently wrong.
+
+        ``_validate_size`` reads ``_SIZE_LAYOUT.get(shape, (0, ""))``, so a shape
+        with no row consumes nothing as far as the check is concerned: every size
+        passes validation and the geom compiles from whatever the vector happened
+        to hold. Publishing a shape therefore also means declaring its layout.
+        """
+        from strands_robots.simulation.mujoco.spec_builder import _SIZE_LAYOUT
+
+        layoutless = sorted(shape for shape in _published_shapes() if shape not in _SIZE_LAYOUT)
+        assert not layoutless, (
+            "every published shape needs a _SIZE_LAYOUT row so the size count is validated and "
+            f"the refusal can quote a layout; missing: {layoutless}"
+        )
+
+    def test_a_published_shape_compiles_the_geom_type_it_names(self, world_sim: Simulation) -> None:
+        """End to end through the router, for the shape the enum gained.
+
+        The enum is a promise about what arrives in the model, not only about
+        what the router accepts. An ellipsoid takes full diameters per axis like
+        a box, so the compiled ``geom_size`` is the requested vector halved, and
+        the resize refusal names the type by name - which is what distinguishes a
+        real ellipsoid from a box that merely accepted the same three numbers.
+        """
+        import mujoco
+
+        assert "ellipsoid" in _published_shapes(), "premise: the shape is published"
+
+        added = world_sim(
+            action="add_object", name="egg", shape="ellipsoid", position=[0, 0, 0.4], size=[0.2, 0.1, 0.3]
+        )
+        assert added["status"] == "success", added
+
+        geom_id = _compiled_geom_id(world_sim, "egg_geom")
+        assert int(world_sim.mj_model.geom_type[geom_id]) == int(mujoco.mjtGeom.mjGEOM_ELLIPSOID)
+        assert [float(component) for component in world_sim.mj_model.geom_size[geom_id][:3]] == [0.1, 0.05, 0.15]
+
+        refused = world_sim(action="set_geom_properties", geom_name="egg", size=[0.1])
+        assert refused["status"] == "error"
+        assert "ellipsoid" in refused["content"][0]["text"], refused
