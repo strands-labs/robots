@@ -10,8 +10,11 @@ Also pins the no-alias rule: the registry must NOT export a duplicate
 it from the discovery surface rather than the API carrying a second name.
 """
 
+import ast
+import inspect
 import re
 from collections.abc import Sequence
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -982,3 +985,222 @@ class TestNoAlias:
             "not by aliasing a wrong guess."
         )
         assert "get_robot_info" not in getattr(registry, "__all__", [])
+
+
+def _folded_string(node: ast.AST) -> str | None:
+    """Fold a string literal or an ``+``-concatenated chain into one value.
+
+    describe() writes its longer signature strings as parenthesised implicit
+    concatenations, which the parser hands back as a single ``ast.Constant``,
+    and a few as explicit ``+`` chains. Anything that is not a compile-time
+    string (an f-string interpolating live state) folds to ``None`` and is
+    skipped: a signature string is a constant by construction.
+
+    Args:
+        node: The expression node to fold.
+
+    Returns:
+        The string value, or ``None`` when the node is not a constant string.
+    """
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        left = _folded_string(node.left)
+        right = _folded_string(node.right)
+        return None if left is None or right is None else left + right
+    return None
+
+
+def _describe_signature_strings(engine_cls: type) -> dict[str, str]:
+    """Read the signature strings ``engine_cls.describe()`` hands out.
+
+    Read from the source rather than from a live ``describe()`` call, because
+    an engine has to exist before it can describe itself and two of the three
+    backends need a runtime (``newton`` + ``warp``, ``isaacsim``) that cannot
+    be installed alongside the others. Their classes import fine, so the
+    signature strings can be compared against the real signatures without
+    constructing anything. Reading the source also covers strings on branches a
+    live call happens not to take.
+
+    Recognizes both spellings describe() uses: a ``{"name": "(...) -> ..."}``
+    entry in a dict literal, and a ``base["methods"]["name"] = "(...) -> ..."``
+    assignment. Only values that begin with ``(`` are collected, so the
+    non-signature entries in the same dict (backend name, solver, note) are
+    skipped.
+
+    Args:
+        engine_cls: The engine class whose ``describe()`` to read.
+
+    Returns:
+        Mapping of advertised method name to its advertised signature string.
+    """
+    source_file = inspect.getsourcefile(engine_cls)
+    assert source_file is not None, f"no source file for {engine_cls.__name__}"
+    module = ast.parse(Path(source_file).read_text(encoding="utf-8"))
+
+    class_defs = [
+        node for node in ast.walk(module) if isinstance(node, ast.ClassDef) and node.name == engine_cls.__name__
+    ]
+    assert class_defs, f"{engine_cls.__name__} not found in {source_file}"
+
+    signatures: dict[str, str] = {}
+    for class_def in class_defs:
+        for describe in [
+            node for node in ast.walk(class_def) if isinstance(node, ast.FunctionDef) and node.name == "describe"
+        ]:
+            for node in ast.walk(describe):
+                if isinstance(node, ast.Dict):
+                    for key, value in zip(node.keys, node.values, strict=True):
+                        name = _folded_string(key) if key is not None else None
+                        text = _folded_string(value)
+                        if name and text and text.lstrip().startswith("("):
+                            signatures[name] = text
+                elif (
+                    isinstance(node, ast.Assign)
+                    and len(node.targets) == 1
+                    and isinstance(node.targets[0], ast.Subscript)
+                ):
+                    name = _folded_string(node.targets[0].slice)
+                    text = _folded_string(node.value)
+                    if name and text and text.lstrip().startswith("("):
+                        signatures[name] = text
+    return signatures
+
+
+def _real_parameters(engine_cls: type, method_name: str) -> tuple[set[str], set[str]] | None:
+    """Real and required parameter names of an advertised method.
+
+    Args:
+        engine_cls: The engine class the method is resolved on.
+        method_name: The advertised method name.
+
+    Returns:
+        ``(all_names, required_names)``, or ``None`` when the method is not
+        introspectable on this class or accepts ``**kwargs`` (a pass-through
+        signature may legitimately advertise keywords it forwards).
+    """
+    function = getattr(engine_cls, method_name, None)
+    if not callable(function):
+        # The backend-agnostic facade advertises the full engine contract,
+        # including the two accessors every concrete backend supplies but the
+        # ABC does not declare. A caller always holds a concrete engine, and
+        # the live-engine tests above pin that an advertised name resolves.
+        return None
+    try:
+        parameters = inspect.signature(function).parameters
+    except (TypeError, ValueError):
+        return None
+    if any(p.kind == p.VAR_KEYWORD for p in parameters.values()):
+        return None
+    required = {
+        name
+        for name, p in parameters.items()
+        if name != "self" and p.default is p.empty and p.kind in (p.POSITIONAL_OR_KEYWORD, p.KEYWORD_ONLY)
+    }
+    return set(parameters) | {"self"}, required
+
+
+# Every backend that overrides describe(), keyed by the label a failure names.
+# Resolved lazily: importing a backend module needs no simulator runtime, but it
+# does need the package's own optional deps, so the import happens inside the
+# test rather than at collection time.
+_DESCRIBE_BACKENDS = {
+    "base": ("strands_robots.simulation.base", "SimEngine"),
+    "mujoco": ("strands_robots.simulation.mujoco.simulation", "MuJoCoSimEngine"),
+    "newton": ("strands_robots.simulation.newton.simulation", "NewtonSimEngine"),
+    "isaac": ("strands_robots.simulation.isaac.simulation", "IsaacSimulation"),
+}
+
+
+def _describe_backend(label: str) -> type:
+    """Import the engine class registered under ``label``.
+
+    Args:
+        label: Key into :data:`_DESCRIBE_BACKENDS`.
+
+    Returns:
+        The engine class. None of these modules needs its simulator runtime
+        (``newton`` + ``warp``, ``isaacsim``) at import time, which is what
+        makes every backend reachable from one environment.
+    """
+    import importlib
+
+    module_name, class_name = _DESCRIBE_BACKENDS[label]
+    return getattr(importlib.import_module(module_name), class_name)
+
+
+class TestDescribeSignaturesAgreeWithTheMethodsOnEveryBackend:
+    """Every backend's advertised signatures name the real parameters.
+
+    The live-engine tests above pin this invariant where an engine can be
+    constructed: the ABC (through a minimal concrete subclass) and MuJoCo. The
+    Newton and Isaac backends need a simulator runtime that cannot be installed
+    in the same environment, so their hardcoded signature strings were never
+    compared against anything, and Newton's ``set_timestep`` drifted to
+    advertise a ``dt`` keyword its method has never accepted. These tests close
+    that gap by reading the strings from source and resolving the signatures on
+    the imported class, so the discovery surface of every backend is held to
+    one rule.
+    """
+
+    def test_every_backend_advertises_signatures(self):
+        """The extraction really finds signature strings on all four surfaces.
+
+        Without this the two tests below would pass vacuously if the source
+        layout of describe() changed and the reader stopped matching.
+        """
+        counts = {
+            label: len(_describe_signature_strings(_describe_backend(label))) for label in sorted(_DESCRIBE_BACKENDS)
+        }
+        assert all(count >= 10 for count in counts.values()), counts
+        assert sum(counts.values()) >= 140, counts
+
+    @pytest.mark.parametrize("label", sorted(_DESCRIBE_BACKENDS))
+    def test_every_advertised_parameter_is_a_real_parameter(self, label):
+        """An advertised keyword must exist, or the caller dead-ends.
+
+        An agent reads a signature string out of describe() and calls the
+        method with those keywords. A keyword no longer on the method raises
+        ``TypeError``, and the discovery surface is the only place the agent
+        looked.
+        """
+        engine_cls = _describe_backend(label)
+        violations = []
+        for method_name, signature in sorted(_describe_signature_strings(engine_cls).items()):
+            resolved = _real_parameters(engine_cls, method_name)
+            if resolved is None:
+                continue
+            real, _ = resolved
+            violations += [
+                f"{method_name}(...{advertised}=...)"
+                for advertised in _advertised_param_names(signature)
+                if advertised not in real
+            ]
+        assert not violations, (
+            f"{label}: describe() advertises parameters the method does not accept: "
+            f"{sorted(violations)}. Update the signature string when the signature changes."
+        )
+
+    @pytest.mark.parametrize("label", sorted(_DESCRIBE_BACKENDS))
+    def test_every_required_parameter_is_advertised(self, label):
+        """A required parameter left out of the string dead-ends the caller too.
+
+        The mirror of the test above: a call built from the advertised
+        parameters alone must be a complete call. A required parameter the
+        string never names raises ``TypeError`` for the missing argument, which
+        is how Newton's renamed ``timestep`` presented from the far side.
+        """
+        engine_cls = _describe_backend(label)
+        violations = []
+        for method_name, signature in sorted(_describe_signature_strings(engine_cls).items()):
+            resolved = _real_parameters(engine_cls, method_name)
+            if resolved is None:
+                continue
+            _, required = resolved
+            missing = sorted(required - set(_advertised_param_names(signature)))
+            if missing:
+                violations.append(f"{method_name}: {missing}")
+        assert not violations, (
+            f"{label}: describe() omits parameters the method requires: {sorted(violations)}. "
+            "A call built from the advertised signature alone must be a complete call."
+        )

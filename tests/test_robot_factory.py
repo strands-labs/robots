@@ -2,6 +2,7 @@
 
 import importlib
 import os
+import sys
 import types
 
 import pytest
@@ -1522,6 +1523,50 @@ class TestRobotNamePreservesUserInput:
             sim.destroy()
 
 
+def _stub_device_connect(monkeypatch, runtime):
+    """Substitute the Device Connect integration module for the foreground loop.
+
+    *runtime* is what ``init_device_connect_sync`` returns, or ``None`` to make
+    importing the module fail the way an uninstalled ``[device-connect]`` extra
+    does. Substituting the module is what makes the two branches selectable:
+    unstubbed, the shipped code brings up a real Zenoh session where the extra
+    happens to be installed and raises ``ImportError`` where it is not, so which
+    branch a test exercised was decided by the environment rather than the test.
+    """
+    if runtime is None:
+        monkeypatch.setitem(sys.modules, "strands_robots.device_connect", None)
+        return
+    module = types.ModuleType("strands_robots.device_connect")
+    module.init_device_connect_sync = lambda robot, peer_id=None, peer_type=None: runtime
+    monkeypatch.setitem(sys.modules, "strands_robots.device_connect", module)
+
+
+def _drive_foreground(monkeypatch, capsys, peer_id="so100-test", runtime="runtime", mesh=None, instance=None):
+    """Run the blocking foreground loop once and return its stdout.
+
+    ``time.sleep`` is patched to raise ``KeyboardInterrupt`` (the operator's
+    Ctrl+C) so the loop exits on the first tick, and ``os._exit`` is patched to
+    a sentinel raise so the test process survives. Pass *instance* to inspect
+    what the loop did to it.
+    """
+    if instance is None:
+        instance = types.SimpleNamespace(_peer_id=peer_id, _peer_type="sim", mesh=mesh)
+    _stub_device_connect(monkeypatch, runtime)
+    monkeypatch.setattr("time.sleep", lambda _s: (_ for _ in ()).throw(KeyboardInterrupt()))
+
+    class _ExitCalled(Exception):
+        pass
+
+    def _fake_exit(code):
+        raise _ExitCalled()
+
+    monkeypatch.setattr(os, "_exit", _fake_exit)
+
+    with pytest.raises(_ExitCalled):
+        _run_device_connect_foreground(instance)
+    return capsys.readouterr().out
+
+
 class TestRunDeviceConnectAsciiOutput:
     """Regression: the foreground ``.run()`` device-connect loop must print
     ASCII-only status lines.
@@ -1536,38 +1581,8 @@ class TestRunDeviceConnectAsciiOutput:
     otherwise-uncovered foreground loop without blocking.
     """
 
-    def _drive_foreground(self, monkeypatch, capsys, peer_id="so100-test"):
-        """Run the blocking foreground loop once and capture its stdout.
-
-        ``time.sleep`` is patched to raise ``KeyboardInterrupt`` (the operator's
-        Ctrl+C) so the loop exits on the first tick, and ``os._exit`` is patched
-        to a sentinel raise so the test process survives.
-        """
-        instance = types.SimpleNamespace(
-            _peer_id=peer_id,
-            _peer_type="sim",
-            mesh=None,
-        )
-
-        # The device_connect import/init is wrapped in the function's own
-        # try/except, so a missing backend is logged and the loop still prints
-        # its lifecycle lines - exactly the path under test. No stubbing needed.
-        monkeypatch.setattr("time.sleep", lambda _s: (_ for _ in ()).throw(KeyboardInterrupt()))
-
-        class _ExitCalled(Exception):
-            pass
-
-        def _fake_exit(code):
-            raise _ExitCalled()
-
-        monkeypatch.setattr(os, "_exit", _fake_exit)
-
-        with pytest.raises(_ExitCalled):
-            _run_device_connect_foreground(instance)
-        return capsys.readouterr().out
-
     def test_foreground_output_is_ascii_only(self, monkeypatch, capsys):
-        out = self._drive_foreground(monkeypatch, capsys)
+        out = _drive_foreground(monkeypatch, capsys)
         assert out, "foreground loop produced no output"
         offenders = [
             (i, ch, hex(ord(ch))) for i, line in enumerate(out.splitlines(), 1) for ch in line if ord(ch) > 0x7F
@@ -1576,12 +1591,98 @@ class TestRunDeviceConnectAsciiOutput:
         # Output encodes cleanly under a non-UTF-8 locale (no UnicodeEncodeError).
         out.encode("ascii")
 
+    def test_a_failed_bring_ups_report_is_ascii_too(self, monkeypatch, capsys):
+        """The status line the failed branch prints is longer, and also ASCII."""
+        out = _drive_foreground(monkeypatch, capsys, runtime=None)
+        assert out.strip(), "foreground loop produced no output"
+        out.encode("ascii")
+
     def test_foreground_output_reports_lifecycle(self, monkeypatch, capsys):
         """The ASCII messages still convey online + shutdown + peer id."""
-        out = self._drive_foreground(monkeypatch, capsys, peer_id="franka-7")
+        out = _drive_foreground(monkeypatch, capsys, peer_id="franka-7")
         assert "franka-7 is online" in out
         assert "Shutting down franka-7" in out
         assert "franka-7 stopped" in out
+
+
+class TestTheStatusLineReportsWhatCameUp:
+    """``run()`` prints one status line, and it has to match the runtime.
+
+    The foreground runner keeps the process alive when a bring-up fails, which
+    is deliberate. What it may not do is announce the device online on that
+    path: the built-in mesh has already been stopped to make way for Device
+    Connect, so a process whose bring-up failed is reachable over nothing at
+    all, and the "is online" line was the last thing the operator was told.
+    A warning was added beside it, but a warning next to a contradicting claim
+    still leaves the claim.
+    """
+
+    def test_a_started_runtime_is_reported_online(self, monkeypatch, capsys):
+        """The unchanged half: a runtime that came up is announced as before."""
+        out = _drive_foreground(monkeypatch, capsys, peer_id="arm-1", runtime="runtime")
+
+        assert "arm-1 is online. Ctrl+C to stop." in out
+        assert "NOT online" not in out
+
+    def test_a_bring_up_that_never_started_is_not_reported_online(self, monkeypatch, capsys):
+        """An absent extra must not produce an "is online" line."""
+        out = _drive_foreground(monkeypatch, capsys, peer_id="arm-1", runtime=None)
+
+        assert "arm-1 is NOT online" in out
+        assert "arm-1 is online" not in out
+        assert "serves no transport" in out
+
+    def test_the_failed_report_names_the_mesh_that_was_stopped_for_it(self, monkeypatch, capsys):
+        """A robot that had a mesh has lost it, and the line says so.
+
+        Which transport the process no longer has is the operator's next step,
+        so the two cases are distinguished rather than collapsed into one
+        message that is wrong for one of them.
+        """
+        stopped = []
+
+        class _Mesh:
+            def stop(self):
+                stopped.append(True)
+
+        out = _drive_foreground(monkeypatch, capsys, peer_id="arm-1", runtime=None, mesh=_Mesh())
+
+        assert stopped == [True], "the mesh is still stopped for a bring-up that then failed"
+        assert "The built-in mesh was stopped for it" in out
+
+        without_mesh = _drive_foreground(monkeypatch, capsys, peer_id="arm-2", runtime=None, mesh=None)
+        assert "The built-in mesh was stopped for it" not in without_mesh
+
+    def test_an_absent_extra_is_reported_with_the_command_that_installs_it(self, monkeypatch, capsys, caplog):
+        """The ImportError names an internal module; the warning names the extra."""
+        with caplog.at_level("WARNING", logger="strands_robots.robot"):
+            _drive_foreground(monkeypatch, capsys, runtime=None)
+
+        failures = [r.getMessage() for r in caplog.records if "Device Connect init failed" in r.getMessage()]
+        assert failures, [r.getMessage() for r in caplog.records]
+        assert "strands-robots[device-connect]" in failures[0], failures[0]
+
+    def test_a_broker_failure_is_reported_without_an_install_remedy(self, monkeypatch, capsys, caplog):
+        """An unreachable broker is not fixed by installing anything."""
+        module = types.ModuleType("strands_robots.device_connect")
+
+        def _no_broker(robot, peer_id=None, peer_type=None):
+            raise RuntimeError("no broker at tcp://127.0.0.1:7447")
+
+        module.init_device_connect_sync = _no_broker
+        monkeypatch.setitem(sys.modules, "strands_robots.device_connect", module)
+        monkeypatch.setattr("time.sleep", lambda _s: (_ for _ in ()).throw(KeyboardInterrupt()))
+        monkeypatch.setattr(os, "_exit", lambda code: (_ for _ in ()).throw(RuntimeError("exited")))
+
+        instance = types.SimpleNamespace(_peer_id="arm-1", _peer_type="sim", mesh=None)
+        with caplog.at_level("WARNING", logger="strands_robots.robot"), pytest.raises(RuntimeError, match="exited"):
+            _run_device_connect_foreground(instance)
+
+        failures = [r.getMessage() for r in caplog.records if "Device Connect init failed" in r.getMessage()]
+        assert failures, [r.getMessage() for r in caplog.records]
+        assert "no broker" in failures[0]
+        assert "pip install" not in failures[0], failures[0]
+        assert "arm-1 is NOT online" in capsys.readouterr().out
 
     def test_built_in_mesh_is_stopped_before_device_connect(self, monkeypatch, capsys):
         """Device Connect supersedes the auto-started mesh in run() mode.
@@ -1596,17 +1697,11 @@ class TestRunDeviceConnectAsciiOutput:
                 stopped.append(True)
 
         instance = types.SimpleNamespace(_peer_id="m1", _peer_type="sim", mesh=_Mesh())
-        monkeypatch.setattr("time.sleep", lambda _s: (_ for _ in ()).throw(KeyboardInterrupt()))
-
-        class _ExitCalled(Exception):
-            pass
-
-        monkeypatch.setattr(os, "_exit", lambda code: (_ for _ in ()).throw(_ExitCalled()))
-        with pytest.raises(_ExitCalled):
-            _run_device_connect_foreground(instance)
+        out = _drive_foreground(monkeypatch, capsys, instance=instance)
 
         assert stopped == [True], "built-in mesh was not stopped"
         assert instance.mesh is None, "mesh reference not detached"
+        assert "m1 is online" in out, "the substituted runtime did come up"
 
 
 class TestAttachDeviceConnectBindsRun:
@@ -1721,13 +1816,17 @@ class TestRobotFactoryErrorBranches:
 
     def test_device_connect_init_failure_keeps_process_alive(self, monkeypatch, capsys):
         """A failure inside ``init_device_connect_sync`` is logged and the
-        foreground loop still reports the device online (best-effort)."""
+        foreground loop keeps running - it reports the failure rather than
+        exiting, and the status line says the device is not online.
+
+        The integration module is substituted rather than patched through, so
+        this resolves without the ``[device-connect]`` extra installed.
+        """
         instance = types.SimpleNamespace(_peer_id="so100-dc", _peer_type="sim", mesh=None)
 
-        monkeypatch.setattr(
-            "strands_robots.device_connect.init_device_connect_sync",
-            lambda *a, **k: (_ for _ in ()).throw(RuntimeError("no broker")),
-        )
+        module = types.ModuleType("strands_robots.device_connect")
+        module.init_device_connect_sync = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("no broker"))
+        monkeypatch.setitem(sys.modules, "strands_robots.device_connect", module)
         monkeypatch.setattr("time.sleep", lambda _s: (_ for _ in ()).throw(KeyboardInterrupt()))
 
         class _ExitCalled(Exception):
@@ -1739,7 +1838,8 @@ class TestRobotFactoryErrorBranches:
             _run_device_connect_foreground(instance)
 
         out = capsys.readouterr().out
-        assert "so100-dc is online" in out
+        assert "so100-dc is NOT online" in out
+        assert "Shutting down so100-dc" in out
 
     def test_auto_mode_without_hardware_resolves_to_sim(self, monkeypatch):
         """``mode='auto'`` with no env override and no detected hardware routes

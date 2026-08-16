@@ -123,18 +123,35 @@ def close_match_hint(requested: object, known: Sequence[str]) -> str:
     messages - it is total so an unhashable name is reported rather than
     raising, and the report it hands off to has to be usable.
 
+    A suggestion identical to ``requested`` is dropped. ``difflib`` scores an
+    exact match 1.0 and therefore ranks it first, so a caller whose ``known``
+    set can contain the requested name would otherwise be told to try the name
+    it just refused - a suggestion that carries no information and displaces a
+    real one out of the three slots. Callers whose ``known`` set is what the
+    world holds cannot reach that (the name is absent, which is why the message
+    is being built), but a caller comparing against a wider catalogue can:
+    :meth:`~strands_robots.simulation.mujoco.simulation.MuJoCoSimEngine._unknown_model_msg`
+    suggests over the whole robot registry, where a registered robot whose
+    asset is missing is exactly the case whose name is already correct. Owning
+    the rule here keeps it from being a precondition each caller has to know.
+
     Args:
         requested: Caller-supplied entity name, of any type.
         known: Entity names that are registered.
 
     Returns:
-        A leading-space ``" Did you mean: ...?"`` fragment, or ``""`` when
-        ``requested`` is not a string, nothing is registered, or no registered
-        name is close enough to suggest.
+        A leading-space ``" Did you mean: ...?"`` fragment naming up to three
+        registered names, or ``""`` when ``requested`` is not a string, nothing
+        is registered, or no registered name other than ``requested`` itself is
+        close enough to suggest.
     """
     if not isinstance(requested, str) or not known:
         return ""
-    matches = difflib.get_close_matches(requested, list(known), n=3, cutoff=0.4)
+    # Ask for one more than we render so dropping an exact self-match promotes
+    # the next-best candidate instead of shortening the list. difflib returns
+    # matches best-first, so the rendered three are unchanged for a caller
+    # whose known set cannot contain ``requested``.
+    matches = [m for m in difflib.get_close_matches(requested, list(known), n=4, cutoff=0.4) if m != requested][:3]
     if not matches:
         return ""
     return " Did you mean: " + ", ".join(matches) + "?"

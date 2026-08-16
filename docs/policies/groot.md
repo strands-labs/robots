@@ -93,11 +93,12 @@ agibot_*            galaxea_r1_pro
 ```python
 from strands_robots.tools import gr00t_inference
 
-gr00t_inference(action="build_image",         tag="gr00t-n1.7:latest")
-gr00t_inference(action="download_checkpoint", model_id="nvidia/GR00T-N1.7-3B")
-gr00t_inference(action="start_container",     tag="gr00t-n1.7:latest",
-                                              model_id="nvidia/GR00T-N1.7-3B",
-                                              data_config="so100_dualcam")
+# The image name is operator config, not an agent parameter: set
+# STRANDS_GR00T_IMAGE (default "gr00t:latest") and it must pass the
+# STRANDS_GR00T_IMAGE_ALLOW allowlist.
+gr00t_inference(action="build_image")
+gr00t_inference(action="download_checkpoint", hf_repo="nvidia/GR00T-N1.7-3B")
+gr00t_inference(action="start_container",     data_config="so100_dualcam")
 # ... run policy ...
 gr00t_inference(action="stop", container_name="gr00t-inference")  # stop only
 gr00t_inference(action="lifecycle", lifecycle="teardown",

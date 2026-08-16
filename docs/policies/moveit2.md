@@ -148,16 +148,22 @@ sim.run_policy(
     instruction="",               # ignored by the planner
     policy_provider="moveit2",
     policy_config={"host": "127.0.0.1", "port": 5556, "planning_group": "arm"},
-    target_pose=[0.3, 0.0, 0.4, 1.0, 0.0, 0.0, 0.0],
+    policy_kwargs={"target_pose": [0.3, 0.0, 0.4, 1.0, 0.0, 0.0, 0.0]},
     duration=10.0,
     control_frequency=50.0,
 )
 ```
 
-The LLM-agent demo path (`Robot.start_task(..., policy_provider="moveit2",
-target_pose=[...])`) flows the same `target_pose` / `target_joints` kwargs
-through `start_task`'s `**policy_kwargs`, so agents share one goal vocabulary
-across VLA and planner providers.
+`policy_config` and `policy_kwargs` are two different sinks. `policy_config`
+is expanded into the policy **constructor**; the per-call goal belongs in
+`policy_kwargs`, which the runner hands to every `get_actions()` call. Passing
+`target_pose=` directly to `run_policy` raises `TypeError` - it has no such
+parameter and no `**kwargs`.
+
+The mesh path forwards the same goal vocabulary:
+`mesh.tell(peer, "...", policy_provider="moveit2", target_pose=[...])`.
+`Robot.start_task` does not - it accepts only `instruction`, `policy_port`,
+`policy_host`, `policy_provider` and `duration`.
 
 ## See also
 

@@ -98,6 +98,13 @@ rejected instead of being mixed with the compiled one:
 | `friction` | 3 (sliding, torsional, rolling) |
 | `size` | whatever the geom's type defines: sphere 1, capsule/cylinder 2, box/ellipsoid/plane 3 |
 
+`size` here is the geom's own `geom_size` - half-extents for a box - and not
+`add_object`'s full extents, so the same vector means two different objects
+depending on which call it is passed to. `add_object(size=[0.2, 0.2, 0.2])`
+builds a 20 cm box; `set_geom_properties(size=[0.2, 0.2, 0.2])` resizes that box
+to 40 cm. A capsule is `[radius, half-length]` here and
+`[diameter, unused, height]` there.
+
 ```python
 sim.set_geom_properties(geom_name="crate", size=[0.4])
 # status=error: 'size' must have exactly 3 component(s) (box: three half-extents),
