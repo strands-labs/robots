@@ -399,6 +399,60 @@ class MotionPrimitivesMixin(MotionPrimitivesCore):
         bid = mj_name_to_id(model, mj.mjtObj.mjOBJ_BODY, frame_name)
         return np.array(data.xpos[bid], dtype=np.float64), np.array(data.xquat[bid], dtype=np.float64)
 
+    def _diagnose_unreachable(
+        self,
+        model: Any,
+        frame_name: str,
+        frame_type: str,
+        target_quat: np.ndarray | None,
+        target_pose: np.ndarray,
+        target: np.ndarray,
+        q0: np.ndarray,
+        arm_jact: dict[int, int],
+        namespace: str,
+    ) -> tuple[float, list[str]]:
+        """Best residual with every model DOF free, and the DOFs that took it.
+
+        Runs on the ``move_to`` refusal path only (see
+        :meth:`MotionPrimitivesCore._move_to_unreachable_error`): the primitive
+        solves over its commanded joints, and this reports what an unrestricted
+        solve could have done, so the refusal distinguishes a point outside the
+        robot's workspace from one that needs uncommanded motion.
+
+        Args:
+            model: The world ``mujoco.MjModel``.
+            frame_name: End-effector frame the solve tracks.
+            frame_type: ``"site"`` / ``"body"`` / ``"geom"``.
+            target_quat: Requested orientation, or ``None`` for position-only.
+            target_pose: The ``(4, 4)`` target the restricted solve was given.
+            target: World-frame target position.
+            q0: The live configuration the solve seeded from.
+            arm_jact: Commanded joint id -> actuator id map.
+            namespace: Robot namespace, stripped from reported joint names.
+
+        Returns:
+            ``(residual_m, uncommanded_joint_names)``. On a fully actuated
+            fixed-base arm the name list is empty and the residual matches the
+            restricted one, which is what keeps the refusal text unchanged
+            there.
+        """
+        from strands_robots.simulation.ik import MinkIKBridge
+
+        try:
+            reference = MinkIKBridge(
+                model,
+                frame_name,
+                frame_type,
+                orientation_cost=1.0 if target_quat is not None else 0.0,
+                max_iters=200,
+            )
+        except (ImportError, RuntimeError, ValueError):  # pragma: no cover - the restricted build succeeded
+            return math.inf, []
+        q_free = reference.solve(target_pose, q0)
+        residual = float(np.linalg.norm(reference.ee_pose(q_free)[:3, 3] - target))
+        moved = self._uncommanded_joints_moved(self._mj, model, arm_jact, q0, q_free, namespace)
+        return residual, moved
+
     # -- primitives ----------------------------------------------------------
 
     def move_to(
@@ -431,6 +485,19 @@ class MotionPrimitivesMixin(MotionPrimitivesCore):
         and transport, so ``set_gripper("close") -> move_to(...)`` carries the
         held object rather than releasing it.
 
+        COMMANDED-DOF SOLVE (contract): the IK solve is restricted to the
+        joints this primitive drives, so ``ik_residual_m`` is the error the
+        servo descent is actually left with. mink optimizes over every degree
+        of freedom in the model, and an unrestricted solve borrows whatever is
+        cheapest - a floating/mobile base, a second robot in the same world
+        model, the gripper this primitive holds - none of which ``move_to``
+        commands. A borrowed solve reports a near-zero residual for a pose the
+        arm cannot hold, which reads as a solved target whose servo merely
+        "needs more steps". When the restricted solve cannot reach the target,
+        the refusal re-solves unrestricted and names the degrees of freedom
+        that would have to move first, so an out-of-workspace point is
+        distinguishable from one that needs base motion.
+
         NOT collision-aware: the straight servo descent can sweep through
         obstacles. Collision-aware transport is the curobo provider's job; this
         primitive deliberately hides the solver backend so that upgrade cannot
@@ -459,8 +526,14 @@ class MotionPrimitivesMixin(MotionPrimitivesCore):
             ``{reached, steps, position_error_m, ik_residual_m, ee_position,
             ee_orientation_wxyz, frame, frame_type}`` on arrival;
             ``{"status": "error", ...}`` with the same json block (including
-            the residual) when the target is unreachable (IK residual > tol)
-            or servo convergence times out. Never raises.
+            the residual) when servo convergence times out. The unreachable
+            refusal (restricted IK residual > tol) carries
+            ``{reached, steps, ik_residual_m, unrestricted_ik_residual_m,
+            uncommanded_joints_moved, frame, frame_type}`` - the last two
+            reporting what a solve over the whole model could have reached and
+            which uncommanded joints it needed, so the caller can tell an
+            out-of-workspace target from one needing base motion. Never
+            raises.
         """
         # ---- parameter validation (before touching the world) ----
         # Shared with the Isaac adapter (motion_primitives_base): same
@@ -535,12 +608,21 @@ class MotionPrimitivesMixin(MotionPrimitivesCore):
                 # whereas move_to jumps from the current pose to an arbitrary
                 # workspace point in one solve and needs the extra integration
                 # budget to converge from far seeds.
+                # commanded_dofs restricts the solve to the joints the servo
+                # loop below actually drives. mink optimizes over the whole
+                # world model, so an unrestricted solve satisfies the Cartesian
+                # task with whatever DOF is cheapest - a floating base, a
+                # second robot, the held gripper - and then reports a residual
+                # for a configuration move_to never commands. On a mobile
+                # manipulator that reads as a solved target followed by a servo
+                # that "just needs more steps"; it never arrives.
                 bridge = MinkIKBridge(
                     model,
                     frame_name,
                     frame_type,
                     orientation_cost=1.0 if target_quat is not None else 0.0,
                     max_iters=200,
+                    commanded_dofs=self._commanded_dof_indices(model, arm_jact),
                 )
             except (ImportError, RuntimeError, ValueError) as e:
                 return _err(f"move_to: IK bridge unavailable: {e}")
@@ -602,17 +684,23 @@ class MotionPrimitivesMixin(MotionPrimitivesCore):
                         break
 
             if ik_residual > float(tol):
-                return _err(
-                    f"move_to: target {target.tolist()} is unreachable for '{robot_name}' "
-                    f"within tol={float(tol)} m - best IK solution leaves a residual of "
-                    f"{ik_residual:.4f} m. Choose a closer target or loosen tol.",
-                    {
-                        "reached": False,
-                        "steps": 0,
-                        "ik_residual_m": ik_residual,
-                        "frame": frame_name,
-                        "frame_type": frame_type,
-                    },
+                # Refusal-path diagnosis only: solve the same target once more
+                # with every model DOF free. If THAT fits tol, the point is
+                # inside the robot's reach and outside this primitive's, so the
+                # refusal can name the degrees of freedom that have to move
+                # first instead of advising a closer target.
+                unrestricted_residual, uncommanded = self._diagnose_unreachable(
+                    model, frame_name, frame_type, target_quat, target_pose, target, q0, arm_jact, namespace
+                )
+                return self._move_to_unreachable_error(
+                    robot_name,
+                    target,
+                    float(tol),
+                    ik_residual=ik_residual,
+                    frame_name=frame_name,
+                    frame_type=frame_type,
+                    unrestricted_residual=unrestricted_residual,
+                    uncommanded_joints=uncommanded,
                 )
 
             # Command ARM joints to the solve; HOLD gripper joints at their

@@ -628,6 +628,18 @@ class IsaacMotionPrimitivesMixin(MotionPrimitivesCore):
         ``_require_no_running_policy`` guard - checked up front and per
         control tick (a policy starting mid-run aborts the primitive).
 
+        COMMANDED-DOF SOLVE (contract): the IK solve is restricted to the
+        arm joints this primitive drives, so ``ik_residual_m`` is the error the
+        servo descent is actually left with. mink optimizes over every degree
+        of freedom in the IK model, and an unrestricted solve borrows whatever
+        is cheapest - a floating/mobile base, the gripper this primitive holds
+        - neither of which ``move_to`` commands; the borrowed solve then
+        reports a near-zero residual for a pose the arm cannot hold. Same rule
+        as the MuJoCo backend, so the two judge reachability identically. When
+        the restricted solve cannot reach the target, the refusal re-solves
+        unrestricted and names the degrees of freedom that would have to move
+        first.
+
         NOT collision-aware: the straight servo descent can sweep through
         obstacles - the same contract as the MuJoCo backend, which
         deliberately hides the solver so a collision-aware upgrade cannot
@@ -654,8 +666,14 @@ class IsaacMotionPrimitivesMixin(MotionPrimitivesCore):
             ``{reached, steps, position_error_m, ik_residual_m, ee_position,
             ee_orientation_wxyz, frame, frame_type}`` on arrival;
             ``{"status": "error", ...}`` with the same json block (including
-            the residual) when the target is unreachable (IK residual > tol)
-            or servo convergence times out. Never raises.
+            the residual) when servo convergence times out. The unreachable
+            refusal (restricted IK residual > tol) carries
+            ``{reached, steps, ik_residual_m, unrestricted_ik_residual_m,
+            uncommanded_joints_moved, frame, frame_type}`` - the last two
+            reporting what a solve over the whole model could have reached and
+            which uncommanded joints it needed, so the caller can tell an
+            out-of-workspace target from one needing base motion. Never
+            raises.
         """
         # ---- parameter validation (before touching the world) ----
         # Shared with the MuJoCo adapter (motion_primitives_base): same
@@ -737,12 +755,21 @@ class IsaacMotionPrimitivesMixin(MotionPrimitivesCore):
                     # for the same reason as the MuJoCo mixin: move_to jumps
                     # from the current pose to an arbitrary workspace point in
                     # one solve and needs the extra integration budget.
+                    # commanded_dofs restricts the solve to the arm joints
+                    # the articulation targets below actually drive. mink
+                    # optimizes over every DOF of the IK model, so an
+                    # unrestricted solve can satisfy the Cartesian task with a
+                    # floating base or the held gripper and then report a
+                    # residual for a configuration that is never commanded.
+                    # Same restriction as the MuJoCo mixin, so the two backends
+                    # judge reachability by the same rule.
                     bridge = MinkIKBridge(
                         model,
                         frame_name,
                         frame_type,
                         orientation_cost=1.0 if target_quat is not None else 0.0,
                         max_iters=200,
+                        commanded_dofs=self._commanded_dof_indices(model, arm_map),
                     )
                 except (ImportError, RuntimeError, ValueError) as e:
                     return _err(f"move_to: IK bridge unavailable: {e}")
@@ -806,17 +833,35 @@ class IsaacMotionPrimitivesMixin(MotionPrimitivesCore):
                             break
 
                 if ik_residual > float(tol):
-                    return _err(
-                        f"move_to: target {target_world.tolist()} is unreachable for '{name}' "
-                        f"within tol={float(tol)} m - best IK solution leaves a residual of "
-                        f"{ik_residual:.4f} m. Choose a closer target or loosen tol.",
-                        {
-                            "reached": False,
-                            "steps": 0,
-                            "ik_residual_m": ik_residual,
-                            "frame": frame_name,
-                            "frame_type": frame_type,
-                        },
+                    # Refusal-path diagnosis only (mirrors the MuJoCo mixin):
+                    # re-solve with every model DOF free so the refusal can
+                    # tell a point outside the robot's workspace from one that
+                    # needs motion this primitive does not command.
+                    unrestricted_residual = math.inf
+                    uncommanded: list[str] = []
+                    try:
+                        reference = MinkIKBridge(
+                            model,
+                            frame_name,
+                            frame_type,
+                            orientation_cost=1.0 if target_quat is not None else 0.0,
+                            max_iters=200,
+                        )
+                    except (ImportError, RuntimeError, ValueError):  # pragma: no cover - restricted build worked
+                        pass
+                    else:
+                        q_free = reference.solve(target_pose, q0)
+                        unrestricted_residual = float(np.linalg.norm(reference.ee_pose(q_free)[:3, 3] - target_local))
+                        uncommanded = self._uncommanded_joints_moved(mj, model, arm_map, q0, q_free)
+                    return self._move_to_unreachable_error(
+                        name,
+                        target_world,
+                        float(tol),
+                        ik_residual=ik_residual,
+                        frame_name=frame_name,
+                        frame_type=frame_type,
+                        unrestricted_residual=unrestricted_residual,
+                        uncommanded_joints=uncommanded,
                     )
 
                 # Command ARM DOFs to the solve, per name; HOLD gripper DOFs

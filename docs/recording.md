@@ -105,6 +105,15 @@ warning is logged when the implicit `default` overview camera is swept in
 alongside your real sensor cameras, so the stray view is never recorded
 silently.
 
+A robot's own cameras are offered under two names: the short name from its
+MJCF (`wrist`) and the namespaced name the compiled scene uses
+(`arm0/wrist`). Both address the same physical camera and record the same
+frames, so pick one per dataset - listing both records the same view twice
+under two columns. Every camera key carries the view of the camera it names:
+a key the scene can no longer render (for example a camera that left with a
+`remove_robot`) is absent from the observation rather than filled in with the
+overview, so a column is never quietly populated from the wrong camera.
+
 `cameras=` is a list of **distinct** camera names, and every surface that accepts
 one - `start_recording`, `render_all`, and the plain-MP4
 `start_cameras_recording` / `start_cameras_recording_synchronous` - enforces that

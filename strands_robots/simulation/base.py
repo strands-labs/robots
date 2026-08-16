@@ -1090,8 +1090,14 @@ class SimEngine(ABC):
               at the physics-engine level.
             - ``"<camera_name>"`` (np.ndarray): One RGB uint8 frame per
               camera associated with the robot, keyed by camera name.
-              Shape ``(H, W, 3)``. Cameras whose render fails MAY be
-              omitted; joint state MUST still be returned.
+              Shape ``(H, W, 3)``. A key MUST carry the view of the camera it
+              names; a backend that cannot render that camera MUST omit the key
+              rather than substitute another view (the free/overview camera in
+              particular), because every consumer of this schema - a policy
+              reading ``observation.images.<name>``, a recorded dataset column -
+              reads the key as a promise about which camera it is looking
+              through and has no way to detect a substitution. Cameras whose
+              render fails MAY be omitted; joint state MUST still be returned.
             - Floating base: a robot whose root is a 6-DoF free joint (a
               humanoid's named ``floating_base_joint`` or a mobile base's
               unnamed ``<freejoint>``) does NOT report that free joint as a

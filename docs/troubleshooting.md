@@ -29,6 +29,7 @@ description: Error → fix table for the most common gotchas across install, sim
 | Sim hangs on `create_world` | Asset download | Wait - first call downloads MJCF, then cached |
 | `ModuleNotFoundError: trs_so_arm100_mj_description` | Auto-install failed | `uv pip install trs-so-arm100-mj-description` |
 | `add_robot` raises after `load_scene` | Scene XML overrides world | Use `add_robot` before `load_scene` |
+| `move_to` refuses with `is unreachable ... The same target solves to ... once the N degree(s) of freedom move_to does not command are free too` | The target needs motion `move_to` does not produce. It drives the arm's position servos only, so a mobile base, a floating pelvis or any unactuated joint is not available to the solve - and 35 of the shipped sim robots have one | Move those degrees of freedom first (drive the base to the work area), then call `move_to`. The refusal's `uncommanded_joints_moved` names them and `unrestricted_ik_residual_m` is what the whole robot could reach |
 
 ## Hardware
 
