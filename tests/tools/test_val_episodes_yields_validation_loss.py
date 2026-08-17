@@ -14,8 +14,11 @@ episode COUNT exactly, and that a count which cannot be honored is refused
 rather than silently rounded.
 """
 
+import dataclasses
+import inspect
 import json
 import math
+import re
 from pathlib import Path
 from typing import Any
 
@@ -113,10 +116,10 @@ class TestCountThatCannotBeHonoredIsRefused:
     @pytest.mark.parametrize("tasks", [0, 1, None, True, "2"])
     def test_absent_or_single_task_count_is_honored(self, tasks: object) -> None:
         """0 / None mean 'no task count recorded', which lerobot treats as one task."""
-        assert validation_split_error(2, tasks, "ctx") is None
+        assert validation_split_error(2, tasks, "ctx", passthrough_param="extra_flags") is None
 
     def test_refusal_names_the_task_count_and_the_direct_knobs(self) -> None:
-        err = validation_split_error(1, 4, "lerobot_train")
+        err = validation_split_error(1, 4, "lerobot_train", passthrough_param="extra_flags")
         assert err is not None
         assert err.startswith("lerobot_train: ")
         assert "4 tasks" in err
@@ -157,3 +160,143 @@ class TestEverySurfaceAgrees:
         root = _write_dataset(tmp_path / "ds", total_episodes=10, total_tasks=3)
         spec = TrainSpec(dataset_root=str(root), output_dir=str(tmp_path / "out"), val_episodes=2)
         assert any("cannot be reserved exactly" in p for p in LerobotTrainer().validate(spec))
+
+
+def _spec(**kwargs: Any) -> Any:
+    """A launchable :class:`TrainSpec`, overridden per case."""
+    from strands_robots.training.base import TrainSpec
+
+    return TrainSpec(output_dir="/tmp/strands-val-episodes-out", steps=10, save_freq=5, **kwargs)
+
+
+def _passthrough_keyword(message: str) -> str:
+    """The passthrough parameter a refusal tells the reader to use instead."""
+    match = re.search(r"(\w+)=\{'dataset\.eval_split'", message)
+    assert match is not None, f"refusal names no dataset.eval_split passthrough: {message}"
+    return match.group(1)
+
+
+class TestAnUnreadableEpisodeCountIsRefused:
+    """A count that cannot become a fraction must be refused, not dropped.
+
+    The split is ``ceil(episodes_in_task * eval_split)``, so turning an episode
+    COUNT into lerobot's fraction needs the dataset's ``total_episodes``. That
+    number is only in a local ``meta/info.json``, which a Hub source need not
+    have: ``dataset_repo_id`` with no ``dataset_root``, or a ``dataset_root``
+    that is a Hub cache directory nothing has been downloaded into yet. Emitting
+    no fraction there is indistinguishable from "no validation was asked for" -
+    the run trains on every episode and records no validation loss, which is the
+    outcome this module exists to prevent.
+    """
+
+    def test_a_hub_source_with_no_local_root_is_refused(self) -> None:
+        pytest.importorskip("lerobot")
+        from strands_robots.training.lerobot import LerobotTrainer
+
+        spec = _spec(dataset_repo_id="lerobot/svla_so101_pickplace", val_episodes=2)
+        trainer = LerobotTrainer()
+        problems = trainer.validate(spec)
+        assert any("val_episodes=2" in p for p in problems), (
+            "a Hub source drops val_episodes silently: validate() reported "
+            f"{problems} while build_command() emits "
+            f"{[c for c in trainer.build_command(spec) if 'eval' in c]}"
+        )
+
+    def test_a_hub_cache_root_with_nothing_downloaded_is_refused(self, tmp_path: Path) -> None:
+        """The documented Hub-cache shape: repo id plus an empty local cache dir."""
+        pytest.importorskip("lerobot")
+        from strands_robots.training.lerobot import LerobotTrainer
+
+        cache = tmp_path / "hf-cache"
+        cache.mkdir()
+        spec = _spec(dataset_repo_id="lerobot/svla_so101_pickplace", dataset_root=str(cache), val_episodes=2)
+        assert any("val_episodes=2" in p for p in LerobotTrainer().validate(spec))
+
+    def test_the_refusal_is_load_bearing_so_no_run_launches_without_the_split(self) -> None:
+        """``train`` fails closed on validate(), so the request cannot be dropped."""
+        pytest.importorskip("lerobot")
+        from strands_robots.training.lerobot import LerobotTrainer
+
+        result = LerobotTrainer().train(_spec(dataset_repo_id="lerobot/svla_so101_pickplace", val_episodes=2))
+        assert result.status != "success"
+        assert "val_episodes=2" in result.message
+
+
+class TestARefusalNamesAPassthroughItsOwnSurfaceAccepts:
+    """Every remedy pointing at raw flags must name a keyword that surface has.
+
+    The passthrough is spelled ``extra_flags`` on the ``lerobot_train`` tool and
+    ``extra`` on :class:`TrainSpec` (and the ``train_policy`` tool), so one
+    hardcoded spelling makes the remedy a dead end on the other surface: applied
+    verbatim it raises ``TypeError`` for an unexpected keyword.
+    """
+
+    def test_the_trainer_names_a_real_trainspec_field(self) -> None:
+        pytest.importorskip("lerobot")
+        from strands_robots.training.base import TrainSpec
+        from strands_robots.training.lerobot import LerobotTrainer
+
+        problems = LerobotTrainer().validate(_spec(dataset_repo_id="lerobot/x", val_episodes=2))
+        keyword = _passthrough_keyword(" ".join(problems))
+        assert keyword in {f.name for f in dataclasses.fields(TrainSpec)}
+
+    def test_the_tool_names_a_real_lerobot_train_parameter(self) -> None:
+        from strands_robots.tools.lerobot_train import lerobot_train
+
+        err = validation_split_error(1, 4, "lerobot_train", passthrough_param="extra_flags")
+        assert err is not None
+        target = getattr(lerobot_train, "__wrapped__", lerobot_train)
+        assert _passthrough_keyword(err) in inspect.signature(target).parameters
+
+    def test_applying_the_trainer_remedy_verbatim_produces_the_pair(self) -> None:
+        """Parse the remedy out of the refusal, apply it, and it must work."""
+        pytest.importorskip("lerobot")
+        from strands_robots.training.lerobot import LerobotTrainer
+
+        trainer = LerobotTrainer()
+        keyword = _passthrough_keyword(" ".join(trainer.validate(_spec(dataset_repo_id="lerobot/x", val_episodes=2))))
+        remedied = _spec(dataset_repo_id="lerobot/x", **{keyword: {"dataset.eval_split": 0.1, "eval_steps": 5}})
+        assert trainer.validate(remedied) == []
+        cmd = trainer.build_command(remedied)
+        assert _flag(cmd, "dataset.eval_split") == "0.1"
+        assert _flag(cmd, "eval_steps") == "5"
+
+    def test_pointing_dataset_root_at_a_local_copy_is_the_other_named_remedy(self, tmp_path: Path) -> None:
+        """The refusal's first remedy: a populated cache root makes the count readable."""
+        pytest.importorskip("lerobot")
+        from strands_robots.training.lerobot import LerobotTrainer
+
+        root = _write_dataset(tmp_path / "cache", total_episodes=10)
+        spec = _spec(dataset_repo_id="lerobot/x", dataset_root=str(root), val_episodes=2)
+        trainer = LerobotTrainer()
+        assert trainer.validate(spec) == []
+        assert math.ceil(10 * float(_flag(trainer.build_command(spec), "dataset.eval_split") or "0")) == 2
+
+
+class TestTheRefusalDoesNotReachPastTheDefect:
+    """Controls: only an unhonorable request may be refused."""
+
+    def test_a_local_root_still_emits_the_pair(self, tmp_path: Path) -> None:
+        pytest.importorskip("lerobot")
+        from strands_robots.training.lerobot import LerobotTrainer
+
+        root = _write_dataset(tmp_path / "ds", total_episodes=50)
+        spec = _spec(dataset_root=str(root), val_episodes=5)
+        trainer = LerobotTrainer()
+        assert trainer.validate(spec) == []
+        assert math.ceil(50 * float(_flag(trainer.build_command(spec), "dataset.eval_split") or "0")) == 5
+
+    def test_a_hub_source_without_val_episodes_is_not_refused(self) -> None:
+        """None is the documented "train on everything" sentinel, not a problem."""
+        pytest.importorskip("lerobot")
+        from strands_robots.training.lerobot import LerobotTrainer
+
+        assert LerobotTrainer().validate(_spec(dataset_repo_id="lerobot/x")) == []
+
+    def test_an_unusable_count_still_names_the_count_domain_first(self) -> None:
+        """A non-positive count is a domain problem wherever the data lives."""
+        pytest.importorskip("lerobot")
+        from strands_robots.training.lerobot import LerobotTrainer
+
+        problems = LerobotTrainer().validate(_spec(dataset_repo_id="lerobot/x", val_episodes=0))
+        assert any("must be a positive integer" in p for p in problems)

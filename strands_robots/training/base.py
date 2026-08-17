@@ -70,7 +70,12 @@ class TrainSpec:
             With :attr:`dataset_repo_id` this streams shards from the Hub with no
             full download (bounded disk); with a local ``dataset_root`` it
             streams from disk (bounded RAM). LeRobot-only; other backends ignore
-            it (tolerance rule).
+            it (tolerance rule). Mutually exclusive with :attr:`val_episodes` on
+            the lerobot backend: a held-out split sends lerobot down a map-style
+            path that rebuilds both splits as ``LeRobotDataset`` and drops the
+            stream, so asking for both materializes the whole dataset. The
+            backend refuses the pair in :meth:`Trainer.validate` rather than
+            deliver one of the two silently.
         base_model: HF model id or local checkpoint path to post-tune *from*.
         output_dir: Directory for checkpoints, logs, and the final artifact.
         embodiment: Embodiment tag / robot id. Required by GR00T
@@ -129,12 +134,20 @@ class TrainSpec:
             the lerobot backend maps it onto ``--dataset.eval_split`` plus a
             non-zero ``--eval_steps`` so an eval loss is logged periodically.
             Must be a positive integer below the dataset's episode count, or
-            ``None`` to train on every episode. Because the count is converted
+            ``None`` to train on every episode. That upper bound is also a SOURCE
+            requirement: the count comes from the dataset's local
+            ``meta/info.json``, so a backend that cannot read one (a Hub source
+            with no populated :attr:`dataset_root`) MUST refuse rather than emit
+            no split - an absent split is indistinguishable from ``None``, and
+            reporting no problem would launch exactly the validation-less run
+            this field exists to avoid. Because the count is converted
             into a real-valued split fraction whose ceiling lerobot takes, a
             backend MUST check it with
             :meth:`Trainer._validation_episodes_problems` rather than compare it
             itself: a non-positive value produces no split at all, and ``True``
-            / ``2.7`` / ``0.5`` reserve 1 / 3 / 0 episodes respectively.
+            / ``2.7`` / ``0.5`` reserve 1 / 3 / 0 episodes respectively. On the
+            lerobot backend this is mutually exclusive with :attr:`streaming`
+            (see that field).
         augmentation: Backend-specific data augmentation (GR00T
             ``color_jitter_params`` / ``random_rotation_angle``; Cosmos
             dataset filter dict).

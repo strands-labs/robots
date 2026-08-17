@@ -13,7 +13,26 @@ count cannot be honored is refused without publishing anything, and a
 without sending anything - the goal coordinates travel inside the request body,
 which ``use_ros`` forwards verbatim.
 
+Commanding a robot goes through ``use_ros``'s operator-approval gate, because
+``/turtle1/cmd_vel`` and a Nav2 ``/navigate_to_pose`` are safety-critical
+surfaces. The bridge therefore forwards an operator context to it: the
+``drive_<node>`` / ``stop_<node>`` / ``navigate_<node>`` agent tools are declared
+``@tool(context=True)`` and hand the context to :func:`use_ros`, so an agent
+driving this robot prompts the operator exactly as a direct ``use_ros`` call
+does. The read paths (:meth:`get_pose`, :meth:`get_scan`) are never gated.
+
+A **programmatic** call carries no operator context, so it is refused unless the
+surface is pre-approved with ``STRANDS_ROS2_COMMAND_ALLOW`` (or the gate is
+bypassed with ``BYPASS_TOOL_CONSENT=true``). That includes :meth:`stop`: the gate
+is keyed on the *surface*, not on the payload, so a zero-velocity halt is gated
+like any other publish to ``cmd_vel``. A payload-shaped exemption would have to
+know that zero means "stationary" on a ``Twist`` while zero on ``/joint_command``
+commands motion to the zero pose - so the halt stays reachable through the same
+three approval paths rather than through a carve-out.
+
 Typical usage::
+
+    import os
 
     from strands import Agent
     from strands_robots.mesh import RosBridgedRobot
@@ -25,11 +44,14 @@ Typical usage::
         odom_type="turtlesim/msg/Pose",
     )
 
-    # Direct, programmatic control:
+    # Direct, programmatic control - no operator context to prompt, so the
+    # command surface has to be pre-approved:
+    os.environ["STRANDS_ROS2_COMMAND_ALLOW"] = "/turtle1/cmd_vel"
     turtle.drive(linear=1.0)
-    print(turtle.get_pose())
+    print(turtle.get_pose())  # reads are never gated
 
-    # Or hand the bridge to an agent as first-class tools:
+    # Or hand the bridge to an agent as first-class tools - the command tools
+    # carry the operator context, so the gate prompts instead of refusing:
     agent = Agent(tools=turtle.tools)
     agent("drive forward, then tell me the pose")
 """
@@ -41,7 +63,7 @@ import re
 from typing import Any
 
 from strands import tool
-from strands.types.tools import AgentTool
+from strands.types.tools import AgentTool, ToolContext
 
 from strands_robots.tools.use_ros import use_ros
 from strands_robots.utils import (
@@ -155,6 +177,7 @@ class RosBridgedRobot:
         angular: float = 0.0,
         duration: float | None = None,
         count: int = 1,
+        tool_context: ToolContext | None = None,
     ) -> dict[str, Any]:
         """Publish a velocity command to the robot's ``cmd_vel`` topic.
 
@@ -174,6 +197,12 @@ class RosBridgedRobot:
                 Must be a positive whole number; ``0`` or a negative count
                 publishes nothing, so reporting a successful drive for it hides
                 a command that never left the process.
+            tool_context: Operator context forwarded to ``use_ros``, whose
+                command gate prompts for approval on a safety-critical surface
+                such as ``cmd_vel``. The ``drive_<node_name>`` agent tool passes
+                the one the framework injects; a programmatic call has none, and
+                the gate then refuses unless the surface is pre-approved via
+                ``STRANDS_ROS2_COMMAND_ALLOW`` / ``BYPASS_TOOL_CONSENT``.
 
         Returns:
             The ``use_ros`` publish result dict, or an ``{"status": "error"}``
@@ -211,11 +240,25 @@ class RosBridgedRobot:
             fields=fields,
             count=n,
             rate=self.publish_rate,
+            tool_context=tool_context,
         )
 
-    def stop(self) -> dict[str, Any]:
-        """Publish a zero-velocity command to halt the robot."""
-        return self.drive(linear=0.0, angular=0.0, count=1)
+    def stop(self, tool_context: ToolContext | None = None) -> dict[str, Any]:
+        """Publish a zero-velocity command to halt the robot.
+
+        The halt reaches ``cmd_vel`` through the same publish as :meth:`drive`,
+        so it passes the same operator gate: the ``stop_<node_name>`` agent tool
+        carries the operator context and prompts, while a programmatic
+        ``stop()`` needs the surface pre-approved. The gate is keyed on the
+        surface rather than the payload deliberately - a "zero means harmless"
+        exemption holds for a ``Twist`` and not for ``/joint_command``, where
+        zero commands motion to the zero pose.
+
+        Args:
+            tool_context: Operator context forwarded to ``use_ros`` (see
+                :meth:`drive`).
+        """
+        return self.drive(linear=0.0, angular=0.0, count=1, tool_context=tool_context)
 
     def get_pose(self, timeout: float = 5.0) -> dict[str, Any]:
         """Read one sample from the robot's odometry/pose topic.
@@ -258,6 +301,7 @@ class RosBridgedRobot:
         yaw: float = 0.0,
         frame_id: str = "map",
         timeout: float = 120.0,
+        tool_context: ToolContext | None = None,
     ) -> dict[str, Any]:
         """Send a goal-level navigation request to the robot's ``nav_action``.
 
@@ -279,6 +323,9 @@ class RosBridgedRobot:
             timeout: End-to-end budget in seconds for the navigation goal.
                 Forwarded to ``use_ros``, which refuses a non-positive or
                 non-finite budget.
+            tool_context: Operator context forwarded to ``use_ros``, whose
+                command gate covers a Nav2-style ``/navigate_to_pose`` action
+                goal as well as a ``cmd_vel`` publish (see :meth:`drive`).
 
         Returns:
             The ``use_ros`` action result dict (goal status, result, feedback
@@ -323,6 +370,7 @@ class RosBridgedRobot:
             type=self.nav_action_type,
             fields=fields,
             timeout=timeout,
+            tool_context=tool_context,
         )
 
     @property
@@ -337,19 +385,35 @@ class RosBridgedRobot:
         no ``duration`` latches until another command arrives, so a caller that
         can start motion must be able to end it without knowing that a
         zero-velocity drive is the halt idiom.
+
+        Every tool that carries a command (``drive``, ``stop``, ``navigate``) is
+        declared ``@tool(context=True)`` and forwards the injected context into
+        ``use_ros``, so its operator-approval gate prompts rather than failing
+        closed. The read-only tools take no context because ``use_ros`` never
+        gates ``echo``.
         """
         suffix = self.node_name.strip("/").replace("/", "_")
 
-        @tool(name=f"drive_{suffix}", description=f"Drive the {self.node_name} robot (linear/angular velocity).")
-        def drive(linear: float = 0.0, angular: float = 0.0, duration: float | None = None) -> dict[str, Any]:
-            return self.drive(linear=linear, angular=angular, duration=duration)
+        @tool(
+            name=f"drive_{suffix}",
+            description=f"Drive the {self.node_name} robot (linear/angular velocity).",
+            context=True,
+        )
+        def drive(
+            linear: float = 0.0,
+            angular: float = 0.0,
+            duration: float | None = None,
+            tool_context: ToolContext | None = None,
+        ) -> dict[str, Any]:
+            return self.drive(linear=linear, angular=angular, duration=duration, tool_context=tool_context)
 
         @tool(
             name=f"stop_{suffix}",
             description=f"Immediately stop the {self.node_name} robot (zero velocity).",
+            context=True,
         )
-        def stop() -> dict[str, Any]:
-            return self.stop()
+        def stop(tool_context: ToolContext | None = None) -> dict[str, Any]:
+            return self.stop(tool_context=tool_context)
 
         @tool(name=f"get_pose_{suffix}", description=f"Read the current pose/odometry of the {self.node_name} robot.")
         def get_pose() -> dict[str, Any]:
@@ -365,9 +429,16 @@ class RosBridgedRobot:
                 f"Navigate the {self.node_name} robot to a map-frame (x, y, yaw) goal using its "
                 "navigation stack (planning and obstacle avoidance handled on-robot)."
             ),
+            context=True,
         )
-        def navigate(x: float, y: float, yaw: float = 0.0, timeout: float = 120.0) -> dict[str, Any]:
-            return self.navigate_to(x=x, y=y, yaw=yaw, timeout=timeout)
+        def navigate(
+            x: float,
+            y: float,
+            yaw: float = 0.0,
+            timeout: float = 120.0,
+            tool_context: ToolContext | None = None,
+        ) -> dict[str, Any]:
+            return self.navigate_to(x=x, y=y, yaw=yaw, timeout=timeout, tool_context=tool_context)
 
         agent_tools: list[AgentTool] = [drive, stop, get_pose]
         if self.scan_topic:

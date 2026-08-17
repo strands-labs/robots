@@ -312,6 +312,7 @@
         "diffusion_steps",
         "guidance_scale",
         "num_frames",
+        "transition_frames",
         "native_fps",
         "tracker_fps",
         "device",

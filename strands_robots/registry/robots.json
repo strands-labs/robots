@@ -198,6 +198,8 @@
         "franka_panda",
         "libero_panda",
         "oxe_droid",
+        "oxe_droid_rel",
+        "oxe_droid_relative_eef_relative_joint",
         "single_panda_gripper"
       ]
     },
@@ -791,8 +793,11 @@
       "aliases": [
         "g1",
         "g1_wbc",
+        "real_g1_relative_eef_relative_joints",
         "unitree_g1_full_body",
         "unitree_g1_locomanip",
+        "unitree_g1_real",
+        "unitree_g1_sonic",
         "unitree_g1_wbc"
       ]
     },

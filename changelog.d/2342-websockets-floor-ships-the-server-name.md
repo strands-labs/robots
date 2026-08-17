@@ -1,0 +1,3 @@
+### Fixed
+
+- **deps**: `[inference]` and `[cosmos3-service]` now require `websockets>=13.0`. Both declared `>=12.0`, but `strands_robots/inference/server.py` annotates `PolicyServer._server` with `websockets.sync.server.Server`, a name that first ships in 13.0 (12.0 spells the class `WebSocketServer`). The import is under `TYPE_CHECKING`, so a 12.0 install serves correctly at runtime and only fails type checking, reporting the missing attribute rather than the too-old dependency. `tests/test_websockets_floor_ships_the_imported_api.py` now derives the required floor from a measured table of every websockets name the sources reach for, so a future use of a newer API cannot leave the floor behind.
