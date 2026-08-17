@@ -1,0 +1,5 @@
+### Fixed
+
+`val_episodes` is no longer silently dropped when the LeRobot backend cannot read the dataset's episode count. The count becomes lerobot's `dataset.eval_split` fraction, so without it no split was emitted — and an absent split is indistinguishable from "no validation was asked for", leaving a run that trained on every episode, logged no validation loss, and reported no problem. `validate()` now refuses, naming the two remedies the backend honors: point `dataset_root` at a populated local copy, or pass `extra={"dataset.eval_split": ..., "eval_steps": ...}`. This affected a Hub `dataset_repo_id` with no `dataset_root`, and a `dataset_root` that is a Hub cache directory nothing had been downloaded into yet.
+
+Migration: `validation_split_error` takes a required keyword-only `passthrough_param` naming the caller's own raw-flag parameter (`extra_flags` on the `lerobot_train` tool, `extra` on `TrainSpec` / `train_policy`). It was previously hardcoded to `extra_flags`, which raised `TypeError` when applied verbatim on the `TrainSpec` surface; the argument is required rather than defaulted so a new surface cannot inherit a keyword it does not accept.

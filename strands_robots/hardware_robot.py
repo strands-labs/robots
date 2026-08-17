@@ -36,6 +36,7 @@ from strands.tools.tools import AgentTool
 from strands.types._events import ToolResultEvent
 from strands.types.tools import ToolResult, ToolSpec, ToolUse
 
+from strands_robots.ros_telemetry import ROS2_SYSTEM_INSTALL_HINT
 from strands_robots.teleop_mixin import TeleopMixin
 from strands_robots.utils import (
     dds_domain_id_error,
@@ -52,6 +53,21 @@ if TYPE_CHECKING:
     from .policies import Policy
 
 logger = logging.getLogger(__name__)
+
+
+# Remedy for a missing ``rclpy`` when the caller asked for the rclpy transport.
+# The shared hint names the step that supplies rclpy; this adds the alternative
+# only a Robot can take, because ``ros2_transport`` is the caller's choice: the
+# pure-RTPS bridge publishes the same topics (both transports share the wire
+# contract in ``RosTelemetryBase``) over cyclonedds, which is a pip wheel, so it
+# is the one route here the ``[ros2]`` extra really does complete.
+_RCLPY_TRANSPORT_INSTALL_HINT = (
+    f"{ROS2_SYSTEM_INSTALL_HINT}\n"
+    "Or select the pure-RTPS transport, which publishes the same topics and "
+    "needs no sourced distro:\n"
+    "  pip install 'strands-robots[ros2]'\n"
+    "  Robot(..., ros2_bridge=True, ros2_transport='rtps')"
+)
 
 
 # ---------------------------------------------------------------------------
@@ -566,9 +582,9 @@ class Robot(TeleopMixin, AgentTool):
         # Validate the ROS 2 bridge precondition (transport + its optional
         # dependency) BEFORE _initialize_robot imports lerobot. Otherwise, in an
         # environment without the [lerobot] extra, _initialize_robot raises a
-        # lerobot ImportError first and masks the documented
-        # "pip install 'strands-robots[ros2]'" hint that the operator who set
-        # ros2_bridge=True actually needs to see. require_optional caches the
+        # lerobot ImportError first and masks the transport-specific install
+        # hint that the operator who set ros2_bridge=True actually needs to see.
+        # require_optional caches the
         # module, so the real bridge construction in _init_ros_bridge pays nothing.
         if ros2_bridge:
             self._check_ros2_bridge_deps(ros2_transport=ros2_transport)
@@ -621,10 +637,12 @@ class Robot(TeleopMixin, AgentTool):
 
         Called from ``__init__`` BEFORE ``_initialize_robot`` (which imports
         lerobot) so that, when ``ros2_bridge=True``, an invalid transport or a
-        missing ``rclpy`` / ``cyclonedds`` surfaces its documented
-        ``pip install 'strands-robots[ros2]'`` error immediately - rather than
-        being masked by the lerobot ImportError ``_initialize_robot`` raises
-        first in an environment without the ``[lerobot]`` extra.
+        missing backend dependency surfaces its own remedy immediately - rather
+        than being masked by the lerobot ImportError ``_initialize_robot`` raises
+        first in an environment without the ``[lerobot]`` extra. The two
+        transports need different remedies: ``cyclonedds`` is a pip wheel the
+        ``[ros2]`` extra installs, while ``rclpy`` comes from a sourced ROS 2
+        distro, so only the RTPS branch can name an extra.
         ``require_optional`` caches the resolved module, so constructing the
         real bridge later in ``_init_ros_bridge`` costs nothing extra.
 
@@ -644,7 +662,11 @@ class Robot(TeleopMixin, AgentTool):
                 purpose="the pure-RTPS hardware bridge (Robot ros2_transport='rtps')",
             )
         else:
-            require_optional("rclpy", extra="ros2", purpose="the ROS 2 telemetry bridge (ros2_bridge=True)")
+            require_optional(
+                "rclpy",
+                system_install=_RCLPY_TRANSPORT_INSTALL_HINT,
+                purpose="the ROS 2 telemetry bridge (ros2_bridge=True)",
+            )
 
     def _init_ros_bridge(
         self,

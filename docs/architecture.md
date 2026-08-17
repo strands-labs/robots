@@ -78,7 +78,7 @@ graph TB
 | Module | What it owns | Key types |
 |--------|--------------|-----------|
 | `strands_robots/robot.py` | Factory `Robot(name, mode, backend, **kwargs)`. Name resolution, sim/real dispatch, mesh attach. | `Robot()` function |
-| `strands_robots/registry/` | 72 robots, 114 aliases, 8 categories. `robots.json` is source of truth. | `list_robots()`, `resolve_name()`, `get_robot()` |
+| `strands_robots/registry/` | 72 robots, 119 aliases, 8 categories. `robots.json` is source of truth. | `list_robots()`, `resolve_name()`, `get_robot()` |
 | `strands_robots/simulation/` | MuJoCo `AgentTool` - 60+ actions. | `Simulation`, `SimWorld`, `SimRobot`, `SimObject`, `SimCamera` |
 | `strands_robots/simulation/base.py` | Backend ABC for future Isaac/Newton backends. | `SimEngine` |
 | `strands_robots/hardware_robot.py` | Real-servo path. Async task execution + status. | `Robot` (class), `TaskStatus`, `RobotTaskState` |

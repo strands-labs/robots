@@ -523,19 +523,19 @@ class TestValidationSplitRendersATaskCountItCannotRender:
     """
 
     def test_an_outsized_task_count_is_answered(self) -> None:
-        refusal = validation_split_error(1, BEYOND_INT_STR_LIMIT, "train")
+        refusal = validation_split_error(1, BEYOND_INT_STR_LIMIT, "train", passthrough_param="extra")
         assert refusal is not None
         assert f"<int of {BEYOND_INT_STR_LIMIT.bit_length()} bits>" in refusal
         refusal.encode("ascii")
 
     def test_an_ordinary_task_count_still_renders_as_a_plain_number(self) -> None:
-        refusal = validation_split_error(1, 5, "train")
+        refusal = validation_split_error(1, 5, "train", passthrough_param="extra")
         assert refusal is not None
         assert "dataset with 5 tasks" in refusal
 
     def test_a_single_task_dataset_is_still_accepted(self) -> None:
-        assert validation_split_error(1, 1, "train") is None
-        assert validation_split_error(1, None, "train") is None
+        assert validation_split_error(1, 1, "train", passthrough_param="extra") is None
+        assert validation_split_error(1, None, "train", passthrough_param="extra") is None
 
 
 # --------------------------------------------------------------------------- #

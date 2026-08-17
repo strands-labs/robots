@@ -258,7 +258,9 @@ pip install strands-robots websockets msgpack 'numpy>=1.24'
 pip install 'vera @ git+https://github.com/sizhe-li/VERA.git'
 
 # 3. Only for the MimicGen sim example: MimicGen sim deps (also pulls the
-#    experimental PushT env).
+#    experimental PushT env, plus `imageio>=2.28.0,<3.0.0` for the rollout
+#    clips - the releases below that floor either raise out of the clip encoder
+#    or write a GIF no decoder can open).
 pip install 'strands-robots[vera-sim]'
 ```
 

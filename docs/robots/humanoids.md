@@ -34,7 +34,7 @@ sim = Robot("reachy_mini")      # Pollen Reachy Mini (expressive)
 | `talos` | PAL Robotics TALOS Humanoid (32-DOF) | 45 | `pal_talos` |
 | `toddlerbot_2xc` | Toddlerbot 2xC Humanoid (45-DOF) | 45 | - |
 | `toddlerbot_2xm` | Toddlerbot 2xM Humanoid (45-DOF) | 45 | - |
-| `unitree_g1` | Unitree G1 Humanoid (29-DOF + dexterous hands) | 46 | `g1`, `g1_wbc`, `unitree_g1_full_body`, `unitree_g1_locomanip`, `unitree_g1_wbc` |
+| `unitree_g1` | Unitree G1 Humanoid (29-DOF + dexterous hands) | 46 | `g1`, `g1_wbc`, `real_g1_relative_eef_relative_joints`, `unitree_g1_full_body`, `unitree_g1_locomanip`, `unitree_g1_real`, `unitree_g1_sonic`, `unitree_g1_wbc` |
 | `unitree_h1` | Unitree H1 Humanoid (19-DOF) | 20 | `h1` |
 | `unitree_h1_2` | Unitree H1-2 Humanoid (52-DOF, with hands) | 52 | `h1_2` |
 
