@@ -170,6 +170,65 @@ OnFrame = Callable[[int, dict[str, Any], dict[str, Any]], None]
 SuccessFn = Callable[[dict[str, Any]], bool]
 
 
+def _criterion_verdict(
+    check: Callable[[Any], bool],
+    subject: Any,
+    *,
+    label: str,
+    episode: int,
+    step: int,
+) -> bool:
+    """Evaluate an episode-outcome criterion, making a raise actionable.
+
+    The eval loops call a caller-supplied outcome criterion after every applied
+    action: :meth:`PolicyRunner.evaluate`'s ``success_fn`` and a benchmark
+    spec's ``is_success`` / ``is_failure``. Every other per-step hook on those
+    paths already states what a raise means - ``on_frame`` is best-effort
+    telemetry (warn and continue), ``spec.on_step`` returns ``status="error"``
+    naming the hook, and :meth:`PolicyRunner.run`'s ``stop_when`` is fatal
+    because the caller asked for an early-return semantics the runner can no
+    longer honor. The outcome criterion decides the evaluation's headline
+    number, so a raise is fatal for the same reason: a ``success_rate``
+    averaged over episodes whose outcome was never determined is not a
+    measurement, and reporting one would misreport the evaluation. What this
+    adds is the message - which criterion, which episode, which step - not a
+    change of posture.
+
+    ``bool()`` mirrors ``stop_when``'s coercion, so a NumPy scalar verdict -
+    what ``observation["x"] > 0.5`` returns, and not an instance of ``bool`` -
+    keeps working unchanged.
+
+    Args:
+        check: The criterion. Receives ``subject``, returns a truthy verdict.
+        subject: What the criterion is evaluated against - the post-action
+            observation for ``success_fn``, the live sim for a spec predicate.
+        label: Criterion name for the message (e.g. ``"success_fn"``).
+        episode: Zero-based episode index, so the message locates the failure.
+        step: Control step within that episode, likewise.
+
+    Returns:
+        The criterion's verdict, coerced with ``bool()``.
+
+    Raises:
+        RuntimeError: If ``check`` raises. Chains the original and names the
+            criterion, the episode and the step, so the failure is locatable
+            instead of arriving as a bare ``KeyError`` from inside the loop.
+            Whether that surfaces as a raise or an error envelope stays each
+            eval method's own posture: ``run`` converts it via its terminal
+            handler, while ``evaluate`` propagates rollout failures by design
+            (a raising ``get_actions`` and a lost recording frame reach the
+            caller the same way).
+    """
+    try:
+        return bool(check(subject))
+    except Exception as e:
+        raise RuntimeError(
+            f"{label} raised at episode {episode}, step {step}: {e!r}. The episode-outcome "
+            "criterion cannot be evaluated, so the evaluation is aborted rather than reporting "
+            "a success_rate over episodes whose outcome was never determined."
+        ) from e
+
+
 def _extract_frame_ndarray(render_result: dict) -> np.ndarray | None:
     """Decode the PNG bytes emitted by ``SimEngine.render`` into an ndarray.
 
@@ -2822,7 +2881,9 @@ class PolicyRunner:
                             steps += 1
                             # Check success against the LIVE post-action observation
                             # (mirrors the synchronous path / _evaluate_with_spec).
-                            if resolved_check is not None and resolved_check(_observation_fn()):
+                            if resolved_check is not None and _criterion_verdict(
+                                resolved_check, _observation_fn(), label="success_fn", episode=ep, step=steps
+                            ):
                                 success = True
                                 break
                     rtc_chunks_acquired += pipeline.chunks_acquired
@@ -2841,7 +2902,9 @@ class PolicyRunner:
                             # semantics as the chunk branch below).
                             self.sim.step(n_steps=1)
                             steps += 1
-                            if resolved_check is not None and resolved_check(_observation_fn()):
+                            if resolved_check is not None and _criterion_verdict(
+                                resolved_check, _observation_fn(), label="success_fn", episode=ep, step=steps
+                            ):
                                 success = True
                                 break
                             continue
@@ -2858,7 +2921,9 @@ class PolicyRunner:
                             # task that completes on the final step -> under-reported
                             # success_rate / inflated avg_steps. Mirrors
                             # _evaluate_with_spec's post-send is_success.
-                            if resolved_check is not None and resolved_check(_observation_fn()):
+                            if resolved_check is not None and _criterion_verdict(
+                                resolved_check, _observation_fn(), label="success_fn", episode=ep, step=steps
+                            ):
                                 success = True
                                 break
                         if success:
@@ -3261,11 +3326,15 @@ class PolicyRunner:
                             if info.done:
                                 stop_episode = True
                                 break
-                            if spec.is_failure(self.sim):
+                            if _criterion_verdict(
+                                spec.is_failure, self.sim, label=f"{spec_name}.is_failure", episode=ep, step=steps
+                            ):
                                 failure = True
                                 stop_episode = True
                                 break
-                            if spec.is_success(self.sim):
+                            if _criterion_verdict(
+                                spec.is_success, self.sim, label=f"{spec_name}.is_success", episode=ep, step=steps
+                            ):
                                 success = True
                                 stop_episode = True
                                 break
@@ -3289,10 +3358,14 @@ class PolicyRunner:
                         last_info = dict(info.info) if info.info else {}
                         if info.done:
                             break
-                        if spec.is_failure(self.sim):
+                        if _criterion_verdict(
+                            spec.is_failure, self.sim, label=f"{spec_name}.is_failure", episode=ep, step=steps
+                        ):
                             failure = True
                             break
-                        if spec.is_success(self.sim):
+                        if _criterion_verdict(
+                            spec.is_success, self.sim, label=f"{spec_name}.is_success", episode=ep, step=steps
+                        ):
                             success = True
                             break
 

@@ -367,9 +367,11 @@ class TestPeerRegistryStress:
     def test_peer_timeout_boundary(self):
         """Peer exactly at timeout boundary."""
         update_peer("boundary", "robot", "h", {})
-        # Manually set last_seen to exactly PEER_TIMEOUT ago
+        # Manually set last_seen_mono to exactly PEER_TIMEOUT ago. The base is a
+        # monotonic reading, so the backdating has to be taken on the same clock
+        # the registry measures the age against.
         with mesh_session._PEERS_LOCK:
-            mesh_session._PEERS["boundary"].last_seen = time.time() - mesh_session.PEER_TIMEOUT
+            mesh_session._PEERS["boundary"].last_seen_mono = time.monotonic() - mesh_session.PEER_TIMEOUT
         # Peer at exact boundary should be pruned (> is strict)
         time.sleep(0.01)
         pruned = prune_peers()

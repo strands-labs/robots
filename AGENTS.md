@@ -1301,6 +1301,28 @@ Corrections from code review that apply to all future contributions:
 - **`except (ImportError, Exception)` is a bug** - `Exception` is a superclass of `ImportError`, so the tuple collapses to `except Exception`. Lint/review will catch this; don't write it.
 - **USB / hardware probing** - use `except (ImportError, OSError)`. `PermissionError` is an `OSError`, `FileNotFoundError` is an `OSError`, etc.
 
+### Clocks: a duration is measured, a stamp is recorded
+- **A duration belongs on `time.monotonic()`.** Anything that decides *how long to keep
+  waiting* - a timeout, a deadline, a TTL, a retry window, a rate window, a frame pacer -
+  must be measured on a clock that only moves forward at one second per second.
+  `time.time()` is the current opinion about the date, and an NTP correction, a `date -s`,
+  or a VM resume moves it by an arbitrary amount mid-wait: forward, the wait ends early
+  with the work still in flight; backward, it runs past the caller's budget by the size of
+  the step. Neither is reported, because nothing raised.
+- **An absolute stamp stays on `time.time()`.** A record's `timestamp`, a session
+  `start_time` persisted to disk, the `t` field of a wire envelope whose freshness another
+  machine judges - those name a point in time that something off this process correlates,
+  and seconds of local process uptime is meaningless to that reader.
+- **The two can share a function and must not share a variable.** `serial_tool`'s monitor
+  bounds its window on `time.monotonic()` and stamps each returned record with
+  `time.time()`; the mesh keeps `_last_estop_mono` beside `_last_estop_ts` for the same
+  reason. If one value is used both to decide and to report, split it rather than picking
+  a compromise clock.
+- Pinned by `tests/tools/test_tool_wait_budgets_survive_a_clock_step.py` (a scan over the
+  agent-callable tools, no exemption list) and, for the safety subsystem, by
+  `tests/mesh/test_replay_cache_monotonic.py` and
+  `tests/mesh/test_corroboration_clock_domain.py`.
+
 ### Module-Level Side Effects
 - **If you must run code at import time, comment WHY it can't be lazy.** `MUJOCO_GL` is the canonical example: MuJoCo locks the GL backend at first `import mujoco`, so the env var must be set before any downstream import chain triggers it.
 - **Cheap-guard optional imports** - `if importlib.util.find_spec("mujoco") is not None:` before doing `from strands_robots.simulation.mujoco.backend import _configure_gl_backend`. Users without the `[sim-mujoco]` extra shouldn't pay an import-attempt cost on every `import strands_robots`.

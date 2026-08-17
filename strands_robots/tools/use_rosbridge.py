@@ -213,8 +213,12 @@ class _RosbridgeBackend:
             return ros
         if getattr(ros, "is_connected", False):
             return ros
-        deadline = time.time() + timeout
-        while time.time() < deadline:
+        # Measured on time.monotonic(): a wall-clock step during the wait moves
+        # the deadline by the size of the step, reporting a reconnect that is
+        # still in progress as a timeout (forward) or waiting far past the
+        # caller's budget (backward).
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
             if getattr(ros, "is_connected", False):
                 return ros
             time.sleep(0.05)

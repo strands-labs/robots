@@ -105,12 +105,22 @@ def _quat_finite_diff_ang_vel(quats_xyzw: np.ndarray, dt: float) -> np.ndarray:
     then keeps the vector part. Output copies the last frame from the
     second-to-last so shapes match the input trajectory.
 
+    The delta is left-multiplied (``q_{t+1} * q_t^-1``), so the result is a
+    WORLD-frame angular velocity, matching the frame every other surface here
+    uses for a per-body angular-velocity array: the ``rigid_body_ang_vel``
+    argument of
+    :func:`~strands_robots.policies.protomotions.state_utils.compute_root_local_ang_vel`,
+    which exists to rotate one body's row of it into that body's local frame.
+    Right-multiplying instead (``q_t^-1 * q_{t+1}``) would give the local-frame
+    quantity; on a walking G1 the two differ by whole rad/s, so a caller that
+    treats one as the other feeds the tracker a wrong reference.
+
     Args:
         quats_xyzw: Shape ``[T, num_bodies, 4]`` xyzw quaternions.
         dt: Source period, seconds.
 
     Returns:
-        Shape ``[T, num_bodies, 3]`` local-frame angular velocities.
+        Shape ``[T, num_bodies, 3]`` world-frame angular velocities.
     """
     T = quats_xyzw.shape[0]
     if T < 2:
@@ -174,7 +184,9 @@ def qpos_to_motion_data(
     Returns:
         A dict with the keys
         :class:`~strands_robots.policies.protomotions.motion_utils.MotionPlayer`
-        accepts.
+        accepts. ``body_pos``/``body_rot`` are world poses read straight off
+        MuJoCo's ``xpos``/``xquat``, and ``body_vel``/``body_ang_vel`` are
+        WORLD-frame velocities derived from them - not body-local ones.
 
     Raises:
         FileNotFoundError: If ``proto_mjcf_path`` does not exist.

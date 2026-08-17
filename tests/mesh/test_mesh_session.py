@@ -40,7 +40,7 @@ class TestPeerInfo:
         assert p.caps == {}
 
     def test_age_increases(self) -> None:
-        p = PeerInfo(peer_id="arm-1", last_seen=time.time() - 5.0)
+        p = PeerInfo(peer_id="arm-1", last_seen_mono=time.monotonic() - 5.0)
         assert p.age >= 5.0
 
     def test_to_dict_includes_caps(self) -> None:
@@ -48,7 +48,7 @@ class TestPeerInfo:
             peer_id="g1",
             peer_type="sim",
             hostname="jetson-01",
-            last_seen=time.time(),
+            last_seen_mono=time.monotonic(),
             caps={"tool_name": "unitree_g1", "connected": True},
         )
         d = p.to_dict()
@@ -60,7 +60,7 @@ class TestPeerInfo:
         assert "age" in d
 
     def test_to_dict_age_is_rounded(self) -> None:
-        p = PeerInfo(peer_id="x", last_seen=time.time() - 1.234)
+        p = PeerInfo(peer_id="x", last_seen_mono=time.monotonic() - 1.234)
         d = p.to_dict()
         # age is rounded to 1 decimal
         assert isinstance(d["age"], float)
@@ -118,7 +118,7 @@ class TestPeerRegistry:
         from strands_robots.mesh.session import _PEERS, _PEERS_LOCK
 
         with _PEERS_LOCK:
-            _PEERS["stale"] = PeerInfo(peer_id="stale", last_seen=time.time() - 30)
+            _PEERS["stale"] = PeerInfo(peer_id="stale", last_seen_mono=time.monotonic() - 30)
 
         pruned = prune_peers(timeout=10.0)
         assert "stale" in pruned

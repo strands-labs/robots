@@ -1379,8 +1379,10 @@ def _start_service(
 
         # Wait for service to start
         wire_protocol = "HTTP" if http_server else "ZMQ"
-        start_time = time.time()
-        while time.time() - start_time < timeout:
+        # time.monotonic(): a wall-clock step during startup would abandon a
+        # container that was still coming up, or wait far past ``timeout``.
+        start_time = time.monotonic()
+        while time.monotonic() - start_time < timeout:
             if _is_service_running(port):
                 response: dict[str, Any] = {
                     "status": "success",

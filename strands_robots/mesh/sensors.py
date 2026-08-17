@@ -18,6 +18,7 @@ Topics published:
 from __future__ import annotations
 
 import logging
+import math
 import os
 import threading
 import time
@@ -363,20 +364,24 @@ class SensorLoopsMixin:
             return
         summary_period = 1.0 / hz
         state_period = 1.0 / LIDAR_STATE_HZ
-        last_state_publish = 0.0
+        # A publish interval is a duration, so it is measured on a clock that
+        # cannot step. -inf rather than 0.0 because a monotonic reading is only
+        # meaningful relative to another one: the first tick should be due
+        # wherever a platform's monotonic epoch happens to sit.
+        last_state_publish_mono = -math.inf
 
         while self._running:
             try:
-                now = time.time()
+                now = time.monotonic()
                 summary = self._read_lidar_summary()
                 if summary:
                     self.publish(f"strands/{self.peer_id}/lidar/summary", summary)
 
-                if now - last_state_publish >= state_period:
+                if now - last_state_publish_mono >= state_period:
                     state = self._read_lidar_state()
                     if state:
                         self.publish(f"strands/{self.peer_id}/lidar/state", state)
-                    last_state_publish = now
+                    last_state_publish_mono = now
             except NotImplementedError:
                 # MRO contract violation: surface immediately rather than
                 # silently dropping every sensor tick (issue #258).

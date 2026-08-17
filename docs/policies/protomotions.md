@@ -112,6 +112,18 @@ cache["num_frames"], cache["control_dt"]
 `MotionPlayer` accepts that dict, an `.npz` written by
 `MotionPlayer.save_cache_npz`, or a raw ProtoMotions `.pt`.
 
+### Cache velocities are world-frame
+
+`body_pos` and `body_rot` are world poses, and `body_vel` and `body_ang_vel`
+are **world-frame** velocities derived from them - the same convention a raw
+ProtoMotions motion library uses for `rigid_body_ang_vel`. That matters when
+you hand-build a cache instead of bridging one: the tracker's root input is a
+*local*-frame angular velocity, and `compute_root_local_ang_vel` produces it by
+rotating a world-frame row into the root's frame. Storing local-frame rows here
+gets them rotated a second time. The frames are not interchangeable - on a
+walking G1 clip they differ by whole rad/s, the same class of silent wrong-frame
+error as substituting the base for the anchor link above.
+
 ### Motion files are read with a restricted unpickler
 
 An `.npz` cache is read by NumPy and needs no torch. A raw `.pt` is read with

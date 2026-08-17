@@ -739,7 +739,7 @@ class NewtonSimEngine(DomainRandomizationMixin, NewtonRecordingMixin, SimEngine)
         size: list[float] | None = None,
         color: list[float] | None = None,
         mass: float = 0.1,
-        is_static: bool = False,
+        is_static: bool | None = None,
         mesh_path: str | None = None,
         material: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
@@ -798,6 +798,8 @@ class NewtonSimEngine(DomainRandomizationMixin, NewtonRecordingMixin, SimEngine)
                 negative, ``nan``, ``inf``, a ``bool`` or a non-number - is
                 refused rather than handed to the solver rebuild.
             is_static: When True the object is fixed in the world.
+                ``None`` (the default) means unspecified; Newton derives
+                nothing from ``shape``, so it resolves to dynamic.
             mesh_path: Path to a mesh asset (``.obj`` / ``.stl`` / ``.glb`` /
                 ``.usd`` -- anything ``trimesh.load`` accepts). Required and
                 only used when ``shape="mesh"``; the mesh is loaded via
@@ -821,6 +823,13 @@ class NewtonSimEngine(DomainRandomizationMixin, NewtonRecordingMixin, SimEngine)
         # than reaching the error path it guards.
         if (name_err := entity_name_error("add_object", "name", name)) is not None:
             return {"status": "error", "content": [{"text": name_err}]}
+
+        # ``None`` means the caller did not specify, per
+        # :meth:`~strands_robots.simulation.base.SimEngine.add_object`. Newton
+        # has no shape-derived rule, so unspecified is dynamic. Resolved here so
+        # the registered :class:`SimObject` carries a real bool rather than the
+        # sentinel, which every later reader would have to re-interpret.
+        is_static = False if is_static is None else is_static
 
         # Validate the pose vectors on the shared ``coerce_pose_vector`` domain the
         # MuJoCo backend's ``add_object`` and this backend's own ``add_camera`` already
@@ -2338,7 +2347,7 @@ class NewtonSimEngine(DomainRandomizationMixin, NewtonRecordingMixin, SimEngine)
                 ),
                 "add_object": (
                     "(name: str, shape='box', position=None, orientation=None, size=None, "
-                    "color=None, mass=0.1, is_static=False, mesh_path=None) -> dict  "
+                    "color=None, mass=0.1, is_static=None, mesh_path=None) -> dict  "
                     "(add a manipulable object -- box/sphere/.../mesh -- to the scene)"
                 ),
                 "remove_robot": (

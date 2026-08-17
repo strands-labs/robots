@@ -1183,7 +1183,22 @@ class MuJoCoSimEngine(
         the error dict back to the agent - previously the return value was
         ignored and the error was silently swallowed, leaving the agent to
         hit a cryptic 'mesh not found' from MuJoCo instead.
+
+        A reference is resolved the way MuJoCo resolves it (see
+        :func:`strands_robots.assets.download._mjcf_mesh_candidates`): against
+        the MAIN model file's directory plus the model's mesh subdirectory, and
+        the subdirectory is read once for the whole model because
+        ``<compiler>`` applies across ``<include>``. Resolving against the
+        directory of whichever fragment declared the mesh - a location MuJoCo
+        does not accept - reports a present mesh as absent, which costs a full
+        ``force=True`` re-download on every ``add_robot`` and refuses the robot
+        outright when that download cannot run.
         """
+        # One owner for the resolution rule: the download path applies the same
+        # rule to decide whether a robot's assets need fetching, so a second
+        # copy here could disagree with it about the same model.
+        from strands_robots.assets.download import _mjcf_mesh_candidates, _mjcf_mesh_subdir
+
         model_dir = os.path.dirname(os.path.abspath(model_path))
 
         files_to_check = [model_path]
@@ -1194,27 +1209,32 @@ class MuJoCoSimEngine(
                 inc_path = os.path.join(model_dir, inc)
                 if os.path.exists(inc_path):
                     files_to_check.append(inc_path)
-        except Exception:
+        except (OSError, UnicodeDecodeError):
+            # An unreadable top-level model contributes no includes to scan.
+            # MuJoCo names the unreadable file itself on the load that follows,
+            # which is a better report than anything this check could invent.
             pass
 
-        missing = False
+        # (fragment directory relative to model_dir, fragment text)
+        fragments: list[tuple[str, str]] = []
         for xml_path in files_to_check:
             try:
                 with open(xml_path) as _f:
                     content = _f.read()
-            except Exception:
+            except (OSError, UnicodeDecodeError):
+                # Same reasoning: a fragment we cannot read declares no mesh
+                # references, and MuJoCo reports it on load.
                 continue
+            frag_dir = os.path.dirname(os.path.abspath(xml_path))
+            rel_dir = os.path.relpath(frag_dir, model_dir)
+            fragments.append(("" if rel_dir == os.curdir else rel_dir, content))
 
-            mesh_files = re.findall(r'file="([^"]+\.(?:stl|STL|obj))"', content)
-            if not mesh_files:
-                continue
+        mesh_subdir = _mjcf_mesh_subdir(*(text for _rel, text in fragments))
 
-            meshdir_match = re.search(r'meshdir="([^"]*)"', content)
-            meshdir = meshdir_match.group(1) if meshdir_match else ""
-            xml_dir = os.path.dirname(os.path.abspath(xml_path))
-
-            for mf in mesh_files:
-                if not os.path.exists(os.path.join(xml_dir, meshdir, mf)):
+        missing = False
+        for rel_dir, content in fragments:
+            for mf in re.findall(r'file="([^"]+\.(?:stl|STL|obj))"', content):
+                if not any(os.path.exists(p) for p in _mjcf_mesh_candidates(mf, model_dir, mesh_subdir, rel_dir)):
                     missing = True
                     break
             if missing:
@@ -3345,8 +3365,11 @@ class MuJoCoSimEngine(
             mass: Body mass in kg for dynamic objects (default 0.1); must be a
                 finite number > 0 (the same domain ``set_body_properties``
                 enforces). Ignored when ``is_static``.
-            is_static: Fix the body in the world. ``shape="plane"`` forces this
-                True; other shapes default to dynamic.
+            is_static: Fix the body in the world. ``None`` (the default)
+                means unspecified: ``shape="plane"`` resolves it to True, every
+                other shape to False. A plane cannot be dynamic, so an explicit
+                ``is_static=False`` there is refused rather than overridden --
+                which is why the default is ``None`` and not ``False``.
             mesh_path: Mesh asset path; required and only used when
                 ``shape="mesh"``. The asset defines the geom's extent, and
                 MuJoCo collides a mesh geom as its **convex hull** -- not as the
