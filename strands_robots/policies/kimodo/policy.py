@@ -277,6 +277,8 @@ class KimodoPolicy(Policy):
         tracker_fps: int | None = None,
         device: str | None = None,
         dtype: str | None = None,
+        cache_dir: str | None = None,
+        trust_remote_code: bool | None = None,
         seed: int | None = None,
     ) -> None:
         """Build the policy from a config object and/or per-field overrides.
@@ -303,6 +305,10 @@ class KimodoPolicy(Policy):
             tracker_fps: Tracker consumption rate override.
             device: torch device string override.
             dtype: Sampler dtype override (``"fp16"``/``"bf16"``/``"fp32"``).
+            cache_dir: Local HuggingFace cache directory override.
+            trust_remote_code: Whether the loader may execute code shipped in
+                the checkpoint repository. ``None`` leaves the resolved
+                config's value, which defaults to ``False``.
             seed: Sampling seed override.
 
         Raises:
@@ -320,6 +326,8 @@ class KimodoPolicy(Policy):
             tracker_fps=tracker_fps,
             device=device,
             dtype=dtype,
+            cache_dir=cache_dir,
+            trust_remote_code=trust_remote_code,
             seed=seed,
         )
         self._motion_agent: KimodoMotionAgent | None = motion_agent

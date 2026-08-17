@@ -72,6 +72,62 @@ def _reject_unsafe_chars(value: str, *, label: str) -> None:
         raise ValueError(f"unsafe {label}: backslash separators not allowed")
 
 
+def _confinement_refusal(
+    output_path: str,
+    *,
+    resolved: Path,
+    sandbox_root: Path,
+    label: str,
+    opt_in: str,
+) -> str:
+    """Build the confinement refusal, matched to the class of path the caller gave.
+
+    An absolute destination outside the sandbox and a *relative* one are the same
+    ``relative_to`` failure but not the same caller mistake, so one shared
+    sentence can only fit the absolute case. A relative path is resolved against
+    the process CWD, so the refusal for one reported a CWD-absolute path the
+    caller never supplied and then offered an absolute-path opt-in - a remedy
+    for a class of input that was not given. Following it does lift the refusal,
+    but it disables confinement and leaves the artifact under the CWD, i.e.
+    anywhere except the sandbox the caller was told the sink writes to.
+
+    The relative wording therefore states where the path was resolved from and
+    quotes the sandbox-anchored spelling to pass instead, keeping the opt-in as
+    the last resort it is. This is the same rule the traversal / metacharacter
+    refusals already follow: only offer a remedy that achieves what was asked.
+
+    Args:
+        output_path: The caller's original, unresolved destination string.
+        resolved: The fully-resolved destination that failed confinement.
+        sandbox_root: Root the destination had to live under.
+        label: Noun for the parameter (``"output_path"`` / ``"output_dir"``).
+        opt_in: Pre-rendered instruction naming this sink's absolute-path opt-in.
+
+    Returns:
+        The refusal message.
+    """
+    raw = Path(output_path).expanduser()
+    if raw.is_absolute():
+        return (
+            f"{label} {resolved} is outside the sandbox {sandbox_root} "
+            f"({opt_in} to permit absolute paths, or pass a path under the sandbox)"
+        )
+    remedies = []
+    # The sandbox-anchored spelling of exactly what the caller asked for. Omitted
+    # when it is the destination that just failed: a one-component name is
+    # already anchored there, so re-suggesting it would loop the caller.
+    suggested = (sandbox_root / raw).resolve(strict=False)
+    if suggested != resolved:
+        remedies.append(f"pass {str(suggested)!r} to write it into the sandbox")
+    remedies.append(f"or a bare {label} with no directory part, which is written into the sandbox")
+    remedies.append(f"or {opt_in} to write outside the sandbox instead")
+    return (
+        f"{label} {output_path!r} is relative, so it resolved against the current "
+        f"directory {Path.cwd()} to {resolved}, which is outside the sandbox "
+        f"{sandbox_root} (" + ", ".join(remedies) + ")"
+    )
+
+
 def validate_output_path(
     output_path: str,
     *,
@@ -156,8 +212,13 @@ def validate_output_path(
             # variable name it read).
             opt_in = f"set {allow_abs_env}=1" if allow_abs_env else "set this sink's *_ALLOW_ABS env var"
             raise ValueError(
-                f"{label} {resolved} is outside the sandbox {sandbox_root} "
-                f"({opt_in} to permit absolute paths, or pass a path under the sandbox)"
+                _confinement_refusal(
+                    output_path,
+                    resolved=resolved,
+                    sandbox_root=sandbox_root,
+                    label=label,
+                    opt_in=opt_in,
+                )
             ) from e
     return resolved
 

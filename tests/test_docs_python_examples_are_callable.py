@@ -218,16 +218,23 @@ def test_run_policy_has_no_goal_parameter_so_a_goal_needs_policy_kwargs() -> Non
         )
 
 
-def test_start_task_takes_no_goal_payload() -> None:
-    """``start_task`` has no ``**policy_kwargs`` for a goal to flow through.
+def test_start_task_forwards_a_goal_payload() -> None:
+    """``start_task`` accepts ``**policy_kwargs`` so a goal can flow through.
 
-    The documentation previously said it did. Its parameter list is fixed, so a
-    goal-bearing ``start_task`` call raises ``TypeError``.
+    The premise this replaces asserted the opposite - that the parameter list
+    was fixed and a goal-bearing call raised ``TypeError``. That was true, and
+    it was the defect: the mesh dispatch collects checkpoint/goal keywords
+    (``model_path``, ``target_pose``, ...) from the wire command, and the
+    hardware entry points had no way to receive them, so checkpoint providers
+    were unrunnable on hardware over the mesh while sim peers accepted the
+    same command. The named parameters stay pinned so a rename/reorder cannot
+    silently rebind a positional call.
     """
     from strands_robots.hardware_robot import Robot
 
     parameters = inspect.signature(Robot.start_task).parameters
-    assert not any(p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters.values())
+    var_kw = [p for p in parameters.values() if p.kind is inspect.Parameter.VAR_KEYWORD]
+    assert [p.name for p in var_kw] == ["policy_kwargs"]
     assert set(parameters) == {
         "self",
         "instruction",
@@ -235,6 +242,7 @@ def test_start_task_takes_no_goal_payload() -> None:
         "policy_host",
         "policy_provider",
         "duration",
+        "policy_kwargs",
     }
 
 

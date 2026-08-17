@@ -628,7 +628,9 @@ _PYTHON_ONLY_ACTIONS = frozenset(
         # TeleopMixin - drives real hardware from a host input device.
         "attach_teleop",
         "detach_teleop",
+        "get_teleop_status",
         "get_teleoperate_status",
+        "start_teleop_receive",
         "list_teleops",
         "stop_teleoperate",
         "teleoperate",

@@ -28,13 +28,33 @@ pip install "strands-robots[kimodo]"
 ```
 
 The extra installs the `diffusers` loader, which drives any checkpoint published
-in *diffusers pipeline layout*. `trust_remote_code=True` is forwarded for a
-pipeline that ships custom code, and the factory gates it behind an explicit
-opt-in:
+in *diffusers pipeline layout*.
+
+Two independent opt-ins guard that loader, and both are off by default. The
+first decides whether the provider may be built at all:
 
 ```bash
 export STRANDS_TRUST_REMOTE_CODE=1
 ```
+
+The second decides whether a checkpoint's own Python code may run when it is
+loaded. It is per call, defaults to `False`, and is never set by the environment
+variable above, so opting in to the provider does not also opt in to executing a
+repository's code:
+
+```python
+sim.run_policy(
+    policy_provider="kimodo",
+    policy_config={
+        "model_id": "your-org/kimodo-pipeline",
+        "trust_remote_code": True,      # only for a repo you have vetted
+    },
+    instruction="walk forward",
+)
+```
+
+Leave it unset for any checkpoint that does not genuinely need it; `diffusers`
+reports plainly when a pipeline requires the flag.
 
 Weights are fetched from HuggingFace on first use under the NVIDIA Open Model
 License; nothing is bundled with `strands_robots`.

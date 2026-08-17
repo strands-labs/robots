@@ -1,0 +1,3 @@
+### Fixed
+
+`add_robot`, `add_object`, `add_camera`, `remove_object` and `remove_robot` no longer silently release a latched `apply_force` wrench. Each rebuilds the MuJoCo model, and `xfrc_applied` was not carried across that rebuild, so an object a thruster or a wind field was holding up resumed free fall under a `"success"` result with nothing logged - contradicting `apply_force`, which documents the latch as holding until the next `apply_force` on that body or a `reset()`, and `add_robot`, which documents that "a latched `apply_force` wrench persists". Both rebuild paths now carry the latched wrenches by body name.

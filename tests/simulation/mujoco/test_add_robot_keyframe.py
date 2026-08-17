@@ -359,7 +359,7 @@ class TestMultiRobotKeyframeSpawn:
 
 
 class TestApplyHomeQposWidthGuard:
-    """``_apply_home_qpos_to_robot`` must skip a home entry whose value width
+    """``_apply_home_state_to_robot`` must skip a home entry whose value width
     disagrees with the target joint's qpos width instead of writing a
     wrong-length slice.
 
@@ -387,7 +387,7 @@ class TestApplyHomeQposWidthGuard:
         # "shoulder" is a 1-wide hinge but the supplied home value has width 2;
         # "elbow" is correctly sized. Keys are the short (namespace-stripped)
         # joint names the method matches against.
-        sim._apply_home_qpos_to_robot(robot, {"shoulder": [0.1, 0.2], "elbow": [0.9]})
+        sim._apply_home_state_to_robot(robot, {"shoulder": [0.1, 0.2], "elbow": [0.9]}, {})
 
         # The mismatched shoulder entry is dropped: its qpos slice is untouched
         # (still the zero pose) and the extra value did NOT spill into the

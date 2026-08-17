@@ -119,6 +119,18 @@ Newton backend, so a rollout rig can be enumerated instead of guessed.
 | `get_energy` | - |
 | `get_sensor_data` | `sensor_name` (optional) |
 
+!!! tip "Discovering joint names"
+    The dict form of `set_joint_positions` / `set_joint_velocities` keys by
+    joint name, and a name the model cannot resolve is refused rather than
+    skipped (the write is all-or-nothing), so the refusal has to say where the
+    real names come from. From an agent that is `get_robot_state`, which reports
+    every joint of one robot by name with its position and velocity - the
+    joint-side counterpart of `list_bodies` for body names. `robot_joint_names`
+    returns the same ordering as a plain list, but it is a Python-only
+    capability: it is not in the tool schema's `action` enum, so an agent that
+    calls it is refused. Reach for it from Python, and for `get_robot_state`
+    from a tool call.
+
 !!! note "Numeric domain of the state writers"
     `set_joint_positions`, `set_joint_velocities` and the `apply_force`
     vectors take finite real numbers - a python or NumPy scalar - and refuse a
