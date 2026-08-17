@@ -6,6 +6,7 @@ end-to-end sim->train->load is exercised separately.
 
 import json
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -1800,3 +1801,144 @@ class TestInProcessTrainerCorrectness:
         message = str(excinfo.value)
         assert str(cfg_file) in message, "the error must name the checkpoint config path"
         assert "resume=False" in message, "the error must offer a way forward"
+
+
+class TestStreamingAndValidationSplitAreMutuallyExclusive:
+    """``streaming`` and ``val_episodes`` cannot both be honored by lerobot.
+
+    ``val_episodes`` becomes lerobot's ``dataset.eval_split``, and any non-zero
+    ``eval_split`` routes lerobot into ``make_train_eval_datasets``, which
+    rebuilds both splits as map-style ``LeRobotDataset`` objects without
+    consulting ``dataset.streaming``. The whole dataset is materialized - the
+    outcome ``streaming`` exists to avoid - and nothing reports it, because an
+    annulled stream looks exactly like ``streaming=False``. Preflight refuses
+    the pair instead, the same way an unreadable episode count is refused rather
+    than allowed to drop a requested split.
+    """
+
+    def _spec(self, dataset_root, tmp_path, **kw):
+        fields = {
+            "dataset_root": dataset_root,
+            "base_model": "",
+            "output_dir": str(tmp_path / "out"),
+            "extra": {"policy_type": "act"},
+        }
+        fields.update(kw)
+        return TrainSpec(**fields)
+
+    def test_asking_for_both_is_refused(self, dataset_root, tmp_path):
+        spec = self._spec(dataset_root, tmp_path, streaming=True, val_episodes=2)
+        problems = LerobotTrainer().validate(spec)
+        assert problems, "streaming + val_episodes delivers neither field, so it is not launchable"
+        assert any("streaming=True cannot be combined with val_episodes=2" in p for p in problems)
+
+    def test_the_refusal_names_the_cost_of_the_silent_outcome(self, dataset_root, tmp_path):
+        spec = self._spec(dataset_root, tmp_path, streaming=True, val_episodes=2)
+        (message,) = [p for p in LerobotTrainer().validate(spec) if "streaming=True" in p]
+        # A caller who reads only the message must learn WHY the pair is refused:
+        # not a policy choice, but that the stream is dropped and the dataset lands
+        # on disk/in RAM in full.
+        assert "materialized" in message
+        assert "stream is dropped" in message
+
+    @pytest.mark.parametrize(
+        ("remedy", "keeps_the_split"),
+        [
+            ({"streaming": False}, True),
+            ({"val_episodes": None}, False),
+        ],
+    )
+    def test_either_remedy_the_message_offers_clears_it(self, dataset_root, tmp_path, remedy, keeps_the_split):
+        # Both remedies are quoted in the refusal, so both must actually work -
+        # and each must deliver the field it keeps, not merely silence the message.
+        trainer = LerobotTrainer()
+        asked = {"streaming": True, "val_episodes": 2, **remedy}
+        spec = self._spec(dataset_root, tmp_path, **asked)
+        assert trainer.validate(spec) == []
+        split = trainer._val_eval_split(spec)
+        assert (split is not None and split > 0.0) is keeps_the_split
+        assert spec.streaming is not keeps_the_split
+
+    def test_streaming_alone_is_launchable(self, dataset_root, tmp_path):
+        # The control that keeps the refusal from swallowing the feature itself.
+        spec = self._spec(dataset_root, tmp_path, streaming=True)
+        assert LerobotTrainer().validate(spec) == []
+
+    def test_validation_split_alone_is_launchable(self, dataset_root, tmp_path):
+        spec = self._spec(dataset_root, tmp_path, val_episodes=2)
+        assert LerobotTrainer().validate(spec) == []
+
+    def test_a_hub_source_with_no_readable_count_keeps_its_own_refusal(self, tmp_path):
+        # With no local meta/info.json no split is emitted at all, so the pair is
+        # not what is wrong here - the episode count is. Reporting both would name
+        # a conflict that this spec does not have.
+        spec = TrainSpec(
+            dataset_root="",
+            dataset_repo_id="lerobot/aloha_sim_transfer_cube_human",
+            base_model="",
+            output_dir=str(tmp_path / "out"),
+            streaming=True,
+            val_episodes=2,
+            extra={"policy_type": "act"},
+        )
+        problems = LerobotTrainer().validate(spec)
+        assert any("episode count is unavailable" in p for p in problems)
+        assert not any("cannot be combined with" in p for p in problems)
+
+    def test_lerobot_split_path_still_drops_the_stream(self, monkeypatch):
+        """The measured constraint the refusal stands on, pinned against lerobot.
+
+        Asserts the property that makes the pair unsatisfiable: lerobot's
+        eval-split path constructs a map-style dataset even when
+        ``dataset.streaming`` is set. If lerobot starts honoring the stream
+        there, this fails and the refusal above should be lifted rather than
+        left to reject a combination that has become supportable.
+        """
+        pytest.importorskip("lerobot")
+        import lerobot.datasets.factory as factory
+
+        built: list[str] = []
+
+        class _StubDataset:
+            def __init__(self, *args, **kwargs):
+                built.append(type(self).__name__)
+                self.episodes = kwargs.get("episodes")
+                self.num_episodes = 4
+                self.meta = SimpleNamespace(
+                    episodes={"tasks": [["t"], ["t"], ["t"], ["t"]]},
+                    camera_keys=[],
+                    depth_keys=[],
+                    stats={},
+                )
+
+        class _StubMapStyle(_StubDataset):
+            pass
+
+        class _StubStreaming(_StubDataset):
+            pass
+
+        monkeypatch.setattr(factory, "LeRobotDataset", _StubMapStyle)
+        monkeypatch.setattr(factory, "StreamingLeRobotDataset", _StubStreaming)
+        monkeypatch.setattr(factory, "make_dataset", lambda cfg: _StubStreaming())
+        monkeypatch.setattr(factory, "resolve_delta_timestamps", lambda *a, **k: None)
+
+        cfg = SimpleNamespace(
+            dataset=SimpleNamespace(
+                repo_id="local",
+                root=None,
+                revision=None,
+                streaming=True,
+                eval_split=0.25,
+                video_backend=None,
+                image_transforms=SimpleNamespace(enable=False),
+                use_imagenet_stats=False,
+            ),
+            trainable_config=None,
+            rename_map=None,
+            tolerance_s=1e-4,
+            num_workers=1,
+        )
+        train_dataset, eval_dataset = factory.make_train_eval_datasets(cfg)
+        assert built.count("_StubStreaming") == 1, "the stream is built once, to read metadata"
+        assert type(train_dataset) is _StubMapStyle, "lerobot rebuilds the TRAIN split map-style, discarding the stream"
+        assert type(eval_dataset) is _StubMapStyle

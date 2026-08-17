@@ -67,7 +67,13 @@ cosmos3-service = [
     # extra numpy-version agnostic so it composes cleanly with `lerobot`
     # (numpy>=2) for dataset recording in the same env.
     "msgpack>=1.0.0,<2.0.0",
-    "websockets>=12.0",
+    # >=13.0 is the floor of the websockets API the package reaches for, not a
+    # preference: `websockets.sync.server.Server` (annotating
+    # PolicyServer._server) first ships in 13.0 - 12.0 spells that class
+    # `WebSocketServer`. One environment resolves one websockets, so this floor
+    # and [inference]'s are deliberately the same number. Owned and measured by
+    # tests/test_websockets_floor_ships_the_imported_api.py.
+    "websockets>=13.0",
 ]
 # In-process Cosmos 3 backend (Cosmos3Policy(backend="diffusers")). Loads the
 # Cosmos3OmniPipeline directly via native Hugging Face `diffusers` (no RoboLab
@@ -391,8 +397,18 @@ sim-gs = [
 benchmark-libero = [
     "libero>=0.1.0,<1.0.0",
 ]
+# Peer-to-peer robot mesh. The floor is set by the wire-level source
+# attribution the safety handlers depend on: `zenoh.SourceInfo` (publisher
+# side) and `Sample.source_info` (receiver side) both first ship in
+# eclipse-zenoh 1.6.1. Every release from 1.0.0 through 1.5.1 exposes
+# neither, so a resolve there silently drops the cross-session forgery
+# defence, and a receiver on such a release refuses an e-stop published by
+# a capable peer. See
+# tests/test_zenoh_floor_ships_wire_source_attribution.py, which owns the
+# measurement and fails if the mesh reaches for a newer zenoh name without
+# raising this floor.
 mesh = [
-    "eclipse-zenoh>=1.0.0,<2.0.0",
+    "eclipse-zenoh>=1.6.1,<2.0.0",
     "json5>=0.9.0,<1.0.0",
 ]
 # AWS IoT Core integration for the mesh - MQTT5/mTLS transport, Device
@@ -454,7 +470,21 @@ vera-sim = [
     # install it from source:
     #     pip install "mimicgen @ git+https://github.com/NVlabs/mimicgen.git"
     "mujoco>=3.5.0,<4.0.0",
-    "imageio",
+    # Clip encoder for this extra's MuJoCo rollouts (the VERA MimicGen example
+    # ships its rollout as a GIF). encode_clip (strands_robots.rendering.video)
+    # imports `imageio.v2` and passes the GIF writer a per-frame duration in
+    # MILLISECONDS, which is imageio's reading only from 2.28.0 on. Measured
+    # against the released wheels on Python 3.12: `imageio.v2` does not exist
+    # before 2.16.0, so encode_clip raises a bare ModuleNotFoundError one line
+    # after its require_optional probe has already reported imageio installed
+    # (require_optional takes no minimum version, so it cannot refuse); 2.16.0 -
+    # 2.19.0 raise out of mimsave; and 2.20.0 - 2.27.0 read that duration as
+    # seconds, silently encoding the clip 1000x too slow (fps=12 -> 83330 ms per
+    # frame instead of 83) while returning a valid GIF that encode_clip's
+    # "the encoder wrote no clip" check accepts. Same specifier as
+    # [sim-mujoco]/[sim-isaac]: one environment resolves one imageio, so a
+    # looser range here describes an install nobody gets.
+    "imageio>=2.28.0,<3.0.0",
 ]
 # Local-LLM agent path (no API key / no AWS -- the natural choice on an edge
 # device): strands.models.ollama.OllamaModel does a top-level `import ollama`.
@@ -469,7 +499,9 @@ ollama = [
 # (numpy-version agnostic, so it composes with lerobot's numpy>=2). See
 # strands_robots/inference/ and docs/inference/remote.md.
 inference = [
-    "websockets>=12.0",
+    # See [cosmos3-service]: >=13.0 is where `websockets.sync.server.Server`
+    # first ships, and both extras must declare the same floor.
+    "websockets>=13.0",
 ]
 # rosbridge WebSocket transport: drive ROS1 (or remote ROS 2) robots from a host
 # with no ROS install at all. Pure-pip `roslibpy` speaks the rosbridge JSON

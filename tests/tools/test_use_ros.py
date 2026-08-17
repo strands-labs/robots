@@ -167,7 +167,7 @@ def test_echo_unresolvable_type_errors(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_publish_requires_topic_and_type() -> None:
-    assert use_ros(action="publish", topic="/cmd_vel")["status"] == "error"
+    assert use_ros(action="publish", topic="/my_topic")["status"] == "error"
 
 
 def test_service_call_requires_service_and_type() -> None:
@@ -185,13 +185,13 @@ def test_publish_dispatches_with_real_dict(monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.setattr(ros_mod, "_publish", fake_publish)
     result = use_ros(
         action="publish",
-        topic="/turtle1/cmd_vel",
+        topic="/turtle1/relay",
         type="geometry_msgs/msg/Twist",
         fields={"linear": {"x": 2.0}, "enabled": True, "tag": None},
         count=3,
     )
     assert result["status"] == "success"
-    assert "published 3 message(s) to /turtle1/cmd_vel" in _texts(result)
+    assert "published 3 message(s) to /turtle1/relay" in _texts(result)
     # The payload reaches the rclpy helper as a real Python dict with types intact.
     assert captured["fields"] == {"linear": {"x": 2.0}, "enabled": True, "tag": None}
 
@@ -593,6 +593,9 @@ def test_list_actions_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_action_send_goal_dispatch_returns_outcome(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A planning action, not /navigate_to_pose: the latter is a gated
+    # safety-critical command surface, and this test is about how an outcome is
+    # marshaled back, not about the approval gate.
     captured: dict[str, Any] = {}
 
     def _fake(action_name: str, action_type: str, fields: dict[str, Any], timeout: float) -> dict[str, Any]:
@@ -603,8 +606,8 @@ def test_action_send_goal_dispatch_returns_outcome(monkeypatch: pytest.MonkeyPat
     goal_fields = {"pose": {"header": {"frame_id": "map"}}}
     result = use_ros(
         action="action_send_goal",
-        action_name="/navigate_to_pose",
-        type="nav2_msgs/action/NavigateToPose",
+        action_name="/compute_path_to_pose",
+        type="nav2_msgs/action/ComputePathToPose",
         fields=goal_fields,
         timeout=120.0,
     )
@@ -612,8 +615,8 @@ def test_action_send_goal_dispatch_returns_outcome(monkeypatch: pytest.MonkeyPat
     assert "SUCCEEDED" in _texts(result)
     # The payload reached the helper as a real dict, untouched.
     assert captured == {
-        "name": "/navigate_to_pose",
-        "type": "nav2_msgs/action/NavigateToPose",
+        "name": "/compute_path_to_pose",
+        "type": "nav2_msgs/action/ComputePathToPose",
         "fields": goal_fields,
         "timeout": 120.0,
     }
@@ -622,13 +625,13 @@ def test_action_send_goal_dispatch_returns_outcome(monkeypatch: pytest.MonkeyPat
 
 def test_action_send_goal_timeout_surfaces_as_error(monkeypatch: pytest.MonkeyPatch) -> None:
     def _fake(*args: Any, **kwargs: Any) -> dict[str, Any]:
-        raise TimeoutError("goal to /navigate_to_pose did not finish within 0.1s (cancel requested)")
+        raise TimeoutError("goal to /compute_path_to_pose did not finish within 0.1s (cancel requested)")
 
     monkeypatch.setattr(ros_mod, "_action_send_goal", _fake)
     result = use_ros(
         action="action_send_goal",
-        action_name="/navigate_to_pose",
-        type="nav2_msgs/action/NavigateToPose",
+        action_name="/compute_path_to_pose",
+        type="nav2_msgs/action/ComputePathToPose",
         timeout=0.1,
     )
     assert result["status"] == "error"
@@ -638,13 +641,13 @@ def test_action_send_goal_timeout_surfaces_as_error(monkeypatch: pytest.MonkeyPa
 
 def test_action_send_goal_rejection_surfaces_as_error(monkeypatch: pytest.MonkeyPatch) -> None:
     def _fake(*args: Any, **kwargs: Any) -> dict[str, Any]:
-        raise ValueError("goal rejected by action server /navigate_to_pose")
+        raise ValueError("goal rejected by action server /compute_path_to_pose")
 
     monkeypatch.setattr(ros_mod, "_action_send_goal", _fake)
     result = use_ros(
         action="action_send_goal",
-        action_name="/navigate_to_pose",
-        type="nav2_msgs/action/NavigateToPose",
+        action_name="/compute_path_to_pose",
+        type="nav2_msgs/action/ComputePathToPose",
     )
     assert result["status"] == "error"
     assert "goal rejected" in _texts(result)
