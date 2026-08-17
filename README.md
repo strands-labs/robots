@@ -38,8 +38,8 @@
 
 `strands-robots` gives a [Strands Agent](https://github.com/strands-agents/harness-sdk)
 hands. One `Robot()` call returns a **MuJoCo simulation** (default - no GPU, no
-hardware) or a **real robot** - same code, same natural-language control, both
-auto-joined to a peer-to-peer **mesh**.
+hardware) or a **real robot** - same code, same natural-language control, and
+the same opt-in peer-to-peer **mesh** (`mesh=True`).
 
 ```python
 from strands import Agent
@@ -63,7 +63,8 @@ from strands_robots.tools import train_policy
 # 1. TELEOPERATE a real SO-101 with its leader arm and RECORD demos as a
 #    LeRobotDataset (one prompt drives cameras + teleop + recording).
 follower = Robot("so101", mode="real", port="/dev/ttyACM0",
-                 cameras={"front": {"type": "opencv", "index_or_path": "/dev/video0"}})
+                 cameras={"front": {"type": "opencv", "index_or_path": "/dev/video0"}},
+                 mesh=True)   # step 4 needs the mesh; joining is opt-in
 follower.attach_teleop("so101_leader", port="/dev/ttyACM1", id="leader")
 Agent(tools=[follower])(
     "start_recording(repo_id='me/pick', root='/tmp/pick', fps=30, "
@@ -437,7 +438,7 @@ Robot("my_arm", urdf_path="arm.xml") # bring your own MJCF/URDF
 | `cameras` | `dict` | `None` | Camera config (**`mode="real"` only**) |
 | `position` | `list[float]` | `[0,0,0]` | Spawn position in the sim world |
 | `data_config` | `str` | name | Observation/action schema name |
-| `mesh` | `bool` | `True` | Auto-join the Zenoh mesh |
+| `mesh` | `bool \| None` | `None` | Join the Zenoh mesh. `None` consults `STRANDS_MESH`, which leaves it **off** unless set to `true`/`1`/`yes` - pass `mesh=True` to opt in per robot. |
 
 Safety/validation rules:
 - **Defaults to sim.** Real hardware is always an explicit `mode="real"`.
@@ -944,8 +945,10 @@ frame = sim.render(camera_name="topdown")   # {status, content:[text, image]}
 
 **Self-healing:** unknown parameters are rejected with *"Unknown parameter X
 for action Y. Valid: [...]"*, missing required params produce *"Action X
-requires parameter Y."*, and vectors/dtypes are validated before MuJoCo sees
-them - so the agent learns the contract without crashing the process.
+requires parameter Y."*, a field the schema publishes as a string is refused
+unless it is one (*"Action X: 'Y' must be a string, got 7 (int)"*), and
+vectors/dtypes are validated before MuJoCo sees them - so the agent learns the
+contract without crashing the process.
 
 **Third-party backends.** `create_simulation(name)` discovers backends beyond
 the built-in `mujoco`/`newton`/`isaac` registry via Python
@@ -973,11 +976,13 @@ backend's install, usage, config, and `STRANDS_ISAAC_*` env vars.
   <img src="docs/assets/mesh_network.svg" alt="Strands Robots mesh - robot peers discovering and coordinating over the Zenoh mesh" width="100%">
 </p>
 
-Every `Robot()` and `Simulation()` is automatically a peer on a local Zenoh
-mesh - no setup. Peers on the same host discover each other out of the box
-(gossip scouting plus a shared local endpoint), sharing a single ref-counted
-`zenoh.Session` per process. Cross-host discovery is deliberately explicit:
-point peers at each other with `ZENOH_CONNECT` (e.g. `tcp/10.0.0.1:7447`).
+`Robot("so100", mesh=True)` joins a local Zenoh mesh. Joining is opt-in: a bare
+`Robot()` leaves `robot.mesh` as `None` unless `STRANDS_MESH` is `true`/`1`/`yes`.
+Once joined, peers on the same host find each other with nothing further to
+configure (gossip scouting plus a shared local endpoint), sharing a single
+ref-counted `zenoh.Session` per process. Cross-host discovery is deliberately
+explicit: point peers at each other with `ZENOH_CONNECT`
+(e.g. `tcp/10.0.0.1:7447`).
 Multicast scouting is **off by default** - it lets any device on the LAN
 enumerate and attract the fleet - and is opt-in via
 `STRANDS_MESH_MULTICAST=true`, which logs a loud warning.
@@ -985,8 +990,8 @@ enumerate and attract the fleet - and is opt-in via
 ```python
 from strands_robots import Robot
 
-a = Robot("so100")              # auto-joins the mesh
-b = Robot("so100")              # second peer (another process)
+a = Robot("so100", mesh=True)   # joining is opt-in
+b = Robot("so100", mesh=True)   # second peer (another process)
 print(a.mesh.peers)             # list[dict] - discovers b
 print(a.mesh.peers_by_id[b.peer_id])   # dict[peer_id -> info] for O(1) lookup
 info = a.mesh.get_peer(b.peer_id)      # None-safe single lookup
@@ -1015,8 +1020,10 @@ a.mesh.tell(
 
 Expose the mesh to an agent with the `robot_mesh` tool (`peers`, `status`,
 `tell`, `send`, `broadcast`, `stop`, `emergency_stop`, `subscribe`, `watch`,
-`inbox`). Disable globally with `STRANDS_MESH=false` or per-robot with
-`Robot("so100", mesh=False)`. Install with `uv pip install "strands-robots[mesh]"`.
+`inbox`). Opt in per robot with `Robot("so100", mesh=True)` or process-wide with
+`STRANDS_MESH=true`; `STRANDS_MESH=false` is a hard kill switch that overrides an
+explicit `mesh=True`, and `Robot("so100", mesh=False)` opts a single robot out.
+Install with `uv pip install "strands-robots[mesh]"`.
 
 For frictionless single-machine experiments, set `STRANDS_MESH_LOCAL_DEV=1` -
 one env var that runs the mesh without mTLS/ACL on localhost. It defaults the

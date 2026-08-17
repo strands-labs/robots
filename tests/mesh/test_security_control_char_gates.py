@@ -205,3 +205,131 @@ class TestPolicyHostEntryRegexNoBrackets:
         from strands_robots.mesh.security import _POLICY_HOST_ENTRY_RE
 
         assert _POLICY_HOST_ENTRY_RE.fullmatch("::1") is not None
+
+
+# --- 6. instruction control-character gate ---
+
+
+#: The control bytes the sibling wire fields already refuse, paired with the
+#: codepoint the refusal must name. ``instruction`` is the field the
+#: validator's own comment calls out ("a malicious peer cannot smuggle
+#: control-byte instruction strings in") and it was the one admitting them.
+_CONTROL_BYTES = [
+    ("\n", 0x0A),
+    ("\r", 0x0D),
+    ("\r\n", 0x0D),
+    ("\x00", 0x00),
+    ("\t", 0x09),
+    ("\x07", 0x07),
+    ("\x1b", 0x1B),
+    ("\x7f", 0x7F),
+    ("\x85", 0x85),
+]
+
+
+class TestInstructionControlCharGate:
+    """``instruction`` must refuse the control bytes its siblings refuse.
+
+    ``validate_command`` charset-gates ``policy_host``, ``server_address``,
+    ``turn_id``/``sender_id``, ``override_code`` and ``robot_name``, and the
+    comment introducing the sim-targeted block names the threat as a peer
+    smuggling "control-byte instruction strings". ``instruction`` itself was
+    bounded only by type and length, so a remote ``execute`` payload could
+    carry CR/LF through to any log record that echoes it - one call emitting
+    two records, the second forgeable at an arbitrary level and logger name.
+    """
+
+    def _cmd(self, instruction: str, action: str = "execute") -> dict:
+        return {
+            "action": action,
+            "instruction": instruction,
+            "policy_provider": "mock",
+        }
+
+    @pytest.mark.parametrize("ctl,_codepoint", _CONTROL_BYTES)
+    def test_rejects_control_byte(self, ctl: str, _codepoint: int):
+        with pytest.raises(ValidationError, match="control character"):
+            validate_command(self._cmd(f"pick up the cube{ctl}trailing"))
+
+    @pytest.mark.parametrize("ctl,codepoint", _CONTROL_BYTES)
+    def test_refusal_names_the_codepoint_and_the_offset(self, ctl: str, codepoint: int):
+        """The refusal locates the byte instead of only asserting one exists.
+
+        A peer sending a 2000-char instruction cannot act on "contains a
+        control character"; the codepoint plus offset identifies it exactly.
+        """
+        prefix = "pick up the cube"
+        with pytest.raises(ValidationError) as exc:
+            validate_command(self._cmd(f"{prefix}{ctl}trailing"))
+        assert f"U+{codepoint:04X}" in str(exc.value)
+        assert f"offset {len(prefix)}" in str(exc.value)
+
+    def test_refusal_does_not_echo_the_payload(self):
+        """The refusal must not carry the injection into the record reporting it.
+
+        A ``ValidationError`` is logged by the dispatcher, so interpolating the
+        instruction would forge the very record that reports the forgery
+        attempt. The sibling fields can echo with ``%r`` because they are short
+        and ASCII; a natural-language field is neither.
+        """
+        with pytest.raises(ValidationError) as exc:
+            validate_command(self._cmd("pick up cube\nWARNING:audit:E-STOP CLEARED"))
+        message = str(exc.value)
+        assert "E-STOP" not in message
+        assert "\n" not in message
+        assert "\r" not in message
+
+    @pytest.mark.parametrize("action", ["execute", "start"])
+    def test_the_gate_covers_every_action_that_takes_an_instruction(self, action: str):
+        with pytest.raises(ValidationError, match="control character"):
+            validate_command(self._cmd("go\nforged", action=action))
+
+    @pytest.mark.parametrize("ctl,_codepoint", _CONTROL_BYTES)
+    def test_instruction_and_robot_name_agree_on_control_bytes(self, ctl: str, _codepoint: int):
+        """One rule for both, so neither field is the soft way in.
+
+        ``robot_name`` refused these bytes while ``instruction`` - carried in
+        the same payload, on the same wire, to the same dispatcher - admitted
+        them.
+        """
+        with pytest.raises(ValidationError):
+            validate_command({"action": "execute", "instruction": "go", "robot_name": f"arm{ctl}1"})
+        with pytest.raises(ValidationError):
+            validate_command(self._cmd(f"go{ctl}1"))
+
+    def test_accepts_a_clean_instruction(self):
+        out = validate_command(self._cmd("pick up the red cube and place it in the bin"))
+        assert out["instruction"] == "pick up the red cube and place it in the bin"
+
+    def test_accepts_printable_non_ascii(self):
+        """A natural-language field bounds the control range, not the charset.
+
+        This is why the gate is not :data:`_SAFE_PASSTHROUGH_RE`: that regex
+        admits only 0x20-0x7E, so reusing it for ``instruction`` would refuse
+        any instruction needing a non-ASCII letter. ``robot_name`` is an
+        identifier and is right to be ASCII-only; an instruction is prose.
+        """
+        instruction = "pick up the caf\u00e9 cup, then the \u65e5\u672c\u8a9e box"
+        out = validate_command(self._cmd(instruction))
+        assert out["instruction"] == instruction
+
+    def test_a_whitespace_only_instruction_is_still_refused_as_empty(self):
+        """The pre-existing empty check keeps its verdict and its wording.
+
+        ``"\\n\\n"`` strips to nothing, so it must still be refused as empty
+        rather than reclassified by the new charset gate - the two guards are
+        ordered, not overlapping.
+        """
+        with pytest.raises(ValidationError, match="non-empty `instruction`"):
+            validate_command(self._cmd("\n\n"))
+
+    def test_the_length_bound_still_outranks_the_charset_gate(self):
+        """Order is type -> length -> charset, matching the sibling fields.
+
+        An oversize instruction that also carries a control byte reports the
+        length, so a peer fixing one problem at a time is not sent in circles.
+        """
+        from strands_robots.mesh.security import MAX_INSTRUCTION_LEN
+
+        with pytest.raises(ValidationError, match="exceeds"):
+            validate_command(self._cmd("x" * MAX_INSTRUCTION_LEN + "\n"))

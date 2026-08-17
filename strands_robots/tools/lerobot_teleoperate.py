@@ -267,7 +267,30 @@ class SessionManager:
         self.sessions_file = SESSION_DIR / "active_sessions.json"
 
     def _load_sessions(self) -> dict[str, Any]:
-        """Load active sessions from disk."""
+        """Load the session store, pruning records whose process is gone.
+
+        ``psutil.pid_exists`` answers whether the PID exists;
+        ``Process(pid).is_running()`` refines that (it also rules out PID reuse).
+        The two probes can disagree, and the two ways they disagree mean opposite
+        things, so they are handled separately:
+
+        * :class:`psutil.NoSuchProcess` - the process was reaped between the two
+          calls. The record names nothing, so it is pruned.
+        * :class:`psutil.AccessDenied` - the process exists (``pid_exists`` just
+          said so) but this user may not inspect it; a session started under
+          ``sudo`` for serial-port access and then listed as the invoking user
+          reads this way. That is not death, so the record is kept.
+
+        Keeping it matters because the prune below is *written back to disk* and
+        this store is the only place a detached session's PID is recorded: a
+        pruned record leaves the teleoperation process running with no supported
+        way to stop it. Presence here is not the running claim - ``list`` and
+        ``status`` each derive that from ``pid_exists`` - so a retained record is
+        reported running only while its PID really exists.
+
+        Returns:
+            The surviving session records, keyed by session name.
+        """
         if not self.sessions_file.exists():
             return {}
 
@@ -284,8 +307,20 @@ class SessionManager:
                         proc = psutil.Process(pid)
                         if proc.is_running():
                             active_sessions[name] = info
-                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    except psutil.NoSuchProcess:
+                        # Reaped between pid_exists and this probe: the record
+                        # names nothing, so pruning it loses no live session.
                         pass
+                    except psutil.AccessDenied:
+                        # Exists but not inspectable: keep the record (see above)
+                        # and say so, because the store is written back below and
+                        # silence here loses the PID for good.
+                        active_sessions[name] = info
+                        logger.warning(
+                            "Teleop session PID %s exists but cannot be inspected; "
+                            "keeping its record so the session stays stoppable",
+                            pid,
+                        )
 
             # Update sessions file with only active sessions
             if len(active_sessions) != len(sessions):

@@ -1,0 +1,3 @@
+### Security
+
+- **mesh/security**: `validate_command` now refuses C0/DEL/C1 control characters in a wire `instruction`, closing the one string field that had no charset gate while `robot_name`, `policy_host`, `server_address`, `turn_id`/`sender_id` and `override_code` all had one. A CR or LF admitted through `instruction` let one logging call emit two log records, the second able to claim an arbitrary level and logger name. The gate bounds only the control range, so a printable non-ASCII instruction is still admitted; the refusal names the offending codepoint and its offset rather than echoing the payload into the record that reports it.
