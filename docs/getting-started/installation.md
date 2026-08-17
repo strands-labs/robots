@@ -15,8 +15,8 @@ Requires **Python >= 3.12**. Examples use [`uv`](https://docs.astral.sh/uv/) (`c
 | `[sim-mujoco]` | `sim` + `mujoco`, `imageio`, `imageio-ffmpeg` | Any `Robot()` with default `mode="sim"` |
 | `[lerobot]` | `lerobot>=0.6.1,<0.7.0` | `LerobotLocalPolicy` + dataset recording |
 | `[groot-service]` | `pyzmq`, `msgpack` | `Gr00tPolicy` (ZMQ to a GR00T container) |
-| `[cosmos3-service]` | `msgpack`, `websockets` | `Cosmos3Policy` (WebSocket to Cosmos 3 server) |
-| `[mesh]` | `eclipse-zenoh`, `json5` | Multi-robot mesh discovery + RPC |
+| `[cosmos3-service]` | `msgpack`, `websockets>=13.0` | `Cosmos3Policy` (WebSocket to Cosmos 3 server) |
+| `[mesh]` | `eclipse-zenoh>=1.6.1,<2.0.0`, `json5` | Multi-robot mesh discovery + RPC |
 | `[mesh-iot]` | `mesh` + `awsiotsdk`, `awscrt`, `boto3` | AWS IoT Core transport for mesh |
 | `[benchmark-libero]` | `libero` eval deps | LIBERO benchmark suite |
 | `[all]` | `groot-service` + `lerobot` + `sim-mujoco` + `mesh` + `mesh-iot` | Demos, CI, exploration |
@@ -36,6 +36,13 @@ MJCF and meshes, and that package gains one module per newly packaged robot.
 registered robot - on an older one, robots such as `so100` and `so101` have no
 module to import and no fallback, so `Robot("so101", mode="sim")` cannot resolve
 a model file.
+
+The `websockets` floor in `[inference]` and `[cosmos3-service]` is set the same
+way. `strands_robots/inference/server.py` annotates `PolicyServer._server` with
+`websockets.sync.server.Server`, which first ships in websockets 13.0 - 12.0
+spells that class `WebSocketServer`. Both extras declare `>=13.0`, and they
+declare the *same* floor on purpose: an environment resolves one `websockets`, so
+two different floors would leave the lower one describing an install nobody gets.
 
 ## Platform notes
 

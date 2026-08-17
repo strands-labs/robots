@@ -22,28 +22,17 @@ import torch
 
 from ...utils import name_list_error, positive_count_error
 from .. import Policy, align_action_values, chunk_count_error
-from .embodiment import ZeroActionMonitor, diagnose_action_dim, hardware_pos_keys, state_key_remedy
+from .embodiment import (
+    ZeroActionMonitor,
+    diagnose_action_dim,
+    hardware_pos_keys,
+    observed_state_keys,
+    state_key_remedy,
+)
 from .processor import ProcessorBridge
 from .resolution import resolve_policy_class_by_name, resolve_policy_class_from_hub
 
 logger = logging.getLogger(__name__)
-
-
-def _scalar_observation_keys(observation_dict: dict[str, Any]) -> list[str]:
-    """Observation keys that can carry a joint/state scalar, in observation order.
-
-    Excludes ``task`` (the instruction string) and any array with 2+ dimensions
-    (a camera frame). Both observation-to-batch paths derive their state-ordering
-    fallback from this, and the state-key diagnostics quote it back to the
-    caller, so all three must agree on what counts as a state key.
-
-    Args:
-        observation_dict: Raw strands/sim observation for this step.
-
-    Returns:
-        The candidate state keys, in the observation's own insertion order.
-    """
-    return [k for k, v in observation_dict.items() if k != "task" and not (isinstance(v, np.ndarray) and v.ndim >= 2)]
 
 
 def _state_key_cause(configured: list[str]) -> str:
@@ -2512,10 +2501,9 @@ class LerobotLocalPolicy(Policy):
                 f"observation: {shown}{ellipsis}. Present joints keep their index and the "
                 "missing dims are zero-filled in place, but the sim/robot does not report "
                 "those joints - commonly a mimic/tendon gripper whose actuator name differs "
-                "from the observation's finger-joint names. "
+                "from the observation's finger-joint names. " + state_key_remedy(observed_state_keys(observation_dict))
                 # Same registry-checked remedy as the all-missing guard, so one
                 # rule serves both degradations.
-                + state_key_remedy(_scalar_observation_keys(observation_dict))
             )
             if self.strict_keys:
                 raise ValueError("strict_keys=True: " + msg)
@@ -2620,7 +2608,7 @@ class LerobotLocalPolicy(Policy):
             used_feats.add(feat)
 
         # 2) Collect scalar joint values into observation.state.
-        scalar_keys = _scalar_observation_keys(observation_dict)
+        scalar_keys = observed_state_keys(observation_dict)
         # Resolve the joint-state ordering, raising/warning loudly when the
         # configured robot_state_keys cannot describe this observation (the
         # generic joint_0..N vs named-joint mismatch) instead of silently
@@ -2945,7 +2933,7 @@ class LerobotLocalPolicy(Policy):
         # raises (strict_keys) or warns + falls back to the observation's own
         # scalar keys, instead of silently dropping observation.state and
         # running the policy open-loop (see _resolve_state_order).
-        scalar_keys = _scalar_observation_keys(observation_dict)
+        scalar_keys = observed_state_keys(observation_dict)
         order = self._resolve_state_order(observation_dict, scalar_keys)
 
         # Collect state values index-aligned with the resolved order. A key in

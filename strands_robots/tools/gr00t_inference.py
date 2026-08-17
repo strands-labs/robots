@@ -1039,8 +1039,86 @@ def _check_service_status(port: int) -> dict[str, Any]:
         }
 
 
+def _signal_service_pids(exec_prefix: list[str], pids: list[str], signal: str) -> None:
+    """Send ``signal`` to every pid in ``pids``, best effort.
+
+    Teardown is best effort *per pid*. A pid that exits between the scan that
+    listed it and the signal that targets it makes ``kill`` exit non-zero
+    ("No such process") -- and that is the outcome teardown wanted, not a
+    failure. Signalling therefore must never abort the sweep: the pids after it
+    in the list, and the SIGKILL escalation that follows, still have to run.
+
+    Args:
+        exec_prefix: Argv prefix that selects where the signal lands, e.g.
+            ``["docker", "exec", "gr00t"]`` for a container or ``[]`` for the
+            host.
+        pids: Process ids to signal. Empty strings are skipped.
+        signal: ``kill`` signal flag, e.g. ``"-TERM"`` or ``"-KILL"``.
+    """
+    for pid in pids:
+        if pid:
+            subprocess.run([*exec_prefix, "kill", signal, pid], capture_output=True, text=True, check=False)
+
+
+def _service_pids_in_container(container_name: str, port: int) -> list[str]:
+    """Return the inference-service pids serving ``port`` inside a container.
+
+    Args:
+        container_name: Container to scan.
+        port: Port the inference service was started on.
+
+    Returns:
+        The matching pids, or an empty list when the container has none or
+        cannot be scanned at all. A container that cannot be scanned is
+        skipped by the caller rather than aborting the whole teardown.
+    """
+    try:
+        result = subprocess.run(
+            ["docker", "exec", container_name, "pgrep", "-f", f"inference_service.py.*--port {port}"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except (subprocess.CalledProcessError, OSError):
+        return []
+    if result.returncode != 0:
+        return []
+    return [pid for pid in result.stdout.strip().split("\n") if pid]
+
+
+def _service_pids_on_host(port: int) -> list[str]:
+    """Return the host pids holding ``port``.
+
+    Args:
+        port: Port to inspect.
+
+    Returns:
+        The pids holding the port, or an empty list when it is free (or when
+        ``lsof`` is unavailable).
+    """
+    try:
+        result = subprocess.run(["lsof", "-t", f"-i:{port}"], capture_output=True, text=True, check=False)
+    except (subprocess.CalledProcessError, OSError):
+        return []
+    if result.returncode != 0:
+        return []
+    return [pid for pid in result.stdout.strip().split("\n") if pid]
+
+
 def _stop_service(port: int) -> dict[str, Any]:
-    """Stop GR00T inference service running on specific port."""
+    """Stop the GR00T inference service running on ``port``.
+
+    Escalates SIGTERM -> SIGKILL over every pid found, then rescans and reports
+    what is actually true. A pid that had already exited is not an error, but a
+    port still held after the escalation is: reporting success there would tell
+    the caller the port is free when the next bind is about to fail.
+
+    Args:
+        port: Port whose inference service should be stopped.
+
+    Returns:
+        A tool result. ``"success"`` only when nothing is left holding ``port``.
+    """
     try:
         containers_result = _find_gr00t_containers()
         if containers_result["status"] == "success":
@@ -1048,67 +1126,63 @@ def _stop_service(port: int) -> dict[str, Any]:
 
             for container in running_containers:
                 container_name = container["name"]
-                try:
-                    result = subprocess.run(
-                        ["docker", "exec", container_name, "pgrep", "-f", f"inference_service.py.*--port {port}"],
-                        capture_output=True,
-                        text=True,
-                        check=False,
-                    )
-
-                    if result.returncode == 0 and result.stdout.strip():
-                        pids = result.stdout.strip().split("\n")
-                        for pid in pids:
-                            if pid:
-                                subprocess.run(["docker", "exec", container_name, "kill", "-TERM", pid], check=True)
-
-                        time.sleep(2)
-
-                        result = subprocess.run(
-                            ["docker", "exec", container_name, "pgrep", "-f", f"inference_service.py.*--port {port}"],
-                            capture_output=True,
-                            text=True,
-                            check=False,
-                        )
-
-                        if result.returncode == 0 and result.stdout.strip():
-                            pids = result.stdout.strip().split("\n")
-                            for pid in pids:
-                                if pid:
-                                    subprocess.run(["docker", "exec", container_name, "kill", "-KILL", pid], check=True)
-
-                        return {
-                            "status": "success",
-                            "port": port,
-                            "container": container_name,
-                            "message": f"GR00T service on port {port} stopped in container {container_name}",
-                        }
-
-                except subprocess.CalledProcessError:
+                alive = _service_pids_in_container(container_name, port)
+                if not alive:
                     continue
 
+                exec_prefix = ["docker", "exec", container_name]
+                _signal_service_pids(exec_prefix, alive, "-TERM")
+                time.sleep(2)
+
+                alive = _service_pids_in_container(container_name, port)
+                if alive:
+                    _signal_service_pids(exec_prefix, alive, "-KILL")
+                    alive = _service_pids_in_container(container_name, port)
+
+                if alive:
+                    return {
+                        "status": "error",
+                        "port": port,
+                        "container": container_name,
+                        "message": (
+                            f"GR00T service on port {port} in container {container_name} survived SIGTERM and "
+                            f"SIGKILL: pid(s) {', '.join(alive)} still match. The port is still held, so a "
+                            f"restart will fail to bind it. Check the container with "
+                            f"'docker exec {container_name} ps -ef'."
+                        ),
+                    }
+
+                return {
+                    "status": "success",
+                    "port": port,
+                    "container": container_name,
+                    "message": f"GR00T service on port {port} stopped in container {container_name}",
+                }
+
         # Fallback: try host system
-        result = subprocess.run(["lsof", "-t", f"-i:{port}"], capture_output=True, text=True)
-
-        if result.returncode == 0:
-            pids = result.stdout.strip().split("\n")
-            for pid in pids:
-                if pid:
-                    subprocess.run(["kill", "-TERM", pid], check=True)
-
-            time.sleep(2)
-
-            result = subprocess.run(["lsof", "-t", f"-i:{port}"], capture_output=True, text=True)
-
-            if result.returncode == 0:
-                pids = result.stdout.strip().split("\n")
-                for pid in pids:
-                    if pid:
-                        subprocess.run(["kill", "-KILL", pid], check=True)
-
-            return {"status": "success", "port": port, "message": f"Service on port {port} stopped"}
-        else:
+        alive = _service_pids_on_host(port)
+        if not alive:
             return {"status": "success", "port": port, "message": f"No service running on port {port}"}
+
+        _signal_service_pids([], alive, "-TERM")
+        time.sleep(2)
+
+        alive = _service_pids_on_host(port)
+        if alive:
+            _signal_service_pids([], alive, "-KILL")
+            alive = _service_pids_on_host(port)
+
+        if alive:
+            return {
+                "status": "error",
+                "port": port,
+                "message": (
+                    f"Port {port} is still held by pid(s) {', '.join(alive)} after SIGTERM and SIGKILL. "
+                    f"The owning process may belong to another user; inspect it with 'lsof -i:{port}'."
+                ),
+            }
+
+        return {"status": "success", "port": port, "message": f"Service on port {port} stopped"}
 
     except Exception as e:
         return {"status": "error", "message": f"Failed to stop service: {e}"}

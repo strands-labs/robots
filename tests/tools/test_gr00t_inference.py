@@ -21,6 +21,7 @@ Coverage:
 
 from __future__ import annotations
 
+import itertools
 import os
 import subprocess
 from pathlib import Path
@@ -1252,20 +1253,26 @@ class TestServiceDiscovery:
         inference process is still alive (the second ``pgrep`` still reports it),
         escalate to KILL so a wedged service cannot leak the port. This pins that
         escalation - dropping it would silently leave a hung server holding the
-        port after ``stop`` reports success.
+        port after ``stop`` reports success. Success is only reported once a
+        rescan shows the port is actually free.
         """
         containers = {
             "status": "success",
             "containers": [{"name": "groot", "image": "isaac-gr00t", "status": "Up 3 hours", "ports": ""}],
         }
         calls: list[list[str]] = []
+        probes = itertools.count()
 
         def fake_run(cmd, *args, **kwargs):
             calls.append(cmd)
             if "pgrep" in cmd:
-                # The process stays alive across both probes -> TERM did not
-                # reap it, so the KILL escalation branch must run.
-                return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="4242\n", stderr="")
+                # Alive across the first two probes -> TERM did not reap it, so
+                # the KILL escalation must run; gone on the third, which is what
+                # lets the teardown be reported as a success.
+                alive = next(probes) < 2
+                return subprocess.CompletedProcess(
+                    args=cmd, returncode=0 if alive else 1, stdout="4242\n" if alive else "", stderr=""
+                )
             return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
 
         with (
@@ -1321,12 +1328,18 @@ class TestServiceDiscovery:
         """
         containers = {"status": "success", "containers": []}
         calls: list[list[str]] = []
+        probes = itertools.count()
 
         def fake_run(cmd, *args, **kwargs):
             calls.append(cmd)
             if "lsof" in cmd:
-                # Process is listed on both lsof probes -> survives TERM.
-                return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="9999\n", stderr="")
+                # Listed on the first two lsof probes -> survives TERM, so the
+                # KILL escalation must run; gone on the third, so the port is
+                # genuinely free and the teardown can report success.
+                alive = next(probes) < 2
+                return subprocess.CompletedProcess(
+                    args=cmd, returncode=0 if alive else 1, stdout="9999\n" if alive else "", stderr=""
+                )
             return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
 
         with (

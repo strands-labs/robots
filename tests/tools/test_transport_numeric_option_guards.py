@@ -102,7 +102,10 @@ def published_at(monkeypatch: pytest.MonkeyPatch) -> list[float]:
 
 
 def _publish_twist(**options: Any) -> dict[str, Any]:
-    return ros_mod.use_ros(action="publish", topic="/cmd_vel", type="geometry_msgs/msg/Twist", **options)
+    # Not /cmd_vel: that is a gated safety-critical command surface, and these
+    # tests are about the numeric option guards, so the honored paths must reach
+    # the publish loop without an operator approval standing in the way.
+    return ros_mod.use_ros(action="publish", topic="/my_topic", type="geometry_msgs/msg/Twist", **options)
 
 
 @pytest.mark.parametrize("rate", UNUSABLE_RATES)

@@ -1902,10 +1902,45 @@ class MuJoCoSimEngine(
         # when the target robot has an active policy (the common case).
         if registered(self._policy_threads, name):
             self._world.robots[name].policy_running = False
-            try:
-                self._policy_threads[name].result(timeout=5.0)
-            except Exception:
-                pass
+            fut = self._policy_threads[name]
+            timeout = self._DEFAULT_POLICY_STOP_TIMEOUT
+            with contextlib.suppress(Exception):
+                # ``result`` raises either the worker's own exception - it has
+                # exited, which is all we needed - or the join timeout. Which
+                # one happened is decided by ``fut.done()`` below rather than by
+                # the exception type, because the two are not distinguishable
+                # that way: ``socket.timeout`` IS ``TimeoutError``, so a policy
+                # server that stops answering raises the same class the join
+                # does. Typing on the class would refuse a removal whose worker
+                # has already exited.
+                fut.result(timeout=timeout)
+            if not fut.done():
+                # The cooperative stop lapsed: the worker is still live (it is
+                # blocked somewhere the stop flag is not read yet - inside a
+                # policy inference call, typically). Keep the tracking entry.
+                # It is the single record every bound on a live worker reads:
+                # the global gate in step 2, ``list_policies_running``, and
+                # cleanup's own bounded join. Deleting it here does not end the
+                # worker, it only makes the worker unobservable - the gate then
+                # admits every later scene mutation (``add_object``,
+                # ``set_timestep``, ``add_robot``) for the rest of the session,
+                # and cleanup's ``executor.shutdown(wait=False)`` runs on the
+                # premise that all policy workers were drained.
+                return {
+                    "status": "error",
+                    "content": [
+                        {
+                            "text": (
+                                f"Robot '{name}' still has a live policy worker after waiting "
+                                f"{timeout:.1f}s for it to stop, so the scene rebuild was refused: "
+                                "it would reallocate the model/data that worker holds. The "
+                                "cooperative stop has been requested and the worker exits at its "
+                                "next control tick - retry action='remove_robot' (until it does, "
+                                "action='list_policies_running' still reports it)."
+                            )
+                        }
+                    ],
+                }
             del self._policy_threads[name]
 
         # Step 2: after stopping our own, there must be no OTHER policy
@@ -1935,7 +1970,9 @@ class MuJoCoSimEngine(
         robot_obj = self._world.robots[name]
 
         # The cooperative stop + no-running-policy gate above guarantee no
-        # PolicyRunner worker is mid-mj_step. The XML round-trip below still
+        # PolicyRunner worker is mid-mj_step: step 1 refuses outright when its
+        # own robot's worker outlived the stop budget, so reaching here means
+        # every worker is done. The XML round-trip below still
         # reallocates model/data, so serialize it under self._lock to exclude
         # the render/recorder daemon (rendering.py reads mjData under the same
         # lock). remove_robot is dispatched WITHOUT the blanket lock (see
@@ -5357,10 +5394,17 @@ class MuJoCoSimEngine(
 
     # Cleanup
 
-    # Default cleanup shutdown timeout (seconds). A policy worker might be
-    # mid-step when cleanup is called; give it bounded time to see the
-    # cooperative-stop flag and exit cleanly before we null the world and
-    # its in-flight ``mj_step`` segfaults on a nulled ``_model``/``_data``.
+    # Cooperative-stop budget (seconds) - how long a caller-facing action waits
+    # for a policy worker to notice ``policy_running = False`` and exit. A
+    # policy worker might be mid-step when cleanup is called; give it bounded
+    # time to see the cooperative-stop flag and exit cleanly before we null the
+    # world and its in-flight ``mj_step`` segfaults on a nulled
+    # ``_model``/``_data``. ``remove_robot`` waits the same budget on the one
+    # worker it stops itself, so the two paths cannot drift to different
+    # answers about how long the protocol gets. Bounded rather than open-ended
+    # so a wedged worker can never hang the caller; each path then decides what
+    # to do with a lapse - cleanup logs and continues teardown, remove_robot
+    # refuses the scene rebuild.
     # Override in tests via ``cleanup(policy_stop_timeout=...)`` if needed.
     _DEFAULT_POLICY_STOP_TIMEOUT = 5.0
 

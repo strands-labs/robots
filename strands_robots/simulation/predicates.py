@@ -212,26 +212,88 @@ def _body_position(sim: SimEngine, body: str) -> list[float] | None:
 def _joint_position(sim: SimEngine, joint: str) -> float | None:
     """Best-effort joint-position lookup via ``get_observation``.
 
-    ``get_observation`` is on the ABC and returns ``{<joint_name>: float}``.
-    When the joint is absent from the observation dict (wrong robot, wrong
-    namespace) we return ``None`` so predicates can decide between ``False``
-    and an explicit error path.
+    ``get_observation`` is on the ABC and returns ``{<joint_name>: float}``,
+    but it is *robot-scoped*: called without ``robot_name`` it reports the
+    joints of one robot only. A benchmark spec names joints at *scene* scope,
+    and the joints that make ``joint_above`` / ``joint_below`` /
+    ``joint_progress`` worth having - a drawer slide, a door hinge - belong to
+    an articulated fixture that is necessarily a *second* entity alongside the
+    arm being controlled. Reading only the unscoped observation therefore never
+    resolves them, and the term degrades to a constant: the predicate *and its
+    negation* both answer ``False``, so no success criterion over that joint
+    can ever hold.
+
+    So resolve over the scene, mirroring the bounded ladder
+    :func:`_body_position` already uses for the LIBERO body-name convention:
+    the unscoped observation first (single-robot scenes, and the controlled
+    robot's own joints, keep their existing fast path), then each robot the
+    world reports by name via the same ``robot_name`` route the ``base_*``
+    helpers use. Only once every entity has been asked is the name genuinely
+    absent - which is what lets :func:`_warn_unresolved` say so truthfully and
+    list what was tried.
+
+    Returns ``None`` when no entity in the scene exposes ``joint``, so
+    predicates can decide between ``False`` and an explicit error path.
     """
+
+    saw_observation = False
+
+    def _read(robot: str | None) -> float | None:
+        nonlocal saw_observation
+        try:
+            obs = (
+                sim.get_observation(skip_images=True)
+                if robot is None
+                else sim.get_observation(robot_name=robot, skip_images=True)
+            )
+        except Exception as e:  # noqa: BLE001 - defensive
+            logger.debug("get_observation(robot_name=%r) failed: %s", robot, e)
+            return None
+        if not isinstance(obs, dict):
+            return None
+        if obs:
+            saw_observation = True
+        val = obs.get(joint)
+        if isinstance(val, (int, float)) and not isinstance(val, bool):
+            return float(val)
+        return None
+
+    val = _read(None)
+    if val is not None:
+        return val
+
     try:
-        obs = sim.get_observation(skip_images=True)
+        robots = sim.list_robots()
     except Exception as e:  # noqa: BLE001 - defensive
-        logger.debug("get_observation() failed: %s", e)
-        return None
-    if not isinstance(obs, dict):
-        return None
-    val = obs.get(joint)
-    if isinstance(val, (int, float)) and not isinstance(val, bool):
-        return float(val)
-    # The backend produced an observation but this joint is not in it: almost
-    # always a spec typo (an empty obs is a backend/capability gap, not a name
-    # error, so stay silent there).
-    if obs and joint not in obs:
-        _warn_unresolved("joint", joint)
+        logger.debug("list_robots() failed: %s", e)
+        robots = []
+    names = [r for r in robots if isinstance(r, str)] if isinstance(robots, list) else []
+
+    hits = [(name, v) for name in names if (v := _read(name)) is not None]
+    if hits:
+        if len(hits) > 1:
+            # ``list_robots`` is documented as ordered and is already the
+            # library's default-robot resolution order, so first-match is
+            # deterministic - but a spec that names a joint several entities
+            # share is under-specified, so say which one answered.
+            logger.warning(
+                "predicate/reward DSL: joint %r is exposed by %d entities %s; "
+                "resolving against %r (first in list_robots() order). Qualify "
+                "the spec if a different entity was meant.",
+                joint,
+                len(hits),
+                [name for name, _ in hits],
+                hits[0][0],
+            )
+        return hits[0][1]
+
+    # Every entity in the scene has been asked and none exposes the joint:
+    # almost always a spec typo. A backend that produces no observation at all
+    # is a capability gap rather than a name error, so stay silent there - the
+    # same condition the single-robot path has always used, now evaluated over
+    # every entity consulted.
+    if saw_observation:
+        _warn_unresolved("joint", joint, ("<controlled robot>", *names))
     return None
 
 
@@ -1168,7 +1230,9 @@ def _joint_progress(joint: str, target: float, weight: float = 1.0) -> RewardTer
     """Negative absolute distance from a joint to its target, weighted.
 
     Useful for drawer/door tasks where success is "joint near target
-    position" and you want dense signal during training.
+    position" and you want dense signal during training. ``joint`` is resolved
+    at scene scope by :func:`_joint_position`, so it may name a joint on an
+    articulated fixture as well as one on the robot being controlled.
     """
     w = float(weight)
     t = float(target)

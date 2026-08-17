@@ -43,7 +43,7 @@ from strands_robots.registry import (
 | `has_sim(name)` / `has_hardware(name)` | Sim / real support flags. |
 | `get_hardware_type(name)` | LeRobot type string for `mode="real"`. |
 | `list_robots_by_category()` | `{category: [names]}`. |
-| `list_aliases()` | All 106 aliases. |
+| `list_aliases()` | All 119 aliases, including every GR00T `data_config` spelling (so `data_config` names resolve as robot names). |
 | `format_robot_table()` | Pretty-printed robot table. |
 | `register_robot(name, entry)` | Add user-defined robot at runtime. |
 | `unregister_robot(name)` | Remove a runtime-registered robot. |

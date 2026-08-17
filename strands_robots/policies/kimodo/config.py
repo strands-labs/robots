@@ -14,6 +14,8 @@ Numeric domains follow the shared helpers in :mod:`strands_robots.utils`:
   for the G1 tracker via SLERP downstream)
 * ``num_frames`` - positive integer bounded by the model's max sequence length
   (196 for RP-v1)
+* ``transition_frames`` - positive integer, at least 1, matching the domain the
+  Kimodo sampler applies to its own ``num_transition_frames``
 
 The default ``model_id`` targets the RP-v1 checkpoint. Alternate model ids are
 accepted verbatim; the loader defers validation to ``from_pretrained``. Note
@@ -33,6 +35,11 @@ _KIMODO_DEFAULT_MODEL_ID = "nvidia/Kimodo-G1-RP-v1"
 _KIMODO_MAX_FRAMES = 196
 _KIMODO_NATIVE_FPS = 30
 _KIMODO_TRACKER_FPS = 50
+# Kimodo's own sampler blends a multi-prompt sequence over its last
+# ``num_transition_frames`` frames and defaults that to 5 (and refuses < 1), so
+# a chained rollout here adopts the same length and domain rather than inventing
+# a second convention for the same transition.
+_KIMODO_TRANSITION_FRAMES = 5
 
 
 def _positive_int(name: str, value: int, upper: int | None = None) -> int:
@@ -93,6 +100,15 @@ class KimodoConfig:
         diffusion_steps: Number of denoising steps (25-200, default 100).
         guidance_scale: Classifier-free-guidance weight (default 7.5).
         num_frames: Motion length in Kimodo native frames (30 FPS, max 196).
+        transition_frames: Number of native frames over which a newly sampled
+            motion is eased off the pose last commanded, when a prompt (or any
+            other sampler input) changes mid-rollout. A fresh sample begins at
+            its own canonical start pose, which is unrelated to wherever the
+            previous motion left the robot, so emitting it directly steps every
+            joint at once. Defaults to 5, the same length Kimodo's sampler uses
+            for its own ``num_transition_frames``. Only the first sample of a
+            rollout is unaffected: with no previously commanded pose there is no
+            seam to ease.
         native_fps: Kimodo sampler output rate (30 Hz native, do not change
             unless targeting a retrained checkpoint).
         tracker_fps: Rate the G1 tracker consumes at (50 Hz standard). Frames
@@ -117,6 +133,7 @@ class KimodoConfig:
     diffusion_steps: int = 100
     guidance_scale: float = 7.5
     num_frames: int = 120
+    transition_frames: int = _KIMODO_TRANSITION_FRAMES
     native_fps: int = _KIMODO_NATIVE_FPS
     tracker_fps: int = _KIMODO_TRACKER_FPS
     device: str | None = None
@@ -130,6 +147,7 @@ class KimodoConfig:
         _positive_int("diffusion_steps", self.diffusion_steps, upper=500)
         _positive_float("guidance_scale", self.guidance_scale)
         _positive_int("num_frames", self.num_frames, upper=_KIMODO_MAX_FRAMES)
+        _positive_int("transition_frames", self.transition_frames, upper=_KIMODO_MAX_FRAMES)
         _positive_int("native_fps", self.native_fps)
         _positive_int("tracker_fps", self.tracker_fps)
         if self.dtype not in ("fp16", "bf16", "fp32"):

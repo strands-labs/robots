@@ -18,6 +18,9 @@ Dependencies:
     pip install "strands-robots[ros2]" strands-agents --break-system-packages
     source /opt/ros/jazzy/setup.bash
     QT_QPA_PLATFORM=offscreen ros2 run turtlesim turtlesim_node &
+    # /turtle1/cmd_vel is a gated command surface; the programmatic section
+    # below has no operator to prompt, so pre-approve that one topic:
+    export STRANDS_ROS2_COMMAND_ALLOW=/turtle1/cmd_vel
     python3 turtlebot_demo.py
 
   Already on a machine with ROS 2 sourced? Just ``source .../setup.bash`` and
@@ -37,7 +40,11 @@ turtle = RosBridgedRobot.from_ros(
     odom_type="turtlesim/msg/Pose",
 )
 
-# 2. Direct, programmatic control.
+# 2. Direct, programmatic control. Needs STRANDS_ROS2_COMMAND_ALLOW to name
+#    /turtle1/cmd_vel (see the header): a script has no operator context, so
+#    use_ros's command gate has nobody to ask. The agent section below does
+#    carry one - the bridge's drive/stop tools forward it, so the operator is
+#    prompted per command instead.
 print("before:", turtle.get_pose()["content"][0]["text"])
 turtle.drive(linear=2.0, angular=1.5, duration=1.5)
 print("after: ", turtle.get_pose()["content"][0]["text"])
