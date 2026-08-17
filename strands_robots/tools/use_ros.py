@@ -300,12 +300,25 @@ class _RosBackend:
         return self._node
 
     def spin_for(self, predicate, timeout: float) -> None:
-        """Spin the executor until ``predicate()`` is true or timeout elapses."""
+        """Spin the executor until ``predicate()`` is true or ``timeout`` elapses.
+
+        The budget is measured on ``time.monotonic()``, which is the clock the
+        caller measured it with: :func:`_action_send_goal` derives every budget
+        it passes here from a single ``time.monotonic()`` deadline. Measuring it
+        on ``time.time()`` instead put one logical deadline on two clocks, and a
+        wall-clock step during the wait -- an NTP correction, ``date -s``, a VM
+        resume -- moved the inner one by the size of the step: forward, the wait
+        ended early with the predicate still false, so a message that was
+        arriving was reported as a timeout; backward, it ran past the budget by
+        the size of the step. That also reached the cancel this module sends
+        before surfacing a timeout, which needs the executor pumped to transmit,
+        so a truncated wait could report a cancel it had not sent.
+        """
         executor = self._executor
         if executor is None:
             raise RuntimeError("rclpy node not initialised - call _ensure_node first")
-        deadline = time.time() + timeout
-        while not predicate() and time.time() < deadline:
+        deadline = time.monotonic() + timeout
+        while not predicate() and time.monotonic() < deadline:
             executor.spin_once(timeout_sec=0.05)
 
     @property

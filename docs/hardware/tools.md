@@ -56,6 +56,25 @@ that means "stop at once", so treating it as unset would invert the request.
 Passing a value an action ignores is never an error: `action="start"` without a
 `dataset_repo_id` teleoperates and reads no `dataset_*` option.
 
+### A session is only forgotten once its process is gone
+
+Because the session runs detached, the on-disk session store is the only place
+its pid is recorded - `stop` and `status` both look the session up there. Every
+load prunes finished sessions and writes the pruned store back, so what counts
+as "finished" decides whether a session stays stoppable:
+
+| What the probe reports | Verdict |
+|------------------------|---------|
+| the pid no longer exists | finished - pruned |
+| `psutil.NoSuchProcess` (reaped between the existence check and the probe) | finished - pruned |
+| `is_running()` returns `False` (a zombie, or the pid was reused) | not this session - pruned |
+| `psutil.AccessDenied` (the pid exists, this user may not inspect it) | kept, and reported at `WARNING` |
+
+The last row is why a session started under `sudo` - a common way to reach a
+serial port - is still listed and still stoppable when the tool is later invoked
+as the unprivileged user. Being kept is not a claim that it is running: `list`
+and `status` each derive that from the pid's existence at the moment you ask.
+
 ### A raw servo write is bounded by the register it encodes into
 
 `serial_tool` writes Feetech registers by masking the value into fixed-width

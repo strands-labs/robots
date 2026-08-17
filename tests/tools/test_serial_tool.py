@@ -9,6 +9,7 @@ must be plain ASCII.
 
 from __future__ import annotations
 
+import itertools
 from types import SimpleNamespace
 from typing import Any
 
@@ -228,14 +229,29 @@ def test_feetech_ping_requires_motor_id(fake_serial_factory):
 
 
 def test_monitor_collects_chunks(fake_serial_factory, monkeypatch):
+    """The monitor window is a duration; each record's timestamp is a stamp.
+
+    Those are different clocks and the test drives both: the five-second window
+    is bounded on ``time.monotonic()``, so a wall-clock step cannot cut the
+    window short or hold the port open past it, while the ``timestamp`` on each
+    returned record stays on the wall clock because a reader correlates it with
+    other logs and seconds of process uptime would not.
+    """
     monkeypatch.setattr("strands_robots.tools.serial_tool.time.sleep", lambda *_: None)
-    times = iter([0.0, 0.0, 1.0, 10.0, 10.0])
-    monkeypatch.setattr("strands_robots.tools.serial_tool.time.time", lambda: next(times))
+    # Scripted so the window admits exactly one read and then expires. Chained
+    # with a repeat rather than a fixed-length iterator so the script bounds the
+    # window instead of the number of clock reads.
+    window = itertools.chain([0.0, 0.0], itertools.repeat(10.0))
+    monkeypatch.setattr("strands_robots.tools.serial_tool.time.monotonic", lambda: next(window))
+    monkeypatch.setattr("strands_robots.tools.serial_tool.time.time", lambda: 1_700_000_000.5)
     created = fake_serial_factory(reads=[b"hi"], in_waiting=2)
     result = serial_tool(action="monitor", port="/dev/ttyACM0")
     assert result["status"] == "success"
     assert len(tool_json(result)["monitor_data"]) == 1
     assert tool_json(result)["monitor_data"][0]["data"] == b"hi".hex()
+    assert tool_json(result)["monitor_data"][0]["timestamp"] == 1_700_000_000.5, (
+        "the record timestamp must come from the wall clock, not from the monotonic clock that bounds the window"
+    )
     assert _texts(result).isascii()
     assert created[0].closed
 

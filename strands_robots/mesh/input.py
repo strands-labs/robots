@@ -15,6 +15,11 @@ Topic schema for ``strands/{peer_id}/input/{device_name}``::
         "action": {"motor.pos": float, ...},
         "events": {"terminate_episode": bool, ...} | null
     }
+
+``events`` is ``null`` both when the teleoperator exposes no
+``get_teleop_events()`` surface and when reading it failed, so the publisher
+side reports a failed read through ``InputPublisher.stats``
+(``event_read_errors``) and a log line rather than only on the wire.
 """
 
 from __future__ import annotations
@@ -47,6 +52,13 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 INPUT_HZ_DEFAULT = 50.0
+
+#: How many times each :class:`InputPublisher` loop failure is logged before
+#: going quiet. The loop runs at ``hz`` (50 Hz by default), so an unbounded
+#: log of a persistent fault - a dead publish transport, a teleoperator whose
+#: event surface stopped answering - floods the operator's console at the
+#: control rate. The counters in :attr:`InputPublisher.stats` stay exact.
+_MAX_LOGGED_LOOP_ERRORS = 5
 
 #: Default ceiling on the rate at which an InputReceiver will
 #: APPLY inbound teleop frames to the robot. The publisher streams at
@@ -162,6 +174,7 @@ class InputPublisher:
         self._stop_event = threading.Event()
         self._seq = 0
         self._error_count = 0
+        self._event_read_error_count = 0
         self._frame_count = 0
         self._start_time = 0.0
 
@@ -185,7 +198,10 @@ class InputPublisher:
     def stats(self) -> dict[str, Any]:
         """Live publishing counters: the target device/method, whether the
         loop is ``running``, cumulative ``frames`` published and ``errors``
-        hit, and the achieved vs. requested rate (``hz_actual`` / ``hz_target``).
+        hit, ``event_read_errors`` (frames published with ``events: null``
+        because ``get_teleop_events()`` raised, rather than because the
+        teleoperator has no event surface), and the achieved vs. requested rate
+        (``hz_actual`` / ``hz_target``).
         """
         elapsed = time.time() - self._start_time if self._start_time else 0
         return {
@@ -194,6 +210,7 @@ class InputPublisher:
             "running": self._running,
             "frames": self._frame_count,
             "errors": self._error_count,
+            "event_read_errors": self._event_read_error_count,
             "hz_actual": self._frame_count / elapsed if elapsed > 0 else 0,
             "hz_target": self.hz,
         }
@@ -246,8 +263,25 @@ class InputPublisher:
                 if hasattr(self.teleoperator, "get_teleop_events"):
                     try:
                         events = self.teleoperator.get_teleop_events()
-                    except Exception:
-                        pass
+                    except Exception as event_err:  # noqa: BLE001
+                        # The operator's control signals (terminate_episode /
+                        # success / rerecord_episode) are secondary to the joint
+                        # stream, so a failure reading them must not stop the
+                        # arm: letting it reach the handler below would drop the
+                        # whole frame, action included. It must not be silent
+                        # either - ``events: null`` is also what a teleoperator
+                        # with no event surface publishes, so an unreported
+                        # failure is indistinguishable from "the operator
+                        # signalled nothing" while joint commands keep flowing.
+                        self._event_read_error_count += 1
+                        if self._event_read_error_count <= _MAX_LOGGED_LOOP_ERRORS:
+                            logger.warning(
+                                "[mesh] input teleop-event read failed (%s): %s - "
+                                "publishing events=None, so operator signals are "
+                                "not reaching subscribers",
+                                self.device_name,
+                                event_err,
+                            )
 
                 payload = {
                     "peer_id": self.mesh.peer_id,
@@ -268,7 +302,7 @@ class InputPublisher:
                 self._frame_count += 1
             except Exception as exc:
                 self._error_count += 1
-                if self._error_count <= 5:
+                if self._error_count <= _MAX_LOGGED_LOOP_ERRORS:
                     logger.warning("[mesh] input publish error (%s): %s", self.device_name, exc)
 
             elapsed = time.perf_counter() - loop_start

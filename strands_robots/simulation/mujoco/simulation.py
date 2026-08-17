@@ -119,6 +119,7 @@ from strands_robots.utils import (
     non_negative_whole_number_error,
     positive_finite_number_error,
     positive_whole_number_error,
+    published_string_error,
     reserved_camera_name_error,
     sequence_length,
     step_aborted_msg,
@@ -329,6 +330,33 @@ with open(_TOOL_SPEC_PATH) as _f:
 # and the failure it produces - refusing an action the model was told to use -
 # is exactly what the guard below exists to prevent.
 _PUBLISHED_ACTIONS: frozenset[str] = frozenset(_TOOL_SPEC_SCHEMA["properties"]["action"]["enum"])
+
+
+def _published_string_params(field_aliases: dict[str, str]) -> frozenset[str]:
+    """Method parameters the schema publishes as a JSON string.
+
+    Derived from the schema for the same reason ``_PUBLISHED_ACTIONS`` is: a
+    second list would be a second thing to keep true, and a field published
+    without being covered here is one whose refusal is a raw ``TypeError`` from
+    inside the method body.
+
+    Wire names are mapped through *field_aliases* because the dispatcher
+    validates a payload whose keys have already been rewritten to method
+    parameter names. ``action`` is excluded: both agent entry points refuse a
+    non-string action before dispatch is reached.
+
+    Args:
+        field_aliases: The dispatcher's wire-name to parameter-name map.
+
+    Returns:
+        The parameter names a caller must supply as a string.
+    """
+    props: dict[str, Any] = _TOOL_SPEC_SCHEMA["properties"]
+    return frozenset(
+        field_aliases.get(wire, wire)
+        for wire, prop in props.items()
+        if wire != "action" and prop.get("type") == "string"
+    )
 
 
 class MuJoCoSimEngine(
@@ -1155,7 +1183,22 @@ class MuJoCoSimEngine(
         the error dict back to the agent - previously the return value was
         ignored and the error was silently swallowed, leaving the agent to
         hit a cryptic 'mesh not found' from MuJoCo instead.
+
+        A reference is resolved the way MuJoCo resolves it (see
+        :func:`strands_robots.assets.download._mjcf_mesh_candidates`): against
+        the MAIN model file's directory plus the model's mesh subdirectory, and
+        the subdirectory is read once for the whole model because
+        ``<compiler>`` applies across ``<include>``. Resolving against the
+        directory of whichever fragment declared the mesh - a location MuJoCo
+        does not accept - reports a present mesh as absent, which costs a full
+        ``force=True`` re-download on every ``add_robot`` and refuses the robot
+        outright when that download cannot run.
         """
+        # One owner for the resolution rule: the download path applies the same
+        # rule to decide whether a robot's assets need fetching, so a second
+        # copy here could disagree with it about the same model.
+        from strands_robots.assets.download import _mjcf_mesh_candidates, _mjcf_mesh_subdir
+
         model_dir = os.path.dirname(os.path.abspath(model_path))
 
         files_to_check = [model_path]
@@ -1166,27 +1209,32 @@ class MuJoCoSimEngine(
                 inc_path = os.path.join(model_dir, inc)
                 if os.path.exists(inc_path):
                     files_to_check.append(inc_path)
-        except Exception:
+        except (OSError, UnicodeDecodeError):
+            # An unreadable top-level model contributes no includes to scan.
+            # MuJoCo names the unreadable file itself on the load that follows,
+            # which is a better report than anything this check could invent.
             pass
 
-        missing = False
+        # (fragment directory relative to model_dir, fragment text)
+        fragments: list[tuple[str, str]] = []
         for xml_path in files_to_check:
             try:
                 with open(xml_path) as _f:
                     content = _f.read()
-            except Exception:
+            except (OSError, UnicodeDecodeError):
+                # Same reasoning: a fragment we cannot read declares no mesh
+                # references, and MuJoCo reports it on load.
                 continue
+            frag_dir = os.path.dirname(os.path.abspath(xml_path))
+            rel_dir = os.path.relpath(frag_dir, model_dir)
+            fragments.append(("" if rel_dir == os.curdir else rel_dir, content))
 
-            mesh_files = re.findall(r'file="([^"]+\.(?:stl|STL|obj))"', content)
-            if not mesh_files:
-                continue
+        mesh_subdir = _mjcf_mesh_subdir(*(text for _rel, text in fragments))
 
-            meshdir_match = re.search(r'meshdir="([^"]*)"', content)
-            meshdir = meshdir_match.group(1) if meshdir_match else ""
-            xml_dir = os.path.dirname(os.path.abspath(xml_path))
-
-            for mf in mesh_files:
-                if not os.path.exists(os.path.join(xml_dir, meshdir, mf)):
+        missing = False
+        for rel_dir, content in fragments:
+            for mf in re.findall(r'file="([^"]+\.(?:stl|STL|obj))"', content):
+                if not any(os.path.exists(p) for p in _mjcf_mesh_candidates(mf, model_dir, mesh_subdir, rel_dir)):
                     missing = True
                     break
             if missing:
@@ -5558,6 +5606,12 @@ class MuJoCoSimEngine(
         "joint_positions": "positions",
     }
 
+    # Fields the schema publishes as a string. The dispatcher refuses a
+    # non-string one before the method body assumes it is a string; see
+    # :func:`strands_robots.utils.published_string_error` for the failures that
+    # reached the caller without this.
+    _PUBLISHED_STRING_PARAMS: frozenset[str] = _published_string_params(_FIELD_ALIASES)
+
     # Params the router passes through but not every method declares.
     # These are used for cross-cutting concerns (e.g. video on run_policy)
     # and must not be reported as "unknown" by the router.
@@ -5582,12 +5636,28 @@ class MuJoCoSimEngine(
     }
 
     def _validate_and_build_kwargs(
-        self, action: str, method_name: str, sig: inspect.Signature, remapped: dict[str, Any]
+        self,
+        action: str,
+        method_name: str,
+        sig: inspect.Signature,
+        remapped: dict[str, Any],
+        received: dict[str, Any] | None = None,
     ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
         """Validate input against method signature; return (kwargs, error_result).
 
         Exactly one of the tuple elements is non-None.
+
+        Args:
+            action: The action being dispatched, used in error text.
+            method_name: The method *action* resolves to.
+            sig: That method's signature, which the validation binds against.
+            remapped: The payload with field aliases already rewritten to
+                parameter names.
+            received: The payload as the caller sent it, before that rewriting.
+                A refusal names the spelling found here, so a caller who used an
+                alias is not sent looking for a key their payload never had.
         """
+        received = remapped if received is None else received
         # Strip self + VAR_POSITIONAL (*args) + VAR_KEYWORD (**kwargs) for signature
         # introspection; **kwargs methods accept arbitrary inputs, so we skip the
         # unknown-key check for them. Those methods own the check instead: the
@@ -5628,7 +5698,33 @@ class MuJoCoSimEngine(
                 ],
             }
 
-        # 2) Vector dimension validation (applies before method runs)
+        # 2) Scalar string type validation. The schema publishes these as
+        # strings, and every value at this boundary arrives as JSON, so a
+        # non-string one is a caller error - not something to carry into the
+        # method body, which assumes a string and fails with a raw TypeError /
+        # AttributeError that names neither the parameter nor a remedy. ``None``
+        # is "unset" and is left to the parameter default.
+        for sparam in sorted(self._PUBLISHED_STRING_PARAMS & remapped.keys()):
+            svalue = remapped[sparam]
+            if svalue is None:
+                continue
+            # Name the spelling the caller used. A field can arrive under an
+            # alias (``checkpoint_name`` -> ``name``), and reporting the
+            # canonical parameter would send them looking for a key their
+            # payload does not contain.
+            reported = (
+                sparam
+                if sparam in received
+                else next(
+                    (wire for wire, param in self._FIELD_ALIASES.items() if param == sparam and wire in received),
+                    sparam,
+                )
+            )
+            smsg = published_string_error(svalue, reported, f"Action '{action}'")
+            if smsg is not None:
+                return None, {"status": "error", "content": [{"text": smsg}]}
+
+        # 3) Vector dimension validation (applies before method runs)
         for vparam, accepted_lens in self._VECTOR_PARAM_LENGTHS.items():
             if vparam not in remapped:
                 continue
@@ -5669,7 +5765,7 @@ class MuJoCoSimEngine(
                         ],
                     }
 
-        # 3) Build kwargs + check required params
+        # 4) Build kwargs + check required params
         kwargs: dict[str, Any] = {}
         for param_name, param in named_params.items():
             if param_name == "name" and "name" not in remapped and "robot_name" in remapped:
@@ -5684,7 +5780,7 @@ class MuJoCoSimEngine(
                     "content": [{"text": f"Action '{action}' requires parameter '{param_name}'."}],
                 }
 
-        # 4) Residual keys for **kwargs methods. The unknown-key check above is
+        # 5) Residual keys for **kwargs methods. The unknown-key check above is
         # skipped for them, so dropping the keys here too would leave the input
         # unvalidated AND unused: a forwarding sink would never see the option
         # the caller asked for, and a discarding sink could not reject a
@@ -5701,6 +5797,8 @@ class MuJoCoSimEngine(
           * unknown top-level params are rejected with a friendly message,
           * missing required params produce a "requires parameter X" error
             (no raw Python ``TypeError``),
+          * a field the schema publishes as a string is refused unless it is
+            one, before the method body assumes it,
           * vector params have length + numeric dtype checked before the
             value reaches numpy / MuJoCo.
 
@@ -5758,7 +5856,7 @@ class MuJoCoSimEngine(
             if _video_flat.get("path"):
                 remapped["video"] = _video_flat
 
-        kwargs, err = self._validate_and_build_kwargs(action, method_name, sig, remapped)
+        kwargs, err = self._validate_and_build_kwargs(action, method_name, sig, remapped, d)
         if err is not None:
             return err
         assert kwargs is not None
