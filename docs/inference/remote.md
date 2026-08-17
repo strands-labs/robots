@@ -23,11 +23,13 @@ hardware control loop - a remote one works too.
 ## Install
 
 ```bash
-pip install 'strands-robots[inference]'   # pulls websockets (numpy-agnostic)
+pip install 'strands-robots[inference]'   # pulls websockets>=13.0 (numpy-agnostic)
 ```
 
 The extra depends only on `websockets`, so it composes cleanly with `lerobot`
-(`numpy>=2`) in the same environment.
+(`numpy>=2`) in the same environment. The `>=13.0` floor is the release that
+first ships `websockets.sync.server.Server`, the class this module annotates
+`PolicyServer._server` with; 12.0 spells it `WebSocketServer`.
 
 ## 1. Start the server (GPU box)
 

@@ -81,7 +81,7 @@ def _step(state_keys: list[str], expected_dim: int, **kw: Any) -> Any:
 @pytest.fixture(autouse=True)
 def _reset_warn_dedup() -> None:
     """The missing-key warning is deduplicated process-wide; start each test clean."""
-    E._WARNED_MISSING_STATE_KEYS.clear()
+    E._WARNED_STATE_KEY_MISMATCH.clear()
 
 
 class TestSimEmbodimentDrivenFromHardware:
@@ -113,7 +113,7 @@ class TestSimEmbodimentDrivenFromHardware:
         with caplog.at_level(logging.WARNING, logger="strands_robots.policies.lerobot_local.embodiment"):
             _step(SIM_KEYS_SO101, 6).observation(_hardware_observation())
         assert [r for r in caplog.records if "absent from the observation" in r.getMessage()] == []
-        assert not E._WARNED_MISSING_STATE_KEYS
+        assert not E._WARNED_STATE_KEY_MISMATCH
 
     def test_consumed_pos_keys_leave_and_every_other_key_passes_through(self) -> None:
         """The bound ``.pos`` keys are replaced by ``observation.state``; a camera

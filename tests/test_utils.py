@@ -56,6 +56,56 @@ class TestRequireOptional:
         mod = require_optional("os.path")
         assert hasattr(mod, "join")
 
+    def test_system_install_replaces_the_pip_block(self):
+        """A system-provided module must be refused with its own remedy, no pip line.
+
+        Some modules arrive with a system package and are absent from PyPI, so any
+        ``pip install`` line is an instruction the caller can follow to no effect.
+        ``system_install`` is the way to say that, and it has to leave the message
+        with no pip command at all.
+        """
+        with pytest.raises(ImportError) as excinfo:
+            require_optional(
+                "nonexistent_xyz",
+                purpose="testing",
+                system_install="Source a distro:\n  source /opt/ros/jazzy/setup.bash",
+            )
+        message = str(excinfo.value)
+        assert "'nonexistent_xyz' is required for testing" in message
+        assert "source /opt/ros/jazzy/setup.bash" in message
+        assert "pip install" not in message
+        assert "Install with:" not in message
+
+    def test_system_install_wins_over_a_pip_remedy(self):
+        """Neither ``extra`` nor ``pip_install`` may leak back into the message.
+
+        A caller migrating a site is likely to leave the old arguments in place;
+        emitting both would put the dead-end command back in front of the reader
+        next to the one that works.
+        """
+        with pytest.raises(ImportError) as excinfo:
+            require_optional(
+                "nonexistent_xyz",
+                pip_install="not-a-real-distribution",
+                extra="my-extra",
+                system_install="Source a distro first.",
+            )
+        message = str(excinfo.value)
+        assert message.endswith("Source a distro first.")
+        assert "not-a-real-distribution" not in message
+        assert "my-extra" not in message
+
+    def test_pip_block_is_unchanged_without_system_install(self):
+        """Omitting ``system_install`` must leave the pip remedy exactly as it was."""
+        with pytest.raises(ImportError) as excinfo:
+            require_optional("nonexistent_xyz", purpose="testing", extra="my-extra", pip_install="my-package")
+        assert str(excinfo.value) == (
+            "'nonexistent_xyz' is required for testing\n"
+            "Install with:\n"
+            "  pip install 'strands-robots[my-extra]'\n"
+            "  pip install my-package"
+        )
+
 
 # safe_join / get_search_paths tests (added for PR #84 follow-up)
 

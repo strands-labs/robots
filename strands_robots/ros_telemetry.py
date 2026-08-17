@@ -39,6 +39,25 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+#: Remedy for a missing ``rclpy``, shared by every surface that refuses for want
+#: of it. ``rclpy`` is not published on PyPI: it arrives with a system ROS 2
+#: install, which is why the ``[ros2]`` extra declares only the pip-installable
+#: cyclonedds RMW binding (see ``pyproject.toml`` and ``docs/ros2-integration.md``).
+#: An install hint naming a pip command for it is therefore a remedy the caller
+#: can follow to no effect - ``pip install 'strands-robots[ros2]'`` exits 0 with
+#: ``rclpy`` exactly as missing, and ``pip install rclpy`` fails outright - so
+#: this names the step that does supply it. Callers that also offer the pure-RTPS
+#: transport append that alternative, which needs no sourced distro.
+ROS2_SYSTEM_INSTALL_HINT = (
+    "rclpy is not published on PyPI - it ships with a system ROS 2 install "
+    "(apt / RoboStack / conda).\n"
+    "Source a distro in the shell that launches this process:\n"
+    "  source /opt/ros/jazzy/setup.bash   # or your distro / RoboStack / conda env\n"
+    "The [ros2] extra installs only the cyclonedds RMW binding; it does not "
+    "provision ROS 2 by itself."
+)
+
+
 #: Env var an operator sets to explicitly run an INBOUND ``joint_command``
 #: surface on an unsecured DDS graph (no ``dds_security_config``). Truthy values
 #: mirror the mesh insecure opt-out (``STRANDS_MESH_I_KNOW_THIS_IS_INSECURE``):
@@ -382,7 +401,9 @@ class RosTelemetryBridge(RosTelemetryBase):
         os.environ["ROS_DOMAIN_ID"] = str(domain_id)
 
         rclpy_mod: Any = require_optional(
-            "rclpy", extra="ros2", purpose="the ROS 2 telemetry bridge (ros2_bridge=True)"
+            "rclpy",
+            system_install=ROS2_SYSTEM_INSTALL_HINT,
+            purpose="the ROS 2 telemetry bridge (ros2_bridge=True)",
         )
         sensor_msgs: Any = require_optional(
             "sensor_msgs.msg", pip_install="ros-<distro>-sensor-msgs", purpose="the ROS 2 telemetry bridge"

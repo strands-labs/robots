@@ -21,6 +21,7 @@ def require_optional(
     pip_install: str | None = None,
     extra: str | None = None,
     purpose: str = "",
+    system_install: str | None = None,
 ) -> object:
     """Import an optional dependency, raising a clear error if missing.
 
@@ -31,6 +32,13 @@ def require_optional(
         pip_install: Explicit pip package name if it differs from *module_name*.
         extra: ``pyproject.toml`` extras group (e.g. ``"groot-service"``).
         purpose: Human-readable description shown in the error message.
+        system_install: Remedy for a module that arrives with a system package
+            rather than from an index - the ROS 2 client libraries are the case
+            in this package. Replaces the ``pip install`` block entirely, and
+            *pip_install* / *extra* are then not consulted, because a pip
+            command for such a module is a remedy the caller can follow to no
+            effect: it either installs something that leaves the module exactly
+            as missing, or fails outright.
 
     Returns:
         The imported module object.
@@ -46,14 +54,19 @@ def require_optional(
         _lazy_modules[module_name] = module
         return module
     except ImportError:
-        install_hint = pip_install or module_name
         parts = [f"'{module_name}' is required"]
         if purpose:
             parts[0] += f" for {purpose}"
-        parts.append("Install with:")
-        if extra:
-            parts.append(f"  pip install 'strands-robots[{extra}]'")
-        parts.append(f"  pip install {install_hint}")
+        if system_install is not None:
+            # No pip line at all: naming one here would hand the caller an
+            # instruction that reports success without supplying the module.
+            parts.append(system_install)
+        else:
+            install_hint = pip_install or module_name
+            parts.append("Install with:")
+            if extra:
+                parts.append(f"  pip install 'strands-robots[{extra}]'")
+            parts.append(f"  pip install {install_hint}")
         raise ImportError("\n".join(parts)) from None
 
 
@@ -2347,7 +2360,7 @@ def validation_split_fraction(val_episodes: int, total_episodes: int) -> float:
     return (val_episodes - 0.5) / total_episodes
 
 
-def validation_split_error(val_episodes: int, total_tasks: Any, context: str) -> str | None:
+def validation_split_error(val_episodes: int, total_tasks: Any, context: str, *, passthrough_param: str) -> str | None:
     """Error text when a global episode COUNT cannot be honored as a split.
 
     lerobot expresses a validation split as one ``eval_split`` FRACTION and
@@ -2366,6 +2379,13 @@ def validation_split_error(val_episodes: int, total_tasks: Any, context: str) ->
         val_episodes: The requested held-out episode count, for the message.
         total_tasks: ``total_tasks`` from the dataset's ``meta/info.json``.
         context: Caller label the message is prefixed with.
+        passthrough_param: Name of the caller's own raw-flag passthrough
+            parameter, interpolated into the remedy. Required rather than
+            defaulted because the surfaces disagree: the ``lerobot_train`` tool
+            spells it ``extra_flags`` while :class:`TrainSpec` (and the
+            ``train_policy`` tool) spell it ``extra``, so a default would name a
+            keyword one of them does not accept - the reader would apply the
+            remedy verbatim and get a ``TypeError``.
 
     Returns:
         The error text, or None when the count can be honored exactly.
@@ -2378,8 +2398,8 @@ def validation_split_error(val_episodes: int, total_tasks: Any, context: str) ->
         "fraction in lerobot (it holds out ceil(episodes_in_task * eval_split) "
         "from every task), so a single global count is not expressible: the "
         "ceiling would be applied once per task. Pass the fraction directly, "
-        "e.g. extra_flags={'dataset.eval_split': 0.1, 'eval_steps': 1000}, and "
-        "the split will hold out a tenth of each task."
+        f"e.g. {passthrough_param}={{'dataset.eval_split': 0.1, 'eval_steps': 1000}}, "
+        "and the split will hold out a tenth of each task."
     )
 
 

@@ -351,6 +351,36 @@ velocity state (LeKiwi's body-frame base velocities `x.vel` / `y.vel` /
 `theta.vel`). Explicit `robot_state_keys` are never filtered - naming `elbow.vel`
 there states the model's input.
 
+### A declarative `embodiment=` reports the same two degradations
+
+A declarative `embodiment=` installs its own state step, and it reports both
+degradations with that same registry-checked remedy. A partly-bound vector names
+the absent keys, the keys the observation does carry, and the remedy; an
+all-bound-nothing configuration says so instead of handing the observation on in
+silence, since the downstream error it would otherwise produce knows nothing
+about embodiments and cannot name the one that binds this observation.
+
+The two conventions in the embodiment registry are what make an all-missing
+binding easy to reach in either direction:
+
+- **A sim embodiment driven from real hardware.** `embodiment="so101"` declares
+  the MuJoCo asset's `'1'..'6'`, and a real arm reports `'<motor>.pos'`. This
+  direction binds anyway: the step falls back to the observation's `'.pos'` keys
+  in motor order, packed raw because hardware already reports the model's
+  training units.
+- **A `*_real` embodiment driven from sim.** Several names are both a lerobot
+  driver spelling and a sim-loadable registry robot - `so100_follower`,
+  `so101_follower`, `koch_follower`, `bi_so_follower`, `lekiwi`, `openarm` - and
+  each resolves to a `*_real` configuration whose `'.pos'` keys no sim
+  observation emits. There is no fallback in this direction, so no
+  `observation.state` is packed; the report names the sim-side configuration to
+  use instead (`embodiment='so101'` for a MuJoCo so101).
+
+An unbound state is a configuration mistake rather than a degraded reading, so
+nothing is invented to stand in for it - no all-zero vector is emitted, and the
+observation is passed on unchanged for a state-less policy or the caller's own
+handling.
+
 ## Camera routing
 
 Robot/sim observations use bare camera names (`top`, `wrist`, `side`); the policy
