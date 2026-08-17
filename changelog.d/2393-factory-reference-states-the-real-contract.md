@@ -1,0 +1,3 @@
+### Fixed
+
+- **docs**: the robot factory reference stated three contracts `Robot()` does not implement: the `mesh` Default cell read `True` where the parameter defaults to `None` (mesh is off unless `STRANDS_MESH` opts in), so the page named a state a bare `Robot(...)` is never in and never named the spelling that enables it; its Mesh snippet read `.mesh.peer_id` on that robot and raised `AttributeError` when copied; and the `**kwargs` row promised unknown keywords raise `ValueError` where they are forwarded and ignored. A new guard grades the page against `Robot()` itself - Default cells against the signature, a documented refusal by raising it, and the Mesh section against the opt-in resolver.
