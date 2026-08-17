@@ -59,6 +59,7 @@ _EXPECTED_FUNCTIONS = {
     "policies.py::build_policy_kwargs",
     "policies.py::get_policy_provider",
     "policies.py::import_policy_class",
+    "policies.py::list_policy_aliases",
     "policies.py::list_policy_providers",
     "policies.py::resolve_policy",
     "robots.py::format_robot_table",

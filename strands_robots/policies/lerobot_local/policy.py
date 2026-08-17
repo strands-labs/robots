@@ -1211,8 +1211,12 @@ class LerobotLocalPolicy(Policy):
                         "dataset-prefixed stats (e.g. 'so100.buffer.action') instead "
                         "of the canonical 'action'/'observation.state' keys. "
                         "Fine-tune the checkpoint (which writes proper stats) or pass "
-                        "processor_overrides={'normalizer_processor': {'stats': "
-                        "<dataset stats>}} -- if the arm reaches an out-of-distribution "
+                        "processor_overrides={'normalizer_processor': {'stats': <dataset "
+                        "stats>}, 'unnormalizer_processor': {'stats': <dataset stats>}} -- "
+                        "state normalization lives in the preprocessor's "
+                        "'normalizer_processor' step and action unnormalization in the "
+                        "postprocessor's 'unnormalizer_processor' step, so naming only one "
+                        "leaves the other inert. If the arm reaches an out-of-distribution "
                         "pose or ignores proprioception, this is why.",
                         self.pretrained_name_or_path or "<model>",
                         inert,

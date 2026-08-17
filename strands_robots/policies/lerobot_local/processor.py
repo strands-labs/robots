@@ -15,6 +15,7 @@ Architecture:
 """
 
 import logging
+import pathlib
 from typing import Any
 
 from ...utils import partial_construction_repr, require_optional
@@ -73,6 +74,68 @@ def _load_checkpoint_state_dict(pretrained_name_or_path: str, revision: str | No
         # No single-file weights on the Hub (sharded), offline, corrupt, or unreadable.
         logger.debug("No single-file model.safetensors for %s: %s", pretrained_name_or_path, exc)
         return None
+
+
+def _pipeline_step_keys(
+    pretrained_name_or_path: str,
+    config_filename: str,
+    revision: str | None = None,
+) -> set[str] | None:
+    """Override keys one processor pipeline's saved config accepts.
+
+    LeRobot resolves an override key per step as its ``registry_name``, or the
+    final component of its ``class`` path when the step is not registry-backed
+    (``DataProcessorPipeline._validate_overrides_used``), and raises
+    ``KeyError`` for any key that matches no step in the pipeline being loaded.
+    A checkpoint's two pipelines therefore accept DISJOINT key sets - a
+    preprocessor carries ``normalizer_processor`` while its postprocessor
+    carries ``unnormalizer_processor`` - so the caller's overrides have to be
+    routed per pipeline rather than handed to both.
+
+    Best-effort by design: returns ``None`` when the config cannot be read
+    (offline, absent, unreadable, or a shape this rule does not describe), and
+    the caller then passes the overrides through unrouted, exactly as before.
+    Never raises into the load path.
+
+    Args:
+        pretrained_name_or_path: HF model ID or local checkpoint path.
+        config_filename: Pipeline config filename (e.g. ``policy_preprocessor.json``).
+        revision: Optional Hub revision to pin the config to.
+
+    Returns:
+        The set of accepted override keys, or ``None`` when undetermined.
+    """
+    import json
+    import os
+
+    raw: str | None = None
+    local = os.path.join(pretrained_name_or_path, config_filename)
+    if os.path.isfile(local):
+        try:
+            raw = pathlib.Path(local).read_text(encoding="utf-8")
+        except OSError as exc:
+            logger.debug("Could not read %s: %s", local, exc)
+            return None
+    else:
+        try:
+            from huggingface_hub import hf_hub_download
+            from huggingface_hub.errors import HfHubHTTPError
+
+            downloaded = hf_hub_download(pretrained_name_or_path, config_filename, revision=revision)
+            raw = pathlib.Path(downloaded).read_text(encoding="utf-8")
+        except ImportError:
+            return None
+        except (HfHubHTTPError, OSError, ValueError) as exc:
+            logger.debug("No %s for %s: %s", config_filename, pretrained_name_or_path, exc)
+            return None
+
+    try:
+        steps = json.loads(raw)["steps"]
+        keys = {step.get("registry_name") or str(step["class"]).rsplit(".", 1)[1] for step in steps}
+    except (KeyError, TypeError, ValueError) as exc:
+        logger.debug("Could not read step keys from %s: %s", config_filename, exc)
+        return None
+    return keys or None
 
 
 def _try_import_processor() -> Any | None:
@@ -274,11 +337,28 @@ class ProcessorBridge:
         # leaving model_inputs empty at inference time. See B10.
         _register_policy_processor_steps(policy_type)
 
+        # Route each override to the pipeline that declares its step. LeRobot
+        # raises KeyError for an override key matching no step in the pipeline
+        # being loaded, and the two pipelines carry DISJOINT step keys
+        # (``normalizer_processor`` pre, ``unnormalizer_processor`` post), so
+        # handing the same dict to both makes every pipeline-specific step
+        # unoverridable: the key is rejected by whichever pipeline lacks it.
+        # Only ``device_processor``, present in both, ever got through -- which
+        # is why supplying normalizer ``stats`` (the documented remedy for a
+        # base checkpoint whose stats are dataset-prefixed and therefore inert)
+        # could not be applied at all.
+        pre_overrides, post_overrides = cls._route_overrides(
+            overrides or {},
+            pretrained_name_or_path,
+            preprocessor_config,
+            postprocessor_config,
+            revision,
+        )
         preprocessor = cls._load_pipeline(
             DataProcessorPipeline,
             pretrained_name_or_path,
             preprocessor_config,
-            overrides or {},
+            pre_overrides,
             device,
             kind="preprocessor",
             revision=revision,
@@ -287,7 +367,7 @@ class ProcessorBridge:
             DataProcessorPipeline,
             pretrained_name_or_path,
             postprocessor_config,
-            overrides or {},
+            post_overrides,
             device,
             kind="postprocessor",
             revision=revision,
@@ -318,6 +398,64 @@ class ProcessorBridge:
             postprocessor=postprocessor,
             device=device,
         )
+
+    @classmethod
+    def _route_overrides(
+        cls,
+        overrides: dict[str, Any],
+        pretrained_name_or_path: str,
+        preprocessor_config: str,
+        postprocessor_config: str,
+        revision: str | None,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Split ``processor_overrides`` into the per-pipeline dicts each accepts.
+
+        A checkpoint's preprocessor and postprocessor declare disjoint step keys,
+        and LeRobot raises ``KeyError`` for an override key that matches no step
+        in the pipeline it is loading. Passing the caller's whole dict to both
+        therefore rejects every pipeline-specific step, so each key is routed to
+        the pipeline(s) that declare it.
+
+        A key declared by NEITHER pipeline is still a typo and is still refused -
+        LeRobot's protection is preserved, and the refusal names both pipelines'
+        keys rather than only the one that happened to be loaded first.
+
+        When a pipeline's step keys cannot be determined (offline, absent, or an
+        unrecognized config shape) that pipeline receives the overrides unrouted,
+        which is the behavior before routing existed.
+
+        Args:
+            overrides: Caller-provided step overrides (never mutated).
+            pretrained_name_or_path: HF model ID or local checkpoint path.
+            preprocessor_config: Preprocessor config filename.
+            postprocessor_config: Postprocessor config filename.
+            revision: Optional Hub revision to pin the configs to.
+
+        Returns:
+            ``(preprocessor_overrides, postprocessor_overrides)``.
+
+        Raises:
+            KeyError: If an override key is declared by neither pipeline.
+        """
+        if not overrides:
+            return {}, {}
+        pre_keys = _pipeline_step_keys(pretrained_name_or_path, preprocessor_config, revision)
+        post_keys = _pipeline_step_keys(pretrained_name_or_path, postprocessor_config, revision)
+        if pre_keys is None and post_keys is None:
+            return dict(overrides), dict(overrides)
+
+        known = (pre_keys or set()) | (post_keys or set())
+        unmatched = sorted(k for k in overrides if k not in known)
+        if unmatched:
+            raise KeyError(
+                f"Override keys {unmatched} do not match any step in "
+                f"{pretrained_name_or_path}. Preprocessor steps: {sorted(pre_keys or [])}. "
+                f"Postprocessor steps: {sorted(post_keys or [])}. Make sure override keys "
+                f"match exact step class names or registry names."
+            )
+        pre = dict(overrides) if pre_keys is None else {k: v for k, v in overrides.items() if k in pre_keys}
+        post = dict(overrides) if post_keys is None else {k: v for k, v in overrides.items() if k in post_keys}
+        return pre, post
 
     @staticmethod
     def _load_pipeline(

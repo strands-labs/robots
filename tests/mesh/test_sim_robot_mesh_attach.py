@@ -96,7 +96,10 @@ def test_attach_creates_child_peer_when_sim_is_on_mesh():
     # The peer_id we pass into init_mesh must encode parent + robot name.
     kwargs = init.call_args.kwargs
     assert kwargs["peer_id"] == "so100_sim-a1b2c3d4__so100"
-    assert kwargs["peer_type"] == "robot"
+    # "sim", never "robot": presence publishes peer_type as robot_type, and a
+    # simulated arm must not announce itself as real hardware (dashboard
+    # badges, e-stop triage, fleet-agent hardware checks all key off it).
+    assert kwargs["peer_type"] == "sim"
     assert kwargs["mesh"] is True
     # Resulting child mesh recorded on the SimRobot for later detach.
     assert robot.mesh is fake_child

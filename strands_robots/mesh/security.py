@@ -222,17 +222,11 @@ _HF_REPO_ENTRY_RE = re.compile(r"^[A-Za-z0-9_./\-]+$")
 #: :data:`_DEFAULT_POLICY_TYPES` set.
 _POLICY_TYPE_ENTRY_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 
-#: Built-in policy_type allowlist. Mirrors the LeRobot policy registry
-#: families plus the providers registered in registry/policies.json. Keep this
-#: in sync with the registry so a provider that ``create_policy`` can build can
-#: also be driven over the mesh ``tell()`` path and Device Connect. Operators
-#: extend via ``STRANDS_MESH_POLICY_TYPE_ALLOW`` (comma-separated).
-_DEFAULT_POLICY_TYPES: frozenset[str] = frozenset(
+#: LeRobot policy *families* accepted as ``policy_type``. This half of the
+#: allowlist names an external vocabulary (LeRobot's own policy registry), not
+#: something this package owns, so it stays a literal.
+_LEROBOT_POLICY_FAMILIES: frozenset[str] = frozenset(
     {
-        "mock",
-        "groot",
-        "lerobot",
-        "lerobot_local",
         "act",
         "diffusion",
         "tdmpc",
@@ -241,13 +235,81 @@ _DEFAULT_POLICY_TYPES: frozenset[str] = frozenset(
         "pi0fast",
         "smolvla",
         "sac",
-        # GR00T Whole-Body-Control (SONIC) locomotion provider (registry: wbc,
-        # shorthand sonic). Without these, tell(..., policy_provider="wbc") and
-        # the Device Connect drivers reject WBC at the security gate.
-        "wbc",
-        "sonic",
     }
 )
+
+#: Every spelling of every provider in ``registry/policies.json``: each
+#: provider's canonical name plus its declared aliases and shorthands, because
+#: ``create_policy`` resolves all of them to the same policy class. A provider
+#: this package can build but does not list here is refused on the mesh
+#: ``tell()`` path and by the Device Connect drivers, so the operator's only
+#: recourse is ``STRANDS_MESH_POLICY_TYPE_ALLOW`` -- a broad grant that reopens
+#: the gate this list exists to close.
+#:
+#: Deliberately a literal rather than derived from the registry at import: a
+#: provider added to ``policies.json`` must not silently widen a security
+#: allowlist. Adding a provider is expected to include the corresponding edit
+#: here, as the WBC provider did; a guard test refuses any registry spelling
+#: this set omits, so the omission fails CI instead of shipping as a
+#: mesh-only availability bug.
+_REGISTRY_POLICY_PROVIDERS: frozenset[str] = frozenset(
+    {
+        # MockPolicy
+        "mock",
+        "random",
+        "test",
+        # Gr00tPolicy
+        "groot",
+        # LerobotLocalPolicy
+        "lerobot_local",
+        "lerobot",
+        # LerobotAsyncPolicy
+        "lerobot_async",
+        # Cosmos3Policy
+        "cosmos3",
+        "c3",
+        # MoveIt2Policy
+        "moveit2",
+        "moveit",
+        # CuroboPolicy
+        "curobo",
+        "cumotion",
+        # WBCPolicy (GR00T Whole-Body-Control / SONIC locomotion)
+        "wbc",
+        "sonic",
+        # VeraPolicy
+        "vera",
+        # WBCGaitPolicy
+        "wbc_gait",
+        "sonic_gait",
+        # MotionBricksPolicy
+        "motionbricks",
+        "motion_bricks",
+        # KimodoPolicy
+        "kimodo",
+        "kimodo_g1",
+        "text2motion",
+        # ProtoMotionsPolicy
+        "protomotions",
+        "gtp",
+        "gtp_g1",
+        "protomotions_g1",
+        # RemotePolicy
+        "remote",
+    }
+)
+
+#: Built-in policy_type allowlist: the LeRobot policy families accepted as
+#: ``policy_type`` plus every provider spelling accepted as
+#: ``policy_provider``. The two vocabularies share one allowlist by design
+#: (see #239 bucket C); operators extend both at once via
+#: ``STRANDS_MESH_POLICY_TYPE_ALLOW`` (comma-separated).
+#:
+#: Widening this set does not relax any other gate: ``validate_command``
+#: applies the ``policy_host``, ``server_address``, ``pretrained_name_or_path``
+#: and ``model_path`` allowlists to every ``execute`` / ``start`` payload
+#: regardless of which provider it names.
+_DEFAULT_POLICY_TYPES: frozenset[str] = _LEROBOT_POLICY_FAMILIES | _REGISTRY_POLICY_PROVIDERS
 
 #: Action vocabulary accepted by :func:`validate_command`. Mirrors the
 #: dispatch table in :meth:`Mesh._dispatch`. Keep these two sets in sync

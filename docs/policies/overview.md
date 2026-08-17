@@ -5,17 +5,27 @@ description: The Policy ABC and every provider that ships - mock, groot, lerobot
 # Policy providers
 
 `strands_robots` ships several policy providers. The registry is the ground
-truth - list every provider that `create_policy("<name>")` accepts with:
+truth - list the providers with:
 
 ```bash
 python -c 'from strands_robots.policies import list_providers; print(list_providers())'
 # ['cosmos3', 'curobo', 'groot', 'kimodo', 'lerobot_async', 'lerobot_local', 'mock', 'motionbricks', 'moveit2', 'protomotions', 'remote', 'vera', 'wbc', 'wbc_gait']
 ```
 
+`create_policy` also accepts each provider's declared aliases and shorthands,
+which `list_providers()` does not repeat. `list_aliases()` reports those, so
+the two together are every spelling `create_policy` accepts:
+
+```bash
+python -c 'from strands_robots.policies import list_aliases; print(list_aliases())'
+# {'lerobot': 'lerobot_local', 'sonic': 'wbc', 'moveit': 'moveit2', 'cumotion': 'curobo', ...}
+```
+
 ```python
-from strands_robots.policies import create_policy, list_policy_types, list_providers
+from strands_robots.policies import create_policy, list_aliases, list_policy_types, list_providers
 
 print(list_providers())     # sorted provider names (registry ground truth)
+print(list_aliases())       # alias -> canonical, e.g. {'sonic': 'wbc', 'lerobot': 'lerobot_local'}
 print(list_policy_types())  # lerobot_local policy_type strings: ['act', 'diffusion', 'smolvla', ...]
 
 policy = create_policy("mock")                                                     # always works, no model
