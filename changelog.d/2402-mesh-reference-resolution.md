@@ -1,0 +1,3 @@
+### Fixed
+
+- **simulation/mujoco**: a mesh-presence check now resolves a reference the way MuJoCo does - honouring `assetdir` as well as `meshdir`, reading the model-global `<compiler>` subdirectory once, and resolving against the main model file's directory. Four registry robots (`stretch3`, `stretch`, `skydio_x2`, `ability_hand`) reported their meshes missing while MuJoCo compiled them, which spent a `force=True` asset re-download on every `add_robot` and refused the robot outright when that download could not run. The download path shared the same blind spot and now reads the rule from the same place.

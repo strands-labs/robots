@@ -371,9 +371,13 @@ def serial_tool(
         elif action == "monitor":
             # Continuous monitoring (limited time for safety)
             monitor_data = []
-            start_time = time.time()
+            # The safety window is a duration, so it is measured on
+            # time.monotonic(); each record's ``timestamp`` below stays on the
+            # wall clock because that is an absolute stamp a reader correlates
+            # with other logs.
+            start_time = time.monotonic()
 
-            while time.time() - start_time < 5.0:  # 5 second limit
+            while time.monotonic() - start_time < 5.0:  # 5 second limit
                 if ser.in_waiting > 0:
                     chunk = ser.read(ser.in_waiting)
                     monitor_data.append(
