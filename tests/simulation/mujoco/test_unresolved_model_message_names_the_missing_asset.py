@@ -1,12 +1,15 @@
 """A model that cannot be resolved must say which of two causes it hit.
 
-``MuJoCoSimEngine._unknown_model_msg`` serves two conditions with different
-remedies:
+``MuJoCoSimEngine._unknown_model_msg`` serves two of its three conditions here:
 
 * the registry does not know the name (a typo) - the remedy is a spelling fix,
   and naming close registry keys is what lets the caller make it in place;
 * the registry knows the name and its model XML is not on disk - the name is
   already correct, so the remedy is the asset, not the spelling.
+
+The third - the registry knows the name and the entry declares no simulation
+asset at all - is pinned in
+``test_unresolved_model_message_names_the_hardware_only_route.py``.
 
 Only the second condition can put the requested name inside the candidate set
 the suggestion is drawn from, and :func:`difflib.get_close_matches` scores an
@@ -124,7 +127,7 @@ class TestATypoStillGetsSpellingHelp:
     def test_an_unreadable_registry_degrades_to_the_bare_form(self, monkeypatch: pytest.MonkeyPatch) -> None:
         import strands_robots.registry as registry
 
-        def _boom() -> list[dict[str, str]]:
+        def _boom(mode: str = "all") -> list[dict[str, str]]:
             raise RuntimeError("registry exploded")
 
         monkeypatch.setattr(registry, "list_robots", _boom)

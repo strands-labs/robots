@@ -282,6 +282,7 @@ _EXPECTED_HELPERS = {
     "mujoco/motion_primitives.py::_unknown_robot_msg",
     "mujoco/physics.py::_unknown_mj_entity_msg",
     "mujoco/physics.py::_unknown_robot_msg",
+    "mujoco/simulation.py::_unknown_action_msg",
     "mujoco/simulation.py::_unknown_camera_msg",
     "mujoco/simulation.py::_unknown_model_msg",
     "mujoco/simulation.py::_unknown_object_msg",

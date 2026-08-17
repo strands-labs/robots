@@ -144,7 +144,15 @@ def ensure_ffmpeg_on_dyld_path() -> bool:
     if _is_safe_to_reexec():
         os.environ[_GUARD_ENV] = "1"
         try:
-            os.execv(sys.executable, [sys.executable, *sys.argv])
+            # sys.argv drops the interpreter options: under ``python -m pkg``
+            # argv is ['/path/to/pkg/__main__.py', ...], so re-execing with
+            # [sys.executable, *sys.argv] runs the __main__.py as a SCRIPT and
+            # ``-m``-style module resolution (and any -X/-W flags) is lost -
+            # observed as "No module named <subcommand>" for
+            # ``python -m strands_robots dashboard``. sys.orig_argv (3.10+)
+            # preserves the exact original command line.
+            argv = list(getattr(sys, "orig_argv", None) or [sys.executable, *sys.argv])
+            os.execv(sys.executable, argv)
         except Exception:
             return False  # fall through; children still benefit
     else:
