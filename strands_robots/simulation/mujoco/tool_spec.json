@@ -122,8 +122,8 @@
       "description": "Robot model registry key for add_robot (e.g. 'so101', 'panda', 'aloha'). Use the BARE name from list_urdfs -- not 'so101_default'/'so101_sim' (those are auto-stripped but the bare key is canonical). Auto-resolves to the MJCF/URDF on disk."
     },
     "keyframe": {
-      "type": "string",
-      "description": "Optional add_robot spawn pose: the name of a <keyframe> in the robot's source model (e.g. 'home' for panda/ur5e/fr3, 'neutral_pose' for aloha) to spawn in that canonical configuration instead of all-zeros. The keyframe's actuator command is applied with the pose, so a gravity-loaded arm holds that configuration instead of sagging out of it; both are restored on reset(). Omit for the default zero pose; an unknown name errors and lists the available keyframes."
+      "type": ["string", "integer"],
+      "description": "Optional add_robot spawn pose: the name of a <keyframe> in the robot's source model (e.g. 'home' for panda/ur5e/fr3, 'neutral_pose' for aloha) to spawn in that canonical configuration instead of all-zeros. The keyframe's actuator command is applied with the pose, so a gravity-loaded arm holds that configuration instead of sagging out of it; both are restored on reset(). Either the keyframe's name or its integer index in the model is accepted. Omit for the default zero pose; an unknown name errors and lists the available keyframes."
     },
     "name": {
       "type": "string",

@@ -805,16 +805,19 @@ def _preview_camera_live(
         camera.connect(warmup=warmup)
 
         frames_displayed = 0
-        start_time = time.time()
-        fps_counter_start = time.time()
+        # Durations, so they are measured on time.monotonic(): a wall-clock step
+        # would cut the preview short, mis-report the FPS window, or skew the
+        # reported duration.
+        start_time = time.monotonic()
+        fps_counter_start = time.monotonic()
         fps_frame_count = 0
 
         print(f"Starting live preview from {camera_type.upper()} camera {camera_id}")
         print(f"Duration: {preview_duration}s | Press 'q' to quit early")
 
         try:
-            while time.time() - start_time < preview_duration:
-                frame_start = time.time()
+            while time.monotonic() - start_time < preview_duration:
+                frame_start = time.monotonic()
 
                 if async_mode:
                     frame = camera.async_read(timeout_ms=timeout_ms)
@@ -842,10 +845,10 @@ def _preview_camera_live(
                 fps_frame_count += 1
 
                 # Calculate and display FPS every second
-                if time.time() - fps_counter_start >= 1.0:
-                    actual_fps = fps_frame_count / (time.time() - fps_counter_start)
+                if time.monotonic() - fps_counter_start >= 1.0:
+                    actual_fps = fps_frame_count / (time.monotonic() - fps_counter_start)
                     print(f"Live FPS: {actual_fps:.1f} | Frames: {frames_displayed}")
-                    fps_counter_start = time.time()
+                    fps_counter_start = time.monotonic()
                     fps_frame_count = 0
 
                 # Check for quit key
@@ -854,7 +857,7 @@ def _preview_camera_live(
                     break
 
                 # Maintain target FPS
-                frame_time = time.time() - frame_start
+                frame_time = time.monotonic() - frame_start
                 target_frame_time = 1.0 / fps
                 if frame_time < target_frame_time:
                     time.sleep(target_frame_time - frame_time)
@@ -863,7 +866,7 @@ def _preview_camera_live(
             cv2.destroyAllWindows()
             camera.disconnect()
 
-        actual_duration = time.time() - start_time
+        actual_duration = time.monotonic() - start_time
         avg_fps = frames_displayed / actual_duration if actual_duration > 0 else 0
 
         result_info = [

@@ -151,6 +151,13 @@ distro is sourced and a refusal happens before a publisher joins the graph:
 | `rate` | `publish` | a positive finite number of Hz - the inter-message period is `1 / rate`, so `0`, a negative value, `nan` and `inf` all leave the burst unthrottled instead of paced |
 | `timeout` | `echo`, `service_call`, `action_send_goal` | a positive finite number of seconds - `0` and negatives wait for nothing, `inf` never expires |
 
+`timeout` is measured on a monotonic clock, so the budget you ask for is the budget you
+get even if the host's wall clock is stepped mid-call by an NTP correction, a `date -s`
+or a resume from suspend. A single `action_send_goal` deadline governs server discovery,
+goal acceptance and result delivery on that one clock, which is also what keeps the
+cancel sent on expiry from being cut short - it needs the executor pumped to leave the
+process.
+
 An option the requested action never reads is not second-guessed:
 `use_ros(action="status", count=-1)` still reports the backend.
 

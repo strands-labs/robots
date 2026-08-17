@@ -108,6 +108,63 @@ def _resolve_robot_descriptions_module(name: str, info: dict) -> str | None:
 get_user_assets_dir = get_assets_dir
 
 
+def _mjcf_mesh_subdir(*contents: str) -> str:
+    """Return the mesh search subdirectory declared by MJCF text.
+
+    MuJoCo's ``<compiler>`` element offers two attributes for this. ``meshdir``
+    names the mesh directory specifically; ``assetdir`` names the mesh AND
+    texture directories at once, and ``meshdir`` overrides it where both appear.
+    Both are model-global: they apply across ``<include>``, so the fragment
+    declaring the directory need not be the fragment declaring the mesh.
+
+    A reader that knows only ``meshdir`` resolves an ``assetdir`` model against
+    the model directory itself, so it reports a mesh that is present as absent.
+
+    Args:
+        *contents: MJCF text fragments making up one model, in any order.
+
+    Returns:
+        The declared subdirectory, or ``""`` when no fragment declares one.
+    """
+    for attr in ("meshdir", "assetdir"):
+        for content in contents:
+            if match := re.search(rf'{attr}="([^"]*)"', content):
+                return match.group(1)
+    return ""
+
+
+def _mjcf_mesh_candidates(mesh_ref: str, model_dir: str, mesh_subdir: str, include_dir: str = "") -> list[str]:
+    """Return the on-disk locations MuJoCo accepts for one mesh reference.
+
+    MuJoCo resolves a ``<mesh file=...>`` against the MAIN model file's
+    directory joined with the model's mesh subdirectory - never against the
+    directory of whichever ``<include>``d fragment happened to declare it. When
+    the declaring fragment lives in a subdirectory of the model, MuJoCo also
+    accepts the reference relative to that fragment's directory, so a reference
+    is satisfied by either location.
+
+    Both branches are load-bearing on shipped Menagerie assets: ``skydio_x2``
+    and ``stretch3`` place their meshes under the first, ``lekiwi`` under the
+    second. Resolving against the declaring fragment's directory instead - a
+    location MuJoCo rejects - reports a present mesh as absent.
+
+    Args:
+        mesh_ref: The ``file=`` value as authored, e.g. ``meshes/base.stl``.
+        model_dir: Directory of the main model file.
+        mesh_subdir: Subdirectory from :func:`_mjcf_mesh_subdir`.
+        include_dir: Directory of the declaring fragment, relative to
+            *model_dir*. Empty when the main file declares the mesh itself.
+
+    Returns:
+        Candidate absolute paths; the reference is present if any one exists.
+    """
+    base = os.path.join(model_dir, mesh_subdir)
+    candidates = [os.path.join(base, mesh_ref)]
+    if include_dir:
+        candidates.append(os.path.join(base, include_dir, mesh_ref))
+    return candidates
+
+
 def _needs_download(name: str, info: dict[str, Any] | None, force: bool = False) -> bool:
     """Return *True* if a robot's mesh files are missing."""
     if info is None:
@@ -127,10 +184,11 @@ def _needs_download(name: str, info: dict[str, Any] | None, force: bool = False)
             mesh_files = re.findall(r'file="([^"]+\.(?:stl|STL|obj|OBJ|msh))"', content)
             if not mesh_files:
                 return False
-            meshdir_match = re.search(r'meshdir="([^"]*)"', content)
-            meshdir = meshdir_match.group(1) if meshdir_match else ""
+            meshdir = _mjcf_mesh_subdir(content)
             for mesh in mesh_files:
-                if not (model_path.parent / meshdir / mesh).exists():
+                # The model file declares these itself, so there is no
+                # include-relative candidate to consider.
+                if not any(os.path.exists(p) for p in _mjcf_mesh_candidates(mesh, str(model_path.parent), meshdir)):
                     return True
             return force
         except Exception:
