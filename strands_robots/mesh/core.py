@@ -311,7 +311,10 @@ def _extract_sample_source_zid(sample: Any) -> str | None:
     Returns ``None`` when:
 
     * the sample carries no ``source_info`` (publisher did not attach one --
-      e.g. the bridge/IoT transport path or a legacy publisher),
+      e.g. the bridge/IoT transport path or a legacy publisher), or the
+      installed zenoh-python predates the ``Sample.source_info`` descriptor
+      (first shipped in eclipse-zenoh 1.6.1, the declared floor), in which case
+      no sample on this install can ever carry a wire zid,
     * the ``source_id`` is missing,
     * the stringified value does not match the strict 1..32 hex digest
       shape (a malformed sample, third-party transport shim, or unit-test
@@ -3305,7 +3308,8 @@ class Mesh(SensorLoopsMixin):
 
         Returns the local Zenoh session ZID only when the full native
         publish path is ready (session open, publisher declarable, ``zenoh``
-        importable, and the ``zenoh.SourceInfo`` constructor present). Returns
+        importable, and the ``zenoh.SourceInfo`` constructor present -- it first
+        ships in eclipse-zenoh 1.6.1, the declared ``[mesh]`` floor). Returns
         ``None`` when the SourceInfo-less fallback ``put()`` path -- which
         strips ``source_zid`` from the body -- will be taken instead. An install
         without the ``mesh`` extra has no ``zenoh`` to import, so every envelope
@@ -3439,7 +3443,9 @@ class Mesh(SensorLoopsMixin):
         * ``zenoh`` is not importable at all -- an install without the
           ``mesh`` extra still publishes the envelope, stripped,
         * the ``zenoh.SourceInfo`` constructor is unavailable on the
-          installed zenoh-python version.
+          installed zenoh-python version -- it first ships in
+          eclipse-zenoh 1.6.1, which is the declared ``[mesh]`` floor, so
+          this is reachable only below the supported range.
 
         In the fallback case the body-level HMAC binding still holds;
         only the additional cross-session-forge defence is omitted.
@@ -3472,8 +3478,9 @@ class Mesh(SensorLoopsMixin):
         try:
             source_info = zenoh.SourceInfo(pub.id, sn)
         except (TypeError, AttributeError):
-            # zenoh-python without the SourceInfo ctor (very old build);
-            # fall back to body-level binding only.
+            # zenoh-python below the declared ``[mesh]`` floor, which exposes no
+            # SourceInfo ctor (first shipped in eclipse-zenoh 1.6.1); fall back
+            # to body-level binding only.
             put(key, self._strip_wire_zid(payload))
             return
         try:

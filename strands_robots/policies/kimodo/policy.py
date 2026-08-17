@@ -35,6 +35,14 @@ Contract:
   ``kwargs`` (``diffusion_steps``, ``guidance_scale``, ``seed``). The instance
   synthesises ONCE on first call (or when the prompt changes) then streams
   per-frame targets on subsequent calls, one frame per call, synchronously.
+* Changing the prompt mid-rollout is how a long-horizon sequence is driven:
+  each new prompt samples the next segment and the stream continues. A fresh
+  sample starts at its own canonical start pose, unrelated to wherever the
+  previous segment left the robot, so the segment is eased off the pose last
+  commanded over ``config.transition_frames`` native frames - the same
+  transition length Kimodo's own sampler applies to a multi-prompt sequence.
+  Without it the seam commands every joint to step at once, which is not a
+  reference any tracker can follow.
 * Output is a dict of joint-name -> target angle for the G1's 29 leg + waist
   + arm joints, keyed by :data:`KIMODO_G1_JOINTS` (the canonical WBC ordering)
   so the tracker sees identical names.
@@ -98,6 +106,95 @@ class KimodoMotionAgent(Protocol):
         ...
 
 
+def _slerp_quat(
+    q0: NDArray[np.float32],
+    q1: NDArray[np.float32],
+    t: float | np.floating[Any],
+) -> NDArray[np.float32]:
+    """Spherically interpolate between two wxyz quaternions.
+
+    Shared by the native -> tracker upsample and the segment-transition ease so
+    both walk the same arc: a quaternion has two representations for one
+    rotation, and picking the shorter arc (the sign flip below) is what stops an
+    interpolation from taking the long way round.
+
+    Args:
+        q0: Start quaternion, wxyz. Assumed unit-norm.
+        q1: End quaternion, wxyz. Assumed unit-norm.
+        t: Interpolation weight, 0.0 returns ``q0`` and 1.0 returns ``q1``. A
+            numpy scalar is accepted as-is rather than widened to a Python
+            float, so the caller's precision decides the arithmetic precision.
+
+    Returns:
+        The interpolated unit quaternion, wxyz.
+    """
+    dot = float(np.dot(q0, q1))
+    if dot < 0.0:
+        q1 = -q1
+        dot = -dot
+    if dot > 0.9995:
+        # Nearly parallel - the arc is shorter than float precision resolves,
+        # so lerp+normalise avoids dividing by a vanishing sin(theta).
+        q = q0 + t * (q1 - q0)
+    else:
+        theta_0 = float(np.arccos(dot))
+        sin_theta_0 = float(np.sin(theta_0))
+        theta = theta_0 * t
+        s0 = float(np.sin(theta_0 - theta)) / sin_theta_0
+        s1 = float(np.sin(theta)) / sin_theta_0
+        q = s0 * q0 + s1 * q1
+    return q / max(float(np.linalg.norm(q)), 1e-8)  # type: ignore[no-any-return]
+
+
+def _ease_onto_previous_pose(
+    qpos: NDArray[np.float32],
+    previous_pose: NDArray[np.float32],
+    frames: int,
+) -> NDArray[np.float32]:
+    """Ease a freshly sampled motion off the pose that was last commanded.
+
+    Kimodo samples every motion from its own canonical start pose, so the first
+    frame of a new segment bears no relation to the last frame of the previous
+    one. Emitting it unmodified steps every joint in a single tick. This decays
+    that pose offset to zero across the first ``frames`` frames, leaving the
+    rest of the segment untouched: the motion keeps its own shape and velocity
+    and only its starting offset is absorbed.
+
+    The offset decays by ``1 / (frames + 1)`` per frame, so the residual step at
+    the seam is the full offset divided by ``frames + 1`` rather than the offset
+    itself. The first frame is deliberately not pinned exactly onto
+    ``previous_pose``: that would command zero motion for one frame, trading a
+    position step for a velocity stall.
+
+    Args:
+        qpos: The freshly sampled ``(n, 7 + njoints)`` motion, native rate.
+        previous_pose: The last commanded ``(7 + njoints,)`` qpos frame.
+        frames: Number of frames to spread the offset over. Clamped to the
+            length of ``qpos``.
+
+    Returns:
+        A new array of the same shape, with the leading frames eased. ``qpos``
+        is not modified.
+    """
+    count = int(min(frames, qpos.shape[0]))
+    if count <= 0:
+        return qpos
+    out = qpos.copy()
+    # Root orientation interpolates on the quaternion arc; root position and
+    # joint angles are ordinary linear channels.
+    linear = list(range(3)) + list(range(_NUM_ROOT_QPOS, qpos.shape[1]))
+    offset = previous_pose[linear] - qpos[0, linear]
+    q_prev = previous_pose[3:7]
+    q_prev = q_prev / max(float(np.linalg.norm(q_prev)), 1e-8)
+    for i in range(count):
+        weight = 1.0 - (i + 1) / (count + 1)
+        out[i, linear] = qpos[i, linear] + weight * offset
+        q_i = qpos[i, 3:7]
+        q_i = q_i / max(float(np.linalg.norm(q_i)), 1e-8)
+        out[i, 3:7] = _slerp_quat(q_i, q_prev, weight)
+    return out
+
+
 def _slerp_upsample(
     qpos: NDArray[np.float32],
     native_fps: int,
@@ -128,21 +225,7 @@ def _slerp_upsample(
     for i, t in enumerate(t_out):
         idx = np.clip(np.searchsorted(t_in, t) - 1, 0, n_in - 2)
         alpha = (t - t_in[idx]) / max(t_in[idx + 1] - t_in[idx], 1e-8)
-        q0, q1 = q_in[idx], q_in[idx + 1]
-        dot = float(np.dot(q0, q1))
-        if dot < 0.0:
-            q1 = -q1
-            dot = -dot
-        if dot > 0.9995:
-            q = q0 + alpha * (q1 - q0)
-        else:
-            theta_0 = float(np.arccos(dot))
-            sin_theta_0 = float(np.sin(theta_0))
-            theta = theta_0 * alpha
-            s0 = float(np.sin(theta_0 - theta)) / sin_theta_0
-            s1 = float(np.sin(theta)) / sin_theta_0
-            q = s0 * q0 + s1 * q1
-        out[i, 3:7] = q / max(float(np.linalg.norm(q)), 1e-8)
+        out[i, 3:7] = _slerp_quat(q_in[idx], q_in[idx + 1], alpha)
     return out
 
 
@@ -189,6 +272,7 @@ class KimodoPolicy(Policy):
         diffusion_steps: int | None = None,
         guidance_scale: float | None = None,
         num_frames: int | None = None,
+        transition_frames: int | None = None,
         native_fps: int | None = None,
         tracker_fps: int | None = None,
         device: str | None = None,
@@ -213,6 +297,8 @@ class KimodoPolicy(Policy):
             diffusion_steps: Denoising steps override.
             guidance_scale: Classifier-free-guidance weight override.
             num_frames: Motion length override, in native frames.
+            transition_frames: Override for the number of native frames a newly
+                sampled segment is eased off the last commanded pose over.
             native_fps: Sampler output rate override.
             tracker_fps: Tracker consumption rate override.
             device: torch device string override.
@@ -229,6 +315,7 @@ class KimodoPolicy(Policy):
             diffusion_steps=diffusion_steps,
             guidance_scale=guidance_scale,
             num_frames=num_frames,
+            transition_frames=transition_frames,
             native_fps=native_fps,
             tracker_fps=tracker_fps,
             device=device,
@@ -244,6 +331,15 @@ class KimodoPolicy(Policy):
         self._buffer_key: tuple[str, int, float, int | None] | None = None
         self._motion_buffer: NDArray[np.float32] | None = None
         self._frame_cursor: int = 0
+        # The last qpos frame handed out. A re-sample eases onto it so a new
+        # segment continues from where the robot actually is; ``None`` means
+        # nothing has been commanded yet, so there is no seam to ease.
+        self._last_frame: NDArray[np.float32] | None = None
+        # The sampler's own output, kept so the buffer can be rebuilt without
+        # easing (and without re-sampling) when an episode boundary means the
+        # transition it was built for no longer applies.
+        self._raw_sample: NDArray[np.float32] | None = None
+        self._buffer_eased: bool = False
         self._joint_names: tuple[str, ...] = KIMODO_G1_JOINTS
         self._robot_state_keys: list[str] = list(KIMODO_G1_JOINTS)
 
@@ -335,6 +431,10 @@ class KimodoPolicy(Policy):
         frame = self._motion_buffer[idx]
         self._frame_cursor += 1
 
+        # Record the emitted pose before returning: it is the seam a later
+        # re-sample eases onto.
+        self._last_frame = frame.copy()
+
         joint_angles = frame[_NUM_ROOT_QPOS:]
         action = {name: float(v) for name, v in zip(self._joint_names, joint_angles)}
         return [action]
@@ -350,6 +450,10 @@ class KimodoPolicy(Policy):
         :meth:`get_actions` re-samples, because the seed is part of the key
         identifying the buffered motion.
 
+        Rewinding also forgets the last commanded pose: episodes are
+        independent, so the next segment opens at the motion's own start pose
+        rather than being eased onto where the previous episode finished.
+
         Args:
             seed: Sampling seed for the next episode. ``None`` rewinds only,
                 replaying the motion already held. A seed equal to the one that
@@ -357,6 +461,15 @@ class KimodoPolicy(Policy):
                 re-running the sampler for identical frames.
         """
         self._frame_cursor = 0
+        # A new episode starts the robot afresh, so there is no previously
+        # commanded pose to stay continuous with. Forgetting the pose is not
+        # enough on its own: a buffer already eased onto it would still be
+        # replayed from frame 0, opening the new episode on a transition built
+        # for the previous one. Rebuilding from the held sample undoes that
+        # without paying for another diffusion run.
+        self._last_frame = None
+        if self._buffer_eased and self._raw_sample is not None:
+            self._rebuild_buffer(None)
         if seed is not None:
             # Store on config-shadow so next _synthesise picks it up.
             object.__setattr__(self.config, "seed", seed)
@@ -415,14 +528,10 @@ class KimodoPolicy(Policy):
                 f"Kimodo agent returned qpos with shape {raw.shape}, expected "
                 f"(*, {_NUM_ROOT_QPOS + len(KIMODO_G1_JOINTS)})"
             )
-        # Upsample native 30Hz -> tracker 50Hz for smooth control.
-        self._motion_buffer = _slerp_upsample(
-            raw.astype(np.float32),
-            native_fps=self.config.native_fps,
-            target_fps=self.config.tracker_fps,
-        )
+        self._raw_sample = raw.astype(np.float32)
+        self._rebuild_buffer(self._last_frame)
         self._buffer_key = self._sample_key(prompt, diffusion_steps, guidance_scale, seed)
-        self._frame_cursor = 0
+        assert self._motion_buffer is not None  # narrowed by _rebuild_buffer
         # The prompt is caller-supplied, so it is identified by digest rather
         # than echoed: interpolating the text would let a prompt containing a
         # newline forge an additional log record. The digest still correlates
@@ -434,6 +543,38 @@ class KimodoPolicy(Policy):
             hashlib.sha256(prompt.encode("utf-8")).hexdigest()[:12],
             len(prompt),
         )
+
+    def _rebuild_buffer(self, previous_pose: NDArray[np.float32] | None) -> None:
+        """Build the streaming buffer from the held sample and rewind the cursor.
+
+        Separated from :meth:`_synthesise` because the buffer depends on two
+        things - the sample and the pose it must continue from - and only the
+        first costs a diffusion run. An episode boundary changes the second, so
+        it rebuilds here rather than re-sampling.
+
+        Args:
+            previous_pose: The pose the segment must continue from, or ``None``
+                to emit the sample as the sampler produced it.
+        """
+        assert self._raw_sample is not None  # only called with a held sample
+        sampled = self._raw_sample
+        # Ease at the native rate so ``transition_frames`` counts the same
+        # frames Kimodo's own ``num_transition_frames`` does, and before the
+        # upsample so the interpolation smooths the eased frames with the rest.
+        if previous_pose is not None:
+            sampled = _ease_onto_previous_pose(
+                sampled,
+                previous_pose,
+                self.config.transition_frames,
+            )
+        self._buffer_eased = previous_pose is not None
+        # Upsample native 30Hz -> tracker 50Hz for smooth control.
+        self._motion_buffer = _slerp_upsample(
+            sampled,
+            native_fps=self.config.native_fps,
+            target_fps=self.config.tracker_fps,
+        )
+        self._frame_cursor = 0
 
     @staticmethod
     def _resolve_config(

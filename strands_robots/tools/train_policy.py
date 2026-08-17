@@ -142,7 +142,11 @@ def train_policy(
             logs an eval loss over them at the checkpoint cadence. A positive
             integer below the dataset's episode count, or None for no held-out
             set - the split is a fraction lerobot takes the ceiling of, so a
-            fractional count would reserve a different number of episodes.
+            fractional count would reserve a different number of episodes. The
+            count is read from the dataset's local ``meta/info.json``, so a Hub
+            source (``dataset_repo_id`` with no populated ``dataset_root``) is
+            refused with the two ways to get a split instead of being launched
+            without one.
         augmentation: Backend-specific augmentation dict.
         fps: Dataset control rate (when a backend needs it).
         extra: Backend-specific passthrough. lerobot: ``policy_type``,

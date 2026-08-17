@@ -538,7 +538,9 @@ def build_train_command(
             raise ValueError(
                 f"val_episodes={val_episodes} leaves no training data (dataset has {total} episodes); reserve fewer."
             )
-        split_err = validation_split_error(val_episodes, _read_total_tasks(dataset_root), "lerobot_train")
+        split_err = validation_split_error(
+            val_episodes, _read_total_tasks(dataset_root), "lerobot_train", passthrough_param="extra_flags"
+        )
         if split_err:
             raise ValueError(split_err)
         # Hand the split to lerobot instead of restricting --dataset.episodes

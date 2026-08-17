@@ -83,7 +83,7 @@ class TestPackStateZeroFillInPlace:
         """Arm joints keep their canonical model index; the two absent gripper
         actuator slots read 0.0. FAILS pre-fix: the right arm slid into the
         left-gripper slot and both zeros landed at the tail."""
-        E._WARNED_MISSING_STATE_KEYS.clear()
+        E._WARNED_STATE_KEY_MISMATCH.clear()
         out = _step(ALOHA_14, 14).observation(_sim_obs_no_gripper())
         state = out["observation.state"].numpy()
         assert len(state) == 14
@@ -95,31 +95,34 @@ class TestPackStateZeroFillInPlace:
     def test_missing_keys_warn_once(self, caplog):
         """The degradation is surfaced once (naming the absent keys), then
         deduplicated across the hot control loop."""
-        E._WARNED_MISSING_STATE_KEYS.clear()
+        E._WARNED_STATE_KEY_MISMATCH.clear()
         step = _step(ALOHA_14, 14)
         import logging
 
         with caplog.at_level(logging.WARNING, logger="strands_robots.policies.lerobot_local.embodiment"):
             step.observation(_sim_obs_no_gripper())
             step.observation(_sim_obs_no_gripper())
-        warns = [r for r in caplog.records if "absent from the observation" in r.getMessage()]
+        # Selected by the missing-key report's stable subject rather than by a
+        # phrase: the wording is shared with the generic robot_state_keys path,
+        # so it belongs to that message's contract and not to this test's.
+        warns = [r for r in caplog.records if "declared state_keys" in r.getMessage()]
         assert len(warns) == 1
         assert "left/gripper" in warns[0].getMessage() and "right/gripper" in warns[0].getMessage()
 
     def test_all_present_unchanged(self):
         """A fully-present key set is packed verbatim with no zero-fill (the
         so101-style path); this must not regress."""
-        E._WARNED_MISSING_STATE_KEYS.clear()
+        E._WARNED_STATE_KEY_MISMATCH.clear()
         keys = ["a", "b", "c"]
         out = _step(keys, 3).observation({"a": 1.0, "b": 2.0, "c": 3.0})
         state = out["observation.state"].numpy()
         np.testing.assert_allclose(state, [1.0, 2.0, 3.0], atol=1e-5)
-        assert not E._WARNED_MISSING_STATE_KEYS  # no missing -> no warn recorded
+        assert not E._WARNED_STATE_KEY_MISMATCH  # no missing -> no warn recorded
 
     def test_all_missing_passthrough(self):
         """When NONE of the declared keys are present, leave the observation
         untouched so a clearer downstream error can fire (do not emit all-zero)."""
-        E._WARNED_MISSING_STATE_KEYS.clear()
+        E._WARNED_STATE_KEY_MISMATCH.clear()
         obs = {"unrelated": 5.0}
         out = _step(["a", "b"], 2).observation(dict(obs))
         assert "observation.state" not in out
@@ -141,7 +144,7 @@ class TestAlohaEmbodimentActuatorConvention:
     def test_aloha_state_build_is_canonically_aligned(self):
         """End-to-end: build observation.state from a gripper-less sim obs through
         the real aloha embodiment config; arm stays aligned, grippers zero-filled."""
-        E._WARNED_MISSING_STATE_KEYS.clear()
+        E._WARNED_STATE_KEY_MISMATCH.clear()
         emb = E.load_embodiment("aloha")
         step = _step(emb.state_keys, 14, dim_policy=emb.dim_policy)
         state = step.observation(_sim_obs_no_gripper())["observation.state"].numpy()
