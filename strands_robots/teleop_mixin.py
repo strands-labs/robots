@@ -20,12 +20,26 @@ Design
   (lerobot ``teleop_loop`` equivalent). ``teleoperate(publish=True)`` ALSO
   publishes each device to the mesh via the host's
   ``start_teleop_publish`` (hardware Robot) so remote followers can mirror.
+* **Slew-bounded** - every merged frame is held to the same per-joint speed
+  bound the mesh receive path applies to an inbound frame
+  (``STRANDS_TELEOP_SLEW_ABS``, default 500 units/second -- wide enough for
+  degree-valued and range-0-100 devices at shipped defaults). One device can
+  drive a local follower and, via ``publish=True``, remote ones from the same
+  ``get_action()`` stream, so the two paths have to judge a frame identically
+  or the follower next to the operator is the only unguarded one. The bound is
+  a speed above what a leader arm's own servos can produce, so a physical
+  leader does not trip it; an over-speed frame (an encoder glitch, a USB
+  re-enumerate, a synthetic stream) is refused and counted in
+  ``slew_rejected`` rather than clamped, since clamping toward the commanded
+  value would silently alter an actuator command.
 """
 
 from __future__ import annotations
 
 import contextlib
 import logging
+import math
+import os
 import threading
 import time
 from collections.abc import Callable
@@ -209,6 +223,12 @@ class TeleopMixin:
             self._teleop_frames: int = 0
             self._teleop_errors: int = 0
             self._teleop_start_time: float = 0.0
+            self._teleop_slew_rejected: int = 0
+            # Baseline for the per-joint slew bound: for each joint, the last
+            # value actually sent and when. Merged rather than replaced, so a
+            # device whose frame carries a subset of the joints cannot erase
+            # the baseline of the ones it omits.
+            self._teleop_slew_baseline: dict[str, tuple[float, float]] = {}
 
     # --- attach / detach --------------------------------------------------
 
@@ -396,9 +416,14 @@ class TeleopMixin:
 
         Returns:
             Status dict. Background mode returns immediately; ``block=True``
-            returns after the loop ends with frame/error stats. An ``hz`` or
-            ``duration`` the loop cannot honor is refused here rather than
-            reported as a started session.
+            returns after the loop ends with frame/error stats, including
+            ``slew_rejected``: frames refused for commanding a joint faster
+            than the per-joint slew bound the mesh receive path also applies
+            (see the module docstring). Refusals are not errors, but a session
+            with any of them does not report ``success``, so a device whose
+            units the bound does not expect cannot look like a clean run while
+            moving nothing. An ``hz`` or ``duration`` the loop cannot honor is
+            refused here rather than reported as a started session.
         """
         self._ensure_teleop_state()
 
@@ -488,6 +513,8 @@ class TeleopMixin:
         self._teleop_stop_event.clear()
         self._teleop_frames = 0
         self._teleop_errors = 0
+        self._teleop_slew_rejected = 0
+        self._teleop_slew_baseline = {}
         self._teleop_start_time = time.time()
         self._teleop_running = True
 
@@ -564,6 +591,7 @@ class TeleopMixin:
                 {
                     "text": f"Local teleop: running={self._teleop_running}, "
                     f"frames={self._teleop_frames}, errors={self._teleop_errors}, "
+                    f"slew_rejected={self._teleop_slew_rejected}, "
                     f"hz={hz:.1f}, devices={list(self._teleops)}"
                 },
                 {
@@ -571,6 +599,7 @@ class TeleopMixin:
                         "running": self._teleop_running,
                         "frames": self._teleop_frames,
                         "errors": self._teleop_errors,
+                        "slew_rejected": self._teleop_slew_rejected,
                         "hz_actual": hz,
                         "devices": list(self._teleops),
                     }
@@ -599,6 +628,74 @@ class TeleopMixin:
         deadline = (self._teleop_start_time + duration) if duration is not None else None
         warned_conflicts: set[str] = set()
 
+        # Per-joint slew bound, the same one the mesh receive path applies, so a
+        # leader frame is judged identically whether it reaches a follower over
+        # the network or on this host. ``teleoperate(publish=True)`` drives both
+        # from one device, so without this the same frame was bounded on every
+        # remote follower and unbounded on the local one. The bound is a speed
+        # above what a leader arm's own servos can produce, so only a synthetic
+        # or glitched frame trips it. The local path defaults to 500 units/s
+        # (``STRANDS_TELEOP_SLEW_ABS``) so it accommodates degree-valued and
+        # range-0-100 devices at their shipped defaults without env-var tuning.
+        #
+        # Imported here rather than at module scope because the mesh package
+        # pulls :mod:`strands_robots.simulation` in, and this mixin must not
+        # depend on it (see
+        # :func:`strands_robots.utils.positive_finite_number_error`). One import
+        # per session, not per tick.
+        from strands_robots.mesh.security import (
+            input_frame_slew_violation,
+            merge_slew_baseline,
+        )
+
+        # The local path uses a wider default than the mesh path because the
+        # shipped SO hardware defaults speak degrees (90 deg/s for a calm sweep,
+        # 372 deg/s for the STS3215 no-load max) and the gripper speaks 0-100.
+        # The mesh path's 8*pi default is radian-scoped and already requires
+        # explicit widening for driver-unit devices; imposing it on the local
+        # loop would refuse ordinary human teleop at default hardware settings.
+        # 500 units/s is above the fastest servo in any shipped unit system
+        # (deg, range-0-100, rad) while still catching encoder glitches and
+        # full-scale jumps that would strip gears.
+        _LOCAL_SLEW_DEFAULT = 500.0
+        _local_slew_str = os.environ.get("STRANDS_TELEOP_SLEW_ABS", "")
+        if _local_slew_str:
+            try:
+                _local_slew = float(_local_slew_str)
+                if _local_slew <= 0 or not math.isfinite(_local_slew):
+                    raise ValueError
+            except (ValueError, TypeError):
+                logger.warning(
+                    "[teleop] STRANDS_TELEOP_SLEW_ABS=%r is not a positive finite number; using default %.1f",
+                    _local_slew_str,
+                    _LOCAL_SLEW_DEFAULT,
+                )
+                _local_slew = _LOCAL_SLEW_DEFAULT
+        else:
+            _local_slew = _LOCAL_SLEW_DEFAULT
+
+        # Magnitude envelope for the baseline prune, and the reason it is
+        # infinite here. ``merge_slew_baseline`` drops an entry once enough time
+        # has passed that it "can no longer refuse anything", computing that
+        # horizon as ``(value_abs + abs(value)) / max_slew`` - a premise that
+        # holds only while the pruner and the checker are parameterised alike.
+        # The mesh path pairs its bound with ``validate_input_frame``'s
+        # magnitude clamp, so a permissible command there can only reach
+        # ``STRANDS_MESH_INPUT_VALUE_ABS``. The local path runs no such clamp
+        # (``input_frame_slew_violation`` takes no envelope, and nothing else
+        # bounds a leader's reach), so no finite displacement exists after which
+        # an entry provably cannot refuse: the only envelope that keeps the
+        # prune a no-verdict-change operation is an unbounded one, under which
+        # it prunes nothing.
+        #
+        # That costs no unbounded growth, because the prune's own motive does
+        # not apply here. It exists because a *remote* stream chooses its key
+        # names; these keys are the attached devices' motor names plus whatever
+        # ``map_fn`` emits - a set fixed by the session's own hardware - and the
+        # baseline is reset per session (see :meth:`teleoperate`). The size
+        # bound is that key set, not a time window.
+        _LOCAL_VALUE_ABS = math.inf
+
         while self._teleop_running and not self._teleop_stop_event.is_set():
             loop_start = time.perf_counter()
             if deadline is not None and time.time() >= deadline:
@@ -626,13 +723,38 @@ class TeleopMixin:
                         merged[k] = v
 
                 if merged:
-                    result = self.send_action(merged, robot_name=robot_name)
-                    if isinstance(result, dict) and result.get("status") == "error":
-                        self._teleop_errors += 1
-                        if self._teleop_errors <= 5:
-                            txt = result.get("content", [{}])[0].get("text", "")
-                            logger.warning("[teleop] send_action error: %s", txt)
-                    self._teleop_frames += 1
+                    # Refuse-and-count, matching the mesh path: clamping toward
+                    # the commanded value would silently alter an actuator
+                    # command. The bound is measured per joint from that joint's
+                    # last sent value, so the allowance grows while a joint is
+                    # still and a refused stream resumes by itself once the
+                    # commanded pose is reachable safely - no resync handshake.
+                    apply_mono = time.perf_counter()
+                    slew_reason = input_frame_slew_violation(
+                        merged, self._teleop_slew_baseline, apply_mono, period, max_slew=_local_slew
+                    )
+                    if slew_reason is not None:
+                        self._teleop_slew_rejected += 1
+                        if self._teleop_slew_rejected <= 5:
+                            logger.warning("[teleop] frame refused: %s", slew_reason)
+                    else:
+                        result = self.send_action(merged, robot_name=robot_name)
+                        if isinstance(result, dict) and result.get("status") == "error":
+                            self._teleop_errors += 1
+                            if self._teleop_errors <= 5:
+                                txt = result.get("content", [{}])[0].get("text", "")
+                                logger.warning("[teleop] send_action error: %s", txt)
+                        # Explicitly parameterised, like the check above: a
+                        # mesh default reaching either call site describes a
+                        # bound this path does not enforce.
+                        self._teleop_slew_baseline = merge_slew_baseline(
+                            self._teleop_slew_baseline,
+                            merged,
+                            apply_mono,
+                            max_slew=_local_slew,
+                            value_abs=_LOCAL_VALUE_ABS,
+                        )
+                        self._teleop_frames += 1
             except Exception as exc:  # noqa: BLE001 - hot loop, count + rate-limit
                 self._teleop_errors += 1
                 if self._teleop_errors <= 5:
@@ -666,16 +788,25 @@ class TeleopMixin:
         #         frames += 1 (an unpowered follower gives errors == frames)
         #   hard: get_action()/send raises -> errors += 1 only, no frame that
         #         tick (a dead leader gives frames == 0)
+        # A third signature is a *refused* frame: one the per-joint slew bound
+        # would not let reach the follower. That is not an error - nothing
+        # failed - but it is not a healthy frame either, so it is counted
+        # separately and still moves the session off "success". A leader whose
+        # every frame is refused (a device whose units are larger than the
+        # bound expects) otherwise reports 0 frames, 0 errors and "success":
+        # a silent no-op, which is the outcome this derivation exists to refuse.
         frames, errors = self._teleop_frames, self._teleop_errors
-        if errors == 0:
+        refused = self._teleop_slew_rejected
+        if errors == 0 and refused == 0:
             status = "success"  # clean run (or idle: no actions attempted)
         elif frames == 0 or errors >= frames:
-            status = "error"  # every attempt failed, either mode
+            status = "error"  # every attempt failed or was refused
         else:
-            status = "degraded"  # some ok, some failed
+            status = "degraded"  # some ok, some failed or refused
         telemetry = {
             "frames": frames,
             "errors": errors,
+            "slew_rejected": refused,
             "hz_actual": hz,
             "elapsed_s": elapsed,
             "status": status,
@@ -688,7 +819,8 @@ class TeleopMixin:
                 {
                     "text": f"Teleoperation {'completed' if blocking else 'stopped'}: "
                     f"{frames} frames, {errors} errors, "
-                    f"{hz:.1f}Hz over {elapsed:.1f}s.{note}"
+                    f"{hz:.1f}Hz over {elapsed:.1f}s."
+                    f"{f' {refused} frame(s) refused by the slew bound.' if refused else ''}{note}"
                 },
                 {"json": telemetry},
             ],

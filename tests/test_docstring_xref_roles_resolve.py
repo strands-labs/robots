@@ -22,19 +22,41 @@ import - and neither does the whitespace-collapsed form a renderer would see.
 The pattern here therefore admits whitespace inside the target and reports such
 a role, rather than failing to match it and exempting it from the guard.
 
-Scope is deliberately conservative: only targets that start with
-``strands_robots.`` are checked. Unqualified roles (``:func:`reset```) and roles
-into third-party packages resolve against Sphinx's current-module context or an
-intersphinx inventory that is not available here, so flagging them would produce
-false positives without catching the rot this guard exists to prevent.
+Two spellings of the same promise are graded, because a target only has to
+resolve - it does not have to be fully qualified to be checkable:
+
+* A fully-qualified target (``strands_robots.a.b.C.d``) resolves on its own.
+* A SHORT-FORM target (``C.d``) resolves once its head is pinned. The head is
+  looked up in the citing module first, and then, if the module does not import
+  it, against a package-wide index of class names - used only when exactly one
+  class in the package answers to that name, so an ambiguous head is skipped
+  rather than guessed. This is the spelling most method cross-references
+  actually use, and the earlier scope excluded it, which left the rot it exists
+  to prevent free to accumulate in the majority form.
+
+A member is resolved permissively: an attribute, a dataclass field, an annotated
+class attribute anywhere in the MRO, a ``__slots__`` entry, or a name the class
+assigns to ``self``. Being strict about what counts as a *claim* and permissive
+about what counts as *evidence* means this guard can only ever under-report; a
+class-level ``hasattr`` alone reads a dataclass field with no default, and an
+attribute only ever assigned in ``__init__``, as missing.
+
+Still out of scope, because these have no decidable target here: a bare
+unqualified role (``:func:`reset```), a short-form role whose head names nothing
+the package defines, and roles into third-party packages - all of which resolve
+against Sphinx's current-module context or an intersphinx inventory that is not
+available, so flagging them would produce false positives.
 """
 
 from __future__ import annotations
 
 import ast
 import importlib
+import inspect
 import re
+from dataclasses import dataclass
 from pathlib import Path
+from types import ModuleType
 
 import strands_robots
 
@@ -201,3 +223,223 @@ def test_a_contiguous_target_that_does_not_resolve_is_reported() -> None:
 def test_a_wrapped_target_outside_the_package_is_left_alone() -> None:
     """Control: third-party targets stay out of scope, wrapped or not."""
     assert _offending_roles_in("See :class:`~mujoco.\n    MjSpec` for the spec API.") == []
+
+
+# --------------------------------------------------------------------------- #
+# Short-form roles (``C.member``), the spelling most method cross-references use
+# --------------------------------------------------------------------------- #
+
+
+def _package_modules() -> dict[str, ModuleType]:
+    """Map dotted name -> imported module for every importable package module.
+
+    A module whose optional dependency is absent simply does not appear, so this
+    guard grades the roles it can reach and never turns a missing extra into a
+    dead pointer.
+    """
+    modules: dict[str, ModuleType] = {}
+    for source_file in sorted(_PKG_ROOT.rglob("*.py")):
+        if "__pycache__" in source_file.parts:
+            continue
+        rel = source_file.relative_to(_PKG_ROOT.parent).with_suffix("")
+        try:
+            modules[".".join(rel.parts)] = importlib.import_module(".".join(rel.parts))
+        except Exception:
+            continue
+    return modules
+
+
+def _class_index(modules: dict[str, ModuleType]) -> dict[str, set[type]]:
+    """Map a bare class name -> every package class answering to it.
+
+    A name with more than one class is ambiguous and is skipped by the caller:
+    guessing which one a role meant would invent the very pointer being graded.
+    """
+    index: dict[str, set[type]] = {}
+    for module in modules.values():
+        for name, obj in vars(module).items():
+            if inspect.isclass(obj) and getattr(obj, "__module__", "").startswith("strands_robots"):
+                index.setdefault(name, set()).add(obj)
+    return index
+
+
+def _self_assigned_names(cls: type) -> set[str]:
+    """Names ``cls`` or a package base assigns to ``self``.
+
+    An attribute that only ever exists because ``__init__`` assigns it is a real
+    member a role may cite, and no class-level lookup can see it.
+    """
+    names: set[str] = set()
+    for klass in inspect.getmro(cls):
+        if not getattr(klass, "__module__", "").startswith("strands_robots"):
+            continue
+        try:
+            source = inspect.getsource(klass)
+        except (OSError, TypeError):
+            continue
+        names |= set(re.findall(r"self\.([A-Za-z_]\w*)\s*(?::[^=\n]+)?=", source))
+    return names
+
+
+def _has_member(owner: object, attr: str) -> bool:
+    """True if ``attr`` is a member of ``owner`` under any declaration style."""
+    if hasattr(owner, attr):
+        return True
+    if attr in getattr(owner, "__dataclass_fields__", {}):
+        return True
+    if inspect.isclass(owner):
+        for klass in inspect.getmro(owner):
+            if attr in getattr(klass, "__annotations__", {}):
+                return True
+            if attr in tuple(getattr(klass, "__slots__", ())):
+                return True
+        if attr in _self_assigned_names(owner):
+            return True
+    return False
+
+
+def _short_form_resolves(citing_module: ModuleType, index: dict[str, set[type]], target: str) -> bool | None:
+    """Grade one short-form ``target`` cited from ``citing_module``.
+
+    Returns:
+        ``True`` when every component resolves, ``False`` when one does not, and
+        ``None`` when the target has no decidable head here (a bare name, an
+        ambiguous class name, or a head the package does not define) and is
+        therefore out of scope rather than an offender.
+    """
+    head, *members = target.split(".")
+    if not members:
+        return None
+    owner: object | None = getattr(citing_module, head, None)
+    if owner is None:
+        candidates = index.get(head, set())
+        if len(candidates) != 1:
+            return None
+        owner = next(iter(candidates))
+    for attr in members:
+        if not _has_member(owner, attr):
+            return False
+        owner = getattr(owner, attr, owner)
+    return True
+
+
+def _short_form_targets(doc: str) -> list[str]:
+    """Every contiguous short-form (non ``strands_robots.``-qualified) dotted target."""
+    targets = []
+    for raw in _ROLE_RE.findall(doc):
+        target = " ".join(raw.split())
+        if target != raw or target.startswith("strands_robots.") or "." not in target:
+            # A wrapped target and a qualified one are both already graded by
+            # the checks above; a bare name has no decidable target.
+            continue
+        targets.append(target)
+    return targets
+
+
+def _graded_short_form_roles() -> tuple[dict[str, list[str]], int]:
+    """Report unresolvable short-form roles, plus how many were graded at all."""
+    modules = _package_modules()
+    index = _class_index(modules)
+    offenders: dict[str, list[str]] = {}
+    graded = 0
+    for dotted, module in modules.items():
+        source_file = getattr(module, "__file__", None)
+        if source_file is None:
+            continue
+        tree = ast.parse(Path(source_file).read_text(encoding="utf-8"), filename=source_file)
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Module | ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef):
+                continue
+            doc = ast.get_docstring(node, clean=False)
+            if not doc:
+                continue
+            for target in _short_form_targets(doc):
+                verdict = _short_form_resolves(module, index, target)
+                if verdict is None:
+                    continue
+                graded += 1
+                if not verdict:
+                    qualname = getattr(node, "name", "<module>")
+                    offenders.setdefault(f"{dotted}::{qualname}", []).append(target)
+    return offenders, graded
+
+
+# The short-form spelling carries the bulk of this package's method
+# cross-references, so a sweep that grades only a handful has stopped reaching
+# them - a reformat or an import change must fail loudly here rather than report
+# a clean tree it never inspected.
+_MINIMUM_GRADED_SHORT_FORM_ROLES = 100
+
+
+def test_short_form_xref_roles_resolve() -> None:
+    offenders, graded = _graded_short_form_roles()
+    assert graded >= _MINIMUM_GRADED_SHORT_FORM_ROLES, (
+        f"only {graded} short-form roles were graded; a clean result would prove nothing"
+    )
+    assert not offenders, (
+        "a short-form docstring cross-reference must name a real member of its head. "
+        "Cite the member that exists - a private spelling of a public method is a dead "
+        "pointer twice over - or drop the role. Offending docstrings: " + repr(offenders)
+    )
+
+
+def test_the_sweep_reports_a_planted_short_form_dead_pointer() -> None:
+    """Non-vacuity: a clean sweep must mean the docstrings are right.
+
+    Grades a target against a real package class so the only thing wrong with it
+    is the member name, which is exactly the shape the sweep exists to catch.
+    """
+    from strands_robots.simulation.base import SimEngine
+
+    module = importlib.import_module("strands_robots.simulation.base")
+    index = _class_index({"strands_robots.simulation.base": module})
+
+    assert _short_form_resolves(module, index, "SimEngine.get_observation") is True
+    assert _short_form_resolves(module, index, "SimEngine.no_such_method") is False
+    assert not hasattr(SimEngine, "no_such_method"), "premise: the planted member does not exist"
+
+
+def test_a_dataclass_field_is_a_member() -> None:
+    """Control: a field with no class-level default must not read as missing.
+
+    ``hasattr(cls, field)`` is False for such a field, so a class-level lookup
+    alone would report every ``:attr:`Config.field``` role in the package.
+    """
+    module = ModuleType("stub_dataclass_module")
+
+    @dataclass
+    class Embodiment:
+        camera_keys: list[str]
+
+    module.Embodiment = Embodiment  # type: ignore[attr-defined]
+
+    assert not hasattr(Embodiment, "camera_keys"), "premise: no class-level attribute exists"
+    assert _short_form_resolves(module, {}, "Embodiment.camera_keys") is True
+
+
+def test_an_attribute_only_assigned_in_init_is_a_member() -> None:
+    """Control: ``self.port = port`` is a real member a role may cite."""
+    module = importlib.import_module("strands_robots.inference.server")
+    from strands_robots.inference.server import PolicyServer
+
+    assert not hasattr(PolicyServer, "port"), "premise: no class-level attribute exists"
+    assert _short_form_resolves(module, {}, "PolicyServer.port") is True
+
+
+def test_an_ambiguous_or_unknown_head_is_out_of_scope() -> None:
+    """Control: an undecidable head is skipped, never reported.
+
+    Reporting one would flag every role into a third-party package, which is the
+    false-positive class the qualified-only scope was written to avoid.
+    """
+    module = ModuleType("stub_empty_module")
+
+    class First:
+        pass
+
+    class Second:
+        pass
+
+    assert _short_form_resolves(module, {}, "SomeThirdPartyThing.method") is None
+    assert _short_form_resolves(module, {"Shared": {First, Second}}, "Shared.method") is None
+    assert _short_form_resolves(module, {}, "reset") is None, "a bare name has no decidable target"
