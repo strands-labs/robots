@@ -48,7 +48,8 @@ from strands_robots.registry import (
 | `register_robot(name, entry)` | Add user-defined robot at runtime. |
 | `unregister_robot(name)` | Remove a runtime-registered robot. |
 | `list_user_robots()` | Names from `register_robot`. |
-| `list_policy_providers()` | Providers from `policies.json`. |
+| `list_policy_providers()` | Providers from `policies.json`, canonical names only. |
+| `list_policy_aliases()` | Alias/shorthand -> canonical provider, from `policies.json`. Peer of `list_aliases()` for robots. |
 | `resolve_policy(uri)` | URI → provider name. |
 | `import_policy_class(provider)` | Lazy import of provider class. |
 | `build_policy_kwargs(provider, **kw)` | Normalise + validate kwargs. An explicit value beats the provider's registry default; the provider's own key (`host=`) beats the generic parameter (`policy_host=`). Every generic parameter defaults to `None`, meaning "unset", so an omitted one leaves the provider's own default -- registry, else constructor -- in place. |
@@ -120,7 +121,8 @@ from strands_robots.policies.cosmos3 import Cosmos3Policy
 | `MockPolicy` | Sinusoidal mock. `requires_images=False`. |
 | `create_policy(provider, **kw)` | Resolve + construct. Accepts `zmq://`, `cosmos3://`, HF `org/model`. |
 | `register_policy(name, loader, aliases)` | Runtime registration. |
-| `list_providers()` | Sorted names of every JSON-registered provider (`cosmos3`, `curobo`, `groot`, `lerobot_local`, `mock`, `motionbricks`, `moveit2`, `remote`, `vera`, `wbc`, `wbc_gait`) plus any runtime `register_policy` names and their aliases. |
+| `list_providers()` | Sorted canonical names of every JSON-registered provider, plus any runtime `register_policy` names and their aliases. Canonical names only for the JSON registry: pair it with `list_aliases()` for the rest. |
+| `list_aliases()` | Every provider alias and the canonical name it resolves to, across both registries. Together with `list_providers()` they are every spelling `create_policy` accepts. |
 | `list_policy_types()` | `policy_type` strings the installed lerobot resolves; `[]` without lerobot. Discovery peer of `list_providers`. |
 | `UntrustedRemoteCodeError` | Raised when `STRANDS_TRUST_REMOTE_CODE` is required but unset. |
 | `Gr00tPolicy` | GR00T N1.5/N1.6/N1.7 via ZMQ (service) or in-process. |

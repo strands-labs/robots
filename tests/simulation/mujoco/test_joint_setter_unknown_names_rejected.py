@@ -26,7 +26,10 @@ import pytest
 
 mj = pytest.importorskip("mujoco")
 
-from strands_robots.simulation.mujoco.simulation import Simulation  # noqa: E402
+from strands_robots.simulation.mujoco.simulation import (  # noqa: E402
+    _PUBLISHED_ACTIONS,
+    Simulation,
+)
 
 ARM_XML = """
 <mujoco model="joint_setter_test">
@@ -68,7 +71,12 @@ def test_positions_unknown_joint_rejected_and_qpos_untouched(sim):
     text = result["content"][0]["text"]
     assert "Joint 'shouldr' not found" in text  # consistent not-found prefix
     assert "shoulder" in text  # close match / available joints
-    assert "robot_joint_names" in text  # discovery pointer
+    # Discovery pointer, and a published action. The second half is asserted
+    # rather than left to the comment: a bare name check cannot tell a
+    # followable pointer from an unfollowable one, which is why this passed
+    # for as long as the hint named a Python-only action.
+    assert "action='get_robot_state'" in text
+    assert "get_robot_state" in _PUBLISHED_ACTIONS
     assert np.array_equal(sim._world._data.qpos, qpos)
 
 

@@ -1,0 +1,3 @@
+### Fixed
+
+`Robot(...).run()` now releases the robot when the operator presses Ctrl+C. The interrupt handler ended with `os._exit(0)`, which runs no `atexit` hook, no `__del__` and no `finally` block, so the instance's `cleanup()` never ran -- and on hardware that is the only path to the driver's own `disconnect()`, where torque disable and gripper release live. An operator's Ctrl+C left the arm energised at its last commanded position while the process printed `"<peer> stopped."` on the way out. The release now runs first, on a background thread under a 5 s budget so a wedged task executor cannot turn one Ctrl+C into a process that never exits, and the shutdown line claims `stopped.` only when the release actually finished.

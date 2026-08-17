@@ -49,6 +49,50 @@ results = sim_a.mesh.broadcast({"action": "status"}, timeout=2.0)
 sim_a.mesh.emergency_stop()   # STRANDS_MESH_AUDIT_DIR overrides log location
 ```
 
+## Recovering from an emergency stop
+
+`emergency_stop()` latches a **lockout** on every peer that receives it. While a
+peer is locked out it refuses every command except `status` and `resume`, and
+nothing clears it on a timer - an e-stop that expired by itself would not be an
+e-stop. Recovery is always an explicit `resume`:
+
+```python
+sim_a.mesh.send(peer_id, {"action": "resume", "override_code": OPERATOR_CODE})
+```
+
+Two prerequisites have to be in place *before* you e-stop a fleet, because both
+are only observable once you are already locked out.
+
+**1. Every peer needs the same override code.** `resume` is accepted only when
+`STRANDS_MESH_OVERRIDE_CODE` is set, and receivers re-verify the operator's proof
+against their own copy. With no code configured there is no remote resume at all
+and each robot must be restarted with one set - so the mesh logs a WARNING at
+startup when it is unset. Set it to the same value on every peer.
+
+**2. Fleet clocks have to agree.** A resume envelope is stamped with the
+operator's wall clock, and a receiver refuses one that is stale or future-dated:
+older than `STRANDS_MESH_RESUME_FRESHNESS_S` (default 60s) or more than
+`STRANDS_MESH_RESUME_FORWARD_SKEW_S` (default 5s) ahead. Each bound catches one
+direction of skew - a receiver *ahead of* the operator trips the freshness
+window, a receiver *behind* it trips the forward bound - so widening the other
+one does not help. The forward bound is the tight one, which is the trap: a robot
+whose clock is only **6 seconds behind** the operator sees a correct,
+correctly-signed resume as future-dated and refuses it, logging
+
+```
+[safety] robot-1: refusing remote resume -- ``t``=... in future (forward_skew_s=5.0, now=...)
+```
+
+and every retry fails the same way, so the robot stays locked out until its clock
+is corrected or the bound is widened. Keep fleet clocks in NTP sync - the same
+"upgrade every peer together" discipline the zenoh floor needs above - or raise
+both knobs on every peer.
+
+Repeated wrong codes arm a brute-force cooldown
+(`STRANDS_MESH_RESUME_MAX_FAILS`, `STRANDS_MESH_RESUME_BACKOFF_S`): during the
+cooldown even the correct code is refused, so wait it out rather than retrying in
+a loop. Every attempt, granted or refused, is written to the safety audit log.
+
 ## Published topics
 
 | Topic | Rate | Content |

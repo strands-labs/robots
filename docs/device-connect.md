@@ -32,6 +32,8 @@ r.run()              # serve on Device Connect (blocks until Ctrl+C)
 
 `.run()` stops the auto-started built-in mesh and serves the robot over Device Connect (D2D Zenoh multicast, no broker). Without `.run()` the robot is **agent-controlled** — discovered and invoked remotely via `robot_mesh` / `discover()`.
 
+Ctrl+C releases the robot before the process exits. `.run()` is the only entry point that holds a robot for the life of a process, so the interrupt handler is the only teardown it gets: it calls the instance's `cleanup()`, which on hardware reaches the driver's own `disconnect()` — where torque disable and gripper release live — and closes the motors bus and every camera. The exit itself stays abrupt (`cleanup()` drains the task executor, and a wedged rollout must not turn one Ctrl+C into a process that never exits), so the release runs under a 5 s budget on a background thread. It prints `<peer-id> stopped.` only when the release finished; a teardown that times out or raises is reported as `<peer-id> is exiting WITHOUT a completed shutdown: …` so an operator is never told the arm is safe when it may still be holding torque.
+
 Because the mesh is stopped *for* Device Connect, a bring-up that fails leaves the process on no transport at all — so `.run()` logs the cause (naming the extra when that is what is missing) and prints `<peer-id> is NOT online` instead of announcing a device that is not there. It keeps running, so a broker that comes back is not a lost process.
 
 !!! warning "Secure by default"

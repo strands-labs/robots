@@ -27,6 +27,31 @@ def _build_alias_map() -> dict[str, str]:
     return alias_map
 
 
+def _canonical_provider_name(provider: str) -> str:
+    """Resolve a provider spelling to the canonical name the registry keys on.
+
+    ``policies.json`` lets a provider declare ``aliases`` and ``shorthands``,
+    and every lookup surface accepts them as readily as the canonical name. The
+    canonical name is the one the registry is keyed on, so anything that keys a
+    decision on a provider -- a config lookup, a module import, the
+    trust-remote-code gate -- has to resolve the caller's spelling first or it
+    answers for a name the registry does not hold.
+
+    This is the one place that rule lives. An unknown spelling is returned
+    unchanged: resolution is the caller's next step, and reporting the name the
+    caller actually passed is what lets that caller quote it back.
+
+    Args:
+        provider: Any spelling the registry accepts - a canonical name, a
+            declared alias, or a shorthand.
+
+    Returns:
+        The canonical provider name, or ``provider`` unchanged when no provider
+        declares that spelling.
+    """
+    return _build_alias_map().get(provider, provider)
+
+
 def get_policy_provider(name: str) -> dict[str, Any] | None:
     """Get policy provider config by name or alias.
 
@@ -38,15 +63,65 @@ def get_policy_provider(name: str) -> dict[str, Any] | None:
         None if not found.
     """
     reg = _load("policies")
-    alias_map = _build_alias_map()
-    canonical = alias_map.get(name, name)
-    return reg.get("providers", {}).get(canonical)
+    return reg.get("providers", {}).get(_canonical_provider_name(name))
 
 
 def list_policy_providers() -> list[str]:
     """List all registered policy provider names (canonical only)."""
     reg = _load("policies")
     return sorted(reg.get("providers", {}).keys())
+
+
+def list_policy_aliases() -> dict[str, str]:
+    """Return the full alias -> canonical provider mapping.
+
+    :func:`list_policy_providers` reports canonical names only, but
+    :func:`get_policy_provider`, :func:`resolve_policy` and
+    ``create_policy`` all accept a provider's declared aliases and
+    shorthands as well. This is the surface that enumerates them, so a
+    caller can discover every spelling the registry honours instead of
+    having to already know it.
+
+    A provider that redundantly lists its own canonical name among its
+    aliases contributes no entry: a name is not an alias of itself, and
+    such an entry would double-count the spelling
+    :func:`list_policy_providers` already reports.
+
+    Returns:
+        Mapping of alias to the canonical provider name it resolves to.
+    """
+    return {alias: canonical for alias, canonical in _build_alias_map().items() if alias != canonical}
+
+
+#: A leading URL scheme, e.g. the ``zmq`` in ``zmq://gpu-box:5555``. The scheme
+#: grammar is RFC 3986 section 3.1: an ALPHA followed by ALPHA / DIGIT / "+" /
+#: "-" / ".".
+_URL_SCHEME_RE = re.compile(r"^([A-Za-z][A-Za-z0-9+.\-]*)://")
+
+
+def _with_lowercase_url_scheme(policy: str) -> str:
+    """Fold a leading ``scheme://`` to lowercase, leaving the rest untouched.
+
+    URL schemes are case-insensitive (RFC 3986 section 3.1), so ``ZMQ://`` and
+    ``zmq://`` name the same transport. Stage 1 of :func:`resolve_policy`
+    matches the ``url_patterns`` each provider declares in ``policies.json`` --
+    every one of them spelled lowercase -- and the per-scheme branches then
+    re-read the same string for host and port. Folding the scheme once, here,
+    is what makes that whole stage case-insensitive; doing it per branch would
+    leave the next scheme added to rediscover the rule.
+
+    Only the scheme is folded. Hostnames are case-insensitive by convention but
+    paths, query strings and HuggingFace repo ids are not, and a string with no
+    ``scheme://`` prefix -- a bare ``host:port``, a shorthand such as ``mock``,
+    a repo id such as ``NVIDIA/GR00T-N1.5-3B`` -- is returned unchanged.
+
+    Args:
+        policy: The caller's policy string, already stripped.
+
+    Returns:
+        ``policy`` with any leading scheme lowercased.
+    """
+    return _URL_SCHEME_RE.sub(lambda m: f"{m.group(1).lower()}://", policy, count=1)
 
 
 def resolve_policy(policy: str, **extra_kwargs) -> tuple[str, dict[str, Any]]:
@@ -61,6 +136,12 @@ def resolve_policy(policy: str, **extra_kwargs) -> tuple[str, dict[str, Any]]:
         3. HuggingFace model IDs (org/model)
         4. Registered provider name
         5. Fallback to lerobot_local
+
+    Every stage matches case-insensitively. A URL scheme is folded per RFC 3986
+    section 3.1 (``ZMQ://gpu:5555`` resolves exactly as ``zmq://gpu:5555``, and
+    the emitted URL carries the lowercased scheme); shorthands and provider
+    names are lowercased; a HuggingFace org is matched lowercased while the repo
+    id itself is forwarded exactly as given, since repo ids are case-sensitive.
 
     Args:
         policy: Smart string - HF model ID, URL, or provider name.
@@ -87,16 +168,21 @@ def resolve_policy(policy: str, **extra_kwargs) -> tuple[str, dict[str, Any]]:
     policy = policy.strip()
     kwargs: dict[str, Any] = {}
 
-    # 1. URL pattern matching - check each provider's url_patterns
+    # 1. URL pattern matching - check each provider's url_patterns.
+    #    Matched against the scheme-folded string: the declared patterns and
+    #    the per-scheme parsers below are all lowercase, so an uppercase scheme
+    #    would otherwise match nothing and fall through to the HuggingFace
+    #    fallback as a repo id (see _with_lowercase_url_scheme).
+    url = _with_lowercase_url_scheme(policy)
     for prov_name, prov_info in providers.items():
         for pattern in prov_info.get("url_patterns", []):
-            if re.match(pattern, policy):
+            if re.match(pattern, url):
                 if pattern.startswith("^wss?://"):
                     # Pass the full URL through as ``endpoint`` so the scheme
                     # (ws:// vs wss://) and any path survive; also split out
                     # host/port for providers that consume them directly.
-                    kwargs["endpoint"] = policy
-                    match = re.match(r"wss?://([^:/]+):?(\d+)?", policy)
+                    kwargs["endpoint"] = url
+                    match = re.match(r"wss?://([^:/]+):?(\d+)?", url)
                     if match:
                         kwargs["host"] = match.group(1)
                         kwargs["port"] = int(match.group(2) or 8000)
@@ -105,7 +191,7 @@ def resolve_policy(policy: str, **extra_kwargs) -> tuple[str, dict[str, Any]]:
                     # Without this branch the pattern matches but no parser
                     # populates host/port, so create_policy("cosmos3://prod:9000")
                     # silently falls back to the default localhost:8000 (#317).
-                    match = re.match(r"cosmos3://([^:/]+):?(\d+)?", policy)
+                    match = re.match(r"cosmos3://([^:/]+):?(\d+)?", url)
                     if match:
                         kwargs["host"] = match.group(1)
                         kwargs["port"] = int(match.group(2) or 8000)
@@ -117,20 +203,20 @@ def resolve_policy(policy: str, **extra_kwargs) -> tuple[str, dict[str, Any]]:
                     # the default 127.0.0.1. VERA's port kwarg is server_port;
                     # leave it unset when the URL omits a port so the
                     # per-embodiment default still applies.
-                    match = re.match(r"vera://([^:/]+):?(\d+)?", policy)
+                    match = re.match(r"vera://([^:/]+):?(\d+)?", url)
                     if match:
                         kwargs["host"] = match.group(1)
                         if match.group(2):
                             kwargs["server_port"] = int(match.group(2))
                 elif pattern.startswith("^zmq://"):
-                    match = re.match(r"zmq://([^:]+):(\d+)", policy)
+                    match = re.match(r"zmq://([^:]+):(\d+)", url)
                     if match:
                         kwargs["host"] = match.group(1)
                         kwargs["port"] = int(match.group(2))
                 elif pattern.startswith("^grpc://"):
-                    kwargs["server_address"] = policy.replace("grpc://", "")
-                elif ":" in policy and "/" not in policy:
-                    kwargs["server_address"] = policy
+                    kwargs["server_address"] = url.removeprefix("grpc://")
+                elif ":" in url and "/" not in url:
+                    kwargs["server_address"] = url
                 kwargs.update(extra_kwargs)
                 return prov_name, kwargs
 
@@ -246,8 +332,7 @@ def import_policy_class(provider: str) -> type:
     if config:
         # Resolve alias to canonical for module lookup
         reg = _load("policies")
-        alias_map = _build_alias_map()
-        canonical = alias_map.get(provider, provider)
+        canonical = _canonical_provider_name(provider)
         config = reg.get("providers", {}).get(canonical, config)
 
         try:

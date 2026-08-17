@@ -279,7 +279,13 @@ def test_unknown_action_returns_error(fake_local_mesh):
 
 
 def test_actions_without_local_mesh_fail(fake_no_local):
-    out = _strands_call(action="tell", target="peer-b", instruction="go")
+    # Since the #10 gateway fallback, a robot-less process CAN reach the mesh
+    # by lazily starting a gateway Mesh - so this test must forbid that path
+    # (real zenoh session + discovery sleep + 30s RPC timeout in a unit test)
+    # and pin the surviving contract: when NO gateway can be built (zenoh
+    # unavailable), actions still fail fast with a clear, structured error.
+    with patch("strands_robots.tools.robot_mesh._gateway_mesh", return_value=None):
+        out = _strands_call(action="tell", target="peer-b", instruction="go")
     assert out["status"] == "error"
     assert "no local mesh" in out["content"][0]["text"]
 

@@ -1135,7 +1135,7 @@ class TestRobotDriverStartTaskArgBinding(unittest.TestCase):
             policy_host="localhost",
             policy_provider="groot",
             duration=30.0,
-            **kw,
+            **policy_kwargs,
         ):
             self.captured = {
                 "instruction": instruction,

@@ -211,10 +211,18 @@ class TestActuateRobot:
         assert arm_sim._world._model.nu == 0, "a rejected call must not mutate the scene"
 
     def test_double_actuation_refused(self, arm_sim):
+        """A second call is refused, and says which joints it found driven.
+
+        Asserted on the joints and their actuators rather than on a phrase: what
+        a caller does next depends on which joints are already driven and by
+        what, so that is the part of the verdict worth pinning.
+        """
         assert arm_sim.actuate_robot("arm")["status"] == "success"
         result = arm_sim.actuate_robot("arm")
         assert result["status"] == "error"
-        assert "already has actuators" in result["content"][0]["text"]
+        text = result["content"][0]["text"]
+        assert "shoulder" in text and "elbow" in text, text
+        assert "arm_act_shoulder" in text and "arm_act_elbow" in text, text
         assert arm_sim._world._model.nu == 2, "the refused call must not add duplicates"
 
     def test_unknown_robot_error(self, sim):

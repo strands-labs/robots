@@ -1,0 +1,3 @@
+### Fixed
+
+`remove_robot` now carries a surviving robot's actuator setpoints (`ctrl`/`act`), an unnamed `<freejoint/>` base pose (the floating-base idiom `unitree_go2` and `lekiwi` ship), and the simulation clock across the scene rebuild. Previously the rebuild's fresh `MjData` left all three at their reset values, so removing one robot let every other robot's position servos drive toward zero on the next step, re-seated a surviving mobile base at its spawn pose, and reset `data.time` while `get_state` kept reporting the old clock - each under a `"success"` result whose immediate read-back looked correct. This matches what `add_robot` already guarantees for the same composition in the other direction.

@@ -120,10 +120,14 @@ class KimodoConfig:
             ``"fp32"`` for reproducibility.
         cache_dir: Optional local HF cache override; ``None`` uses
             ``$HF_HOME``.
-        trust_remote_code: Forwarded to ``from_pretrained`` so a checkpoint that
-            ships custom pipeline code can load; gated by
-            ``STRANDS_TRUST_REMOTE_CODE`` at the factory layer. This only
-            applies to a ``model_id`` published in diffusers pipeline layout -
+        trust_remote_code: Whether ``from_pretrained`` may execute code that
+            ships inside the checkpoint repository. Defaults to ``False``, so
+            loading a checkpoint does not run its code unless the caller asks
+            for it. ``STRANDS_TRUST_REMOTE_CODE`` is a separate and coarser
+            gate: it decides whether this provider may be constructed at all
+            and never sets this field, so opting in to the provider does not
+            also opt in to executing a repository's code. Only a ``model_id``
+            published in diffusers pipeline layout reaches the flag at all -
             NVIDIA's own Kimodo checkpoints are not, and are refused at load
             time in favour of a ``motion_agent=`` sampler.
         seed: RNG seed for reproducible sampling. ``None`` = fresh each call.
@@ -139,7 +143,7 @@ class KimodoConfig:
     device: str | None = None
     dtype: str = "fp16"
     cache_dir: str | None = None
-    trust_remote_code: bool = True
+    trust_remote_code: bool = False
     seed: int | None = None
 
     def __post_init__(self) -> None:

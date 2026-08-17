@@ -19,6 +19,7 @@ from strands_robots.simulation.mujoco.backend import (
     capture_stderr_fd,
     mj_name_to_id,
 )
+from strands_robots.simulation.mujoco.scene_ops import tendon_joint_ids
 from strands_robots.simulation.safe_output import (
     atomic_write_bytes,
     env_flag,
@@ -870,7 +871,9 @@ class RenderingMixin:
 
         Matches direct joint-transmission actuators first, then falls back to
         tendon-transmission actuators whose tendon wraps ``jnt_id`` (the
-        Panda/Franka gripper case from issue #318).
+        Panda/Franka gripper case from issue #318). The direct pass keeps
+        priority: a joint wired both ways is commanded through its own ctrl
+        rather than through a tendon it shares with its neighbours.
         """
         # 1. Direct joint transmission (JOINT / JOINTINPARENT).
         joint_trn = {int(mj.mjtTrn.mjTRN_JOINT)}
@@ -880,25 +883,17 @@ class RenderingMixin:
             if int(model.actuator_trntype[ai]) in joint_trn and model.actuator_trnid[ai, 0] == jnt_id:
                 return ai
 
-        # 2. Tendon transmission: find tendons whose JOINT wrap entries
-        #    include jnt_id, then the actuator driving that tendon.
+        # 2. Tendon transmission: a tendon that wraps jnt_id drives it, so the
+        #    actuator driving that tendon is the one to write. The wrap walk is
+        #    the shared rule in scene_ops, so this direction and the
+        #    "which joints does this actuator drive" direction cannot disagree
+        #    about what a tendon reaches.
         tendon_trn = int(mj.mjtTrn.mjTRN_TENDON)
-        wrap_joint = int(mj.mjtWrap.mjWRAP_JOINT)
-        tendons_with_joint: set[int] = set()
-        for t in range(int(model.ntendon)):
-            adr = int(model.tendon_adr[t])
-            num = int(model.tendon_num[t])
-            for w in range(adr, adr + num):
-                if int(model.wrap_type[w]) == wrap_joint and int(model.wrap_objid[w]) == jnt_id:
-                    tendons_with_joint.add(t)
-                    break
-        if tendons_with_joint:
-            for ai in range(model.nu):
-                if (
-                    int(model.actuator_trntype[ai]) == tendon_trn
-                    and int(model.actuator_trnid[ai, 0]) in tendons_with_joint
-                ):
-                    return ai
+        for ai in range(model.nu):
+            if int(model.actuator_trntype[ai]) != tendon_trn:
+                continue
+            if jnt_id in tendon_joint_ids(model, int(model.actuator_trnid[ai, 0]), mj):
+                return ai
         return -1
 
     @staticmethod
