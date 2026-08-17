@@ -154,7 +154,19 @@ class TrainSpec:
         fps: Dataset control rate, when a backend needs it explicitly.
         extra: Raw passthrough. Keys become backend-native flags / overrides
             (lerobot ``--key=value``; Cosmos Hydra ``key.path=value``). The
-            escape hatch that keeps the ABC stable as backends evolve.
+            escape hatch that keeps the ABC stable as backends evolve. A value
+            may be given either as text or as the destination field's own Python
+            type; a backend that assigns into a typed config MUST decode text
+            with the same decoder its ``--key=value`` form uses, so one spec
+            means one run whichever path the backend takes. The lerobot backend
+            reads text through lerobot's own draccus decoder: ``false``/``no``/
+            ``off`` and ``true``/``yes``/``on`` (any case) are booleans, ``0``
+            and ``1`` are not, and text that does not decode to the field's type
+            is refused rather than stored. For example, unfreezing a SmolVLA
+            vision tower takes ``extra={"policy.freeze_vision_encoder": False,
+            "policy.train_expert_only": False}`` - or the same values as
+            ``"false"`` - because both default to ``True`` in that policy's own
+            config.
     """
 
     # --- universal ---

@@ -131,6 +131,53 @@ TrainSpec(..., method="lora", lora_r=16, extra={"policy_type": "pi05"})
 # -> lerobot_train --peft.method_type=LORA --peft.r=16 --policy.type=pi05
 ```
 
+#### Passing lerobot's own flags through `extra`
+
+Any key in `extra` that names a real field of lerobot's config tree is applied to
+it, dotted for a sub-config (`policy.*`, `dataset.*`, `wandb.*`). A key that
+matches no field is ignored with a warning, so a typo can never become an
+arbitrary flag.
+
+A value may be written either as the field's own Python type or as text. Text is
+read with lerobot's own draccus decoder - the same one behind `--key=value` - so
+one spec means one run whether the backend builds the config in-process or shells
+out:
+
+```python
+# these two are the same request
+extra={"policy.freeze_vision_encoder": False}
+extra={"policy.freeze_vision_encoder": "false"}
+```
+
+For a boolean field that decoder accepts `false`/`no`/`off` and
+`true`/`yes`/`on` in any case. `0` and `1` are integers to it, not booleans, and
+are refused - as they are on the command line. Text that does not decode to the
+field's declared type is refused naming the field and its type, rather than
+stored as-is: a stored string is truthy, so `"false"` would otherwise read as
+"true" and silently invert the flag.
+
+Some policies freeze most of themselves by default, which `method="full"` does
+not override - it selects strands' tuning strategy, not lerobot's per-policy
+defaults. SmolVLA, for instance, ships `freeze_vision_encoder=True` and
+`train_expert_only=True`, so full-model finetuning means asking for both:
+
+```python
+TrainSpec(
+    dataset_repo_id="org/tictactoe",
+    base_model="lerobot/smolvla_base",
+    output_dir="/tmp/ft_out",
+    steps=20000,
+    method="full",
+    extra={"policy_type": "smolvla",
+           "policy.freeze_vision_encoder": False,
+           "policy.train_expert_only": False},
+)
+```
+
+Check what a policy freezes by default before assuming `method="full"` trains
+all of it: `dataclasses.fields()` on its lerobot config class lists every knob
+and its default.
+
 #### RA-BC sample weighting (reward-aligned behavior cloning)
 
 Reward-Aligned Behavior Cloning reweights the per-sample loss so high-progress

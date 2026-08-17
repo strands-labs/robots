@@ -1,0 +1,3 @@
+### Fixed
+
+- **training**: a text value in `TrainSpec.extra` is now decoded with the same decoder lerobot's `--key=value` CLI uses, so one spec means one run whichever path the lerobot backend takes. `extra={"policy.freeze_vision_encoder": "false"}` previously stored the truthy string `"false"` and left the encoder frozen while the identical CLI flag unfroze it, with nothing raised or warned. `false`/`no`/`off` and `true`/`yes`/`on` (any case) are booleans; text that does not decode to the field's declared type is refused naming the field, its type and a spelling that works. A value already of the field's own Python type is passed through unchanged.
