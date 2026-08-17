@@ -19,7 +19,9 @@ from __future__ import annotations
 
 import builtins
 import random
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
+from types import ModuleType
 from typing import Any, Literal
 from unittest.mock import MagicMock, patch
 
@@ -37,6 +39,38 @@ from strands_robots.simulation.benchmark import (
     register_benchmark,
 )
 from strands_robots.simulation.policy_runner import PolicyRunner
+
+
+def _installed_version(dist_name: str, module: ModuleType) -> str:
+    """Resolve an installed package's version without being able to raise.
+
+    A skip reason is a diagnostic, so building it must not be the thing that
+    fails. ``libero`` is what makes that concrete: the distribution the
+    ``benchmark-libero`` extra resolves to (``libero>=0.1.0,<1.0.0``, and 0.1.1
+    is the only release) ships an empty top-level ``libero/__init__.py``, so
+    ``libero.__version__`` raises ``AttributeError``. Reading it while building
+    a skip reason would turn every run on a host that *has* libero into an
+    error, and no gate here would see it, because a host without libero skips
+    at ``importorskip("libero")`` before reaching the reason.
+
+    Distribution metadata is preferred over a module attribute, which is the
+    order :func:`strands_robots.doctor._resolve_version` documents for the same
+    situation: a package that defines no ``__version__`` still records its
+    version in the metadata it was installed from, so metadata reports 0.1.1
+    for the libero above where a module-attribute read has nothing to report.
+
+    Args:
+        dist_name: Installed distribution name (e.g. ``"libero"``).
+        module: The already-imported module. Read only when metadata holds no
+            entry for ``dist_name`` - a source tree that was never installed.
+
+    Returns:
+        The resolved version, or ``"unknown"`` when neither source has one.
+    """
+    try:
+        return version(dist_name)
+    except PackageNotFoundError:
+        return str(getattr(module, "__version__", "unknown"))
 
 
 @pytest.fixture(autouse=True)
@@ -222,6 +256,59 @@ class FakeSim(SimEngine):
 
 
 # Construction
+
+
+def _stub_module(name: str) -> Any:
+    """A module object whose attributes can be assigned without narrowing.
+
+    ``ModuleType`` declares no ``__version__``, so setting one in an annotated
+    test body is an ``attr-defined`` error. Returning ``Any`` keeps the
+    assignment legible instead of carrying a type suppression.
+
+    Args:
+        name: Module name, used only in the object's ``repr``.
+
+    Returns:
+        A fresh, empty module.
+    """
+    return ModuleType(name)
+
+
+class TestInstalledVersion:
+    """``_installed_version`` resolves a version and never raises doing it.
+
+    The helper exists so that a skip reason cannot be what fails. A check on
+    the source shape (``tests/test_optional_dependency_skips_bind_their_names.py``)
+    cannot see whether the helper itself is safe, so its contract is pinned
+    here: simplifying it back to a bare ``module.__version__`` read has to fail
+    something.
+    """
+
+    def test_a_module_without_a_version_attribute_does_not_raise(self) -> None:
+        """The libero case: an empty ``__init__.py`` and no installed metadata."""
+        module = ModuleType("not_installed_anywhere_xyz")
+        # ``vars`` rather than ``hasattr``: the latter is the torch stand-in's
+        # discriminator, which has one home (see
+        # tests/test_torch_stand_in_serves_or_skips.py), and this states the
+        # libero condition more directly anyway - nothing in the namespace.
+        assert "__version__" not in vars(module)
+        assert _installed_version("not-installed-anywhere-xyz", module) == "unknown"
+
+    def test_a_module_attribute_is_the_fallback(self) -> None:
+        """With no metadata entry, a module ``__version__`` is still reported."""
+        module = _stub_module("not_installed_anywhere_xyz")
+        module.__version__ = "9.9.9"
+        assert _installed_version("not-installed-anywhere-xyz", module) == "9.9.9"
+
+    def test_installed_metadata_outranks_a_module_attribute(self) -> None:
+        """Pin the documented order, using a distribution that is installed.
+
+        ``pytest`` is present wherever this suite runs, so its metadata version
+        is available to compare against a module attribute that disagrees.
+        """
+        module = _stub_module("pytest_stand_in")
+        module.__version__ = "0.0.0-from-the-module"
+        assert _installed_version("pytest", module) == version("pytest")
 
 
 class TestConstruction:
@@ -3361,12 +3448,32 @@ class TestInstallActionController:
         libero = pytest.importorskip("libero")
         import mujoco
 
-        # Resolve the canonical LIBERO Panda home pose. Skip if libero
-        # version doesn't expose MountedPanda (e.g. future rename).
-        try:
-            from libero.libero.envs.robots.mounted_panda import MountedPanda
-        except ImportError:
-            pytest.skip(f"libero {libero.__version__} does not expose MountedPanda")
+        # Resolve the canonical LIBERO Panda home pose. Skip if this libero
+        # version does not expose MountedPanda (e.g. a future rename). The
+        # module and the attribute are two separate skips because
+        # ``importorskip`` covers only the module: reading the attribute with
+        # ``getattr`` and skipping on ``None`` keeps a rename a skip rather
+        # than turning it into an ``AttributeError``, and it binds the name on
+        # every path that reaches the use below.
+        #
+        # ``reason`` is an argument, so it is built before the call it is
+        # passed to - on every run where ``libero`` imports, not only on the
+        # skipping one. Read the version defensively once: the released
+        # distribution (0.1.1, the only one the ``benchmark-libero`` extra can
+        # resolve) ships an empty top-level ``libero/__init__.py`` with no
+        # ``__version__``, so a bare read here is an ``AttributeError`` on
+        # exactly the hosts where this test runs for real. The distribution
+        # metadata still records 0.1.1, so ``_installed_version`` reads that
+        # first and a module attribute only as a fallback - a reason that says
+        # "libero 0.1.1" rather than "libero unknown" on every real host.
+        libero_version = _installed_version("libero", libero)
+        mounted_panda = pytest.importorskip(
+            "libero.libero.envs.robots.mounted_panda",
+            reason=f"libero {libero_version} does not expose the mounted_panda module",
+        )
+        MountedPanda = getattr(mounted_panda, "MountedPanda", None)
+        if MountedPanda is None:
+            pytest.skip(f"libero {libero_version} does not expose MountedPanda")
         expected_home_qpos = np.asarray(MountedPanda().init_qpos, dtype=np.float64)
         assert expected_home_qpos.shape == (7,), (
             f"MountedPanda.init_qpos must be 7-DoF for Panda, got {expected_home_qpos.shape}"

@@ -640,6 +640,74 @@ def test_state_observation_byte_equivalent_at_canonical_init() -> None:
         upstream_env.close()
 
 
+def _attribute_or_skip(module: Any, name: str) -> Any:
+    """Return ``module.name``, skipping when this version does not expose it.
+
+    :func:`pytest.importorskip` gates on the module, not on what it contains,
+    so a guarded attribute read needs its own skip. Returning the attribute
+    rather than leaving it optional at the call site binds the caller's name
+    unconditionally: the only way past this call is with the attribute in hand.
+
+    The skip is raised rather than called so that every path out of this
+    function is explicit. :func:`pytest.skip` is annotated ``NoReturn``, but
+    reading it that way needs the annotation, and a checker that does not
+    reports the skip branch as falling off the end - which is the same "the
+    analysis cannot see the skip" problem this helper exists to remove, one
+    level up. ``pytest.skip.Exception`` is what :func:`pytest.skip` raises.
+
+    Args:
+        module: Module that imported successfully.
+        name: Attribute to read from it.
+
+    Returns:
+        The attribute.
+
+    Raises:
+        Skipped: When ``module`` does not expose ``name``.
+    """
+    __tracebackhide__ = True
+    attribute = getattr(module, name, None)
+    if attribute is None:
+        raise pytest.skip.Exception(f"{module.__name__} does not expose {name}; skipping end-to-end test")
+    return attribute
+
+
+def _load_upstream_policy_or_skip(policy_cls: Any, embodiment_tag: Any, checkpoint: str) -> Any:
+    """Build the upstream Gr00t policy, or skip when this host cannot load it.
+
+    Returning the policy rather than assigning into the caller's local keeps
+    that binding unconditional: the only way past the call is with a policy in
+    hand. Assigning inside a ``try`` whose handler skips leaves the name bound
+    only on the success path as far as any analysis of the enclosing function
+    can tell, which is what ``py/uninitialized-local-variable`` reports. The
+    skip is raised rather than called for the same reason it is in
+    :func:`_attribute_or_skip`: it keeps every path out of this function
+    explicit.
+
+    The guard stays broad on purpose. A checkpoint load reaches torch, the
+    transformers stack and the Hub, any of which can fail for reasons that are
+    about this host rather than about the code under test; narrowing the tuple
+    would turn an unanticipated environmental failure into a red integration
+    run that says nothing about strands-robots.
+
+    Args:
+        policy_cls: Upstream ``Gr00tPolicy`` class.
+        embodiment_tag: Embodiment tag to load the checkpoint under.
+        checkpoint: Filesystem path to the checkpoint directory.
+
+    Returns:
+        The constructed upstream policy.
+
+    Raises:
+        Skipped: When this host cannot load the checkpoint.
+    """
+    __tracebackhide__ = True
+    try:
+        return policy_cls(embodiment_tag=embodiment_tag, model_path=checkpoint, device=0)
+    except Exception as e:  # noqa: BLE001 - model load failure is environmental
+        raise pytest.skip.Exception(f"failed to load Gr00tPolicy ({e}); skipping end-to-end test") from e
+
+
 @pytest.mark.timeout(900)
 def test_libero_10_scene5_mujoco_engine_success_rate() -> None:
     """Round 46 (#176 sub-task 3d) acceptance - MuJoCoSimEngine reaches
@@ -687,12 +755,18 @@ def test_libero_10_scene5_mujoco_engine_success_rate() -> None:
 
     if isaac_gr00t not in sys.path:
         sys.path.insert(0, isaac_gr00t)
-    try:
-        from gr00t.data.embodiment_tags import EmbodimentTag
-        from gr00t.policy.gr00t_policy import Gr00tPolicy as NvidiaGr00tPolicy
-        from gr00t.policy.gr00t_policy import Gr00tSimPolicyWrapper
-    except ImportError as e:
-        pytest.skip(f"gr00t imports failed ({e}); skipping end-to-end test")
+    embodiment_tags = pytest.importorskip(
+        "gr00t.data.embodiment_tags", reason="gr00t not importable; skipping end-to-end test"
+    )
+    gr00t_policy = pytest.importorskip(
+        "gr00t.policy.gr00t_policy", reason="gr00t not importable; skipping end-to-end test"
+    )
+    # ``importorskip`` covers the module, not the attribute, so each name is
+    # read separately; a rename upstream stays a skip rather than becoming an
+    # ``AttributeError``.
+    EmbodimentTag = _attribute_or_skip(embodiment_tags, "EmbodimentTag")
+    NvidiaGr00tPolicy = _attribute_or_skip(gr00t_policy, "Gr00tPolicy")
+    Gr00tSimPolicyWrapper = _attribute_or_skip(gr00t_policy, "Gr00tSimPolicyWrapper")
 
     try:
         import torch
@@ -721,14 +795,7 @@ def test_libero_10_scene5_mujoco_engine_success_rate() -> None:
     )
     init_states = bd.get_task_init_states(task_id)
 
-    try:
-        nvidia_policy = NvidiaGr00tPolicy(
-            embodiment_tag=EmbodimentTag.LIBERO_PANDA,
-            model_path=checkpoint,
-            device=0,
-        )
-    except Exception as e:  # noqa: BLE001 - model load failure is environmental
-        pytest.skip(f"failed to load Gr00tPolicy ({e}); skipping end-to-end test")
+    nvidia_policy = _load_upstream_policy_or_skip(NvidiaGr00tPolicy, EmbodimentTag.LIBERO_PANDA, checkpoint)
     wrapped = Gr00tSimPolicyWrapper(nvidia_policy)
 
     adapter = LiberoAdapter.from_file(task_bddl, install_cameras=True, init_states=init_states)
