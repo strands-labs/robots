@@ -66,6 +66,13 @@ out-of-distribution:
 sim.add_robot(name="panda", data_config="panda", keyframe="home")  # or keyframe=0
 ```
 
+The `Robot(...)` factory forwards `keyframe=` (and `orientation=`) to
+`add_robot`, so a one-line spawn reaches the same pose:
+
+```python
+robot = Robot("panda", keyframe="home")
+```
+
 The pose is applied to the robot's joints by name and is restored by `reset()`,
 so a keyframe spawn is sticky across episodes. A MuJoCo `<key>` pairs that pose
 with the actuator command that *holds* it, and both are applied and restored
@@ -512,6 +519,30 @@ The batch is atomic: if any op is rejected the world is rolled back to its
 pre-patch state, so a bad key or a non-finite component never leaves a
 half-applied scene. Use
 `replace_scene_mjcf(xml)` for MJCF elements this vocabulary does not cover.
+
+## Exporting a scene
+
+`export_xml(output_path=...)` serialises the live scene - including every runtime
+mutation - as MJCF. It is the read sibling of `replace_scene_mjcf`, so the file it
+writes is meant to be reloadable:
+
+```python
+sim.export_xml(output_path="/tmp/handoff.xml")
+other.load_scene(scene_path="/tmp/handoff.xml")   # same scene, same structure
+```
+
+Mesh, texture and height-field assets are referenced by ABSOLUTE path. MuJoCo
+resolves a relative `file=` against the model's own directory (plus `meshdir` /
+`texturedir`), and that directory is not part of the serialised XML - so a
+relative reference would resolve against wherever the export happened to be
+written. Absolute references keep the export reloadable from any location, and a
+scene composed from several models needs them: each model contributes assets from
+its own root, so no single `meshdir` could cover them all.
+
+The consequence is that an export names paths on the machine that produced it.
+Copying the XML alone to another machine will not carry the assets with it;
+copy the referenced asset trees too, or re-compose the scene there from the same
+`add_robot` calls.
 
 ## Cameras
 

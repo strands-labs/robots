@@ -32,14 +32,35 @@ from strands_robots.simulation.mujoco.backend import (
 )
 from strands_robots.simulation.mujoco.scene_ops import (
     fromto_fixed_size_components,
+    joint_drive_map,
     persist_body_mass,
     persist_geom_properties,
     refresh_body_inertial_from_geometry,
 )
 from strands_robots.simulation.safe_output import atomic_write_bytes, validate_output_path
-from strands_robots.utils import BOOLEAN_VECTOR_REASON, coerce_rgba, is_boolean
+from strands_robots.utils import BOOLEAN_VECTOR_REASON, boolean_flag_error, coerce_rgba, is_boolean
 
 logger = logging.getLogger(__name__)
+
+#: How many joint names a success report samples before summarizing the rest. A
+#: whole-body write is routine (``unitree_h1_2`` drives 51 joints), and the point
+#: of the sample is to make the condition recognizable, not to re-list the
+#: request the caller just made.
+_NAME_SAMPLE_LIMIT = 4
+
+
+def _joint_name_sample(names: list[str]) -> str:
+    """Render *names* as a short, deterministic sample for a success report.
+
+    Sorted so the same set reads the same way on every call, and truncated with
+    a count of the remainder in the same ``... and N more`` shape
+    :meth:`PhysicsMixin.get_contact_forces` already uses for a long list.
+    """
+    ordered = sorted(names)
+    if len(ordered) <= _NAME_SAMPLE_LIMIT:
+        return ", ".join(ordered)
+    shown = ", ".join(ordered[:_NAME_SAMPLE_LIMIT])
+    return f"{shown} and {len(ordered) - _NAME_SAMPLE_LIMIT} more"
 
 
 def _coerce_finite_vector(
@@ -1351,11 +1372,50 @@ class PhysicsMixin:
         self,
         positions: dict[str, float] | list[float] | None = None,
         robot_name: str | None = None,
+        hold: bool = False,
     ) -> dict[str, Any]:
         """Set joint positions directly (bypassing actuators).
 
         Writes to qpos and runs mj_forward to update kinematics.
         Useful for teleportation, IK solutions, or keyframe setting.
+
+        The write is kinematic only, so on a robot whose joints are held by
+        position servos the pose survives exactly as long as nothing steps: the
+        servos are still commanded to their previous setpoint, and the next
+        ``step`` drives the pose back toward it (measured on ``so101``: a
+        6-joint pose written exactly, then 2.75 rad away from the request after
+        150 steps, with every joint back near zero). That is the hazard
+        :meth:`actuate_robot` already avoids by seeding each new actuator's
+        ``ctrl`` from its joint's current position, and the one
+        :meth:`remove_robot` carries ``ctrl`` across an eject for. Two
+        consequences the caller needs and could not previously see:
+
+        * the success text names the written joints whose servo is still
+          commanded elsewhere, so a pose that will not survive a step is no
+          longer reported as an unqualified success;
+        * ``hold=True`` moves those setpoints with the pose, which is what makes
+          "teleport and stay there" expressible - ``send_action`` writes the
+          setpoints but not ``qpos``, and it always advances at least one step.
+          It is off by default because a kinematic write is a real use (render a
+          pose, replay a planned trajectory frame by frame) and because the
+          companion state a direct ``qpos`` write leaves behind is the caller's
+          to manage, the same reason :meth:`zero_dynamics` is a separate call
+          rather than folded in here.
+
+        Only position servos are moved, meaning an actuator whose ``ctrl`` is the
+        joint target itself. A motor takes a torque and a velocity drive takes a
+        rate, so the same number is a different physical quantity there: written
+        into a motor it commands a torque numerically equal to an angle in
+        radians, and written into a velocity drive it commands a rate that moves
+        the joint straight off the pose just written. A joint a tendon couples to
+        one ``ctrl`` - every stock gripper, and the ``stretch3`` telescoping arm -
+        is left alone for two further reasons: that ``ctrl`` is in the tendon's
+        units, and it drives several joints at once, so it cannot carry any one
+        joint's angle. Those joints are left alone and the success text says how
+        many were. The split is per actuator rather than per robot - ``openarm``
+        carries 2 servos beside 16 motors - and comes from
+        :func:`~strands_robots.simulation.mujoco.scene_ops.joint_drive_map`,
+        which spells out the terms that separate the two.
 
         Accepts EITHER form:
 
@@ -1377,6 +1437,22 @@ class PhysicsMixin:
         and leaves ``qpos`` untouched -- a typo can no longer report success
         while silently applying a partial pose (or no pose at all). An empty
         mapping is likewise rejected instead of reporting a successful no-op.
+
+        Args:
+            positions: The pose to write, as ``{joint_name: value}`` or as an
+                ordered vector (see the two accepted forms above).
+            robot_name: Which robot the ordered form binds to, and whose
+                namespace resolves an unqualified joint name. Optional when the
+                world holds exactly one robot.
+            hold: Also write the matching position-servo setpoints, so the servos
+                hold the pose written instead of pulling it back to wherever they
+                were last commanded. Must be a boolean. Joints with no position
+                servo are unaffected.
+
+        Returns:
+            Standard ``{"status", "content"}`` envelope. On success the text
+            reports the setpoints moved (``hold=True``) or the written joints
+            whose servo still holds a different setpoint (``hold=False``).
         """
         if self._world is None or self._world._model is None or self._world._data is None:
             return {"status": "error", "content": [{"text": _NO_WORLD_MSG}]}
@@ -1392,6 +1468,11 @@ class PhysicsMixin:
                 "status": "error",
                 "content": [{"text": "set_joint_positions: 'positions' is required (list or dict of joint values)."}],
             }
+
+        # Read by truthiness this flag would invert for exactly the spellings a
+        # caller opting out reaches for: "false", "no" and "0" are all truthy.
+        if text := boolean_flag_error(hold, "hold", "set_joint_positions"):
+            return {"status": "error", "content": [{"text": text}]}
 
         # normalize list input to dict using a deterministic joint ordering
         if isinstance(positions, (list, tuple)):
@@ -1462,17 +1543,49 @@ class PhysicsMixin:
             return err
 
         with self._lock:
+            servos, other_drives = joint_drive_map(model, mj)
+            moved: list[str] = []
+            stale: list[str] = []
+            not_a_pose: list[str] = []
             for jnt_name, value in positions.items():
-                qpos_adr = model.jnt_qposadr[joint_ids[jnt_name]]
+                jnt_id = joint_ids[jnt_name]
+                qpos_adr = model.jnt_qposadr[jnt_id]
                 data.qpos[qpos_adr] = float(value)
+
+                act_id = servos.get(jnt_id)
+                if act_id is None:
+                    if jnt_id in other_drives:
+                        not_a_pose.append(jnt_name)
+                    continue
+                if hold:
+                    data.ctrl[act_id] = float(value)
+                    moved.append(jnt_name)
+                elif float(data.ctrl[act_id]) != float(value):
+                    # Exact inequality is the claim being reported: the servo is
+                    # commanded somewhere else, so the next step moves the pose.
+                    stale.append(jnt_name)
 
             mj.mj_forward(model, data)
 
         count = len(positions)
-        return {
-            "status": "success",
-            "content": [{"text": f"Set {count}/{count} joint positions, FK updated"}],
-        }
+        text = f"Set {count}/{count} joint positions, FK updated"
+        if hold:
+            if moved:
+                text += f", {len(moved)} position-servo setpoint(s) moved with it"
+            if not_a_pose:
+                text += (
+                    f". {len(not_a_pose)} written joint(s) are driven by a non-position actuator "
+                    f"({_joint_name_sample(not_a_pose)}), whose ctrl is a torque, a rate, a tendon "
+                    "length or a target behind an actuator state rather than a pose, so their setpoints "
+                    "were left alone"
+                )
+        elif stale:
+            text += (
+                f". {len(stale)} of them are held by a position servo still commanded to a different "
+                f"setpoint ({_joint_name_sample(stale)}), so the next step drives the pose back toward "
+                "that setpoint; pass hold=True to move the setpoints with the pose"
+            )
+        return {"status": "success", "content": [{"text": text}]}
 
     def set_joint_velocities(
         self,
