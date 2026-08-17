@@ -40,6 +40,61 @@ from strands_robots.simulation.terrain import (
 
 logger = logging.getLogger(__name__)
 
+
+def _absolutize_asset_paths(spec: Any) -> int:
+    """Rewrite a spec's file-backed asset references to absolute paths.
+
+    MuJoCo resolves a ``<mesh>`` / ``<hfield>`` / ``<texture>`` ``file=`` against
+    a base directory (the model file's own directory, plus ``meshdir`` /
+    ``texturedir``). That base is tracked on the spec as ``modelfiledir`` and is
+    NOT emitted by ``spec.to_xml()``, and ``spec.attach()`` does not carry it
+    onto the parent. So a spec whose assets are named relatively compiles fine
+    in the session that loaded it while serialising to an XML that resolves
+    those names against wherever the XML happens to be written - i.e. nowhere.
+    Rewriting each reference to an absolute path makes the spec self-describing,
+    so every consumer of ``to_xml()`` gets asset locations instead of an
+    implicit dependency on a directory the text never mentions.
+
+    MuJoCo honours an absolute ``file=`` regardless of any ``meshdir`` /
+    ``texturedir`` still declared, so those attributes are left untouched.
+
+    A reference is rewritten only when it is relative AND the resolved path
+    exists. An unresolvable reference is left exactly as authored: MuJoCo's own
+    "Error opening file" names the reference the model actually declares, which
+    is more useful than an invented absolute path that was never on disk.
+
+    Args:
+        spec: the ``MjSpec`` to repair in place.
+
+    Returns:
+        Number of asset references rewritten.
+    """
+    base = getattr(spec, "modelfiledir", "") or ""
+    rewritten = 0
+    # meshdir covers meshes AND height fields; textures have their own dir.
+    for assets, subdir in (
+        (spec.meshes, getattr(spec, "meshdir", "") or ""),
+        (spec.hfields, getattr(spec, "meshdir", "") or ""),
+        (spec.textures, getattr(spec, "texturedir", "") or ""),
+    ):
+        for asset in assets:
+            ref = asset.file or ""
+            if not ref or os.path.isabs(ref):
+                continue
+            resolved = os.path.abspath(os.path.join(base, subdir, ref))
+            if not os.path.isfile(resolved):
+                continue
+            asset.file = resolved
+            rewritten += 1
+    if rewritten:
+        logger.debug(
+            "absolutized %d asset reference(s) against %r so spec.to_xml() stays reloadable",
+            rewritten,
+            base,
+        )
+    return rewritten
+
+
 # Accepted keys of the ``add_object(material=...)`` spec. Single source of truth
 # shared by :func:`material_spec_error` and :meth:`SpecBuilder._build_material`.
 MATERIAL_KEYS: Final[frozenset[str]] = frozenset(
@@ -532,14 +587,23 @@ class SpecBuilder:
 
     @staticmethod
     def from_file(path: str) -> Any:
-        """Load an MJCF/URDF file as a fresh spec.
+        """Load an MJCF/URDF file as a fresh spec, with asset refs absolutized.
 
         MuJoCo 3.2+ reads URDF as well as MJCF via the same entry point - the
         file extension + XML root determines the path. Raises ``ValueError``
         on invalid files.
+
+        Every file-backed asset reference is rewritten to an absolute path via
+        :func:`_absolutize_asset_paths` before the spec is handed back, so the
+        spec carries its own asset locations instead of depending on a base
+        directory MuJoCo tracks separately and does not serialise. This is what
+        makes ``spec.to_xml()`` (and therefore ``export_xml``) reloadable from
+        anywhere; see that helper for why the repair belongs at load time.
         """
         mujoco = _ensure_mujoco()
-        return mujoco.MjSpec.from_file(str(path))
+        spec = mujoco.MjSpec.from_file(str(path))
+        _absolutize_asset_paths(spec)
+        return spec
 
     # object add
     @staticmethod
@@ -1026,7 +1090,13 @@ class SpecBuilder:
         """
         mujoco = _ensure_mujoco()
 
-        robot_spec = mujoco.MjSpec.from_file(str(robot_file_path))
+        # Loaded through SpecBuilder.from_file (not mujoco.MjSpec.from_file) so
+        # the child's file-backed asset references are absolutized while the
+        # child still knows its own base directory. ``spec.attach`` does not
+        # carry that directory onto the parent, so a child left with bare
+        # filenames would compile here and then serialise to an XML no one can
+        # reload - see _absolutize_asset_paths.
+        robot_spec = SpecBuilder.from_file(str(robot_file_path))
 
         # Strip the robot scene's own ground/floor plane(s) before attaching.
         # Many menagerie scenes (e.g. franka_emika_panda/scene.xml) ship a

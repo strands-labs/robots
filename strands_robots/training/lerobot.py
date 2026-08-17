@@ -53,6 +53,8 @@ import os
 import re
 import shutil
 import time
+import types
+import typing
 from typing import TYPE_CHECKING, Any
 
 from strands_robots.training._inproc import call_callable, elastic_launch_callable, resume_argv
@@ -1238,7 +1240,10 @@ class LerobotTrainer(Trainer):
         """Typed passthrough for remaining ``extra.*`` keys (validate()-gated).
 
         Only sets attributes that exist on the typed config tree; unknown keys
-        are ignored (never become an arbitrary flag).
+        are ignored (never become an arbitrary flag). A *text* value is decoded
+        to the field's declared type by :func:`_decode_extra_value`, so the same
+        spelling means the same thing here as on the ``--flag=value`` CLI that
+        :meth:`build_command` documents this config as corresponding to.
         """
         _consumed = {"policy_type", "job_name", "relative_actions", "sample_weighting", "reward_model"}
         for key, value in spec.extra.items():
@@ -1246,7 +1251,7 @@ class LerobotTrainer(Trainer):
                 continue
             target, attr = _resolve_dotted(cfg, key)
             if target is not None and hasattr(target, attr):
-                setattr(target, attr, value)
+                setattr(target, attr, _decode_extra_value(target, attr, key, value))
             else:
                 logger.warning("LerobotTrainer: ignoring extra '%s' (no matching config field).", key)
 
@@ -1603,6 +1608,114 @@ def _resolve_dotted(cfg: Any, key: str) -> tuple[Any, str]:
     if sub is None or "." in tail:
         return None, tail
     return sub, tail
+
+
+def _extra_field_type(target: Any, attr: str) -> Any:
+    """Resolved annotation of ``target.attr``, or ``None`` when unavailable.
+
+    ``dataclasses.fields()`` reports ``f.type`` as the *source text* of the
+    annotation for a module compiled with ``from __future__ import
+    annotations`` - 45 ``bool`` fields across 6 lerobot policy configs
+    (``eo1``, ``evo1``, ``fastwam``, ``molmoact2``, ``vla_jepa``, ``xvla``)
+    read back as the string ``"bool"`` there - so a caller that compared
+    ``f.type is bool`` would silently skip exactly those. The annotation is
+    resolved through :func:`typing.get_type_hints` instead, which evaluates
+    the string form.
+
+    Returns ``None`` when the annotation cannot be resolved (an unresolvable
+    forward reference, or a target that is not annotated at all), which the
+    caller reads as "leave the value alone".
+    """
+    try:
+        hints = typing.get_type_hints(type(target))
+    except (NameError, TypeError):
+        return None
+    return hints.get(attr)
+
+
+def _annotation_admits_text(hint: Any) -> bool:
+    """Whether ``hint`` already accepts a ``str`` as-is.
+
+    ``str``, ``str | None`` and ``Any`` need no decoding: the value the caller
+    passed is already the field's own type. A generic whose *parameters*
+    happen to include ``str`` (``dict[str, int]``) does not qualify - only a
+    union is searched - because the field itself is not a string there.
+    """
+    if hint is str or hint is Any:
+        return True
+    origin = typing.get_origin(hint)
+    if origin is typing.Union or origin is types.UnionType:
+        return any(_annotation_admits_text(arg) for arg in typing.get_args(hint))
+    return False
+
+
+def _decode_extra_value(target: Any, attr: str, key: str, value: Any) -> Any:
+    """Decode a text ``extra`` value the way lerobot's own CLI decodes it.
+
+    ``build_command`` renders an ``extra`` entry as ``--key=value``, where
+    lerobot's draccus parser reads the text with ``cfgparsing.parse_string``
+    (YAML scalar rules) and then decodes it to the field's declared type. The
+    in-process path assigns to the same dataclass field directly, so a text
+    value has to travel the same two stages or the two paths stop agreeing:
+    ``extra={"policy.freeze_vision_encoder": "false"}`` otherwise stores the
+    *string* ``"false"``, which is truthy, so the encoder stays frozen while
+    ``--policy.freeze_vision_encoder=false`` unfreezes it.
+
+    The decoder is borrowed from draccus rather than reimplemented so the
+    accepted spellings cannot drift from the CLI's: ``false``/``no``/``off``
+    and ``true``/``yes``/``on`` (any case) decode to bools, while ``0``/``1``
+    are *not* bools to draccus and are refused on both paths.
+
+    Args:
+        target: Config object owning the field (``cfg`` or a sub-config).
+        attr: Attribute name on ``target``.
+        key: Original ``extra`` key, quoted in the refusal so the caller can
+            find it in their spec.
+        value: Value from ``spec.extra``. A non-``str`` is returned unchanged -
+            a caller who already passed the field's own type never went through
+            text, so there is nothing to decode.
+
+    Returns:
+        The value to assign to ``target.attr``.
+
+    Raises:
+        ValueError: The text does not decode to the field's declared type.
+            The CLI refuses the same spelling, and assigning it raw is how a
+            wrong type reaches training silently, so it is refused here too.
+    """
+    if not isinstance(value, str):
+        return value
+    hint = _extra_field_type(target, attr)
+    if hint is None or _annotation_admits_text(hint):
+        return value
+
+    import draccus
+    from draccus import cfgparsing
+
+    try:
+        return draccus.decode(hint, cfgparsing.parse_string(value))
+    except Exception as e:
+        # Both stages are third-party and raise from disjoint hierarchies
+        # (draccus.ParsingError for the decode, yaml.YAMLError for the scalar
+        # parse), so the breadth here translates every decoder failure into one
+        # actionable refusal. Nothing is swallowed - the cause is chained.
+        raise ValueError(
+            f"extra['{key}']={value!r} does not decode to {_format_annotation(hint)}, "
+            f"the declared type of '{attr}' on {type(target).__name__}. "
+            f"Values are read with lerobot's own CLI decoder, so the accepted spellings are "
+            f"the ones '--{key}={value}' accepts"
+            + (
+                " - for a boolean: false/no/off or true/yes/on (any case); note 0 and 1 are not booleans."
+                if hint is bool
+                else "."
+            )
+            + f" Pass a {_format_annotation(hint)} value directly to skip decoding."
+        ) from e
+
+
+def _format_annotation(hint: Any) -> str:
+    """Human-readable name for an annotation, for use in a refusal."""
+    return getattr(hint, "__name__", None) or str(hint)
 
 
 def _lerobot_worker(policy_type: str, device: str, spec: TrainSpec, log_path: str) -> None:

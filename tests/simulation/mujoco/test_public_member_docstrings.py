@@ -74,6 +74,7 @@ _EXPECTED_FUNCTIONS = {
     "scene_ops.py::inject_object_into_scene",
     "scene_ops.py::inject_robot_into_scene",
     "scene_ops.py::install_compiled_model",
+    "scene_ops.py::joint_drive_map",
     "scene_ops.py::patch_scene_mjcf",
     "scene_ops.py::persist_body_mass",
     "scene_ops.py::persist_geom_properties",

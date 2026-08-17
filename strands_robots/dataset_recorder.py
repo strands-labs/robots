@@ -1634,6 +1634,15 @@ class DatasetRecorder:
           * leave the buffer in place and warn (caller must ``stop_recording`` /
             ``save_episode`` to drain it before recording again).
 
+        Discarded frames are un-counted from both ``frame_count`` and
+        ``episode_frame_count``, because ``add_frame`` counts at buffer time
+        while frames only reach disk on ``save_episode``. Both counters
+        therefore describe frames that reached, or will reach, disk - never
+        frames that were thrown away. When no clear surface is available the
+        frames are still buffered and will be written by the
+        ``stop_recording``/``save_episode`` drain the warning recommends, so
+        neither counter changes in that case.
+
         Returns:
             True if the buffer was actively cleared; False if no clear surface
             was available (a warning is logged in that case).
@@ -1650,10 +1659,25 @@ class DatasetRecorder:
             logger.warning("clear_episode_buffer failed: %s", e)
             cleared = False
 
-        # Reset the per-episode frame counter regardless: the next episode
-        # reports frames from 0. frame_count (cumulative) is left untouched
-        # since those frames were really written to disk only on save_episode.
-        self.episode_frame_count = 0
+        if cleared:
+            # The buffered frames are gone. They were counted optimistically by
+            # add_frame (which counts at buffer time) but never reached disk,
+            # since frames are only written by save_episode - so un-count them
+            # from the cumulative total as well as the per-episode one. Both
+            # counters describe frames that reached, or will reach, disk:
+            # resume() seeds frame_count from dataset.meta.total_frames, and
+            # stop_recording refuses an empty dataset by asking frame_count
+            # whether anything was ever captured. Leaving the discarded frames
+            # counted makes the recorder report a total no parquet row backs,
+            # and blinds that refusal.
+            self.frame_count -= self.episode_frame_count
+            self.episode_frame_count = 0
+        # When the discard did NOT happen the frames are still buffered, and the
+        # warning below tells the caller to drain them with
+        # stop_recording()/save_episode() - which writes them to disk. Nothing
+        # was thrown away, so both counters are left as they are: the eventual
+        # flush then reports the frames it really wrote, and a later successful
+        # clear can still un-count them.
 
         if not cleared:
             logger.warning(

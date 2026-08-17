@@ -2878,12 +2878,16 @@ class MuJoCoSimEngine(
             "(errors if the name is unknown or a policy is running)"
         )
         base["methods"]["set_joint_positions"] = (
-            "(positions: dict[str, float] | list[float], robot_name=None) -> dict "
+            "(positions: dict[str, float] | list[float], robot_name=None, hold=False) -> dict "
             "# write qpos directly and run forward kinematics (teleport / set an "
             "initial pose, bypassing the actuators). dict is per-joint; list is "
             "ordered and must match one robot's joint count (see get_features). "
             "The write is all-or-nothing: a dict key that is not a joint of the "
-            "model is an error, not a silent skip (see robot_joint_names)"
+            "model is an error, not a silent skip (see robot_joint_names). "
+            "Kinematic only: a joint held by a position servo is pulled back "
+            "toward the servo's existing setpoint by the next step, and the "
+            "success text names those joints; hold=True moves the matching "
+            "position-servo setpoints with the pose so it survives stepping"
         )
         base["methods"]["set_joint_velocities"] = (
             "(velocities: dict[str, float] | list[float], robot_name=None) -> dict "

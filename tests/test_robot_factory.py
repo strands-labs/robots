@@ -399,6 +399,192 @@ class TestFactoryForwardsPosition:
             assert factory_accepts is backend_accepts, f"verdicts differ for position={position!r}"
 
 
+class TestFactorySpawnParameterForwarding:
+    """``Robot(...)`` must express every spawn parameter ``add_robot`` accepts.
+
+    The factory is a thin front door to ``SimEngine.add_robot``, and ``position``
+    is documented as forwarded verbatim so the backend's contract governs both
+    its default and its refusals. ``orientation`` and ``keyframe`` are the same
+    kind of parameter on the same method - both declared by the ABC and by every
+    backend - but were not forwarded. The backend constructor's ``**kwargs``
+    absorbed them, so a requested rotation or keyframe spawn was silently dropped
+    and the robot came up unrotated in the zero configuration while the factory
+    reported success. The refusals ``add_robot`` documents did not reach the
+    caller either, including the one it states outright for a bad keyframe: "a
+    hard error that names the available keyframes; it never silently falls back
+    to zeros".
+    """
+
+    # A named actuator and a <keyframe> carrying BOTH halves of a keyframe: the
+    # pose and the actuator command that holds it. The actuator is named because
+    # a keyed ctrl is applied by actuator name, so an unnamed one is skipped and
+    # could not show whether the command travelled.
+    MJCF = """<mujoco model="test_arm">
+      <worldbody>
+        <light pos="0 0 3"/>
+        <geom type="plane" size="1 1 0.1"/>
+        <body name="link0" pos="0 0 0.1">
+          <joint name="joint0" type="hinge" axis="0 0 1"/>
+          <geom type="capsule" size="0.02" fromto="0 0 0  0 0 0.2"/>
+        </body>
+      </worldbody>
+      <actuator><position name="act0" joint="joint0" kp="10" ctrlrange="-2 2"/></actuator>
+      <keyframe><key name="home" qpos="0.6" ctrl="0.6"/></keyframe>
+    </mujoco>"""
+
+    ROTATION = [0.7071068, 0.0, 0.0, 0.7071068]  # 90 deg about x, wxyz
+
+    @classmethod
+    def _model(cls, tmp_path):
+        """Write the inline arm so no downloaded asset is needed."""
+        path = tmp_path / "keyframed_arm.xml"
+        path.write_text(cls.MJCF)
+        return str(path)
+
+    def _spawn(self, tmp_path, **kwargs):
+        """Return the spawn state the factory actually gave the backend."""
+        sim = Robot("so100", mode="sim", urdf_path=self._model(tmp_path), mesh=False, **kwargs)
+        try:
+            return {
+                "orientation": list(sim._world.robots["so100"].orientation),
+                "qpos": [float(v) for v in sim._world._data.qpos],
+                "ctrl": [float(v) for v in sim._world._data.ctrl],
+            }
+        finally:
+            sim.destroy()
+
+    def _add_robot(self, tmp_path, **kwargs):
+        """The same spawn state reached through ``add_robot`` directly."""
+        from strands_robots import Simulation
+
+        sim = Simulation(tool_name="direct", mesh=False)
+        try:
+            sim.create_world()
+            result = sim.add_robot(name="so100", urdf_path=self._model(tmp_path), **kwargs)
+            assert result["status"] != "error", result
+            return {
+                "orientation": list(sim._world.robots["so100"].orientation),
+                "qpos": [float(v) for v in sim._world._data.qpos],
+                "ctrl": [float(v) for v in sim._world._data.ctrl],
+            }
+        finally:
+            sim.destroy()
+
+    def test_factory_can_express_every_add_robot_spawn_parameter(self):
+        """Root cause: a parameter the factory cannot name is one a caller cannot reach.
+
+        ``Robot(**kwargs)`` forwards leftovers to the *backend constructor*, not
+        to ``add_robot``, and that constructor takes ``**kwargs`` of its own - so
+        an unforwarded spawn parameter is absorbed with no error and no warning
+        rather than surfacing as an unexpected-keyword failure.
+        """
+        import inspect
+
+        from strands_robots.simulation.base import SimEngine
+
+        backend = set(inspect.signature(SimEngine.add_robot).parameters) - {"self"}
+        factory = set(inspect.signature(Robot).parameters) - {"kwargs"}
+        unreachable = sorted(backend - factory)
+        assert not unreachable, (
+            f"Robot() cannot express add_robot parameter(s) {unreachable}; a caller passing "
+            "one gets it absorbed by the backend constructor's **kwargs and silently dropped. "
+            "Forward it in the factory's add_robot call, or give it a factory parameter that "
+            "documents why the front door omits it."
+        )
+
+    def test_keyframe_reaches_the_pose_the_backend_would_spawn(self, tmp_path):
+        """The whole point of the parameter: a non-zero canonical start pose."""
+        pytest.importorskip("mujoco")
+        assert self._spawn(tmp_path, keyframe="home")["qpos"] == pytest.approx([0.6])
+
+    def test_keyframe_also_carries_the_actuator_command_that_holds_the_pose(self, tmp_path):
+        """A MuJoCo ``<key>`` pairs a pose with the command that holds it.
+
+        Forwarding only the pose would leave a gravity-loaded arm standing at its
+        home configuration with its actuators commanded to zero, so the pose is
+        not self-holding and collapses as soon as the world steps.
+        """
+        pytest.importorskip("mujoco")
+        assert self._spawn(tmp_path, keyframe="home")["ctrl"] == pytest.approx([0.6])
+
+    def test_keyframe_by_index_is_forwarded_too(self, tmp_path):
+        """``add_robot`` documents a name *or* an index; both must reach it."""
+        pytest.importorskip("mujoco")
+        assert self._spawn(tmp_path, keyframe=0)["qpos"] == pytest.approx([0.6])
+
+    def test_orientation_reaches_the_backend(self, tmp_path):
+        pytest.importorskip("mujoco")
+        assert self._spawn(tmp_path, orientation=self.ROTATION)["orientation"] == pytest.approx(self.ROTATION)
+
+    def test_factory_and_add_robot_reach_the_same_spawn_state(self, tmp_path):
+        """Parity: the front door and the method it wraps must agree.
+
+        A difference here is a spawn state the caller can only reach by dropping
+        out of the factory and calling the backend directly.
+        """
+        pytest.importorskip("mujoco")
+        kwargs = {"keyframe": "home", "orientation": self.ROTATION}
+        through_factory = self._spawn(tmp_path, **kwargs)
+        through_backend = self._add_robot(tmp_path, **kwargs)
+        for field in ("orientation", "qpos", "ctrl"):
+            assert through_factory[field] == pytest.approx(through_backend[field]), (
+                f"{field}: factory gave {through_factory[field]} but add_robot gives {through_backend[field]}"
+            )
+
+    def test_unknown_keyframe_is_refused_not_silently_spawned_at_zero(self, tmp_path):
+        """``add_robot`` promises this is a hard error naming the available keyframes.
+
+        Absorbed instead, the caller gets a robot in the zero configuration -
+        out-of-distribution for a policy trained from the home pose - and nothing
+        says the requested pose was never applied.
+        """
+        pytest.importorskip("mujoco")
+        with pytest.raises(RuntimeError, match="home"):
+            Robot(
+                "so100",
+                mode="sim",
+                urdf_path=self._model(tmp_path),
+                mesh=False,
+                keyframe="not_a_keyframe",
+            )
+
+    def test_malformed_orientation_is_refused(self, tmp_path):
+        """A 3-vector is a caller mistake, not a request for the identity rotation."""
+        pytest.importorskip("mujoco")
+        with pytest.raises(RuntimeError, match="4-element vector"):
+            Robot(
+                "so100",
+                mode="sim",
+                urdf_path=self._model(tmp_path),
+                mesh=False,
+                orientation=[0.0, 0.0, 1.0],
+            )
+
+    def test_non_finite_orientation_is_refused(self, tmp_path):
+        """nan/inf in a base quaternion would propagate through the physics state."""
+        pytest.importorskip("mujoco")
+        with pytest.raises(RuntimeError, match="finite numbers"):
+            Robot(
+                "so100",
+                mode="sim",
+                urdf_path=self._model(tmp_path),
+                mesh=False,
+                orientation=[float("nan"), 0.0, 0.0, 0.0],
+            )
+
+    def test_omitting_them_keeps_the_historical_spawn(self, tmp_path):
+        """No-overreach: forwarding must not change what an existing caller gets.
+
+        Omitted, both parameters keep the documented defaults - the zero joint
+        configuration, its actuators commanded to zero, and no rotation.
+        """
+        pytest.importorskip("mujoco")
+        spawned = self._spawn(tmp_path)
+        assert spawned["qpos"] == pytest.approx([0.0])
+        assert spawned["ctrl"] == pytest.approx([0.0])
+        assert spawned["orientation"] == pytest.approx([1.0, 0.0, 0.0, 0.0])
+
+
 class TestRobotRealMode:
     """Tests for mode='real' path (mocked - no physical hardware)."""
 
