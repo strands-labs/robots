@@ -428,18 +428,22 @@ TrainSpec(..., num_gpus=8,
 as GPU.** LeRobot's `train()` calls
 `require_package("accelerate", extra="training")` *before* it branches on
 device, so "no GPU" does not mean "no extra" - and nothing on this path pulls
-`accelerate` in: the `[lerobot]` extra is exactly `lerobot[feetech,dataset]`, and
-the only `strands-robots` extra that declares `accelerate` is
-`cosmos3-diffusers`, a different provider.
+`accelerate` in: the `[lerobot]` extra is exactly `lerobot[feetech,dataset]`. The
+`strands-robots` extras that declare `accelerate` belong to other providers
+(`kimodo`, `cosmos3-diffusers`), so an install only has it by accident - `[all]`
+does, because it pulls `[kimodo]`; `[lerobot]` alone does not.
 
 ```bash
 pip install "lerobot[training]"
 ```
 
-`train()` reports the missing package in its `TrainResult` rather than raising,
-so check `result.status` and surface `result.message` - it carries LeRobot's own
-install remedy. An unchecked call hands whatever consumes `checkpoint_dir` a
-`None` instead.
+`validate()` reports an absent `accelerate` - and an absent `peft` when
+`method="lora"` - as a preflight problem, so `train()` fails closed on it and
+leaves `output_dir` untouched rather than clearing it on the way to a run that
+cannot start. Either way the cause arrives in the `TrainResult` rather than as a
+raise, so check `result.status` and surface `result.message` - it names the
+package and the `lerobot[...]` extra that supplies it. An unchecked call hands
+whatever consumes `checkpoint_dir` a `None` instead.
 
 The base `strands-robots[lerobot]` extra covers **recording, streaming, and
 loading a trained checkpoint**, and with `lerobot[training]` it covers **ACT /
