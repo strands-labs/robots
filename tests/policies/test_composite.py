@@ -137,13 +137,14 @@ class TestErrorPaths:
         with pytest.raises(ValueError, match="both a 'lower' and an 'upper'"):
             CompositePolicy(None, MockPolicy())  # type: ignore[arg-type]
 
-    def test_runtime_collision_raises(self):
-        # Default routing with lower precedence cannot collide; force a collision
-        # by making the upper group explicitly claim a name the lower also emits.
+    def test_lower_commanding_an_upper_owned_joint_raises(self):
+        # Two defaulted groups cannot contest a name (the upper dict is routed with
+        # the lower's names excluded), so reach the ownership branch the way it is
+        # reachable: an explicit upper group claiming a name the lower also emits.
         lower = StubPolicy([{"hip": 1.0, "shoulder": 5.0}])
         upper = StubPolicy([{"shoulder": 2.0}])
         c = CompositePolicy(lower, upper, upper_joints=["shoulder"])
-        with pytest.raises(ValueError, match="both produced joint"):
+        with pytest.raises(ValueError, match="also commanded them this tick"):
             _run(c)
 
     def test_empty_lower_chunk_raises(self):

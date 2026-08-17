@@ -123,7 +123,7 @@
     },
     "keyframe": {
       "type": "string",
-      "description": "Optional add_robot spawn pose: the name of a <keyframe> in the robot's source model (e.g. 'home' for panda/ur5e/fr3, 'neutral_pose' for aloha) to spawn in that canonical configuration instead of all-zeros. Restored on reset(). Omit for the default zero pose; an unknown name errors and lists the available keyframes."
+      "description": "Optional add_robot spawn pose: the name of a <keyframe> in the robot's source model (e.g. 'home' for panda/ur5e/fr3, 'neutral_pose' for aloha) to spawn in that canonical configuration instead of all-zeros. The keyframe's actuator command is applied with the pose, so a gravity-loaded arm holds that configuration instead of sagging out of it; both are restored on reset(). Omit for the default zero pose; an unknown name errors and lists the available keyframes."
     },
     "name": {
       "type": "string",
@@ -256,7 +256,7 @@
     },
     "output_path": {
       "type": "string",
-      "description": "Destination file path. render: PNG still, confined to the render sandbox (~/.strands_robots/renders, or STRANDS_ROBOTS_RENDER_ROOT); set STRANDS_ROBOTS_RENDER_ALLOW_ABS=1 to write outside it. export_xml: MJCF scene, any absolute path accepted. run_policy/start_policy/eval_policy/evaluate_benchmark: rollout MP4. Every sink rejects '..' traversal, a symlinked target, backslash separators and shell metacharacters."
+      "description": "Destination file path. render: PNG still, confined to the render sandbox (~/.strands_robots/renders, or STRANDS_ROBOTS_RENDER_ROOT); a bare filename like 'frame.png' is written INTO that sandbox, so the sandbox path never has to be spelled out; set STRANDS_ROBOTS_RENDER_ALLOW_ABS=1 to write outside it. export_xml: MJCF scene, any absolute path accepted. run_policy/start_policy/eval_policy/evaluate_benchmark: rollout MP4. Every sink rejects '..' traversal, a symlinked target, backslash separators and shell metacharacters."
     },
     "fps": {
       "type": "integer",

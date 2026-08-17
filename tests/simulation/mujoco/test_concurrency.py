@@ -15,6 +15,8 @@ import shutil
 import tempfile
 import threading
 import time
+from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pytest
@@ -76,6 +78,18 @@ def robot_xml_path():
 def sim_with_robot(robot_xml_path):
     """Simulation with world + robot loaded."""
     sim = Simulation(tool_name="test_regression", mesh=False)
+    result = sim.create_world(gravity=[0, 0, -9.81])
+    assert result["status"] == "success"
+    result = sim.add_robot("arm1", urdf_path=robot_xml_path)
+    assert result["status"] == "success"
+    yield sim
+    sim.cleanup()
+
+
+@pytest.fixture
+def sim_with_namespaced_camera(robot_xml_path):
+    """Sim with a robot whose camera name contains '/' (namespace)."""
+    sim = Simulation(tool_name="test_recording", mesh=False)
     result = sim.create_world(gravity=[0, 0, -9.81])
     assert result["status"] == "success"
     result = sim.add_robot("arm1", urdf_path=robot_xml_path)
@@ -288,6 +302,82 @@ ROBOT_B_XML = """
 """
 
 
+def _record_short_camera_episode(sim: Any, ds_root: str) -> None:
+    """Record one short mock-policy episode with camera frames into ``ds_root``.
+
+    Args:
+        sim: Simulation holding the camera-bearing robot ``arm1``.
+        ds_root: Directory the LeRobot dataset is written to.
+    """
+    result = sim._dispatch_action(
+        "start_recording",
+        {"repo_id": "local/rt-test", "root": ds_root, "fps": 10, "overwrite": True},
+    )
+    assert result["status"] == "success", f"start_recording failed: {result}"
+
+    # Run mock policy for a short burst (generates frames via on_frame hook)
+    result = sim._dispatch_action(
+        "run_policy",
+        {
+            "robot_name": "arm1",
+            "policy_provider": "mock",
+            "duration": 0.5,
+            "control_frequency": 10,
+        },
+    )
+    assert result["status"] == "success", f"run_policy failed: {result}"
+
+    result = sim._dispatch_action("stop_recording", {})
+    assert result["status"] == "success", f"stop_recording failed: {result}"
+
+
+def _assert_recorded_camera_video_carries_bytes(dataset_root: Path) -> None:
+    """Assert the recording landed at least one camera video that carries bytes.
+
+    Reading a frame back decodes the recorded video, and a decoder that cannot
+    be loaded raises the same ``RuntimeError`` as a video carrying no readable
+    stream. A guard wrapped around the decode therefore cannot tell "this host
+    has no video decoder" from "the recorder wrote an empty file", so
+    tolerating the first silently tolerates the second - and an empty camera
+    video is exactly what the recorder warns about when it captures no frames.
+
+    Inspecting the files on disk needs no decoder, so it runs first and as a
+    plain assertion: an empty camera video fails on every host, including one
+    that cannot decode video at all. The Isaac backend's recording tests
+    already assert this about their MP4 output.
+
+    Args:
+        dataset_root: Root directory of the recorded LeRobot dataset.
+
+    Raises:
+        AssertionError: If the recording landed no camera MP4, or if any MP4 it
+            landed is zero bytes.
+    """
+    videos = sorted(dataset_root.glob("videos/**/*.mp4"))
+    assert videos, f"camera recording must land per-camera MP4 files under {dataset_root / 'videos'}, found none"
+    empty = sorted(str(p.relative_to(dataset_root)) for p in videos if p.stat().st_size == 0)
+    assert not empty, f"recorded camera video carries no bytes: {empty}"
+
+
+def _read_first_frame_or_skip(dataset: Any) -> Any:
+    """Return frame 0 of a recorded dataset, skipping if video decode is unavailable.
+
+    Decoding needs ``torchcodec`` plus the system FFmpeg libraries. Skipping
+    reports that the pixels went unverified, where passing quietly would report
+    a verified frame the run never read.
+
+    Args:
+        dataset: Reopened LeRobot dataset to read frame 0 from.
+
+    Returns:
+        The decoded frame mapping for index 0.
+    """
+    try:
+        return dataset[0]
+    except RuntimeError as exc:
+        pytest.skip(f"video decode unavailable: {exc}")
+
+
 class TestRecordingRoundtripCameraFrames:
     """Regression: namespaced cameras survive schema reconcile and have frames.
 
@@ -295,17 +385,6 @@ class TestRecordingRoundtripCameraFrames:
     start_recording → run_policy → stop_recording, reopen the dataset,
     assert the camera feature has non-zero frames."
     """
-
-    @pytest.fixture
-    def sim_with_namespaced_camera(self, robot_xml_path, tmp_path):
-        """Sim with a robot whose camera name contains '/' (namespace)."""
-        sim = Simulation(tool_name="test_recording", mesh=False)
-        result = sim.create_world(gravity=[0, 0, -9.81])
-        assert result["status"] == "success"
-        result = sim.add_robot("arm1", urdf_path=robot_xml_path)
-        assert result["status"] == "success"
-        yield sim
-        sim.cleanup()
 
     @requires_gl
     def test_recording_roundtrip_has_camera_frames(self, sim_with_namespaced_camera, tmp_path):
@@ -316,45 +395,27 @@ class TestRecordingRoundtripCameraFrames:
         'arm0__wrist_cam' in the dataset schema.
         """
         pytest.importorskip("lerobot")
-        from pathlib import Path
 
         sim = sim_with_namespaced_camera
         ds_root = str(tmp_path / "roundtrip_ds")
 
-        # Start recording
-        result = sim._dispatch_action(
-            "start_recording",
-            {"repo_id": "local/rt-test", "root": ds_root, "fps": 10, "overwrite": True},
-        )
-        assert result["status"] == "success", f"start_recording failed: {result}"
-
-        # Run mock policy for a short burst (generates frames via on_frame hook)
-        result = sim._dispatch_action(
-            "run_policy",
-            {
-                "robot_name": "arm1",
-                "policy_provider": "mock",
-                "duration": 0.5,
-                "control_frequency": 10,
-            },
-        )
-        assert result["status"] == "success", f"run_policy failed: {result}"
-
-        # Stop recording
-        result = sim._dispatch_action("stop_recording", {})
-        assert result["status"] == "success", f"stop_recording failed: {result}"
+        _record_short_camera_episode(sim, ds_root)
 
         # Verify dataset exists and has frames
         ds_path = Path(ds_root)
         assert ds_path.exists(), f"Dataset dir not created at {ds_root}"
+        _assert_recorded_camera_video_carries_bytes(ds_path)
 
-        # Reopen dataset and verify camera feature has frames
-        try:
-            from lerobot.datasets.lerobot_dataset import LeRobotDataset
-
-            ds = LeRobotDataset(repo_id="local/rt-test", root=ds_root)
-        except (ImportError, RuntimeError):
-            pytest.skip("lerobot dataset API not available (torchcodec/ffmpeg missing)")
+        # Reopen the dataset. Importing lerobot is the only step here that an
+        # absent optional dependency can break, so it is the only step gated by
+        # a skip: construction reads back what the recorder under test just
+        # wrote, and it does not touch the video decoder, so a failure there is
+        # a defect in the recording rather than a missing dependency.
+        lerobot_dataset = pytest.importorskip(
+            "lerobot.datasets.lerobot_dataset",
+            reason="lerobot dataset API not available",
+        )
+        ds = lerobot_dataset.LeRobotDataset(repo_id="local/rt-test", root=ds_root)
 
         assert len(ds) > 0, f"Dataset has no frames (expected > 0, got {len(ds)})"
 
@@ -369,20 +430,138 @@ class TestRecordingRoundtripCameraFrames:
             f"No observation.images.* feature found in dataset. Features: {list(ds.features.keys())}"
         )
 
-        # Access a frame and verify image data is present (requires ffmpeg for video decode)
-        try:
-            sample = ds[0]
-            for feat_name in ds.features:
-                if feat_name.startswith("observation.images."):
-                    assert feat_name in sample, f"Camera feature {feat_name} missing from sample"
-                    img = sample[feat_name]
-                    # Image should be non-empty (tensor or array with shape)
-                    assert hasattr(img, "shape"), f"Camera data has no shape: {type(img)}"
-                    assert img.shape[0] > 0, f"Camera image has zero height: {img.shape}"
-                    break
-        except RuntimeError:
-            # torchcodec requires system FFmpeg libraries for video decode
-            pass
+        # Access a frame and verify image data is present. Only the decode call
+        # is guarded; the assertions below run outside it so a decoded frame
+        # that carries no image cannot be mistaken for a missing decoder.
+        sample = _read_first_frame_or_skip(ds)
+
+        for feat_name in ds.features:
+            if feat_name.startswith("observation.images."):
+                assert feat_name in sample, f"Camera feature {feat_name} missing from sample"
+                img = sample[feat_name]
+                # Image should be non-empty (tensor or array with shape)
+                assert hasattr(img, "shape"), f"Camera data has no shape: {type(img)}"
+                assert img.shape[0] > 0, f"Camera image has zero height: {img.shape}"
+                break
+
+
+class TestAnEmptyRecordedCameraVideoFailsTheRoundtrip:
+    """A camera video that carries no bytes must fail the round-trip, not pass it.
+
+    Frame access is the only step that looks at video content, and it raises
+    ``RuntimeError`` both when no decoder can be loaded and when the video has
+    no readable stream. A guard that tolerates the first tolerates the second,
+    so the round-trip inspects the files on disk first - which needs no decoder
+    and cannot be absorbed by a guard.
+    """
+
+    @staticmethod
+    def _write_camera_video(dataset_root: Path, payload: bytes) -> Path:
+        """Write one camera MP4 at the layout the recorder uses."""
+        video = dataset_root / "videos" / "observation.images.arm0__wrist_cam" / "chunk-000" / "file-000.mp4"
+        video.parent.mkdir(parents=True, exist_ok=True)
+        video.write_bytes(payload)
+        return video
+
+    @requires_gl
+    def test_emptying_a_recorded_camera_video_fails_the_check(self, sim_with_namespaced_camera, tmp_path):
+        """Record for real, truncate the camera video, and require a failure.
+
+        Reopening this dataset still succeeds and still reports the recorded
+        frame count and camera feature, so every check that does not read the
+        video passes. Reading a frame raises ``RuntimeError`` - the same
+        exception a host without a decoder raises - so only an assertion taken
+        from the files on disk can fail here.
+        """
+        pytest.importorskip("lerobot")
+
+        ds_root = str(tmp_path / "emptied_ds")
+        _record_short_camera_episode(sim_with_namespaced_camera, ds_root)
+
+        ds_path = Path(ds_root)
+        videos = sorted(ds_path.glob("videos/**/*.mp4"))
+        assert videos, "premise: the recording must land a camera MP4 to empty"
+        for video in videos:
+            video.write_bytes(b"")
+
+        with pytest.raises(AssertionError, match="carries no bytes"):
+            _assert_recorded_camera_video_carries_bytes(ds_path)
+
+    def test_a_recording_that_landed_no_camera_video_is_rejected(self, tmp_path):
+        """No MP4 at all is a recording failure, not an absent decoder."""
+        ds_path = tmp_path / "no_video_ds"
+        (ds_path / "videos").mkdir(parents=True)
+
+        with pytest.raises(AssertionError, match="must land per-camera MP4 files"):
+            _assert_recorded_camera_video_carries_bytes(ds_path)
+
+    def test_a_camera_video_that_carries_bytes_is_accepted(self, tmp_path):
+        """The check must not fail a recording that wrote a video."""
+        ds_path = tmp_path / "ok_ds"
+        self._write_camera_video(ds_path, b"\x00" * 64)
+
+        _assert_recorded_camera_video_carries_bytes(ds_path)
+
+    def test_the_check_needs_no_decoder_to_reach_a_verdict(self, tmp_path):
+        """Bytes that no decoder could read still pass, and zero bytes still fail.
+
+        Pins the scope of this check: it answers "did the recorder write
+        anything", which is decidable from the filesystem alone. Verifying the
+        pixels is the decode step's job, and that step is allowed to skip.
+        """
+        undecodable = tmp_path / "undecodable_ds"
+        self._write_camera_video(undecodable, b"not an mp4" * 8)
+        _assert_recorded_camera_video_carries_bytes(undecodable)
+
+        empty = tmp_path / "empty_ds"
+        self._write_camera_video(empty, b"")
+        with pytest.raises(AssertionError, match="carries no bytes"):
+            _assert_recorded_camera_video_carries_bytes(empty)
+
+
+class TestFrameDecodeReportsSkipRatherThanPassing:
+    """An unreadable frame must report a skip, not a silent pass.
+
+    Swallowing the decode failure reported the round-trip as passing on a run
+    that read no pixels at all, so the report could not distinguish a verified
+    frame from an unverified one.
+    """
+
+    def test_a_decode_failure_skips_instead_of_returning(self):
+        """A ``RuntimeError`` from frame access is reported as a skip.
+
+        The exception type is the substance of this double, not an arbitrary
+        choice: ``RuntimeError`` is what LeRobot's decode path raises when
+        torchcodec or the system FFmpeg libraries are missing, and it is the type
+        :func:`_read_first_frame_or_skip` catches. Raising a ``LookupError``
+        instead would leave the skip branch unexercised. The raise sits in a
+        helper rather than in ``__getitem__`` so the double is a stand-in for a
+        failing decode rather than a container whose subscript is always an
+        error.
+        """
+
+        class _DecodeBroken:
+            @staticmethod
+            def _decode(idx):
+                raise RuntimeError("Could not load libtorchcodec (video decode failed)")
+
+            def __getitem__(self, idx):
+                return self._decode(idx)
+
+        with pytest.raises(pytest.skip.Exception, match="video decode unavailable"):
+            _read_first_frame_or_skip(_DecodeBroken())
+
+    def test_a_readable_frame_is_returned_unchanged(self):
+        """A decodable frame is handed back to the caller's assertions."""
+
+        frame = {"observation.images.arm0__wrist_cam": np.zeros((3, 48, 64), dtype=np.uint8)}
+
+        class _Readable:
+            def __getitem__(self, idx):
+                assert idx == 0
+                return frame
+
+        assert _read_first_frame_or_skip(_Readable()) is frame
 
 
 class TestMultiRobotDifferentAssetDirs:

@@ -52,6 +52,7 @@ from strands_robots.policies.cosmos3 import Cosmos3Policy
 from strands_robots.policies.factory import (
     UntrustedRemoteCodeError,
     create_policy,
+    list_aliases,
     list_providers,
     policy_mapping_error,
     policy_provider_error,
@@ -81,6 +82,7 @@ __all__ = [
     "policy_mapping_error",
     "register_policy",
     "list_providers",
+    "list_aliases",
     "list_policy_types",
     "UntrustedRemoteCodeError",
     "PersistentPolicy",

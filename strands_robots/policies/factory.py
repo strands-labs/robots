@@ -5,7 +5,17 @@ import os
 from collections.abc import Callable, Mapping
 
 from strands_robots.policies.base import Policy
-from strands_robots.registry import import_policy_class, list_policy_providers, resolve_policy
+from strands_robots.registry import (
+    import_policy_class,
+    list_policy_aliases,
+    list_policy_providers,
+    resolve_policy,
+)
+
+# The one canonicalisation rule, shared rather than restated: a decision keyed
+# on a provider name has to resolve the caller's spelling first, and a second
+# copy of that rule here is a second thing to keep in step with policies.json.
+from strands_robots.registry.policies import _canonical_provider_name
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +55,29 @@ def list_providers() -> list[str]:
     names.extend(_runtime_registry.keys())
     names.extend(_runtime_aliases.keys())
     return sorted(set(names))
+
+
+def list_aliases() -> dict[str, str]:
+    """Return every provider alias and the canonical name it resolves to.
+
+    :func:`create_policy` accepts a provider's declared aliases and
+    shorthands as readily as its canonical name, but
+    :func:`list_providers` reports the canonical names from the JSON
+    registry. Together the two surfaces enumerate every spelling
+    :func:`create_policy` accepts::
+
+        accepted = set(list_providers()) | set(list_aliases())
+
+    Covers both registries, matching the union :func:`list_providers`
+    reports: aliases declared in ``policies.json`` and aliases passed to
+    :func:`register_policy` at runtime. A runtime alias shadows a JSON
+    alias of the same name, which is the precedence
+    :func:`create_policy` applies.
+
+    Returns:
+        Mapping of alias to the canonical provider name it resolves to.
+    """
+    return {**list_policy_aliases(), **_runtime_aliases}
 
 
 class UntrustedRemoteCodeError(RuntimeError):
@@ -135,8 +168,14 @@ def _resolve_policy_class(provider: str, **kwargs) -> tuple[str, type[Policy], d
         if resolved_provider:
             return resolved_provider, import_policy_class(resolved_provider), dict(resolved_kwargs)
 
-    # 3. Standard lookup from policies.json.
-    return provider, import_policy_class(provider), dict(kwargs)
+    # 3. Standard lookup from policies.json. The name returned is the canonical
+    #    one, not the caller's spelling: create_policy keys the
+    #    trust-remote-code gate on it and that gate membership-tests a set of
+    #    canonical names, so returning a declared alias would skip the gate for
+    #    every spelling but one. Stages 1 and 2 already canonicalise (the
+    #    runtime alias map, and resolve_policy's shorthand stage); this is the
+    #    third.
+    return _canonical_provider_name(provider), import_policy_class(provider), dict(kwargs)
 
 
 # ``policy_config`` (and the per-call ``policy_kwargs``) are opaque provider
