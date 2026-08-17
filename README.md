@@ -1097,6 +1097,7 @@ touches ROS 2.
 | `STRANDS_MESH` | Opt a bare `Robot()` into the Zenoh mesh: `true`/`1`/`yes` turns it on. `false`/`0`/`no` is a hard kill switch that also overrides an explicit `mesh=True` | unset (mesh off) |
 | `STRANDS_MESH_LOCAL_DEV` | Set `1` for a one-var localhost preset (auth `none`, no second factor needed) | unset |
 | `STRANDS_ROS2_BRIDGE_I_KNOW_THIS_IS_INSECURE` | Second factor to expose a `Robot(ros2_transport="rtps")` inbound `joint_command` surface with no `dds_security_config` (DDS Security). Truthy: `1`/`true`/`yes` | unset |
+| `STRANDS_ROS2_COMMAND_ALLOW` | Comma-separated ROS 2 surfaces pre-approved for `use_ros` commands, for headless use where no operator can be prompted (e.g. `/cmd_vel,/navigate_to_pose`). Everything else on the safety-critical blocklist stays gated, including a zero-velocity halt: the gate is keyed on the surface, not on the payload, so a deployment that must halt unattended pre-approves its `cmd_vel` topic. Reads are never gated. See [safety-critical command surfaces](docs/ros2-integration.md#safety-critical-command-surfaces-need-operator-approval) | unset |
 <details>
 <summary><b>Mesh / IoT / GR00T-container env vars (advanced)</b></summary>
 

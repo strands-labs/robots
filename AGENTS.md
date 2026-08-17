@@ -675,14 +675,42 @@ hatch run format            # ruff check --fix, ruff format
      direction - `REVIEW_REQUIRED` at least says a review is owed, whereas
      `null` reads as "no review requirement applies here" rather than "one
      resolve from merging". It is not a recompute lag: that approval was more
-     than twenty minutes old when the field was read as `null`. The two also
-     need opposite actions - the `REVIEW_REQUIRED` case above needs a second
-     account, this one needs no review at all. The distinguishing read is the
-     threads, not the decision:
+     than twenty minutes old when the field was read as `null`.
+
+     **`null` is at least two states, and the resolve clears only one of them.**
+     #2328 presented #1974's signature exactly - `MERGEABLE`, `BLOCKED`, `null`,
+     one unresolved `github-advanced-security` thread, the required check
+     `SUCCESS` - so the paragraph above prescribed resolving that thread, which
+     was the right action. It settled the decision the other way:
+
+     | pull request | approving review present | after `resolveReviewThread` |
+     |---|---|---|
+     | #1974 | one `APPROVED`, post-dating the head | `APPROVED` / `CLEAN` - merges |
+     | #2328 | none - every review `COMMENTED` | `REVIEW_REQUIRED` / still `BLOCKED` |
+
+     `null` is also what a pull request carrying **no approving review at all**
+     reads, because a `COMMENTED` review contributes no approval. So the resolve
+     was necessary on both and sufficient on one, and "this one needs no review
+     at all" is true of #1974 and false of #2328 while the field is identical on
+     the two.
+
+     Read the review set beside the threads, and read it **before** you resolve
+     anything. #2328's decision moved from `null` to `REVIEW_REQUIRED` on the
+     resolve, so the one value that says which case you are in is gone by the
+     time you re-read it:
 
      ```graphql
+     reviews(last: 20) { nodes { state author { login } submittedAt } }
      reviewThreads(first: 50) { nodes { id isResolved isOutdated } }
      ```
+
+     A `null` carrying no `APPROVED` node is `REVIEW_REQUIRED` wearing a
+     different value: the remedy is a first approving review, and no amount of
+     resolving supplies one. That leaves `REVIEW_REQUIRED` itself carrying two
+     remedies - a first approval, or a second account when the only approval
+     came from the pusher - which is the split
+     `scripts/check_last_push_approval.py --all-open` reports and which no
+     single field distinguishes either.
 
      `isOutdated: true` on an unresolved thread is the common form, and it is a
      prompt rather than reassurance: the diff moved on, so the request has

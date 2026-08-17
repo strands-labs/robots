@@ -102,7 +102,8 @@ use_ros(action="list_topics")
 # Subscribe and read two samples (type auto-resolved from the graph)
 use_ros(action="echo", topic="/turtle1/pose", count=2, timeout=2.0)
 
-# Publish a velocity command
+# Publish a velocity command. /cmd_vel is a gated surface - see
+# "Safety-critical command surfaces need operator approval" below.
 use_ros(action="publish", topic="/turtle1/cmd_vel",
         type="geometry_msgs/msg/Twist",
         fields={"linear": {"x": 2.0}, "angular": {"z": 1.5}})
@@ -152,6 +153,59 @@ distro is sourced and a refusal happens before a publisher joins the graph:
 
 An option the requested action never reads is not second-guessed:
 `use_ros(action="status", count=-1)` still reports the backend.
+
+### Safety-critical command surfaces need operator approval
+
+A robot is driven through three different verbs - `publish` to a topic,
+`service_call` to a service and `action_send_goal` to an action server - so the
+gate is keyed on the surface **name** and consulted from all three. An agent
+asked to "drive forward" reaches for whichever verb fits the interface it found
+on the graph, so gating `publish` alone would leave `/navigate_to_pose` (a ROS 2
+action) and `/emergency_stop` (usually a `std_srvs/srv/Trigger` service)
+unenforceable. These surfaces are blocked by default:
+
+| Surface | Usually reached by |
+|---------|--------------------|
+| `/cmd_vel`, `/cmd_vel_unstamped` | `publish` |
+| `/joint_command`, `/joint_trajectory`, `/joint_trajectory_controller/joint_trajectory` | `publish` |
+| `/emergency_stop`, `/e_stop` | `service_call`, sometimes `publish` |
+| `/motor_enable`, `/enable_motor`, `/disable_motor` | `service_call` |
+| `/navigate_to_pose`, `/follow_path` | `action_send_goal` |
+
+Matching is on the final path segment, so a namespaced form
+(`/my_robot/cmd_vel`, `/fleet/robot1/emergency_stop`) is caught while a lookalike
+(`/cmd_vel_evil`, `/joint_trajectory_status`) is not. The name is compared in the
+form rclpy resolves it to, so the unrooted `cmd_vel` and the trailing-separator
+`/cmd_vel/` are the same surface as `/cmd_vel`. Case is deliberately **not**
+folded: ROS 2 graph names are case-sensitive, so `/CMD_VEL` is a genuinely
+different topic that no `/cmd_vel` subscriber receives, and refusing it would
+block a legitimate surface without closing a path to the robot.
+
+Three ways through the gate, consulted in this order:
+
+| Mode | Mechanism |
+|------|-----------|
+| Interactive (default) | `tool_context.interrupt()` prompts the operator; reply `y` to approve |
+| Headless allowlist | `STRANDS_ROS2_COMMAND_ALLOW=/cmd_vel,/follow_path` pre-approves those surfaces, everything else stays gated |
+| Fully trusted | `BYPASS_TOOL_CONSENT=true` allows every blocked surface with a WARNING log |
+
+The gate **fails closed**: with no `tool_context` (outside an agent loop), or when
+`interrupt()` is unavailable, the command is refused and the error names both
+environment variables. Only the operator's approve/deny verdict is read - the
+reply text is never echoed back into the agent's context.
+
+Anything that wraps `use_ros` has to forward that context or it inherits the
+fail-closed path for every command it sends. `RosBridgedRobot` does: its
+`drive_<node>` / `stop_<node>` / `navigate_<node>` tools are declared
+`@tool(context=True)` and hand the context on, so an agent driving a bridged
+robot prompts the operator. A **programmatic** `robot.drive(...)` has no operator
+to prompt and is refused unless the surface is pre-approved - scripts and
+unattended demos set `STRANDS_ROS2_COMMAND_ALLOW` for the topics they drive.
+
+Reading is never gated: `echo`, `info` and the `list_*` queries work on a blocked
+surface, so telemetry stays available to the agent. The gate also runs *after* the
+action's required arguments are validated, so an operator is never asked to
+approve a call that could not have run.
 
 ## Sim bridge: publish a simulation on a ROS 2 domain
 
@@ -297,6 +351,8 @@ remote ROS 2 robot drives like any other strands robot - the same
 `Agent(tools=[robot])` pattern used for simulated and hardware arms.
 
 ```python
+import os
+
 from strands import Agent
 from strands_robots.mesh import RosBridgedRobot
 
@@ -307,9 +363,11 @@ turtle = RosBridgedRobot.from_ros(
     odom_type="turtlesim/msg/Pose",  # optional; auto-resolved when omitted
 )
 
-# Direct, programmatic control:
+# Direct, programmatic control. cmd_vel is a gated command surface and a script
+# has no operator to prompt, so pre-approve the topics this process drives:
+os.environ["STRANDS_ROS2_COMMAND_ALLOW"] = "/turtle1/cmd_vel"
 turtle.drive(linear=1.0, duration=1.5)   # hold the command for 1.5 s
-print(turtle.get_pose())                 # one odom/pose sample
+print(turtle.get_pose())                 # reads are never gated
 turtle.stop()
 
 # Or hand the robot to an agent - its capabilities become named tools
@@ -327,13 +385,24 @@ whole number, and `publish_rate` is refused at construction. Construct it freely
 without a ROS 2 environment present - errors surface only when a method is
 actually called and `rclpy` is unavailable.
 
+It also inherits the [command gate](#safety-critical-command-surfaces-need-operator-approval):
+`cmd_vel` and a Nav2 `nav_action` are both blocklisted surfaces. The command
+tools forward the operator context they are given, so an agent prompts; a
+programmatic call needs `STRANDS_ROS2_COMMAND_ALLOW` (or
+`BYPASS_TOOL_CONSENT=true`). That includes `stop()` - the gate is keyed on the
+surface rather than the payload, because "zero is harmless" is true of a `Twist`
+and false of `/joint_command`, where zero commands motion to the zero pose. An
+unattended deployment that must always be able to halt should pre-approve its
+`cmd_vel` topic.
+
 | Method | ROS 2 action | Notes |
 |--------|--------------|-------|
-| `drive(linear, angular, duration=, count=)` | publish `Twist` to `cmd_vel_topic` | `duration` holds the command at `publish_rate` Hz; finite velocities, `duration > 0`, `count >= 1` - anything else is refused without publishing |
-| `stop()` | publish zero `Twist` | |
-| `get_pose()` | echo `odom_topic` | |
-| `get_scan()` | echo `scan_topic` | error when no `scan_topic` configured |
-| `.tools` | - | per-instance named agent tools |
+| `drive(linear, angular, duration=, count=)` | publish `Twist` to `cmd_vel_topic` | `duration` holds the command at `publish_rate` Hz; finite velocities, `duration > 0`, `count >= 1` - anything else is refused without publishing. Gated: needs an operator context or a pre-approved surface |
+| `stop()` | publish zero `Twist` | Gated like `drive` - same surface, same verb |
+| `navigate_to(x, y, yaw=, frame_id=, timeout=)` | `action_send_goal` to `nav_action` | error when no `nav_action` configured; finite pose components. Gated |
+| `get_pose()` | echo `odom_topic` | never gated |
+| `get_scan()` | echo `scan_topic` | error when no `scan_topic` configured; never gated |
+| `.tools` | - | per-instance named agent tools; the command tools are `@tool(context=True)` so the gate can prompt |
 
 See `examples/ros2/turtlebot_demo.py` for an end-to-end agent driving a turtle
 in `turtlesim` through the mesh bridge.

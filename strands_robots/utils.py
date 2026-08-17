@@ -2360,7 +2360,7 @@ def validation_split_fraction(val_episodes: int, total_episodes: int) -> float:
     return (val_episodes - 0.5) / total_episodes
 
 
-def validation_split_error(val_episodes: int, total_tasks: Any, context: str) -> str | None:
+def validation_split_error(val_episodes: int, total_tasks: Any, context: str, *, passthrough_param: str) -> str | None:
     """Error text when a global episode COUNT cannot be honored as a split.
 
     lerobot expresses a validation split as one ``eval_split`` FRACTION and
@@ -2379,6 +2379,13 @@ def validation_split_error(val_episodes: int, total_tasks: Any, context: str) ->
         val_episodes: The requested held-out episode count, for the message.
         total_tasks: ``total_tasks`` from the dataset's ``meta/info.json``.
         context: Caller label the message is prefixed with.
+        passthrough_param: Name of the caller's own raw-flag passthrough
+            parameter, interpolated into the remedy. Required rather than
+            defaulted because the surfaces disagree: the ``lerobot_train`` tool
+            spells it ``extra_flags`` while :class:`TrainSpec` (and the
+            ``train_policy`` tool) spell it ``extra``, so a default would name a
+            keyword one of them does not accept - the reader would apply the
+            remedy verbatim and get a ``TypeError``.
 
     Returns:
         The error text, or None when the count can be honored exactly.
@@ -2391,8 +2398,8 @@ def validation_split_error(val_episodes: int, total_tasks: Any, context: str) ->
         "fraction in lerobot (it holds out ceil(episodes_in_task * eval_split) "
         "from every task), so a single global count is not expressible: the "
         "ceiling would be applied once per task. Pass the fraction directly, "
-        "e.g. extra_flags={'dataset.eval_split': 0.1, 'eval_steps': 1000}, and "
-        "the split will hold out a tenth of each task."
+        f"e.g. {passthrough_param}={{'dataset.eval_split': 0.1, 'eval_steps': 1000}}, "
+        "and the split will hold out a tenth of each task."
     )
 
 

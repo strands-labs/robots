@@ -286,7 +286,7 @@ def import_policy_class(provider: str) -> type:
 def build_policy_kwargs(
     provider: str,
     policy_port: int | None = None,
-    policy_host: str = "localhost",
+    policy_host: str | None = None,
     model_path: str | None = None,
     server_address: str | None = None,
     policy_type: str | None = None,
@@ -301,7 +301,9 @@ def build_policy_kwargs(
     Args:
         provider: Policy provider name.
         policy_port: Port number (groot, cosmos3, moveit2, remote).
-        policy_host: Hostname (default: "localhost").
+        policy_host: Hostname.  ``None`` leaves the key unset so the
+            provider's registry default -- or, failing that, its own
+            constructor default -- applies.
         model_path: Local model path or HF ID.
         server_address: Full server address host:port (grpc:// URLs, remote providers).
         policy_type: Sub-type (pi0, act, smolvla, ...).
@@ -329,7 +331,9 @@ def build_policy_kwargs(
         "host": policy_host,
         "data_config": data_config,
         "server_address": server_address
-        or (f"{policy_host}:{policy_port}" if policy_port and "server_address" in allowed_keys else None),
+        or (
+            f"{policy_host}:{policy_port}" if policy_host and policy_port and "server_address" in allowed_keys else None
+        ),
         "model_path": model_path,
         "pretrained_name_or_path": (
             model_path

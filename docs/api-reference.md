@@ -43,7 +43,7 @@ from strands_robots.registry import (
 | `has_sim(name)` / `has_hardware(name)` | Sim / real support flags. |
 | `get_hardware_type(name)` | LeRobot type string for `mode="real"`. |
 | `list_robots_by_category()` | `{category: [names]}`. |
-| `list_aliases()` | All 106 aliases. |
+| `list_aliases()` | All 119 aliases, including every GR00T `data_config` spelling (so `data_config` names resolve as robot names). |
 | `format_robot_table()` | Pretty-printed robot table. |
 | `register_robot(name, entry)` | Add user-defined robot at runtime. |
 | `unregister_robot(name)` | Remove a runtime-registered robot. |
@@ -51,7 +51,7 @@ from strands_robots.registry import (
 | `list_policy_providers()` | Providers from `policies.json`. |
 | `resolve_policy(uri)` | URI → provider name. |
 | `import_policy_class(provider)` | Lazy import of provider class. |
-| `build_policy_kwargs(provider, **kw)` | Normalise + validate kwargs. An explicit value beats the provider's registry default; the provider's own key (`host=`) beats the generic parameter (`policy_host=`). |
+| `build_policy_kwargs(provider, **kw)` | Normalise + validate kwargs. An explicit value beats the provider's registry default; the provider's own key (`host=`) beats the generic parameter (`policy_host=`). Every generic parameter defaults to `None`, meaning "unset", so an omitted one leaves the provider's own default -- registry, else constructor -- in place. |
 
 ## `strands_robots.simulation`
 

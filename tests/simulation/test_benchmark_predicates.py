@@ -54,6 +54,29 @@ class _BodyStateSim:
         return {}
 
 
+class _ScopedJointObsSim:
+    """Sim whose ``get_observation`` is robot-scoped, like the real backends.
+
+    ``get_observation()`` without ``robot_name`` reports one robot's joints;
+    each entity's joints are reachable only by naming it. This is the structure
+    a scene with an arm plus an articulated fixture actually has, so it is what
+    a scene-scoped joint name must be resolved against. ``_JointObsSim`` returns
+    the same flat dict for every call and therefore cannot express it.
+    """
+
+    def __init__(self, per_robot: dict[str, dict[str, float]]):
+        self._per_robot = per_robot
+
+    def list_robots(self) -> list[str]:
+        return list(self._per_robot)
+
+    def get_observation(self, robot_name: str | None = None, *, skip_images: bool = False) -> dict[str, float]:
+        if robot_name is None:
+            first = next(iter(self._per_robot), None)
+            return dict(self._per_robot[first]) if first is not None else {}
+        return dict(self._per_robot.get(robot_name, {}))
+
+
 class _JointObsSim:
     """Sim that exposes joint positions via ``get_observation``."""
 
@@ -283,6 +306,90 @@ class TestJointPredicates:
         sim = _JointObsSim({"drawer": 0.2})
         term = make_predicate("joint_progress", joint="drawer", target=0.2, weight=1.0)
         assert term(sim) == pytest.approx(0.0)
+
+
+class TestJointPredicatesResolveSceneJoints:
+    """A joint predicate must reach the joint it names anywhere in the scene.
+
+    ``get_observation`` is robot-scoped, so an articulated fixture's joint - a
+    drawer slide, a door hinge - is invisible to an unscoped read: such a
+    fixture is necessarily a second entity alongside the arm being controlled.
+    That is exactly the task class ``joint_progress`` documents itself for, and
+    before the fix the term degraded to a constant for all of them, so a
+    predicate *and its negation* both answered ``False`` and no success
+    criterion over the joint could ever hold.
+    """
+
+    def setup_method(self):
+        _reset_resolution_warnings()
+
+    def test_open_drawer_criterion_holds_when_the_drawer_is_open(self):
+        sim = _ScopedJointObsSim({"arm": {"shoulder": 0.0}, "cabinet": {"drawer": 0.18}})
+        # FAILS pre-fix: the unscoped observation reports only the arm.
+        assert make_predicate("joint_above", joint="drawer", value=0.15)(sim) is True
+
+    def test_close_drawer_criterion_holds_when_the_drawer_is_shut(self):
+        sim = _ScopedJointObsSim({"arm": {"shoulder": 0.0}, "cabinet": {"drawer": 0.001}})
+        assert make_predicate("joint_below", joint="drawer", value=0.005)(sim) is True
+
+    def test_a_predicate_and_its_negation_do_not_both_hold(self):
+        """The constant-False degradation made both answer False at once."""
+        sim = _ScopedJointObsSim({"arm": {"shoulder": 0.0}, "cabinet": {"drawer": 0.037}})
+        above = make_predicate("joint_above", joint="drawer", value=0.005)(sim)
+        below = make_predicate("joint_below", joint="drawer", value=0.005)(sim)
+        assert above is True and below is False
+        assert above is not below, "a joint cannot be neither above nor below a threshold"
+
+    def test_joint_progress_measures_a_fixture_joint(self):
+        sim = _ScopedJointObsSim({"arm": {"shoulder": 0.0}, "cabinet": {"drawer": 0.1}})
+        term = make_predicate("joint_progress", joint="drawer", target=0.2, weight=10.0)
+        assert term(sim) == pytest.approx(-1.0)  # FAILS pre-fix: dead 0.0 reward
+
+    def test_a_scene_joint_that_is_open_is_not_reported_shut(self):
+        """The worst shape: a fully open drawer scoring as successfully closed."""
+        sim = _ScopedJointObsSim({"arm": {"shoulder": 0.0}, "cabinet": {"drawer": 0.20}})
+        assert make_predicate("joint_below", joint="drawer", value=0.005)(sim) is False
+
+    def test_the_controlled_robot_keeps_its_unscoped_fast_path(self):
+        """A joint on the default robot must still resolve without a scan."""
+        sim = _ScopedJointObsSim({"arm": {"gripper": 0.02}, "cabinet": {"drawer": 0.18}})
+        assert make_predicate("joint_below", joint="gripper", value=0.05)(sim) is True
+
+    def test_the_default_robot_wins_a_name_it_shares(self):
+        """Shadowed names resolve to the controlled robot, as before the fix."""
+        sim = _ScopedJointObsSim({"arm": {"j": 0.10}, "cabinet": {"j": 0.90}})
+        assert make_predicate("joint_above", joint="j", value=0.5)(sim) is False
+
+    def test_a_genuinely_absent_joint_still_degrades_and_warns_once(self, caplog):
+        sim = _ScopedJointObsSim({"arm": {"shoulder": 0.0}, "cabinet": {"drawer": 0.18}})
+        pred = make_predicate("joint_above", joint="ghost_slide", value=0.0)
+        with caplog.at_level(logging.WARNING, logger=_PRED_LOGGER):
+            assert pred(sim) is False
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 1
+        msg = warnings[0].getMessage()
+        assert "ghost_slide" in msg
+        # Having asked every entity, the message may now say so truthfully.
+        assert "cabinet" in msg
+
+    def test_an_ambiguous_fixture_joint_resolves_deterministically_and_says_so(self, caplog):
+        sim = _ScopedJointObsSim({"arm": {"shoulder": 0.0}, "cab_a": {"drawer": 0.18}, "cab_b": {"drawer": 0.90}})
+        pred = make_predicate("joint_above", joint="drawer", value=0.5)
+        with caplog.at_level(logging.WARNING, logger=_PRED_LOGGER):
+            assert pred(sim) is False  # cab_a (first in list_robots order) answers
+        assert any(
+            "cab_a" in r.getMessage() and "cab_b" in r.getMessage()
+            for r in caplog.records
+            if r.levelno == logging.WARNING
+        )
+
+    def test_a_backend_without_introspection_stays_silent(self, caplog):
+        """No observation at all is a capability gap, not a spec typo."""
+        sim = _NoHelpersSim()
+        term = make_predicate("joint_progress", joint="drawer", target=0.2, weight=1.0)
+        with caplog.at_level(logging.WARNING, logger=_PRED_LOGGER):
+            assert term(sim) == 0.0
+        assert not [r for r in caplog.records if r.levelno == logging.WARNING]
 
 
 # Contact predicates

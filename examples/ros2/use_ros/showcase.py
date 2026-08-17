@@ -18,7 +18,9 @@ Run it inside a sourced ROS 2 environment with turtlesim running:
     source /opt/ros/jazzy/setup.bash
     QT_QPA_PLATFORM=offscreen ros2 run turtlesim turtlesim_node &
     pip install strands-agents          # rclpy comes from the sourced distro
-    python3 showcase.py
+    # /turtle1/cmd_vel is a gated command surface and this script runs outside
+    # an agent loop, so there is no operator to prompt - pre-approve it:
+    STRANDS_ROS2_COMMAND_ALLOW=/turtle1/cmd_vel python3 showcase.py
 
 See ./README.md for a one-command docker-compose runner.
 """

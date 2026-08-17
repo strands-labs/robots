@@ -29,6 +29,13 @@ sim_a.mesh.tell(sim_b.mesh.peer_id, "pick up the cube",
 uv pip install "strands-robots[mesh]"   # eclipse-zenoh; already in the default install
 ```
 
+`[mesh]` requires `eclipse-zenoh>=1.6.1`. The safety handlers authenticate an
+e-stop / resume publisher at the wire level, below the JSON body, using
+`zenoh.SourceInfo` on the publisher and `Sample.source_info` on the receiver.
+Both names first ship in 1.6.1; on an older zenoh neither exists, so envelopes
+travel unattributed and a receiver refuses one published by a peer that *is*
+attributing. Upgrade every peer in a fleet together.
+
 ## Key mesh calls
 
 ```python

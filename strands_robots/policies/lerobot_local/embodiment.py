@@ -28,7 +28,7 @@ from __future__ import annotations
 import json
 import logging
 import math
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -514,25 +514,76 @@ class ZeroActionMonitor:
 
 # Imported lazily so this module is importable without lerobot (e.g. for unit
 # testing EmbodimentMap loading/validation in a minimal env).
-# Warn-once dedup for state_keys absent from the observation (keyed by the
-# missing-key tuple, which is stable across the 50Hz control loop).
-_WARNED_MISSING_STATE_KEYS: set[tuple[str, ...]] = set()
+# Warn-once dedup for a declared-vs-observed state_keys mismatch, keyed by the
+# (missing keys, observed keys) pair so the message repeats at most once per
+# distinct mismatch rather than at every tick of the 50Hz control loop.
+_WARNED_STATE_KEY_MISMATCH: set[tuple[tuple[str, ...], tuple[str, ...]]] = set()
 
 
-def _warn_missing_state_keys(missing: list[str]) -> None:
-    """Warn once that some declared ``state_keys`` were absent (zero-filled in place)."""
-    sig = tuple(missing)
-    if sig in _WARNED_MISSING_STATE_KEYS:
+def observed_state_keys(observation: Mapping[str, Any]) -> list[str]:
+    """Observation keys that can carry a joint/state scalar, in observation order.
+
+    Excludes ``task`` (the instruction string) and any array with 2+ dimensions
+    (a camera frame). Both observation-to-batch paths derive their state-ordering
+    fallback from this, and every state-key diagnostic quotes it back to the
+    caller, so all of them must agree on what counts as a state key - which is
+    why this is one function rather than a rule restated per call site.
+
+    Args:
+        observation: Raw strands/sim observation for this step.
+
+    Returns:
+        The candidate state keys, in the observation's own insertion order.
+    """
+    return [k for k, v in observation.items() if k != "task" and not (isinstance(v, np.ndarray) and v.ndim >= 2)]
+
+
+def _warn_state_key_mismatch(missing: list[str], observation: Mapping[str, Any], *, total: bool) -> None:
+    """Warn once that declared ``state_keys`` are absent from the observation.
+
+    Reports the two degradations the declarative state path can hit with the
+    same registry-checked remedy the generic ``robot_state_keys`` path uses
+    (:func:`state_key_remedy`), because both answer the same caller question and
+    a remedy invented per call site drifts from the one the registry can prove.
+
+    The remedy is chosen from what the observation carries rather than from the
+    declared keys, so it can never name an embodiment that would land back on
+    this same mismatch - the reasoning :func:`state_key_remedy` documents.
+
+    Args:
+        missing: Declared ``state_keys`` absent from ``observation``, in
+            declared order.
+        observation: The observation being packed, read for the keys it does
+            carry.
+        total: Whether NO declared key was present. A total miss leaves the
+            observation unpacked for the caller's own handling, so it is
+            reported as an unbindable configuration rather than as a
+            zero-filled dimension.
+    """
+    observed = observed_state_keys(observation)
+    sig = (tuple(missing), tuple(observed))
+    if sig in _WARNED_STATE_KEY_MISMATCH:
         return
-    _WARNED_MISSING_STATE_KEYS.add(sig)
-    logger.warning(
-        "lerobot_local: state_key(s) %s absent from the observation; zero-filled IN "
-        "PLACE so the present joints keep their model index (the missing dims read 0). "
-        "The canonical trigger is a mimic/tendon gripper actuator (e.g. left/gripper) "
-        "whose sim observation exposes finger joints instead -- the arm proprioception "
-        "stays aligned while the gripper state reads 0.",
-        missing,
-    )
+    _WARNED_STATE_KEY_MISMATCH.add(sig)
+    shown = missing[:_REMEDY_KEYS_INLINE_MAX]
+    ellipsis = "..." if len(missing) > _REMEDY_KEYS_INLINE_MAX else ""
+    if total:
+        detail = (
+            f"None of the {len(missing)} declared state_keys {shown}{ellipsis} are present in the "
+            f"observation. Observed joint/state keys: {observed}. No observation.state was packed, "
+            "so the model receives no proprioceptive input and the failure surfaces downstream. "
+            "The embodiment's declared keys describe a different robot/sim - or a different naming "
+            "convention for the same one - than the observation reporting them."
+        )
+    else:
+        detail = (
+            f"{len(missing)} declared state_keys are not present in the observation: "
+            f"{shown}{ellipsis}. Observed joint/state keys: {observed}. Present joints keep their "
+            "model index and the missing dims are zero-filled in place, but the sim/robot does not "
+            "report those joints - commonly a mimic/tendon gripper actuator whose name differs from "
+            "the observation's finger-joint names."
+        )
+    logger.warning("lerobot_local: %s %s", detail, state_key_remedy(observed))
 
 
 def register_pack_state_step() -> type | None:
@@ -649,10 +700,19 @@ def register_pack_state_step() -> type | None:
                 # No declared state key AND no usable '.pos' fallback; leave obs
                 # alone so a clearer downstream error (or a state-less policy)
                 # can handle it, rather than emitting an all-zero state vector.
+                #
+                # Say so first. Returning silently made this the one degradation
+                # on either state path that reported nothing: the generic path
+                # names the observed keys and the remedy for both an all-missing
+                # and a partly-missing binding, while here the caller learned
+                # only that something downstream wanted observation.state - after
+                # the weight download, and without the one fact that resolves it
+                # (which embodiment DOES bind this observation).
+                _warn_state_key_mismatch(list(self.state_keys), observation, total=True)
                 return observation
 
             if missing:
-                _warn_missing_state_keys(missing)
+                _warn_state_key_mismatch(missing, observation, total=False)
 
             # Convert sim units (radians + gripper joint range) to the model's
             # training units (arm degrees, gripper 0..100) BEFORE packing, so the
@@ -947,6 +1007,7 @@ __all__ = [
     "diagnose_action_dim",
     "load_embodiment",
     "matching_embodiments",
+    "observed_state_keys",
     "reconcile_dim",
     "register_pack_state_step",
     "state_key_remedy",

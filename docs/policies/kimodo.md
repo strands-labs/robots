@@ -115,6 +115,7 @@ it, or a tuned PD law) is required, and is out of scope for this provider.
 | `diffusion_steps` | int | 100 | 25–200 useful range |
 | `guidance_scale` | float | 7.5 | CFG weight |
 | `num_frames` | int | 120 | ≤196 (RP-v1 max) |
+| `transition_frames` | int | 5 | Native frames a chained segment is eased over |
 | `native_fps` | int | 30 | Sampler native rate |
 | `tracker_fps` | int | 50 | SLERP upsample target |
 | `device` | str \| None | auto | `"cuda"` / `"cpu"` |
@@ -163,6 +164,64 @@ whole run stays reproducible: re-running at the same master `seed=` replays the
 same per-episode motions. Repeating a seed replays the buffered motion rather
 than re-running the sampler for identical frames, and `reset()` without a seed
 only rewinds - neither pays for a diffusion run.
+
+## Chaining prompts into a long-horizon sequence
+
+Because a changed prompt samples the next segment and the stream simply
+continues, a long-horizon episode is a rollout that changes the instruction as
+it goes — no stitching layer required. Anything that can vary the instruction
+per tick will do; a `policy_object` driven directly is the smallest version:
+
+```python
+import asyncio
+
+from strands_robots import Robot
+from strands_robots.policies.kimodo import KIMODO_G1_JOINTS, KimodoPolicy
+
+CHAIN = [
+    ("a person walking forward with confident strides", 90),
+    ("a person turning to the left", 60),
+    ("a person waving with the right hand", 60),
+    ("a person crouching down to pick an object off the floor", 90),
+    ("a person walking forward with confident strides", 90),
+]
+
+sim = Robot("g1", mesh=False)
+policy = KimodoPolicy()
+policy.set_robot_state_keys(list(KIMODO_G1_JOINTS))
+
+for instruction, ticks in CHAIN:
+    for _ in range(ticks):
+        action = asyncio.run(policy.get_actions({}, instruction))[0]
+        sim.set_joint_positions(action, robot_name="g1")
+```
+
+Each segment is sampled once, on the tick its instruction first appears. Kimodo
+samples every motion from its own canonical start pose, which has no relation to
+wherever the previous segment left the robot, so a new segment is eased off the
+pose last commanded across `transition_frames` native frames. Without that the
+seam commands every joint to step at once — measured across the 600 ordered
+pairs of a 25-motion corpus, the median seam moved a joint 1.6 rad in a single
+tick and 84% of transitions exceeded the largest step the motions themselves
+ever take. A reference like that is not one a tracker can follow, and it is
+reported as a successful rollout.
+
+`transition_frames` defaults to 5, the same length Kimodo's own sampler uses for
+`num_transition_frames` when it generates a multi-prompt sequence. Raise it for
+wider pose gaps (opposing poses eased over more frames), lower it toward 1 to
+keep segment boundaries crisp. It is bounded below at 1, matching the domain the
+sampler enforces on its own transition length.
+
+Note the difference in kind from the sampler's native multi-prompt path: Kimodo
+conditions the *diffusion* of the next segment on the previous segment's last
+frames, so the generated motion itself leads into the transition. The agent
+protocol here takes only a prompt and sampling knobs, with no continuation
+state, so easing shapes the emitted stream rather than the sample. It removes
+the discontinuity; it does not re-plan the motion around it.
+
+An episode boundary is not a seam. `reset()` forgets the last commanded pose, so
+the next episode opens on its motion's own start pose rather than being eased
+onto wherever the previous episode finished.
 
 ## When the checkpoint is not a Kimodo checkpoint
 
