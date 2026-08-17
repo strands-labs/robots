@@ -32,7 +32,8 @@ def _load_checkpoint_state_dict(pretrained_name_or_path: str, revision: str | No
 
     Resolves a local directory first, then the HF Hub (cached). Returns ``None``
     when no single-file ``model.safetensors`` is present (e.g. a sharded VLA
-    checkpoint) or safetensors is unavailable -- the OLD-FORMAT checkpoints this
+    checkpoint), or when safetensors or ``huggingface_hub`` is unavailable -- an
+    installed-but-unimportable hub included. The OLD-FORMAT checkpoints this
     supports (ACT / diffusion / tdmpc / vqbet zoo) are all single-file, so this
     stays best-effort and never raises into the load path.
 
@@ -62,14 +63,23 @@ def _load_checkpoint_state_dict(pretrained_name_or_path: str, revision: str | No
             logger.debug("Could not read %s: %s", local, exc)
             return None
 
+    # The Hub error class is imported in its own try so it is bound before the
+    # handler that names it can be evaluated. Python evaluates an except clause's
+    # exception expression when the body raises, so binding it in the same try made
+    # every non-ImportError import failure raise UnboundLocalError instead - past
+    # the OSError/ValueError handler written for exactly that. An unimportable hub
+    # now degrades like an absent one, matching the guard in
+    # _load_in_model_normalization_fallback.
     try:
         from huggingface_hub import hf_hub_download
         from huggingface_hub.errors import HfHubHTTPError
+    except Exception as exc:  # noqa: BLE001 - a broken install must degrade, not raise
+        logger.debug("huggingface_hub unusable for %s: %s", pretrained_name_or_path, exc)
+        return None
 
+    try:
         path = hf_hub_download(pretrained_name_or_path, "model.safetensors", revision=revision)
         return load_file(path)
-    except ImportError:
-        return None
     except (HfHubHTTPError, OSError, ValueError, SafetensorError) as exc:
         # No single-file weights on the Hub (sharded), offline, corrupt, or unreadable.
         logger.debug("No single-file model.safetensors for %s: %s", pretrained_name_or_path, exc)
@@ -93,9 +103,9 @@ def _pipeline_step_keys(
     routed per pipeline rather than handed to both.
 
     Best-effort by design: returns ``None`` when the config cannot be read
-    (offline, absent, unreadable, or a shape this rule does not describe), and
-    the caller then passes the overrides through unrouted, exactly as before.
-    Never raises into the load path.
+    (offline, absent, unreadable, ``huggingface_hub`` unusable, or a shape this
+    rule does not describe), and the caller then passes the overrides through
+    unrouted, exactly as before. Never raises into the load path.
 
     Args:
         pretrained_name_or_path: HF model ID or local checkpoint path.
@@ -117,14 +127,18 @@ def _pipeline_step_keys(
             logger.debug("Could not read %s: %s", local, exc)
             return None
     else:
+        # Imported in its own try so the error class is bound before the handler
+        # naming it is evaluated - see the same guard in _load_checkpoint_state_dict.
         try:
             from huggingface_hub import hf_hub_download
             from huggingface_hub.errors import HfHubHTTPError
+        except Exception as exc:  # noqa: BLE001 - a broken install must degrade, not raise
+            logger.debug("huggingface_hub unusable for %s: %s", pretrained_name_or_path, exc)
+            return None
 
+        try:
             downloaded = hf_hub_download(pretrained_name_or_path, config_filename, revision=revision)
             raw = pathlib.Path(downloaded).read_text(encoding="utf-8")
-        except ImportError:
-            return None
         except (HfHubHTTPError, OSError, ValueError) as exc:
             logger.debug("No %s for %s: %s", config_filename, pretrained_name_or_path, exc)
             return None

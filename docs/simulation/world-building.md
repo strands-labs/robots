@@ -66,6 +66,13 @@ out-of-distribution:
 sim.add_robot(name="panda", data_config="panda", keyframe="home")  # or keyframe=0
 ```
 
+The `Robot(...)` factory forwards `keyframe=` (and `orientation=`) to
+`add_robot`, so a one-line spawn reaches the same pose:
+
+```python
+robot = Robot("panda", keyframe="home")
+```
+
 The pose is applied to the robot's joints by name and is restored by `reset()`,
 so a keyframe spawn is sticky across episodes. A MuJoCo `<key>` pairs that pose
 with the actuator command that *holds* it, and both are applied and restored

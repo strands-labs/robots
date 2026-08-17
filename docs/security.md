@@ -33,7 +33,7 @@ Defense-in-depth controls the SDK already provides, and which you should rely on
 
 ## Robot mesh authentication
 
-Every `Robot()` and `Simulation()` automatically joins a Zenoh peer mesh, and the `robot_mesh` tool lets an agent enumerate, command, and broadcast to every peer on it. The security of that mesh is governed by `STRANDS_MESH_AUTH_MODE`.
+Joining the Zenoh peer mesh is opt-in: `Robot(name, mesh=True)` (or `STRANDS_MESH=true`) joins one, a `Simulation` built directly joins by being assigned a started client, and a bare `Robot()` exposes no mesh surface at all. Once a robot has joined, the `robot_mesh` tool lets an agent enumerate, command, and broadcast to every peer on that mesh, and the security of the mesh is governed by `STRANDS_MESH_AUTH_MODE`.
 
 ### Development posture (insecure)
 
