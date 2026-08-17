@@ -2336,6 +2336,59 @@ def entity_name_error(method: str, param_name: str, name: Any) -> str | None:
     return None
 
 
+def published_string_error(value: Any, param: str, context: str) -> str | None:
+    """Return an error message if a field published as a string did not arrive as one.
+
+    The agent-boundary counterpart to :func:`entity_name_error`. That guard runs
+    at the creation sites which *claim* a name; this one runs at the dispatcher,
+    for every field the tool's own schema declares ``"type": "string"`` -- names,
+    but also paths, ids, XML, and enum-valued selectors.
+
+    It exists because the dispatcher already promises this. Its documented
+    validation layer refuses an unknown parameter, refuses a missing required one
+    "(no raw Python ``TypeError``)", and checks a vector's length and dtype
+    "before the value reaches numpy / MuJoCo" -- but a scalar string field had no
+    such layer, so a non-string value was carried into the method body and failed
+    wherever that body first assumed a string. What the caller received was not a
+    refusal naming the field: it was ``AttributeError: 'int' object has no
+    attribute 'lower'`` out of a registry lookup, ``TypeError: stat: path should
+    be string, bytes, os.PathLike or integer, not list`` out of ``os.stat``, or
+    ``TypeError: unhashable type: 'list'`` out of a dict subscript. None of those
+    names the parameter, and none of them can be acted on.
+
+    Checking it here rather than at each entry point is the same reasoning
+    :func:`strands_robots.simulation.mujoco.backend.mj_name_to_id` records for
+    entity lookups: routing every one through a single funnel means a field added
+    later is safe by construction. It is also why the check keys off the
+    *published* schema -- the set it enforces is derived from that schema at
+    import time, so a field published tomorrow is covered without a second list
+    to keep in sync.
+
+    Only the type is refused. The empty string is NOT: ``instruction=""`` is the
+    documented default for a rollout and ``render(camera_name="")`` selects the
+    free camera, so the emptiness rule belongs at the creation sites that
+    :func:`entity_name_error` guards, not at the boundary. A ``str`` subclass is
+    accepted, for the same reason it is there -- it is a string by every
+    operation that follows.
+
+    Args:
+        value: The caller's value.
+        param: Parameter name, used in error text.
+        context: Calling context, used in error text (e.g. ``"Action 'add_robot'"``).
+
+    Returns:
+        ``None`` when *value* is a string, otherwise the error message to report
+        through the structured tool-result dict.
+    """
+    if isinstance(value, str):
+        return None
+    return (
+        f"{context}: '{param}' must be a string, got {_refusal_repr(value)} "
+        f"({type(value).__name__}); this tool publishes '{param}' as a string and "
+        "every agent-tool call carries it as one."
+    )
+
+
 def validation_split_fraction(val_episodes: int, total_episodes: int) -> float:
     """``dataset.eval_split`` that holds out exactly ``val_episodes`` episodes.
 

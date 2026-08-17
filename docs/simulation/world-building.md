@@ -533,7 +533,8 @@ other.load_scene(scene_path="/tmp/handoff.xml")   # same scene, same structure
 
 Mesh, texture and height-field assets are referenced by ABSOLUTE path. MuJoCo
 resolves a relative `file=` against the model's own directory (plus `meshdir` /
-`texturedir`), and that directory is not part of the serialised XML - so a
+`texturedir`, or the `assetdir` that sets both), and that directory is not part
+of the serialised XML - so a
 relative reference would resolve against wherever the export happened to be
 written. Absolute references keep the export reloadable from any location, and a
 scene composed from several models needs them: each model contributes assets from

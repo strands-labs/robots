@@ -288,8 +288,10 @@ def use_rtps(
                     return _ok(f"subscribed to {topic} ({type})")
                 # echo: poll the reader until count samples arrive or timeout.
                 samples: list[Any] = []
-                deadline = time.time() + timeout
-                while len(samples) < count and time.time() < deadline:
+                # time.monotonic(): a wall-clock step during the poll would
+                # return short of ``count`` samples that were still arriving.
+                deadline = time.monotonic() + timeout
+                while len(samples) < count and time.monotonic() < deadline:
                     for sample in reader.take(N=count - len(samples)):
                         samples.append(_sample_to_dict(sample))
                     if len(samples) < count:

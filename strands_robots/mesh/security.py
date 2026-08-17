@@ -108,6 +108,15 @@ _PEER_ID_RE = re.compile(r"^[A-Za-z0-9_.\-]+$")
 #: downstream string ops.
 _SAFE_PASSTHROUGH_RE = re.compile(r"^[\x20-\x7E]+$")
 
+#: Control characters refused in a natural-language payload
+#: (``instruction``): C0 (0x00-0x1F, which includes NUL, CR and LF), DEL
+#: (0x7F), and C1 (0x80-0x9F). Deliberately *not*
+#: :data:`_SAFE_PASSTHROUGH_RE`: that gate admits only printable ASCII, so
+#: reusing it here would refuse a legitimate instruction written in any
+#: language that needs a non-ASCII letter. A natural-language field bounds
+#: the control range and nothing else.
+_NATURAL_TEXT_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+
 #: Maximum length of wire-routing passthrough fields (``turn_id``,
 #: ``sender_id``). These are ULID/UUID-shaped correlation tokens; 128
 #: chars is generous for any legitimate usage.
@@ -852,7 +861,10 @@ def validate_command(cmd: dict[str, Any]) -> dict[str, Any]:
 
     * ``action`` must be a string and a member of :data:`ALLOWED_ACTIONS`.
     * ``execute`` and ``start`` actions require:
-        - ``instruction``: non-empty str up to :data:`MAX_INSTRUCTION_LEN`.
+        - ``instruction``: non-empty str up to :data:`MAX_INSTRUCTION_LEN`,
+          carrying no C0/DEL/C1 control character. Printable non-ASCII is
+          admitted -- it is a natural-language field, so the charset gate
+          bounds only the control range.
         - ``policy_host``: in the allowlist (defaults to ``"localhost"``).
         - ``duration``: ``[0, MAX_DURATION_S]``, defaults to 30.
         - ``policy_port`` (optional): integer in ``[1, 65535]``.
@@ -924,6 +936,17 @@ def validate_command(cmd: dict[str, Any]) -> dict[str, Any]:
             raise ValidationError("execute/start requires non-empty `instruction`")
         if len(instruction) > MAX_INSTRUCTION_LEN:
             raise ValidationError(f"instruction exceeds {MAX_INSTRUCTION_LEN} chars (got {len(instruction)})")
+        control = _NATURAL_TEXT_CONTROL_RE.search(instruction)
+        if control is not None:
+            # Identified by codepoint and offset rather than echoed. A
+            # ValidationError is itself logged by the dispatcher, so
+            # interpolating the payload would carry the injection into the
+            # very record that reports it.
+            raise ValidationError(
+                f"instruction contains a control character (U+{ord(control.group()):04X} "
+                f"at offset {control.start()}); send printable text only "
+                "(CRLF, NUL and other C0/C1 bytes are refused)"
+            )
         out["instruction"] = instruction
 
         policy_host = cmd.get("policy_host", "localhost")
