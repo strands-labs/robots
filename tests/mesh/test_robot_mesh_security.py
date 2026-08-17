@@ -33,6 +33,12 @@ def _reset_state(monkeypatch, tmp_path):
     monkeypatch.delenv("STRANDS_MESH_PSK", raising=False)
     monkeypatch.delenv("STRANDS_MESH_REQUIRE_AUTH", raising=False)
     monkeypatch.delenv("STRANDS_MESH_POLICY_HOST_ALLOW", raising=False)
+    # #10 gateway fallback: in a robot-less test process ``robot_mesh()``
+    # would lazily bring up a REAL zenoh gateway Mesh (session + discovery
+    # sleep + 30s RPC timeouts) before these mocks are consulted. That both
+    # breaks hermeticity and stretches a rate-limit burst past its window.
+    # These tests pin the defence layers, not transport - forbid the gateway.
+    monkeypatch.setattr(rmt, "_gateway_mesh", lambda: None)
     rmt._reset_rate_limits()
     from strands_robots.mesh import audit
 

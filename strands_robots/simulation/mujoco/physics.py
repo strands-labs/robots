@@ -882,7 +882,7 @@ class PhysicsMixin:
             if kind == "Body":
                 msg += " Use action='list_bodies' to see all."
             elif kind == "Joint":
-                msg += " Use action='robot_joint_names' to see one robot's joints."
+                msg += " Use action='get_robot_state' to see one robot's joints."
         return msg
 
     def raycast(
@@ -1315,7 +1315,7 @@ class PhysicsMixin:
                         "text": (
                             f"{method}: '{name}' is empty, so there is nothing to write. "
                             "Pass at least one joint (dict form) or a full ordered vector (list form); "
-                            "use action='robot_joint_names' to see one robot's joints."
+                            "use action='get_robot_state' to see one robot's joints."
                         )
                     }
                 ],

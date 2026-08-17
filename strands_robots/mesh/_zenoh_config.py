@@ -194,6 +194,17 @@ DEFAULT_MAX_SESSIONS: int = 256
 #: Per-message byte cap on cmd / broadcast topics.
 DEFAULT_MAX_CMD_BYTES: int = 16 * 1024
 
+
+def cmd_bytes_cap() -> int:
+    """Effective cmd-topic byte cap (env override honoured).
+
+    Mesh.send pre-checks outbound command size against this cap so
+    an over-cap message fails loudly at the sender instead of being silently
+    dropped by the low-pass filter (which cannot say why nothing arrived).
+    """
+    return _int_env("STRANDS_MESH_MAX_CMD_BYTES", DEFAULT_MAX_CMD_BYTES)
+
+
 #: Per-message byte cap on camera frames.
 DEFAULT_MAX_CAMERA_BYTES: int = 1 * 1024 * 1024
 

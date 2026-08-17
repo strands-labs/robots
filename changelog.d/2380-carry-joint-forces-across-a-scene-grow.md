@@ -1,0 +1,2 @@
+### Fixed
+- **Simulation (MuJoCo)**: a generalized force latched in `qfrc_applied` is no longer dropped when the scene grows. `spec.recompile` carries neither applied-force buffer, and while `xfrc_applied` is snapshotted by name across a rebuild, `qfrc_applied` was not - so the same latched force survived `remove_robot` (0.5 N m kept) and vanished on `add_object`, `add_camera` or `add_robot` (0.0), under a `"status": "success"`. Both buffers are now carried across both rebuild directions.

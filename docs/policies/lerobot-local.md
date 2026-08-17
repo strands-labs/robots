@@ -310,6 +310,45 @@ producing off-policy / micro-motion trajectories. An explicit
 `processor_overrides={"device_processor": {"device": ...}}` is still honored
 as-is and takes precedence over the automatic reconciliation.
 
+### Overriding a processor step
+
+`processor_overrides` is keyed by step name -- a step's `registry_name`, or its
+class name when the step is not registry-backed. A checkpoint ships two
+pipelines whose step names are mostly disjoint, so each override is routed to
+the pipeline that declares it:
+
+| step | pipeline | what it controls |
+| --- | --- | --- |
+| `normalizer_processor` | preprocessor | `observation.state` normalization |
+| `unnormalizer_processor` | postprocessor | `action` un-normalization |
+| `device_processor` | both | tensor placement |
+
+A key no pipeline declares is refused, and the refusal lists both pipelines'
+step names.
+
+This is how you supply stats to a checkpoint whose declared normalization is
+inert -- a pretraining *base* checkpoint such as `lerobot/smolvla_base` ships
+stats keyed by its training dataset (`so100.buffer.action`) rather than the
+canonical `action` / `observation.state` keys, so LeRobot's normalizer finds no
+matching key and passes those tensors through untouched. Both halves live in
+different pipelines, so a remedy has to name both steps:
+
+```python
+policy = create_policy(
+    "lerobot_local",
+    pretrained_name_or_path="lerobot/smolvla_base",
+    policy_type="smolvla",
+    processor_overrides={
+        "normalizer_processor": {"stats": dataset_stats},    # observation.state
+        "unnormalizer_processor": {"stats": dataset_stats},  # action
+    },
+)
+```
+
+Naming only one leaves the other inert, and the diagnostic keeps reporting
+whichever half is still unnormalized. Fine-tuning the checkpoint writes stats
+under the canonical keys and needs no override at all.
+
 ## State routing
 
 `observation.state` is composed from `robot_state_keys` (set explicitly with

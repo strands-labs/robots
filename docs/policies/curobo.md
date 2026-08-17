@@ -128,8 +128,9 @@ parameter and no `**kwargs`.
 
 The mesh path forwards the same goal vocabulary:
 `mesh.tell(peer, "...", policy_provider="curobo", target_pose=[...])`.
-`Robot.start_task` does not - it accepts only `instruction`, `policy_port`,
-`policy_host`, `policy_provider` and `duration`.
+`Robot.start_task` forwards the same keywords through `**policy_kwargs` to
+`create_policy`, so the hardware path accepts the goal vocabulary the mesh
+dispatch collects from the wire command.
 
 ## See also
 

@@ -101,13 +101,14 @@ Some policy providers load models from the HuggingFace Hub with `trust_remote_co
 
 Because this is code execution, not just data loading, Strands Robots forces an explicit, deliberate opt-in before any such provider will load:
 
-- The provider `lerobot_local` (`LerobotLocalPolicy`) is on the remote-code list. Any provider that loads models with `trust_remote_code=True` must be listed in `_HF_REMOTE_CODE_PROVIDERS` so the opt-in is enforced.
+- The providers `lerobot_local` (`LerobotLocalPolicy`) and `kimodo` (`KimodoPolicy`) are on the remote-code list. Any provider that loads models with `trust_remote_code=True` must be listed in `_HF_REMOTE_CODE_PROVIDERS` so the opt-in is enforced.
 - Loading is blocked by default. Attempting to create a gated provider without opting in raises `UntrustedRemoteCodeError` with an explanation, rather than silently executing remote code.
 - To opt in, set `STRANDS_TRUST_REMOTE_CODE=1` (`1` / `true` / `yes` are accepted). The example CLI enforces the same gate before it will run `--policy lerobot_local`.
 
 Operator guidance:
 
 - Only set `STRANDS_TRUST_REMOTE_CODE=1` when you are loading checkpoints from organizations you trust - ideally your own org, or a small allowlist of vendors you have vetted (e.g. `lerobot/`, `nvidia/`). The opt-in is a per-process, whole-environment switch: once set, it trusts every model the process loads for the life of that process, not just the one you had in mind. Scope it tightly (set it on the specific command, not globally in a shell profile) and pin checkpoints to a known revision where the loader supports it.
+- Where a provider exposes a per-call `trust_remote_code` setting, use it rather than relying on the environment variable alone. `KimodoPolicy` takes `trust_remote_code` (default `False`), so a process that has opted in to the provider can still refuse to execute a given repository's code. The two are independent: the environment variable decides whether the provider may be built, the setting decides whether a checkpoint's code runs.
 - Prefer providers that do not require remote code where you can. The default Mock policy, the GR00T container path, and many LeRobot policy families do not need this flag. Reach for `lerobot_local` with `trust_remote_code` only when a specific model genuinely requires it.
 - A mesh peer can request a model load too. When the mesh forwards a `pretrained_name_or_path` in an `execute`/`start` command, it is additionally constrained to an org allowlist (`STRANDS_MESH_HF_REPO_ALLOW`, default `nvidia,huggingface,lerobot`) so an authenticated peer cannot steer a robot into loading an arbitrary repo. Keep that allowlist as narrow as your fleet allows, and remember it is independent of the per-process `STRANDS_TRUST_REMOTE_CODE` opt-in - both gates apply.
 
