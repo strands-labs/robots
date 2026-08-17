@@ -317,6 +317,8 @@
         "tracker_fps",
         "device",
         "dtype",
+        "cache_dir",
+        "trust_remote_code",
         "seed",
         "motion_agent"
       ],

@@ -115,8 +115,8 @@ class TestAnExplicitExtraValueBeatsTheRegistryDefault:
 class TestTheProviderSpecificSpellingBeatsTheGenericParameter:
     """``host`` and ``policy_host`` name one key; the explicit one wins."""
 
-    def test_extra_host_beats_the_generic_policy_host_default(self):
-        """``policy_host`` carries its own default, so it cannot mean "unset"."""
+    def test_extra_host_beats_the_generic_policy_host(self):
+        """The provider's own spelling wins over the generic one."""
         kwargs = build_policy_kwargs("groot", host="gpu-box")
         assert kwargs["host"] == "gpu-box"
 
@@ -149,14 +149,15 @@ class TestADefaultStillFillsAnUnsetKey:
     def test_an_omitted_key_takes_the_registry_default(self, provider, key, default):
         """Honouring an explicit value must not stop a default from filling in.
 
-        ``host`` is the one exception: the generic ``policy_host`` parameter
-        carries its own default, so it fills the key before the registry can.
+        ``host`` used to be carved out of this contract: ``policy_host``
+        carried the literal default ``"localhost"``, so it filled the key
+        before the registry could.  Every generic parameter now defaults to
+        ``None``, so the rule is uniform.
         """
         kwargs = build_policy_kwargs(provider)
-        if key == "host":
-            assert kwargs[key] == "localhost"
-        else:
-            assert kwargs[key] == default
+        assert kwargs[key] == default, (
+            f"{provider}: {key} declares {default!r} but build_policy_kwargs returned {kwargs.get(key)!r}"
+        )
 
 
 class TestUnknownExtraKeysAreStillDropped:

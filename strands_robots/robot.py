@@ -42,6 +42,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
+import threading
 from typing import TYPE_CHECKING, Any, Literal, cast, overload
 
 from strands_robots.registry import (
@@ -93,14 +94,23 @@ def _auto_detect_mode(canonical: str) -> str:
             import serial.tools.list_ports
 
             ports = list(serial.tools.list_ports.comports())
-            servo_keywords = ["feetech", "dynamixel", "sts3215", "xl430", "xl330"]
+            servo_keywords = ["feetech", "dynamixel", "sts3215", "xl430", "xl330", "ch340", "ch343"]
+            # Servo-bus USB bridge vendor IDs. Feetech/SO-10x controller boards
+            # carry WCH CH34x chips that enumerate with the generic description
+            # "USB Single Serial" (observed on macOS with SO-101, vid 0x1a86
+            # pid 0x55d3), so keyword matching alone misses them entirely and
+            # mode="auto" silently falls back to sim with hardware attached.
+            servo_vids = {0x1A86, 0x0403}  # WCH CH34x, FTDI
             exclude = ["bluetooth", "internal", "debug", "apple", "modem"]
             robot_ports = [
                 p
                 for p in ports
-                if any(
-                    kw in ((p.description or "") + (getattr(p, "manufacturer", None) or "")).lower()
-                    for kw in servo_keywords
+                if (
+                    any(
+                        kw in ((p.description or "") + (getattr(p, "manufacturer", None) or "")).lower()
+                        for kw in servo_keywords
+                    )
+                    or (getattr(p, "vid", None) in servo_vids)
                 )
                 and not any(s in (p.description or "").lower() for s in exclude)
             ]
@@ -417,6 +427,16 @@ def Robot(  # noqa: N802 - uppercase by design (factory mimicking a class constr
             if sim_mesh is not None:
                 sim.mesh = sim_mesh
                 sim.peer_id = sim_mesh.peer_id
+                # The robot was added BEFORE the mesh existed (create_world ->
+                # add_robot -> init_mesh), so _attach_robot_to_mesh was a no-op
+                # at add_robot time. Attach the already-added robots now so
+                # each SimRobot gets its own child peer (which is what
+                # publishes per-robot joint state on strands/<peer>/state).
+                if hasattr(sim, "_attach_robot_to_mesh"):
+                    world = getattr(sim, "_world", None)
+                    for _sim_robot in (getattr(world, "robots", None) or {}).values():
+                        if getattr(_sim_robot, "mesh", None) is None:
+                            sim._attach_robot_to_mesh(_sim_robot)
         except Exception as exc:  # noqa: BLE001 - mesh enrichment is best-effort
             logger.warning("Failed to initialise mesh for %r: %s", canonical, exc)
 
@@ -478,6 +498,94 @@ def _attach_device_connect(instance: Any, canonical: str, mode: str, peer_id: st
     instance.run = lambda: _run_device_connect_foreground(instance)
 
 
+#: Seconds to wait for the Ctrl+C teardown before exiting anyway. Matches
+#: ``MuJoCoSimEngine._DEFAULT_POLICY_STOP_TIMEOUT``, which bounds the same
+#: decision on the same event: a teardown step that will not finish must not
+#: keep the process alive on the way out.
+_SHUTDOWN_TIMEOUT_S: float = 5.0
+
+
+def _release_resources_on_interrupt(instance: Any, peer_id: str) -> str | None:
+    """Run the instance's terminal teardown for Ctrl+C, bounded by a budget.
+
+    ``cleanup()`` is where a robot releases what it holds, and on hardware that
+    includes the physical devices: it reaches the driver's own ``disconnect()``,
+    which is where torque disable and gripper release live. Nothing else in the
+    library reaches them - ``cleanup()`` is terminal, so no entry point runs
+    after it, and lerobot's ``Robot.disconnect()`` refuses to be called by hand
+    once the robot is half-open. So the teardown either happens here or it does
+    not happen at all: the caller ends with ``os._exit``, which runs no
+    ``atexit`` hook, no ``__del__`` and no ``finally`` block.
+
+    The budget, and why the exit stays abrupt: ``Robot.cleanup()`` drains its
+    task executor with ``shutdown(wait=True)``, which a wedged rollout does not
+    finish - measured, a submitted item that never returns keeps that call
+    running indefinitely, and a ``ThreadPoolExecutor`` worker is not a daemon
+    thread, so the interpreter's own exit hook would then join it too. Awaiting
+    the teardown on the calling thread, or returning normally and letting the
+    interpreter tear down, therefore turns one operator Ctrl+C into a process
+    that never exits - and an operator who reaches for ``SIGKILL`` gets no
+    teardown at all, which is the outcome this exists to prevent. Running it on
+    a daemon thread with a budget keeps the guarantee that Ctrl+C ends the
+    process, on the same reasoning
+    :meth:`~strands_robots.simulation.mujoco.simulation.MuJoCoSimEngine.cleanup`
+    already applies to a wedged policy worker: bound the wait, report, proceed.
+
+    Args:
+        instance: The robot or simulation the runner was bound to. An instance
+            exposing no callable ``cleanup`` holds nothing this can release, so
+            it is reported as released rather than as a failure.
+        peer_id: Peer identifier, used to name the teardown thread.
+
+    Returns:
+        ``None`` when the teardown ran to completion, so the caller may report
+        the robot stopped. Otherwise a sentence naming what stopped it -- the
+        budget expiring, the teardown raising, or a second Ctrl+C arriving
+        during the wait -- for a caller that must not claim more than happened.
+    """
+    cleanup = getattr(instance, "cleanup", None)
+    if not callable(cleanup):
+        return None
+
+    failure: list[BaseException] = []
+    finished = threading.Event()
+
+    def _teardown() -> None:
+        try:
+            cleanup()
+        except Exception as exc:  # noqa: BLE001 - reported to the operator below
+            failure.append(exc)
+        finally:
+            finished.set()
+
+    threading.Thread(target=_teardown, name=f"{peer_id}-shutdown", daemon=True).start()
+
+    try:
+        released = finished.wait(timeout=_SHUTDOWN_TIMEOUT_S)
+    except KeyboardInterrupt:
+        # An impatient operator interrupting again lands here rather than in the
+        # loop above, and it must not escape: the caller's ``os._exit`` is what
+        # guarantees the process ends, and letting this propagate would instead
+        # unwind into interpreter shutdown, where the executor drain this wait
+        # is covering gets joined a second time by ``concurrent.futures``' own
+        # exit hook. Before this budget existed there was no window to interrupt,
+        # so the second Ctrl+C has to keep behaving the way the first one did.
+        logger.warning("%s: shutdown interrupted again; exiting immediately.", peer_id)
+        return "the shutdown was interrupted again before it finished."
+
+    if not released:
+        logger.warning(
+            "%s: cleanup() did not finish within %gs; exiting anyway.",
+            peer_id,
+            _SHUTDOWN_TIMEOUT_S,
+        )
+        return f"cleanup() did not finish within {_SHUTDOWN_TIMEOUT_S:g}s."
+    if failure:
+        logger.warning("%s: cleanup() raised during shutdown: %s", peer_id, failure[0])
+        return f"cleanup() raised {type(failure[0]).__name__}: {failure[0]}."
+    return None
+
+
 def _run_device_connect_foreground(instance: Any) -> None:
     """Start Device Connect and block - the robot listens for commands.
 
@@ -492,6 +600,13 @@ def _run_device_connect_foreground(instance: Any) -> None:
     the mesh has already been stopped for a replacement that never arrived, so
     the process serves no transport at all and the operator has to be told
     that rather than the opposite.
+
+    The operator's Ctrl+C is the only teardown this loop ever gets, on either
+    branch, so it releases the instance before exiting -- on hardware that is
+    what reaches the driver's ``disconnect()``, where torque disable and gripper
+    release live. The exit stays abrupt afterwards, and the shutdown line
+    reports whether the release actually finished; see
+    :func:`_release_resources_on_interrupt`.
     """
     import time
 
@@ -538,7 +653,15 @@ def _run_device_connect_foreground(instance: Any) -> None:
             time.sleep(1)
     except KeyboardInterrupt:
         print(f"\nShutting down {peer_id}...", flush=True)
-        print(f"{peer_id} stopped.", flush=True)
+        unreleased = _release_resources_on_interrupt(instance, peer_id)
+        if unreleased is None:
+            print(f"{peer_id} stopped.", flush=True)
+        else:
+            print(
+                f"{peer_id} is exiting WITHOUT a completed shutdown: {unreleased} "
+                f"Devices this process held may not have been released.",
+                flush=True,
+            )
         os._exit(0)
 
 

@@ -53,13 +53,20 @@ def test_robot_factory_attaches_mesh_in_sim_mode(patched_init_mesh):
     mock_init_mesh, fake_mesh = patched_init_mesh
     sim = Robot("so100", mode="sim", mesh=True)
     try:
-        # init_mesh was called with the constructed sim and peer_type='sim'.
+        # init_mesh is called for the PARENT sim first, then once per
+        # already-added SimRobot (child peers, BUGS.md #6 attach-ordering
+        # fix) - so assert on the first call, not call_args (= last call).
         assert mock_init_mesh.called
-        kw = mock_init_mesh.call_args.kwargs
+        kw = mock_init_mesh.call_args_list[0].kwargs
         assert kw["peer_type"] == "sim"
         assert kw["mesh"] is True
         assert sim.mesh is fake_mesh
         assert sim.peer_id == "fakebot-test"
+        # Child SimRobot peers are sims too: a simulated arm must never
+        # announce robot_type="robot" (real hardware) on presence.
+        for call in mock_init_mesh.call_args_list[1:]:
+            assert call.kwargs["peer_type"] == "sim"
+            assert call.kwargs["peer_id"].startswith("fakebot-test__")
     finally:
         # Best-effort cleanup; destroy may fail under heavily mocked envs.
         try:
@@ -114,7 +121,9 @@ def test_robot_factory_passes_peer_id_through(patched_init_mesh):
     mock_init_mesh, _ = patched_init_mesh
     sim = Robot("so100", mode="sim", peer_id="my-custom-id")
     try:
-        assert mock_init_mesh.call_args.kwargs["peer_id"] == "my-custom-id"
+        # First call = parent sim (child SimRobot attaches derive their own
+        # "<parent>__<name>" ids from it, so call_args would see the child).
+        assert mock_init_mesh.call_args_list[0].kwargs["peer_id"] == "my-custom-id"
     finally:
         try:
             sim.destroy()

@@ -23,6 +23,21 @@ the world and adds the named robot for you. Constructing a backend directly -
 `create_simulation("mujoco")` or `Simulation()` - gives an **empty** engine; you
 then call `create_world()` and `add_robot("so100")` yourself.
 
+Because `Robot(...)` has already built the world, calling `create_world()` on
+what it returns is refused - a world cannot be rebuilt under a live scene. The
+refusal names what that world holds and which call applies the arguments you
+passed:
+
+| You asked for | What applies it |
+|---------------|-----------------|
+| `timestep=`, `gravity=` | `set_timestep` / `set_gravity` on the live world - contents kept |
+| `ground_plane=`, `terrain=`, `difficulty=` | compiled in at creation: `destroy()`, then `create_world(...)` |
+| nothing | the world is ready; `reset()` restarts the rollout in place |
+
+`reset()` applies no `create_world` parameter - it restores the initial state at
+the values the world was built with - so it is never the way to get a *different*
+world.
+
 `robot_name` therefore belongs to `Robot(...)` and `add_robot(...)`, never to a
 backend constructor. Passing it to the constructor
 (`Simulation(robot_name="so100")`) is rejected with a `TypeError` rather than
@@ -52,11 +67,38 @@ sim.add_robot(name="panda", data_config="panda", keyframe="home")  # or keyframe
 ```
 
 The pose is applied to the robot's joints by name and is restored by `reset()`,
-so a keyframe spawn is sticky across episodes. An
-unknown keyframe name/index
+so a keyframe spawn is sticky across episodes. A MuJoCo `<key>` pairs that pose
+with the actuator command that *holds* it, and both are applied and restored
+together - so a gravity-loaded arm stays at its home configuration instead of
+sagging out of it as soon as the world steps. 28 of the 31 built-in robots that
+ship a `<keyframe>` declare a non-zero `ctrl` in it. The keyed command is applied
+verbatim, whatever quantity each actuator reads it as (a servo setpoint, a motor
+torque, a stateful actuator's activation); the keyed `qvel` is not applied, since
+a robot is added at rest. An unknown keyframe name/index
 is an error that lists the model's available keyframes. `keyframe=None` (the
 default) keeps the zero-pose spawn. (MuJoCo backend; the Newton backend rejects
 `keyframe=` as not-yet-supported.)
+
+### `position` offsets the model's own root pose
+
+`position` is written as the attach frame's translation, and MuJoCo *composes*
+that frame with the `pos` the model's root body declares - it does not replace
+it. A ground-bolted arm declares `pos="0 0 0"`, so for those the offset is the
+world position. A locomotion model is authored standing, so it is not:
+
+```python
+sim.add_robot(name="dog", data_config="unitree_go2", position=[0.0, 0.0, 0.4])
+# Position: [0.0, 0.0, 0.845] (position=[0.0, 0.0, 0.4] + model root offset [0.0, 0.0, 0.445])
+```
+
+30 of the 55 single-root robots in the built-in registry declare a non-zero root
+`pos` - the Unitree Go2 base at `z=0.445`, the JVRC pelvis at `z=1.4` - so for
+those `position=[0, 0, 0]` spawns the robot standing rather than sunk into the
+floor, which is the reason the compose is the useful default. `add_robot`
+reports the *measured* world position of the robot's root body and names the
+request and the model's offset beside it whenever they differ, so a spawn that
+did not land where it was asked is visible in the result. This differs from
+`add_object`, whose `position` places its body at exactly that world point.
 
 ### Adding a robot does not disturb the scene it joins
 

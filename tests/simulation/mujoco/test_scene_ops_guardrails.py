@@ -189,11 +189,13 @@ class TestRepositionBodyGuards:
 
 
 class TestSnapshotRestoreWithoutModel:
-    def test_snapshot_empty_world_returns_empty_dict(self) -> None:
-        assert scene_ops._snapshot_joint_state(SimWorld()) == {}
+    def test_snapshot_empty_world_returns_empty_state(self) -> None:
+        snap = scene_ops._snapshot_scene_state(SimWorld())
+        assert (snap.joints, snap.actuators, snap.body_wrenches, snap.time) == ({}, {}, {}, 0.0)
 
     def test_restore_empty_world_restores_nothing(self) -> None:
-        assert scene_ops._restore_joint_state(SimWorld(), {}) == 0
+        empty = scene_ops._SceneState(joints={}, actuators={}, body_wrenches={}, time=0.0)
+        assert scene_ops._restore_scene_state(SimWorld(), empty) == 0
 
 
 class TestPatchOpValidation:
@@ -376,7 +378,7 @@ _MIXED_JOINT_XML = """
 
 
 class TestSnapshotRestoreJointWidths:
-    """``_snapshot_joint_state`` / ``_restore_joint_state`` slice each joint at
+    """``_snapshot_scene_state`` / ``_restore_scene_state`` slice each joint at
     the width MuJoCo actually uses (free 7/6, ball 4/3, hinge/slide 1/1).
 
     ``eject_robot_from_scene`` relies on this to carry surviving robots and
@@ -395,11 +397,15 @@ class TestSnapshotRestoreJointWidths:
         return world
 
     def test_snapshot_uses_per_joint_type_widths(self, mixed_world: SimWorld) -> None:
-        """Each joint is captured at its type-correct qpos/qvel width."""
-        snap = scene_ops._snapshot_joint_state(mixed_world)
-        assert (len(snap["free_j"][0]), len(snap["free_j"][1])) == (7, 6)
-        assert (len(snap["ball_j"][0]), len(snap["ball_j"][1])) == (4, 3)
-        assert (len(snap["hinge_j"][0]), len(snap["hinge_j"][1])) == (1, 1)
+        """Each joint is captured at its type-correct qpos/dof width.
+
+        Every per-dof buffer (``qvel`` and ``qfrc_applied``) shares the dof
+        width, so all three slices are checked together.
+        """
+        joints = scene_ops._snapshot_scene_state(mixed_world).joints
+        assert [len(part) for part in joints[("joint", "free_j")]] == [7, 6, 6]
+        assert [len(part) for part in joints[("joint", "ball_j")]] == [4, 3, 3]
+        assert [len(part) for part in joints[("joint", "hinge_j")]] == [1, 1, 1]
 
     def test_snapshot_restore_round_trips_all_joint_types(self, mixed_world: SimWorld) -> None:
         """A snapshot restored back into the same model touches every joint and
@@ -408,26 +414,28 @@ class TestSnapshotRestoreJointWidths:
         data = mixed_world._data
         data.qpos[:] = [float(i) * 0.01 for i in range(len(data.qpos))]
         data.qvel[:] = [float(i) * 0.02 for i in range(len(data.qvel))]
-        snap = scene_ops._snapshot_joint_state(mixed_world)
+        data.qfrc_applied[:] = [float(i) * 0.03 for i in range(len(data.qfrc_applied))]
+        snap = scene_ops._snapshot_scene_state(mixed_world)
 
         # Clobber state, then restore from the snapshot by name.
         data.qpos[:] = 0.0
         data.qvel[:] = 0.0
-        restored = scene_ops._restore_joint_state(mixed_world, snap)
+        data.qfrc_applied[:] = 0.0
+        restored = scene_ops._restore_scene_state(mixed_world, snap)
 
         assert restored == 3, "free + ball + hinge all restored"
-        re_snap = scene_ops._snapshot_joint_state(mixed_world)
+        re_snap = scene_ops._snapshot_scene_state(mixed_world)
         for name in ("free_j", "ball_j", "hinge_j"):
-            assert re_snap[name] == snap[name]
+            assert re_snap.joints[("joint", name)] == snap.joints[("joint", name)]
 
     def test_restore_skips_width_mismatched_joint(self, mixed_world: SimWorld) -> None:
         """A snapshot entry whose width no longer matches the joint type (e.g.
         a same-named joint changed type across a rebuild) is skipped, not
         force-written - corrupt DOFs are never silently injected."""
-        snap = scene_ops._snapshot_joint_state(mixed_world)
+        snap = scene_ops._snapshot_scene_state(mixed_world)
         # Forge a free-joint-width payload under the hinge joint's name.
-        snap["hinge_j"] = ([0.0] * 7, [0.0] * 6)
-        restored = scene_ops._restore_joint_state(mixed_world, snap)
+        snap.joints[("joint", "hinge_j")] = ([0.0] * 7, [0.0] * 6, [0.0] * 6)
+        restored = scene_ops._restore_scene_state(mixed_world, snap)
         # free + ball restored; the mismatched hinge entry is dropped.
         assert restored == 2
 

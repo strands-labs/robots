@@ -4598,7 +4598,11 @@ class SimEngine(ABC):
                 "add_robot": (
                     "(name: str, urdf_path=None, data_config=None, position=None, "
                     "orientation=None) -> dict  # add a robot to the scene by "
-                    "registry name (or urdf_path); the first scene-construction step"
+                    "registry name (or urdf_path); the first scene-construction step. "
+                    "position OFFSETS the model's own authored root pose (a locomotion "
+                    "model is authored standing), so it is the world position only for "
+                    "a model whose root declares pos 0 0 0; the result reports the "
+                    "measured placement"
                 ),
                 "add_object": (
                     "(name: str, shape='box', position=None, orientation=None, "

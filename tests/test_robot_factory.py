@@ -97,6 +97,22 @@ class TestRobotRegistry:
 
 
 class TestAutoDetectMode:
+    @pytest.fixture(autouse=True)
+    def _no_usb_hardware(self, monkeypatch):
+        """Pin the port list empty so the verdict is the code's, not the host's.
+
+        These tests assert the no-hardware default, but ``_auto_detect_mode``
+        reads the host's real USB serial ports - so on a dev machine with a
+        servo bus attached (an SO-10x CH34x bridge, vid 0x1a86) the detection
+        correctly answers "real" and the assertion fails for a reason that has
+        nothing to do with the code under test. Same shape as the shared-cache
+        rule in AGENTS.md #15: a test that reads shared host state has a
+        verdict that depends on what the host already holds.
+        """
+        import serial.tools.list_ports
+
+        monkeypatch.setattr(serial.tools.list_ports, "comports", lambda: [])
+
     def test_defaults_to_sim(self):
         """No hardware plugged in → sim."""
         assert _auto_detect_mode("so100") == "sim"
@@ -487,6 +503,11 @@ class TestModeNormalization:
         from strands_robots.robot import _auto_detect_mode
 
         monkeypatch.setenv("STRANDS_ROBOT_MODE", "auto")
+        # Pin the port list empty: with a servo bus attached to the host the
+        # detection correctly answers "real" and this asserts the wrong layer.
+        import serial.tools.list_ports
+
+        monkeypatch.setattr(serial.tools.list_ports, "comports", lambda: [])
         # Auto-detect with no USB hardware → falls back to sim
         assert _auto_detect_mode("so100") == "sim"
 

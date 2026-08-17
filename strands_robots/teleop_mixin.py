@@ -77,6 +77,118 @@ class TeleopMixin:
     # Declared here (not implemented) so static analysis knows the mixin's
     # _teleop_loop may call it; at runtime Python resolves the host's concrete
     # method via MRO. A bare TeleopMixin (no host) raises NotImplementedError.
+    def start_teleop_receive(
+        self,
+        source_peer_id: str,
+        device_name: str = "leader",
+        apply_fn: Any | None = None,
+        robot_name: str | None = None,
+    ) -> dict[str, Any]:
+        """Follow a remote leader's input stream and apply it to this host.
+
+        Host-agnostic (N6): previously this existed only on the hardware
+        Robot, so a sim digital twin could not follow a real leader arm over
+        the mesh - "practice on the twin before touching metal" was
+        impossible, and every teleop verb answered sim peers with "robot does
+        not support teleop_receive". The receiver's default apply is
+        ``robot.send_action(action)``, which this mixin defines for both
+        hosts; on a sim, ``robot_name`` scopes the target arm (single-robot
+        worlds resolve it automatically).
+
+        Args:
+            source_peer_id: Peer id of the publishing leader.
+            device_name: Input stream name to subscribe to.
+            apply_fn: Optional custom ``(robot, action_dict) -> None``.
+            robot_name: Sim only - which robot in the world receives the
+                actions. Ignored on hardware hosts.
+
+        Returns:
+            Status dict; error when the mesh is inactive or an identifier is
+            not a valid mesh identifier.
+        """
+        mesh = getattr(self, "mesh", None)
+        if not mesh or not getattr(mesh, "alive", False):
+            return {"status": "error", "content": [{"text": "Mesh not active. Cannot receive input."}]}
+
+        from strands_robots.mesh.security import ValidationError, validate_mesh_identifier
+
+        try:
+            validate_mesh_identifier(source_peer_id, "start_teleop_receive.source_peer_id")
+            validate_mesh_identifier(device_name, "start_teleop_receive.device_name")
+        except ValidationError as exc:
+            return {"status": "error", "content": [{"text": str(exc)}]}
+
+        from strands_robots.mesh import InputReceiver
+
+        if apply_fn is None and robot_name is not None:
+            # Sim host with an explicit target arm: bind robot_name so the
+            # receiver's send_action lands on the right robot in the world.
+            def apply_fn(host: Any, action: dict[str, float], _rn: str | None = robot_name) -> None:  # noqa: ANN401
+                host.send_action(action, robot_name=_rn)
+
+        if not hasattr(self, "_input_receivers"):
+            self._input_receivers: dict[str, Any] = {}
+
+        key = f"{source_peer_id}/{device_name}"
+        if key in self._input_receivers:
+            self._input_receivers[key].stop()
+
+        # Hardware hosts apply to the inner lerobot driver (self.robot);
+        # sim hosts apply to self (send_action routes by robot_name).
+        target = getattr(self, "robot", None) if apply_fn is None else self
+        if target is None:
+            target = self
+
+        receiver = InputReceiver(
+            mesh=mesh,
+            robot=target,
+            source_peer_id=source_peer_id,
+            device_name=device_name,
+            apply_fn=apply_fn,
+        )
+        receiver.start()
+        self._input_receivers[key] = receiver
+
+        return {
+            "status": "success",
+            "content": [
+                {
+                    "text": f"Teleop receive started: following {source_peer_id}/{device_name}"
+                    + (f" -> {robot_name}" if robot_name else "")
+                }
+            ],
+        }
+
+    def get_teleop_status(self) -> dict[str, Any]:
+        """Status of all active teleop publishers/receivers (host-agnostic)."""
+        publishers = {}
+        receivers = {}
+        if hasattr(self, "_input_publishers"):
+            for name, pub in self._input_publishers.items():
+                publishers[name] = pub.stats
+        if hasattr(self, "_input_receivers"):
+            for key, rcv in self._input_receivers.items():
+                receivers[key] = rcv.stats
+        return {
+            "status": "success",
+            "content": [
+                {
+                    "text": f"Teleop status:\n"
+                    f"  Publishers: {len(publishers)} active\n"
+                    f"  Receivers: {len(receivers)} active\n"
+                    + "".join(
+                        f"  [pub] {n}: {s.get('frames', 0)} frames @ {s.get('hz_actual', 0):.1f}Hz\n"
+                        for n, s in publishers.items()
+                    )
+                    + "".join(
+                        f"  [rcv] {k}: {s.get('frames_received', 0)} frames @ {s.get('hz_actual', 0):.1f}Hz\n"
+                        for k, s in receivers.items()
+                    )
+                },
+                {"json": {"publishers": publishers, "receivers": receivers}},
+            ],
+        }
+
     def send_action(self, action: ActionDict, robot_name: str | None = None) -> dict[str, Any]:
         """Apply ``action`` to the host robot/sim. Implemented by the host."""
         raise NotImplementedError(

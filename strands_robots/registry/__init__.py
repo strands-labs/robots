@@ -44,6 +44,7 @@ from .policies import (
     build_policy_kwargs,
     get_policy_provider,
     import_policy_class,
+    list_policy_aliases,
     list_policy_providers,
     resolve_policy,
 )
@@ -86,6 +87,7 @@ __all__ = [
     # Policy registry
     "get_policy_provider",
     "list_policy_providers",
+    "list_policy_aliases",
     "resolve_policy",
     "import_policy_class",
     "build_policy_kwargs",
