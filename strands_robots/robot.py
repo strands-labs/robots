@@ -198,6 +198,9 @@ def Robot(
     cameras: dict[str, dict[str, Any]] | None = ...,
     position: list[float] | None = ...,
     data_config: str | None = ...,
+    *,
+    orientation: list[float] | None = ...,
+    keyframe: str | int | None = ...,
     **kwargs: Any,
 ) -> Simulation: ...
 
@@ -211,6 +214,9 @@ def Robot(
     cameras: dict[str, dict[str, Any]] | None = ...,
     position: list[float] | None = ...,
     data_config: str | None = ...,
+    *,
+    orientation: list[float] | None = ...,
+    keyframe: str | int | None = ...,
     **kwargs: Any,
 ) -> HardwareRobot: ...
 
@@ -224,6 +230,9 @@ def Robot(
     cameras: dict[str, dict[str, Any]] | None = ...,
     position: list[float] | None = ...,
     data_config: str | None = ...,
+    *,
+    orientation: list[float] | None = ...,
+    keyframe: str | int | None = ...,
     **kwargs: Any,
 ) -> Simulation | HardwareRobot: ...
 
@@ -238,6 +247,11 @@ def Robot(  # noqa: N802 - uppercase by design (factory mimicking a class constr
     data_config: str | None = None,
     mesh: bool | None = None,
     peer_id: str | None = None,
+    # Keyword-only: appended after the existing parameters, so no positional
+    # call shifts meaning and the overloads above stay positionally faithful.
+    *,
+    orientation: list[float] | None = None,
+    keyframe: str | int | None = None,
     **kwargs: Any,
 ) -> Simulation | HardwareRobot:
     """Create a robot - returns a Simulation or HardwareRobot instance.
@@ -286,6 +300,21 @@ def Robot(  # noqa: N802 - uppercase by design (factory mimicking a class constr
         data_config: Data configuration name for observation/action schema.
                      Defaults to the canonical robot name. For multi-camera
                      setups, specify explicitly: ``data_config="so100_dualcam"``.
+        orientation: Robot base orientation in the sim world as a quaternion
+            ``[w, x, y, z]``. Forwarded to the backend's ``add_robot`` verbatim
+            on the same terms as ``position``: omitting it spawns unrotated, and
+            a wrong-length, non-numeric or non-finite quaternion is refused with
+            an actionable message (surfaced here as ``RuntimeError``) rather
+            than being replaced by the identity rotation.
+        keyframe: Spawn the robot in a canonical pose declared by a
+            ``<keyframe>`` in its source model (e.g. panda ``"home"``, aloha
+            ``"neutral_pose"``) instead of the default all-zero configuration.
+            Accepts the keyframe name (``str``) or index (``int``) and is
+            forwarded to the backend's ``add_robot`` verbatim, so that method's
+            contract governs: the pose is sticky across ``reset()`` and an
+            unknown keyframe is a hard error naming the available keyframes
+            (surfaced here as ``RuntimeError``) instead of a silent zero-pose
+            spawn.
         mesh: Attach a Zenoh fleet-coordination mesh. ``None`` (default) keeps
               mesh OFF for a quiet bare ``Robot(...)`` but honours the
               ``STRANDS_MESH=true`` opt-in. Pass ``True`` to force it on or
@@ -391,11 +420,23 @@ def Robot(  # noqa: N802 - uppercase by design (factory mimicking a class constr
             # unnecessary: ``position=None`` is what ``add_robot`` already
             # documents as "spawn at the origin", so passing it through keeps ONE
             # source of truth for that default instead of a copy that can drift.
+            # ``orientation`` and ``keyframe`` travel with ``position`` for the
+            # same reason it is passed through unmodified: all three are
+            # ``SimEngine.add_robot`` parameters whose defaults and refusals that
+            # method already documents, so forwarding the caller's value verbatim
+            # keeps ONE source of truth for each. Dropping them here made the
+            # factory silently disagree with the backend it delegates to - a
+            # requested rotation or keyframe spawn was absorbed by ``**kwargs``
+            # and the robot came up unrotated in the zero configuration, and the
+            # refusals ``add_robot`` raises for a malformed quaternion or an
+            # unknown keyframe never reached the caller.
             result = sim.add_robot(
                 name=name,
                 urdf_path=urdf_path,
                 data_config=data_config or canonical,
                 position=position,
+                orientation=orientation,
+                keyframe=keyframe,
             )
             if result.get("status") == "error":
                 content = result.get("content", [])

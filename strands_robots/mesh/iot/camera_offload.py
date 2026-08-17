@@ -47,7 +47,7 @@ Configuration
 
 Bucket-ownership threat model
 -----------------------------
-The S3 PutObject path in :meth:`CameraOffloader._upload_frame` does
+The S3 PutObject path in :meth:`CameraOffloader.upload_frame` does
 not pass an ``ACL=`` kwarg. The contract for the offload bucket is
 that the operator configures it with object-ownership control
 ``BucketOwnerEnforced`` (and a bucket policy that denies public

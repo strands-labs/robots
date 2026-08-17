@@ -113,8 +113,35 @@ Every hardware `Robot` and `Simulation` host exposes:
 - **`duration`** - auto-stop after N seconds (`None` = until stopped).
 
 Each tick: poll every selected device's `get_action()` → apply its `map_fn` →
-**merge** (last-wins on key conflict, with a one-time warning) → apply via
+**merge** (last-wins on key conflict, with a one-time warning) → check the
+merged frame against the **per-joint slew bound** → apply via
 `self.send_action(merged, robot_name=...)`.
+
+The slew bound is `STRANDS_TELEOP_SLEW_ABS` (default 500 units/second): the
+fastest any single joint may be commanded to travel. The local loop carries its
+own default because the shipped SO hardware speaks driver units - arm joints in
+degrees, gripper in 0-100 - while the mesh receive path's
+`STRANDS_MESH_INPUT_SLEW_ABS` (8π) is radian-scoped. Either bound is above what a
+leader arm's own servos can produce, so a physical leader never trips it - what does is a frame no arm could
+have generated, such as an encoder glitch or a USB re-enumerate reading
+full-scale. Such a frame is **refused and counted** in `slew_rejected`, not
+clamped: clamping toward the commanded value would silently alter an actuator
+command. Because the bound is a speed measured from each joint's last applied
+value, the allowance grows while a joint is still, so a refused stream resumes
+by itself once the commanded pose is reachable safely - there is no resync step.
+
+A device that stops reporting keeps its place. When a teleoperator returns `{}`
+for a while - a disconnect, a USB re-enumerate - the loop still applies the other
+attached devices' frames, and the quiet device's joints keep their last applied
+value as their baseline. Its first read back on reconnecting is therefore
+measured against where it actually left the follower, so a full-scale first read
+is refused like any other over-speed frame rather than applied because the device
+had been away.
+
+Refusals are not errors, but a session with any of them does not report
+`success`, so a device whose units the bound does not expect (degree-valued or
+normalized-percent) cannot look like a clean run while moving nothing - widen
+the bound for those.
 
 ## Action-key compatibility
 
@@ -245,6 +272,16 @@ robot.stop_teleoperate()                     # stop loop + publishers + disconne
 `start_teleop_receive`) is the **transport** for streaming actions between
 peers. `teleoperate(publish=True)` composes the two: drive locally **and**
 publish so remote followers mirror.
+
+Because that composition drives both followers from one `get_action()` stream,
+both paths hold a frame to a per-joint slew bound - the local loop to
+`STRANDS_TELEOP_SLEW_ABS`, the mesh receive path to
+`STRANDS_MESH_INPUT_SLEW_ABS` - otherwise one device would be judged by one rule
+and no rule, and the follower physically next to the operator would be the unguarded
+one. The mesh receive path adds guards the local path has no need of, since it
+accepts frames from another host: sender scoping, replay freshness, an
+apply-rate ceiling (`STRANDS_MESH_INPUT_MAX_HZ`) and a magnitude clamp
+(`STRANDS_MESH_INPUT_VALUE_ABS`).
 
 ## See also
 
