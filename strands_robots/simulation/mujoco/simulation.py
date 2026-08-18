@@ -3365,8 +3365,11 @@ class MuJoCoSimEngine(
             mass: Body mass in kg for dynamic objects (default 0.1); must be a
                 finite number > 0 (the same domain ``set_body_properties``
                 enforces). Ignored when ``is_static``.
-            is_static: Fix the body in the world. ``shape="plane"`` forces this
-                True; other shapes default to dynamic.
+            is_static: Fix the body in the world. ``None`` (the default)
+                means unspecified: ``shape="plane"`` resolves it to True, every
+                other shape to False. A plane cannot be dynamic, so an explicit
+                ``is_static=False`` there is refused rather than overridden --
+                which is why the default is ``None`` and not ``False``.
             mesh_path: Mesh asset path; required and only used when
                 ``shape="mesh"``. The asset defines the geom's extent, and
                 MuJoCo collides a mesh geom as its **convex hull** -- not as the

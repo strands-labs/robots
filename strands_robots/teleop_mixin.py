@@ -37,6 +37,7 @@ Design
 from __future__ import annotations
 
 import contextlib
+import importlib
 import logging
 import math
 import os
@@ -222,7 +223,11 @@ class TeleopMixin:
             self._teleop_robot_name: str | None = None
             self._teleop_frames: int = 0
             self._teleop_errors: int = 0
-            self._teleop_start_time: float = 0.0
+            # ``time.monotonic()`` reading taken when the session began.
+            # Every reader subtracts it from a later reading of the same clock
+            # (the deadline, the elapsed/Hz report), and none reports it as a
+            # point in time, so a wall-clock step cannot move any of them.
+            self._teleop_start_mono: float = 0.0
             self._teleop_slew_rejected: int = 0
             # Baseline for the per-joint slew bound: for each joint, the last
             # value actually sent and when. Merged rather than replaced, so a
@@ -412,7 +417,10 @@ class TeleopMixin:
                 call returns immediately with a handle/status.
             duration: Stop automatically after N seconds. Must be a positive
                 finite number when given; ``None`` = run until
-                ``stop_teleoperate()`` (background) / Ctrl+C (block).
+                ``stop_teleoperate()`` (background) / Ctrl+C (block). Measured
+                from the end of setup, so it is time spent teleoperating: device
+                connection and the one-time resolution of the slew helpers happen
+                before the clock starts and are not charged to it.
 
         Returns:
             Status dict. Background mode returns immediately; ``block=True``
@@ -515,7 +523,23 @@ class TeleopMixin:
         self._teleop_errors = 0
         self._teleop_slew_rejected = 0
         self._teleop_slew_baseline = {}
-        self._teleop_start_time = time.time()
+        # Resolve the mesh slew module before the session clock starts. The loop
+        # judges every frame with helpers from strands_robots.mesh.security, which
+        # it imports lazily (the mesh package reaches strands_robots.simulation,
+        # which this mixin must not depend on - see the layering note in
+        # _teleop_loop). Resolving it there put ~2s of one-time import cost on a
+        # cold process INSIDE the window ``duration`` bounds, because the deadline
+        # is ``self._teleop_start_mono + duration`` and that stamp is taken here,
+        # before the loop runs at all. A session shorter than the import ended
+        # without polling the leader once and still reported success; a longer one
+        # was silently shortened by the same amount. Resolving it here - with the
+        # rest of setup, which already includes connecting every device - leaves
+        # the loop's import a sys.modules lookup, so ``duration`` measures
+        # teleoperation rather than teleoperation plus setup. Stated as a call
+        # rather than an unused ``import`` so the effect is the statement.
+        importlib.import_module("strands_robots.mesh.security")
+
+        self._teleop_start_mono = time.monotonic()
         self._teleop_running = True
 
         loop = lambda: self._teleop_loop(selected, robot_name, hz, duration)  # noqa: E731
@@ -583,7 +607,7 @@ class TeleopMixin:
     def get_teleoperate_status(self) -> dict[str, Any]:
         """Status of the local teleop loop (distinct from mesh get_teleop_status)."""
         self._ensure_teleop_state()
-        elapsed = time.time() - self._teleop_start_time if self._teleop_start_time else 0
+        elapsed = time.monotonic() - self._teleop_start_mono if self._teleop_start_mono else 0
         hz = self._teleop_frames / elapsed if elapsed > 0 else 0
         return {
             "status": "success",
@@ -625,7 +649,7 @@ class TeleopMixin:
         # caller), so the division is safe. ``duration`` is read by membership,
         # not truthiness: a falsy-but-supplied value must not read as "absent".
         period = 1.0 / float(hz)
-        deadline = (self._teleop_start_time + duration) if duration is not None else None
+        deadline = (self._teleop_start_mono + duration) if duration is not None else None
         warned_conflicts: set[str] = set()
 
         # Per-joint slew bound, the same one the mesh receive path applies, so a
@@ -642,7 +666,9 @@ class TeleopMixin:
         # pulls :mod:`strands_robots.simulation` in, and this mixin must not
         # depend on it (see
         # :func:`strands_robots.utils.positive_finite_number_error`). One import
-        # per session, not per tick.
+        # per session, not per tick - and :meth:`teleoperate` resolves the module
+        # before it stamps the session clock, so this reads an already-imported
+        # module rather than charging its cost to the caller's ``duration``.
         from strands_robots.mesh.security import (
             input_frame_slew_violation,
             merge_slew_baseline,
@@ -698,7 +724,13 @@ class TeleopMixin:
 
         while self._teleop_running and not self._teleop_stop_event.is_set():
             loop_start = time.perf_counter()
-            if deadline is not None and time.time() >= deadline:
+            # ``duration`` is an elapsed-time budget, so the deadline is
+            # compared on the clock it was built from. Read on ``time.time()``
+            # an NTP correction or a resume from suspend moved this comparison
+            # by the size of the step: forward the session ended early with the
+            # leader still held, and backward it kept driving the follower past
+            # the budget the caller asked for. Neither was reported.
+            if deadline is not None and time.monotonic() >= deadline:
                 logger.info("[teleop] duration elapsed (%.1fs); stopping", duration)
                 break
 
@@ -776,7 +808,7 @@ class TeleopMixin:
                 stop_pub()  # stops all publishers/receivers on the host
 
     def _teleop_stats(self, *, blocking: bool, publish_results: list | None = None) -> dict[str, Any]:
-        elapsed = time.time() - self._teleop_start_time if self._teleop_start_time else 0
+        elapsed = time.monotonic() - self._teleop_start_mono if self._teleop_start_mono else 0
         hz = self._teleop_frames / elapsed if elapsed > 0 else 0
         note = ""
         if publish_results:

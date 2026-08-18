@@ -181,7 +181,7 @@ def _make_minimal_engine():
             size: list[float] | None = None,
             color: list[float] | None = None,
             mass: float = 1.0,
-            is_static: bool = False,
+            is_static: bool | None = None,
             mesh_path: str | None = None,
             material: dict[str, Any] | None = None,
             **kwargs: Any,

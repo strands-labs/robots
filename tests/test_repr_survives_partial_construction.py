@@ -246,7 +246,7 @@ BUILDABLE: list[tuple[str, Any, str]] = [
     ),
     ("RtpsRobot", lambda: RtpsRobot(node_name="/arm", cmd_vel_topic="/cmd_vel"), "/arm"),
     ("Mesh", lambda: Mesh(_Robot(), peer_id="arm", peer_type="robot"), "arm"),
-    ("PeerInfo", lambda: PeerInfo(peer_id="arm", peer_type="robot", last_seen=0.0), "arm"),
+    ("PeerInfo", lambda: PeerInfo(peer_id="arm", peer_type="robot", last_seen_mono=0.0), "arm"),
     ("DatasetRecorder", lambda: DatasetRecorder(dataset=_Dataset()), "user/dataset"),
     ("InputPublisher", lambda: InputPublisher(_fake_mesh(), object(), device_name="leader", hz=50.0), "leader"),
     (

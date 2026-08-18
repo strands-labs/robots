@@ -1853,7 +1853,7 @@ class IsaacSimulation(IsaacMotionPrimitivesMixin, IsaacRecordingMixin, SimEngine
         size: list[float] | None = None,
         color: list[float] | None = None,
         mass: float = 0.1,
-        is_static: bool = False,
+        is_static: bool | None = None,
         mesh_path: str | None = None,
         material: dict[str, Any] | None = None,
         **kwargs: Any,
@@ -1936,11 +1936,13 @@ class IsaacSimulation(IsaacMotionPrimitivesMixin, IsaacRecordingMixin, SimEngine
             ``mass=0`` "make it static" spelling - ``0`` is refused with
             ``is_static=True`` named as the remedy, which is the MuJoCo
             contract this backend's docs otherwise mirror.
-        is_static : bool
+        is_static : bool, optional
             If ``True``, the prim is constructed via ``Fixed{Cuboid,
             Sphere, Cylinder, Capsule}`` and stays pinned in space. If
-            ``False`` (default), uses the ``Dynamic*`` counterpart and
-            participates in physics with ``mass``.
+            ``False``, uses the ``Dynamic*`` counterpart and participates in
+            physics with ``mass``. ``None`` (the default) means unspecified;
+            this backend derives nothing from ``shape``, so it resolves to
+            ``False``.
         mesh_path : str, optional
             Path to a custom mesh asset. Loading custom meshes is not
             supported by the Isaac backend yet; a non-``None`` value is
@@ -2077,6 +2079,14 @@ class IsaacSimulation(IsaacMotionPrimitivesMixin, IsaacRecordingMixin, SimEngine
                     "status": "error",
                     "content": [{"text": f"Object '{name}' already exists."}],
                 }
+
+            # ``None`` means the caller did not specify, per
+            # :meth:`~strands_robots.simulation.base.SimEngine.add_object`. This
+            # backend has no shape-derived rule, so unspecified is dynamic.
+            # Resolved before any gate reads it, so the mass check below still
+            # runs for a dynamic body and the recorded object state carries a
+            # real bool rather than the sentinel.
+            is_static = False if is_static is None else is_static
 
             # ``scale`` is accepted as an alias for ``size`` (matches
             # Isaac's ``DynamicCuboid(scale=...)`` convention and the docs
