@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import contextlib
 import dataclasses
+import importlib.util
 import json
 import logging
 import os
@@ -81,6 +82,48 @@ _LEROBOT_POLICY_TYPES_FALLBACK = frozenset(
 )
 
 _SUPPORTED_METHODS = {"full", "lora", "expert_only"}
+
+# Packages lerobot's own ``train()`` requires at CALL time, each with the lerobot
+# extra whose remedy names it. Transcribed from the ``require_package(...)`` call
+# sites in ``lerobot.scripts.lerobot_train``, which is the authority for what that
+# entry point will demand:
+#
+#   * ``accelerate`` (extra ``training``) is required UNCONDITIONALLY, as the first
+#     statement of ``train()`` - before it branches on device and before it loads a
+#     dataset - so every LeRobot run needs it, CPU included.
+#   * ``peft`` (extra ``peft``) is required when ``cfg.peft`` is set, which
+#     :meth:`LerobotTrainer.build_config` does exactly when ``method == "lora"``.
+#
+# ``diffusers`` (extra ``diffusion``) is the third such call site, guarded by
+# ``cfg.ema.enable``. It is deliberately absent: nothing here sets ``cfg.ema``, so
+# it is reachable only by naming ``ema.enable`` through the generic dotted
+# ``extra`` passthrough, and enumerating what an arbitrary passthrough key implies
+# is a different question from what this spec's own fields ask for.
+_LEROBOT_CALL_TIME_PACKAGES: tuple[tuple[str, str], ...] = (("accelerate", "training"),)
+_LEROBOT_LORA_PACKAGES: tuple[tuple[str, str], ...] = (("peft", "peft"),)
+
+
+def _module_available(name: str) -> bool:
+    """Whether ``name`` can be located, asked WITHOUT importing it.
+
+    Mirrors lerobot's own ``is_package_available`` - an
+    :func:`importlib.util.find_spec` lookup - so a preflight answers the very
+    question the runtime gate will ask, and keeps :meth:`Trainer.validate`
+    read-only: locating a module neither executes it nor pays its import cost.
+
+    Args:
+        name: Top-level import name of the package to locate.
+
+    Returns:
+        True when a spec was found. A lookup that raises answers False rather
+        than propagating: this runs on a preflight path whose contract is to
+        report problems, so a broken probe is "cannot confirm it is there".
+    """
+    try:
+        return importlib.util.find_spec(name) is not None
+    except (ImportError, ValueError):
+        return False
+
 
 # LeRobot policy types whose config exposes ``use_relative_actions`` (the
 # relative-action processor pair: a RelativeActionsProcessorStep on the input
@@ -688,8 +731,10 @@ class LerobotTrainer(Trainer):
         split below the dataset total and not asked for alongside ``streaming``
         (lerobot's split path is map-style only), a local dataset format version
         the installed lerobot can read, usable LoRA hyperparameters when
-        ``method == "lora"``, and that ``lerobot.scripts.lerobot_train``
-        is importable. ``extra['reward_model']`` switches to reward-model
+        ``method == "lora"``, that ``lerobot.scripts.lerobot_train``
+        is importable, and that the packages its ``train()`` requires at call
+        time (``accelerate`` always, ``peft`` for ``method == "lora"``) are
+        installed. ``extra['reward_model']`` switches to reward-model
         preflight; otherwise the default policy path is checked. Returns the
         problem list; empty means launchable. Read-only.
         """
@@ -788,14 +833,59 @@ class LerobotTrainer(Trainer):
 
         # lerobot must be importable to actually train.
         try:
-            import importlib.util
-
-            if importlib.util.find_spec("lerobot.scripts.lerobot_train") is None:
+            lerobot_present = importlib.util.find_spec("lerobot.scripts.lerobot_train") is not None
+            if not lerobot_present:
                 problems.append("lerobot is not installed (no lerobot.scripts.lerobot_train)")
         except Exception:  # noqa: BLE001
+            lerobot_present = False
             problems.append("lerobot is not installed")
 
+        # An installed lerobot is not yet a launchable one: its train() requires
+        # more packages at CALL time. Reported only once lerobot itself is
+        # present, so an install with neither gets one root cause, not two.
+        if lerobot_present:
+            problems.extend(self._call_time_dependency_problems(spec))
+
         return problems
+
+    def _call_time_dependency_problems(self, spec: TrainSpec) -> list[str]:
+        """Packages lerobot's ``train()`` will require that are not installed.
+
+        ``validate()`` already reports an absent lerobot rather than "deferring
+        the failure to the training launch", but an importable lerobot is not a
+        launchable one: ``lerobot.scripts.lerobot_train.train`` calls
+        ``require_package(...)`` for packages that are NOT module-scope imports
+        of that module, so locating it says nothing about them. The first such
+        call is ``require_package("accelerate", extra="training")``, the opening
+        statement of ``train()`` - and no ``strands-robots[lerobot]`` install
+        supplies ``accelerate``.
+
+        Left unreported, that spec validates clean and :meth:`train` proceeds
+        through :meth:`prepare` and the fresh-start hygiene that removes a
+        checkpoint-less ``output_dir`` before raising - so a run knowably
+        unlaunchable at preflight time deletes a directory first. This gate is
+        what makes "empty means launchable" true of the dependency axis.
+
+        Args:
+            spec: The spec being validated; ``method`` selects the conditional
+                requirements (``lora`` sets ``cfg.peft``, which lerobot gates
+                ``peft`` on).
+
+        Returns:
+            One problem per absent package, naming the lerobot extra that
+            supplies it. Empty when every package the run will need is present.
+        """
+        required = list(_LEROBOT_CALL_TIME_PACKAGES)
+        if spec.method == "lora":
+            required.extend(_LEROBOT_LORA_PACKAGES)
+
+        return [
+            f"'{package}' is required by lerobot's train() but is not installed; "
+            f"install it with: pip install 'lerobot[{extra}]' "
+            f"(the strands-robots[lerobot] extra does not supply it)"
+            for package, extra in required
+            if not _module_available(package)
+        ]
 
     def _validate_policy(self, spec: TrainSpec) -> list[str]:
         """Policy-training preflight (the default, ``cfg.policy`` path)."""

@@ -179,7 +179,8 @@
       "description": "Body mass in kg for add_object (default 0.1). Dynamic objects need a finite value > 0 and >= MuJoCo's mjMINVAL (1e-15); anything else is rejected, since a non-finite mass turns the whole world's state to nan on the next step. Ignored when is_static=true (MuJoCo derives the mass from the geom density)."
     },
     "is_static": {
-      "type": "boolean"
+      "type": "boolean",
+      "description": "Fix an add_object body in the world so physics cannot move it. Omit it to leave the choice to the shape: shape='plane' is then made static (a plane is infinite and cannot carry a dynamic mass) and every other shape is dynamic. Sending false for a plane is refused rather than overridden, so omit this rather than spelling out the non-plane default."
     },
     "mesh_path": {
       "type": "string"

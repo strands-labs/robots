@@ -18,16 +18,40 @@ import asyncio
 import pkgutil
 import sys
 import threading
+import time as real_time
 import types
 from typing import Any
 
 import pytest
 
+from strands_robots import hardware_robot as hardware_robot_module
 from strands_robots.hardware_robot import Robot as HwRobot
 from strands_robots.hardware_robot import RobotTaskState, TaskStatus
 from strands_robots.policies.base import Policy
 from tests._daemon_executor import DaemonThreadExecutor
 from tests.tool_result_contract import tool_json
+
+
+def _script_loop_clock(monkeypatch: pytest.MonkeyPatch, clock: dict[str, float]) -> None:
+    """Make the control loop's elapsed-time clock read ``clock["now"]``.
+
+    The loop measures its budget on ``time.monotonic()``, which is also
+    asyncio's event-loop clock. Patching the attribute on the ``time`` module
+    would therefore freeze the event loop's own scheduling and the
+    ``asyncio.sleep`` between two commands would never return, so the module
+    reference the robot holds is swapped instead: the script reaches the code
+    under test and nothing else.
+    """
+    monkeypatch.setattr(
+        hardware_robot_module,
+        "time",
+        types.SimpleNamespace(
+            monotonic=lambda: clock["now"],
+            time=real_time.time,
+            sleep=real_time.sleep,
+            perf_counter=real_time.perf_counter,
+        ),
+    )
 
 
 class _FakeLeRobot:
@@ -126,9 +150,9 @@ class TestTaskStatusReporting:
         hw = _make_robot()
         hw._task_state.status = TaskStatus.RUNNING
         hw._task_state.instruction = "pick cube"
-        hw._task_state.start_time = 100.0
+        hw._task_state.start_mono = 100.0
         hw._task_state.step_count = 7
-        monkeypatch.setattr("strands_robots.hardware_robot.time.time", lambda: 103.5)
+        _script_loop_clock(monkeypatch, {"now": 103.5})
 
         text = hw.get_task_status()["content"][0]["text"]
         assert "RUNNING" in text
@@ -323,9 +347,10 @@ class TestExecuteTaskAsync:
     def test_full_loop_sends_actions_and_completes(self, monkeypatch):
         """One observe->act iteration runs, then the loop terminates.
 
-        The control loop is bounded by ``while time.time() - start < duration``.
-        Driving that with a hand-counted finite iterator is fragile: it assumes
-        the code reads ``time.time()`` an exact number of times before the loop
+        The control loop is bounded by
+        ``while time.monotonic() - start < duration``. Driving that with a
+        hand-counted finite iterator is fragile: it assumes the code reads the
+        clock an exact number of times before the loop
         (connect/policy-init logging, the Python/lerobot build, or any future
         refactor that adds a clock read would desync the iterator, leave the
         captured ``start`` pinned to the terminal value, and spin the loop
@@ -338,10 +363,7 @@ class TestExecuteTaskAsync:
         hw = _make_robot(fake, control_frequency=1000.0)
 
         clock = {"now": 0.0}
-        monkeypatch.setattr(
-            "strands_robots.hardware_robot.time.time",
-            lambda: clock["now"],
-        )
+        _script_loop_clock(monkeypatch, clock)
 
         class _ClockAdvancingPolicy(_StubPolicy):
             async def get_actions(self, observation, instruction):
@@ -531,10 +553,7 @@ class TestExecuteTaskAsyncRtcContract:
         hw = _make_robot(fake, control_frequency=control_frequency)
 
         clock = {"now": 0.0}
-        monkeypatch.setattr(
-            "strands_robots.hardware_robot.time.time",
-            lambda: clock["now"],
-        )
+        _script_loop_clock(monkeypatch, clock)
 
         # Advance the clock past the duration once the chunk is fetched so the
         # loop runs exactly one observe->infer->apply iteration.

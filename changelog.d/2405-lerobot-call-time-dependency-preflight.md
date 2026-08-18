@@ -1,0 +1,3 @@
+### Fixed
+
+- **training/lerobot**: `LerobotTrainer.validate` now reports the packages lerobot's own `train()` requires at call time - `accelerate` always, and `peft` when `method == "lora"` - instead of returning no problems for a spec that cannot train. `lerobot.scripts.lerobot_train.train` reaches those through `require_package(...)` rather than a module-scope import, so locating lerobot said nothing about them, and no `strands-robots[lerobot]` install supplies `accelerate`. `train()` fails closed on a validate() problem, so an `output_dir` is no longer cleared on the way to a run that could never start. Each problem names the `lerobot[...]` extra that supplies the package.
