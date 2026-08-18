@@ -129,19 +129,194 @@ def test_read_pose_matrix_provider_decomposes_se3() -> None:
     assert pose["source"] == "provider"
 
 
-def test_read_pose_matrix_negative_trace_uses_identity_quat() -> None:
-    # 180-degree rotation about X gives a non-positive trace branch.
-    mat = np.array(
+def _yaw_se3(degrees: float) -> np.ndarray:
+    """SE(3) transform: yaw about Z at a fixed non-zero translation."""
+    a = np.radians(degrees)
+    c, s = np.cos(a), np.sin(a)
+    return np.array(
         [
-            [1.0, 0.0, 0.0, 0.0],
-            [0.0, -1.0, 0.0, 0.0],
-            [0.0, 0.0, -1.0, 0.0],
+            [c, -s, 0.0, 1.5],
+            [s, c, 0.0, -0.25],
+            [0.0, 0.0, 1.0, 0.1],
             [0.0, 0.0, 0.0, 1.0],
         ]
     )
+
+
+def _rotmat_from_quat_wxyz(q: list[float]) -> np.ndarray:
+    """Scalar-first unit quaternion -> 3x3 rotation matrix (round-trip oracle)."""
+    w, x, y, z = q
+    return np.array(
+        [
+            [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+            [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+            [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
+        ]
+    )
+
+
+def _quat_angle_degrees(q: list[float]) -> float:
+    """Rotation angle a scalar-first quaternion encodes, in degrees."""
+    return float(2.0 * np.degrees(np.arccos(min(1.0, abs(q[0])))))
+
+
+def _axis_angle_rot(axis: tuple[float, float, float], degrees: float) -> np.ndarray:
+    """Rotation matrix from axis-angle (Rodrigues).
+
+    Built from the angle rather than typed as decimal literals so the matrix is
+    orthonormal to machine precision and a round-trip can be asserted tightly.
+    """
+    a = np.asarray(axis, dtype=float)
+    a = a / np.linalg.norm(a)
+    t = np.radians(degrees)
+    k = np.array([[0.0, -a[2], a[1]], [a[2], 0.0, -a[0]], [-a[1], a[0], 0.0]])
+    return np.eye(3) + np.sin(t) * k + (1.0 - np.cos(t)) * (k @ k)
+
+
+@pytest.mark.parametrize("yaw", [5.0, 45.0, 90.0, 119.0, 121.0, 150.0, 179.0, 180.0, -135.0, -180.0])
+def test_read_pose_matrix_quat_and_theta_report_the_same_rotation(yaw: float) -> None:
+    """One pose payload cannot carry two different headings.
+
+    ``theta`` and ``quat`` are decomposed from the same SE(3) matrix and are the
+    only two orientation fields the payload has, so a consumer that reads either
+    must get the same answer. A quaternion built from the trace branch alone is
+    unusable once the trace is non-positive - which is exactly a rotation of 120
+    degrees or more, 61% of SO(3) - and substituting the identity there makes
+    this payload self-contradictory: the same message reported a robot turned
+    180 degrees as ``theta`` = pi beside a ``quat`` meaning no rotation at all.
+    """
+    pose = _host(_pose=_yaw_se3(yaw))._read_pose()
+    assert pose is not None
+    theta_deg = float(np.degrees(pose["theta"]))
+    assert theta_deg == pytest.approx(yaw, abs=1e-6)
+    # A planar yaw is a rotation about Z alone, so the quaternion's angle is the
+    # magnitude of that heading and its axis is +/-Z.
+    assert _quat_angle_degrees(pose["quat"]) == pytest.approx(abs(yaw), abs=1e-6)
+    assert pose["quat"][1] == pytest.approx(0.0, abs=1e-9)
+    assert pose["quat"][2] == pytest.approx(0.0, abs=1e-9)
+
+
+@pytest.mark.parametrize(
+    ("name", "rot"),
+    [
+        ("yaw 180", np.diag([-1.0, -1.0, 1.0])),
+        ("pitch 180", np.diag([-1.0, 1.0, -1.0])),
+        ("roll 180", np.diag([1.0, -1.0, -1.0])),
+    ],
+)
+def test_read_pose_matrix_reports_a_half_turn_as_a_half_turn(name: str, rot: np.ndarray) -> None:
+    """A half turn about any axis is a half turn, not the identity.
+
+    All three of these have trace ``-1``, the far end of the branch the trace
+    formula cannot serve. Reporting the identity here tells a fleet operator a
+    robot that has completely reversed its orientation has not moved.
+    """
+    mat = np.eye(4)
+    mat[:3, :3] = rot
     pose = _host(_pose=mat)._read_pose()
     assert pose is not None
-    assert pose["quat"] == [1.0, 0.0, 0.0, 0.0]
+    assert _quat_angle_degrees(pose["quat"]) == pytest.approx(180.0, abs=1e-6), name
+
+
+@pytest.mark.parametrize(
+    ("axis", "degrees"),
+    [
+        ((0.0, 0.0, 1.0), 180.0),
+        ((1.0, 0.0, 0.0), 180.0),
+        ((0.0, 1.0, 0.0), 135.0),
+        ((1.0, 1.0, 0.0), 180.0),
+        ((1.0, 2.0, -3.0), 168.0),
+        ((-2.0, 1.0, 0.5), 121.0),
+    ],
+)
+def test_read_pose_matrix_quat_round_trips_to_the_input_rotation(
+    axis: tuple[float, float, float], degrees: float
+) -> None:
+    """Recomposing the published quaternion returns the matrix it came from.
+
+    The round trip is the contract independent of any convention: whatever
+    ordering or sign the payload uses, the rotation it encodes must be the one
+    the caller handed over. Each of these has a non-positive trace.
+    """
+    rot = _axis_angle_rot(axis, degrees)
+    mat = np.eye(4)
+    mat[:3, :3] = rot
+    pose = _host(_pose=mat)._read_pose()
+    assert pose is not None
+    assert float(np.trace(rot)) <= 0.0, "premise: exercises the non-positive-trace branch"
+    recovered = _rotmat_from_quat_wxyz(pose["quat"])
+    assert np.allclose(recovered, rot, atol=1e-9)
+
+
+@pytest.mark.parametrize("yaw", [5.0, 45.0, 90.0, 119.0])
+def test_read_pose_matrix_quat_unchanged_below_the_trace_boundary(yaw: float) -> None:
+    """Rotations the trace branch already served keep the quaternion they had.
+
+    These yaws all have a positive trace, so they were already reported
+    correctly. Completing the remaining branches must not perturb them - this
+    fails if the branch selection is changed rather than extended.
+    """
+    pose = _host(_pose=_yaw_se3(yaw))._read_pose()
+    assert pose is not None
+    half = np.radians(yaw) / 2.0
+    assert pose["quat"] == pytest.approx([np.cos(half), 0.0, 0.0, np.sin(half)], abs=1e-9)
+
+
+@pytest.mark.parametrize("yaw", [45.0, 121.0, 180.0, -160.0])
+def test_read_pose_matrix_quat_is_always_a_unit_quaternion(yaw: float) -> None:
+    """Every published quaternion is unit length, on both sides of the branch."""
+    pose = _host(_pose=_yaw_se3(yaw))._read_pose()
+    assert pose is not None
+    assert float(np.linalg.norm(pose["quat"])) == pytest.approx(1.0, abs=1e-12)
+
+
+def test_read_pose_matrix_quat_round_trips_across_a_uniform_sample_of_so3() -> None:
+    """The whole rotation group, not a hand-picked list of angles.
+
+    Recomposing the published quaternion must return the matrix it came from for
+    any orientation a robot can be in. The sample is asserted to straddle the
+    branch boundary so a seed that happened to draw only small rotations cannot
+    pass vacuously, and the split is reported in the failure message because the
+    non-positive-trace side is the majority of the group, not a corner of it.
+    """
+    rng = np.random.default_rng(17)
+    mats = []
+    for _ in range(300):
+        q, r = np.linalg.qr(rng.normal(size=(3, 3)))
+        q = q @ np.diag(np.sign(np.diag(r)))
+        if np.linalg.det(q) < 0:
+            q[:, 0] *= -1
+        mats.append(q)
+    traces = [float(np.trace(m)) for m in mats]
+    n_nonpositive = sum(1 for t in traces if t <= 0.0)
+    assert 0 < n_nonpositive < len(mats), (
+        f"premise: sample must straddle the branch boundary, got {n_nonpositive}/{len(mats)} non-positive"
+    )
+    worst = 0.0
+    for rot in mats:
+        mat = np.eye(4)
+        mat[:3, :3] = rot
+        pose = _host(_pose=mat)._read_pose()
+        assert pose is not None
+        worst = max(worst, float(np.max(np.abs(_rotmat_from_quat_wxyz(pose["quat"]) - rot))))
+    assert worst < 1e-9, (
+        f"worst round-trip error {worst:.3e} over {len(mats)} rotations ({n_nonpositive} non-positive trace)"
+    )
+
+
+def test_read_pose_matrix_quat_is_unit_for_a_drifted_rotation_block() -> None:
+    """A not-quite-orthonormal rotation block still yields a unit quaternion.
+
+    A pose integrated from odometry or handed over by a SLAM stack accumulates
+    scale drift. Without normalization the quaternion's length silently carries
+    that drift onto the wire, where a consumer reading it as a unit quaternion
+    has no way to notice.
+    """
+    mat = _yaw_se3(70.0)
+    mat[:3, :3] *= 1.004
+    pose = _host(_pose=mat)._read_pose()
+    assert pose is not None
+    assert float(np.linalg.norm(pose["quat"])) == pytest.approx(1.0, abs=1e-12)
 
 
 def test_read_pose_slam_fallback() -> None:

@@ -1,0 +1,3 @@
+### Fixed
+
+- **rendering**: `srgb_to_linear` no longer guesses the scale of an integer array. It accepts two scales - byte codes in `[0, 255]` (`uint8`) and unit floats in `[0, 1]` - and decided between them from `dtype == uint8` alone, so every other integer spelling of the same byte data (a `uint16` capture, an `int32` array, or the plain Python list its `ArrayLike` annotation invites) took the float branch and was clipped, turning every code above 1 into pure white with nothing reported. Such an array is now refused with a message naming both accepted spellings and the conversion for each. `derive_key_light`, which passes its caller's environment map straight into the decode, inherits the refusal instead of reporting a key light derived from a saturated map.

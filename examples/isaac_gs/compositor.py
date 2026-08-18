@@ -53,10 +53,16 @@ class IsaacHybridCompositor(_LibraryHybridCompositor):
         background: Optional[BackgroundRenderer] = None,
         feather_pixels: int = 1,
         depth_epsilon: float = 1e-4,
+        **kwargs: object,
     ) -> None:
         super().__init__(
             sim,  # type: ignore[arg-type]
             background=background,
             feather_pixels=feather_pixels,
             depth_epsilon=depth_epsilon,
+            # Forward everything else (shadow_plane_z, blend_in_linear, ...)
+            # so the library compositor's options stay reachable -- a kwarg
+            # accepted here but dropped before the library would be a silent
+            # no-op (see AGENTS.md "Forward all advertised kwargs").
+            **kwargs,  # type: ignore[arg-type]
         )
