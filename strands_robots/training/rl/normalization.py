@@ -22,9 +22,11 @@ from torch import nn
 class EmpiricalNormalization(nn.Module):
     """Normalize a tensor stream by its running (Welford) mean and std.
 
-    The running statistics update only while the module is in training mode and
-    ``update=True`` is passed to :meth:`forward`; in eval mode the learned
-    statistics are frozen, so an exported policy normalizes deterministically.
+    The running statistics update only while the module is in training mode:
+    :meth:`forward` additionally requires ``update=True``, and :meth:`update`
+    folds a batch whenever the module is training. In eval mode the learned
+    statistics are frozen at BOTH entry points, so an exported policy
+    normalizes deterministically.
 
     Args:
         shape: Per-feature shape of the observation (e.g. ``(num_obs,)``).
@@ -88,7 +90,17 @@ class EmpiricalNormalization(nn.Module):
 
     @torch.no_grad()
     def update(self, x: torch.Tensor) -> None:
-        """Fold a batch into the running mean/var (no-op once ``until`` reached)."""
+        """Fold a batch into the running mean/var.
+
+        A no-op in eval mode, and once ``until`` samples have been seen. The
+        mode check lives here rather than only in :meth:`forward` so the
+        documented eval-mode freeze holds for a direct ``update`` call too:
+        the statistics are persistent buffers, so folding a batch after
+        ``eval()`` would be written into the next checkpoint and change how an
+        exported policy whitens every observation.
+        """
+        if not self.training:
+            return
         if self.until is not None and int(self.count) >= self.until:
             return
         count_x = x.shape[0]

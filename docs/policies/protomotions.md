@@ -166,6 +166,20 @@ some 20 degrees out, with nothing in the cache to say so. A model whose `qpos`
 layout differs is refused separately and says so, so a model-side mismatch is
 not read as a bad `qpos` argument.
 
+### An MJCF that declares its own ground is used as-is
+
+Forward kinematics needs a floor, and the ProtoMotions G1 MJCF names one from
+`<contact><pair geom2="floor">`, so the bridge appends a plane geom called
+`floor` when - and only when - the model does not already declare a ground.
+
+Whether it does is decided from the geom list MuJoCo itself parses out of the
+file, so every way of declaring a ground counts: a plane in any of the
+`<worldbody>` sections MuJoCo merges, one nested inside a body, and one spliced
+in through `<include>`. Pass any G1 MJCF that already ships a floor - the
+`unitree_ros` G1 descriptions declare theirs in a second `<worldbody>`, and
+menagerie-style `scene.xml` wrappers `<include>` the robot and add their own -
+and it is used unchanged.
+
 ### Cache velocities are world-frame
 
 `body_pos` and `body_rot` are world poses, and `body_vel` and `body_ang_vel`

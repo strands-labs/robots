@@ -36,7 +36,7 @@ from collections import deque
 import numpy as np
 from numpy.typing import NDArray
 
-from .config import WBCConfig
+from .config import _DEFAULT_OBS_SCALES, WBCConfig
 
 
 def build_single_frame(
@@ -113,9 +113,13 @@ def build_single_frame(
         da = np.asarray(config.default_angles, dtype=np.float64)
         limit = min(da.shape[0], no)
         defaults[:limit] = da[:limit]
-    ang_vel_scale = config.obs_scales.get("ang_vel", 1.0)
-    dof_pos_scale = config.obs_scales.get("dof_pos", 1.0)
-    dof_vel_scale = config.obs_scales.get("dof_vel", 1.0)
+    # WBCConfig completes an incomplete obs_scales map at construction, so these
+    # keys are present. The fallback resolves from the same upstream table rather
+    # than from a bare 1.0, so a config assembled outside WBCConfig is scaled the
+    # way the layout documents instead of 20x on the dqj block.
+    ang_vel_scale = config.obs_scales.get("ang_vel", _DEFAULT_OBS_SCALES["ang_vel"])
+    dof_pos_scale = config.obs_scales.get("dof_pos", _DEFAULT_OBS_SCALES["dof_pos"])
+    dof_vel_scale = config.obs_scales.get("dof_vel", _DEFAULT_OBS_SCALES["dof_vel"])
 
     frame = np.zeros(config.single_obs_dim, dtype=np.float64)
     end = c + 6 + 2 * no + na
