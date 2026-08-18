@@ -15,7 +15,13 @@ Run it with::
 
 The sidecar is single-threaded REQ/REP - one in-flight plan request at a
 time. That matches the ``MoveItPy.plan()`` API which is itself
-single-threaded.
+single-threaded. Because REQ/REP is lockstep, every request that is
+received gets exactly one reply: a request that cannot be served is
+answered with a failure response, never by dropping the reply and
+exiting. A planning failure is reported in the ``plan`` response
+(``success=False`` plus a ``status`` naming the stage); anything else is
+reported as ``{"error": ...}``, which the client raises as
+``RuntimeError``.
 
 Wire protocol::
 
@@ -40,7 +46,8 @@ Notes for forks:
   pushing to the planning scene.
 * ``api_token`` validation is left as an exercise - the reference
   implementation accepts any client. Enable it by checking
-  ``request.get("api_token")`` against an env-var / file secret.
+  ``request.get("api_token")`` against an env-var / file secret - by
+  then ``request`` is known to be a map.
 """
 
 from __future__ import annotations
@@ -131,9 +138,26 @@ def _plan(
 ) -> dict[str, Any]:
     """Run a single ``moveit_py`` plan and serialise the result.
 
-    Returns the wire-format response dict. Catches planner exceptions
-    so the ZMQ loop can return a structured ``{"success": False}``
-    response instead of crashing.
+    Returns the wire-format response dict. Every ``moveit_py``
+    interaction is guarded, so a failing plan comes back as a structured
+    ``{"success": False, "status": ...}`` response instead of raising:
+    the REP loop owes its peer exactly one reply, and an escaping
+    exception would end the sidecar with that reply never sent.
+
+    ``moveit_py`` is a C++ binding whose exception types are not
+    enumerable from Python, so each guard catches broadly and reports the
+    stage that failed in ``status``:
+
+    * ``unknown_planning_group`` - the group name does not resolve.
+    * ``start_state_error`` - the current robot state is not readable
+      (no ``/joint_states`` yet, monitor not warmed up).
+    * ``missing_goal`` - neither goal field was supplied.
+    * ``invalid_goal`` - the goal was rejected: a joint the group does
+      not have, an unresolvable pose link, or a ``target_pose`` that is
+      not 7 values.
+    * ``planner_exception`` / ``planner_returned_empty`` - planning ran
+      and failed.
+    * ``trajectory_error`` - the result did not serialise.
     """
     from geometry_msgs.msg import PoseStamped
 
@@ -142,33 +166,42 @@ def _plan(
     except Exception as e:
         return {"trajectory": [], "success": False, "status": f"unknown_planning_group:{e}"}
 
-    component.set_start_state_to_current_state()
+    try:
+        component.set_start_state_to_current_state()
+    except Exception as e:  # noqa: BLE001 - report the failing stage structurally
+        logger.exception("Reading the current robot state failed: %s", e)
+        return {"trajectory": [], "success": False, "status": f"start_state_error:{e}"}
+
     if joint_state is not None:
         # Forks that need start-state override should plug their own
         # ``RobotState`` builder here. Reference implementation trusts
         # the planner's current state.
         logger.debug("joint_state hint received but unused in reference impl: %s", joint_state)
 
-    if target_joints is not None:
-        component.set_goal_state(joint_values=target_joints)
-    elif target_pose is not None:
-        x, y, z, qw, qx, qy, qz = target_pose
-        pose = PoseStamped()
-        pose.header.frame_id = "base_link"  # Forks: parameterise this.
-        pose.pose.position.x = x
-        pose.pose.position.y = y
-        pose.pose.position.z = z
-        pose.pose.orientation.w = qw
-        pose.pose.orientation.x = qx
-        pose.pose.orientation.y = qy
-        pose.pose.orientation.z = qz
-        component.set_goal_state(pose_stamped_msg=pose, pose_link="end_effector_link")
-    else:
-        return {
-            "trajectory": [],
-            "success": False,
-            "status": "missing_goal:expected_target_pose_or_target_joints",
-        }
+    try:
+        if target_joints is not None:
+            component.set_goal_state(joint_values=target_joints)
+        elif target_pose is not None:
+            x, y, z, qw, qx, qy, qz = target_pose
+            pose = PoseStamped()
+            pose.header.frame_id = "base_link"  # Forks: parameterise this.
+            pose.pose.position.x = x
+            pose.pose.position.y = y
+            pose.pose.position.z = z
+            pose.pose.orientation.w = qw
+            pose.pose.orientation.x = qx
+            pose.pose.orientation.y = qy
+            pose.pose.orientation.z = qz
+            component.set_goal_state(pose_stamped_msg=pose, pose_link="end_effector_link")
+        else:
+            return {
+                "trajectory": [],
+                "success": False,
+                "status": "missing_goal:expected_target_pose_or_target_joints",
+            }
+    except Exception as e:  # noqa: BLE001 - report the failing stage structurally
+        logger.exception("Setting the goal state failed: %s", e)
+        return {"trajectory": [], "success": False, "status": f"invalid_goal:{e}"}
 
     try:
         plan_result = component.plan()
@@ -179,14 +212,18 @@ def _plan(
     if not plan_result:
         return {"trajectory": [], "success": False, "status": "planner_returned_empty"}
 
-    trajectory_msg = plan_result.trajectory
-    rows: list[list[float]] = []
     # ``trajectory_msg.joint_trajectory.points`` is a list of
     # ``trajectory_msgs/JointTrajectoryPoint``. Each has
     # ``time_from_start`` (Duration) + ``positions`` (list[float]).
-    for point in trajectory_msg.joint_trajectory.points:
-        t = point.time_from_start.sec + point.time_from_start.nanosec * 1e-9
-        rows.append([float(t)] + [float(q) for q in point.positions])
+    try:
+        trajectory_msg = plan_result.trajectory
+        rows: list[list[float]] = []
+        for point in trajectory_msg.joint_trajectory.points:
+            t = point.time_from_start.sec + point.time_from_start.nanosec * 1e-9
+            rows.append([float(t)] + [float(q) for q in point.positions])
+    except Exception as e:  # noqa: BLE001 - report the failing stage structurally
+        logger.exception("Serialising the planned trajectory failed: %s", e)
+        return {"trajectory": [], "success": False, "status": f"trajectory_error:{e}"}
 
     return {"trajectory": rows, "success": True, "status": "ok"}
 
@@ -231,31 +268,60 @@ def main(argv: list[str] | None = None) -> int:
                 socket.send(msgpack.packb({"error": f"malformed_request:{e}"}, use_bin_type=True))
                 continue
 
+            # ``unpackb`` decodes any valid msgpack value, not just a map: the
+            # single byte ``0x2a`` is the integer 42, and a string, list, nil or
+            # bool decode just as cleanly. Reading ``endpoint`` off one of those
+            # raises before the dispatch guard below exists to answer it, so it
+            # is rejected here in the same class as bytes that do not decode at
+            # all - either way the peer did not send a request. This is also
+            # what makes the ``api_token`` check the fork notes suggest safe to
+            # add: nothing reads a key off ``request`` until it is a map.
+            if not isinstance(request, dict):
+                socket.send(
+                    msgpack.packb(
+                        {"error": f"malformed_request:expected a msgpack map, got {type(request).__name__}"},
+                        use_bin_type=True,
+                    )
+                )
+                continue
+
             endpoint = request.get("endpoint", "")
             data = request.get("data") or {}
 
-            if endpoint == "ping":
-                response = {"status": "ok"}
-            elif endpoint == "reset":
-                # Reference implementation has nothing to reset; forks
-                # with stateful planners (RRT-Connect cache, etc.)
-                # should plug seed handling here.
-                seed = (data.get("options") or {}).get("seed")
-                logger.info("reset called (seed=%r); reference impl is a no-op", seed)
-                response = {"status": "ok"}
-            elif endpoint == "plan":
-                response = _plan(
-                    moveit_py,
-                    planning_group=data.get("planning_group", args.planning_group),
-                    joint_state=data.get("joint_state"),
-                    target_pose=data.get("target_pose"),
-                    target_joints=data.get("target_joints"),
-                    world_update=data.get("world_update"),
-                )
-            else:
-                response = {"error": f"unknown_endpoint:{endpoint}"}
+            # REQ/REP is lockstep: this peer is blocked until we reply, so
+            # every request must produce exactly one response. Dispatch is
+            # guarded because forks are invited to edit the handlers above
+            # (start-state override, pose frame, world_update schema) and an
+            # exception escaping here would close the socket with the reply
+            # never sent - taking the sidecar down for every other client
+            # too, not just the one that sent the bad request.
+            try:
+                if endpoint == "ping":
+                    response = {"status": "ok"}
+                elif endpoint == "reset":
+                    # Reference implementation has nothing to reset; forks
+                    # with stateful planners (RRT-Connect cache, etc.)
+                    # should plug seed handling here.
+                    seed = (data.get("options") or {}).get("seed")
+                    logger.info("reset called (seed=%r); reference impl is a no-op", seed)
+                    response = {"status": "ok"}
+                elif endpoint == "plan":
+                    response = _plan(
+                        moveit_py,
+                        planning_group=data.get("planning_group", args.planning_group),
+                        joint_state=data.get("joint_state"),
+                        target_pose=data.get("target_pose"),
+                        target_joints=data.get("target_joints"),
+                        world_update=data.get("world_update"),
+                    )
+                else:
+                    response = {"error": f"unknown_endpoint:{endpoint}"}
+                payload = msgpack.packb(response, use_bin_type=True)
+            except Exception as e:  # noqa: BLE001 - answer the peer, keep serving
+                logger.exception("Handling endpoint %r failed: %s", endpoint, e)
+                payload = msgpack.packb({"error": f"internal_error:{type(e).__name__}:{e}"}, use_bin_type=True)
 
-            socket.send(msgpack.packb(response, use_bin_type=True))
+            socket.send(payload)
     finally:
         socket.close()
         context.term()
