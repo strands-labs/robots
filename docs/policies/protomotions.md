@@ -97,6 +97,34 @@ Joint velocities are treated the same way: an absent `<joint>.vel` is refused
 rather than substituted with zero. Velocity is tracker feedback, and zeros are a
 plausible-looking value that quietly degrades tracking.
 
+### Orientations need not be exactly unit
+
+Every rotation the tracker derives — body-framing the root angular velocity,
+and extracting a yaw for heading alignment — is computed from a formula that
+mixes a quadratic term in the quaternion components with a constant, so the
+quaternion's scale does not cancel. Both helpers therefore normalise their
+input, and a quaternion scaled by any positive factor gives the same answer:
+
+```python
+from strands_robots.policies.protomotions import extract_yaw_quat
+
+extract_yaw_quat(q)          # same heading as
+extract_yaw_quat(q * 0.92)   # this
+```
+
+That is worth knowing when assembling observations by hand. An IMU reading
+drifts off unit, and an orientation obtained by *linearly* interpolating two
+samples is short by up to about 8% — for two samples 90 degrees apart the
+midpoint has `|q| = 0.924`, which read as-is would be a heading 6.2 degrees off
+and an angular velocity 29% short of its true magnitude. (Linear interpolation
+is why the clip loader slerps and renormalises rather than lerping.)
+
+An orientation that cannot define a rotation at all — all zeros, which is how a
+never-written or dropped orientation reads, or a non-finite component — is
+refused with a `ValueError` naming the helper and the value. Scaling cannot
+recover a direction from it, and standing in an arbitrary rotation would feed
+the network a plausible-looking wrong frame.
+
 ## Bridging a qpos clip
 
 `qpos_to_motion_data` turns a `[T, 7 + 29]` MuJoCo `qpos` sequence into the
@@ -111,6 +139,46 @@ cache["num_frames"], cache["control_dt"]
 
 `MotionPlayer` accepts that dict, an `.npz` written by
 `MotionPlayer.save_cache_npz`, or a raw ProtoMotions `.pt`.
+
+### The MJCF has to be the tracker's own embodiment
+
+`proto_mjcf_path` is not just any G1. The tracker reads a body out of the cache
+by **row index**, never by name: `anchor_body_index` and `root_body_index` are
+offsets into `GTP_G1_BODY_NAMES`, the 33-name list pinned from the checkpoint's
+sidecar. `qpos_to_motion_data` fills those rows by name from the model you hand
+it, so the model has to carry all 33 - plus a free root and the 29
+`GTP_G1_JOINT_NAMES` joints, for a `qpos` width of 36.
+
+The G1 family does not agree on that body set. The widely-shipped fingerless
+models omit `head` and both `rubber_hand` placeholders and expose 30 bodies;
+`g1_29dof_with_hand` and `g1_with_hands` expose 44 and a `qpos` width of 50.
+Passing one of those is refused, with a message that names what is missing:
+
+```text
+ValueError: ProtoMotions G1 MJCF .../g1_29dof.xml is missing 3 of the 33 bodies
+the tracker reads by row index: ['head', 'left_rubber_hand', 'right_rubber_hand'].
+```
+
+The refusal is the point. Read positionally, a 30-body model shifts every row
+after the gap by one, so the tracker asks for `torso_link` at row 16 and is
+handed `left_shoulder_pitch_link` - on a walking clip, an anchor orientation
+some 20 degrees out, with nothing in the cache to say so. A model whose `qpos`
+layout differs is refused separately and says so, so a model-side mismatch is
+not read as a bad `qpos` argument.
+
+### An MJCF that declares its own ground is used as-is
+
+Forward kinematics needs a floor, and the ProtoMotions G1 MJCF names one from
+`<contact><pair geom2="floor">`, so the bridge appends a plane geom called
+`floor` when - and only when - the model does not already declare a ground.
+
+Whether it does is decided from the geom list MuJoCo itself parses out of the
+file, so every way of declaring a ground counts: a plane in any of the
+`<worldbody>` sections MuJoCo merges, one nested inside a body, and one spliced
+in through `<include>`. Pass any G1 MJCF that already ships a floor - the
+`unitree_ros` G1 descriptions declare theirs in a second `<worldbody>`, and
+menagerie-style `scene.xml` wrappers `<include>` the robot and add their own -
+and it is used unchanged.
 
 ### Cache velocities are world-frame
 

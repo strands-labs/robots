@@ -312,6 +312,76 @@ def actuator_driven_joint_ids(model: Any, act_id: int, mj: Any) -> frozenset[int
     return tendon_joint_ids(model, int(model.actuator_trnid[act_id, 0]), mj)
 
 
+def actuator_target_body_ids(model: Any, act_id: int, mj: Any) -> frozenset[int]:
+    """Return the bodies actuator ``act_id``'s transmission acts on.
+
+    The third member of the transmission-reading family, and a different
+    question from the two joint ones. :func:`actuator_joint_id` answers "which
+    single joint is this actuator's target" and
+    :func:`actuator_driven_joint_ids` answers "which joints does it command,
+    including through a tendon". Both are empty for a transmission that moves a
+    *frame* rather than a joint coordinate -- ``mjTRN_SITE``, ``mjTRN_BODY``,
+    ``mjTRN_SLIDERCRANK``. That is not an exotic case: it is how an aerial
+    robot is actuated, where each rotor is a force applied at a site on the
+    airframe and the model declares no joint at all besides the floating base.
+    A caller asking "what part of the machine does this actuator move" therefore
+    cannot use either joint function, which is why this is a third function
+    rather than a flag on one of them.
+
+    Resolution per transmission, each id read from the space its own
+    ``trntype`` selects (the id spaces each start at 0, so reading
+    ``actuator_trnid`` without branching on the type matches an unrelated
+    entity that merely shares a number):
+
+    * ``mjTRN_JOINT`` / ``mjTRN_JOINTINPARENT`` -- the body the joint belongs to.
+    * ``mjTRN_SITE`` / ``mjTRN_SLIDERCRANK`` -- the body carrying the target
+      site. Only the primary target is resolved: a site transmission's second
+      id is a *reference* frame the force is measured against, not another part
+      the actuator moves.
+    * ``mjTRN_BODY`` -- that body.
+    * ``mjTRN_TENDON`` -- the bodies of the joints the tendon wraps, via
+      :func:`tendon_joint_ids`, so the tendon rule stays owned in one place. A
+      purely spatial tendon wraps sites rather than joints and so contributes
+      nothing, matching what that function reports.
+
+    Args:
+        model: The compiled ``MjModel``.
+        act_id: Actuator index in ``range(model.nu)``.
+        mj: The ``mujoco`` module.
+
+    Returns:
+        The body ids the transmission acts on, empty when none resolves.
+    """
+    trntype = int(model.actuator_trntype[act_id])
+    target = int(model.actuator_trnid[act_id, 0])
+    if target < 0:
+        return frozenset()
+
+    joint_trn = {int(mj.mjtTrn.mjTRN_JOINT)}
+    if hasattr(mj.mjtTrn, "mjTRN_JOINTINPARENT"):
+        joint_trn.add(int(mj.mjtTrn.mjTRN_JOINTINPARENT))
+    if trntype in joint_trn:
+        if target >= int(model.njnt):
+            return frozenset()
+        return frozenset({int(model.jnt_bodyid[target])})
+
+    site_trn = {int(mj.mjtTrn.mjTRN_SITE), int(mj.mjtTrn.mjTRN_SLIDERCRANK)}
+    if trntype in site_trn:
+        if target >= int(model.nsite):
+            return frozenset()
+        return frozenset({int(model.site_bodyid[target])})
+
+    if trntype == int(mj.mjtTrn.mjTRN_BODY):
+        if target >= int(model.nbody):
+            return frozenset()
+        return frozenset({target})
+
+    if trntype == int(mj.mjtTrn.mjTRN_TENDON):
+        return frozenset(int(model.jnt_bodyid[j]) for j in tendon_joint_ids(model, target, mj))
+
+    return frozenset()
+
+
 def tendon_joint_ids(model: Any, tendon_id: int, mj: Any) -> frozenset[int]:
     """Return the joint ids wired into tendon ``tendon_id`` by its wrap list.
 

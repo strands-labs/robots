@@ -29,6 +29,7 @@ import numpy as np
 
 from strands_robots.utils import require_optional
 
+from .config import GTP_G1_BODY_NAMES, GTP_G1_JOINT_NAMES, GTP_G1_ROOT_BODY_INDEX
 from .motion_utils import lerp, slerp
 from .state_utils import mujoco_wxyz_to_xyzw
 
@@ -36,10 +37,51 @@ logger = logging.getLogger(__name__)
 
 __all__ = ["qpos_to_motion_data"]
 
+#: qpos entries a free root joint occupies: xyz translation + wxyz quaternion.
+_ROOT_QPOS_WIDTH = 7
+
+#: Total qpos width the tracker's embodiment has: the free root plus one
+#: entry per :data:`GTP_G1_JOINT_NAMES` hinge.
+_EXPECTED_NQ = _ROOT_QPOS_WIDTH + len(GTP_G1_JOINT_NAMES)
+
 
 # ---------------------------------------------------------------------------
 # MJCF patching
 # ---------------------------------------------------------------------------
+
+
+def _declares_a_ground_geom(mujoco, mjcf_path: Path) -> bool:
+    """Report whether ``mjcf_path`` already declares a ground geom.
+
+    The question is about the model MuJoCo will build from the file, not about
+    one section of the file's XML: MuJoCo merges *every* ``<worldbody>`` a file
+    declares, splices ``<include>``d content in, and compiles geoms wherever
+    they are nested inside bodies. Reading the first ``<worldbody>``'s direct
+    ``<geom>`` children answers a narrower question and misses all three, so
+    this asks MuJoCo's own parser for the flat geom list instead - the same rule
+    :mod:`strands_robots.simulation.mujoco.spec_builder` applies when it decides
+    whether a world already owns a ground plane.
+
+    Parsing a spec resolves includes without compiling meshes (single-digit
+    milliseconds on a G1, against ~170ms for a full compile), so this stays well
+    inside this module's one-off build-time cost.
+
+    Args:
+        mujoco: The resolved ``mujoco`` module.
+        mjcf_path: Path to the MJCF to inspect.
+
+    Returns:
+        ``True`` when the parsed model declares a plane geom, or a geom whose
+        name reads as a floor or ground, and a patched-in floor would therefore
+        be a second ground plane sharing the ``floor`` name.
+    """
+    spec = mujoco.MjSpec.from_file(str(mjcf_path))  # type: ignore[attr-defined]
+    return any(
+        "floor" in (geom.name or "").lower()
+        or "ground" in (geom.name or "").lower()
+        or geom.type == mujoco.mjtGeom.mjGEOM_PLANE  # type: ignore[attr-defined]
+        for geom in spec.geoms
+    )
 
 
 def _patch_and_load_mjcf(mjcf_path: Path):
@@ -58,19 +100,12 @@ def _patch_and_load_mjcf(mjcf_path: Path):
         root.remove(sensor_elem)
 
     worldbody = root.find("worldbody")
-    if worldbody is not None:
-        has_ground = any(
-            "floor" in g.get("name", "").lower()
-            or "ground" in g.get("name", "").lower()
-            or g.get("type", "").lower() == "plane"
-            for g in worldbody.findall("geom")
-        )
-        if not has_ground:
-            floor = ET.SubElement(worldbody, "geom")
-            floor.set("name", "floor")
-            floor.set("type", "plane")
-            floor.set("size", "0 0 0.05")
-            floor.set("rgba", "0.7 0.7 0.7 1")
+    if worldbody is not None and not _declares_a_ground_geom(mujoco, mjcf_path):
+        floor = ET.SubElement(worldbody, "geom")
+        floor.set("name", "floor")
+        floor.set("type", "plane")
+        floor.set("size", "0 0 0.05")
+        floor.set("rgba", "0.7 0.7 0.7 1")
 
     xml_str = ET.tostring(root, encoding="unicode")
 
@@ -91,6 +126,68 @@ def _patch_and_load_mjcf(mjcf_path: Path):
 
     data = mujoco.MjData(model)  # type: ignore[attr-defined]
     return mujoco, model, data
+
+
+# ---------------------------------------------------------------------------
+# Embodiment check
+# ---------------------------------------------------------------------------
+
+
+def _proto_body_rows(mujoco, model, mjcf_path: Path) -> np.ndarray:
+    """Resolve the MuJoCo body ids the cache's body rows must hold.
+
+    The tracker reads a body out of the cache by ROW INDEX, not by name:
+    :attr:`~strands_robots.policies.protomotions.config.ProtoMotionsConfig.anchor_body_index`
+    and ``root_body_index`` are offsets into
+    :data:`~strands_robots.policies.protomotions.config.GTP_G1_BODY_NAMES`. So the
+    cache's rows have to be that list, in that order - MuJoCo's own body order is
+    only the same thing when the supplied MJCF is the tracker's own embodiment.
+    Resolving each row by name keeps the two orders from being paired positionally.
+
+    Args:
+        mujoco: The imported ``mujoco`` module.
+        model: A compiled ``MjModel``.
+        mjcf_path: Path the model was compiled from, quoted in refusals.
+
+    Returns:
+        MuJoCo body ids, one per :data:`GTP_G1_BODY_NAMES` entry, in that order.
+
+    Raises:
+        ValueError: If the model's qpos layout is not a free root followed by the
+            tracker's joints, or if it does not carry every tracker body.
+    """
+    has_free_root = model.njnt > 0 and model.jnt_type[0] == mujoco.mjtJoint.mjJNT_FREE
+    if not has_free_root or model.nq != _EXPECTED_NQ:
+        root = "a free root joint" if has_free_root else "no free root joint"
+        raise ValueError(
+            f"ProtoMotions G1 MJCF {mjcf_path} does not have the tracker's qpos "
+            f"layout: it has {root} and nq={model.nq}, but the cache is built for "
+            f"nq={_EXPECTED_NQ} (a free root's {_ROOT_QPOS_WIDTH} entries plus "
+            f"{len(GTP_G1_JOINT_NAMES)} joints). This is the MJCF's layout, not the "
+            f"qpos argument's - supply the MJCF the tracker checkpoint was exported "
+            f"against."
+        )
+
+    rows: list[int] = []
+    missing: list[str] = []
+    for name in GTP_G1_BODY_NAMES:
+        body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, name)
+        if body_id < 0:
+            missing.append(name)
+        else:
+            rows.append(body_id)
+    if missing:
+        raise ValueError(
+            f"ProtoMotions G1 MJCF {mjcf_path} is missing {len(missing)} of the "
+            f"{len(GTP_G1_BODY_NAMES)} bodies the tracker reads by row index: "
+            f"{missing!r}. The tracker indexes cache rows against "
+            f"GTP_G1_BODY_NAMES (row 0 is the root, row "
+            f"{GTP_G1_BODY_NAMES.index('torso_link')} is the anchor), so a model "
+            f"with a different body set shifts every row after the gap and the "
+            f"tracker reads a different link than it asked for. Supply the MJCF the "
+            f"tracker checkpoint was exported against."
+        )
+    return np.asarray(rows, dtype=np.intp)
 
 
 # ---------------------------------------------------------------------------
@@ -178,19 +275,31 @@ def qpos_to_motion_data(
             with a warning (some Kimodo variants emit trailing padding).
         fps: Source frame rate in Hz (Kimodo default is 30).
         proto_mjcf_path: Path to the ProtoMotions G1 MJCF (the caller supplies
-            it; this module ships no asset bundle).
+            it; this module ships no asset bundle). It must be the tracker's own
+            embodiment: a free root plus the
+            :data:`~strands_robots.policies.protomotions.config.GTP_G1_JOINT_NAMES`
+            joints, carrying every
+            :data:`~strands_robots.policies.protomotions.config.GTP_G1_BODY_NAMES`
+            body. A G1 variant with a different body set is refused rather than
+            bridged into rows the tracker would misread.
         control_dt: Target control period, seconds (default 0.02 = 50Hz).
 
     Returns:
         A dict with the keys
         :class:`~strands_robots.policies.protomotions.motion_utils.MotionPlayer`
-        accepts. ``body_pos``/``body_rot`` are world poses read straight off
-        MuJoCo's ``xpos``/``xquat``, and ``body_vel``/``body_ang_vel`` are
-        WORLD-frame velocities derived from them - not body-local ones.
+        accepts. ``body_pos``/``body_rot`` are world poses read off MuJoCo's
+        ``xpos``/``xquat``, one row per
+        :data:`~strands_robots.policies.protomotions.config.GTP_G1_BODY_NAMES`
+        entry IN THAT ORDER - the order the tracker's ``anchor_body_index`` and
+        ``root_body_index`` are offsets into, resolved by name rather than by
+        MuJoCo's own body order. ``body_vel``/``body_ang_vel`` are WORLD-frame
+        velocities derived from them - not body-local ones.
 
     Raises:
         FileNotFoundError: If ``proto_mjcf_path`` does not exist.
-        ValueError: If ``qpos.shape[1]`` is not exactly 36 (after truncation).
+        ValueError: If ``qpos.shape[1]`` is not exactly 36 (after truncation), or
+            if the MJCF is not the tracker's embodiment - a distinct message that
+            names the MJCF, so a model-side mismatch is not read as a bad ``qpos``.
         RuntimeError: If MuJoCo is not installed.
     """
     proto_mjcf_path = Path(proto_mjcf_path)
@@ -215,8 +324,9 @@ def qpos_to_motion_data(
     T = qpos.shape[0]
     mujoco, model, data = _patch_and_load_mjcf(proto_mjcf_path)
 
-    num_bodies = model.nbody - 1  # skip world body at index 0
-    num_dofs = model.nq - 7
+    body_rows = _proto_body_rows(mujoco, model, proto_mjcf_path)
+    num_bodies = len(body_rows)
+    num_dofs = model.nq - _ROOT_QPOS_WIDTH
 
     logger.info(
         "qpos_to_motion_data: MJCF has %d bodies, %d dofs. Processing %d frames @ %.1f Hz.",
@@ -234,11 +344,11 @@ def qpos_to_motion_data(
         data.qpos[:] = qpos[t]
         data.qvel[:] = 0.0
         mujoco.mj_forward(model, data)  # type: ignore[attr-defined]
-        body_pos[t] = data.xpos[1:].astype(np.float32)
-        body_rot_xyzw[t] = mujoco_wxyz_to_xyzw(data.xquat[1:]).astype(np.float32)
+        body_pos[t] = data.xpos[body_rows].astype(np.float32)
+        body_rot_xyzw[t] = mujoco_wxyz_to_xyzw(data.xquat[body_rows]).astype(np.float32)
         # Root body's rot is the canonical freejoint quaternion from qpos.
-        body_rot_xyzw[t, 0] = mujoco_wxyz_to_xyzw(data.qpos[3:7].astype(np.float32))
-        dof_pos[t] = data.qpos[7:].astype(np.float32)
+        body_rot_xyzw[t, GTP_G1_ROOT_BODY_INDEX] = mujoco_wxyz_to_xyzw(data.qpos[3:_ROOT_QPOS_WIDTH].astype(np.float32))
+        dof_pos[t] = data.qpos[_ROOT_QPOS_WIDTH:].astype(np.float32)
 
     dt_src = 1.0 / max(fps, 1e-6)
     dof_vel = np.zeros_like(dof_pos)

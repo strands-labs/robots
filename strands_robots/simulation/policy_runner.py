@@ -1565,7 +1565,15 @@ class PolicyRunner:
         # seam at any other frequency.
         policy.set_control_frequency(control_frequency)
         # Initialize BEFORE try so CooperativeStop never sees unbound names.
-        start_time = time.time()
+        # ``time.monotonic()``: the only thing derived from this base is how
+        # long the rollout ran, and a duration is measured rather than
+        # recorded. On ``time.time()`` a wall-clock step - an NTP correction, a
+        # ``date -s``, a resume from suspend - moved the reported ``elapsed_s``
+        # by the size of the step while the rollout itself ran exactly as long
+        # as it did, so a 30s step turned a 2s episode into a 32s record and a
+        # backward step reported it negative. Named for the clock it holds so a
+        # future reader does not reach for ``time.time()`` again.
+        start_mono = time.monotonic()
         step_count = 0
         try:
             # Prefer an explicit integer step count when the caller resolved one
@@ -1973,7 +1981,7 @@ class PolicyRunner:
         if stop_predicate_fired:
             stopped_early = True
             stopped_reason = "predicate"
-        elapsed = time.time() - start_time
+        elapsed = time.monotonic() - start_mono
         sim_time = self._maybe_sim_time()
         if not stopped_early:
             prefix = "Policy complete"
@@ -2306,7 +2314,9 @@ class PolicyRunner:
         # frame, so it is deliberately excluded here.
         n_substeps = self._control_substeps(dataset_fps)
         frames_applied = 0
-        start_time = time.time()
+        # The replayed episode's own duration, on the same clock as the pacer
+        # below for the same reason: it is measured, not recorded.
+        start_mono = time.monotonic()
 
         # Replay only consumes the recorded action vector, which lives in the
         # dataset's parquet column store. A real LeRobotDataset's __getitem__
@@ -2323,7 +2333,15 @@ class PolicyRunner:
             frame_source = hf_dataset
 
         for frame_idx in range(episode_length):
-            step_start = time.time()
+            # The frame pacer's base. This one decides rather than reports: the
+            # sleep below is computed from it, so on ``time.time()`` a
+            # wall-clock step mid-episode either stalled the replay for the size
+            # of the step (backward: the subtraction goes negative and the sleep
+            # becomes ``frame_interval + step``) or dropped the pacing entirely
+            # and ran the remaining frames unthrottled (forward: the sleep goes
+            # negative). Both left a real robot tracking recorded targets at the
+            # wrong rate under ``status="success"``.
+            step_start_mono = time.monotonic()
             try:
                 frame = frame_source[episode_start + frame_idx]
             except Exception as e:  # noqa: BLE001 - decoder/library errors are opaque
@@ -2425,11 +2443,11 @@ class PolicyRunner:
                     }
                 frames_applied += 1
 
-            sleep_time = frame_interval - (time.time() - step_start)
+            sleep_time = frame_interval - (time.monotonic() - step_start_mono)
             if sleep_time > 0:
                 time.sleep(sleep_time)
 
-        duration = time.time() - start_time
+        duration = time.monotonic() - start_mono
         return {
             "status": "success",
             "content": [

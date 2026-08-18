@@ -67,7 +67,7 @@ result block so the saving is observable end to end:
 
 | field | meaning |
 | --- | --- |
-| `policy_load_time_s` | wall seconds the weight load took (`0.0` on a cache hit) |
+| `policy_load_time_s` | seconds the weight load took, on a monotonic clock (`0.0` on a cache hit) |
 | `policy_load_cache_hit` | whether the heavy `from_pretrained` read was skipped |
 | `policy_resident_rss_mb` | process RSS in MB at result time (`None` if unmeasurable) |
 

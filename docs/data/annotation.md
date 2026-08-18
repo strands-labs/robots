@@ -83,7 +83,64 @@ Common flags:
 - `--vlm.api_base=http://host:8000/v1` with `--vlm.auto_serve=false` - reuse a
   running vLLM server instead of spawning one.
 - `--only_episodes=0,1,2` - annotate a subset while iterating.
+- `--vlm.camera_key=observation.images.<name>` - choose which camera the
+  `plan` and `interjections` modules read; see [Which camera the labels come
+  from](#which-camera-the-labels-come-from).
 - toggle modules with `--plan.enabled`, `--interjections.enabled`, `--vqa.enabled`.
+
+## Which camera the labels come from
+
+A multi-camera dataset does not get one label per camera. The `plan` module
+(subtasks, plan, memory) and the `interjections` module read **one** stream: the
+dataset's *first* video key. `VideoFrameProvider` picks it in
+`lerobot/annotations/steerable_pipeline/frames.py` (`self.camera_key = keys[0]`)
+and those two modules call `frames_at()` without naming a camera, so they
+inherit that default. Only the `vqa` module iterates every camera, which is why
+`vqa`/`trace` rows carry a `camera` field and every other style carries
+`camera=None`.
+
+The first video key is the one **you** chose when you recorded:
+
+| how you recorded | first video key |
+| --- | --- |
+| `start_recording(...)` with no `cameras=` | `observation.images.default` - the implicit overview camera `create_world` adds |
+| `start_recording(..., cameras=[...])` | the **first name in your list** |
+
+So the `cameras=` list that scopes a dataset to its real sensors - the list the
+`start_recording` warning tells you to pass - also decides which view every
+subtask label is derived from.
+
+**Do not let that first key be a gripper-mounted camera.** A camera added with
+`add_camera(..., parent_body="<arm>/gripper")` travels with whatever the gripper
+is holding, so its image evidence about object motion is *inverted* with respect
+to the scene. Measured in simulation on one recorded episode, tracking the
+manipuland's centroid in each recorded video (256x256, 90 frames):
+
+| recorded view | object carried 0.3049 m | object left on its stand |
+| --- | --- | --- |
+| world-fixed, front | 174.4 px of image motion | 13.7 px |
+| world-fixed, overhead | 174.2 px | 16.3 px |
+| gripper-mounted (wrist) | **2.0 px** (visible 90/90) | **140.0 px** (visible 46/90) |
+
+A carried object is pinned in the wrist view; a *stationary* object is what
+sweeps across it and leaves the frame. A labeller reading that stream has the
+evidence for "the object moved" exactly when the object did not move, so a
+transport gets described as static and an idle sweep gets described as a
+transport.
+
+Point the shared modules at a world-fixed view whenever the first key is a
+wrist camera:
+
+```bash
+lerobot-annotate \
+    --root="$HF_LEROBOT_HOME/user/pick_place" \
+    --vlm.camera_key=observation.images.front \
+    --vlm.model_id=Qwen/Qwen2.5-VL-7B-Instruct
+```
+
+Equivalently, list a world-fixed camera first when you record:
+`start_recording(..., cameras=["front", "wrist"])`. Wrist views stay valuable
+for the `vqa` module, which grounds per camera and records which one it used.
 
 ## What it writes: the language columns
 

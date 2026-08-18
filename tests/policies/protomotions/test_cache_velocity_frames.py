@@ -28,6 +28,8 @@ import pytest
 from strands_robots.policies.protomotions import bridge, motion_utils, state_utils
 from strands_robots.policies.protomotions.state_utils import quat_rotate_inverse
 
+from .test_cache_body_rows_match_the_tracker_order import g1_like_mjcf
+
 # A quarter turn about world X, xyzw. Chosen so a world-Z spin has a *different*
 # local-frame representation - a frame-agnostic pose would make every assertion
 # below pass for either convention.
@@ -215,22 +217,15 @@ class TestTheBridgedCacheIsWorldFrameEndToEnd:
 
     @staticmethod
     def _mjcf(tmp_path: pathlib.Path) -> pathlib.Path:
-        """A freejoint root plus 29 hinges, so ``nq`` is exactly 36."""
-        links = "".join(
-            f'<body name="l{i}" pos="0 0 0.05">'
-            f'<joint name="j{i}" type="hinge" axis="0 1 0"/>'
-            f'<geom type="box" size="0.02 0.02 0.02" mass="0.1"/>'
-            for i in range(29)
-        )
-        xml = (
-            "<mujoco><worldbody>"
-            '<body name="root" pos="0 0 1"><freejoint/>'
-            '<geom type="box" size="0.05 0.05 0.05" mass="1"/>'
-            f"{links}{'</body>' * 29}</body></worldbody></mujoco>"
-        )
-        path = tmp_path / "chain36.xml"
-        path.write_text(xml)
-        return path
+        """The tracker's embodiment: a freejoint root plus 29 hinges, ``nq`` 36.
+
+        Carries the tracker's own body and joint names, because the bridge fills
+        the cache's rows against
+        :data:`~strands_robots.policies.protomotions.config.GTP_G1_BODY_NAMES` and
+        refuses a model that cannot supply them. Row 0 is still the root, which is
+        the row every assertion below reads.
+        """
+        return g1_like_mjcf(tmp_path / "tracker36.xml")
 
     @staticmethod
     def _qpos(frames: int, dt: float, speed: float) -> np.ndarray:
