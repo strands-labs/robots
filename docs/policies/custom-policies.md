@@ -72,7 +72,12 @@ Aliases and shorthands are validated on load: each must be unique across provide
 ## Declaring body poses your policy needs
 
 `get_actions` receives per-joint state plus, for a floating-base robot, the base
-pose (`base_pos`, `base_quat`, `base_lin_vel`, `base_ang_vel`). A whole-body
+pose (`base_pos`, `base_quat`, `base_lin_vel`, `base_ang_vel`). Do not assume the
+per-joint half is non-empty: an aerial robot is actuated by forces applied at
+sites on its airframe rather than by joints, so it declares no joint at all
+besides its floating base and its entire observation *is* the base pose (its
+`robot_action_keys` are rotor names such as `thrust1`, not joint names). A policy
+that indexes a joint key unconditionally cannot fly one. A whole-body
 **motion-mimic tracker** needs more than that: its network is conditioned on the
 world orientation of one *anchor* link -- `torso_link` on a Unitree G1 -- and
 `base_quat` is the **pelvis**, separated from the torso by the three waist

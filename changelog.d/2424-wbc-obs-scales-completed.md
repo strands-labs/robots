@@ -1,0 +1,3 @@
+### Fixed
+
+- **policies/wbc**: a `WBCConfig` that states some observation scales now keeps the documented upstream default for the rest. Stating `ang_vel_scale` and `dof_pos_scale` used to replace the whole `obs_scales` map, leaving `dof_vel` to a second fallback number inside the frame builders (a bare `1.0`) instead of its documented `0.05` - scaling the 29 joint-velocity entries of every observation frame by 20x. Driving the GR00T SONIC checkpoint with such a config walked the G1 0.37 m and dropped its pelvis from 0.74 m to 0.19 m while reporting success; it now walks 3.11 m as the same scales stated explicitly do. `obs_scales` is completed once on the config, so the observation builder, the gait builder and any other consumer read the same values.

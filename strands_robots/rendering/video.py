@@ -372,7 +372,14 @@ def _mjpeg_stream(
     emitted = 0
     try:
         while max_frames is None or emitted < max_frames:
-            t0 = time.time()
+            # ``time.monotonic()``: the sleep below is computed from this base,
+            # so it decides how long the client waits for the next frame. On
+            # ``time.time()`` a wall-clock step landing between the two
+            # readings - an NTP correction, a ``date -s``, a resume from
+            # suspend - changed that wait by the size of the step: forward the
+            # pacing was skipped, backward the frame was held for
+            # ``frame_dt + step``.
+            frame_start_mono = time.monotonic()
             frame: np.ndarray | None
             try:
                 frame = frame_fn()
@@ -391,7 +398,7 @@ def _mjpeg_stream(
                 emitted += 1
             else:
                 time.sleep(0.2)
-            elapsed = time.time() - t0
+            elapsed = time.monotonic() - frame_start_mono
             if elapsed < frame_dt:
                 time.sleep(frame_dt - elapsed)
     except GeneratorExit:  # client disconnected
