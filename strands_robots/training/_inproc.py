@@ -11,7 +11,8 @@ Two primitives:
 * :func:`call_callable` - run a Python callable in THIS interpreter with its
   stdout/stderr + root-logger output tee'd to a per-run log file (so the
   trainers can still parse a "RUNNING != learning" verdict, exactly as they did
-  from the old subprocess log).
+  from the old subprocess log). Both halves go through one file object, so
+  neither can overwrite the other's bytes.
 
 * :func:`elastic_launch_callable` - multi-GPU single-node launch via torch's
   programmatic :class:`torch.distributed.launcher.api.elastic_launch` (the same
@@ -66,6 +67,14 @@ class _Tee(io.TextIOBase):
 class capture_to_file:
     """Context manager: tee stdout/stderr + root-logger output into ``log_path``.
 
+    Exactly one file object ever writes ``log_path``: the stream the tee holds,
+    which the root-logger handler is pointed at too. Both halves therefore share
+    one write offset and land in the order they were produced. Two file objects
+    over one path would not - a buffered tee write and an appending handler each
+    track their own offset, so whichever flushes second overwrites the other's
+    bytes in place, and the log a trainer reads back for its
+    "RUNNING != learning" verdict is left holding neither stream whole.
+
     ``log_path=None`` is a no-op (used by non-rank-0 workers so only rank 0
     writes the shared log).
     """
@@ -73,7 +82,7 @@ class capture_to_file:
     def __init__(self, log_path: str | None) -> None:
         self.log_path = log_path
         self._stream: io.TextIOBase | None = None
-        self._fh: logging.FileHandler | None = None
+        self._fh: logging.StreamHandler | None = None
         self._r_out: Any = None
         self._r_err: Any = None
 
@@ -81,7 +90,12 @@ class capture_to_file:
         if not self.log_path:
             return self
         self._stream = open(self.log_path, "w", encoding="utf-8")  # noqa: SIM115
-        self._fh = logging.FileHandler(self.log_path)
+        # Records go through the *same* file object the tee writes to. Opening
+        # the path a second time (a FileHandler) gives two file objects with
+        # independent write offsets over one file: the tee's buffered writes
+        # land at its own offset and overwrite whatever the handler appended
+        # there, so the log ends up holding neither stream whole.
+        self._fh = logging.StreamHandler(self._stream)
         self._fh.setLevel(logging.INFO)
         self._fh.setFormatter(logging.Formatter("%(message)s"))
         logging.getLogger().addHandler(self._fh)

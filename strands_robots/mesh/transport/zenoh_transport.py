@@ -1,9 +1,14 @@
 """Eclipse Zenoh transport - thin :class:`MeshTransport` adapter over the
 existing :mod:`strands_robots.mesh.session` singleton.
 
-This wrapper deliberately delegates to the legacy ``session.get_session()`` /
-``session.put()`` / ``session.release_session()`` functions instead of
-reimplementing them. That keeps:
+This wrapper deliberately delegates to the :mod:`strands_robots.mesh.session`
+module instead of reimplementing Zenoh state. Every delegation goes to that
+module's ``_*_directly`` helpers rather than to its public, backend-aware
+``get_session`` / ``put`` / ``release_session`` / ``session_alive``: those
+resolve whatever ``STRANDS_MESH_BACKEND`` selects, and under ``bridge`` that is
+the :class:`~strands_robots.mesh.transport.bridge_transport.BridgeTransport`
+which owns this very transport - so a backend-aware call routes straight back
+into the caller. Delegating to the raw path keeps:
 
 1. **Zero behaviour change for existing callers.** Every existing
    caller that pokes ``session._SESSION`` / ``_SESSION_REFS`` keeps
@@ -18,8 +23,8 @@ reimplementing them. That keeps:
    benefits automatically.
 
 The Zenoh dependency stays **lazy**: importing this module does not import
-``zenoh``. The first :meth:`connect` call delegates to ``session.get_session``
-which performs the actual lazy import.
+``zenoh``. The first :meth:`connect` call delegates to
+``session._get_zenoh_session_directly`` which performs the actual lazy import.
 """
 
 from __future__ import annotations
@@ -36,9 +41,9 @@ class ZenohTransport:
     """Concrete :class:`MeshTransport` backed by Eclipse Zenoh.
 
     Each instance holds **one** reference to the process-wide Zenoh session
-    via ``mesh.session.get_session`` / ``release_session``. The underlying
-    session is shared by all transport instances and only closes when the
-    last reference releases.
+    via ``mesh.session._get_zenoh_session_directly`` /
+    ``_release_zenoh_session_directly``. The underlying session is shared by
+    all transport instances and only closes when the last reference releases.
 
     Thread safety: :meth:`connect` and :meth:`close` are guarded by an
     internal lock so concurrent ``Mesh.start()`` calls don't double-acquire.
@@ -77,13 +82,18 @@ class ZenohTransport:
 
         Idempotent. The underlying ``zenoh.Session`` only closes when the
         last reference (across all transports and direct callers) releases.
+
+        Releases the raw Zenoh refcount rather than calling the backend-aware
+        ``session.release_session``: in bridge mode that delegates back to the
+        transport factory, whose last release closes the bridge holding this
+        instance.
         """
         with self._lock:
             if not self._has_ref:
                 return
-            from strands_robots.mesh.session import release_session
+            from strands_robots.mesh.session import _release_zenoh_session_directly
 
-            release_session()
+            _release_zenoh_session_directly()
             self._has_ref = False
 
     # Inspection
@@ -115,11 +125,13 @@ class ZenohTransport:
     def put(self, key: str, data: dict[str, Any]) -> None:
         """Publish *data* (JSON-encoded) to *key*. Fire-and-forget.
 
-        Delegates to :func:`strands_robots.mesh.session.put`.
+        Goes to the raw Zenoh session, not to the backend-aware
+        ``session.put``: in bridge mode that would resolve the active
+        transport, which is the bridge holding this instance.
         """
-        from strands_robots.mesh.session import put
+        from strands_robots.mesh.session import _put_zenoh_directly
 
-        put(key, data)
+        _put_zenoh_directly(key, data)
 
     def declare_subscriber(self, key_expr: str, handler: Callable[[Any], None]) -> Any:
         """Subscribe to *key_expr* and route inbound samples to *handler*.

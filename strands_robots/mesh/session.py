@@ -923,13 +923,33 @@ def release_session() -> None:
     ``undeclare`` calls. The "session closed" INFO line is emitted only when
     the close actually completed.
     """
-    global _SESSION, _SESSION_REFS  # noqa: PLW0603
-
     if _is_transport_backend():
         from strands_robots.mesh.transport.factory import release_transport
 
         release_transport()
         return
+
+    _release_zenoh_session_directly()
+
+
+def _release_zenoh_session_directly() -> None:
+    """Release one reference to the raw Zenoh session, bypassing backend routing.
+
+    The teardown companion to :func:`_get_zenoh_session_directly`, and the
+    function :func:`release_session` itself calls once the backend branch is
+    not taken - so the legacy refcount and its close contract (documented on
+    :func:`release_session`) live in exactly one place.
+
+    :class:`~strands_robots.mesh.transport.zenoh_transport.ZenohTransport` must
+    release through here rather than :func:`release_session` for the same
+    reason it acquires through :func:`_get_zenoh_session_directly`: under
+    ``STRANDS_MESH_BACKEND=bridge`` the backend-aware :func:`release_session`
+    delegates to the transport factory, whose last release closes the
+    :class:`~strands_robots.mesh.transport.bridge_transport.BridgeTransport`
+    that owns that very ``ZenohTransport``, re-entering the factory's
+    non-reentrant lock from the thread already holding it.
+    """
+    global _SESSION, _SESSION_REFS  # noqa: PLW0603
 
     with _SESSION_LOCK:
         if _SESSION_REFS <= 0:
@@ -993,6 +1013,28 @@ def put(key: str, data: dict[str, Any]) -> None:
             logger.debug("Mesh transport put error on %s: %s", key, exc)
         return
 
+    _put_zenoh_directly(key, data)
+
+
+def _put_zenoh_directly(key: str, data: dict[str, Any]) -> None:
+    """Publish to the raw Zenoh session, bypassing transport-backend routing.
+
+    The publish companion to :func:`_get_zenoh_session_directly`, and the
+    function :func:`put` itself calls once the backend branch is not taken - so
+    the raw JSON encode-and-publish lives in exactly one place.
+
+    :class:`~strands_robots.mesh.transport.zenoh_transport.ZenohTransport` must
+    publish through here rather than :func:`put`: under
+    ``STRANDS_MESH_BACKEND=bridge`` the backend-aware :func:`put` resolves the
+    active transport, which is the
+    :class:`~strands_robots.mesh.transport.bridge_transport.BridgeTransport`
+    that owns that very ``ZenohTransport`` - so the payload would route back
+    into the bridge instead of onto the wire.
+
+    Fire-and-forget, and it reads ``_SESSION`` without taking
+    ``_SESSION_LOCK`` exactly as :func:`put` always has: a 50 Hz teleop loop
+    must not serialise on the session lock.
+    """
     if _SESSION is None:
         return
     try:

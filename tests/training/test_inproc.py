@@ -11,9 +11,14 @@ Covers :mod:`strands_robots.training._inproc`:
   crash a training run on a flaky file handle or lose the RUNNING-vs-learning
   verdict log.
 * :func:`capture_to_file` - the context manager that tees stdout/stderr and
-  installs a root-logger ``FileHandler`` for the run, and is a strict no-op when
+  installs a root-logger handler for the run, and is a strict no-op when
   ``log_path is None`` (the non-rank-0 worker path, so only rank 0 writes the
-  shared log).
+  shared log). Its other load-bearing contract is that **one** file object
+  writes the log: the handler is pointed at the stream the tee already holds,
+  so the two halves share a write offset. Opening the path a second time gave
+  two offsets over one file, and the buffered tee overwrote the handler's
+  appended bytes in place - losing whole metrics lines and leaving partial ones
+  behind, in the log a trainer reads back for its RUNNING-vs-learning verdict.
 
 :func:`elastic_launch_callable` - the shell-free ``torchrun`` replacement: it
 drives torch's programmatic elastic agent to spawn ``nproc_per_node`` workers,
@@ -30,6 +35,13 @@ tee-ing and the handler lifecycle, never on which *logging records* reach the
 file: record visibility is governed by the ambient root-logger level and, under
 pytest, by the log-capture plugin's handlers - global mutable state that would
 make any record-level assertion order-dependent and flaky.
+
+:class:`TestCaptureToFileIsTheOnlyWriter` keeps that exclusion. What survives a
+write is a different question from what is *filtered into* one, and only the
+first is this module's to answer, so those tests hand records straight to the
+handler ``capture_to_file`` installed rather than logging through a logger -
+no logger level, no propagation and no capture plugin in the path. They pin
+byte survival and ordering; record visibility stays out of scope.
 """
 
 from __future__ import annotations
@@ -161,11 +173,14 @@ class TestCaptureToFile:
     def test_removes_handler_and_closes_on_exit(self, tmp_path):
         root = logging.getLogger()
         before = list(root.handlers)
-        with capture_to_file(str(tmp_path / "run.log")):
-            # Exactly one FileHandler added for the duration of the context.
+        with capture_to_file(str(tmp_path / "run.log")) as cap:
+            # Exactly one stream handler added for the duration of the context,
+            # writing the stream the tee holds rather than a second file object
+            # over the same path.
             added = [h for h in root.handlers if h not in before]
             assert len(added) == 1
-            assert isinstance(added[0], logging.FileHandler)
+            assert isinstance(added[0], logging.StreamHandler)
+            assert added[0].stream is cap._stream
         # ...and removed again on exit (no handler leak across runs).
         assert list(root.handlers) == before
 
@@ -181,7 +196,7 @@ class TestCaptureToFile:
         except RuntimeError:
             pass
         # Even on an exception inside the context, redirect_stdout/stderr unwind
-        # and the FileHandler is removed - no leaked handler, no swapped streams.
+        # and the handler is removed - no leaked handler, no swapped streams.
         assert sys.stdout is before_out
         assert sys.stderr is before_err
         assert list(root.handlers) == before_handlers
@@ -212,6 +227,155 @@ class TestCaptureToFileNoop:
         with capture_to_file(None):
             pass
         assert list(tmp_path.iterdir()) == []
+
+
+class TestCaptureToFileIsTheOnlyWriter:
+    """One file object writes the log, so neither half can overwrite the other.
+
+    ``capture_to_file`` promises the run log holds stdout/stderr *and*
+    root-logger output. Two file objects over one path cannot deliver that: the
+    tee's stream buffers and writes at its own offset while an appending handler
+    writes at end-of-file, so once the buffer spills past the handler's bytes it
+    overwrites them in place. Records vanish outright, and the ones straddling a
+    flush boundary are left as partial lines that still look like records - in
+    the file a trainer parses for ``latest_step`` / ``learning`` / ``liveness_ok``.
+
+    Records are handed to the installed handler directly (see the module
+    docstring): what survives a write is this module's contract, what is
+    filtered into one is not.
+    """
+
+    #: Print volume that guarantees the tee's stream buffer spills at least once
+    #: while records are still being appended, whatever the platform's default
+    #: text buffer size is. Below a spill both writers happen to stay ordered
+    #: and the overwrite is invisible - which is why a quieter run passes either
+    #: way, and why the chatty one is the case worth pinning.
+    _CHATTER_BYTES = io.DEFAULT_BUFFER_SIZE * 4
+
+    @staticmethod
+    def _metrics_line(step: int) -> str:
+        """A lerobot ``MetricsTracker`` line, the shape the verdict parser reads."""
+        return f"step:{step} smpl:{step * 4}K ep:{step // 100} epch:{step / 100:.2f} loss:0.1234 grdn:0.512"
+
+    def _run(self, log_path, *, steps: int, chatter_bytes: int) -> str:
+        """Interleave ``steps`` handler records with ``chatter_bytes`` of stdout."""
+        filler = "dataset: caching episode ....................................."
+        per_step = max(1, chatter_bytes // (steps * (len(filler) + 1))) if chatter_bytes else 0
+        with capture_to_file(str(log_path)) as cap:
+            assert cap._fh is not None, "premise: a handler is installed for a real log_path"
+            for i in range(1, steps + 1):
+                cap._fh.emit(
+                    logging.LogRecord(
+                        name="lerobot.scripts.lerobot_train",
+                        level=logging.INFO,
+                        pathname=__file__,
+                        lineno=0,
+                        msg=self._metrics_line(i * 100),
+                        args=(),
+                        exc_info=None,
+                    )
+                )
+                for _ in range(per_step):
+                    print(filler)
+        return log_path.read_text(encoding="utf-8", errors="replace")
+
+    def test_every_record_survives_a_chatty_stdout(self, tmp_path, capsys):
+        # The headline: a run whose stdout out-volumes its records must still
+        # hold every record. Pre-fix the tee's buffer spilled over the appended
+        # records and none of them were left in the file.
+        steps = 12
+        text = self._run(tmp_path / "run.log", steps=steps, chatter_bytes=self._CHATTER_BYTES)
+        expected = [self._metrics_line(i * 100) for i in range(1, steps + 1)]
+        missing = [line for line in expected if line not in text]
+        if missing:
+            raise AssertionError(
+                f"{len(missing)} of {steps} emitted records are absent from the log "
+                f"(first missing: {missing[0]!r}); the log kept {len(text)} bytes of "
+                f"{self._CHATTER_BYTES} bytes of stdout, so the tee's buffer overwrote "
+                "what the handler had appended"
+            )
+
+    def test_no_record_is_left_half_overwritten(self, tmp_path, capsys):
+        # Worse than a lost line is a surviving fragment of one. A short print
+        # after the records puts the tee's single close-flush over the *head* of
+        # what the handler appended, so the tail of a record is left behind as a
+        # line of its own - shorter than any record, and still numeric enough to
+        # read like one. The contract is exact: the log holds the lines that were
+        # written and nothing else.
+        log = tmp_path / "run.log"
+        records = [self._metrics_line(i * 100) for i in (1, 2, 3)]
+        tail = "training finished, saved checkpoint"
+        with capture_to_file(str(log)) as cap:
+            assert cap._fh is not None, "premise: a handler is installed for a real log_path"
+            for msg in records:
+                cap._fh.emit(
+                    logging.LogRecord(
+                        name="lerobot.scripts.lerobot_train",
+                        level=logging.INFO,
+                        pathname=__file__,
+                        lineno=0,
+                        msg=msg,
+                        args=(),
+                        exc_info=None,
+                    )
+                )
+            print(tail)
+        written = [*records, tail]
+        found = log.read_text(encoding="utf-8", errors="replace").splitlines()
+        strays = [line for line in found if line not in written]
+        assert not strays, (
+            f"the log holds {strays!r}, which was never written - a record left "
+            f"half-overwritten by the tee's flush; wrote {written!r}"
+        )
+        assert sorted(found) == sorted(written), f"log holds {found!r}, wrote {written!r}"
+
+    def test_the_verdict_reads_a_chatty_run_as_learning(self, tmp_path, capsys):
+        # The consumer. A healthy run that logged 12 metrics lines must not be
+        # reported as having produced none just because stdout was chatty.
+        from strands_robots.training.lerobot import LerobotTrainer
+
+        log = tmp_path / "run.log"
+        self._run(log, steps=12, chatter_bytes=self._CHATTER_BYTES)
+        metrics = LerobotTrainer._parse_log(LerobotTrainer.__new__(LerobotTrainer), str(log))
+        assert metrics.get("liveness_ok") is True, f"healthy run read as dead: {metrics}"
+        assert metrics.get("latest_step") == 1200, f"wrong step recovered: {metrics}"
+        assert metrics.get("learning") is True, f"finite loss read as not-learning: {metrics}"
+
+    def test_stdout_and_records_keep_their_order(self, tmp_path, capsys):
+        # One offset also means one ordering: a record emitted between two prints
+        # lands between them, not at end-of-file.
+        log = tmp_path / "run.log"
+        with capture_to_file(str(log)) as cap:
+            assert cap._fh is not None
+            print("BEFORE")
+            cap._fh.emit(
+                logging.LogRecord(
+                    name="t",
+                    level=logging.INFO,
+                    pathname=__file__,
+                    lineno=0,
+                    msg="RECORD",
+                    args=(),
+                    exc_info=None,
+                )
+            )
+            print("AFTER")
+        lines = [line for line in log.read_text(encoding="utf-8").splitlines() if line]
+        assert lines == ["BEFORE", "RECORD", "AFTER"], lines
+
+    def test_a_quiet_run_is_unchanged(self, tmp_path, capsys):
+        # Control: with no stdout to spill there was never an overwrite, so this
+        # holds either way. It fails only if pointing the handler at the tee's
+        # stream cost the records or their formatting.
+        steps = 3
+        text = self._run(tmp_path / "run.log", steps=steps, chatter_bytes=0)
+        assert text == "".join(f"{self._metrics_line(i * 100)}\n" for i in range(1, steps + 1))
+
+    def test_the_handler_writes_the_stream_the_tee_holds(self, tmp_path):
+        # The root cause, pinned directly: one file object, so one write offset.
+        with capture_to_file(str(tmp_path / "run.log")) as cap:
+            assert cap._fh is not None and cap._stream is not None
+            assert cap._fh.stream is cap._stream
 
 
 class TestCallCallable:

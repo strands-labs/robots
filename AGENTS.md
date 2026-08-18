@@ -166,6 +166,26 @@ hatch run format            # ruff check --fix, ruff format
     audit dir to `tmp_path`, so there the whole log *is* the record set it
     means. Pinned by tests/test_examples_attest_only_what_they_report.py.
 
+17. **A transport delegates to the raw backend path, never to the router that
+    resolves it** - `strands_robots.mesh.session` exposes every Zenoh operation
+    twice: a public, backend-aware entry point (`get_session`, `put`,
+    `release_session`, `session_alive`) that resolves whatever
+    `STRANDS_MESH_BACKEND` selects, and a private `_*_directly` helper that
+    always takes the raw Zenoh path. A `MeshTransport` implementation must use
+    the second kind for *every* delegation, because under
+    `STRANDS_MESH_BACKEND=bridge` the router resolves the `BridgeTransport` that
+    owns that very transport - so a backend-aware call routes straight back into
+    the caller. Both re-entries are silent, which is what makes the rule worth
+    stating rather than leaving to review: a re-entrant `put` raises
+    `RecursionError`, which is a `RuntimeError` subclass and so is absorbed by
+    the narrow `except (RuntimeError, ConnectionError, OSError)` that idempotent
+    transport paths are required to use, and a re-entrant `close` blocks on the
+    factory's non-reentrant lock from the thread already holding it. Neither
+    reports anything a caller can act on. Every fixture that injects a *fake*
+    leg into a composite transport hides this by construction, so the raw path
+    has to be pinned structurally. Pinned by
+    tests/mesh/test_zenoh_transport_bypasses_backend_routing.py.
+
 ## PR Workflow
 
 1. Create the feature branch **on your fork**. Branch creation in the base
@@ -1366,6 +1386,24 @@ Corrections from code review that apply to all future contributions:
   achieved refresh timeline against the unstepped one rather than a tolerance. A duration
   base also carries its clock in its name (`started_mono`, `last_idle_render_mono`), so a
   later reader cannot mistake it for a stamp and subtract `time.time()` from it.
+
+### One writer per log file
+- **A file two writers share needs one file object, not one path.** Two file objects over
+  one path each track their own write offset, so a buffered writer flushes at its offset
+  and overwrites in place whatever the other appended there. The training backends' run
+  log tees stdout/stderr *and* root-logger records into a single file, so the logger
+  handler is pointed at the stream the tee already holds
+  (`logging.StreamHandler(stream)`) rather than opening the path a second time
+  (`logging.FileHandler(path)`).
+- **The failure is silent and shaped like data, not like an error.** Records vanish, and a
+  record straddling a flush boundary survives as a fragment that still reads like one - so
+  the loss surfaces as a wrong *value* somewhere downstream. The log a training backend
+  parses for its "RUNNING != learning" verdict reported a healthy 1200-step run as having
+  produced no metrics at all, with nothing raised and nothing logged.
+- Pinned by `tests/training/test_inproc.py::TestCaptureToFileIsTheOnlyWriter`, which
+  asserts the log holds exactly the lines that were written - so a dropped record and a
+  surviving fragment both fail - and hands records to the installed handler directly, so
+  the assertion does not depend on ambient logger levels or on pytest's capture plugin.
 
 ### Module-Level Side Effects
 - **If you must run code at import time, comment WHY it can't be lazy.** `MUJOCO_GL` is the canonical example: MuJoCo locks the GL backend at first `import mujoco`, so the env var must be set before any downstream import chain triggers it.

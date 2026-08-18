@@ -805,63 +805,22 @@ def bake_gsplat_panorama(
     T[:3, 3] = -R @ viewpoint  # world_from_gs: centroid -> origin, upright
     base._transform = T
 
-    # Six cube faces (world dirs in the upright frame) + their up vectors.
-    faces = [
-        (np.array([1.0, 0, 0]), np.array([0, 0, 1.0])),
-        (np.array([-1.0, 0, 0]), np.array([0, 0, 1.0])),
-        (np.array([0, 1.0, 0]), np.array([0, 0, 1.0])),
-        (np.array([0, -1.0, 0]), np.array([0, 0, 1.0])),
-        (np.array([0, 0, 1.0]), np.array([0, 1.0, 0])),
-        (np.array([0, 0, -1.0]), np.array([0, 1.0, 0])),
-    ]
-    f = 0.5 * face_size  # 90 deg FOV -> focal = size/2
-    Kf = np.array([[f, 0, face_size / 2], [0, f, face_size / 2], [0, 0, 1.0]])
+    # The six-cube-face render + equirect reprojection is shared with the
+    # world-frame environment-map bake (issue #2323). This bake keeps its own
+    # viewpoint (the scene centroid, in the unaligned upright frame above).
+    from .ibl import render_environment_map
 
-    face_imgs, face_bases = [], []
-    for fwd, up in faces:
-        right = np.cross(fwd, up)
-        right /= np.linalg.norm(right)
-        u = np.cross(right, fwd)
-        Twc = np.eye(4)
-        Twc[:3, :3] = np.stack([right, u, -fwd], axis=1)  # OpenGL: -Z = fwd
-        cam = CameraParams(K=Kf, T_world_cam=Twc, width=face_size, height=face_size, znear=0.01, zfar=1e3)
-        rgb, _ = base.render(cam)  # camera at world origin (viewpoint)
-        face_imgs.append(rgb.astype(np.float32))
-        face_bases.append((fwd, right, u))
-
-    # Equirectangular grid matching PanoramaBackground: uu in [0,1] -> theta in
-    # [-pi,pi]; vv in [0,1] (top->bottom) -> phi in [pi/2, -pi/2].
-    jj, ii = np.meshgrid(np.arange(equi_w), np.arange(equi_h))
-    theta = (jj / equi_w) * 2 * np.pi - np.pi
-    phi = np.pi / 2 - (ii / equi_h) * np.pi
-    dx = np.cos(phi) * np.cos(theta)
-    dy = np.cos(phi) * np.sin(theta)
-    dz = np.sin(phi)
-    dirs = np.stack([dx, dy, dz], axis=-1)  # (H,W,3) world rays
-
-    pano = np.zeros((equi_h, equi_w, 3), np.float32)
-    best = np.full((equi_h, equi_w), -1e9, np.float32)
-    for img, (fwd, right, u) in zip(face_imgs, face_bases):
-        d_f = dirs @ fwd
-        sel = d_f > max(1e-6, 0)  # rays in this face's hemisphere
-        # Pick the face with the largest forward component per pixel.
-        take = sel & (d_f > best)
-        if not take.any():
-            continue
-        s = dirs[take] / d_f[take][:, None]  # project to image plane (z=1)
-        u_img = s @ right
-        v_img = s @ u
-        inside = (np.abs(u_img) <= 1.0) & (np.abs(v_img) <= 1.0)
-        col = np.clip(((u_img + 1) * 0.5 * (face_size - 1)).astype(int), 0, face_size - 1)
-        row = np.clip(((1 - (v_img + 1) * 0.5) * (face_size - 1)).astype(int), 0, face_size - 1)
-        idx = np.where(take)
-        ri, ci = idx[0][inside], idx[1][inside]
-        pano[ri, ci] = img[row[inside], col[inside]]
-        best[ri, ci] = d_f[take][inside]
+    pano = render_environment_map(
+        base,
+        origin_world=(0.0, 0.0, 0.0),
+        face_size=face_size,
+        equi_w=equi_w,
+        equi_h=equi_h,
+    )
 
     from PIL import Image as _Image
 
-    _Image.fromarray(np.clip(pano, 0, 255).astype(np.uint8)).save(out, quality=88)
+    _Image.fromarray(pano).save(out, quality=88)
     logger.info("Baked GS panorama -> %s", out)
     return out
 
