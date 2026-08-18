@@ -856,7 +856,7 @@ class TestGsplatBackgroundClipSplats:
         # is honored, so both clear the world-frame floor.
         assert (kept, total) == (2, 2)
 
-    def test_clip_filters_sh_coefficient_colors_per_gaussian(self) -> None:
+    def test_clip_filters_sh_coefficient_colors_per_gaussian(self, scene_ply) -> None:
         # An SH-bearing asset stores colors as (N, K, 3); clipping must filter
         # the gaussian axis and keep each survivor's full coefficient stack.
         pytest.importorskip("torch")
@@ -864,7 +864,7 @@ class TestGsplatBackgroundClipSplats:
 
         from strands_robots.rendering.backgrounds import GsplatBackground
 
-        bg = GsplatBackground(ply_path="scene.ply")
+        bg = GsplatBackground(ply_path=scene_ply)
         bg._transform = np.eye(4)
         splats = self._splats([[0, 0, -1.0], [0, 0, 1.0]], [0.9, 0.9])
         splats["colors"] = torch.arange(2 * 4 * 3, dtype=torch.float32).reshape(2, 4, 3)
@@ -888,7 +888,7 @@ class TestGsplatRenderShDegree:
     CUDA rasterizer is doubled -- this pins the call, not the kernels.
     """
 
-    def _render_and_capture(self, monkeypatch, colors):
+    def _render_and_capture(self, monkeypatch, scene_ply, colors):
         import sys
         import types
 
@@ -908,7 +908,7 @@ class TestGsplatRenderShDegree:
         monkeypatch.setitem(sys.modules, "gsplat", fake_gsplat)
 
         n = colors.shape[0]
-        bg = GsplatBackground(ply_path="scene.ply", device="cpu")
+        bg = GsplatBackground(ply_path=scene_ply, device="cpu")
         bg._splats = {
             "means": torch.zeros(n, 3),
             "quats": torch.tensor([[1.0, 0.0, 0.0, 0.0]] * n),
@@ -919,10 +919,10 @@ class TestGsplatRenderShDegree:
         rgb, depth = bg.render(_cam(16, 12))
         return captured, rgb, depth
 
-    def test_baked_rgb_colors_pass_no_sh_degree(self, monkeypatch) -> None:
+    def test_baked_rgb_colors_pass_no_sh_degree(self, monkeypatch, scene_ply) -> None:
         torch = pytest.importorskip("torch")
 
-        captured, rgb, depth = self._render_and_capture(monkeypatch, torch.rand(3, 3))
+        captured, rgb, depth = self._render_and_capture(monkeypatch, scene_ply, torch.rand(3, 3))
 
         assert captured["sh_degree"] is None
         assert captured["colors"].shape == (3, 3)
@@ -930,11 +930,11 @@ class TestGsplatRenderShDegree:
         assert depth.shape == (12, 16)
 
     @pytest.mark.parametrize("degree", [1, 2, 3])
-    def test_sh_coefficients_pass_the_degree_their_count_encodes(self, monkeypatch, degree) -> None:
+    def test_sh_coefficients_pass_the_degree_their_count_encodes(self, monkeypatch, scene_ply, degree) -> None:
         torch = pytest.importorskip("torch")
 
         k = (degree + 1) ** 2
-        captured, _, _ = self._render_and_capture(monkeypatch, torch.rand(3, k, 3))
+        captured, _, _ = self._render_and_capture(monkeypatch, scene_ply, torch.rand(3, k, 3))
 
         assert captured["sh_degree"] == degree
         assert captured["colors"].shape == (3, k, 3)
@@ -1358,7 +1358,7 @@ class TestGsplatRenderPartialAlpha:
     """Premultiplied-alpha compositing and alpha-normalized metric depth."""
 
     @staticmethod
-    def _single_gaussian_background(color, bg_fill):
+    def _single_gaussian_background(scene_ply, color, bg_fill):
         """A GsplatBackground with one injected gaussian 4 m straight ahead
         (GS frame == world frame; camera at origin looking down -Z), at
         opacity 0.5 so the dead-center pixel lands at alpha ~0.5."""
@@ -1366,7 +1366,7 @@ class TestGsplatRenderPartialAlpha:
 
         from strands_robots.rendering.backgrounds import GsplatBackground
 
-        bg = GsplatBackground(ply_path="never-loaded-splats-injected.ply", device="cuda", bg_fill=bg_fill)
+        bg = GsplatBackground(ply_path=scene_ply, device="cuda", bg_fill=bg_fill)
         dev = "cuda"
         bg._splats = {
             "means": torch.tensor([[0.0, 0.0, -4.0]], device=dev),
@@ -1377,10 +1377,10 @@ class TestGsplatRenderPartialAlpha:
         }
         return bg
 
-    def test_partial_alpha_color_is_composited_once_not_squared(self) -> None:
+    def test_partial_alpha_color_is_composited_once_not_squared(self, scene_ply) -> None:
         _require_cuda_rasterizer()
         cam = _cam(64, 64)
-        bg = self._single_gaussian_background(color=(1.0, 0.0, 0.0), bg_fill=(0, 0, 0))
+        bg = self._single_gaussian_background(scene_ply, color=(1.0, 0.0, 0.0), bg_fill=(0, 0, 0))
 
         rgb, _ = bg.render(cam)
 
@@ -1391,10 +1391,10 @@ class TestGsplatRenderPartialAlpha:
         center_red = float(rgb[32, 32, 0]) / 255.0
         assert 0.44 <= center_red <= 0.56
 
-    def test_partial_alpha_splat_over_matching_fill_is_invariant(self) -> None:
+    def test_partial_alpha_splat_over_matching_fill_is_invariant(self, scene_ply) -> None:
         _require_cuda_rasterizer()
         cam = _cam(64, 64)
-        bg = self._single_gaussian_background(color=(1.0, 1.0, 1.0), bg_fill=(255, 255, 255))
+        bg = self._single_gaussian_background(scene_ply, color=(1.0, 1.0, 1.0), bg_fill=(255, 255, 255))
 
         rgb, _ = bg.render(cam)
 
@@ -1404,10 +1404,10 @@ class TestGsplatRenderPartialAlpha:
         # a grey halo wherever coverage is partial.
         assert int(rgb[32, 32].min()) >= 250
 
-    def test_accumulated_depth_is_alpha_normalized_to_metric(self) -> None:
+    def test_accumulated_depth_is_alpha_normalized_to_metric(self, scene_ply) -> None:
         _require_cuda_rasterizer()
         cam = _cam(64, 64)
-        bg = self._single_gaussian_background(color=(1.0, 0.0, 0.0), bg_fill=(0, 0, 0))
+        bg = self._single_gaussian_background(scene_ply, color=(1.0, 0.0, 0.0), bg_fill=(0, 0, 0))
 
         _, depth = bg.render(cam)
 
