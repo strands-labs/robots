@@ -31,6 +31,18 @@ go through the helpers here:
   shadow is a multiplicative ratio of received light, which is only a
   multiplication in linear space.
 
+**Which scale a value is on**
+
+:func:`srgb_to_linear` is the one helper here that accepts two scales -- bytes
+in ``[0, 255]`` or floats in ``[0, 1]`` -- so it is the only one that can be
+handed a value whose scale it cannot know. It reads ``uint8`` as bytes and
+floats as unit values, and *refuses* any other integer dtype rather than
+guessing: a ``uint16`` array (or a plain Python list of ints) could already be
+the unit domain or could be byte-encoded, and reading byte codes as unit floats
+clips every code above 1 to pure white. :func:`linear_to_srgb` and
+:func:`relative_luminance` take unit linear light only, so an integer ``0``/``1``
+there is unambiguous and is accepted.
+
 Transfer function: IEC 61966-2-1 (sRGB), the piecewise curve -- not a bare 2.2
 power -- so round trips are exact to float precision. Luminance weights are
 Rec. 709 / sRGB primaries.
@@ -53,10 +65,26 @@ def srgb_to_linear(rgb: npt.ArrayLike) -> np.ndarray:
 
     Returns:
         ``float32`` array of the same shape, linear light in ``[0, 1]``.
+
+    Raises:
+        ValueError: if ``rgb`` is an integer array of any dtype other than
+            ``uint8``, whose scale is unknowable -- ``uint16``, ``int32`` or a
+            Python list of ints could already be the ``[0, 1]`` unit domain or
+            could be byte-encoded. The message names both accepted spellings;
+            the caller states the scale rather than this function guessing it.
     """
     x = np.asarray(rgb)
     if x.dtype == np.uint8:
         x = x.astype(np.float32) / 255.0
+    elif np.issubdtype(x.dtype, np.integer):
+        # Reading byte codes as unit floats would clip every code above 1 to
+        # white, silently, so the ambiguity is refused instead of resolved.
+        raise ValueError(
+            f"srgb_to_linear: cannot tell what scale a {x.dtype} array is on - sRGB input is "
+            "either uint8 in [0, 255] or float in [0, 1], and an integer array could be either. "
+            "Pass .astype(np.uint8) for byte-encoded values, or divide by the encoding maximum "
+            "(255 for 8-bit, 65535 for 16-bit) and pass float."
+        )
     else:
         x = x.astype(np.float32)
     x = np.clip(x, 0.0, 1.0)

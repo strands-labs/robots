@@ -119,9 +119,15 @@ robot = RosbridgeRobot(
 
 All parameters are optional except `node_name`, `cmd_vel_topic`, and `odom_topic`.
 
-### Fleet drive contract
+### Drive contract
 
-The `drive()` method follows the strands fleet-standard contract:
+`drive()` takes the fleet-standard `(linear, angular, duration, count)` shape,
+and two of its guarantees are fleet-standard too: every value is checked against
+the same numeric domains the [ROS 2](ros2-integration.md) and
+[RTPS](rtps-integration.md) bridges use, and a bare single-shot command latches.
+The velocity clamps, the `max_duration` ceiling and the trailing zero Twist are
+specific to this bridge - the other two accept no ceilings and publish no
+trailing zero, so a timed drive there leaves the last velocity latched.
 
 ```python
 # Direct, programmatic control:
@@ -132,23 +138,28 @@ pose = robot.get_pose()  # read one odometry sample
 scan = robot.get_scan()  # read one laser scan (error if no scan_topic)
 ```
 
-**Safety semantics:**
+**Safety semantics** (fleet-wide unless marked):
 
 - **Finite-input guards**: non-finite (NaN, inf) linear or angular velocities
   are rejected before any publish.
-- **Velocity clamps**: linear and angular are independently clamped to
-  `max_linear` and `max_angular`.
-- **Loud duration rejection**: `duration` must be positive, finite, and at most
-  `max_duration`; anything else returns a detailed error and nothing is published.
-- **Timed-command trailing zero**: every drive with a `duration` argument and a
-  non-zero command (or multi-message publish) automatically publishes a single
-  zero Twist afterwards - even if the main publish failed - so a timed drive
-  cannot leave the robot with a live velocity.
 - **Single-shot latch**: a bare single-message `drive()` (no `duration`, no
   `count > 1`) publishes once and latches in the robot's controller until
   `stop()` is called. This is standard cmd_vel behavior.
-- **stop() never gated**: the stop method always publishes a zero Twist,
-  regardless of prior state or publish failures.
+- **Velocity clamps** (this bridge only): linear and angular are independently
+  clamped to `max_linear` and `max_angular`. The other two bridges accept no
+  velocity ceiling and put the requested value on the wire unchanged.
+- **Loud duration rejection** (this bridge only): `duration` must be positive,
+  finite, and at most `max_duration`; anything else returns a detailed error and
+  nothing is published. The other two bridges accept any positive finite hold.
+- **Timed-command trailing zero** (this bridge only): every drive with a
+  `duration` argument and a non-zero command (or multi-message publish)
+  automatically publishes a single zero Twist afterwards - even if the main
+  publish failed - so a timed drive cannot leave the robot with a live velocity.
+  The other two bridges stop publishing without a trailing zero, so do not carry
+  a timed drive on them expecting it to self-stop.
+- **stop() never gated** (this bridge only): the stop method always publishes a
+  zero Twist, regardless of prior state or publish failures. On the ROS 2 bridge
+  the halt goes through the same operator gate as `drive()`.
 
 | Method | ROS action | Notes |
 |--------|------------|-------|

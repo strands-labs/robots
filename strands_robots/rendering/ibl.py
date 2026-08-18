@@ -40,6 +40,8 @@ from pathlib import Path
 
 import numpy as np
 
+from strands_robots.utils import boolean_flag_error
+
 from .camera import CameraParams
 from .color import relative_luminance, srgb_to_linear
 
@@ -304,18 +306,22 @@ def derive_key_light(
             sphere derives an elevation of -76 deg -- a key light from
             *underneath*), and below-horizon radiance is bounce, which the
             dome texture already provides as fill. Pass ``False`` to search
-            the full sphere.
+            the full sphere. It selects a *posture* rather than scaling a
+            quantity, so it is checked against
+            :func:`~strands_robots.utils.boolean_flag_error` rather than read
+            by truthiness: ``"false"`` is a truthy string, so reading it that
+            way would search the hemisphere the caller asked to leave out.
 
     Returns:
         The :class:`KeyLightEstimate`.
 
     Raises:
         ValueError: if ``brightest_fraction`` is outside ``(0, 1]``, if
-            ``env_map`` is not an ``(H, W, 3)`` image, or if no dominant
-            direction exists in the searched region (bright texels cancel
-            out, or the searched hemisphere is black), in which case there is
-            no key light worth authoring and the caller should keep its
-            default lighting.
+            ``upper_hemisphere`` is not a boolean, if ``env_map`` is not an
+            ``(H, W, 3)`` image, or if no dominant direction exists in the
+            searched region (bright texels cancel out, or the searched
+            hemisphere is black), in which case there is no key light worth
+            authoring and the caller should keep its default lighting.
     """
     if not isinstance(brightest_fraction, (int, float)) or isinstance(brightest_fraction, bool):
         raise ValueError(
@@ -326,6 +332,15 @@ def derive_key_light(
         raise ValueError(
             f"derive_key_light: brightest_fraction must be a number in (0, 1], got {brightest_fraction!r}."
         )
+    # Checked beside brightest_fraction rather than read by truthiness below:
+    # every spelling of "off" a caller reaches for is a truthy string, so
+    # upper_hemisphere="false" would search the hemisphere it asks to skip,
+    # while an undeclared falsy value (None, 0, "") would silently select the
+    # full sphere this argument's own docstring warns aims a key light from
+    # underneath. Both choose a search region, not a magnitude, so the flag is
+    # checked rather than parsed.
+    if text := boolean_flag_error(upper_hemisphere, "upper_hemisphere", "derive_key_light"):
+        raise ValueError(text)
     env = np.asarray(env_map)
     if env.ndim != 3 or env.shape[2] != 3:
         raise ValueError(f"derive_key_light: env_map must be an (H, W, 3) image, got shape {env.shape}.")

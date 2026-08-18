@@ -136,7 +136,8 @@ class RosTelemetryBase:
     ) -> dict[str, tuple[float, float]] | None:
         """Validate and normalize a ``joint_limits`` mapping at construction.
 
-        Returns ``{motor: (min, max)}`` with floats and ``min <= max``, or
+        Returns ``{"<motor>.pos": (min, max)}`` with floats and ``min <= max``,
+        or
         ``None`` when no limits are configured. Failing fast here (rather than
         per-command) means a malformed bound surfaces at bridge construction,
         not as a silent mid-run rejection of every command.
@@ -272,8 +273,9 @@ class RosTelemetryBase:
         reported and returns ``None`` rather than raising, so the failure costs
         exactly the one message on either transport.
 
-        When ``joint_limits`` is supplied (``{motor: (min, max)}``), the command
-        is range-checked against the declared bounds: if ANY commanded joint
+        When ``joint_limits`` is supplied (``{"<motor>.pos": (min, max)}``), the
+        command is range-checked against the declared bounds: if ANY commanded
+        joint
         falls outside its range the ENTIRE command is rejected (returns
         ``None``) - no partial application - so one out-of-range joint can never
         drive part of the arm to a surprising pose while the rest holds. Joints
@@ -282,8 +284,12 @@ class RosTelemetryBase:
         Args:
             msg: The inbound ``JointState``-like message (``name``/``position``).
             skip_empty: Drop a wholly empty sample silently (DDS keep-alive).
-            joint_limits: Optional ``{motor: (min, max)}`` clamp ranges; a
-                command with any joint outside its range is rejected whole.
+            joint_limits: Optional ``{"<motor>.pos": (min, max)}`` clamp ranges;
+                a command with any joint outside its range is rejected whole.
+                Keys are matched against this message's own ``name`` entries,
+                which are the ``<motor>.pos`` names the bridges publish in
+                ``joint_states`` - a key that names no commanded joint
+                constrains nothing.
         """
         names = list(getattr(msg, "name", []) or [])
         positions = list(getattr(msg, "position", []) or [])

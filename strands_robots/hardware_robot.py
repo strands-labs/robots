@@ -491,8 +491,11 @@ class Robot(TeleopMixin, AgentTool):
                 pip wheel, no rclpy / no sourced distro), type coverage bounded
                 by the local IDL bundle (joint_states + image_raw). Both emit
                 byte-identical topics. Ignored unless ``ros2_bridge=True``.
-            joint_limits: Optional ``{motor: (min, max)}`` clamp ranges threaded
-                into the ROS 2 bridge. When set, an inbound ``joint_command``
+            joint_limits: Optional ``{"<motor>.pos": (min, max)}`` clamp ranges
+                threaded into the ROS 2 bridge, keyed by the joint name as it
+                arrives on the wire (the same ``<motor>.pos`` names the bridge
+                publishes in ``joint_states``). When set, an inbound
+                ``joint_command``
                 whose ANY joint is outside its declared range is rejected whole
                 (no partial application). Requires ``ros2_bridge=True``.
             dds_security_config: Optional DDS Security credentials
@@ -725,9 +728,10 @@ class Robot(TeleopMixin, AgentTool):
             ros2_commands: When True (default), also subscribe to
                 ``joint_command`` and drive the arm; False for read-only.
             ros2_transport: ``"rclpy"`` or ``"rtps"`` (see above).
-            joint_limits: Optional ``{motor: (min, max)}`` clamp ranges threaded
-                into whichever bridge is built (both enforce them on inbound
-                commands via the shared base).
+            joint_limits: Optional ``{"<motor>.pos": (min, max)}`` clamp ranges
+                threaded into whichever bridge is built (both enforce them on
+                inbound commands via the shared base), keyed by the joint name
+                as it arrives on the wire.
             dds_security_config: Optional DDS Security credentials, consumed
                 only by the ``"rtps"`` bridge. Passing it with the ``"rclpy"``
                 transport raises (rclpy DDS Security is configured at the RMW

@@ -184,13 +184,20 @@ class RosbridgeRobot:
     ) -> dict[str, Any]:
         """Publish a velocity command over rosbridge.
 
-        Fleet-standard contract, shared with :meth:`RosBridgedRobot.drive` and
-        :meth:`RtpsRobot.drive`. Inputs are validated before any side effect;
-        velocities are then clamped to the constructor limits. Every timed or
-        multi-message non-zero command is followed by a single zero Twist -
-        even if the main publish failed - so a timed drive cannot leave the
-        robot with a live velocity. A bare single-shot command latches until
-        :meth:`stop`, like any raw cmd_vel publish.
+        Fleet-standard across all three mobile-base bridges: inputs are
+        validated against the shared numeric domains before any side effect,
+        and a bare single-shot command latches until :meth:`stop`, like any
+        raw cmd_vel publish.
+
+        Specific to this bridge: velocities are clamped to ``max_linear`` and
+        ``max_angular``, a hold beyond ``max_duration`` is refused, and every
+        timed or multi-message non-zero command is followed by a single zero
+        Twist - even if the main publish failed - so a timed drive cannot
+        leave the robot with a live velocity. :meth:`RosBridgedRobot.drive`
+        and :meth:`RtpsRobot.drive` carry none of the three: they accept no
+        velocity or duration ceiling, publish the requested burst unclamped,
+        and stop publishing without a trailing zero, so a timed drive there
+        leaves the last velocity latched in the robot's controller.
 
         Args:
             linear: Forward linear velocity (m/s), mapped to ``linear.x``. Must

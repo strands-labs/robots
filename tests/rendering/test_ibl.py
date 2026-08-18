@@ -209,3 +209,31 @@ class TestDeriveKeyLight:
     def test_non_image_env_map_is_refused(self, shape) -> None:
         with pytest.raises(ValueError, match=r"\(H, W, 3\)"):
             derive_key_light(np.zeros(shape, np.uint8))
+
+    def test_an_env_map_whose_scale_is_ambiguous_is_refused_not_read_as_another_light(self) -> None:
+        """The map's *shape* is checked; its *scale* reaches the decode untouched.
+
+        A map whose dtype carries no scale (a 16-bit capture, or an array a
+        caller widened) decoded as unit light saturates every non-black texel,
+        so the estimate stops being the brightest region's direction and
+        becomes the solid-angle centroid of everything that is not pure black --
+        a different light, reported as success.
+        """
+        env = self._env_with_blob(row=16, col=64, color=(220, 200, 40))
+        env[8:12, 100:112] = 60  # a dimmer source elsewhere, which must not win
+        reference = derive_key_light(env)
+        assert reference.color[2] < 0.5, "premise: the blob is not white, so its chromaticity is visible"
+
+        try:
+            got = derive_key_light(env.astype(np.uint16))
+        except ValueError as exc:
+            assert "uint8" in str(exc)
+            return
+
+        raise AssertionError(
+            f"the same map as uint16 derived azimuth={got.azimuth_deg:.1f} deg "
+            f"elevation={got.elevation_deg:.1f} deg color={tuple(round(c, 3) for c in got.color)}, "
+            f"not azimuth={reference.azimuth_deg:.1f} deg "
+            f"elevation={reference.elevation_deg:.1f} deg "
+            f"color={tuple(round(c, 3) for c in reference.color)}."
+        )
