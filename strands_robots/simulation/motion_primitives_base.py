@@ -684,9 +684,18 @@ class MotionPrimitivesCore:
         target_yaw: float,
         final_yaw: float,
         yaw_error: float,
+        uncommanded_drives: list[str] | None = None,
     ) -> dict[str, Any]:
-        """Success / not-reached envelope for ``rotate_wrist``, shared across backends."""
-        payload = {
+        """Success / not-reached envelope for ``rotate_wrist``, shared across backends.
+
+        *uncommanded_drives* names actuators on this robot that the primitive
+        deliberately left alone because their ``ctrl`` is not a joint pose (a
+        wheel ``<velocity>`` drive on a mobile manipulator, say), so "holds every
+        other joint" is reported for the joints it can hold rather than claimed
+        for all of them. Omitted from the payload when there are none, which
+        keeps the envelope byte-identical for a fully position-servo robot.
+        """
+        payload: dict[str, Any] = {
             "reached": reached,
             "steps": steps_used,
             "wrist_joint": wrist_name,
@@ -694,18 +703,22 @@ class MotionPrimitivesCore:
             "final_yaw": final_yaw,
             "yaw_error_rad": yaw_error,
         }
+        if uncommanded_drives:
+            payload["uncommanded_drives"] = list(uncommanded_drives)
         if reached:
+            text = (
+                f"rotate_wrist: '{robot_name}' joint '{wrist_name}' reached "
+                f"{target_yaw:.3f} rad within {float(tol)} rad in {steps_used} steps."
+            )
+            if uncommanded_drives:
+                text += (
+                    f" {len(uncommanded_drives)} actuator(s) were left uncommanded because their "
+                    f"ctrl is not a joint pose ({list(uncommanded_drives)}); command those in "
+                    "their own units with action='send_action'."
+                )
             return {
                 "status": "success",
-                "content": [
-                    {
-                        "text": (
-                            f"rotate_wrist: '{robot_name}' joint '{wrist_name}' reached "
-                            f"{target_yaw:.3f} rad within {float(tol)} rad in {steps_used} steps."
-                        )
-                    },
-                    {"json": payload},
-                ],
+                "content": [{"text": text}, {"json": payload}],
             }
         return _err(
             f"rotate_wrist: '{robot_name}' joint '{wrist_name}' did not reach {target_yaw:.3f} rad "

@@ -60,6 +60,15 @@ becomes `rt/turtle1/cmd_vel`, and a type `geometry_msgs/msg/Twist` becomes
 `geometry_msgs::msg::dds_::Twist_` - the conventions that make a bare DDS
 participant interoperable with real ROS 2 nodes.
 
+Message interfaces only. ROS 2 has no single DDS type for a service or an
+action: `rosidl` generates one type per constituent message, so
+`example_interfaces/srv/AddTwoInts` becomes
+`example_interfaces::srv::dds_::AddTwoInts_Request_` and
+`..._Response_` on the `rq`/`rr` prefixes rather than `rt`. A `pkg/srv/Name` or
+`pkg/action/Name` type is therefore refused, with the types ROS 2 does generate
+quoted - an invented `pkg::srv::dds_::AddTwoInts_` would match no participant,
+and DDS reports a type mismatch as silence rather than as an error.
+
 ## Examples
 
 ```python
