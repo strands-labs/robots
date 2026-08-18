@@ -9,11 +9,15 @@ with only a logged warning. The user asked for the photoreal path and silently
 got the fallback; the repo's own gallery shipped the beige gradient. These
 tests pin the corrected contract:
 
-* a GS background that cannot initialize **raises** ``RuntimeError`` carrying
-  the pre-built-wheel install hint, both for an explicit ``--gsplat-ply`` and
-  for the default ``prefer_gs=True`` resolution;
+* a GS background that cannot initialize **raises**, both for an explicit
+  ``--gsplat-ply`` and for the default ``prefer_gs=True`` resolution:
+  capability and preset failures as ``RuntimeError`` carrying the
+  pre-built-wheel install hint, and a caller-supplied ``gsplat_ply`` that
+  fails to construct as-is (e.g. ``FileNotFoundError`` for a typo'd path),
+  because the install hint is the wrong diagnosis there;
 * ``allow_fallback=True`` (the CLIs' ``--allow-fallback``) restores the old
-  demotion, still logged;
+  demotion, still logged -- for every failure mode on both GS paths,
+  construction included;
 * the explicit panorama paths are untouched.
 
 No gsplat/CUDA needed: the rasterizer probe is stubbed at the library seam the
@@ -41,6 +45,24 @@ def rasterizer_unavailable(monkeypatch):
     )
 
 
+@pytest.fixture
+def rasterizer_ok_but_construction_fails(monkeypatch):
+    """A working rasterizer whose ``GsplatBackground`` construction raises.
+
+    This is what a typo'd ``--gsplat-ply`` looks like on a machine with a
+    working CUDA rasterizer: the probe passes, and the constructor guard
+    (exists + readable, issue #2321) raises. Stubbed at the library seam
+    ``resolve_background`` imports through, so the construction branch is
+    exercised without a GPU.
+    """
+    monkeypatch.setattr(rendering, "gsplat_rasterizer_available", lambda: (True, "ok"))
+
+    def _boom(*_args, **_kwargs):
+        raise FileNotFoundError("Gaussian Splat not found: capture.spz")
+
+    monkeypatch.setattr(rendering, "GsplatBackground", _boom)
+
+
 class TestExplicitPlyRequest:
     def test_unavailable_rasterizer_raises_with_install_hint(self, rasterizer_unavailable) -> None:
         with pytest.raises(RuntimeError, match="gsplat") as excinfo:
@@ -56,6 +78,32 @@ class TestExplicitPlyRequest:
             bg = resolve_background(gsplat_ply="capture.ply", allow_fallback=True)
         assert isinstance(bg, PanoramaBackground)
         assert any("falling back to procedural panorama" in r.getMessage() for r in caplog.records)
+
+
+class TestAllowFallbackSurvivesConstruction:
+    """The flag covers a *construction* failure, not only the probe.
+
+    The constructor validation (issue #2321) moved a missing/unreadable
+    ``ply_path`` from a first-``render()`` failure to a construction failure,
+    which used to sit outside the ``try`` on the explicit-``gsplat_ply``
+    path -- so ``--gsplat-ply <typo> --allow-fallback`` crashed rather than
+    demoting, the one mode whose documented purpose is to prefer rendering
+    *something* over failing.
+    """
+
+    def test_construction_failure_demotes_when_fallback_allowed(
+        self, rasterizer_ok_but_construction_fails, caplog
+    ) -> None:
+        with caplog.at_level(logging.WARNING, logger="isaac_gs.background"):
+            bg = resolve_background(gsplat_ply="capture.spz", allow_fallback=True)
+        assert isinstance(bg, PanoramaBackground)
+        assert any("falling back to procedural panorama" in r.getMessage() for r in caplog.records)
+
+    def test_construction_failure_still_raises_by_default(self, rasterizer_ok_but_construction_fails) -> None:
+        # A bare re-raise, not a RuntimeError wrap: the install hint diagnoses
+        # a missing CUDA wheel, which is the wrong remedy for a typo'd path.
+        with pytest.raises(FileNotFoundError, match="capture.spz"):
+            resolve_background(gsplat_ply="capture.spz")
 
 
 class TestDefaultGsResolution:

@@ -122,12 +122,16 @@ def resolve_background(
        :data:`DEFAULT_GS_SCENE`), downloaded + skybox-aligned.
 
     On the GS paths (1 and 3) a failure -- ``gsplat`` not importable, the
-    CUDA rasterizer disabled, a download/load error -- **raises**
-    ``RuntimeError`` with the pre-built-wheel install hint, because the
-    caller asked for the photoreal background and must not silently get the
-    procedural gradient (issue #2321). Pass ``allow_fallback=True`` to
-    restore the old demotion (logged warning + ``PanoramaBackground``) for
-    demo contexts that prefer rendering *something* over failing.
+    CUDA rasterizer disabled, a download/load error -- **raises**, because
+    the caller asked for the photoreal background and must not silently get
+    the procedural gradient (issue #2321). Capability and preset failures
+    raise ``RuntimeError`` with the pre-built-wheel install hint; a
+    caller-supplied ``gsplat_ply`` that fails to construct re-raises as-is
+    (e.g. ``FileNotFoundError`` for a typo'd path), since the install hint
+    is the wrong diagnosis there. Pass ``allow_fallback=True`` to restore
+    the old demotion (logged warning + ``PanoramaBackground``) for demo
+    contexts that prefer rendering *something* over failing; it covers
+    every failure mode on both GS paths, construction included.
 
     Args:
         gsplat_ply: path to a user-supplied ``.ply`` / ``.spz`` 3DGS capture.
@@ -143,8 +147,13 @@ def resolve_background(
 
     Raises:
         RuntimeError: a GS background was requested (explicitly or via the
-            ``prefer_gs`` default) and could not initialize, and
-            ``allow_fallback`` is ``False``.
+            ``prefer_gs`` default) and could not initialize for a capability
+            or preset reason (rasterizer unavailable, download/load failure),
+            and ``allow_fallback`` is ``False``.
+        FileNotFoundError: ``gsplat_ply`` names a path that does not exist
+            (or is not a file) and ``allow_fallback`` is ``False``.
+        PermissionError: ``gsplat_ply`` names a file the process cannot
+            read and ``allow_fallback`` is ``False``.
     """
     from strands_robots.rendering import GsplatBackground, PanoramaBackground, gsplat_rasterizer_available
 
@@ -165,7 +174,24 @@ def resolve_background(
             )
             return PanoramaBackground()
         logger.info("background: live 3DGS skybox from %s", gsplat_ply)
-        return GsplatBackground(ply_path=gsplat_ply, skybox=True)
+        try:
+            return GsplatBackground(ply_path=gsplat_ply, skybox=True)
+        except Exception as exc:  # noqa: BLE001 - re-raised as-is unless allow_fallback opts in
+            if not allow_fallback:
+                # Deliberately a bare raise, not a RuntimeError wrap: the
+                # install hint diagnoses a missing CUDA wheel, which is the
+                # wrong remedy for a typo'd caller-supplied path --
+                # `FileNotFoundError: Gaussian Splat not found: <path>` is
+                # already the better message.
+                raise
+            logger.warning(
+                "background: uploaded 3DGS %s failed to initialize (%s: %s); falling back to "
+                "procedural panorama (allow_fallback=True).",
+                gsplat_ply,
+                type(exc).__name__,
+                exc,
+            )
+            return PanoramaBackground()
 
     if panorama:
         logger.info("background: panorama image %s", panorama)

@@ -11,4 +11,7 @@ install hint; the demotion is opt-in via `allow_fallback=True`
 (`--allow-fallback` on `render_demo.py` and `app.py`). `GsplatBackground` also
 validates `ply_path` at construction (exists + readable) so a wrong path
 surfaces where it was supplied instead of at the first frame inside an app's
-catch-all. (#2321)
+catch-all; `allow_fallback=True` covers that construction failure too (an
+explicit `--gsplat-ply` with a typo'd path demotes instead of crashing),
+while the default posture keeps the precise `FileNotFoundError` /
+`PermissionError` rather than wrapping it in the install hint. (#2321)
