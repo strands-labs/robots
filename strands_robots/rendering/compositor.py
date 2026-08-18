@@ -55,6 +55,7 @@ import numpy as np
 from ..utils import positive_whole_number_error
 from .backgrounds import BackgroundRenderer, PanoramaBackground
 from .camera import CameraParams
+from .color import linear_to_srgb, relative_luminance, srgb_to_linear
 
 logger = logging.getLogger(__name__)
 
@@ -122,6 +123,113 @@ def _depth_epsilon_error(value: Any) -> str | None:
     return None
 
 
+def _shadow_plane_z_error(value: Any) -> str | None:
+    """Error text when ``value`` is not a usable shadow-catcher plane height.
+
+    The height is a world-frame z coordinate in meters, compared against the
+    analytic per-pixel plane depth (:func:`plane_depth`), so only a finite
+    number can be honored: a non-finite plane intersects no ray and the
+    shadow pass would silently never fire. ``None`` (feature off) is handled
+    by the caller, not here. ``bool`` is rejected explicitly -- a truth value
+    is not a height.
+
+    Args:
+        value: The caller-supplied plane height, in meters.
+
+    Returns:
+        An error message, or ``None`` when the value is usable.
+    """
+    message = f"HybridCompositor: shadow_plane_z must be a finite world-frame height in meters, got {value!r}."
+    if isinstance(value, bool) or not isinstance(value, numbers.Real):
+        return message
+    if not math.isfinite(float(value)):
+        return message
+    return None
+
+
+def _shadow_plane_tolerance_error(value: Any) -> str | None:
+    """Error text when ``value`` is not a usable plane-match depth tolerance.
+
+    Catcher pixels are recognized by ``|fg_depth - plane_depth| <= tolerance``,
+    so only a finite distance in meters ``> 0`` can be honored: ``0`` (or a
+    negative value) matches no pixel even on an exact plane (float depth is
+    never bit-exact), and a non-finite tolerance matches *every* valid
+    foreground pixel -- the robot itself would be read as shadow and erased.
+
+    Args:
+        value: The caller-supplied tolerance, in meters.
+
+    Returns:
+        An error message, or ``None`` when the value is usable.
+    """
+    message = f"HybridCompositor: shadow_plane_tolerance must be a finite distance in meters > 0, got {value!r}."
+    if isinstance(value, bool) or not isinstance(value, numbers.Real):
+        return message
+    numeric = float(value)
+    if not math.isfinite(numeric) or numeric <= 0.0:
+        return message
+    return None
+
+
+def _shadow_min_factor_error(value: Any) -> str | None:
+    """Error text when ``value`` is not a usable shadow darkening floor.
+
+    The floor is a multiplicative factor on linear background light, so only
+    a finite number in ``[0, 1]`` can be honored: below ``0`` a shadow would
+    invert the background's sign, above ``1`` it would *brighten*, and a
+    non-finite floor makes every clip degenerate. ``bool`` is rejected
+    explicitly -- ``True`` would read as "no darkening at all".
+
+    Args:
+        value: The caller-supplied factor floor.
+
+    Returns:
+        An error message, or ``None`` when the value is usable.
+    """
+    message = f"HybridCompositor: shadow_min_factor must be a number in [0, 1], got {value!r}."
+    if isinstance(value, bool) or not isinstance(value, numbers.Real):
+        return message
+    numeric = float(value)
+    if not math.isfinite(numeric) or numeric < 0.0 or numeric > 1.0:
+        return message
+    return None
+
+
+def plane_depth(cam: CameraParams, plane_z: float) -> np.ndarray:
+    """Per-pixel camera-frame z-depth of the horizontal plane ``z == plane_z``.
+
+    Casts one ray per pixel (same optical convention as the backgrounds: +X
+    right, +Y up, -Z forward) and intersects it with the world-frame
+    horizontal plane at height ``plane_z``. Pure camera math -- this is how
+    the shadow-catcher pass recognizes "this foreground pixel is the catcher
+    plane" without the compositor knowing anything about scene geometry.
+
+    Args:
+        cam: pinhole camera parameters at the target image size.
+        plane_z: world-frame height of the plane, meters.
+
+    Returns:
+        ``(H, W) float32`` z-depth in meters; ``np.inf`` where the ray never
+        hits the plane (parallel to it, or the hit is behind the camera).
+    """
+    H, W = cam.height, cam.width
+    u, v = np.meshgrid(np.arange(W, dtype=np.float64), np.arange(H, dtype=np.float64))
+    Kinv = np.linalg.inv(cam.K)
+    homo = np.stack([u, v, np.ones_like(u)], axis=-1)  # (H, W, 3)
+    dirs_cam = homo @ Kinv.T  # image-plane rays at unit z-depth
+    dirs_cam[..., 1] *= -1.0  # image v grows down -> camera +Y up
+    dirs_cam[..., 2] *= -1.0  # OpenGL: -Z forward
+    # World-frame ray p(s) = origin + s * (R @ dirs_cam); because dirs_cam has
+    # camera-frame z == -1, the parameter ``s`` *is* the camera-frame z-depth.
+    R = cam.T_world_cam[:3, :3]
+    origin_z = float(cam.T_world_cam[2, 3])
+    dz_world = dirs_cam @ R.T[:, 2]  # world-z component of each ray
+    with np.errstate(divide="ignore", invalid="ignore"):
+        s = (float(plane_z) - origin_z) / dz_world
+    depth = np.where(np.isfinite(s) & (s > 0.0), s, np.inf)
+    return depth.astype(np.float32)
+
+
 class FrameSource(Protocol):
     """The slice of ``SimEngine`` the compositor needs (structural typing)."""
 
@@ -143,9 +251,15 @@ class CompositeFrame:
     Attributes:
         rgb: ``(H, W, 3) uint8`` final composited image.
         foreground_rgb: ``(H, W, 3) uint8`` simulation-only render, for debugging.
-        background_rgb: ``(H, W, 3) uint8`` background-only render, for debugging.
+        background_rgb: ``(H, W, 3) uint8`` background-only render, for
+            debugging. When a shadow catcher is configured
+            (``shadow_plane_z``), this is the background *with the caught
+            shadow applied* -- i.e. the layer actually composited under the
+            foreground.
         foreground_mask: ``(H, W) bool`` ``True`` where the foreground won the
-            depth test (i.e. a simulated object is visible).
+            depth test (i.e. a simulated object is visible). Shadow-catcher
+            pixels are never part of the mask -- the catcher plane modulates
+            the background instead of painting over it.
         depth: ``(H, W) float32`` foreground depth in meters (the simulation
             depth, since the foreground is what the user usually cares about
             measuring).
@@ -186,15 +300,43 @@ class HybridCompositor:
             depth annotator reports no-hit pixels as ``0`` (or non-finite);
             MuJoCo pins them to the far clip. Both extremes read as background.
             A finite distance in meters, ``>= 0``.
+        shadow_plane_z: world-frame height (meters) of a shadow-catcher plane
+            the *scene* renders (an untextured plane the robot casts shadows
+            onto). Foreground pixels whose depth matches the analytic depth of
+            that plane (:func:`plane_depth`) are read as the catcher: they are
+            excluded from the foreground mask (the plane itself is never
+            painted) and their relative darkening -- the shadow the simulator
+            rendered onto the plane -- is multiplied onto the background in
+            linear light, so the robot grounds itself with a contact shadow on
+            the photoreal backdrop. ``None`` (default) disables the pass.
+            A finite height in meters.
+        shadow_plane_tolerance: how close (meters, along the ray's z-depth) a
+            foreground depth must be to the analytic plane depth to count as
+            the catcher. A finite distance ``> 0``. Default ``0.01``.
+        shadow_min_factor: floor on the shadow's multiplicative darkening, in
+            ``[0, 1]`` -- ``0`` allows pitch-black shadows, ``1`` disables
+            darkening. Default ``0.25``, so contact shadows read clearly
+            without punching a black hole into the backdrop.
+        blend_in_linear: when ``True``, the fg/bg seam blend (and nothing
+            else) is computed in linear light instead of on gamma-encoded
+            bytes -- see :mod:`strands_robots.rendering.color` for the
+            pipeline contract. Fully-foreground and fully-background pixels
+            are byte-identical either way. Default ``False`` (keeps the
+            historical byte-space blend).
 
     Raises:
         ValueError: if any option cannot be honored -- a ``feather_pixels``
             that is not a whole pixel count ``>= 0``, a ``depth_epsilon`` that
             is not a finite distance ``>= 0`` (a non-finite threshold discards
             the entire foreground, so the robot would vanish from the frame),
-            or a ``default_width`` / ``default_height`` that is not a positive
-            whole number. Every one of these was previously coerced or clamped
-            into a plausible-but-different render.
+            a ``default_width`` / ``default_height`` that is not a positive
+            whole number, a non-finite ``shadow_plane_z``, a
+            ``shadow_plane_tolerance`` that is not a finite distance ``> 0``
+            (``inf`` would read the robot itself as shadow), a
+            ``shadow_min_factor`` outside ``[0, 1]``, or a
+            ``blend_in_linear`` that is not a ``bool``. Every one of these
+            was previously coerced or clamped into a plausible-but-different
+            render.
 
     Example:
 
@@ -218,11 +360,25 @@ class HybridCompositor:
         default_height: int | None = None,
         feather_pixels: int = 1,
         depth_epsilon: float = 1e-4,
+        shadow_plane_z: float | None = None,
+        shadow_plane_tolerance: float = 0.01,
+        shadow_min_factor: float = 0.25,
+        blend_in_linear: bool = False,
     ) -> None:
         if text := _feather_pixels_error(feather_pixels):
             raise ValueError(text)
         if text := _depth_epsilon_error(depth_epsilon):
             raise ValueError(text)
+        if shadow_plane_z is not None and (text := _shadow_plane_z_error(shadow_plane_z)):
+            raise ValueError(text)
+        if text := _shadow_plane_tolerance_error(shadow_plane_tolerance):
+            raise ValueError(text)
+        if text := _shadow_min_factor_error(shadow_min_factor):
+            raise ValueError(text)
+        if not isinstance(blend_in_linear, bool):
+            # Truthiness would silently honor e.g. a misplaced string; the
+            # option changes the blend math, so it must be an explicit bool.
+            raise ValueError(f"HybridCompositor: blend_in_linear must be a bool, got {blend_in_linear!r}.")
         for label, size in (("default_width", default_width), ("default_height", default_height)):
             # ``None`` means "defer to the engine"; any supplied size must be a
             # size the engine can render, checked here rather than at the first
@@ -237,6 +393,10 @@ class HybridCompositor:
         self.default_height = None if default_height is None else int(default_height)
         self.feather_pixels = int(feather_pixels)
         self.depth_epsilon = float(depth_epsilon)
+        self.shadow_plane_z = None if shadow_plane_z is None else float(shadow_plane_z)
+        self.shadow_plane_tolerance = float(shadow_plane_tolerance)
+        self.shadow_min_factor = float(shadow_min_factor)
+        self.blend_in_linear = bool(blend_in_linear)
         # Cache of background renders keyed by (camera_name, W, H, background
         # name) + a rounded hash of the camera pose/intrinsics. The background
         # only changes when the *camera* moves, not when the robot does -- so
@@ -311,7 +471,38 @@ class HybridCompositor:
         # finite depth above epsilon (Isaac reports no-hit as 0 / inf) and
         # short of the far clip (MuJoCo pins sky to zfar).
         valid_fg = np.isfinite(fg_depth) & (fg_depth > self.depth_epsilon) & (fg_depth < cam.zfar * 0.999)
+
+        catcher = None
+        if self.shadow_plane_z is not None:
+            # Shadow-catcher pass (issue #2323): foreground pixels whose depth
+            # matches the analytic depth of the configured plane ARE the
+            # catcher plane the scene renders. They never win the composite --
+            # the photoreal backdrop owns that surface -- but the shading the
+            # simulator rendered onto them carries the robot's cast shadow.
+            plane_d = plane_depth(cam, self.shadow_plane_z)[:h, :w]
+            catcher = valid_fg & np.isfinite(plane_d) & (np.abs(fg_depth - plane_d) <= self.shadow_plane_tolerance)
+            valid_fg = valid_fg & ~catcher
+
         winner = valid_fg & (fg_depth + 1e-3 < bg_depth)
+
+        if catcher is not None and catcher.any():
+            # A shadow is a ratio of received light, so it multiplies in
+            # linear space (see strands_robots.rendering.color). Reference
+            # brightness = the catcher's own typical unshadowed level (75th
+            # percentile), so unshadowed plane pixels clip to factor 1 and
+            # only genuinely darker pixels darken the backdrop.
+            lum = relative_luminance(srgb_to_linear(fg_rgb))
+            ref = float(np.percentile(lum[catcher], 75.0))
+            if ref > 1e-6:
+                factor = np.ones(lum.shape, dtype=np.float32)
+                factor[catcher] = np.clip(lum[catcher] / ref, self.shadow_min_factor, 1.0)
+                if self.feather_pixels > 0:
+                    # Soften the shadow field the same way the fg/bg seam is
+                    # softened, so the catcher's silhouette (plane edge,
+                    # robot-contact edge) doesn't print as a hard outline.
+                    factor = 1.0 - feather_mask(1.0 - factor, self.feather_pixels)
+                shadowed_lin = srgb_to_linear(bg_rgb) * factor[..., None]
+                bg_rgb = np.clip(linear_to_srgb(shadowed_lin) * 255.0 + 0.5, 0, 255).astype(np.uint8)
 
         if self.feather_pixels > 0:
             alpha = feather_mask(winner, self.feather_pixels)
@@ -319,8 +510,14 @@ class HybridCompositor:
             alpha = winner.astype(np.float32)
 
         alpha = alpha[..., None]
-        composite = alpha * fg_rgb.astype(np.float32) + (1.0 - alpha) * bg_rgb.astype(np.float32)
-        composite_u8 = np.clip(composite, 0, 255).astype(np.uint8)
+        if self.blend_in_linear:
+            # Seam blending is light arithmetic, so do it on linear light and
+            # re-encode. alpha in {0, 1} pixels round-trip byte-identically.
+            blended = alpha * srgb_to_linear(fg_rgb) + (1.0 - alpha) * srgb_to_linear(bg_rgb)
+            composite_u8 = np.clip(linear_to_srgb(blended) * 255.0 + 0.5, 0, 255).astype(np.uint8)
+        else:
+            composite = alpha * fg_rgb.astype(np.float32) + (1.0 - alpha) * bg_rgb.astype(np.float32)
+            composite_u8 = np.clip(composite, 0, 255).astype(np.uint8)
 
         return CompositeFrame(
             rgb=composite_u8,

@@ -118,6 +118,17 @@ a loop. Every attempt, granted or refused, is written to the safety audit log.
 
 Sensor topics only publish when the robot exposes the attribute. Zero cost when unused.
 
+### Pose orientation
+
+A robot that exposes a 4x4 SE(3) matrix as its pose provider has it decomposed
+into `x` / `y` / `z`, a planar `theta`, and a `quat`. The quaternion is
+scalar-first `[w, x, y, z]`, unit length, and sign-canonicalized to `w >= 0`
+(`q` and `-q` are the same rotation, so an unchanged pose reads back
+identically). `theta` and `quat` are decomposed from the same matrix, so they
+always agree: both describe the full rotation for every orientation, including
+the half of SO(3) past 120 degrees that a robot turning back the way it came
+lands in.
+
 ## Agent-driven mesh
 
 ```python

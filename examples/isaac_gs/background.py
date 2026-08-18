@@ -25,6 +25,65 @@ logger = logging.getLogger("isaac_gs.background")
 # correctly without per-camera tuning.
 DEFAULT_GS_SCENE = "tabletop (indoor room)"
 
+# Where the IBL environment map is baked from: the world frame is authored so
+# the robot's support surface is z=0 with the arm at the origin, so a point
+# ~0.4 m above the base (mid-arm height, inside the captured room shell) sees
+# the environment the way the robot does.
+ENV_BAKE_ORIGIN = (0.0, 0.0, 0.4)
+
+
+def resolve_ibl_env_map(
+    background: object,
+    gsplat_ply: Optional[str] = None,
+    gsplat_scene: Optional[str] = None,
+    panorama: Optional[str] = None,
+) -> Optional[str]:
+    """Resolve the equirect environment map that should light the robot.
+
+    Companion to :func:`resolve_background` (issue #2323, stage 1): given the
+    background it returned (and the same CLI options), produce the image for
+    the scene's dome light:
+
+    1. A live 3DGS background -> bake
+       (:func:`strands_robots.rendering.bake_environment_map`) from
+       :data:`ENV_BAKE_ORIGIN` through the background's own aligned
+       ``render``, cached next to the scene file with the bake geometry in
+       the name.
+    2. A user panorama -> the panorama image itself (it already *is* an
+       equirect environment map in the same direction convention).
+    3. The procedural panorama fallback -> ``None`` (a synthetic gradient is
+       no more the robot's room than the hardcoded lights; keep those).
+
+    Returns the image path, or ``None`` when the demo should keep its
+    default lighting rig (any bake failure logs a warning and falls back --
+    same always-renders-something posture as :func:`resolve_background`).
+    """
+    from strands_robots.rendering import (
+        GsplatBackground,
+        bake_environment_map,
+        download_gsplat_scene,
+        environment_map_cache_path,
+    )
+
+    if isinstance(background, GsplatBackground):
+        try:
+            scene_file = gsplat_ply or str(download_gsplat_scene(gsplat_scene or DEFAULT_GS_SCENE))
+            out = environment_map_cache_path(scene_file, origin_world=ENV_BAKE_ORIGIN)
+            path = bake_environment_map(background, out, origin_world=ENV_BAKE_ORIGIN)
+            logger.info("IBL: environment map %s (baked from %s)", path, scene_file)
+            return str(path)
+        except Exception as exc:  # noqa: BLE001 - any failure falls back to the default lights
+            logger.warning(
+                "IBL: environment-map bake failed (%s: %s); keeping the default lighting rig.",
+                type(exc).__name__,
+                exc,
+            )
+            return None
+    if panorama:
+        logger.info("IBL: using the panorama image %s as the dome environment map", panorama)
+        return panorama
+    return None
+
 
 def resolve_background(
     gsplat_ply: Optional[str] = None,

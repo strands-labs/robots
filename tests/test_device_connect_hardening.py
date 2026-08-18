@@ -298,6 +298,128 @@ def test_emergencystop_ignores_unauthorized_source(monkeypatch):
     assert robot.stopped is True
 
 
+# ── what counts as an unset allowlist ─────────────────────────
+
+# Every spelling of "an allowlist holding no entry". ``_parse_allowlist`` is the
+# module's single owner of that question, so the premise below asserts each of
+# these really does parse to None rather than hard-coding the vocabulary here.
+_EMPTY_ALLOWLIST_SPELLINGS = ["", " ", "\t", ",", ", ,", " , "]
+
+
+@pytest.mark.parametrize("spelling", _EMPTY_ALLOWLIST_SPELLINGS)
+def test_an_empty_estop_allowlist_inherits_the_rpc_allowlist_whatever_its_spelling(monkeypatch, spelling):
+    """An empty DEVICE_CONNECT_ESTOP_ALLOW must fall back to the RPC allowlist.
+
+    ``_parse_allowlist`` calls a value empty when it holds no non-blank entry
+    after stripping, so a whitespace- or comma-only value is an empty allowlist
+    just as ``""`` is. Deciding the fallback on the raw string's truthiness
+    instead splits that one concept in two: the spellings truthiness calls "set"
+    skip the fallback and then parse to nothing, which reads as "no allowlist
+    configured" and opens emergencyStop to every caller. A comma-only value is
+    what a templated list produces when its ids never got populated
+    (``ESTOP_ALLOW="$PRIMARY,$BACKUP"`` with both unset), so the permissive
+    reading is reachable from an ordinary deployment mistake.
+    """
+    import strands_robots.device_connect._authz as az
+
+    assert az._parse_allowlist(spelling) is None, f"premise: {spelling!r} is an empty allowlist"
+
+    monkeypatch.setenv("DEVICE_CONNECT_RPC_ALLOW", "safety-1")
+    monkeypatch.setenv("DEVICE_CONNECT_ESTOP_ALLOW", spelling)
+
+    assert az.is_authorized_caller("safety-1", scope="estop") is True
+    assert az.is_authorized_caller("rogue-device", scope="estop") is False, (
+        f"ESTOP_ALLOW={spelling!r} holds no entry, so the estop scope must inherit "
+        "the RPC allowlist rather than authorize every caller"
+    )
+
+
+def test_an_empty_estop_allowlist_still_denies_an_anonymous_caller(monkeypatch):
+    """The fail-closed promise must survive an empty estop allowlist.
+
+    With an allowlist in force a caller carrying no identity cannot be matched
+    and is denied. An empty estop value that reads as "no allowlist configured"
+    silently lifts that, authorizing the anonymous caller the inherited RPC
+    allowlist would have refused.
+    """
+    import strands_robots.device_connect._authz as az
+
+    monkeypatch.setenv("DEVICE_CONNECT_RPC_ALLOW", "safety-1")
+    monkeypatch.setenv("DEVICE_CONNECT_ESTOP_ALLOW", ",")
+
+    assert az.is_authorized_caller(None, scope="estop") is False
+
+
+def test_emergencystop_from_a_rogue_device_is_ignored_when_estop_allowlist_is_blank(monkeypatch):
+    """End-to-end: a spoofed emergencyStop must not stop the robot.
+
+    ``onEmergencyStop`` guards on the estop scope precisely so a spoofed event
+    from an arbitrary device cannot interrupt operations. An estop allowlist
+    that holds no entry must inherit the RPC allowlist, not admit the rogue
+    device and halt the running task.
+    """
+    from strands_robots.device_connect.robot_driver import RobotDeviceDriver
+
+    monkeypatch.setenv("DEVICE_CONNECT_RPC_ALLOW", "safety-1")
+    monkeypatch.setenv("DEVICE_CONNECT_ESTOP_ALLOW", ",")
+    robot = _FakeRobot()
+    d = RobotDeviceDriver(robot)
+
+    _run(d.onEmergencyStop("rogue-device", "emergencyStop", {}))
+    assert robot.stopped is False, "a rogue device must not be able to halt the task"
+
+    # The inherited allowlist still lets the real safety controller through.
+    _run(d.onEmergencyStop("safety-1", "emergencyStop", {}))
+    assert robot.stopped is True
+
+
+def test_a_populated_estop_allowlist_still_overrides_the_rpc_allowlist(monkeypatch):
+    """Inheriting on empty must not become inheriting always.
+
+    A configured estop allowlist is the authority for that scope: it admits its
+    own entries and refuses an RPC-only caller. Falling back unconditionally
+    would widen emergencyStop to every state-mutating caller.
+    """
+    import strands_robots.device_connect._authz as az
+
+    monkeypatch.setenv("DEVICE_CONNECT_RPC_ALLOW", "rpc-only")
+    monkeypatch.setenv("DEVICE_CONNECT_ESTOP_ALLOW", "estop-only")
+
+    assert az.is_authorized_caller("estop-only", scope="estop") is True
+    assert az.is_authorized_caller("rpc-only", scope="estop") is False
+
+
+def test_both_allowlists_empty_stays_permissive(monkeypatch):
+    """Out-of-the-box usability is unchanged: no allowlist anywhere allows all.
+
+    Nothing to inherit means nothing is configured, which stays permissive (and
+    logs the warning that makes the posture visible) rather than becoming
+    fail-closed for every deployment that never set an allowlist.
+    """
+    import strands_robots.device_connect._authz as az
+
+    monkeypatch.setenv("DEVICE_CONNECT_RPC_ALLOW", ",")
+    monkeypatch.setenv("DEVICE_CONNECT_ESTOP_ALLOW", " ")
+
+    assert az.is_authorized_caller("anyone", scope="estop") is True
+    assert az.is_authorized_caller(None, scope="estop") is True
+
+
+@pytest.mark.parametrize("spelling", _EMPTY_ALLOWLIST_SPELLINGS)
+def test_the_rpc_scope_reads_an_empty_allowlist_as_unset(monkeypatch, spelling):
+    """The RPC scope's own handling of an empty allowlist is unchanged.
+
+    It has one variable and no fallback, so every empty spelling already meant
+    "unset" there. This pins that the estop fix did not disturb it.
+    """
+    import strands_robots.device_connect._authz as az
+
+    monkeypatch.setenv("DEVICE_CONNECT_RPC_ALLOW", spelling)
+
+    assert az.is_authorized_caller("anyone", scope="rpc") is True
+    assert az.is_authorized_caller(None, scope="rpc") is True
+
+
 # ── playMove path traversal ───────────────────────────────────
 
 

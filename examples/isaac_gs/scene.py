@@ -23,6 +23,10 @@ class SceneBuild:
     robot_joint_count: int
     camera_name: str
     object_names: list[str]
+    # World-frame z of the shadow-catcher plane's top surface, when one was
+    # added -- pass it to ``HybridCompositor(shadow_plane_z=...)`` so the
+    # compositor reads the plane as a shadow catcher instead of geometry.
+    shadow_plane_z: "float | None" = None
 
 
 # Hero camera presets (pos, target, fov_deg) framing the Franka in the 3DGS
@@ -76,15 +80,25 @@ SO101_CAMERA_PRESETS: "dict[str, tuple[list[float], list[float], float]]" = {
 }
 
 
-def _add_lighting(sim: "object") -> None:
-    """Add explicit key + dome lights to the stage.
+def _add_lighting(sim: "object", env_map_path: "str | None" = None) -> None:
+    """Add key + dome lights to the stage, optionally derived from the scene.
 
     The digital-twin composite uses ``ground_plane=False`` (so the
     background provides the floor, not occluded by a sim ground). But
     Isaac's default lighting is part of the default-ground-plane
     subtree, so without it the robot renders as an unlit black
-    silhouette. Author a distant key light + a dome fill light directly
+    silhouette. Author a distant key light + a dome light directly
     so lighting is independent of the (absent) floor.
+
+    With ``env_map_path`` (an equirectangular image baked from the
+    background scene via
+    :func:`strands_robots.rendering.bake_environment_map`), the dome
+    light is textured with it -- the robot is lit by the room it stands
+    in (issue #2323, stage 1) -- and the key light's direction + color
+    are derived from the map's dominant light
+    (:func:`strands_robots.rendering.derive_key_light`) instead of the
+    hardcoded warm example light. Without it, the historical hardcoded
+    rig is authored unchanged.
 
     No-op if ``pxr`` / the stage aren't available.
     """
@@ -97,15 +111,97 @@ def _add_lighting(sim: "object") -> None:
     if stage is None:
         return
 
+    key_estimate = None
+    if env_map_path:
+        try:
+            import numpy as np
+            from PIL import Image
+
+            from strands_robots.rendering import derive_key_light
+
+            key_estimate = derive_key_light(np.array(Image.open(env_map_path).convert("RGB")))
+        except ValueError as exc:
+            # No dominant direction in the map (e.g. a near-uniform room):
+            # keep the default key light; the dome texture still carries the
+            # scene's ambient color.
+            logger.warning("env map %s has no derivable key light (%s); keeping the default key.", env_map_path, exc)
+
     key = UsdLux.DistantLight.Define(stage, Sdf.Path("/World/KeyLight"))
     key.CreateIntensityAttr(1500.0)
     key.CreateAngleAttr(1.0)
-    key.CreateColorAttr(Gf.Vec3f(1.0, 0.96, 0.9))  # slightly warm, kitchen-ish
-    UsdGeom.Xformable(key.GetPrim()).AddRotateXYZOp().Set(Gf.Vec3f(-50.0, 10.0, 0.0))
+    if key_estimate is not None:
+        # Aim the key the way the captured scene's dominant light actually
+        # falls: a USD DistantLight emits along its local -Z, and the light
+        # *travels* opposite the direction it comes from.
+        travel = Gf.Vec3d(*(-c for c in key_estimate.direction))
+        rot = Gf.Rotation(Gf.Vec3d(0.0, 0.0, -1.0), travel)
+        UsdGeom.Xformable(key.GetPrim()).AddOrientOp().Set(Gf.Quatf(rot.GetQuat()))
+        key.CreateColorAttr(Gf.Vec3f(*key_estimate.color))
+        logger.info(
+            "Key light derived from %s: azimuth=%.0f deg elevation=%.0f deg color=%s",
+            env_map_path,
+            key_estimate.azimuth_deg,
+            key_estimate.elevation_deg,
+            key_estimate.color,
+        )
+    else:
+        key.CreateColorAttr(Gf.Vec3f(1.0, 0.96, 0.9))  # slightly warm, kitchen-ish
+        UsdGeom.Xformable(key.GetPrim()).AddRotateXYZOp().Set(Gf.Vec3f(-50.0, 10.0, 0.0))
 
     dome = UsdLux.DomeLight.Define(stage, Sdf.Path("/World/DomeLight"))
-    dome.CreateIntensityAttr(450.0)
-    logger.info("Added key + dome lights (ground-plane lighting unavailable with ground_plane=False)")
+    if env_map_path:
+        # IBL: light the robot with the (baked) background scene itself. The
+        # bake is LDR, so keep a moderate dome intensity; the key light above
+        # still provides the directional/shadow-casting component.
+        dome.CreateTextureFileAttr(str(env_map_path))
+        dome.CreateTextureFormatAttr(UsdLux.Tokens.latlong)
+        dome.CreateIntensityAttr(1000.0)
+        # A USD dome's default pole is +Y; the stage (and the baked map's
+        # convention -- world +Z at the top row) is Z-up, so stand it up.
+        UsdGeom.Xformable(dome.GetPrim()).AddRotateXYZOp().Set(Gf.Vec3f(90.0, 0.0, 0.0))
+        logger.info("Added scene-derived IBL lighting (dome texture %s)", env_map_path)
+    else:
+        dome.CreateIntensityAttr(450.0)
+        logger.info("Added key + dome lights (ground-plane lighting unavailable with ground_plane=False)")
+
+
+# The shadow catcher's top surface sits a hair below the world z=0 support
+# surface (the curated skybox alignments seat the robot's support -- e.g. the
+# tabletop scene's counter -- exactly at z=0): sunk so the photoreal surface
+# wins the depth race everywhere, while the robot's cast shadow still lands on
+# the catcher. The compositor is told the same height via
+# ``SceneBuild.shadow_plane_z``.
+_SHADOW_CATCHER_TOP_Z = -0.001
+_SHADOW_CATCHER_THICKNESS = 0.01
+_SHADOW_CATCHER_SIZE = 3.0
+
+
+def _add_shadow_catcher(sim: "object") -> "float | None":
+    """Add a matte white plane for the robot's contact shadow (issue #2323).
+
+    The plane is ordinary RTX geometry -- untextured, white, static -- so the
+    key light casts the robot's shadow onto it. It is *never* painted into
+    the composite: the compositor recognizes its pixels analytically
+    (``HybridCompositor(shadow_plane_z=...)``) and multiplies their shading
+    onto the photoreal background instead, which is what grounds the arm on
+    the backdrop.
+
+    Returns the plane's top-surface world z (to hand to the compositor), or
+    ``None`` when the object could not be added (non-fatal: the composite
+    just has no contact shadow, exactly as before).
+    """
+    r = sim.add_object(
+        name="shadow_catcher",
+        shape="box",
+        position=[0.0, 0.0, _SHADOW_CATCHER_TOP_Z - _SHADOW_CATCHER_THICKNESS / 2.0],
+        size=[_SHADOW_CATCHER_SIZE, _SHADOW_CATCHER_SIZE, _SHADOW_CATCHER_THICKNESS],
+        color=[1.0, 1.0, 1.0],
+        is_static=True,
+    )
+    if r.get("status") != "success":
+        logger.warning("add_object(shadow_catcher) failed (non-fatal, composite has no contact shadow): %s", r)
+        return None
+    return _SHADOW_CATCHER_TOP_Z
 
 
 # Default Franka Panda USD sub-paths relative to the Isaac assets root.
@@ -212,6 +308,8 @@ def build_default_scene(
     camera_width: int = 640,
     camera_height: int = 480,
     camera_fov: float = 48.0,
+    env_map_path: "str | None" = None,
+    shadow_catcher: bool = False,
 ) -> SceneBuild:
     """Build the demo scene on a fresh ``IsaacSimulation``.
 
@@ -231,11 +329,23 @@ def build_default_scene(
         Name for the RTX camera (the compositor renders this).
     camera_position, camera_target : list[float], optional
         Camera placement. Defaults frame the arm over-the-shoulder.
+    env_map_path : str, optional
+        Equirectangular environment map baked from the background scene
+        (``strands_robots.rendering.bake_environment_map``); when given,
+        the dome + key lights are derived from it instead of the
+        hardcoded example rig -- see ``_add_lighting``.
+    shadow_catcher : bool
+        Add the matte shadow-catcher plane (see ``_add_shadow_catcher``);
+        the resulting plane height is reported via
+        ``SceneBuild.shadow_plane_z`` and must be forwarded to
+        ``HybridCompositor(shadow_plane_z=...)`` -- a catcher plane the
+        compositor doesn't know about would z-fight the backdrop.
 
     Returns
     -------
     SceneBuild
-        What loaded (robot name + joint count, camera, objects).
+        What loaded (robot name + joint count, camera, objects, shadow
+        plane height).
     """
     # No ground plane in the digital-twin composite: the background
     # (captured-real 3DGS scene / panorama) is the visible floor, so a
@@ -247,7 +357,8 @@ def build_default_scene(
     cw = sim.create_world(ground_plane=False)
     if cw.get("status") != "success":
         raise RuntimeError(f"create_world failed: {cw}")
-    _add_lighting(sim)
+    _add_lighting(sim, env_map_path=env_map_path)
+    shadow_plane_z = _add_shadow_catcher(sim) if shadow_catcher else None
 
     usd = robot_usd or _default_franka_usd(sim)
     # Name "robot" is not a procedural alias, so the usd_path branch is
@@ -301,6 +412,7 @@ def build_default_scene(
         robot_joint_count=joint_count,
         camera_name=camera_name,
         object_names=obj_names,
+        shadow_plane_z=shadow_plane_z,
     )
     logger.info(
         "Scene built: robot=%s (%d joints), camera=%s, objects=%s",

@@ -1,0 +1,3 @@
+### Fixed
+
+- **device_connect**: an empty `DEVICE_CONNECT_ESTOP_ALLOW` now inherits `DEVICE_CONNECT_RPC_ALLOW` whatever its spelling. The fallback tested the raw string's truthiness while `_parse_allowlist` strips and drops blank entries, so a whitespace- or comma-only value - what a templated list produces when its ids never got populated - counted as a configured allowlist that then parsed to nothing, reading as "no allowlist" and authorizing every caller for `emergencyStop`, anonymous ones included. `_parse_allowlist` is now the single owner of whether an allowlist is set. Corrects the documented default for that variable, which is the RPC allowlist rather than "allow all".
