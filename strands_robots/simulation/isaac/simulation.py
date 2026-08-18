@@ -4966,7 +4966,10 @@ class IsaacSimulation(IsaacMotionPrimitivesMixin, IsaacRecordingMixin, SimEngine
                 "paths": paths,
                 "errors": dict.fromkeys(names, 0),
                 "output_dir": out_dir,
-                "started_at": _time.time(),
+                # A ``time.monotonic()`` reading: the only thing derived from
+                # this base is how long the recording has been running, so it
+                # is a duration base and carries its clock in its name.
+                "started_mono": _time.monotonic(),
                 "max_frames": max_frames_per_camera,
             }
             self._cams_rec_state = state
@@ -5050,7 +5053,7 @@ class IsaacSimulation(IsaacMotionPrimitivesMixin, IsaacRecordingMixin, SimEngine
 
         from strands_robots.rendering.video import encode_clip
 
-        elapsed = _time.time() - state["started_at"]
+        elapsed = _time.monotonic() - state["started_mono"]
         lines = [
             f"Stopped '{state['name']}' after {elapsed:.1f}s",
             f"   output_dir: {state['output_dir']}",
@@ -5745,7 +5748,12 @@ class IsaacSimulation(IsaacMotionPrimitivesMixin, IsaacRecordingMixin, SimEngine
         ``is_set()`` returning truthy ends the loop. ``None`` (default)
         loops until ``KeyboardInterrupt``.
         """
-        last_idle_render = 0.0
+        # ``None`` until the first idle refresh, rather than a sentinel that
+        # only reads as "long ago" because a wall clock's epoch is large: on
+        # ``time.monotonic()`` the epoch is unspecified (seconds since boot on
+        # Linux), so a numeric sentinel would suppress the first preview refresh
+        # for the first ``_idle_render_period`` seconds of uptime.
+        last_idle_render_mono: float | None = None
         self._pump_running = True
         try:
             while stop_event is None or not stop_event.is_set():
@@ -5760,17 +5768,25 @@ class IsaacSimulation(IsaacMotionPrimitivesMixin, IsaacRecordingMixin, SimEngine
                     job = None
                 if job is not None:
                     job()
-                    last_idle_render = 0.0
+                    last_idle_render_mono = None
                     continue
                 busy = not self._action_q.empty()
                 if busy:
                     self.pump(render=False)
                     continue
-                now = time.time()
-                do_render = (now - last_idle_render) >= self._idle_render_period
+                # ``time.monotonic()``: the comparison below decides whether
+                # the live preview is refreshed on this iteration, so this is a
+                # duration base. On ``time.time()`` a wall-clock step landing
+                # between two iterations changed that decision - backward by S
+                # the preview stopped refreshing for S while ``pump()`` kept
+                # draining the app, forward the gate fired once early.
+                now_mono = time.monotonic()
+                do_render = (
+                    last_idle_render_mono is None or (now_mono - last_idle_render_mono) >= self._idle_render_period
+                )
                 self.pump(render=do_render)
                 if do_render:
-                    last_idle_render = now
+                    last_idle_render_mono = now_mono
                 time.sleep(0.05)
         finally:
             self._pump_running = False

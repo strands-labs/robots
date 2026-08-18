@@ -26,6 +26,13 @@ Cache format (dict-of-numpy):
 * ``control_dt``    - python float, seconds per control tick
 * ``num_frames``    - python int
 
+Every channel's leading axis is the frame axis, so the six of them and
+``num_frames`` all state one number and are checked against each other on load:
+a cache whose declared count its channels cannot serve is refused rather than
+played, because the frame index is clamped to that count and the tracker's
+future window reads *ahead* of the playhead. ``num_frames`` may be omitted, in
+which case the channels' own row count is used.
+
 The two velocity channels are WORLD-frame, the same convention as a raw
 ProtoMotions motion library's ``rigid_body_ang_vel``. A hand-built cache must
 follow it: the tracker's own root input is a local-frame angular velocity that
@@ -51,7 +58,8 @@ __all__ = ["MotionPlayer", "slerp", "lerp"]
 logger = logging.getLogger(__name__)
 
 # The keys a full motion state carries. Kept as a module constant so a caller
-# a stubs one for a test can round-trip identical field names.
+# stubbing one for a test round-trips identical field names, and so the loader
+# checks every channel rather than a sample of them.
 _STATE_KEYS = ("dof_pos", "dof_vel", "body_rot", "body_pos", "body_vel", "body_ang_vel")
 
 
@@ -143,6 +151,62 @@ def _calc_frame_blend(time_s: float, motion_length_s: float, num_frames: int, sr
     f1 = min(f0 + 1, num_frames - 1)
     blend = frame_f - f0
     return f0, f1, blend
+
+
+def _cache_frame_count(arrays: dict[str, np.ndarray], declared: Any) -> int:
+    """Resolve the one frame count every channel of a cache agrees on.
+
+    The cache format documents each state channel as ``[num_frames, ...]``, so
+    the six channels and a declared ``num_frames`` are several statements of a
+    single number. :meth:`MotionPlayer.get_state_at_frame` clamps a query into
+    ``[0, num_frames - 1]`` to keep an out-of-range frame safe, and
+    :meth:`MotionPlayer.get_future_references` asks for frames *ahead* of the
+    playhead, so that clamp is the only thing standing between the tracker's
+    future window and the end of the arrays. A count the channels cannot serve
+    turns it into an out-of-range read part-way through the clip, and a count
+    below the row count leaves the tail unreachable with nothing reported -
+    which is why the number is settled here, once, rather than trusted.
+
+    Args:
+        arrays: The state channels of one clip, keyed by name.
+        declared: The cache's own ``num_frames``, or ``None`` when it omits it.
+
+    Returns:
+        The frame count every channel agrees on.
+
+    Raises:
+        ValueError: A channel has no frame axis, the channels disagree on its
+            length, or ``declared`` contradicts them.
+    """
+    flat = [k for k in _STATE_KEYS if arrays[k].ndim == 0]
+    if flat:
+        raise ValueError(
+            f"MotionPlayer cache channels {flat!r} are scalars, so they carry no frame axis. "
+            f"Every channel is documented as [num_frames, ...] for one clip."
+        )
+    rows = {k: int(arrays[k].shape[0]) for k in _STATE_KEYS}
+    distinct = sorted(set(rows.values()))
+    if len(distinct) > 1:
+        detail = ", ".join(f"{k}={rows[k]}" for k in _STATE_KEYS)
+        raise ValueError(
+            f"MotionPlayer cache channels disagree on the frame count ({detail}). "
+            f"Every channel is documented as [num_frames, ...] for one clip, so they all "
+            f"carry the same number of frames."
+        )
+    actual = distinct[0]
+    if declared is None:
+        return actual
+    stated = int(declared)
+    if stated != actual:
+        raise ValueError(
+            f"MotionPlayer cache declares num_frames={stated} but its channels carry "
+            f"{actual} frames. Every channel is documented as [num_frames, ...], and a "
+            f"frame index is clamped to num_frames - 1, so a declared count the channels "
+            f"cannot serve reads out of range before the clip ends while a smaller one "
+            f"hides the tail. Drop num_frames to take the row count, or resize the "
+            f"channels to match it."
+        )
+    return stated
 
 
 # ---------------------------------------------------------------------------
@@ -267,14 +331,16 @@ class MotionPlayer:
         missing = [k for k in _STATE_KEYS if k not in data]
         if missing:
             raise KeyError(f"MotionPlayer cache is missing required keys: {missing!r}.")
-        self._dof_pos = np.asarray(data["dof_pos"], dtype=np.float32)
-        self._dof_vel = np.asarray(data["dof_vel"], dtype=np.float32)
-        self._body_rot = np.asarray(data["body_rot"], dtype=np.float32)
-        self._body_pos = np.asarray(data["body_pos"], dtype=np.float32)
-        self._body_vel = np.asarray(data["body_vel"], dtype=np.float32)
-        self._body_ang_vel = np.asarray(data["body_ang_vel"], dtype=np.float32)
+        arrays = {key: np.asarray(data[key], dtype=np.float32) for key in _STATE_KEYS}
+        num_frames = _cache_frame_count(arrays, data.get("num_frames"))
+        self._dof_pos = arrays["dof_pos"]
+        self._dof_vel = arrays["dof_vel"]
+        self._body_rot = arrays["body_rot"]
+        self._body_pos = arrays["body_pos"]
+        self._body_vel = arrays["body_vel"]
+        self._body_ang_vel = arrays["body_ang_vel"]
         self._control_dt = float(data.get("control_dt", self._control_dt))
-        self._num_frames = int(data.get("num_frames", self._dof_pos.shape[0]))
+        self._num_frames = num_frames
         logger.info(
             "MotionPlayer loaded cache: %d frames @ %.0f Hz",
             self._num_frames,
