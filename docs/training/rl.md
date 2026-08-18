@@ -30,7 +30,7 @@ trainer = create_trainer("ppo")   # on-policy PPO, from-scratch RL
 | [`FastSacTrainer`](#fastsac) | Soft Actor-Critic (off-policy, replay buffer, twin Q critics, auto-tuned entropy). |
 | `SimpleReplayBuffer` | Off-policy transition store (fixed-capacity ring buffer). |
 | [`SimEnv`](#simenv) | Gym-style `reset -> step` adapter over a `SimEngine`. |
-| `EmpiricalNormalization` | Running observation normalizer (whitens inputs for stable training). Statistics update only in training mode - `eval()` freezes them at both entry points (`forward` and `update`), so an exported policy whitens deterministically. |
+| `EmpiricalNormalization` | Running observation normalizer (whitens inputs for stable training). Statistics update only in training mode - `eval()` freezes them at both entry points (`forward` and `update`), so an exported policy whitens deterministically. Both entry points want a batched `(batch, num_obs)` tensor and refuse anything else by name; pass `obs.unsqueeze(0)` for a single observation. A refused batch leaves the estimator untouched - the sample count is committed only once the fold succeeds. |
 
 ## SimEnv
 

@@ -1,10 +1,20 @@
 """Behavior contracts for the RL observation normalizer.
 
 ``EmpiricalNormalization`` (strands_robots.training.rl.normalization) documents
-four behaviors beyond the running-statistics happy path that RL trainers rely
+five behaviors beyond the running-statistics happy path that RL trainers rely
 on: scale-only whitening (``center=False``), a warmup freeze after ``until``
-samples, an empty-batch no-op, and the eval-mode freeze. Each is a small branch
-that is easy to break silently, so pin them directly.
+samples, an empty-batch no-op, the eval-mode freeze, and the batch shape both
+entry points accept. Each is a small branch that is easy to break silently, so
+pin them directly.
+
+The shape contract and the empty-batch no-op are one rule at two sizes: a batch
+that cannot be folded must leave the estimator untouched. ``update`` reads row 0
+as the batch axis, so an unbatched ``(num_obs,)`` observation is arithmetically
+indistinguishable from ``num_obs`` samples of a one-feature stream, and whitening
+broadcasts rather than failing - the pooled statistics and the reshaped return
+value are both silent. The buffers are persisted, so ``count`` is committed only
+once the fold succeeds: an inflated count is not recoverable, since it shrinks
+the blend rate for every later batch and brings the ``until`` freeze forward.
 
 The eval-mode freeze has TWO entry points - ``forward`` and the public
 ``update`` - and the class documents the freeze for both. That matters because
@@ -21,6 +31,8 @@ the CI torch mock stands in for a real PyTorch install.
 """
 
 from __future__ import annotations
+
+import re
 
 import pytest
 
@@ -188,3 +200,171 @@ def test_restoring_training_mode_resumes_updating() -> None:
 
     assert count_after_eval == 2
     assert int(norm.count) == 5
+
+
+# Batches a normalizer built for per-feature shape ``(4,)`` cannot fold, and why.
+_UNFOLDABLE = [
+    pytest.param((4,), "unbatched observation, read as 4 samples of 1 feature", id="flat"),
+    pytest.param((3, 1), "one feature broadcast across all 4", id="too-few-features"),
+    pytest.param((3, 3), "wrong feature count", id="wrong-features"),
+    pytest.param((2, 1, 4), "an extra dimension ahead of the features", id="extra-dim"),
+    pytest.param((), "no batch axis at all", id="scalar"),
+]
+
+
+def _tensor_of_shape(shape: tuple[int, ...]):
+    """A float tensor of exactly ``shape``, with distinct ascending values."""
+    rows = 1
+    for dim in shape:
+        rows *= dim
+    return torch.arange(1.0, 1.0 + max(rows, 1)).reshape(shape)
+
+
+def _warmed(width: int = 4):
+    """A normalizer for per-feature shape ``(width,)`` with established statistics."""
+    from strands_robots.training.rl.normalization import EmpiricalNormalization
+
+    norm = EmpiricalNormalization(width, device="cpu")
+    norm.train()
+    for _ in range(6):
+        norm.update(torch.arange(1.0, width + 1).repeat(4, 1))
+    return norm
+
+
+@pytest.mark.parametrize(("shape", "why"), _UNFOLDABLE)
+@pytest.mark.parametrize("route", ["forward", "update"])
+def test_a_batch_that_cannot_be_folded_leaves_the_estimator_untouched(
+    shape: tuple[int, ...], why: str, route: str
+) -> None:
+    """A rejected batch must change no buffer, through either entry point.
+
+    This is the empty-batch no-op generalised: ``update`` advances ``count`` by
+    row 0 of whatever it is handed, so a batch it cannot meaningfully fold either
+    pools the per-feature statistics into one number or fails part-way through
+    with the sample count already advanced. Both outcomes are written into the
+    next checkpoint, and both are silent.
+    """
+    norm = _warmed()
+    before = {name: buf.clone() for name, buf in norm.state_dict().items()}
+    x = _tensor_of_shape(shape)
+
+    with pytest.raises(ValueError, match="expected a batched tensor"):
+        norm(x) if route == "forward" else norm.update(x)
+
+    after = norm.state_dict()
+    drifted = sorted(name for name in before if not torch.equal(before[name], after[name]))
+    assert drifted == [], f"{route} left {drifted} changed by a rejected batch ({why})"
+
+
+@pytest.mark.parametrize(
+    ("shape", "broadcast_to"),
+    [
+        pytest.param((4,), (1, 4), id="flat"),
+        pytest.param((3, 1), (3, 4), id="too-few-features"),
+        pytest.param((), (1, 4), id="scalar"),
+    ],
+)
+def test_whitening_never_returns_a_shape_the_caller_did_not_pass(
+    shape: tuple[int, ...], broadcast_to: tuple[int, ...]
+) -> None:
+    """``forward`` documents "same shape as ``x``"; broadcasting is the alternative.
+
+    Whitening divides by buffers of shape ``(1, *shape)``, so these three inputs
+    are broadcast up into the buffers' shape rather than failing, and the caller
+    gets back a ``broadcast_to`` tensor it never passed in - no error, no log.
+    Refusing is the only outcome that keeps the documented return contract.
+    """
+    norm = _warmed()
+    x = _tensor_of_shape(shape)
+
+    with pytest.raises(ValueError) as excinfo:
+        out = norm(x, update=False)
+        pytest.fail(f"whitening a {tuple(x.shape)} input returned {tuple(out.shape)}, expected a refusal")
+
+    assert str(tuple(x.shape)) in str(excinfo.value)
+    assert tuple(x.shape) != broadcast_to, "premise: the broadcast shape differs from the input"
+
+
+def test_the_deployed_eval_mode_path_refuses_an_unbatched_observation() -> None:
+    """An exported policy whitens with ``update=False`` in eval mode.
+
+    ``BaseRLAlgo.evaluate`` scores a rollout on exactly this path, so it is the
+    one an unbatched single observation is most likely to reach. Nothing folds
+    there, which leaves the reshaped return value as the only symptom.
+    """
+    norm = _warmed()
+    norm.eval()
+
+    single = torch.arange(1.0, 5)
+    with pytest.raises(ValueError, match="expected a batched tensor"):
+        norm(single, update=False)
+
+    batched = norm(single.unsqueeze(0), update=False)
+    assert tuple(batched.shape) == (1, 4)
+
+
+def test_the_refusal_names_the_required_shape_and_its_remedy_works() -> None:
+    """Parse the remedy out of the message and apply it: it must fix the call.
+
+    Asserting on wording pins the sentence; applying the remedy pins that the
+    message is true. A refusal that names neither the shape wanted nor the way
+    to produce it sends the caller to read the source.
+    """
+    norm = _warmed()
+    with pytest.raises(ValueError) as excinfo:
+        norm(torch.arange(1.0, 5))
+    message = str(excinfo.value)
+
+    assert "(batch, 4)" in message, message
+    match = re.search(r"x\.unsqueeze\((\d+)\)", message)
+    assert match, f"no applicable remedy in: {message}"
+
+    fixed = torch.arange(1.0, 5).unsqueeze(int(match.group(1)))
+    whitened = norm(fixed)
+    assert tuple(whitened.shape) == (1, 4)
+
+
+def test_a_fold_that_fails_on_dtype_does_not_advance_the_sample_count() -> None:
+    """The count is committed after the fold, not before it.
+
+    An integer observation tensor has an acceptable shape and still cannot be
+    folded - ``torch.var_mean`` refuses it - so it reaches the arithmetic the
+    shape check cannot screen. Advancing ``count`` first would leave the
+    estimator claiming samples it never folded, which permanently shrinks the
+    blend rate applied to every later batch.
+    """
+    from strands_robots.training.rl.normalization import EmpiricalNormalization
+
+    norm = EmpiricalNormalization(4, device="cpu")
+    norm.train()
+    norm.update(torch.arange(1.0, 5).repeat(4, 1))
+    count_before = int(norm.count)
+    mean_before = norm.mean.clone()
+
+    with pytest.raises(RuntimeError):
+        norm.update(torch.arange(1, 5).repeat(4, 1))
+
+    assert int(norm.count) == count_before
+    assert torch.allclose(norm.mean, mean_before)
+
+
+def test_two_folds_reproduce_the_population_statistics_of_their_union() -> None:
+    """The accepted path is unchanged: chunked Welford equals the exact answer.
+
+    Committing ``count`` after the fold instead of before it must not change any
+    number, so pin the arithmetic against the population mean/std of the two
+    batches taken together rather than against a recorded snapshot.
+    """
+    from strands_robots.training.rl.normalization import EmpiricalNormalization
+
+    norm = EmpiricalNormalization(2, device="cpu")
+    norm.train()
+    first = torch.tensor([[0.0, 0.0], [2.0, 2.0]])
+    second = torch.tensor([[4.0, 4.0], [6.0, 6.0]])
+    norm.update(first)
+    norm.update(second)
+
+    both = torch.cat([first, second])
+    assert int(norm.count) == 4
+    assert torch.allclose(norm.mean, both.mean(dim=0))
+    assert torch.allclose(norm.std, both.std(dim=0, unbiased=False))
