@@ -1301,6 +1301,35 @@ Corrections from code review that apply to all future contributions:
 - **`except (ImportError, Exception)` is a bug** - `Exception` is a superclass of `ImportError`, so the tuple collapses to `except Exception`. Lint/review will catch this; don't write it.
 - **USB / hardware probing** - use `except (ImportError, OSError)`. `PermissionError` is an `OSError`, `FileNotFoundError` is an `OSError`, etc.
 
+### Actuators: a joint pose goes only where `ctrl` IS a joint pose
+- **`data.ctrl` is not a pose channel, it is whatever the actuator's force law reads.**
+  A `<position kp>` reads it as the joint target, a `<velocity kv>` as a rate, a `<motor>`
+  as a torque, an `<intvelocity>` integrates it as a rate. Writing a joint coordinate into
+  any of the latter commands a different physical quantity that happens to be numerically
+  equal to an angle, and nothing raises: the joint simply moves somewhere the caller did
+  not ask for.
+- **Anything that writes a pose asks
+  `strands_robots.simulation.mujoco.scene_ops.joint_drive_map` first.** Resolving the
+  transmission is not enough - a `<velocity>` actuator's transmission IS the joint, and
+  every stock tendon gripper measured clears the bias-type and position-gain terms a naive
+  servo check would look at. The classification is per actuator, not per robot: `openarm`
+  ships 2 position servos beside 16 motors, and 19 of the loadable registry robots have at
+  least one joint-transmission actuator that is not a servo.
+- **A drive that cannot take the pose is left uncommanded and named, not written to.** The
+  motion primitives hold the joints they can hold and report the rest, because writing a
+  live joint angle into a rate drive is what *moves* the joint the call meant to hold - and
+  a wheel angle accumulates, so that "hold" grows with every turn the wheel has already
+  made. Where the drive being targeted is the one that cannot take a pose, the primitive
+  refuses instead: a servo loop on a rate drive meets its convergence test when the joint
+  sweeps *past* the number while still accelerating, so it reports the set-point as reached
+  and the joint keeps going after the call returns.
+- Pinned by `tests/simulation/mujoco/test_pose_write_reports_whether_the_servos_hold_it.py`
+  for `set_joint_positions(hold=True)` and by
+  `tests/simulation/mujoco/test_primitives_write_a_pose_only_into_a_pose_drive.py` for
+  `move_to` / `rotate_wrist` / `set_gripper`, which also pins the boundary: a usable
+  `ctrlrange` is authoritative and already in the drive's own units, so only the
+  *substitution* of a driven joint's limits needs the drive to be a servo.
+
 ### Clocks: a duration is measured, a stamp is recorded
 - **A duration belongs on `time.monotonic()`.** Anything that decides *how long to keep
   waiting* - a timeout, a deadline, a TTL, a retry window, a rate window, a frame pacer -

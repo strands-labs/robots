@@ -1,0 +1,3 @@
+### Fixed
+
+- **rtps**: `dds_type_name` now maps message interfaces only. ROS 2 generates one DDS type per constituent message of a service or an action, so there is no single type to return for one; a `pkg/srv/Name` or `pkg/action/Name` is refused with the types ROS 2 does generate quoted (`pkg::srv::dds_::Name_Request_` / `..._Response_`) instead of returning a `pkg::srv::dds_::Name_` the participant would then advertise for a struct that exists nowhere in the ROS 2 type system. `ros_topic_name` checks the name it recovers against the same rule `dds_topic_name` applies, so the documented inverse no longer hands back a ROS 2 topic name the module itself refuses.
