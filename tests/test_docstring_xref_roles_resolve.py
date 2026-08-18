@@ -58,6 +58,13 @@ unqualified role (``:func:`reset```), a short-form role whose head names nothing
 the package defines, and roles into third-party packages - all of which resolve
 against Sphinx's current-module context or an intersphinx inventory that is not
 available, so flagging them would produce false positives.
+
+One further target is undecidable for a reason that lives in the environment
+rather than in the docstring: a cited module whose own optional dependency is not
+installed. The module exists in the tree, so the citation is sound, but nothing
+here can confirm the object it names, and reporting it accuses a correct pointer
+whose only remedy would be deletion. Such a target is skipped - the rule the
+short-form half has always applied to the modules it indexes.
 """
 
 from __future__ import annotations
@@ -85,8 +92,24 @@ _REPO_ROOT = _PKG_ROOT.parent
 _ROLE_RE = re.compile(r":(?:mod|class|func|meth|attr|data|obj|exc):`~?([A-Za-z_][\w.\s]*)`")
 
 
-def _resolves(target: str) -> bool:
-    """True if ``target`` names a real ``strands_robots`` module or attribute.
+def _absent_dependency(exc: ImportError) -> str | None:
+    """The absent third-party module ``exc`` names, if that is what it reports.
+
+    Both causes of a failed import here raise the same exception type and need
+    opposite verdicts, and the name it carries is what separates them. A
+    ``strands_robots`` path means no such module exists - the rot being graded. A
+    name outside the package means the cited module does exist and could not be
+    imported because an extra is not installed, which is a fact about this
+    environment and not about the docstring.
+    """
+    name = getattr(exc, "name", None)
+    if not name or name == "strands_robots" or name.startswith("strands_robots."):
+        return None
+    return name
+
+
+def _resolves(target: str) -> bool | None:
+    """Grade one fully-qualified ``target`` against the real API.
 
     Imports the longest importable module prefix, then walks the remaining
     dotted components as members (so ``pkg.mod.Class.method`` resolves), using
@@ -94,6 +117,18 @@ def _resolves(target: str) -> bool:
     ``hasattr`` walk here would report a dataclass field with no class-level
     default, and an attribute only ever assigned in ``__init__``, as a dead
     pointer - while the identical member cited in the short form resolved.
+
+    The member walk is guarded for the same reason the imports are: a package
+    that imports its submodules from a module-level ``__getattr__`` raises
+    ``ModuleNotFoundError`` from inside ``hasattr``, which swallows only
+    ``AttributeError``. Left to propagate, one absent extra ends the sweep and
+    nothing is graded at all.
+
+    Returns:
+        ``True`` when every component resolves, ``False`` when the path names
+        nothing, and ``None`` when an optional dependency is absent, so this
+        environment cannot decide the target either way. The tri-state is the one
+        :func:`_short_form_resolves` already returns for an undecidable target.
     """
     parts = target.split(".")
     module = None
@@ -101,17 +136,26 @@ def _resolves(target: str) -> bool:
     for i in range(len(parts), 0, -1):
         try:
             module = importlib.import_module(".".join(parts[:i]))
-            consumed = i
-            break
+        except ImportError as exc:
+            if _absent_dependency(exc):
+                return None
+            continue
         except Exception:
             continue
+        consumed = i
+        break
     if module is None:
         return False
     obj = module
     for attr in parts[consumed:]:
-        if not _has_member(obj, attr):
-            return False
-        obj = getattr(obj, attr, obj)
+        try:
+            if not _has_member(obj, attr):
+                return False
+            obj = getattr(obj, attr, obj)
+        except ImportError as exc:
+            if _absent_dependency(exc):
+                return None
+            raise
     return True
 
 
@@ -145,7 +189,7 @@ def _offending_roles_in(doc: str) -> list[str]:
             continue
         if target != contiguous:
             offenders.append(f"{target!r} is wrapped over a line break; write it as {contiguous!r}")
-        elif not _resolves(target):
+        elif _resolves(target) is False:
             offenders.append(target)
     return offenders
 
@@ -211,15 +255,112 @@ def test_qualified_strands_robots_xref_roles_resolve() -> None:
 
 
 def test_guard_resolver_accepts_real_symbol_and_rejects_bogus() -> None:
-    """The resolver walks module.attr chains and rejects nonexistent paths."""
-    assert _resolves("strands_robots.simulation.base.SimEngine.get_observation")
-    assert not _resolves("strands_robots.simulation.predicates.base_below_z")
+    """The resolver walks module.attr chains and rejects nonexistent paths.
+
+    Asserted against the exact verdict rather than its truthiness: the resolver
+    also returns ``None`` for a target it cannot decide, and ``not None`` is true,
+    so a truthiness check would read an undecided target as a rejected one.
+    """
+    assert _resolves("strands_robots.simulation.base.SimEngine.get_observation") is True
+    assert _resolves("strands_robots.simulation.predicates.base_below_z") is False
 
 
 # A real object, and a path that has never existed, used below to separate
 # "the guard cannot see this role" from "the target does not resolve".
 _REAL = "strands_robots.simulation.base.SimEngine.get_observation"
 _BOGUS = "strands_robots.simulation.predicates.base_below_z"
+
+# The module prefix of ``_REAL``, whose import is staged as failing below.
+_REAL_MODULE = "strands_robots.simulation.base"
+
+# Named so a traceback carrying it cannot be mistaken for a real absent package.
+_ABSENT_EXTRA = "an_extra_this_environment_does_not_have"
+
+
+def _import_module_lacking(prefix: str):
+    """Stand in for ``import_module``, with ``prefix`` needing an absent extra.
+
+    Which extras are actually missing varies with the developer's install and is
+    nothing in a full CI environment, so the failure is staged rather than
+    sampled: the exception a missing extra really raises, named on a module this
+    tree really does ship. Every other name is imported for real, so the walk
+    under test is the production one.
+    """
+    real = importlib.import_module
+
+    def _import(name: str, package: str | None = None) -> ModuleType:
+        if name == prefix:
+            raise ModuleNotFoundError(f"No module named {_ABSENT_EXTRA!r}", name=_ABSENT_EXTRA)
+        return real(name, package) if package else real(name)
+
+    return _import
+
+
+def test_a_target_whose_module_needs_an_absent_extra_is_not_a_dead_pointer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unimportable module is an unknown here, and an unknown is not an offender.
+
+    The resolver falls back to the longest prefix that does import, so a module
+    waiting on an extra was looked for as a *member* of its own parent package,
+    was not found, and the citation was reported as rot. Measured on a
+    ``[dev]``-only install of this tree: 39 such targets, every one of them
+    correct, and the only remedy the report offers is deleting them.
+    """
+    assert _resolves(_REAL) is True, "premise: the target resolves when the module imports"
+
+    monkeypatch.setattr(importlib, "import_module", _import_module_lacking(_REAL_MODULE))
+
+    assert _resolves(_REAL) is None
+    assert _offending_roles_in(f"Delegates to :meth:`~{_REAL}`.") == []
+
+
+def test_a_lazy_import_failure_in_the_member_walk_does_not_end_the_sweep(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A module-level ``__getattr__`` raising must not escape through ``hasattr``.
+
+    ``strands_robots.tools`` imports its submodules on attribute access, so
+    grading ``strands_robots.tools.pose_tool`` without the ``serial`` extra raised
+    out of the sweep: the guard reported no docstring at all, and the traceback
+    named a dependency rather than a cross-reference. Four targets in this tree
+    reach it, which is the worse half of the same cause - an over-report is at
+    least legible as a list of docstrings.
+    """
+    lazy = ModuleType(_REAL_MODULE.rsplit(".", 1)[0])
+
+    def _raise_absent(attr: str) -> object:
+        raise ModuleNotFoundError(f"No module named {_ABSENT_EXTRA!r}", name=_ABSENT_EXTRA)
+
+    lazy.__getattr__ = _raise_absent  # type: ignore[method-assign]
+    with pytest.raises(ModuleNotFoundError):
+        hasattr(lazy, "base")  # premise: hasattr swallows only AttributeError
+
+    def _import(name: str, package: str | None = None) -> ModuleType:
+        if name == lazy.__name__:
+            return lazy
+        raise ModuleNotFoundError(f"No module named {name!r}", name=name)
+
+    monkeypatch.setattr(importlib, "import_module", _import)
+
+    assert _resolves(_REAL_MODULE) is None
+    assert _offending_roles_in(f"See :mod:`~{_REAL_MODULE}`.") == []
+
+
+def test_a_module_the_package_does_not_have_is_still_a_dead_pointer() -> None:
+    """Control: an absent extra and absent rot must not become the same verdict.
+
+    Both raise ``ModuleNotFoundError`` and only the name it carries separates
+    them, so this is the assertion that stops the skip from laundering real rot
+    into an unknown. ``strands_robots.mesh_session`` is the module folded into the
+    ``mesh`` package whose citations #2427 found still being followed.
+    """
+    assert _resolves("strands_robots.mesh_session.get_session") is False
+    assert _resolves(_BOGUS) is False
+
+    assert _absent_dependency(ModuleNotFoundError("x", name="strands_robots.mesh_session")) is None
+    assert _absent_dependency(ModuleNotFoundError("x", name="strands_robots")) is None
+    assert _absent_dependency(ModuleNotFoundError("x", name="serial")) == "serial"
 
 
 def test_the_role_pattern_extracts_a_target_wrapped_over_a_line_break() -> None:
