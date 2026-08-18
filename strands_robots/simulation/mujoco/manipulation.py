@@ -43,6 +43,7 @@ from strands_robots.simulation.mujoco.scene_ops import (
     add_weld_constraint,
     remove_equality_constraint,
 )
+from strands_robots.utils import boolean_flag_error
 
 if TYPE_CHECKING:
     from strands_robots.simulation.models import SimRobot
@@ -373,8 +374,12 @@ class ManipulationMixin:
     def _apply_kinematic_attachments(self) -> None:
         """Teleport every kinematically attached child to follow its parent.
 
-        Called after each ``mj_step`` (both the ``step()`` batch loop and the
-        policy-driven ``_apply_sim_action`` substep loop). Callers MUST hold
+        Called after EVERY ``mj_step`` the backend issues - the ``step()``
+        batch loop, the single-robot ``_apply_sim_action`` substep loop, the
+        motion-primitive tick, and the synchronized ``run_multi_policy`` loop -
+        because ``attach_bodies(mode="kinematic")`` promises the child follows
+        every physics step, and a stepping path that skips this leaves the
+        carried body behind while reporting success. Callers MUST hold
         ``self._lock``. Uses the parent's ``xpos``/``xquat`` from the step's
         forward pass (one integration step of latency at the physics timestep,
         matching the example's carry). Entries whose bodies or freejoint no
@@ -523,18 +528,23 @@ class ManipulationMixin:
             armature: Per-joint armature (rotor inertia) floor; existing
                 larger values are kept. Must be finite and >= 0.
             gravity_compensation: Apply ``gravcomp=1`` to the robot's bodies
-                so modest gains track tightly.
+                so modest gains track tightly. Must be a boolean - a truthy
+                string such as ``"no"`` is refused rather than read as True.
             disable_self_collision: Zero contype/conaffinity on the robot's
                 own geoms. Planners like cuRobo ignore adjacent-link contacts,
                 which otherwise block planned motion in MuJoCo. NOTE: this
                 disables ALL collision on the robot's geoms (not just
                 link-vs-link), so add contact geoms that must keep colliding
                 (e.g. fingertip pads) AFTER this call via ``patch_scene_mjcf``.
+                Must be a boolean, for the same reason and more sharply: read by
+                truthiness, ``"false"`` would disable every collision on the
+                robot for a caller spelling the opt-out.
 
         Returns:
             ``{status, content}`` tool result; ``status="error"`` when no world
             exists, a policy is running, the robot is unknown or already driven,
-            ``kp``/``damping``/``armature`` are invalid, or the recompile fails.
+            ``kp``/``damping``/``armature`` are invalid, either posture flag was
+            not supplied as a boolean, or the recompile fails.
             The already-driven refusal names the joints it found and the
             actuators driving them, because what a caller does next differs by
             whether the robot is driven throughout or only in part.
@@ -556,6 +566,19 @@ class ManipulationMixin:
                 "status": "error",
                 "content": [{"text": f"actuate_robot: 'armature' must be a finite number >= 0, got {armature!r}."}],
             }
+
+        # Read by truthiness these two would invert for exactly the spellings a
+        # caller opting out reaches for: "false", "no", "off" and "0" are all
+        # truthy, and disable_self_collision then zeroes contype/conaffinity on
+        # every one of the robot's geoms - on the spec, so it outlives the
+        # recompile - while the caller asked to keep them colliding. Their
+        # numeric siblings above have been on a shared domain all along.
+        for flag_name, flag_value in (
+            ("gravity_compensation", gravity_compensation),
+            ("disable_self_collision", disable_self_collision),
+        ):
+            if text := boolean_flag_error(flag_value, flag_name, "actuate_robot"):
+                return {"status": "error", "content": [{"text": text}]}
 
         mj = _ensure_mujoco()
         with self._lock:
@@ -634,8 +657,8 @@ class ManipulationMixin:
                 kp_by_joint,
                 damping=float(damping),
                 armature=float(armature),
-                gravity_compensation=bool(gravity_compensation),
-                disable_self_collision=bool(disable_self_collision),
+                gravity_compensation=gravity_compensation,
+                disable_self_collision=disable_self_collision,
             ):
                 return {
                     "status": "error",

@@ -5507,6 +5507,11 @@ class MuJoCoSimEngine(
                         pfx = robot.namespace or ""
                         self._apply_action_by_name(self._world._model, self._world._data, act, pfx, mj)
                     mj.mj_step(self._world._model, self._world._data)
+                    # Kinematic attachments (attach_bodies mode="kinematic")
+                    # follow their parent every physics step, on this
+                    # synchronized loop as much as on the single-robot policy
+                    # path. Fast no-op when none are registered.
+                    self._apply_kinematic_attachments()
                     self._world.sim_time = self._world._data.time
                     self._world.step_count += 1
                     if hasattr(self, "_viewer_handle") and self._viewer_handle is not None:

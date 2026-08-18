@@ -65,6 +65,7 @@ _EXPECTED_FUNCTIONS = {
     "scene_ops.py::actuate_robot_in_scene",
     "scene_ops.py::actuator_driven_joint_ids",
     "scene_ops.py::actuator_joint_id",
+    "scene_ops.py::actuator_target_body_ids",
     "scene_ops.py::add_weld_constraint",
     "scene_ops.py::eject_body_from_scene",
     "scene_ops.py::eject_camera_from_scene",
