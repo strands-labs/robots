@@ -414,7 +414,12 @@ class RobotTaskState:
 
     status: TaskStatus = TaskStatus.IDLE
     instruction: str = ""
-    start_time: float = 0.0
+    #: ``time.monotonic()`` reading taken when the task began. Every reader
+    #: subtracts it from a later reading of the same clock to get an elapsed
+    #: duration, and none of them reports it as a point in time - so it is
+    #: monotonic rather than wall-clock, which a step cannot move. Named for
+    #: its clock so a future reader does not reach for ``time.time()``.
+    start_mono: float = 0.0
     duration: float = 0.0
     step_count: int = 0
     error_message: str = ""
@@ -547,7 +552,11 @@ class Robot(TeleopMixin, AgentTool):
         # Task execution state
         self._task_state = RobotTaskState()
         # Stream-telemetry throttle (publish_step from the control loop).
-        self._last_stream_pub: float = 0.0
+        # A ``time.monotonic()`` reading, like every other elapsed-time base
+        # here. ``-inf`` rather than ``0.0`` because monotonic readings are
+        # only meaningful relative to each other: the first tick is due
+        # regardless of where this platform's monotonic epoch happens to sit.
+        self._last_stream_pub: float = float("-inf")
         # Imported here rather than at module top for the reason every other
         # mesh import in this file is: ``strands_robots.mesh`` pulls the
         # transport package, and a hardware Robot must construct without it.
@@ -1468,7 +1477,7 @@ class Robot(TeleopMixin, AgentTool):
             self._stop_requested.clear()
             self._task_state.status = TaskStatus.CONNECTING
             self._task_state.instruction = instruction
-            self._task_state.start_time = time.time()
+            self._task_state.start_mono = time.monotonic()
             self._task_state.duration = 0.0
             self._task_state.step_count = 0
             self._task_state.error_message = ""
@@ -1544,10 +1553,17 @@ class Robot(TeleopMixin, AgentTool):
                 return
 
             self._task_state.status = TaskStatus.RUNNING
-            start_time = time.time()
+            # The rollout budget is a duration, so it is measured on a clock
+            # that only ever moves forward at one second per second. Read on
+            # ``time.time()`` an NTP correction, a ``date -s`` or a resume from
+            # suspend moved this comparison by the size of the step: forward it
+            # ended the rollout early and left the arm parked mid-task, and
+            # backward it kept commanding the servo bus past the budget
+            # ``_duration_error`` exists to bound. Neither was reported.
+            start_mono = time.monotonic()
 
             while (
-                time.time() - start_time < duration
+                time.monotonic() - start_mono < duration
                 and (n_steps is None or self._task_state.step_count < n_steps)
                 and self._task_state.status == TaskStatus.RUNNING
                 and not self._stop_requested.is_set()
@@ -1594,8 +1610,8 @@ class Robot(TeleopMixin, AgentTool):
                     # limited; failures never touch the control loop.
                     _mesh = getattr(self, "mesh", None)
                     if _mesh is not None:
-                        _now_stream = time.time()
-                        if _now_stream - getattr(self, "_last_stream_pub", 0.0) >= self._stream_min_period:
+                        _now_stream = time.monotonic()
+                        if _now_stream - self._last_stream_pub >= self._stream_min_period:
                             self._last_stream_pub = _now_stream
                             try:
                                 _mesh.publish_step(
@@ -1612,7 +1628,7 @@ class Robot(TeleopMixin, AgentTool):
                     await asyncio.sleep(self.action_sleep_time)
 
             # Update final state
-            elapsed = time.time() - start_time
+            elapsed = time.monotonic() - start_mono
             self._task_state.duration = elapsed
 
             if self._task_state.status == TaskStatus.RUNNING:
@@ -1648,8 +1664,8 @@ class Robot(TeleopMixin, AgentTool):
     def _duration_error(duration: Any, method: str) -> dict[str, Any] | None:
         """Reject a task ``duration`` the control loop cannot honor.
 
-        ``duration`` is the wall-clock budget the loop compares against
-        (``time.time() - start_time < duration``), and on hardware it bounds
+        ``duration`` is the elapsed-time budget the loop compares against
+        (``time.monotonic() - start_mono < duration``), and on hardware it bounds
         every rollout: unlike the simulation's ``run_policy`` - where an
         ``n_steps`` recomputes ``duration`` and supersedes it - the two
         conditions are ANDed here, so ``duration`` is the effective horizon
@@ -2290,7 +2306,7 @@ class Robot(TeleopMixin, AgentTool):
 
         # Update duration for running tasks
         if self._task_state.status == TaskStatus.RUNNING:
-            self._task_state.duration = time.time() - self._task_state.start_time
+            self._task_state.duration = time.monotonic() - self._task_state.start_mono
 
         status_text = f"Robot Status: {self._task_state.status.value.upper()}\n"
 

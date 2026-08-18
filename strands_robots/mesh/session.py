@@ -282,20 +282,25 @@ class PeerInfo:
         peer_id: Unique identifier for this peer (e.g. ``"so100-a1b2"``).
         peer_type: One of ``"robot"``, ``"sim"``, or ``"agent"``.
         hostname: The hostname the peer reported.
-        last_seen: :func:`time.time` of the most recent heartbeat.
+        last_seen_mono: :func:`time.monotonic` reading taken when this process
+            last saw a heartbeat from the peer. Monotonic because every reader
+            subtracts it from a later reading to get an age, and an age decides
+            whether the peer is still alive - see :meth:`age` and
+            :func:`prune_peers`. It is a local observation, never a stamp the
+            peer sent, and it is not serialised: :meth:`to_dict` reports ``age``.
         caps: Arbitrary capability dictionary broadcast in the presence payload.
     """
 
     peer_id: str
     peer_type: str = "robot"
     hostname: str = ""
-    last_seen: float = 0.0
+    last_seen_mono: float = 0.0
     caps: dict[str, Any] = field(default_factory=dict)
 
     @property
     def age(self) -> float:
         """Seconds since the last heartbeat."""
-        return time.time() - self.last_seen
+        return time.monotonic() - self.last_seen_mono
 
     def to_dict(self) -> dict[str, Any]:
         """Serialise to a plain dict (JSON-friendly)."""
@@ -328,13 +333,13 @@ def update_peer(peer_id: str, peer_type: str, hostname: str, caps: dict[str, Any
     with _PEERS_LOCK:
         is_new = peer_id not in _PEERS
         # When a NEW peer would push us over the cap, evict the oldest
-        # peer (smallest last_seen) to make room. Updates to EXISTING peers
+        # peer (smallest last_seen_mono) to make room. Updates to EXISTING peers
         # never trigger eviction (they don't grow the dict). This bounds the
         # phantom-peer flood DoS while still admitting genuine new robots.
         if is_new:
             cap = _max_peers()
             while len(_PEERS) >= cap and _PEERS:
-                oldest_id = min(_PEERS, key=lambda pid: _PEERS[pid].last_seen)
+                oldest_id = min(_PEERS, key=lambda pid: _PEERS[pid].last_seen_mono)
                 del _PEERS[oldest_id]
                 _PEERS_VERSION += 1
                 logger.warning(
@@ -346,7 +351,7 @@ def update_peer(peer_id: str, peer_type: str, hostname: str, caps: dict[str, Any
             peer_id=peer_id,
             peer_type=peer_type,
             hostname=hostname,
-            last_seen=time.time(),
+            last_seen_mono=time.monotonic(),
             caps=caps,
         )
         if is_new:
@@ -361,10 +366,10 @@ def prune_peers(timeout: float = PEER_TIMEOUT) -> list[str]:
         List of pruned peer IDs (may be empty).
     """
     global _PEERS_VERSION  # noqa: PLW0603
-    now = time.time()
+    now = time.monotonic()
     pruned: list[str] = []
     with _PEERS_LOCK:
-        stale = [pid for pid, p in _PEERS.items() if now - p.last_seen > timeout]
+        stale = [pid for pid, p in _PEERS.items() if now - p.last_seen_mono > timeout]
         for pid in stale:
             del _PEERS[pid]
             _PEERS_VERSION += 1

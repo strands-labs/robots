@@ -85,7 +85,7 @@ def _make_dummy_engine_class() -> type[SimEngine]:
             size: list[float] | None = None,
             color: list[float] | None = None,
             mass: float = 0.1,
-            is_static: bool = False,
+            is_static: bool | None = None,
             mesh_path: str | None = None,
             material: dict[str, Any] | None = None,
             **kwargs: Any,

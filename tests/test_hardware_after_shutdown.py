@@ -4,7 +4,7 @@
 ``_shutdown_event`` is one of the control loop's exit conditions::
 
     while (
-        time.time() - start_time < duration
+        time.monotonic() - start_mono < duration
         and (n_steps is None or self._task_state.step_count < n_steps)
         and self._task_state.status == TaskStatus.RUNNING
         and not self._stop_requested.is_set()
