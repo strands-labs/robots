@@ -49,6 +49,17 @@ it. The commanded pose is a fixed reference, so calling `randomize()` once per
 episode draws independent offsets that always stay inside `position_noise`
 instead of compounding into a random walk that eventually leaves the workspace.
 
+`randomize_lighting` measures its offset the same way, from each light's
+**authored** position - the pose the scene spec declares, which is also what a
+recompile restores - so a per-episode loop keeps every light inside +/-0.5 m of
+where the scene put it. Both axes need a fixed reference for the same reason:
+offsetting the live value makes each call start from the previous call's result,
+and the displacement then grows without limit while every individual draw still
+looks correctly bounded. A light authored 3.5 m above the scene walks 4.7 m away
+over 50 episodes that way, which is 9.4x the advertised bound. Because the
+offset is absolute rather than cumulative, replaying a `seed` now reproduces the
+same lighting regardless of how many calls preceded it.
+
 `randomize()` leaves the sim in a forwarded, render-ready state: the next `render()` / `get_observation()` reflects the perturbation immediately, with no manual `step()` in between. This matters for lighting in particular - the renderer reads light positions from the derived `data.light_xpos`, not `model.light_pos`, so a light-position jitter only reaches a render after a forward.
 
 ## Categories
@@ -56,7 +67,7 @@ instead of compounding into a random walk that eventually leaves the workspace.
 | Flag | What changes | Range param |
 |------|-------------|-------------|
 | `randomize_colors` | Object + floor RGB (alpha fixed at 1.0) | `color_range` |
-| `randomize_lighting` | Directional direction, intensity, ambient | - |
+| `randomize_lighting` | Light position (+/-0.5 m of its authored pose) + diffuse colour | - |
 | `randomize_physics` | Per-object mass (mult), per-geom friction (scale), joint damping | `mass_range`, `friction_range` |
 | `randomize_positions` | Dynamic-object position offsets (metres); static objects have no pose DOF and are skipped | `position_noise` |
 

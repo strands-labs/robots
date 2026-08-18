@@ -525,7 +525,7 @@ class TestFlushMixedFrameSizes:
             "paths": {"cam": str(tmp_path / "mixed__cam.mp4")},
             "errors": {"cam": 0},
             "output_dir": str(tmp_path),
-            "started_at": _time.time(),
+            "started_mono": _time.monotonic(),
         }
 
     def test_mixed_size_buffer_flushes_dominant_run_without_raising(self, tmp_path: Path):

@@ -84,6 +84,14 @@ _DEFAULT_NUM_ACTIONS = 15
 # Upstream g1_gear_wbc.yaml: obs_history_len=6 (num_obs = 86*6 = 516).
 _DEFAULT_OBS_HISTORY_LEN = 6
 _DEFAULT_COMMAND_DIM = 7
+# The observation scales from upstream g1_gear_wbc.yaml, and the single owner of
+# them. Every consumer resolves an omitted key from THIS table, so a config that
+# states some scales and leaves the rest to their documented default cannot end
+# up scaled differently from one that states none: ``dof_vel`` is 0.05 either
+# way. A second fallback number (a bare ``1.0``) would silently multiply the 29
+# joint-velocity entries of the frame by 20 for exactly the configs that name a
+# sibling key, which the network reads as a malformed observation.
+_DEFAULT_OBS_SCALES: dict[str, float] = {"ang_vel": 0.5, "dof_pos": 1.0, "dof_vel": 0.05}
 # Upstream cmd_scale applied to [vx, vy, omega] and the default base-height
 # command, from g1_gear_wbc.yaml.
 _DEFAULT_CMD_SCALE = (2.0, 2.0, 0.5)
@@ -124,7 +132,10 @@ class WBCConfig:
         obs_scales: Named scale factors applied to observation sub-vectors
             (``ang_vel`` / ``dof_pos`` / ``dof_vel``). Defaults match upstream
             g1_gear_wbc.yaml (ang_vel_scale=0.5, dof_pos_scale=1.0,
-            dof_vel_scale=0.05).
+            dof_vel_scale=0.05). A map that states only some of them is
+            completed with those defaults at construction, so this attribute is
+            always the full map the observation is built with - naming one scale
+            never changes what an unnamed sibling is scaled by.
         cmd_scale: Scale applied to the ``[vx, vy, omega]`` velocity command
             before it enters the observation's command block (upstream
             ``cmd_scale = [2.0, 2.0, 0.5]``).
@@ -160,7 +171,7 @@ class WBCConfig:
     kps: list[float] = field(default_factory=list)
     kds: list[float] = field(default_factory=list)
     action_scale: float = 0.25
-    obs_scales: dict[str, float] = field(default_factory=lambda: {"ang_vel": 0.5, "dof_pos": 1.0, "dof_vel": 0.05})
+    obs_scales: dict[str, float] = field(default_factory=lambda: dict(_DEFAULT_OBS_SCALES))
     cmd_scale: list[float] = field(default_factory=lambda: list(_DEFAULT_CMD_SCALE))
     height_cmd: float = _DEFAULT_HEIGHT_CMD
     freq_cmd: float = _DEFAULT_FREQ_CMD
@@ -263,6 +274,15 @@ class WBCConfig:
         for scale_name, scale in self.obs_scales.items():
             if error := finite_number_error(scale, f"obs_scales[{scale_name!r}]", "WBCConfig"):
                 raise ValueError(error)
+        # Fill the scales this config does not state from the upstream table, so
+        # ``obs_scales`` is the complete map the observation is actually built
+        # with. Done here - on the config, once - rather than per consumer, for
+        # the reason WBCPolicy fills the per-joint SONIC vectors on the config:
+        # the observation builder and the controller must see the same values.
+        # A stated scale always wins; only an omitted one is filled. Frozen
+        # dataclass, so the normalised map is installed with object.__setattr__.
+        if any(name not in self.obs_scales for name in _DEFAULT_OBS_SCALES):
+            object.__setattr__(self, "obs_scales", {**_DEFAULT_OBS_SCALES, **self.obs_scales})
 
     @property
     def num_obs(self) -> int:
@@ -282,7 +302,10 @@ class WBCConfig:
         FLAT keys (``ang_vel_scale`` / ``dof_pos_scale`` / ``dof_vel_scale``)
         rather than a nested ``obs_scales`` map. Those flat keys are normalised
         into ``obs_scales`` here so the upstream config loads unchanged. An
-        explicit ``obs_scales`` map, if present, takes precedence.
+        explicit ``obs_scales`` map, if present, takes precedence. A config that
+        states only some of the scales keeps the documented default for the rest
+        (:meth:`__post_init__` completes the map), so naming one scale does not
+        change what an unnamed sibling is scaled by.
         """
         if "policy_path" not in data:
             raise ValueError("WBCConfig requires a 'policy_path' entry")

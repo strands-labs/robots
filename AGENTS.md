@@ -1326,7 +1326,11 @@ Corrections from code review that apply to all future contributions:
   *achieved* frame interval across a clock step rather than the value the pacer computed,
   and the RTC inference-delay estimate by
   `tests/policies/lerobot_local/test_rtc_latency_survives_a_clock_step.py` - a latency that
-  feeds a decision is a duration, however much it also reads as telemetry.
+  feeds a decision is a duration, however much it also reads as telemetry. The two
+  rendering pacers - the MJPEG stream generator and the multi-camera recorder thread - are
+  pinned on the same achieved-interval basis by
+  `tests/simulation/test_rendering_pacers_survive_a_clock_step.py`, along with the duration
+  each recording reports.
 
 ### Module-Level Side Effects
 - **If you must run code at import time, comment WHY it can't be lazy.** `MUJOCO_GL` is the canonical example: MuJoCo locks the GL backend at first `import mujoco`, so the env var must be set before any downstream import chain triggers it.
