@@ -176,7 +176,7 @@ class InputPublisher:
         self._error_count = 0
         self._event_read_error_count = 0
         self._frame_count = 0
-        self._start_time = 0.0
+        self._start_mono = 0.0
 
     def __repr__(self) -> str:
         try:
@@ -203,7 +203,7 @@ class InputPublisher:
         teleoperator has no event surface), and the achieved vs. requested rate
         (``hz_actual`` / ``hz_target``).
         """
-        elapsed = time.time() - self._start_time if self._start_time else 0
+        elapsed = time.monotonic() - self._start_mono if self._start_mono else 0
         return {
             "device": self.device_name,
             "method": self.method,
@@ -221,7 +221,7 @@ class InputPublisher:
             return
         self._running = True
         self._stop_event.clear()
-        self._start_time = time.time()
+        self._start_mono = time.monotonic()
         self._thread = threading.Thread(
             target=self._publish_loop,
             name=f"mesh-input-{self.device_name}",
@@ -386,7 +386,7 @@ class InputReceiver:
         # merged rather than replaced, so a frame carrying a subset of the
         # joints cannot erase the baseline of the ones it omits.
         self._last_applied: dict[str, tuple[float, float]] = {}
-        self._start_time = 0.0
+        self._start_mono = 0.0
 
     def __repr__(self) -> str:
         try:
@@ -414,7 +414,7 @@ class InputReceiver:
         than the per-joint slew bound) -
         plus the achieved ``hz_actual``.
         """
-        elapsed = time.time() - self._start_time if self._start_time else 0
+        elapsed = time.monotonic() - self._start_mono if self._start_mono else 0
         return {
             "source": self.source_peer_id,
             "device": self.device_name,
@@ -433,7 +433,7 @@ class InputReceiver:
         if self._running:
             return
         self._running = True
-        self._start_time = time.time()
+        self._start_mono = time.monotonic()
         self._sub_name = self.mesh.subscribe(
             self.topic,
             callback=self._on_input,

@@ -8,9 +8,25 @@ Quaternion convention throughout: ``xyzw`` (ProtoMotions common format).
 MuJoCo's own quaternions are ``wxyz`` - :func:`mujoco_wxyz_to_xyzw` bridges
 the two at the read boundary so the rest of this module a caller mixes with
 MuJoCo state can stay in one convention.
+
+Unit-quaternion contract: every rotation formula here is derived for a unit
+quaternion, so :func:`quat_rotate_inverse` and :func:`extract_yaw_quat`
+normalise their input rather than trusting it, and refuse a quaternion that
+cannot define a rotation. Scale does not cancel in either formula - both mix a
+quadratic term with a constant - so a caller's raw quaternion would otherwise
+be read as a *different* rotation instead of the same one. That matters
+because the quaternions reaching this module are not all guaranteed unit: a
+hand-assembled ``body_rot_xyzw`` batch, a real-robot IMU reading and an
+orientation obtained by linearly interpolating two samples are all slightly
+off unit (linear interpolation is why the sibling
+:mod:`strands_robots.policies.protomotions.motion_utils` normalises inside its
+slerp). This matches the world-to-body helpers elsewhere in the package, which
+all normalise internally.
 """
 
 from __future__ import annotations
+
+import math
 
 import numpy as np
 
@@ -49,24 +65,66 @@ def mujoco_wxyz_to_xyzw(wxyz: np.ndarray) -> np.ndarray:
 # ---------------------------------------------------------------------------
 
 
-def _normalize_quat(q: np.ndarray) -> np.ndarray:
-    """Unit-normalise ``q`` along the last axis with a soft floor."""
-    norm = np.linalg.norm(q, axis=-1, keepdims=True)
-    return q / np.maximum(norm, 1e-8)
+#: Smallest quaternion norm treated as a rotation. Below this the direction is
+#: numerical noise, so scaling to unit length would amplify noise into an
+#: arbitrary orientation rather than recover the caller's intent.
+_MIN_QUAT_NORM = 1e-8
+
+
+def _unit_quat(q_xyzw: np.ndarray, *, context: str) -> np.ndarray:
+    """Scale ``q_xyzw`` to unit length, refusing one that is not a rotation.
+
+    Args:
+        q_xyzw: Shape ``[4]`` quaternion, not required to be unit.
+        context: Name of the calling helper, quoted in the refusal so the
+            caller learns which input was rejected.
+
+    Returns:
+        The same quaternion scaled to unit length, in the input's dtype.
+
+    Raises:
+        ValueError: If the norm is not finite or is below
+            :data:`_MIN_QUAT_NORM`. An all-zero quaternion is the common
+            spelling of a dropped or never-written orientation, and it cannot
+            be repaired by scaling - every direction is equally consistent with
+            it - so it is refused instead of silently standing in for one.
+    """
+    q = np.asarray(q_xyzw)
+    norm = float(np.linalg.norm(np.asarray(q, dtype=np.float64)))
+    if not math.isfinite(norm) or norm < _MIN_QUAT_NORM:
+        raise ValueError(
+            f"{context}: quaternion {np.asarray(q, dtype=np.float64).tolist()} has norm "
+            f"{norm!r} and cannot define a rotation. An all-zero or non-finite quaternion "
+            "usually means the orientation was never written - supply the body's real "
+            "orientation (MuJoCo reports it as wxyz; convert with mujoco_wxyz_to_xyzw)."
+        )
+    # Dividing by a Python float keeps the caller's dtype (float32 stays
+    # float32), which the ONNX session downstream expects.
+    return q / norm
 
 
 def quat_rotate_inverse(q_xyzw: np.ndarray, v: np.ndarray) -> np.ndarray:
-    """Rotate vector ``v`` by the INVERSE of a unit quaternion ``q``.
+    """Rotate vector ``v`` by the INVERSE of the rotation ``q`` encodes.
+
+    Computes ``R(q)^T @ v`` - the standard "rotate by the inverse" that
+    expresses a world-frame vector in the body frame.
 
     Args:
-        q_xyzw: Shape ``[4]`` (xyzw).
+        q_xyzw: Shape ``[4]`` (xyzw). Need not be exactly unit; it is
+            normalised internally, so a quaternion scaled by any positive
+            factor gives the same answer.
         v: Shape ``[3]`` world-frame vector.
 
     Returns:
         Shape ``[3]`` local-frame vector.
+
+    Raises:
+        ValueError: If ``q_xyzw`` cannot define a rotation (non-finite or
+            ~zero norm).
     """
-    q_w = q_xyzw[3]
-    q_vec = q_xyzw[:3]
+    q = _unit_quat(q_xyzw, context="quat_rotate_inverse")
+    q_w = q[3]
+    q_vec = q[:3]
     a = v * (2.0 * q_w * q_w - 1.0)
     b = np.cross(q_vec, v) * q_w * 2.0
     c = q_vec * np.dot(q_vec, v) * 2.0
@@ -141,6 +199,10 @@ def compute_root_local_ang_vel(
 
     Returns:
         Shape ``[3]`` local-frame angular velocity of the root body.
+
+    Raises:
+        ValueError: If the root row of ``rigid_body_rot`` cannot define a
+            rotation (non-finite or ~zero norm).
     """
     root_rot = rigid_body_rot[root_body_index]
     root_ang_vel = rigid_body_ang_vel[root_body_index]
@@ -160,12 +222,19 @@ def extract_yaw_quat(q_xyzw: np.ndarray) -> np.ndarray:
     heading with the robot's own heading without touching torso lean.
 
     Args:
-        q_xyzw: Shape ``[4]``.
+        q_xyzw: Shape ``[4]``. Need not be exactly unit; it is normalised
+            internally, so a quaternion scaled by any positive factor yields
+            the same yaw.
 
     Returns:
         Shape ``[4]`` yaw-only quaternion ``(0, 0, sin(yaw/2), cos(yaw/2))``.
+
+    Raises:
+        ValueError: If ``q_xyzw`` cannot define a rotation (non-finite or
+            ~zero norm).
     """
-    x, y, z, w = q_xyzw[0], q_xyzw[1], q_xyzw[2], q_xyzw[3]
+    q = _unit_quat(q_xyzw, context="extract_yaw_quat")
+    x, y, z, w = q[0], q[1], q[2], q[3]
     yaw = np.arctan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
     half = yaw * 0.5
     return np.array([0.0, 0.0, np.sin(half), np.cos(half)], dtype=np.float32)
@@ -186,6 +255,10 @@ def compute_yaw_offset(robot_quat_xyzw: np.ndarray, motion_quat_xyzw: np.ndarray
     Returns:
         Shape ``[4]`` yaw-only quaternion offset - apply with
         :func:`apply_heading_offset` to align a motion body-rot batch.
+
+    Raises:
+        ValueError: If either input cannot define a rotation (non-finite or
+            ~zero norm).
     """
     robot_yaw = extract_yaw_quat(robot_quat_xyzw)
     motion_yaw = extract_yaw_quat(motion_quat_xyzw)

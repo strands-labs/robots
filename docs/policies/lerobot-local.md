@@ -121,7 +121,9 @@ saving from the cache is observable instead of guessed:
 
 - `load_cache_hit` (`bool`): `True` when the heavy `from_pretrained` weight
   read was skipped because the process cache already held this checkpoint.
-- `load_time_s` (`float`): wall time the load took (near `0.0` on a cache hit).
+- `load_time_s` (`float`): seconds the load took (near `0.0` on a cache hit).
+  Measured on a monotonic clock, so a wall-clock correction landing during a
+  multi-minute weight read cannot report the load as negative or as hours.
 
 `Simulation.run_policy` and `Simulation.eval_policy` surface these in their
 `{"json": {...}}` result block as `policy_load_cache_hit` and

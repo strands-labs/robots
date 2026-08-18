@@ -19,12 +19,19 @@ Cache format (dict-of-numpy):
 
 * ``dof_pos``       - ``[num_frames, num_dofs]``   float32
 * ``dof_vel``       - ``[num_frames, num_dofs]``   float32
-* ``body_rot``      - ``[num_frames, num_bodies, 4]``  float32 (xyzw)
-* ``body_pos``      - ``[num_frames, num_bodies, 3]``  float32
-* ``body_vel``      - ``[num_frames, num_bodies, 3]``  float32
-* ``body_ang_vel``  - ``[num_frames, num_bodies, 3]``  float32
+* ``body_rot``      - ``[num_frames, num_bodies, 4]``  float32 (xyzw, world)
+* ``body_pos``      - ``[num_frames, num_bodies, 3]``  float32 (world)
+* ``body_vel``      - ``[num_frames, num_bodies, 3]``  float32 (world frame)
+* ``body_ang_vel``  - ``[num_frames, num_bodies, 3]``  float32 (world frame)
 * ``control_dt``    - python float, seconds per control tick
 * ``num_frames``    - python int
+
+The two velocity channels are WORLD-frame, the same convention as a raw
+ProtoMotions motion library's ``rigid_body_ang_vel``. A hand-built cache must
+follow it: the tracker's own root input is a local-frame angular velocity that
+:func:`~strands_robots.policies.protomotions.state_utils.compute_root_local_ang_vel`
+derives by rotating a world-frame row, so supplying local-frame rows here is
+rotated a second time rather than used as-is.
 
 Clean-room from ProtoMotions (Apache 2.0) deployment/motion_utils.py.
 """

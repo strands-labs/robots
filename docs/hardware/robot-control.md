@@ -68,6 +68,13 @@ themselves apply, so a port the arm accepts is a port the provider can dial.
 of them can honor is reported by name, with the arm still disconnected and the
 command bus still free for a task that could run.
 
+`duration` is measured on a monotonic clock, not on the date. It is an elapsed
+time rather than a point in time, so an NTP correction or a resume from suspend
+cannot cut a rollout short or hold the servo bus past the budget - and the
+`duration` the task reports back is the time that actually elapsed. The same
+holds for `teleoperate(duration=...)`; see
+[Teleoperation](teleoperation.md#mixin-api).
+
 `cleanup()` (and `stop()`, which delegates to it) is terminal: it latches a
 shutdown, releases the task executor, tears down the mesh and ROS bridges, and
 disconnects the robot. It holds whatever state the robot is in - never

@@ -1321,7 +1321,12 @@ Corrections from code review that apply to all future contributions:
 - Pinned by `tests/tools/test_tool_wait_budgets_survive_a_clock_step.py` (a scan over the
   agent-callable tools, no exemption list) and, for the safety subsystem, by
   `tests/mesh/test_replay_cache_monotonic.py` and
-  `tests/mesh/test_corroboration_clock_domain.py`.
+  `tests/mesh/test_corroboration_clock_domain.py`. The frame pacer named above is pinned
+  by `tests/simulation/test_rollout_durations_survive_a_clock_step.py`, which asserts the
+  *achieved* frame interval across a clock step rather than the value the pacer computed,
+  and the RTC inference-delay estimate by
+  `tests/policies/lerobot_local/test_rtc_latency_survives_a_clock_step.py` - a latency that
+  feeds a decision is a duration, however much it also reads as telemetry.
 
 ### Module-Level Side Effects
 - **If you must run code at import time, comment WHY it can't be lazy.** `MUJOCO_GL` is the canonical example: MuJoCo locks the GL backend at first `import mujoco`, so the env var must be set before any downstream import chain triggers it.

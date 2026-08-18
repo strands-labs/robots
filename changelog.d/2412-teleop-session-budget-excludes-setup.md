@@ -1,0 +1,3 @@
+### Fixed
+
+- **teleop**: `teleoperate(duration=...)` now measures the session from the end of setup. The control loop resolved `strands_robots.mesh.security` on its first line, after `teleoperate` had stamped the clock the deadline is built from, so the ~2.1s cost of that import on a cold process fell inside the window `duration` bounds: the first session in a process polled the leader zero times and still reported `success` at "0 frames, 0.0Hz", and every longer session was silently shortened by the same amount. The module is now resolved before the clock starts, alongside connecting the devices; the loop's lazy import is unchanged, so the module layering and a warm session are both untouched.

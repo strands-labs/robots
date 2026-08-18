@@ -111,6 +111,14 @@ Every hardware `Robot` and `Simulation` host exposes:
 - **`block`** - run inline until `duration` elapses / Ctrl+C (`True`) vs
   background thread (`False`, default).
 - **`duration`** - auto-stop after N seconds (`None` = until stopped).
+  Measured on a monotonic clock, so a wall-clock correction mid-session neither
+  ends it early nor keeps the follower driven past the budget, and the reported
+  `elapsed_s` is the time that actually elapsed. It is also measured from the end
+  of setup: connecting the devices and resolving the slew helpers happen before
+  the clock starts, so `duration` is time spent teleoperating rather than time
+  since the call. `teleoperate(block=False)` therefore returns once setup is
+  done - on the first session in a process that costs about two seconds, after
+  which the loop is polling.
 
 Each tick: poll every selected device's `get_action()` → apply its `map_fn` →
 **merge** (last-wins on key conflict, with a one-time warning) → check the
