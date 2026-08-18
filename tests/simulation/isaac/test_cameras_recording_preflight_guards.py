@@ -144,7 +144,7 @@ def test_stop_cameras_recording_reports_a_refused_rate_instead_of_raising(tmp_pa
         "paths": {"front": path},
         "errors": {"front": 0},
         "output_dir": str(tmp_path),
-        "started_at": 0.0,
+        "started_mono": 0.0,
         "max_frames": 3000,
     }
 

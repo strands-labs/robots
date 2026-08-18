@@ -1326,7 +1326,17 @@ Corrections from code review that apply to all future contributions:
   *achieved* frame interval across a clock step rather than the value the pacer computed,
   and the RTC inference-delay estimate by
   `tests/policies/lerobot_local/test_rtc_latency_survives_a_clock_step.py` - a latency that
-  feeds a decision is a duration, however much it also reads as telemetry.
+  feeds a decision is a duration, however much it also reads as telemetry. The two
+  rendering pacers - the MJPEG stream generator and the multi-camera recorder thread - are
+  pinned on the same achieved-interval basis by
+  `tests/simulation/test_rendering_pacers_survive_a_clock_step.py`, along with the duration
+  each recording reports. The Isaac backend's own two - the idle gate that decides when
+  `run_pump_forever` refreshes the live preview, and the duration its camera recording
+  reports - are pinned by
+  `tests/simulation/isaac/test_isaac_durations_survive_a_clock_step.py`, which asserts the
+  achieved refresh timeline against the unstepped one rather than a tolerance. A duration
+  base also carries its clock in its name (`started_mono`, `last_idle_render_mono`), so a
+  later reader cannot mistake it for a stamp and subtract `time.time()` from it.
 
 ### Module-Level Side Effects
 - **If you must run code at import time, comment WHY it can't be lazy.** `MUJOCO_GL` is the canonical example: MuJoCo locks the GL backend at first `import mujoco`, so the env var must be set before any downstream import chain triggers it.
@@ -1352,6 +1362,7 @@ Corrections from code review that apply to all future contributions:
 - **`robot.py` is for the `Robot()` factory**, the user-facing entry point. Hardware-specific code lives in `hardware_robot.py`. Don't have two files both named "robot something" with different responsibilities.
 - **Reference module names, not filenames, in docstrings** - `strands_robots.hardware_robot` not `robot.py`. Filenames change; module paths are the public contract.
 - **Keep a cross-reference target on one line** - a `:class:`/`:func:`/`:meth:` path is only a dotted path while it is contiguous. Wrapping `:class:`~strands_robots.policies.protomotions.motion_utils.MotionPlayer`` over a line break leaves a token carrying a newline and the next line's indentation, which imports nowhere. Break the prose before the role and give the path its own line.
+- **A cross-reference in a test docstring is graded too** - the roles in `tests/` and `tests_integ/` are checked against the real API alongside the package's, because a test module's docstring is where a maintainer working on that subsystem starts reading. Name the seam a fixture actually patches (`strands_robots.mesh.core.get_session`), not a local import alias dressed up as a module path.
 
 ### Unicode & String Hygiene
 - **No emojis in user-facing strings** - this is a project rule. Tool result dicts (`{"content": [{"text": ...}]}`), log messages, error messages: plain ASCII only. Agents read these strings programmatically; emojis just add tokenizer noise.

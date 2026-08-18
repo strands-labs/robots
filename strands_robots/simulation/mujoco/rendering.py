@@ -2103,7 +2103,10 @@ class RenderingMixin:
             "paths": paths,
             "errors": dict.fromkeys(names, 0),
             "output_dir": out_dir,
-            "started_at": _time.time(),
+            # A ``time.monotonic()`` reading: the only thing derived from
+            # this base is how long the recording has been running, so it
+            # is a duration base and carries its clock in its name.
+            "started_mono": _time.monotonic(),
             "thread": None,
             "max_frames": max_frames_per_camera,
             "ready": _threading.Event(),
@@ -2198,7 +2201,13 @@ class RenderingMixin:
 
             interval = 1.0 / fps
             while state["running"]:
-                t0 = _time.time()
+                # ``time.monotonic()``: the sleep below is computed from this
+                # base, so it decides the capture rate. On ``time.time()`` a
+                # wall-clock step landing between the two readings changed how
+                # much of the rollout this buffer sampled, and the frames carry
+                # no per-frame timestamp, so the result is indistinguishable
+                # afterwards from one paced correctly.
+                frame_start_mono = _time.monotonic()
                 for cam in names:
                     if not state["running"]:
                         break
@@ -2214,7 +2223,7 @@ class RenderingMixin:
                     except Exception as e:
                         state["errors"][cam] += 1
                         logger.debug("camera recorder (%s) error: %s", cam, e)
-                lag = _time.time() - t0
+                lag = _time.monotonic() - frame_start_mono
                 if lag < interval:
                     _time.sleep(interval - lag)
 
@@ -2292,7 +2301,7 @@ class RenderingMixin:
 
         from strands_robots.rendering.video import encode_clip
 
-        elapsed = _time.time() - state["started_at"]
+        elapsed = _time.monotonic() - state["started_mono"]
         lines = [
             f"Stopped '{state['name']}' after {elapsed:.1f}s",
             f"   output_dir: {state['output_dir']}",
@@ -2553,7 +2562,10 @@ class RenderingMixin:
             "paths": paths,
             "errors": dict.fromkeys(names, 0),
             "output_dir": out_dir,
-            "started_at": _time.time(),
+            # A ``time.monotonic()`` reading: the only thing derived from
+            # this base is how long the recording has been running, so it
+            # is a duration base and carries its clock in its name.
+            "started_mono": _time.monotonic(),
             # No daemon thread in synchronous mode; left as None so
             # ``stop_cameras_recording`` can detect this and skip the
             # join.
@@ -2630,7 +2642,7 @@ class RenderingMixin:
         if not state or not state.get("running"):
             return {"status": "success", "content": [{"text": "[idle] No active camera recording."}]}
 
-        elapsed = _time.time() - state["started_at"]
+        elapsed = _time.monotonic() - state["started_mono"]
         lines = [f"[recording] '{state['name']}' for {elapsed:.1f}s  @ {state['fps']} FPS"]
         for cam in state["cameras"]:
             frames = len(state["buffers"][cam])
