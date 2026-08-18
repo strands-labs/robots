@@ -987,7 +987,11 @@ class LerobotLocalPolicy(Policy):
             pass
 
         logger.info("Loading %s...", self.pretrained_name_or_path)
-        start = time.time()
+        # ``load_time_s`` is a duration, so it is measured on a clock that
+        # cannot step: a wall-clock correction landing during a multi-minute
+        # weight read is exactly when this would otherwise be reported as
+        # negative or as hours.
+        start_mono = time.monotonic()
 
         # Reuse a process-cached model when one was already built for this
         # (path, policy_type, device) - skips the expensive from_pretrained
@@ -1051,7 +1055,7 @@ class LerobotLocalPolicy(Policy):
             if hasattr(config, "output_features"):
                 self._output_features = config.output_features
 
-        elapsed = time.time() - start
+        elapsed = time.monotonic() - start_mono
         self.load_time_s = elapsed
         logger.info(
             "Loaded %s (type='%s') in %.1fs on %s",
@@ -1348,7 +1352,8 @@ class LerobotLocalPolicy(Policy):
             state_dim = action_dim = len(self.robot_state_keys)
 
         logger.info("Loading MolmoAct2 (transformers-native) from %s...", self.pretrained_name_or_path)
-        start = time.time()
+        # Same contract as the generic load path above: a measured duration.
+        start_mono = time.monotonic()
 
         # Reuse a process-cached MolmoAct2 model when one was already built for
         # this checkpoint+device+load-knobs. The model weights (1295 files for
@@ -1390,7 +1395,7 @@ class LerobotLocalPolicy(Policy):
         # MolmoAct2.select_action requires inference_action_mode every call.
         self.inference_kwargs.setdefault("inference_action_mode", self._molmoact2_inference_action_mode)
 
-        elapsed = time.time() - start
+        elapsed = time.monotonic() - start_mono
         self.load_time_s = elapsed
         logger.info(
             "Loaded MolmoAct2Policy (type='molmoact2') in %.1fs on %s",
@@ -2020,10 +2025,25 @@ class LerobotLocalPolicy(Policy):
 
         # predict_action_chunk returns (batch, chunk_size, action_dim)
         assert self._policy is not None, "Policy not loaded"
-        inference_start = time.time()
+        # This latency is not a report. It is appended to
+        # ``_rtc_latency_history`` below, and ``_estimate_inference_delay``
+        # turns that window's p95 into ``inference_delay`` - the RTC paper's
+        # ``d``, which freezes the first ``d`` actions of the next chunk to the
+        # already-committed prefix and is the offset the chunk-seam slice skips.
+        # On ``time.time()`` a wall-clock step became one latency sample of the
+        # step's size, and the window it lands in outlives the correction: a
+        # lone outlier IS the p95 of a window holding 2..20 samples (it drops
+        # out from 21 on), and ``reset()`` clears the window every episode, so
+        # an episode's first inferences are always in that range. One correction
+        # there put ``step * fps`` into ``inference_delay`` for roughly the next
+        # 19 seams - past ``execution_horizon``, which freezes the whole prefix
+        # and discards each newly computed chunk while the arm executes the
+        # stale one - and then recovered by itself, which is what made it hard
+        # to attribute. A backward step recorded a negative latency instead.
+        inference_start_mono = time.monotonic()
         action_chunk = self._policy.predict_action_chunk(batch, **rtc_kwargs)
 
-        inference_elapsed = time.time() - inference_start
+        inference_elapsed = time.monotonic() - inference_start_mono
         self._rtc_latency_history.append(inference_elapsed)
 
         # Remove batch dim if present: (1, T, A) → (T, A)

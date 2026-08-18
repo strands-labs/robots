@@ -88,6 +88,15 @@ is corrected or the bound is widened. Keep fleet clocks in NTP sync - the same
 "upgrade every peer together" discipline the zenoh floor needs above - or raise
 both knobs on every peer.
 
+**Correcting those clocks does not cost you the fleet.** The bounds above are the
+only place a *stamp* crosses a machine boundary. Everything the mesh decides from
+a **duration** on its own - how old a peer's last heartbeat is (`age`), whether
+that peer has timed out (10s), which peer the registry evicts when it hits
+`STRANDS_MESH_MAX_PEERS`, and the sensor publish intervals - is measured on
+`time.monotonic()`, which no NTP correction, `date -s` or resume from suspend can
+move. So bringing a robot's clock into sync to satisfy the forward bound above
+will not make the next heartbeat tick drop every peer it can still hear.
+
 Repeated wrong codes arm a brute-force cooldown
 (`STRANDS_MESH_RESUME_MAX_FAILS`, `STRANDS_MESH_RESUME_BACKOFF_S`): during the
 cooldown even the correct code is refused, so wait it out rather than retrying in

@@ -108,7 +108,7 @@ def test_teleop_stats_contract_and_status(frames, errors, expected):
     host._ensure_teleop_state()
     host._teleop_frames = frames
     host._teleop_errors = errors
-    host._teleop_start_time = 1.0  # non-zero so elapsed/hz compute
+    host._teleop_start_mono = 1.0  # non-zero so elapsed/hz compute
 
     result = host._teleop_stats(blocking=True)
     assert_strands_tool_result(result)

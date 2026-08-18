@@ -1,7 +1,7 @@
 """Behavior tests for the accepted ``duration`` domain of a hardware task.
 
 ``strands_robots.hardware_robot.Robot`` bounds every rollout by comparing
-elapsed wall-clock time against ``duration`` (``time.time() - start_time <
+elapsed time against ``duration`` (``time.monotonic() - start_mono <
 duration``). On hardware that comparison is ANDed with the optional ``n_steps``
 cap rather than superseded by it, so ``duration`` is the effective horizon of
 every task. These tests pin that a budget the loop cannot honor is refused at
@@ -203,7 +203,7 @@ class TestAnEndlessBudgetIsRefused:
     def test_run_policy_returns_instead_of_commanding_forever(self, hw: Any):
         """The blocking call returns; the loop is never entered.
 
-        ``inf`` never makes ``time.time() - start_time < duration`` false, so
+        ``inf`` never makes ``time.monotonic() - start_mono < duration`` false, so
         the loop kept commanding the servo bus with no bound and the caller
         never got control back. Driven from a worker thread so the assertion
         fails as a timeout rather than hanging the suite.
