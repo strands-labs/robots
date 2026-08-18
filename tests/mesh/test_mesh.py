@@ -2,7 +2,7 @@
 
 All tests are 100% mocked.  No ``eclipse-zenoh`` install required: a
 ``MagicMock`` session is injected in place of the real Zenoh session by
-patching :func:`strands_robots.mesh_session.get_session`.
+patching :func:`strands_robots.mesh.core.get_session`.
 """
 
 from __future__ import annotations

@@ -19,7 +19,11 @@ from strands_robots.simulation.mujoco.backend import (
     capture_stderr_fd,
     mj_name_to_id,
 )
-from strands_robots.simulation.mujoco.scene_ops import tendon_joint_ids
+from strands_robots.simulation.mujoco.scene_ops import (
+    actuator_target_body_ids,
+    robot_owned_actuator_ids,
+    tendon_joint_ids,
+)
 from strands_robots.simulation.safe_output import (
     atomic_write_bytes,
     env_flag,
@@ -344,16 +348,73 @@ class RenderingMixin:
             return None
         return state.get("viz_option")
 
+    def _ancestor_free_joint(self, model: Any, body: int) -> int:
+        """Free joint on ``body`` or on one of its ancestors, else ``-1``.
+
+        The shared half of the base walk: a floating base is a free joint at or
+        above the part being considered, so every seed a caller can offer is
+        resolved the same way.
+        """
+        mj = _ensure_mujoco()
+        while body > 0:
+            for j in range(model.njnt):
+                if int(model.jnt_bodyid[j]) == body and model.jnt_type[j] == mj.mjtJoint.mjJNT_FREE:
+                    return j
+            body = int(model.body_parentid[body])
+        return -1
+
+    def _body_is_namespaced(self, model: Any, body: int, pfx: str) -> bool:
+        """Whether ``body`` is part of the robot whose namespace is ``pfx``.
+
+        Membership is read from the compiled body's NAME, because a name is the
+        only part of a robot's identity that survives a recompile. Its resolved
+        ids do not: ``replace_scene_mjcf`` compiles caller-supplied MJCF without
+        rewriting the registry, so a stored joint or body index then addresses
+        whatever that index means in the new model -- possibly an entirely
+        different machine's part.
+        """
+        mj = _ensure_mujoco()
+        name = mj.mj_id2name(model, mj.mjtObj.mjOBJ_BODY, int(body)) or ""
+        return name.startswith(pfx)
+
     def _robot_base_free_joint(self, model: Any, robot: Any, pfx: str) -> int:
         """Return the id of the robot's floating-base free joint, or ``-1``.
 
         Fallback for a floating base that is NOT a named entry in
         ``robot.joint_names`` (e.g. a mobile base whose ``<freejoint>`` is
-        unnamed). Resolves the robot's first actuated joint, then walks up the
-        body tree and returns the free joint attached to an ancestor body. This
-        matches only the robot's OWN base: a sibling task object (a free-jointed
-        cube) is never on the ancestor chain of an actuated joint, and a
-        fixed-base arm has no ancestor free joint (returns ``-1``).
+        unnamed). Walks up the body tree from a seed part of the machine and
+        returns the free joint attached to it or an ancestor.
+
+        Two seeds are tried, because a robot need not have a joint to seed
+        from. First the robot's first resolvable declared joint, which covers a
+        mobile base or humanoid. Then the bodies the robot's own actuators act
+        on, via :func:`~strands_robots.simulation.mujoco.scene_ops.actuator_target_body_ids`.
+        The second seed is what an aerial robot needs: its rotors are forces
+        applied at sites on the airframe, so it declares no joint at all besides
+        the unnamed floating base, and a walk that can only start from a declared
+        joint has nothing to start from -- precisely the case this fallback
+        exists for. Its base then reads as absent, and every surface derived from
+        it goes quiet rather than wrong: ``get_observation`` returns no state at
+        all for a robot that is in the scene and moving, and ``start_recording``
+        declares a dataset with no ``observation.state`` column while still
+        recording the actions, so the episode trains nothing and reports success.
+
+        Both seeds keep the "only the robot's OWN base" guarantee, and for the
+        same reason: a sibling task object -- a free-jointed cube, including one
+        shipped inside the robot's own MJCF under its namespace, which is how
+        every Menagerie grasping scene is authored -- carries neither a declared
+        joint of the robot nor any actuator of it, so it is on no seed's ancestor
+        chain. Ownership of the actuators is resolved by
+        :func:`~strands_robots.simulation.mujoco.scene_ops.robot_owned_actuator_ids`
+        rather than re-derived here, and the body it lands on is then checked
+        against the robot's namespace by :meth:`_body_is_namespaced`. That second
+        check is not redundant: one of the two ownership rules matches an actuator
+        by the joint id it drives, and a stored id does not survive
+        ``replace_scene_mjcf`` -- after a replace it addresses whatever that index
+        means in the newly compiled model, so an unrelated machine's actuator can
+        be claimed and its base reported as this robot's. A name cannot be
+        borrowed that way. A fixed-base arm has no ancestor free joint from either
+        seed and returns ``-1``.
         """
         mj = _ensure_mujoco()
         for jnt_name in robot.joint_names:
@@ -363,13 +424,20 @@ class RenderingMixin:
                 jnt_id = mj_name_to_id(model, mj.mjtObj.mjOBJ_JOINT, jnt_name)
             if jnt_id < 0:
                 continue
-            body = int(model.jnt_bodyid[jnt_id])
-            while body > 0:
-                for j in range(model.njnt):
-                    if int(model.jnt_bodyid[j]) == body and model.jnt_type[j] == mj.mjtJoint.mjJNT_FREE:
-                        return j
-                body = int(model.body_parentid[body])
+            found = self._ancestor_free_joint(model, int(model.jnt_bodyid[jnt_id]))
+            if found >= 0:
+                return found
             break
+
+        if not pfx:
+            return -1
+        for act_id in robot_owned_actuator_ids(model, robot, mj):
+            for body in sorted(actuator_target_body_ids(model, act_id, mj)):
+                if not self._body_is_namespaced(model, body, pfx):
+                    continue
+                found = self._ancestor_free_joint(model, body)
+                if found >= 0 and self._body_is_namespaced(model, int(model.jnt_bodyid[found]), pfx):
+                    return found
         return -1
 
     def _robot_free_base_joint_id(self, model: Any, robot: Any) -> int:
@@ -379,7 +447,9 @@ class RenderingMixin:
         recording: first scans ``robot.joint_names`` for a NAMED free joint (a
         humanoid's ``floating_base_joint``), then falls back to the
         kinematic-tree walk (:meth:`_robot_base_free_joint`) for an UNNAMED
-        ``<freejoint>`` (a mobile base like LeKiwi). A fixed-base arm has
+        ``<freejoint>`` -- seeded from a declared joint (a mobile base like
+        LeKiwi) or, for a robot that declares none, from the bodies its own
+        actuators act on (an aerial robot's rotor sites). A fixed-base arm has
         neither and returns ``-1``. Mirrors the free-joint detection inlined in
         :meth:`_get_sim_observation`.
         """
@@ -2033,7 +2103,10 @@ class RenderingMixin:
             "paths": paths,
             "errors": dict.fromkeys(names, 0),
             "output_dir": out_dir,
-            "started_at": _time.time(),
+            # A ``time.monotonic()`` reading: the only thing derived from
+            # this base is how long the recording has been running, so it
+            # is a duration base and carries its clock in its name.
+            "started_mono": _time.monotonic(),
             "thread": None,
             "max_frames": max_frames_per_camera,
             "ready": _threading.Event(),
@@ -2128,7 +2201,13 @@ class RenderingMixin:
 
             interval = 1.0 / fps
             while state["running"]:
-                t0 = _time.time()
+                # ``time.monotonic()``: the sleep below is computed from this
+                # base, so it decides the capture rate. On ``time.time()`` a
+                # wall-clock step landing between the two readings changed how
+                # much of the rollout this buffer sampled, and the frames carry
+                # no per-frame timestamp, so the result is indistinguishable
+                # afterwards from one paced correctly.
+                frame_start_mono = _time.monotonic()
                 for cam in names:
                     if not state["running"]:
                         break
@@ -2144,7 +2223,7 @@ class RenderingMixin:
                     except Exception as e:
                         state["errors"][cam] += 1
                         logger.debug("camera recorder (%s) error: %s", cam, e)
-                lag = _time.time() - t0
+                lag = _time.monotonic() - frame_start_mono
                 if lag < interval:
                     _time.sleep(interval - lag)
 
@@ -2222,7 +2301,7 @@ class RenderingMixin:
 
         from strands_robots.rendering.video import encode_clip
 
-        elapsed = _time.time() - state["started_at"]
+        elapsed = _time.monotonic() - state["started_mono"]
         lines = [
             f"Stopped '{state['name']}' after {elapsed:.1f}s",
             f"   output_dir: {state['output_dir']}",
@@ -2483,7 +2562,10 @@ class RenderingMixin:
             "paths": paths,
             "errors": dict.fromkeys(names, 0),
             "output_dir": out_dir,
-            "started_at": _time.time(),
+            # A ``time.monotonic()`` reading: the only thing derived from
+            # this base is how long the recording has been running, so it
+            # is a duration base and carries its clock in its name.
+            "started_mono": _time.monotonic(),
             # No daemon thread in synchronous mode; left as None so
             # ``stop_cameras_recording`` can detect this and skip the
             # join.
@@ -2560,7 +2642,7 @@ class RenderingMixin:
         if not state or not state.get("running"):
             return {"status": "success", "content": [{"text": "[idle] No active camera recording."}]}
 
-        elapsed = _time.time() - state["started_at"]
+        elapsed = _time.monotonic() - state["started_mono"]
         lines = [f"[recording] '{state['name']}' for {elapsed:.1f}s  @ {state['fps']} FPS"]
         for cam in state["cameras"]:
             frames = len(state["buffers"][cam])

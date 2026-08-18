@@ -1,6 +1,6 @@
 """Guard: fully-qualified ``strands_robots`` Sphinx cross-references must resolve.
 
-A docstring role such as :func:`~strands_robots.simulation.predicates.base_below_z`
+A docstring role naming ``strands_robots.simulation.predicates.base_below_z``
 promises the reader an importable API object at that exact dotted path. When the
 path is wrong - a private implementation renamed public, a symbol moved or split,
 or, as happened here, a *registered predicate name* dressed up as an importable
@@ -14,6 +14,13 @@ The sibling filename guards (for example
 form - the ``:mod:`` / ``:class:`` / ``:func:`` / ``:meth:`` roles that name a
 dotted API path - by verifying that every fully-qualified ``strands_robots.*``
 target actually resolves to a real module or attribute.
+
+Every tree a reader reads is graded: the shipped package, ``tests/`` and
+``tests_integ/``. A role is a pointer a human follows, and the roles in a test
+module's docstring are the first thing a maintainer working on that subsystem
+reads. Scoping the scan to the package left the test trees' several hundred
+qualified targets ungraded, and a module that had been folded into a package
+went on being cited at its old top-level path long after it stopped existing.
 
 A target only counts as named if it is a CONTIGUOUS dotted path. A role whose
 path is long enough to wrap over a line break carries a newline plus the next
@@ -41,6 +48,11 @@ about what counts as *evidence* means this guard can only ever under-report; a
 class-level ``hasattr`` alone reads a dataclass field with no default, and an
 attribute only ever assigned in ``__init__``, as missing.
 
+Both spellings resolve a member through that one rule. A qualified target and a
+short-form target that name the SAME member have to get the same verdict, or the
+guard reports a dead pointer for an attribute that exists and the remedy is to
+delete a correct cross-reference.
+
 Still out of scope, because these have no decidable target here: a bare
 unqualified role (``:func:`reset```), a short-form role whose head names nothing
 the package defines, and roles into third-party packages - all of which resolve
@@ -58,9 +70,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
 
+import pytest
+
 import strands_robots
 
 _PKG_ROOT = Path(strands_robots.__file__).resolve().parent
+_REPO_ROOT = _PKG_ROOT.parent
 
 # Sphinx cross-reference roles naming a dotted Python target, optionally with a
 # leading ``~`` (display-shortening) tilde. Whitespace is admitted INSIDE the
@@ -74,7 +89,11 @@ def _resolves(target: str) -> bool:
     """True if ``target`` names a real ``strands_robots`` module or attribute.
 
     Imports the longest importable module prefix, then walks the remaining
-    dotted components as attributes (so ``pkg.mod.Class.method`` resolves).
+    dotted components as members (so ``pkg.mod.Class.method`` resolves), using
+    the same :func:`_has_member` rule the short-form half applies. A bare
+    ``hasattr`` walk here would report a dataclass field with no class-level
+    default, and an attribute only ever assigned in ``__init__``, as a dead
+    pointer - while the identical member cited in the short form resolved.
     """
     parts = target.split(".")
     module = None
@@ -90,9 +109,9 @@ def _resolves(target: str) -> bool:
         return False
     obj = module
     for attr in parts[consumed:]:
-        if not hasattr(obj, attr):
+        if not _has_member(obj, attr):
             return False
-        obj = getattr(obj, attr)
+        obj = getattr(obj, attr, obj)
     return True
 
 
@@ -131,12 +150,29 @@ def _offending_roles_in(doc: str) -> list[str]:
     return offenders
 
 
-def _unresolved_xref_roles() -> dict[str, list[str]]:
-    """Map ``relpath::qualname`` -> list of unfollowable ``strands_robots.*`` roles."""
-    offenders: dict[str, list[str]] = {}
-    for source_file in sorted(_PKG_ROOT.rglob("*.py")):
-        if "__pycache__" in source_file.parts:
+def _graded_source_files() -> list[Path]:
+    """Every Python file whose docstrings carry pointers a reader follows.
+
+    The shipped package plus both test trees. A missing tree is skipped rather
+    than assumed, so the sweep still runs in a checkout that ships only one.
+    """
+    files: list[Path] = []
+    for root in (_PKG_ROOT, _REPO_ROOT / "tests", _REPO_ROOT / "tests_integ"):
+        if not root.is_dir():
             continue
+        files.extend(f for f in sorted(root.rglob("*.py")) if "__pycache__" not in f.parts)
+    return files
+
+
+def _unresolved_xref_roles() -> tuple[dict[str, list[str]], int]:
+    """Report unfollowable qualified roles, plus how many were graded at all.
+
+    Returns:
+        ``({relpath::qualname: [offending target, ...]}, graded_count)``.
+    """
+    offenders: dict[str, list[str]] = {}
+    graded = 0
+    for source_file in _graded_source_files():
         tree = ast.parse(source_file.read_text(encoding="utf-8"), filename=str(source_file))
         for node in ast.walk(tree):
             if not isinstance(node, ast.Module | ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef):
@@ -144,16 +180,27 @@ def _unresolved_xref_roles() -> dict[str, list[str]]:
             doc = ast.get_docstring(node, clean=False)
             if not doc:
                 continue
+            graded += sum(1 for t in _ROLE_RE.findall(doc) if "".join(t.split()).startswith("strands_robots."))
             bad = _offending_roles_in(doc)
             if bad:
                 qualname = getattr(node, "name", "<module>")
-                rel = source_file.relative_to(_PKG_ROOT)
+                rel = source_file.relative_to(_REPO_ROOT)
                 offenders[f"{rel}::{qualname}"] = bad
-    return offenders
+    return offenders, graded
+
+
+# The qualified spelling carries several hundred targets across the package and
+# both test trees, so a sweep that grades only a handful has stopped reaching
+# them - a reformat or a scope change must fail loudly here rather than report a
+# clean tree it never inspected.
+_MINIMUM_GRADED_QUALIFIED_ROLES = 600
 
 
 def test_qualified_strands_robots_xref_roles_resolve() -> None:
-    offenders = _unresolved_xref_roles()
+    offenders, graded = _unresolved_xref_roles()
+    assert graded >= _MINIMUM_GRADED_QUALIFIED_ROLES, (
+        f"only {graded} qualified roles were graded; a clean result would prove nothing"
+    )
     assert not offenders, (
         "docstring cross-reference roles must name a real importable object. "
         "Cite a registered predicate/backend by its literal name (``base_below_z``) "
@@ -443,3 +490,52 @@ def test_an_ambiguous_or_unknown_head_is_out_of_scope() -> None:
     assert _short_form_resolves(module, {}, "SomeThirdPartyThing.method") is None
     assert _short_form_resolves(module, {"Shared": {First, Second}}, "Shared.method") is None
     assert _short_form_resolves(module, {}, "reset") is None, "a bare name has no decidable target"
+
+
+def test_the_sweep_reaches_the_test_trees() -> None:
+    """Non-vacuity: the scan must actually open files outside the package.
+
+    A role is a pointer a reader follows, and a test module's docstring is where
+    a maintainer starts. A sweep that silently covered only the package would
+    report a clean tree while the majority of docstrings went unread.
+    """
+    scanned = {str(f.relative_to(_REPO_ROOT)).split("/", 1)[0] for f in _graded_source_files()}
+
+    assert {"strands_robots", "tests"} <= scanned, f"graded trees: {sorted(scanned)}"
+
+
+@pytest.mark.parametrize(
+    ("qualified", "short_form"),
+    [
+        # An attribute that exists only because __init__ assigns it.
+        ("strands_robots.inference.server.PolicyServer.port", "PolicyServer.port"),
+        ("strands_robots.rendering.HybridCompositor.default_width", "HybridCompositor.default_width"),
+    ],
+)
+def test_both_spellings_agree_that_a_member_is_a_member(qualified: str, short_form: str) -> None:
+    """The same member must resolve whichever way a role names it.
+
+    Two resolvers grading one concept is how a guard starts contradicting
+    itself: the short form accepted ``self``-assigned attributes while the
+    qualified form, walking with a bare ``hasattr``, called the identical
+    member a dead pointer. The only remedy such a report offers is deleting a
+    cross-reference that was correct.
+    """
+    head, member = qualified.rsplit(".", 1)
+    module = importlib.import_module(head.rsplit(".", 1)[0])
+    owner = getattr(module, head.rsplit(".", 1)[1])
+
+    assert not hasattr(owner, member), "premise: no class-level attribute exists"
+    assert _short_form_resolves(module, {}, short_form) is True, "premise: the short form resolves it"
+    assert _resolves(qualified), f"the qualified spelling of {short_form} must resolve too"
+
+
+def test_a_qualified_target_that_names_nothing_is_still_reported() -> None:
+    """Control: sharing the permissive member rule must not blunt the guard.
+
+    ``_has_member`` widens what counts as evidence, not what counts as a claim,
+    so a path naming no object at all stays an offender.
+    """
+    assert not _resolves(_BOGUS)
+    assert _offending_roles_in(f"See :func:`~{_BOGUS}`.") == [_BOGUS]
+    assert not _resolves("strands_robots.simulation.base.SimEngine.no_such_method")
