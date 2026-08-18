@@ -140,6 +140,21 @@ cache["num_frames"], cache["control_dt"]
 `MotionPlayer` accepts that dict, an `.npz` written by
 `MotionPlayer.save_cache_npz`, or a raw ProtoMotions `.pt`.
 
+Each channel is `[num_frames, ...]`, so a cache states its frame count several
+times over and `MotionPlayer` checks those statements agree before playing it.
+That matters when you edit a cache by hand - trimming or concatenating the
+channels and leaving `num_frames` behind is refused with both counts named,
+rather than overrunning the arrays part-way through the clip (the frame index is
+clamped to `num_frames`, and the tracker's future window reads ahead of the
+playhead) or silently hiding the tail. Drop `num_frames` and the channels' own
+row count is used:
+
+```python
+cache["dof_pos"] = cache["dof_pos"][:100]   # ... and the other five channels
+del cache["num_frames"]                     # or set it to 100
+player = MotionPlayer(cache)
+```
+
 ### The MJCF has to be the tracker's own embodiment
 
 `proto_mjcf_path` is not just any G1. The tracker reads a body out of the cache

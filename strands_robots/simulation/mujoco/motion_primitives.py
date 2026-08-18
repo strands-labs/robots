@@ -76,6 +76,7 @@ from strands_robots.simulation.motion_primitives_base import (
     _quat_angle_error,
 )
 from strands_robots.simulation.mujoco.backend import _NO_WORLD_MSG, mj_name_to_id
+from strands_robots.simulation.mujoco.scene_ops import joint_drive_map
 
 logger = logging.getLogger(__name__)
 
@@ -179,6 +180,37 @@ class MotionPrimitivesMixin(MotionPrimitivesCore):
         self._world.step_count += _SUBSTEPS_PER_TICK
         mj.mj_kinematics(model, data)
 
+    def _pose_actuator_map(self, model: Any, robot: Any) -> tuple[dict[int, int], dict[int, int]]:
+        """Split :meth:`_joint_actuator_map` into the pose-writable half and the rest.
+
+        Every primitive here drives a joint by writing a joint POSE into
+        ``data.ctrl`` - the IK solve for ``move_to``, the set-point for
+        ``rotate_wrist``, a set-point range end for ``set_gripper``. That is only
+        the joint's target on an actuator whose ``ctrl`` IS a pose, which is what
+        :func:`~strands_robots.simulation.mujoco.scene_ops.joint_drive_map`
+        decides and already decides for the one other surface that writes a pose
+        into ``ctrl`` (``set_joint_positions(hold=True)``). Writing one into any
+        other drive commands a different physical quantity numerically equal to
+        an angle: a rate on a ``<velocity>``, a torque on a ``<motor>``.
+
+        Returns:
+            ``(pose_jact, other_jact)`` - both ``jnt_id -> act_id``, together
+            exactly :meth:`_joint_actuator_map`. *other_jact* is what a primitive
+            must leave uncommanded rather than write a pose into.
+        """
+        jact = self._joint_actuator_map(model, robot)
+        servos, _ = joint_drive_map(model, self._mj)
+        pose_jact = {j: a for j, a in jact.items() if servos.get(j) == a}
+        other_jact = {j: a for j, a in jact.items() if j not in pose_jact}
+        return pose_jact, other_jact
+
+    def _drive_names(self, model: Any, act_ids: Any, namespace: str) -> list[str]:
+        """Short actuator names for a set of actuator ids, sorted for stable text."""
+        mj = self._mj
+        return sorted(
+            self._short_name(mj.mj_id2name(model, mj.mjtObj.mjOBJ_ACTUATOR, int(a)), namespace) for a in set(act_ids)
+        )
+
     def _joint_actuator_map(self, model: Any, robot: Any) -> dict[int, int]:
         """Map ``jnt_id -> act_id`` for the robot's joint-transmission actuators.
 
@@ -244,6 +276,15 @@ class MotionPrimitivesMixin(MotionPrimitivesCore):
           rewrites ``ctrlrange`` to hand control to a whole-body controller and
           restores it afterwards.
         * A driven joint that is itself unlimited has no limits to lend.
+        * A drive whose ``ctrl`` is not a joint pose cannot be commanded with a
+          joint limit even though its transmission IS the joint: substituting
+          the range would command a rate (``<velocity>``) or a torque
+          (``<motor>``) numerically equal to a joint coordinate. The
+          substitution's premise is that ``ctrl`` is the joint target - exactly
+          what ``inheritrange="1"`` would have compiled - so it is the drive
+          rather than the transmission that has to supply it, which is what
+          :func:`~strands_robots.simulation.mujoco.scene_ops.joint_drive_map`
+          decides.
         * A tendon actuator's ctrlrange is a normalised command space, not joint
           units - the shipped Franka gripper is ``(0, 255)`` - so a joint range
           would command the wrong quantity. *jnt_id* is ``None`` for one by
@@ -274,6 +315,13 @@ class MotionPrimitivesMixin(MotionPrimitivesCore):
         if not bool(model.jnt_limited[jnt_id]):
             return None, (
                 f"its ctrlrange ({lo}, {hi}) is unset (ctrllimited=0) and the joint it drives is itself unlimited"
+            )
+        servos, _ = joint_drive_map(model, self._mj)
+        if servos.get(jnt_id) != act_id:
+            return None, (
+                f"its ctrlrange ({lo}, {hi}) is unset (ctrllimited=0) and its ctrl is not a joint "
+                "pose, so the driven joint's limits are not set-points it can be commanded with - "
+                "a <velocity> drive reads ctrl as a rate, a <motor> as a torque"
             )
         jnt_lo = float(model.jnt_range[jnt_id][0])
         jnt_hi = float(model.jnt_range[jnt_id][1])
@@ -622,13 +670,29 @@ class MotionPrimitivesMixin(MotionPrimitivesCore):
             grip_acts, _, grip_err = self._resolve_gripper_actuators(model, robot)
             if grip_err is not None:
                 return grip_err
-            arm_jact = {j: a for j, a in jact.items() if a not in grip_acts}
+            # Only the pose-writable half: the solve below is applied by
+            # writing each joint angle into data.ctrl, so a joint whose drive
+            # reads ctrl as a rate or a torque cannot carry it. Narrowing here
+            # narrows the IK's decision space with it (arm_jact IS the
+            # commanded_dofs set), which keeps the residual a statement about
+            # the configuration move_to actually commands.
+            pose_jact, other_jact = self._pose_actuator_map(model, robot)
+            arm_jact = {j: a for j, a in pose_jact.items() if a not in grip_acts}
             if not arm_jact:
+                non_pose = self._drive_names(model, other_jact.values(), namespace)
+                detail = (
+                    f" {len(other_jact)} actuated joint(s) are driven by an actuator whose ctrl is "
+                    f"not a joint pose ({non_pose}), so an IK solution cannot be written to them; "
+                    "drive those directly with action='send_action'."
+                    if other_jact
+                    else ""
+                )
                 return _err(
                     f"move_to: robot '{robot_name}' has no non-gripper joint-transmission "
                     "actuators to drive - every actuated joint is classified as a gripper "
-                    f"drive (registry metadata or the name heuristic {list(_GRIPPER_HINTS)}). "
-                    "Nothing can move the end-effector."
+                    f"drive (registry metadata or the name heuristic {list(_GRIPPER_HINTS)}) "
+                    "or is not driven by a position servo. "
+                    f"Nothing can move the end-effector.{detail}"
                 )
 
             try:
@@ -799,7 +863,7 @@ class MotionPrimitivesMixin(MotionPrimitivesCore):
             ctrl_targets.update(
                 {
                     act_id: float(data.qpos[int(model.jnt_qposadr[jnt_id])])
-                    for jnt_id, act_id in jact.items()
+                    for jnt_id, act_id in pose_jact.items()
                     if act_id in grip_acts
                 }
             )
@@ -1071,6 +1135,23 @@ class MotionPrimitivesMixin(MotionPrimitivesCore):
                 )
             wrist_name = jnt_short(wrist_jnt)
 
+            # The set-point below is written into the wrist actuator's ctrl as a
+            # joint angle, so that actuator has to read ctrl as a pose. On any
+            # other drive the servo loop's convergence test is met by the joint
+            # sweeping PAST the number while still accelerating - it reports
+            # reached and the joint keeps going once the primitive returns.
+            pose_jact, other_jact = self._pose_actuator_map(model, robot)
+            if wrist_jnt not in pose_jact:
+                wrist_act = self._drive_names(model, [jact[wrist_jnt]], namespace)[0]
+                servo_names = sorted(jnt_short(j) for j in pose_jact)
+                return _err(
+                    f"rotate_wrist: joint '{wrist_name}' on '{robot_name}' is driven by "
+                    f"'{wrist_act}', whose ctrl is not a joint pose (a <velocity> drive reads it "
+                    "as a rate, a <motor> as a torque), so target_yaw cannot be commanded as a "
+                    f"set-point. Position-servo joints on this robot: {servo_names}. Drive "
+                    f"'{wrist_act}' in its own units with action='send_action' instead."
+                )
+
             if bool(model.jnt_limited[wrist_jnt]):
                 lo = float(model.jnt_range[wrist_jnt][0])
                 hi = float(model.jnt_range[wrist_jnt][1])
@@ -1081,11 +1162,19 @@ class MotionPrimitivesMixin(MotionPrimitivesCore):
                     )
 
             # Hold every other actuated joint at its CURRENT position; command
-            # only the wrist to the set-point.
+            # only the wrist to the set-point - but hold only the joints whose
+            # ctrl IS a pose. Writing a live joint
+            # angle into a rate or torque drive does not hold that joint, it
+            # drives it away from the position being held (measured on
+            # tiago_velocity: joints the call promised to hold travelled up to
+            # 0.28 rad while the one position servo in the same call held to
+            # 0.004 rad). Such a drive is left uncommanded instead, and named in
+            # the payload so the caller can command it in its own units.
             ctrl_targets: dict[int, float] = {}
-            for jnt_id, act_id in jact.items():
+            for jnt_id, act_id in pose_jact.items():
                 qadr = int(model.jnt_qposadr[jnt_id])
                 ctrl_targets[act_id] = target_yaw if jnt_id == wrist_jnt else float(data.qpos[qadr])
+            uncommanded_drives = self._drive_names(model, other_jact.values(), namespace)
             wrist_qadr = int(model.jnt_qposadr[wrist_jnt])
 
         steps_used = 0
@@ -1115,4 +1204,5 @@ class MotionPrimitivesMixin(MotionPrimitivesCore):
             target_yaw=target_yaw,
             final_yaw=final_yaw,
             yaw_error=yaw_error,
+            uncommanded_drives=uncommanded_drives,
         )

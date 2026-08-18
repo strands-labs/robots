@@ -1301,6 +1301,35 @@ Corrections from code review that apply to all future contributions:
 - **`except (ImportError, Exception)` is a bug** - `Exception` is a superclass of `ImportError`, so the tuple collapses to `except Exception`. Lint/review will catch this; don't write it.
 - **USB / hardware probing** - use `except (ImportError, OSError)`. `PermissionError` is an `OSError`, `FileNotFoundError` is an `OSError`, etc.
 
+### Actuators: a joint pose goes only where `ctrl` IS a joint pose
+- **`data.ctrl` is not a pose channel, it is whatever the actuator's force law reads.**
+  A `<position kp>` reads it as the joint target, a `<velocity kv>` as a rate, a `<motor>`
+  as a torque, an `<intvelocity>` integrates it as a rate. Writing a joint coordinate into
+  any of the latter commands a different physical quantity that happens to be numerically
+  equal to an angle, and nothing raises: the joint simply moves somewhere the caller did
+  not ask for.
+- **Anything that writes a pose asks
+  `strands_robots.simulation.mujoco.scene_ops.joint_drive_map` first.** Resolving the
+  transmission is not enough - a `<velocity>` actuator's transmission IS the joint, and
+  every stock tendon gripper measured clears the bias-type and position-gain terms a naive
+  servo check would look at. The classification is per actuator, not per robot: `openarm`
+  ships 2 position servos beside 16 motors, and 19 of the loadable registry robots have at
+  least one joint-transmission actuator that is not a servo.
+- **A drive that cannot take the pose is left uncommanded and named, not written to.** The
+  motion primitives hold the joints they can hold and report the rest, because writing a
+  live joint angle into a rate drive is what *moves* the joint the call meant to hold - and
+  a wheel angle accumulates, so that "hold" grows with every turn the wheel has already
+  made. Where the drive being targeted is the one that cannot take a pose, the primitive
+  refuses instead: a servo loop on a rate drive meets its convergence test when the joint
+  sweeps *past* the number while still accelerating, so it reports the set-point as reached
+  and the joint keeps going after the call returns.
+- Pinned by `tests/simulation/mujoco/test_pose_write_reports_whether_the_servos_hold_it.py`
+  for `set_joint_positions(hold=True)` and by
+  `tests/simulation/mujoco/test_primitives_write_a_pose_only_into_a_pose_drive.py` for
+  `move_to` / `rotate_wrist` / `set_gripper`, which also pins the boundary: a usable
+  `ctrlrange` is authoritative and already in the drive's own units, so only the
+  *substitution* of a driven joint's limits needs the drive to be a servo.
+
 ### Clocks: a duration is measured, a stamp is recorded
 - **A duration belongs on `time.monotonic()`.** Anything that decides *how long to keep
   waiting* - a timeout, a deadline, a TTL, a retry window, a rate window, a frame pacer -
@@ -1330,7 +1359,13 @@ Corrections from code review that apply to all future contributions:
   rendering pacers - the MJPEG stream generator and the multi-camera recorder thread - are
   pinned on the same achieved-interval basis by
   `tests/simulation/test_rendering_pacers_survive_a_clock_step.py`, along with the duration
-  each recording reports.
+  each recording reports. The Isaac backend's own two - the idle gate that decides when
+  `run_pump_forever` refreshes the live preview, and the duration its camera recording
+  reports - are pinned by
+  `tests/simulation/isaac/test_isaac_durations_survive_a_clock_step.py`, which asserts the
+  achieved refresh timeline against the unstepped one rather than a tolerance. A duration
+  base also carries its clock in its name (`started_mono`, `last_idle_render_mono`), so a
+  later reader cannot mistake it for a stamp and subtract `time.time()` from it.
 
 ### Module-Level Side Effects
 - **If you must run code at import time, comment WHY it can't be lazy.** `MUJOCO_GL` is the canonical example: MuJoCo locks the GL backend at first `import mujoco`, so the env var must be set before any downstream import chain triggers it.
@@ -1356,6 +1391,7 @@ Corrections from code review that apply to all future contributions:
 - **`robot.py` is for the `Robot()` factory**, the user-facing entry point. Hardware-specific code lives in `hardware_robot.py`. Don't have two files both named "robot something" with different responsibilities.
 - **Reference module names, not filenames, in docstrings** - `strands_robots.hardware_robot` not `robot.py`. Filenames change; module paths are the public contract.
 - **Keep a cross-reference target on one line** - a `:class:`/`:func:`/`:meth:` path is only a dotted path while it is contiguous. Wrapping `:class:`~strands_robots.policies.protomotions.motion_utils.MotionPlayer`` over a line break leaves a token carrying a newline and the next line's indentation, which imports nowhere. Break the prose before the role and give the path its own line.
+- **A cross-reference in a test docstring is graded too** - the roles in `tests/` and `tests_integ/` are checked against the real API alongside the package's, because a test module's docstring is where a maintainer working on that subsystem starts reading. Name the seam a fixture actually patches (`strands_robots.mesh.core.get_session`), not a local import alias dressed up as a module path.
 
 ### Unicode & String Hygiene
 - **No emojis in user-facing strings** - this is a project rule. Tool result dicts (`{"content": [{"text": ...}]}`), log messages, error messages: plain ASCII only. Agents read these strings programmatically; emojis just add tokenizer noise.
