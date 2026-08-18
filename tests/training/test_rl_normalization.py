@@ -1,10 +1,11 @@
 """Behavior contracts for the RL observation normalizer.
 
 ``EmpiricalNormalization`` (strands_robots.training.rl.normalization) documents
-four behaviors beyond the running-statistics happy path that RL trainers rely
+five behaviors beyond the running-statistics happy path that RL trainers rely
 on: scale-only whitening (``center=False``), a warmup freeze after ``until``
-samples, an empty-batch no-op, and the eval-mode freeze. Each is a small branch
-that is easy to break silently, so pin them directly.
+samples, an empty-batch no-op, the eval-mode freeze, and the ``(batch, *shape)``
+input contract. Each is a small branch that is easy to break silently, so pin
+them directly.
 
 The eval-mode freeze has TWO entry points - ``forward`` and the public
 ``update`` - and the class documents the freeze for both. That matters because
@@ -13,6 +14,14 @@ written into the next checkpoint and changes how an exported policy whitens
 every observation, with nothing raised and nothing logged. ``BaseRLAlgo.evaluate``
 relies on the freeze (it flips the normalizer to ``eval()`` around a scoring
 rollout and restores the prior mode afterwards), so the round trip is pinned too.
+
+The input-shape contract has the same persistence consequence and one more:
+a shape the running buffers merely *broadcast* against is silently accepted, so
+a single unbatched observation - the shape ``GymSimEnv`` and the gymnasium
+contract hand back - is folded as one sample per feature, collapsing every
+per-feature statistic onto one pooled number. Both entry points refuse it, and
+the refusal is checked before ``count`` moves so a rejected batch cannot skew
+the update rate of the batches after it.
 
 The convergence / eval-freeze happy path is covered separately in
 ``test_rl_ppo.py``; this module targets the contract edges. Imports are deferred
@@ -188,3 +197,148 @@ def test_restoring_training_mode_resumes_updating() -> None:
 
     assert count_after_eval == 2
     assert int(norm.count) == 5
+
+
+@pytest.mark.parametrize("route", ["forward", "update"])
+def test_an_unbatched_observation_is_refused_rather_than_broadcast(route: str) -> None:
+    """A ``(D,)`` observation must be refused, not read as D one-feature samples.
+
+    The class documents ``(batch, *shape)`` in and "the same shape as ``x``" out.
+    A single unbatched observation satisfies neither: it broadcasts against the
+    ``(1, D)`` buffers, so ``forward`` returns ``(1, D)`` for a ``(D,)`` input,
+    and ``update`` folds it as D samples of a one-feature stream - advancing
+    ``count`` by D for one observation and collapsing every per-feature mean and
+    std onto a single pooled number, inside buffers that persist into the
+    checkpoint.
+
+    ``GymSimEnv`` hands back exactly this shape (the gymnasium contract is a flat
+    observation array), so the caller most likely to reach it is following the
+    package's own adapter.
+    """
+    from strands_robots.training.rl.normalization import EmpiricalNormalization
+
+    norm = EmpiricalNormalization(4, device="cpu")
+    norm.train()
+    flat = torch.tensor([1.0, 2.0, 3.0, 4.0])
+
+    with pytest.raises(ValueError, match=r"batch of shape \(batch, 4\)"):
+        norm(flat) if route == "forward" else norm.update(flat)
+
+    assert int(norm.count) == 0
+
+
+def test_a_feature_count_mismatch_that_broadcasts_is_refused() -> None:
+    """A single-column batch must not have its stats written into every feature.
+
+    ``(3, 1)`` into a 4-feature normalizer broadcasts, so it used to return
+    ``(3, 4)`` and write that one column's mean and std into all four running
+    slots. Every feature then whitens by a statistic measured from a different
+    signal, which is exactly the per-feature separation this module exists to
+    keep.
+    """
+    from strands_robots.training.rl.normalization import EmpiricalNormalization
+
+    norm = EmpiricalNormalization(4, device="cpu")
+    norm.train()
+
+    with pytest.raises(ValueError, match=r"got \(3, 1\)"):
+        norm(torch.tensor([[10.0], [20.0], [30.0]]))
+
+    assert int(norm.count) == 0
+    assert torch.allclose(norm.mean, torch.zeros(4))
+
+
+@pytest.mark.parametrize("bad", [(3, 3), (2, 1, 4), ()], ids=["wrong-width", "extra-dim", "scalar"])
+def test_a_refused_batch_leaves_the_running_count_where_it_was(bad: tuple[int, ...]) -> None:
+    """The shape is checked before ``count`` moves, not after.
+
+    ``count`` was advanced by ``x.shape[0]`` before ``var_mean`` ran, so a batch
+    that failed inside the statistics update had already moved it. Since the
+    Welford step weights each batch by ``count_x / count``, that left every
+    later batch folded in at the wrong rate - a permanent skew from a batch that
+    was never folded at all.
+    """
+    from strands_robots.training.rl.normalization import EmpiricalNormalization
+
+    norm = EmpiricalNormalization(4, device="cpu")
+    norm.train()
+    norm.update(torch.zeros(1, 4))
+    count_before = int(norm.count)
+
+    with pytest.raises(ValueError):
+        norm.update(torch.zeros(bad))
+
+    assert int(norm.count) == count_before
+
+
+def test_the_frozen_eval_path_also_refuses_an_unbatched_observation() -> None:
+    """The refusal covers the deployed-policy path, where nothing is folded.
+
+    In eval mode ``update`` returns early, so no statistic moves - but the
+    whitening arithmetic still broadcasts, and an exported policy handed a
+    ``(D,)`` observation gets a ``(1, D)`` tensor back. The shape contract is a
+    property of the call, not of whether the batch is folded, so it has to hold
+    with the statistics frozen too.
+    """
+    from strands_robots.training.rl.normalization import EmpiricalNormalization
+
+    norm = EmpiricalNormalization(4, device="cpu")
+    norm.train()
+    norm.update(torch.zeros(4, 4))
+    norm.eval()
+
+    with pytest.raises(ValueError):
+        norm(torch.tensor([1.0, 2.0, 3.0, 4.0]), update=False)
+
+
+def test_the_refusal_names_the_call_that_batches_a_single_observation() -> None:
+    """The message's remedy, applied verbatim, produces per-feature statistics.
+
+    A refusal that only reports the mismatch leaves the caller to guess whether
+    a flat observation is one sample or D of them. Parsing the remedy out of the
+    message and running it is what proves the advice is both present and
+    correct: after ``unsqueeze(0)`` the count reflects one observation and the
+    four features keep four distinct means, rather than one pooled value.
+    """
+    import re
+
+    from strands_robots.training.rl.normalization import EmpiricalNormalization
+
+    norm = EmpiricalNormalization(4, device="cpu")
+    norm.train()
+    flat = torch.tensor([1.0, 2.0, 3.0, 4.0])
+
+    with pytest.raises(ValueError) as excinfo:
+        norm(flat)
+
+    remedy = re.search(r"normalized as (x\.unsqueeze\(0\))\.", str(excinfo.value))
+    assert remedy is not None, f"no remedy in: {excinfo.value}"
+
+    out = norm(flat.unsqueeze(0))
+    assert tuple(out.shape) == (1, 4)
+    assert int(norm.count) == 1
+    assert torch.allclose(norm.mean, flat)
+
+
+@pytest.mark.parametrize(
+    ("shape", "batch"),
+    [(4, (2, 4)), ((2, 3), (5, 2, 3)), (1, (3, 1)), (4, (0, 4))],
+    ids=["vector", "multi-dim-feature", "single-feature", "empty-batch"],
+)
+def test_a_correctly_batched_input_is_accepted_unchanged(shape: int | tuple[int, ...], batch: tuple[int, ...]) -> None:
+    """Every shape the contract already documents keeps working.
+
+    The guard must refuse only what broadcasting used to hide, so the accepted
+    domain is pinned alongside it: a plain feature vector, a multi-dimensional
+    per-feature shape, a one-feature stream (where ``(batch, 1)`` is genuinely a
+    batch and not a mis-shaped ``(batch,)``), and the documented zero-row no-op.
+    """
+    from strands_robots.training.rl.normalization import EmpiricalNormalization
+
+    norm = EmpiricalNormalization(shape, device="cpu")
+    norm.train()
+
+    out = norm(torch.zeros(batch))
+
+    assert tuple(out.shape) == batch
+    assert int(norm.count) == batch[0]

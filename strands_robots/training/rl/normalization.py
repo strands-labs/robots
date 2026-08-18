@@ -19,6 +19,62 @@ import torch
 from torch import nn
 
 
+def _batched_shape_error(got: tuple[int, ...], feature_shape: tuple[int, ...]) -> str | None:
+    """Return why ``got`` is not a batch of ``feature_shape``, or ``None`` if it is.
+
+    :class:`EmpiricalNormalization` keeps one running mean/std *per feature* and
+    reads a leading batch axis, so the only shape it can interpret is
+    ``(batch, *feature_shape)``. Anything else is not a smaller version of that
+    contract - it is a different one, and torch broadcasting hides the
+    difference instead of refusing it.
+
+    Refusing here rather than letting the arithmetic proceed is what keeps the
+    class's two documented promises true. ``forward`` promises a tensor of "the
+    same shape as ``x``", which broadcasting silently breaks: a single
+    unbatched observation of shape ``(D,)`` comes back ``(1, D)``. And the
+    statistics are *persistent buffers*, so a folded batch of the wrong shape
+    is written into the next checkpoint: that same ``(D,)`` observation is read
+    as ``D`` samples of a one-feature stream, advancing ``count`` by ``D`` for
+    one observation and collapsing every per-feature mean and std onto a single
+    pooled number - which is the whole quantity the normalizer exists to keep
+    separate. Neither raises, and neither is recoverable once saved.
+
+    The refusal also makes the class's behavior uniform. Most mis-shaped inputs
+    already fail loudly, because ``var_mean`` over a ``(batch, *feature_shape)``
+    mismatch that does *not* broadcast raises a ``RuntimeError``; only the
+    shapes that happen to broadcast slipped through, and those raised nothing at
+    all. This is checked before any buffer is touched, so a refused batch also
+    leaves ``count`` where it was - previously a batch that raised inside
+    ``var_mean`` had already advanced it, skewing the ``count_x / count`` update
+    rate of every later batch.
+
+    It is a module-private tuple rule rather than one of the shared domains in
+    :mod:`strands_robots.utils` because those are deliberately torch-free and
+    describe scalars and plain numeric vectors, while this describes a tensor's
+    rank and trailing extents.
+
+    Args:
+        got: The received tensor's shape, as a tuple.
+        feature_shape: The per-feature shape this normalizer was built for.
+
+    Returns:
+        ``None`` when ``got`` is ``(batch, *feature_shape)``; otherwise a
+        message naming the shape read and the shape received, and - for a single
+        unbatched observation - the call that batches it.
+    """
+    if len(got) == len(feature_shape) + 1 and got[len(got) - len(feature_shape) :] == feature_shape:
+        return None
+    expected = ", ".join(["batch", *(str(n) for n in feature_shape)]) + ("," if not feature_shape else "")
+    remedy = " A single unbatched observation is normalized as x.unsqueeze(0)." if got == feature_shape else ""
+    return (
+        f"EmpiricalNormalization keeps one running mean and std per feature of shape "
+        f"{feature_shape}, so both entry points read a batch of shape ({expected}); got {got}. "
+        f"A different shape either broadcasts - returning a tensor that is not the caller's "
+        f"shape, and pooling per-feature statistics onto one number inside buffers that "
+        f"persist into the checkpoint - or fails inside the running-statistics update." + remedy
+    )
+
+
 class EmpiricalNormalization(nn.Module):
     """Normalize a tensor stream by its running (Welford) mean and std.
 
@@ -27,6 +83,12 @@ class EmpiricalNormalization(nn.Module):
     folds a batch whenever the module is training. In eval mode the learned
     statistics are frozen at BOTH entry points, so an exported policy
     normalizes deterministically.
+
+    Both entry points read a batch of shape ``(batch, *shape)`` and refuse
+    anything else (see :func:`_batched_shape_error`). A single unbatched
+    observation of shape ``shape`` - what
+    :class:`~strands_robots.training.rl.gym_env.GymSimEnv` and the gymnasium
+    contract hand back - has to be batched by the caller as ``x.unsqueeze(0)``.
 
     Args:
         shape: Per-feature shape of the observation (e.g. ``(num_obs,)``).
@@ -60,6 +122,16 @@ class EmpiricalNormalization(nn.Module):
         self.register_buffer("count", torch.tensor(0, dtype=torch.long, device=device))
 
     @property
+    def _feature_shape(self) -> tuple[int, ...]:
+        """Per-feature shape the running buffers were built for.
+
+        Read off ``_mean`` rather than stored at construction so there is one
+        owner of the value: the buffers are what the arithmetic broadcasts
+        against, and ``load_state_dict`` can replace them.
+        """
+        return tuple(self._mean.shape[1:])
+
+    @property
     def mean(self) -> torch.Tensor:
         """Current running mean, shape ``shape`` (batch dim squeezed)."""
         return self._mean.squeeze(0).clone()
@@ -81,7 +153,17 @@ class EmpiricalNormalization(nn.Module):
 
         Returns:
             The normalized tensor, same shape as ``x``.
+
+        Raises:
+            ValueError: If ``x`` is not shaped ``(batch, *shape)``. The check
+                covers this entry point too, not only :meth:`update`: an
+                unbatched observation broadcasts against the running buffers,
+                so the returned tensor would not have the caller's shape even
+                in eval mode, where nothing is folded at all.
         """
+        problem = _batched_shape_error(tuple(x.shape), self._feature_shape)
+        if problem is not None:
+            raise ValueError(problem)
         if self.training and update:
             self.update(x)
         if center:
@@ -98,7 +180,15 @@ class EmpiricalNormalization(nn.Module):
         the statistics are persistent buffers, so folding a batch after
         ``eval()`` would be written into the next checkpoint and change how an
         exported policy whitens every observation.
+
+        Raises:
+            ValueError: If ``x`` is not shaped ``(batch, *shape)``. Checked
+                before ``count`` moves, so a refused batch does not skew the
+                ``count_x / count`` update rate of the batches after it.
         """
+        problem = _batched_shape_error(tuple(x.shape), self._feature_shape)
+        if problem is not None:
+            raise ValueError(problem)
         if not self.training:
             return
         if self.until is not None and int(self.count) >= self.until:
