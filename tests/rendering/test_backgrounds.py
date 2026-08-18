@@ -125,6 +125,23 @@ def test_scene_preset_registries_are_consistent() -> None:
     assert gsplat_skybox_align_for("someone_uploaded.ply") == {}
 
 
+def test_ply_presets_are_fully_trained_checkpoints_with_provenance() -> None:
+    # The .ply presets point at the fully-trained 30k-iteration checkpoints
+    # (iteration_7000 is visibly undertrained), and every preset carries
+    # provenance: source, training iteration, and license.
+    from strands_robots.rendering.backgrounds import GSPLAT_SCENE_PROVENANCE
+
+    assert set(GSPLAT_SCENE_PROVENANCE) == set(GSPLAT_SCENES)
+    for name, url in GSPLAT_SCENES.items():
+        assert "iteration_7000" not in url, f"{name}: early-training checkpoint"
+        provenance = GSPLAT_SCENE_PROVENANCE[name]
+        assert set(provenance) == {"source", "iteration", "license"}
+        assert all(value.strip() for value in provenance.values())
+        if url.lower().endswith(".ply"):
+            assert "iteration_30000" in url, f"{name}: expected a 30k checkpoint"
+            assert provenance["iteration"] == "30000"
+
+
 def _write_solid_panorama(path, color, width: int = 256, height: int = 128) -> None:
     """Write a solid-color equirectangular image the loader can read."""
     from PIL import Image
@@ -244,6 +261,7 @@ def _build_spz(
     version: int,
     frac_bits: int = 12,
     sh_degree: int = 0,
+    sh: np.ndarray | None = None,
     flags: int = 0,
 ):
     """Write a minimal gzip-compressed .spz file and return its path."""
@@ -261,6 +279,8 @@ def _build_spz(
         + scl.astype(np.uint8).reshape(n, 3).tobytes()
         + rot.astype(np.uint8).tobytes()
     )
+    if sh is not None:
+        body += sh.astype(np.uint8).tobytes()
     path = tmp_path / f"scene_v{version}.spz"
     path.write_bytes(gzip.compress(header + body))
     return path
@@ -388,14 +408,86 @@ class TestSpzGaussianSplatReader:
         with pytest.raises(ValueError, match="unsupported SPZ version"):
             _load_spz_splats(path, device="cpu")
 
+    def test_load_decodes_higher_order_sh_as_raw_coefficients(self, tmp_path) -> None:
+        # An asset with sh_degree > 0 must come back with ``colors`` as raw SH
+        # coefficients (N, K, 3), DC first, so the rasterizer can evaluate
+        # view-dependent color -- not with the trailing SH block dropped.
+        pytest.importorskip("torch")
+        from strands_robots.rendering.backgrounds import _SPZ_COLOR_SCALE, _load_spz_splats
 
-def _build_ply(path, *, means, scales_log, quats, opacity_logit, f_dc):
+        means = np.zeros((2, 3), np.float32)
+        alpha = np.array([255, 255], np.uint8)
+        col = np.array([[128, 128, 128], [255, 0, 64]], np.uint8)
+        scl = np.full((2, 3), 128, np.uint8)
+        rot = np.array([_encode_spz_rotation_v3((1.0, 0.0, 0.0, 0.0))] * 2, np.uint8)
+        # degree 1 -> 3 rest coefficients per channel; coefficient-major with
+        # the channel fastest-varying (spz spec). byte -> (byte - 128) / 128.
+        sh = np.arange(2 * 3 * 3, dtype=np.uint8).reshape(2, 3, 3) + 100
+        path = _build_spz(tmp_path, means, alpha, col, scl, rot, version=3, sh_degree=1, sh=sh)
+
+        splats = _load_spz_splats(path, device="cpu")
+
+        colors = splats["colors"].numpy()
+        assert colors.shape == (2, 4, 3)
+        # Coefficient 0 is the raw (un-baked) DC term.
+        f_dc = (col.astype(np.float32) / 255.0 - 0.5) / _SPZ_COLOR_SCALE
+        assert np.allclose(colors[:, 0, :], f_dc, atol=1e-6)
+        # The rest dequantize as (byte - 128) / 128, in stored order.
+        assert np.allclose(colors[:, 1:, :], (sh.astype(np.float32) - 128.0) / 128.0, atol=1e-6)
+
+    def test_load_sh_degree_zero_keeps_baked_dc_colors(self, tmp_path) -> None:
+        # The documented fast path: no higher-order SH -> per-gaussian RGB
+        # (N, 3) in [0, 1], exactly as before.
+        pytest.importorskip("torch")
+        from strands_robots.rendering.backgrounds import _load_spz_splats
+
+        means = np.zeros((1, 3), np.float32)
+        path = _build_spz(
+            tmp_path,
+            means,
+            np.array([255], np.uint8),
+            np.array([[128, 128, 128]], np.uint8),
+            np.full((1, 3), 128, np.uint8),
+            np.array([_encode_spz_rotation_v3((1.0, 0.0, 0.0, 0.0))], np.uint8),
+            version=3,
+            sh_degree=0,
+        )
+
+        colors = _load_spz_splats(path, device="cpu")["colors"].numpy()
+        assert colors.shape == (1, 3)
+        assert np.all((colors >= 0.0) & (colors <= 1.0))
+
+    def test_load_rejects_truncated_sh_block(self, tmp_path) -> None:
+        # A header that claims sh_degree > 0 over a body with no (or short) SH
+        # bytes is a corrupt file: refuse it by name rather than decode garbage.
+        pytest.importorskip("torch")
+        from strands_robots.rendering.backgrounds import _load_spz_splats
+
+        means = np.zeros((1, 3), np.float32)
+        path = _build_spz(
+            tmp_path,
+            means,
+            np.array([255], np.uint8),
+            np.array([[128, 128, 128]], np.uint8),
+            np.full((1, 3), 128, np.uint8),
+            np.array([_encode_spz_rotation_v3((1.0, 0.0, 0.0, 0.0))], np.uint8),
+            version=3,
+            sh_degree=2,
+            sh=None,  # header claims degree 2 (24 bytes/point) but the body has none
+        )
+        with pytest.raises(ValueError, match="sh_degree=2"):
+            _load_spz_splats(path, device="cpu")
+
+
+def _build_ply(path, *, means, scales_log, quats, opacity_logit, f_dc, f_rest=None):
     """Write a minimal 3DGS ``.ply`` with the fields ``_load_ply_splats`` reads.
 
     The 3D Gaussian-Splatting PLY layout stores scales in log-space
     (``scale_0..2``), opacity as a logit (``opacity``), rotations as raw WXYZ
-    quaternions (``rot_0..3``), and DC color as SH coefficients (``f_dc_0..2``);
-    the loader converts each back to the render-ready representation.
+    quaternions (``rot_0..3``), DC color as SH coefficients (``f_dc_0..2``),
+    and -- when ``f_rest`` is given as an ``(N, M)`` array -- higher-order SH
+    as ``f_rest_0..M-1`` (channel-major, per the INRIA exporter); the loader
+    converts each back to the render-ready representation.
     """
     from plyfile import PlyData, PlyElement
 
@@ -416,6 +508,8 @@ def _build_ply(path, *, means, scales_log, quats, opacity_logit, f_dc):
         ("f_dc_1", f_dc[:, 1]),
         ("f_dc_2", f_dc[:, 2]),
     ]
+    if f_rest is not None:
+        fields += [(f"f_rest_{i}", f_rest[:, i]) for i in range(f_rest.shape[1])]
     dtype = [(name, "f4") for name, _ in fields]
     verts = np.empty(n, dtype=dtype)
     for name, col in fields:
@@ -499,6 +593,77 @@ class TestPlyGaussianSplatReader:
         colors = _load_ply_splats(path, device="cpu")["colors"].numpy()
         assert np.allclose(colors[0], 1.0)
         assert np.allclose(colors[1], 0.0)
+
+    @staticmethod
+    def _ply_with_rest(tmp_path, f_dc, f_rest):
+        n = len(f_dc)
+        path = tmp_path / "sh.ply"
+        _build_ply(
+            path,
+            means=np.zeros((n, 3), np.float32),
+            scales_log=np.zeros((n, 3), np.float32),
+            quats=np.tile(np.array([1.0, 0.0, 0.0, 0.0], np.float32), (n, 1)),
+            opacity_logit=np.zeros(n, np.float32),
+            f_dc=f_dc,
+            f_rest=f_rest,
+        )
+        return path
+
+    def test_load_reads_higher_order_sh_as_raw_coefficients(self, tmp_path) -> None:
+        # An asset carrying f_rest_* must load ``colors`` as raw SH coefficients
+        # (N, K, 3) with the DC term first -- view-dependent appearance is
+        # evaluated at render time, not dropped at load time.
+        pytest.importorskip("torch")
+        pytest.importorskip("plyfile")
+        from strands_robots.rendering.backgrounds import _load_ply_splats
+
+        f_dc = np.array([[0.1, 0.2, 0.3], [-0.4, 0.5, -0.6]], np.float32)
+        # degree 1 -> 3 rest coefficients per channel, 9 f_rest_* fields. The
+        # INRIA exporter flattens (3 channels, K-1 coeffs) channel-major, so
+        # f_rest_{c * 3 + j} holds channel c, coefficient j.
+        f_rest = np.arange(2 * 9, dtype=np.float32).reshape(2, 9) / 10.0
+        path = self._ply_with_rest(tmp_path, f_dc, f_rest)
+
+        colors = _load_ply_splats(path, device="cpu")["colors"].numpy()
+
+        assert colors.shape == (2, 4, 3)
+        # Coefficient 0 is the raw (un-baked, un-clipped) DC term.
+        assert np.allclose(colors[:, 0, :], f_dc, atol=1e-6)
+        # Coefficient 1+j, channel c comes from field f_rest_{c*(K-1)+j}.
+        for j in range(3):
+            for c in range(3):
+                assert np.allclose(colors[:, 1 + j, c], f_rest[:, c * 3 + j], atol=1e-6)
+
+    def test_load_without_f_rest_keeps_the_baked_dc_fast_path(self, tmp_path) -> None:
+        # DC-only assets stay on the documented fast path: per-gaussian RGB
+        # (N, 3), never a degenerate (N, 1, 3) SH stack.
+        pytest.importorskip("torch")
+        pytest.importorskip("plyfile")
+        from strands_robots.rendering.backgrounds import _load_ply_splats
+
+        path = self._ply_with_rest(tmp_path, np.zeros((2, 3), np.float32), None)
+        colors = _load_ply_splats(path, device="cpu")["colors"].numpy()
+        assert colors.shape == (2, 3)
+
+    def test_load_rejects_f_rest_count_matching_no_sh_degree(self, tmp_path) -> None:
+        # 6 fields = 2 coefficients per channel, which is no integer degree
+        # ((deg+1)^2 - 1 is 3, 8, 15, ...): refuse rather than mis-evaluate.
+        pytest.importorskip("torch")
+        pytest.importorskip("plyfile")
+        from strands_robots.rendering.backgrounds import _load_ply_splats
+
+        path = self._ply_with_rest(tmp_path, np.zeros((2, 3), np.float32), np.zeros((2, 6), np.float32))
+        with pytest.raises(ValueError, match="does not(.|\n)*match any degree"):
+            _load_ply_splats(path, device="cpu")
+
+    def test_load_rejects_f_rest_count_not_divisible_by_channels(self, tmp_path) -> None:
+        pytest.importorskip("torch")
+        pytest.importorskip("plyfile")
+        from strands_robots.rendering.backgrounds import _load_ply_splats
+
+        path = self._ply_with_rest(tmp_path, np.zeros((2, 3), np.float32), np.zeros((2, 4), np.float32))
+        with pytest.raises(ValueError, match="not divisible by 3"):
+            _load_ply_splats(path, device="cpu")
 
 
 # --------------------------------------------------------------------------- #
@@ -681,6 +846,89 @@ class TestGsplatBackgroundClipSplats:
         # gs-z -1 -> world 4.0 (kept); gs-z -4 -> world 1.0 (kept): the transform
         # is honored, so both clear the world-frame floor.
         assert (kept, total) == (2, 2)
+
+    def test_clip_filters_sh_coefficient_colors_per_gaussian(self) -> None:
+        # An SH-bearing asset stores colors as (N, K, 3); clipping must filter
+        # the gaussian axis and keep each survivor's full coefficient stack.
+        pytest.importorskip("torch")
+        import torch
+
+        from strands_robots.rendering.backgrounds import GsplatBackground
+
+        bg = GsplatBackground(ply_path="scene.ply")
+        bg._transform = np.eye(4)
+        splats = self._splats([[0, 0, -1.0], [0, 0, 1.0]], [0.9, 0.9])
+        splats["colors"] = torch.arange(2 * 4 * 3, dtype=torch.float32).reshape(2, 4, 3)
+        bg._splats = splats
+
+        kept, total = bg._clip_splats(clip_below=0.0, min_opacity=0.0)
+
+        assert (kept, total) == (1, 2)
+        assert bg._splats["colors"].shape == (1, 4, 3)
+        # The survivor keeps its own coefficients (row 1), untouched.
+        assert bg._splats["colors"].flatten().tolist() == list(range(12, 24))
+
+
+class TestGsplatRenderShDegree:
+    """render() forwards SH assets to gsplat for per-view evaluation.
+
+    The color contract at the rasterization boundary: baked-RGB assets
+    ((N, 3) colors) pass ``sh_degree=None``; SH assets ((N, K, 3) raw
+    coefficients) pass the degree the coefficient count encodes, so gsplat
+    evaluates view-dependent color instead of the loader having baked it. The
+    CUDA rasterizer is doubled -- this pins the call, not the kernels.
+    """
+
+    def _render_and_capture(self, monkeypatch, colors):
+        import sys
+        import types
+
+        import torch
+
+        from strands_robots.rendering.backgrounds import GsplatBackground
+
+        captured: dict = {}
+
+        def fake_rasterization(**kwargs):
+            captured.update(kwargs)
+            h, w = kwargs["height"], kwargs["width"]
+            return torch.zeros(1, h, w, 4), torch.zeros(1, h, w, 1), {}
+
+        fake_gsplat = types.ModuleType("gsplat")
+        fake_gsplat.rasterization = fake_rasterization  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "gsplat", fake_gsplat)
+
+        n = colors.shape[0]
+        bg = GsplatBackground(ply_path="scene.ply", device="cpu")
+        bg._splats = {
+            "means": torch.zeros(n, 3),
+            "quats": torch.tensor([[1.0, 0.0, 0.0, 0.0]] * n),
+            "scales": torch.ones(n, 3),
+            "opacities": torch.ones(n),
+            "colors": colors,
+        }
+        rgb, depth = bg.render(_cam(16, 12))
+        return captured, rgb, depth
+
+    def test_baked_rgb_colors_pass_no_sh_degree(self, monkeypatch) -> None:
+        torch = pytest.importorskip("torch")
+
+        captured, rgb, depth = self._render_and_capture(monkeypatch, torch.rand(3, 3))
+
+        assert captured["sh_degree"] is None
+        assert captured["colors"].shape == (3, 3)
+        assert rgb.shape == (12, 16, 3)
+        assert depth.shape == (12, 16)
+
+    @pytest.mark.parametrize("degree", [1, 2, 3])
+    def test_sh_coefficients_pass_the_degree_their_count_encodes(self, monkeypatch, degree) -> None:
+        torch = pytest.importorskip("torch")
+
+        k = (degree + 1) ** 2
+        captured, _, _ = self._render_and_capture(monkeypatch, torch.rand(3, k, 3))
+
+        assert captured["sh_degree"] == degree
+        assert captured["colors"].shape == (3, k, 3)
 
 
 class TestBakeGsplatPanorama:

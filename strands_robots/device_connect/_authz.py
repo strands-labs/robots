@@ -11,8 +11,9 @@ code changes:
 
 * ``DEVICE_CONNECT_RPC_ALLOW`` - comma-separated device ids permitted to call
   state-mutating RPCs. ``*`` (or unset) means "allow all" but logs a warning so
-  the permissive posture is visible. An explicit empty value (``""`` after
-  stripping) is treated as unset.
+  the permissive posture is visible. An empty value is treated as unset, and a
+  value is empty when it holds no non-blank entry after stripping - so ``""``,
+  ``" "`` and ``","`` are all unset.
 * ``DEVICE_CONNECT_ESTOP_ALLOW`` - comma-separated device ids permitted to
   trigger emergency-stop handling. Falls back to ``DEVICE_CONNECT_RPC_ALLOW``
   when unset.
@@ -73,7 +74,14 @@ def _warn_insecure_acl_once(scope: str) -> None:
 
 
 def _parse_allowlist(raw: str | None) -> list[str] | None:
-    """Parse a comma-separated allowlist. Returns None when unset/empty."""
+    """Parse a comma-separated allowlist. Returns None when unset/empty.
+
+    This is the one place that decides whether an allowlist is set. A value is
+    empty when it holds no non-blank entry after stripping, so ``""``, ``" "``
+    and ``","`` all parse to None. Every emptiness question routes here rather
+    than testing the raw string's truthiness, which would call a whitespace- or
+    comma-only value "set" and leave it parsing to nothing.
+    """
     if raw is None:
         return None
     entries = [e.strip() for e in raw.split(",") if e.strip()]
@@ -106,13 +114,20 @@ def is_authorized_caller(caller: str | None, *, scope: str = "rpc") -> bool:
     scope="estop" -> emergency-stop event handling
     """
     if scope == "estop":
-        raw = os.environ.get(_ESTOP_ALLOW_ENV) or os.environ.get(_RPC_ALLOW_ENV)
+        # Fall back through the parser, not through the raw string's truthiness:
+        # a whitespace- or comma-only value (a templated list whose ids never got
+        # populated) is an empty allowlist, so it must inherit the RPC allowlist.
+        # Testing truthiness here would call it "set", skip the fallback, and
+        # then parse it to nothing - opening emergencyStop to every caller,
+        # anonymous ones included.
+        patterns = _parse_allowlist(os.environ.get(_ESTOP_ALLOW_ENV))
+        if patterns is None:
+            patterns = _parse_allowlist(os.environ.get(_RPC_ALLOW_ENV))
         env_scope = "estop"
     else:
-        raw = os.environ.get(_RPC_ALLOW_ENV)
+        patterns = _parse_allowlist(os.environ.get(_RPC_ALLOW_ENV))
         env_scope = "rpc"
 
-    patterns = _parse_allowlist(raw)
     if patterns is None:
         # No allowlist configured - preserve out-of-the-box dev usability but
         # make the permissive posture loud so operators notice.

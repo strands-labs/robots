@@ -30,7 +30,7 @@ _PACKAGE_DIR = Path(rendering_pkg.__file__).parent
 
 # The public-API modules of the package (``__init__`` only re-exports). All are
 # scanned by AST, so the walk needs no optional backend installed.
-_MODULES = ("backgrounds.py", "camera.py", "compositor.py", "video.py")
+_MODULES = ("backgrounds.py", "camera.py", "color.py", "compositor.py", "ibl.py", "video.py")
 
 # Every public class the package exposes, keyed ``module.py::ClassName``. Pinned
 # so a refactor that drops or renames a class trips the completeness guard
@@ -43,6 +43,7 @@ _EXPECTED_CLASSES = {
     "compositor.py::FrameSource",
     "compositor.py::CompositeFrame",
     "compositor.py::HybridCompositor",
+    "ibl.py::KeyLightEstimate",
 }
 
 # Every public module-level function the package exposes.
@@ -53,7 +54,15 @@ _EXPECTED_FUNCTIONS = {
     "backgrounds.py::gsplat_skybox_align_for",
     "backgrounds.py::download_gsplat_scene",
     "backgrounds.py::bake_gsplat_panorama",
+    "color.py::srgb_to_linear",
+    "color.py::linear_to_srgb",
+    "color.py::relative_luminance",
     "compositor.py::feather_mask",
+    "compositor.py::plane_depth",
+    "ibl.py::render_environment_map",
+    "ibl.py::bake_environment_map",
+    "ibl.py::environment_map_cache_path",
+    "ibl.py::derive_key_light",
     "video.py::encode_clip",
     "video.py::mjpeg_frames",
 }

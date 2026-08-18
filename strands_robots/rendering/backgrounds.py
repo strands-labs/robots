@@ -23,8 +23,9 @@ The renderers are backend-agnostic: they only consume
 :class:`~strands_robots.rendering.camera.CameraParams` (which every
 ``SimEngine.get_camera_params`` produces in the same OpenGL optical frame).
 
-Scope note: GS rendering here is DC-term color only -- no spherical harmonics
-view-dependence and no relighting.
+Scope note: assets that carry higher-order spherical harmonics render with
+full view-dependent color (the SH coefficients are evaluated per-view by
+``gsplat``); DC-only assets take a baked-RGB fast path. No relighting.
 """
 
 from __future__ import annotations
@@ -543,6 +544,14 @@ class GsplatBackground:
         viewmat = torch.from_numpy(viewmat_np).float().unsqueeze(0).to(self._device)
         K = torch.from_numpy(cam.K).float().unsqueeze(0).to(self._device)
 
+        # ``colors`` is either baked per-gaussian RGB ``(N, 3)`` (DC-only
+        # asset: fast path, nothing to evaluate) or raw SH coefficients
+        # ``(N, K, 3)`` (asset with view-dependent color). gsplat evaluates
+        # the coefficients against per-gaussian view directions when
+        # ``sh_degree`` is set; the loaders guarantee K == (degree + 1)^2.
+        colors = s["colors"]
+        sh_degree = int(np.sqrt(colors.shape[1])) - 1 if colors.dim() == 3 else None
+
         # rasterization returns (render_colors, render_alphas, meta). With
         # render_mode="RGB+D", render_colors is (B, H, W, 4): [..., :3] =
         # alpha-premultiplied RGB (already accumulated over the splats),
@@ -553,7 +562,7 @@ class GsplatBackground:
             quats=s["quats"],
             scales=s["scales"],
             opacities=s["opacities"],
-            colors=s["colors"],
+            colors=colors,
             viewmats=viewmat,
             Ks=K,
             width=cam.width,
@@ -561,6 +570,7 @@ class GsplatBackground:
             near_plane=cam.znear,
             far_plane=cam.zfar,
             render_mode="RGB+D",
+            sh_degree=sh_degree,
             rasterize_mode=self._rasterize_mode,
         )
         out = render_colors[0]  # (H, W, 4)
@@ -596,21 +606,49 @@ class GsplatBackground:
 # Real trained 3DGS scenes hosted on HuggingFace (standard INRIA .ply layout).
 # ``bonsai`` is an indoor plant-on-a-table room ~= a "tabletop" scene; the
 # others are outdoor. Users can also upload their own .ply (e.g. a World Labs
-# Marble export re-saved as .ply).
+# Marble export re-saved as .ply). Per-preset provenance (source, training
+# iteration, license) lives in :data:`GSPLAT_SCENE_PROVENANCE`.
 GSPLAT_SCENES = {
     "tabletop (indoor room)": (
         "https://raw.githubusercontent.com/Vector-Wangel/MuJoCo-GS-Web/main/assets/environments/tabletop/scene.spz"
     ),
     "bonsai (indoor tabletop)": (
-        "https://huggingface.co/datasets/dylanebert/3dgs/resolve/main/bonsai/point_cloud/iteration_7000/point_cloud.ply"
+        "https://huggingface.co/datasets/dylanebert/3dgs/resolve/main/bonsai/point_cloud/iteration_30000/point_cloud.ply"
     ),
     "bicycle (outdoor)": (
         "https://huggingface.co/datasets/dylanebert/3dgs/resolve/main/"
-        "bicycle/point_cloud/iteration_7000/point_cloud.ply"
+        "bicycle/point_cloud/iteration_30000/point_cloud.ply"
     ),
     "stump (outdoor)": (
-        "https://huggingface.co/datasets/dylanebert/3dgs/resolve/main/stump/point_cloud/iteration_7000/point_cloud.ply"
+        "https://huggingface.co/datasets/dylanebert/3dgs/resolve/main/stump/point_cloud/iteration_30000/point_cloud.ply"
     ),
+}
+
+# Provenance for every preset in :data:`GSPLAT_SCENES` (same keys). The .ply
+# presets are the fully-trained 30k-iteration checkpoints of the official
+# INRIA 3D Gaussian Splatting models for the Mip-NeRF 360 scenes -- not the
+# visibly-undertrained iteration_7000 ones this table used to point at.
+GSPLAT_SCENE_PROVENANCE: dict[str, dict[str, str]] = {
+    "tabletop (indoor room)": {
+        "source": "Vector-Wangel/MuJoCo-GS-Web (curated tabletop environment, sh_degree=0 .spz)",
+        "iteration": "n/a (curated export)",
+        "license": "MIT (https://github.com/Vector-Wangel/MuJoCo-GS-Web/blob/main/LICENSE)",
+    },
+    "bonsai (indoor tabletop)": {
+        "source": "INRIA 3DGS pre-trained models (Mip-NeRF 360 'bonsai'), mirrored at hf.co/datasets/dylanebert/3dgs",
+        "iteration": "30000",
+        "license": "Gaussian-Splatting License (research/evaluation; https://github.com/graphdeco-inria/gaussian-splatting/blob/main/LICENSE.md)",
+    },
+    "bicycle (outdoor)": {
+        "source": "INRIA 3DGS pre-trained models (Mip-NeRF 360 'bicycle'), mirrored at hf.co/datasets/dylanebert/3dgs",
+        "iteration": "30000",
+        "license": "Gaussian-Splatting License (research/evaluation; https://github.com/graphdeco-inria/gaussian-splatting/blob/main/LICENSE.md)",
+    },
+    "stump (outdoor)": {
+        "source": "INRIA 3DGS pre-trained models (Mip-NeRF 360 'stump'), mirrored at hf.co/datasets/dylanebert/3dgs",
+        "iteration": "30000",
+        "license": "Gaussian-Splatting License (research/evaluation; https://github.com/graphdeco-inria/gaussian-splatting/blob/main/LICENSE.md)",
+    },
 }
 
 
@@ -628,6 +666,10 @@ def gsplat_scene_names() -> list[str]:
 #     (good from hero/oblique angles only); stump -> outdoor clearing.
 #   ``bicycle`` is intentionally excluded: it's an overcast outdoor capture that
 #   renders as white haze + floaters from every angle (poor as a backdrop).
+#   Re-measured on the fully-trained 30k checkpoint (four-view orbit at the
+#   arm's eye level, auto up-sign): 33-66% of pixels near-white per view vs
+#   bonsai's 0-5%, so the haze is the capture's overcast sky, not the earlier
+#   checkpoint's undertraining -- the exclusion stands.
 GSPLAT_SKYBOX_ALIGN: dict[str, dict[str, Any]] = {
     # tabletop is a three.js **Y-up** .spz of a kitchen. Align with the KNOWN
     # up-axis (GS +Y) -- PCA mis-picks a horizontal axis and tilts the room ~36 deg
@@ -763,63 +805,22 @@ def bake_gsplat_panorama(
     T[:3, 3] = -R @ viewpoint  # world_from_gs: centroid -> origin, upright
     base._transform = T
 
-    # Six cube faces (world dirs in the upright frame) + their up vectors.
-    faces = [
-        (np.array([1.0, 0, 0]), np.array([0, 0, 1.0])),
-        (np.array([-1.0, 0, 0]), np.array([0, 0, 1.0])),
-        (np.array([0, 1.0, 0]), np.array([0, 0, 1.0])),
-        (np.array([0, -1.0, 0]), np.array([0, 0, 1.0])),
-        (np.array([0, 0, 1.0]), np.array([0, 1.0, 0])),
-        (np.array([0, 0, -1.0]), np.array([0, 1.0, 0])),
-    ]
-    f = 0.5 * face_size  # 90 deg FOV -> focal = size/2
-    Kf = np.array([[f, 0, face_size / 2], [0, f, face_size / 2], [0, 0, 1.0]])
+    # The six-cube-face render + equirect reprojection is shared with the
+    # world-frame environment-map bake (issue #2323). This bake keeps its own
+    # viewpoint (the scene centroid, in the unaligned upright frame above).
+    from .ibl import render_environment_map
 
-    face_imgs, face_bases = [], []
-    for fwd, up in faces:
-        right = np.cross(fwd, up)
-        right /= np.linalg.norm(right)
-        u = np.cross(right, fwd)
-        Twc = np.eye(4)
-        Twc[:3, :3] = np.stack([right, u, -fwd], axis=1)  # OpenGL: -Z = fwd
-        cam = CameraParams(K=Kf, T_world_cam=Twc, width=face_size, height=face_size, znear=0.01, zfar=1e3)
-        rgb, _ = base.render(cam)  # camera at world origin (viewpoint)
-        face_imgs.append(rgb.astype(np.float32))
-        face_bases.append((fwd, right, u))
-
-    # Equirectangular grid matching PanoramaBackground: uu in [0,1] -> theta in
-    # [-pi,pi]; vv in [0,1] (top->bottom) -> phi in [pi/2, -pi/2].
-    jj, ii = np.meshgrid(np.arange(equi_w), np.arange(equi_h))
-    theta = (jj / equi_w) * 2 * np.pi - np.pi
-    phi = np.pi / 2 - (ii / equi_h) * np.pi
-    dx = np.cos(phi) * np.cos(theta)
-    dy = np.cos(phi) * np.sin(theta)
-    dz = np.sin(phi)
-    dirs = np.stack([dx, dy, dz], axis=-1)  # (H,W,3) world rays
-
-    pano = np.zeros((equi_h, equi_w, 3), np.float32)
-    best = np.full((equi_h, equi_w), -1e9, np.float32)
-    for img, (fwd, right, u) in zip(face_imgs, face_bases):
-        d_f = dirs @ fwd
-        sel = d_f > max(1e-6, 0)  # rays in this face's hemisphere
-        # Pick the face with the largest forward component per pixel.
-        take = sel & (d_f > best)
-        if not take.any():
-            continue
-        s = dirs[take] / d_f[take][:, None]  # project to image plane (z=1)
-        u_img = s @ right
-        v_img = s @ u
-        inside = (np.abs(u_img) <= 1.0) & (np.abs(v_img) <= 1.0)
-        col = np.clip(((u_img + 1) * 0.5 * (face_size - 1)).astype(int), 0, face_size - 1)
-        row = np.clip(((1 - (v_img + 1) * 0.5) * (face_size - 1)).astype(int), 0, face_size - 1)
-        idx = np.where(take)
-        ri, ci = idx[0][inside], idx[1][inside]
-        pano[ri, ci] = img[row[inside], col[inside]]
-        best[ri, ci] = d_f[take][inside]
+    pano = render_environment_map(
+        base,
+        origin_world=(0.0, 0.0, 0.0),
+        face_size=face_size,
+        equi_w=equi_w,
+        equi_h=equi_h,
+    )
 
     from PIL import Image as _Image
 
-    _Image.fromarray(np.clip(pano, 0, 255).astype(np.uint8)).save(out, quality=88)
+    _Image.fromarray(pano).save(out, quality=88)
     logger.info("Baked GS panorama -> %s", out)
     return out
 
@@ -988,8 +989,10 @@ def _load_spz_splats(spz_path: Path, device: str) -> dict[str, Any]:
     """Load a Niantic ``.spz`` (versions 2 & 3) into the same dict layout as
     :func:`_load_ply_splats`, plus an ``"antialiased"`` bool (header flags
     bit 0: the asset was trained with mip-splatting AA and must be rasterized
-    with ``rasterize_mode="antialiased"``). Higher-order SH is ignored (DC
-    color is enough for a backdrop)."""
+    with ``rasterize_mode="antialiased"``). ``sh_degree=0`` assets get baked
+    DC color (``colors`` as ``(N, 3)`` RGB); assets with higher-order SH
+    decode the trailing coefficient block into ``colors`` as ``(N, K, 3)``
+    raw SH so the rasterizer can evaluate view-dependent color."""
     import gzip
     import struct
 
@@ -1020,7 +1023,22 @@ def _load_spz_splats(spz_path: Path, device: str) -> dict[str, Any]:
     scl = np.frombuffer(raw, np.uint8, count=N * 3, offset=off).reshape(N, 3)
     off += N * 3
     rot = np.frombuffer(raw, np.uint8, count=N * rot_bytes, offset=off).reshape(N, rot_bytes)
-    off += N * rot_bytes  # trailing SH (sh_degree-dependent) intentionally ignored
+    off += N * rot_bytes
+    # Trailing SH block: (sh_degree+1)^2 - 1 coefficients per channel, one byte
+    # each, coefficient-major with the color channel fastest-varying (spz spec).
+    sh_rest: np.ndarray | None = None
+    if sh_degree > 0:
+        n_rest = (sh_degree + 1) ** 2 - 1
+        want = N * n_rest * 3
+        if len(raw) - off < want:
+            raise ValueError(
+                f"{spz_path}: header claims sh_degree={sh_degree} "
+                f"({want} SH bytes) but only {len(raw) - off} bytes remain"
+            )
+        sh_bytes = np.frombuffer(raw, np.uint8, count=want, offset=off).reshape(N, n_rest, 3)
+        # unquantizeSH: byte -> (byte - 128) / 128 (spz spec).
+        sh_rest = (sh_bytes.astype(np.float32) - 128.0) / 128.0
+        off += want
 
     # positions: 24-bit little-endian signed fixed point / 2^frac_bits
     p = pos.reshape(N, 3, 3).astype(np.int32)
@@ -1031,7 +1049,13 @@ def _load_spz_splats(spz_path: Path, device: str) -> dict[str, Any]:
     scales = np.exp(scl.astype(np.float32) / 16.0 - 10.0)
     opac = alpha.astype(np.float32) / 255.0
     f_dc = (col.astype(np.float32) / 255.0 - 0.5) / _SPZ_COLOR_SCALE
-    colors = np.clip(0.5 + 0.28209479177387814 * f_dc, 0.0, 1.0)
+    if sh_rest is not None:
+        # Raw SH coefficients (DC first): the rasterizer evaluates these
+        # per-view (see GsplatBackground.render).
+        colors = np.concatenate([f_dc[:, None, :], sh_rest], axis=1)
+    else:
+        # DC-only fast path: bake the DC term to per-gaussian RGB.
+        colors = np.clip(0.5 + 0.28209479177387814 * f_dc, 0.0, 1.0)
     quats = _decode_spz_rotations(rot, smallest3)
 
     logger.info(
@@ -1061,9 +1085,13 @@ def _load_ply_splats(ply_path: Path, device: str) -> dict[str, Any]:
 
     Supports the standard 3DGS PLY layout (means as ``x y z``, scales as
     ``scale_0 scale_1 scale_2`` in log-space, rotations as ``rot_0..rot_3``
-    quaternions, opacity as ``opacity``, and SH DC color as ``f_dc_0..2``).
-    Higher-order spherical harmonics are dropped -- for a backdrop the DC
-    term is fine.
+    quaternions, opacity as ``opacity``, SH DC color as ``f_dc_0..2``, and
+    optional higher-order SH as ``f_rest_*``).
+
+    Assets without ``f_rest_*`` take the DC-only fast path: the DC term is
+    baked to per-gaussian RGB (``colors`` as ``(N, 3)``). Assets that carry
+    higher-order SH return ``colors`` as raw coefficients ``(N, K, 3)`` (DC
+    first) so the rasterizer can evaluate view-dependent color per frame.
     """
     require_optional("torch", extra="sim-gs", purpose=_GSPLAT_PURPOSE)
     require_optional("plyfile", extra="sim-gs", purpose=".ply Gaussian-splat loading")
@@ -1079,9 +1107,27 @@ def _load_ply_splats(ply_path: Path, device: str) -> dict[str, Any]:
     opac = np.array(v["opacity"])
     sh_dc = np.stack([v["f_dc_0"], v["f_dc_1"], v["f_dc_2"]], axis=-1)
 
-    # SH DC -> linear RGB (see https://github.com/graphdeco-inria/gaussian-splatting).
-    SH_C0 = 0.28209479177387814
-    colors = np.clip(0.5 + SH_C0 * sh_dc, 0.0, 1.0)
+    # Higher-order SH: the INRIA layout flattens per-point (3, K-1) coefficient
+    # blocks channel-major, so f_rest_{c * (K-1) + j} is channel c, coeff j.
+    n_rest_fields = sum(1 for name in v.dtype.names if name.startswith("f_rest_"))
+    if n_rest_fields:
+        if n_rest_fields % 3:
+            raise ValueError(f"{ply_path}: {n_rest_fields} f_rest_* fields is not divisible by 3 channels")
+        n_rest = n_rest_fields // 3
+        degree = int(np.sqrt(n_rest + 1)) - 1
+        if (degree + 1) ** 2 - 1 != n_rest:
+            raise ValueError(
+                f"{ply_path}: {n_rest} SH coefficients per channel does not "
+                f"match any degree ((deg+1)^2 - 1 for integer deg)"
+            )
+        rest = np.stack([v[f"f_rest_{i}"] for i in range(n_rest_fields)], axis=-1)
+        rest = rest.reshape(-1, 3, n_rest).transpose(0, 2, 1)  # -> (N, K-1, 3)
+        colors = np.concatenate([sh_dc[:, None, :], rest], axis=1).astype(np.float32)
+    else:
+        # DC-only fast path: SH DC -> linear RGB
+        # (see https://github.com/graphdeco-inria/gaussian-splatting).
+        SH_C0 = 0.28209479177387814
+        colors = np.clip(0.5 + SH_C0 * sh_dc, 0.0, 1.0)
     # Sigmoid opacity, exp scale.
     opac = 1.0 / (1.0 + np.exp(-opac))
     scales = np.exp(scales)

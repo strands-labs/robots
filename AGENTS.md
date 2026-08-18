@@ -166,6 +166,26 @@ hatch run format            # ruff check --fix, ruff format
     audit dir to `tmp_path`, so there the whole log *is* the record set it
     means. Pinned by tests/test_examples_attest_only_what_they_report.py.
 
+17. **A transport delegates to the raw backend path, never to the router that
+    resolves it** - `strands_robots.mesh.session` exposes every Zenoh operation
+    twice: a public, backend-aware entry point (`get_session`, `put`,
+    `release_session`, `session_alive`) that resolves whatever
+    `STRANDS_MESH_BACKEND` selects, and a private `_*_directly` helper that
+    always takes the raw Zenoh path. A `MeshTransport` implementation must use
+    the second kind for *every* delegation, because under
+    `STRANDS_MESH_BACKEND=bridge` the router resolves the `BridgeTransport` that
+    owns that very transport - so a backend-aware call routes straight back into
+    the caller. Both re-entries are silent, which is what makes the rule worth
+    stating rather than leaving to review: a re-entrant `put` raises
+    `RecursionError`, which is a `RuntimeError` subclass and so is absorbed by
+    the narrow `except (RuntimeError, ConnectionError, OSError)` that idempotent
+    transport paths are required to use, and a re-entrant `close` blocks on the
+    factory's non-reentrant lock from the thread already holding it. Neither
+    reports anything a caller can act on. Every fixture that injects a *fake*
+    leg into a composite transport hides this by construction, so the raw path
+    has to be pinned structurally. Pinned by
+    tests/mesh/test_zenoh_transport_bypasses_backend_routing.py.
+
 ## PR Workflow
 
 1. Create the feature branch **on your fork**. Branch creation in the base
@@ -1301,6 +1321,35 @@ Corrections from code review that apply to all future contributions:
 - **`except (ImportError, Exception)` is a bug** - `Exception` is a superclass of `ImportError`, so the tuple collapses to `except Exception`. Lint/review will catch this; don't write it.
 - **USB / hardware probing** - use `except (ImportError, OSError)`. `PermissionError` is an `OSError`, `FileNotFoundError` is an `OSError`, etc.
 
+### Actuators: a joint pose goes only where `ctrl` IS a joint pose
+- **`data.ctrl` is not a pose channel, it is whatever the actuator's force law reads.**
+  A `<position kp>` reads it as the joint target, a `<velocity kv>` as a rate, a `<motor>`
+  as a torque, an `<intvelocity>` integrates it as a rate. Writing a joint coordinate into
+  any of the latter commands a different physical quantity that happens to be numerically
+  equal to an angle, and nothing raises: the joint simply moves somewhere the caller did
+  not ask for.
+- **Anything that writes a pose asks
+  `strands_robots.simulation.mujoco.scene_ops.joint_drive_map` first.** Resolving the
+  transmission is not enough - a `<velocity>` actuator's transmission IS the joint, and
+  every stock tendon gripper measured clears the bias-type and position-gain terms a naive
+  servo check would look at. The classification is per actuator, not per robot: `openarm`
+  ships 2 position servos beside 16 motors, and 19 of the loadable registry robots have at
+  least one joint-transmission actuator that is not a servo.
+- **A drive that cannot take the pose is left uncommanded and named, not written to.** The
+  motion primitives hold the joints they can hold and report the rest, because writing a
+  live joint angle into a rate drive is what *moves* the joint the call meant to hold - and
+  a wheel angle accumulates, so that "hold" grows with every turn the wheel has already
+  made. Where the drive being targeted is the one that cannot take a pose, the primitive
+  refuses instead: a servo loop on a rate drive meets its convergence test when the joint
+  sweeps *past* the number while still accelerating, so it reports the set-point as reached
+  and the joint keeps going after the call returns.
+- Pinned by `tests/simulation/mujoco/test_pose_write_reports_whether_the_servos_hold_it.py`
+  for `set_joint_positions(hold=True)` and by
+  `tests/simulation/mujoco/test_primitives_write_a_pose_only_into_a_pose_drive.py` for
+  `move_to` / `rotate_wrist` / `set_gripper`, which also pins the boundary: a usable
+  `ctrlrange` is authoritative and already in the drive's own units, so only the
+  *substitution* of a driven joint's limits needs the drive to be a servo.
+
 ### Clocks: a duration is measured, a stamp is recorded
 - **A duration belongs on `time.monotonic()`.** Anything that decides *how long to keep
   waiting* - a timeout, a deadline, a TTL, a retry window, a rate window, a frame pacer -
@@ -1337,6 +1386,24 @@ Corrections from code review that apply to all future contributions:
   achieved refresh timeline against the unstepped one rather than a tolerance. A duration
   base also carries its clock in its name (`started_mono`, `last_idle_render_mono`), so a
   later reader cannot mistake it for a stamp and subtract `time.time()` from it.
+
+### One writer per log file
+- **A file two writers share needs one file object, not one path.** Two file objects over
+  one path each track their own write offset, so a buffered writer flushes at its offset
+  and overwrites in place whatever the other appended there. The training backends' run
+  log tees stdout/stderr *and* root-logger records into a single file, so the logger
+  handler is pointed at the stream the tee already holds
+  (`logging.StreamHandler(stream)`) rather than opening the path a second time
+  (`logging.FileHandler(path)`).
+- **The failure is silent and shaped like data, not like an error.** Records vanish, and a
+  record straddling a flush boundary survives as a fragment that still reads like one - so
+  the loss surfaces as a wrong *value* somewhere downstream. The log a training backend
+  parses for its "RUNNING != learning" verdict reported a healthy 1200-step run as having
+  produced no metrics at all, with nothing raised and nothing logged.
+- Pinned by `tests/training/test_inproc.py::TestCaptureToFileIsTheOnlyWriter`, which
+  asserts the log holds exactly the lines that were written - so a dropped record and a
+  surviving fragment both fail - and hands records to the installed handler directly, so
+  the assertion does not depend on ambient logger levels or on pytest's capture plugin.
 
 ### Module-Level Side Effects
 - **If you must run code at import time, comment WHY it can't be lazy.** `MUJOCO_GL` is the canonical example: MuJoCo locks the GL backend at first `import mujoco`, so the env var must be set before any downstream import chain triggers it.

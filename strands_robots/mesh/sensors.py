@@ -44,6 +44,66 @@ from strands_robots.mesh.session import (
 logger = logging.getLogger(__name__)
 
 
+def _quat_wxyz_from_rotmat(mat: Any) -> list[float]:
+    """Rotation matrix -> unit quaternion, scalar-first ``[w, x, y, z]``.
+
+    Shepperd's method: take the trace branch when the trace is positive,
+    otherwise branch on the largest diagonal term. All four branches are needed.
+    The trace branch alone divides by ``sqrt(trace + 1)``, which goes to zero as
+    the trace approaches ``-1``, so it cannot serve the ``trace <= 0`` half of
+    the domain - and that half is not an edge case. A rotation's trace is
+    ``1 + 2 * cos(angle)``, so ``trace <= 0`` is exactly ``angle >= 120
+    degrees``, which is 61% of SO(3) under the uniform measure: a robot that has
+    turned to face back the way it came is in it. Substituting the identity
+    quaternion there reports such a robot as one that has not turned at all, and
+    reports it as a valid unit quaternion, so no consumer can tell.
+
+    The result is normalized, so a matrix that is only approximately orthonormal
+    - a pose integrated from odometry or handed over by a SLAM stack - still
+    yields a unit quaternion rather than one whose length quietly carries the
+    input's drift onto the wire. It is then sign-canonicalized to ``w >= 0``:
+    ``q`` and ``-q`` encode the same rotation, so the canonical sign is safe for
+    every consumer and keeps repeated reads of an unchanged pose identical.
+
+    The MuJoCo and Isaac backends hold the same rule, and this is deliberately a
+    third copy rather than an import: :mod:`strands_robots.mesh` must not depend
+    on :mod:`strands_robots.simulation`, and the shared-domain module those two
+    layers do have in common (:mod:`strands_robots.utils`) is the refusal-guard
+    module, which holds a scanned invariant that no function in it converts a
+    caller's value outside a ``try``. Giving all three one owner is a refactor
+    of two already-correct implementations, separate from reporting a pose.
+
+    Args:
+        mat: A rotation matrix, or an SE(3) transform whose leading 3x3 block is
+            one (the translation row and column are not read).
+
+    Returns:
+        ``[w, x, y, z]`` as plain floats: a unit quaternion with ``w >= 0``.
+    """
+    import numpy as np
+
+    m = np.asarray(mat, dtype=np.float64)
+    t = float(m[0, 0] + m[1, 1] + m[2, 2])
+    if t > 0.0:
+        s = float(np.sqrt(t + 1.0)) * 2.0
+        w, x, y, z = 0.25 * s, (m[2, 1] - m[1, 2]) / s, (m[0, 2] - m[2, 0]) / s, (m[1, 0] - m[0, 1]) / s
+    elif m[0, 0] >= m[1, 1] and m[0, 0] >= m[2, 2]:
+        s = float(np.sqrt(1.0 + m[0, 0] - m[1, 1] - m[2, 2])) * 2.0
+        w, x, y, z = (m[2, 1] - m[1, 2]) / s, 0.25 * s, (m[0, 1] + m[1, 0]) / s, (m[0, 2] + m[2, 0]) / s
+    elif m[1, 1] >= m[2, 2]:
+        s = float(np.sqrt(1.0 + m[1, 1] - m[0, 0] - m[2, 2])) * 2.0
+        w, x, y, z = (m[0, 2] - m[2, 0]) / s, (m[0, 1] + m[1, 0]) / s, 0.25 * s, (m[1, 2] + m[2, 1]) / s
+    else:
+        s = float(np.sqrt(1.0 + m[2, 2] - m[0, 0] - m[1, 1])) * 2.0
+        w, x, y, z = (m[1, 0] - m[0, 1]) / s, (m[0, 2] + m[2, 0]) / s, (m[1, 2] + m[2, 1]) / s, 0.25 * s
+    q = np.array([w, x, y, z], dtype=np.float64)
+    norm = float(np.linalg.norm(q)) or 1.0
+    q = q / norm
+    if q[0] < 0.0:
+        q = -q
+    return [float(v) for v in q]
+
+
 def _resolve_hz(env_name: str, default: float) -> float:
     """Read a publish rate (Hz) from the environment, falling back to default.
 
@@ -141,16 +201,7 @@ class SensorLoopsMixin:
                     pose["y"] = float(mat[1, 3])
                     pose["z"] = float(mat[2, 3])
                     pose["theta"] = float(np.arctan2(mat[1, 0], mat[0, 0]))
-                    trace = float(mat[0, 0] + mat[1, 1] + mat[2, 2])
-                    if trace > 0:
-                        s = 0.5 / np.sqrt(trace + 1.0)
-                        w = 0.25 / s
-                        x = (mat[2, 1] - mat[1, 2]) * s
-                        y = (mat[0, 2] - mat[2, 0]) * s
-                        z = (mat[1, 0] - mat[0, 1]) * s
-                    else:
-                        w, x, y, z = 1.0, 0.0, 0.0, 0.0
-                    pose["quat"] = [float(w), float(x), float(y), float(z)]
+                    pose["quat"] = _quat_wxyz_from_rotmat(mat)
                     pose["source"] = "provider"
                     pose["frame"] = "map"
                     return pose
