@@ -1039,7 +1039,7 @@ class SimEngine(ABC):
         size: list[float] | None = None,
         color: list[float] | None = None,
         mass: float = 0.1,
-        is_static: bool = False,
+        is_static: bool | None = None,
         mesh_path: str | None = None,
         material: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
@@ -1072,6 +1072,17 @@ class SimEngine(ABC):
         ``set_body_properties`` would refuse: a non-finite mass makes the first
         integration step produce ``nan`` and, because the solver shares one
         state vector, poisons every other body in the world too.
+
+        ``is_static`` is tri-state, and ``None`` is the default because it
+        is the only value that means "the caller did not specify". That is what
+        lets a backend derive the answer from ``shape``: MuJoCo forces a
+        ``shape="plane"`` static -- a plane is infinite and cannot carry a
+        dynamic mass -- and *refuses* an explicit ``is_static=False`` there
+        rather than quietly overriding it. A backend with no shape-derived rule
+        resolves ``None`` to ``False`` (dynamic). Declaring the default as
+        ``False`` would state a value the default backend does not deliver, and
+        would make restating that declared default a hard error for the one
+        shape whose whole point is being static.
 
         ``material`` (optional): backend-specific visual material/texture
         spec. ``None`` keeps the flat ``color`` rgba (unchanged); a backend
