@@ -50,6 +50,40 @@ _EXPECTED_NQ = _ROOT_QPOS_WIDTH + len(GTP_G1_JOINT_NAMES)
 # ---------------------------------------------------------------------------
 
 
+def _declares_a_ground_geom(mujoco, mjcf_path: Path) -> bool:
+    """Report whether ``mjcf_path`` already declares a ground geom.
+
+    The question is about the model MuJoCo will build from the file, not about
+    one section of the file's XML: MuJoCo merges *every* ``<worldbody>`` a file
+    declares, splices ``<include>``d content in, and compiles geoms wherever
+    they are nested inside bodies. Reading the first ``<worldbody>``'s direct
+    ``<geom>`` children answers a narrower question and misses all three, so
+    this asks MuJoCo's own parser for the flat geom list instead - the same rule
+    :mod:`strands_robots.simulation.mujoco.spec_builder` applies when it decides
+    whether a world already owns a ground plane.
+
+    Parsing a spec resolves includes without compiling meshes (single-digit
+    milliseconds on a G1, against ~170ms for a full compile), so this stays well
+    inside this module's one-off build-time cost.
+
+    Args:
+        mujoco: The resolved ``mujoco`` module.
+        mjcf_path: Path to the MJCF to inspect.
+
+    Returns:
+        ``True`` when the parsed model declares a plane geom, or a geom whose
+        name reads as a floor or ground, and a patched-in floor would therefore
+        be a second ground plane sharing the ``floor`` name.
+    """
+    spec = mujoco.MjSpec.from_file(str(mjcf_path))  # type: ignore[attr-defined]
+    return any(
+        "floor" in (geom.name or "").lower()
+        or "ground" in (geom.name or "").lower()
+        or geom.type == mujoco.mjtGeom.mjGEOM_PLANE  # type: ignore[attr-defined]
+        for geom in spec.geoms
+    )
+
+
 def _patch_and_load_mjcf(mjcf_path: Path):
     """Load MJCF with a floor geom + no sensors - required for FK."""
     mujoco = require_optional(
@@ -66,19 +100,12 @@ def _patch_and_load_mjcf(mjcf_path: Path):
         root.remove(sensor_elem)
 
     worldbody = root.find("worldbody")
-    if worldbody is not None:
-        has_ground = any(
-            "floor" in g.get("name", "").lower()
-            or "ground" in g.get("name", "").lower()
-            or g.get("type", "").lower() == "plane"
-            for g in worldbody.findall("geom")
-        )
-        if not has_ground:
-            floor = ET.SubElement(worldbody, "geom")
-            floor.set("name", "floor")
-            floor.set("type", "plane")
-            floor.set("size", "0 0 0.05")
-            floor.set("rgba", "0.7 0.7 0.7 1")
+    if worldbody is not None and not _declares_a_ground_geom(mujoco, mjcf_path):
+        floor = ET.SubElement(worldbody, "geom")
+        floor.set("name", "floor")
+        floor.set("type", "plane")
+        floor.set("size", "0 0 0.05")
+        floor.set("rgba", "0.7 0.7 0.7 1")
 
     xml_str = ET.tostring(root, encoding="unicode")
 

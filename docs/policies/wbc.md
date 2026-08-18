@@ -162,6 +162,14 @@ WBC reproduces the upstream `GearWbcController` loop (NVlabs/GR00T-WholeBodyCont
   - joint positions `[13:28]` (minus `default_angles`, scaled by `dof_pos_scale`)
   - joint velocities `[28:43]` (scaled by `dof_vel_scale=0.05`)
   - previous action `[43:58]`; indices `[58:86]` are a reserved (zero) tail.
+
+  The upstream YAML spells these three scales as flat `ang_vel_scale` /
+  `dof_pos_scale` / `dof_vel_scale` keys, and `WBCConfig` normalises them into
+  the nested `obs_scales` map. A config only has to state the scales it wants to
+  change: the rest keep the upstream defaults above, so naming one scale never
+  changes what an unnamed sibling is scaled by. `config.obs_scales` is therefore
+  always the complete map the frame is built with, whichever spelling the config
+  used.
 - **Action** - the network emits a 15-dim joint-position *offset*; the policy
   forms absolute targets `target_q = default_angles + action_scale * raw` and
   returns them keyed by actuator name. For torque-actuated MuJoCo, convert with
