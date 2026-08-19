@@ -88,7 +88,11 @@ class HardwareRosBridge(RosTelemetryBridge):
             thread into a busy-spin with no bound - and ``inf`` raises
             ``OverflowError`` out of it, killing the loop while the bridge
             reports a successful construction.
-        joint_limits: Optional ``{motor: (min, max)}`` clamp ranges. Each bound
+        joint_limits: Optional ``{"<motor>.pos": (min, max)}`` clamp ranges,
+            keyed by the joint name as it arrives in ``joint_command`` - the
+            same ``<motor>.pos`` names this bridge publishes in
+            ``joint_states``, so a controller can echo them straight back. A
+            key that names no commanded joint constrains nothing. Each bound
             must be a finite number - a non-finite one declares a range that
             admits nothing, so the bridge refuses it at construction rather than
             dropping every inbound command for that joint mid-run. When set,
@@ -99,7 +103,7 @@ class HardwareRosBridge(RosTelemetryBridge):
     Raises:
         ValueError: If ``domain_id`` is outside ``[0, 232]``, if ``spin_period``
             is not a positive finite number, or if ``joint_limits`` is not a
-            ``{motor: (min, max)}`` mapping of finite numeric pairs with
+            ``{"<motor>.pos": (min, max)}`` mapping of finite numeric pairs with
             ``min <= max``.
     """
 
@@ -129,7 +133,8 @@ class HardwareRosBridge(RosTelemetryBridge):
         super().__init__(domain_id=domain_id, node_name=node_name, qos_depth=qos_depth)
 
         self._robot = robot
-        # Optional {motor: (min, max)} clamp ranges enforced on inbound commands
+        # Optional {"<motor>.pos": (min, max)} clamp ranges enforced on inbound
+        # commands
         # by RosTelemetryBase._command_action (validated up front, fail fast).
         self._joint_limits = self._validate_joint_limits(joint_limits)
         # Commands require a robot to drive; a pure-publisher bridge (robot

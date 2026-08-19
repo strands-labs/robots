@@ -18,7 +18,24 @@ These tests deliberately do NOT require NVIDIA Isaac Sim (the pattern of
 ``test_urdf_joint_name_demangle.py``): the articulation, the world and the
 ``ArticulationAction`` type are all faked, so resolution, convergence,
 timeout and abort are all exercised on any host. Real-GPU integration
-coverage is the tests child of #2123 and lives in ``tests_integ/``.
+coverage is the tests child of #2123 and lives in
+``tests_integ/simulation/test_isaac_motion_primitives_gpu.py``.
+
+Parity scope (#2156): this file mirrors
+``tests/simulation/mujoco/test_motion_primitives.py`` case-for-case where
+the behavior is backend-neutral. MuJoCo cases that pin a MuJoCo-only
+mechanism are deliberately NOT ported emptily (test behavior, not
+implementation):
+
+  * ``TestDiscoverySurface``'s ``tool_spec`` cases and the whole
+    ``TestDispatchForwarding`` class pin the MuJoCo ``AgentTool`` router
+    (``tool_spec`` / ``_dispatch_action``); ``IsaacSimulation`` exposes no
+    tool-dispatch surface, so there is nothing to forward through.
+  * The MuJoCo servo pins that read ``data.ctrl`` interplay or count
+    ``_SUBSTEPS_PER_TICK`` physics substeps have no Isaac counterpart: an
+    Isaac control tick IS one ``world.step`` (see
+    ``IsaacMotionPrimitivesMixin._primitive_tick``), which
+    ``test_target_reasserted_every_tick`` pins from the behavior side.
 """
 
 from __future__ import annotations
@@ -246,6 +263,15 @@ class TestGuards:
         assert result["status"] == "error"
         assert "not initialized" in result["content"][0]["text"]
 
+    def test_allowed_after_policy_stopped(self):
+        # The flag every Isaac policy-driving loop clears on exit is the whole
+        # gate: once it drops, the primitive proceeds (MuJoCo parity).
+        sim, _ = _make_sim()
+        sim._robots["arm"].policy_running = True
+        sim._robots["arm"].policy_running = False
+        result = sim.set_gripper(robot_name="arm", state="open", steps=2)
+        assert result["status"] == "success", result
+
     def test_worker_thread_without_pump_is_a_structured_error(self):
         # Isaac writes must happen on the Kit-owning thread. Called off it
         # with no pump, the primitive answers with the recipe instead of the
@@ -407,6 +433,39 @@ class TestGripperRegistryMetadata:
         assert _json_block(result)["actuators"] == ["6"]
         assert list(np.asarray(art.applied[0].joint_indices)) == [5]
 
+    def test_set_gripper_commands_only_metadata_actuators(self, monkeypatch):
+        # The heuristic's inverse failure mode (GH #1658) is silent: an ARM
+        # joint whose name happens to contain a hint (here the base pan,
+        # 'finger_camera_pan') would be classified as a gripper drive and
+        # slewed by set_gripper. Metadata is authoritative: ONLY the named
+        # joint is commanded.
+        self._patch_registry(monkeypatch, {"actuators": ["Jaw"], "closed": "low", "open": "high"})
+        sim, art = _make_sim(
+            joint_names=["finger_camera_pan", "shoulder_lift", "elbow", "wrist_roll", "Jaw"],
+            data_config="so101",
+        )
+        result = sim.set_gripper(robot_name="arm", state="close", steps=5)
+        assert result["status"] == "success", result
+        payload = _json_block(result)
+        assert payload["actuators"] == ["Jaw"], payload
+        assert "finger_camera_pan" not in payload["targets"]
+        commanded = {int(i) for a in art.applied for i in np.asarray(a.joint_indices)}
+        assert commanded == {4}, "set_gripper commanded a hint-colliding arm DOF"
+
+    def test_alias_data_config_resolves_metadata(self):
+        # data_config aliases resolve to the canonical registry entry through
+        # the REAL registry (no patching): so100_dualcam -> so100, whose
+        # gripper metadata names 'Jaw'. The hint-colliding pan joint proves
+        # the metadata (not the heuristic) did the resolution - the heuristic
+        # would have picked both.
+        sim, _ = _make_sim(
+            joint_names=["finger_camera_pan", "shoulder_lift", "elbow", "wrist_roll", "Jaw"],
+            data_config="so100_dualcam",
+        )
+        result = sim.set_gripper(robot_name="arm", state="open", steps=5)
+        assert result["status"] == "success", result
+        assert _json_block(result)["actuators"] == ["Jaw"]
+
     def test_inverted_open_close_convention_honored(self, monkeypatch):
         self._patch_registry(monkeypatch, {"actuators": ["6"], "closed": "high", "open": "low"})
         sim, _ = _make_sim(
@@ -421,21 +480,31 @@ class TestGripperRegistryMetadata:
     def test_stale_metadata_is_a_loud_error_not_a_heuristic_fallback(self, monkeypatch):
         # The metadata names a joint the articulation does not have; falling
         # back to the hints would command whatever the heuristic guesses.
+        # rotate_wrist shares the classification (GH #1661), so it refuses
+        # identically instead of silently picking a wrist from the raw hints.
         self._patch_registry(monkeypatch, {"actuators": ["NoSuchJoint"], "closed": "low", "open": "high"})
         sim, art = _make_sim(data_config="so101")
-        result = sim.set_gripper(robot_name="arm", state="open")
-        assert result["status"] == "error"
-        text = result["content"][0]["text"]
-        assert "stale" in text
-        assert "NoSuchJoint" in text
+        for action, fields in (
+            ("set_gripper", {"state": "open"}),
+            ("rotate_wrist", {"target_yaw": 0.3}),
+        ):
+            result = getattr(sim, action)(robot_name="arm", **fields)
+            assert result["status"] == "error", (action, result)
+            text = result["content"][0]["text"]
+            assert "stale" in text, (action, text)
+            assert "NoSuchJoint" in text, (action, text)
         assert art.applied == []
 
     def test_malformed_metadata_is_a_loud_error(self, monkeypatch):
         self._patch_registry(monkeypatch, {"actuators": [], "closed": "low", "open": "low"})
         sim, _ = _make_sim(data_config="so101")
-        result = sim.set_gripper(robot_name="arm", state="open")
-        assert result["status"] == "error"
-        assert "malformed" in result["content"][0]["text"]
+        for action, fields in (
+            ("set_gripper", {"state": "open"}),
+            ("rotate_wrist", {"target_yaw": 0.3}),
+        ):
+            result = getattr(sim, action)(robot_name="arm", **fields)
+            assert result["status"] == "error", (action, result)
+            assert "malformed" in result["content"][0]["text"], (action, result)
 
     def test_no_data_config_still_uses_heuristic(self):
         sim, _ = _make_sim(data_config=None)
@@ -523,6 +592,29 @@ class TestRotateWrist:
         result = sim.rotate_wrist(robot_name="arm", target_yaw=0.3)
         assert result["status"] == "success", result
         assert _json_block(result)["wrist_joint"] == "elbow"
+
+    def test_hint_colliding_distal_joint_stays_a_wrist_candidate(self, monkeypatch):
+        # GH #1661's fallback-shift failure mode: the most distal arm joint is
+        # named 'finger_camera_roll'. The raw heuristic excluded it (finger
+        # hint) and shifted the last-non-gripper fallback onto the elbow; with
+        # registry metadata (gripper = Jaw) the roll joint stays a candidate
+        # and is picked. No wrist hint matches, so the fallback path is the
+        # one exercised.
+        monkeypatch.setattr(
+            "strands_robots.simulation.isaac.motion_primitives.get_robot",
+            lambda name: (
+                {"gripper": {"actuators": ["Jaw"], "closed": "low", "open": "high"}} if name == "so100" else None
+            ),
+        )
+        sim, _ = _make_sim(
+            joint_names=["shoulder_pan", "shoulder_lift", "elbow", "finger_camera_roll", "Jaw"],
+            data_config="so100",
+        )
+        result = sim.rotate_wrist(robot_name="arm", target_yaw=0.5)
+        assert result["status"] == "success", result
+        payload = _json_block(result)
+        assert payload["wrist_joint"] == "finger_camera_roll", payload
+        assert payload["reached"] is True
 
     def test_gripper_only_articulation_cannot_resolve_a_wrist(self):
         sim, _ = _make_sim(joint_names=["jaw"], limits=[(-0.2, 1.5)])
@@ -620,3 +712,28 @@ class TestDiscoverySurface:
         assert "rotate_wrist" in methods
         assert "open" in methods["set_gripper"]
         assert "target_yaw" in methods["rotate_wrist"]
+
+
+class TestRecordingInterplay:
+    """Primitive motion does NOT feed the dataset recorder (the #1498 bug class).
+
+    Only the policy-rollout per-frame hook records dataset episodes
+    (:meth:`~strands_robots.simulation.isaac.recording.IsaacRecordingMixin._make_run_policy_hook`);
+    a primitive stepping physics directly must not add frames - a silent
+    zero-frame "recording" must never masquerade as a recorded episode.
+    Mirrors the MuJoCo pin; the recorder is a mock, so no dataset root is
+    ever resolved (nothing touches the shared cache).
+    """
+
+    def test_primitive_does_not_feed_dataset_recorder(self):
+        from unittest.mock import MagicMock
+
+        sim, _ = _make_sim()
+        recorder = MagicMock()
+        sim._recording_state_dict = {"recording": True, "dataset_recorder": recorder}
+        try:
+            result = sim.set_gripper(robot_name="arm", state="close", steps=5)
+            assert result["status"] == "success", result
+            recorder.add_frame.assert_not_called()
+        finally:
+            sim._recording_state_dict = {}

@@ -137,6 +137,32 @@ remaining columns onto the keys from `set_robot_state_keys(...)`. A
 `success=False` response raises `RuntimeError`. The sidecar also exposes
 `ping` (health check) and `reset` (per-episode hook).
 
+### Failure reporting
+
+REQ/REP is lockstep, so the sidecar answers every request it receives: a
+request it cannot serve comes back as a failure response, never by dropping the
+reply and exiting. A planning failure is reported in the `plan` response as
+`success=False` plus a `status` naming the stage that failed:
+
+| `status` prefix | Meaning |
+| --- | --- |
+| `unknown_planning_group:` | The requested group does not resolve. |
+| `start_state_error:` | The current robot state is not readable (no `/joint_states` yet, state monitor not warmed up). |
+| `missing_goal:` | Neither `target_pose` nor `target_joints` was supplied. |
+| `invalid_goal:` | The goal was rejected - a joint the group does not have, an unresolvable pose link, or a `target_pose` that is not 7 values. |
+| `planner_exception:` / `planner_returned_empty` | Planning ran and failed. |
+| `trajectory_error:` | The planned trajectory did not serialise. |
+
+Client-side validation checks `target_joints` key *syntax*, not whether the
+group actually has those joints, so a joint-name typo is reported by the
+sidecar as `invalid_goal:` rather than rejected before the call. Anything
+outside the `plan` contract - an unknown endpoint, a request that does not
+decode or that decodes to something other than a map, an unexpected error in a
+forked handler - comes back as `{"error": ...}`, which the client raises as
+`RuntimeError`. Both malformed-payload cases share the `malformed_request:`
+prefix, so a client has one class to match whether the bytes were undecodable
+or decoded to an integer.
+
 ## In simulation
 
 ```python

@@ -1387,6 +1387,101 @@ Corrections from code review that apply to all future contributions:
   base also carries its clock in its name (`started_mono`, `last_idle_render_mono`), so a
   later reader cannot mistake it for a stamp and subtract `time.time()` from it.
 
+### Posture flags are checked, never read by truthiness
+- **A flag that selects a posture is checked; a knob that scales a quantity is
+  validated.** Both live in the same signatures and both are caller input, but they fail
+  differently. `boolean_flag_error` is the domain for the first kind - a confirmation gate,
+  a security opt-out, a preview mode, a search region - and the numeric domains
+  (`positive_whole_number_error`, `positive_finite_number_error`) for the second. The two
+  are inverses: the numeric ones reject `bool` because it is an `int` subclass that would
+  pass as a silent `1`, and this one requires the boolean they turn away.
+- **Truthiness inverts exactly the spellings an operator reaches for.** Every non-empty
+  string is truthy, so `"false"`, `"no"`, `"off"` and `"0"` select the *other* posture from
+  the one they read as, and `None`, `0`, `""` and `[]` take a branch without ever being a
+  declared spelling of it. Nothing raises and nothing logs, so the wrong posture is
+  indistinguishable from the right one - `actuate_robot`'s `disable_self_collision="no"`
+  disabled every collision in the scene, and `derive_key_light`'s
+  `upper_hemisphere="false"` searched the hemisphere the value asks to skip.
+- **Do not parse a vocabulary as a fallback.** A flag arrives already typed, unlike an
+  environment variable whose only shape is a string, so the honest answer is to check it.
+  Parsing only moves which spellings invert: `"on"`, `"enabled"` and `"y"` are absent from
+  every such vocabulary here and would each resolve to the restrictive posture while
+  reading as an opt-in.
+- **A refusal that branches on the same flag inherits the inversion.** If an error message
+  chooses its wording or its remedy from the flag, a truthy non-boolean makes it describe
+  the branch the caller did not ask for - `derive_key_light` reported a region black
+  "above the horizon" to a caller who had asked for the full sphere, and advised passing
+  the value they believed they had passed. Checking the flag makes such a branch reachable
+  only where its advice is actionable.
+- Pinned by `tests/simulation/mujoco/test_actuate_robot_posture_flag_domain.py`,
+  `tests/simulation/test_recording_posture_flag_domain.py`,
+  `tests/tools/test_lerobot_teleoperate_flag_domain.py`,
+  `tests/mesh/test_iot_provisioning_flag_domain.py` and
+  `tests/rendering/test_key_light_posture_flag_domain.py`, each of which parametrizes over
+  `boolean_flag_error` itself rather than a copied spelling list, so a spelling added to
+  the shared domain is covered without an edit.
+
+### A subset selector is read by membership, never by truthiness
+- **A parameter that names a SUBSET of a collection the call already owns is not a value
+  with a default; it is a selection.** `None` means "all of it" on these surfaces, so
+  reading the parameter by truthiness makes every other falsy value take that same branch
+  - and for a selector, that is not a wider default but the *opposite* answer. An empty
+  selection asks for nothing and was served everything: `teleoperate(names=[])`, which is
+  what a filter that matched nothing produces, connected and drove every attached leader,
+  and `detach_teleop("")` removed the whole attached set. Both reported success.
+- **Read it `is None`, and refuse the empty selection rather than widening it.** A scalar
+  default (a path, a device string, an empty `fields` dict) can be read by truthiness
+  because empty and absent genuinely coincide there - the value is derived either way. A
+  subset selector is the case where they diverge, so it needs the membership read plus its
+  own verdict on emptiness, which the shared name-list domain deliberately leaves to the
+  caller ("a surface where an absent value IS an error keeps that verdict its own").
+- **The other unhonorable spellings belong to `name_list_error`.** A single name as a bare
+  string is iterable per character, a repeated name makes the call do its unit of work
+  twice, and a one-shot iterator is consumed by whichever check reads it first, leaving the
+  real consumer nothing. Route the shape through the shared domain and keep only the
+  emptiness verdict local; refuse before the call touches hardware, a filesystem or a
+  thread, so a refused selection has no partial effect to undo.
+- **A selection widened to everything can also reach past the call.** `detach_teleop` stops
+  the local loop once nothing is left to drive, so a detach widened from one stream to all
+  of them ended a running session as a side effect of the misread.
+- Pinned by `tests/test_teleop_device_selection_domain.py`, whose controls assert that the
+  documented spellings (`names=None`, a real subset, `detach_teleop(None)`) are unchanged,
+  and by the render path's `cameras` resolution, which has read the same kind of selector
+  `is None` all along - an empty camera selection there resolves to no camera rather than
+  to every one.
+### A resolution knob is validated before the work it sizes
+- **Check the knob that sizes an expensive result before producing the result.** A
+  resolution is caller input like any other, and the numeric domains
+  (`positive_whole_number_error` for a pixel or frame count) are what it is checked
+  against. Checking it late is not merely a worse message: `render_environment_map`
+  paid six full background renders - GPU-bound for a `GsplatBackground` - before
+  returning a `(H, 0, 3)` map for `equi_w=0`, and `bake_environment_map` probed and
+  wrote its cache file before anything looked at the size it was baking.
+- **A zero-sized grid is a resolution mistake, and the consumer will misdiagnose it
+  as a property of the scene.** An empty map is not distinguishable from a dark one
+  by the code that reads it, so `derive_key_light` blamed the background - "the map
+  is black above the horizon" - and advised a search flag. Following that advice
+  fails identically, because a map with no texels has no hemisphere to search, so
+  the only remedy on offer was a dead end and the knob the caller actually got
+  wrong was named nowhere. Refuse at the entry point and the accurate diagnosis is
+  the first one the caller sees.
+- **Check the domain, not the quality.** A resolution the module cannot use is a
+  refusal; a resolution that merely buys a poor result is the caller's call, and
+  the two are worth keeping apart. `face_size` is the example: the equirect
+  reprojection scales by `face_size - 1`, so 1, 2 and 3 each resolve almost
+  nothing within a cube face, and the detail a map carries grows smoothly from
+  there with no boundary to pin a floor to. `0` cannot produce a map at all, so
+  that is refused; `1` can, so it is accepted.
+- **Normalize after checking.** The numeric domains deliberately accept an integral
+  float and a NumPy integer, so the value has to be put through `int()` before it
+  indexes anything - `HybridCompositor` does this for its own `default_width` /
+  `default_height`. Where the value is formatted into a cache key that is not
+  cosmetic: `2048` and `2048.0` spelled two different environment-map filenames for
+  one set of pixels, so a bake already on disk was missed and paid for again.
+- Pinned by `tests/rendering/test_environment_map_resolution_domain.py`, which
+  parametrizes over `positive_whole_number_error` itself rather than a copied value
+  list, so a value added to the shared domain is covered without an edit.
+
 ### One writer per log file
 - **A file two writers share needs one file object, not one path.** Two file objects over
   one path each track their own write offset, so a buffered writer flushes at its offset

@@ -102,7 +102,16 @@ Every hardware `Robot` and `Simulation` host exposes:
 
 ### `teleoperate`
 
-- **`names`** - subset of attached streams to run (default: all).
+- **`names`** - subset of attached streams to run (`None`, the default, runs
+  every attached stream). The selection is read by membership, so only `None`
+  means "all": `names=[]` names no stream and is **refused** rather than widened
+  to every device, because a filter that matched nothing must not energise and
+  drive every leader attached to the host. The list is held to the shared
+  name-list domain - several distinct names, as a list - so `names="leader"` is
+  refused as a single string rather than read as one stream per character, a
+  repeated name is refused rather than polling that device twice per tick, and a
+  one-shot iterator is refused rather than being consumed before the loop can
+  poll it. Every one of these is refused before any device is connected.
 - **`robot_name`** - target robot in a multi-robot simulation world.
 - **`hz`** - control-loop rate (default `50.0`).
 - **`publish`** - also publish each device to the mesh via the host's
@@ -150,6 +159,16 @@ Refusals are not errors, but a session with any of them does not report
 `success`, so a device whose units the bound does not expect (degree-valued or
 normalized-percent) cannot look like a clean run while moving nothing - widen
 the bound for those.
+
+### `detach_teleop`
+
+- **`name`** - which attached stream to remove. `None` (the default) detaches
+  every one; any other value names a single stream. Read by membership, like
+  `teleoperate(names=)`, so a value naming no attached stream is refused rather
+  than widened to the whole set - `detach_teleop("")` reports
+  `No teleop named ''.` and leaves every stream attached. That matters mid-
+  session: `detach_teleop` stops the loop once nothing is left to drive, so a
+  detach widened to all streams would also end a running session.
 
 ## Action-key compatibility
 

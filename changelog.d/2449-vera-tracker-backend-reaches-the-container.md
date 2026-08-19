@@ -1,0 +1,3 @@
+### Fixed
+
+- **policies/vera**: carry the IDM point-tracker backend into the containerised policy server. `VeraConfig.server_env()` is the single statement of what the server must be configured with, and only the subprocess runner reads it - the docker runner re-enumerated the same vocabulary by hand as `-e` flags and omitted `VERA_TRACKER_BACKEND`, whose only sink is that overlay. `server_mode="docker"` therefore ignored `tracker_backend` (and its documented `VERA_TRACKER_BACKEND` override) entirely: `docker run` has no unpassed variable to object to, so the server started on its default tracker while the same config selected the requested one in `server_mode="subprocess"`.

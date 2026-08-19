@@ -227,6 +227,12 @@ class DockerServerRunner:
         config: The :class:`~strands_robots.policies.vera.config.VeraConfig`
             (``docker_image``, ``docker_container_name``, ``docker_gpus``,
             ``ckpt_root``, ports, embodiment).
+
+    Every value :meth:`~strands_robots.policies.vera.config.VeraConfig.server_env`
+    declares reaches the container, so a server configured through the config
+    is configured the same way in either mode: a backend name is forwarded as
+    ``-e`` verbatim, and a host path is bind-mounted and forwarded as the
+    container path it was mounted at.
     """
 
     def __init__(self, config: VeraConfig) -> None:
@@ -302,6 +308,13 @@ class DockerServerRunner:
             cmd += ["-e", f"VERA_DYNAMICS_RUN_ID={cfg.dynamics_run_id}"]
         if cfg.text_prompt:
             cmd += ["-e", f"VERA_TEXT_PROMPT={cfg.text_prompt}"]
+        # IDM point tracker. A backend NAME, so it needs no host->container path
+        # translation: forwarding it as `-e` puts it in the server process's
+        # environment exactly as the subprocess path's `env=` overlay does. The
+        # container is built to take such an override - `_set_if_exists` in the
+        # entrypoint only fills a var it finds empty, so an explicit `-e` wins.
+        if cfg.tracker_backend:
+            cmd += ["-e", f"VERA_TRACKER_BACKEND={cfg.tracker_backend}"]
         if cfg.sample_steps is not None:
             cmd += ["-e", f"VERA_SAMPLE_STEPS={cfg.sample_steps}"]
         if not cfg.teacache:

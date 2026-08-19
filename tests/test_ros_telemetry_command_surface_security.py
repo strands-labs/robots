@@ -4,7 +4,8 @@ An inbound ``joint_command`` subscription lets any participant on the DDS domain
 drive a physical arm, so :class:`strands_robots.ros_telemetry.RosTelemetryBase`
 validates the drivable surface at construction rather than silently degrading:
 
-* ``joint_limits`` must be a well-formed ``{motor: (min, max)}`` mapping, or the
+* ``joint_limits`` must be a well-formed ``{"<motor>.pos": (min, max)}`` mapping,
+  or the
   bridge refuses to build (a malformed bound can never become a silent mid-run
   rejection of every command).
 * An enabled command surface requires DDS Security credentials *or* an explicit
@@ -274,7 +275,8 @@ class TestANonFiniteBoundIsRefusedAtConstruction:
 
         ``(-1.9, inf)`` and ``(-inf, 1.9)`` did admit in-range commands before
         this rule, so refusing them is a deliberate narrowing rather than a
-        no-op: a ``{motor: (min, max)}`` clamp range is a bounded interval, an
+        no-op: a ``{"<motor>.pos": (min, max)}`` clamp range is a bounded
+        interval, an
         unbounded joint is expressed by omitting it (documented: "Joints without
         a declared bound are not constrained"), and the sibling declaration of
         this parameter refuses ``inf`` too - one parameter name must not carry

@@ -126,6 +126,15 @@ server boots with **no network**. See
 `server_mode="subprocess"` launches a local `python -m vera.server...` when VERA
 is installed in the same env.
 
+Either mode configures the server from the same `VeraConfig`, so every value in
+the table below reaches it whichever one runs. The two modes get it there by
+different routes: the subprocess inherits the whole environment overlay, while
+the container takes a scalar (a backend name, a run id) as `-e` and a host path
+as a read-only bind mount forwarded under the container path it was mounted at
+(`ckpt_root` -> `/ckpts`, `wan_ckpt_root` -> `/wan`). A value the container
+command failed to pass would not be reported: `docker run` has nothing to
+object to, so the server would simply start on the default the caller overrode.
+
 ## Configuration
 
 `VeraConfig` maps 1:1 to VERA's server flags and is env-overridable (deploy/CI

@@ -31,6 +31,7 @@ full view-dependent color (the SH coefficients are evaluated per-view by
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -368,6 +369,20 @@ class GsplatBackground:
         major_axis: tuple | None = None,
     ) -> None:
         self._ply_path = Path(ply_path)
+        # Validate the scene file where the caller supplied it (issue #2321).
+        # The heavy work (torch/gsplat imports, decoding the splats) stays
+        # lazy in ``_load`` so construction is still cheap and CPU-safe, but a
+        # wrong path is a configuration error: raising here surfaces it at the
+        # construction site instead of at the first ``render()`` -- which in
+        # app contexts sits inside a catch-all that demotes the photoreal
+        # background to a procedural fallback.
+        if not self._ply_path.is_file():
+            raise FileNotFoundError(
+                f"Gaussian Splat not found: {self._ply_path}. "
+                "GsplatBackground requires an existing .ply/.spz scene file."
+            )
+        if not os.access(self._ply_path, os.R_OK):
+            raise PermissionError(f"Gaussian Splat is not readable: {self._ply_path}")
         self._device = device
         self._explicit_transform = transform is not None
         self._transform = np.asarray(transform, dtype=np.float64) if transform is not None else np.eye(4)

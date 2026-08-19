@@ -22,9 +22,13 @@ into a clip by `render_demo.py --wave` (the same `imageio` libx264 path
 ![Front hero view of the Franka on the backdrop](assets/hero_front.jpg)
 
 *The reframed `front` hero camera: a clean full-arm shot of the Franka
-composited over the backdrop. These were rendered on the procedural
-`PanoramaBackground` fallback (gsplat not installed); the real captured-3DGS
-path (`--gsplat-ply`) swaps the backdrop for a photoreal capture.*
+composited over the backdrop. **These two gallery images show the procedural
+`PanoramaBackground` fallback** (rendered before the pre-built `gsplat` wheel
+was in the render environment), *not* the photoreal 3DGS path -- on a host
+where gsplat rasterizes, the default run composites the robot into the real
+captured `tabletop` kitchen instead. Regenerating the gallery from the real GS
+path is tracked as a follow-up (blocked on the rasterization/lighting fixes in
+#2322 / #2323 so it isn't baked twice).*
 
 ## Why this exists (and how it differs from `mujoco_gs`)
 
@@ -82,9 +86,14 @@ supplies those `CameraParams` from the Isaac RTX camera instead of MuJoCo's
 pip install 'strands-robots[sim-isaac]'          # + a working Isaac Sim (RTX GPU)
 
 # Default: the real 3DGS tabletop scene (auto-downloaded + skybox-aligned),
-# default Franka. Falls back to the procedural panorama if gsplat isn't
-# installed — so this still runs with zero ML deps:
+# default Franka. If the 3DGS path can't initialize (gsplat missing or unable
+# to CUDA-rasterize) the run FAILS with an install hint rather than silently
+# demoting to the procedural panorama (#2321):
 python -m examples.isaac_gs.render_demo --frames 1 --out rollouts/isaac_gs
+
+# Zero-ML-deps mode: opt into the procedural-panorama demotion so the demo
+# always renders something, even without gsplat:
+python -m examples.isaac_gs.render_demo --frames 1 --allow-fallback
 
 # Sweep the arm across frames to show it moving on the backdrop. A
 # multi-frame run writes the PNG stills *and* assembles them into an MP4
@@ -107,8 +116,8 @@ python -m examples.isaac_gs.render_demo --gsplat-scene 'tabletop (indoor room)'
 
 # Your own captured 3DGS background (digital-twin use case; needs gsplat + a .ply).
 # NOTE: a plain `pip install gsplat` silently disables the CUDA backend in the
-# Isaac container (no nvcc) and crashes at first rasterization. Install a
-# pre-built wheel matching your torch + CUDA build instead:
+# Isaac container (no nvcc) — the demo detects this up front and fails with
+# this hint. Install a pre-built wheel matching your torch + CUDA build:
 pip install --index-url https://docs.gsplat.studio/whl/pt24cu118 'gsplat==1.5.3+pt24cu118'
 python -m examples.isaac_gs.render_demo --gsplat-ply /path/to/kitchen.ply
 

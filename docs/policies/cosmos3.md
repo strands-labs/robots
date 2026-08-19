@@ -53,6 +53,21 @@ Cosmos3Policy(
 | `av` | Autonomous vehicle cameras | - |
 | `bridge` | Bridge dataset robots | - |
 
+### Action spaces
+
+An embodiment serves its action under one or more `action_space` names, and each
+one names its own columns:
+
+| `action_space` | Columns | Notes |
+|----------------|---------|-------|
+| `midtrain` | The model's unified action: `tx,ty,tz` + the 6D rotation `r0..r5` + `grasp` (omitted for `av`, which has no gripper) | Served through un-converted, so the columns are the same as `raw_action_layout` |
+| `joint_pos` | `joint_0..joint_6` + `gripper` (DROID only) | The one space the RoboLab server post-processes, converting the effector pose into joint targets |
+
+`action_mapping` renames a column to one of your robot's actuator names, so its
+keys must be columns of the active space. Mapping the gripper is therefore
+`{"grasp": ...}` under `midtrain` and `{"gripper": ...}` under `joint_pos`; a key
+that names no column is refused, listing the ones that are valid.
+
 ## Backends
 
 Cosmos3Policy can run Cosmos 3 two ways. The default is unchanged.

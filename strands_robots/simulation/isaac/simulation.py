@@ -296,6 +296,19 @@ def _rgb_png_block(rgb: np.ndarray) -> dict[str, Any] | None:
 # Module-level singleton tracking for SimulationApp
 _SIMULATION_APP: Any = None
 _SIMULATION_APP_LOCK = threading.Lock()
+# The launch config the singleton was actually created with. A later request
+# that differs (e.g. a second IsaacSimulation asking for a different renderer)
+# cannot be honoured -- SimulationApp is create-once per process -- so the
+# mismatch is reported instead of silently dropped.
+_SIMULATION_APP_LAUNCH: dict[str, Any] | None = None
+
+# ``IsaacConfig.render_mode`` -> the SimulationApp ``renderer`` launch key
+# (see :class:`SimulationAppLaunchConfig`). ``"headless"`` means "no
+# rendering", so it deliberately selects nothing and Kit keeps its default.
+_RENDERER_BY_MODE: dict[str, str] = {
+    "rtx_realtime": "RayTracedLighting",
+    "rtx_pathtracing": "PathTracing",
+}
 
 
 def _get_or_create_simulation_app(
@@ -306,7 +319,11 @@ def _get_or_create_simulation_app(
     """Get or create the process-wide SimulationApp singleton.
 
     Isaac Sim's SimulationApp can only be created ONCE per process.
-    This function ensures that constraint is respected.
+    This function ensures that constraint is respected. When the singleton
+    already exists, any launch key the new request would have changed
+    (renderer, resolution, even ``headless``) cannot take effect; the
+    dropped keys are reported via ``logger.warning`` rather than silently
+    ignored.
 
     Parameters
     ----------
@@ -333,10 +350,30 @@ def _get_or_create_simulation_app(
     ImportError
         If omni.isaac.kit is not available.
     """
-    global _SIMULATION_APP
+    global _SIMULATION_APP, _SIMULATION_APP_LAUNCH
 
     with _SIMULATION_APP_LOCK:
+        # Layer order: typed launch_config base, then **kwargs escape hatch,
+        # then explicit headless argument (always wins so the caller's
+        # intent is unambiguous).
+        merged: dict[str, Any] = dict(launch_config or {})
+        merged.update(kwargs)
+        merged["headless"] = headless
+
         if _SIMULATION_APP is not None:
+            # SimulationApp is create-once per process, so a differing launch
+            # request cannot take effect. Say so rather than silently
+            # returning an app configured otherwise (e.g. a second sim asking
+            # for renderer="PathTracing" after a RayTracedLighting launch).
+            created_with = _SIMULATION_APP_LAUNCH or {}
+            dropped = {k: v for k, v in merged.items() if created_with.get(k) != v}
+            if dropped:
+                logger.warning(
+                    "SimulationApp already exists (process-wide singleton, created with %s); "
+                    "launch keys %s cannot be applied. Restart the process to change them.",
+                    created_with,
+                    dropped,
+                )
             return _SIMULATION_APP
 
         try:
@@ -357,16 +394,12 @@ def _get_or_create_simulation_app(
 
             raise ImportError(not_available_import_error()) from e
 
-        # Layer order: typed launch_config base, then **kwargs escape hatch,
-        # then explicit headless argument (always wins so the caller's
-        # intent is unambiguous).
-        merged: dict[str, Any] = dict(launch_config or {})
-        merged.update(kwargs)
-        merged["headless"] = headless
         _SIMULATION_APP = SimulationApp(merged)
+        _SIMULATION_APP_LAUNCH = dict(merged)
         logger.info(
-            "SimulationApp created (headless=%s). Note: this is a process-wide singleton.",
+            "SimulationApp created (headless=%s, renderer=%s). Note: this is a process-wide singleton.",
             headless,
+            merged.get("renderer", "<Kit default>"),
         )
         return _SIMULATION_APP
 
@@ -1002,8 +1035,17 @@ class IsaacSimulation(IsaacMotionPrimitivesMixin, IsaacRecordingMixin, SimEngine
                 }
 
             try:
-                # Create/get SimulationApp singleton
-                self._app = _get_or_create_simulation_app(headless=self._config.headless)
+                # Create/get SimulationApp singleton, selecting the RTX
+                # renderer that ``render_mode`` names. The value used to be
+                # stored but never forwarded, so ``rtx_pathtracing`` silently
+                # ran the default real-time renderer (#2324). ``"headless"``
+                # maps to no ``renderer`` key: no frames are rendered, so
+                # Kit's default is left alone.
+                renderer = _RENDERER_BY_MODE.get(self._config.render_mode)
+                self._app = _get_or_create_simulation_app(
+                    headless=self._config.headless,
+                    launch_config={"renderer": renderer} if renderer is not None else None,
+                )
 
                 # Now safe to import Isaac core modules. Isaac Sim 6.0
                 # exposes ``World`` under ``isaacsim.core.api``; the legacy
@@ -5657,12 +5699,21 @@ class IsaacSimulation(IsaacMotionPrimitivesMixin, IsaacRecordingMixin, SimEngine
     #    multi-episode grasp.
     #
     # 3. **DLSS ghost mitigation** (``_converge_render``, ``_resize_rgb``,
-    #    ``_configure_renderer``, ``_add_lighting``, ``set_joint_positions``,
-    #    plus the ``add_camera`` native-resolution upscale) -- RTX
-    #    cameras at small (<300 px) internal resolution smear a moving
-    #    arm into a translucent "ghost"; rendering at >= ``_MIN_RENDER_PX``
-    #    wide and holding the kinematic pose static for a few converge
-    #    ticks per captured frame keeps every frame crisp.
+    #    ``set_joint_positions``, plus the ``add_camera``
+    #    native-resolution upscale) -- RTX cameras at small (<300 px)
+    #    internal resolution smear a moving arm into a translucent
+    #    "ghost"; rendering at >= ``_MIN_RENDER_PX`` wide and holding the
+    #    kinematic pose static for a few converge ticks per captured
+    #    frame keeps every frame crisp. A carb-settings mitigation
+    #    (``_configure_renderer``: force FXAA, disable the temporal
+    #    denoiser) migrated in with this batch but was abandoned and has
+    #    been deleted: the RTX pipeline re-asserts ``/rtx/post/aa/op``
+    #    back to DLSS (3) on every render tick, so those settings never
+    #    stuck (#2324). A backend-side ``_add_lighting`` was likewise
+    #    never wired -- scene lighting is owned by the scene author
+    #    (``add_default_ground_plane()`` ships its own light, and
+    #    ``examples/isaac_gs/scene.py`` defines its own ``_add_lighting``
+    #    for its groundless stage).
     #
     # The headless / CI path doesn't engage any of these (the main-thread
     # callers run inline, the renderer config is best-effort, and the
@@ -6697,68 +6748,6 @@ class IsaacSimulation(IsaacMotionPrimitivesMixin, IsaacRecordingMixin, SimEngine
         ys = (np.arange(out_h) * (h / out_h)).astype(int).clip(0, h - 1)
         xs = (np.arange(out_w) * (w / out_w)).astype(int).clip(0, w - 1)
         return img[ys][:, xs]
-
-    def _configure_renderer(self) -> None:
-        """Best-effort RTX settings for a stable real-time image.
-
-        These carb settings (RaytracedLighting, FXAA, no temporal
-        denoiser) nudge RTX toward a single-frame-stable image, but
-        note the RTX pipeline re-asserts ``/rtx/post/aa/op`` back to
-        DLSS (3) on every render tick, so they do NOT by themselves
-        stop the moving-arm "ghost". The actual ghost fix is rendering
-        cameras at a high native resolution (>= ``_MIN_RENDER_PX`` wide)
-        so the DLSS upscaler stays out of its temporal-ghost regime,
-        plus ``_converge_render`` holding the pose static while it
-        settles. Best-effort: skipped silently when ``carb.settings``
-        isn't importable.
-        """
-        try:
-            import carb  # type: ignore[import-not-found]
-
-            s = carb.settings.get_settings()
-            s.set("/rtx/rendermode", "RaytracedLighting")
-            s.set("/rtx/directLighting/sampledLighting/enabled", True)
-            s.set("/rtx/raytracing/subframes", 1)
-            s.set("/rtx/pathtracing/totalSpp", 1)
-            s.set("/rtx/sceneDb/ambientLightIntensity", 1.0)
-            s.set("/rtx/post/aa/op", 1)
-            s.set("/rtx/post/dlss/execMode", 0)
-            s.set("/rtx/post/taa/enabled", False)
-            s.set("/rtx/directLighting/denoiser/enabled", False)
-            s.set("/rtx/raytracing/lightcache/spatialCache/enabled", False)
-        except (ImportError, AttributeError, RuntimeError):
-            logger.debug("renderer config skipped", exc_info=True)
-
-    def _add_lighting(self) -> None:
-        """Add a dome + key + fill light so RTX camera frames aren't black.
-
-        Unlike MuJoCo (which has implicit headlight / ambient), an Isaac
-        stage is unlit by default -- without this, ``get_rgba()``
-        returns near-black frames and the UI preview looks empty.
-        Best-effort; skipped silently when Pixar USD imports fail.
-        """
-        try:
-            import omni.usd  # type: ignore[import-not-found]
-            from pxr import (  # type: ignore[import-not-found]
-                Gf,
-                Sdf,
-                UsdGeom,
-                UsdLux,
-            )
-
-            stage = omni.usd.get_context().get_stage()
-            dome = UsdLux.DomeLight.Define(stage, Sdf.Path("/World/lights/dome"))
-            dome.CreateIntensityAttr(800.0)
-            distant = UsdLux.DistantLight.Define(stage, Sdf.Path("/World/lights/key"))
-            distant.CreateIntensityAttr(2500.0)
-            distant.CreateAngleAttr(1.0)
-            UsdGeom.Xformable(distant.GetPrim()).AddRotateXYZOp().Set(Gf.Vec3f(-45.0, 0.0, 25.0))
-            fill = UsdLux.DistantLight.Define(stage, Sdf.Path("/World/lights/fill"))
-            fill.CreateIntensityAttr(1500.0)
-            fill.CreateAngleAttr(1.0)
-            UsdGeom.Xformable(fill.GetPrim()).AddRotateXYZOp().Set(Gf.Vec3f(-60.0, 0.0, 180.0))
-        except (ImportError, AttributeError, RuntimeError):
-            logger.debug("Could not add scene lighting", exc_info=True)
 
     def describe(self) -> dict[str, Any]:
         """Return the Isaac engine's live discovery surface.

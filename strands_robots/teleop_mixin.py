@@ -47,7 +47,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from strands_robots.utils import positive_finite_number_error
+from strands_robots.utils import name_list_error, positive_finite_number_error
 
 logger = logging.getLogger(__name__)
 
@@ -333,10 +333,27 @@ class TeleopMixin:
 
         Stops the local loop first if it's running and would be left with no
         devices. Disconnects each detached device if it was connected.
+
+        Args:
+            name: Which attached stream to detach. ``None`` = every attached
+                device. Read by membership, so only ``None`` selects all: any
+                other value names one stream, and a value naming no attached
+                stream is refused rather than widened to the whole set.
+
+        Returns:
+            Status dict; error when ``name`` names no attached teleoperator.
         """
         self._ensure_teleop_state()
 
-        names = [name] if name else list(self._teleops)
+        # ``name`` selects which attached devices this call operates on, so it is
+        # read by membership: ``None`` is the documented "detach every attached
+        # device", and any other value names one. Read by truthiness, ``""`` took
+        # the all-devices branch, so a detach aimed at a single stream removed the
+        # whole set - and, with a session running, ended it, because the branch
+        # below stops the loop once nothing is left to drive. An empty name is not
+        # a spelling of "all"; it names no attached device, so it now reaches the
+        # not-found refusal below.
+        names = list(self._teleops) if name is None else [name]
         detached = []
         for n in names:
             att = self._teleops.pop(n, None)
@@ -401,7 +418,14 @@ class TeleopMixin:
         ``self.send_action(merged, robot_name=...)``.
 
         Args:
-            names: Subset of attached device names to drive. ``None`` = all.
+            names: Subset of attached device names to drive. ``None`` = every
+                attached device. Read by membership, so an explicitly empty
+                selection is not a spelling of "all": ``names=[]`` is refused
+                rather than widened to every device. The list itself is held to
+                the shared name-list domain - several distinct non-blank names,
+                as a sequence - so a single name passed as a bare string, a
+                repeated name, and a one-shot iterator are refused rather than
+                reinterpreted.
             robot_name: Target robot for ``send_action``. ``None`` -> the
                 host's default (single hardware robot, or first sim robot).
                 In a multi-robot sim, name the specific robot.
@@ -431,7 +455,9 @@ class TeleopMixin:
             with any of them does not report ``success``, so a device whose
             units the bound does not expect cannot look like a clean run while
             moving nothing. An ``hz`` or ``duration`` the loop cannot honor is
-            refused here rather than reported as a started session.
+            refused here rather than reported as a started session, as is a
+            ``names`` that does not name a usable subset - both are refused
+            before any device is connected.
         """
         self._ensure_teleop_state()
 
@@ -459,7 +485,43 @@ class TeleopMixin:
                 "content": [{"text": "Teleoperation already running. Call stop_teleoperate() first."}],
             }
 
-        selected = names or list(self._teleops)
+        # ``names`` selects a SUBSET of the attached devices, so it is read by
+        # membership - the same rule ``duration`` is read by in this call and
+        # ``cameras`` is resolved by on the render path, where an empty selection
+        # resolves to no camera rather than to every one. ``None`` is the
+        # documented "every attached device"; an explicitly empty selection is the
+        # opposite of that, not a spelling of it. Read by truthiness, ``names=[]``
+        # - what a filter that matched nothing produces - connected and drove
+        # every attached device, so a call that selected no leader energised all
+        # of them and reported success.
+        #
+        # The shape goes through the shared name-list domain, because the other
+        # ways this selector cannot be honored as written were reinterpreted too:
+        # a single name as a bare string is iterable per character, so it was read
+        # as one device per letter; a repeated name polled that device twice per
+        # tick and then warned that it conflicted with itself; and a one-shot
+        # iterator was consumed by the membership check below, leaving the loop
+        # nothing to poll while the session still reported success.
+        if names is None:
+            selected = list(self._teleops)
+        else:
+            if error := name_list_error(names, "names", "teleoperate"):
+                return {"status": "error", "content": [{"text": error}]}
+            selected = list(names)
+            if not selected:
+                return {
+                    "status": "error",
+                    "content": [
+                        {
+                            "text": (
+                                "teleoperate(names=[]) selects no teleoperator, so there is nothing to "
+                                "drive. Pass names=None to drive every attached device "
+                                f"(attached: {sorted(self._teleops)}), or name the subset to drive."
+                            )
+                        }
+                    ],
+                }
+
         unknown = [n for n in selected if n not in self._teleops]
         if unknown:
             return {

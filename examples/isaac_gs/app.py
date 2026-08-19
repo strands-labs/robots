@@ -168,11 +168,15 @@ class IsaacGsApp:
         height: int = 480,
         robot_usd: Optional[str] = None,
         camera_presets: Optional[dict] = None,
+        allow_fallback: bool = False,
     ) -> None:
         self.default_camera = default_camera
         self.panorama_path = panorama_path
         self.gsplat_ply = gsplat_ply
         self.gsplat_scene = gsplat_scene
+        # When True, a 3DGS background that can't initialize demotes to the
+        # procedural panorama (logged) instead of raising -- see issue #2321.
+        self.allow_fallback = bool(allow_fallback)
         self.width = int(width)
         self.height = int(height)
         # Robot: default None -> build_default_scene loads the bundled Franka.
@@ -370,6 +374,7 @@ class IsaacGsApp:
             gsplat_scene=self.gsplat_scene,
             panorama=self.panorama_path,
             prefer_gs=getattr(self, "_prefer_gs", True),
+            allow_fallback=self.allow_fallback,
         )
 
     # --- public handlers (called from Gradio worker threads) ------------
@@ -672,6 +677,13 @@ def main(argv: "list[str] | None" = None) -> None:
         help="Strands model id for the chat agent (e.g. a Bedrock model). Default: Strands' default.",
     )
     parser.add_argument("--no-agent", action="store_true", help="Disable the chat agent (buttons-only UI).")
+    parser.add_argument(
+        "--allow-fallback",
+        action="store_true",
+        help="Demote to the procedural panorama when the 3DGS background can't "
+        "initialize (gsplat missing / CUDA rasterizer disabled) instead of "
+        "failing the boot or the background swap (issue #2321).",
+    )
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
@@ -702,6 +714,7 @@ def main(argv: "list[str] | None" = None) -> None:
         height=args.height,
         robot_usd=robot_usd,
         camera_presets=camera_presets,
+        allow_fallback=args.allow_fallback,
     )
 
     # Build the natural-language agent (optional: degrades to a buttons-only UI

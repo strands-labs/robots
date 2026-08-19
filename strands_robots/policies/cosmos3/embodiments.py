@@ -28,10 +28,15 @@ class Cosmos3Embodiment:
         camera_keys: Server observation image keys (OpenPI ``/`` namespace).
         action_layouts: ``{action_space: [column_name, ...]}`` naming each
             output action column so :class:`Cosmos3Policy` can build
-            per-actuator step dicts. The released DROID policy serves
-            ``joint_pos`` (8D = 7 joints + gripper) and ``midtrain``
-            (10D = 3 pos + 4 quat + ... + gripper). Used by the ``service``
-            backend (the RoboLab server post-processes to these layouts).
+            per-actuator step dicts. Used by the ``service`` backend. The
+            RoboLab server post-processes only ``joint_pos``, converting the
+            unified action's effector pose into joint targets (DROID: 8D =
+            7 joints + gripper); ``midtrain`` is the model's own unified
+            action served through, so a ``midtrain`` entry names the same
+            columns as :attr:`raw_action_layout`. A narrower ``midtrain``
+            entry does not shorten the served row - it leaves the surplus
+            columns unnamed and shifts every name it does carry onto the
+            wrong column.
         raw_action_layout: Column names for the **raw unified action** that the
             in-process ``diffusers`` :class:`Cosmos3OmniPipeline` emits directly
             (width = :attr:`raw_action_dim`). This is the model's native action
@@ -63,10 +68,10 @@ class Cosmos3Embodiment:
 # ordered joint convention used by the released Cosmos3-Nano-Policy-DROID.
 _FRANKA_JOINTS = [f"joint_{i}" for i in range(7)]
 
-# DROID joint_pos action = [7 joint deltas/targets, 1 gripper].
+# DROID joint_pos action = [7 joint deltas/targets, 1 gripper]. This is the one
+# layout the RoboLab server converts, so it is the only one that legitimately
+# differs from the model's unified action width.
 _DROID_JOINT_POS = _FRANKA_JOINTS + ["gripper"]
-# DROID midtrain action = [3 EE position, 4 quaternion (xyzw), gripper].
-_DROID_MIDTRAIN = ["ee_x", "ee_y", "ee_z", "ee_qx", "ee_qy", "ee_qz", "ee_qw", "gripper"]
 
 # Raw unified-action layouts: the native action the Cosmos3OmniPipeline emits
 # (diffusers backend), BEFORE the RoboLab server's joint_pos conversion. The
@@ -91,7 +96,8 @@ EMBODIMENTS: dict[str, Cosmos3Embodiment] = {
         ],
         action_layouts={
             "joint_pos": _DROID_JOINT_POS,
-            "midtrain": _DROID_MIDTRAIN,
+            # ``midtrain`` is the unified action itself, un-converted.
+            "midtrain": _RAW_POSE9_GRASP,
         },
         raw_action_layout=_RAW_POSE9_GRASP,
         default_action_space="joint_pos",

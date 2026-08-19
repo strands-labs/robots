@@ -331,10 +331,12 @@ concurrently with publishing, and it is torn down cleanly on `cleanup()`/`stop()
 Because the inbound `joint_command` topic drives the physical arm, two guards
 harden it (both threaded through `Robot()`):
 
-- `joint_limits={motor: (min, max)}` range-checks every inbound command; if any
-  commanded joint is outside its declared range the **entire** command is
-  rejected (no partial application). Joints without a declared bound are
-  unconstrained. Every bound must be a finite number - a non-finite one declares
+- `joint_limits={"<motor>.pos": (min, max)}` range-checks every inbound command;
+  if any commanded joint is outside its declared range the **entire** command is
+  rejected (no partial application). Keys are matched against the joint names
+  the command carries - the same `<motor>.pos` names the bridge publishes in
+  `joint_states` - so a key that names no commanded joint constrains nothing,
+  and joints without a declared bound are unconstrained. Every bound must be a finite number - a non-finite one declares
   a range that admits nothing, so it is refused at construction. Available on
   both transports.
 - For the pure-RTPS transport (`ros2_transport="rtps"`), a `dds_security_config`
