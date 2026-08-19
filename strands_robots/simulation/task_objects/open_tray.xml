@@ -1,0 +1,22 @@
+<mujoco model="open_tray">
+  <!--
+    Rigid task object: an open-top tray, the standard receptacle for the
+    pouring tasks. No joints - it exists so a pour benchmark has a walled
+    target whose body name (``tray``) the containment predicates
+    (`body_inside` / `particles_inside` / `particles_spilled`) can score
+    against. Attach with
+    ``add_robot(name="tray", urdf_path=task_object_path("open_tray"))``.
+
+    Dimensions: outer footprint 0.24 x 0.24 m, 5 cm walls, 4 mm thick.
+  -->
+  <compiler angle="radian"/>
+  <worldbody>
+    <body name="tray" pos="0 0 0">
+      <geom name="tray_bottom" type="box" size="0.12 0.12 0.005" pos="0 0 0.005"/>
+      <geom name="tray_wall_xp" type="box" size="0.002 0.12 0.025" pos="0.118 0 0.029"/>
+      <geom name="tray_wall_xn" type="box" size="0.002 0.12 0.025" pos="-0.118 0 0.029"/>
+      <geom name="tray_wall_yp" type="box" size="0.12 0.002 0.025" pos="0 0.118 0.029"/>
+      <geom name="tray_wall_yn" type="box" size="0.12 0.002 0.025" pos="0 -0.118 0.029"/>
+    </body>
+  </worldbody>
+</mujoco>
