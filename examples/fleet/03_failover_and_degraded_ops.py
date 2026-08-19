@@ -359,6 +359,60 @@ def resync_after_restart(peers: Sequence[dict[str, Any]], records: Sequence[dict
     return {"alive_peers": alive, "lockouts": lockouts, "estop_issuer": estop_issuer, "tasks": tasks}
 
 
+def resync_until_lockout_recovered(
+    read_records: Callable[[], Sequence[dict[str, Any]]],
+    peers: Sequence[dict[str, Any]],
+    locked_out: Sequence[str],
+    *,
+    timeout_s: float = 15.0,
+    poll_s: float = 0.2,
+    clock: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Part 2 core: await the audit evidence, then reconstruct the outage.
+
+    :func:`resync_after_restart` is a pure reduction over the records it is
+    handed, so it can only be as complete as the read that fed it - and the
+    rows it needs do not all exist yet when the estop call returns. A peer's
+    own ``remote_estop_engaged`` row is written by *that peer's* safety
+    handler, on its callback thread, once the broadcast reaches it. No
+    issuer-side call can make a remote peer's write synchronous, so the wait
+    belongs here, on the observer, exactly as presence discovery is awaited
+    rather than assumed.
+
+    Reads once before waiting, so a trail that is already complete costs no
+    delay, then polls ``read_records`` until the reconstruction shows a
+    lockout for a peer in *locked_out*. That is the same verdict the drill
+    has always asserted; only the timing changes.
+
+    Args:
+        read_records: Returns the audit records to reduce, re-read per poll.
+        peers: Presence snapshot passed through to :func:`resync_after_restart`.
+        locked_out: Peers whose lockout the reconstruction must recover.
+        timeout_s: Bound on the wait, measured on *clock*.
+        poll_s: Delay between reads.
+        clock: Monotonic clock seam (a duration is measured on a monotonic
+            clock, so a wall-clock step cannot extend or truncate the bound).
+        sleep: Sleep seam, so a caller can drive the poll without waiting.
+
+    Returns:
+        The reconstruction and the records it was built from.
+
+    Raises:
+        RuntimeError: The bound elapsed with the lockout still unrecovered;
+            the message names the last reconstruction.
+    """
+    deadline = clock() + timeout_s
+    while True:
+        records = list(read_records())
+        resync = resync_after_restart(peers, records)
+        if any(resync["lockouts"].get(robot) for robot in locked_out):
+            return resync, records
+        if clock() >= deadline:
+            raise RuntimeError(f"re-sync did not recover the estop lockout from the audit log: {resync}")
+        sleep(poll_s)
+
+
 # Dry-run seams: a scripted fleet, no simulator, no Zenoh.
 
 
@@ -528,12 +582,13 @@ def _run_live(n_steps: int) -> tuple[dict[str, Any], dict[str, Any], list[dict[s
                 timeout_s=15.0,
                 what="presence discovery after the orchestrator restart",
             )
-            records = read_audit_log(since=run_start - 1.0)
-            resync = resync_after_restart(orch_mesh2.peers, records)
+            resync, records = resync_until_lockout_recovered(
+                lambda: read_audit_log(since=run_start - 1.0),
+                orch_mesh2.peers,
+                others,
+            )
         finally:
             orch_mesh2.stop()
-        if not any(resync["lockouts"].get(robot) for robot in others):
-            raise RuntimeError(f"re-sync did not recover the estop lockout from the audit log: {resync}")
         return failover_summary, resync, records
     finally:
         cleanup()

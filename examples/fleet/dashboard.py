@@ -12,14 +12,19 @@ resume / HITL decisions, as recorded in the audit trail).
 READ-ONLY is enforced, not narrated: ``restrict_to_subscribe_only`` replaces
 every command-capable method on the peer (``send`` / ``tell`` / ``broadcast``
 / ``emergency_stop`` / ``publish_step``) with a refusal, and confines raw
-``publish`` to the peer's own presence namespace - so a command, an estop or
-a resume cannot be published from this peer by accident. This is a guard
-against misuse, not a security boundary: the refusals are instance
-attributes, so code that deliberately reaches for the class attribute is not
-contained by them (``restrict_to_subscribe_only`` itself does exactly that,
-via ``type(mesh).publish``, to keep the confined path working). HITL
-approvals stay in the operator terminal; a write-capable UI is an explicit
-epic non-goal.
+``publish`` to the peer's own ``strands/{peer_id}/...`` namespace - so a
+command, an estop or a resume cannot be published from this peer by accident.
+Two write paths are deliberately kept, because the peer's own mesh loops need
+them: ``publish`` under that namespace (presence and health, so the dashboard
+is visible as a peer) and ``publish_safety_event``, which the mesh's own
+safety handlers call to record this peer's lockout transitions. So the
+dashboard does append to the signed audit trail it renders - for its own
+``peer_id`` only. This is a guard against misuse, not a security boundary:
+the refusals are instance attributes, so code that deliberately reaches for
+the class attribute is not contained by them (``restrict_to_subscribe_only``
+itself does exactly that, via ``type(mesh).publish``, to keep the confined
+path working). HITL approvals stay in the operator terminal; a write-capable
+UI is an explicit epic non-goal.
 
 Dependencies: pip install "strands-robots[mesh]"
               (rendering upgrades from terminal to Rerun when rerun-sdk is
@@ -68,22 +73,47 @@ SUBSCRIBE_TOPICS: tuple[str, ...] = (
     "strands/safety/resume",
 )
 
-# Command-capable Mesh methods a read-only peer must not hold. ``publish``
-# is handled separately: the peer's own liveness loops need it for the
-# peer's OWN topics, so it is confined rather than removed.
+# Command-capable Mesh methods a read-only peer must not hold. Every one of
+# these is reachable only from caller code: the mesh's own loops never call
+# them (``tell`` delegates to ``send`` and ``emergency_stop`` to
+# ``broadcast``, and both callers are themselves refused), so removing them
+# cannot break the peer.
+#
+# Two write-capable methods are deliberately absent, because the peer's own
+# mesh loops DO call them and a refusal would break the peer rather than
+# guard it:
+#   ``publish``              - confined to the peer's own namespace instead
+#                              (the presence/health loops publish there).
+#   ``publish_safety_event`` - the mesh's own ``_on_safety_estop`` /
+#                              ``_on_safety_resume`` handlers call it to
+#                              record this peer's lockout transitions, two of
+#                              them outside a try, and the guarded ones catch
+#                              only (TypeError, ValueError, OSError). Adding
+#                              it here raises inside a Zenoh subscription
+#                              callback on the safety path.
 _COMMAND_METHODS: tuple[str, ...] = ("send", "tell", "broadcast", "emergency_stop", "publish_step")
 
 
 def restrict_to_subscribe_only(mesh: Any) -> Any:
     """Turn a started Mesh peer into a subscribe-only surface, in place.
 
-    Every command-capable method is replaced with a refusal that raises
-    ``RuntimeError`` naming the dashboard's contract, and raw ``publish`` is
-    confined to the peer's own ``strands/{peer_id}/...`` namespace - which
-    keeps the presence/health liveness loops honest (the dashboard is
-    visible as a peer) while making every command topic (another peer's
-    ``cmd``, ``broadcast``, ``safety/estop``, ``safety/resume``)
-    unreachable. Returns the same mesh object.
+    Every method in :data:`_COMMAND_METHODS` is replaced with a refusal that
+    raises ``RuntimeError`` naming the dashboard's contract, and raw
+    ``publish`` is confined to the peer's own ``strands/{peer_id}/...``
+    namespace - which keeps the presence/health liveness loops honest (the
+    dashboard is visible as a peer) while making every command topic
+    (another peer's ``cmd``, ``broadcast``, ``safety/estop``,
+    ``safety/resume``) unreachable. Returns the same mesh object.
+
+    ``publish_safety_event`` is exempt and stays callable: the mesh's own
+    safety handlers use it to record this peer's lockout transitions, so
+    refusing it would raise on the safety path rather than guard anything
+    (see the note on :data:`_COMMAND_METHODS`). It writes only this peer's
+    own ``strands/{peer_id}/safety/event`` topic and audit records carrying
+    this peer's own ``peer_id`` - it cannot name another peer - but that does
+    mean a caller holding the restricted mesh can append to the signed audit
+    trail this dashboard renders. Scoping that write is a mesh-side contract
+    question, not something this example decides.
     """
 
     def _refuse_command(name: str) -> Callable[..., Any]:

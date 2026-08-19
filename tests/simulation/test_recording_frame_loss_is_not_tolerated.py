@@ -13,6 +13,15 @@ the declared ``fps``.
 
 These tests pin the split: a lost recording frame is fatal, a caller's telemetry
 failure keeps its tolerance.
+
+They also pin the split's *documentation*. The exemption is invisible in the
+signature, so the only place a caller can learn it is the docstring of the
+surface they call, and every such docstring named ``CooperativeStop`` alone -
+telling a caller who followed the hook's own documented use ("use it to record
+frames") that a failed dataset write is logged and tolerated when it is neither.
+:class:`TestTheDocumentedPostureNamesEveryExemptClass` derives the exempt set
+from the handlers themselves, so a third exempt class cannot be added without
+the surfaces that describe the posture being updated with it.
 """
 
 from __future__ import annotations
@@ -20,6 +29,7 @@ from __future__ import annotations
 import ast
 import inspect
 import logging
+import re
 import sys
 from typing import Any
 
@@ -29,6 +39,7 @@ pytest.importorskip("mujoco")
 
 from strands_robots.dataset_recorder import DatasetRecorder, RecordingFrameError
 from strands_robots.policies.mock import MockPolicy
+from strands_robots.simulation.base import SimEngine
 from strands_robots.simulation.mujoco.simulation import Simulation
 from strands_robots.simulation.policy_runner import PolicyRunner
 
@@ -220,6 +231,53 @@ class TestCallerTelemetryKeepsItsTolerance:
         assert recorder.dropped_frame_count == 10
 
 
+class TestAnExplicitToleranceDoesNotResizeTheExemption:
+    """``max_onframe_failures`` sizes the tolerance, not the exempt set.
+
+    The knob's own documentation is what this pins: a caller who raises the
+    tolerance is buying patience for flaky telemetry, and a lost dataset frame is
+    outside what that patience covers however high the number goes.
+    """
+
+    @pytest.mark.parametrize(
+        ("exception_cls", "expected_calls"),
+        [
+            pytest.param(RuntimeError, 5, id="telemetry-failure-spends-the-tolerance"),
+            pytest.param(RecordingFrameError, 1, id="lost-frame-ignores-the-tolerance"),
+        ],
+    )
+    def test_only_a_telemetry_failure_spends_the_configured_tolerance(
+        self, exception_cls: type[Exception], expected_calls: int
+    ) -> None:
+        tolerance = 5
+        sim = Simulation(tool_name="frame_loss_tolerance", mesh=False)
+        sim.create_world()
+        sim.add_robot(name="arm", data_config="so100")
+        calls: list[int] = []
+
+        def failing_hook(step: int, obs: dict[str, Any], action: dict[str, Any]) -> None:
+            calls.append(step)
+            raise exception_cls("synthetic hook failure")
+
+        try:
+            result = PolicyRunner(sim).run(
+                robot_name="arm",
+                policy=_policy(sim),
+                n_steps=20,
+                control_frequency=50.0,
+                on_frame=failing_hook,
+                max_onframe_failures=tolerance,
+            )
+        finally:
+            sim.cleanup()
+
+        assert result["status"] == "error", result
+        assert len(calls) == expected_calls, (
+            f"with max_onframe_failures={tolerance}, a {exception_cls.__name__} hook was called "
+            f"{len(calls)} time(s); expected {expected_calls}"
+        )
+
+
 class TestRecorderRaisesADistinguishableError:
     def test_strict_add_frame_raises_recording_frame_error_chaining_the_cause(self) -> None:
         """The type is what the runner keys on; the cause must stay readable."""
@@ -237,15 +295,15 @@ class TestRecorderRaisesADistinguishableError:
         assert recorder.frame_count == 0
 
 
-def test_every_on_frame_call_site_excludes_a_lost_recording_frame() -> None:
-    """No rollout loop may absorb a lost dataset frame into hook tolerance.
+def _on_frame_guards() -> list[ast.Try]:
+    """Return the innermost ``try`` guarding each ``on_frame`` call site.
 
-    Walks every ``try`` that invokes the ``on_frame`` hook - including the
-    benchmark-spec eval loop, which needs a registered benchmark to reach
-    behaviourally - and requires each to handle ``RecordingFrameError``.
+    An enclosing rollout ``try`` also contains the call and is not the handler
+    that decides tolerance, so only the innermost one is returned. Shared by the
+    handler guard and the docstring guard below, which must agree about which
+    handlers define the posture.
     """
-    source = inspect.getsource(sys.modules[PolicyRunner.__module__])
-    tree = ast.parse(source)
+    tree = ast.parse(inspect.getsource(sys.modules[PolicyRunner.__module__]))
 
     def calls_on_frame(node: ast.Try) -> bool:
         return any(
@@ -256,13 +314,21 @@ def test_every_on_frame_call_site_excludes_a_lost_recording_frame() -> None:
 
     containing = [t for t in ast.walk(tree) if isinstance(t, ast.Try) and calls_on_frame(t)]
     containing_ids = {id(t) for t in containing}
-    # Keep only the innermost guard per call site: an enclosing rollout ``try``
-    # also contains the call, and it is not the handler that decides tolerance.
-    guarded = [
+    return [
         t
         for t in containing
         if not any(isinstance(o, ast.Try) and o is not t and id(o) in containing_ids for o in ast.walk(t))
     ]
+
+
+def test_every_on_frame_call_site_excludes_a_lost_recording_frame() -> None:
+    """No rollout loop may absorb a lost dataset frame into hook tolerance.
+
+    Walks every ``try`` that invokes the ``on_frame`` hook - including the
+    benchmark-spec eval loop, which needs a registered benchmark to reach
+    behaviourally - and requires each to handle ``RecordingFrameError``.
+    """
+    guarded = _on_frame_guards()
     assert len(guarded) >= 3, f"expected every on_frame call site to be guarded, found {len(guarded)}"
 
     for node in guarded:
@@ -271,3 +337,138 @@ def test_every_on_frame_call_site_excludes_a_lost_recording_frame() -> None:
             f"the on_frame try at line {node.lineno} does not exclude RecordingFrameError "
             f"from its tolerance (handlers: {sorted(names)})"
         )
+
+
+# The posture is stated on four caller-facing surfaces plus ``run_policy``'s
+# tolerance knob. Fewer graded blocks than this means the scan stopped reaching
+# the docstrings, not that they agree with the handlers.
+_MINIMUM_GRADED_DOC_BLOCKS = 5
+
+# An Args entry begins a new block: a claim about ``on_frame`` and a claim about
+# ``max_onframe_failures`` are separate promises and each has to stand alone.
+_ARG_ENTRY = re.compile(r"^\s{8,}[a-z_][a-z0-9_]*:\s")
+
+# A block is graded only when it quantifies over the hook's exceptions - the
+# claim being checked is which of them the posture covers. A block that sizes the
+# tolerance numerically makes no claim about exception classes and is left alone.
+_QUANTIFIERS = ("logged at WARN", "consecutive")
+
+
+def _exempt_hook_exception_classes() -> frozenset[str]:
+    """Return the exception classes exempt from the ``on_frame`` posture.
+
+    Read from the handlers themselves rather than listed here: a handler whose
+    whole body is a bare ``raise`` re-raises instead of tolerating, which is what
+    makes its class exempt. Deriving it means a third exempt class is graded
+    against the docstrings the moment it is added.
+    """
+    exempt: set[str] = set()
+    for guard in _on_frame_guards():
+        for handler in guard.handlers:
+            body = handler.body
+            reraises = len(body) == 1 and isinstance(body[0], ast.Raise) and body[0].exc is None
+            if isinstance(handler.type, ast.Name) and reraises:
+                exempt.add(handler.type.id)
+    return frozenset(exempt)
+
+
+def _doc_blocks(docstring: str) -> list[str]:
+    """Split ``docstring`` into blocks at blank lines and at Args entries."""
+    blocks: list[str] = []
+    current: list[str] = []
+    for line in docstring.splitlines():
+        if not line.strip() or _ARG_ENTRY.match(line):
+            if current:
+                blocks.append(" ".join(" ".join(current).split()))
+            current = [line] if line.strip() else []
+        else:
+            current.append(line)
+    if current:
+        blocks.append(" ".join(" ".join(current).split()))
+    return blocks
+
+
+def _posture_blocks(source: str) -> list[tuple[str, str]]:
+    """Return ``(owner, text)`` for each doc block describing the hook posture."""
+    graded: list[tuple[str, str]] = []
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef | ast.Module):
+            continue
+        docstring = ast.get_docstring(node, clean=False)
+        if not docstring:
+            continue
+        owner = getattr(node, "name", "<module>")
+        for block in _doc_blocks(docstring):
+            if not any(marker in block for marker in _QUANTIFIERS):
+                continue
+            if "exception" not in block:
+                continue
+            if "on_frame" not in block and "hook" not in block:
+                continue
+            graded.append((owner, block))
+    return graded
+
+
+def _documented_surfaces() -> list[tuple[str, str, str]]:
+    """Return ``(module, owner, block)`` for every graded block on both modules."""
+    graded: list[tuple[str, str, str]] = []
+    for label, module in (("base", SimEngine.__module__), ("policy_runner", PolicyRunner.__module__)):
+        source = inspect.getsource(sys.modules[module])
+        graded.extend((label, owner, block) for owner, block in _posture_blocks(source))
+    return graded
+
+
+class TestTheDocumentedPostureNamesEveryExemptClass:
+    """A surface that describes the hook posture names every exempt class.
+
+    The tolerance is invisible in the signature, so a caller learns it only from
+    the docstring of the surface they call. Naming one of the two exempt classes
+    describes a posture the runner does not have.
+    """
+
+    def test_every_graded_surface_names_every_exempt_class(self) -> None:
+        """Pre-fix, five surfaces promised a posture ``RecordingFrameError`` never had."""
+        exempt = _exempt_hook_exception_classes()
+        graded = _documented_surfaces()
+        offenders = [
+            (module, owner, sorted(cls for cls in exempt if cls not in block), block)
+            for module, owner, block in graded
+            if any(cls not in block for cls in exempt)
+        ]
+        assert not offenders, "\n".join(
+            f"{module}.{owner} describes the on_frame posture without naming {missing}: {block[:150]}"
+            for module, owner, missing, block in offenders
+        )
+
+    def test_the_exempt_set_is_read_from_the_handlers(self) -> None:
+        """The graded set comes from the code, so a third class cannot slip past.
+
+        Pins the two classes the handlers exempt today. Adding a third is a
+        change to the posture every surface above describes, so it should fail
+        here until those surfaces say so too.
+        """
+        assert _exempt_hook_exception_classes() == frozenset({"CooperativeStop", "RecordingFrameError"})
+
+    def test_the_scan_reaches_the_surfaces_it_grades(self) -> None:
+        """A reformat that hides the blocks must fail rather than report clean."""
+        graded = _documented_surfaces()
+        assert len(graded) >= _MINIMUM_GRADED_DOC_BLOCKS, (
+            f"only {len(graded)} doc blocks describe the on_frame posture; "
+            f"expected at least {_MINIMUM_GRADED_DOC_BLOCKS}"
+        )
+        owners = {owner for _module, owner, _block in graded}
+        assert {"run_policy", "eval_policy", "evaluate_benchmark", "run", "evaluate"} <= owners, sorted(owners)
+
+    def test_a_surface_naming_one_class_is_reported(self) -> None:
+        """Non-vacuity: the grader must reject the wording this change replaced."""
+        planted = '''
+def f():
+    """One line.
+
+    Args:
+        on_frame: A non-``CooperativeStop`` hook exception is logged at WARN.
+    """
+'''
+        graded = _posture_blocks(planted)
+        assert len(graded) == 1, graded
+        assert "RecordingFrameError" not in graded[0][1]

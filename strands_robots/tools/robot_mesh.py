@@ -176,7 +176,8 @@ def _warn_none_opt_out_once() -> None:
     logger.warning(
         "[robot_mesh] STRANDS_MESH_HITL_ACTIONS=none -- human-in-the-loop "
         "approval is DISABLED for all mesh actions. Physical-actuation "
-        "commands (tell/send/stop/broadcast/emergency_stop) will dispatch "
+        "commands (tell/send/stop/rpc/broadcast/emergency_stop) will "
+        "dispatch "
         "without operator confirmation."
     )
 
@@ -1024,13 +1025,13 @@ def robot_mesh(
           so a malformed or out-of-policy payload is rejected client-side
           before it hits the wire.
         * Every ``tell`` / ``send`` / ``broadcast`` / ``stop`` /
-          ``emergency_stop`` is audited.
+          ``emergency_stop`` / ``rpc`` is audited.
     """
     # Resolve which actions require a human-in-the-loop interrupt for THIS
     # call. Consumers configure the set via STRANDS_MESH_HITL_ACTIONS; the
     # default gates every physical-actuation action (emergency_stop,
-    # broadcast, tell, send, stop). A malformed env var fails loud here
-    # rather than silently degrading the gate.
+    # broadcast, tell, send, stop, rpc). A malformed env var fails loud
+    # here rather than silently degrading the gate.
     try:
         interrupt_actions = _resolve_interrupt_actions()
     except _InterruptConfigError as exc:

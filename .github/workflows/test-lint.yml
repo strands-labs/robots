@@ -11,12 +11,23 @@ jobs:
   test-lint:
     name: Test and Lint
     runs-on: ubuntu-latest
-    # The suite is tightly distributed - 19-27 min over the last 20 successful
-    # runs, max 26.5 - so 45 is ~1.7x the observed ceiling and costs a healthy
-    # run nothing. Without it this job inherits the 6-hour default, which is how
-    # a test that had already printed its verdict at 18 min went on to hold the
+    # Sized so that every bounded step below can spend its ENTIRE allowance and
+    # the suite still finishes inside this bound - the two were sized
+    # independently and stopped being compatible. Over 663 successful runs in
+    # the 10 days to 2026-08-19: `Run tests` p50 22.6 / p90 27.2 / max 29.1 min,
+    # and the unbounded remainder (checkout, setup-python, install, lint) 4.4
+    # min. Against the apt step's own 12-minute bound that is 29.1 + 12 + 4.4 =
+    # 45.5 min of legal spend, so 45 could be reaped with nothing wrong and no
+    # step named - the exact outcome that step bound exists to prevent (#2456).
+    # 60 leaves ~14.5 min of margin. It is also `_CEILING_MINUTES` in
+    # tests/test_workflow_jobs_are_bounded.py, deliberately: the suite grew
+    # +0.95 min/day over that window (p50 23.0 -> 32.7, R^2 0.93, driven by
+    # +3054 test functions), so the next raise cannot be spent here and has to
+    # be argued as suite runtime instead (#2457).
+    # Without any bound this job inherits the 6-hour default, which is how a
+    # test that had already printed its verdict at 18 min went on to hold the
     # runner for another 82 (#2239).
-    timeout-minutes: 45
+    timeout-minutes: 60
     permissions:
       contents: read
     steps:
@@ -38,11 +49,15 @@ jobs:
         # The step's own ceiling, so a stall is reaped here rather than at the
         # job's 45 - only the step-level bound marks the step that stalled, and
         # a job-level reap renders as a rollup FAILURE with no reason (#2442).
-        # Sized from the observed band, which is narrow at both ends: 31
-        # successful runs put this step at p50 33s and max 455s (7m35s), so 12
-        # clears the maximum by ~1.6x, while the rest of the job costs up to
-        # ~32 min, so anything above ~13 lets a slow apt push the job into the
-        # 45-minute reap it is meant to prevent.
+        # Sized from the observed band: 31 successful runs put this step at
+        # p50 33s and max 455s (7m35s). That band was exceeded twice on
+        # 2026-08-19 - #2488 (14:27:49Z) and #2489 (15:07:23Z) were both reaped
+        # here, 40 minutes apart, by multi-minute mirror stalls rather than by
+        # anything in their diffs - so the headroom was restored by cutting what
+        # the step downloads (the install below, -30.5%) rather than by raising
+        # this number, because the rest of the job costs up to ~32 min and
+        # anything above ~13 lets a slow apt push the job into the 45-minute
+        # reap it is meant to prevent.
         timeout-minutes: 12
         run: |
           # The GitHub runner image preconfigures third-party apt repos (e.g.
@@ -63,8 +78,9 @@ jobs:
           # 180s bounds `update` only, which is the command the loop retries.
           # It is not a bound on the download: `update` costs ~5s even on the
           # slow runs (the 455s maximum above was `install` fetching ffmpeg's
-          # ~115 packages), so a bound tight enough to be useful here would
-          # reap a healthy `install`. `install` is bounded by the step instead.
+          # dependency closure - 104 packages after the flag below, 116 before),
+          # so a bound tight enough to be useful here would reap a healthy
+          # `install`. `install` is bounded by the step instead.
           for attempt in 1 2 3; do
             if sudo timeout 180 apt-get update; then
               break
@@ -72,7 +88,22 @@ jobs:
             echo "apt-get update failed or hung (attempt ${attempt}/3), retrying in 5s..."
             sleep 5
           done
-          sudo apt-get install -y libosmesa6-dev ffmpeg
+          # --no-install-recommends because ffmpeg's Recommends closure is
+          # 12 packages and 29.9 MiB of the 98.1 MiB transfer (30.5%), none of
+          # it reachable from this job: VA-API/VDPAU hardware video-acceleration
+          # drivers on a runner with no GPU (MuJoCo renders through OSMesa in
+          # software, which is why libosmesa6-dev is here), Blu-ray DRM, a GTK
+          # decoration plugin, an SVG loader, and pocketsphinx-en-us - 26.2 MiB
+          # of speech-recognition acoustic models, the largest single file in
+          # the set and the one being fetched when #2489 was reaped, pulled in
+          # because ffmpeg -> libavfilter9 -> libpocketsphinx3 is a Depends
+          # chain that then Recommends its model data.
+          #
+          # ffmpeg and every libav* shared library stay: they are Depends, they
+          # carry the h264/hevc/libsvtav1 software encoders video.py names, and
+          # torchcodec links them rather than the ffmpeg binary. Pinned by
+          # tests/test_apt_install_declines_recommends.py.
+          sudo apt-get install -y --no-install-recommends libosmesa6-dev ffmpeg
 
       # The Device Connect integration (strands_robots/device_connect) can
       # depend on changes in the device-connect-edge / agent-tools packages

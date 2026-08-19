@@ -433,3 +433,127 @@ def test_degraded_safety_assertion_refuses_a_peer_that_accepts_execute(example):
 
     with pytest.raises(RuntimeError, match="did not answer status"):
         example.assert_degraded_safety(dead_robot_probe, ["so101-a1"])
+
+
+# --- Part 2 re-sync: the audit evidence is awaited, not sampled ----------
+#
+# A peer's own ``remote_estop_engaged`` row is written by that peer's safety
+# handler, on its callback thread, after the estop broadcast reaches it. The
+# issuer's ``emergency_stop()`` returns before that write lands and cannot
+# make it synchronous, so a single point-in-time read of the audit log can
+# reconstruct the issuer's lockout and miss the survivor's. These pin that
+# the drill awaits the evidence on a bounded monotonic clock instead.
+
+_ISSUER_ROWS = [
+    {"peer_id": "fleet-orchestrator", "event": "task_dispatch", "payload": {"task_id": "T-42"}},
+    {"peer_id": "lekiwi-a1", "event": "emergency_stop", "payload": {}},
+]
+_SURVIVOR_ROW = {"peer_id": "so101-a1", "event": "remote_estop_engaged", "payload": {}}
+_PEERS = [{"peer_id": "lekiwi-a1"}, {"peer_id": "so101-a1"}]
+
+
+def _reader(*reads):
+    """A read_records seam returning each supplied trail in turn, then the last."""
+    calls = []
+
+    def read():
+        trail = reads[min(len(calls), len(reads) - 1)]
+        calls.append(len(trail))
+        return list(trail)
+
+    return read, calls
+
+
+def test_a_survivor_row_that_lands_after_the_read_is_awaited_not_missed(example):
+    """The lockout is recovered even when its row lands after the first read.
+
+    Both halves run against the same trail: reduced from the first read alone
+    the survivor has no lockout, which is exactly the drill's failure mode;
+    awaited, the reconstruction recovers it.
+    """
+    read, calls = _reader(_ISSUER_ROWS, _ISSUER_ROWS + [_SURVIVOR_ROW])
+    slept = []
+
+    # A single point-in-time read reduces to the issuer's lockout only.
+    sampled = example.resync_after_restart(_PEERS, _ISSUER_ROWS)
+    assert sampled["lockouts"] == {"lekiwi-a1": True}
+    assert not any(sampled["lockouts"].get(robot) for robot in ["so101-a1"])
+
+    resync, records = example.resync_until_lockout_recovered(
+        read, _PEERS, ["so101-a1"], poll_s=0.01, sleep=slept.append
+    )
+
+    assert resync["lockouts"] == {"lekiwi-a1": True, "so101-a1": True}
+    assert resync["estop_issuer"] == "lekiwi-a1"
+    assert _SURVIVOR_ROW in records
+    assert calls == [2, 3], "must re-read rather than reuse the first trail"
+    assert slept == [0.01], "one bounded wait between the two reads"
+
+
+def test_a_complete_trail_is_reconstructed_on_the_first_read(example):
+    """An already-complete trail costs no delay: one read, no waiting."""
+    read, calls = _reader(_ISSUER_ROWS + [_SURVIVOR_ROW])
+    slept = []
+
+    resync, records = example.resync_until_lockout_recovered(read, _PEERS, ["so101-a1"], sleep=slept.append)
+
+    assert resync["lockouts"]["so101-a1"] is True
+    assert len(records) == 3
+    assert calls == [3], "a complete trail must not be polled again"
+    assert slept == [], "no wait when the evidence is already there"
+
+
+def test_an_unrecoverable_lockout_still_names_the_reconstruction(example):
+    """On timeout the drill reports the same verdict, with diagnostics.
+
+    The message is the one the drill has always raised, so an operator
+    reading it still gets the reconstruction that fell short.
+    """
+    read, calls = _reader(_ISSUER_ROWS)
+
+    with pytest.raises(RuntimeError, match="re-sync did not recover the estop lockout") as excinfo:
+        example.resync_until_lockout_recovered(
+            read, _PEERS, ["so101-a1"], timeout_s=0.05, poll_s=0.01, sleep=lambda _s: None
+        )
+
+    assert "'lekiwi-a1': True" in str(excinfo.value), "names the reconstruction it fell short of"
+    assert len(calls) > 1, "polls before giving up"
+
+
+def test_the_wait_is_bounded_on_a_monotonic_clock_and_reads_before_waiting(example):
+    """The bound is measured on the injected clock, after at least one read.
+
+    A wall-clock step must not be able to extend or truncate the bound, so
+    the deadline is taken from a monotonic seam - and an expired bound still
+    reads once, so a caller never skips the evidence entirely.
+    """
+    read, calls = _reader(_ISSUER_ROWS)
+    ticks = iter([100.0, 1000.0])  # deadline taken, then already elapsed
+    slept = []
+
+    with pytest.raises(RuntimeError, match="re-sync did not recover the estop lockout"):
+        example.resync_until_lockout_recovered(
+            read,
+            _PEERS,
+            ["so101-a1"],
+            timeout_s=15.0,
+            clock=lambda: next(ticks),
+            sleep=slept.append,
+        )
+
+    assert calls == [2], "reads once even when the bound has already elapsed"
+    assert slept == [], "does not wait past the bound"
+
+
+def test_the_live_resync_awaits_the_audit_evidence(example):
+    """The live drill routes its re-sync through the awaiting core.
+
+    A regression to a single ``read_audit_log`` + ``resync_after_restart``
+    pair inside ``_run_live`` would restore the race, so pin the seam the
+    drill reconstructs through.
+    """
+    import inspect
+
+    source = inspect.getsource(example._run_live)
+    assert "resync_until_lockout_recovered(" in source
+    assert "resync_after_restart(" not in source, "must reconstruct through the awaiting core"

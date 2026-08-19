@@ -1,5 +1,5 @@
 ---
-description: NVIDIA Cosmos 3 omnimodal VLA - WebSocket service, droid/umi/av/bridge embodiments, MuJoCo rollout.
+description: NVIDIA Cosmos 3 omnimodal VLA - WebSocket service, droid/umi/av/bridge/openarm embodiments, MuJoCo rollout.
 ---
 
 # Cosmos 3
@@ -27,7 +27,7 @@ python -m cosmos_framework.scripts.action_policy_server_robolab \
 
 ```python
 Cosmos3Policy(
-    embodiment="droid",          # droid | umi | av | bridge
+    embodiment="droid",          # droid | umi | av | bridge | openarm
     host="localhost",
     port=8000,
     action_space=None,
@@ -52,6 +52,7 @@ Cosmos3Policy(
 | `umi` | UMI gripper | - |
 | `av` | Autonomous vehicle cameras | - |
 | `bridge` | Bridge dataset robots | - |
+| `openarm` | Enactic OpenArm (7-DOF + gripper) | `"openarm"` |
 
 ### Action spaces
 
@@ -244,7 +245,7 @@ concern, not an IK one.)
 #### De-normalization stats are per domain
 
 The de-normalize step needs that domain's own `q01`/`q99` quantiles. Two domains
-ship them bundled; the other two registered embodiments do not:
+ship them bundled; the other three registered embodiments do not:
 
 | embodiment | domain | raw dim | bundled stats |
 |---|---|---|---|
@@ -252,9 +253,10 @@ ship them bundled; the other two registered embodiments do not:
 | `bridge` | `bridge_orig_lerobot` | 10 | yes |
 | `umi` | `umi` | 10 | no |
 | `av` | `av` | 9 | no |
+| `openarm` | `openarm_lerobot` | 10 | no |
 
 `nvidia/Cosmos3-Edge` documents its forward-dynamics example on `umi` and its
-inverse-dynamics example on `av` — exactly the two without bundled quantiles — so
+inverse-dynamics example on `av` — both without bundled quantiles — so
 driving the sim bridge from Edge means supplying that domain's stats yourself:
 
 ```python
@@ -266,8 +268,9 @@ out = decode_cosmos_chunk_to_targets(
 ```
 
 `stats_domain` is required whenever `stats` is passed, and must match the
-embodiment's domain. It is not bookkeeping: `umi`, `droid_lerobot` and
-`bridge_orig_lerobot` are all 10 columns, so the width check cannot tell one
+embodiment's domain. It is not bookkeeping: `umi`, `droid_lerobot`,
+`bridge_orig_lerobot` and `openarm_lerobot` are all 10 columns, so the width
+check cannot tell one
 domain's quantiles from another's, and the two bundled domains disagree by up to
 **2.77x** on the physical translation they decode from the same normalized
 action. Substituting another domain's stats would rescale every commanded pose

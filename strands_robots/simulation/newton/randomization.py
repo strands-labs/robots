@@ -36,6 +36,7 @@ from strands_robots.simulation.base import (
     randomization_seed_error,
     unknown_kwargs_error,
 )
+from strands_robots.utils import boolean_flag_error
 
 logger = logging.getLogger(__name__)
 
@@ -101,7 +102,11 @@ class DomainRandomizationMixin:
         """Apply domain randomization to the Newton scene.
 
         Keyword names and defaults mirror the MuJoCo backend so randomization
-        code transfers across backends unchanged. Each axis is opt-in:
+        code transfers across backends unchanged - including the shared
+        boolean-flag domain each axis flag is checked on
+        (:func:`~strands_robots.utils.boolean_flag_error`), so an axis is not
+        turned off by ``"false"``, ``"no"``, ``"off"`` or ``"0"``. Each axis is
+        opt-in:
 
           - ``randomize_colors=True``  - per-shape RGB resampled in ``color_range``.
           - ``randomize_lighting=True`` - directional-light orientation jittered.
@@ -135,22 +140,44 @@ class DomainRandomizationMixin:
             seed: Optional seed for reproducible randomization; a non-negative
                 integer, or None for fresh entropy.
             **kwargs: Tolerated for MuJoCo-signature parity: ``randomize_positions``
-                and ``position_noise`` are accepted keywords, and a truthy
-                ``randomize_positions`` returns an error (Newton does not yet
-                support object-position randomization). Nothing else is
+                and ``position_noise`` are accepted keywords, and
+                ``randomize_positions=True`` returns an error (Newton does not
+                yet support object-position randomization). It is checked on the
+                same boolean-flag domain as the declared axes first, so that
+                refusal cannot inherit a misread and blame an axis the caller
+                asked to skip. Nothing else is
                 forwarded, so any other keyword is rejected with an error naming
                 the valid parameters instead of being silently dropped.
 
         Returns:
             Status dict. On success the ``json`` block carries the applied
             multipliers; an error dict is returned when a keyword is unknown, no
-            world exists, a range is invalid, or an unsupported axis is
-            requested.
+            world exists, an axis flag is not a boolean, a range is invalid, or
+            an unsupported axis is requested.
         """
         if kwargs_error := unknown_kwargs_error("randomize", kwargs, _RANDOMIZE_PARAMS):
             return kwargs_error
         if self._world is None:
             return {"status": "error", "content": [{"text": "No world. Call create_world (or load_scene) first."}]}
+        # Each flag selects a posture, so each is checked on the shared domain
+        # rather than read by truthiness - the same rule the MuJoCo backend's
+        # keyword parity promises. ``randomize_positions`` is declared only
+        # there, so here it arrives through ``**kwargs``; it is checked with the
+        # rest and BEFORE the parity refusal below, which branches on it and so
+        # would otherwise report an unsupported axis to a caller who had spelled
+        # "do not randomize positions" as ``"false"``. The stored spec applies
+        # ``bool()`` to each flag, so a misread would persist to every later
+        # rebuild rather than to this call alone.
+        axis_flags: list[tuple[str, Any]] = [
+            ("randomize_colors", randomize_colors),
+            ("randomize_lighting", randomize_lighting),
+            ("randomize_physics", randomize_physics),
+        ]
+        if "randomize_positions" in kwargs:
+            axis_flags.append(("randomize_positions", kwargs["randomize_positions"]))
+        for flag_param, flag_value in axis_flags:
+            if msg := boolean_flag_error(flag_value, flag_param, "randomize"):
+                return {"status": "error", "content": [{"text": msg}]}
         if kwargs.get("randomize_positions"):
             return {
                 "status": "error",

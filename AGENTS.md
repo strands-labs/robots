@@ -1419,6 +1419,19 @@ Corrections from code review that apply to all future contributions:
   opt-out - the one remedy that turns that refusal into a silent open of the surface the
   caller asked to close. Checking the flag makes such a branch reachable only where its
   advice is actionable.
+- **A facade that checks a flag does not check it for the method it forwards to.**
+  Where one contract is reachable through a convenience surface and a documented
+  direct API, both read the same caller input, so a guard on one leaves the other
+  disagreeing about which values are usable - which is what the shared *numeric*
+  domains in the same signatures exist to prevent. Every backend's
+  `start_recording` checked the `overwrite` it forwards to
+  `DatasetRecorder.create`, and `create` read it by truthiness and deleted the
+  caller's dataset. Guard the flag where it is *read*, on the same domain, and
+  ahead of the side effect it selects - for a confirmation gate in front of a
+  delete, that means before the target is touched, so a refusal cannot arrive
+  after the deletion it was refusing. Pinned by
+  `tests/test_dataset_recorder_posture_flag_domain.py`, which also records why
+  the neighbouring surfaces are out of scope.
 - Pinned by `tests/simulation/mujoco/test_actuate_robot_posture_flag_domain.py`,
   `tests/simulation/test_recording_posture_flag_domain.py`,
   `tests/tools/test_lerobot_teleoperate_flag_domain.py`,
