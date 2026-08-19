@@ -10,6 +10,10 @@ refuses an episode with no deterministic verdict, and records a disagreeing
 Four agent tools (`load_episode`, `sample_frames` - with optional camera-frame
 decoding for a multimodal judge - `read_predicate_verdict`, `write_label`) and
 `create_judge_agent` assemble a model-provider-agnostic strands judge agent.
+`sample_frames`' motion summary carries `rms_state_jerk` (rms third difference
+of the state series, so `jerky_motion` is groundable from state alone - a max
+first difference is a peak-velocity statistic that cannot see a superimposed
+jitter) beside `max_state_delta`.
 `examples/17_judge_recorded_episodes.py` runs the pipeline end to end: record
 with per-episode predicate stops, verdicts, scripted judge, judge/human
 agreement on a holdout, and a filtered ACT re-training run on the

@@ -152,6 +152,11 @@ class TestSampleFrames:
         assert payload["samples"][0]["state"] == [0.0, 0.0]
         # The synthetic state moves 0.5 per step on its largest dim.
         assert payload["max_state_delta"] == pytest.approx(0.5)
+        # A linear ramp has zero third difference: the smoothness statistic
+        # reads 0 however large the per-step velocity is (abs tolerance:
+        # 0.1-per-step is not exactly representable, and the residue is
+        # amplified by the 1/dt^3 scaling).
+        assert payload["rms_state_jerk"] == pytest.approx(0.0, abs=1e-6)
 
     def test_n_frames_is_clamped_to_the_episode_length(self, dataset_root):
         result = _sample_frames(str(dataset_root), 1, n_frames=100)
@@ -174,6 +179,94 @@ class TestSampleFrames:
         result = _sample_frames(str(dataset_root), 7)
         assert result["status"] == "error"
         assert "no frames" in _text(result)
+
+
+class TestSmoothnessIsCarriedByTheThirdDifference:
+    """Pin the distinction between the two motion-summary fields, not their
+    arithmetic: two episodes whose per-step maxima MATCH while their third
+    differences differ. ``max_state_delta`` is a peak-velocity statistic
+    pinned by the gross traverse - measured constant to 0.013% across a 4x
+    range of true jerk on a real SO-101 recording (PR #2486 review) - so
+    smoothness must be read from ``rms_state_jerk`` and only that field may
+    separate these episodes.
+    """
+
+    _FPS = 50.0
+
+    def _write_jerk_ladder(self, root: Path) -> None:
+        """Three episodes, one state dim, all with per-step max delta 0.5.
+
+        - episode 0 (smooth): linear ramp, third difference identically 0;
+        - episode 1 (jerky): steps alternating 0.5 / 0.0, third difference
+          alternating +/-1.0 per step (rms exactly 1.0);
+        - episode 2: three frames - too short for a third difference.
+        """
+        (root / "meta" / "episodes" / "chunk-000").mkdir(parents=True)
+        (root / "data" / "chunk-000").mkdir(parents=True)
+        (root / "meta" / "info.json").write_text(
+            json.dumps(
+                {
+                    "fps": self._FPS,
+                    "total_episodes": 3,
+                    "total_frames": 23,
+                    "features": {"observation.state": {"dtype": "float32", "names": ["pan"]}},
+                }
+            )
+        )
+        pq.write_table(
+            pa.table({"episode_index": [0, 1, 2], "length": [10, 10, 3]}),
+            root / "meta" / "episodes" / "chunk-000" / "file-000.parquet",
+        )
+        episode_column: list[int] = []
+        frame_column: list[int] = []
+        timestamp_column: list[float] = []
+        state_column: list[list[float]] = []
+        smooth = [0.5 * i for i in range(10)]
+        jerky = [0.5 * ((i + 1) // 2) for i in range(10)]  # 0, .5, .5, 1, 1, ...
+        for episode, series in ((0, smooth), (1, jerky), (2, smooth[:3])):
+            for frame, value in enumerate(series):
+                episode_column.append(episode)
+                frame_column.append(frame)
+                timestamp_column.append(frame / self._FPS)
+                state_column.append([value])
+        pq.write_table(
+            pa.table(
+                {
+                    "episode_index": episode_column,
+                    "frame_index": frame_column,
+                    "timestamp": timestamp_column,
+                    "observation.state": state_column,
+                }
+            ),
+            root / "data" / "chunk-000" / "file-000.parquet",
+        )
+
+    @pytest.fixture
+    def ladder_root(self, tmp_path):
+        root = tmp_path / "ladder"
+        root.mkdir()
+        self._write_jerk_ladder(root)
+        return root
+
+    def test_matching_maxima_differing_third_differences(self, ladder_root):
+        smooth = _json_payload(_sample_frames(str(ladder_root), 0))
+        jerky = _json_payload(_sample_frames(str(ladder_root), 1))
+
+        # The first-difference statistic cannot separate the two episodes...
+        assert smooth["max_state_delta"] == pytest.approx(0.5)
+        assert jerky["max_state_delta"] == pytest.approx(smooth["max_state_delta"])
+
+        # ...and the third-difference one does: 0 on the ramp, and on the
+        # jerky series an rms raw third difference of exactly 1.0, scaled to
+        # per-second-cubed by the recorded timestamp spacing.
+        assert smooth["rms_state_jerk"] == pytest.approx(0.0)
+        assert jerky["rms_state_jerk"] == pytest.approx(1.0 / (1.0 / self._FPS) ** 3)
+        assert jerky["rms_state_jerk"] > smooth["rms_state_jerk"]
+
+    def test_an_episode_too_short_for_a_third_difference_reports_none(self, ladder_root):
+        payload = _json_payload(_sample_frames(str(ladder_root), 2))
+        assert payload["max_state_delta"] == pytest.approx(0.5)
+        assert payload["rms_state_jerk"] is None
 
 
 class TestReadPredicateVerdict:

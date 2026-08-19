@@ -28,6 +28,8 @@ from __future__ import annotations
 
 import json
 import logging
+import math
+import statistics
 from pathlib import Path
 from typing import Any
 
@@ -179,6 +181,52 @@ def _decoded_image_blocks(root: Path, episode: int, positions: list[int]) -> lis
     return blocks
 
 
+def _rms_state_jerk(rows: list[dict[str, Any]]) -> float | None:
+    """RMS third difference of the state series - the statistic that carries
+    smoothness.
+
+    Jerk is the third derivative of position, so the max first difference
+    (``max_state_delta``) cannot express it: a maximum over the episode is
+    pinned by the gross traverse's own peak step, and a superimposed jitter
+    never exceeds it - measured constant to 0.013% across a 4x range of true
+    jerk on a real SO-101 recording (PR #2486 review). The third difference
+    over the same rows tracks true rms jerk with correlation +1.0 on that
+    same ladder, and recorded datasets carry positions only (no velocity
+    channel), so a third difference of position is the available route.
+
+    When the rows carry timestamps with a positive median spacing the value
+    is scaled to state-units per second cubed; otherwise it is the raw
+    per-step third difference. Returns ``None`` when fewer than four
+    consecutive frames carry a state vector (jerk needs four points).
+    """
+    total = 0.0
+    count = 0
+    for s0, s1, s2, s3 in zip(
+        (r["state"] for r in rows),
+        (r["state"] for r in rows[1:]),
+        (r["state"] for r in rows[2:]),
+        (r["state"] for r in rows[3:]),
+    ):
+        if s0 is None or s1 is None or s2 is None or s3 is None:
+            continue
+        for a, b, c, d in zip(s0, s1, s2, s3):
+            third = d - 3.0 * c + 3.0 * b - a
+            total += third * third
+            count += 1
+    if count == 0:
+        return None
+    rms = math.sqrt(total / count)
+    spacings = [
+        current["timestamp"] - previous["timestamp"]
+        for previous, current in zip(rows, rows[1:])
+        if previous["timestamp"] is not None and current["timestamp"] is not None
+    ]
+    positive = [s for s in spacings if s > 0.0]
+    if positive:
+        rms /= statistics.median(positive) ** 3
+    return rms
+
+
 @tool
 def load_episode(root: str, episode: int) -> dict[str, Any]:
     """Describe one recorded episode: length, features, and label state.
@@ -253,10 +301,14 @@ def sample_frames(root: str, episode: int, n_frames: int = 4, include_images: bo
 
     Always returns the flattened ``observation.state`` vector and timestamp
     per sampled frame (pure pyarrow read, no lerobot import), plus a motion
-    summary (largest per-step state delta across the whole episode) so a
-    text-only judge can reason about smoothness. With ``include_images`` a
-    multimodal judge additionally receives the decoded camera frames as
-    image content blocks.
+    summary over the whole episode: ``rms_state_jerk`` (rms third difference
+    of the state series) so a text-only judge can ground ``jerky_motion``
+    from state alone, and ``max_state_delta`` (largest per-step state delta)
+    for spotting discontinuities and teleports. Smoothness lives in the jerk
+    field - a maximum first difference is a peak-velocity statistic pinned by
+    the gross traverse, so it cannot see a superimposed jitter. With
+    ``include_images`` a multimodal judge additionally receives the decoded
+    camera frames as image content blocks.
 
     Args:
         root: Dataset root directory (the directory containing ``meta/``).
@@ -270,8 +322,11 @@ def sample_frames(root: str, episode: int, n_frames: int = 4, include_images: bo
 
     Returns:
         Structured result whose JSON payload carries ``episode``, ``length``,
-        ``samples`` (``frame_index`` / ``timestamp`` / ``state`` per sample)
-        and ``max_state_delta``; image blocks follow when requested.
+        ``samples`` (``frame_index`` / ``timestamp`` / ``state`` per sample),
+        ``max_state_delta`` and ``rms_state_jerk`` (state units per second
+        cubed when timestamps are present, per step cubed otherwise; ``null``
+        when the episode is shorter than four frames); image blocks follow
+        when requested.
     """
     try:
         root_path = _resolve_root(root)
@@ -305,6 +360,7 @@ def sample_frames(root: str, episode: int, n_frames: int = 4, include_images: bo
                     "length": length,
                     "samples": samples,
                     "max_state_delta": max_delta,
+                    "rms_state_jerk": _rms_state_jerk(rows),
                 }
             },
         ]

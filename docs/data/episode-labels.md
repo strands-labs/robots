@@ -85,9 +85,12 @@ agnostic (any strands model object; a local OpenAI-compatible VLM endpoint
 works, no cloud dependency required):
 
 - `load_episode` - frame count, features, whether a verdict/label exists.
-- `sample_frames` - evenly spaced state vectors plus a motion summary;
-  `include_images=True` decodes the camera frames into image blocks for a
-  multimodal judge (needs the `lerobot` extra).
+- `sample_frames` - evenly spaced state vectors plus a motion summary:
+  `rms_state_jerk` (rms third difference of the state series - jerk is the
+  third derivative, so this is the field that grounds `jerky_motion` from
+  state alone) and `max_state_delta` (peak per-step delta, for spotting
+  discontinuities); `include_images=True` decodes the camera frames into
+  image blocks for a multimodal judge (needs the `lerobot` extra).
 - `read_predicate_verdict` - the authoritative deterministic verdict.
 - `write_label` - the annotation; structurally unable to touch the verdict.
 

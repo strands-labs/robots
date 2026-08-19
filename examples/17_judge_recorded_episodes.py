@@ -139,7 +139,12 @@ def scripted_judge(root: str, episodes: list[int]) -> None:
         if verdict["success"]:
             quality = "high" if verdict.get("steps", STEP_BUDGET) <= 10 else "medium"
             failure_mode = None
-            note = f"reached the target in {verdict.get('steps')} steps; max state delta {frames['max_state_delta']:.3f}"
+            # rms_state_jerk is the smoothness statistic (rms third difference);
+            # max_state_delta is a peak per-step magnitude for discontinuities.
+            jerk = frames["rms_state_jerk"]
+            note = f"reached the target in {verdict.get('steps')} steps"
+            if jerk is not None:
+                note += f"; rms state jerk {jerk:.1f}"
         else:
             quality = "low"
             failure_mode = "incomplete"
