@@ -14,8 +14,9 @@
   ``SpecBuilder`` gives the mesh geom a ``meshname`` rather than a size, leaving
   the compiled extent to the asset.
 
-Isaac refuses mesh objects outright and points callers at MuJoCo, so it has no
-stake in this one.
+Isaac sits on MuJoCo's side of this: its mesh ``add_object`` (#2459) documents
+``size`` as ignored - the asset's own units define the extent - so the
+divergence measured here stays a two-party one (Newton vs. that shared read).
 
 So ``size=[2, 3, 4]`` scales the asset on one backend and is ignored on the
 other, and **both calls report success** - which is what makes the divergence

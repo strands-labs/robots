@@ -350,17 +350,70 @@ class TestIsaacSimulationConstruction:
         text = result["content"][0]["text"].lower()
         assert "material" in text and "mujoco" in text, text
 
-    def test_add_object_mesh_path_rejected_with_actionable_error(self):
-        # The Isaac add_object supports only primitive shapes; a custom
-        # ``mesh_path`` is rejected with an actionable error rather than being
-        # silently dropped into **kwargs.
+    def test_add_object_mesh_path_on_primitive_shape_rejected(self):
+        # A ``mesh_path`` is only consumed by ``shape="mesh"`` (#2459); on a
+        # primitive shape it would be silently ignored, so it is refused with
+        # an error naming the remedy rather than dropped. Fires before the
+        # world check, so it holds on any host.
         from strands_robots.simulation.isaac.simulation import IsaacSimulation
 
         sim = IsaacSimulation(num_envs=1, headless=True)
         result = sim.add_object("part", mesh_path="/tmp/widget.obj")
         assert result["status"] == "error"
         text = result["content"][0]["text"].lower()
-        assert "mesh" in text and "mujoco" in text, text
+        assert "shape='mesh'" in text, text
+
+    def test_add_object_mesh_shape_requires_mesh_path(self):
+        # MuJoCo-parity contract: shape='mesh' without a mesh_path names the
+        # missing parameter rather than degrading to a default primitive.
+        from strands_robots.simulation.isaac.simulation import IsaacSimulation
+
+        sim = IsaacSimulation(num_envs=1, headless=True)
+        result = sim.add_object("part", shape="mesh")
+        assert result["status"] == "error"
+        assert "mesh_path" in result["content"][0]["text"]
+
+    def test_add_object_mesh_missing_file_rejected(self):
+        # Fail-loud: a mesh asset that does not exist is refused by name
+        # before anything touches the stage - never a silent fallback box.
+        from strands_robots.simulation.isaac.simulation import IsaacSimulation
+
+        sim = IsaacSimulation(num_envs=1, headless=True)
+        result = sim.add_object("part", shape="mesh", mesh_path="/no/such/widget.obj")
+        assert result["status"] == "error"
+        text = result["content"][0]["text"]
+        assert "not found" in text and "/no/such/widget.obj" in text
+
+    def test_add_object_mesh_unsupported_format_rejected(self, tmp_path):
+        # A format the converter cannot parse (e.g. a COLLADA .dae) is
+        # refused with the supported set named.
+        from strands_robots.simulation.isaac.simulation import IsaacSimulation
+
+        asset = tmp_path / "part.dae"
+        asset.write_bytes(b"\x00\x01")
+        sim = IsaacSimulation(num_envs=1, headless=True)
+        result = sim.add_object("part", shape="mesh", mesh_path=str(asset))
+        assert result["status"] == "error"
+        text = result["content"][0]["text"]
+        assert ".dae" in text and ".obj" in text
+
+    def test_add_object_mesh_with_valid_asset_reaches_world_check(self, tmp_path):
+        # The behaviour test replacing the old explicit-refusal pin (#2459):
+        # a usable mesh asset passes the mesh validation and proceeds to the
+        # ordinary lifecycle gates - on a host without Isaac Sim that is the
+        # "No world created" error, NOT the retired "not supported on the
+        # Isaac backend yet" refusal. The live placement half runs on GPU in
+        # tests_integ/.
+        from strands_robots.simulation.isaac.simulation import IsaacSimulation
+
+        asset = tmp_path / "widget.obj"
+        asset.write_text("v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n", encoding="utf-8")
+        sim = IsaacSimulation(num_envs=1, headless=True)
+        result = sim.add_object("part", shape="mesh", mesh_path=str(asset))
+        assert result["status"] == "error"
+        text = result["content"][0]["text"].lower()
+        assert "no world" in text, text
+        assert "not supported" not in text
 
     def test_add_robot_signature_parity_with_base(self):
         # The base SimEngine.add_robot declares ``keyframe`` (spawn at a

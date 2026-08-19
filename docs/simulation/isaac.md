@@ -192,8 +192,18 @@ open a window.
 - **Robots** - `add_robot` (procedural builders, or USD via `usd_path=`, or
   URDF), `remove_robot`, `list_robots`, `robot_joint_names`, `send_action`,
   `get_observation`.
-- **Objects** - `add_object` (`cuboid` / `sphere` / `cylinder` / `capsule`,
-  dynamic or static), `remove_object`.
+- **Objects** - `add_object` (`cuboid` / `sphere` / `cylinder` / `capsule` /
+  `mesh`, dynamic or static), `remove_object`. A `shape="mesh"` add takes a
+  `mesh_path` to an STL/OBJ/MSH asset (converted to USD once and cached under
+  `$STRANDS_BASE_DIR/asset_cache/usd_meshes/`, content-addressed) or to a
+  USD file (referenced directly). The asset defines the extent - `size` is
+  ignored for a mesh, the MuJoCo read of that parameter (the Newton backend
+  consumes it as a scale instead; see
+  [#2300](https://github.com/strands-labs/robots/issues/2300)) - and
+  collision uses the mesh's **convex hull**, also the MuJoCo contract, with
+  the same caveat for concave assets: the hull fills every cavity. A missing
+  file or an unconvertible format is refused up front, never realized as a
+  fallback primitive.
 - **Cameras & rendering** - `add_camera` (look-at, FOV), `render` (RGB + depth).
   World-fixed only: `parent_body` (a body-mounted wrist camera, supported on
   mujoco/newton) is refused here with an error naming those backends, because
@@ -204,6 +214,17 @@ open a window.
 
 Because the joint-name and observation contract matches the MuJoCo backend,
 policies and observation mappings transfer unchanged between backends.
+
+LIBERO scenes get the same treatment for their *visuals*: `load_scene`
+renders each task object with its real mesh (bowls, plates - the assets a
+pixel-conditioned policy was trained on) while keeping the validated
+collision-AABB box as the invisible physics proxy, so switching backends does
+not also switch what the cameras see. An object whose mesh cannot be resolved
+keeps a visible box proxy, and the `load_scene` report then carries an
+explicit caveat that pixel-conditioned policy scores on that scene are not
+comparable across backends; when every object renders its mesh, the caveat
+disappears. A mesh asset that is declared but missing on disk fails the scene
+load loudly - never a silent box.
 
 The accepted *input* domain matches too, so a call one backend refuses is
 refused by all three. For the setup methods that means the pose vectors, an
