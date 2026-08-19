@@ -62,10 +62,14 @@ logger = logging.getLogger(__name__)
 
 _PURPOSE = "submitting SageMaker training jobs (strands_robots.training.sagemaker)"
 
-# TrainingJobName must match ^[a-zA-Z0-9](-*[a-zA-Z0-9]){0,62}$ (max 63 chars).
-# The base job name keeps 32 chars so the appended UTC stamp + entropy suffix
-# ("-YYYYmmdd-HHMMSS-<8 hex>", 25 chars) always fits.
-_BASE_JOB_NAME_RE = re.compile(r"^[a-zA-Z0-9](-*[a-zA-Z0-9]){0,31}$")
+# TrainingJobName must match ^[a-zA-Z0-9](-*[a-zA-Z0-9]){0,62}$ AND be at most
+# 63 characters - AWS states the pattern and the max length as two separate
+# constraints, and the pattern alone caps only the alphanumeric count (the
+# inner ``-*`` is unbounded, so a hyphen-padded name of any length matches).
+# The lookahead carries the length half. The base job name keeps 32 chars so
+# the appended UTC stamp + entropy suffix ("-YYYYmmdd-HHMMSS-<8 hex>",
+# 25 chars) always fits under 63.
+_BASE_JOB_NAME_RE = re.compile(r"^(?=.{1,32}$)[a-zA-Z0-9](-*[a-zA-Z0-9]){0,31}$")
 
 # SageMaker training instance types are "ml.<family>.<size>", e.g.
 # "ml.g5.12xlarge" / "ml.p4d.24xlarge". Format allowlist only - the live
@@ -80,10 +84,11 @@ _ROLE_ARN_RE = re.compile(r"^arn:aws[a-zA-Z-]*:iam::\d{12}:role/.+$")
 # managed job, so it is refused here rather than failing at job start.
 _S3_URI_RE = re.compile(r"^s3://[a-z0-9][a-z0-9.\-]*[a-z0-9](/.*)?$")
 
-# CreateTrainingJob limits: at most 100 hyperparameters, each value at most
-# 2500 characters. Checked in validate() so an oversized ``extra`` is refused
-# before submission rather than by the API.
+# CreateTrainingJob limits: at most 100 hyperparameters, each key at most 256
+# characters and each value at most 2500. Checked in validate() so an
+# oversized ``extra`` is refused before submission rather than by the API.
 _MAX_HYPERPARAMETERS = 100
+_MAX_HYPERPARAMETER_KEY_LEN = 256
 _MAX_HYPERPARAMETER_VALUE_LEN = 2500
 
 # TrainSpec fields forwarded to the container as hyperparameters, under their
@@ -176,7 +181,7 @@ def hyperparameter_problems(spec: TrainSpec) -> list[str]:
     first, so the refusal happens in ``validate`` rather than at the API or -
     worse - silently: an ``extra`` key that collides with a forwarded spec
     field would otherwise shadow it, an unencodable value would raise from a
-    method documented to return problems, and an oversized value or count
+    method documented to return problems, and an oversized key, value or count
     would be refused by CreateTrainingJob only after submission.
     """
     problems: list[str] = []
@@ -191,6 +196,11 @@ def hyperparameter_problems(spec: TrainSpec) -> list[str]:
 
     candidates = _forwarded_items(spec) + [(str(k), v) for k, v in extra.items()]
     for key, value in candidates:
+        if len(key) > _MAX_HYPERPARAMETER_KEY_LEN:
+            problems.append(
+                f"hyperparameter key {key!r} is {len(key)} characters long "
+                f"(SageMaker caps a hyperparameter key at {_MAX_HYPERPARAMETER_KEY_LEN})"
+            )
         try:
             encoded = _encode_hyperparameter(value)
         except (TypeError, ValueError):
@@ -221,6 +231,11 @@ class SagemakerTrainer(Trainer):
             ``validate`` problem rather than a constructor error.
         role_arn: SageMaker execution role ARN the job runs as. Required.
         instance_type: SageMaker training instance type (``ml.<family>.<size>``).
+            ``spec.num_gpus`` must agree with the GPUs this type carries: it
+            travels to the container as a hyperparameter and is NOT
+            cross-checked against the instance catalog here, so a mismatch
+            fails inside the container only after the instance is provisioned
+            (which bills).
         region: AWS region for the SageMaker client. ``None`` defers to boto3's
             standard resolution chain (env / config / instance profile).
         volume_size_gb: EBS volume attached to each training instance.

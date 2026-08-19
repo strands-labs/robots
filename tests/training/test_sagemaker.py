@@ -11,6 +11,7 @@ per-test so a previously imported real boto3 cannot leak in.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import sys
 import time
@@ -23,6 +24,7 @@ import strands_robots.utils as utils_module
 from strands_robots.training import TrainSpec, create_trainer, list_trainers
 from strands_robots.training.factory import import_trainer_class
 from strands_robots.training.sagemaker import (
+    _FORWARDED_FIELDS,
     SagemakerTrainer,
     build_hyperparameters,
     hyperparameter_problems,
@@ -159,6 +161,7 @@ class TestValidate:
             (lambda s: s.extra.__setitem__("output_dir", "s3://x/y"), "collides with the forwarded TrainSpec field"),
             (lambda s: s.extra.__setitem__("payload", object()), "not JSON-encodable"),
             (lambda s: s.extra.__setitem__("payload", "x" * 2501), "caps a hyperparameter value"),
+            (lambda s: s.extra.__setitem__("k" * 300, "1"), "caps a hyperparameter key"),
             (lambda s: s.extra.__setitem__("--evil", "1"), "extra key"),
         ],
     )
@@ -177,6 +180,13 @@ class TestValidate:
             ({"instance_type": "g5.xlarge"}, "does not look like a SageMaker"),
             ({"base_job_name": "-bad-"}, "base_job_name"),
             ({"base_job_name": "x" * 40}, "base_job_name"),
+            # AWS states TrainingJobName as a pattern PLUS a separate 63-char
+            # max length; the pattern alone caps only the alphanumeric count
+            # (`-*` is unbounded), so a hyphen-padded name used to pass
+            # validate and generate a TrainingJobName over 63, refused by the
+            # API only after submission.
+            ({"base_job_name": "a-" * 25 + "b"}, "base_job_name"),
+            ({"base_job_name": "a" + "-" * 100 + "b"}, "base_job_name"),
             ({"volume_size_gb": 0}, "volume_size_gb"),
             ({"max_runtime_s": 0}, "max_runtime_s"),
             ({"poll_interval_s": 0.0}, "poll_interval_s"),
@@ -191,8 +201,32 @@ class TestValidate:
         problems = hyperparameter_problems(spec)
         assert any("caps a training job" in p for p in problems), problems
 
+    @pytest.mark.parametrize("base_job_name", ["a" * 32, "a-b-c", "strands-robots"])
+    def test_max_length_base_job_name_still_fits_the_api_cap(self, spec: TrainSpec, base_job_name: str) -> None:
+        """Control for the length bound: 32 chars is accepted, and the generated
+        TrainingJobName (base + 25-char stamp/entropy suffix) stays within AWS's
+        63-character cap."""
+        trainer = _trainer(base_job_name=base_job_name)
+        assert trainer.validate(spec) == []
+        assert len(trainer._job_name()) <= 63
+
 
 class TestHyperparameterMapping:
+    def test_every_trainspec_field_is_forwarded_or_deliberately_special(self) -> None:
+        """Drift guard: pins ``_FORWARDED_FIELDS`` to ``TrainSpec`` in both directions.
+
+        A field added to ``TrainSpec`` and not forwarded would be silently
+        dropped by this provider - the container never sees it, ``validate``
+        reports nothing, and the job trains with a setting the caller did not
+        ask for while reporting success. A name removed from ``TrainSpec``
+        while ``_FORWARDED_FIELDS`` keeps it would make ``_forwarded_items``'s
+        ``getattr`` raise out of a pure mapping function. Equality catches both.
+        """
+        # channel, artifact path, spliced in beside the forwarded fields
+        special = {"dataset_root", "output_dir", "extra"}
+        fields = {f.name for f in dataclasses.fields(TrainSpec)}
+        assert fields - special == set(_FORWARDED_FIELDS)
+
     def test_values_are_all_strings(self, spec: TrainSpec) -> None:
         """SageMaker hyperparameters are str -> str; nothing else may leak in."""
         hp = build_hyperparameters(spec)
