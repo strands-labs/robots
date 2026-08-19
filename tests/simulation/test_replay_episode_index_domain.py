@@ -434,6 +434,15 @@ _REPLAY_EPISODE_SURFACES = {
     ("strands_robots/simulation/policy_runner.py", "replay"),
     ("strands_robots/simulation/base.py", "replay_episode"),
     ("strands_robots/dataset_recorder.py", "load_lerobot_episode"),
+    # The episode-label surfaces resolve the same quantity: which recorded
+    # episode a verdict/annotation/read is about. Each applies the shared rule
+    # itself (the judge tools return the refusal as a structured error dict).
+    ("strands_robots/episode_labels.py", "deterministic_verdict"),
+    ("strands_robots/episode_labels.py", "annotate_episode"),
+    ("strands_robots/tools/episode_judge.py", "load_episode"),
+    ("strands_robots/tools/episode_judge.py", "sample_frames"),
+    ("strands_robots/tools/episode_judge.py", "read_predicate_verdict"),
+    ("strands_robots/tools/episode_judge.py", "write_label"),
 }
 
 _REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
