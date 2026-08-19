@@ -72,6 +72,7 @@ See ``docs/data/episode-labels.md`` for the full schema documentation and
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import tempfile
@@ -142,10 +143,12 @@ def _write_document(path: Path, document: dict[str, Any]) -> None:
         os.replace(tmp_name, path)
     except BaseException:
         # Cleanup-and-reraise: never leave the temp file behind on failure.
-        try:
+        # The unlink is best-effort - the exception worth the caller's
+        # attention is the write failure being re-raised, not a cleanup
+        # OSError on a file that may already be gone (same construct as
+        # atomic_write_bytes in strands_robots.simulation.safe_output).
+        with contextlib.suppress(OSError):
             os.unlink(tmp_name)
-        except OSError:
-            pass
         raise
 
 
