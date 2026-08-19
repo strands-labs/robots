@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -342,16 +343,18 @@ class TestDoctorDegradedPaths:
         result = check_python_version()
         assert "  FAIL  " in result
 
-    def test_hf_auth_no_token_anywhere_warns(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from pathlib import Path
-
+    def test_hf_auth_no_token_anywhere_warns(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         from strands_robots.doctor import check_hf_auth
 
-        monkeypatch.delenv("HF_TOKEN", raising=False)
-        monkeypatch.delenv("HUGGING_FACE_HUB_TOKEN", raising=False)
-        # Force the cached-token path to look absent so the warn branch is taken
-        # regardless of the host's ~/.cache/huggingface state.
-        monkeypatch.setattr(Path, "exists", lambda _self: False)
+        for name in ("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN", "HF_HOME", "HF_TOKEN_PATH", "XDG_CACHE_HOME"):
+            monkeypatch.delenv(name, raising=False)
+        # Relocate the whole HuggingFace home to an empty tree so the warn branch
+        # is taken regardless of the host's own cache. Patching ``Path.exists``
+        # would only work while the check happened to consult that one method;
+        # driving the resolution the Hub actually uses states the premise
+        # directly and cannot go stale.
+        monkeypatch.setitem(sys.modules, "huggingface_hub.constants", None)
+        monkeypatch.setenv("HF_HOME", str(tmp_path / "empty_hf_home"))
         result = check_hf_auth()
         assert "  WARN  " in result
 

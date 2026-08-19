@@ -1242,9 +1242,14 @@ class PolicyRunner:
                 VLA providers ignore unknown kwargs per the #300 contract, so
                 this is safe to forward unconditionally. ``None`` forwards no
                 extra kwargs (identical to the historical behaviour).
-            max_onframe_failures: Maximum *consecutive* non-``CooperativeStop``
-                exceptions from the ``on_frame`` hook before the runner aborts
-                the episode. ``None`` (default) uses
+            max_onframe_failures: Maximum *consecutive* exceptions from the
+                ``on_frame`` hook before the runner aborts the episode.
+                ``CooperativeStop`` and
+                :class:`~strands_robots.dataset_recorder.RecordingFrameError` are
+                exempt from the count rather than tolerated by it: the first is
+                the documented graceful stop and the second is data loss, so a
+                lost dataset frame aborts on the FIRST occurrence whatever this
+                is set to. ``None`` (default) uses
                 ``_MAX_CONSECUTIVE_ONFRAME_FAILURES`` (currently ``5``). A
                 broken recording hook otherwise silently produces empty
                 datasets - see GH #117. Non-consecutive failures reset the
@@ -2535,9 +2540,13 @@ class PolicyRunner:
                 fired per applied control step on the eval thread, after
                 ``sim.send_action``. Forwarded on BOTH the ``spec=`` and the
                 legacy ``success_fn`` paths; ``step`` is a monotonic index
-                that continues across episode boundaries. A non-
-                ``CooperativeStop`` hook exception is logged at WARN and never
-                aborts the eval; raising :class:`CooperativeStop` stops the
+                that continues across episode boundaries. A hook exception
+                other than ``CooperativeStop`` or
+                :class:`~strands_robots.dataset_recorder.RecordingFrameError` is
+                logged at WARN and never aborts the eval; a
+                ``RecordingFrameError`` is data loss rather than telemetry and
+                propagates on the first occurrence. Raising
+                :class:`CooperativeStop` stops the
                 evaluation gracefully after the episodes completed so far
                 (the result carries ``stopped_early=True`` and
                 ``episodes_completed``), matching :meth:`run`. Use this for
@@ -2821,7 +2830,9 @@ class PolicyRunner:
             # Fire AFTER ``send_action`` (post-action obs unavailable yet, so
             # pass the pre-action obs the chunk was queried with - matches
             # ``_evaluate_with_spec``). The hook is best-effort telemetry: a
-            # failure is logged at WARN and never aborts the eval.
+            # GENERIC failure is logged at WARN and never aborts the eval. The
+            # two classes handled below are not telemetry and are exempt from
+            # that posture.
             nonlocal global_step
             if current_vwriter is not None:
                 current_vwriter.capture(ep_step)
