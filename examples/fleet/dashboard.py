@@ -31,6 +31,11 @@ Dependencies: pip install "strands-robots[mesh]"
               installed: pip install rerun-sdk)
 Expected output: a live-updating fleet table plus an event timeline, in the
                  Rerun viewer when available and on the terminal otherwise.
+                 On a headless or remote host, ``--serve-web`` serves the
+                 Rerun web viewer + live log stream from this process
+                 instead of spawning a native viewer window; it binds
+                 127.0.0.1 by default and prints the ready-to-open URL plus
+                 the SSH tunnel recipe.
 Runtime: until Ctrl+C, or --duration seconds.
 
 Note: Run any fleet example in another terminal (e.g.
@@ -52,16 +57,46 @@ import os
 os.environ.setdefault("STRANDS_MESH_LOCAL_DEV", "1")
 
 import argparse
+import subprocess
+import sys
+import tempfile
 import time
+import urllib.parse
 from collections import deque
 from collections.abc import Callable
 from typing import Any
 
 from strands_robots.mesh import init_mesh
 from strands_robots.mesh.audit import read_audit_log
-from strands_robots.utils import require_optional
+from strands_robots.utils import require_optional, tcp_port_error
 
 DASHBOARD_ID = "fleet-dashboard"
+
+# --serve-web defaults. Loopback is the repo's network-exposure convention
+# ("bind to 127.0.0.1 by default, not 0.0.0.0"); the ports match the rerun
+# CLI's own defaults so the tunnel recipe below is the one users already know.
+DEFAULT_BIND = "127.0.0.1"
+DEFAULT_WEB_PORT = 9090
+DEFAULT_GRPC_PORT = 9876
+
+#: How long the web server child gets to bind its ports before --serve-web
+#: gives up and raises (a duration, so it is measured on time.monotonic()).
+SERVE_READY_TIMEOUT_S = 15.0
+
+#: The line the rerun server prints once its gRPC listener is bound (0.26.x).
+#: Readiness is read from the child's own log rather than probed with a TCP
+#: connect: when the port is already taken, a connect probe reaches the
+#: squatter and reports the server ready exactly when it is not - measured,
+#: that false pass left the dashboard streaming into a socket that speaks no
+#: gRPC instead of refusing with the child's own bind error.
+_SERVE_READY_LINE = b"Listening for gRPC connections on"
+
+#: And the line it prints instead when that listener cannot bind (0.26.x
+#: keeps serving the viewer HTML and only logs this ERROR, so the process
+#: staying alive proves nothing). Recognising it turns a 15s timeout into an
+#: immediate refusal; if the wording ever changes, the timeout still catches
+#: the failure and quotes the log.
+_SERVE_FAILED_LINE = b"message proxy server crashed"
 
 # The subscribe surface: presence and health for the fleet table, the two
 # fleet-wide safety topics plus per-peer safety events for the timeline.
@@ -255,6 +290,9 @@ class TerminalRenderer:
         self._max_event_lines = max_event_lines
         self._seen_events = 0
 
+    def close(self) -> None:
+        """No resources to release; mirrors :meth:`RerunRenderer.close`."""
+
     def render(self, snapshot: dict[str, Any]) -> None:
         print(f"\n== fleet ({time.strftime('%H:%M:%S')})  safety: {snapshot['fleet_safety']} ==")
         header = f"{'peer':<20} {'type':<10} {'age_s':>6} {'battery':>8} {'safety':<24} task"
@@ -270,17 +308,206 @@ class TerminalRenderer:
             print(f"  [{event['source']}] {event['event']} ({event['peer']})")
 
 
-class RerunRenderer:
-    """Rerun renderer: fleet table as a text document, events as a text log."""
+def serve_connect_host(bind: str) -> str:
+    """The address a local client (the SDK stream, the readiness probe, the
+    printed URL) uses to reach a server bound on ``bind``.
 
-    def __init__(self, *, spawn: bool = True) -> None:
+    ``0.0.0.0`` accepts on every interface but is not itself a destination,
+    so loopback stands in for it; any other bind address is reachable only at
+    that address.
+    """
+    return "127.0.0.1" if bind == "0.0.0.0" else bind
+
+
+def rerun_binary() -> str:
+    """Resolve the native rerun-cli binary that ships inside the rerun-sdk wheel.
+
+    The child must BE the binary for :meth:`RerunRenderer.close` to actually
+    stop the server: ``{sys.executable} -m rerun`` wraps the binary in
+    ``subprocess.call`` (see ``rerun_cli.__main__``), so terminating that
+    wrapper orphans the grandchild - measured on 0.26.2, the dashboard exited
+    and both ports stayed bound by a leaked ``rerun_cli/rerun`` process,
+    which is exactly the state that makes the next ``--serve-web`` fail.
+    ``RERUN_CLI_PATH`` is honoured because it is the wrapper's own documented
+    override for the same resolution.
+    """
+    override = os.environ.get("RERUN_CLI_PATH")
+    if override:
+        if not os.path.exists(override):
+            raise RuntimeError(f"RERUN_CLI_PATH={override!r} does not exist")
+        return override
+    cli = require_optional("rerun_cli", pip_install="rerun-sdk", purpose="the fleet dashboard's --serve-web server")
+    suffix = ".exe" if sys.platform.startswith("win") else ""
+    path = os.path.join(os.path.dirname(cli.__file__), "rerun" + suffix)
+    if not os.path.exists(path):
+        raise RuntimeError(f"rerun-sdk is installed but its CLI binary is missing at {path!r}")
+    return path
+
+
+def serve_web_command(*, binary: str, bind: str, web_port: int, grpc_port: int) -> list[str]:
+    """Pure argv builder for the Rerun web server child process.
+
+    rerun-sdk 0.26's in-process serve API (``rr.serve_grpc`` +
+    ``rr.serve_web_viewer``) exposes no bind address and binds ``0.0.0.0``
+    (measured on 0.26.2: both listeners show ``0.0.0.0`` in ``ss -ltn``
+    while the returned URI says ``127.0.0.1``), so the only surface that can
+    honour the loopback-by-default convention is the CLI's ``--bind`` - and
+    the CLI's own default is ``0.0.0.0``, so the address is always set here
+    deliberately rather than inherited. ``binary`` comes from
+    :func:`rerun_binary`, which keeps the server in the same environment as
+    the SDK that streams to it.
+    """
+    return [
+        binary,
+        "--serve-web",
+        "--bind",
+        bind,
+        "--port",
+        str(grpc_port),
+        "--web-viewer-port",
+        str(web_port),
+    ]
+
+
+def web_viewer_lines(*, bind: str, web_port: int, grpc_port: int) -> list[str]:
+    """The startup message for --serve-web: URL, tunnel recipe, exposure note.
+
+    The URL carries the gRPC stream address in its ``?url=`` query (the
+    ``rerun%2Bhttp...`` form) so the browser connects to the live stream
+    without any manual viewer configuration. Loopback binding gets the SSH
+    tunnel recipe - both ports must be forwarded, because the browser fetches
+    the viewer from the web port and then dials the gRPC port itself. Any
+    wider bind says so explicitly instead: opting into network exposure is
+    the caller's deliberate act and the output should read like one.
+    """
+    host = serve_connect_host(bind)
+    grpc_uri = f"rerun+http://{host}:{grpc_port}/proxy"
+    url = f"http://{host}:{web_port}/?url={urllib.parse.quote(grpc_uri, safe='')}"
+    lines = [f"Rerun web viewer: {url}"]
+    if bind == DEFAULT_BIND:
+        lines.append("bound to 127.0.0.1 (loopback only). From a remote machine, tunnel both ports first:")
+        lines.append(f"  ssh -N -L {web_port}:127.0.0.1:{web_port} -L {grpc_port}:127.0.0.1:{grpc_port} user@this-host")
+        lines.append("then open the URL above in your local browser.")
+    else:
+        lines.append(
+            f"WARNING: bound to {bind} (network exposure beyond loopback); "
+            f"anyone who can reach ports {web_port} and {grpc_port} can watch this dashboard."
+        )
+    return lines
+
+
+class RerunRenderer:
+    """Rerun renderer: fleet table as a text document, events as a text log.
+
+    Two transports, one render path. The default spawns the native viewer
+    (``spawn=True``); ``serve_web=True`` instead starts a Rerun web server
+    child bound to ``bind`` (loopback unless the caller opted wider) and
+    streams the same log data into it over gRPC, so a browser - locally or
+    through an SSH tunnel - watches the dashboard live on a headless host.
+    The web viewer is a view only: nothing here widens the mesh peer's
+    subscribe-only surface, which is enforced upstream by
+    :func:`restrict_to_subscribe_only`.
+    """
+
+    def __init__(
+        self,
+        *,
+        spawn: bool = True,
+        serve_web: bool = False,
+        bind: str = DEFAULT_BIND,
+        web_port: int = DEFAULT_WEB_PORT,
+        grpc_port: int = DEFAULT_GRPC_PORT,
+    ) -> None:
         self._rr = require_optional(
             "rerun",
             pip_install="rerun-sdk",
             purpose="the fleet dashboard's Rerun rendering",
         )
-        self._rr.init("strands-fleet-dashboard", spawn=spawn)
+        self._server: subprocess.Popen[bytes] | None = None
+        if serve_web:
+            self._server = self._start_web_server(bind=bind, web_port=web_port, grpc_port=grpc_port)
+            self._rr.init("strands-fleet-dashboard", spawn=False)
+            self._rr.connect_grpc(f"rerun+http://{serve_connect_host(bind)}:{grpc_port}/proxy")
+            for line in web_viewer_lines(bind=bind, web_port=web_port, grpc_port=grpc_port):
+                print(line)
+        else:
+            self._rr.init("strands-fleet-dashboard", spawn=spawn)
         self._seen_events = 0
+
+    @staticmethod
+    def _start_web_server(*, bind: str, web_port: int, grpc_port: int) -> subprocess.Popen[bytes]:
+        """Start the web server child and wait until it serves (or raise).
+
+        A port already in use makes the child exit; without this readiness
+        gate the dashboard would keep running with its log stream pointed at
+        nothing (or at whatever process holds the port), which is exactly the
+        silent fall-through --serve-web exists to refuse. The child's output
+        goes to a temp file (not a pipe: nothing drains a pipe here, and a
+        full pipe buffer would block the server), and readiness is that
+        file's own "listening" line - see :data:`_SERVE_READY_LINE` for why a
+        TCP probe would pass on the one failure this gate is for.
+        """
+        cmd = serve_web_command(binary=rerun_binary(), bind=bind, web_port=web_port, grpc_port=grpc_port)
+        log = tempfile.NamedTemporaryFile(
+            mode="w+b", prefix="strands-dashboard-rerun-serve-", suffix=".log", delete=False
+        )
+        with log:
+            # Popen dups the descriptor, so the parent's handle can close
+            # here; the child keeps writing to the (kept) file.
+            proc = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT)
+
+        def _log_tail() -> str:
+            with open(log.name, "rb") as handle:
+                return handle.read()[-2000:].decode("utf-8", errors="replace")
+
+        deadline = time.monotonic() + SERVE_READY_TIMEOUT_S
+        while time.monotonic() < deadline:
+            # Exit status first, then the log: a ready line found after the
+            # child died must not return a dead server.
+            exited = proc.poll() is not None
+            with open(log.name, "rb") as handle:
+                output = handle.read()
+            if _SERVE_FAILED_LINE in output:
+                proc.terminate()
+                raise RuntimeError(
+                    f"the Rerun web server could not bind its gRPC listener on port {grpc_port} "
+                    f"(already in use?). Its output:\n{_log_tail()}"
+                )
+            if exited:
+                raise RuntimeError(
+                    f"the Rerun web server exited (code {proc.returncode}) before serving "
+                    f"(ports {web_port}/{grpc_port} already in use?). Its output:\n{_log_tail()}"
+                )
+            if _SERVE_READY_LINE in output:
+                return proc
+            time.sleep(0.1)
+        proc.terminate()
+        raise RuntimeError(
+            f"the Rerun web server did not report its gRPC listener on port {grpc_port} "
+            f"within {SERVE_READY_TIMEOUT_S:.0f}s. Its output:\n{_log_tail()}"
+        )
+
+    def close(self) -> None:
+        """Flush and detach the log stream, then stop the web server child.
+
+        The stream detaches first (``rr.disconnect`` flushes and closes the
+        gRPC connection): killing the server while the sink is attached makes
+        the SDK's shutdown flush fail against a vanished peer, and the last
+        rendered snapshot goes with it. The child then gets a terminate: the
+        server's whole job is to outlive renders, not the dashboard, and an
+        orphaned child would keep both ports bound, so the next run's
+        --serve-web fails on addresses this one leaked.
+        """
+        if self._server is not None:
+            self._rr.disconnect()
+            if self._server.poll() is None:
+                self._server.terminate()
+                try:
+                    self._server.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    self._server.kill()
+                    self._server.wait(timeout=5)
+        self._server = None
 
     def render(self, snapshot: dict[str, Any]) -> None:
         lines = [f"fleet safety: {snapshot['fleet_safety']}", ""]
@@ -301,8 +528,24 @@ class RerunRenderer:
             self._rr.log("fleet/events", self._rr.TextLog(f"[{event['source']}] {event['event']} ({event['peer']})"))
 
 
-def make_renderer(*, prefer_rerun: bool = True, spawn: bool = True) -> Any:
-    """Rerun when available, terminal otherwise - degradation is loud."""
+def make_renderer(
+    *,
+    prefer_rerun: bool = True,
+    spawn: bool = True,
+    serve_web: bool = False,
+    bind: str = DEFAULT_BIND,
+    web_port: int = DEFAULT_WEB_PORT,
+    grpc_port: int = DEFAULT_GRPC_PORT,
+) -> Any:
+    """Rerun when available, terminal otherwise - degradation is loud.
+
+    ``serve_web`` is an explicit ask for the web viewer, so it does NOT
+    degrade: with rerun-sdk absent the ``ImportError`` (carrying the
+    ``pip install rerun-sdk`` hint) propagates instead of silently rendering
+    tables to a terminal nobody is watching on a headless host.
+    """
+    if serve_web:
+        return RerunRenderer(serve_web=True, bind=bind, web_port=web_port, grpc_port=grpc_port)
     if prefer_rerun:
         try:
             return RerunRenderer(spawn=spawn)
@@ -324,37 +567,89 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--no-rerun", action="store_true", help="force the terminal renderer")
     parser.add_argument("--no-spawn", action="store_true", help="do not spawn the Rerun viewer process")
     parser.add_argument("--no-audit", action="store_true", help="do not tail the signed audit log")
+    parser.add_argument(
+        "--serve-web",
+        action="store_true",
+        help="serve the Rerun web viewer + live log stream from this process "
+        "instead of spawning a native viewer (for headless/remote hosts)",
+    )
+    parser.add_argument(
+        "--web-port",
+        type=int,
+        default=None,
+        help=f"HTTP port for the web viewer (default {DEFAULT_WEB_PORT}; requires --serve-web)",
+    )
+    parser.add_argument(
+        "--grpc-port",
+        type=int,
+        default=None,
+        help=f"gRPC port for the live log stream (default {DEFAULT_GRPC_PORT}; requires --serve-web)",
+    )
+    parser.add_argument(
+        "--bind",
+        default=None,
+        help=f"bind address for --serve-web (default {DEFAULT_BIND}, loopback only; "
+        "pass 0.0.0.0 to deliberately expose the viewer on every interface)",
+    )
     args = parser.parse_args(argv)
     if args.interval <= 0:
         raise SystemExit("--interval must be a positive number of seconds")
+    if args.serve_web and args.no_rerun:
+        raise SystemExit("--serve-web and --no-rerun are mutually exclusive: the web viewer is Rerun rendering")
+    if not args.serve_web and (args.bind is not None or args.web_port is not None or args.grpc_port is not None):
+        # Silently ignoring these would be a dropped ask: they configure the
+        # web server, and without --serve-web no web server exists.
+        raise SystemExit("--bind/--web-port/--grpc-port configure the web viewer; they require --serve-web")
+    bind = args.bind if args.bind is not None else DEFAULT_BIND
+    web_port = args.web_port if args.web_port is not None else DEFAULT_WEB_PORT
+    grpc_port = args.grpc_port if args.grpc_port is not None else DEFAULT_GRPC_PORT
+    for value, name in ((web_port, "--web-port"), (grpc_port, "--grpc-port")):
+        if (port_error := tcp_port_error(value, name, parser.prog)) is not None:
+            raise SystemExit(port_error)
+    if web_port == grpc_port:
+        raise SystemExit(
+            f"--web-port and --grpc-port must differ (both are {web_port}); "
+            "the HTTP and gRPC servers each bind their own port"
+        )
+    if args.serve_web and not bind.strip():
+        raise SystemExit("--bind must be a non-empty address")
 
-    mesh = init_mesh(_DashboardOwner(), peer_id=DASHBOARD_ID, peer_type="dashboard")
-    if mesh is None:
-        raise SystemExit("mesh is disabled (STRANDS_MESH=0); the dashboard has nothing to attach to")
-    if not mesh.alive:
-        raise SystemExit('mesh did not start (is eclipse-zenoh installed? pip install "strands-robots[mesh]")')
-    restrict_to_subscribe_only(mesh)
-
-    dashboard = FleetDashboard(
-        mesh,
-        make_renderer(prefer_rerun=not args.no_rerun, spawn=not args.no_spawn),
-        tail_audit=not args.no_audit,
+    # The renderer comes first: if --serve-web cannot start (rerun-sdk absent,
+    # port in use), the refusal lands before a mesh peer ever announces itself.
+    renderer = make_renderer(
+        prefer_rerun=not args.no_rerun,
+        spawn=not args.no_spawn,
+        serve_web=args.serve_web,
+        bind=bind,
+        web_port=web_port,
+        grpc_port=grpc_port,
     )
-    dashboard.attach()
-    print(f"dashboard peer {DASHBOARD_ID} attached (subscribe-only); Ctrl+C to exit")
-
-    deadline = time.monotonic() + args.duration if args.duration > 0 else None
     try:
-        while deadline is None or time.monotonic() < deadline:
-            dashboard.tick()
-            time.sleep(args.interval)
-    except KeyboardInterrupt:
-        # Ctrl+C is the documented way to stop the dashboard; announce the
-        # shutdown so the interrupt is visibly handled, then fall through to
-        # the mesh.stop() cleanup below.
-        print("dashboard interrupted; detaching from the mesh")
+        mesh = init_mesh(_DashboardOwner(), peer_id=DASHBOARD_ID, peer_type="dashboard")
+        if mesh is None:
+            raise SystemExit("mesh is disabled (STRANDS_MESH=0); the dashboard has nothing to attach to")
+        if not mesh.alive:
+            raise SystemExit('mesh did not start (is eclipse-zenoh installed? pip install "strands-robots[mesh]")')
+        restrict_to_subscribe_only(mesh)
+
+        dashboard = FleetDashboard(mesh, renderer, tail_audit=not args.no_audit)
+        dashboard.attach()
+        print(f"dashboard peer {DASHBOARD_ID} attached (subscribe-only); Ctrl+C to exit")
+
+        deadline = time.monotonic() + args.duration if args.duration > 0 else None
+        try:
+            while deadline is None or time.monotonic() < deadline:
+                dashboard.tick()
+                time.sleep(args.interval)
+        except KeyboardInterrupt:
+            # Ctrl+C is the documented way to stop the dashboard; announce the
+            # shutdown so the interrupt is visibly handled, then fall through to
+            # the mesh.stop() cleanup below.
+            print("dashboard interrupted; detaching from the mesh")
+        finally:
+            mesh.stop()
     finally:
-        mesh.stop()
+        renderer.close()
     return 0
 
 
