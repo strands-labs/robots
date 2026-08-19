@@ -5,7 +5,7 @@ The agent receives a single prompt describing the eval, picks
 ``evaluate_benchmark`` on the registered ``Simulation`` tool, sets the
 kwargs from prompt context, runs, and returns a natural-language
 summary. For the scripted / deterministic version of the same eval,
-see ``run_mujoco.py`` (sibling file); for the Isaac Sim equivalent,
+see ``run.py`` (sibling file, ``mujoco`` subcommand); for the Isaac Sim equivalent,
 see ``run_isaac_agent.py``.
 
 What the script handles deterministically (NOT the agent)
@@ -22,7 +22,7 @@ Owned by the script:
 
 * GR00T inference container lifecycle (start, wait-for-load, teardown
   on exit) via ``gr00t_inference(action='lifecycle', ...)`` - same
-  block as ``run_mujoco.py``. Idempotent: reuses an already-running
+  block as ``run.py``. Idempotent: reuses an already-running
   container with the matching name on ``--port``; no redundant
   checkpoint re-download if the cache is already populated.
 * LIBERO scene pre-warm: ``spec.ensure_scene()`` ->
@@ -31,7 +31,7 @@ Owned by the script:
   'video.image' must be in observation`` because the scene's cameras
   haven't been registered yet.
 * MP4 recording via ``start_cameras_recording`` (daemon-thread
-  recorder, same path as ``run_mujoco.py``). Under Strands ``Agent``
+  recorder, same path as ``run.py``). Under Strands ``Agent``
   tool dispatch the eval runs on a worker thread distinct from the
   recorder thread, and the two race on shared ``mjData``; in practice
   this means lower frame coverage and the occasional greenish GL
@@ -49,7 +49,7 @@ Owned by the script:
   the simpler daemon-thread shape here for matrix-quality wall-time
   and so the agent demo exercises the natural-language -> action-pick
   -> kwarg-fill flow over the real ``Simulation`` surface; users who
-  need guaranteed-clean video should use ``run_mujoco.py``
+  need guaranteed-clean video should use ``run.py mujoco``
   programmatically. The agent does *not* pick a recorder API -
   earlier shapes of this script let the agent decide and it
   consistently picked LeRobot's ``Dataset`` recorder which then
@@ -101,7 +101,7 @@ Notes
 -----
 - Output is non-deterministic by design (LLM-generated summary). The
   backend matrix (``libero_backend_matrix.py``) does not ingest this
-  file; the deterministic numbers live in ``run_mujoco.py`` (sibling
+  file; the deterministic numbers live in ``run.py`` (sibling
   file).
 - Records video to ``rollouts/YYYY_MM_DD/`` with a filename that ends
   ``--policy=mock|groot--agent`` so post-hoc analysis can tell which
@@ -135,7 +135,7 @@ def _date_dir(date_root: str = "rollouts") -> str:
 def _suite_for_task(task: str) -> str:
     """Auto-derive a LIBERO suite name from a benchmark task ID.
 
-    Same shape as ``run_mujoco.py``'s helper; see that file for the
+    Same shape as ``run.py``'s helper; see that file for the
     canonical doctest examples.
     """
     parts = task.split("-", 2)
@@ -220,7 +220,7 @@ def _configure_gr00t_image(image: str) -> None:
 def _bring_up_gr00t_server(args: argparse.Namespace, suite: str) -> dict | None:
     """Start the GR00T inference container and block until model is loaded.
 
-    Mirrors the lifecycle block in ``run_mujoco.py`` so the agent file
+    Mirrors the lifecycle block in ``run.py`` so the agent file
     has identical "real-eval" plumbing. Returns the lifecycle handle
     (or ``None`` if ``--policy=mock`` / ``--no-auto-server``).
     """
@@ -264,7 +264,7 @@ def _bring_up_gr00t_server(args: argparse.Namespace, suite: str) -> dict | None:
         raise RuntimeError(_explain_lifecycle_failure(result, args.checkpoint_dir, args.container))
     print(f"[setup] {result.get('message')}")
 
-    # Same readiness wait as run_mujoco.py - the lifecycle tool returns
+    # Same readiness wait as run.py - the lifecycle tool returns
     # success when the port is bound, but the model loads asynchronously
     # after that. Block until GPU memory crosses a heuristic threshold.
     deadline = monotonic() + 180
@@ -408,7 +408,7 @@ def main() -> None:
 
         # Pre-warm the LIBERO scene so the cameras the GR00T server
         # expects (`image`, `wrist_image`) are registered before
-        # recording / inference starts. Same block as run_mujoco.py;
+        # recording / inference starts. Same block as run.py;
         # see that file for the longer rationale on ordering.
         if args.policy == "groot":
             from strands_robots.simulation.benchmark import get_benchmark

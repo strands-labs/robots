@@ -1,45 +1,48 @@
 #!/usr/bin/env python3
 """LIBERO backend matrix -- same task, every installed backend, side-by-side.
 
-The flagship demo of this repo. Runs one LIBERO task on whichever of
-the per-backend driver scripts (``run_mujoco.py``, ``run_isaac.py``,
-``run_isaac_fleet.py``) the host can actually execute, and prints a
-single side-by-side table
-with ``success_rate`` and ``wall_time`` per backend. Missing backends
-are skipped gracefully -- a CPU-only laptop with just MuJoCo installed
-should produce a table where every Isaac row reads ``unavailable``
-and only the MuJoCo row carries a measurement.
+The flagship demo of this repo. Runs one LIBERO task through the
+backend subcommands of the merged driver (``run.py mujoco`` /
+``run.py isaac``, plus the not-yet-migrated ``run_isaac_fleet.py``)
+that the host can actually execute, and prints a single side-by-side
+table with ``success_rate`` and ``wall_time`` per backend. Missing
+backends are skipped gracefully -- a CPU-only laptop with just MuJoCo
+installed should produce a table where every Isaac row reads
+``unavailable`` / ``skip`` and only the MuJoCo row carries a
+measurement.
 
 Why a subprocess-and-parse driver, not direct ``create_simulation``?
 --------------------------------------------------------------------
-The per-backend driver files (``examples/libero/run_<backend>.py``)
-already encode every backend-specific quirk needed to make a LIBERO
-eval succeed: GR00T container lifecycle, scene pre-warm, real-vs-
-procedural robot loading, container-name disambiguation across MuJoCo
-and Isaac runs on the same host, etc. Reproducing all of that inline
-here would either drift from those files (regressions visible only in
-the matrix run) or vendor them (~200 LOC of duplicated setup). The
-matrix script instead trusts the per-backend file as the single source
-of truth and parses its two grep-stable output lines:
+The driver (``examples/libero/run.py``) already encodes every
+backend-specific quirk needed to make a LIBERO eval succeed: GR00T
+container lifecycle, scene pre-warm, real-vs-procedural robot loading,
+container-name disambiguation across MuJoCo and Isaac runs on the same
+host, etc. Reproducing all of that inline here would either drift from
+that file (regressions visible only in the matrix run) or vendor it
+(~200 LOC of duplicated setup). The matrix script instead trusts the
+driver as the single source of truth and parses its two grep-stable
+output lines:
 
 * ``benchmark_name=<task>``
-* ``policy=<...>  task=<...>  success_rate=<float>  wall_time=<float>s  videos=<path>``
+* ``policy=<...>  task=<...>  resolved_task=<...>  success_rate=<float>  wall_time=<float>s  videos=<path>  backend=<...>``
 
-This contract is documented in ``examples/README.md`` under "Two
-execution patterns" and survives every per-backend file's rebases.
+This contract is pinned by ``tests/test_examples_libero_drivers.py``
+(against ``run.py._format_result_lines``) and survives the driver's
+rebases. A subprocess per row also means only one simulation backend
+loads per process invocation.
 
 Detection
 ---------
 For each backend row, the matrix script:
 
-1. Checks that the per-backend driver file exists in this checkout.
+1. Checks that the row's driver file exists in this checkout.
    Missing → ``unavailable (file missing)``. (E.g.
    ``run_isaac_fleet.py`` doesn't land until R23 / `#27`.)
-2. Spawns ``python <file> --policy=mock --n-episodes=N --seed=S``.
-   If that exits non-zero, captures the last few stderr lines and
-   marks the row ``skip (<reason>)``. The most common skip reason is
-   the backend's ``is_available()`` short-circuit firing on a host
-   that lacks Isaac Sim / CUDA / a CDN-reachable assets root.
+2. Spawns ``python <file> <subcommand> --policy=mock --n-episodes=N
+   --seed=S``. If that exits non-zero, captures the last few stderr
+   lines and marks the row ``skip (<reason>)``. The most common skip
+   reason is the backend's ``is_available()`` short-circuit firing on
+   a host that lacks Isaac Sim / CUDA / a CDN-reachable assets root.
 3. On success, parses the two grep-stable lines and records
    ``(label, success_rate, wall_time, "ok")``.
 4. After every row runs, prints a fixed-width table with one row per
@@ -61,8 +64,8 @@ Usage
     python examples/libero/libero_backend_matrix.py
 
     # 2) Real eval against the matching `libero_<suite>/` GR00T
-    #    sub-checkpoint. Requires the per-backend setup each
-    #    `run_<backend>.py` documents (HF token, GPU, etc.):
+    #    sub-checkpoint. Requires the setup `run.py` documents
+    #    (HF token, GPU, etc.):
     python examples/libero/libero_backend_matrix.py --policy groot
 
     # 3) Limit which backend rows are attempted (faster smoke runs):
@@ -71,9 +74,9 @@ Usage
 Install combinations
 --------------------
 The script never imports backend modules itself, so missing backends
-never crash it -- they just produce ``unavailable`` rows. The
-underlying per-backend files do import their backends, and the
-combinations that produce non-skip rows are::
+never crash it -- they just produce ``unavailable`` / ``skip`` rows.
+The underlying driver imports its backend after subcommand parsing,
+and the combinations that produce non-skip rows are::
 
     # Just MuJoCo (mujoco row only -- isaac rows skip):
     pip install 'strands-robots[sim-mujoco,benchmark-libero]'
@@ -84,7 +87,7 @@ combinations that produce non-skip rows are::
 Verification status
 -------------------
 CLI / subprocess-and-parse / table-printing logic is verified on a
-CPU-only dev box where every ``run_*`` driver is expected to short-
+CPU-only dev box where every Isaac invocation is expected to short-
 circuit on Isaac ``is_available()`` calls and only the
 ``mujoco`` row produces a measurement. Full multi-backend numbers
 (the actual side-by-side table this script exists to deliver) land
@@ -104,32 +107,34 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-# Per-backend driver files, in matrix-row order. Each tuple is
-# (display_label, driver_filename, extra_argv). The driver_filename
-# is resolved relative to this script's directory; extra_argv lets a
+# Per-backend driver invocations, in matrix-row order. Each tuple is
+# (display_label, driver_filename, subcommand_argv, extra_argv). The
+# driver_filename is resolved relative to this script's directory;
+# subcommand_argv is inserted right after the driver path (the merged
+# ``run.py`` selects its backend via a subcommand, while the fleet
+# driver is still its own file with no subcommand); extra_argv lets a
 # row pass backend-specific flags (e.g., the fleet rows force a
 # 4096-env count).
 #
 # Driver files that don't yet exist on disk produce an
 # ``unavailable (file missing)`` row -- the matrix script doesn't
-# need them all to land at once. R5 / R8 / R23 / R12 each add their
-# own driver as part of the staged plan tracked in #8.
-_BACKEND_ROWS: list[tuple[str, str, list[str]]] = [
-    ("mujoco", "run_mujoco.py", []),
-    ("isaac-1", "run_isaac.py", []),
-    ("isaac-4096", "run_isaac_fleet.py", []),
+# need them all to land at once. R23 adds the fleet driver as part of
+# the staged plan tracked in #8.
+_BACKEND_ROWS: list[tuple[str, str, list[str], list[str]]] = [
+    ("mujoco", "run.py", ["mujoco"], []),
+    ("isaac-1", "run.py", ["isaac"], []),
+    ("isaac-4096", "run_isaac_fleet.py", [], []),
 ]
 
-# The grep-stable result line that every per-backend driver produces.
-# Kept in sync with the spec in examples/README.md "Two execution
-# patterns" + the `print(...)` calls at the tail of run_mujoco.py and
-# run_isaac.py. If those drift, the parser surfaces an empty
-# ``success_rate`` rather than crashing -- the row will read ``ok``
-# with ``--`` cells and a stderr hint. Drivers may add extra key=value
-# fields between the shared ones (run_isaac.py emits ``resolved_task=``
-# after ``task=`` when the placeholder task falls back), so match each
-# anchor key anywhere past the previous one rather than requiring strict
-# adjacency.
+# The grep-stable result line that the driver produces. Kept in sync
+# with ``run.py._format_result_lines`` -- pinned by
+# ``tests/test_examples_libero_drivers.py``. If the two drift, the
+# parser surfaces an empty ``success_rate`` rather than crashing --
+# the row will read ``ok`` with ``--`` cells and a stderr hint.
+# Drivers may add extra key=value fields between the shared ones
+# (``run.py`` emits ``resolved_task=`` between ``task=`` and
+# ``success_rate=``), so match each anchor key anywhere past the
+# previous one rather than requiring strict adjacency.
 _RE_RESULT = re.compile(
     r"^policy=\S+\s+task=\S+.*?\s" r"success_rate=(?P<sr>[0-9]+\.[0-9]+)\s.*?" r"wall_time=(?P<wt>[0-9]+\.[0-9]+)s\b",
     re.MULTILINE,
@@ -203,6 +208,7 @@ def _short_skip_reason(stderr: str, returncode: int) -> str:
 def _run_one(
     label: str,
     driver_path: Path,
+    subcommand_argv: list[str],
     extra_argv: list[str],
     *,
     policy: str,
@@ -216,6 +222,7 @@ def _run_one(
     argv = [
         sys.executable,
         str(driver_path),
+        *subcommand_argv,
         "--policy",
         policy,
         "--task",
@@ -231,7 +238,7 @@ def _run_one(
     env = os.environ.copy()
     # Headless rendering on a no-display dev box. Drivers that
     # already export these are unaffected; drivers that don't (e.g.,
-    # bare ``run_mujoco.py``) need them or they crash on the first
+    # bare ``run.py mujoco``) need them or they crash on the first
     # `mjr_makeContext` call.
     env.setdefault("MUJOCO_GL", "egl")
     env.setdefault("PYOPENGL_PLATFORM", "egl")
@@ -333,7 +340,7 @@ def main() -> int:
 
     rows: list[RowResult] = []
     matrix_t0 = time.time()
-    for label, driver_filename, extra_argv in _BACKEND_ROWS:
+    for label, driver_filename, subcommand_argv, extra_argv in _BACKEND_ROWS:
         if selected_labels is not None and label not in selected_labels:
             continue
 
@@ -355,11 +362,12 @@ def main() -> int:
         else:
             row_argv = list(extra_argv)
 
-        print(f"[matrix] running {label} → {driver_filename} ...", flush=True)
+        print(f"[matrix] running {label} → {driver_filename} {' '.join(subcommand_argv)}".rstrip() + " ...", flush=True)
         rows.append(
             _run_one(
                 label,
                 driver_path,
+                subcommand_argv,
                 row_argv,
                 policy=args.policy,
                 task=args.task,

@@ -171,7 +171,7 @@ Measured **`success_rate=1.00`** against `nvidia/GR00T-N1.7-LIBERO`
   serves `/data/checkpoints/libero_10`, so run **`libero_10`** tasks. A
   different suite against it is a skill mismatch → ~0% success. (Bring up a
   suite-matched checkpoint with `gr00t_inference(action="lifecycle", …,
-  hf_subfolder=<suite>)` — see `examples/libero/run_mujoco.py`.)
+  hf_subfolder=<suite>)` — see `examples/libero/run.py`.)
 * **Don't cap `max_steps`.** LIBERO-Long needs ~500 steps; capping truncates
   the episode before completion. The runner/script use the adapter default.
 * **Pre-warm the scene** (generate BDDL scene → `load_scene` → `prewarm`) so

@@ -94,7 +94,8 @@ Known collateral (observed with isaacsim 6.0.0.1 and 6.0.1.0):
 - **Exit code 134 after successful work.** Isaac Sim has a known atexit
   segfault that makes otherwise-clean scripts exit 134 *after* completing
   successfully. The drivers in this repo guard with `os._exit(...)` after
-  SimulationApp teardown (see `examples/libero/run_isaac.py`); user scripts
+  SimulationApp teardown (see the `isaac` subcommand epilogue in
+  `examples/libero/run.py`); user scripts
   that boot SimulationApp should do the same.
 
 ## Usage
