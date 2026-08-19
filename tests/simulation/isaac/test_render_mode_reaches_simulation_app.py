@@ -30,6 +30,7 @@ import logging
 import pytest
 
 from strands_robots.simulation.isaac import simulation as isaac_simulation
+from strands_robots.simulation.isaac.config import RENDER_MODES
 from strands_robots.simulation.isaac.simulation import IsaacSimulation
 
 
@@ -61,6 +62,23 @@ def fake_isaacsim(monkeypatch, fresh_singleton):
 
 class TestCreateWorldForwardsRenderMode:
     """create_world derives the SimulationApp launch config from render_mode."""
+
+    def test_every_render_mode_makes_a_renderer_decision(self):
+        """Stated over the whole enumeration rather than three representative values.
+
+        ``__post_init__`` admits exactly ``RENDER_MODES``, and a member with no
+        entry in ``_RENDERER_BY_MODE`` reaches ``.get()`` as ``None`` and
+        silently launches Kit's default renderer -- the #2324 defect this file
+        pins, one mode over. Only ``"headless"`` may select nothing, and it
+        does so deliberately (documented at the map and at the config field).
+        A new mode must therefore either gain a renderer entry or be added to
+        the explicit no-renderer set here, on purpose.
+        """
+        mapped = set(isaac_simulation._RENDERER_BY_MODE)
+        assert set(RENDER_MODES) == mapped | {"headless"}, (
+            "a render_mode with no entry in _RENDERER_BY_MODE silently launches Kit's "
+            "default renderer -- the #2324 defect this file pins"
+        )
 
     @pytest.mark.parametrize(
         ("render_mode", "expected_launch_config"),
