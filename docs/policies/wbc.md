@@ -16,9 +16,10 @@ It is a non-VLA, locomotion controller: it reads its goal from the well-known
 locomotion `**kwargs` (`target_velocity`), ignores camera frames
 (`requires_images = False`), and never parses the instruction string for
 control. The controller drives the **15 leg+waist DOFs** of the G1; the arm
-joints are held at their nominal defaults. Layering an upper-body manipulation
-policy (e.g. GR00T) on top of WBC locomotion is the job of a future
-`CompositePolicy`, out of scope for this provider.
+joints are held at their nominal defaults. To drive the arms as well, layer an
+upper-body manipulation policy (e.g. GR00T) on top of WBC locomotion with
+[`CompositePolicy`](#composing-an-upper-body-manipulation-on-top-of-wbc): WBC
+keeps the robot balanced and walking while the upper policy owns the arm joints.
 
 ## Install
 

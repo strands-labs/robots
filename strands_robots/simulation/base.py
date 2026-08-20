@@ -2397,9 +2397,14 @@ class SimEngine(ABC):
                 exceptions tolerated before the rollout aborts the episode. That
                 hook is where a backend attaches dataset recording and video
                 capture, so a broken recorder otherwise fills an empty dataset
-                behind a successful-looking rollout. ``None`` (default) uses the
-                runner's own limit (currently ``5``); non-consecutive failures
-                reset the counter. Must otherwise be a positive integer - the
+                behind a successful-looking rollout. Two classes are exempt from
+                the count rather than tolerated by it: ``CooperativeStop`` is the
+                documented graceful stop, and
+                :class:`~strands_robots.dataset_recorder.RecordingFrameError` is
+                data loss rather than telemetry, so a lost dataset frame aborts on
+                the FIRST occurrence whatever this is set to. ``None`` (default)
+                uses the runner's own limit (currently ``5``); non-consecutive
+                failures reset the counter. Must otherwise be a positive integer - the
                 same domain as ``n_steps`` and ``n_episodes`` above, since the
                 runner compares it against a plain integer counter. ``nan`` and
                 ``inf`` make that comparison false forever and so disable the
@@ -3710,9 +3715,13 @@ class SimEngine(ABC):
         monotonic index that continues across episode boundaries. Use it to
         record frames or stream telemetry synchronously on the eval thread
         (e.g. paired with ``start_cameras_recording_synchronous``) so a
-        daemon-thread recorder does not race ``mjData`` mutations. A non-
-        ``CooperativeStop`` hook exception is logged at WARN and never aborts
-        the eval; raising :class:`~strands_robots.simulation.policy_runner.CooperativeStop`
+        daemon-thread recorder does not race ``mjData`` mutations. A hook
+        exception other than ``CooperativeStop`` or
+        :class:`~strands_robots.dataset_recorder.RecordingFrameError` is logged
+        at WARN and never aborts the eval; a ``RecordingFrameError`` is data loss
+        rather than telemetry and propagates on the first occurrence, so the
+        caller learns the episode is incomplete instead of reading a successful
+        eval. Raising :class:`~strands_robots.simulation.policy_runner.CooperativeStop`
         stops the evaluation gracefully after the episodes completed so far
         (the result carries ``stopped_early=True`` and ``episodes_completed``),
         matching :meth:`run_policy`.
@@ -3953,8 +3962,12 @@ class SimEngine(ABC):
                 ``stopped_early=True`` and ``episodes_completed`` (matching
                 :meth:`run_policy` / :meth:`eval_policy`); any in-progress
                 episode's partial video is closed cleanly and is NOT listed
-                in ``video_paths``. A non-``CooperativeStop`` hook exception
-                is logged at WARN and never aborts the eval.
+                in ``video_paths``. A hook exception other than
+                ``CooperativeStop`` or
+                :class:`~strands_robots.dataset_recorder.RecordingFrameError` is
+                logged at WARN and never aborts the eval; a
+                ``RecordingFrameError`` is data loss rather than telemetry and
+                propagates on the first occurrence.
             policy_kwargs: Per-call goal payload forwarded verbatim to every
                 ``policy.get_actions(obs, instruction, **policy_kwargs)`` call
                 (same contract as :meth:`run_policy` / :meth:`eval_policy`).

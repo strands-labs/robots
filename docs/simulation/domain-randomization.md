@@ -33,6 +33,25 @@ sim.randomize(randomize_position=True)   # singular
 #                      'randomize_positions', 'seed']
 ```
 
+**An axis flag must be a boolean.** The four flags select a *posture* - run this
+axis or leave it alone - so each is checked rather than read for truthiness.
+Every non-empty string is truthy, so `"false"`, `"no"`, `"off"` and `"0"` - the
+spellings you reach for when turning an axis off - each turned that axis **on**,
+and the call reported it applied. That is the same guarantee as the misspelled
+key above, one level down: a value an axis cannot be read from can never look
+like a successful randomization either.
+
+```python
+sim.randomize(randomize_physics="false")
+# status=error: randomize: randomize_physics must be a boolean, got 'false'.
+#              It selects a posture, so it is not read for truthiness ...
+```
+
+Both backends that implement `randomize()` (MuJoCo and Newton) check the same
+domain, so an axis you can turn off on one is not left on by the other. The
+numeric knobs in the same signature keep their own domain: a `mass_range` is a
+quantity, and it is still refused as a range rather than as a flag.
+
 **Destructive** - writes into MuJoCo model arrays. To restore: `load_scene(...)` or recreate the sim.
 
 **Every axis survives `reset()`.** A reset restores the world's initial state,

@@ -131,7 +131,11 @@ capability match, not a name match):
    safety does not depend on the dispatcher. The example *asserts* both halves
    (status answered, execute refused) and raises if either fails. The
    orchestrator then restarts and re-syncs from the two things that survived
-   the outage: the presence registry and the signed audit log.
+   the outage: the presence registry and the signed audit log. Both are
+   awaited on a bounded deadline rather than sampled once - a peer's own
+   `remote_estop_engaged` row is written by that peer's safety handler when
+   the broadcast reaches it, so it can land after the issuing call has
+   already returned.
 
 ```bash
 # No simulator, no mesh - scripted presence + loopback transport:

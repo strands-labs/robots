@@ -78,7 +78,12 @@ jobs:
             echo "apt-get update failed or hung (attempt ${attempt}/3), retrying in 5s..."
             sleep 5
           done
-          sudo apt-get install -y libosmesa6-dev
+          # --no-install-recommends is a measured no-op for this argument
+          # list today - libosmesa6-dev is 17 packages / 8.33 MiB either way -
+          # and is here so that adding a package with heavy Recommends cannot
+          # silently restore the 29.9 MiB closure test-lint.yml stopped paying
+          # for. Pinned by tests/test_apt_install_declines_recommends.py.
+          sudo apt-get install -y --no-install-recommends libosmesa6-dev
 
       # Importing the sim backend needs the sim-mujoco extra. CPU-only backend,
       # headless osmesa rendering - no GPU required.

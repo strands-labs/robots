@@ -682,7 +682,17 @@ class Mesh(SensorLoopsMixin):
                 # state.
                 _acl_config._clear_thread_snapshot()
             if session is None:
-                logger.debug("[mesh] %s: zenoh unavailable, mesh off", self.peer_id)
+                # The sibling refusal above leaves the mesh not-started and says
+                # so at ERROR.  Arriving here leaves it not-started too, so the
+                # caller learns that ``mesh.alive`` is False from the same level
+                # rather than from whichever downstream wait expires first.  The
+                # cause is reported by the session/transport layer that returned
+                # None; this names the peer it applies to.
+                logger.warning(
+                    "[mesh] %s: no mesh transport - mesh off (mesh.alive is False, so this "
+                    "peer publishes no presence and discovers no peers)",
+                    self.peer_id,
+                )
                 return
 
             self._has_session_ref = True

@@ -13,6 +13,7 @@ from strands_robots.simulation.base import (
 )
 from strands_robots.simulation.mujoco.backend import _NO_WORLD_MSG, _ensure_mujoco, mj_name_to_id
 from strands_robots.simulation.mujoco.scene_ops import _get_spec
+from strands_robots.utils import boolean_flag_error
 
 if TYPE_CHECKING:
     from strands_robots.simulation.models import SimWorld
@@ -128,6 +129,13 @@ class RandomizationMixin:
           - ``randomize_physics=False`` - friction/mass left untouched unless asked.
           - ``randomize_positions=False`` - object qpos left untouched unless asked.
 
+        Each flag selects a posture, so each is checked on the shared
+        boolean-flag domain
+        (:func:`~strands_robots.utils.boolean_flag_error`) before anything is
+        written: an axis is not turned off by ``"false"``, ``"no"``, ``"off"``
+        or ``"0"``, every one of which is a truthy non-empty string that turned
+        the axis ON instead.
+
         "No flags" means "nothing is randomized" - the call is a no-op. This
         matches the LLM ergonomics principle: explicit is better than implicit.
         Randomization IS destructive; recompile the scene to undo. Every axis
@@ -201,7 +209,8 @@ class RandomizationMixin:
 
         Returns:
             Status dict listing the axes applied, or an error dict when a
-            keyword is unknown, a range/noise/seed value cannot be applied, the
+            keyword is unknown, an axis flag is not a boolean, a range/noise/seed
+            value cannot be applied, the
             lighting axis cannot resolve the authored light positions it jitters
             around, no world exists, or a policy is running.
         """
@@ -212,6 +221,25 @@ class RandomizationMixin:
         # domain randomization mutates model arrays; a running policy racing with it is UB
         if err := self._require_no_running_policy("randomize"):
             return err
+        # The four flags select which axes run, so each is checked on the shared
+        # boolean-flag domain rather than read by truthiness. Randomization is
+        # destructive - the physics and position axes default to OFF precisely
+        # because undoing them means recompiling the scene - and every spelling
+        # an operator reaches for to turn an axis off ("false", "no", "off",
+        # "0") is a non-empty string, so it turned that axis ON and the call
+        # reported the axis applied. The ``randomize_lighting`` refusal further
+        # down branches on its own flag, so a truthy non-boolean also made it
+        # describe the axis the caller had asked to skip. A misspelled axis
+        # NAME is already refused above; this is the same guarantee for the
+        # value that name carries.
+        for flag_param, flag_value in (
+            ("randomize_colors", randomize_colors),
+            ("randomize_lighting", randomize_lighting),
+            ("randomize_physics", randomize_physics),
+            ("randomize_positions", randomize_positions),
+        ):
+            if msg := boolean_flag_error(flag_value, flag_param, "randomize"):
+                return {"status": "error", "content": [{"text": msg}]}
         # Every numeric knob below is written straight into the live model (or
         # into ``data.qpos``), so a value with no valid sampling interval either
         # raises deep inside the mutation loop - past the tool envelope - or

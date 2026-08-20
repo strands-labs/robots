@@ -104,7 +104,12 @@ def stage_record(dataset_root: str, n_episodes: int, steps_per_episode: int, che
         start = sim.start_recording(
             repo_id="local/g1_vla_demo",
             root=dataset_root,
-            fps=30,
+            # 50 fps, not 30: the rollout below captures at control_frequency
+            # =50 Hz (the WBC controller's dt=0.005 x decimation 4, and the
+            # default for the MockPolicy branch). The recorder writes one frame
+            # per control step with no decimation, so declaring a different rate
+            # here is refused and every episode lands with zero frames.
+            fps=50,
             task="walk forward",
             overwrite=(ep == 0),
         )
@@ -114,14 +119,22 @@ def stage_record(dataset_root: str, n_episodes: int, steps_per_episode: int, che
             print("  Hint: recording requires pip install 'strands-robots[lerobot]'", file=sys.stderr)
             raise SystemExit(1)
 
-        sim.run_policy(
+        rollout = sim.run_policy(
             robot_name="unitree_g1",
             policy_object=policy,
             instruction="walk forward",
             n_steps=steps_per_episode,
             **record_kwargs,
         )
-        sim.stop_recording()
+        if rollout.get("status") != "success":
+            text = (rollout.get("content") or [{}])[0].get("text", "unknown error")
+            print(f"  ERROR: run_policy failed: {text}", file=sys.stderr)
+            raise SystemExit(1)
+        stopped = sim.stop_recording()
+        if stopped.get("status") != "success":
+            text = (stopped.get("content") or [{}])[0].get("text", "unknown error")
+            print(f"  ERROR: stop_recording failed: {text}", file=sys.stderr)
+            raise SystemExit(1)
         print(f"  Episode {ep + 1}/{n_episodes} recorded.")
 
     sim.destroy()

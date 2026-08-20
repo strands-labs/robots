@@ -60,6 +60,15 @@ _SESSION: Any | None = None  # zenoh.Session when open, else None
 _SESSION_LOCK = threading.Lock()
 _SESSION_REFS: int = 0
 
+# One-shot guard so an absent ``eclipse-zenoh`` is reported at most once per
+# process.  Both session-open paths re-attempt the import on every call (nothing
+# is cached when it fails), so a fleet of N robots in one process would otherwise
+# emit N copies of an identical, static fact.  A set (mutated via .add, never
+# reassigned) avoids a `global` rebind so static analysis sees it as used -- the
+# same shape as ``_software_render_warned`` in the MuJoCo backend.  Mutated only
+# under ``_SESSION_LOCK``.
+_zenoh_missing_warned: set[str] = set()
+
 
 # Constants
 
@@ -615,6 +624,34 @@ def current_session() -> Any | None:
         return _SESSION
 
 
+def _report_zenoh_missing() -> None:
+    """Report an absent ``eclipse-zenoh`` at WARNING, once per process.
+
+    Every other way a session open can end with no session -- a refused
+    endpoint, a failed open -- is reported at WARNING, and even a bad
+    ``STRANDS_MESH_PORT`` that still yields a working mesh warns.  A missing
+    dependency is the most total of those outcomes: nothing publishes, nothing
+    is discovered, and ``Mesh.alive`` stays ``False`` for the whole process.
+    Reporting it below the level a default-configured consumer sees left the
+    first observable symptom to whatever downstream wait expired first.
+
+    Warning rather than raising keeps the documented contract: a robot that
+    does not need the mesh still runs, and the mesh stays off without taking
+    the host process with it.
+
+    Callers must hold ``_SESSION_LOCK``; the once-guard is read and mutated
+    without further synchronisation.
+    """
+    if _zenoh_missing_warned:
+        return
+    _zenoh_missing_warned.add("warned")
+    logger.warning(
+        "eclipse-zenoh is not installed, so the mesh stays off: this process "
+        "publishes no presence and discovers no peers, and Mesh.alive is "
+        "False. Install it with: pip install 'strands-robots[mesh]'"
+    )
+
+
 def get_session() -> Any | None:
     """Acquire the shared mesh transport (lazy, ref-counted).
 
@@ -652,7 +689,7 @@ def get_session() -> Any | None:
         try:
             import zenoh  # noqa: F811 - lazy import
         except ImportError:
-            logger.debug("eclipse-zenoh not installed - mesh disabled")
+            _report_zenoh_missing()
             return None
 
         # STRANDS_MESH_PORT is read at session-open time so a process can be
@@ -820,7 +857,7 @@ def _get_zenoh_session_directly() -> Any | None:
         try:
             import zenoh
         except ImportError:
-            logger.debug("eclipse-zenoh not installed - mesh disabled")
+            _report_zenoh_missing()
             return None
 
         port_env = os.getenv("STRANDS_MESH_PORT", "7447")
