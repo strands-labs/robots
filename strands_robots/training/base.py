@@ -239,6 +239,15 @@ class Trainer(ABC):
     NOT reimplement training and do NOT shell out to a subprocess. Multi-GPU is
     driven via torch's programmatic ``elastic_launch`` (the engine behind
     ``torchrun``), still in-process.
+
+    The field-scoped shared domains below (:meth:`_seed_problems` and its
+    siblings) are each obliged of "a backend that reads the field", and a
+    backend reads a field by any means: naming it (``spec.seed``) or forwarding
+    it through a table (``getattr(spec, field)`` over a tuple of field names,
+    which is how a provider that passes a spec on serializes every field
+    without naming any). The second form is a read for this rule exactly as the
+    first is - what obliges the gate is that the value reaches the run, not the
+    syntax that fetched it.
     """
 
     @property

@@ -278,12 +278,19 @@ def test_unknown_action_returns_error(fake_local_mesh):
     assert "unknown action" in out["content"][0]["text"]
 
 
-def test_actions_without_local_mesh_fail(fake_no_local):
+def test_actions_without_local_mesh_fail(fake_no_local, monkeypatch):
     # Since the #10 gateway fallback, a robot-less process CAN reach the mesh
     # by lazily starting a gateway Mesh - so this test must forbid that path
     # (real zenoh session + discovery sleep + 30s RPC timeout in a unit test)
     # and pin the surviving contract: when NO gateway can be built (zenoh
     # unavailable), actions still fail fast with a clear, structured error.
+    #
+    # The premise is "zenoh unavailable", so state it: the suite-wide
+    # STRANDS_MESH=false from tests/conftest.py is a *different* reason to have
+    # no mesh, and it now has its own message naming that variable. Without this
+    # delenv the assertion below would be graded against the kill-switch answer
+    # and this test would stop covering the case it names.
+    monkeypatch.delenv("STRANDS_MESH", raising=False)
     with patch("strands_robots.tools.robot_mesh._gateway_mesh", return_value=None):
         out = _strands_call(action="tell", target="peer-b", instruction="go")
     assert out["status"] == "error"

@@ -16,6 +16,7 @@ uses.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any
 
 import pytest
@@ -29,6 +30,7 @@ from strands_robots.simulation.predicates import (
     make_predicate,
     predicate_kind,
 )
+from strands_robots.utils import name_list_error
 
 
 class _BodySim:
@@ -186,28 +188,106 @@ class TestParticlesInsideFraction:
             make_predicate("particles_inside_fraction", particles=[], container="tray")
 
 
+class _FrozenNames(Sequence[str]):
+    """A ``Sequence`` that is neither ``list`` nor ``tuple``.
+
+    The shape a caller gets from an immutable name-set wrapper. It is here so
+    the collector is graded against the domain's rule rather than against the
+    two builtin spellings that happen to be easy to type.
+    """
+
+    def __init__(self, *names: str) -> None:
+        self._names = tuple(names)
+
+    def __getitem__(self, index: int) -> str:  # type: ignore[override]
+        return self._names[index]
+
+    def __len__(self) -> int:
+        return len(self._names)
+
+
+# Container shapes a caller can spell a name list as. The verdict on each is
+# name_list_error's - the domain the pour factories delegate their shape
+# contract to - so this table needs no hand-maintained expectation.
+_SHAPE_BUILDERS = {
+    "list": list,
+    "tuple": tuple,
+    "custom-sequence": lambda names: _FrozenNames(*names),
+    "bare-str": "".join,
+    "mapping": lambda names: dict.fromkeys(names),
+    "iterator": iter,
+}
+_SHAPES = [pytest.param(builder, id=name) for name, builder in _SHAPE_BUILDERS.items()]
+
+
 class TestStopWhenCollection:
-    def test_list_kwargs_are_collected_for_probing(self):
+    """Every name in a list-valued kwarg is collected for the pre-rollout probe.
+
+    ``stop_when_referenced_entities`` runs on a clause ``compile_stop_when``
+    has already accepted, so a container shape a predicate factory takes and
+    this walker skips is a clause whose particle names are never probed against
+    the live scene - the silent never-fires the probe exists to turn into an
+    up-front error.
+    """
+
+    @pytest.mark.parametrize("shape", [list, tuple], ids=["list", "tuple"])
+    def test_particles_are_collected_for_probing(self, shape):
         bodies, joints = stop_when_referenced_entities(
             {
                 "predicate": "particles_inside",
-                "particles": ["bead_a", "bead_b"],
+                "particles": shape(["bead_a", "bead_b"]),
                 "container": "tray",
             }
         )
         assert bodies == ["bead_a", "bead_b", "tray"]
         assert joints == []
 
-    def test_containers_list_is_collected(self):
+    @pytest.mark.parametrize("shape", [list, tuple], ids=["list", "tuple"])
+    def test_containers_are_collected(self, shape):
         bodies, _ = stop_when_referenced_entities(
             {
                 "predicate": "particles_spilled",
-                "particles": ["bead_a"],
-                "containers": ["tray", "carton"],
+                "particles": shape(["bead_a"]),
+                "containers": shape(["tray", "carton"]),
                 "max_spilled": 0,
             }
         )
         assert bodies == ["bead_a", "tray", "carton"]
+
+    @pytest.mark.parametrize("builder", _SHAPES)
+    def test_the_collector_collects_exactly_the_shapes_the_factories_accept(self, builder):
+        """The walker and the factories agree on what a name list is.
+
+        The factories delegate their shape contract to ``name_list_error``, so
+        that function is the oracle here rather than a second list of accepted
+        types this test would have to keep in step.
+        """
+        names = ["bead_a", "bead_b"]
+        accepted = name_list_error(builder(names), "particles", "particles_inside") is None
+        bodies, _ = stop_when_referenced_entities(
+            {
+                "predicate": "particles_inside",
+                "particles": builder(names),
+                "container": "tray",
+            }
+        )
+        collected = [b for b in bodies if b != "tray"]
+        if accepted:
+            assert collected == names, (
+                f"the factories accept this shape but the walker collected {collected} from it, "
+                "so its names are never probed against the live scene"
+            )
+        else:
+            assert collected == [], f"the factories refuse this shape yet the walker read {collected} out of it"
+
+    def test_the_shape_table_spans_both_verdicts(self):
+        """Premise: the table above only grades anything if it holds shapes the
+        domain accepts AND shapes it refuses."""
+        verdicts = {
+            name_list_error(builder(["bead_a", "bead_b"]), "particles", "ctx") is None
+            for builder in _SHAPE_BUILDERS.values()
+        }
+        assert verdicts == {True, False}
 
 
 class TestDeclarativeSpecIntegration:
