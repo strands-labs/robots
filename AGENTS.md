@@ -1432,6 +1432,19 @@ Corrections from code review that apply to all future contributions:
   after the deletion it was refusing. Pinned by
   `tests/test_dataset_recorder_posture_flag_domain.py`, which also records why
   the neighbouring surfaces are out of scope.
+- **A flag whose misread only shows up in a rendered frame is checked at construction.**
+  Where the branch a flag selects is applied later - a fitted transform, a compositing
+  decision - the misread has no error to surface at, so it reads as a scene that looks
+  slightly wrong rather than as a bad argument. `GsplatBackground` already raises for a
+  nonexistent scene path for exactly that reason (its first `render` sits inside an app's
+  catch-all that demotes the photoreal backdrop to a procedural fallback), and its four
+  alignment flags - `auto_backdrop`, `skybox`, `metric`, `own_floor` - were read by
+  truthiness beside it. `metric` is the sharpest: it also decides whether `radius` is read
+  at all, so `metric="no"` kept a capture's raw scale and stood a real 500k-splat room up
+  at a 4.45 m radius for a caller who asked for 2.5 m. Check such a flag where the caller
+  supplied it, not where the branch is taken. Pinned by
+  `tests/rendering/test_gsplat_background_posture_flag_domain.py`, which measures the
+  branch each of the four selects.
 - Pinned by `tests/simulation/mujoco/test_actuate_robot_posture_flag_domain.py`,
   `tests/simulation/test_recording_posture_flag_domain.py`,
   `tests/tools/test_lerobot_teleoperate_flag_domain.py`,
@@ -1737,6 +1750,16 @@ apply to all future work on `strands_robots/mesh/{core,audit,security}.py`.
   vars (`_resume_forward_skew_s`, `_resume_freshness_window_s`) into locals at
   handler entry, before taking the cache lock, so the lock holds for the minimum
   window and a hot path never re-parses the environment per call.
+- **This covers every replay-cache lock and every lazy resolver, not just the
+  two the rule was written for.** `Mesh` keeps three replay caches - estop,
+  resume and inbound-command dedup (`_exec_cmd`) - and the eviction bound they
+  share is a third resolver, `_resume_replay_cache_max`. A resolver is one
+  `os.getenv` plus a validating parse, and on an unusable operator value it logs
+  too, so the cost is not constant: at the cache sizes these actually sit at, the
+  parse is the majority of the critical section rather than a rounding error.
+  Resolve into a local before the `with`, then read the local inside it.
+  Pinned by `tests/mesh/test_safety_tunables_cached_at_handler_entry.py`, which
+  derives the lock set from the class so a fourth cache is graded on arrival.
 - **Lockout-engagement is decoupled from the per-issuer cache cap.** A bounded
   replay cache that is full (flood, or a tiny operator override) must still let a
   legitimate peer ENGAGE a lockout - the cap bounds memory, not safety. Pin both
@@ -1750,9 +1773,21 @@ apply to all future work on `strands_robots/mesh/{core,audit,security}.py`.
 ### Audit poison-record symmetry
 - **Every degraded audit path writes a poison record, never a silent drop.** The
   poison `sig` discriminators (`PSK_DEGRADED`, `SIGN_FAILED`, `SEQ_LOCK_DEGRADED`,
-  `NEXT_SEQ_DEGRADED`) let a `verify_audit_integrity` walker attribute a stream
-  gap to a specific failure class. When you add a new `_next_seq`/sign/persist
-  failure branch, add the matching poison `sig` instead of returning early.
+  `NEXT_SEQ_DEGRADED`, `SERIALISE_FAILED`) let a `verify_audit_integrity` walker
+  attribute a stream gap to a specific failure class. When you add a new
+  `_next_seq`/sign/serialise/persist failure branch, add the matching poison
+  `sig` instead of returning early.
+- **`_next_seq` runs before serialisation, so an early `return` is a deletion.**
+  The sequence number is consumed and persisted before the record is encoded, so
+  a branch that gives up after that point leaves the signature this module's
+  header documents as "records were deleted". A payload the JSON encoder cannot
+  represent keeps the envelope (`ts` / `event` / `peer_id` / `seq`) and swaps the
+  payload for a bounded diagnostic; the only remaining drop is an envelope that
+  is itself unrepresentable, where there is nothing left to poison with.
+- Pinned by `tests/mesh/test_audit_serialise_safety.py`, whose
+  `TestEveryDegradedPathWritesARecord` drives every degraded branch from one
+  table so a path added later is graded rather than quietly becoming the next
+  silent drop.
 
 ### Replay-cache eviction
 - **TTL purge runs unconditionally, not only when the cache is full.** On a
@@ -1778,6 +1813,18 @@ From the `robot_mesh` human-in-the-loop review trail (#227). Apply to the
   so the audit log is a complete record of agent mesh access - operators get the
   "agent read N frames from sub X at time T" trail that raw telemetry access
   otherwise lacks.
+- **The row belongs to the action, not to the backend that served it.** `robot_mesh`
+  renders each action onto an agent-side Device Connect connection when one has
+  devices and onto the built-in mesh otherwise, and Device Connect is the one tried
+  FIRST - so auditing only the mesh rendering left the audited implementations as the
+  fallback. Widen an audit contract across every backend that answers the action, and
+  record the magnitude that was read (`devices=N`, `local=N remote=M`) rather than a
+  bare marker. `peers` is the read worth recording: it returns every device id plus
+  every function name the fleet exposes, which is the callable surface a later `rpc`
+  would use.
+- Pinned by `tests/mesh/test_robot_mesh_readonly_audit_parity.py`, which discovers the
+  actions Device Connect answers by calling the dispatcher rather than restating a
+  list, so an action added to that backend is graded without editing the test.
 
 ### Rate-limit safety semantics
 - **A declined HITL approval must NOT consume a rate-limit slot.** The slot is

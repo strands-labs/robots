@@ -173,6 +173,7 @@ extras you need:
 | `motionbricks` | torch + vector-quantize-pytorch, pytorch-lightning, hydra-core (install `motionbricks` from source) | NVIDIA MotionBricks generative kinematic motion for the G1 - in-process torch, composes with `wbc` |
 | `mesh` | eclipse-zenoh, json5 | Peer-to-peer robot mesh |
 | `mesh-iot` | awsiotsdk, awscrt, boto3 | AWS IoT Core mesh transport for fleets |
+| `sagemaker` | boto3 | Submit a `TrainSpec` as a managed SageMaker training job (`create_trainer("sagemaker")`) |
 | `device-connect` | device-connect-edge, device-connect-agent-tools | Device-aware networking - discovery, RPC, events, safety (falls back to the built-in mesh if absent) |
 | `benchmark-libero` | libero | LIBERO benchmark evaluation |
 | `all` | everything above except the GPU-only `sim-isaac` / `sim-gs` extras | Kitchen sink |
@@ -855,6 +856,7 @@ ppo = create_trainer("ppo")   # or create_trainer("fast_sac")
 | `groot` | Imitation / post-tuning | NVIDIA GR00T fine-tune; needs an `embodiment` tag |
 | `cosmos3` | Imitation / post-tuning | NVIDIA Cosmos 3 fine-tune (multi-node HSDP capable) |
 | `mock` | Imitation (test) | No-op trainer for tests and dry runs |
+| `sagemaker` | Managed cloud transport | Submits the spec as one SageMaker training job wrapping a containerized trainer image (`[sagemaker]` extra) |
 | `ppo` | Reinforcement learning | On-policy PPO; pairs with `VecSimEnv` for parallel rollouts |
 | `fast_sac` | Reinforcement learning | Off-policy Soft Actor-Critic |
 
@@ -863,6 +865,60 @@ The RL trainers (`ppo`, `fast_sac`) subclass `BaseRLAlgo` and share the same
 They collect trajectories through `VecSimEnv` (N independent `SimEnv` as one
 batched env) and score with `BaseRLAlgo.evaluate()`. The training package stays
 torch-free until an RL provider is resolved on first use.
+
+### SageMaker managed training jobs
+
+The `sagemaker` provider is transport, not behavior: it submits the same
+`TrainSpec` as one managed training job and waits for the terminal verdict.
+The training logic lives in the container image you point it at, which
+packages one of the local trainer paths (the `groot` and `cosmos3` providers
+are directly containerizable). Install with `pip install
+"strands-robots[sagemaker]"` (boto3 only; validate works without it).
+
+```python
+from strands_robots.training import create_trainer, TrainSpec
+
+trainer = create_trainer(
+    "sagemaker",
+    image_uri="123456789012.dkr.ecr.us-east-1.amazonaws.com/strands-trainer:latest",
+    role_arn="arn:aws:iam::123456789012:role/StrandsSageMakerTraining",
+    instance_type="ml.g5.xlarge",
+)
+spec = TrainSpec(
+    dataset_root="s3://my-bucket/datasets/pick",   # -> the "training" input channel
+    output_dir="s3://my-bucket/checkpoints/pick",  # -> the job's S3OutputPath
+    base_model="lerobot/smolvla_base",
+    steps=20000,
+    extra={"policy_type": "act"},                  # -> string hyperparameters
+)
+result = trainer.train(spec)   # validates locally BEFORE submitting
+# result.checkpoint_dir -> s3://.../<job name>/output/model.tar.gz on success;
+# a failed job is an error result naming the job + FailureReason.
+```
+
+`dataset_root` and `output_dir` must be `s3://` URIs; every other spec field
+plus `extra` travels as string hyperparameters (strings verbatim, everything
+else JSON-encoded) that the container's entry point decodes back into a
+`TrainSpec` with `dataset_root=/opt/ml/input/data/training` and
+`output_dir=/opt/ml/model`. `spec.num_nodes` maps onto the job's
+`InstanceCount`. A job that outlives the local poll budget reports `running`
+and stays pollable via `trainer.status(job_name)`.
+
+Required IAM surface - the **caller** (the identity running `train`) needs:
+
+- `sagemaker:CreateTrainingJob`, `sagemaker:DescribeTrainingJob`
+- `iam:PassRole` on the execution role passed as `role_arn`
+
+and the **execution role** itself needs S3 read on the dataset prefix, S3
+write on the output prefix, ECR pull on the image, and CloudWatch Logs write
+(`AmazonSageMakerFullAccess` is a superset, but the above is the minimal set).
+
+The integration smoke (`tests_integ/training/test_sagemaker_smoke.py`) skips
+without AWS credentials; its full submission half additionally reads
+`STRANDS_SAGEMAKER_SMOKE_IMAGE_URI`, `STRANDS_SAGEMAKER_SMOKE_ROLE_ARN`,
+`STRANDS_SAGEMAKER_SMOKE_S3_PREFIX` (and optionally
+`STRANDS_SAGEMAKER_SMOKE_INSTANCE_TYPE`) - test-only variables, not read by
+the library.
 
 
 ## Simulation (MuJoCo)

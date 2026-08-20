@@ -11,6 +11,14 @@ The fix caches both values into locals immediately after the
 ``isinstance(data, dict)`` guard and uses those locals for the rest of
 the method. The next envelope still re-reads the env, so the operator
 tunable contract is preserved.
+
+The static half of that pin originally graded one lock (``_estop_replay_lock``),
+one method (``_on_safety_estop``) and the two float tunables. ``Mesh`` now keeps
+three replay caches -- estop, resume and inbound-command dedup -- behind three
+locks, and the eviction bound they all share is resolved by a third lazy
+resolver, ``_resume_replay_cache_max``. The scan below therefore derives both the
+lock set and the methods that take them from the class, so a fourth replay cache
+is graded the hour it lands rather than inheriting the same gap.
 """
 
 from __future__ import annotations
@@ -18,6 +26,7 @@ from __future__ import annotations
 import ast
 import inspect
 import json
+import textwrap
 import threading
 import time
 from types import SimpleNamespace
@@ -101,49 +110,190 @@ def test_env_change_mid_handler_does_not_affect_current_envelope(monkeypatch):
     assert seen == [60.0], f"freshness window must be read exactly once at entry; reads={seen}"
 
 
-def _lock_acquired_without_env_reads(method) -> bool:
-    """Static check: no _estop_replay_lock ``with`` body contains a call
-    to a tunable reader (``_resume_forward_skew_s`` /
-    ``_resume_freshness_window_s``) or to ``_parse_positive_float_env``.
-    """
-    source = inspect.getsource(method)
-    # Dedent so ast can parse the standalone method.
-    import textwrap
-
-    tree = ast.parse(textwrap.dedent(source))
-    banned = {
+#: Every lazy env resolver that feeds a replay-cache critical section, plus the
+#: two parsers behind them. Each is an ``os.getenv`` and a validating parse, and
+#: on an unusable operator value it logs as well -- so the cost is not constant
+#: and has no reason to be paid while holding a lock other peers wait on.
+_BANNED_IN_LOCK = frozenset(
+    {
         "_resume_forward_skew_s",
         "_resume_freshness_window_s",
+        "_resume_replay_cache_max",
         "_parse_positive_float_env",
+        "_parse_positive_int_env",
     }
-
-    class _Visitor(ast.NodeVisitor):
-        def __init__(self):
-            self.violation = False
-
-        def visit_With(self, node: ast.With):
-            uses_estop_lock = any(
-                isinstance(item.context_expr, ast.Attribute) and item.context_expr.attr == "_estop_replay_lock"
-                for item in node.items
-            )
-            if uses_estop_lock:
-                for inner in ast.walk(node):
-                    if isinstance(inner, ast.Call):
-                        fn = inner.func
-                        name = fn.id if isinstance(fn, ast.Name) else getattr(fn, "attr", None)
-                        if name in banned:
-                            self.violation = True
-            self.generic_visit(node)
-
-    v = _Visitor()
-    v.visit(tree)
-    return not v.violation
+)
 
 
-def test_lock_held_duration_does_not_include_env_reads():
-    """The _estop_replay_lock critical section must not parse env tunables."""
-    assert _lock_acquired_without_env_reads(core.Mesh._on_safety_estop), (
-        "_estop_replay_lock body must not call _resume_forward_skew_s / "
-        "_resume_freshness_window_s / _parse_positive_float_env; cache them "
-        "at handler entry (issue #265)"
+def _class_tree(cls) -> ast.AST:
+    """Parse *cls* from source, dedented so :mod:`ast` accepts it standalone."""
+    return ast.parse(textwrap.dedent(inspect.getsource(cls)))
+
+
+def _replay_lock_names(cls) -> set[str]:
+    """Return the ``*_replay_lock`` attributes *cls* assigns to itself.
+
+    Derived from the constructor rather than listed, so a replay cache added
+    later is graded without editing this file.
+    """
+    names: set[str] = set()
+    for node in ast.walk(_class_tree(cls)):
+        if not isinstance(node, ast.Assign):
+            continue
+        for target in node.targets:
+            if (
+                isinstance(target, ast.Attribute)
+                and isinstance(target.value, ast.Name)
+                and target.value.id == "self"
+                and target.attr.endswith("_replay_lock")
+            ):
+                names.add(target.attr)
+    return names
+
+
+def _env_reads_inside_replay_locks(cls) -> list[str]:
+    """Report every banned resolver call made inside a replay-cache lock body.
+
+    Args:
+        cls: The class to scan, read from source.
+
+    Returns:
+        One human-readable entry per offending call, empty when every replay
+        lock body is free of environment parsing.
+    """
+    locks = _replay_lock_names(cls)
+    offenders: list[str] = []
+    for method in ast.walk(_class_tree(cls)):
+        if not isinstance(method, ast.FunctionDef | ast.AsyncFunctionDef):
+            continue
+        for block in ast.walk(method):
+            if not isinstance(block, ast.With):
+                continue
+            held = {
+                item.context_expr.attr
+                for item in block.items
+                if isinstance(item.context_expr, ast.Attribute) and item.context_expr.attr in locks
+            }
+            if not held:
+                continue
+            for inner in ast.walk(block):
+                if not isinstance(inner, ast.Call):
+                    continue
+                func = inner.func
+                name = func.id if isinstance(func, ast.Name) else getattr(func, "attr", None)
+                if name in _BANNED_IN_LOCK:
+                    offenders.append(f"{method.name} holds {sorted(held)} and calls {name}() (line {inner.lineno})")
+    return offenders
+
+
+def test_the_scan_reaches_every_replay_cache_lock() -> None:
+    """Non-vacuity: a clean report must mean the scan found the locks.
+
+    Without this, collapsing the lock discovery to an empty set would report a
+    clean tree while grading nothing.
+    """
+    locks = _replay_lock_names(core.Mesh)
+    assert len(locks) >= 3, f"expected at least three replay-cache locks, found {sorted(locks)}"
+    tree = _class_tree(core.Mesh)
+    takers = {
+        method.name
+        for method in ast.walk(tree)
+        if isinstance(method, ast.FunctionDef | ast.AsyncFunctionDef)
+        for block in ast.walk(method)
+        if isinstance(block, ast.With)
+        for item in block.items
+        if isinstance(item.context_expr, ast.Attribute) and item.context_expr.attr in locks
+    }
+    assert len(takers) >= 3, f"expected at least three methods taking a replay lock, found {sorted(takers)}"
+
+
+def test_no_replay_cache_lock_body_parses_the_environment() -> None:
+    """No replay-cache critical section resolves an env tunable (issue #265)."""
+    offenders = _env_reads_inside_replay_locks(core.Mesh)
+    assert not offenders, (
+        "a replay-cache lock body must not parse the environment -- resolve the "
+        "tunable into a local before taking the lock:\n  " + "\n  ".join(offenders)
     )
+
+
+class _WatchingLock:
+    """A real lock that records which resolvers are called while it is held."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self.entered = 0
+        self.held = False
+        self.calls: list[str] = []
+
+    def __enter__(self) -> _WatchingLock:
+        self._lock.acquire()
+        self.entered += 1
+        self.held = True
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.held = False
+        self._lock.release()
+
+
+def _watch_resolvers(monkeypatch, watch: _WatchingLock) -> None:
+    """Record any :data:`_BANNED_IN_LOCK` resolver call made while *watch* is held."""
+    for name in ("_resume_forward_skew_s", "_resume_freshness_window_s", "_resume_replay_cache_max"):
+        real = getattr(core, name)
+
+        def spy(_real=real, _name=name):
+            if watch.held:
+                watch.calls.append(_name)
+            return _real()
+
+        monkeypatch.setattr(core, name, spy)
+
+
+class _FakeRobot:
+    """Minimal robot adapter: enough surface for an actuating command."""
+
+    def status(self) -> dict:
+        return {"status": "idle"}
+
+    def stop_task(self) -> dict:
+        return {"ok": True}
+
+
+def test_command_dedup_lock_holds_no_env_parse(monkeypatch) -> None:
+    """The inbound-command replay lock is held without parsing the environment.
+
+    ``_exec_cmd`` dedups actuating commands through a third replay cache added
+    after issue #265. It resolves the same tunables the safety handlers do, so it
+    must resolve them the same way: into locals, before the lock.
+    """
+    mesh = core.Mesh(_FakeRobot(), peer_id="robot-a")
+    monkeypatch.setattr(mesh, "publish", lambda key, payload, **kw: None)
+    monkeypatch.setattr(core, "log_safety_event", lambda event_type, peer_id, detail: None)
+
+    watch = _WatchingLock()
+    monkeypatch.setattr(mesh, "_cmd_replay_lock", watch)
+    _watch_resolvers(monkeypatch, watch)
+
+    mesh._exec_cmd({"sender_id": "op1", "turn_id": "t1", "command": {"action": "stop"}})
+
+    assert watch.entered >= 1, "premise: the command must reach the dedup critical section"
+    assert not watch.calls, f"env tunables parsed while holding _cmd_replay_lock: {watch.calls}"
+
+
+def test_estop_replay_lock_holds_no_env_parse(monkeypatch) -> None:
+    """Nothing under the estop lock reads the environment, bound included.
+
+    Issue #265 hoisted the two float tunables out of this critical section but
+    left the eviction bound resolved inside it, so the handler paid an
+    ``os.getenv`` and a parse under the lock it had just been cleared of. The
+    bound is resolved beside ``per_issuer_cap`` before the lock now.
+    """
+    mesh = _stub_mesh()
+    watch = _WatchingLock()
+    monkeypatch.setattr(mesh, "_estop_replay_lock", watch)
+    _watch_resolvers(monkeypatch, watch)
+
+    mesh._on_safety_estop(_envelope(time.time()))
+
+    assert watch.entered >= 1, "premise: the envelope must reach the estop critical section"
+    assert not watch.calls, f"env tunables parsed while holding _estop_replay_lock: {watch.calls}"

@@ -52,6 +52,7 @@ record→train→deploy loop) as Jupyter notebooks - all CPU-only, no hardware o
 | 14 | [`14_save_state_and_perturb.py`](14_save_state_and_perturb.py) | `save_state`/`load_state` + `apply_force` + `raycast` | No | No |
 | 15 | [`15_robot_catalog.py`](15_robot_catalog.py) | `list_robots` / `get_robot` registry discovery (no sim) | No | No |
 | 16 | [`16_harness_memory.py`](16_harness_memory.py) | `harness_memory` tool: save a solution trace, reuse it under spatial perturbation | No | No |
+| 17 | [`17_pour_task.py`](17_pour_task.py) | Articulated-container pouring: bundled task objects + particle-proxy pour predicates | No | No |
 | -- | [`locomotion/vla_g1_workflow.py`](locomotion/vla_g1_workflow.py) | VLA-on-G1: record -> GR00T fine-tune -> WBC deploy | No | Optional (tune) |
 | — | [`vera_mimicgen_panda/`](vera_mimicgen_panda/) | VERA MimicGen → Panda (eef-delta + IK bridge) | No | **Yes** (server) |
 | — | [`isaac_gs/`](isaac_gs/) | Isaac RTX robot z-composited over a 3DGS / panorama backdrop (digital-twin) | No | **Yes** (Isaac Sim / RTX) |

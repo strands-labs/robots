@@ -1,0 +1,27 @@
+<mujoco model="sliding_carton">
+  <!--
+    Articulated task object: the same small carton as ``hinged_carton`` but
+    with the lid on a prismatic (slide) joint along +X instead of a hinge -
+    the "push the cap open" variant, and the one to use for lid-down pouring
+    mounts: the load of resting contents is orthogonal to the slide axis, so
+    the closed cap is a stable state (unlike a lid-down hinge, which creeps
+    open - see hinged_carton.xml). Attach it into a live scene with
+    ``add_robot(name="carton", urdf_path=task_object_path("sliding_carton"))``
+    so the slide is observable by the joint predicates under the bare name
+    ``cap_slide`` (metres of travel; fully open at 0.1).
+  -->
+  <compiler angle="radian"/>
+  <worldbody>
+    <body name="carton" pos="0 0 0">
+      <geom name="carton_bottom" type="box" size="0.05 0.04 0.002" pos="0 0 0.002"/>
+      <geom name="carton_wall_xp" type="box" size="0.002 0.04 0.058" pos="0.048 0 0.062"/>
+      <geom name="carton_wall_xn" type="box" size="0.002 0.04 0.058" pos="-0.048 0 0.062"/>
+      <geom name="carton_wall_yp" type="box" size="0.05 0.002 0.058" pos="0 0.038 0.062"/>
+      <geom name="carton_wall_yn" type="box" size="0.05 0.002 0.058" pos="0 -0.038 0.062"/>
+      <body name="cap" pos="0 0 0.122">
+        <joint name="cap_slide" type="slide" axis="1 0 0" range="0 0.1" damping="0.05" frictionloss="0.5"/>
+        <geom name="cap_geom" type="box" size="0.05 0.04 0.002" pos="0 0 0" mass="0.02"/>
+      </body>
+    </body>
+  </worldbody>
+</mujoco>
