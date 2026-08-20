@@ -15,6 +15,7 @@ Optionally override the checkpoint with COSMOS3_MODEL (default nvidia/Cosmos3-Na
 
 from __future__ import annotations
 
+import math
 import os
 
 import numpy as np
@@ -58,14 +59,37 @@ def policy():
 def test_policy_mode_returns_action_chunk_and_world_video(policy):
     """A real in-process policy run yields per-step actuator dicts AND surfaces
     the predicted world video on last_rollout. The diffusers backend emits the
-    model's raw unified action (DROID = 9D end-effector pose + 1D gripper)."""
+    model's raw unified action (DROID = 9D end-effector pose + 1D gripper), so
+    the step layout and dimensionality are derived from the embodiment registry
+    rather than restated here, and every value is asserted finite and within the
+    raw normalized [-1, 1] range - isinstance(v, float) alone passes on NaN/inf,
+    which is exactly what a bad checkpoint or dtype drift emits.
+    """
+    from strands_robots.policies.cosmos3.embodiments import get_embodiment
+
+    embodiment = get_embodiment("droid")
     out = policy.get_actions_sync(_obs(), "pick up the red cube")
     assert isinstance(out, list) and out
-    step = out[0]
-    assert set(step.keys()) == {"tx", "ty", "tz", "r0", "r1", "r2", "r3", "r4", "r5", "grasp"}
-    assert all(isinstance(v, float) for v in step.values())
+    for step in out:
+        assert set(step.keys()) == set(embodiment.raw_action_layout)
+        for name, v in step.items():
+            assert isinstance(v, float), (name, v)
+            assert math.isfinite(v), (name, v)
     assert policy.last_rollout is not None
     assert policy.last_rollout["video"] is not None  # predicted world video
+
+    # The raw chunk is the model's quantile-normalized unified action: every
+    # value finite and in [-1, 1] (small eps for numeric slop), the second
+    # dimension the embodiment's raw action dim, and not identically zero -
+    # an all-zeros chunk is the classic silent-failure shape this repo forbids
+    # as a failure default.
+    chunk = np.asarray(policy.last_rollout["action"], dtype=np.float64)
+    assert chunk.ndim == 2
+    assert chunk.shape[1] == embodiment.raw_action_dim
+    assert np.isfinite(chunk).all()
+    eps = 1e-4
+    assert (np.abs(chunk) <= 1.0 + eps).all(), (chunk.min(), chunk.max())
+    assert np.any(chunk != 0.0)
 
 
 # --- Full sim loop: real Cosmos action -> de-normalize -> IK -> MuJoCo --------
@@ -109,6 +133,9 @@ def test_cosmos_action_drives_mujoco_arm_within_tracking_bar(policy):
     )
     assert out["qpos"].shape[1] == model.nq
     assert out["poses"].shape[0] == out["qpos"].shape[0]
+    # An IK solve that diverges to NaN passes the shape checks above; require
+    # every solved joint target to be finite.
+    assert np.isfinite(out["qpos"]).all()
     # Tracking bar (reachable trajectory). Cosmos's own deltas may scale past the
     # Franka reach; this asserts the IK *geometry* closes the loop.
     assert out["tracking_error"]["mean_mm"] <= 45.0, out["tracking_error"]
