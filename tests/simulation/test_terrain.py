@@ -12,10 +12,12 @@ are pure stdlib (no mujoco / numpy) and exercise the module in isolation.
 from __future__ import annotations
 
 import types
+from typing import Any
 
 import pytest
 
 from strands_robots.simulation import terrain
+from strands_robots.utils import positive_whole_number_error
 
 
 def test_rough_field_has_correct_length_and_range() -> None:
@@ -269,3 +271,119 @@ def test_validate_difficulty_rejects_non_positive_or_nonfinite(bad: float) -> No
 def test_validate_difficulty_accepts_positive_finite(good: float) -> None:
     terrain.validate_difficulty(good)  # no raise
     assert terrain.terrain_elevation(good) > 0.0
+
+
+class TestResolutionIsMeasuredAgainstTheSharedDiscreteDomain:
+    """``resolution`` sizes the grid, so it is checked before the grid is built.
+
+    ``generate_heightfield`` is the exported, backend-independent generator and
+    ``resolution`` is the count its documented ``resolution * resolution`` output
+    length is squared from. A bare ``int(resolution)`` truncated a fractional
+    count, accepted a string, and let ``TypeError`` / ``OverflowError`` out of a
+    module whose error contract is ``ValueError`` - the same three axes
+    :func:`~strands_robots.simulation.terrain.validate_difficulty` documents for
+    the continuous knob in this file, which is why both now report through the
+    shared numeric domains.
+
+    The expected verdicts are read from
+    :func:`~strands_robots.utils.positive_whole_number_error` itself rather than
+    from a copied value list, so a value the shared domain starts accepting or
+    refusing is covered here without an edit.
+    """
+
+    # Values whose verdict the shared domain owns. Each is a spelling a caller
+    # can plausibly arrive at: a config/argv string, a cell count computed by
+    # division, a NumPy size, a boolean flag passed to the wrong parameter.
+    DOMAIN_CASES: tuple[Any, ...] = ("40", 2.5, 39.7, True, False, None, "abc", [], float("nan"), float("inf"), -5, 0)
+
+    @pytest.mark.parametrize("value", DOMAIN_CASES)
+    def test_a_value_the_shared_domain_refuses_is_refused_here(self, value: object) -> None:
+        assert positive_whole_number_error(value, "resolution", "terrain") is not None, (
+            f"premise: the shared domain must own the verdict for {value!r}"
+        )
+        with pytest.raises(ValueError) as exc:
+            terrain.generate_heightfield("rough", resolution=value)  # type: ignore[arg-type]
+        assert "resolution" in str(exc.value), f"the refusal must name the parameter: {exc.value}"
+
+    @pytest.mark.parametrize("value", DOMAIN_CASES)
+    def test_the_refusal_is_a_value_error_and_not_a_type_or_overflow_error(self, value: object) -> None:
+        """``ValueError`` is the contract; ``int()`` raised outside it for three spellings.
+
+        ``None`` and ``[]`` raised ``TypeError`` and ``inf`` raised
+        ``OverflowError`` from inside ``int()``, so a caller narrowing to
+        ``ValueError`` - which is what every terrain refusal in this module is -
+        never saw them as a refusal at all.
+        """
+        try:
+            terrain.generate_heightfield("rough", resolution=value)  # type: ignore[arg-type]
+        except ValueError:
+            return
+        except Exception as exc:  # noqa: BLE001 - the point is which class escapes
+            raise AssertionError(
+                f"resolution={value!r} raised {type(exc).__name__}, which a ValueError-only "
+                f"caller does not see as a refusal: {exc}"
+            ) from exc
+        raise AssertionError(f"resolution={value!r} was accepted rather than refused")
+
+    def test_a_fractional_resolution_is_refused_rather_than_truncated(self) -> None:
+        """The documented length is ``resolution * resolution``, so a truncation breaks it.
+
+        ``39.7`` used to return a 39x39 field - 1521 floats for a number whose
+        square is 1576.09 - and the only place that surfaced was the consumer,
+        where MuJoCo reports ``elevation data length must match nrow*ncol``
+        without naming ``resolution`` or the truncation.
+        """
+        try:
+            heights = terrain.generate_heightfield("rough", resolution=39.7)  # type: ignore[arg-type]
+        except ValueError:
+            return
+        raise AssertionError(
+            f"resolution=39.7 was accepted and returned {len(heights)} floats, so the documented "
+            f"resolution * resolution length (1576.09) does not hold"
+        )
+
+    def test_a_string_resolution_is_refused_rather_than_parsed(self) -> None:
+        """``"40"`` built a 40x40 field, so a config/argv string was refused nowhere."""
+        try:
+            heights = terrain.generate_heightfield("rough", resolution="40")  # type: ignore[arg-type]
+        except ValueError:
+            return
+        raise AssertionError(f"resolution='40' was accepted and returned {len(heights)} floats")
+
+    # --- controls: what the domain must not change -------------------------
+
+    @pytest.mark.parametrize("value", [4, 4.0, terrain.TERRAIN_RESOLUTION])
+    def test_a_usable_whole_count_still_builds_that_grid(self, value: object) -> None:
+        """An int, an integral float and the module default are unaffected.
+
+        The shared domain deliberately accepts an integral float (a count
+        computed from a config float), so ``4.0`` must still build the same 4x4
+        field ``4`` does.
+        """
+        heights = terrain.generate_heightfield("rough", resolution=value, seed=0)  # type: ignore[arg-type]
+        n = int(value)  # type: ignore[call-overload]
+        from_int = terrain.generate_heightfield("rough", resolution=n, seed=0)
+        assert len(heights) == n * n
+        assert heights == from_int
+
+    def test_the_floor_at_two_keeps_its_own_refusal(self) -> None:
+        """``1`` is a positive whole number, so the ``>= 2`` floor is still this module's.
+
+        This fails if the shared domain is treated as the whole check and the
+        floor is dropped, or if the floor's message is folded into the domain's.
+        """
+        assert positive_whole_number_error(1, "resolution", "terrain") is None, (
+            "premise: the shared domain accepts 1, so only this module refuses it"
+        )
+        with pytest.raises(ValueError, match=r">= 2"):
+            terrain.generate_heightfield("rough", resolution=1)
+
+    def test_the_kind_is_still_checked_before_the_resolution(self) -> None:
+        """An unknown kind keeps its own actionable message even with a bad resolution.
+
+        Ordering matters: a caller who got both wrong should be told about the
+        kind, which is the one this module can enumerate a remedy for.
+        """
+        with pytest.raises(ValueError) as exc:
+            terrain.generate_heightfield("bogus", resolution=2.5)  # type: ignore[arg-type]
+        assert "Supported" in str(exc.value)

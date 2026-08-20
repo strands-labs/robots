@@ -23,7 +23,7 @@ Quick start (no hardware, no GPU, no Hub credentials needed):
 (For sim-only runs you can disable the mesh entirely with STRANDS_MESH=false.)
 
 Note on Step 5: by default the robot_mesh tool routes every physically-actuating
-action -- emergency_stop, broadcast, tell, send, stop -- through a
+action -- emergency_stop, broadcast, tell, send, stop, rpc -- through a
 human-in-the-loop approval interrupt (set STRANDS_MESH_HITL_ACTIONS to "all",
 "none", or a comma-separated subset to tune this). The first time the agent
 invokes a broadcast, you'll see a "robot_mesh-broadcast-approval" prompt in the

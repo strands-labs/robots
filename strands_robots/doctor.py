@@ -94,6 +94,49 @@ def _resolve_version(import_name: str, dist_name: str) -> str:
     return str(getattr(module, "__version__", "unknown"))
 
 
+def _hf_token_path() -> Path:
+    """Path a cached HuggingFace login token is read from.
+
+    ``huggingface_hub`` owns this resolution: ``HF_TOKEN_PATH`` when set, else
+    ``<HF_HOME>/token``, where ``HF_HOME`` is ``$HF_HOME`` when set, else
+    ``<XDG_CACHE_HOME>/huggingface``, else ``~/.cache/huggingface``. Answering
+    about a hardcoded ``~/.cache/huggingface/token`` instead describes a file the
+    Hub will not open on any host that relocated its cache, and it is wrong in
+    both directions: a relocated token reads as "not logged in", and a stale
+    token left at the default path reads as "logged in" for an environment where
+    every Hub call resolves no token at all.
+
+    Prefer the constant the Hub computed for itself, so the two cannot drift.
+    ``huggingface_hub`` ships only in the extras that pull a checkpoint
+    (``[wbc]``, ``[kimodo]``, ``[protomotions]``), so a base install has no Hub
+    to ask and the fallback transcribes the same rule. Each variable is read by
+    presence rather than truthiness, so an explicitly empty value resolves the
+    way the Hub resolves it rather than being treated as unset.
+
+    Returns:
+        The token path, with ``~`` and ``$VAR`` expanded.
+    """
+    try:
+        from huggingface_hub.constants import HF_TOKEN_PATH
+
+        return Path(HF_TOKEN_PATH)
+    except ImportError:
+        # No Hub installed, so nothing here can ask it where it would look;
+        # fall through to the transcription of its rule below.
+        pass
+
+    default_home = os.path.join(os.path.expanduser("~"), ".cache")
+    hf_home = os.path.expandvars(
+        os.path.expanduser(
+            os.environ.get(
+                "HF_HOME",
+                os.path.join(os.environ.get("XDG_CACHE_HOME", default_home), "huggingface"),
+            )
+        )
+    )
+    return Path(os.path.expandvars(os.path.expanduser(os.environ.get("HF_TOKEN_PATH", os.path.join(hf_home, "token")))))
+
+
 def check_python_version() -> str:
     """Python >= 3.12 required."""
     v = sys.version_info
@@ -224,13 +267,18 @@ def check_hf_auth() -> str:
     token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
     if token:
         return _pass("HF_TOKEN set")
-    # Check huggingface-cli login token
-    hf_token_path = Path.home() / ".cache" / "huggingface" / "token"
-    if hf_token_path.exists() and hf_token_path.read_text().strip():
-        return _pass("HuggingFace token found (~/.cache/huggingface/token)")
+    # Read the file the Hub reads (see _hf_token_path), and name it: on a host
+    # that relocated its cache the default path is not the one being consulted,
+    # so a verdict that does not say which file it read cannot be acted on.
+    hf_token_path = _hf_token_path()
+    # ``is_file`` rather than ``exists``: an explicitly empty ``HF_TOKEN_PATH``
+    # resolves to ``Path(".")``, a directory that exists, and reading it raises.
+    if hf_token_path.is_file() and hf_token_path.read_text().strip():
+        return _pass(f"HuggingFace token found ({hf_token_path})")
     return _warn(
         "No HuggingFace token found",
-        note="Needed for dataset push + gated models. Run: huggingface-cli login  # or export HF_TOKEN=hf_...",
+        note=f"Looked in {hf_token_path}. Needed for dataset push + gated models. "
+        "Run: hf auth login  # or export HF_TOKEN=hf_...",
     )
 
 

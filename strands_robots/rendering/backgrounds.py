@@ -37,7 +37,7 @@ from typing import Any, Protocol
 
 import numpy as np
 
-from strands_robots.utils import require_optional
+from strands_robots.utils import boolean_flag_error, require_optional
 
 from .camera import CameraParams
 
@@ -341,6 +341,16 @@ class GsplatBackground:
           to whatever fallback you pass.
         * You'll likely want to align the GS scene to your MuJoCo world frame
           via the ``transform`` kwarg (4x4 SE(3) ``world_from_gs``).
+
+    Raises:
+        FileNotFoundError: if ``ply_path`` names no existing file.
+        PermissionError: if ``ply_path`` exists but is not readable.
+        ValueError: if ``auto_backdrop``, ``skybox``, ``metric`` or
+            ``own_floor`` is not a ``bool``. Each selects an alignment or
+            compositing branch, so a value read by truthiness picks a branch
+            instead of being refused - and every spelling of *off* a caller
+            reaches for is a truthy string, so it picks the branch it asks to
+            skip.
     """
 
     name = "gsplat"
@@ -383,6 +393,30 @@ class GsplatBackground:
             )
         if not os.access(self._ply_path, os.R_OK):
             raise PermissionError(f"Gaussian Splat is not readable: {self._ply_path}")
+        # Each of these selects an alignment or compositing branch, so it is
+        # checked on the shared boolean domain beside the path above rather than
+        # read by truthiness where the branch is taken. Truthiness inverts
+        # exactly the spellings an operator reaches for: ``skybox="false"``,
+        # ``metric="no"`` and ``own_floor="off"`` each selected the branch the
+        # value asks to skip, and nothing raised or logged. ``metric`` is the
+        # sharpest of the four because it also decides whether ``radius`` is
+        # read at all: a truthy string kept the capture's raw scale and dropped
+        # the requested one, so a scene stood up at whatever size it was
+        # captured at. The undeclared falsy values are the other half - ``0``,
+        # ``""``, ``[]`` and ``None`` took the default branch without being a
+        # spelling of it, and ``skybox``/``auto_backdrop`` composed with
+        # ``transform is None``, so the attribute held that raw value rather
+        # than a bool. ``HybridCompositor`` checks its own ``blend_in_linear``
+        # for the same reason: every such option "was previously coerced or
+        # clamped into a plausible-but-different render".
+        for _param, _value in (
+            ("auto_backdrop", auto_backdrop),
+            ("skybox", skybox),
+            ("metric", metric),
+            ("own_floor", own_floor),
+        ):
+            if text := boolean_flag_error(_value, _param, "GsplatBackground"):
+                raise ValueError(text)
         self._device = device
         self._explicit_transform = transform is not None
         self._transform = np.asarray(transform, dtype=np.float64) if transform is not None else np.eye(4)

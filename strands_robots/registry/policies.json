@@ -113,7 +113,7 @@
     "cosmos3": {
       "module": "strands_robots.policies.cosmos3",
       "class": "Cosmos3Policy",
-      "description": "NVIDIA Cosmos 3 omnimodal VLA policy (DROID/UMI/AV/bridge) via Cosmos Framework",
+      "description": "NVIDIA Cosmos 3 omnimodal VLA policy (DROID/UMI/AV/bridge/OpenArm) via Cosmos Framework",
       "requires": [],
       "config_keys": [
         "embodiment",

@@ -141,8 +141,8 @@ def decode_cosmos_chunk_to_targets(
             the bundled per-domain stats are loaded for ``embodiment.domain_name``.
             When supplied, ``stats_domain`` must name the domain they were
             measured on: several Cosmos 3 domains share an action width
-            (``umi``, ``droid_lerobot`` and ``bridge_orig_lerobot`` are all 10
-            columns), so the width check in
+            (``umi``, ``droid_lerobot``, ``bridge_orig_lerobot`` and
+            ``openarm_lerobot`` are all 10 columns), so the width check in
             :func:`~strands_robots.policies.cosmos3.action_decode.denormalize_quantile`
             cannot tell one domain's quantiles from another's.
         stats_domain: Domain the explicit ``stats`` describe. Required whenever
@@ -189,8 +189,9 @@ def decode_cosmos_chunk_to_targets(
         raise ValueError(
             "decode_cosmos_chunk_to_targets: explicit stats= must declare the domain "
             "they were measured on via stats_domain=. Cosmos 3 domains share action "
-            "widths (umi, droid_lerobot and bridge_orig_lerobot are all 10 columns), "
-            "so a width check cannot tell one domain's quantiles from another's, and "
+            "widths (umi, droid_lerobot, bridge_orig_lerobot and openarm_lerobot are "
+            "all 10 columns), so a width check cannot tell one domain's quantiles "
+            "from another's, and "
             f"de-normalizing a {embodiment.domain_name!r} action with the wrong "
             "domain's quantiles silently rescales every commanded pose delta. Pass "
             f"stats_domain={embodiment.domain_name!r}."

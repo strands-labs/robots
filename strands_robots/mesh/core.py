@@ -191,11 +191,17 @@ RESUME_REPLAY_CACHE_MAX: int = _parse_positive_int_env("STRANDS_MESH_RESUME_REPL
 def _resume_freshness_window_s() -> float:
     """Lazy resolver for ``STRANDS_MESH_RESUME_FRESHNESS_S``.
 
-    re-reads the env var on every call so operator-set values
-    take effect without a process restart. Cheap (one ``os.getenv``
-    + a regex parse via ``_parse_positive_float_env``) and called
-    only on safety-handler entry, which is bounded by the transport
-    rate cap.
+    Re-reads the env var on every call so operator-set values take effect
+    without a process restart. One ``os.getenv`` plus a validating parse via
+    :func:`_parse_positive_float_env` -- and, when the operator value is
+    unusable, a log record as well, so the cost is not constant.
+
+    Four paths resolve it, not only the safety handlers: presence
+    (``_on_presence``), inbound command dispatch (``_exec_cmd``) and both
+    ``_on_safety_estop`` / ``_on_safety_resume``. Each resolves it once, into a
+    local, before taking a replay-cache lock, so no critical section carries the
+    parse and the value cannot change mid-envelope. The next envelope re-reads
+    the env, which is what keeps the knob operator-tunable.
     """
     return _parse_positive_float_env("STRANDS_MESH_RESUME_FRESHNESS_S", "60")
 
@@ -682,7 +688,17 @@ class Mesh(SensorLoopsMixin):
                 # state.
                 _acl_config._clear_thread_snapshot()
             if session is None:
-                logger.debug("[mesh] %s: zenoh unavailable, mesh off", self.peer_id)
+                # The sibling refusal above leaves the mesh not-started and says
+                # so at ERROR.  Arriving here leaves it not-started too, so the
+                # caller learns that ``mesh.alive`` is False from the same level
+                # rather than from whichever downstream wait expires first.  The
+                # cause is reported by the session/transport layer that returned
+                # None; this names the peer it applies to.
+                logger.warning(
+                    "[mesh] %s: no mesh transport - mesh off (mesh.alive is False, so this "
+                    "peer publishes no presence and discovers no peers)",
+                    self.peer_id,
+                )
                 return
 
             self._has_session_ref = True
@@ -1513,11 +1529,17 @@ class Mesh(SensorLoopsMixin):
             _now_mono = time.monotonic()
             _key = (sender, turn)
             _is_replay = False
+            # Resolve the lazy tunables BEFORE taking the lock. Each one is an
+            # os.getenv plus a validating parse, and on a bad operator value it
+            # also logs -- work that has no reason to sit inside a critical
+            # section other peers are waiting on. Mirrors the hoist the two
+            # safety handlers do at entry (issue #265).
+            _ttl = _resume_freshness_window_s() + _resume_forward_skew_s()
+            _replay_cache_max = _resume_replay_cache_max()
             with self._cmd_replay_lock:
-                _ttl = _resume_freshness_window_s() + _resume_forward_skew_s()
                 _evict_replay_cache(
                     self._cmd_replay_cache,
-                    max_size=_resume_replay_cache_max(),
+                    max_size=_replay_cache_max,
                     ttl_s=_ttl,
                     now_mono=_now_mono,
                 )
@@ -2260,7 +2282,12 @@ class Mesh(SensorLoopsMixin):
         # most ``per_issuer_cap`` slots so a single attacker cannot
         # fill the global cache. Default cap is _resume_replay_cache_max()
         # / 4 -- four legitimate operators always have working slots.
-        per_issuer_cap = max(1, _resume_replay_cache_max() // 4)
+        # Resolved here, outside the lock below, for the same reason the two
+        # float tunables are resolved at handler entry: the eviction call in
+        # the critical section reuses this local instead of re-parsing the env
+        # while holding _estop_replay_lock.
+        replay_cache_max = _resume_replay_cache_max()
+        per_issuer_cap = max(1, replay_cache_max // 4)
         # cache TTL bookkeeping uses time.monotonic() so an NTP step
         # backward cannot leave entries un-evictable and a step forward
         # cannot age fresh entries out early. Envelope freshness still
@@ -2364,7 +2391,7 @@ class Mesh(SensorLoopsMixin):
             ts_view: dict[float, float] = {k: v[1] for k, v in self._estop_replay_cache.items()}
             _evict_replay_cache(
                 ts_view,
-                max_size=_resume_replay_cache_max(),
+                max_size=replay_cache_max,
                 # include forward_skew so a forward-skewed envelope
                 # at t=now+skew stays cached for the full freshness window
                 # rather than the lesser ``freshness`` only.
@@ -2699,6 +2726,10 @@ class Mesh(SensorLoopsMixin):
         # wire_zid="ab12cd" no longer conflate into the same slot.
         issuer_key = ("wire", wire_zid) if wire_zid is not None else ("body", issuer_id)
         cache_key = (issuer_key, proof_nonce)
+        # Resolved before the lock, matching the estop site: both the eviction
+        # bound and the per-issuer cap below read this local rather than
+        # re-parsing the env inside _resume_replay_lock.
+        replay_cache_max = _resume_replay_cache_max()
         with self._resume_replay_lock:
             if cache_key in self._resume_replay_cache:
                 logger.warning(
@@ -2735,7 +2766,7 @@ class Mesh(SensorLoopsMixin):
             now_mono = time.monotonic()
             _evict_replay_cache(
                 self._resume_replay_cache,
-                max_size=_resume_replay_cache_max(),
+                max_size=replay_cache_max,
                 # see _evict_replay_cache docstring.
                 ttl_s=freshness_window_s + forward_skew_s,
                 now_mono=now_mono,
@@ -2749,7 +2780,7 @@ class Mesh(SensorLoopsMixin):
             # branch, suppressing real replay-rejection signals. The cap
             # is computed from the SAME expression as the estop site so
             # the two replay-cache defenses stay symmetric.
-            per_issuer_cap = max(1, _resume_replay_cache_max() // 4)
+            per_issuer_cap = max(1, replay_cache_max // 4)
             issuer_slots = sum(1 for k in self._resume_replay_cache if k[0] == issuer_key)
             if issuer_slots >= per_issuer_cap:
                 logger.warning(

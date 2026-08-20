@@ -154,6 +154,44 @@ EMBODIMENTS: dict[str, Cosmos3Embodiment] = {
         raw_action_layout=_RAW_POSE9_GRASP,
         default_action_space="midtrain",
     ),
+    # Enactic OpenArm (7-DOF + gripper; registry ``openarm``, lerobot
+    # ``openarm_follower``). **Requires post-training** - no released Cosmos 3
+    # checkpoint ships this domain, so the entry promises no zero-shot
+    # behavior: it is the deploy-side mapping for a checkpoint post-trained on
+    # OpenArm episodes via the existing ``cosmos3`` trainer
+    # (:class:`strands_robots.training.cosmos3.Cosmos3Trainer`: SFT recipe TOML
+    # -> ``cosmos_framework`` launch). The unified action is the standard
+    # single-arm 9D EE pose + 1D grasp (eef-space), so the MuJoCo sim loop
+    # closes through the de-normalize + IK bridge
+    # (:func:`strands_robots.policies.cosmos3.sim_ik.decode_cosmos_chunk_to_targets`).
+    # No action stats are bundled for ``openarm_lerobot`` - post-training
+    # produces the domain's own ``q01``/``q99``, which the caller passes as
+    # ``stats=`` + ``stats_domain="openarm_lerobot"`` (another domain's stats
+    # are refused by name, never silently substituted). Camera keys mirror the
+    # recorded OpenArm episode set (front + wrist, the ``openarm_real``
+    # lerobot embodiment); chunk size and FPS mirror the DROID single-arm
+    # manipulator recipe defaults and must match the post-training recipe.
+    # ``bi_openarm`` (16-DOF bimanual) is a deliberate follow-up once this
+    # single-arm mapping is validated on post-trained weights.
+    "openarm": Cosmos3Embodiment(
+        name="openarm",
+        domain_name="openarm_lerobot",
+        raw_action_dim=10,
+        action_chunk_size=32,
+        fps=15,
+        camera_keys=[
+            "observation/image",
+            "observation/wrist_image",
+        ],
+        action_layouts={
+            # ``midtrain`` is the unified action itself, un-converted. There is
+            # no ``joint_pos`` entry: the RoboLab server's joint conversion is
+            # DROID-only, so promising a joint layout here would fabricate one.
+            "midtrain": _RAW_POSE9_GRASP,
+        },
+        raw_action_layout=_RAW_POSE9_GRASP,
+        default_action_space="midtrain",
+    ),
 }
 
 # Aliases → canonical embodiment key.
@@ -163,6 +201,11 @@ _EMBODIMENT_ALIASES = {
     "franka": "droid",
     "bridge_orig_lerobot": "bridge",
     "autonomous_vehicle": "av",
+    # OpenArm: the conditioning domain, the lerobot driver type, and the
+    # registry alias all resolve to the one canonical entry.
+    "openarm_lerobot": "openarm",
+    "openarm_follower": "openarm",
+    "enactic_openarm": "openarm",
 }
 
 

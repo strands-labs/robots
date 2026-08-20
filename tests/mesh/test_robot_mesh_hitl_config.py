@@ -1,10 +1,10 @@
 """Pin: STRANDS_MESH_HITL_ACTIONS makes the robot_mesh interrupt set configurable.
 
 The default interrupt set gates every physical-actuation action
-(emergency_stop, broadcast, tell, send, stop). Consumers narrow or widen
+(emergency_stop, broadcast, tell, send, stop, rpc). Consumers narrow or widen
 the gate via the env var:
 
-* unset      -> default set (the five actuation actions)
+* unset      -> default set (the actuation actions)
 * "all"      -> every gateable action incl. subscribe / watch
 * "none"     -> no gate (explicit opt-out; logs one warning)
 * CSV subset -> exactly those actions
@@ -63,6 +63,7 @@ def test_resolver_default_is_actuation_set(monkeypatch):
     assert "tell" in rmt._resolve_interrupt_actions()
     assert "send" in rmt._resolve_interrupt_actions()
     assert "stop" in rmt._resolve_interrupt_actions()
+    assert "rpc" in rmt._resolve_interrupt_actions()
 
 
 def test_resolver_all_expands_to_every_gateable(monkeypatch):

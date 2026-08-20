@@ -502,12 +502,28 @@ def _build_live_transport() -> tuple[Callable[[str, str, int], dict[str, Any]], 
     if sim_mesh is None:
         sim.destroy()
         raise RuntimeError("mesh is disabled (STRANDS_MESH=0); rerun with --dry-run")
+    # A peer whose mesh did not start answers every RPC with "mesh not running",
+    # so without this the queue below runs to completion and reports each order
+    # as a per-robot dispatch failure.  Refuse here, where the cause is known.
+    if not sim_mesh.alive:
+        sim.destroy()
+        raise RuntimeError(
+            "mesh did not start for peer 'fleet-sites' (mesh.alive is False): install the mesh "
+            'extra with pip install "strands-robots[mesh]", or rerun with --dry-run'
+        )
     sim.mesh, sim.peer_id = sim_mesh, sim_mesh.peer_id
     orch_mesh = init_mesh(_Dispatcher(), peer_id=DISPATCHER_ID)
     if orch_mesh is None:
         sim_mesh.stop()
         sim.destroy()
         raise RuntimeError("mesh is disabled (STRANDS_MESH=0); rerun with --dry-run")
+    if not orch_mesh.alive:
+        sim_mesh.stop()
+        sim.destroy()
+        raise RuntimeError(
+            f"mesh did not start for peer {DISPATCHER_ID!r} (mesh.alive is False): install the mesh "
+            'extra with pip install "strands-robots[mesh]", or rerun with --dry-run'
+        )
 
     def send(robot_name: str, instruction: str, n_steps: int) -> dict[str, Any]:
         # "execute" runs the policy synchronously, so multi-step orders are

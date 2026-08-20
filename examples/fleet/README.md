@@ -131,7 +131,11 @@ capability match, not a name match):
    safety does not depend on the dispatcher. The example *asserts* both halves
    (status answered, execute refused) and raises if either fails. The
    orchestrator then restarts and re-syncs from the two things that survived
-   the outage: the presence registry and the signed audit log.
+   the outage: the presence registry and the signed audit log. Both are
+   awaited on a bounded deadline rather than sampled once - a peer's own
+   `remote_estop_engaged` row is written by that peer's safety handler when
+   the broadcast reaches it, so it can land after the issuing call has
+   already returned.
 
 ```bash
 # No simulator, no mesh - scripted presence + loopback transport:
@@ -296,3 +300,4 @@ with the network off, given cached robot assets).
 | `STRANDS_MESH_LOCAL_DEV=1` | Skip TLS for local development (defaulted by the examples). |
 | `STRANDS_MESH_MULTICAST=true` | Enable multicast scouting so separate processes (e.g. the dashboard and an example) discover each other. Off by default; trusted networks only. |
 | `STRANDS_MESH=0` | Disable the mesh entirely; use `--dry-run` in that posture. |
+| _(mesh extra absent)_ | With `eclipse-zenoh` not installed the mesh stays off (`mesh.alive` is `False`): the live paths refuse at start-up naming the peer and the remedy. Install `strands-robots[mesh]` or use `--dry-run`. |

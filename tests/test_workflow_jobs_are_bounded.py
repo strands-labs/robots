@@ -32,19 +32,40 @@ reviewer into waiting.  A job-level bound is the only mechanism that sits
 outside the interpreter, which is why it fixes the class rather than the one
 test that exposed it.
 
-The bounds themselves are sized from observed durations over the last 300
-workflow runs, not guessed::
+The bounds themselves are sized from observed durations, not guessed.  Resampled
+over 663 successful jobs in the 10 days to 2026-08-19 (the original sample was
+20 runs over ~11 hours, which is too short to separate a level shift from a
+trend)::
 
-    workflow / job                    n    p50 min   max min   bound
-    Test and Lint / test-lint        20      25.2      26.5      45
-    CodeQL / analyze                 49       3.8       4.1      20
-    Agent API Check                   5       0.9       1.1      10
-    every other gate job          6..52      0.1       0.6      10
+    workflow / job                    n    p50 min   p90 min   max min   bound
+    Test and Lint / test-lint       663      27.1      32.0      44.4      60
+    CodeQL / analyze                 49       3.8         -       4.1      20
+    Agent API Check                   5       0.9         -       1.1      10
+    every other gate job          6..52      0.1         -       0.6      10
 
-The suite's band is tight (19-27 min, and zero completed runs over the sampled
-300 exceeded 45), so 45 is ~1.7x the observed ceiling: it costs a healthy run
-nothing while converting a six-hour silent stall into a 45-minute honest
-failure.
+The suite's band is no longer tight and no longer stationary: p50 rose
+monotonically every one of those ten days, 23.0 -> 32.7 min, a +0.95 min/day fit
+at R^2 0.93, while `tests/` gained 3054 test functions (13770 -> 16824) over the
+same window.  So the bound is sized against the arithmetic below rather than
+against a multiple of the observed ceiling, which is a moving target.
+
+**A job bound and a step bound inside it are one budget, and these two were
+sized independently.**  `Run tests` alone measures p50 22.6 / p90 27.2 / max
+29.1 min, and the steps that carry no bound of their own (checkout,
+setup-python, install, lint) cost 4.4 min.  The apt step's bound is 12 min
+(#2456, sized when the rest of the job cost "up to ~32 min"; it now costs 33.5),
+so a run in which apt spends its whole legal allowance costs
+29.1 + 12 + 4.4 = 45.5 min.  Under the old 45 that run is reaped having done
+nothing wrong -- and a job-level reap renders as a rollup ``FAILURE`` naming no
+step, which is precisely the diagnosis the step bound was added to provide.  The
+worst four successful jobs in the window show the composition rather than
+implying it: 44.4 min = 12.4 apt + 27.6 tests, 44.0 = 11.9 + 27.7, 42.0 = 10.5 +
+27.1, 39.6 = 9.1 + 26.4.  ``Run tests`` never exceeded 29.1, so the suite is not
+what put those runs near the bound.
+
+That compatibility is asserted below rather than left to this prose, because
+both numbers are edited by different changes for different reasons and neither
+edit has any occasion to look at the other.
 
 Two exemptions, both structural rather than discretionary, and each pinned
 below so it cannot quietly widen into a hole:
@@ -80,15 +101,37 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 _WORKFLOWS = _REPO_ROOT / ".github" / "workflows"
 
 #: A bound has to be meaningfully tighter than the 6-hour default to be a bound
-#: at all. Nothing here is near it -- the widest is the 45-minute suite -- so a
-#: value above this ceiling means someone silenced this guard rather than sized
-#: a job.
+#: at all. Nothing here is near it -- the widest is the 60-minute suite, which
+#: now sits exactly on this ceiling -- so a value above it means someone
+#: silenced this guard rather than sized a job. The suite reaching the ceiling
+#: is deliberate: at +0.95 min/day the next raise has to be argued as suite
+#: runtime rather than spent here, and raising this constant to buy it is the
+#: edit that says so out loud (#2457).
 _CEILING_MINUTES = 60
 
-#: The suite bound must clear the measured 19-27 minute band with room to spare,
-#: or it converts a healthy run into a red one. The lower edge is ~1.1x the
-#: observed maximum of 26.5.
-_SUITE_FLOOR_MINUTES = 30
+#: The suite bound must clear the measured band with room to spare, or it
+#: converts a healthy run into a red one. Resampled, that band tops out at 44.4
+#: min over 663 successful runs, so the old floor of 30 sat *below* the observed
+#: maximum and would have admitted a bound that reaps healthy runs.
+_SUITE_FLOOR_MINUTES = 46
+
+#: ``Run tests`` measured alone: max 29.1 min over the same 663 runs, rounded up.
+_SUITE_STEP_CEILING_MINUTES = 30
+
+#: The suite job's steps that declare no bound of their own -- checkout,
+#: setup-python, install dependencies, lint -- measured at 4.4 min, rounded up.
+_SUITE_UNBOUNDED_OVERHEAD_MINUTES = 5
+
+#: A step-level ``timeout-minutes``, which sits two indent levels deeper than a
+#: job-level one. Read line-based for the reason the module docstring gives.
+_STEP_TIMEOUT_MINUTES = re.compile(r"^ {8}timeout-minutes:\s*(\d+)\s*$")
+
+
+def _suite_step_bounds() -> list[int]:
+    """Every step-level bound declared inside ``test-lint.yml``."""
+    text = (_WORKFLOWS / "test-lint.yml").read_text(encoding="utf-8")
+    return [int(match.group(1)) for line in text.splitlines() if (match := _STEP_TIMEOUT_MINUTES.match(line))]
+
 
 _JOBS_KEY = re.compile(r"^jobs:\s*$")
 _TOP_LEVEL_KEY = re.compile(r"^\S")
@@ -267,6 +310,40 @@ class TestTheSuiteBoundClearsTheMeasuredBand:
         minutes = suite[0].timeout_minutes
         assert minutes is not None, "the required check is unbounded (#2239)"
         assert _SUITE_FLOOR_MINUTES <= minutes <= _CEILING_MINUTES, (
-            f"the suite bound is {minutes} min; it must clear the measured 19-27 min band "
-            f"(max 26.5 over 20 runs) without approaching the 6-hour default"
+            f"the suite bound is {minutes} min; it must clear the measured band "
+            f"(p50 27.1, p90 32.0, max 44.4 over 663 successful runs) without approaching "
+            f"the 6-hour default"
+        )
+
+    def test_the_suite_bound_survives_every_step_bound_spending_its_allowance(self) -> None:
+        """A bounded step must not be able to stay legal and still reap the job.
+
+        A step bound exists to name the step that stalled, because a job-level
+        reap renders as a rollup ``FAILURE`` with no reason (#2456). That only
+        holds while the job bound covers every step bound plus the work the
+        remaining steps actually do -- and the two numbers live in different
+        blocks, are edited for different reasons, and neither edit has any
+        occasion to read the other. At the measured 45.5 min of legal spend
+        against the former 45-minute bound, the step bound had quietly stopped
+        being able to fire first.
+        """
+        suite = [j for j in _ALL_JOBS if j.workflow == "test-lint.yml" and j.job_id == "test-lint"]
+        assert len(suite) == 1, "test-lint.yml:test-lint is the required check and must exist"
+
+        minutes = suite[0].timeout_minutes
+        assert minutes is not None, "the required check is unbounded (#2239)"
+
+        step_bounds = _suite_step_bounds()
+        assert step_bounds, (
+            "test-lint.yml declares no step-level timeout-minutes; either the apt bound "
+            "(#2456) was removed or the indent this contract reads has changed"
+        )
+
+        legal_spend = sum(step_bounds) + _SUITE_STEP_CEILING_MINUTES + _SUITE_UNBOUNDED_OVERHEAD_MINUTES
+        assert minutes >= legal_spend, (
+            f"the suite bound is {minutes} min but a run in which every bounded step spends "
+            f"its whole allowance costs {legal_spend} min "
+            f"(steps {'+'.join(str(b) for b in step_bounds)} + suite "
+            f"{_SUITE_STEP_CEILING_MINUTES} + overhead {_SUITE_UNBOUNDED_OVERHEAD_MINUTES}); "
+            f"a job-level reap names no step, so raise the job bound or lower a step bound"
         )

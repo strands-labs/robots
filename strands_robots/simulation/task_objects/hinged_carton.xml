@@ -1,0 +1,35 @@
+<mujoco model="hinged_carton">
+  <!--
+    Articulated task object: a small open carton whose top is closed by a lid
+    on a hinge along the -X top edge. Attach it into a live scene with
+    ``add_robot(name="carton", urdf_path=task_object_path("hinged_carton"))``
+    so the hinge is observable by the joint predicates (`joint_above` /
+    `joint_below` / `joint_progress`) under the bare name ``cap_hinge``.
+
+    Dimensions: outer footprint 0.10 x 0.08 m, cavity height ~0.12 m, 4 mm
+    walls. The hinge axis is -Y so a POSITIVE angle swings the lid up and
+    away from the cavity ("open").
+
+    Mount this variant UPRIGHT (lid on top), where gravity holds the lid
+    shut. Mounted lid-down, the lid creeps open under any resting load
+    however large the hinge's `frictionloss` is - MuJoCo's dof friction is a
+    soft constraint that saturates under a persistent torque (measured:
+    identical creep at frictionloss 0.05 and 2.0). The lid-down pouring
+    mount is what `sliding_carton` is for: a slide's closed state is held by
+    the cavity geometry, not by joint friction.
+  -->
+  <compiler angle="radian"/>
+  <worldbody>
+    <body name="carton" pos="0 0 0">
+      <geom name="carton_bottom" type="box" size="0.05 0.04 0.002" pos="0 0 0.002"/>
+      <geom name="carton_wall_xp" type="box" size="0.002 0.04 0.058" pos="0.048 0 0.062"/>
+      <geom name="carton_wall_xn" type="box" size="0.002 0.04 0.058" pos="-0.048 0 0.062"/>
+      <geom name="carton_wall_yp" type="box" size="0.05 0.002 0.058" pos="0 0.038 0.062"/>
+      <geom name="carton_wall_yn" type="box" size="0.05 0.002 0.058" pos="0 -0.038 0.062"/>
+      <body name="cap" pos="-0.05 0 0.122">
+        <joint name="cap_hinge" type="hinge" axis="0 -1 0" range="0 2.6" damping="0.02" frictionloss="0.3"/>
+        <geom name="cap_geom" type="box" size="0.05 0.04 0.002" pos="0.05 0 0" mass="0.02"/>
+      </body>
+    </body>
+  </worldbody>
+</mujoco>
