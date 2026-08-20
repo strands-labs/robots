@@ -846,6 +846,15 @@ def _build_live_world() -> tuple[MujocoEvacuationWorld, Any, Callable[[], None]]
         coordinator = init_mesh(_Coordinator(), peer_id=COORDINATOR_ID)
         if sim_mesh is None or coordinator is None:
             raise RuntimeError("mesh is disabled (STRANDS_MESH=0); rerun with --dry-run")
+        # A peer whose mesh did not start publishes no presence and discovers
+        # none, so the presence wait below can only expire.  Refuse here, where
+        # the cause is still known.
+        for peer_id, peer in ((FLEET_PEER_ID, sim_mesh), (COORDINATOR_ID, coordinator)):
+            if not peer.alive:
+                raise RuntimeError(
+                    f"mesh did not start for peer {peer_id!r} (mesh.alive is False): install the mesh "
+                    'extra with pip install "strands-robots[mesh]", or rerun with --dry-run'
+                )
     except BaseException:
         cleanup()
         raise

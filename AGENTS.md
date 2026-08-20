@@ -1750,6 +1750,16 @@ apply to all future work on `strands_robots/mesh/{core,audit,security}.py`.
   vars (`_resume_forward_skew_s`, `_resume_freshness_window_s`) into locals at
   handler entry, before taking the cache lock, so the lock holds for the minimum
   window and a hot path never re-parses the environment per call.
+- **This covers every replay-cache lock and every lazy resolver, not just the
+  two the rule was written for.** `Mesh` keeps three replay caches - estop,
+  resume and inbound-command dedup (`_exec_cmd`) - and the eviction bound they
+  share is a third resolver, `_resume_replay_cache_max`. A resolver is one
+  `os.getenv` plus a validating parse, and on an unusable operator value it logs
+  too, so the cost is not constant: at the cache sizes these actually sit at, the
+  parse is the majority of the critical section rather than a rounding error.
+  Resolve into a local before the `with`, then read the local inside it.
+  Pinned by `tests/mesh/test_safety_tunables_cached_at_handler_entry.py`, which
+  derives the lock set from the class so a fourth cache is graded on arrival.
 - **Lockout-engagement is decoupled from the per-issuer cache cap.** A bounded
   replay cache that is full (flood, or a tiny operator override) must still let a
   legitimate peer ENGAGE a lockout - the cap bounds memory, not safety. Pin both

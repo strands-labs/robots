@@ -5049,6 +5049,9 @@ ros2 = [
 rosbridge = [
     { name = "roslibpy" },
 ]
+sagemaker = [
+    { name = "boto3" },
+]
 sim = [
     { name = "robot-descriptions" },
 ]
@@ -5109,6 +5112,7 @@ requires-dist = [
     { name = "awsiotsdk", marker = "extra == 'mesh-iot'", specifier = ">=1.21.0,<2.0.0" },
     { name = "boto3", marker = "extra == 'all'", specifier = ">=1.34.0,<2.0.0" },
     { name = "boto3", marker = "extra == 'mesh-iot'", specifier = ">=1.34.0,<2.0.0" },
+    { name = "boto3", marker = "extra == 'sagemaker'", specifier = ">=1.34.0,<2.0.0" },
     { name = "cyclonedds", marker = "extra == 'ros2'", specifier = ">=0.10.2,<1.0.0" },
     { name = "device-connect-agent-tools", marker = "extra == 'all'", specifier = ">=0.1.0" },
     { name = "device-connect-agent-tools", marker = "extra == 'device-connect'", specifier = ">=0.1.0" },
@@ -5222,7 +5226,7 @@ requires-dist = [
     { name = "websockets", marker = "extra == 'cosmos3-service'", specifier = ">=13.0" },
     { name = "websockets", marker = "extra == 'inference'", specifier = ">=13.0" },
 ]
-provides-extras = ["all", "benchmark-libero", "cosmos3-diffusers", "cosmos3-service", "cosmos3-sim", "curobo", "dev", "device-connect", "groot-service", "inference", "kimodo", "lerobot", "lerobot-async", "mesh", "mesh-iot", "molmoact2", "motionbricks", "moveit2", "ollama", "protomotions", "ros2", "rosbridge", "sim", "sim-gs", "sim-isaac", "sim-mujoco", "sim-newton", "vera-sim", "wbc"]
+provides-extras = ["all", "benchmark-libero", "cosmos3-diffusers", "cosmos3-service", "cosmos3-sim", "curobo", "dev", "device-connect", "groot-service", "inference", "kimodo", "lerobot", "lerobot-async", "mesh", "mesh-iot", "molmoact2", "motionbricks", "moveit2", "ollama", "protomotions", "ros2", "rosbridge", "sagemaker", "sim", "sim-gs", "sim-isaac", "sim-mujoco", "sim-newton", "vera-sim", "wbc"]
 
 [[package]]
 name = "sympy"

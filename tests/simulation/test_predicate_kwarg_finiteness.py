@@ -60,6 +60,7 @@ _VALID_FOR_ANNOTATION: dict[str, Any] = {
     "str | None": None,
     "list[float]": [1.0, 1.0, 1.0],
     "list[int]": [1, 1, 1],
+    "list[str]": ["body_x", "body_y"],
     "tuple[float, ...]": (1.0, 1.0, 1.0),
 }
 # Params whose domain is a nested predicate-call structure, not a number.
@@ -139,7 +140,7 @@ def test_no_registry_param_annotation_escapes_the_guard_unclassified() -> None:
     and gets checked, or it is added here as explicitly non-numeric. Without this
     the new param would silently pass unvalidated.
     """
-    known = _NUMERIC_ANNOTATIONS | _STRUCTURAL_ANNOTATIONS | {"str", "bool", "str | None"}
+    known = _NUMERIC_ANNOTATIONS | _STRUCTURAL_ANNOTATIONS | {"str", "bool", "str | None", "list[str]"}
     unclassified = {
         (name, param, str(annotation))
         for name, factory in PREDICATE_REGISTRY.items()
