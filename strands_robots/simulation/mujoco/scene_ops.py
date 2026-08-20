@@ -600,6 +600,68 @@ def _restore_body_wrenches(model: Any, data: Any, wrenches: dict[str, list[float
             data.xfrc_applied[bid, i] = v
 
 
+def _unaddressable_actuator_reason(model: Any, mj: Any) -> str | None:
+    """Why this backend cannot address ``model``'s actuators, or ``None``.
+
+    Every actuator surface here addresses an actuator BY ITS CONTROL INDEX:
+    ``robot.actuator_ids`` holds indices into ``data.ctrl``, and the
+    ``actuator_*`` model arrays are read at that same index. The identity holds
+    only while each actuator owns exactly one control slot -- true of every
+    actuator MuJoCo shipped through 3.11, which is why ``model.nu`` served as
+    both the control width and the actuator count.
+
+    mujoco 3.12 separated the two. ``<pid>`` takes two controls by default
+    (``input="pos vel"``) and ``<orientation>`` up to four, so a model compiles
+    with ``nu > nactuator`` and the ``actuator_*`` arrays -- indexed by ACTUATOR
+    -- are shorter than ``nu``. That breaks the identity in both directions: a
+    loop over ``range(nu)`` indexes past their end, and one over
+    ``range(nactuator)`` addresses the wrong slot as soon as a multi-control
+    actuator precedes a single-control one. Measured on 3.12.0, ``<pid>`` then
+    ``<position>`` puts the servo's setpoint at ``ctrl[2]`` while such a loop
+    writes ``ctrl[1]`` -- the pid's *velocity* setpoint, so the arm is driven at
+    a rate by a value meant as a pose and the servo is never commanded at all.
+
+    Refusing is what keeps that from being settled by guesswork. Driving a
+    multi-control actuator needs a control layout this surface does not have --
+    which of an actuator's controls a pose is written to, and what
+    :meth:`~strands_robots.simulation.mujoco.simulation.MuJoCoSimEngine.robot_action_keys`
+    reports for the rest -- so the model is declined with the actuator named
+    rather than half-driven.
+
+    Args:
+        model: The compiled ``MjModel``.
+        mj: The ``mujoco`` module.
+
+    Returns:
+        An actionable refusal naming the offending actuators and their control
+        slots, or ``None`` when every actuator owns exactly one slot. Always
+        ``None`` on a build with no ``nactuator``, where ``nu`` IS the actuator
+        count and no multi-control actuator exists to declare.
+    """
+    n_act = getattr(model, "nactuator", None)
+    if n_act is None or int(n_act) == int(model.nu):
+        return None
+    adr = getattr(model, "actuator_ctrladr", None)
+    num = getattr(model, "actuator_ctrlnum", None)
+    offenders: list[str] = []
+    for act_id in range(int(n_act)):
+        width = int(num[act_id]) if num is not None else 1
+        if width <= 1:
+            continue
+        name = mj.mj_id2name(model, mj.mjtObj.mjOBJ_ACTUATOR, act_id) or f"<unnamed actuator {act_id}>"
+        start = int(adr[act_id]) if adr is not None else act_id
+        slots = list(range(start, start + width))
+        offenders.append(f"{name!r} owns control slots {slots}")
+    listed = "; ".join(offenders) if offenders else "the build does not report which actuator is wider"
+    return (
+        f"model declares {int(n_act)} actuator(s) spanning {int(model.nu)} control slots ({listed}). "
+        "This backend addresses an actuator by its control index, so a multi-control actuator "
+        "(mujoco >= 3.12 <pid>, <orientation>) has no single index to drive it by. Replace it with a "
+        "single-control actuator (<position>, <motor>, <velocity>, <intvelocity>, <general>), or drive "
+        "that joint outside this backend."
+    )
+
+
 def _recompile_preserving_state(world: SimWorld, spec: Any, *, raise_on_refusal: bool = False) -> bool:
     """Recompile ``spec`` in place, replacing ``world._model`` and ``_data``.
 
@@ -701,6 +763,21 @@ def _recompile_preserving_state(world: SimWorld, spec: Any, *, raise_on_refusal:
         logger.error("spec.recompile failed: %s", e)
         if raise_on_refusal:
             raise
+        return False
+
+    # Refuse a model this backend cannot address on the same rung as one the
+    # compiler refuses, and for the same reason: BEFORE the model is installed,
+    # so a world that keeps its previous model is the only state a caller's
+    # rollback has to find. Ungated, the unaddressable model was installed and
+    # the per-robot re-discovery below then read ``actuator_*`` at a control
+    # index past their end -- a bare numpy IndexError that escaped both this
+    # function's refusal path and the caller's spec restore, leaving the robot's
+    # bodies compiled into a scene whose registry had already dropped it.
+    unaddressable = _unaddressable_actuator_reason(new_model, mj)
+    if unaddressable is not None:
+        logger.error("spec.recompile produced a model this backend cannot address: %s", unaddressable)
+        if raise_on_refusal:
+            raise ValueError(unaddressable)
         return False
 
     install_compiled_model(world, new_model, new_data)
@@ -1153,12 +1230,24 @@ def inject_robot_into_scene(
         world._backend_state["spec"] = backup_spec
         return False
 
-    if _recompile_preserving_state(world, spec):
+    # Ask for the refusal's own reason rather than a bare False, exactly as
+    # inject_object_into_scene does. Folded into a False it reached the caller as
+    # "Failed to inject robot '<name>' into scene." with the actionable text left
+    # in the log -- the same dead end the object path was fixed to stop
+    # producing. Either way the pre-attach spec goes back first, so the reason
+    # travels without the robot's subtree surviving in the live spec.
+    try:
+        recompiled = _recompile_preserving_state(world, spec, raise_on_refusal=True)
+    except (ValueError, RuntimeError):
+        # The attach landed in the spec but the model it produced was refused,
+        # so the robot's whole namespaced subtree is sitting in the live spec
+        # while the caller is about to report a failed add. Put the pre-attach
+        # spec back, then let the reason reach the caller.
+        world._backend_state["spec"] = backup_spec
+        raise
+    if recompiled:
         return True
 
-    # The attach landed in the spec but the model it produced was refused, so
-    # the robot's whole namespaced subtree is sitting in the live spec while the
-    # caller is about to report a failed add. Put the pre-attach spec back.
     world._backend_state["spec"] = backup_spec
     return False
 

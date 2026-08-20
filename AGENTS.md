@@ -1350,6 +1350,32 @@ Corrections from code review that apply to all future contributions:
   `ctrlrange` is authoritative and already in the drive's own units, so only the
   *substitution* of a driven joint's limits needs the drive to be a servo.
 
+### MuJoCo enums are matched by value, never by operand order
+
+`mjModel` / `mjData` expose their type fields as numpy integer arrays, while the
+matching vocabulary is a pybind11 enum. Whether the two compare equal depends on
+which side the enum is on.
+
+- **Compare `int()` to `int()`.** `int(model.geom_type[i]) in (int(mjGEOM_PLANE),
+  int(mjGEOM_HFIELD))`, `int(model.actuator_trntype[a]) != int(mjTRN_TENDON)`.
+- **`x in (enum, ...)` is the trap, not a hand-written reversed `==`.** CPython
+  compares `element == needle`, so membership puts the ENUM on the left. That is
+  `True` on mujoco 3.9.0 / 3.10.0 / 3.11.0 and `False` on 3.12.0 - all inside the
+  declared `mujoco>=3.5.0,<4.0.0` range. A `set` of enum members degrades the
+  same way: the hashes still collide and the confirming equality is the failing
+  direction.
+- **The failure is silent.** The membership test simply answers `False` for every
+  element. Measured: a heightfield ground geom stopped being recognised as
+  ground, so a "lowest robot geom" scan returned the ground's own `z=0.0`; and an
+  example's home-pose helper matched 0 of 3 joints, writing no `qpos` and no
+  `ctrl` while logging that the pose had been set.
+- **The rule is uniform, with no exemption for a spec-side value.** `MjsGeom.type`
+  really is an enum, so `in` works there - but a reader cannot tell an `MjsGeom`
+  attribute from an `MjModel` array element at the call site, so both are written
+  by value.
+- Pinned by `tests/test_mujoco_enum_comparisons_are_value_based.py`, which grades
+  `strands_robots`, `tests`, `tests_integ` and `examples`.
+
 ### Clocks: a duration is measured, a stamp is recorded
 - **A duration belongs on `time.monotonic()`.** Anything that decides *how long to keep
   waiting* - a timeout, a deadline, a TTL, a retry window, a rate window, a frame pacer -

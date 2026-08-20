@@ -1,0 +1,3 @@
+### Fixed
+
+- **episode-labels**: the structural sweep that pins the shared non-negative-whole-number domain for an episode index now grades an index that arrives inside a collection - an entry of the `episodes` list `record_deterministic_verdicts` records, a key of the `human_labels` mapping `measure_agreement` calibrates against. Discovery used to admit a surface only when a parameter was literally named `episode`, so those two were graded by nothing: the completeness test reported a clean tree over 9 of 11 surfaces and deleting both guards left the file passing. It is now derived from each surface's own `Args:` entry, and `measure_agreement`'s refusal names the episode index rather than only `human_labels key`.
