@@ -123,8 +123,10 @@ def _concurrency(text: str) -> tuple[str, str] | None:
 
     ``None`` means the workflow declares no workflow-level concurrency, so it
     cancels nothing and the question this module asks does not arise for it -
-    ``codeql.yml`` is in that position and is deliberately not exempted, because
-    there is nothing to exempt.
+    ``closing-reference.yml`` is in that position and is deliberately not exempted,
+    because there is nothing to exempt. Which workflows may be in that position at
+    all is graded by ``tests/test_pull_request_concurrency_group.py``; ``codeql.yml``
+    was here until it gained a group and is now covered by the sweep below.
     """
     lines = text.splitlines()
     for index, line in enumerate(lines):

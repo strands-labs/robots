@@ -316,6 +316,10 @@ def compile_stop_when(stop_when: Any, *, context: str = "stop_when") -> Callable
 # to a constant False at evaluation time, and burn the whole step budget
 # reporting stopped_reason="budget" - indistinguishable from an honest miss.
 _BODY_NAME_KWARGS = frozenset({"body", "body_a", "body_b", "container"})
+# Kwargs that carry a LIST of body names (the particle-proxy pour predicates).
+# Collected element-wise so every particle / container in a stop_when clause is
+# probed against the live sim exactly like a singular body kwarg.
+_BODY_LIST_KWARGS = frozenset({"particles", "containers"})
 _JOINT_NAME_KWARGS = frozenset({"joint"})
 
 
@@ -325,7 +329,8 @@ def stop_when_referenced_entities(stop_when: Any) -> tuple[list[str], list[str]]
     Walks the same shapes :func:`compile_stop_when` accepts (a single
     predicate call or an ``all``/``any`` group) and gathers the values of the
     entity-naming kwargs (``body`` / ``body_a`` / ``body_b`` / ``container``
-    for bodies, ``joint`` for joints) so the caller can probe each one
+    for bodies, plus each element of the list-valued ``particles`` /
+    ``containers``, and ``joint`` for joints) so the caller can probe each one
     against the live sim before arming the clause. Geom names
     (``contact_between``) are not collected - there is no generic geom
     lookup on the engine ABC to probe them with.
@@ -350,6 +355,10 @@ def stop_when_referenced_entities(stop_when: Any) -> tuple[list[str], list[str]]
                     bodies.setdefault(value)
                 elif key in _JOINT_NAME_KWARGS:
                     joints.setdefault(value)
+            elif key in _BODY_LIST_KWARGS and isinstance(value, list):
+                for entry in value:
+                    if isinstance(entry, str) and entry:
+                        bodies.setdefault(entry)
 
     if isinstance(stop_when, dict):
         if "predicate" in stop_when:

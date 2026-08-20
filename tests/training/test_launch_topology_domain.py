@@ -269,7 +269,7 @@ class TestOneOwnerForTheLaunchTopologyDomain:
     def test_the_scan_finds_the_launching_backends(self) -> None:
         """Non-vacuity: a mis-rooted scan cannot report a clean sweep of nothing."""
         readers = {p.name for p in _trainer_modules() if _reads_a_topology_field(p.read_text())}
-        assert readers == {"cosmos3.py", "groot.py", "lerobot.py"}
+        assert readers == {"cosmos3.py", "groot.py", "lerobot.py", "sagemaker.py"}
 
     def test_every_backend_that_launches_routes_through_the_shared_gate(self) -> None:
         adrift = sorted(

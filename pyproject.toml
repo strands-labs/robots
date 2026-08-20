@@ -510,6 +510,15 @@ inference = [
 rosbridge = [
     "roslibpy>=1.7.0,<2.0.0",
 ]
+# SageMaker trainer transport (strands_robots/training/sagemaker.py): submit a
+# TrainSpec as a managed AWS training job wrapping a containerized trainer
+# image. Needs only boto3 (CreateTrainingJob / DescribeTrainingJob) - the heavy
+# `sagemaker` Python SDK is deliberately NOT pulled in, because the provider is
+# transport-only and the low-level API is all it speaks. Same boto3 bounds as
+# [mesh-iot] (>=1.0 dep: cap the major).
+sagemaker = [
+    "boto3>=1.34.0,<2.0.0",
+]
 all = [
     "strands-robots[groot-service]",
     "strands-robots[moveit2]",
@@ -527,6 +536,7 @@ all = [
     "strands-robots[ollama]",
     "strands-robots[inference]",
     "strands-robots[rosbridge]",
+    "strands-robots[sagemaker]",
 ]
 dev = [
     "pytest>=6.0,<10.0.0",

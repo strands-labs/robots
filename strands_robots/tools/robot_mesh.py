@@ -832,6 +832,15 @@ def _device_connect_dispatch(
                     if funcs:
                         names = [f["name"] if isinstance(f, dict) else f for f in funcs]
                         text += f"    Functions: {', '.join(names)}\n"
+            # Audit the read-only observation actions on this backend too. The
+            # mesh rendering of ``peers`` / ``status`` records the fleet it read
+            # (see the ``peers`` branch in the mesh dispatch below); this backend
+            # is the one tried FIRST whenever Device Connect has devices, so
+            # leaving it out made the audited implementations the fallback and
+            # the unaudited ones the default. ``peers`` in particular returns
+            # every device id and every function name the fleet exposes, so an
+            # enumeration of the callable surface would otherwise leave no trail.
+            _audit_tool_action(action, target, True, f"devices={len(devices)}")
             return _DCResult(_ok(text))
 
         if action == "tell":

@@ -53,6 +53,7 @@ from strands_robots.training.cosmos3 import Cosmos3Trainer
 from strands_robots.training.groot import Gr00tTrainer
 from strands_robots.training.lerobot import LerobotTrainer
 from strands_robots.training.mock import MockTrainer
+from strands_robots.training.sagemaker import SagemakerTrainer
 
 # Values no backend can honor, split by how each one failed before the gate.
 
@@ -73,7 +74,7 @@ NOT_A_NUMBER = ("1e-4", [1e-4], {"lr": 1e-4})
 
 UNUSABLE = SILENT_NO_OP + SILENT_DIVERGENCE + SILENT_MISREAD + LOUD_BUT_LATE + NOT_A_NUMBER
 
-SUPERVISED_TRAINERS = (MockTrainer, Cosmos3Trainer, Gr00tTrainer, LerobotTrainer)
+SUPERVISED_TRAINERS = (MockTrainer, Cosmos3Trainer, Gr00tTrainer, LerobotTrainer, SagemakerTrainer)
 RL_TRAINER_NAMES = ("FastSacTrainer", "PpoTrainer")
 ALL_TRAINER_NAMES = tuple(t.__name__ for t in SUPERVISED_TRAINERS) + RL_TRAINER_NAMES
 
@@ -117,7 +118,7 @@ def _rl_spec(tmp_path: pathlib.Path, rate: Any) -> Any:
 
 
 class TestEveryBackendRefusesAnUnusableLearningRate:
-    """One domain, six backends, one verdict per value."""
+    """One domain, seven backends, one verdict per value."""
 
     @pytest.mark.parametrize("trainer_cls", SUPERVISED_TRAINERS)
     @pytest.mark.parametrize("value", UNUSABLE)
