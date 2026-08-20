@@ -557,6 +557,7 @@ class LerobotLocalPolicy(Policy):
         # embodiment / image_keys were incompatible with the model's declared
         # features, so the bridge was discarded (see _load_processor_bridge).
         self._embodiment_config_failed = False
+        self._processor_inert_reason: str | None = None
         self._tokenizer: Any = None
         # Refused where the caller's value arrives, and before any checkpoint is
         # downloaded: the tokenizer reads this as a slice bound over the encoded
@@ -1113,6 +1114,7 @@ class LerobotLocalPolicy(Policy):
         caller error that should abort the load loudly.
         """
         self._embodiment_config_failed = False
+        self._processor_inert_reason = None
         if not (self.use_processor and self.pretrained_name_or_path):
             return
 
@@ -1167,6 +1169,12 @@ class LerobotLocalPolicy(Policy):
                     self._processor_bridge = None
                     self._embodiment_config_failed = True
             else:
+                # An inactive bridge is normally benign - the checkpoint ships no
+                # processor configs and no recognized stats file. When it instead
+                # carries a reason (a caller argument put reachable pipelines out
+                # of reach), keep that reason so the report below can name it; the
+                # bridge itself is still discarded, it applies nothing either way.
+                self._processor_inert_reason = self._processor_bridge.inert_reason
                 self._processor_bridge = None
                 logger.debug("No processor configs found, using raw obs/action flow")
 
@@ -1181,7 +1189,23 @@ class LerobotLocalPolicy(Policy):
         # misleading "no policy_postprocessor.json" message for that case.
         if self.use_processor and not self._embodiment_config_failed:
             bridge = self._processor_bridge
-            if bridge is None or not bridge.has_postprocessor:
+            inert_reason = self._processor_inert_reason
+            if inert_reason:
+                # The pipelines were within reach and a caller-supplied argument
+                # put them out of reach. Report THAT, not the generic missing-
+                # postprocessor message below, whose remedy (supply the
+                # checkpoint's postprocessor) does not address it - the same
+                # accurate-cause rule the embodiment-config failure follows.
+                logger.warning(
+                    "lerobot_local: %s loaded WITHOUT normalization: %s "
+                    "Until it is corrected, observation.state reaches the policy "
+                    "un-normalized and predicted actions reach the robot without "
+                    "unnormalization -- if the arm barely moves or reaches an "
+                    "out-of-distribution pose, this is why.",
+                    self.pretrained_name_or_path or "<model>",
+                    inert_reason,
+                )
+            elif bridge is None or not bridge.has_postprocessor:
                 logger.warning(
                     "lerobot_local: %s loaded WITHOUT an action postprocessor "
                     "(no policy_postprocessor.json). Actions are emitted in the "

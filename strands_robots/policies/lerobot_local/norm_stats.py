@@ -54,6 +54,22 @@ OBS_STATE = "observation.state"
 _EPS = 1e-6
 
 
+class UnknownNormTagError(ValueError):
+    """An explicitly requested ``norm_tag`` the checkpoint's stats do not carry.
+
+    Distinct from the two benign reasons a norm-stats fallback yields no
+    pipelines - no recognized stats file, or a multi-tag file the caller left
+    unresolved. Here the stats ARE present and usable and the caller named a tag
+    that is not among them, which is a caller error: the reference implementation
+    (``_RobotStats.validate_tag`` in
+    ``lerobot.policies.molmoact2.molmoact2_hf_model.modeling_molmoact2``) raises
+    for exactly this input rather than proceeding un-normalized.
+
+    Subclasses :class:`ValueError` so a caller narrowing on the loader's existing
+    exception contract keeps catching it.
+    """
+
+
 def _to_array(value: Any) -> np.ndarray | None:
     """Coerce a stats value to a float32 ndarray (mirrors the reference helper).
 
@@ -450,7 +466,24 @@ def build_norm_stats_processors(
     Returns:
         ``(preprocessor, postprocessor)`` pipelines, or ``(None, None)`` when the
         tag is unresolved, the stats are unusable, or LeRobot is unavailable.
+
+    Raises:
+        UnknownNormTagError: If ``norm_tag`` is given but the payload carries no
+            such tag. Degrading to ``(None, None)`` there would make the bridge a
+            passthrough while usable stats sit in the payload - the
+            un-normalized-state / un-unnormalized-action failure this module
+            exists to prevent - and the caller could not tell that verdict apart
+            from "this checkpoint ships no stats".
     """
+    declared = payload.get("metadata_by_tag")
+    if norm_tag and isinstance(declared, dict) and declared and norm_tag not in declared:
+        raise UnknownNormTagError(
+            f"norm_tag={norm_tag!r} is not declared by this checkpoint's norm stats. "
+            f"Declared tags: {sorted(declared)}. Normalization would be skipped "
+            "entirely: observation.state would reach the policy un-normalized and "
+            "predicted actions would reach the motors un-unnormalized. Pass one of "
+            "the declared tags, or omit norm_tag to auto-resolve a single-tag file."
+        )
     tag = select_norm_tag(payload, norm_tag)
     if tag is None:
         return None, None
@@ -489,6 +522,7 @@ def build_norm_stats_processors(
 
 __all__ = [
     "MOLMOACT2_NORM_STATS_FORMAT",
+    "UnknownNormTagError",
     "DEFAULT_SO_NORM_TAG",
     "FeatureNormalizer",
     "load_norm_stats",

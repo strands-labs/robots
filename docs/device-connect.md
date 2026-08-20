@@ -157,6 +157,17 @@ You rarely touch more than one or two of these. Grouped by what they control:
 | `MESSAGING_CREDENTIALS_FILE` | unset | **The one var to enable mTLS.** A single `*.creds.json` bundling CA + cert + key. Works D2D or brokered. |
 | `DEVICE_CONNECT_ALLOW_INSECURE` | unset (secure) | `true`/`1`/`yes` = skip auth/encryption; every other spelling is secure. **Trusted, isolated LAN only**; logs a warning. The string vocabulary is this variable's - the `allow_insecure=` argument must be a boolean and refuses a string, since `"false"` is truthy. |
 
+`ReachyMiniDriver` reaches its robot over a second link the variables above do not
+cover: the Reachy Mini daemon's own REST / WebSocket interface. That link is
+**plaintext by default**, and three variables secure it - the token authenticates,
+only `REACHY_DAEMON_TLS` encrypts, so they are only useful together.
+
+| Variable | Default | What it does |
+|----------|---------|--------------|
+| `REACHY_DAEMON_TLS` | unset - plaintext `http://` / `ws://` | `1`/`true`/`yes`/`on` (any case) upgrades the daemon link to `https://` / `wss://`. Until it is set the channel is unencrypted, so the token below and every actuator command cross the network in the clear, where they can be sniffed or replayed. |
+| `REACHY_DAEMON_TOKEN` | unset | Bearer credential the daemon authenticates the caller with; unset logs a one-time warning that the link is unauthenticated. It authenticates, it does not encrypt - on the default plaintext link the token itself is sent in the clear, so set `REACHY_DAEMON_TLS` alongside it. |
+| `REACHY_DAEMON_TLS_INSECURE` | unset - certificate verified | `1`/`true`/`yes`/`on` (any case) keeps the encryption but stops verifying the daemon's certificate - for a self-signed daemon with no CA provisioned yet. A one-time warning keeps the weakened posture visible. |
+
 #### Authorization & safety — who may do what
 
 | Variable | Default | What it does |
@@ -171,7 +182,6 @@ You rarely touch more than one or two of these. Grouped by what they control:
 | Variable | Default | What it does |
 |----------|---------|--------------|
 | `STRANDS_ROBOT_MESH_DC` | `on` | `off` makes `robot_mesh()` skip Device Connect and use the built-in mesh only. |
-| `REACHY_DAEMON_TOKEN` | unset | Auth token for the Reachy Mini daemon, if it requires one. |
 
 !!! warning "Allowlists are a hard boundary only under mTLS"
     Over insecure D2D the caller id is self-asserted, so `DEVICE_CONNECT_RPC_ALLOW` / `DEVICE_CONNECT_ESTOP_ALLOW` are *advisory* (a one-time warning is logged). For a real authorization boundary, run the brokered setup with mTLS, which binds the caller id to the sender's certificate.

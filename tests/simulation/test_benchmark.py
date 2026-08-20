@@ -155,6 +155,111 @@ class TestBenchmarkProtocolContract:
         assert sim.add_robot_calls[0]["data_config"] == "so100"
 
 
+# A refused default_robot is a setup failure, not a score
+
+
+class TestRefusedDefaultRobotIsASetupFailure:
+    """``on_episode_start``'s auto-load honours the refusal ``add_robot`` returns.
+
+    The hook's own docstring promises it adds :attr:`default_robot` when the sim
+    is empty, and ``add_robot`` reports refusal in the return envelope rather
+    than by raising: a ``default_robot`` naming a hardware-only registry entry,
+    an asset that is not on disk, or a model the backend cannot load all come
+    back as ``{"status": "error"}`` carrying the reason and the remedy.
+
+    Dropping that envelope leaves the episode to run against a robotless scene.
+    The consequence is the one the sibling attribute's domain is validated to
+    prevent - ``max_steps``' own ``Attributes:`` entry says it is checked where
+    it is read "rather than an evaluation over episodes of zero length that
+    still reports a 0% success rate" - and the sibling *setup* call one frame
+    up, ``DeclarativeBenchmark.on_episode_start``'s ``load_scene``, already
+    checks its own envelope and raises with the backend's reason attached.
+
+    These pin that the two setup calls agree, and that the checks stay scoped to
+    a refusal: a sim that returns nothing, or anything other than an error
+    envelope, is left alone.
+    """
+
+    @staticmethod
+    def _sim(add_robot_result: Any):
+        class FakeSim:
+            def __init__(self) -> None:
+                self.add_robot_calls: list[dict[str, Any]] = []
+
+            def list_robots(self) -> list[str]:
+                return []
+
+            def add_robot(self, *, name: str, data_config: str) -> Any:
+                self.add_robot_calls.append({"name": name, "data_config": data_config})
+                return add_robot_result
+
+        return FakeSim()
+
+    def test_a_refused_add_raises_instead_of_returning(self):
+        """The hook must not return normally after the robot was refused."""
+        reason = (
+            "Robot 'reachy2' is registered for real hardware only (LeRobot type "
+            "'reachy2'): its registry entry declares no simulation asset."
+        )
+        sim = self._sim({"status": "error", "content": [{"text": reason}]})
+        bench = _MinimalBenchmark(supported=[], default="reachy2")
+
+        with pytest.raises(RuntimeError) as exc:
+            bench.on_episode_start(sim, random.Random(0))  # type: ignore[arg-type]
+
+        assert sim.add_robot_calls, "premise: the hook must reach the auto-load path"
+        message = str(exc.value)
+        # The spec class, the value that was refused, and the backend's reason -
+        # PolicyRunner.evaluate prints this verbatim, so all three have to be in it.
+        assert "_MinimalBenchmark" in message
+        assert "reachy2" in message
+        assert "no simulation asset" in message
+
+    def test_a_successful_add_still_returns(self):
+        """Control: the accepted path is unchanged."""
+        sim = self._sim({"status": "success", "content": [{"text": "added"}]})
+        bench = _MinimalBenchmark(supported=[], default="so100")
+
+        bench.on_episode_start(sim, random.Random(0))  # type: ignore[arg-type]
+
+        assert sim.add_robot_calls[0]["data_config"] == "so100"
+
+    @pytest.mark.parametrize(
+        "returned",
+        [None, {"content": [{"text": "no status key"}]}, "not a dict", 0],
+        ids=["none", "no-status-key", "string", "zero"],
+    )
+    def test_anything_that_is_not_an_error_envelope_is_left_alone(self, returned: Any):
+        """Control: only an error envelope is a refusal.
+
+        The ABC types ``add_robot`` as returning a result dict, but the hook is
+        handed whatever object the caller passes - a duck-typed stand-in that
+        returns nothing must keep working rather than be read as a failure.
+        """
+        sim = self._sim(returned)
+        bench = _MinimalBenchmark(supported=[], default="so100")
+
+        bench.on_episode_start(sim, random.Random(0))  # type: ignore[arg-type]
+
+        assert len(sim.add_robot_calls) == 1
+
+    def test_the_sibling_setup_call_checks_its_envelope_the_same_way(self):
+        """Both setup calls in the hook chain read a refusal out of the envelope.
+
+        ``DeclarativeBenchmark.on_episode_start`` checks ``load_scene`` and the
+        base impl checks ``add_robot``; a change that drops either check leaves
+        one half of the chain reporting a setup failure as a score.
+        """
+        import inspect
+
+        from strands_robots.simulation.benchmark_spec import DeclarativeBenchmark
+
+        for func in (BenchmarkProtocol.on_episode_start, DeclarativeBenchmark.on_episode_start):
+            src = inspect.getsource(func)
+            assert 'get("status") == "error"' in src, f"{func.__qualname__} drops the envelope"
+            assert "raise RuntimeError" in src, f"{func.__qualname__} does not report the refusal"
+
+
 # augment_observation hook (#156)
 
 
