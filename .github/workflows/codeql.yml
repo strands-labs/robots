@@ -9,6 +9,13 @@ on:
     # Weekly scan on Monday 06:00 UTC catches drift even when no PRs land.
     - cron: '0 6 * * 1'
 
+# Keyed on the commit rather than the ref for a push, and on the event as well,
+# so neither a following merge nor the weekly scan can cancel a pushed commit's
+# analysis - the defect tests/test_push_concurrency_group.py exists for.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}-${{ github.event_name }}
+  cancel-in-progress: true
+
 jobs:
   analyze:
     name: Analyze (Python)

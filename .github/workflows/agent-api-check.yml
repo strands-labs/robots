@@ -28,6 +28,10 @@ on:
       - '.github/scripts/agent_api_snapshot.py'
       - '.github/workflows/agent-api-check.yml'
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 permissions:
   contents: read       # checkout
   pull-requests: write # post/update PR comment

@@ -49,6 +49,7 @@ from strands_robots.training.groot import Gr00tTrainer
 from strands_robots.training.lerobot import LerobotTrainer
 from strands_robots.training.mock import MockTrainer
 from strands_robots.utils import validation_split_fraction
+from tests.training._spec_field_reads import reads_spec_field
 
 TOTAL_EPISODES = 10
 
@@ -428,11 +429,14 @@ def _trainer_modules() -> list[pathlib.Path]:
 
 
 def _reads_the_count(source: str) -> bool:
-    """Does *source* read ``spec.val_episodes``?"""
-    return any(
-        isinstance(node, ast.Attribute) and node.attr == "val_episodes" and getattr(node.value, "id", None) == "spec"
-        for node in ast.walk(ast.parse(source))
-    )
+    """Does *source* read ``spec.val_episodes``, by name or through a table?
+
+    Delegated to the shared rule so this guard and its siblings cannot disagree
+    about what counts as a read - a transport-only provider reads every field it
+    forwards through ``getattr(spec, field)`` and names none of them in an
+    attribute access.
+    """
+    return reads_spec_field(source, ("val_episodes",))
 
 
 def _calls_the_gate(source: str) -> bool:
@@ -450,14 +454,14 @@ class TestOneOwnerForTheValidationEpisodesDomain:
 
     The set of backends in scope is derived from the tree rather than listed: a
     module that *reads* ``spec.val_episodes`` must route it through the shared
-    gate, so a second backend that starts reserving a validation set fails this
+    gate, so a third backend that starts reserving a validation set fails this
     test until it does.
     """
 
     def test_the_scan_finds_the_backend_that_reads_the_field(self) -> None:
         """Non-vacuity: a mis-rooted scan cannot report a clean sweep of nothing."""
         readers = {p.name for p in _trainer_modules() if _reads_the_count(p.read_text())}
-        assert readers == {"lerobot.py"}
+        assert readers == {"lerobot.py", "sagemaker.py"}
 
     def test_every_backend_that_reads_it_routes_through_the_shared_gate(self) -> None:
         adrift = sorted(
@@ -479,6 +483,17 @@ class TestOneOwnerForTheValidationEpisodesDomain:
     def test_the_scanners_detect_a_planted_defect(self) -> None:
         """A scanner that silently matched nothing would look like a clean tree."""
         planted = "def validate(self, spec):\n    return [] if spec.val_episodes is None else []\n"
+        assert _reads_the_count(planted)
+        assert not _calls_the_gate(planted)
+
+    def test_the_scanners_detect_a_table_driven_defect(self) -> None:
+        """A backend that forwards the field by name is a reader too.
+
+        The form a transport-only provider takes: no attribute access mentions
+        the field, so a scan keyed on ``spec.val_episodes`` alone reports a clean
+        sweep while this backend skips the gate.
+        """
+        planted = 'F = ("val_episodes",)\ndef validate(self, spec):\n    return [getattr(spec, f) for f in F]\n'
         assert _reads_the_count(planted)
         assert not _calls_the_gate(planted)
 

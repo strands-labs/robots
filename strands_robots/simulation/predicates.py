@@ -42,6 +42,8 @@ Available predicates (bool):
     contact_any()
     body_on(body_a, body_b, z_offset=0.02, xy_tol=0.15, require_contact=False)
     body_inside(body, container, xy_tol=0.15, z_tol=0.15)
+    particles_inside(particles, container, min_fraction=1.0, xy_tol=0.15, z_tol=0.15)
+    particles_spilled(particles, containers, max_spilled=0, xy_tol=0.15, z_tol=0.15)
     body_upright(body, tol=0.15)
     grasped(body, gripper_prefix)
     base_tipped(tol=0.15, robot=None)
@@ -54,6 +56,7 @@ Available reward terms (float):
 
     distance_neg(body_a, body_b, weight=1.0)
     joint_progress(joint, target, weight=1.0)
+    particles_inside_fraction(particles, container, xy_tol=0.15, z_tol=0.15, weight=1.0)
     base_velocity(vx=0.0, vy=0.0, wz=0.0, weight=1.0, robot=None)
     base_velocity_tracking(vx=0.0, vy=0.0, wz=0.0, lin_weight=1.0, ang_weight=0.5, tracking_sigma=0.25, robot=None)
     base_height(target, weight=1.0, robot=None)
@@ -73,7 +76,7 @@ import math
 from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Any
 
-from strands_robots.utils import finite_number_error, finite_vector_error
+from strands_robots.utils import finite_number_error, finite_vector_error, name_list_error
 
 if TYPE_CHECKING:
     from strands_robots.simulation.base import SimEngine
@@ -798,6 +801,43 @@ def _body_on(
     return check
 
 
+def _within_box(pos: list[float], center: list[float], xy_tol: float, z_tol: float) -> bool:
+    """Axis-aligned containment test shared by the ``*_inside`` / ``*_spilled`` predicates.
+
+    True when ``pos`` is within a box centered on ``center`` with half-extents
+    (``xy_tol``, ``xy_tol``, ``z_tol``). One owner, so ``body_inside`` and the
+    particle predicates cannot drift apart on what "inside" means.
+    """
+    return (
+        abs(pos[0] - center[0]) <= float(xy_tol)
+        and abs(pos[1] - center[1]) <= float(xy_tol)
+        and abs(pos[2] - center[2]) <= float(z_tol)
+    )
+
+
+def _validated_name_list(value: Any, param: str, context: str) -> list[str]:
+    """Return ``value`` as a list of body names, or raise a compile-time refusal.
+
+    The shape contract (a real sequence of distinct non-blank names, not a
+    bare string iterated per character, not a one-shot iterator) is the shared
+    domain :func:`strands_robots.utils.name_list_error`; the emptiness verdict
+    is kept local per that domain's contract. An empty selection would compile
+    to a constant predicate (``particles_inside`` never true,
+    ``particles_spilled`` never firing) - the exact silent-constant failure
+    mode a typo'd body name degrades to at eval time, except authored, so it
+    is refused here at compile time instead.
+    """
+    if (err := name_list_error(value, param, context)) is not None:
+        raise ValueError(err)
+    if not value:
+        raise ValueError(
+            f"{context}: '{param}' must name at least one body - an empty "
+            "selection would compile to a constant predicate that can never "
+            "change the episode verdict."
+        )
+    return [str(n) for n in value]
+
+
 def _body_inside(body: str, container: str, xy_tol: float = 0.15, z_tol: float = 0.15) -> BoolPredicate:
     """Approximate ``(in A B)`` predicate - A contained within B's volume.
 
@@ -815,11 +855,100 @@ def _body_inside(body: str, container: str, xy_tol: float = 0.15, z_tol: float =
         pos_b = _body_position(sim, container)
         if pos_a is None or pos_b is None:
             return False
-        return (
-            abs(pos_a[0] - pos_b[0]) <= float(xy_tol)
-            and abs(pos_a[1] - pos_b[1]) <= float(xy_tol)
-            and abs(pos_a[2] - pos_b[2]) <= float(z_tol)
-        )
+        return _within_box(pos_a, pos_b, xy_tol, z_tol)
+
+    return check
+
+
+def _particles_inside(
+    particles: list[str],
+    container: str,
+    min_fraction: float = 1.0,
+    xy_tol: float = 0.15,
+    z_tol: float = 0.15,
+) -> BoolPredicate:
+    """True when at least ``min_fraction`` of ``particles`` are inside ``container``.
+
+    The pour-success predicate for particle-proxy container tasks: contents
+    are modeled as a small set of rigid bodies (spheres spawned via
+    ``add_object``), and "poured" is measurable as the fraction of them whose
+    position lies within the same axis-aligned box :func:`_body_inside` uses
+    (centered on ``container``, half-extents ``xy_tol``/``xy_tol``/``z_tol``).
+    No fluid simulation is involved, so this scores identically on every
+    backend that resolves body positions.
+
+    Each particle is scored by the same per-body resolution ladder as
+    ``body_inside``; a particle the sim cannot resolve counts as *not* inside
+    (and is warned once via the shared lookup), so a typo'd name can lower the
+    fraction but never inflate it. An unresolvable ``container`` degrades the
+    whole predicate to ``False``, per the module's never-raise contract.
+
+    ``min_fraction`` must be in ``(0, 1]``: ``1.0`` (default) demands every
+    particle, ``0.0`` would compile to a constant ``True`` and is refused.
+    """
+    names = _validated_name_list(particles, "particles", "particles_inside")
+    frac = float(min_fraction)
+    if not (0.0 < frac <= 1.0):
+        raise ValueError(f"particles_inside: 'min_fraction' must be in (0, 1], got {frac}")
+
+    def check(sim: SimEngine) -> bool:
+        center = _body_position(sim, container)
+        if center is None:
+            return False
+        inside = 0
+        for n in names:
+            pos = _body_position(sim, n)
+            if pos is not None and _within_box(pos, center, xy_tol, z_tol):
+                inside += 1
+        return inside / len(names) >= frac
+
+    return check
+
+
+def _particles_spilled(
+    particles: list[str],
+    containers: list[str],
+    max_spilled: int = 0,
+    xy_tol: float = 0.15,
+    z_tol: float = 0.15,
+) -> BoolPredicate:
+    """True when more than ``max_spilled`` particles are inside NONE of ``containers``.
+
+    The pour-failure predicate: a particle is "spilled" when its position is
+    outside every listed container's containment box (the source carton AND
+    the target receptacle both count as containers, so contents still in the
+    carton are not spilled). Use it in a ``failure`` clause with
+    ``max_spilled`` as the tolerated loss - the clause fires on the
+    ``max_spilled + 1``-th lost particle.
+
+    Degradation keeps the failure honest in both directions: a particle the
+    sim cannot resolve cannot be *shown* spilled, so it does not count toward
+    the threshold, and an unresolvable container makes the whole predicate
+    ``False`` (a failure clause must not fire because a name was typo'd).
+
+    ``max_spilled`` must be a non-negative whole number.
+    """
+    names = _validated_name_list(particles, "particles", "particles_spilled")
+    container_names = _validated_name_list(containers, "containers", "particles_spilled")
+    limit = float(max_spilled)
+    if limit < 0 or not limit.is_integer():
+        raise ValueError(f"particles_spilled: 'max_spilled' must be a whole number >= 0, got {max_spilled!r}")
+
+    def check(sim: SimEngine) -> bool:
+        centers: list[list[float]] = []
+        for c in container_names:
+            center = _body_position(sim, c)
+            if center is None:
+                return False
+            centers.append(center)
+        spilled = 0
+        for n in names:
+            pos = _body_position(sim, n)
+            if pos is None:
+                continue
+            if not any(_within_box(pos, center, xy_tol, z_tol) for center in centers):
+                spilled += 1
+        return spilled > limit
 
     return check
 
@@ -1242,6 +1371,42 @@ def _joint_progress(joint: str, target: float, weight: float = 1.0) -> RewardTer
         if q is None:
             return 0.0
         return -w * abs(q - t)
+
+    return term
+
+
+def _particles_inside_fraction(
+    particles: list[str],
+    container: str,
+    xy_tol: float = 0.15,
+    z_tol: float = 0.15,
+    weight: float = 1.0,
+) -> RewardTerm:
+    """Fraction of ``particles`` inside ``container``, weighted - dense pour signal.
+
+    The reward companion of :func:`_particles_inside`: returns
+    ``weight * (n_inside / n_particles)`` per step, so a policy earns signal
+    for every particle it lands in the receptacle rather than only at the
+    success threshold. Containment is the same axis-aligned box as
+    ``body_inside`` / ``particles_inside`` (centered on ``container``,
+    half-extents ``xy_tol``/``xy_tol``/``z_tol``).
+
+    An unresolvable ``container`` yields ``0.0``; an unresolvable particle
+    counts as not inside (warned once via the shared lookup).
+    """
+    names = _validated_name_list(particles, "particles", "particles_inside_fraction")
+    w = float(weight)
+
+    def term(sim: SimEngine) -> float:
+        center = _body_position(sim, container)
+        if center is None:
+            return 0.0
+        inside = 0
+        for n in names:
+            pos = _body_position(sim, n)
+            if pos is not None and _within_box(pos, center, xy_tol, z_tol):
+                inside += 1
+        return w * (inside / len(names))
 
     return term
 
@@ -1707,6 +1872,8 @@ PREDICATE_REGISTRY: dict[str, PredicateFactory] = {
     "contact_any": _contact_any,
     "body_on": _body_on,
     "body_inside": _body_inside,
+    "particles_inside": _particles_inside,
+    "particles_spilled": _particles_spilled,
     "body_upright": _body_upright,
     "grasped": _grasped,
     "base_tipped": _base_tipped,
@@ -1717,6 +1884,7 @@ PREDICATE_REGISTRY: dict[str, PredicateFactory] = {
     # float-valued
     "distance_neg": _distance_neg,
     "joint_progress": _joint_progress,
+    "particles_inside_fraction": _particles_inside_fraction,
     "base_velocity": _base_velocity,
     "base_velocity_tracking": _base_velocity_tracking,
     "base_height": _base_height,

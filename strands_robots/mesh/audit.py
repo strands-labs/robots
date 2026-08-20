@@ -23,9 +23,13 @@ Each line is one JSON object with these keys:
 * ``payload`` -- free-form dict with event-specific fields
 * ``seq`` -- process-monotonic sequence number. Useful for detecting
   truncation: gaps within a single peer's stream indicate missing events.
-* ``sig`` -- HMAC-SHA256 hex over the rest of the record. Present only when
+* ``sig`` -- HMAC-SHA256 hex over the rest of the record, present when
   ``STRANDS_MESH_AUDIT_PSK`` is configured. Verifies that the record
-  content has not been edited after write.
+  content has not been edited after write. The field also carries one of the
+  poison discriminators (``PSK_DEGRADED``, ``SIGN_FAILED``,
+  ``SEQ_LOCK_DEGRADED``, ``NEXT_SEQ_DEGRADED``, ``SERIALISE_FAILED``) in place
+  of an HMAC, signed log or not, which is how a degraded write says so instead
+  of leaving a hole; none of them is a valid HMAC, so a verifier fails closed.
 
 Integrity verification
 ----------------------
@@ -162,6 +166,11 @@ _SEQ_COUNTERS: dict[str, int] = {}
 #: input from silently denying the legitimate writer the next ~billion
 #: seq values.
 _MAX_SEED_SEQ: int = 100_000_000
+
+#: Upper bound on the diagnostic text a poison record carries. A poison
+#: record exists so a verifier can attribute a stream gap; it is not a place
+#: for an unbounded exception message to grow the audit log.
+_MAX_POISON_REASON_CHARS: int = 500
 
 # the PSK fingerprint snapshot at
 # ``_AUDIT_STATE.psk_fingerprint`` is read+modified+compared on every
@@ -1012,7 +1021,11 @@ def log_safety_event(event_type: str, peer_id: str, payload: dict[str, Any]) -> 
     Raises:
         Nothing - write errors are logged at WARNING and swallowed because
         an audit-log failure must never propagate up into the safety code
-        path that called this function.
+        path that called this function. A payload the JSON encoder cannot
+        represent is not dropped either: the record is written with the
+        payload replaced by a diagnostic under ``sig="SERIALISE_FAILED"``,
+        so the sequence number this call already consumed still has a
+        record naming the failure rather than reading as a deletion.
     """
     seq_lock_degraded_reason: str | None = None
     next_seq_degraded_reason: str | None = None
@@ -1114,12 +1127,36 @@ def log_safety_event(event_type: str, peer_id: str, payload: dict[str, Any]) -> 
     try:
         line = json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n"
     except (TypeError, ValueError) as exc:
-        logger.warning(
-            "[audit] could not serialise record for peer_id=%r: %s -- record dropped",
+        # A payload the JSON encoder cannot represent used to return here.
+        # ``_next_seq`` has already consumed and persisted this peer's
+        # sequence number by that point, so the drop left a gap the module
+        # header documents as "records were deleted" -- a payload mistake
+        # wearing the forensic signature of tampering, and the one degraded
+        # path a verifier could not attribute. Write a poison record
+        # (``sig="SERIALISE_FAILED"``) carrying the consumed ``seq`` and a
+        # diagnostic in place of the unrepresentable payload, the same
+        # discipline as SEQ_LOCK_DEGRADED / NEXT_SEQ_DEGRADED /
+        # PSK_DEGRADED / SIGN_FAILED.
+        logger.error(
+            "[audit] SERIALISE_FAILED for peer_id=%r: %s -- writing poison record",
             peer_id,
             exc,
         )
-        return
+        record["payload"] = {"unrepresentable": True}
+        record["payload_error"] = f"{type(exc).__name__}: {exc}"[:_MAX_POISON_REASON_CHARS]
+        record["sig"] = "SERIALISE_FAILED"
+        try:
+            line = json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n"
+        except (TypeError, ValueError) as poison_exc:
+            # The envelope itself is unrepresentable (a caller passed a
+            # non-string ``event_type`` / ``peer_id``), so there is nothing
+            # left to poison with. This is the only remaining drop.
+            logger.warning(
+                "[audit] could not serialise record for peer_id=%r: %s -- record dropped",
+                peer_id,
+                poison_exc,
+            )
+            return
     path = audit_log_path()
 
     with _WRITE_LOCK:

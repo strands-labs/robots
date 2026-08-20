@@ -374,11 +374,24 @@ def _build_live_zones() -> tuple[Any, Callable[[], None]]:
             mesh = init_mesh(sim, peer_id=zone_id, peer_type="sim")
             if mesh is None:
                 raise RuntimeError("mesh is disabled (STRANDS_MESH=0); rerun with --dry-run")
+            # A peer whose mesh did not start is not a slow peer: it publishes no
+            # presence and discovers none, so the presence wait below can only
+            # expire.  Refuse here, where the cause is still known.
+            if not mesh.alive:
+                raise RuntimeError(
+                    f"mesh did not start for peer {zone_id!r} (mesh.alive is False): install the mesh "
+                    'extra with pip install "strands-robots[mesh]", or rerun with --dry-run'
+                )
             sim.mesh, sim.peer_id = mesh, mesh.peer_id
             meshes.append(mesh)
         coordinator = init_mesh(_Coordinator(), peer_id=COORDINATOR_ID)
         if coordinator is None:
             raise RuntimeError("mesh is disabled (STRANDS_MESH=0); rerun with --dry-run")
+        if not coordinator.alive:
+            raise RuntimeError(
+                f"mesh did not start for peer {COORDINATOR_ID!r} (mesh.alive is False): install the mesh "
+                'extra with pip install "strands-robots[mesh]", or rerun with --dry-run'
+            )
     except BaseException:
         cleanup()
         raise

@@ -487,11 +487,24 @@ def _build_live_fleet() -> tuple[dict[str, Any], Any, Callable[[], None]]:
             mesh = init_mesh(sim, peer_id=robot_id, peer_type="sim")
             if mesh is None:
                 raise RuntimeError("mesh is disabled (STRANDS_MESH=0); rerun with --dry-run")
+            # A peer whose mesh did not start publishes no presence and discovers
+            # none, so the presence wait below can only expire.  Refuse here,
+            # where the cause is still known.
+            if not mesh.alive:
+                raise RuntimeError(
+                    f"mesh did not start for peer {robot_id!r} (mesh.alive is False): install the mesh "
+                    'extra with pip install "strands-robots[mesh]", or rerun with --dry-run'
+                )
             sim.mesh, sim.peer_id = mesh, mesh.peer_id
             meshes[robot_id] = mesh
         orch_mesh = init_mesh(_Orchestrator(), peer_id=ORCHESTRATOR_ID)
         if orch_mesh is None:
             raise RuntimeError("mesh is disabled (STRANDS_MESH=0); rerun with --dry-run")
+        if not orch_mesh.alive:
+            raise RuntimeError(
+                f"mesh did not start for peer {ORCHESTRATOR_ID!r} (mesh.alive is False): install the mesh "
+                'extra with pip install "strands-robots[mesh]", or rerun with --dry-run'
+            )
     except BaseException:
         cleanup()
         raise
@@ -576,6 +589,11 @@ def _run_live(n_steps: int) -> tuple[dict[str, Any], dict[str, Any], list[dict[s
         orch_mesh2 = init_mesh(_Orchestrator(), peer_id=ORCHESTRATOR_ID)
         if orch_mesh2 is None:
             raise RuntimeError("mesh is disabled (STRANDS_MESH=0)")
+        if not orch_mesh2.alive:
+            raise RuntimeError(
+                f"the restarted {ORCHESTRATOR_ID!r} peer did not join the mesh (mesh.alive is False), "
+                "so the presence wait below cannot succeed"
+            )
         try:
             _wait_for(
                 lambda: all(robot in orch_mesh2.peers_by_id for robot in survivors),

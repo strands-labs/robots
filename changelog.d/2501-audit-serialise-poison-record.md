@@ -1,0 +1,2 @@
+### Fixed
+- **mesh/audit**: a safety event whose payload the JSON encoder cannot represent now leaves an attributable poison record (`sig="SERIALISE_FAILED"`) instead of being dropped. `_next_seq` consumes and persists the peer's sequence number before the record is encoded, so the drop left the signature the module header documents as "records were deleted" - the one degraded path a `verify_audit_integrity` walker could not attribute to a failure class. The envelope (`ts` / `event` / `peer_id` / `seq`) is kept and the payload is replaced by a bounded diagnostic.
