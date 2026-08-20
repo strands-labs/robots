@@ -176,9 +176,13 @@ class Cosmos3Policy(Policy):
           views); a partial set fails fast client-side.
         * Latency is chunked (a diffusion policy), not 500 Hz servo. One
           inference returns a chunk of ~``action_chunk_size`` steps.
-        * The predicted world video/sound (diffusers backend) are surfaced on
-          :attr:`last_rollout` after each ``get_actions`` call, leaving the
-          ``list[dict]`` return type (the Policy ABC contract) unchanged.
+        * Auxiliary rollout outputs are surfaced on :attr:`last_rollout` after
+          each ``get_actions`` call, leaving the ``list[dict]`` return type
+          (the Policy ABC contract) unchanged. Both backends populate
+          ``last_rollout["action"]`` with the raw ``[T, D]`` chunk; the
+          predicted world ``video``/``sound`` come from the diffusers backend
+          (the service server sends ``video`` only when launched with
+          rollout-video output, so it is often ``None`` there).
     """
 
     def __init__(
@@ -243,10 +247,12 @@ class Cosmos3Policy(Policy):
                 )
         self._action_mapping = action_mapping or {}
         self.robot_state_keys: list[str] = []
-        # Auxiliary world outputs (predicted video / sound) from the last
-        # get_actions call, surfaced WITHOUT changing the Policy ABC return
-        # type. None until the first inference, and always None for the service
-        # backend (the RoboLab server's "video" field is not consumed here).
+        # Auxiliary rollout outputs (raw action chunk, predicted video / sound)
+        # from the last get_actions call, surfaced WITHOUT changing the Policy
+        # ABC return type. None until the first inference. Both backends
+        # populate "action" with the raw [T, D] chunk; "video"/"sound" are the
+        # diffusers backend's world outputs (the service server sends "video"
+        # only when launched to emit rollout videos, so it is often None).
         self.last_rollout: dict[str, Any] | None = None
 
         self._client: Cosmos3WebsocketClient | None = None
@@ -428,6 +434,14 @@ class Cosmos3Policy(Policy):
         assert self._client is not None  # set in __init__ for backend=service
         result = self._client.infer(obs)
         action = np.asarray(result["action"])
+        # Surface the raw [T, D] chunk (and the server's optional rollout
+        # video) on last_rollout, matching the diffusers backend, so callers
+        # and integration tests can assert on the un-unpacked chunk.
+        self.last_rollout = {
+            "action": action,
+            "video": result.get("video"),
+            "sound": result.get("sound"),
+        }
         return self._unpack_actions(action)
 
     def _default_obs_mapping(self) -> dict[str, str]:
