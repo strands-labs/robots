@@ -469,21 +469,60 @@ def download_robots(
       3. Custom GitHub repos for non-Menagerie robots.
 
     Args:
-        names: Robot names to download (``None`` = all sim robots).
-        category: Filter by category (arm, humanoid, mobile, ...).
+        names: Robot names to download - a SUBSET of the sim robots the registry
+            lists. ``None`` selects all of them; an empty list selects none and
+            is refused rather than widened to all (see :exc:`ValueError` below).
+        category: Filter by category (arm, humanoid, mobile, ...). Applied only
+            when ``names`` is ``None``.
         force: Re-download even if present.
 
     Returns:
         Dict with downloaded/skipped/failed counts, names, and details.
+
+    Raises:
+        ValueError: If ``names`` is an empty selection, which asks for no robot
+            and cannot be honored as a request for every robot.
     """
+    # ``names`` selects a SUBSET of the sim robots the registry already lists, so it
+    # is read by membership - the rule ``names`` is read by on the teleoperate path
+    # and ``cameras`` on the render path, where an empty selection resolves to no
+    # camera rather than to every one. ``None`` is the documented "all sim robots";
+    # an explicitly empty selection is the opposite of that, not a spelling of it.
+    #
+    # Read by truthiness, ``names=[]`` fell through to the branches that do not read
+    # it at all. Measured on this registry it downloaded 56 robots on its own, and
+    # 13 - the whole ``humanoid`` category - when a ``category`` was passed too,
+    # reporting either as the caller's own request. An empty selection is what a
+    # filter that matched nothing produces, and the ``download_assets`` tool reaches
+    # it from a NON-empty argument: ``robots=","`` parses to no names through that
+    # tool's own ``if r.strip()`` filter, so no caller has to write ``[]`` to get here.
+    #
+    # Refused ahead of ``get_user_assets_dir()``, which creates the cache directory,
+    # so a refused selection leaves nothing behind to undo.
+    #
+    # Only the emptiness verdict is taken here; the shape is deliberately NOT routed
+    # through the shared ``name_list_error`` domain. This surface resolves each name
+    # by membership into ``robots`` below, so a repeat resolves to its first
+    # occurrence and costs nothing - the same carve-out that keeps the WBC and
+    # MotionBricks providers out of that domain - and a mapping and a one-shot
+    # iterator are each read exactly once here. Refusing them would reject calls
+    # that are honored as written today.
+    if names is not None and not names:
+        raise ValueError(
+            "download_robots(names=[]) selects no robot, so there is nothing to download. "
+            "Pass names=None to download every sim robot, or name the subset to download."
+        )
+
     dest_dir = get_user_assets_dir()
     # Filter None values - get_robot() can return None for unknown names
     all_sim: dict[str, dict[str, Any]] = {
         r["name"]: info for r in registry_list_robots(mode="sim") if (info := get_robot(r["name"])) is not None
     }
 
-    # Resolve requested robots
-    if names:
+    # Resolve requested robots. Read ``is not None``: an empty selection was
+    # refused above, so reaching the ``category``/all branches means the caller
+    # named no subset at all.
+    if names is not None:
         robots: dict[str, dict[str, Any]] = {}
         for name in names:
             canonical = resolve_robot_name(name)

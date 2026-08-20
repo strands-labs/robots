@@ -1,0 +1,3 @@
+### Fixed
+
+- **tests**: the episode-index domain sweep now discovers a surface by whether it can resolve an index against a dataset it can reach, the contract its own docstring states, rather than by whether any parameter is documented as carrying one. A surface handed an already-resolved index alongside the data selected with it resolves nothing, so requiring the shared `non_negative_whole_number_error` rule of it demanded a guard on a value it never receives. The drift report now names the surface that drifted and both ways to satisfy the sweep; `pytest` elides a 13-element set diff, so the bare equality assert named neither. The 11 pinned surfaces are unchanged and still graded.

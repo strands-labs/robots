@@ -1488,10 +1488,18 @@ class NewtonSimEngine(DomainRandomizationMixin, NewtonRecordingMixin, SimEngine)
 
         Returns:
             Status dict confirming removal, or an error dict when no world
-            exists or the camera is unknown.
+            exists, ``name`` is a free-camera routing token, or the camera is
+            unknown.
         """
         if self._world is None or self._model is None:
             return {"status": "error", "content": [{"text": "No world. Call create_world first."}]}
+        # Same rule as ``add_camera``, at the other end of the name's life: a
+        # routing token cannot be un-addressed, and ``list_cameras`` names it
+        # unconditionally. It precedes the existence test because that test
+        # answers "not found. Registered: [...]" for a name ``list_cameras``
+        # advertises, which reads as a bookkeeping slip rather than the rule.
+        if (reserved_err := reserved_camera_name_error("remove_camera", "name", name)) is not None:
+            return {"status": "error", "content": [{"text": reserved_err}]}
         if not registered(self._world.cameras, name):
             return {
                 "status": "error",

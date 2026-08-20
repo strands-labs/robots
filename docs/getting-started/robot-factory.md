@@ -21,14 +21,14 @@ robot = Robot("so100", mode="auto")  # probes USB, falls back to sim
 | `name` | str | required | Catalog name or alias. Resolved via `registry/robots.json`. |
 | `mode` | str | `"sim"` | `"sim"` / `"real"` / `"auto"`. Overridden by `STRANDS_ROBOT_MODE`. |
 | `backend` | str | `"mujoco"` | Sim backend. Ignored when `mode="real"`. |
-| `urdf_path` | str | `None` | Explicit MJCF/URDF path - bypasses registry. |
+| `urdf_path` | str | `None` | Explicit MJCF/URDF path - bypasses registry. Ignored when `mode="real"` (reported at debug level). |
 | `cameras` | dict | `None` | Real-hardware camera config. **Rejected in `mode="sim"`** - raises `ValueError`. |
-| `position` | list | `None` | Robot position `[x, y, z]` in sim world. |
-| `data_config` | str | `None` | GR00T data_config name. |
+| `position` | list | `None` | Robot position `[x, y, z]` in sim world. Ignored when `mode="real"` (reported at debug level). |
+| `data_config` | str | `None` | GR00T data_config name. Honoured in both modes: `mode="sim"` defaults it to the canonical robot name, `mode="real"` forwards it to the hardware driver, which carries it into the `policy_config` a policy is built with. |
 | `mesh` | bool \| None | `None` | Join the Zenoh fleet mesh. `None` consults `STRANDS_MESH`, which leaves it **off** unless set to `true`/`1`/`yes` - pass `mesh=True` to opt in per robot. |
 | `peer_id` | str | `None` | Stable mesh peer id. Auto-generated if omitted. |
-| `orientation` | list | `None` | Robot base orientation `[w, x, y, z]` in sim world. |
-| `keyframe` | str \| int | `None` | Spawn in a model `<keyframe>` pose (name or index) instead of the zero configuration. |
+| `orientation` | list | `None` | Robot base orientation `[w, x, y, z]` in sim world. Ignored when `mode="real"` (reported at debug level). |
+| `keyframe` | str \| int | `None` | Spawn in a model `<keyframe>` pose (name or index) instead of the zero configuration. Ignored when `mode="real"` (reported at debug level). |
 | `**kwargs` | | | Forwarded to the backend or driver constructor as given. A name it does not recognize is ignored, not refused, so check the spelling against the forwardable list below. |
 
 ## Name resolution
