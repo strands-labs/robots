@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import ast
 import inspect
+import os
 import re
 from collections.abc import Callable
 from pathlib import Path
@@ -465,6 +466,81 @@ def _readme_allow_row() -> str:
     return ""
 
 
+# Clauses asserting a pre-approval covers only the surfaces the operator listed.
+# An allowlist is the one direction where the gate's namespace-stripped matching
+# is fail-OPEN, so a document that claims exclusivity understates the blast radius.
+_EXCLUSIVE_REACH_PHRASES: tuple[str, ...] = (
+    "everything else stays gated",
+    "everything else on the safety-critical blocklist stays gated",
+    "individual surfaces",
+    "those surfaces",
+    "only the surfaces",
+)
+
+# Prose stating the reach the gate actually has: an entry also pre-approves every
+# namespaced surface sharing its base name.
+_BASE_NAME_REACH_PHRASES: tuple[str, ...] = (
+    "same base name",
+    "namespaced",
+    "any namespace",
+    "every namespace",
+)
+
+
+def _surfaces_documenting_the_allowlist() -> list[tuple[str, str]]:
+    """Every surface an operator or maintainer reads to size a pre-approval.
+
+    The markdown files contribute the lines naming the variable; the gate helper
+    contributes its own docstring, which enumerates the four ways through the
+    gate and is what a maintainer reads before changing one.
+
+    Returns:
+        ``(surface_label, text)`` pairs, text lowercased for phrase matching.
+    """
+    surfaces: list[tuple[str, str]] = []
+    for name in _OPERATOR_FACING_DOCS:
+        lines = [
+            line
+            for line in (_repo_root() / name).read_text(encoding="utf-8").splitlines()
+            if ros_mod._COMMAND_ALLOW_ENV in line
+        ]
+        if lines:
+            surfaces.append((name, "\n".join(lines).lower()))
+    gate_doc = inspect.getdoc(_gate_command) or ""
+    if ros_mod._COMMAND_ALLOW_ENV in gate_doc:
+        surfaces.append(("_gate_command docstring", gate_doc.lower()))
+    return surfaces
+
+
+def _measured_allowlist_reach() -> tuple[str, list[str]]:
+    """Measure what one bare pre-approval entry actually un-gates.
+
+    Sets the variable to a single bare blocklist entry and asks the gate about
+    namespaced siblings the entry never names. Nothing is published: the gate is
+    consulted with ``tool_context=None``, so a surface that is still gated comes
+    back as the fail-closed error rather than reaching a transport.
+
+    Returns:
+        ``("base" | "exact", extra_surfaces)`` - the reach, and the surfaces the
+        entry un-gated without naming them.
+    """
+    siblings = ["/robot_a/cmd_vel", "/robot_b/cmd_vel", "/mobile_base/cmd_vel"]
+    previous = os.environ.get(ros_mod._COMMAND_ALLOW_ENV)
+    previous_bypass = os.environ.get("BYPASS_TOOL_CONSENT")
+    os.environ[ros_mod._COMMAND_ALLOW_ENV] = "/cmd_vel"
+    os.environ.pop("BYPASS_TOOL_CONSENT", None)
+    try:
+        extra = [name for name in siblings if _gate_command("publish", name, None) is None]
+    finally:
+        if previous is None:
+            os.environ.pop(ros_mod._COMMAND_ALLOW_ENV, None)
+        else:
+            os.environ[ros_mod._COMMAND_ALLOW_ENV] = previous
+        if previous_bypass is not None:
+            os.environ["BYPASS_TOOL_CONSENT"] = previous_bypass
+    return ("base" if extra else "exact"), extra
+
+
 def _documented_halt_exemptions() -> list[tuple[str, int, str]]:
     """Every operator-facing clause asserting the halt is exempt from the gate."""
     found: list[tuple[str, int, str]] = []
@@ -606,3 +682,80 @@ class TestTheDocumentedExemptionsAreTheRealOnes:
             type="nav2_msgs/action/NavigateToPose",
         )
         assert goal["status"] == "success", "the example's second surface was not pre-approved"
+
+
+class TestTheDocumentedAllowlistReachIsTheRealReach:
+    """A pre-approval's documented scope must be the scope the gate grants.
+
+    ``_match_blocklist`` reduces both sides to a canonical form and then also
+    compares base names, so a bare ``/cmd_vel`` matches ``/robot_b/cmd_vel``.
+    That breadth is deliberate and load-bearing for the *blocklist*, where it is
+    fail-safe: one entry has to catch every namespaced drive topic in the graph.
+    The same matcher serves the operator's pre-approval list, where the identical
+    breadth is fail-OPEN - one entry lifts the gate on surfaces the operator
+    never named.
+
+    Sizing that reach is the operator's job and the documentation is their only
+    input, so a document may not describe the pre-approval as exclusive while the
+    gate grants it by base name. The claims are graded against the running gate
+    rather than banned outright, so a gate that one day matches exactly makes the
+    exclusivity claim permissible instead of failing here.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _hermetic(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("BYPASS_TOOL_CONSENT", raising=False)
+        monkeypatch.delenv(ros_mod._COMMAND_ALLOW_ENV, raising=False)
+
+    def test_every_surface_documenting_the_variable_states_its_real_reach(self) -> None:
+        """The headline, graded in both directions against the running gate.
+
+        Every surface that names the variable is telling an operator how to size
+        a safety exemption, so each one has to carry the reach - a passing
+        mention that leaves it out is how the fleet-wide case gets discovered in
+        the field. The converse arm matters just as much: a gate narrowed to
+        exact matching must not leave a namespaced-reach claim behind.
+        """
+        reach, extra = _measured_allowlist_reach()
+        surfaces = _surfaces_documenting_the_allowlist()
+        offenders = []
+        for label, text in surfaces:
+            states_reach = any(phrase in text for phrase in _BASE_NAME_REACH_PHRASES)
+            claims_exclusive = any(phrase in text for phrase in _EXCLUSIVE_REACH_PHRASES)
+            if reach == "base" and not states_reach:
+                detail = " (and calls the pre-approval exclusive)" if claims_exclusive else ""
+                offenders.append(f"{label}{detail}")
+            if reach == "exact" and states_reach:
+                offenders.append(f"{label} (claims a namespaced reach the gate no longer grants)")
+        assert not offenders, (
+            f"a single {ros_mod._COMMAND_ALLOW_ENV}=/cmd_vel entry pre-approves {extra} - surfaces it "
+            f"never names - so the gate's reach is {reach!r}, which these do not state: {offenders}"
+        )
+
+    def test_one_bare_entry_pre_approves_every_robots_drive_topic(self) -> None:
+        """The measured fact the documentation has to carry."""
+        reach, extra = _measured_allowlist_reach()
+        assert reach == "base", "the gate now matches pre-approvals exactly; update the documented reach"
+        assert len(extra) >= 3, f"expected several namespaced siblings un-gated, got {extra}"
+
+    def test_a_namespaced_entry_scopes_the_approval_to_one_robot(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The remedy the corrected documentation points at has to work.
+
+        Naming the namespace is what keeps a fleet-wide pre-approval from being
+        the only option, so it is pinned here rather than left to prose.
+        """
+        monkeypatch.setenv(ros_mod._COMMAND_ALLOW_ENV, "/robot_a/cmd_vel")
+        assert _gate_command("publish", "/robot_a/cmd_vel", None) is None
+        for other in ("/robot_b/cmd_vel", "/cmd_vel"):
+            result = _gate_command("publish", other, None)
+            assert result is not None and result["status"] == "error", (
+                f"a pre-approval naming /robot_a/cmd_vel also lifted the gate on {other}"
+            )
+
+    def test_the_sweep_reaches_every_operator_facing_surface(self) -> None:
+        """Non-vacuity: a doc reflow that hides the variable must fail loudly."""
+        labels = [label for label, _ in _surfaces_documenting_the_allowlist()]
+        assert set(_OPERATOR_FACING_DOCS) <= set(labels), (
+            f"only {labels} document {ros_mod._COMMAND_ALLOW_ENV}; a clean sweep would prove nothing"
+        )
+        assert "_gate_command docstring" in labels, "the gate helper stopped naming the variable it reads"

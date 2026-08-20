@@ -1930,9 +1930,38 @@ def register_predicate(name: str, factory: PredicateFactory) -> None:
 _SCALAR_NUMBER_ANNOTATIONS = frozenset({"float", "int"})
 _NUMBER_SEQUENCE_ANNOTATIONS = frozenset({"list[float]", "list[int]", "tuple[float, ...]"})
 
+# Numeric params that name a TOLERANCE rather than a signed quantity. A
+# tolerance is a half-width or a bound compared against a distance, an absolute
+# difference or a squared magnitude - quantities that are never negative - so a
+# negative tolerance is not a looser bound, it is an unsatisfiable one. The
+# signed params keep both signs: ``z_offset`` is a signed offset, ``z``/``x``/
+# ``y``/``yaw``/``value``/``target`` are coordinates, ``vx``/``vy``/``wz`` are
+# velocity components and ``weight`` scales a reward term.
+#
+# Read from the param NAME for the same reason the domain above is read from the
+# annotation: a predicate added later is covered by naming its tolerance the way
+# every shipped one already does, with no per-predicate table to drift out of
+# step with the registry. Matched on the whole name or a ``_tol`` suffix, never
+# as a substring, so a param that merely contains the letters is untouched.
+_TOLERANCE_PARAM_NAMES = frozenset({"tol", "threshold"})
+_TOLERANCE_PARAM_SUFFIX = "_tol"
+
+
+def _is_tolerance_param(param: str) -> bool:
+    """True when ``param`` names a tolerance and so carries a non-negative domain.
+
+    See :data:`_TOLERANCE_PARAM_NAMES` for why the domain is read from the name.
+    """
+    return param in _TOLERANCE_PARAM_NAMES or param.endswith(_TOLERANCE_PARAM_SUFFIX)
+
 
 def _kwarg_domain_error(name: str, factory: PredicateFactory, kwargs: dict[str, Any]) -> str | None:
-    """Return an error message if a numeric kwarg for *name* is not a finite number.
+    """Return an error message if a numeric kwarg for *name* is outside its domain.
+
+    Two domains are enforced: every numeric kwarg must be a finite number, and a
+    kwarg that names a TOLERANCE must additionally be ``>= 0`` (see
+    :func:`_is_tolerance_param`). Both refuse for the same reason - a value that
+    compiles clean and makes the clause unsatisfiable.
 
     A spec kwarg is coerced with a bare ``float(...)`` inside the factory and
     then closed over, so a ``nan``/``inf`` threshold or weight compiles clean
@@ -1950,6 +1979,19 @@ def _kwarg_domain_error(name: str, factory: PredicateFactory, kwargs: dict[str, 
     * A non-numeric value (``"abc"``) otherwise escapes as a bare
       ``ValueError: could not convert string to float: 'abc'`` naming neither
       the predicate nor the clause it came from.
+
+    A negative tolerance reaches the same unsatisfiable-clause outcome by a
+    third route, and it does so while reading as a *looser* bound. Every
+    tolerance is compared against a distance, an absolute difference or a squared
+    magnitude, so ``threshold=-0.3`` in ``distance_less_than`` cannot be
+    satisfied at any pose - the same permanently-``False`` clause a ``nan``
+    threshold produces. ``body_upright`` and ``base_tipped`` already refused
+    ``tol < 0`` inside their factories; holding the domain here covers the rest
+    of the family, the nested ``staged_reward`` calls, and any predicate added
+    later. Signed params are untouched: ``body_on``'s ``z_offset`` is a signed
+    offset a caller legitimately sets negative, ``base_velocity``'s ``vx`` is a
+    velocity component whose sign is a direction, and ``body_below_z``'s ``z`` is
+    a coordinate.
 
     Only params the factory annotates as numeric are constrained, so a ``str``
     body name, a ``bool`` flag and a ``str | None`` robot selector are untouched,
@@ -1971,6 +2013,16 @@ def _kwarg_domain_error(name: str, factory: PredicateFactory, kwargs: dict[str, 
         if annotation in _SCALAR_NUMBER_ANNOTATIONS:
             if (err := finite_number_error(value, param, context)) is not None:
                 return err
+            # A tolerance is compared against a distance / absolute difference /
+            # squared magnitude, so a negative one is unsatisfiable rather than
+            # loose. ``float(...)`` is safe here: the guard above established the
+            # value is a finite real inside the float64 range.
+            if _is_tolerance_param(param) and float(value) < 0.0:
+                return (
+                    f"{context}: {param} must be >= 0, got {value!r}. It is a tolerance - a bound on a "
+                    "distance, an absolute difference or a squared magnitude, none of which is ever "
+                    "negative - so a negative value makes the clause unsatisfiable rather than loose."
+                )
         elif annotation in _NUMBER_SEQUENCE_ANNOTATIONS:
             if (err := finite_vector_error(context, param, value)) is not None:
                 return err
@@ -1985,7 +2037,8 @@ def make_predicate(name: str, **kwargs: Any) -> Callable[[SimEngine], Any]:
     the valid set; bad kwargs surface as whatever ``TypeError`` the factory
     raises.
 
-    Every numeric kwarg is held to a finite domain here rather than in the
+    Every numeric kwarg is held to a finite domain here - and a tolerance kwarg
+    additionally to a non-negative one - rather than in the
     spec compiler, because this is the only choke point every predicate call
     passes through: ``staged_reward`` builds its per-stage ``reward`` /
     ``advance_when`` calls by calling back into this function, so a guard in
@@ -2002,8 +2055,9 @@ def make_predicate(name: str, **kwargs: Any) -> Callable[[SimEngine], Any]:
         predicate.
 
     Raises:
-        ValueError: If ``name`` is unknown, or a kwarg the factory annotates
-            as numeric is not a finite number.
+        ValueError: If ``name`` is unknown, a kwarg the factory annotates as
+            numeric is not a finite number, or a kwarg that names a tolerance
+            is negative.
         TypeError: If required factory kwargs are missing.
     """
     factory = PREDICATE_REGISTRY.get(name)

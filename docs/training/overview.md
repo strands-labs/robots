@@ -33,6 +33,16 @@ and a single `--policy.type` flag can't express them:
 | `lerobot_local` | `lerobot.scripts.lerobot_train` | draccus `--dotted.flags` | `python` / `accelerate launch` | CPU for a toy run; 1 consumer GPU in practice |
 | `groot` | Isaac-GR00T `launch_finetune.py` | `FinetuneConfig` (tyro) + `tune_*` flags | `python` / `torchrun` | 1 modern GPU |
 | `cosmos3` | `cosmos_framework.scripts.train` | TOML recipe + Hydra overrides; **DCP convert** + **safetensors export** | `torchrun` (HSDP) | 8×H100 80GB |
+| `sagemaker` | none - the container image's own trainer | the same `TrainSpec`, as job hyperparameters | `CreateTrainingJob` (managed) | none locally; the job brings its own |
+
+Those three local backends import a training library and drive it in-process.
+`sagemaker` is the other shape: pure transport, importing no training library and
+submitting the spec to a managed runner whose image packages one of the local
+paths. The difference is visible in one place a caller has to handle - a local
+`train()` blocks and returns a terminal result, while a submitted run can outlive
+the call and come back as `running` with a `job_id` to poll via `status()`, and
+no checkpoint yet. Branch on all three `TrainResult.status` values, not on
+"not `error`".
 
 The `Trainer` ABC hides all of that behind one lifecycle:
 
@@ -121,6 +131,16 @@ agent("Record 50 cube-pick episodes, then post-tune lerobot ACT on the dataset "
 ```
 
 `train_policy` actions: `train`, `validate`, `status`, `export`, `list`.
+
+`train` reports the step that fits the run it got. A finished run names the
+checkpoint to load; a run that has not finished - the managed-job backend
+whose job outlives the submitting process, which returns `running` once its
+local poll budget expires - names the `status` poll for its `job_id` instead,
+and a run that wrote no discoverable checkpoint says so. The tool never offers
+`create_policy(<checkpoint_dir>)` for a result whose `checkpoint_dir` is
+`None`, because that renders as `create_policy('None')` and raises
+`Unknown policy provider: 'None'`. The run's own status always travels verbatim
+in the result's `{"json": ...}` block.
 
 ## Provider-specific knobs
 
@@ -456,8 +476,8 @@ on an L40S GPU:
 | `lerobot_local` + ACT / diffusion | `pip install 'strands-robots[lerobot]' 'lerobot[training]'` | `[lerobot]` supplies torch + torchcodec + datasets; it does **not** supply `accelerate` |
 | `lerobot_local` + `smolvla` | `pip install 'strands-robots[lerobot]' 'lerobot[training]' 'lerobot[smolvla]'` | lerobot 0.6's `[smolvla]` extra layers `transformers>=5.4.0,<5.6.0` + num2words on top. Do **not** pin `transformers==5.3.0` - it conflicts with lerobot 0.6's transformers floor. |
 | `lerobot_local` + `pi0` / `pi05` | `pip install 'strands-robots[lerobot]' 'lerobot[training]' 'lerobot[pi]'` | lerobot 0.6's `[pi]` extra (same `transformers>=5.4.0,<5.6.0` range + scipy) |
-| `groot` | Isaac-GR00T checkout + its own venv (`omegaconf`, `tyro`, …); point `extra["groot_root"]` / `GR00T_ROOT` at it | launched as a subprocess, so it uses GR00T's interpreter, not ours |
-| `cosmos3` | cosmos-framework checkout (`uv sync --group=cu130-train`); point `extra["cosmos_root"]` / `COSMOS_ROOT` at it | torchrun-driven; same subprocess-interpreter rule |
+| `groot` | Isaac-GR00T checkout, installed with `pip install -e` into the **same** environment as `strands_robots` (it pulls `omegaconf`, `tyro`, …); point `extra["groot_root"]` / `GR00T_ROOT` at the checkout | `gr00t` is imported in the calling interpreter, so it has to be importable there; `GR00T_ROOT` resolves relative configs, not the interpreter |
+| `cosmos3` | cosmos-framework checkout (`uv sync --group=cu130-train`), installed into the **same** environment as `strands_robots`; point `extra["cosmos_root"]` / `COSMOS_ROOT` at the checkout | `cosmos_framework` is imported in the calling interpreter; multi-GPU goes through torch's programmatic `elastic_launch`, not a `torchrun` binary |
 
 > **torchcodec / torch ABI:** the lerobot training dataloader decodes video via
 > `torchcodec`, whose compiled `.so` must match the **exact** installed torch
@@ -467,10 +487,15 @@ on an L40S GPU:
 > training fails with a generic non-zero exit. Pin `torch` + `torchcodec`
 > together (verified-good combo: `torch==2.10.0+cu128` + `torchcodec==0.10.0`).
 
-> **Subprocess interpreter:** `LerobotTrainer` / `Gr00tTrainer` / `Cosmos3Trainer`
-> accept a `python_executable=` argument (defaults to `sys.executable`). Set it
-> to a venv that has the provider's deps if your agent process runs in a
-> different environment — the training pipeline runs in that interpreter.
+> **One interpreter:** `LerobotTrainer` / `Gr00tTrainer` / `Cosmos3Trainer` call their
+> backend as a library in the **same** interpreter that imports `strands_robots`, so
+> there is no second interpreter to point them at. There is no `python_executable=`
+> argument either, and because each constructor absorbs unknown keywords, passing one
+> is silently a no-op rather than an error. Install the provider's deps into the
+> environment your agent process runs in; otherwise `train()` reports
+> `<package> is not importable from this interpreter` in `TrainResult.message`.
+> `GR00T_ROOT` / `COSMOS_ROOT` (and `extra["groot_root"]` / `extra["cosmos_root"]`)
+> resolve the checkout so relative configs load - they are not interpreter paths.
 
 ## See also
 
