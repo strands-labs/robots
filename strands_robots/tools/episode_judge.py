@@ -42,8 +42,8 @@ logger = logging.getLogger(__name__)
 
 # The doctrine the agent operates under, stated where the model reads it.
 # The quality-orthogonality sentence is load-bearing, not stylistic: measured
-# on a graded five-recording ladder with exact ground truth (PR #2486 review),
-# an unsteered VLM's grade tracks the OUTCOME - low for every failure, high
+# on a graded five-recording ladder with exact ground truth, an unsteered
+# VLM's grade tracks the OUTCOME - low for every failure, high
 # only for the success - which re-derives the verdict the judge can never
 # overturn and carries no information where the grade is consulted
 # (filter_episodes already gates on the deterministic verdict).

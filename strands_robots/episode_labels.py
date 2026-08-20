@@ -96,9 +96,9 @@ SIDECAR_FILENAME = "episode_labels.json"
 # orthogonal to the deterministic outcome: a grade that re-derives
 # success/failure carries no information where it is consulted, because
 # filter_episodes already gates on the verdict. An unsteered judge collapses
-# onto the outcome (measured on a graded ladder with exact ground truth -
-# PR #2486 review), which is why JUDGE_SYSTEM_PROMPT states this contract
-# where the model reads it.
+# onto the outcome (measured on a graded ladder with exact ground truth),
+# which is why JUDGE_SYSTEM_PROMPT states this contract where the model
+# reads it.
 QUALITY_GRADES = ("low", "medium", "high")
 
 # Fixed failure-mode taxonomy - the qualities a person tags in recorded
