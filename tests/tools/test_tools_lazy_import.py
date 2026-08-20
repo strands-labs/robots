@@ -26,6 +26,7 @@ def test_all_lists_every_lazy_import_name() -> None:
     assert set(tools_pkg.__all__) == set(tools_pkg._LAZY_IMPORTS)
     # The advertised fleet of tools, so a silent drop is caught here.
     assert set(tools_pkg.__all__) == {
+        "create_judge_agent",
         "download_assets",
         "gr00t_inference",
         "harness_memory",
@@ -33,15 +34,19 @@ def test_all_lists_every_lazy_import_name() -> None:
         "lerobot_camera",
         "lerobot_teleoperate",
         "lerobot_train",
+        "load_episode",
         "pose_tool",
+        "read_predicate_verdict",
         "robot_mesh",
         "run_policy",
+        "sample_frames",
         "serial_tool",
         "train_policy",
         "use_lerobot",
         "use_ros",
         "use_rosbridge",
         "use_rtps",
+        "write_label",
     }
 
 

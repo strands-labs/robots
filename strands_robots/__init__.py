@@ -62,6 +62,13 @@ if TYPE_CHECKING:
     from strands_robots.streaming_dataset import StreamingDatasetReader, stream_dataset
     from strands_robots.teleoperator import Teleoperator
     from strands_robots.tools.download_assets import download_assets
+    from strands_robots.tools.episode_judge import (
+        create_judge_agent,
+        load_episode,
+        read_predicate_verdict,
+        sample_frames,
+        write_label,
+    )
     from strands_robots.tools.gr00t_inference import gr00t_inference
     from strands_robots.tools.harness_memory import harness_memory
     from strands_robots.tools.lerobot_calibrate import lerobot_calibrate
@@ -123,6 +130,13 @@ _LAZY_IMPORTS: dict[str, tuple[str, str]] = {
     "download_assets": ("strands_robots.tools.download_assets", "download_assets"),
     "gr00t_inference": ("strands_robots.tools.gr00t_inference", "gr00t_inference"),
     "harness_memory": ("strands_robots.tools.harness_memory", "harness_memory"),
+    # Episode-judge labeling tools (deterministic-verdict precedence lives in
+    # strands_robots.episode_labels; these are the agent-facing surface).
+    "create_judge_agent": ("strands_robots.tools.episode_judge", "create_judge_agent"),
+    "load_episode": ("strands_robots.tools.episode_judge", "load_episode"),
+    "sample_frames": ("strands_robots.tools.episode_judge", "sample_frames"),
+    "read_predicate_verdict": ("strands_robots.tools.episode_judge", "read_predicate_verdict"),
+    "write_label": ("strands_robots.tools.episode_judge", "write_label"),
     "lerobot_calibrate": ("strands_robots.tools.lerobot_calibrate", "lerobot_calibrate"),
     "lerobot_camera": ("strands_robots.tools.lerobot_camera", "lerobot_camera"),
     "lerobot_teleoperate": ("strands_robots.tools.lerobot_teleoperate", "lerobot_teleoperate"),
@@ -181,6 +195,11 @@ __all__ = [
     "download_assets",
     "gr00t_inference",
     "harness_memory",
+    "create_judge_agent",
+    "load_episode",
+    "sample_frames",
+    "read_predicate_verdict",
+    "write_label",
     "lerobot_camera",
     "lerobot_teleoperate",
     "lerobot_train",

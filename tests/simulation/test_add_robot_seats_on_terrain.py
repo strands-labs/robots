@@ -83,6 +83,12 @@ def _write(xml: str) -> str:
     return p
 
 
+# ``model.geom_type[i]`` is a numpy integer, so it is compared to the geom-type
+# enum BY VALUE: ``x in (enum, ...)`` puts the enum on the left of ``==``, where a
+# pybind11 enum does not match a numpy integer on every mujoco build.
+_GROUND_GEOM_TYPES = (int(mujoco.mjtGeom.mjGEOM_HFIELD), int(mujoco.mjtGeom.mjGEOM_PLANE))
+
+
 def _lowest_collision_geom_z(sim) -> float:
     """World z of the lowest collidable robot geom (skips the ground plane / hfield)."""
     model, data = sim._world._model, sim._world._data
@@ -90,7 +96,7 @@ def _lowest_collision_geom_z(sim) -> float:
     for gid in range(model.ngeom):
         if model.geom_contype[gid] == 0 and model.geom_conaffinity[gid] == 0:
             continue
-        if model.geom_type[gid] in (mujoco.mjtGeom.mjGEOM_HFIELD, mujoco.mjtGeom.mjGEOM_PLANE):
+        if int(model.geom_type[gid]) in _GROUND_GEOM_TYPES:
             continue
         zs.append(float(data.geom_xpos[gid][2]))
     assert zs, "no collidable robot geoms found"

@@ -168,12 +168,14 @@ class TestToolsReexportedAtTopLevel:
 
         import strands_robots.tools as tools_pkg
 
-        # Each tool lives in a submodule named after it, defining an attribute
-        # of the same name. The top-level lazy export must resolve to that same
-        # object (not, for example, the submodule).
+        # Each tool is defined in the submodule the tools package's own lazy
+        # map records (usually a submodule named after the tool; the episode-
+        # judge module defines four). The top-level lazy export must resolve
+        # to that same object (not, for example, the submodule).
         for name in tools_pkg.__all__:
-            submodule = importlib.import_module(f"strands_robots.tools.{name}")
-            assert getattr(strands_robots, name) is getattr(submodule, name), name
+            rel_module, attr_name = tools_pkg._LAZY_IMPORTS[name]
+            submodule = importlib.import_module(rel_module, tools_pkg.__name__)
+            assert getattr(strands_robots, name) is getattr(submodule, attr_name), name
 
 
 class TestPolicyFactorySymbolsReexported:
