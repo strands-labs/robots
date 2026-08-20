@@ -17,6 +17,12 @@ jitter) beside `max_state_delta`. With images requested, every recorded camera
 is decoded (one block per camera per sampled position - a single canonical
 view measurably drops verdicts the interleave keeps), and the leading text
 block states the block count and the position-major, sorted-camera grouping.
+The quality grade is pinned as an execution grade, orthogonal to the outcome:
+an unsteered VLM's grade measurably collapses onto the verdict it can never
+overturn (low for every failure, high only for the success on a graded
+ladder), so the system prompt and the `write_label` parameter schema both
+state that a clean failure can grade medium/high and a jerky or lucky success
+low.
 `examples/17_judge_recorded_episodes.py` runs the pipeline end to end: record
 with per-episode predicate stops, verdicts, scripted judge, judge/human
 agreement on a holdout, and a filtered ACT re-training run on the

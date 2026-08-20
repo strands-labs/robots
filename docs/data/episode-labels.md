@@ -67,7 +67,7 @@ Field domains:
 
 | field | domain |
 |---|---|
-| `quality` | `low` / `medium` / `high` (ordered; filters compare rank) |
+| `quality` | `low` / `medium` / `high` (ordered; filters compare rank). An *execution* grade, orthogonal to the outcome - see below |
 | `failure_mode` | `null` or one of `jerky_motion`, `near_miss`, `camera_occlusion`, `wrong_but_lucky`, `drift`, `collision`, `incomplete`, `other` |
 | `success_opinion` | `null` (no opinion) or a boolean |
 | `disputes_verdict` | derived: opinion present and different from the deterministic `success` |
@@ -76,6 +76,20 @@ Field domains:
 A `failure_mode` is deliberately legal on a deterministically *successful*
 episode: `near_miss` and `wrong_but_lucky` are exactly the annotations that
 make a success worth excluding from training data.
+
+`quality` grades the **execution visible in the recording** - smoothness,
+directness, control - never the outcome. The deterministic verdict already
+carries success/failure, and `filter_episodes` gates on that verdict, so a
+grade that re-derives the outcome carries no information in the one place it
+is consulted: with `require_success=True` it only ever discriminates among
+successes, and a jerky or lucky success graded `high` for succeeding is
+exactly the episode the grade exists to exclude. This is not a hypothetical
+drift: measured on a graded five-recording ladder with exact ground truth
+(PR #2486 review), an unsteered VLM's grade tracked the outcome - `low` for
+every failure, `high` only for the success - so `JUDGE_SYSTEM_PROMPT` states
+the contract where the model reads it (a clean failure can be `medium` or
+`high`; a jerky or lucky success can be `low`), and calibration
+(`measure_agreement`) is where to confirm a given judge honours it.
 
 ## The judge agent
 
@@ -111,6 +125,12 @@ total single-camera occlusion (0 visible object pixels in every sampled
 frame of that view) from any presentation. Expect `camera_occlusion` from a
 human or a stronger multimodal judge, and treat any direction phrase in a
 free-text `note` as a statement about a camera frame, not about the world.
+The `note` is for humans and is never parsed by anything downstream - the
+filterable channels are the closed vocabularies, and that split is measured,
+not stylistic: on a frozen-arm control clip (arm silhouette travelling ~1 px
+over the whole episode) 11 of 12 sampled free-text descriptions from the same
+VLM said the arm moves toward the object, while the closed-vocabulary pick on
+the identical clip was right at mass 0.95 (PR #2486 review).
 
 ```python
 from strands.models import BedrockModel  # or any strands model provider

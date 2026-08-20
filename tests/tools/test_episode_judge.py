@@ -359,3 +359,27 @@ class TestJudgeAgentAssembly:
         assert "never overturn" in M.JUDGE_SYSTEM_PROMPT
         for tool_name in ("read_predicate_verdict", "load_episode", "sample_frames", "write_label"):
             assert tool_name in M.JUDGE_SYSTEM_PROMPT
+
+    def test_the_system_prompt_pins_quality_to_execution_not_outcome(self):
+        """The grade is orthogonal to the verdict, and the prompt says so.
+
+        An unsteered VLM's quality grade tracks the OUTCOME - low for every
+        failure, high only for the success, measured on a graded
+        five-recording ladder with exact ground truth (PR #2486 review) -
+        which re-derives the verdict the judge can never overturn and
+        carries no information where the grade is consulted
+        (filter_episodes already gates on the deterministic verdict). The
+        model reads nothing but the prompt and the tool schemas, so the
+        contract has to be stated in both.
+        """
+        prompt = M.JUDGE_SYSTEM_PROMPT
+        assert "not about the outcome" in prompt
+        # Both directions of the decoupling are spelled out, because each is
+        # the counterintuitive half for one verdict class.
+        assert "failed episode" in prompt and "can be medium or high" in prompt
+        assert "successful episode" in prompt and "can be low" in prompt
+        # The tool schema is derived from the docstring's Args entry
+        # (AGENTS.md convention 13), so the same contract must reach the
+        # quality parameter's own description.
+        quality_doc = M.write_label.tool_spec["inputSchema"]["json"]["properties"]["quality"]["description"]
+        assert "not the outcome" in quality_doc

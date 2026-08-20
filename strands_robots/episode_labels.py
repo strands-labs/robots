@@ -91,7 +91,14 @@ SIDECAR_FILENAME = "episode_labels.json"
 
 # The quality vocabulary, ordered worst to best so rank comparisons are
 # index comparisons. A grade outside this tuple is refused at write time -
-# a free-text grade cannot be filtered on.
+# a free-text grade cannot be filtered on. The grade is about the EXECUTION
+# visible in the recording (smoothness, directness, control), deliberately
+# orthogonal to the deterministic outcome: a grade that re-derives
+# success/failure carries no information where it is consulted, because
+# filter_episodes already gates on the verdict. An unsteered judge collapses
+# onto the outcome (measured on a graded ladder with exact ground truth -
+# PR #2486 review), which is why JUDGE_SYSTEM_PROMPT states this contract
+# where the model reads it.
 QUALITY_GRADES = ("low", "medium", "high")
 
 # Fixed failure-mode taxonomy - the qualities a person tags in recorded
@@ -324,7 +331,9 @@ def annotate_episode(
         root: Dataset root directory.
         episode: Episode index, a non-negative whole number.
         quality: One of :data:`QUALITY_GRADES`. Refused otherwise - a
-            free-text grade cannot be filtered on.
+            free-text grade cannot be filtered on. Grades the execution
+            visible in the recording, not the outcome (see the
+            :data:`QUALITY_GRADES` comment).
         failure_mode: ``None`` or one of :data:`FAILURE_MODES`. Deliberately
             legal on a deterministically successful episode (``near_miss``,
             ``wrong_but_lucky``).

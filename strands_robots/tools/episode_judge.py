@@ -41,17 +41,28 @@ from strands_robots.utils import boolean_flag_error, non_negative_whole_number_e
 logger = logging.getLogger(__name__)
 
 # The doctrine the agent operates under, stated where the model reads it.
+# The quality-orthogonality sentence is load-bearing, not stylistic: measured
+# on a graded five-recording ladder with exact ground truth (PR #2486 review),
+# an unsteered VLM's grade tracks the OUTCOME - low for every failure, high
+# only for the success - which re-derives the verdict the judge can never
+# overturn and carries no information where the grade is consulted
+# (filter_episodes already gates on the deterministic verdict).
 JUDGE_SYSTEM_PROMPT = (
     "You are an episode-labeling judge for recorded robot datasets. The "
     "deterministic benchmark predicates have already scored each episode and "
     "their verdict is authoritative - you can never overturn it. Your job is "
     "to add what the predicates cannot measure: a quality grade (low / medium "
     "/ high), a failure-mode tag from the fixed taxonomy, and a short "
-    "free-text note. Workflow per episode: call read_predicate_verdict, then "
-    "load_episode and sample_frames to inspect the recording, then write_label "
-    "exactly once. If your own read of success differs from the verdict, say "
-    "so via success_opinion - it is recorded as a dispute annotation for "
-    "human review, never applied to the verdict."
+    "free-text note. The quality grade is about the EXECUTION visible in the "
+    "recording - smoothness, directness, control - not about the outcome. The "
+    "verdict already carries success and failure, so do not re-derive it in "
+    "the grade: a failed episode executed cleanly up to the point of failure "
+    "can be medium or high, and a successful episode with jerky or lucky "
+    "motion can be low. Workflow per episode: call read_predicate_verdict, "
+    "then load_episode and sample_frames to inspect the recording, then "
+    "write_label exactly once. If your own read of success differs from the "
+    "verdict, say so via success_opinion - it is recorded as a dispute "
+    "annotation for human review, never applied to the verdict."
 )
 
 
@@ -470,7 +481,11 @@ def write_label(
     Args:
         root: Dataset root directory (the directory containing ``meta/``).
         episode: Episode index to label, a non-negative whole number.
-        quality: Quality grade, one of ``low`` / ``medium`` / ``high``.
+        quality: Quality grade, one of ``low`` / ``medium`` / ``high``. Grades
+            the execution visible in the recording (smoothness, directness,
+            control), not the outcome - the deterministic verdict already
+            carries success/failure, so a clean failure can be medium or high
+            and a jerky or lucky success can be low.
         failure_mode: Optional tag from the fixed taxonomy (``jerky_motion``,
             ``near_miss``, ``camera_occlusion``, ``wrong_but_lucky``,
             ``drift``, ``collision``, ``incomplete``, ``other``). Legal on a

@@ -131,24 +131,44 @@ def scripted_judge(root: str, episodes: list[int]) -> None:
     """Stage two: annotate each episode through the judge tools.
 
     A stand-in heuristic where a real deployment points create_judge_agent at
-    a VLM - the tool calls (and the sidecar they write) are identical.
+    a VLM - the tool calls (and the sidecar they write) are identical. The
+    grade follows the contract JUDGE_SYSTEM_PROMPT states for the VLM:
+    quality grades the EXECUTION visible in the recording (here the
+    rms_state_jerk smoothness statistic), never the outcome. The verdict
+    already carries success/failure, so a grade that re-derives it says
+    nothing filter_episodes does not already know - and an unsteered VLM
+    drifts into exactly that (measured on a graded ladder, PR #2486 review).
     """
+    # Grade smoothness relative to the episode set: these recordings share
+    # one policy and one task, so the smoothest episode anchors "high" and
+    # an episode is marked down only for measurably rougher execution.
+    jerks: dict[int, float | None] = {}
+    for episode in episodes:
+        frames = _json_payload(_sample_frames(root, episode, n_frames=3))
+        # rms_state_jerk is the smoothness statistic (rms third difference);
+        # max_state_delta is a peak per-step magnitude for discontinuities.
+        jerks[episode] = frames["rms_state_jerk"]
+    baseline = min((j for j in jerks.values() if j is not None), default=None)
+
     for episode in episodes:
         verdict = _json_payload(_read_verdict(root, episode))
-        frames = _json_payload(_sample_frames(root, episode, n_frames=3))
-        if verdict["success"]:
-            quality = "high" if verdict.get("steps", STEP_BUDGET) <= 10 else "medium"
-            failure_mode = None
-            # rms_state_jerk is the smoothness statistic (rms third difference);
-            # max_state_delta is a peak per-step magnitude for discontinuities.
-            jerk = frames["rms_state_jerk"]
-            note = f"reached the target in {verdict.get('steps')} steps"
-            if jerk is not None:
-                note += f"; rms state jerk {jerk:.1f}"
+        jerk = jerks[episode]
+        if jerk is None or baseline is None or baseline == 0.0:
+            quality = "medium"  # no usable smoothness ratio: no execution evidence either way
+        elif jerk <= 2.0 * baseline:
+            quality = "high"
+        elif jerk <= 5.0 * baseline:
+            quality = "medium"
         else:
             quality = "low"
+        if verdict["success"]:
+            failure_mode = None
+            note = f"reached the target in {verdict.get('steps')} steps"
+        else:
             failure_mode = "incomplete"
             note = f"budget exhausted at {verdict.get('steps')} steps without reaching the target"
+        if jerk is not None:
+            note += f"; rms state jerk {jerk:.1f}"
         result = _write_label(
             root,
             episode,
