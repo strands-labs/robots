@@ -57,7 +57,14 @@ def register_transform(
 
 
 def list_transforms() -> list[str]:
-    """List provider names that have a dataset transform (runtime + JSON ``transform`` blocks)."""
+    """List every name :func:`create_transform` accepts - providers AND aliases.
+
+    One sorted flat list of runtime-registered provider names, their aliases,
+    and providers declaring a JSON ``transform`` block. An entry may therefore
+    be an alias rather than a provider name: the list answers "what can I pass
+    to ``create_transform``", not "what providers exist", so do not iterate it
+    as a provider list.
+    """
     names: list[str] = list(_runtime_registry.keys())
     names.extend(_runtime_aliases.keys())
     for provider in list_policy_providers():
@@ -77,8 +84,16 @@ def import_transform_class(provider: str) -> type[DatasetTransform]:
          :class:`DatasetTransform` subclass.
 
     Raises:
-        ValueError: If no transform can be resolved for the provider.
-        ImportError: If the declared module can't be imported.
+        ValueError: If no transform can be resolved for the provider - no
+            ``transform`` block in policies.json and no
+            ``strands_robots.transforms.<provider>`` module exists.
+        ImportError: If a module that DOES exist can't be imported: the
+            declared policies.json module, or the auto-discovered provider
+            module whose own dependency is missing. "Your dependency is
+            missing" is a different problem than "no such transform", so it
+            surfaces instead of collapsing into the ValueError's
+            "available transforms" list and sending the caller to the
+            wrong one.
     """
     cfg = get_policy_provider(provider)
     if cfg and "transform" in cfg:
@@ -88,8 +103,18 @@ def import_transform_class(provider: str) -> type[DatasetTransform]:
         return cls
 
     # Auto-discovery fallback: strands_robots.transforms.<provider>
+    module_name = f"strands_robots.transforms.{provider}"
     try:
-        mod = importlib.import_module(f"strands_robots.transforms.{provider}")
+        mod = importlib.import_module(module_name)
+    except ModuleNotFoundError as exc:
+        if exc.name != module_name:
+            # The provider module exists but something IT imports is absent -
+            # a missing backend dependency, not an unregistered provider.
+            # Re-raise so the caller is sent to the right problem.
+            raise
+        # No strands_robots.transforms.<provider> module; fall through to the
+        # ValueError below so the caller gets the full "available" list.
+    else:
         class_name = f"{provider.capitalize()}Transform"
         if hasattr(mod, class_name):
             cls = getattr(mod, class_name)
@@ -98,10 +123,6 @@ def import_transform_class(provider: str) -> type[DatasetTransform]:
             attr = getattr(mod, attr_name)
             if isinstance(attr, type) and issubclass(attr, DatasetTransform) and attr is not DatasetTransform:
                 return attr
-    except ImportError:
-        # No strands_robots.transforms.<provider> module; fall through to the
-        # ValueError below so the caller gets the full "available" list.
-        pass
 
     raise ValueError(f"No transform registered for provider '{provider}'. Available transforms: {list_transforms()}")
 

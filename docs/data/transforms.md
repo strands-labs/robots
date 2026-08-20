@@ -1,5 +1,5 @@
 ---
-description: Multiply a recorded LeRobotDataset with generative episode augmentation - video streams transformed, actions byte-identical, provenance-marked, predicate re-validated.
+description: Multiply a recorded LeRobotDataset with generative episode augmentation - video streams transformed, actions byte-identical, provenance-marked, pixel-verdict re-validated.
 ---
 
 # Dataset transforms (episode augmentation)
@@ -34,7 +34,14 @@ record (strands-robots)  ->  transform (this page)  ->  train (create_trainer)
    episode's verdict; a generated episode that flips the verdict is discarded
    and **counted** (`TransformResult.episodes_discarded`) - measured, not
    assumed. An ungated run says so (`revalidated=False`), so it never
-   masquerades as a gated one.
+   masquerades as a gated one. The gate's entire discriminating power lives
+   in the image columns: contract item 1 holds every other column
+   byte-identical, so a verdict that reads no `observation.images.*` column
+   returns the same answer on the source and on every variant and can never
+   flip. The surface measures which columns the verdict consulted, and a run
+   whose verdict read no image column is reported as ungated
+   (`revalidated=False`, with the cause in `message`) rather than as a clean
+   gated pass.
 
 ## Usage
 
@@ -54,7 +61,10 @@ if not problems:
     print(result.episodes_written, result.episodes_discarded)
 ```
 
-Gate the output with a deterministic verdict function:
+Gate the output with a deterministic verdict function. The verdict must read
+at least one `observation.images.<cam>` column - a state- or action-only
+predicate cannot flip, because those columns are byte-identical on every
+variant, and such a run is reported as ungated:
 
 ```python
 def verdict(episode) -> bool:

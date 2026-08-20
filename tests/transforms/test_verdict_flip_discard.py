@@ -111,3 +111,86 @@ class TestVerdictFlipDiscard:
         result = MockTransform(pixel_shift=10).transform(spec)
         assert result.status == "success", result.message
         assert seen and all({"action", "observation.state", "observation.images.cam", "task"} <= keys for keys in seen)
+
+
+class TestVacuousGateIsReported:
+    """A verdict that reads no pixel column can never flip - and must say so.
+
+    Guarantee 1 holds every non-image column byte-identical between a source
+    episode and each generated variant, so the gate's whole discriminating
+    power lives in the ``observation.images.*`` columns: for any verdict that
+    consults none of them, ``f(generated) == f(source)`` identically, and
+    ``revalidated=True`` with ``episodes_discarded=0`` would render exactly
+    like "checked, nothing flipped" over pixels the transform destroyed.
+    These tests pin that such a run refuses the gated label instead.
+    """
+
+    def test_a_state_only_verdict_cannot_claim_a_gated_run(self, record_source_dataset, tmp_path):
+        """Pixel-destroying shift + state-only verdict: written, but NOT a gated pass."""
+
+        def state_verdict(episode: dict) -> bool:
+            return float(episode["observation.state"].mean()) < 100.0
+
+        source_root = record_source_dataset([10, 10])
+        spec = TransformSpec(
+            source_root=source_root,
+            output_root=str(tmp_path / "vacuous"),
+            variants_per_episode=3,
+            seed=0,
+            revalidate=state_verdict,
+        )
+        # pixel_shift=245 saturates every frame to pure white - the scene is gone.
+        result = MockTransform(pixel_shift=245).transform(spec)
+        assert result.status == "success", result.message
+        # The variants still pass through (nothing could be discarded)...
+        assert result.episodes_written == 6
+        assert result.episodes_discarded == 0
+        # ...but the run does NOT report a clean gated pass, and names the cause.
+        assert result.revalidated is False
+        assert "observation.images" in result.message
+        assert "NOT gated" in result.message
+
+    def test_a_pixel_verdict_still_claims_the_gate(self, record_source_dataset, tmp_path):
+        """Control: a verdict that indexes an image column keeps ``revalidated=True``."""
+        source_root = record_source_dataset([10])
+        spec = TransformSpec(
+            source_root=source_root,
+            output_root=str(tmp_path / "pixel_gated"),
+            revalidate=_mean_pixel_below_50,
+        )
+        result = MockTransform(pixel_shift=10).transform(spec)
+        assert result.status == "success", result.message
+        assert result.revalidated is True
+        assert "NOT gated" not in result.message
+
+    def test_a_verdict_reading_pixels_through_items_is_not_accused(self, record_source_dataset, tmp_path):
+        """A verdict iterating ``episode.items()`` received the pixel values too."""
+
+        def items_verdict(episode: dict) -> bool:
+            for key, value in episode.items():
+                if key.startswith("observation.images."):
+                    return float(value.mean()) < 50.0
+            return True
+
+        source_root = record_source_dataset([10])
+        spec = TransformSpec(
+            source_root=source_root,
+            output_root=str(tmp_path / "items_gated"),
+            revalidate=items_verdict,
+        )
+        result = MockTransform(pixel_shift=10).transform(spec)
+        assert result.status == "success", result.message
+        assert result.revalidated is True
+
+    def test_the_vacuous_gate_still_flips_on_a_pixel_verdict_elsewhere(self, record_source_dataset, tmp_path):
+        """The discard machinery is untouched: the pixel verdict still discards a flip."""
+        source_root = record_source_dataset([0])
+        spec = TransformSpec(
+            source_root=source_root,
+            output_root=str(tmp_path / "still_flips"),
+            revalidate=_mean_pixel_below_50,
+        )
+        result = MockTransform(pixel_shift=100).transform(spec)
+        assert result.status == "success", result.message
+        assert result.revalidated is True
+        assert result.episodes_discarded == 1

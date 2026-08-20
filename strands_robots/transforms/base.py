@@ -24,7 +24,13 @@ The contract, in the order it protects the training loop:
    supplies a deterministic verdict function, every generated episode is scored
    against its source episode's verdict, and a generated episode that flips the
    verdict is discarded and **counted** in
-   :attr:`TransformResult.episodes_discarded` - measured, not assumed.
+   :attr:`TransformResult.episodes_discarded` - measured, not assumed. The
+   gate's entire discriminating power lives in the image columns, because
+   guarantee 1 holds every other column byte-identical: a verdict that reads
+   no ``observation.images.*`` column cannot flip, so the orchestration
+   measures which columns the verdict consulted and reports such a run as
+   ungated (:attr:`TransformResult.revalidated` ``False``) instead of letting
+   a vacuous gate masquerade as a clean gated pass.
 
 Backends implement only :attr:`DatasetTransform.provider_name`,
 :meth:`DatasetTransform.validate` and :meth:`DatasetTransform.transform_frames`;
@@ -113,6 +119,14 @@ class TransformSpec:
             ``"task"`` as a list of per-frame strings - and returns a bool.
             The gate compares the verdict on the source episode with the
             verdict on each generated variant; a flip discards the variant.
+            **The verdict must read at least one ``observation.images.<cam>``
+            column to gate anything**: every other column passes through
+            byte-identical (guarantee 1), so a verdict that consults no image
+            column returns the same answer on the source and on every variant
+            and can never flip. The orchestration measures which columns the
+            source-verdict call consulted and reports such a run as ungated
+            (:attr:`TransformResult.revalidated` ``False``, cause in the
+            message) rather than as a clean gated pass.
         overwrite: When :attr:`output_root` already holds a dataset, remove it
             and write fresh (checked as a strict boolean; every other spelling
             of a posture flag is refused rather than read by truthiness).
@@ -148,9 +162,15 @@ class TransformResult:
             episode. Measured, never assumed: ``0`` with
             :attr:`revalidated` ``False`` means "nothing was checked", not
             "nothing flipped".
-        revalidated: Whether a verdict function gated the output. ``False``
-            means :attr:`TransformSpec.revalidate` was ``None`` and every
-            generated episode was written unchecked.
+        revalidated: Whether a verdict function actually gated the output.
+            ``False`` means one of two causes, and :attr:`message` names
+            which: :attr:`TransformSpec.revalidate` was ``None`` (every
+            generated episode was written unchecked), or the supplied verdict
+            consulted no ``observation.images.*`` column - every other column
+            passes through byte-identical, so such a verdict returns the same
+            answer on the source and on every variant and can never flip. A
+            vacuous gate is a run that was NOT gated, and it must not render
+            as the reassuring "checked, nothing flipped".
         provenance_path: Path of the provenance sidecar written into the
             output dataset (``None`` on validation failure).
         message: Human-readable summary / error detail.
@@ -397,12 +417,23 @@ class DatasetTransform(ABC):
         episodes_written = 0
         episodes_discarded = 0
         gated = spec.revalidate is not None
+        pixel_blind_episodes: list[int] = []
 
         try:
             for source_episode in selected:
                 episode = reader._read_episode(source_episode)
                 episodes_read += 1
-                source_verdict = bool(spec.revalidate(episode)) if spec.revalidate is not None else None
+                source_verdict: bool | None = None
+                if spec.revalidate is not None:
+                    # Record which columns the verdict consults: a source call
+                    # that read no observation.images.* column read only values
+                    # every variant shares byte-identically (guarantee 1), so
+                    # this episode's gate is provably vacuous and the run must
+                    # not claim it was gated.
+                    probe = _KeyRecordingEpisode(episode)
+                    source_verdict = bool(spec.revalidate(probe))
+                    if not probe.consulted_an_image_column():
+                        pixel_blind_episodes.append(int(source_episode))
 
                 for variant in range(int(spec.variants_per_episode)):
                     generated = dict(episode)
@@ -455,20 +486,78 @@ class DatasetTransform(ABC):
 
             provenance_path = str(write_provenance(spec.output_root, provenance_records))
 
+        # A verdict that consulted no image column on some source episode is
+        # vacuous for that episode's variants: reporting the run as gated
+        # would render exactly like "checked, nothing flipped", which is the
+        # silent direction. Never over-claim - the whole run refuses the
+        # gated label, and the message names the cause.
+        gate_vacuous = gated and bool(pixel_blind_episodes)
+        if gate_vacuous:
+            gate_note = (
+                f" (revalidate consulted no observation.images.* column on source episode(s) "
+                f"{pixel_blind_episodes} - every non-image column passes through byte-identical, "
+                "so this verdict cannot flip and the output was NOT gated)"
+            )
+        elif gated:
+            gate_note = ""
+        else:
+            gate_note = " (no revalidate function supplied - output was NOT gated)"
+
         return TransformResult(
             status="success",
             output_root=spec.output_root if recorder is not None else None,
             episodes_read=episodes_read,
             episodes_written=episodes_written,
             episodes_discarded=episodes_discarded,
-            revalidated=gated,
+            revalidated=gated and not gate_vacuous,
             provenance_path=provenance_path,
             message=(
                 f"{self.provider_name}: read {episodes_read} episode(s), wrote {episodes_written} "
-                f"generated episode(s), discarded {episodes_discarded} on the re-validation gate"
-                + ("" if gated else " (no revalidate function supplied - output was NOT gated)")
+                f"generated episode(s), discarded {episodes_discarded} on the re-validation gate" + gate_note
             ),
         )
+
+
+class _KeyRecordingEpisode(dict):
+    """Episode dict that records which columns a verdict function consults.
+
+    Wrapped around the SOURCE episode for the one verdict call per episode in
+    :meth:`DatasetTransform.transform`. Guarantee 1 holds every non-image
+    column byte-identical between the source and each generated variant, so a
+    deterministic verdict whose source call consulted no
+    ``observation.images.*`` column read only values every variant shares -
+    it returns the same answer on all of them and can never flip. Recording
+    the consulted keys is what lets the orchestration refuse to report that
+    vacuous gate as a clean gated pass.
+
+    ``items()`` / ``values()`` conservatively record every key: a verdict
+    iterating them received every column's value, so accusing it of reading
+    no pixels would be the false refusal.
+    """
+
+    def __init__(self, episode: dict[str, Any]) -> None:
+        super().__init__(episode)
+        self.consulted: set[Any] = set()
+
+    def __getitem__(self, key: Any) -> Any:
+        self.consulted.add(key)
+        return super().__getitem__(key)
+
+    def get(self, key: Any, default: Any = None) -> Any:
+        self.consulted.add(key)
+        return super().get(key, default)
+
+    def items(self) -> Any:
+        self.consulted.update(super().keys())
+        return super().items()
+
+    def values(self) -> Any:
+        self.consulted.update(super().keys())
+        return super().values()
+
+    def consulted_an_image_column(self) -> bool:
+        """Whether the verdict read at least one ``observation.images.*`` value."""
+        return any(isinstance(k, str) and k.startswith(_IMAGE_PREFIX) for k in self.consulted)
 
 
 def _require_same_frame_schema(provider: str, camera_key: str, source: np.ndarray, out: Any) -> None:

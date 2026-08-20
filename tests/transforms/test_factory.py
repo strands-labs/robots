@@ -1,5 +1,7 @@
 """Tests for the dataset-transform factory: registry, aliases, discovery."""
 
+import importlib
+
 import pytest
 
 from strands_robots.transforms import (
@@ -47,6 +49,27 @@ class TestFactory:
     def test_unknown_provider_raises(self):
         with pytest.raises(ValueError, match="No transform registered"):
             create_transform("does_not_exist_xyz")
+
+    def test_discovered_module_with_a_missing_dependency_surfaces_the_import_error(self, tmp_path, monkeypatch):
+        """A provider module that EXISTS but whose backend dep is absent is not "unregistered".
+
+        Collapsing that ``ModuleNotFoundError`` into the "No transform
+        registered ... Available transforms" refusal sends the user to the
+        wrong problem: the fix is installing the dependency, not spelling the
+        provider differently. Only the absence of the provider module itself
+        may fall through to the ValueError.
+        """
+        import strands_robots.transforms as transforms_pkg
+
+        (tmp_path / "heavybackend.py").write_text(
+            '"""Fake discovered transform whose backend SDK is not installed."""\n'
+            "import a_backend_sdk_that_is_not_installed_xyz  # noqa: F401\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(transforms_pkg, "__path__", [*transforms_pkg.__path__, str(tmp_path)])
+        importlib.invalidate_caches()
+        with pytest.raises(ModuleNotFoundError, match="a_backend_sdk_that_is_not_installed_xyz"):
+            import_transform_class("heavybackend")
 
     def test_auto_discovery_import(self):
         """``import_transform_class`` finds the module-per-provider layout."""
