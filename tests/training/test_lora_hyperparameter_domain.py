@@ -45,6 +45,7 @@ from strands_robots.training.cosmos3 import Cosmos3Trainer
 from strands_robots.training.groot import Gr00tTrainer
 from strands_robots.training.lerobot import LerobotTrainer
 from strands_robots.training.mock import MockTrainer
+from tests.training._spec_field_reads import reads_spec_field
 
 TOTAL_EPISODES = 10
 
@@ -442,11 +443,14 @@ def _trainer_modules() -> list[pathlib.Path]:
 
 
 def _reads_a_hyperparameter(source: str) -> bool:
-    """Does *source* read ``spec.lora_r`` or ``spec.lora_alpha``?"""
-    return any(
-        isinstance(node, ast.Attribute) and node.attr in FIELDS and getattr(node.value, "id", None) == "spec"
-        for node in ast.walk(ast.parse(source))
-    )
+    """Does *source* read either field, by name or through a forwarding table?
+
+    Delegated to the shared rule so this guard and its siblings cannot disagree
+    about what counts as a read - a transport-only provider reads every field it
+    forwards through ``getattr(spec, field)`` and names none of them in an
+    attribute access.
+    """
+    return reads_spec_field(source, FIELDS)
 
 
 def _calls_the_gate(source: str) -> bool:
@@ -464,14 +468,14 @@ class TestOneOwnerForTheAdapterHyperparameterDomain:
 
     The set of backends in scope is derived from the tree rather than listed: a
     module that *reads* either field must route it through the shared gate, so a
-    second backend that starts building a LoRA adapter fails this test until it
+    third backend that starts building a LoRA adapter fails this test until it
     does.
     """
 
     def test_the_scan_finds_the_backend_that_reads_the_fields(self) -> None:
         """Non-vacuity: a mis-rooted scan cannot report a clean sweep of nothing."""
         readers = {p.name for p in _trainer_modules() if _reads_a_hyperparameter(p.read_text())}
-        assert readers == {"lerobot.py"}
+        assert readers == {"lerobot.py", "sagemaker.py"}
 
     def test_every_backend_that_reads_them_routes_through_the_shared_gate(self) -> None:
         adrift = sorted(
@@ -493,6 +497,17 @@ class TestOneOwnerForTheAdapterHyperparameterDomain:
     def test_the_scanners_detect_a_planted_defect(self) -> None:
         """A scanner that silently matched nothing would look like a clean tree."""
         planted = "def validate(self, spec):\n    return [] if spec.lora_alpha > 0 else ['bad']\n"
+        assert _reads_a_hyperparameter(planted)
+        assert not _calls_the_gate(planted)
+
+    def test_the_scanners_detect_a_table_driven_defect(self) -> None:
+        """A backend that forwards either field by name is a reader too.
+
+        The form a transport-only provider takes: no attribute access mentions
+        either field, so a scan keyed on ``spec.lora_r`` alone reports a clean
+        sweep while this backend skips the gate.
+        """
+        planted = 'F = ("lora_alpha",)\ndef validate(self, spec):\n    return [getattr(spec, f) for f in F]\n'
         assert _reads_a_hyperparameter(planted)
         assert not _calls_the_gate(planted)
 

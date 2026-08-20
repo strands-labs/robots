@@ -3695,6 +3695,35 @@ class Mesh(SensorLoopsMixin):
         put(key, payload)
 
 
+#: Values of ``STRANDS_MESH`` that trip the hard kill switch.
+#:
+#: Spelled once because two call sites resolve it: :func:`init_mesh`, the public
+#: constructor, and the robot-less coordinator peer in
+#: :mod:`strands_robots.tools.robot_mesh`, which builds its ``Mesh`` directly
+#: rather than through :func:`init_mesh`. A second inline spelling is how that
+#: peer came to escape the switch.
+_MESH_KILL_SWITCH_VALUES = ("false", "0", "no")
+
+
+def mesh_disabled_by_env() -> bool:
+    """Report whether ``STRANDS_MESH`` forces the mesh off.
+
+    ``STRANDS_MESH=false`` (or ``0`` / ``no``) is documented in README's
+    Configuration table as "a hard kill switch that also overrides an explicit
+    ``mesh=True``". An operator who sets it is asking for no Zenoh session and no
+    presence on the fleet, so every path that can open one answers this -- not
+    only :func:`init_mesh`.
+
+    The switch is one-directional here: it only ever forces mesh OFF. Opting a
+    bare ``Robot()`` *on* via ``STRANDS_MESH=true`` is resolved in the ``Robot``
+    factory, which reads the affirmative spellings instead. A caller asking "may
+    I start a mesh?" wants this predicate; a caller asking "was I asked to start
+    one?" wants that one, and the two are not each other's negation -- an unset
+    variable answers False to both.
+    """
+    return os.getenv("STRANDS_MESH", "").strip().lower() in _MESH_KILL_SWITCH_VALUES
+
+
 # init_mesh -- the only public constructor
 def init_mesh(
     robot: Any,
@@ -3713,8 +3742,7 @@ def init_mesh(
     # env var only ever forces mesh OFF here, never ON, so a caller that
     # explicitly opted out is honoured. The opt-in path (a bare ``Robot()``
     # turning mesh ON via STRANDS_MESH=true) is resolved in the Robot factory.
-    env = os.getenv("STRANDS_MESH", "").strip().lower()
-    if env in ("false", "0", "no"):
+    if mesh_disabled_by_env():
         mesh = False
     if not mesh:
         return None
