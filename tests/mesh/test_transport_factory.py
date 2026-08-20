@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 import pytest
 
+from strands_robots.mesh._backend_select import select_backend
 from strands_robots.mesh.transport import factory
 from strands_robots.mesh.transport.iot_transport import IotMqttTransport
 from strands_robots.mesh.transport.zenoh_transport import ZenohTransport
@@ -36,36 +37,48 @@ def reset_factory_singleton():
 
 
 class TestBackendSelection:
-    """``_select_backend`` resolves the env var safely."""
+    """``select_backend`` resolves the env var safely.
+
+    The vocabulary lives in :mod:`strands_robots.mesh._backend_select` so this
+    factory and the session gate in front of it cannot disagree about it; the
+    factory asks it in :func:`~strands_robots.mesh.transport.factory.get_transport`.
+    """
 
     def test_default_is_zenoh(self, monkeypatch):
         monkeypatch.delenv("STRANDS_MESH_BACKEND", raising=False)
-        assert factory._select_backend() == "zenoh"
+        assert select_backend() == "zenoh"
 
     def test_explicit_iot(self, monkeypatch):
         monkeypatch.setenv("STRANDS_MESH_BACKEND", "iot")
-        assert factory._select_backend() == "iot"
+        assert select_backend() == "iot"
 
     def test_case_insensitive(self, monkeypatch):
         monkeypatch.setenv("STRANDS_MESH_BACKEND", "IOT")
-        assert factory._select_backend() == "iot"
+        assert select_backend() == "iot"
 
     def test_whitespace_stripped(self, monkeypatch):
         monkeypatch.setenv("STRANDS_MESH_BACKEND", " zenoh ")
-        assert factory._select_backend() == "zenoh"
+        assert select_backend() == "zenoh"
 
     def test_unknown_falls_back_to_zenoh(self, monkeypatch, caplog):
-        """Typos must NOT crash the host; warn and default to zenoh."""
+        """Typos must NOT crash the host; warn and default to zenoh.
+
+        The vocabulary and the report live in
+        :mod:`strands_robots.mesh._backend_select`, which both this factory and
+        the session gate in front of it ask, so this asserts the report names
+        the offending value rather than which module emitted it.
+        """
         import logging
 
+        from strands_robots.mesh import _backend_select
+
+        monkeypatch.setattr(_backend_select, "_UNKNOWN_WARNED", set())
         monkeypatch.setenv("STRANDS_MESH_BACKEND", "unknownXYZ")
         with caplog.at_level(logging.WARNING):
-            assert factory._select_backend() == "zenoh"
+            assert _backend_select.select_backend() == "zenoh"
             # The warning message includes the typo'd value
             assert any(
-                "unknownxyz" in r.getMessage()
-                for r in caplog.records
-                if r.name.startswith("strands_robots.mesh.transport")
+                "unknownxyz" in r.getMessage() for r in caplog.records if "STRANDS_MESH_BACKEND" in r.getMessage()
             )
 
 

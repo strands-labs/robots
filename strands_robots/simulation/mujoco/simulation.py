@@ -4055,12 +4055,24 @@ class MuJoCoSimEngine(
 
         Returns:
             A ``{status, content}`` tool result. ``status`` is ``"error"`` when
-            no world exists, ``name`` is unknown, a policy is running, or the
-            scene would not recompile without the camera -- in that last case
-            the camera is still registered and the scene is unchanged.
+            no world exists, ``name`` is a free-camera routing token, ``name`` is
+            unknown, a policy is running, or the scene would not recompile
+            without the camera -- in that last case the camera is still
+            registered and the scene is unchanged.
         """
         if self._world is None or self._world._model is None or self._world._data is None:
             return {"status": "error", "content": [{"text": _NO_WORLD_MSG}]}
+        # Same rule as ``add_camera``, at the other end of the name's life, and for
+        # the same reason: a routing token cannot be un-addressed. ``render`` /
+        # ``render_depth`` / ``get_frame`` / ``get_camera_params`` keep resolving
+        # the token past the registry, and ``list_cameras`` names it
+        # unconditionally, so dropping the entry removes no camera - it removes
+        # only the recordable/observable alias, leaving every other surface still
+        # advertising it. It precedes the existence test because that test can
+        # answer for ``"default"`` (``create_world`` registers the free view under
+        # that name) and answering it succeeds.
+        if (reserved_err := reserved_camera_name_error("remove_camera", "name", name)) is not None:
+            return {"status": "error", "content": [{"text": reserved_err}]}
         if not registered(self._world.cameras, name):
             return {"status": "error", "content": [{"text": self._unknown_camera_msg(name)}]}
         if err := self._require_no_running_policy("remove_camera"):

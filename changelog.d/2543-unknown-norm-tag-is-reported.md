@@ -1,0 +1,3 @@
+### Fixed
+
+- **policies/lerobot_local**: a `norm_tag` the checkpoint's `norm_stats.json` does not declare is now refused instead of absorbed. It previously shared the `(None, None)` verdict used for "this checkpoint ships no stats", so the processor bridge became a full passthrough while usable stats sat in the payload - state reaching the policy un-normalized and actions reaching the motors un-unnormalized - and the load report blamed a missing `policy_postprocessor.json` the checkpoint was never going to ship. The refusal names the requested tag, the declared tags and the consequence, and that reason reaches the load report in place of the generic message.

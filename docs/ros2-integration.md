@@ -211,6 +211,14 @@ The gate **fails closed**: with no `tool_context` (outside an agent loop), or wh
 environment variables. Only the operator's approve/deny verdict is read - the
 reply text is never echoed back into the agent's context.
 
+The reply is recorded in the local safety audit log instead, on both outcomes.
+That matters because only `y` / `yes` / `approve` / `approved` count as approval,
+so a reply that carries a reason (`n - not while the cell door is open`) is always
+a decline - and the audit row is the one place that reason survives. An approval
+is recorded too: whether a human authorised an agent to reach a physical surface
+is the first thing an incident review asks. Make sure your deployment captures and
+retains that log; see [Security](security.md).
+
 Anything that wraps `use_ros` has to forward that context or it inherits the
 fail-closed path for every command it sends. `RosBridgedRobot` does: its
 `drive_<node>` / `stop_<node>` / `navigate_<node>` tools are declared

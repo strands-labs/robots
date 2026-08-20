@@ -41,7 +41,9 @@ def download_assets(
     Args:
         action: ``download`` | ``list`` | ``status``.  ``status`` marks each
             robot ``[ok]`` (assets present) or ``[--]`` (missing).
-        robots: Comma-separated names (e.g. ``so100,panda``). Omit for all.
+        robots: Comma-separated names (e.g. ``so100,panda``). Omit for all. A
+            non-empty value that names no robot (``","``) is refused rather
+            than read as "all".
         category: Filter: arm, bimanual, hand, humanoid, mobile, mobile_manip
         force: Re-download even if present
     """
@@ -64,7 +66,36 @@ def download_assets(
             return {"status": "success", "content": [{"text": "\n".join(lines)}]}
 
         if action == "download":
-            robot_names = [r.strip() for r in robots.split(",") if r.strip()] if robots else None
+            # ``robots`` carries a SUBSET of the sim robots as one comma-separated
+            # string, and the parse below drops blank fields - so a non-empty
+            # argument can name nothing: ``","``, ``" "`` and ``",,,"`` each parse
+            # to zero names. Handed on as ``names=[]`` that was the opposite of what
+            # it asked for, because ``download_robots`` read the selector by
+            # truthiness and downloaded every sim robot instead.
+            #
+            # ``download_robots`` now refuses an empty selection, so this only has to
+            # not manufacture one - but the refusal is raised in terms of ``names=``,
+            # which is not the argument this caller passed. Refuse here instead, in
+            # this surface's own vocabulary, so the remedy names ``robots=`` and is
+            # actionable as written. An absent or empty ``robots`` still means "all":
+            # for a single string argument, unset and empty genuinely coincide, and
+            # only a value that carries content while naming nothing is a mistake.
+            robot_names: list[str] | None = None
+            if robots:
+                robot_names = [r.strip() for r in robots.split(",") if r.strip()]
+                if not robot_names:
+                    return {
+                        "status": "error",
+                        "content": [
+                            {
+                                "text": (
+                                    f"download_assets: robots={robots!r} names no robot - it is read as a "
+                                    "comma-separated list and every field in it is blank. Omit robots= to "
+                                    'download every sim robot, or name the subset (robots="so100,panda").'
+                                )
+                            }
+                        ],
+                    }
             result = download_robots(names=robot_names, category=category, force=force)
             parts = [
                 f"Downloaded: {result['downloaded']}, Skipped: {result['skipped']}, Failed: {result['failed']}",

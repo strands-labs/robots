@@ -25,9 +25,9 @@ new path used when :class:`Mesh` is configured for ``backend="iot"``.
 from __future__ import annotations
 
 import logging
-import os
 import threading
 
+from strands_robots.mesh._backend_select import select_backend
 from strands_robots.mesh.transport.base import MeshTransport
 
 logger = logging.getLogger(__name__)
@@ -37,19 +37,6 @@ _TRANSPORT: MeshTransport | None = None
 _TRANSPORT_REFS: int = 0
 _TRANSPORT_BACKEND: str = ""
 _LOCK = threading.Lock()
-
-
-def _select_backend() -> str:
-    """Resolve ``STRANDS_MESH_BACKEND``. Defaults to ``zenoh``.
-
-    Unknown values fall back to ``zenoh`` with a warning - the policy is to
-    keep the mesh running rather than crash the host on a typo.
-    """
-    raw = os.getenv("STRANDS_MESH_BACKEND", "zenoh").strip().lower()
-    if raw not in ("zenoh", "iot", "bridge"):
-        logger.warning("Unknown STRANDS_MESH_BACKEND=%r - falling back to 'zenoh'", raw)
-        return "zenoh"
-    return raw
 
 
 def _construct(backend: str) -> MeshTransport:
@@ -87,7 +74,7 @@ def get_transport() -> MeshTransport | None:
             _TRANSPORT_REFS += 1
             return _TRANSPORT
 
-        backend = _select_backend()
+        backend = select_backend()
         transport = _construct(backend)
 
         # Try to connect; bail out and keep the singleton None on failure.
