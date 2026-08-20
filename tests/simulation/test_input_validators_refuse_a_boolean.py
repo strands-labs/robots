@@ -524,6 +524,13 @@ _NOT_AN_INPUT_DOMAIN = {
     # boolean component) and the engine-owned robot base position - a boolean
     # cannot reach the float() here.
     "_workspace_sanity_error": "measures an already-coerced target against engine state",
+    # The one float() here compares a value finite_number_error has already
+    # accepted, and that shared domain refuses bool and numpy.bool_ explicitly, so
+    # a boolean is answered with its own reason and never reaches the coercion.
+    # Pinned behaviourally rather than only claimed here:
+    # tests/simulation/test_predicate_tolerance_sign_domain.py fails when the
+    # delegation is dropped or the shared domain stops refusing a boolean.
+    "_kwarg_domain_error": "coerces only a value finite_number_error accepted",
 }
 
 _GUARDED_VALIDATORS = {

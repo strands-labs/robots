@@ -193,8 +193,18 @@ Three ways through the gate, consulted in this order:
 | Mode | Mechanism |
 |------|-----------|
 | Interactive (default) | `tool_context.interrupt()` prompts the operator; reply `y` to approve |
-| Headless allowlist | `STRANDS_ROS2_COMMAND_ALLOW=/cmd_vel,/follow_path` pre-approves those surfaces, everything else stays gated |
+| Headless allowlist | `STRANDS_ROS2_COMMAND_ALLOW=/cmd_vel,/follow_path` pre-approves those surfaces and every namespaced surface sharing a base name with one of them; a surface whose base name no entry lists stays gated |
 | Fully trusted | `BYPASS_TOOL_CONSENT=true` allows every blocked surface with a WARNING log |
+
+Both lists are matched by **base name** as well as by exact name, after a
+leading/trailing `/` is normalised away: a `/cmd_vel` entry matches
+`/robot_b/cmd_vel` too. On the blocklist that breadth is the point - one entry
+has to catch every namespaced drive topic in the graph. On the pre-approval list
+it is the same breadth pointing the other way, so `STRANDS_ROS2_COMMAND_ALLOW=/cmd_vel`
+lifts the gate on **every** robot's drive topic, not just the one being driven.
+Name the namespace (`/turtle1/cmd_vel`) when the approval should cover one robot,
+and list each surface when it should cover several. Case is never folded:
+`/CMD_VEL` is a different topic that no `/cmd_vel` subscriber receives.
 
 The gate **fails closed**: with no `tool_context` (outside an agent loop), or when
 `interrupt()` is unavailable, the command is refused and the error names both
