@@ -175,6 +175,33 @@ class TestSampleFrames:
         assert result["status"] == "error"
         assert "no observation.images" in _text(result)
 
+    def test_image_block_count_and_grouping_are_stated_in_the_text(self, dataset_root, monkeypatch):
+        """A judge asked for n frames and handed n_frames x n_cameras
+        unlabelled image blocks has no stated way to know adjacent blocks are
+        the same timestep from different viewpoints unless the payload says
+        so - the leading text block states the block count, the
+        position-major grouping and the sorted camera order (PR #2486
+        review). The decode itself is integration territory (lerobot video
+        stack); here it is stubbed at the module seam."""
+        info = json.loads((dataset_root / "meta" / "info.json").read_text())
+        for camera in ("front", "overview"):
+            info["features"][f"observation.images.{camera}"] = {"dtype": "video"}
+        (dataset_root / "meta" / "info.json").write_text(json.dumps(info))
+
+        def fake_blocks(root: Path, episode: int, positions: list[int]) -> list[dict[str, Any]]:
+            return [
+                {"image": {"format": "png", "source": {"bytes": b""}}} for _ in positions for _ in ("front", "overview")
+            ]
+
+        monkeypatch.setattr(M, "_decoded_image_blocks", fake_blocks)
+        result = _sample_frames(str(dataset_root), 0, n_frames=2, include_images=True)
+        assert result["status"] == "success", _text(result)
+        assert (
+            result["content"][0]["text"]
+            == "Episode 0: sampled 2 of 10 frames; 4 image blocks, position-major, cameras sorted (front, overview)."
+        )
+        assert sum(1 for block in result["content"] if "image" in block) == 4
+
     def test_an_episode_with_no_frames_is_an_error_dict(self, dataset_root):
         result = _sample_frames(str(dataset_root), 7)
         assert result["status"] == "error"

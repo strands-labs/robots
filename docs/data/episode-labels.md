@@ -90,9 +90,27 @@ works, no cloud dependency required):
   third derivative, so this is the field that grounds `jerky_motion` from
   state alone) and `max_state_delta` (peak per-step delta, for spotting
   discontinuities); `include_images=True` decodes the camera frames into
-  image blocks for a multimodal judge (needs the `lerobot` extra).
+  image blocks for a multimodal judge (needs the `lerobot` extra). Every
+  recorded camera is included - one block per camera per sampled position,
+  position-major, cameras in sorted order, with the count and grouping
+  stated in the leading text block. That is deliberate, not a missing
+  simplification: the same world motion can be well above a judge's
+  legibility threshold in one view and below it in another (a 185 mm slide
+  measured as 84 px of travel in one camera and 22 px in the other, with
+  the verdict lost on the weaker view alone - PR #2486 review), so
+  sampling one canonical camera would drop verdicts the interleave keeps.
 - `read_predicate_verdict` - the authoritative deterministic verdict.
 - `write_label` - the annotation; structurally unable to touch the verdict.
+
+Two failure modes lean on judge capability rather than on a payload field,
+so calibrate before trusting them: `jerky_motion` is grounded for a
+text-only judge by `rms_state_jerk`, but `camera_occlusion` is inherently a
+claim about *one* view that the payload's unlabelled image blocks cannot
+name, and the open-weights VLM measured on PR #2486 did not tag even a
+total single-camera occlusion (0 visible object pixels in every sampled
+frame of that view) from any presentation. Expect `camera_occlusion` from a
+human or a stronger multimodal judge, and treat any direction phrase in a
+free-text `note` as a statement about a camera frame, not about the world.
 
 ```python
 from strands.models import BedrockModel  # or any strands model provider

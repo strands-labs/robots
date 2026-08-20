@@ -13,7 +13,10 @@ decoding for a multimodal judge - `read_predicate_verdict`, `write_label`) and
 `sample_frames`' motion summary carries `rms_state_jerk` (rms third difference
 of the state series, so `jerky_motion` is groundable from state alone - a max
 first difference is a peak-velocity statistic that cannot see a superimposed
-jitter) beside `max_state_delta`.
+jitter) beside `max_state_delta`. With images requested, every recorded camera
+is decoded (one block per camera per sampled position - a single canonical
+view measurably drops verdicts the interleave keeps), and the leading text
+block states the block count and the position-major, sorted-camera grouping.
 `examples/17_judge_recorded_episodes.py` runs the pipeline end to end: record
 with per-episode predicate stops, verdicts, scripted judge, judge/human
 agreement on a holdout, and a filtered ACT re-training run on the

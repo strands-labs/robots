@@ -189,10 +189,10 @@ def _rms_state_jerk(rows: list[dict[str, Any]]) -> float | None:
     (``max_state_delta``) cannot express it: a maximum over the episode is
     pinned by the gross traverse's own peak step, and a superimposed jitter
     never exceeds it - measured constant to 0.013% across a 4x range of true
-    jerk on a real SO-101 recording (PR #2486 review). The third difference
-    over the same rows tracks true rms jerk with correlation +1.0 on that
-    same ladder, and recorded datasets carry positions only (no velocity
-    channel), so a third difference of position is the available route.
+    jerk on a real SO-101 recording. The third difference over the same rows
+    tracks true rms jerk with correlation +1.0 on that same ladder, and
+    recorded datasets carry positions only (no velocity channel), so a third
+    difference of position is the available route.
 
     When the rows carry timestamps with a positive median spacing the value
     is scaled to state-units per second cubed; otherwise it is the raw
@@ -325,8 +325,18 @@ def sample_frames(root: str, episode: int, n_frames: int = 4, include_images: bo
         ``samples`` (``frame_index`` / ``timestamp`` / ``state`` per sample),
         ``max_state_delta`` and ``rms_state_jerk`` (state units per second
         cubed when timestamps are present, per step cubed otherwise; ``null``
-        when the episode is shorter than four frames); image blocks follow
-        when requested.
+        when the episode is shorter than four frames). When images are
+        requested, one image block follows per camera per sampled position -
+        position-major, cameras in sorted key order within each position (the
+        same order ``load_episode`` reports ``camera_keys``) - and the leading
+        text block states the block count and that grouping, so a judge handed
+        ``n_frames x n_cameras`` unlabelled images knows which are the same
+        timestep from different viewpoints. Every camera is deliberately
+        included rather than one canonical view: the same world motion can be
+        legible in one view and below a judge's threshold in another (measured
+        on a real two-camera recording, where a 185 mm slide read as 84 px of
+        travel in one view and 22 px in the other), so sampling a single
+        camera would drop verdicts.
     """
     try:
         root_path = _resolve_root(root)
@@ -366,12 +376,25 @@ def sample_frames(root: str, episode: int, n_frames: int = 4, include_images: bo
         ]
         if include_images:
             features = _read_info(root_path).get("features", {})
-            if not any(k.startswith("observation.images.") for k in features):
+            camera_keys = sorted(
+                k.removeprefix("observation.images.") for k in features if k.startswith("observation.images.")
+            )
+            if not camera_keys:
                 return _error(
                     f"sample_frames: dataset {root_path} carries no observation.images.* features "
                     "to decode; record with cameras for a multimodal judge."
                 )
-            content.extend(_decoded_image_blocks(root_path, episode, positions))
+            image_blocks = _decoded_image_blocks(root_path, episode, positions)
+            # State the block count and grouping where the judge reads it: a
+            # judge asked for n_frames and handed n_frames x n_cameras
+            # unlabelled images has no other way to know that adjacent blocks
+            # are the same timestep from different viewpoints.
+            content[0]["text"] = (
+                f"Episode {episode}: sampled {count} of {length} frames; "
+                f"{len(image_blocks)} image blocks, position-major, "
+                f"cameras sorted ({', '.join(camera_keys)})."
+            )
+            content.extend(image_blocks)
         return {"status": "success", "content": content}
     except (
         ValueError,
