@@ -1118,9 +1118,8 @@ class SpecBuilder:
         #      angled/elevated plane, e.g. a ramp or wall, which must survive).
         #   3. Debug log -- record which geoms were stripped so a disappearing
         #      (or surviving) robot floor is diagnosable.
-        world_has_ground = any(
-            g.type in (mujoco.mjtGeom.mjGEOM_PLANE, mujoco.mjtGeom.mjGEOM_HFIELD) for g in scene_spec.geoms
-        )
+        ground_types = (int(mujoco.mjtGeom.mjGEOM_PLANE), int(mujoco.mjtGeom.mjGEOM_HFIELD))
+        world_has_ground = any(int(g.type) in ground_types for g in scene_spec.geoms)
         stripped: list[str] = []
         if world_has_ground:
             for plane in [

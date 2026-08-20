@@ -466,7 +466,11 @@ def measure_agreement(root: str | Path, human_labels: dict[int, dict[str, Any]])
         root: Dataset root directory.
         human_labels: Mapping of episode index to the human's labels for the
             holdout, each a dict with ``quality`` (required, one of
-            :data:`QUALITY_GRADES`) and optionally ``failure_mode``.
+            :data:`QUALITY_GRADES`) and optionally ``failure_mode``. Each key
+            is an episode index on the shared non-negative-whole-number
+            domain, checked like every other spelling of that quantity: a key
+            that is not one selects the wrong episode to calibrate against,
+            not a slower calibration.
 
     Returns:
         Dict with ``episodes_compared``, ``quality_agreement`` and
@@ -491,7 +495,7 @@ def measure_agreement(root: str | Path, human_labels: dict[int, dict[str, Any]])
     mode_hits = 0
     disagreements: list[dict[str, Any]] = []
     for index, human in human_labels.items():
-        if msg := non_negative_whole_number_error(index, "human_labels key", "measure_agreement"):
+        if msg := non_negative_whole_number_error(index, "human_labels episode index", "measure_agreement"):
             raise ValueError(msg)
         if not isinstance(human, dict) or human.get("quality") not in QUALITY_GRADES:
             raise ValueError(
