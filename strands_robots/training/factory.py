@@ -17,6 +17,13 @@ Mirrors ``strands_robots.policies.factory`` exactly, but resolves the
 so a single provider name owns BOTH the inference class
 (``create_policy("lerobot_local")``) and the training class
 (``create_trainer("lerobot_local")``).
+
+A provider can also be declared at runtime with :func:`register_trainer`, which
+is how the ``training.rl`` backends (``ppo``, ``fast_sac``) and the ``sagemaker``
+transport are wired without a paired inference provider to hang a JSON block
+off. Both routes resolve through :func:`import_trainer_class`, so
+:func:`list_trainers`, :func:`import_trainer_class` and :func:`create_trainer`
+answer for the same set of names.
 """
 
 from __future__ import annotations
@@ -78,15 +85,38 @@ def list_trainers() -> list[str]:
 def import_trainer_class(provider: str) -> type[Trainer]:
     """Import and return the :class:`Trainer` subclass for a provider.
 
-    Resolution order:
-      1. The provider's ``"trainer"`` block in policies.json.
-      2. Auto-discovery fallback: ``strands_robots.training.<provider>`` with a
+    The one resolver behind :func:`create_trainer`, which adds nothing but the
+    constructor call - so a name either function can resolve is a name both can.
+    Resolution order mirrors ``policies.factory._resolve_policy_class``:
+
+      1. The runtime registry (:func:`register_trainer`), resolving an alias to
+         its provider first. This rung comes first so re-registering a name
+         overrides a shipped ``trainer`` block rather than being ignored by it.
+      2. The provider's ``"trainer"`` block in policies.json.
+      3. Auto-discovery fallback: ``strands_robots.training.<provider>`` with a
          class named ``<Provider>Trainer`` or the first ``Trainer`` subclass.
 
+    Rung 1 is not optional for the shipped providers either: ``ppo`` and
+    ``fast_sac`` register at runtime because their modules live in the
+    ``training.rl`` subpackage, which neither of the other two rungs reaches.
+
+    Args:
+        provider: Provider name or a runtime-registered alias.
+
+    Returns:
+        The :class:`Trainer` subclass, not an instance.
+
     Raises:
-        ValueError: If no trainer can be resolved for the provider.
+        ValueError: If no trainer can be resolved for the provider. The message
+            names the providers this resolver can serve, which is the same set
+            :func:`list_trainers` advertises.
         ImportError: If the declared module can't be imported.
     """
+    # 1. Runtime registry (register_trainer), alias first.
+    resolved = _runtime_aliases.get(provider, provider)
+    if resolved in _runtime_registry:
+        return _runtime_registry[resolved]()
+
     cfg = get_policy_provider(provider)
     if cfg and "trainer" in cfg:
         tcfg = cfg["trainer"]
@@ -131,11 +161,5 @@ def create_trainer(provider: str, **kwargs: Any) -> Trainer:
     Raises:
         ValueError: If no trainer is registered for the provider.
     """
-    # 1. Runtime registry first (user-registered trainers).
-    resolved = _runtime_aliases.get(provider, provider)
-    if resolved in _runtime_registry:
-        return _runtime_registry[resolved]()(**kwargs)
-
-    # 2. Registry / auto-discovery.
     TrainerClass = import_trainer_class(provider)
     return TrainerClass(**kwargs)

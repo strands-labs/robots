@@ -1,0 +1,3 @@
+### Fixed
+
+- **simulation**: match a MuJoCo `mjt*` enum by value rather than by operand order. A model field is a numpy integer and `x in (enum, ...)` puts the enum on the *left* of `==`, where a pybind11 enum stops matching a numpy integer on mujoco 3.12.0 - inside the declared `mujoco>=3.5.0,<4.0.0` range. The membership test then answers `False` for every element with nothing raised: a heightfield ground geom was no longer recognised as ground, and an example's home-pose helper matched 0 of 3 joints and wrote neither `qpos` nor `ctrl` while logging that the pose had been set. Every such comparison now reads `int(...)` on both sides, and a new guard grades `strands_robots`, `tests`, `tests_integ` and `examples` so a new site fails CI instead of degrading silently.

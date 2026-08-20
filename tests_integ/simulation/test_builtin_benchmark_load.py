@@ -163,6 +163,11 @@ _TERRAIN = "pyramid"
 _DIFFICULTY = 2.0
 
 
+# ``model.geom_type[i]`` is a numpy integer, so it is compared to the geom-type
+# enum BY VALUE (see the note in tests/simulation/test_add_robot_seats_on_terrain.py).
+_GROUND_GEOM_TYPES = (int(mujoco.mjtGeom.mjGEOM_HFIELD), int(mujoco.mjtGeom.mjGEOM_PLANE))
+
+
 def _lowest_collision_geom_z(sim: Any) -> float:
     """World z of the lowest collidable robot geom (skips the ground plane / hfield)."""
     model, data = sim._world._model, sim._world._data
@@ -170,7 +175,7 @@ def _lowest_collision_geom_z(sim: Any) -> float:
         float(data.geom_xpos[g][2])
         for g in range(model.ngeom)
         if not (model.geom_contype[g] == 0 and model.geom_conaffinity[g] == 0)
-        and model.geom_type[g] not in (mujoco.mjtGeom.mjGEOM_HFIELD, mujoco.mjtGeom.mjGEOM_PLANE)
+        and int(model.geom_type[g]) not in _GROUND_GEOM_TYPES
     ]
     assert zs, "no collidable robot geoms found"
     return min(zs)
