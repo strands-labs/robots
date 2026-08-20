@@ -450,11 +450,23 @@ def test_resume_cache_other_issuer_entries_not_evicted(monkeypatch):
 def test_resume_and_estop_per_issuer_cap_use_same_expression():
     """Structural symmetry pin: both replay-cache handlers must derive
     per_issuer_cap from the identical expression so the two fairness
-    defenses cannot silently diverge."""
-    import inspect
+    defenses cannot silently diverge.
 
-    resume_src = inspect.getsource(Mesh._on_safety_resume)
-    estop_src = inspect.getsource(Mesh._on_safety_estop)
-    cap_expr = "per_issuer_cap = max(1, _resume_replay_cache_max() // 4)"
-    assert cap_expr in resume_src
-    assert cap_expr in estop_src
+    Compares the assignment the two handlers actually carry rather than a
+    literal copy of it, so the pin survives a change to how the bound is
+    spelled -- what must not drift is that the two spellings agree.
+    """
+    import inspect
+    import re
+
+    def cap_assignment(method) -> str:
+        found = re.findall(r"^\s*per_issuer_cap = (.+)$", inspect.getsource(method), re.MULTILINE)
+        assert len(found) == 1, f"expected one per_issuer_cap assignment in {method.__name__}, got {found}"
+        return found[0].strip()
+
+    resume_expr = cap_assignment(Mesh._on_safety_resume)
+    estop_expr = cap_assignment(Mesh._on_safety_estop)
+    assert resume_expr == estop_expr, (
+        f"the two fairness bounds have diverged: resume derives {resume_expr!r} but estop derives {estop_expr!r}"
+    )
+    assert "// 4" in resume_expr, f"expected a quarter-of-cache bound, got {resume_expr!r}"

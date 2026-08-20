@@ -23,6 +23,10 @@ on:
     paths:
       - 'strands_robots/**'
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 permissions:
   contents: read       # checkout
   pull-requests: write # post/update PR comment (read-only on fork PRs)
