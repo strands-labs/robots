@@ -163,6 +163,48 @@ def test_scripted_pour_flips_the_predicates(sim):
     assert spilled(sim) is False
 
 
+@pytest.mark.parametrize("shape", [list, tuple], ids=["list", "tuple"])
+def test_a_typod_bead_is_refused_before_the_rollout_whatever_the_sequence_shape(tmp_path, shape):
+    """A pour clause naming a bead that is not in the scene is refused at step 0.
+
+    ``run_policy`` probes a ``stop_when`` clause's entity names against the live
+    scene before arming it, because a typo'd name compiles clean and degrades to
+    a constant False: the rollout would run its whole step budget and report
+    ``stopped_reason="budget"``, which is what an honest miss reports too. The
+    bead names reach that probe through the sequence-valued ``particles`` kwarg,
+    so every shape the predicate factory accepts for it has to arrive there -
+    otherwise the spelling of the name list decides whether the typo is caught.
+    """
+    arm = tmp_path / "arm.xml"
+    arm.write_text(ARM_MJCF)
+    engine = create_simulation(backend="mujoco", tool_name="pour_probe", mesh=False)
+    try:
+        assert engine.create_world(ground_plane=True)["status"] == "success"
+        assert engine.add_robot(name="arm", urdf_path=str(arm))["status"] == "success"
+        _build_pour_scene(engine)
+        result = engine.run_policy(
+            robot_name="arm",
+            policy_provider="mock",
+            n_steps=40,
+            control_frequency=50.0,
+            stop_when={
+                "predicate": "particles_inside",
+                "particles": shape([*BEADS, "bead_typo"]),
+                "container": "tray",
+            },
+        )
+        payload = next(c["json"] for c in result["content"] if "json" in c)
+        text = result["content"][0]["text"]
+        assert result["status"] == "error", (
+            f"the clause was armed with an unresolvable bead and the rollout ran anyway: "
+            f"stopped_reason={payload.get('stopped_reason')!r} steps_used={payload.get('steps_used')!r}"
+        )
+        assert "bead_typo" in text, f"the refusal does not name the unresolvable bead: {text}"
+        assert payload["steps_used"] == 0
+    finally:
+        engine.destroy()
+
+
 def test_the_closed_cap_is_a_stable_state(sim):
     """The failure mode this asset choice exists for: the cap must not creep open."""
     _build_pour_scene(sim)

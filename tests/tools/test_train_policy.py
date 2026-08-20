@@ -21,6 +21,9 @@ Covered contracts:
   stub and returns a loadable artifact path.
 * The tool boundary never raises: an unknown provider is reported as a
   structured error, not an exception.
+* A non-error ``train`` result is not always a loadable one: a ``running`` run
+  and a ``success`` run that wrote no checkpoint are both reported with the step
+  that applies to them, never with the completed-run load instruction.
 """
 
 from __future__ import annotations
@@ -251,3 +254,154 @@ def test_backend_training_failure_is_shaped_as_error(tmp_path: Path) -> None:
     text = result["content"][0]["text"]
     assert "training failed" in text
     assert "cuda OOM" in text
+
+
+# --------------------------------------------------------------------------
+# train: a non-error result is not always a loadable one
+# --------------------------------------------------------------------------
+# ``train`` returns three statuses, not two. Its sibling above pins that an
+# ``error`` run is never shaped as a success; these pin the other non-success
+# status. A ``running`` result is the managed-job backend reporting that the job
+# outlived the submitting process (``SagemakerTrainer.train`` returns it when
+# its local poll budget expires - pinned by
+# ``test_exhausted_poll_budget_reports_running_not_success``), and a ``success``
+# result carries whatever ``latest_checkpoint`` found, which is ``None`` when
+# the run wrote no discoverable checkpoint tree (``LerobotTrainer.train`` passes
+# that value straight through). Neither has an artifact to load, so neither may
+# be reported with the completed-run load instruction.
+_RUNNING_JOB_ID = "strands-train-abc123"
+
+
+def _register_trainer_returning(name: str, result: Any) -> None:
+    """Register a trainer whose ``train`` returns exactly ``result``."""
+    from strands_robots.training import register_trainer
+    from strands_robots.training.mock import MockTrainer
+
+    class _FixedResultTrainer(MockTrainer):
+        @property
+        def provider_name(self) -> str:
+            return name
+
+        def validate(self, spec: Any) -> list[str]:  # passes preflight
+            return []
+
+        def train(self, spec: Any) -> Any:
+            return result
+
+        def status(self, job_id: str) -> Any:
+            return result
+
+    register_trainer(name, lambda: _FixedResultTrainer)
+
+
+def _running_result() -> Any:
+    from strands_robots.training.base import TrainResult
+
+    return TrainResult(
+        status="running",
+        job_id=_RUNNING_JOB_ID,
+        checkpoint_dir=None,
+        metrics={"sagemaker_status": "InProgress"},
+        message=f"training job '{_RUNNING_JOB_ID}' is still running after the local poll budget",
+    )
+
+
+def _train_text(tmp_path: Path, provider: str) -> tuple[dict[str, Any], str]:
+    kwargs = _valid_kwargs(tmp_path)
+    kwargs["provider"] = provider
+    result = train_policy(action="train", **kwargs)
+    _assert_canonical(result)
+    return result, result["content"][0]["text"]
+
+
+def test_the_load_instruction_names_a_provider_create_policy_refuses() -> None:
+    """Premise: the value an artifact-less result interpolates is a dead end.
+
+    Passes on both sides of the fix - it is a property of ``create_policy``, and
+    it is what makes naming ``checkpoint_dir`` unconditionally a defect rather
+    than a wording preference.
+    """
+    import pytest
+
+    from strands_robots.policies import create_policy
+
+    with pytest.raises(ValueError, match="Unknown policy provider"):
+        create_policy(str(None))
+
+
+def test_a_still_running_run_is_not_offered_as_a_loadable_checkpoint(tmp_path: Path) -> None:
+    _register_trainer_returning("mock_running", _running_result())
+    _, text = _train_text(tmp_path, "mock_running")
+    assert "create_policy(" not in text, (
+        "a run that has not finished has no artifact, but the report offered one: " + text
+    )
+    assert "has not finished" in text
+
+
+def test_a_still_running_run_names_the_poll_step_for_its_job(tmp_path: Path) -> None:
+    _register_trainer_returning("mock_running_poll", _running_result())
+    _, text = _train_text(tmp_path, "mock_running_poll")
+    assert "action='status'" in text and _RUNNING_JOB_ID in text, (
+        "the result carries a job_id this tool's status action polls; the report must name it: " + text
+    )
+
+
+def test_the_poll_step_a_running_run_names_is_one_this_tool_answers(tmp_path: Path) -> None:
+    """Follow the offered remedy verbatim - it must not be a second dead end."""
+    import re
+
+    _register_trainer_returning("mock_running_followed", _running_result())
+    _, text = _train_text(tmp_path, "mock_running_followed")
+    offered = re.search(r"train_policy\(action='status', provider='([^']+)', job_id='([^']+)'\)", text)
+    assert offered is not None, f"no runnable poll step in: {text}"
+    polled = train_policy(action="status", provider=offered.group(1), job_id=offered.group(2))
+    _assert_canonical(polled)
+    assert polled["status"] == "success", polled
+    assert _json_block(polled)["status"] == "running"
+
+
+def test_a_success_without_a_checkpoint_is_not_offered_as_a_loadable_one(tmp_path: Path) -> None:
+    from strands_robots.training.base import TrainResult
+
+    _register_trainer_returning(
+        "mock_no_ckpt",
+        TrainResult(status="success", job_id="j1", checkpoint_dir=None, message="run complete"),
+    )
+    _, text = _train_text(tmp_path, "mock_no_ckpt")
+    assert "create_policy(" not in text, "no checkpoint was written, but a load was offered: " + text
+    assert "no checkpoint path" in text
+
+
+def test_a_completed_run_with_a_checkpoint_still_names_the_load(tmp_path: Path) -> None:
+    """Control: the reported-completed path is unchanged."""
+    from strands_robots.training.base import TrainResult
+
+    _register_trainer_returning(
+        "mock_done",
+        TrainResult(
+            status="success",
+            job_id="j2",
+            checkpoint_dir="/tmp/ft/checkpoints/last/pretrained_model",
+            message="run complete",
+        ),
+    )
+    _, text = _train_text(tmp_path, "mock_done")
+    assert "Load the result with: create_policy('/tmp/ft/checkpoints/last/pretrained_model')" in text
+
+
+def test_the_run_status_is_reported_verbatim_whatever_the_next_step(tmp_path: Path) -> None:
+    """Control: only the next-step line is state-dependent.
+
+    The tool-level ``status`` stays ``success`` for a submitted-but-unfinished
+    run - the action is documented as "validate + launch training", and the
+    sibling ``status`` action likewise maps a running job onto a successful poll
+    - and the run's own status travels verbatim in the json block. Changing that
+    vocabulary is a separate contract; this pins that this fix does not.
+    """
+    _register_trainer_returning("mock_running_status", _running_result())
+    result, _ = _train_text(tmp_path, "mock_running_status")
+    assert result["status"] == "success"
+    payload = _json_block(result)
+    assert payload["status"] == "running"
+    assert payload["checkpoint_dir"] is None
+    assert payload["job_id"] == _RUNNING_JOB_ID
