@@ -182,6 +182,31 @@ class TestVacuousGateIsReported:
         assert result.status == "success", result.message
         assert result.revalidated is True
 
+    def test_a_verdict_comparing_the_whole_mapping_is_not_accused(self, record_source_dataset, tmp_path):
+        """``episode == other`` reads every column's value at C level - recorded too.
+
+        ``dict.__eq__`` is a bulk read exactly like ``items()``: the probe
+        must record every key on it, or an equality-based verdict would be
+        falsely accused of consulting no pixels (CodeQL py/missing-equals on
+        the probe adding ``consulted`` without overriding ``__eq__``).
+        """
+
+        def equality_verdict(episode: dict) -> bool:
+            # Compares the whole mapping; deterministic (False) on source and
+            # every generated variant alike, so nothing is discarded.
+            return episode == {"not": "the episode"}
+
+        source_root = record_source_dataset([10])
+        spec = TransformSpec(
+            source_root=source_root,
+            output_root=str(tmp_path / "eq_gated"),
+            revalidate=equality_verdict,
+        )
+        result = MockTransform(pixel_shift=10).transform(spec)
+        assert result.status == "success", result.message
+        assert result.revalidated is True
+        assert "NOT gated" not in result.message
+
     def test_the_vacuous_gate_still_flips_on_a_pixel_verdict_elsewhere(self, record_source_dataset, tmp_path):
         """The discard machinery is untouched: the pixel verdict still discards a flip."""
         source_root = record_source_dataset([0])

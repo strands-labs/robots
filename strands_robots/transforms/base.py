@@ -530,9 +530,13 @@ class _KeyRecordingEpisode(dict):
     the consulted keys is what lets the orchestration refuse to report that
     vacuous gate as a clean gated pass.
 
-    ``items()`` / ``values()`` conservatively record every key: a verdict
-    iterating them received every column's value, so accusing it of reading
-    no pixels would be the false refusal.
+    ``items()`` / ``values()`` / ``==`` / ``!=`` conservatively record every
+    key: a verdict iterating the former or comparing the whole mapping
+    received every column's value, so accusing it of reading no pixels would
+    be the false refusal. Overriding equality also keeps the added
+    ``consulted`` attribute out of the comparison on purpose - the probe is a
+    transparent stand-in for the episode dict, so it compares by episode
+    contents exactly as the wrapped dict would.
     """
 
     def __init__(self, episode: dict[str, Any]) -> None:
@@ -554,6 +558,19 @@ class _KeyRecordingEpisode(dict):
     def values(self) -> Any:
         self.consulted.update(super().keys())
         return super().values()
+
+    def __eq__(self, other: Any) -> bool:
+        self.consulted.update(super().keys())
+        return super().__eq__(other)
+
+    def __ne__(self, other: Any) -> bool:
+        self.consulted.update(super().keys())
+        return super().__ne__(other)
+
+    # dict subclasses are unhashable by default; equality above compares by
+    # episode contents (``consulted`` is instrumentation, not identity), so
+    # hashing stays refused exactly as it is for the wrapped dict.
+    __hash__ = None  # type: ignore[assignment]
 
     def consulted_an_image_column(self) -> bool:
         """Whether the verdict read at least one ``observation.images.*`` value."""
