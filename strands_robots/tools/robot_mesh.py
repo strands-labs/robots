@@ -48,6 +48,7 @@ from strands.types.tools import ToolContext
 
 from strands_robots.mesh import security as _security
 from strands_robots.mesh.core import mesh_disabled_by_env
+from strands_robots.tools._hitl_audit import log_operator_response
 from strands_robots.utils import finite_number_error, positive_count_error, positive_finite_number_error
 
 # Literal peer-id pattern for watch(target=...). Peer ids are an enumerable
@@ -391,6 +392,11 @@ def _rate_limit_check_and_record(action: str) -> str | None:
         return None
 
 
+#: Event source recorded on this tool's audit rows, including the
+#: operator-response rows :func:`log_operator_response` writes.
+_AUDIT_SOURCE = "robot_mesh_tool"
+
+
 def _audit_tool_action(action: str, target: str, success: bool, detail: str) -> None:
     """Best-effort audit log of every safety-significant tool call.
 
@@ -408,7 +414,7 @@ def _audit_tool_action(action: str, target: str, success: bool, detail: str) -> 
 
         log_safety_event(
             "llm_tool_action",
-            "robot_mesh_tool",
+            _AUDIT_SOURCE,
             {
                 "action": action,
                 "target": target,
@@ -1227,7 +1233,7 @@ def robot_mesh(
             # content side-channel: a prompt-injected agent could phrase the
             # approval reason so the operator's typed reply leaks data back into
             # the model context. Return a flat, fixed sentinel instead.
-            _audit_tool_action(action, target, False, f"operator declined: {response!r}")
+            log_operator_response(_AUDIT_SOURCE, action, target, approved=False, response=response)
             return _err(f"action '{action}' was declined by the operator interrupt.")
         # Approval granted. Re-check under the lock and consume the
         # slot atomically -- a concurrent invocation that ALSO passed
@@ -1238,7 +1244,7 @@ def robot_mesh(
         if rl_race_err is not None:
             _audit_tool_action(action, target, False, f"rate_limit_race: {rl_race_err}")
             return _err(rl_race_err)
-        _audit_tool_action(action, target, True, f"operator approved: {response!r}")
+        log_operator_response(_AUDIT_SOURCE, action, target, approved=True, response=response)
     else:
         # No interrupt required for this action - reserve the slot with the
         # same atomic check+record the approved path uses above. The pre-gate

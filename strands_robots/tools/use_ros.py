@@ -69,6 +69,7 @@ from typing import Any
 from strands import tool
 from strands.types.tools import ToolContext
 
+from strands_robots.tools._hitl_audit import log_operator_response
 from strands_robots.tools._numeric_options import numeric_option_error
 
 logger = logging.getLogger(__name__)
@@ -110,6 +111,9 @@ _COMMAND_ALLOW_ENV = "STRANDS_ROS2_COMMAND_ALLOW"
 _BYPASS_CONSENT_ENV = "BYPASS_TOOL_CONSENT"
 
 _APPROVE_RESPONSES = frozenset({"y", "yes", "approve", "approved"})
+
+#: Event source recorded on this tool's operator-response audit rows.
+_AUDIT_SOURCE = "use_ros_tool"
 
 
 def _approve_response(response: object) -> bool:
@@ -249,7 +253,9 @@ def _gate_command(kind: str, name: str, tool_context: ToolContext | None) -> dic
     except RuntimeError as exc:
         return _err(f"{kind} to {name!r} requires operator approval, but interrupts are not available: {exc}")
 
-    if not _approve_response(response):
+    approved = _approve_response(response)
+    log_operator_response(_AUDIT_SOURCE, kind, name, approved=approved, response=response)
+    if not approved:
         return _err(f"{kind} to {name!r} was declined by the operator.")
 
     logger.info("%s to %s approved via operator interrupt", kind, name)
