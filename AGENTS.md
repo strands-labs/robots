@@ -1350,6 +1350,32 @@ Corrections from code review that apply to all future contributions:
   `ctrlrange` is authoritative and already in the drive's own units, so only the
   *substitution* of a driven joint's limits needs the drive to be a servo.
 
+### MuJoCo enums are matched by value, never by operand order
+
+`mjModel` / `mjData` expose their type fields as numpy integer arrays, while the
+matching vocabulary is a pybind11 enum. Whether the two compare equal depends on
+which side the enum is on.
+
+- **Compare `int()` to `int()`.** `int(model.geom_type[i]) in (int(mjGEOM_PLANE),
+  int(mjGEOM_HFIELD))`, `int(model.actuator_trntype[a]) != int(mjTRN_TENDON)`.
+- **`x in (enum, ...)` is the trap, not a hand-written reversed `==`.** CPython
+  compares `element == needle`, so membership puts the ENUM on the left. That is
+  `True` on mujoco 3.9.0 / 3.10.0 / 3.11.0 and `False` on 3.12.0 - all inside the
+  declared `mujoco>=3.5.0,<4.0.0` range. A `set` of enum members degrades the
+  same way: the hashes still collide and the confirming equality is the failing
+  direction.
+- **The failure is silent.** The membership test simply answers `False` for every
+  element. Measured: a heightfield ground geom stopped being recognised as
+  ground, so a "lowest robot geom" scan returned the ground's own `z=0.0`; and an
+  example's home-pose helper matched 0 of 3 joints, writing no `qpos` and no
+  `ctrl` while logging that the pose had been set.
+- **The rule is uniform, with no exemption for a spec-side value.** `MjsGeom.type`
+  really is an enum, so `in` works there - but a reader cannot tell an `MjsGeom`
+  attribute from an `MjModel` array element at the call site, so both are written
+  by value.
+- Pinned by `tests/test_mujoco_enum_comparisons_are_value_based.py`, which grades
+  `strands_robots`, `tests`, `tests_integ` and `examples`.
+
 ### Clocks: a duration is measured, a stamp is recorded
 - **A duration belongs on `time.monotonic()`.** Anything that decides *how long to keep
   waiting* - a timeout, a deadline, a TTL, a retry window, a rate window, a frame pacer -
@@ -1477,6 +1503,23 @@ Corrections from code review that apply to all future contributions:
 - **A selection widened to everything can also reach past the call.** `detach_teleop` stops
   the local loop once nothing is left to drive, so a detach widened from one stream to all
   of them ended a running session as a side effect of the misread.
+- **A surface that resolves the names by membership takes only the emptiness verdict.**
+  Where the selector is resolved into a dict rather than bound by position, a repeat
+  resolves to its first occurrence and a mapping and a one-shot iterator are each read
+  exactly once, so routing the shape through `name_list_error` would refuse calls that
+  are honored as written today - the same carve-out that keeps the WBC and MotionBricks
+  providers out of that domain. `download_robots(names=...)` is that case, and the
+  membership read is still owed: read by truthiness, `names=[]` downloaded 56 robots on
+  the shipped registry, and 13 - a whole category - when a `category` was also passed,
+  reporting either count as the caller's own request. Nothing had to write `[]` to get
+  there, which is what made it reachable rather than theoretical: the `download_assets`
+  tool builds the list from a comma-separated string through its own blank-field filter,
+  so the NON-empty `robots=","`, `" "` and `",,,"` each parse to zero names. Refuse the
+  empty selection ahead of the call that creates the asset cache directory, so a refused
+  selection leaves nothing behind - and refuse it again in the tool's own vocabulary, so
+  the remedy names the `robots=` that caller passed rather than the `names=` it never
+  did. Pinned by `tests/test_asset_download_selection_domain.py`, whose controls pin the
+  three tolerated spellings so the narrowing stays deliberate rather than incidental.
 - Pinned by `tests/test_teleop_device_selection_domain.py`, whose controls assert that the
   documented spellings (`names=None`, a real subset, `detach_teleop(None)`) are unchanged,
   and by the render path's `cameras` resolution, which has read the same kind of selector

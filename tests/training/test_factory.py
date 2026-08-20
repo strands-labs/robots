@@ -1,7 +1,9 @@
 """Tests for the Trainer abstraction: ABC contract, factory, mock lifecycle."""
 
+import ast
 import json
 import os
+import re
 
 import pytest
 
@@ -14,6 +16,7 @@ from strands_robots.training import (
     list_trainers,
     register_trainer,
 )
+from strands_robots.training.factory import _runtime_registry
 from strands_robots.training.mock import MockTrainer
 
 
@@ -195,9 +198,10 @@ class TestSpecTolerance:
 
 
 class TestAutoDiscoveryFallback:
-    """Resolution-order step 2 of ``import_trainer_class``: when a provider has
-    no ``trainer`` block in policies.json, the factory falls back to importing
-    ``strands_robots.training.<provider>`` and resolving a Trainer subclass.
+    """Last resolution rung of ``import_trainer_class``: when a provider is in
+    neither the runtime registry nor a ``trainer`` block in policies.json, the
+    factory falls back to importing ``strands_robots.training.<provider>`` and
+    resolving a Trainer subclass.
     """
 
     def test_resolves_named_provider_trainer_class(self, monkeypatch):
@@ -242,3 +246,124 @@ class TestAutoDiscoveryFallback:
 
         with pytest.raises(ValueError, match="No trainer registered"):
             import_trainer_class("emptyprov")
+
+
+class TestBothResolversServeEveryListedTrainer:
+    """``import_trainer_class`` resolves every name ``list_trainers`` advertises.
+
+    The factory has two entry points onto one question - which ``Trainer``
+    subclass a provider name means. :func:`create_trainer` answers it to build
+    an instance; :func:`import_trainer_class` is the public answer for a caller
+    that wants the class without paying for construction. A name only one of
+    them can serve makes the pair a coin flip on which door the caller used,
+    and the refusal ``import_trainer_class`` raises builds its available list
+    from ``list_trainers()`` - so a name it cannot serve is advertised by the
+    very message that rejects it.
+    """
+
+    def test_every_listed_trainer_resolves(self):
+        """No advertised provider is refused by the public resolver."""
+        refused = {}
+        for name in list_trainers():
+            try:
+                import_trainer_class(name)
+            except Exception as e:  # noqa: BLE001 - report every failure, not the first
+                refused[name] = f"{type(e).__name__}: {e}"
+        assert not refused, f"list_trainers() advertises providers import_trainer_class refuses: {refused}"
+
+    def test_the_refusal_advertises_only_names_it_can_serve(self):
+        """A refusal must not enumerate the provider it just rejected."""
+        with pytest.raises(ValueError) as exc:
+            import_trainer_class("no_such_trainer_xyz")
+        message = str(exc.value)
+        advertised = ast.literal_eval(re.search(r"Available trainers: (\[[^\]]*\])", message).group(1))
+        assert advertised, "premise: the refusal names an available-trainers list to grade"
+        unservable = []
+        for name in advertised:
+            try:
+                import_trainer_class(name)
+            except Exception:  # noqa: BLE001 - any failure means the list over-promises
+                unservable.append(name)
+        assert not unservable, f"the refusal offers providers it cannot resolve: {unservable}\n  message: {message}"
+
+    def test_the_two_entry_points_agree_on_every_listed_name(self):
+        """Resolving a class and building an instance answer the same question."""
+        disagree = []
+        for name in list_trainers():
+            try:
+                import_trainer_class(name)
+                imports = True
+            except Exception:  # noqa: BLE001
+                imports = False
+            try:
+                create_trainer(name)
+                creates = True
+            except Exception:  # noqa: BLE001
+                creates = False
+            if imports is not creates:
+                disagree.append((name, imports, creates))
+        assert not disagree, f"(name, import_trainer_class, create_trainer) disagree: {disagree}"
+
+    def test_the_builtin_rl_trainers_are_reachable_through_the_public_resolver(self):
+        """``ppo`` and ``fast_sac`` register at runtime, not in policies.json.
+
+        Their modules live in the ``training.rl`` subpackage, so neither the
+        JSON rung nor auto-discovery on ``strands_robots.training.<provider>``
+        finds them - the runtime registry is the only rung that can.
+        """
+        from strands_robots.training.rl.fast_sac import FastSacTrainer
+        from strands_robots.training.rl.ppo import PpoTrainer
+
+        assert import_trainer_class("ppo") is PpoTrainer
+        assert import_trainer_class("fast_sac") is FastSacTrainer
+
+    def test_a_runtime_registered_trainer_and_its_alias_resolve(self):
+        """The documented ``register_trainer`` route reaches the public resolver."""
+
+        class ResolverProbeTrainer(MockTrainer):
+            pass
+
+        register_trainer("resolver_probe", lambda: ResolverProbeTrainer, aliases=["rp"])
+        assert import_trainer_class("resolver_probe") is ResolverProbeTrainer
+        assert import_trainer_class("rp") is ResolverProbeTrainer
+
+    def test_at_least_one_listed_trainer_is_runtime_only(self):
+        """Non-vacuity: the graded set spans both registries.
+
+        Were every provider declared in policies.json, the properties above
+        would hold for a resolver that consults only the JSON rung.
+        """
+        from strands_robots.registry.policies import get_policy_provider
+
+        runtime_only = [name for name in list_trainers() if not (get_policy_provider(name) or {}).get("trainer")]
+        assert runtime_only, "expected at least one provider registered outside policies.json"
+
+
+class TestTheRuntimeRungKeepsItsPrecedence:
+    """A runtime registration shadows a JSON ``trainer`` block, as before.
+
+    ``create_trainer`` consulted the runtime registry ahead of the registry
+    lookup, so a caller could already override a shipped provider's trainer by
+    re-registering the name. Sharing one resolver has to keep that ordering:
+    demoting the runtime rung below the JSON rung would silently ignore such an
+    override instead of honoring it.
+    """
+
+    def test_a_runtime_registration_overrides_a_json_trainer_block(self):
+        class ShadowingTrainer(MockTrainer):
+            pass
+
+        register_trainer("mock", lambda: ShadowingTrainer)
+        try:
+            assert import_trainer_class("mock") is ShadowingTrainer
+            assert isinstance(create_trainer("mock"), ShadowingTrainer)
+        finally:
+            _runtime_registry.pop("mock", None)
+        # The JSON rung answers again once the override is gone.
+        assert import_trainer_class("mock") is MockTrainer
+
+    def test_an_unknown_provider_is_still_refused(self):
+        with pytest.raises(ValueError, match="No trainer registered"):
+            import_trainer_class("definitely_not_a_trainer_xyz")
+        with pytest.raises(ValueError, match="No trainer registered"):
+            create_trainer("definitely_not_a_trainer_xyz")

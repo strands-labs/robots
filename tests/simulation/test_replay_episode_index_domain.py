@@ -41,6 +41,29 @@ The fix applies ``non_negative_whole_number_error`` - the shared rule whose own
 docstring already names ``replay_episode``, the same quantity on the
 neighbouring teleop surface - so the refusal is identical across both spellings
 rather than merely equivalent in verdict.
+
+The structural sweep below is what keeps that true as surfaces are added, so
+its *discovery* has to be as wide as the quantity. It used to admit a surface
+only when a parameter was literally named ``episode``, which is one spelling of
+two: an index also arrives inside a **collection** - an entry of the
+``episodes`` list ``record_deterministic_verdicts`` records, a key of the
+``human_labels`` mapping ``measure_agreement`` calibrates against. Both apply
+the shared rule, and both were invisible to the sweep, so
+``test_the_surface_set_is_exactly_the_pinned_one`` reported a clean tree while
+grading 9 of 11 surfaces and ``test_every_surface_validates_or_forwards`` never
+ran on either. Deleting both guards left the whole file passing (203 passed),
+while the behaviour they hold degraded exactly as the table above:
+``{"episode": True}`` recorded a verdict against **episode 1** and left episode
+0 unlabeled, and ``measure_agreement({True: ...})`` reported
+``quality_agreement 1.0`` calibrated against episode 1 - the number that
+decides whether a judge is trusted to filter training data.
+
+Discovery is therefore derived from each surface's own ``Args:`` entry: a
+parameter named ``episode``, or one whose documented description says it
+carries an episode index. That keeps the rule a property of the tree rather
+than a list to maintain, and it holds the collection spellings to the same
+contract - ``filter_episodes``, which *returns* indices rather than resolving
+one, stays out on the same rule.
 """
 
 from __future__ import annotations
@@ -49,12 +72,14 @@ import ast
 import inspect
 import math
 import pathlib
+import re
 import sys
 import types
 
 import numpy as np
 import pytest
 
+from strands_robots import episode_labels
 from strands_robots.utils import non_negative_whole_number_error
 
 # ── the fake dataset ────────────────────────────────────────────────
@@ -443,12 +468,54 @@ _REPLAY_EPISODE_SURFACES = {
     ("strands_robots/tools/episode_judge.py", "sample_frames"),
     ("strands_robots/tools/episode_judge.py", "read_predicate_verdict"),
     ("strands_robots/tools/episode_judge.py", "write_label"),
+    # The same quantity arriving inside a collection: an entry of the recorded
+    # ``episodes`` list, and a key of the human holdout mapping. A spelling is
+    # not a different contract, so these are graded like the bare parameter.
+    ("strands_robots/episode_labels.py", "record_deterministic_verdicts"),
+    ("strands_robots/episode_labels.py", "measure_agreement"),
 }
 
 _REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 
 
+# A parameter carries an episode index when its own ``Args:`` entry says so.
+# Derived from the docstring rather than from a list of parameter names, so a
+# collection spelling (``episodes``, ``human_labels``) is discovered on the
+# same rule as the bare ``episode``.
+_CARRIES_AN_INDEX = re.compile(r"episode\W*index|index of the episode|``episode``")
+_ARG_ENTRY = re.compile(r"^\s{4,}([*\w]+):\s*(.*)$")
+
+
+def _arg_descriptions(node: ast.FunctionDef | ast.AsyncFunctionDef) -> dict[str, str]:
+    """Map each documented parameter to its ``Args:`` description.
+
+    Continuation lines are folded into the entry they belong to, so a
+    description that wraps is matched as one string.
+    """
+    lines = (ast.get_docstring(node) or "").splitlines()
+    try:
+        start = next(i for i, line in enumerate(lines) if line.strip() == "Args:")
+    except StopIteration:
+        return {}
+    described: dict[str, str] = {}
+    current: str | None = None
+    entry_indent: int | None = None
+    for line in lines[start + 1 :]:
+        if line.strip() in ("Returns:", "Raises:", "Yields:", "Example:", "Examples:", "Note:"):
+            break
+        match = _ARG_ENTRY.match(line)
+        indent = len(line) - len(line.lstrip())
+        if match and (entry_indent is None or indent == entry_indent):
+            entry_indent = indent
+            current = match.group(1).lstrip("*")
+            described[current] = match.group(2)
+        elif current and line.strip():
+            described[current] += " " + line.strip()
+    return described
+
+
 def _public_episode_surfaces(source: str) -> list[ast.FunctionDef | ast.AsyncFunctionDef]:
+    """Every public function that resolves an episode index, in either spelling."""
     tree = ast.parse(source)
     found: list[ast.FunctionDef | ast.AsyncFunctionDef] = []
     for node in ast.walk(tree):
@@ -458,6 +525,10 @@ def _public_episode_surfaces(source: str) -> list[ast.FunctionDef | ast.AsyncFun
             continue
         args = list(node.args.posonlyargs) + list(node.args.args) + list(node.args.kwonlyargs)
         if any(a.arg == "episode" for a in args):
+            found.append(node)
+            continue
+        described = _arg_descriptions(node)
+        if any(a.arg in described and _CARRIES_AN_INDEX.search(described[a.arg]) for a in args):
             found.append(node)
     return found
 
@@ -496,6 +567,101 @@ class TestNoEpisodeIndexSurfaceDrifts:
         planted = ast.parse("def replay(self, repo_id, episode=0):\n    return load_lerobot_episode(repo_id, 0)\n")
         node = planted.body[0]
         assert not _validates_or_forwards(node)
+
+    def test_discovery_finds_an_index_that_arrives_inside_a_collection(self):
+        """A collection-valued spelling is the same surface, so it is discovered.
+
+        The narrow rule admitted a surface only when a parameter was literally
+        named ``episode``. A planted surface taking a list of per-episode dicts
+        - the ``record_deterministic_verdicts`` shape - was therefore invisible,
+        and an unguarded one passed the sweep.
+        """
+        planted = ast.parse(
+            "def record(root, verdicts):\n"
+            '    """Record verdicts.\n'
+            "\n"
+            "    Args:\n"
+            "        root: Dataset root.\n"
+            "        verdicts: Per-episode dicts, each carrying an episode index.\n"
+            '    """\n'
+            "    return None\n"
+        )
+        discovered = _public_episode_surfaces(ast.unparse(planted))
+        assert [n.name for n in discovered] == ["record"]
+        assert not _validates_or_forwards(discovered[0]), "an unguarded collection surface must not pass"
+
+    def test_discovery_leaves_a_surface_that_only_returns_indices_out(self):
+        """``filter_episodes`` selects episodes; it resolves no caller index.
+
+        The boundary is the same derived rule, not an exemption: no parameter
+        of it is documented as carrying an index, so requiring it to apply the
+        shared rule would demand a guard on a value it never receives.
+        """
+        source = (_REPO_ROOT / "strands_robots/episode_labels.py").read_text()
+        names = {node.name for node in _public_episode_surfaces(source)}
+        assert "filter_episodes" not in names
+        assert {"record_deterministic_verdicts", "measure_agreement"} <= names
+
+
+class TestTheCollectionSpellingsRefuseAnUnusableIndex:
+    """The two collection-valued surfaces honour the shared domain end to end.
+
+    The sweep above is structural; these drive the real functions, because what
+    the sweep protects is the behaviour: an index outside the domain must be
+    refused rather than resolve a different episode. ``True`` is the case worth
+    naming - it is the value a misplaced flag takes, ``int(True)`` is 1, and
+    every episode table is indexable by 1.
+    """
+
+    @staticmethod
+    def _labeled_dataset(tmp_path):
+        root = tmp_path / "ds"
+        root.mkdir()
+        episode_labels.record_deterministic_verdicts(
+            root, [{"episode": 0, "success": True}, {"episode": 1, "success": True}], benchmark="b"
+        )
+        episode_labels.annotate_episode(root, 0, quality="low", model="m")
+        episode_labels.annotate_episode(root, 1, quality="high", model="m")
+        return root
+
+    @pytest.mark.parametrize("bad", [True, False, 2.5, -1, "0", None, [0]])
+    def test_a_recorded_verdict_index_outside_the_domain_is_refused(self, tmp_path, bad):
+        root = tmp_path / "ds"
+        root.mkdir()
+        with pytest.raises(ValueError, match="non-negative whole number"):
+            episode_labels.record_deterministic_verdicts(root, [{"episode": bad, "success": True}])
+        assert not episode_labels.labels_path(root).exists(), "a refused verdict must write no sidecar"
+
+    @pytest.mark.parametrize("bad", [True, False, 2.5, -1, "0", None])
+    def test_a_holdout_episode_key_outside_the_domain_is_refused(self, tmp_path, bad):
+        root = self._labeled_dataset(tmp_path)
+        with pytest.raises(ValueError, match="non-negative whole number"):
+            episode_labels.measure_agreement(root, {bad: {"quality": "high"}})
+
+    def test_both_refusals_name_the_episode_index(self, tmp_path):
+        """The refusal names the quantity, so the caller knows what to fix.
+
+        ``measure_agreement`` used to report only ``human_labels key``, naming
+        the container slot rather than the episode index it holds - which is
+        also why the sweep's recogniser, which requires the shared rule to be
+        applied to the episode, could not see the guard that was there.
+        """
+        root = self._labeled_dataset(tmp_path)
+        with pytest.raises(ValueError) as recorded:
+            episode_labels.record_deterministic_verdicts(root, [{"episode": True, "success": True}])
+        with pytest.raises(ValueError) as calibrated:
+            episode_labels.measure_agreement(root, {True: {"quality": "high"}})
+        for message in (str(recorded.value), str(calibrated.value)):
+            assert "episode" in message, message
+            assert "True" in message, message
+
+    def test_an_index_inside_the_domain_still_resolves_that_episode(self, tmp_path):
+        """Control: the guard refuses the domain, not the callers."""
+        root = self._labeled_dataset(tmp_path)
+        assert episode_labels.deterministic_verdict(root, 1)["success"] is True
+        agreement = episode_labels.measure_agreement(root, {1: {"quality": "high"}})
+        assert agreement["episodes_compared"] == 1
+        assert agreement["quality_agreement"] == 1.0
 
 
 class TestTheTeleopSpellingStaysOutOfScope:

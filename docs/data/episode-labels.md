@@ -67,6 +67,7 @@ Field domains:
 
 | field | domain |
 |---|---|
+| `episode_index` | a non-negative whole number, on the shared domain every surface applies. Holds in each spelling the index arrives in: the `episode` argument of `deterministic_verdict` / `annotate_episode` and the judge tools, an `episodes[i]["episode"]` entry handed to `record_deterministic_verdicts`, and a key of `measure_agreement`'s holdout mapping. A value outside it selects a *different* episode rather than failing slowly - `True` is `1` to an index - so it is refused and named |
 | `quality` | `low` / `medium` / `high` (ordered; filters compare rank). An *execution* grade, orthogonal to the outcome - see below |
 | `failure_mode` | `null` or one of `jerky_motion`, `near_miss`, `camera_occlusion`, `wrong_but_lucky`, `drift`, `collision`, `incomplete`, `other` |
 | `success_opinion` | `null` (no opinion) or a boolean |
