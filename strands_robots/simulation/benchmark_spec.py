@@ -67,7 +67,7 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
@@ -316,9 +316,14 @@ def compile_stop_when(stop_when: Any, *, context: str = "stop_when") -> Callable
 # to a constant False at evaluation time, and burn the whole step budget
 # reporting stopped_reason="budget" - indistinguishable from an honest miss.
 _BODY_NAME_KWARGS = frozenset({"body", "body_a", "body_b", "container"})
-# Kwargs that carry a LIST of body names (the particle-proxy pour predicates).
-# Collected element-wise so every particle / container in a stop_when clause is
-# probed against the live sim exactly like a singular body kwarg.
+# Kwargs that carry a SEQUENCE of body names (the particle-proxy pour
+# predicates). Collected element-wise so every particle / container in a
+# stop_when clause is probed against the live sim exactly like a singular body
+# kwarg. The accepted container shape is the one the predicate factories accept
+# - name_list_error's, i.e. any Sequence that is not a str/bytes (a bare string
+# is a name-per-character mistake, not a name list). This walker only ever sees
+# a clause compile_stop_when already accepted, so a shape a factory takes and
+# this misses is a clause whose names are silently never probed.
 _BODY_LIST_KWARGS = frozenset({"particles", "containers"})
 _JOINT_NAME_KWARGS = frozenset({"joint"})
 
@@ -329,8 +334,10 @@ def stop_when_referenced_entities(stop_when: Any) -> tuple[list[str], list[str]]
     Walks the same shapes :func:`compile_stop_when` accepts (a single
     predicate call or an ``all``/``any`` group) and gathers the values of the
     entity-naming kwargs (``body`` / ``body_a`` / ``body_b`` / ``container``
-    for bodies, plus each element of the list-valued ``particles`` /
-    ``containers``, and ``joint`` for joints) so the caller can probe each one
+    for bodies, plus each element of the sequence-valued ``particles`` /
+    ``containers`` - every shape the predicate factories accept for them, which
+    is :func:`~strands_robots.utils.name_list_error`'s domain rather than
+    ``list`` alone - and ``joint`` for joints) so the caller can probe each one
     against the live sim before arming the clause. Geom names
     (``contact_between``) are not collected - there is no generic geom
     lookup on the engine ABC to probe them with.
@@ -355,7 +362,7 @@ def stop_when_referenced_entities(stop_when: Any) -> tuple[list[str], list[str]]
                     bodies.setdefault(value)
                 elif key in _JOINT_NAME_KWARGS:
                     joints.setdefault(value)
-            elif key in _BODY_LIST_KWARGS and isinstance(value, list):
+            elif key in _BODY_LIST_KWARGS and isinstance(value, Sequence) and not isinstance(value, str | bytes):
                 for entry in value:
                     if isinstance(entry, str) and entry:
                         bodies.setdefault(entry)

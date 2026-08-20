@@ -411,6 +411,242 @@ def test_renderer_degrades_to_the_terminal_when_rerun_is_absent(dash, monkeypatc
         )
     )
     assert "zone-a" in capsys.readouterr().out
+    renderer.close()  # the terminal renderer's close is a documented no-op
+
+
+# -- dashboard: --serve-web (live web viewer for headless hosts, #2471) --------
+
+
+def test_serve_web_command_sets_the_loopback_bind_deliberately(dash):
+    """The rerun CLI defaults to 0.0.0.0, so the address must always be argv."""
+    cmd = dash.serve_web_command(
+        binary="/opt/venv/rerun_cli/rerun", bind=dash.DEFAULT_BIND, web_port=9090, grpc_port=9876
+    )
+    # The child is the native binary itself: a ``python -m rerun`` wrapper
+    # runs the binary as a grandchild (``subprocess.call``), so terminating
+    # the wrapper on close() leaks the server and both its ports (measured
+    # on rerun-sdk 0.26.2).
+    assert cmd[0] == "/opt/venv/rerun_cli/rerun"
+    assert "-m" not in cmd
+    assert "--serve-web" in cmd
+    assert cmd[cmd.index("--bind") + 1] == "127.0.0.1"
+    assert cmd[cmd.index("--web-viewer-port") + 1] == "9090"
+    assert cmd[cmd.index("--port") + 1] == "9876"
+
+
+def test_rerun_binary_honours_the_documented_override_and_refuses_a_missing_one(dash, monkeypatch, tmp_path):
+    real = tmp_path / "rerun"
+    real.write_bytes(b"")
+    monkeypatch.setenv("RERUN_CLI_PATH", str(real))
+    assert dash.rerun_binary() == str(real)
+    monkeypatch.setenv("RERUN_CLI_PATH", str(tmp_path / "missing"))
+    with pytest.raises(RuntimeError, match="RERUN_CLI_PATH"):
+        dash.rerun_binary()
+
+
+def test_rerun_binary_resolves_inside_the_installed_wheel(dash, monkeypatch):
+    rerun_cli = pytest.importorskip("rerun_cli")
+    monkeypatch.delenv("RERUN_CLI_PATH", raising=False)
+    binary = dash.rerun_binary()
+    assert Path(binary).parent == Path(rerun_cli.__file__).parent
+    assert Path(binary).exists()
+
+
+def test_serve_connect_host_substitutes_loopback_only_for_the_wildcard(dash):
+    assert dash.serve_connect_host("0.0.0.0") == "127.0.0.1"
+    assert dash.serve_connect_host("127.0.0.1") == "127.0.0.1"
+    assert dash.serve_connect_host("10.0.0.5") == "10.0.0.5"
+
+
+def test_web_viewer_lines_carry_the_url_and_the_tunnel_recipe_for_loopback(dash):
+    lines = dash.web_viewer_lines(bind=dash.DEFAULT_BIND, web_port=9090, grpc_port=9876)
+    # The ready-to-open form: gRPC stream address quoted into the ?url= query.
+    assert "http://127.0.0.1:9090/?url=rerun%2Bhttp%3A%2F%2F127.0.0.1%3A9876%2Fproxy" in lines[0]
+    tunnel = next(line for line in lines if "ssh -N" in line)
+    # Both ports are forwarded: the browser fetches the viewer from one and
+    # dials the log stream on the other.
+    assert "-L 9090:127.0.0.1:9090" in tunnel
+    assert "-L 9876:127.0.0.1:9876" in tunnel
+
+
+def test_web_viewer_lines_say_so_when_bound_wider_than_loopback(dash):
+    lines = dash.web_viewer_lines(bind="0.0.0.0", web_port=9090, grpc_port=9876)
+    warning = next(line for line in lines if "WARNING" in line)
+    assert "0.0.0.0" in warning
+    assert not any("ssh -N" in line for line in lines)  # the recipe is for the loopback posture
+
+
+@pytest.mark.parametrize("bind", ["127.0.0.2", "127.1.2.3", "::1"])
+def test_a_loopback_bind_other_than_the_default_is_not_network_exposure(dash, bind):
+    """The posture is the address's class, not equality with one spelling of it.
+
+    ``127.0.0.0/8`` is loopback in its entirety and the Rerun CLI binds it:
+    measured on rerun-sdk 0.26.2, ``--bind 127.0.0.2`` passes the dashboard's
+    own readiness gate with both listeners serving. Reported as network
+    exposure, that startup message makes a false claim about who can reach
+    the dashboard AND withholds the tunnel recipe - on the headless remote
+    host this flag exists for, the recipe is the actionable half.
+    """
+    lines = dash.web_viewer_lines(bind=bind, web_port=9090, grpc_port=9876)
+    assert not any("network exposure" in line for line in lines), (
+        f"bind={bind} is loopback, but the startup message calls it network exposure: {lines[1]}"
+    )
+    assert any("ssh -N" in line for line in lines), (
+        f"bind={bind} is loopback and reachable only through a tunnel, but no recipe was printed: {lines}"
+    )
+
+
+def test_the_tunnel_recipe_forwards_to_the_address_the_server_is_on(dash):
+    """A forward to the default address would reach nothing on a bind that is not it."""
+    lines = dash.web_viewer_lines(bind="127.0.0.2", web_port=9090, grpc_port=9876)
+    tunnel = next((line for line in lines if "ssh -N" in line), None)
+    assert tunnel is not None, f"no tunnel recipe was printed for a loopback bind: {lines}"
+    assert "-L 9090:127.0.0.2:9090" in tunnel
+    assert "-L 9876:127.0.0.2:9876" in tunnel
+    assert "127.0.0.1" not in tunnel
+
+
+def test_an_ipv6_literal_is_bracketed_wherever_a_port_follows_it(dash):
+    """Unbracketed, the address runs into the port separator and parses as neither."""
+    lines = dash.web_viewer_lines(bind="::1", web_port=9090, grpc_port=9876)
+    assert "http://[::1]:9090/" in lines[0]
+    assert "%5B%3A%3A1%5D%3A9876" in lines[0]  # the quoted rerun+http://[::1]:9876 stream URI
+    assert "http://::1:9090" not in lines[0]
+    tunnel = next(line for line in lines if "ssh -N" in line)
+    assert "-L 9090:[::1]:9090" in tunnel
+
+
+def test_a_hostname_is_not_classified_because_the_server_refuses_one(dash):
+    """Control: the classification and the CLI's accepted domain must not diverge.
+
+    ``--bind`` takes an IP literal only - measured, ``--bind localhost`` is
+    refused with "invalid IP address syntax" - so a name never reaches a
+    serving process. Parsing the address keeps the two in step; a fixed set of
+    loopback spellings would print a tunnel recipe for a bind the server will
+    not accept.
+    """
+    lines = dash.web_viewer_lines(bind="localhost", web_port=9090, grpc_port=9876)
+    assert any("network exposure" in line for line in lines)
+    assert not any("ssh -N" in line for line in lines)
+
+
+def test_the_default_bind_message_is_unchanged(dash):
+    """Control: the posture that already worked reads exactly as before."""
+    assert dash.web_viewer_lines(bind=dash.DEFAULT_BIND, web_port=9090, grpc_port=9876) == [
+        "Rerun web viewer: http://127.0.0.1:9090/?url=rerun%2Bhttp%3A%2F%2F127.0.0.1%3A9876%2Fproxy",
+        "bound to 127.0.0.1 (loopback only). From a remote machine, tunnel both ports first:",
+        "  ssh -N -L 9090:127.0.0.1:9090 -L 9876:127.0.0.1:9876 user@this-host",
+        "then open the URL above in your local browser.",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("bind", "loopback"),
+    [
+        ("127.0.0.1", True),
+        ("127.0.0.2", True),
+        ("127.1.2.3", True),
+        ("::1", True),
+        ("0.0.0.0", False),  # binds every interface; not itself loopback
+        ("::", False),
+        ("10.0.0.5", False),
+        ("localhost", False),  # a name, which --bind refuses
+        ("", False),
+        ("not-an-address", False),
+    ],
+)
+def test_is_loopback_bind_is_class_membership(dash, bind, loopback):
+    assert dash.is_loopback_bind(bind) is loopback
+
+
+def test_serve_web_with_rerun_absent_raises_the_install_hint(dash, monkeypatch):
+    """--serve-web is an explicit ask: no silent terminal fall-through."""
+
+    def _absent(*_args, **_kwargs):
+        raise ImportError('pip install "rerun-sdk"')
+
+    monkeypatch.setattr(dash, "require_optional", _absent)
+    with pytest.raises(ImportError, match="rerun-sdk"):
+        dash.make_renderer(serve_web=True)
+
+
+class _FakeServerProc:
+    """A web-server child that is alive until terminated."""
+
+    def __init__(self, journal: list[str]):
+        self.returncode: int | None = None
+        self._journal = journal
+
+    def poll(self):
+        return self.returncode
+
+    def terminate(self):
+        self._journal.append("terminate")
+        self.returncode = 0
+
+    def kill(self):
+        self.returncode = -9
+
+    def wait(self, timeout=None):
+        return self.returncode
+
+
+class _FakeRerun:
+    """Records the init/connect/disconnect calls the serve path must make."""
+
+    def __init__(self, journal: list[str]):
+        self.init_calls: list[dict] = []
+        self.connect_urls: list[str] = []
+        self._journal = journal
+
+    def init(self, app_id, spawn):
+        self.init_calls.append({"app_id": app_id, "spawn": spawn})
+
+    def connect_grpc(self, url):
+        self.connect_urls.append(url)
+
+    def disconnect(self):
+        self._journal.append("disconnect")
+
+
+def test_serve_web_streams_into_the_server_it_started_and_close_stops_it(dash, monkeypatch, capsys):
+    journal: list[str] = []
+    fake_rr = _FakeRerun(journal)
+    fake_proc = _FakeServerProc(journal)
+    monkeypatch.setattr(dash, "require_optional", lambda *a, **k: fake_rr)
+    monkeypatch.setattr(dash.RerunRenderer, "_start_web_server", staticmethod(lambda **_kw: fake_proc))
+    renderer = dash.make_renderer(serve_web=True, bind="127.0.0.1", web_port=19090, grpc_port=19876)
+    # No native viewer is spawned; the log stream dials the served gRPC port.
+    assert fake_rr.init_calls == [{"app_id": "strands-fleet-dashboard", "spawn": False}]
+    assert fake_rr.connect_urls == ["rerun+http://127.0.0.1:19876/proxy"]
+    out = capsys.readouterr().out
+    assert "http://127.0.0.1:19090/?url=" in out
+    renderer.close()
+    # The stream flushes/detaches BEFORE the server dies (killing the server
+    # first fails the final flush against a vanished peer), and no orphan is
+    # left holding the ports for the next run.
+    assert journal == ["disconnect", "terminate"]
+    renderer.close()  # idempotent
+    assert journal == ["disconnect", "terminate"]
+
+
+@pytest.mark.parametrize(
+    ("argv", "match"),
+    [
+        (["--serve-web", "--no-rerun"], "mutually exclusive"),
+        (["--web-port", "8080"], "require --serve-web"),
+        (["--grpc-port", "8081"], "require --serve-web"),
+        (["--bind", "0.0.0.0"], "require --serve-web"),
+        (["--serve-web", "--web-port", "0"], "1-65535"),
+        (["--serve-web", "--grpc-port", "70000"], "1-65535"),
+        (["--serve-web", "--web-port", "9000", "--grpc-port", "9000"], "must differ"),
+        (["--serve-web", "--bind", " "], "non-empty"),
+    ],
+)
+def test_serve_web_flag_domain_is_refused_before_anything_starts(dash, argv, match):
+    """Every refusal lands before a renderer, a subprocess or a mesh peer."""
+    with pytest.raises(SystemExit, match=match):
+        dash.main(argv)
 
 
 # -- dashboard: the mesh surface is classified, not assumed --------------------

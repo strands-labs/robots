@@ -1,9 +1,10 @@
 """The reproducibility seed a TrainSpec asks for is one shared non-negative-count domain.
 
 :attr:`~strands_robots.training.base.TrainSpec.seed` is the field a caller sets
-to make a run reproducible, and four backends read it - LeRobot (``cfg.seed`` and
-a ``--seed=`` argv token), Cosmos (a ``trainer.seed=`` Hydra override) and the two
-RL trainers (``torch.manual_seed``). Before this contract none of them checked it,
+to make a run reproducible, and five backends read it - LeRobot (``cfg.seed`` and
+a ``--seed=`` argv token), Cosmos (a ``trainer.seed=`` Hydra override), the two
+RL trainers (``torch.manual_seed``) and SageMaker (a string hyperparameter the
+job's container seeds from). Before this contract none of them checked it,
 and the appliers do not agree about a single value:
 
 * ``torch.manual_seed`` reduces the value modulo ``2**64``, so a negative seed is
@@ -41,6 +42,7 @@ from strands_robots.training.cosmos3 import Cosmos3Trainer
 from strands_robots.training.groot import Gr00tTrainer
 from strands_robots.training.lerobot import LerobotTrainer
 from strands_robots.training.mock import MockTrainer
+from tests.training._spec_field_reads import reads_spec_field
 
 # The backends that seed from the field. The RL trainers are exercised through
 # their own spec type further down (their validate() needs an RLTrainSpec).
@@ -242,11 +244,14 @@ def _trainer_modules() -> list[pathlib.Path]:
 
 
 def _reads_the_seed(source: str) -> bool:
-    """Does *source* read ``spec.seed``?"""
-    return any(
-        isinstance(node, ast.Attribute) and node.attr == "seed" and getattr(node.value, "id", None) == "spec"
-        for node in ast.walk(ast.parse(source))
-    )
+    """Does *source* read ``spec.seed``, by name or through a forwarding table?
+
+    Delegated to the shared rule so this guard and its siblings cannot disagree
+    about what counts as a read - a transport-only provider reads every field it
+    forwards through ``getattr(spec, field)`` and names none of them in an
+    attribute access.
+    """
+    return reads_spec_field(source, ("seed",))
 
 
 def _calls_the_gate(source: str) -> bool:
@@ -268,7 +273,7 @@ class TestOneOwnerForTheSeedDomain:
     def test_the_scan_finds_the_seeding_backends(self) -> None:
         """Non-vacuity: a mis-rooted scan cannot report a clean sweep of nothing."""
         readers = {p.name for p in _trainer_modules() if _reads_the_seed(p.read_text())}
-        assert readers == {"cosmos3.py", "lerobot.py", "fast_sac.py", "ppo.py"}
+        assert readers == {"cosmos3.py", "lerobot.py", "fast_sac.py", "ppo.py", "sagemaker.py"}
 
     def test_every_backend_that_seeds_routes_through_the_shared_gate(self) -> None:
         adrift = sorted(
@@ -290,6 +295,17 @@ class TestOneOwnerForTheSeedDomain:
     def test_the_scanners_detect_a_planted_defect(self) -> None:
         """A scanner that silently matched nothing would look like a clean tree."""
         planted = "def validate(self, spec):\n    return [] if spec.seed is None else []\n"
+        assert _reads_the_seed(planted)
+        assert not _calls_the_gate(planted)
+
+    def test_the_scanners_detect_a_table_driven_defect(self) -> None:
+        """A backend that forwards the field by name is a reader too.
+
+        The form a transport-only provider takes: no attribute access mentions
+        the field, so a scan keyed on ``spec.seed`` alone reports a clean sweep
+        while this backend skips the gate.
+        """
+        planted = 'FIELDS = ("seed",)\ndef validate(self, spec):\n    return [getattr(spec, f) for f in FIELDS]\n'
         assert _reads_the_seed(planted)
         assert not _calls_the_gate(planted)
 
