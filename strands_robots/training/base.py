@@ -15,10 +15,18 @@ post-tuned* - and those pipelines genuinely differ per provider:
   **DCP checkpoint conversion** prepare step and a **DCP -> safetensors** export
   step. 8xH100 floor.
 
-All three run **in-process** (imported and called as libraries, no subprocess);
-multi-GPU goes through torch's programmatic ``elastic_launch``.
+Those three are **local** backends: they run in-process (imported and called as
+libraries, no subprocess) and multi-GPU goes through torch's programmatic
+``elastic_launch``. A provider may instead be pure **transport**:
 
-All three nonetheless converge on:
+* **SageMaker** - submit the same spec as one managed AWS training job whose
+  container image packages one of the local paths, so this provider imports no
+  training library and the run outlives the submitting process.
+
+Which shape a provider is decides its :meth:`Trainer.train` return contract - a
+local run always finishes inside the call, a submitted one need not.
+
+All of them nonetheless converge on:
 
 1. the same **dataset format** - LeRobotDataset v3 (what
    :class:`~strands_robots.dataset_recorder.DatasetRecorder` already writes), and
@@ -233,12 +241,17 @@ class Trainer(ABC):
     loadable artifact a run produced; :meth:`status` is an optional best-effort
     verdict for backends that can poll a still-running job.
 
-    Concrete trainers are thin adapters that **import the backend package and
-    call its own training function in-process** (LeRobot ``train(cfg)``, GR00T
-    ``experiment.run(config)``, Cosmos ``train.launch(config, args)``) - they do
-    NOT reimplement training and do NOT shell out to a subprocess. Multi-GPU is
-    driven via torch's programmatic ``elastic_launch`` (the engine behind
-    ``torchrun``), still in-process.
+    Concrete trainers come in two shapes, and neither reimplements training. A
+    **local** trainer is a thin adapter that **imports the backend package and
+    calls its own training function in-process** (LeRobot ``train(cfg)``, GR00T
+    ``experiment.run(config)``, Cosmos ``train.launch(config, args)``) - it does
+    NOT shell out to a subprocess, and multi-GPU is driven via torch's
+    programmatic ``elastic_launch`` (the engine behind ``torchrun``), still
+    in-process. A **transport** trainer imports no training library at all: it
+    submits the same :class:`TrainSpec` to a managed runner whose image packages
+    a local trainer (``sagemaker`` -> one SageMaker training job). Only the
+    local shape necessarily finishes inside the :meth:`train` call; see that
+    method for the return contract that follows from this.
 
     The field-scoped shared domains below (:meth:`_seed_problems` and its
     siblings) are each obliged of "a backend that reads the field", and a
@@ -757,31 +770,41 @@ class Trainer(ABC):
 
     @abstractmethod
     def train(self, spec: TrainSpec) -> TrainResult:
-        """Run the backend's training in-process and return the final result.
+        """Run the backend's training and return the result of that run.
 
         Responsible for: building the backend's typed config from the
         :class:`TrainSpec`, wiring resume, selecting single- vs multi-GPU
         (``elastic_launch`` for ``num_gpus > 1``), invoking the backend's own
         training function, and surfacing the checkpoint dir + metrics verdict.
 
-        Training is **synchronous**: this call blocks until the run finishes (or
-        raises) and returns a terminal ``TrainResult`` (``success``/``error``)
-        with ``metrics`` already populated - there is no detached job to poll.
-        ``status()`` exists only for backends that CAN report on a separately
-        launched, still-running job; the default returns an informative error.
+        A **local** trainer runs the training in-process, so the call is
+        **synchronous**: it blocks until the run finishes (or raises) and
+        returns a terminal ``TrainResult`` (``success``/``error``) with
+        ``metrics`` already populated, and there is no detached job to poll. A
+        **transport** trainer submits a run that outlives this process, so its
+        result MAY be non-terminal: ``running`` with a ``job_id`` that
+        :meth:`status` polls, and no ``checkpoint_dir`` yet.
+
+        A caller therefore has to branch on all three
+        :attr:`TrainResult.status` values rather than read "not ``error``" as
+        finished: a completed-run report rendered for a ``running`` result names
+        an artifact that does not exist yet.
         Every implementation MUST call :meth:`validate` first and fail closed.
         """
 
     def status(self, job_id: str) -> TrainResult:
-        """Optional "RUNNING != learning" verdict for a separately launched job.
+        """Optional "RUNNING != learning" verdict for a job still in flight.
 
-        Because :meth:`train` is synchronous and already returns the full
-        ``metrics`` verdict, this is only meaningful for a job launched OUT of
-        band (e.g. a long cosmos run started under an external launcher) that a
-        caller wants to poll by id. Most backends do not track detached jobs, so
-        the default returns an informative ``error``. Backends that DO override
-        parse their training logs for ``latest_step`` / ``latest_loss`` / a
-        ``learning`` boolean.
+        Two kinds of job reach here: one launched OUT of band (e.g. a long
+        cosmos run started under an external launcher) that a caller wants to
+        poll by id, and one a **transport** :meth:`train` submitted and handed
+        back as ``running`` because it outlives the submitting process. A local
+        trainer produces neither - its ``train`` already returned the full
+        ``metrics`` verdict - so most backends track no job at all and inherit
+        this default, which returns an informative ``error``. Backends that DO
+        override either read the runner's own job API (``sagemaker`` ->
+        ``DescribeTrainingJob``) or parse their training logs for
+        ``latest_step`` / ``latest_loss`` / a ``learning`` boolean.
         """
         return TrainResult(
             status="error",

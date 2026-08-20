@@ -476,6 +476,89 @@ def test_web_viewer_lines_say_so_when_bound_wider_than_loopback(dash):
     assert not any("ssh -N" in line for line in lines)  # the recipe is for the loopback posture
 
 
+@pytest.mark.parametrize("bind", ["127.0.0.2", "127.1.2.3", "::1"])
+def test_a_loopback_bind_other_than_the_default_is_not_network_exposure(dash, bind):
+    """The posture is the address's class, not equality with one spelling of it.
+
+    ``127.0.0.0/8`` is loopback in its entirety and the Rerun CLI binds it:
+    measured on rerun-sdk 0.26.2, ``--bind 127.0.0.2`` passes the dashboard's
+    own readiness gate with both listeners serving. Reported as network
+    exposure, that startup message makes a false claim about who can reach
+    the dashboard AND withholds the tunnel recipe - on the headless remote
+    host this flag exists for, the recipe is the actionable half.
+    """
+    lines = dash.web_viewer_lines(bind=bind, web_port=9090, grpc_port=9876)
+    assert not any("network exposure" in line for line in lines), (
+        f"bind={bind} is loopback, but the startup message calls it network exposure: {lines[1]}"
+    )
+    assert any("ssh -N" in line for line in lines), (
+        f"bind={bind} is loopback and reachable only through a tunnel, but no recipe was printed: {lines}"
+    )
+
+
+def test_the_tunnel_recipe_forwards_to_the_address_the_server_is_on(dash):
+    """A forward to the default address would reach nothing on a bind that is not it."""
+    lines = dash.web_viewer_lines(bind="127.0.0.2", web_port=9090, grpc_port=9876)
+    tunnel = next((line for line in lines if "ssh -N" in line), None)
+    assert tunnel is not None, f"no tunnel recipe was printed for a loopback bind: {lines}"
+    assert "-L 9090:127.0.0.2:9090" in tunnel
+    assert "-L 9876:127.0.0.2:9876" in tunnel
+    assert "127.0.0.1" not in tunnel
+
+
+def test_an_ipv6_literal_is_bracketed_wherever_a_port_follows_it(dash):
+    """Unbracketed, the address runs into the port separator and parses as neither."""
+    lines = dash.web_viewer_lines(bind="::1", web_port=9090, grpc_port=9876)
+    assert "http://[::1]:9090/" in lines[0]
+    assert "%5B%3A%3A1%5D%3A9876" in lines[0]  # the quoted rerun+http://[::1]:9876 stream URI
+    assert "http://::1:9090" not in lines[0]
+    tunnel = next(line for line in lines if "ssh -N" in line)
+    assert "-L 9090:[::1]:9090" in tunnel
+
+
+def test_a_hostname_is_not_classified_because_the_server_refuses_one(dash):
+    """Control: the classification and the CLI's accepted domain must not diverge.
+
+    ``--bind`` takes an IP literal only - measured, ``--bind localhost`` is
+    refused with "invalid IP address syntax" - so a name never reaches a
+    serving process. Parsing the address keeps the two in step; a fixed set of
+    loopback spellings would print a tunnel recipe for a bind the server will
+    not accept.
+    """
+    lines = dash.web_viewer_lines(bind="localhost", web_port=9090, grpc_port=9876)
+    assert any("network exposure" in line for line in lines)
+    assert not any("ssh -N" in line for line in lines)
+
+
+def test_the_default_bind_message_is_unchanged(dash):
+    """Control: the posture that already worked reads exactly as before."""
+    assert dash.web_viewer_lines(bind=dash.DEFAULT_BIND, web_port=9090, grpc_port=9876) == [
+        "Rerun web viewer: http://127.0.0.1:9090/?url=rerun%2Bhttp%3A%2F%2F127.0.0.1%3A9876%2Fproxy",
+        "bound to 127.0.0.1 (loopback only). From a remote machine, tunnel both ports first:",
+        "  ssh -N -L 9090:127.0.0.1:9090 -L 9876:127.0.0.1:9876 user@this-host",
+        "then open the URL above in your local browser.",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("bind", "loopback"),
+    [
+        ("127.0.0.1", True),
+        ("127.0.0.2", True),
+        ("127.1.2.3", True),
+        ("::1", True),
+        ("0.0.0.0", False),  # binds every interface; not itself loopback
+        ("::", False),
+        ("10.0.0.5", False),
+        ("localhost", False),  # a name, which --bind refuses
+        ("", False),
+        ("not-an-address", False),
+    ],
+)
+def test_is_loopback_bind_is_class_membership(dash, bind, loopback):
+    assert dash.is_loopback_bind(bind) is loopback
+
+
 def test_serve_web_with_rerun_absent_raises_the_install_hint(dash, monkeypatch):
     """--serve-web is an explicit ask: no silent terminal fall-through."""
 

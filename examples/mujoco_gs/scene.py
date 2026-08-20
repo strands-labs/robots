@@ -210,17 +210,20 @@ def _erect_arm(sim, robot_name: str = "arm") -> bool:
 
         kq = m.key_qpos[key_id]
         ns = f"{robot_name}/"
-        hinge_slide = (mujoco.mjtJoint.mjJNT_HINGE, mujoco.mjtJoint.mjJNT_SLIDE)
+        # Joint types are compared BY VALUE: ``m.jnt_type[j]`` is a numpy integer and
+        # ``x in (enum, ...)`` puts the enum on the left of ``==``, where a pybind11
+        # enum does not match a numpy integer on every mujoco build.
+        hinge_slide = (int(mujoco.mjtJoint.mjJNT_HINGE), int(mujoco.mjtJoint.mjJNT_SLIDE))
         # 1) qpos for the arm's own actuated joints.
         for j in range(m.njnt):
             jn = mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_JOINT, j) or ""
-            if jn.startswith(ns) and m.jnt_type[j] in hinge_slide:
+            if jn.startswith(ns) and int(m.jnt_type[j]) in hinge_slide:
                 adr = m.jnt_qposadr[j]
                 d.qpos[adr] = kq[adr]
         # 2) actuator targets so position actuators hold the pose.
         for a in range(m.nu):
             jid = int(m.actuator_trnid[a, 0])
-            if jid >= 0 and m.jnt_type[jid] in hinge_slide:
+            if jid >= 0 and int(m.jnt_type[jid]) in hinge_slide:
                 d.ctrl[a] = kq[m.jnt_qposadr[jid]]
         mujoco.mj_forward(m, d)
         logger.info("Arm set to 'home' pose (erected on benchtop).")

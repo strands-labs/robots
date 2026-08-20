@@ -74,15 +74,19 @@ _EXPECTED_TOOLS = frozenset(
         "lerobot_camera",
         "lerobot_teleoperate",
         "lerobot_train",
+        "load_episode",
         "pose_tool",
+        "read_predicate_verdict",
         "robot_mesh",
         "run_policy",
+        "sample_frames",
         "serial_tool",
         "train_policy",
         "use_lerobot",
         "use_ros",
         "use_rosbridge",
         "use_rtps",
+        "write_label",
     }
 )
 

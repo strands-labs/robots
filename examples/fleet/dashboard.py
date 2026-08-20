@@ -57,6 +57,7 @@ import os
 os.environ.setdefault("STRANDS_MESH_LOCAL_DEV", "1")
 
 import argparse
+import ipaddress
 import subprocess
 import sys
 import tempfile
@@ -319,6 +320,50 @@ def serve_connect_host(bind: str) -> str:
     return "127.0.0.1" if bind == "0.0.0.0" else bind
 
 
+def is_loopback_bind(bind: str) -> bool:
+    """Whether a server bound to ``bind`` is reachable only from this host.
+
+    Membership in the loopback class, not equality with one spelling of it:
+    ``127.0.0.1`` is the default, but the whole ``127.0.0.0/8`` block is
+    loopback too, and the Rerun CLI accepts it - measured on rerun-sdk 0.26.2,
+    ``--bind 127.0.0.2`` binds both listeners and serves. An operator who
+    isolates the viewer on its own loopback address is still on loopback, so
+    the startup message owes them the tunnel recipe rather than a network-
+    exposure warning.
+
+    A hostname is deliberately not classified. ``--bind`` takes an IP literal
+    only (measured: ``--bind localhost`` is refused with "invalid IP address
+    syntax"), so parsing the address here means this classification and the
+    server's own accepted domain cannot disagree - a name the server refuses
+    never reaches the message at all.
+    """
+    try:
+        return ipaddress.ip_address(bind).is_loopback
+    except ValueError:
+        # Not an IP literal, so not an address the server would bind either.
+        return False
+
+
+def url_host(host: str) -> str:
+    """``host`` as a URL authority: an IPv6 literal is bracketed (RFC 3986).
+
+    Unbracketed, an IPv6 address runs into the port separator and the result
+    parses as neither (``http://::1:9090``), so the URL the message prints
+    would not open and the ``ssh -L`` forward would not parse. The bracket
+    keeps whatever :func:`is_loopback_bind` classifies spellable; no IPv6
+    bind is reachable on rerun-sdk 0.26.2 (measured: the gRPC listener binds
+    ``[::1]`` and the process then exits ``Could not parse address``), so this
+    is what keeps the two halves consistent rather than a reachable fix.
+    """
+    try:
+        if ipaddress.ip_address(host).version == 6:
+            return f"[{host}]"
+    except ValueError:
+        # Not an IP literal, so not a form that collides with the port separator.
+        pass
+    return host
+
+
 def rerun_binary() -> str:
     """Resolve the native rerun-cli binary that ships inside the rerun-sdk wheel.
 
@@ -379,14 +424,20 @@ def web_viewer_lines(*, bind: str, web_port: int, grpc_port: int) -> list[str]:
     the viewer from the web port and then dials the gRPC port itself. Any
     wider bind says so explicitly instead: opting into network exposure is
     the caller's deliberate act and the output should read like one.
+
+    Which posture a bind has is :func:`is_loopback_bind`'s class membership,
+    not equality with the default spelling, and the recipe forwards to the
+    address the server is actually on: ``--bind 127.0.0.2`` serves on
+    loopback, so a warning about who can reach it would be false and a
+    forward to ``127.0.0.1`` would reach nothing.
     """
-    host = serve_connect_host(bind)
+    host = url_host(serve_connect_host(bind))
     grpc_uri = f"rerun+http://{host}:{grpc_port}/proxy"
     url = f"http://{host}:{web_port}/?url={urllib.parse.quote(grpc_uri, safe='')}"
     lines = [f"Rerun web viewer: {url}"]
-    if bind == DEFAULT_BIND:
-        lines.append("bound to 127.0.0.1 (loopback only). From a remote machine, tunnel both ports first:")
-        lines.append(f"  ssh -N -L {web_port}:127.0.0.1:{web_port} -L {grpc_port}:127.0.0.1:{grpc_port} user@this-host")
+    if is_loopback_bind(bind):
+        lines.append(f"bound to {bind} (loopback only). From a remote machine, tunnel both ports first:")
+        lines.append(f"  ssh -N -L {web_port}:{host}:{web_port} -L {grpc_port}:{host}:{grpc_port} user@this-host")
         lines.append("then open the URL above in your local browser.")
     else:
         lines.append(

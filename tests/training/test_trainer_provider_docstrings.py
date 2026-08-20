@@ -6,10 +6,12 @@ contract (``validate`` / ``prepare`` / ``train`` / ``export`` / ``status`` /
 :class:`~strands_robots.training.mock.MockTrainer` follows suit. The real
 providers (:class:`~strands_robots.training.cosmos3.Cosmos3Trainer`,
 :class:`~strands_robots.training.groot.Gr00tTrainer`,
-:class:`~strands_robots.training.lerobot.LerobotTrainer`) genuinely differ per
-backend - each ``validate`` checks backend-specific inputs and each ``train``
-drives a different in-process training function - so every public override needs
-its own docstring rather than silently leaning on the inherited one.
+:class:`~strands_robots.training.lerobot.LerobotTrainer`,
+:class:`~strands_robots.training.sagemaker.SagemakerTrainer`) genuinely differ
+per backend - each ``validate`` checks backend-specific inputs, and each
+``train`` either drives a different in-process training function or submits the
+spec to a managed runner - so every public override needs its own docstring
+rather than silently leaning on the inherited one.
 
 This guard walks the provider modules and fails if any concrete ``Trainer``
 subclass defines a public method or property with no docstring.

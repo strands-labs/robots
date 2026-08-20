@@ -206,6 +206,12 @@ STRANDS_MESH_MULTICAST=true python examples/fleet/dashboard.py --serve-web
 ssh -N -L 9090:127.0.0.1:9090 -L 9876:127.0.0.1:9876 user@remote-box
 ```
 
+Any loopback address gets that tunnel recipe, not just the default one:
+`--bind` takes an IP literal, and the whole `127.0.0.0/8` block is reachable
+only from the host, so `--bind 127.0.0.2` (isolating the viewer on its own
+loopback address) prints the recipe forwarded to `127.0.0.2`. The
+network-exposure warning is for a bind that really is wider.
+
 The web viewer is a view, not a surface: it changes only the render
 transport, and the mesh peer stays subscribe-only exactly as above. With
 rerun-sdk absent, `--serve-web` fails with the install hint rather than
