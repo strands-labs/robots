@@ -1458,12 +1458,20 @@ class TestStartRestartDispatch:
 
     def test_restart_stops_then_starts_in_order(self):
         """``restart`` tears down the existing service before starting the new
-        one, with a pause in between, and returns the start result."""
+        one, with a pause in between, and returns the start result.
+
+        The ``_stop_service`` stub answers with a real success envelope because
+        ``restart`` reads the teardown verdict before it rebinds the port - a
+        stub returning ``None`` cannot express either verdict, so it could not
+        tell an honoured teardown from a discarded one.
+        """
         calls: list[str] = []
         with (
             patch(
                 "strands_robots.tools.gr00t_inference._stop_service",
-                side_effect=lambda port: calls.append("stop"),
+                side_effect=lambda port: (
+                    calls.append("stop") or {"status": "success", "port": port, "message": "stopped"}
+                ),
             ),
             patch(
                 "strands_robots.tools.gr00t_inference._start_service",

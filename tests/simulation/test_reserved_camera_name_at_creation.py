@@ -182,13 +182,19 @@ class TestMujocoAddCamera:
         first = sim.add_camera("default", position=[1.0, 1.0, 1.0], target=[0.0, 0.0, 0.0])
         assert first["status"] == "error"
         assert "reserved" in first["content"][0]["text"]
-        # The old message's remedy, followed literally.
-        assert sim.remove_camera("default")["status"] == "success"
+        # The old message's remedy, followed literally: it is refused for the
+        # same stated reason, so the sequence cannot be completed at all.
+        removed = sim.remove_camera("default")
+        assert removed["status"] == "error", removed
+        assert "reserved" in removed["content"][0]["text"]
         second = sim.add_camera("default", position=[9.0, 9.0, 9.0], target=[0.0, 0.0, 0.0])
         assert second["status"] == "error", second
         assert "reserved" in second["content"][0]["text"]
-        assert "default" not in sim._world.cameras
-        assert _compiled_camera_names(sim) == []
+        # The advertised alias and the compiled camera both survived every
+        # step. Pre-fix the removal deleted the compiled camera the scene
+        # ships with (this assertion read ``[]``) and nothing could restore it.
+        assert "default" in sim._world.cameras
+        assert _compiled_camera_names(sim) == ["default"]
 
     def test_the_reserved_check_precedes_the_duplicate_test(self, sim) -> None:
         """Ordering is the property: "already exists" was the misleading answer.

@@ -156,7 +156,12 @@ class BenchmarkProtocol(ABC):
         Default implementation enforces robot compatibility:
 
         * If the sim has no robots, add :attr:`default_robot` via
-          ``sim.add_robot(name="robot", data_config=default_robot)``.
+          ``sim.add_robot(name="robot", data_config=default_robot)``. A refused
+          add raises :class:`RuntimeError` carrying the backend's reason rather
+          than returning, so the episode does not run against a robotless
+          scene: :meth:`~strands_robots.simulation.policy_runner.PolicyRunner.evaluate`
+          converts it into a structured error naming this benchmark, which a
+          caller can tell apart from a policy that scored zero.
         * Otherwise, validate that every loaded robot's ``data_config`` is
           in :attr:`supported_robots` (when non-empty). Mismatches raise
           :class:`BenchmarkCompatibilityError` - the eval loop catches that
@@ -170,10 +175,31 @@ class BenchmarkProtocol(ABC):
             sim: The engine being driven.
             rng: Seeded per-episode RNG. Always use this - don't create your
                 own ``random.Random()`` or seeding will be non-reproducible.
+
+        Raises:
+            RuntimeError: If ``sim.add_robot`` refuses :attr:`default_robot`.
+            BenchmarkCompatibilityError: If a loaded robot's ``data_config`` is
+                outside :attr:`supported_robots`.
         """
         robots = sim.list_robots()
         if not robots:
-            sim.add_robot(name="robot", data_config=self.default_robot)
+            result = sim.add_robot(name="robot", data_config=self.default_robot)
+            # Checked for the same reason the sibling setup call in
+            # ``DeclarativeBenchmark.on_episode_start`` checks its own
+            # ``load_scene`` envelope. A refused robot is a setup failure, and
+            # ``add_robot`` refuses for reasons a spec author hits: a
+            # ``default_robot`` naming a hardware-only registry entry, an asset
+            # that is not on disk, a model the backend cannot load. Dropping the
+            # refusal leaves the episode to run against a robotless scene and
+            # report the fabricated 0% success rate that ``max_steps`` is
+            # validated to prevent, with the reason - which names the robot and
+            # what to do about it - discarded. ``isinstance`` keeps a duck-typed
+            # sim that returns nothing from ``add_robot`` working.
+            if isinstance(result, dict) and result.get("status") == "error":
+                msg = (result.get("content") or [{}])[0].get("text", "")
+                raise RuntimeError(
+                    f"{type(self).__name__}: add_robot(data_config={self.default_robot!r}) failed: {msg}"
+                )
             return
 
         # Validate all loaded robots against supported_robots
