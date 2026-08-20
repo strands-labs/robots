@@ -11,12 +11,23 @@ jobs:
   test-lint:
     name: Test and Lint
     runs-on: ubuntu-latest
-    # The suite is tightly distributed - 19-27 min over the last 20 successful
-    # runs, max 26.5 - so 45 is ~1.7x the observed ceiling and costs a healthy
-    # run nothing. Without it this job inherits the 6-hour default, which is how
-    # a test that had already printed its verdict at 18 min went on to hold the
+    # Sized so that every bounded step below can spend its ENTIRE allowance and
+    # the suite still finishes inside this bound - the two were sized
+    # independently and stopped being compatible. Over 663 successful runs in
+    # the 10 days to 2026-08-19: `Run tests` p50 22.6 / p90 27.2 / max 29.1 min,
+    # and the unbounded remainder (checkout, setup-python, install, lint) 4.4
+    # min. Against the apt step's own 12-minute bound that is 29.1 + 12 + 4.4 =
+    # 45.5 min of legal spend, so 45 could be reaped with nothing wrong and no
+    # step named - the exact outcome that step bound exists to prevent (#2456).
+    # 60 leaves ~14.5 min of margin. It is also `_CEILING_MINUTES` in
+    # tests/test_workflow_jobs_are_bounded.py, deliberately: the suite grew
+    # +0.95 min/day over that window (p50 23.0 -> 32.7, R^2 0.93, driven by
+    # +3054 test functions), so the next raise cannot be spent here and has to
+    # be argued as suite runtime instead (#2457).
+    # Without any bound this job inherits the 6-hour default, which is how a
+    # test that had already printed its verdict at 18 min went on to hold the
     # runner for another 82 (#2239).
-    timeout-minutes: 45
+    timeout-minutes: 60
     permissions:
       contents: read
     steps:

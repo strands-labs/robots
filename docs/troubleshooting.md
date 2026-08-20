@@ -64,7 +64,7 @@ description: Error → fix table for the most common gotchas across install, sim
 | `start_recording` fails: lerobot missing | `[lerobot]` not installed | `uv pip install "strands-robots[lerobot]"` |
 | Need MP4 without LeRobot | - | Use `start_cameras_recording` / `stop_cameras_recording` |
 | Empty MP4 files | Stopped before any frames | Check `get_recording_status()` frame count |
-| Push fails | Not logged into HF | `huggingface-cli login` |
+| Push fails | Not logged into HF | `hf auth login` (the `huggingface-cli` entry point is not published at the declared `huggingface_hub>=1.5` floor) |
 
 ## Mesh
 

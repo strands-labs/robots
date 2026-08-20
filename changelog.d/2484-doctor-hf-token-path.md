@@ -1,0 +1,3 @@
+### Fixed
+
+- **doctor**: `check_hf_auth` reports on the token file `huggingface_hub` will actually read, resolving it from `HF_TOKEN_PATH` / `HF_HOME` / `XDG_CACHE_HOME` as the Hub does instead of a hardcoded `~/.cache/huggingface/token`, and names that path in its verdict. A relocated cache previously read as "not logged in" while the Hub held a token, and a stale token at the default path read as "logged in" for an environment where the Hub resolved none. The login command offered is now `hf auth login`, matching the rest of the package: `huggingface-cli` is not published as a console script at the declared `huggingface_hub>=1.5` floor, and the later 1.x releases that install it refuse to run.
