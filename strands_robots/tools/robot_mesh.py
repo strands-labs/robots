@@ -47,6 +47,7 @@ from strands import tool
 from strands.types.tools import ToolContext
 
 from strands_robots.mesh import security as _security
+from strands_robots.mesh.core import mesh_disabled_by_env
 from strands_robots.utils import finite_number_error, positive_count_error, positive_finite_number_error
 
 # Literal peer-id pattern for watch(target=...). Peer ids are an enumerable
@@ -599,7 +600,32 @@ atexit.register(_stop_gateway_mesh)
 
 
 def _gateway_mesh() -> Any | None:
-    """Lazily create the robot-less gateway Mesh (None if zenoh unavailable)."""
+    """Lazily create the robot-less gateway Mesh.
+
+    Returns None when zenoh is unavailable, and -- before trying -- when
+    ``STRANDS_MESH`` trips the hard kill switch.
+
+    This is the one ``Mesh`` in the tree built without going through
+    :func:`~strands_robots.mesh.core.init_mesh`, so it did not inherit that
+    function's kill-switch check. README documents ``STRANDS_MESH=false`` as
+    overriding even an explicit ``mesh=True``, but an operator who set it and
+    then used the ``robot_mesh`` tool from a robot-less process still got a real
+    Zenoh session, this peer advertised to the fleet as ``gateway-*``, and the
+    heartbeat, state and seven sensor threads :meth:`Mesh.start` spawns -- for
+    the life of the process, since the result is cached here until
+    :func:`_stop_gateway_mesh` runs at exit. A kill switch that leaves nine
+    threads publishing is not a kill switch.
+
+    The check is deliberately outside ``_GATEWAY_LOCK``: it reads one env var and
+    touches no shared state, and a disabled mesh should not queue behind a
+    bring-up that is holding the lock through its discovery sleep.
+    """
+    if mesh_disabled_by_env():
+        logger.debug(
+            "robot_mesh: gateway mesh not started: STRANDS_MESH=%r disables the mesh",
+            os.getenv("STRANDS_MESH", ""),
+        )
+        return None
     with _GATEWAY_LOCK:
         cached = _GATEWAY.get("mesh")
         if cached is not None and getattr(cached, "alive", False):
@@ -1297,6 +1323,15 @@ def robot_mesh(
     # All remaining actions need an outbound mesh.
     mesh = _resolve_mesh(target)
     if mesh is None:
+        if mesh_disabled_by_env():
+            # Naming the variable matters more here than anywhere else in this
+            # function: the generic remedy below is to construct a Robot(), and
+            # the kill switch would refuse that mesh too, so an operator
+            # following it learns nothing and tries twice.
+            return _err(
+                f"mesh disabled: STRANDS_MESH={os.getenv('STRANDS_MESH', '')!r} is a hard kill switch. "
+                f"Unset it (or set it to true) to use action={action!r}."
+            )
         return _err("no local mesh found. Construct a Robot()/Simulation() first to join the mesh, then retry.")
 
     # ── action: tell ──────────────────────────────────────────────────────

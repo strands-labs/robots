@@ -39,6 +39,7 @@ from strands_robots.training.cosmos3 import Cosmos3Trainer
 from strands_robots.training.groot import Gr00tTrainer
 from strands_robots.training.lerobot import LerobotTrainer
 from strands_robots.training.mock import MockTrainer
+from strands_robots.training.sagemaker import SagemakerTrainer
 
 # The two factors of the run size, and the values no backend can honor. Split
 # by failure mode so a test can say which contract each value belongs to.
@@ -58,7 +59,7 @@ UNUSABLE = NON_POSITIVE + WRONG_TYPE + NOT_COMPARABLE
 
 # Every backend that reads the run size. The RL trainers are deliberately
 # absent - see TestTheRLTrainersIgnoreAFieldTheyDoNotRead.
-SUPERVISED_TRAINERS = (MockTrainer, Cosmos3Trainer, Gr00tTrainer, LerobotTrainer)
+SUPERVISED_TRAINERS = (MockTrainer, Cosmos3Trainer, Gr00tTrainer, LerobotTrainer, SagemakerTrainer)
 
 
 @pytest.fixture
@@ -84,7 +85,7 @@ def _mutate(spec: TrainSpec, field: str, value: Any) -> TrainSpec:
 
 
 class TestEveryBackendRefusesAnUnusableRunSize:
-    """One domain, four backends, one verdict per value."""
+    """One domain, five backends, one verdict per value."""
 
     @pytest.mark.parametrize("trainer_cls", SUPERVISED_TRAINERS)
     @pytest.mark.parametrize("field", RUN_SIZE_FIELDS)

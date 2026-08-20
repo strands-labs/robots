@@ -189,6 +189,29 @@ STRANDS_MESH_MULTICAST=true python examples/fleet/02_cross_zone_transport.py
 python examples/fleet/dashboard.py --no-rerun --duration 10
 ```
 
+On a headless or remote host - where a fleet dashboard naturally runs - the
+native viewer has no display to open on. `--serve-web` instead serves the
+Rerun web viewer and the live log stream from the dashboard process and
+prints the ready-to-open URL (the `?url=rerun%2Bhttp...` form):
+
+```bash
+# Remote box - no display needed. Binds 127.0.0.1 by default per the repo's
+# network-exposure convention; --bind 0.0.0.0 deliberately opts into wider
+# exposure and the startup output says so.
+STRANDS_MESH_MULTICAST=true python examples/fleet/dashboard.py --serve-web
+# ports: --web-port 9090 (viewer HTTP) / --grpc-port 9876 (log stream)
+
+# Local machine - tunnel BOTH ports (the browser fetches the viewer from one
+# and dials the log stream on the other), then open the printed URL:
+ssh -N -L 9090:127.0.0.1:9090 -L 9876:127.0.0.1:9876 user@remote-box
+```
+
+The web viewer is a view, not a surface: it changes only the render
+transport, and the mesh peer stays subscribe-only exactly as above. With
+rerun-sdk absent, `--serve-web` fails with the install hint rather than
+silently falling back to the terminal renderer - the explicit ask for a web
+viewer must not degrade into tables nobody is watching.
+
 Because it attaches to the mesh and not the simulator, the dashboard works
 unchanged across every example in this suite and every backend (epic decision
 D9).

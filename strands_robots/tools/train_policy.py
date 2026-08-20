@@ -44,6 +44,37 @@ def _err(text: str) -> dict[str, Any]:
     return {"status": "error", "content": [{"text": text}]}
 
 
+def _next_step_after_train(provider: str, res: Any) -> str:
+    """Name the step that fits a train result, never a load of an absent artifact.
+
+    A non-error ``train`` result does not always carry a loadable checkpoint.
+    ``status="running"`` is the backend whose job outlives the submitting
+    process reporting that the job is still going (the SageMaker provider
+    returns it when its local poll budget expires, pollable by ``job_id``), and
+    even ``status="success"`` carries whatever
+    :meth:`~strands_robots.training.base.Trainer.latest_checkpoint` found -
+    which is ``None`` when the run wrote no discoverable checkpoint tree.
+
+    Interpolating that value into a load instruction prints the ``None``
+    sentinel and sends the caller to ``create_policy('None')``, which raises
+    ``Unknown policy provider: 'None'`` - the dead end
+    ``docs/training/overview.md`` warns about when it notes that an unchecked
+    call "hands whatever consumes ``checkpoint_dir`` a ``None`` instead". So the
+    load instruction is named only when there is an artifact to load; a run that
+    has not finished gets the step that does apply, which is polling it through
+    this same tool's ``status`` action.
+    """
+    if res.status == "running":
+        unfinished = "The run has not finished, so there is no artifact to load yet."
+        if not res.job_id:
+            return unfinished
+        poll = f"train_policy(action='status', provider='{provider}', job_id='{res.job_id}')"
+        return f"{unfinished}\nPoll it with: {poll}"
+    if res.checkpoint_dir:
+        return f"Load the result with: create_policy('{res.checkpoint_dir}')"
+    return "The run finished but reported no checkpoint path, so there is nothing to load yet."
+
+
 @tool
 def train_policy(
     action: str = "train",
@@ -274,7 +305,7 @@ def train_policy(
                             f"job_id: {res.job_id}\n"
                             f"checkpoint_dir: {res.checkpoint_dir}\n"
                             f"metrics: {res.metrics}\n"
-                            f"Load the result with: create_policy('{res.checkpoint_dir}')"
+                            f"{_next_step_after_train(provider, res)}"
                         )
                     },
                     {

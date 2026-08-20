@@ -122,6 +122,16 @@ agent("Record 50 cube-pick episodes, then post-tune lerobot ACT on the dataset "
 
 `train_policy` actions: `train`, `validate`, `status`, `export`, `list`.
 
+`train` reports the step that fits the run it got. A finished run names the
+checkpoint to load; a run that has not finished - the managed-job backend
+whose job outlives the submitting process, which returns `running` once its
+local poll budget expires - names the `status` poll for its `job_id` instead,
+and a run that wrote no discoverable checkpoint says so. The tool never offers
+`create_policy(<checkpoint_dir>)` for a result whose `checkpoint_dir` is
+`None`, because that renders as `create_policy('None')` and raises
+`Unknown policy provider: 'None'`. The run's own status always travels verbatim
+in the result's `{"json": ...}` block.
+
 ## Provider-specific knobs
 
 ### LeRobot (`lerobot_local`)

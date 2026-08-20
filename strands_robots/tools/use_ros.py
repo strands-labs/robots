@@ -152,6 +152,28 @@ def _match_blocklist(name: str, blocked: frozenset[str]) -> bool:
 
     Both sides are reduced to their canonical form first, so the caller's
     spelling and the operator's allowlist spelling do not have to agree.
+
+    The namespace-stripped arm makes one entry cover every namespaced instance of
+    that base name, and this one matcher serves both directions of the gate, where
+    that breadth means opposite things:
+
+    * On the **blocklist** it is the point and it is fail-safe - a single
+      ``/cmd_vel`` entry has to catch ``/robot_b/cmd_vel`` and every other
+      namespaced drive topic, which is why the default set is spelled bare.
+    * On the operator's **pre-approval** list (``STRANDS_ROS2_COMMAND_ALLOW``) the
+      same breadth is fail-OPEN: a ``/cmd_vel`` entry lifts the gate on every
+      robot's drive topic, not only the one being driven. That reach is documented
+      where an operator sizes the list (README, ``docs/ros2-integration.md``,
+      ``docs/security.md``) so it is chosen rather than discovered, and naming the
+      namespace (``/turtle1/cmd_vel``) scopes an approval to one robot.
+
+    Args:
+        name: A topic, service or action name as supplied by the caller.
+        blocked: Surfaces to match against - the blocklist or the operator's
+            pre-approval list.
+
+    Returns:
+        True when *name* matches an entry exactly or shares its base name.
     """
     canonical = _canonical_command_name(name)
     targets = {_canonical_command_name(entry) for entry in blocked}
@@ -188,7 +210,9 @@ def _gate_command(kind: str, name: str, tool_context: ToolContext | None) -> dic
     Returns:
         An error dict to halt the command, or None to let it proceed. Four
         outcomes, in order: the surface is not blocklisted -> proceed;
-        STRANDS_ROS2_COMMAND_ALLOW names it -> allow silently;
+        STRANDS_ROS2_COMMAND_ALLOW names it, exactly or by base name (see
+        :func:`_match_blocklist` - a bare entry covers every namespaced instance)
+        -> allow silently;
         BYPASS_TOOL_CONSENT=true -> allow with a WARNING log; otherwise prompt
         the operator, failing closed when no interrupt is reachable.
     """

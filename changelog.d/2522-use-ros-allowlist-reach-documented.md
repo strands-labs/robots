@@ -1,0 +1,3 @@
+### Fixed
+
+- **use_ros**: state the reach a `STRANDS_ROS2_COMMAND_ALLOW` entry actually has. The pre-approval list is matched by base name as well as exactly - deliberate and fail-safe for the command blocklist, fail-open here - so `/cmd_vel` pre-approves every namespaced `cmd_vel` in the graph and not only the robot being driven. The README Configuration row, `docs/ros2-integration.md`, `docs/security.md` and the gate's own docstring described the pre-approval as covering only the surfaces the operator listed; each now states the base-name reach and the remedy that scopes an approval to one robot. No behaviour change.
