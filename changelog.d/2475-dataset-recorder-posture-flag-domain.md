@@ -1,0 +1,3 @@
+### Fixed
+
+- **dataset_recorder**: `DatasetRecorder.create` and `resume` now check their posture flags (`use_videos`, `streaming_encoding`, `overwrite`) on the shared boolean domain, so the documented direct creation API and the `start_recording` facade agree on which values are usable. Read by truthiness, `overwrite="false"` (also `"no"`, `"off"`, `"0"`) deleted the dataset it was opting out of while `create` returned a working recorder, and `use_videos="false"` declared every camera as `dtype="video"` where `False` declares `"image"`. Refused before the lerobot extra is probed and before the on-disk target is touched.

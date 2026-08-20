@@ -37,7 +37,7 @@ from __future__ import annotations
 
 import random
 
-from strands_robots.utils import positive_finite_number_error
+from strands_robots.utils import positive_finite_number_error, positive_whole_number_error
 
 # Supported terrain kinds. ``"rough"`` is smoothed value-noise bumps; ``"stairs"``
 # is a flight of discrete parallel step plateaus rising along +x; ``"pyramid"`` is
@@ -235,11 +235,43 @@ def generate_heightfield(
 
     Row-major (``userdata`` order for a MuJoCo ``<hfield>``). Deterministic given
     ``(kind, resolution, seed)``. Raises ``ValueError`` for an unknown/None kind
-    or a resolution below 2.
+    or an unusable resolution.
+
+    ``resolution`` is the grid-cell count the returned length is squared from, so
+    it is measured against
+    :func:`~strands_robots.utils.positive_whole_number_error` - the shared
+    positive-discrete domain every other pixel/cell count in the package is
+    checked against - before anything is generated, exactly as ``difficulty`` is
+    measured against the continuous domain by :func:`validate_difficulty`. A bare
+    ``int(resolution)`` left three axes open, and each one produced a grid the
+    caller did not ask for or an error a caller could not act on:
+
+    * A **fractional** count was truncated silently, so the documented
+      ``resolution * resolution`` length no longer held: ``39.7`` returned 1521
+      floats for a number whose square is 1576.09, and ``2.5`` returned a 2x2
+      field. Nothing raised, and the mismatch only surfaced once the caller fed
+      the field to an ``<hfield>`` sized from the number they passed, where
+      MuJoCo reports ``elevation data length must match nrow*ncol`` - a message
+      naming neither ``resolution`` nor the truncation.
+    * A **string** was accepted outright: ``"40"`` built a 40x40 field, so a
+      resolution read from a config file or an argv string passed here and was
+      refused nowhere.
+    * ``None``, ``[]`` and ``inf`` raised ``TypeError`` / ``OverflowError`` from
+      inside ``int()``. ``ValueError`` is this module's error contract - it is
+      what :func:`validate_terrain` and :func:`validate_difficulty` raise and
+      what the ``create_world`` implementations narrow to when turning a terrain
+      refusal into a ``{"status": "error"}`` tool result - so those two classes
+      escaped it entirely rather than being reported through it.
+
+    The ``>= 2`` floor below is unchanged and stays a separate check: the shared
+    domain answers whether the value is a usable count at all, and a 1x1 field
+    (which MuJoCo does compile) is this module's own refusal.
     """
     validate_terrain(kind)
     if kind is None:
         raise ValueError("generate_heightfield requires a terrain kind, got None.")
+    if positive_whole_number_error(resolution, "resolution", "terrain") is not None:
+        raise ValueError(f"terrain resolution must be a positive whole number of grid cells, got {resolution!r}.")
     n = int(resolution)
     if n < 2:
         raise ValueError(f"terrain resolution must be >= 2, got {resolution}.")

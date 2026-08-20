@@ -66,3 +66,18 @@ def _load_fast_sac_trainer() -> type[Trainer]:
 
 
 register_trainer("fast_sac", _load_fast_sac_trainer)
+
+
+# Register the SageMaker managed-job transport. Auto-discovery would resolve
+# ``create_trainer("sagemaker")`` from the module name alone, but registration
+# is what puts the provider in ``list_trainers()`` (there is no policy-side
+# ``"trainer"`` block to list it - "sagemaker" is a training transport with no
+# paired inference provider). The loader keeps the import deferred; the module
+# itself defers boto3 to first use via ``require_optional``.
+def _load_sagemaker_trainer() -> type[Trainer]:
+    from strands_robots.training.sagemaker import SagemakerTrainer
+
+    return SagemakerTrainer
+
+
+register_trainer("sagemaker", _load_sagemaker_trainer)

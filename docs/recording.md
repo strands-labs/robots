@@ -594,6 +594,36 @@ facades can make (see [`fps` must equal the rollout's
 `control_frequency`](#fps-must-equal-the-rollouts-control_frequency)); `create()`
 judges the rate on its own terms.
 
+### A posture flag must be a boolean
+
+`use_videos`, `streaming_encoding` and `overwrite` select a *branch* rather than
+scaling a quantity, so `create()` holds them to the shared boolean domain - the
+one every backend's `start_recording` already applies to the `overwrite` it
+forwards here, and the one `push_to_hub(private=...)` and `sync_to_bucket()`
+apply to their own flags. `resume()` checks the `streaming_encoding` it forwards
+on the same domain:
+
+```python
+DatasetRecorder.create(repo_id="user/d", overwrite="false")   # ValueError: overwrite must be a boolean
+DatasetRecorder.create(repo_id="user/d", use_videos="no")     # same refusal
+DatasetRecorder.resume(repo_id="user/d", streaming_encoding=0)  # same refusal
+```
+
+Read by truthiness, every non-empty string is truthy, so the spellings a caller
+reaches for when opting *out* selected the branch they were opting out of.
+`overwrite` is a confirmation gate in front of a delete, so it was the expensive
+one: `overwrite="false"` (also `"no"`, `"off"`, `"0"`) removed the existing
+dataset - a dataset holding one recorded episode came back holding zero, and
+`create()` returned a working recorder throughout. `use_videos="false"` declared
+every camera as `dtype="video"` where `False` declares `"image"`, a schema
+decision written into `meta/info.json` and fixed for the life of the dataset, and
+the same unconverted string then reached LeRobot's own boolean parameter, as
+`streaming_encoding="false"` did.
+
+The check runs in the same guard block as the schema and rate checks above -
+before the lerobot extra is probed and before the on-disk target is touched - so
+a refused flag cannot remove a dataset on the way to being reported.
+
 ### Re-recording into an existing `repo_id`
 
 `DatasetRecorder.create()` builds a **fresh** dataset. If the resolved dataset
@@ -609,6 +639,9 @@ up front, matching the `start_recording` facade:
   `create()` does not dead-end on its own existence guard.
 - A non-empty **non-dataset** directory raises `ValueError` rather than deleting
   unrelated files.
+- `overwrite` must be a boolean (see [A posture flag must be a
+  boolean](#a-posture-flag-must-be-a-boolean)), checked before the target is
+  touched, so a value that is not one cannot delete a dataset.
 
 ```python
 # Re-run a capture script into the same repo_id, replacing the old dataset:

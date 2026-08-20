@@ -6,11 +6,14 @@ requirement, custody-ordered dispatch behind the HITL gate, and the
 machine-readable refusals - is driven through stub approval and transport
 seams: no simulator, no Zenoh session, no network.
 
-The dashboard is asserted on its two contracts rather than its rendering:
-the subscribe-only surface (every command-capable method refuses, and raw
-``publish`` is confined to the peer's own namespace) and the snapshot
-pipeline (presence/health/safety folding plus the audit tail, with no record
-folded twice).
+The dashboard is asserted on its contracts rather than its rendering: the
+subscribe-only surface (every method the module declares command-capable
+refuses, and raw ``publish`` is confined to the peer's own namespace), the
+snapshot pipeline (presence/health/safety folding plus the audit tail, with
+no record folded twice), and the classification of the mesh surface itself -
+every public ``Mesh`` method must be refused, confined, or documented as an
+exempt write path, so a method added to ``Mesh`` cannot land on a peer
+advertised as read-only without a decision.
 
 The audit log is redirected to ``tmp_path`` (never the developer's real
 ``~/.strands_robots/mesh_audit.jsonl``) and signed with a test PSK so
@@ -265,6 +268,7 @@ class _FakeMesh:
         self.published: list[tuple[str, dict]] = []
         self.subscribed: list[str] = []
         self.commands: list[str] = []
+        self.safety_events: list[str] = []
 
     def publish(self, key: str, payload: dict) -> None:
         self.published.append((key, payload))
@@ -292,13 +296,24 @@ class _FakeMesh:
     def publish_step(self, *args, **kwargs):
         self.commands.append("publish_step")
 
+    def publish_safety_event(self, event_type: str, severity: str = "warning", payload: dict | None = None) -> None:
+        # Mirrors the real method: publishes the peer's OWN safety topic (so
+        # the confinement governs it) and appends an audit record. Present so
+        # this fake can express the exempt write path at all - without it the
+        # surface tests below would pass by the method simply being absent.
+        self.publish(f"strands/{self.peer_id}/safety/event", {"peer_id": self.peer_id, "type": event_type})
+        self.safety_events.append(event_type)
 
-@pytest.mark.parametrize("method", ["send", "tell", "broadcast", "emergency_stop", "publish_step"])
-def test_every_command_method_refuses_on_the_restricted_peer(dash, method):
-    mesh = dash.restrict_to_subscribe_only(_FakeMesh())
-    with pytest.raises(RuntimeError, match="read-only dashboard"):
-        getattr(mesh, method)()
-    assert mesh.commands == []  # the underlying command surface was never reached
+
+def test_every_command_method_refuses_on_the_restricted_peer(dash):
+    # Driven from the module's own list rather than a copy of it, so a method
+    # added to _COMMAND_METHODS is exercised here without editing this test.
+    assert dash._COMMAND_METHODS, "premise: the module declares a refusal list"
+    for method in dash._COMMAND_METHODS:
+        mesh = dash.restrict_to_subscribe_only(_FakeMesh())
+        with pytest.raises(RuntimeError, match="read-only dashboard"):
+            getattr(mesh, method)()
+        assert mesh.commands == []  # the underlying command surface was never reached
 
 
 def test_restricted_publish_refuses_every_key_outside_the_peers_own_namespace(dash):
@@ -396,3 +411,166 @@ def test_renderer_degrades_to_the_terminal_when_rerun_is_absent(dash, monkeypatc
         )
     )
     assert "zone-a" in capsys.readouterr().out
+
+
+# -- dashboard: the mesh surface is classified, not assumed --------------------
+
+# Public ``Mesh`` methods that read, or manage this peer's own lifecycle: safe
+# to hold on a subscribe-only peer, so they need no refusal. Recorded here as
+# an explicit decision rather than derived, so a method added to ``Mesh`` falls
+# into neither this set nor the module's refusal list and fails the
+# classification test below instead of silently landing on the read-only peer.
+_READ_ONLY_MESH_METHODS = frozenset({"get_peer", "on_stream", "start", "stop", "subscribe", "unsubscribe"})
+
+# The write path that is neither refused nor confinable: the mesh's own safety
+# handlers call it (see the test below), so it must be documented instead.
+_EXEMPT_WRITE_METHOD = "publish_safety_event"
+
+_SAFETY_HANDLERS = ("_on_safety_estop", "_on_safety_resume")
+
+
+def _public_mesh_methods() -> frozenset[str]:
+    from strands_robots.mesh.core import Mesh
+
+    return frozenset(name for name in dir(Mesh) if not name.startswith("_") and callable(getattr(Mesh, name, None)))
+
+
+def _safety_event_calls(handler: str) -> list[tuple[bool, set[str]]]:
+    """Every ``self.publish_safety_event`` call in *handler*: (guarded, caught).
+
+    ``guarded`` is True when the call sits inside a ``try``; ``caught`` is the
+    set of exception names that ``try``'s handlers name.
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    from strands_robots.mesh.core import Mesh
+
+    tree = ast.parse(textwrap.dedent(inspect.getsource(getattr(Mesh, handler))))
+    guards: list[tuple[set[int], set[str]]] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Try):
+            caught: set[str] = set()
+            for clause in node.handlers:
+                for name in ast.walk(clause.type) if clause.type is not None else []:
+                    if isinstance(name, ast.Name):
+                        caught.add(name.id)
+            guards.append(({id(child) for child in ast.walk(node)}, caught))
+
+    calls: list[tuple[bool, set[str]]] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        if not (isinstance(node.func, ast.Attribute) and node.func.attr == "publish_safety_event"):
+            continue
+        enclosing = [caught for members, caught in guards if id(node) in members]
+        calls.append((bool(enclosing), set().union(*enclosing) if enclosing else set()))
+    return calls
+
+
+def test_every_public_mesh_method_is_refused_confined_or_documented(dash):
+    """No method may write to the mesh from this peer without a recorded decision.
+
+    A peer advertised as read-only is only as read-only as the surface it
+    holds, and that surface is ``Mesh``, which grows independently of this
+    example. So every public ``Mesh`` method must be accounted for: refused
+    (``_COMMAND_METHODS``), confined (``publish``), read-only/lifecycle, or
+    named in ``restrict_to_subscribe_only``'s docstring as a write path that
+    deliberately stays. An unaccounted method is one a reader auditing "can
+    this peer write?" is told nothing about.
+    """
+    surface = _public_mesh_methods()
+    documented = dash.restrict_to_subscribe_only.__doc__ or ""
+    unclassified = sorted(
+        name
+        for name in surface
+        if name not in _READ_ONLY_MESH_METHODS
+        and name not in dash._COMMAND_METHODS
+        and name != "publish"  # confined; pinned by the namespace tests above
+        and f"``{name}``" not in documented
+    )
+    assert not unclassified, (
+        f"{unclassified} can write to the mesh from a peer advertised as read-only, and are neither refused "
+        f"(_COMMAND_METHODS), confined (publish), classified read-only, nor named in "
+        f"restrict_to_subscribe_only's docstring as a write path that stays. Refuse it, confine it, or "
+        f"document why it stays and what it can reach."
+    )
+
+
+def test_the_read_only_classification_names_only_real_mesh_methods():
+    """Non-vacuity: a rename on ``Mesh`` must not leave a stale exemption behind."""
+    surface = _public_mesh_methods()
+    assert len(surface) >= 10, f"premise: Mesh exposes a public surface to classify, found {sorted(surface)}"
+    assert _READ_ONLY_MESH_METHODS <= surface, sorted(_READ_ONLY_MESH_METHODS - surface)
+    assert _EXEMPT_WRITE_METHOD in surface
+
+
+def test_the_module_docstring_names_every_write_path_the_peer_keeps(dash):
+    """The read-only claim must name what it keeps, not only what it removes.
+
+    The module docstring is where an operator learns what this peer can do.
+    Listing only the refusals reads as "this peer writes nothing", which is
+    not true of a peer whose own presence loop publishes and whose safety
+    handlers append to the audit trail.
+    """
+    doc = dash.__doc__ or ""
+    for name in ("publish", _EXEMPT_WRITE_METHOD):
+        assert f"``{name}``" in doc, (
+            f"the module docstring does not name ``{name}``, a write path the restricted peer keeps; "
+            f"an operator reading it cannot tell what this peer can still put on the mesh"
+        )
+
+
+def test_the_safety_event_exemption_is_load_bearing_on_the_estop_path():
+    """Why ``publish_safety_event`` cannot simply be added to the refusal list.
+
+    The mesh's own remote-estop and remote-resume handlers call it to record
+    this peer's lockout transitions. At least one call is outside a ``try``,
+    and the guarded ones narrow to payload/disk errors - none of them catches
+    ``RuntimeError``. So refusing it would raise inside a Zenoh subscription
+    callback on the safety path: a break, not a guard. This test fails if that
+    stops being true, which is the point at which refusing it becomes an
+    option worth reconsidering.
+    """
+    from strands_robots.mesh.core import Mesh
+
+    for handler in _SAFETY_HANDLERS:
+        assert hasattr(Mesh, handler), f"premise: Mesh.{handler} is the receiver-side safety handler"
+        calls = _safety_event_calls(handler)
+        assert calls, f"premise: Mesh.{handler} records transitions through publish_safety_event"
+        assert any(not guarded for guarded, _ in calls), (
+            f"every publish_safety_event call in Mesh.{handler} is now guarded; if the guards also absorb "
+            f"RuntimeError, the refusal list can take publish_safety_event"
+        )
+        for guarded, caught in calls:
+            if guarded:
+                assert "RuntimeError" not in caught, (
+                    f"a guarded publish_safety_event call in Mesh.{handler} now absorbs RuntimeError; "
+                    f"re-check whether the read-only peer can refuse the method"
+                )
+
+
+def test_the_exempt_safety_write_is_scoped_to_the_peers_own_id(dash):
+    """The exemption is bounded: it can only ever name this peer.
+
+    ``publish_safety_event`` stays callable on the restricted peer, so the
+    bound that matters is what it can reach - its own ``safety/event`` topic
+    and audit records carrying its own ``peer_id``. It cannot speak for
+    another peer, which is what keeps the exemption narrow enough to document
+    rather than close.
+    """
+    import inspect
+
+    from strands_robots.mesh.core import Mesh
+
+    source = inspect.getsource(getattr(Mesh, _EXEMPT_WRITE_METHOD))
+    assert 'f"strands/{self.peer_id}/safety/event"' in source, "the wire topic is no longer peer-scoped"
+    assert "peer_id=self.peer_id" in source, "the audit record is no longer peer-scoped"
+
+    mesh = dash.restrict_to_subscribe_only(_FakeMesh())
+    mesh.publish_safety_event("remote_estop_engaged", severity="critical")
+    assert mesh.published == [
+        ("strands/fleet-dashboard/safety/event", {"peer_id": "fleet-dashboard", "type": "remote_estop_engaged"}),
+    ]
+    assert mesh.safety_events == ["remote_estop_engaged"]

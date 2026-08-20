@@ -25,8 +25,8 @@ import strands_robots.training as training_pkg
 _PACKAGE_DIR = Path(training_pkg.__file__).parent
 
 # Provider modules that define a concrete Trainer subclass (mock is the
-# dependency-free reference; the other three are the real backends).
-_PROVIDER_MODULES = ("mock.py", "cosmos3.py", "groot.py", "lerobot.py")
+# dependency-free reference; the others are the real backends).
+_PROVIDER_MODULES = ("mock.py", "cosmos3.py", "groot.py", "lerobot.py", "sagemaker.py")
 
 
 def _public_members_without_docstring(class_node: ast.ClassDef) -> list[str]:
@@ -55,13 +55,14 @@ def _concrete_trainer_classes() -> dict[str, ast.ClassDef]:
 
 
 def test_provider_modules_define_concrete_trainers() -> None:
-    """Guard: the scan actually found the four concrete Trainer subclasses."""
+    """Guard: the scan actually found the five concrete Trainer subclasses."""
     found = set(_concrete_trainer_classes())
     assert found == {
         "mock.py::MockTrainer",
         "cosmos3.py::Cosmos3Trainer",
         "groot.py::Gr00tTrainer",
         "lerobot.py::LerobotTrainer",
+        "sagemaker.py::SagemakerTrainer",
     }, found
 
 

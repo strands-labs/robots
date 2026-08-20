@@ -105,7 +105,11 @@ class Cosmos3Policy(Policy):
 
     Args:
         embodiment: Embodiment key/alias (``"droid"``, ``"umi"``, ``"av"``,
-            ``"bridge"``). Selects domain, action layout, and defaults.
+            ``"bridge"``, ``"openarm"``). Selects domain, action layout, and
+            defaults. ``"openarm"`` is a post-training-only embodiment: it maps
+            a checkpoint post-trained on OpenArm episodes (see
+            :mod:`strands_robots.policies.cosmos3.embodiments`), not a released
+            zero-shot model.
         host: Policy-server hostname.
         port: Policy-server WebSocket port, an ``int`` in ``[1, 65535]``.
             Read only when this constructor builds the client; an injected

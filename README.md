@@ -173,6 +173,7 @@ extras you need:
 | `motionbricks` | torch + vector-quantize-pytorch, pytorch-lightning, hydra-core (install `motionbricks` from source) | NVIDIA MotionBricks generative kinematic motion for the G1 - in-process torch, composes with `wbc` |
 | `mesh` | eclipse-zenoh, json5 | Peer-to-peer robot mesh |
 | `mesh-iot` | awsiotsdk, awscrt, boto3 | AWS IoT Core mesh transport for fleets |
+| `sagemaker` | boto3 | Submit a `TrainSpec` as a managed SageMaker training job (`create_trainer("sagemaker")`) |
 | `device-connect` | device-connect-edge, device-connect-agent-tools | Device-aware networking - discovery, RPC, events, safety (falls back to the built-in mesh if absent) |
 | `benchmark-libero` | libero | LIBERO benchmark evaluation |
 | `all` | everything above except the GPU-only `sim-isaac` / `sim-gs` extras | Kitchen sink |
@@ -600,7 +601,7 @@ create_policy("lerobot/act_aloha_sim_transfer_cube")   # local HF inference
 |----------|---------|-------|
 | `mock` | none | Sinusoidal trajectories; `requires_images=False` (~10x faster) |
 | `groot` | NVIDIA GR00T N1.5/N1.6/N1.7 | Service mode (ZMQ to a Docker container) or local in-process (`model_path=`) |
-| `cosmos3` | NVIDIA Cosmos 3 omnimodal VLA | Service mode (WebSocket to a Cosmos Framework RoboLab policy server); embodiments: `droid`, `umi`, `av`, `bridge` |
+| `cosmos3` | NVIDIA Cosmos 3 omnimodal VLA | Service mode (WebSocket to a Cosmos Framework RoboLab policy server); embodiments: `droid`, `umi`, `av`, `bridge`, `openarm` |
 | `lerobot_local` | HuggingFace | Direct ACT / Pi0 / SmolVLA / Diffusion inference, no server |
 | `lerobot_async` | HuggingFace via gRPC | Offload a LeRobot policy to a remote `PolicyServer` over lerobot's native async-inference gRPC transport (edge/light robot host) |
 | `remote` | any policy, over WebSocket | Drop-in client that forwards observations to a remote `PolicyServer` and returns its action chunk: `create_policy("remote", endpoint="ws://gpu-box:8765")` (or the smart string `create_policy("ws://gpu-box:8765")`). For a light robot host with a GPU box elsewhere; mirrors the server policy's RTC support |
@@ -728,7 +729,8 @@ arm, so use the `franka` (or `panda`) sim asset:
 MUJOCO_GL=egl python examples/vla/cosmos3_sim_rollout.py --record /tmp/c3.mp4
 ```
 
-Embodiments: `droid` (10D, chunk 32, 15 fps), `umi`, `av`, `bridge`. If the
+Embodiments: `droid` (10D, chunk 32, 15 fps), `umi`, `av`, `bridge`, `openarm`
+(post-training only). If the
 server is not running, the policy raises a `ConnectionError` with the exact
 command to start it.
 
@@ -854,6 +856,7 @@ ppo = create_trainer("ppo")   # or create_trainer("fast_sac")
 | `groot` | Imitation / post-tuning | NVIDIA GR00T fine-tune; needs an `embodiment` tag |
 | `cosmos3` | Imitation / post-tuning | NVIDIA Cosmos 3 fine-tune (multi-node HSDP capable) |
 | `mock` | Imitation (test) | No-op trainer for tests and dry runs |
+| `sagemaker` | Managed cloud transport | Submits the spec as one SageMaker training job wrapping a containerized trainer image (`[sagemaker]` extra) |
 | `ppo` | Reinforcement learning | On-policy PPO; pairs with `VecSimEnv` for parallel rollouts |
 | `fast_sac` | Reinforcement learning | Off-policy Soft Actor-Critic |
 
@@ -862,6 +865,60 @@ The RL trainers (`ppo`, `fast_sac`) subclass `BaseRLAlgo` and share the same
 They collect trajectories through `VecSimEnv` (N independent `SimEnv` as one
 batched env) and score with `BaseRLAlgo.evaluate()`. The training package stays
 torch-free until an RL provider is resolved on first use.
+
+### SageMaker managed training jobs
+
+The `sagemaker` provider is transport, not behavior: it submits the same
+`TrainSpec` as one managed training job and waits for the terminal verdict.
+The training logic lives in the container image you point it at, which
+packages one of the local trainer paths (the `groot` and `cosmos3` providers
+are directly containerizable). Install with `pip install
+"strands-robots[sagemaker]"` (boto3 only; validate works without it).
+
+```python
+from strands_robots.training import create_trainer, TrainSpec
+
+trainer = create_trainer(
+    "sagemaker",
+    image_uri="123456789012.dkr.ecr.us-east-1.amazonaws.com/strands-trainer:latest",
+    role_arn="arn:aws:iam::123456789012:role/StrandsSageMakerTraining",
+    instance_type="ml.g5.xlarge",
+)
+spec = TrainSpec(
+    dataset_root="s3://my-bucket/datasets/pick",   # -> the "training" input channel
+    output_dir="s3://my-bucket/checkpoints/pick",  # -> the job's S3OutputPath
+    base_model="lerobot/smolvla_base",
+    steps=20000,
+    extra={"policy_type": "act"},                  # -> string hyperparameters
+)
+result = trainer.train(spec)   # validates locally BEFORE submitting
+# result.checkpoint_dir -> s3://.../<job name>/output/model.tar.gz on success;
+# a failed job is an error result naming the job + FailureReason.
+```
+
+`dataset_root` and `output_dir` must be `s3://` URIs; every other spec field
+plus `extra` travels as string hyperparameters (strings verbatim, everything
+else JSON-encoded) that the container's entry point decodes back into a
+`TrainSpec` with `dataset_root=/opt/ml/input/data/training` and
+`output_dir=/opt/ml/model`. `spec.num_nodes` maps onto the job's
+`InstanceCount`. A job that outlives the local poll budget reports `running`
+and stays pollable via `trainer.status(job_name)`.
+
+Required IAM surface - the **caller** (the identity running `train`) needs:
+
+- `sagemaker:CreateTrainingJob`, `sagemaker:DescribeTrainingJob`
+- `iam:PassRole` on the execution role passed as `role_arn`
+
+and the **execution role** itself needs S3 read on the dataset prefix, S3
+write on the output prefix, ECR pull on the image, and CloudWatch Logs write
+(`AmazonSageMakerFullAccess` is a superset, but the above is the minimal set).
+
+The integration smoke (`tests_integ/training/test_sagemaker_smoke.py`) skips
+without AWS credentials; its full submission half additionally reads
+`STRANDS_SAGEMAKER_SMOKE_IMAGE_URI`, `STRANDS_SAGEMAKER_SMOKE_ROLE_ARN`,
+`STRANDS_SAGEMAKER_SMOKE_S3_PREFIX` (and optionally
+`STRANDS_SAGEMAKER_SMOKE_INSTANCE_TYPE`) - test-only variables, not read by
+the library.
 
 
 ## Simulation (MuJoCo)
@@ -1122,7 +1179,7 @@ touches ROS 2.
 | `STRANDS_MESH_CAMERA_PRESIGN_TTL` | TTL (s) for S3 presigned camera URLs; capped at 3600 | `60` |
 | `STRANDS_MESH_ACL_FILE` | Path to a JSON5 Zenoh ACL file; unset = permissive default. See `examples/mesh/mesh_acl_example.json5` (role-scoped) and `examples/mesh/mesh_acl_strict_per_peer.json5` (per-peer). **⚠️ Required on any WAN/cloud router: mTLS gives identity, not least-privilege — without a topic-level ACL one device cert can read all fleet traffic and command any robot. See [security docs](docs/security.md#production-posture-required-off-trusted-networks).** | unset |
 | `STRANDS_MESH_POLICY_HOST_ALLOW` | Comma-separated allowlist of VLA policy-server hosts/CIDRs for inference | loopback only |
-| `STRANDS_MESH_HITL_ACTIONS` | `robot_mesh` actions needing a human-in-the-loop interrupt: `all` / `none` / subset of `emergency_stop,broadcast,tell,send,stop,subscribe,watch` | actuation default |
+| `STRANDS_MESH_HITL_ACTIONS` | `robot_mesh` actions needing a human-in-the-loop interrupt: `all` / `none` / subset of `emergency_stop,broadcast,tell,send,stop,rpc,subscribe,watch` | actuation default |
 | `STRANDS_MESH_SUBSCRIBE_ALLOW` | Extra Zenoh key-expr patterns the `robot_mesh` `subscribe` action may target, beyond the built-in low-impact set | shared classes only |
 | `STRANDS_MESH_OVERRIDE_CODE` | Shared secret for e-stop resume HMAC proof; unset means no remote resume possible | unset |
 | `STRANDS_MESH_INPUT_VALUE_ABS` | Absolute value clamp for teleop joint commands (radians) | `12.566` (4pi) |
