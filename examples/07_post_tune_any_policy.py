@@ -38,13 +38,23 @@ sim.start_recording(
     task="pick up the red cube",
     overwrite=True,
 )
-sim.run_policy(
+# control_frequency must equal the recording's fps above: the recorder writes
+# one frame per control step with no decimation, so the 50 Hz default rollout
+# against a 30 fps recording is refused and the episode lands with zero frames.
+rollout = sim.run_policy(
     robot_name="so100",
     policy_object=MockPolicy(),
     instruction="pick up the red cube",
     n_steps=60,
+    control_frequency=30.0,
 )
-sim.stop_recording()
+if rollout["status"] != "success":
+    raise SystemExit(f"rollout failed: {rollout['content'][0]['text']}")
+stopped = sim.stop_recording()
+if stopped["status"] != "success":
+    # An empty dataset here surfaces two steps later as an unrelated-looking
+    # Hub 404 from lerobot, so report the recorder's own reason instead.
+    raise SystemExit(f"recording failed: {stopped['content'][0]['text']}")
 print(f"Recorded LeRobotDataset -> {DATASET_ROOT}")
 
 # 2. TRAIN - the trainer is selected by the SAME name as the inference policy.
@@ -78,4 +88,16 @@ print(f"exported artifact: {exported}")
 os.environ.setdefault("STRANDS_TRUST_REMOTE_CODE", "1")
 policy = create_policy(exported, device="cpu")
 print(f"loaded trained policy: {type(policy).__name__} (provider={policy.provider_name})")
-print("\nLoop closed: record -> train -> export -> load. Swap PROVIDER to 'groot'/'cosmos3' to retarget the same flow.")
+deployed = sim.run_policy(
+    robot_name="so100",
+    policy_object=policy,
+    instruction="pick up the red cube",
+    n_steps=30,
+    control_frequency=30.0,
+)
+sim.destroy()
+if deployed["status"] != "success":
+    raise SystemExit(f"deploy rollout failed: {deployed['content'][0]['text']}")
+info = next(item["json"] for item in deployed["content"] if "json" in item)
+print(f"deployed: {info['steps_used']} steps in {info['elapsed_s']}s")
+print("\nLoop closed: record -> train -> export -> load -> run. Swap PROVIDER to 'groot'/'cosmos3' to retarget the same flow.")

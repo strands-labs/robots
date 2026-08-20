@@ -36,8 +36,10 @@ In MuJoCo (the ``droid`` embodiment drives a Franka/DROID-class arm - use the
                    control_frequency=15.0)
 
 See ``examples/vla/cosmos3_sim_rollout.py`` for a complete, runnable rollout +
-recording. Available embodiments: droid, umi, av, bridge
-(see :mod:`strands_robots.policies.cosmos3.embodiments`).
+recording. Available embodiments: droid, umi, av, bridge, openarm
+(see :mod:`strands_robots.policies.cosmos3.embodiments`; ``openarm`` requires
+post-training on OpenArm episodes via the ``cosmos3`` trainer - it is not a
+released zero-shot checkpoint).
 """
 
 from .action_decode import decode_pose_trajectory, denormalize_quantile, load_action_stats
