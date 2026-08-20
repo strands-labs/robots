@@ -52,6 +52,7 @@ _PACKAGE_ROOT = Path(strands_robots.__file__).resolve().parent
 # against the released wheels. Everything not listed at 1.5.0 or later was
 # already present in 1.0.0.
 _STRANDS_SYMBOL_FLOORS: dict[tuple[str, str], str] = {
+    ("strands", "Agent"): "1.0.0",
     ("strands", "tool"): "1.0.0",
     ("strands.tools.decorator", "tool"): "1.0.0",
     ("strands.tools.tools", "AgentTool"): "1.0.0",
