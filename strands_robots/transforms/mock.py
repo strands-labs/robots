@@ -15,6 +15,7 @@ from __future__ import annotations
 import numpy as np
 
 from strands_robots.transforms.base import DatasetTransform, TransformSpec, derive_variant_seed
+from strands_robots.utils import non_negative_whole_number_error
 
 
 class MockTransform(DatasetTransform):
@@ -79,7 +80,16 @@ class MockTransform(DatasetTransform):
 
         Returns:
             Shifted pixels, same shape and dtype.
+
+        Raises:
+            ValueError: ``source_episode`` is outside the non-negative
+                whole-number domain shared by every episode-resolving surface
+                (see :func:`~strands_robots.transforms.base.derive_variant_seed`).
+                Refused before the explicit ``pixel_shift`` short-circuit, so
+                the two constructor modes agree on the accepted domain.
         """
+        if text := non_negative_whole_number_error(source_episode, "source_episode", "mock.transform_frames"):
+            raise ValueError(text)
         if self._pixel_shift is not None:
             shift = self._pixel_shift
         else:

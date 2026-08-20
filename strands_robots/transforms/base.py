@@ -203,10 +203,19 @@ def derive_variant_seed(seed: int | None, source_episode: int, variant: int) -> 
 
     Returns:
         A 32-bit seed, or ``None`` when ``seed`` is ``None``.
+
+    Raises:
+        ValueError: ``source_episode`` is outside the non-negative
+            whole-number domain every episode-resolving surface shares.
+            ``True`` is the value worth naming: unrefused it derives episode
+            1's seed, so a variant of episode ``True`` silently collides with
+            a variant of episode 1.
     """
+    if text := non_negative_whole_number_error(source_episode, "source_episode", "derive_variant_seed"):
+        raise ValueError(text)
     if seed is None:
         return None
-    return int(np.random.SeedSequence([seed, source_episode, variant]).generate_state(1)[0])
+    return int(np.random.SeedSequence([seed, int(source_episode), variant]).generate_state(1)[0])
 
 
 class DatasetTransform(ABC):
@@ -272,7 +281,12 @@ class DatasetTransform(ABC):
             frames: Source pixels as a ``(T, H, W, 3) uint8`` array.
             spec: The running spec (for :attr:`TransformSpec.prompt` /
                 :attr:`TransformSpec.extra`).
-            source_episode: Source episode index the variant derives from.
+            source_episode: Source episode the variant derives from.
+                Implementations refuse a value outside the non-negative
+                whole-number domain (the shared rule
+                :func:`derive_variant_seed` applies) rather than deriving a
+                determinism key from it; this abstract declaration carries no
+                body, so the guard lives in each implementation.
             variant: Variant counter within that episode. Together with
                 :attr:`TransformSpec.seed` and ``source_episode`` this is the
                 determinism key - see :func:`derive_variant_seed`.

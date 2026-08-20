@@ -68,6 +68,7 @@ from typing import Any
 import numpy as np
 
 from strands_robots.transforms.base import DatasetTransform, TransformSpec, derive_variant_seed
+from strands_robots.utils import non_negative_whole_number_error
 
 _PIPELINE_HELP = (
     "pass pipeline= a constructed video2video object exposing "
@@ -203,12 +204,19 @@ class CosmosTransferTransform(DatasetTransform):
             refuses anything else loudly).
 
         Raises:
+            ValueError: ``source_episode`` is outside the non-negative
+                whole-number domain shared by every episode-resolving surface
+                (see :func:`~strands_robots.transforms.base.derive_variant_seed`).
             RuntimeError: No pipeline is bound. Unreachable through
                 :meth:`~strands_robots.transforms.base.DatasetTransform.transform`,
                 which validates first; raised for a direct caller so the
                 refusal names the remedy instead of surfacing as an
                 ``AttributeError`` on ``None``.
         """
+        if text := non_negative_whole_number_error(
+            source_episode, "source_episode", "cosmos_transfer.transform_frames"
+        ):
+            raise ValueError(text)
         if self._pipeline is None and self._pipeline_problems():
             raise RuntimeError(f"cosmos_transfer.transform_frames: no video2video pipeline is bound - {_PIPELINE_HELP}")
         pipeline = self._pipeline

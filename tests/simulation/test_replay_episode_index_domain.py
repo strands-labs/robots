@@ -473,6 +473,14 @@ _REPLAY_EPISODE_SURFACES = {
     # not a different contract, so these are graded like the bare parameter.
     ("strands_robots/episode_labels.py", "record_deterministic_verdicts"),
     ("strands_robots/episode_labels.py", "measure_agreement"),
+    # The transform surfaces take the source episode a variant derives from as
+    # a determinism-key input. ``derive_variant_seed`` applies the shared rule;
+    # each backend's ``transform_frames`` applies it too, because the abstract
+    # seam it implements is a docstring-only declaration that cannot carry the
+    # guard itself (its ``Args:`` entry says so).
+    ("strands_robots/transforms/base.py", "derive_variant_seed"),
+    ("strands_robots/transforms/cosmos_transfer.py", "transform_frames"),
+    ("strands_robots/transforms/mock.py", "transform_frames"),
 }
 
 _REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
