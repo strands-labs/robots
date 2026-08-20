@@ -514,6 +514,55 @@ def _arg_descriptions(node: ast.FunctionDef | ast.AsyncFunctionDef) -> dict[str,
     return described
 
 
+# An index can only select the wrong trajectory in a surface that can reach the
+# data to select it FROM. Every surface in the pinned set takes an explicit
+# dataset locator and indexes it. A surface handed an index *alongside the data
+# already selected with it* - a transform backend receives decoded frames plus
+# the source index as a determinism/provenance key - resolves nothing, so
+# requiring the shared rule there would demand a guard on a value the surface
+# never resolves. That is the boundary
+# ``test_discovery_leaves_a_surface_that_only_returns_indices_out`` already
+# draws for ``filter_episodes``, applied one step further along the call chain.
+_DATASET_LOCATOR = re.compile(r"^(repo_id|root|dataset|dataset_root|ds)$")
+
+
+def _resolves_against_a_dataset(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    """True when the surface can reach a dataset to resolve the index against."""
+    args = list(node.args.posonlyargs) + list(node.args.args) + list(node.args.kwonlyargs)
+    if any(_DATASET_LOCATOR.match(a.arg) for a in args):
+        return True
+    # A locator carried on the instance rather than passed in.
+    for inner in ast.walk(node):
+        if (
+            isinstance(inner, ast.Attribute)
+            and isinstance(inner.value, ast.Name)
+            and inner.value.id == "self"
+            and _DATASET_LOCATOR.match(inner.attr.lstrip("_"))
+        ):
+            return True
+    return False
+
+
+def _drift_message(discovered: set[tuple[str, str]]) -> str:
+    """The remedy a drifted sweep reports, naming both ways to satisfy it.
+
+    ``pytest`` elides a 13-element set diff to ``{(...), ...}``, so a bare
+    ``assert discovered == _REPLAY_EPISODE_SURFACES`` tells a contributor
+    neither which surface drifted nor what to do about it.
+    """
+    new = sorted(discovered - _REPLAY_EPISODE_SURFACES)
+    gone = sorted(_REPLAY_EPISODE_SURFACES - discovered)
+    return (
+        f"the episode-index surface sweep drifted: new={new} missing={gone}. "
+        "A surface is in scope when it resolves a caller-supplied episode index "
+        "against a dataset it can reach. Pin it in _REPLAY_EPISODE_SURFACES and "
+        "either apply non_negative_whole_number_error(episode, 'episode', ctx) or "
+        "forward `episode=episode` verbatim to a surface that does. A surface that "
+        "only receives an already-resolved index (no repo_id/root/dataset locator) "
+        "resolves nothing and is out of scope - see _resolves_against_a_dataset."
+    )
+
+
 def _public_episode_surfaces(source: str) -> list[ast.FunctionDef | ast.AsyncFunctionDef]:
     """Every public function that resolves an episode index, in either spelling."""
     tree = ast.parse(source)
@@ -522,6 +571,8 @@ def _public_episode_surfaces(source: str) -> list[ast.FunctionDef | ast.AsyncFun
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
         if node.name.startswith("_"):
+            continue
+        if not _resolves_against_a_dataset(node):
             continue
         args = list(node.args.posonlyargs) + list(node.args.args) + list(node.args.kwonlyargs)
         if any(a.arg == "episode" for a in args):
@@ -554,7 +605,7 @@ class TestNoEpisodeIndexSurfaceDrifts:
         for path in sorted((_REPO_ROOT / "strands_robots").rglob("*.py")):
             for node in _public_episode_surfaces(path.read_text()):
                 discovered.add((str(path.relative_to(_REPO_ROOT)), node.name))
-        assert discovered == _REPLAY_EPISODE_SURFACES
+        assert discovered == _REPLAY_EPISODE_SURFACES, _drift_message(discovered)
 
     @pytest.mark.parametrize("rel_path,func_name", sorted(_REPLAY_EPISODE_SURFACES))
     def test_every_surface_validates_or_forwards(self, rel_path, func_name):
@@ -601,6 +652,89 @@ class TestNoEpisodeIndexSurfaceDrifts:
         names = {node.name for node in _public_episode_surfaces(source)}
         assert "filter_episodes" not in names
         assert {"record_deterministic_verdicts", "measure_agreement"} <= names
+
+    def test_discovery_leaves_a_consumer_of_an_already_resolved_index_out(self):
+        """A surface handed an index it cannot resolve is out of scope.
+
+        The collection-valued widening admits any surface whose ``Args:`` entry
+        says "episode index", which cannot tell a surface that *resolves* an
+        index from one that merely *receives* one. A transform backend is handed
+        already-decoded pixels plus the source index as a determinism key: it
+        has no dataset to index, so it cannot select the wrong trajectory, and
+        requiring the shared rule of it would demand a guard on a value it
+        never resolves - the boundary the ``filter_episodes`` case above draws,
+        one step further along the call chain.
+        """
+        planted = (
+            "def transform_frames(self, camera_key, frames, spec, *, source_episode, variant):\n"
+            '    """Transform one camera stream of one episode variant.\n'
+            "\n"
+            "    Args:\n"
+            "        camera_key: Bare camera name.\n"
+            "        frames: Source pixels as a (T, H, W, 3) uint8 array.\n"
+            "        spec: The running spec.\n"
+            "        source_episode: Source episode index the variant derives from.\n"
+            "        variant: Variant counter within that episode.\n"
+            '    """\n'
+            "    return frames\n"
+        )
+        assert [n.name for n in _public_episode_surfaces(planted)] == []
+
+    def test_the_drift_report_names_both_ways_to_satisfy_the_sweep(self):
+        """A drifted sweep must say what to do, not just that it drifted.
+
+        ``pytest`` elides a 13-element set diff, so the bare equality assert
+        reported ``{('strands_ro...pisode'), ...}`` and named neither the
+        surface that drifted nor either remedy. Its sibling
+        ``test_every_surface_validates_or_forwards`` has carried an actionable
+        message all along; this is the same class of report.
+        """
+        message = _drift_message(_REPLAY_EPISODE_SURFACES | {("pkg/new.py", "label_episode")})
+        assert "pkg/new.py" in message and "label_episode" in message
+        assert "_REPLAY_EPISODE_SURFACES" in message, "must name where to pin it"
+        assert "non_negative_whole_number_error" in message, "must name the shared rule"
+        assert "forward" in message, "must offer the forwarding alternative"
+        assert "_resolves_against_a_dataset" in message, "must name the out-of-scope rule"
+
+    def test_a_resolver_with_no_guard_is_still_caught(self):
+        """Control: narrowing the discovery must not narrow what it grades.
+
+        The planted surface takes a dataset root *and* a caller index and
+        indexes one against the other, so it is exactly what the sweep exists
+        to catch - it stays discovered, and it stays unguarded.
+        """
+        planted = (
+            "def label_episode(root, episode):\n"
+            '    """Label an episode.\n'
+            "\n"
+            "    Args:\n"
+            "        root: Dataset root.\n"
+            "        episode: Index of the episode to label.\n"
+            '    """\n'
+            "    return read_labels(root)[episode]\n"
+        )
+        discovered = _public_episode_surfaces(planted)
+        assert [n.name for n in discovered] == ["label_episode"]
+        assert not _validates_or_forwards(discovered[0]), "an unguarded resolver must not pass"
+
+    def test_a_locator_carried_on_the_instance_still_counts_as_resolving(self):
+        """A resolver that holds its dataset on ``self`` is in scope too.
+
+        Every surface pinned today takes an explicit locator, so keying only on
+        the parameter list would pass the sweep while leaving a future method
+        that reads ``self._root`` ungraded.
+        """
+        planted = (
+            "class Store:\n"
+            "    def label_episode(self, episode):\n"
+            '        """Label an episode.\n'
+            "\n"
+            "        Args:\n"
+            "            episode: Index of the episode to label.\n"
+            '        """\n'
+            "        return read_labels(self._root)[episode]\n"
+        )
+        assert [n.name for n in _public_episode_surfaces(planted)] == ["label_episode"]
 
 
 class TestTheCollectionSpellingsRefuseAnUnusableIndex:

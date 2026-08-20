@@ -1,0 +1,2 @@
+### Fixed
+- **tools**: `gr00t_inference(action="restart")` now reports a teardown that could not free the port instead of reporting the new checkpoint as serving. The rebind cannot detect the collision itself - the launch is a detached `docker exec -d` and the readiness wait is a bare TCP connect that the surviving server answers - so a restart whose stop failed returned `status="success"` naming the new `checkpoint_path` while every inference request still reached the old one.

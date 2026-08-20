@@ -28,6 +28,7 @@ import psutil
 from strands import tool
 from strands.types.tools import ToolContext
 
+from strands_robots.tools._hitl_audit import log_operator_response
 from strands_robots.utils import (
     positive_count_error,
     validation_split_error,
@@ -123,6 +124,9 @@ _BYPASS_CONSENT_ENV = "BYPASS_TOOL_CONSENT"
 
 _APPROVE_RESPONSES = frozenset({"y", "yes", "approve", "approved"})
 
+#: Event source recorded on this tool's operator-response audit rows.
+_AUDIT_SOURCE = "lerobot_train_tool"
+
 
 def _approve_response(response: object) -> bool:
     """Accept affirmative operator responses from the HIL interrupt."""
@@ -209,7 +213,9 @@ def _gate_extra_flags(
             ],
         }
 
-    if not _approve_response(response):
+    approved = _approve_response(response)
+    log_operator_response(_AUDIT_SOURCE, "train", flag_names, approved=approved, response=response)
+    if not approved:
         return {
             "status": "error",
             "content": [{"text": f"extra_flags {flag_names} declined by the operator."}],
