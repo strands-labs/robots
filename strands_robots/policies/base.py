@@ -21,14 +21,13 @@ See :class:`~strands_robots.policies.mock.MockPolicy` for the canonical
 non-VLA reference implementation.
 """
 
-import asyncio
-import concurrent.futures
 from abc import ABC, abstractmethod
 from collections.abc import Iterator, Sequence
 from typing import Any, Protocol, runtime_checkable
 
 import numpy as np
 
+from strands_robots._async_utils import _resolve_coroutine
 from strands_robots.utils import (
     non_negative_count_error,
     positive_count_error,
@@ -201,23 +200,22 @@ class Policy(ABC):
     def get_actions_sync(
         self, observation_dict: dict[str, Any], instruction: str, **kwargs: Any
     ) -> list[dict[str, Any]]:
-        """Synchronous convenience wrapper around get_actions().
+        """Synchronous convenience wrapper around :meth:`get_actions`.
 
-        Safe to call from sync code, event loops, or notebooks.
+        Safe to call from sync code, event loops, or notebooks. Resolution is
+        delegated to :mod:`strands_robots._async_utils`, the one owner of
+        "resolve a policy coroutine in a sync context": with no running loop it
+        is ``asyncio.run``, and inside one the coroutine is offloaded to that
+        module's single reused worker thread.
+
+        Delegating rather than re-deriving is what keeps this callable at
+        control rate from a running loop -- a notebook cell and any async host
+        take the offload branch, and constructing a private executor there
+        starts and joins one OS thread per call. Every in-process rollout path
+        already resolves through the same owner, so the wrapper and the runner
+        cannot drift on which branch a caller lands in.
         """
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            loop = None
-
-        if loop and loop.is_running():
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                return pool.submit(
-                    asyncio.run,
-                    self.get_actions(observation_dict, instruction, **kwargs),
-                ).result()
-        else:
-            return asyncio.run(self.get_actions(observation_dict, instruction, **kwargs))
+        return _resolve_coroutine(self.get_actions(observation_dict, instruction, **kwargs))
 
     @abstractmethod
     def set_robot_state_keys(self, robot_state_keys: list[str]) -> None:
