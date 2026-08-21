@@ -80,7 +80,7 @@ class VeraWebsocketClient:
             )
             # Server sends its VeraServerConfig as the first message.
             self._server_metadata = self._mnp.unpackb(self._ws.recv())
-        except (ConnectionRefusedError, OSError, TimeoutError) as e:
+        except OSError as e:
             raise ConnectionError(self._server_hint()) from e
         logger.info("VeraWebsocketClient connected to %s", self.uri)
         return self._ws

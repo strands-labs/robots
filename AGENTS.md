@@ -1365,6 +1365,7 @@ Corrections from code review that apply to all future contributions:
 ### Thread Safety
 - **Lock ALL model/data mutations** - MuJoCo `model`/`data` are not thread-safe. Any method that writes `qpos`, `qvel`, `ctrl`, `qfrc_applied`, `body_mass`, `geom_friction`, or calls `mj_step`/`mj_forward`/`mj_resetData` MUST hold `self._lock`.
 - **Guard scene mutations during policy** - Use `_require_no_running_policy()` before any action that recompiles or replaces the model/data objects.
+- **Lock a read that copies model/data out too** - the rule above is stated for writes, but a read that copies mjData into another buffer races a concurrent `mj_step` exactly as a write does, and the corrupt half is the copy. `Renderer.update_scene` copies `xpos`/`xquat`/`xmat` and the geom poses, and `Renderer.render` dereferences `data.contact`, so every method that drives that pair must hold `self._lock` across it and `.copy()` the frame inside, leaving only the encoding unlocked. The blanket dispatch lock is not that guarantee: it covers the tool surface only, so a direct Python call, a recorder daemon, or a `PolicyRunner` worker holds nothing. `render` and `get_frame` serialised this read and `render_depth` did not - identical operations on the same buffers, and with a policy worker stepping on its own thread 3 of 60 depth reads landed inside a physics step while 0 of 60 RGB reads did. Where the read lives in a private helper, lock the public facade across the delegation instead (`get_observation` -> `_get_sim_observation`) and pin *that*, rather than exempting the helper. `Pinned by` `tests/simulation/mujoco/test_frame_readers_serialize_the_mjdata_read.py`, which derives the graded set from the module's AST so a reader added later is held to the rule, and `tests/simulation/mujoco/test_concurrency_lock_audit.py` for the read-only physics queries.
 - **Document the concurrency contract** - If a method is safe to call concurrently, say so. If not, say so.
 
 ### Error Handling Contracts
@@ -1406,7 +1407,13 @@ Corrections from code review that apply to all future contributions:
 
 ### Exception Clauses Must Be Narrow
 - **`except Exception` is forbidden** for non-recovery code paths. Use the smallest superset of expected exception types.
-- **`except (ImportError, Exception)` is a bug** - `Exception` is a superclass of `ImportError`, so the tuple collapses to `except Exception`. Lint/review will catch this; don't write it.
+- **`except (ImportError, Exception)` is a bug** - `Exception` is a superclass of `ImportError`, so the tuple collapses to `except Exception`. The same collapse happens for any member another member already covers: `except (FileNotFoundError, OSError)` is `except OSError`, and with it `PermissionError`, `TimeoutError` and the whole `ConnectionError` family. The covered name contributes no scope, only the impression of a smaller superset than the handler has - and where the prose on the handler enumerates the tuple, that impression becomes a claim the handler does not keep. No linter reports it: ruff's `B014` covers a *duplicate* member only, and the full
+  catalogue (`--select ALL`) reports neither `(FileNotFoundError, OSError)` nor
+  `(ImportError, Exception)`. Drop the covered member - that changes no behaviour. Narrowing the
+  handler's real surface is a separate behaviour change, one per site. Pinned by
+  tests/test_except_tuples_state_their_real_scope.py, over builtins, the standard library and
+  this package; a third-party tree is left alone because a dependency can re-parent its classes
+  between releases, so naming both it and a builtin superclass is a hedge.
 - **USB / hardware probing** - use `except (ImportError, OSError)`. `PermissionError` is an `OSError`, `FileNotFoundError` is an `OSError`, etc.
 
 ### Actuators: a joint pose goes only where `ctrl` IS a joint pose
@@ -1694,6 +1701,7 @@ which side the enum is on.
 
 ### Unicode & String Hygiene
 - **No emojis in user-facing strings** - this is a project rule. Tool result dicts (`{"content": [{"text": ...}]}`), log messages, error messages: plain ASCII only. Agents read these strings programmatically; emojis just add tokenizer noise.
+- **All three surfaces are graded, and the tool result needs a flow step.** A log line and a `raise` message hold their text inline, so a scan of the call site sees it. A handler's report is usually built up in a local and joined into the returned dict - `lines.append(...)` in a loop, then the joined list as the `text` value - so a scan of the `return` expression alone sees nothing - which is how ten glyphs (`U+2194` in `get_contact_forces`, `U+2192` in `set_geom_properties` / `set_body_properties`, `U+00D7` in `get_mass_matrix`, `U+00B7` in `apply_force`, `U+00B1` in `randomize`, `U+2022` in `list_benchmarks`) sat in text an agent reads back out of its own tool call, on the surface this rule names first. Prefer the spelling the package already uses for the same content: `simulation.mujoco.rendering` listed a contact pair `geom1 <-> geom2` while `simulation.mujoco.physics` listed it `geom1 U+2194 geom2`. ASCII renderings: `->`, `<->`, `+/-`, `x`, `N*m`, `  - ` for a bullet. Semantic Unicode in a *docstring* stays - the rule is about what a caller reads back, not about how the source documents itself. Pinned by `tests/test_log_strings_are_ascii.py::test_tool_result_strings_are_ascii`.
 - **Hunt orphan combining marks after any emoji sweep** - `⏱️` is `U+23F1` + `U+FE0F` (variation selector). Stripping `U+23F1` leaves a stray invisible `U+FE0F` in the output. Sweep with:
   ```bash
   grep -nP '[^\x00-\x7F]' path/to/file.py
@@ -1721,14 +1729,24 @@ Corrections from code review that apply to all future contributions:
   into `subprocess.run`, `subprocess.Popen`, MJCF / XML interpolation, or filesystem
   path construction MUST be validated up front via regex allowlist, enum match, or
   range check. Argv-style subprocess does not exempt you - defense-in-depth.
-- **Centralise validation in one function** - pattern: a `validate_inputs(...)` helper
-  at the top of the tool module that takes every user-supplied param as a keyword arg
-  and raises `ValueError` with a clear message on any rejection. Single entry-point
-  is independently testable. PR #90's `gr00t_inference.validate_inputs()` is the
-  canonical example.
+- **Group the check by what consumes the value, and run it at the dispatch
+  boundary** - one `..._option_error(action, *, <params>) -> str | None` helper per
+  *kind* of value, called before any expensive work starts, returning the reason for
+  the dispatcher to fold into its error dict. Keying it on the action means a caller
+  is never refused for a value the requested action ignores.
+  `gr00t_inference._numeric_option_error` and its enum-valued sibling
+  `_enumerable_option_error` are the shipped pair: both cover options that are
+  interpolated into a `docker exec` command line run **detached**, where a value the
+  server's own flag parser rejects surfaces minutes later in the container log
+  instead of as the call's result. Note the shape returns rather than raises, so
+  **Return error dicts, never raise** above still holds at the tool surface.
 - **Allowlist enumerable values** - `data_config`, `embodiment_tag`, dtype strings,
   container names: all match `^[a-z][a-z0-9_]+$` or an explicit `{"fp16", "fp8", ...}`
-  set. Never accept arbitrary strings into enumerable surfaces.
+  set. Never accept arbitrary strings into enumerable surfaces. Derive the
+  "refuses nothing real" half from a shipped catalogue rather than a copied list -
+  `data_configs.json` names every valid `data_config`, so a config added there is
+  admitted by construction. Pinned by
+  `tests/tools/test_gr00t_enumerable_option_guards.py`.
 - **Reject shell metacharacters in paths** - `;`, `|`, `$`, backticks, `>`, `<`,
   `\n`, `\r`, `\x00`. Also reject `..` path traversal components. Apply even when
   using argv-style subprocess.

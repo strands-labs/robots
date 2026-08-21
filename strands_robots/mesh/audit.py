@@ -637,12 +637,12 @@ def _load_seq_counters() -> None:
                     "to the audit log cannot poison the seq restore when STRANDS_MESH_AUDIT_PSK is set)",
                     unverified_skipped,
                 )
-        except (OSError, json.JSONDecodeError, ValueError, TypeError) as log_exc:
+        except (OSError, ValueError, TypeError) as log_exc:
             # Narrow per AGENTS.md > "Exception Clauses Must Be Narrow":
-            # OSError covers disk failures, JSONDecodeError covers
-            # malformed records, ValueError covers _validate_acl_shape-
-            # style schema violations, TypeError covers record-shape
-            # mismatches. An unexpected exception type is a programmer
+            # OSError covers disk failures, ValueError covers both a
+            # malformed record (a ``json.JSONDecodeError`` is a
+            # ``ValueError``) and a _validate_acl_shape-style schema
+            # violation, TypeError covers record-shape mismatches. An unexpected exception type is a programmer
             # bug we want to see in tests, not silently degrade the
             # the prior counter-reset defence.
             logger.warning(

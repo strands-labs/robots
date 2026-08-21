@@ -27,6 +27,20 @@ These pin the repair and its blast radius: an unqualified key resolves inside
 ``robot_name``'s namespace first, and every spelling that resolved before still
 resolves - a qualified key, a bare key with no ``robot_name``, and a bare key
 that names no joint of ``robot_name`` but does name one elsewhere in the scene.
+
+They also pin the consequence of making the namespace load-bearing: a
+``robot_name`` no robot carries is refused rather than read as "no namespace"
+(#2549). While the dict form ignored the argument there was nothing for a wrong
+value to be wrong about, so tolerating it cost nothing; once it selects the
+namespace, a misspelling means "scope this write to a namespace that does not
+exist" and falls through to the cross-robot first-match lookup - writing some
+other robot's joint while the caller believes they addressed a specific one,
+which is #2453's defect reached through an unchecked scope. The list form
+refused that value all along, so the two accepted forms gave one argument two
+answers and the dict form's answer was ``status="success"``. Refusing in the
+shared resolver deletes the divergence for both forms and both setters at once;
+``test_the_two_forms_agree_on_an_unknown_robot_name`` is the pin on the
+agreement itself, rather than on each form separately.
 """
 
 import os
@@ -182,18 +196,67 @@ def test_bare_name_without_robot_name_is_unchanged(sim):
     assert _qpos(sim, "alice/j1") == pytest.approx(0.7)
 
 
-def test_unknown_robot_name_falls_back_rather_than_raising(sim):
-    """A robot_name no robot carries cannot scope, and must not crash the write."""
+def test_unknown_robot_name_is_refused(sim):
+    """A robot_name no robot carries is an error, not a scope that silently widens.
+
+    This asserts the flip #2549 decided. The previous pin here recorded the
+    tolerant behaviour: the lookup missed, ``ns`` stayed empty, and the write
+    proceeded through the cross-robot first-match lookup reporting success -- so
+    ``robot_name="nobody"`` wrote *alice*, the first robot attached. That is the
+    same wrong-robot write #2453 reported, reached through an unchecked scope
+    rather than an unqualified name, and it is the reason tolerating the value
+    stopped being free once the namespace became load-bearing.
+
+    ``nobody`` is refused with the list form's own message, and nothing is
+    written -- the all-or-nothing contract covers a refused scope too, not just
+    an unresolvable joint name.
+    """
+    before = sim._world._data.qpos.copy()
     result = sim.set_joint_positions({"j1": 0.2}, robot_name="nobody")
+    assert result["status"] == "error", result
+    assert "not found" in result["content"][0]["text"], result
+    assert np.array_equal(sim._world._data.qpos, before), "refused write leaked into qpos"
+
+
+def test_the_two_forms_agree_on_an_unknown_robot_name(sim):
+    """The claim #2549 is about: one argument, one answer, whichever form.
+
+    Asserting the two refusals are the *same string* rather than merely both
+    errors is deliberate -- the defect was not that the dict form lacked an
+    error, it was that the two accepted spellings of one call disagreed about
+    whether ``robot_name`` must name a real robot. Equality is what a future
+    change cannot satisfy by inventing a second, differently-worded refusal.
+    """
+    dict_form = sim.set_joint_positions({"j1": 0.2}, robot_name="nobody")
+    list_form = sim.set_joint_positions([0.1, 0.2, 0.3], robot_name="nobody")
+    assert dict_form["status"] == list_form["status"] == "error", (dict_form, list_form)
+    assert dict_form["content"][0]["text"] == list_form["content"][0]["text"]
+
+
+def test_a_known_robot_name_is_still_accepted(sim):
+    """Non-vacuity: the refusal must key on the name, not refuse every name."""
+    result = sim.set_joint_positions({"j1": 0.2}, robot_name="alice")
     assert result["status"] == "success", result
     assert _qpos(sim, "alice/j1") == pytest.approx(0.2)
 
 
 def test_unresolvable_name_is_still_all_or_nothing(sim):
-    """Scoping must not weaken the all-or-nothing guard."""
+    """Scoping must not weaken the all-or-nothing guard.
+
+    The message assertion pins refusal *precedence*: a real ``robot_name`` with
+    an unresolvable joint key must still be diagnosed as the joint problem it
+    is. Refusing an unknown ``robot_name`` (#2549) put a second refusal ahead of
+    this one in the same resolver, and a robot lookup that fired too eagerly
+    would replace the joint hint -- which names the key and the joints the model
+    does have -- with "Robot 'bob' not found", sending the caller after the
+    wrong argument.
+    """
     before = sim._world._data.qpos.copy()
     result = sim.set_joint_positions({"j1": 0.5, "nope": 0.1}, robot_name="bob")
     assert result["status"] == "error", result
+    text = result["content"][0]["text"]
+    assert "nope" in text, text
+    assert "not found" not in text.split("Joint")[0], f"robot refusal pre-empted the joint refusal: {text}"
     assert np.array_equal(sim._world._data.qpos, before), "partial write leaked into qpos"
 
 
@@ -242,7 +305,7 @@ UNHASHABLE_ROBOT_NAMES: list[tuple[str, Any]] = [
 
 
 @pytest.mark.parametrize("kind,robot_name", UNHASHABLE_ROBOT_NAMES, ids=[k for k, _ in UNHASHABLE_ROBOT_NAMES])
-def test_dict_form_reports_a_robot_name_that_cannot_be_a_key(sim, kind, robot_name):
+def test_dict_form_refuses_a_robot_name_that_cannot_be_a_key(sim, kind, robot_name):
     """Scoping made robot_name a registry lookup, which must stay total.
 
     The namespace lookup here is the dict form's *first* use of ``robot_name``:
@@ -253,22 +316,32 @@ def test_dict_form_reports_a_robot_name_that_cannot_be_a_key(sim, kind, robot_na
     ``{"status", "content"}`` envelope this method documents as its only failure
     channel. Measured on the unscoped-lookup tree: all three names raised out of
     the dict form while the list form reported each one, so one argument had two
-    answers depending on the form. Routing through
-    :func:`~strands_robots.simulation.models.registry_entry` makes the name
-    resolve to "no such robot", which is the fall-back path
-    :func:`test_unknown_robot_name_falls_back_rather_than_raising` already pins.
+    answers depending on the form.
+
+    Routing through :func:`~strands_robots.simulation.models.registry_entry`
+    makes such a name resolve to "no such robot" instead of raising, and #2549
+    then decided what "no such robot" means for a write: a refusal. So this
+    asserts an error rather than the tolerated success an earlier revision
+    pinned, and the envelope check stays -- it is the part that distinguishes a
+    refusal from a ``TypeError``, which is the escape this case exists for.
+    Both subsets reach the one branch: a name no robot carries, and a name that
+    cannot be a registry key at all.
     """
+    before = sim._world._data.qpos.copy()
     result = sim.set_joint_positions({"j1": 0.4}, robot_name=robot_name)
     assert isinstance(result, dict) and "status" in result, f"{kind} name escaped the envelope: {result!r}"
-    assert result["status"] == "success", result
-    assert _qpos(sim, "alice/j1") == pytest.approx(0.4)
+    assert result["status"] == "error", result
+    assert "not found" in result["content"][0]["text"], result
+    assert np.array_equal(sim._world._data.qpos, before), "refused write leaked into qpos"
 
 
 @pytest.mark.parametrize("kind,robot_name", UNHASHABLE_ROBOT_NAMES, ids=[k for k, _ in UNHASHABLE_ROBOT_NAMES])
 def test_the_list_form_still_refuses_such_a_name(sim, kind, robot_name):
     """The control: the ordered form already reported it, and still must.
 
-    Without this, the test above could be satisfied by making both forms raise.
+    Now that both forms refuse, this is what keeps "both refuse" from being
+    satisfied by both *raising*: the ordered form has to answer through the
+    ``{"status", "content"}`` envelope, naming the robot it could not find.
     """
     result = sim.set_joint_positions([0.1, 0.2, 0.3], robot_name=robot_name)
     assert result["status"] == "error", result
@@ -278,7 +351,17 @@ def test_the_list_form_still_refuses_such_a_name(sim, kind, robot_name):
 @pytest.mark.parametrize("kind,robot_name", UNHASHABLE_ROBOT_NAMES, ids=[k for k, _ in UNHASHABLE_ROBOT_NAMES])
 def test_velocities_share_the_total_lookup(sim, kind, robot_name):
     """The sibling setter shares the resolver, so it shares the contract."""
+    before = sim._world._data.qvel.copy()
     result = sim.set_joint_velocities({"j1": 1.0}, robot_name=robot_name)
     assert isinstance(result, dict) and "status" in result, f"{kind} name escaped the envelope: {result!r}"
-    assert result["status"] == "success", result
-    assert _qvel(sim, "alice/j1") == pytest.approx(1.0)
+    assert result["status"] == "error", result
+    assert np.array_equal(sim._world._data.qvel, before), "refused write leaked into qvel"
+
+
+def test_velocities_refuse_an_unknown_robot_name(sim):
+    """The sibling setter shares the refusal for a plain misspelling too."""
+    before = sim._world._data.qvel.copy()
+    result = sim.set_joint_velocities({"j1": 1.0}, robot_name="nobody")
+    assert result["status"] == "error", result
+    assert "not found" in result["content"][0]["text"], result
+    assert np.array_equal(sim._world._data.qvel, before), "refused write leaked into qvel"

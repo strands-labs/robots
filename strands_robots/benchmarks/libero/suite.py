@@ -59,7 +59,6 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 
 from strands_robots.benchmarks.libero.adapter import LiberoAdapter
-from strands_robots.benchmarks.libero.bddl_parser import BDDLParseError
 from strands_robots.simulation.benchmark import register_benchmark
 from strands_robots.utils import require_optional
 
@@ -348,7 +347,7 @@ def load_libero_suite(
                 init_states=task_init_states,
                 **(adapter_kwargs or {}),
             )
-        except (BDDLParseError, FileNotFoundError, ValueError) as e:
+        except (FileNotFoundError, ValueError) as e:
             logger.warning("Skipping LIBERO task %s: %s", bddl_file.name, e)
             failures.append((str(bddl_file), str(e)))
             continue
