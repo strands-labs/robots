@@ -456,7 +456,11 @@ class LerobotTrainer(Trainer):
         policy_type: LeRobot policy type (default ``"act"``). Resolved from
             ``TrainSpec.extra['policy_type']`` if present, else this. Ignored for
             reward-model runs (``TrainSpec.extra['reward_model']`` is set).
-        device: Torch device string (default auto: cuda > mps > cpu).
+        device: Torch device string (default auto: cuda > mps > cpu). Graded
+            by :meth:`validate` against torch's own device-string domain -
+            a device type, optionally with an index (``'cuda'``,
+            ``'cuda:0'``, ``'cpu'``, ``'mps'``). Only the spelling is
+            checked, never whether this machine has that device.
     """
 
     def __init__(
@@ -520,7 +524,7 @@ class LerobotTrainer(Trainer):
         try:
             with open(info, encoding="utf-8") as f:
                 return int(json.load(f).get("total_episodes"))
-        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        except (OSError, ValueError, TypeError):
             return None
 
     def _resume_config_path(self, output_dir: str) -> str | None:
@@ -718,6 +722,60 @@ class LerobotTrainer(Trainer):
             )
         return sw
 
+    def _device_problems(self) -> list[str]:
+        """Problems for a ``device`` no torch build can parse, or an empty list.
+
+        ``device`` is the trainer's one constructor knob, and it reaches lerobot
+        twice: interpolated into ``--policy.device=`` (and
+        ``--reward_model.device=``) by :meth:`build_command`, and assigned onto
+        ``policy_cfg.device`` by :meth:`build_config`. Neither refuses an
+        unusable spelling - the argv is built verbatim and the config carries the
+        string forward - so without this gate ``validate`` returns ``[]`` for a
+        run that cannot start, which is the one thing its contract says an empty
+        list does not mean.
+
+        Every other caller-supplied value this preflight sees is already held to
+        a domain: ``steps`` / ``global_batch_size`` / ``lora_r`` / ``lora_alpha``
+        through :meth:`_run_size_problems`, ``learning_rate``, ``seed``,
+        ``num_gpus`` / ``num_nodes``, ``val_episodes``, and
+        ``dataset_repo_id`` against ``_HUB_REPO_ID_RE``. ``device`` was the one
+        knob beside them with none.
+
+        The admitted domain is torch's own, read by handing the value to
+        ``torch.device`` rather than by comparing against a copied list of
+        device types, so a torch build that gains a backend is admitted here
+        with no change and torch's own exception enumerates the types it
+        accepts. Only the spelling is graded, never availability:
+        ``torch.device("cuda")`` constructs on a CPU-only box, and a spec
+        legitimately names a device the machine writing it does not have - a
+        queued or containerised run is dispatched from one host and executed on
+        another. A non-``str`` is refused before torch is consulted for that
+        same reason, because ``torch.device(0)`` reads the accelerator inventory
+        and would make one spec validate on a GPU box and fail on a CPU box.
+
+        When torch is not importable the domain is unknown and the value passes
+        through unguarded, which is the same posture the reward-model field set
+        takes when its registry cannot be read.
+        """
+        device = self.device
+        if not isinstance(device, str):
+            return [
+                f"device must be a torch device string, got {type(device).__name__}; "
+                "pass a device type, optionally with an index (e.g. 'cuda', 'cuda:0', 'cpu', 'mps')."
+            ]
+        try:
+            import torch
+        except Exception:  # noqa: BLE001 - torch missing -> domain unknown, pass through
+            return []
+        try:
+            torch.device(device)
+        except (RuntimeError, ValueError) as e:
+            return [
+                f"device={device!r} is not a torch device string ({e}); "
+                "pass a device type, optionally with an index (e.g. 'cuda', 'cuda:0', 'cpu', 'mps')."
+            ]
+        return []
+
     # ---- ABC ---------------------------------------------------------------
 
     def validate(self, spec: TrainSpec) -> list[str]:
@@ -726,7 +784,8 @@ class LerobotTrainer(Trainer):
         Runs the shared input-safety gate, then checks a data source -
         exactly one of a local LeRobotDataset v3 ``dataset_root`` or a Hub
         ``dataset_repo_id`` (for streaming) - an ``output_dir``, a usable run
-        size (``steps`` / ``global_batch_size``), single-node only
+        size (``steps`` / ``global_batch_size``), a ``device`` torch can parse,
+        single-node only
         (``num_nodes == 1``), a ``val_episodes``
         split below the dataset total and not asked for alongside ``streaming``
         (lerobot's split path is map-style only), a local dataset format version
@@ -779,6 +838,7 @@ class LerobotTrainer(Trainer):
         problems.extend(self._run_size_problems(spec))
         problems.extend(self._learning_rate_problems(spec))
         problems.extend(self._seed_problems(spec))
+        problems.extend(self._device_problems())
         # Captured rather than extended blind: the multi-node refusal below
         # compares num_nodes, which is only a meaningful comparison once this
         # gate has established it IS a count - a string or None would raise out

@@ -807,7 +807,7 @@ class PhysicsMixin:
                     "text": (
                         f"Force applied to '{body_name}' (body {body_id})\n"
                         f"Force: {f.tolist()} N\n"
-                        f"Torque: {t.tolist()} N·m\n"
+                        f"Torque: {t.tolist()} N*m\n"
                         f"Point: {p.tolist()}"
                     )
                 }
@@ -1165,7 +1165,7 @@ class PhysicsMixin:
         return {
             "status": "success",
             "content": [
-                {"text": f"Mass matrix: {nv}×{nv}, rank={rank}, cond={cond:.2e}"},
+                {"text": f"Mass matrix: {nv}x{nv}, rank={rank}, cond={cond:.2e}"},
                 {
                     "json": {
                         "shape": [nv, nv],
@@ -1323,8 +1323,9 @@ class PhysicsMixin:
             method: Calling method name, used in error text.
             robot_name: The robot an unqualified key belongs to. Its namespace is
                 tried first, so a bare name reaches that robot's joint even when
-                a sibling robot declares the same short name. ``None`` (or a name
-                no robot in the world carries) leaves resolution as it was.
+                a sibling robot declares the same short name. ``None`` leaves
+                resolution as it was; a name no robot in the world carries is
+                refused, on the same terms as the list form.
 
         Returns:
             ``({joint_name: joint_id}, None)`` when every name resolves, else
@@ -1355,11 +1356,28 @@ class PhysicsMixin:
         # lands on a robot the caller never addressed (#2453). Scoping first
         # keeps that fallback for everything it already resolved: a bare name
         # that is not a joint of this robot still reaches the shared lookup.
+        #
+        # A ``robot_name`` no robot carries is refused rather than read as "no
+        # namespace". Once the namespace is load-bearing, a misspelling means
+        # "scope this write to a namespace that does not exist", which falls
+        # through to the cross-robot first-match lookup and writes some other
+        # robot's joint while the caller believes they addressed a specific one -
+        # the defect #2453 reported, reached through an unchecked scope instead of
+        # an unqualified name. The list form already refuses the same value here,
+        # so this deletes a divergence rather than adding a rule: one argument had
+        # two answers, and in the dict form the answer was success (#2549).
+        # ``registry_entry`` keeps the lookup total, so a name that cannot be a
+        # registry key at all is refused by this same branch rather than raising
+        # ``TypeError`` past the structured-error contract.
         ns = ""
         if robot_name is not None and self._world is not None:
             robot = registry_entry(self._world.robots, robot_name)
-            if robot is not None:
-                ns = robot.namespace or ""
+            if robot is None:
+                return {}, {
+                    "status": "error",
+                    "content": [{"text": self._unknown_robot_msg(robot_name)}],
+                }
+            ns = robot.namespace or ""
 
         resolved: dict[str, int] = {}
         unresolved: list[str] = []
@@ -1450,7 +1468,10 @@ class PhysicsMixin:
           ``robot_name`` a bare key falls back to a first-match-wins lookup
           across robots, so pass ``robot_name`` or the qualified
           ``"<robot>/<joint>"`` spelling when more than one robot declares the
-          name.
+          name. A ``robot_name`` no robot carries is refused: because it selects
+          the namespace, a misspelling would otherwise scope the write to a
+          namespace that does not exist and fall back to that cross-robot
+          lookup, landing on a robot the caller never addressed.
         * list/tuple: [v0, v1, ...] - ordered positional. Must match a single robot's
           joint count (when ``robot_name`` is given, that robot's joints; otherwise the
           world must contain exactly one robot, or the call errors).
@@ -1474,7 +1495,10 @@ class PhysicsMixin:
                 ordered vector (see the two accepted forms above).
             robot_name: Which robot the ordered form binds to, and whose
                 namespace resolves an unqualified joint name. Optional when the
-                world holds exactly one robot.
+                world holds exactly one robot. When given it must name a robot
+                in the world, in either form: a name no robot carries returns
+                ``status="error"`` and writes nothing, rather than widening the
+                lookup back across every robot.
             hold: Also write the matching position-servo setpoints, so the servos
                 hold the pose written instead of pulling it back to wherever they
                 were last commanded. Must be a boolean. Joints with no position
@@ -1642,7 +1666,8 @@ class PhysicsMixin:
 
         Joint names are scoped on the same terms too: an unqualified key is
         resolved inside ``robot_name``'s namespace before the cross-robot
-        fallback, so a bare name reaches the robot the caller addressed.
+        fallback, so a bare name reaches the robot the caller addressed, and a
+        ``robot_name`` no robot carries is refused in both call forms.
         """
         if self._world is None or self._world._model is None or self._world._data is None:
             return {"status": "error", "content": [{"text": _NO_WORLD_MSG}]}
@@ -1885,7 +1910,7 @@ class PhysicsMixin:
                 if reason := persist_body_mass(self._world, body_id, mass_ratio=mass_ratio):
                     return {"status": "error", "content": [{"text": f"set_body_properties: {reason}"}]}
                 model.body_mass[body_id] = mass
-                changes.append(f"mass: {old_mass:.3f} → {mass:.3f}")
+                changes.append(f"mass: {old_mass:.3f} -> {mass:.3f}")
                 # Inertia tracks mass for fixed geometry: setting a rigid body's
                 # mass to a new value at constant shape is a uniform density
                 # change, which scales its inertia tensor by the same factor
@@ -2122,12 +2147,12 @@ class PhysicsMixin:
             if color is not None:
                 # Already coerced to 4 components (RGB got an opaque alpha).
                 model.geom_rgba[gid] = color
-                changes.append(f"color → {model.geom_rgba[gid].tolist()}")
+                changes.append(f"color -> {model.geom_rgba[gid].tolist()}")
 
             if friction is not None:
                 # Validated as exactly the three MuJoCo coefficients.
                 model.geom_friction[gid] = friction
-                changes.append(f"friction → {friction}")
+                changes.append(f"friction -> {friction}")
 
             if size is not None:
                 # A resize changes the shape the owning body's inertial row was
@@ -2150,7 +2175,7 @@ class PhysicsMixin:
                 # smaller collision bounds and other bodies silently pass through
                 # it. Recompute both for size-defined primitives.
                 _recompute_primitive_geom_bounds(mj, model, gid)
-                changes.append(f"size → {model.geom_size[gid].tolist()}")
+                changes.append(f"size -> {model.geom_size[gid].tolist()}")
 
         return {
             "status": "success",
@@ -2212,7 +2237,7 @@ class PhysicsMixin:
 
         lines = [f"{len(contacts)} contacts:"]
         for c in contacts[:15]:
-            lines.append(f"{c['geom1']} ↔ {c['geom2']}: normal={c['normal_force']:.3f}N, dist={c['distance']:.4f}m")
+            lines.append(f"{c['geom1']} <-> {c['geom2']}: normal={c['normal_force']:.3f}N, dist={c['distance']:.4f}m")
         if len(contacts) > 15:
             lines.append(f"  ... and {len(contacts) - 15} more")
 
