@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING, Any, cast
 import numpy as np
 
 from strands_robots.simulation.base import _BOOLEAN_STATE_REASON, close_match_hint
-from strands_robots.simulation.models import registered
+from strands_robots.simulation.models import registered, registry_entry
 from strands_robots.simulation.mujoco.backend import (
     _NO_WORLD_MSG,
     _ensure_mujoco,
@@ -1304,6 +1304,7 @@ class PhysicsMixin:
         values: dict[str, float],
         name: str,
         method: str,
+        robot_name: str | None = None,
     ) -> tuple[dict[str, int], dict[str, Any] | None]:
         """Resolve every joint name to a MuJoCo joint id before any state write.
 
@@ -1320,6 +1321,10 @@ class PhysicsMixin:
             values: The ``{joint_name: value}`` mapping about to be written.
             name: Parameter name (``"positions"`` / ``"velocities"``), used in error text.
             method: Calling method name, used in error text.
+            robot_name: The robot an unqualified key belongs to. Its namespace is
+                tried first, so a bare name reaches that robot's joint even when
+                a sibling robot declares the same short name. ``None`` (or a name
+                no robot in the world carries) leaves resolution as it was.
 
         Returns:
             ``({joint_name: joint_id}, None)`` when every name resolves, else
@@ -1342,10 +1347,28 @@ class PhysicsMixin:
                 ],
             }
 
+        # An unqualified key is resolved inside ``robot_name``'s namespace before
+        # the shared lookup gets it. ``_resolve_mj_name`` tries a bare name
+        # verbatim and then under every robot namespace in turn, returning the
+        # first hit - deliberately, for the read paths that share it - so with
+        # two robots declaring ``j1`` the first one attached wins and the write
+        # lands on a robot the caller never addressed (#2453). Scoping first
+        # keeps that fallback for everything it already resolved: a bare name
+        # that is not a joint of this robot still reaches the shared lookup.
+        ns = ""
+        if robot_name is not None and self._world is not None:
+            robot = registry_entry(self._world.robots, robot_name)
+            if robot is not None:
+                ns = robot.namespace or ""
+
         resolved: dict[str, int] = {}
         unresolved: list[str] = []
         for jnt_name in values:
-            jnt_id = self._resolve_mj_name(mj.mjtObj.mjOBJ_JOINT, jnt_name)
+            jnt_id = -1
+            if ns and isinstance(jnt_name, str) and "/" not in jnt_name:
+                jnt_id = self._resolve_mj_name(mj.mjtObj.mjOBJ_JOINT, ns + jnt_name)
+            if jnt_id < 0:
+                jnt_id = self._resolve_mj_name(mj.mjtObj.mjOBJ_JOINT, jnt_name)
             if jnt_id >= 0:
                 resolved[jnt_name] = jnt_id
             else:
@@ -1419,7 +1442,15 @@ class PhysicsMixin:
 
         Accepts EITHER form:
 
-        * dict: {joint_name: value, ...} - explicit per-joint, safest in multi-robot scenes.
+        * dict: {joint_name: value, ...} - explicit per-joint, and the form to
+          reach for in a multi-robot scene *provided the key names one robot*.
+          An unqualified key is resolved inside ``robot_name``'s namespace
+          first, so ``{"j1": 0.9}`` with ``robot_name="bob"`` writes ``bob/j1``
+          even when a sibling robot also declares ``j1``. Without
+          ``robot_name`` a bare key falls back to a first-match-wins lookup
+          across robots, so pass ``robot_name`` or the qualified
+          ``"<robot>/<joint>"`` spelling when more than one robot declares the
+          name.
         * list/tuple: [v0, v1, ...] - ordered positional. Must match a single robot's
           joint count (when ``robot_name`` is given, that robot's joints; otherwise the
           world must contain exactly one robot, or the call errors).
@@ -1538,7 +1569,9 @@ class PhysicsMixin:
         if err:
             return err
 
-        joint_ids, err = self._resolve_joint_write_targets(positions, "positions", "set_joint_positions")
+        joint_ids, err = self._resolve_joint_write_targets(
+            positions, "positions", "set_joint_positions", robot_name=robot_name
+        )
         if err:
             return err
 
@@ -1606,6 +1639,10 @@ class PhysicsMixin:
         The write is all-or-nothing on the same terms as
         :meth:`set_joint_positions`: an unresolvable joint name (or an empty
         mapping) returns ``status="error"`` and leaves ``qvel`` untouched.
+
+        Joint names are scoped on the same terms too: an unqualified key is
+        resolved inside ``robot_name``'s namespace before the cross-robot
+        fallback, so a bare name reaches the robot the caller addressed.
         """
         if self._world is None or self._world._model is None or self._world._data is None:
             return {"status": "error", "content": [{"text": _NO_WORLD_MSG}]}
@@ -1680,7 +1717,9 @@ class PhysicsMixin:
         if err:
             return err
 
-        joint_ids, err = self._resolve_joint_write_targets(velocities, "velocities", "set_joint_velocities")
+        joint_ids, err = self._resolve_joint_write_targets(
+            velocities, "velocities", "set_joint_velocities", robot_name=robot_name
+        )
         if err:
             return err
 
