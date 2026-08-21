@@ -1573,8 +1573,8 @@ class TestMinimalConfigContractBranches:
             hw._create_minimal_config("needs_arg_robot", cameras={})
 
 
-class TestHardwareConfigV040Followups:
-    """v0.4.0 hardware_robot follow-up bundle (#389) - PR #276 review trail."""
+class TestForwardableKwargDropIsReported:
+    """A kwarg the target dataclass cannot take is reported, never dropped silently."""
 
     def test_cross_robot_kwarg_drop_emits_debug_signal(self, caplog):
         """#294/#297: dropping a forwardable kwarg the target dataclass does
@@ -1601,6 +1601,10 @@ class TestHardwareConfigV040Followups:
             f"expected a DEBUG signal naming the dropped 'kp' kwarg; got {drop_msgs}"
         )
 
+
+class TestThirdPartyPluginGuardIsNarrow:
+    """The third-party plugin registration guard names the exceptions it absorbs."""
+
     def test_register_third_party_plugins_exception_is_narrow(self):
         """#291: the register_third_party_plugins() guard must NOT be a bare
         except Exception. Pin the narrowed (ImportError, AttributeError,
@@ -1617,6 +1621,10 @@ class TestHardwareConfigV040Followups:
         assert "except Exception as exc:  # noqa: BLE001 -- third-party plugin" not in src, (
             "the bare except Exception on plugin registration must be gone (#291)"
         )
+
+
+class TestLerobotExtraShipsAnAarch64VideoDecoder:
+    """The ``[lerobot]`` extra declares a video decoder that resolves on aarch64."""
 
     def test_lerobot_extra_provides_aarch64_video_decoder(self):
         """#378: a `pip install strands-robots[lerobot]` on Thor/Jetson must get a

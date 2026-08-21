@@ -1388,6 +1388,7 @@ Corrections from code review that apply to all future contributions:
 - **Round-trip tests for recording** - Any recording feature needs: start -> write -> stop -> reopen -> assert non-empty. Schema-only tests miss silent data loss.
 - **Pin regression tests for reviewed fixes** - Every review fix gets a test that fails on pre-fix code. Otherwise the next refactor silently reintroduces the bug.
 - **No host paths in test files** - Never commit `/Users/<name>/` or `/home/<name>/` paths. CI test `test_no_host_paths.py` enforces this.
+- **Name a test for its behaviour, not for its provenance** - a test class or function must not carry the release (`TestHardwareConfigV040Followups`) or review round (`...Followups`) that produced it. The name is the first thing a maintainer reads, so it has to say what is verified; and a name tied to a shipped release reads as historical, which invites skipping it. A bundle named for a review round is usually a bundle of unrelated checks - split it into one behaviour per class rather than inventing a name that covers all of them. Provenance belongs in the docstring, where the `#NNN` reference stays useful. A version token of one or two digits is fine: it names a *data format* under test (`test_load_v3_parses_every_field`), not a release. `Pinned by` `tests/test_test_case_names_describe_behaviour.py`.
 
 ### Performance
 - **Don't create executors in hot loops** - Reuse a single `ThreadPoolExecutor` instance instead of creating one per call at 50Hz.
