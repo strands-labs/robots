@@ -43,7 +43,7 @@ from typing import Any
 from strands_robots.simulation.models import SimCamera, SimObject, SimRobot, SimWorld
 from strands_robots.simulation.mujoco.backend import _ensure_mujoco, filter_mujoco_attach_noise, mj_name_to_id
 from strands_robots.simulation.mujoco.spec_builder import SpecBuilder
-from strands_robots.utils import coerce_rgba, finite_vector_error, pose_vector_error
+from strands_robots.utils import coerce_rgba, entity_name_error, finite_vector_error, pose_vector_error
 
 logger = logging.getLogger(__name__)
 
@@ -2302,6 +2302,12 @@ def _apply_patch_op(spec: Any, op: dict[str, Any], new_bodies: dict[str, Any]) -
     MuJoCo compile errors surface on the enclosing ``recompile`` call.
     ``new_bodies`` is a batch-local cache of body handles added earlier
     in the same patch (see ``_find_body`` for why this is needed).
+
+    An op that CLAIMS a name holds it to the shared
+    :func:`~strands_robots.utils.entity_name_error` domain, so this door cannot
+    create an entity a name-based surface is unable to address. An op that
+    LOOKS a name UP does not: there a name addressing nothing is honestly
+    absent, which is what its own "not found" message already reports.
     """
     if not isinstance(op, dict):
         raise ValueError(f"each op must be a dict, got {type(op).__name__}")
@@ -2321,8 +2327,10 @@ def _apply_patch_op(spec: Any, op: dict[str, Any], new_bodies: dict[str, Any]) -
     if kind == "add_body":
         parent = op.get("parent", "world")
         name = op.get("name")
-        if not name:
+        if name is None:
             raise ValueError("add_body requires 'name'")
+        if (name_err := entity_name_error("add_body", "name", name)) is not None:
+            raise ValueError(name_err)
         pos = op.get("pos", [0.0, 0.0, 0.0])
         quat = op.get("quat", [1.0, 0.0, 0.0, 0.0])
         parent_body = _find_body(spec, parent, new_bodies)
@@ -2352,6 +2360,10 @@ def _apply_patch_op(spec: Any, op: dict[str, Any], new_bodies: dict[str, Any]) -
             "rgba": op.get("rgba", [0.5, 0.5, 0.5, 1.0]),
         }
         if "name" in op:
+            # Only a supplied name is a claim: omitting the key leaves the geom
+            # unnamed, which is a legal MJCF geom and stays legal here.
+            if (name_err := entity_name_error("add_geom", "name", op["name"])) is not None:
+                raise ValueError(name_err)
             geom_kwargs["name"] = op["name"]
         if "pos" in op:
             geom_kwargs["pos"] = op["pos"]
@@ -2366,8 +2378,10 @@ def _apply_patch_op(spec: Any, op: dict[str, Any], new_bodies: dict[str, Any]) -
         if body is None:
             raise ValueError(f"add_site: body '{body_name}' not found")
         name = op.get("name")
-        if not name:
+        if name is None:
             raise ValueError("add_site requires 'name'")
+        if (name_err := entity_name_error("add_site", "name", name)) is not None:
+            raise ValueError(name_err)
         site_kwargs: dict[str, Any] = {
             "name": name,
             "pos": op.get("pos", [0.0, 0.0, 0.0]),

@@ -21,16 +21,15 @@ Submodules
 - ``core`` - The Mesh class (lifecycle, presence, state, RPC, subscribe)
 - ``sensors`` - Extended sensor topic loops (pose, health, IMU, odom, lidar, hand, map)
 - ``input`` - InputPublisher / InputReceiver for teleoperation over mesh
+
+The in-process registry of mesh-enabled robots is reachable through
+:func:`get_local_robots`, which returns a snapshot. Code that needs to
+mutate the registry itself reaches ``strands_robots.mesh.core``, where it is
+defined; this package re-exports the public surface only.
 """
 
 from strands_robots.mesh.audit import log_safety_event
-from strands_robots.mesh.core import (
-    _LOCAL_ROBOTS,
-    _LOCAL_ROBOTS_LOCK,
-    Mesh,
-    get_local_robots,
-    init_mesh,
-)
+from strands_robots.mesh.core import Mesh, get_local_robots, init_mesh
 from strands_robots.mesh.input import InputPublisher, InputReceiver
 from strands_robots.mesh.ros_bridge import RosBridgedRobot
 from strands_robots.mesh.rosbridge_robot import RosbridgeRobot
@@ -71,7 +70,4 @@ __all__ = [
     "prune_peers",
     # Safety
     "log_safety_event",
-    # Private (exposed for test patching only)
-    "_LOCAL_ROBOTS",
-    "_LOCAL_ROBOTS_LOCK",
 ]
