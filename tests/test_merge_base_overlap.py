@@ -25,7 +25,9 @@ CI, pinned by ``test_a_merge_commit_head_defeats_the_check``.
 
 from __future__ import annotations
 
+import ast
 import importlib.util
+import inspect
 import subprocess
 import sys
 from collections.abc import Callable
@@ -950,6 +952,161 @@ def test_all_open_and_head_are_mutually_exclusive(tmp_path: Path) -> None:
     with pytest.raises(SystemExit) as raised:
         check.main(["--all-open", "--head", "abc123", "--github-repo", "owner/name", "--token", "t"])
     assert raised.value.code == 2
+
+
+def _flag_partition() -> tuple[dict[str, str], set[str]]:
+    """Split ``main``'s value-bearing flags into what the sweep reads and what it does not.
+
+    Derived from the source rather than listed. Every value the sweep reads is
+    passed to ``_run_sweep``, so its complement is exactly the set of flags only
+    the single-branch path consults -- which is the partition the mutual-exclusion
+    checks have to cover. A flag added later lands on one side or the other
+    without this test being edited.
+
+    ``store_true`` flags are skipped: they select the mode rather than carry an
+    input it could read.
+    """
+    options: dict[str, str] = {}
+    swept: set[str] = set()
+    for node in ast.walk(ast.parse(inspect.getsource(check.main))):
+        if not isinstance(node, ast.Call):
+            continue
+        called = ast.unparse(node.func)
+        if called.endswith("add_argument") and node.args and isinstance(node.args[0], ast.Constant):
+            option = str(node.args[0].value)
+            if not option.startswith("--"):
+                continue
+            if any(
+                keyword.arg == "action"
+                and isinstance(keyword.value, ast.Constant)
+                and keyword.value.value == "store_true"
+                for keyword in node.keywords
+            ):
+                continue
+            options[option.removeprefix("--").replace("-", "_")] = option
+        elif called == "_run_sweep":
+            swept.update(
+                argument.attr
+                for argument in node.args
+                if isinstance(argument, ast.Attribute) and ast.unparse(argument).startswith("args.")
+            )
+    return options, swept
+
+
+_FLAG_OPTIONS, _SWEEP_READS = _flag_partition()
+
+#: Flags the sweep is handed none of, so passing one to ``--all-open`` describes a
+#: run that is not happening.
+_SWEEP_IGNORES = tuple(sorted(set(_FLAG_OPTIONS) - _SWEEP_READS))
+
+
+def _refusal(argv: list[str], captured: pytest.CaptureFixture[str]) -> str:
+    """Run ``main`` expecting an argparse refusal and return the message it gave.
+
+    Only the text after ``error:`` -- argparse prints the whole usage line first,
+    and the usage line names every flag, so asserting against the full stderr
+    would pass whatever the refusal said.
+
+    An accepted call is reported as what it did rather than as a missing raise:
+    the run went ahead reading a value it was never handed, which is the thing
+    being pinned.
+    """
+    try:
+        code = check.main(argv)
+    except SystemExit as refused:
+        assert refused.code == 2, f"expected an argparse refusal, got exit {refused.code}"
+        return captured.readouterr().err.split("error:", 1)[1].strip()
+    raise AssertionError(
+        f"argparse accepted {' '.join(argv)} and the run went ahead (exit {code}): the sweep is handed "
+        "none of that flag, so the value named nothing and the report describes whatever "
+        "$GITHUB_REPOSITORY names instead"
+    )
+
+
+def test_all_open_and_repo_are_mutually_exclusive(capsys: pytest.CaptureFixture[str]) -> None:
+    """``--repo`` names one checkout and the sweep reads none, so it is refused too.
+
+    The same reasoning as ``--head`` above, on the flag a caller is far more
+    likely to reach for: the sibling gate scripts spell ``owner/name`` ``--repo``,
+    so ``--repo strands-labs/robots --all-open`` reads as naming the repository.
+    Accepted as a path it named nothing -- the sweep read ``$GITHUB_REPOSITORY``
+    and reported on whatever repository the command happened to be running in,
+    exiting ``0`` with a report shaped exactly like the right one. Measured before
+    this refusal, run from a checkout of a fork: the same command reported ``0 open
+    non-draft pull request(s)`` for the fork, where naming the intended repository
+    reports 10.
+
+    So the refusal also names ``--github-repo``: a caller who passed ``--repo``
+    wanted the repository named, and that is the flag that names it.
+    """
+    message = _refusal(
+        ["--all-open", "--repo", "strands-labs/robots", "--github-repo", "owner/name", "--token", "t"],
+        capsys,
+    )
+    assert "--repo" in message
+    assert "--github-repo" in message, f"the refusal must name the flag that does name a repository: {message!r}"
+
+
+@pytest.mark.parametrize("dest", _SWEEP_IGNORES)
+def test_a_flag_the_sweep_is_handed_none_of_is_refused_rather_than_ignored(
+    dest: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Every flag outside ``_run_sweep``'s arguments is refused by ``--all-open``.
+
+    The root-cause form of the two named tests around it: the rule is a property
+    of the partition, not of the two flags that happen to be on the local side
+    today, so a third one is graded on arrival rather than silently ignored.
+    """
+    option = _FLAG_OPTIONS[dest]
+    message = _refusal(
+        ["--all-open", option, "placeholder", "--github-repo", "owner/name", "--token", "t"],
+        capsys,
+    )
+    assert option in message, f"the refusal must name the flag it refused: {message!r}"
+
+
+def test_the_partition_is_derived_and_finds_both_sides() -> None:
+    """Non-vacuity: a derivation that found nothing would grade nothing.
+
+    Pinned as the two sets rather than a count, because each side carries a
+    different obligation -- the sweep's own inputs are refused when *missing*
+    (above), and the local ones when *present*.
+    """
+    assert _SWEEP_READS == {"github_repo", "base_ref", "token"}, _SWEEP_READS
+    assert set(_SWEEP_IGNORES) == {"head", "repo"}, _SWEEP_IGNORES
+
+
+def test_the_flag_both_modes_read_is_not_refused_by_the_sweep(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """``--base-ref`` is handed to the sweep, so naming it is not a mistake.
+
+    The boundary: the refusal is scoped to flags the sweep is handed none of, not
+    to every flag the single-branch path also happens to read.
+    """
+    monkeypatch.setattr(check, "_get", _api([], {}, base="release"))
+    monkeypatch.chdir(tmp_path)
+    assert check.main(["--all-open", "--base-ref", "release", "--github-repo", "owner/name", "--token", "t"]) == 0
+
+
+def test_one_branch_still_reads_the_checkout_path(repo: Path) -> None:
+    """``--repo`` is refused by the sweep only; it stays the single-branch input.
+
+    Which is what makes the refusal a scoping statement rather than a removal.
+    """
+    _branch_editing_shared(repo)
+    assert check.main(["--repo", str(repo), "--base-ref", "main", "--head", "HEAD"]) == 0
+
+
+def test_the_head_refusal_is_unchanged(capsys: pytest.CaptureFixture[str]) -> None:
+    """Each refusal stays specific to the flag it refused.
+
+    Collapsing them into one message would lose the ``--github-repo`` pointer,
+    which is the half a caller who reached for ``--repo`` needs.
+    """
+    message = _refusal(
+        ["--all-open", "--head", "abc123", "--github-repo", "owner/name", "--token", "t"],
+        capsys,
+    )
+    assert message == "--all-open sweeps the open set and reads no local commit; --head names one branch"
 
 
 @pytest.mark.parametrize("missing", ["--github-repo", "--token"])

@@ -1005,7 +1005,11 @@ for action Y. Valid: [...]"*, missing required params produce *"Action X
 requires parameter Y."*, a field the schema publishes as a string is refused
 unless it is one (*"Action X: 'Y' must be a string, got 7 (int)"*), and
 vectors/dtypes are validated before MuJoCo sees them - so the agent learns the
-contract without crashing the process.
+contract without crashing the process. Every one of those refusals names the
+field by the spelling you sent, or by the one this schema publishes: the router
+rewrites a few wire names to their method parameter (`torque_vec` -> `torque`)
+before validating, and a refusal naming the rewritten name would point at a
+field the schema does not carry.
 
 **Third-party backends.** `create_simulation(name)` discovers backends beyond
 the built-in `mujoco`/`newton`/`isaac` registry via Python
@@ -1253,6 +1257,58 @@ other spelling is refused. See
 Clear with `rm -rf ~/.strands_robots/assets/`; relocate with
 `export STRANDS_ASSETS_DIR=/path/to/dir`.
 
+### CA Pin Rotation Runbook
+
+The AWS IoT transport pins the SHA-256 of the canonical Amazon Root CA1 PEM, so
+a network-level attacker (DNS hijack, captive portal, BGP, malicious local
+proxy) cannot substitute a rogue CA at the download URL. The accepted set is a
+*collection*, not a scalar, so old and new pins can both be valid at once - that
+is what makes a rotation expressible without a flag-day deploy.
+
+When AWS rotates the root, every fleet member refuses the new certificate until
+a pin covering it is accepted, on both the download path and the on-disk re-use
+path. Deleting the cached PEM does not help: the re-download fetches the same
+unpinned bytes and is refused again. Rotation therefore needs an ordered
+procedure, which is this one.
+
+**Recompute** the pin of whatever the URL currently serves:
+
+```bash
+python -c "import hashlib, urllib.request as u; \
+print(hashlib.sha256(u.urlopen( \
+'https://www.amazontrust.com/repository/AmazonRootCA1.pem' \
+).read()).hexdigest())"
+```
+
+**Monitor** for rotations before they bite: AWS announces root-CA changes in its
+security bulletins with a deprecation timeline, so a planned rotation can be
+shipped ahead of the cutover rather than during an outage.
+
+**Rotate (planned):**
+
+1. **Verify the new certificate out of band.** A digest computed from the same
+   connection that served the bytes proves nothing. Confirm the certificate
+   against an independent source before it becomes a pin.
+2. **Ship a release that adds the new pin and keeps the old one.** Both stay
+   valid, so peers still on the previous release keep verifying.
+3. **Wait for fleet uptake.** The overlap is bounded by the slowest fleet member,
+   not by the release cadence.
+4. **Drop the old pin in a follow-up release** once uptake is complete.
+
+**Emergency (a rotation lands faster than a release can ship):** stage the
+verified new pin in `STRANDS_MESH_CA_PINS` (comma-separated, 64-char lowercase
+hex). It is *additive* - the built-in pin stays accepted and verification stays
+on - so it buys the grace period a release would have provided. Entries that are
+not valid hex digests are rejected with a warning and skipped rather than
+weakening the set. Remove the override once the release carrying the pin is
+deployed.
+
+`STRANDS_MESH_DISABLE_CA_PIN` is **not** part of this procedure. It turns the
+download-path pin check off rather than widening it, accepts whatever the URL
+serves, and marks the result as unverified-origin so later runs warn about
+re-using it. It is a break-glass for a broken pin, never the response to a
+rotation - a rotation has a verified pin to stage.
+
 ## Benchmarks
 
 `strands-robots` ships a [LIBERO](https://github.com/Lifelong-Robot-Learning/LIBERO)
@@ -1309,7 +1365,9 @@ process in [SECURITY.md](SECURITY.md) (AWS VDP / HackerOne).
 
 Note the `trust_remote_code` gate on `lerobot_local` (see
 [Policy providers](#policy-providers)) and the mesh CA-pinning / thing-name
-validation controls in the [Configuration](#configuration) matrix.
+validation controls in the [Configuration](#configuration) matrix
+Rotating the pinned Amazon Root CA1 has an ordered procedure:
+[CA Pin Rotation Runbook](#ca-pin-rotation-runbook).
 
 ## Contributing
 

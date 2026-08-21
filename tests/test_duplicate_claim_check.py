@@ -90,6 +90,7 @@ _NAMES_REPOSITORY: dict[str, tuple[str, str | None]] = {
     "check_duplicate_claim.py": ("--repo", None),
     "check_last_push_approval.py": ("--repo", None),
     "check_merge_base_overlap.py": ("--github-repo", "--all-open"),
+    "check_merge_blockers.py": ("--repo", None),
     "check_pr_head_is_current.py": ("--repo", None),
 }
 

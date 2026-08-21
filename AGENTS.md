@@ -948,6 +948,52 @@ hatch run format            # ruff check --fix, ruff format
    still `APPROVED`, nine suites queued including the required one. #1988 has the
    full account.
 
+   **Two further causes need no second token, and one needs nothing at all.**
+   `mergeStateStatus` is one word for at least six situations and names none of
+   them, so the rule that is actually unsatisfied has to be read separately.
+   Measured 2026-08-21, both approved and green, both idle after approval because
+   a scheduled pass read `BLOCKED` and concluded the next move was a reviewer's:
+
+   | PR | approved | merged | idle | actually unsatisfied | who could clear it |
+   |---|---|---|---|---|---|
+   | #2566 | 16:39 | 17:10 | 31 min | one unresolved review thread | the author |
+   | #2574 | 16:25 | 17:10 | 45 min | nothing - a stale computation | anyone, by retrying |
+
+   #2566 sat on `required_review_thread_resolution`, which the ruleset carries:
+   one thread was open, its fix had already landed, and the reviewer had approved
+   *past* it. Resolving it flipped `blocked` to `clean` on the next read. #2574 had
+   zero threads and twelve green checks, and `blocked` was simply stale -
+   `mergePullRequest` refused with `Pull Request is not mergeable`, naming nothing,
+   and `PUT /repos/{owner}/{repo}/pulls/{n}/merge` then succeeded on the first
+   attempt with no state having changed in between.
+
+   Two consequences worth keeping. **A merge attempt is cheap and self-verifying**,
+   so `BLOCKED` on a pull request with no unsatisfied rule is not a reason to wait;
+   and **prefer REST for the attempt**, because its refusal names the requirement
+   that is unmet while the GraphQL mutation's does not.
+
+   Rather than infer which of these is operating, read it:
+
+   ```
+   python3 scripts/check_merge_blockers.py --repo strands-labs/robots --pr <N>
+   python3 scripts/check_merge_blockers.py --repo strands-labs/robots --all-open
+   ```
+
+   It reads the branch ruleset - so a rule that is changed in settings cannot
+   drift from this file - and names every rule the pull request leaves
+   unsatisfied together with the party who can clear it: a conflict or an
+   unresolved thread or a failing check (the author), a missing approval (any
+   reviewer), an approval only its own pusher supplied (a different reviewer,
+   per #1905), a required check absent because a fork run is held at
+   `action_required` (a maintainer), a check still running (nobody), or no
+   unsatisfied rule at all, which is the #2574 case and the one worth saying out
+   loud. A conflict or a draft is reported as *gating*: the rules behind it
+   cannot be assessed, so an approval there is necessary but not sufficient.
+
+   It composes `check_last_push_approval.py` rather than restating it, so what
+   counts as a current approval has one owner. Neither script gates a merge.
+   Pinned by tests/test_merge_blockers.py.
+
    This is worth the words because the failure mode is silent and expensive in the
    opposite direction from the usual one. Treating an advisory red as a merge
    blocker does not look like a mistake; it looks like diligence, and it costs a
@@ -1829,18 +1875,26 @@ Corrections from code review that apply to all future contributions:
 - **One alert class clears under none of the three, and the question that settles
   it is which thread you marshal onto.** `py/catch-base-exception` never fires on
   cleanup-and-reraise: the query accepts a handler that re-raises *lexically*, and
-  six of the tree's seven `except BaseException` handlers do, so they have never
-  been flagged.
+  every `except BaseException` handler in this tree does so but one, which is why
+  none of them has ever been flagged. A count would rot here, so the census below
+  is stated as the property that matters and is derived from the tree by
+  `tests/test_codeql_query_filters.py` rather than copied into this file.
+
+  Every handler in `strands_robots/`, named by the function that owns it because a
+  line number is the part that goes stale:
 
   | handler | ends in | flagged |
   |---|---|---|
-  | `robot.py:368` | `sim.destroy()`, bare `raise` | no |
-  | `policies/persistent.py:193` | `handoff.abandon()`, bare `raise` | no |
-  | `simulation/safe_output.py:185` | `os.unlink(tmp)`, bare `raise` | no |
-  | `hardware_robot.py:1865` | `self._release_task()`, bare `raise` | no |
-  | `tests/policies/lerobot_local/test_list_policy_types.py:70` | `raise AssertionError(...) from exc` | no |
-  | `tests/policies/lerobot_local/test_vla_jepa.py:164` | `raise AssertionError(...) from exc` | no |
-  | `simulation/isaac/simulation.py:5125` | `box["exc"] = exc`, no lexical raise | **yes** |
+  | `strands_robots/episode_labels.py::_write_document` | `os.unlink(tmp_name)`, bare `raise` | no |
+  | `strands_robots/hardware_robot.py::start_task` | `self._release_task()`, bare `raise` | no |
+  | `strands_robots/policies/persistent.py::get_actions` | `handoff.abandon()`, bare `raise` | no |
+  | `strands_robots/robot.py::Robot` | `sim.destroy()`, bare `raise` | no |
+  | `strands_robots/simulation/safe_output.py::atomic_write_bytes` | `os.unlink(tmp)`, bare `raise` | no |
+  | `strands_robots/simulation/isaac/simulation.py::_job` | `box["exc"] = exc`, no lexical raise | **yes** |
+
+  The handlers under `tests/`, `examples/` and `scripts/` re-raise lexically too,
+  several as `raise AssertionError(...) from exc` rather than a bare `raise`: the
+  query accepts either, because what it reads is the lexical raise.
 
   The rule's entire alert surface here is therefore one construct: a
   **cross-thread exception-marshal box**, which parks the exception for *another*
@@ -1884,8 +1938,8 @@ Corrections from code review that apply to all future contributions:
   must keep failing the two-id set `tests/test_codeql_query_filters.py` pins.
 
   What makes the class worth naming is that both answers are live right now and
-  nothing else records why they differ. Alert #691 - `run_on_main`'s box at
-  `simulation/isaac/simulation.py:5125` - has been open on `refs/heads/main` since
+  nothing else records why they differ. Alert #691 - `run_on_main`'s box in
+  `strands_robots.simulation.isaac.simulation` - has been open on `refs/heads/main` since
   2026-07-07 at note severity, gating nothing, carrying only a
   `# noqa: BLE001` that CodeQL does not read. Alerts #853 and #854 are the same
   idiom raised on a branch, one of them in that same file, and each opened a
@@ -1922,6 +1976,12 @@ Corrections from code review that apply to all future contributions:
   returns a `frozenset` so the dual-pin grace period is expressible. Any future
   pinned fingerprint (other roots, signing keys) should follow the same
   multi-value shape so rotation never requires a flag-day deploy.
+- **A cited runbook is graded, not assumed.** The runbook heading above, the
+  four ordered steps, and the two env vars they distinguish are checked
+  against README.md, and every pin refusal is checked to name the runbook -
+  so a procedure that only exists in this file cannot pass for a published
+  one. The dual-pin state the runbook depends on stays pinned beside it.
+  Pinned by tests/mesh/test_iot_ca_pin_rotation.py.
 
 ## Review Learnings (PR-6 - mesh core safety hardening)
 

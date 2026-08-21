@@ -43,8 +43,11 @@ pin.
 
 from __future__ import annotations
 
+import ast
 import re
+from functools import lru_cache
 from pathlib import Path
+from typing import NamedTuple
 
 import pytest
 
@@ -215,8 +218,9 @@ class TestTheRulesFileSettlesTheCrossThreadMarshalClass:
 
     The three tools the section offers are fix / dismiss-if-test-only /
     filter-if-every-instance-is-obliged. This rule's whole alert surface in the
-    tree is one construct - a cross-thread exception-marshal box, the only one of
-    seven ``except BaseException`` handlers that does not re-raise lexically - and
+    tree is one construct - a cross-thread exception-marshal box, the only
+    ``except BaseException`` handler in the tree that does not re-raise lexically,
+    measured by ``TestTheMarshalBoxCensusIsDerivedFromTheTree`` below - and
     each tool refuses it in turn: narrowing deletes a ``SystemExit`` outright
     (pinned below), the flagged site is not test-only, and not every instance is
     obliged because ``concurrent.futures`` is a genuine route whenever the caller
@@ -364,4 +368,180 @@ class TestTheNarrowingMeasurementStillHolds:
             "merely type - is what lets AGENTS.md call delegating strictly better than a "
             "hand-rolled box, so a regression here weakens the prescription rather than any "
             "code, and the passage would need rewording."
+        )
+
+
+#: Trees searched for ``except BaseException`` handlers. The passage's claim is
+#: about the whole repository, so the scan is too - a handler added under
+#: ``examples/`` is as much a new alert as one under ``strands_robots/``.
+_HANDLER_TREES = ("strands_robots", "tests", "tests_integ", "examples", "scripts")
+
+#: The one handler the section is about, as ``path::function``.
+_MARSHAL_BOX = "strands_robots/simulation/isaac/simulation.py::_job"
+
+#: Floor for the census, so a scan that stops finding handlers fails loudly
+#: instead of reporting a clean tree it never read.
+_MIN_HANDLERS = 10
+
+
+class _Handler(NamedTuple):
+    """One ``except BaseException`` handler, keyed the way the table names it."""
+
+    path: str
+    lineno: int
+    owner: str
+    reraises: bool
+
+    @property
+    def key(self) -> str:
+        return f"{self.path}::{self.owner}"
+
+
+def _owning_definition(tree: ast.AST, lineno: int) -> str:
+    """Name of the innermost def/class containing ``lineno``."""
+    best: ast.AST | None = None
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+            end = node.end_lineno or node.lineno
+            if node.lineno <= lineno <= end and (best is None or node.lineno > best.lineno):  # type: ignore[attr-defined]
+                best = node
+    return getattr(best, "name", "<module>")
+
+
+@lru_cache(maxsize=1)
+def _base_exception_handlers() -> tuple[_Handler, ...]:
+    """Every ``except BaseException`` handler in the tree, with its disposition.
+
+    ``reraises`` is whether the handler's last statement is a lexical ``raise``,
+    which is exactly what ``py/catch-base-exception`` accepts - so this is the
+    census the AGENTS.md passage argues from, measured rather than transcribed.
+    """
+    found: list[_Handler] = []
+    for tree_name in _HANDLER_TREES:
+        root = _REPO_ROOT / tree_name
+        if not root.is_dir():
+            continue
+        for path in sorted(root.rglob("*.py")):
+            try:
+                parsed = ast.parse(path.read_text(encoding="utf-8"))
+            except (OSError, SyntaxError):  # pragma: no cover - unreadable source
+                continue
+            for node in ast.walk(parsed):
+                if not isinstance(node, ast.ExceptHandler) or node.type is None:
+                    continue
+                named = {n.id for n in ast.walk(node.type) if isinstance(n, ast.Name)}
+                if "BaseException" not in named:
+                    continue
+                found.append(
+                    _Handler(
+                        path=path.relative_to(_REPO_ROOT).as_posix(),
+                        lineno=node.lineno,
+                        owner=_owning_definition(parsed, node.lineno),
+                        reraises=isinstance(node.body[-1], ast.Raise),
+                    )
+                )
+    return tuple(found)
+
+
+def _census_table_rows() -> list[tuple[str, bool]]:
+    """The ``| handler | ends in | flagged |`` rows, as ``(handler, flagged)``."""
+    text = _AGENTS_PATH.read_text(encoding="utf-8")
+    start = text.index("| handler | ends in | flagged |")
+    end = text.index("\n\n", start)
+    rows: list[tuple[str, bool]] = []
+    for line in text[start:end].splitlines()[2:]:
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        handler = cells[0].strip("`")
+        rows.append((handler, "yes" in cells[-1]))
+    return rows
+
+
+class TestTheMarshalBoxCensusIsDerivedFromTheTree:
+    """The passage above argues from a census of the tree, so the census is measured here.
+
+    Its load-bearing claim is that the rule's *entire* alert surface is one
+    construct: every ``except BaseException`` handler re-raises lexically, which
+    ``py/catch-base-exception`` accepts, except the cross-thread marshal box. That
+    claim is what makes the section's disposition (dismiss the box, delegate
+    everything else to ``concurrent.futures``) exhaustive rather than a guess.
+
+    Nothing checked it. The class above grades which *concepts* the passage names -
+    the rule id, ``concurrent.futures``, ``run_on_main``, ``SystemExit`` - all of
+    which survive a census going stale underneath them, and it had: the passage
+    counted seven handlers against a tree holding sixteen, omitted one in
+    ``strands_robots/`` outright, and cited five of its seven sites at line numbers
+    that had moved, the flagged one by 745 lines. Every assertion here passed
+    throughout.
+
+    Two failures matter differently. A row that names nothing real is a stale
+    citation and costs a reader a search. A *second* handler that does not re-raise
+    is the section becoming wrong: it is a new alert of a rule whose thread gates
+    the merge, arriving with no recorded disposition, and the passage would still
+    read as if it had one.
+    """
+
+    def test_the_scan_reaches_the_tree(self):
+        """A census that finds nothing would satisfy every assertion below."""
+        handlers = _base_exception_handlers()
+        assert len(handlers) >= _MIN_HANDLERS, (
+            f"only {len(handlers)} `except BaseException` handlers found across "
+            f"{_HANDLER_TREES}; the scan stopped reading the tree, so the census "
+            "assertions below hold vacuously"
+        )
+
+    def test_exactly_one_handler_does_not_reraise_lexically(self):
+        """The claim the section's disposition rests on."""
+        loose = [h for h in _base_exception_handlers() if not h.reraises]
+        assert len(loose) == 1, (
+            "AGENTS.md argues that py/catch-base-exception's whole alert surface here is one "
+            f"construct, and the tree now holds {len(loose)}: "
+            f"{[f'{h.path}:{h.lineno} in {h.owner}()' for h in loose]}. Each one that does not "
+            "end in a lexical raise is a separate alert whose review thread gates the merge, so "
+            "either give it a lexical raise (cleanup-and-reraise, the majority form above) or "
+            "record its disposition in that section - a passage claiming a single construct "
+            "while the tree holds several sends the next contributor to the wrong bullet."
+        )
+
+    def test_the_one_that_does_not_is_the_cross_thread_marshal_box(self):
+        """Which handler it is decides which bullet applies, so it is pinned by identity."""
+        loose = [h for h in _base_exception_handlers() if not h.reraises]
+        assert [h.key for h in loose] == [_MARSHAL_BOX], (
+            f"the handler that does not re-raise lexically is {[h.key for h in loose]}, not "
+            f"{_MARSHAL_BOX}. The section's disposition is specific to a box marshalling onto an "
+            "already-running foreign thread - obliged, because concurrent.futures cannot target "
+            "one - and reads as advice to dismiss whatever is flagged if the flagged site is "
+            "something else."
+        )
+
+    def test_every_row_names_a_handler_that_exists(self):
+        """A row is a citation, and a citation that resolves to nothing is worse than none."""
+        by_key = {h.key for h in _base_exception_handlers()}
+        missing = [handler for handler, _ in _census_table_rows() if handler not in by_key]
+        assert not missing, (
+            f"AGENTS.md's handler table names sites that do not exist: {missing}. Name each one "
+            "as `path::function`; the function that owns the handler survives edits above it, "
+            "which a line number does not - that is how the previous table came to cite five of "
+            "seven sites at lines they had moved away from."
+        )
+
+    def test_the_table_is_the_whole_package_census(self):
+        """An omitted handler reads as a handler that is not there, which is the same mistake."""
+        in_package = {h.key for h in _base_exception_handlers() if h.path.startswith("strands_robots/")}
+        listed = {handler for handler, _ in _census_table_rows()}
+        assert listed == in_package, (
+            f"AGENTS.md's handler table must list every `except BaseException` handler in "
+            f"strands_robots/. Missing: {sorted(in_package - listed)}. Listed but not in the "
+            f"package: {sorted(listed - in_package)}. The table is the evidence for the claim "
+            "above it, so a handler left out of it is a site a reader concludes does not exist."
+        )
+
+    def test_the_flagged_column_marks_exactly_the_one_that_is_flagged(self):
+        """The column is the whole point of the table: it separates the two dispositions."""
+        loose = {h.key for h in _base_exception_handlers() if not h.reraises}
+        marked = {handler for handler, flagged in _census_table_rows() if flagged}
+        assert marked == loose, (
+            f"the table marks {sorted(marked)} as flagged and the tree says {sorted(loose)}. The "
+            "column is what tells a contributor whether the handler they are looking at is the "
+            "obliged case or the avoidable one, so it cannot be maintained by hand against a "
+            "property this file already measures."
         )

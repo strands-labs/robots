@@ -237,6 +237,22 @@ membership test itself raised `TypeError: unhashable type` for a list or dict
 name, so the miss escaped the envelope those methods document as their only
 failure channel - reachable with no entities registered at all.
 
+`render` is the one lookup that cannot answer with a frame, so it reports the
+same verdict as its raw sibling. Given a `camera_name` that *names* a camera the
+scene does not carry it returns `{"status": "error"}` with
+`Camera '<name>' not found. Available: [...]` - the message `get_frame` raises
+for the identical name, and the one the MuJoCo and Newton `render` give. It used
+to report `status="success"` with an all-black frame instead, tagged
+`Rendered (no camera)`, plus `pixel_mean` `0.0` as a measurement and the missing
+name in the `camera` field; because that envelope carries the PNG block the
+shared frame extractor reads, a rollout recording a mistyped camera wrote an
+all-black video and reported success. A `camera_name` that names *no* camera -
+`None`, `""`, `"default"` (the signature default) or `"free"` - still gets that
+blank frame: Isaac has no free camera to fall back to, unlike the two backends
+whose render entry points resolve those tokens to one, so for them it is a
+degradation rather than a mistake. Registering a camera under one of those names
+is accepted here and renders normally, since nothing on this backend routes them.
+
 ## Fleet (IsaacLab-style) preview
 
 ```python
