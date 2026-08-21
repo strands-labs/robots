@@ -442,6 +442,105 @@ def _numeric_option_error(
     return None
 
 
+_ENUMERABLE_OPTION_RE = re.compile(r"^[a-z][a-z0-9_]+$")
+
+#: Per-action set of enumerable string options the action's command line reads.
+#: The keys mirror :data:`_ACTION_NUMERIC_OPTIONS` -- these five options are
+#: consumed by exactly the actions that build an inference command line, which is
+#: the same set that reads ``denoising_steps``.
+_ACTION_ENUMERABLE_OPTIONS: dict[str, tuple[str, ...]] = {
+    "start": ("data_config", "embodiment_tag", "vit_dtype", "llm_dtype", "dit_dtype"),
+    "restart": ("data_config", "embodiment_tag", "vit_dtype", "llm_dtype", "dit_dtype"),
+    "lifecycle:full": ("data_config", "embodiment_tag", "vit_dtype", "llm_dtype", "dit_dtype"),
+}
+
+
+def _is_allowed_enumerable_option(value: Any) -> bool:
+    """True iff *value* is a lowercase ``[a-z][a-z0-9_]+`` selector token.
+
+    Total over any input, like :func:`_is_allowed_image`: a non-string is refused
+    rather than carried into :mod:`re`.
+    """
+    return isinstance(value, str) and _ENUMERABLE_OPTION_RE.match(value) is not None
+
+
+def _enumerable_option_error(
+    action: str,
+    *,
+    data_config: Any,
+    embodiment_tag: Any,
+    vit_dtype: Any,
+    llm_dtype: Any,
+    dit_dtype: Any,
+    protocol: str,
+    use_tensorrt: bool,
+    lifecycle: str,
+) -> str | None:
+    """Error text for the first enumerable option ``action`` reads but cannot honor.
+
+    The enum-valued counterpart to :func:`_numeric_option_error`, and it exists for
+    the same reason that one records: these options are interpolated into the
+    ``docker exec`` command line that :func:`_build_inference_command` builds and
+    ``_start_service`` runs **detached**, so a value the server's own flag parser
+    rejects surfaces minutes later inside the container's log rather than as this
+    call's result. The numeric options in that argv were already refused here; the
+    selector strings beside them were carried through unchecked, so a mistyped
+    ``data_config`` reported a service that "failed to start" and a shell
+    metacharacter rode into the argv on the strength of it being argv-style.
+
+    Each option names a vocabulary rather than a free string -- an embodiment data
+    config, an embodiment tag, a TensorRT precision -- and every value the shipped
+    catalogue and this tool's own docstring name is a lowercase
+    ``[a-z][a-z0-9_]+`` token, so that is the domain. It is the class the
+    repository requires for exactly these fields, and holding them to it refuses
+    nothing the server would have accepted.
+
+    Only the options ``action`` actually reads are checked, so a caller is never
+    refused for a value the requested action ignores. Two carry an extra
+    condition, both read off :func:`_build_inference_command`: the N1.7 entrypoint
+    takes no ``--data-config`` flag, so under ``protocol="n1.7"`` that value is
+    genuinely inert; and the three dtype flags are only emitted when
+    ``use_tensorrt`` is set.
+
+    Args:
+        action: The requested action; decides which options are effective.
+        data_config: Embodiment data-config selector, as supplied.
+        embodiment_tag: Embodiment tag, as supplied.
+        vit_dtype: TensorRT ViT precision, as supplied.
+        llm_dtype: TensorRT LLM precision, as supplied.
+        dit_dtype: TensorRT DiT precision, as supplied.
+        protocol: The server protocol; ``"n1.7"`` ignores ``data_config``.
+        use_tensorrt: Whether the dtype flags are emitted at all.
+        lifecycle: The lifecycle phase, which selects the effective option set
+            when ``action`` is ``"lifecycle"``.
+
+    Returns:
+        An error message naming the action and the option, or ``None`` when every
+        option this call reads is usable.
+    """
+    key = f"lifecycle:{lifecycle}" if action == "lifecycle" else action
+    consumed = _ACTION_ENUMERABLE_OPTIONS.get(key, ())
+    if not consumed:
+        return None
+    candidates: list[tuple[str, Any]] = []
+    if "data_config" in consumed and protocol != "n1.7":
+        candidates.append(("data_config", data_config))
+    if "embodiment_tag" in consumed:
+        candidates.append(("embodiment_tag", embodiment_tag))
+    if use_tensorrt:
+        candidates.extend([("vit_dtype", vit_dtype), ("llm_dtype", llm_dtype), ("dit_dtype", dit_dtype)])
+    for param, value in candidates:
+        if not _is_allowed_enumerable_option(value):
+            return (
+                f"{action}: {param} must be a lowercase selector token matching "
+                f"{_ENUMERABLE_OPTION_RE.pattern} (letters, digits and underscores), "
+                f"got {value!r}. It is passed straight to the inference server's "
+                f"flag parser, which reports a value it cannot read only in the "
+                f"container log."
+            )
+    return None
+
+
 @tool
 def gr00t_inference(
     action: str,
@@ -619,8 +718,11 @@ def gr00t_inference(
             Defaults to 5555 (ZMQ) or auto-switches
             to 8000 when ``http_server=True``.
         data_config: Embodiment data config name (see Data configs above). N1.5/N1.6 only.
+            Must be a lowercase ``[a-z][a-z0-9_]+`` selector token - it is passed
+            to the server's ``--data-config`` flag, which reports a name it cannot
+            read only in the container log.
         embodiment_tag: Embodiment tag for the model (e.g., ``gr1``, ``so100``,
-            ``libero_sim``).
+            ``libero_sim``). Must be a lowercase ``[a-z][a-z0-9_]+`` selector token.
         denoising_steps: Number of denoising steps for action generation (default: 4).
             Must be a positive integer. Ignored by ``protocol="n1.7"``, whose
             entrypoint takes no ``--denoising-steps`` flag.
@@ -633,8 +735,14 @@ def gr00t_inference(
         use_tensorrt: Enable TensorRT acceleration (default: False).
         trt_engine_path: Directory for TensorRT engine cache (default: ``gr00t_engine``).
         vit_dtype: ViT precision with TensorRT - ``fp16`` or ``fp8`` (default: ``fp8``).
+            Must be a lowercase ``[a-z][a-z0-9_]+`` token; read only when
+            ``use_tensorrt=True``.
         llm_dtype: LLM precision with TensorRT - ``fp16``, ``nvfp4``, or ``fp8`` (default: ``nvfp4``).
+            Must be a lowercase ``[a-z][a-z0-9_]+`` token; read only when
+            ``use_tensorrt=True``.
         dit_dtype: DiT precision with TensorRT - ``fp16`` or ``fp8`` (default: ``fp8``).
+            Must be a lowercase ``[a-z][a-z0-9_]+`` token; read only when
+            ``use_tensorrt=True``.
         http_server: Use HTTP REST API instead of ZMQ (default: False).
         api_token: API token for authentication. Falls back to ``GROOT_API_TOKEN`` env var.
         protocol: Server protocol version - ``"n1.5"`` (default), ``"n1.6"``, or ``"n1.7"``.
@@ -794,6 +902,23 @@ def gr00t_inference(
     )
     if _numeric_reason is not None:
         return {"status": "error", "message": f"gr00t_inference: {_numeric_reason}"}
+
+    # Same boundary, same argv: the selector strings sit beside those numerics on
+    # the detached ``docker exec`` command line, so a value the server's flag
+    # parser cannot read is equally invisible to this caller.
+    _enumerable_reason = _enumerable_option_error(
+        action,
+        data_config=data_config,
+        embodiment_tag=embodiment_tag,
+        vit_dtype=vit_dtype,
+        llm_dtype=llm_dtype,
+        dit_dtype=dit_dtype,
+        protocol=protocol,
+        use_tensorrt=use_tensorrt,
+        lifecycle=lifecycle,
+    )
+    if _enumerable_reason is not None:
+        return {"status": "error", "message": f"gr00t_inference: {_enumerable_reason}"}
 
     if action == "find_containers":
         return _find_gr00t_containers()
