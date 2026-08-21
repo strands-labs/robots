@@ -1268,7 +1268,7 @@ class MuJoCoSimEngine(
 
             canonical = resolve_robot_name(robot_name)
             download_robots(names=[canonical], force=True)
-        except (ImportError, FileNotFoundError, OSError) as e:
+        except (ImportError, OSError) as e:
             return {
                 "status": "error",
                 "content": [

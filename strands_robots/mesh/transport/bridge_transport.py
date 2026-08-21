@@ -609,20 +609,23 @@ class BridgeTransport:
         """Close both backends. Idempotent.
 
         Narrow exception surface per AGENTS.md > Review Learnings:
-        idempotent teardown swallows the documented transport-failure
-        surface (RuntimeError = already-closed session,
-        ConnectionError = connection drop racing with close,
-        OSError = socket teardown race) and lets unexpected exceptions
-        propagate.
+        idempotent teardown swallows ``RuntimeError`` (already-closed
+        session) and ``OSError`` (socket teardown race - a connection drop
+        racing with close arrives as ``ConnectionError``, an ``OSError``
+        subclass). Both names are class trees rather than single classes,
+        so the absorbed surface is wider than the two: a
+        ``NotImplementedError`` raised by an incomplete leg is a
+        ``RuntimeError`` and is swallowed here too. An exception outside
+        both trees propagates.
         """
         with self._lock:
             try:
                 self._zenoh.close()
-            except (RuntimeError, ConnectionError, OSError) as exc:
+            except (RuntimeError, OSError) as exc:
                 logger.debug("[bridge] zenoh.close() failed: %s", exc)
             try:
                 self._iot.close()
-            except (RuntimeError, ConnectionError, OSError) as exc:
+            except (RuntimeError, OSError) as exc:
                 logger.debug("[bridge] iot.close() failed: %s", exc)
             self._zenoh_alive = False
             self._iot_alive = False
@@ -672,10 +675,14 @@ class BridgeTransport:
         """Publish to Zenoh always; publish to IoT only if the topic bridges.
 
         Failure of one side does not affect the other. Narrow exception
-        surface per AGENTS.md > Review Learnings: transport-level failures
-        (RuntimeError from closed session, ConnectionError from broker
-        drop, OSError from socket-level write) are absorbed; everything
-        else propagates.
+        surface per AGENTS.md > Review Learnings: a transport-level failure
+        is absorbed as ``RuntimeError`` (closed session) or ``OSError``
+        (socket-level write - a broker drop arrives as ``ConnectionError``,
+        an ``OSError`` subclass). Both names are class trees rather than
+        single classes, so the absorbed surface is wider than the two:
+        ``NotImplementedError`` and ``RecursionError`` are ``RuntimeError``
+        subclasses and are swallowed here too. An exception outside both
+        trees - a serialisation ``ValueError``, say - propagates.
         """
         # AWS IoT reserved topics ($aws/..., e.g. named-shadow updates) are
         # cloud-plane only. They are meaningless on the Zenoh LAN (and would
@@ -685,7 +692,7 @@ class BridgeTransport:
             if self._iot.is_alive():
                 try:
                     self._iot.put(key, data)
-                except (RuntimeError, ConnectionError, OSError) as exc:
+                except (RuntimeError, OSError) as exc:
                     logger.debug("[bridge] iot.put error on %s: %s", key, exc)
             return
 
@@ -693,14 +700,14 @@ class BridgeTransport:
         if self._zenoh.is_alive():
             try:
                 self._zenoh.put(key, data)
-            except (RuntimeError, ConnectionError, OSError) as exc:
+            except (RuntimeError, OSError) as exc:
                 logger.debug("[bridge] zenoh.put error on %s: %s", key, exc)
 
         # Filtered IoT.
         if self._iot.is_alive() and _should_bridge(key, self._bridge_suffixes, self._bridge_prefixes):
             try:
                 self._iot.put(key, data)
-            except (RuntimeError, ConnectionError, OSError) as exc:
+            except (RuntimeError, OSError) as exc:
                 logger.debug("[bridge] iot.put error on %s: %s", key, exc)
 
     def declare_subscriber(self, key_expr: str, handler: Callable[[Any], None]) -> _BridgeSubHandle:
@@ -784,7 +791,7 @@ class BridgeTransport:
         if self._zenoh.is_alive():
             try:
                 zenoh_sub = self._zenoh.declare_subscriber(key_expr, make_dedup_handler("zenoh"))
-            except (RuntimeError, ConnectionError, OSError) as exc:
+            except (RuntimeError, OSError) as exc:
                 # Narrow per AGENTS.md > Review Learnings: subscribe-side
                 # transport failures (closed session, broker drop, socket
                 # error) degrade to the surviving side; unexpected errors
@@ -794,7 +801,7 @@ class BridgeTransport:
         if self._iot.is_alive():
             try:
                 iot_sub = self._iot.declare_subscriber(key_expr, make_dedup_handler("iot"))
-            except (RuntimeError, ConnectionError, OSError) as exc:
+            except (RuntimeError, OSError) as exc:
                 logger.debug("[bridge] iot.declare_subscriber(%s) failed: %s", key_expr, exc)
 
         if zenoh_sub is None and iot_sub is None:

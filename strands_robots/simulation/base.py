@@ -4134,7 +4134,7 @@ class SimEngine(ABC):
             lines = [f"Registered benchmarks ({len(snapshot)}):"]
             for name, meta in snapshot.items():
                 lines.append(
-                    f"  • {name}: {meta['class']} "
+                    f"  - {name}: {meta['class']} "
                     f"(robots={meta['supported_robots'] or 'any'}, "
                     f"default={meta['default_robot']}, "
                     f"max_steps={meta['max_steps']})"

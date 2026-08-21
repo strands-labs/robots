@@ -20,12 +20,12 @@ from strands_robots.tools import (
 
 | Tool | Key actions | What |
 |------|-------------|------|
-| `lerobot_calibrate` | `"list"`, `"info"`, `"search"`, `"compare"`, `"backup"` | Manage existing calibration JSONs under `~/.cache/huggingface/lerobot/calibration/` (this tool inspects/organizes - actual calibration is run via the LeRobot CLI) |
-| `lerobot_camera` | `"list"`, `"test"`, `"stream"` | Enumerate, test, stream connected cameras |
+| `lerobot_calibrate` | `"list"`, `"view"`, `"search"`, `"backup"`, `"restore"` | Manage existing calibration JSONs under `~/.cache/huggingface/lerobot/calibration/` (this tool inspects/organizes - actual calibration is run via the LeRobot CLI) |
+| `lerobot_camera` | `"list"`, `"test"`, `"capture"`, `"record"` | Enumerate, test, capture from, and record connected cameras |
 | `lerobot_teleoperate` | `"start"`, `"stop"`, `"status"`, `"replay"`, `"dagger"` | Leader-follower teleop session, episode replay, and DAgger correction collection |
 | `lerobot_train` | `"start"`, `"status"`, `"stop"`, `"list"` | Fine-tune a policy on a local dataset via `lerobot-train` |
-| `pose_tool` | `"fk"`, `"ik"`, `"set_gripper"` | Forward/inverse kinematics, gripper control |
-| `serial_tool` | `"list"`, `"send"` | Enumerate serial ports, send raw commands |
+| `pose_tool` | `"store_pose"`, `"load_pose"`, `"read_all"`, `"move_motor"` | Store, recall and replay named servo poses on a real bus, and read or move one motor at a time. This tool is joint-space only - Cartesian IK is `Simulation.move_to` |
+| `serial_tool` | `"list_ports"`, `"send"` | Enumerate serial ports, send raw commands |
 | `download_assets` | - | Pre-fetch MJCF assets to `~/.strands_robots/assets/` |
 | `gr00t_inference` | `"start_container"`, … | GR00T container lifecycle - see [GR00T](../policies/groot.md) |
 | `robot_mesh` | `"tell"`, `"broadcast"`, `"emergency_stop"` | Agent-driven mesh ops - see [Multi-robot](../mesh.md) |
@@ -127,12 +127,12 @@ caller's `timeout` is not effective there.
 ## Examples
 
 ```python
-result = serial_tool(action="list")
+result = serial_tool(action="list_ports")
 print(result["content"][0]["text"])
 
 result = lerobot_calibrate(action="list", device_type="robots")
 result = lerobot_camera(action="list", camera_type="opencv")
-result = pose_tool(action="fk", robot_id="so101_follower", port="/dev/ttyACM0")
+result = pose_tool(action="read_all", robot_id="so101_follower", port="/dev/ttyACM0")
 
 # DAgger / teleop takeover: a policy drives the follower while the leader can
 # pre-empt to record corrections (appended to the dataset as new episodes).

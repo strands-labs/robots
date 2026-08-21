@@ -402,7 +402,7 @@ class RandomizationMixin:
                 # Report the count actually perturbed, as the colour axis does:
                 # a scene whose objects are all static perturbs nothing, and
                 # naming the axis without a count reads as work done.
-                changes.append(f"Positions: {n_moved} dynamic objects perturbed by ±{position_noise}m")
+                changes.append(f"Positions: {n_moved} dynamic objects perturbed by +/-{position_noise}m")
 
             # Recompute derived state so the sim is left render-ready. Several
             # randomization axes mutate model arrays whose rendered/simulated
