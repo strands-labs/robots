@@ -21,7 +21,7 @@ import serial
 import serial.tools.list_ports
 from strands import tool
 
-from strands_robots.tools._path_validation import validate_save_path
+from strands_robots.tools._path_validation import resolve_output_path, validate_save_path
 from strands_robots.utils import finite_number_error, positive_count_error, positive_finite_number_error
 
 logger = logging.getLogger(__name__)
@@ -128,7 +128,7 @@ class PoseManager:
         raw_dir = str(storage_dir) if storage_dir else str(Path.cwd() / ".strands_robots" / "poses")
         self.storage_dir = Path(validate_save_path(raw_dir, label="storage_dir"))
         self.storage_dir.mkdir(parents=True, exist_ok=True)
-        self.pose_file = self.storage_dir / f"{robot_id}_poses.json"
+        self.pose_file = Path(resolve_output_path(str(self.storage_dir), f"{robot_id}_poses.json", label="robot_id"))
         self.poses: dict[str, RobotPose] = {}
         self._load_poses()
 
@@ -669,7 +669,9 @@ def pose_tool(
 
     Args:
         action: Action to perform
-        robot_id: Robot identifier for pose storage
+        robot_id: Robot identifier for pose storage. Becomes part of the pose
+            file's name, so a value resolving outside the storage directory is
+            refused rather than written there.
         port: Serial port for robot communication
         pose_name: Name for pose operations
         motor_name: Motor name for single motor operations
@@ -723,8 +725,15 @@ def pose_tool(
     ):
         return {"status": "error", "content": [{"text": target_error}]}
 
-    # Initialize managers
-    pose_manager = PoseManager(robot_id)
+    # Initialize managers. PoseManager composes its pose file name from
+    # robot_id, so an id that resolves outside the storage directory is refused
+    # there rather than here. This construction sits outside the try below, so
+    # the refusal is caught explicitly - otherwise it would leave this tool as
+    # an exception instead of the error envelope every other refusal here uses.
+    try:
+        pose_manager = PoseManager(robot_id)
+    except ValueError as e:
+        return {"status": "error", "content": [{"text": str(e)}]}
 
     try:
         if action == "list_poses":

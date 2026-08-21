@@ -1,7 +1,15 @@
 """Shared path validation utilities for tools that write to the filesystem.
 
-Provides a consistent ``validate_save_path`` helper that all tool modules
-can import to reject dangerous path values before any I/O occurs.
+Provides two helpers all tool modules can import to reject dangerous path values
+before any I/O occurs, one per half of a write target:
+
+* :func:`validate_save_path` validates the *directory* a tool writes into.
+* :func:`resolve_output_path` resolves the *file name* a caller asks for inside
+  that directory, and refuses a name that leaves it.
+
+Both are needed because a tool composes its write target from the two, and
+validating only the directory leaves the composition unchecked - the defect
+:func:`resolve_output_path` exists to close.
 
 Cross-platform: blocks sensitive directories on Linux, macOS, and Windows.
 """
@@ -108,5 +116,74 @@ def validate_save_path(path: str, *, label: str = "path") -> str:
     for prefix in BLOCKED_PREFIXES:
         if check_path.startswith(prefix):
             raise ValueError(f"{label} resolves to a protected system directory ({prefix}): {resolved}")
+
+    return resolved
+
+
+def resolve_output_path(directory: str, name: str, *, label: str = "filename") -> str:
+    """Resolve ``name`` as a file inside the already-validated ``directory``.
+
+    :func:`validate_save_path` validates the directory a tool was told to write
+    into. It cannot validate the *file*, because the file name is composed
+    afterwards from separate caller-supplied parts - a ``filename`` and often an
+    extension - and ``os.path.join`` happily walks back out of the directory it
+    was given. So a tool that validated its ``save_path`` and then joined a name
+    onto it wrote wherever the name pointed:
+
+    ``os.path.join("/captures", "../../etc/x" + ".jpg")`` -> ``/etc/x.jpg``
+
+    which is the traversal ``validate_save_path`` refuses in its own argument,
+    reached through the part that was never checked. This helper is the second
+    half of that pair, and it is deliberately a *containment* check rather than a
+    character allowlist: an allowlist has to guess which spellings are dangerous
+    on which platform, and it would refuse working requests. What is actually
+    required is narrower and exactly statable - the resolved write target must lie
+    inside the resolved directory - so that is what is asserted, after resolution,
+    on the composed path. Resolving with :func:`os.path.realpath` also means a
+    symlink inside the directory cannot be used to step outside it.
+
+    A name that stays inside the directory is accepted whatever it is spelled
+    with, including one that names a subdirectory (``"a/b.jpg"``). That is not an
+    oversight: such a name is contained, so it is not this function's concern, and
+    if the subdirectory does not exist the write fails loudly at the call site
+    rather than silently landing somewhere else.
+
+    Args:
+        directory: The directory to resolve within. Pass the value returned by
+            :func:`validate_save_path`, not the raw caller-supplied one.
+        name: The file name to resolve, composed of whatever caller-supplied
+            parts the tool builds it from.
+        label: A human-readable name for error messages (e.g. ``"filename"``).
+
+    Returns:
+        The resolved absolute path of the file, guaranteed to be inside
+        ``directory``.
+
+    Raises:
+        ValueError: If ``name`` is empty, contains a null byte, or resolves to a
+            location that is not inside ``directory``.
+    """
+    if not name:
+        raise ValueError(f"{label} must not be empty")
+
+    if _DANGEROUS_CHARS.search(name):
+        raise ValueError(f"{label} contains invalid characters")
+
+    root = os.path.realpath(directory)
+    resolved = os.path.realpath(os.path.join(root, name))
+
+    # ``commonpath`` rather than ``startswith``: the latter matches a sibling
+    # directory that merely shares a prefix ("/captures2" against "/captures").
+    # Both operands are absolute here, so it cannot raise on mixed forms.
+    if os.path.commonpath([root, resolved]) != root:
+        raise ValueError(
+            f"{label}: {name!r} resolves to {resolved}, which is outside the directory it must be written into ({root})"
+        )
+
+    # Reported separately: this one *is* inside the directory, so the message
+    # above would have to say it is outside it, which is a contradiction rather
+    # than a diagnosis.
+    if resolved == root:
+        raise ValueError(f"{label}: {name!r} names the directory {root} itself, not a file inside it")
 
     return resolved

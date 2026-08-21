@@ -50,7 +50,7 @@ import os
 import re
 import threading
 import time
-from collections.abc import AsyncGenerator, Callable, Sequence
+from collections.abc import AsyncGenerator, Callable, Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
@@ -356,6 +356,55 @@ def _published_string_params(field_aliases: dict[str, str]) -> frozenset[str]:
         field_aliases.get(wire, wire)
         for wire, prop in props.items()
         if wire != "action" and prop.get("type") == "string"
+    )
+
+
+# Every field name the schema publishes. Derived from the schema for the same
+# reason ``_PUBLISHED_ACTIONS`` is, and used to decide which spelling a refusal
+# may name: a model constrained to this schema can emit no other.
+_PUBLISHED_PARAMS: frozenset[str] = frozenset(_TOOL_SPEC_SCHEMA["properties"]) - {"action"}
+
+
+def _reported_param_name(param: str, field_aliases: Mapping[str, str], received: Mapping[str, Any]) -> str:
+    """The spelling a refusal names when it is about method parameter *param*.
+
+    The dispatcher rewrites ``_FIELD_ALIASES`` to method parameter names before
+    validating, so a refusal that echoes the parameter it validated can name a
+    field no caller ever wrote. ``apply_force``'s torque is the case with no way
+    back: it arrives as the schema's ``torque_vec``, is validated as ``torque``,
+    and ``torque`` is not a published property at all -- so a model told
+    "Parameter 'torque' must be a list of 3 numbers" was sent to a field it
+    cannot emit.
+
+    Preference order, most specific first:
+
+    1. *param* itself when the payload carries it, since that is what the caller
+       wrote.
+    2. The alias for *param* that the payload carries, for a field that arrived
+       under a wire name.
+    3. The spelling the schema publishes, for a name the payload does not carry
+       at all -- an entry in a ``Valid:`` list, or a missing required parameter.
+
+    Args:
+        param: The method parameter name the dispatcher validated.
+        field_aliases: The dispatcher's wire-name to parameter-name map.
+        received: The payload as the caller sent it, before alias rewriting.
+
+    Returns:
+        The field name to put in the refusal. Falls back to *param* when no
+        published spelling exists, which keeps a Python-only parameter reportable
+        under the only name it has.
+    """
+    if param in received:
+        return param
+    for wire, target in field_aliases.items():
+        if target == param and wire in received:
+            return wire
+    if param in _PUBLISHED_PARAMS:
+        return param
+    return next(
+        (wire for wire, target in field_aliases.items() if target == param and wire in _PUBLISHED_PARAMS),
+        param,
     )
 
 
@@ -5728,7 +5777,9 @@ class MuJoCoSimEngine(
         # 1) Unknown kwargs (skipped for **kwargs methods which legitimately passthrough)
         unknown = [] if method_has_var_keyword else [k for k in remapped if k not in accepted_field_names]
         if unknown:
-            valid_sorted = sorted(method_param_names - {"action"})
+            valid_sorted = sorted(
+                _reported_param_name(param, self._FIELD_ALIASES, received) for param in method_param_names - {"action"}
+            )
             return None, {
                 "status": "error",
                 "content": [
@@ -5750,14 +5801,7 @@ class MuJoCoSimEngine(
             # alias (``checkpoint_name`` -> ``name``), and reporting the
             # canonical parameter would send them looking for a key their
             # payload does not contain.
-            reported = (
-                sparam
-                if sparam in received
-                else next(
-                    (wire for wire, param in self._FIELD_ALIASES.items() if param == sparam and wire in received),
-                    sparam,
-                )
-            )
+            reported = _reported_param_name(sparam, self._FIELD_ALIASES, received)
             smsg = published_string_error(svalue, reported, f"Action '{action}'")
             if smsg is not None:
                 return None, {"status": "error", "content": [{"text": smsg}]}
@@ -5770,11 +5814,12 @@ class MuJoCoSimEngine(
             if val is None:
                 continue
             expected_len = " or ".join(str(n) for n in accepted_lens)
+            reported_vparam = _reported_param_name(vparam, self._FIELD_ALIASES, received)
             n_components = sequence_length(val)
             if n_components is None:
                 return None, {
                     "status": "error",
-                    "content": [{"text": f"Parameter '{vparam}' must be a list of {expected_len} numbers."}],
+                    "content": [{"text": f"Parameter '{reported_vparam}' must be a list of {expected_len} numbers."}],
                 }
             if n_components not in accepted_lens:
                 return None, {
@@ -5782,7 +5827,8 @@ class MuJoCoSimEngine(
                     "content": [
                         {
                             "text": (
-                                f"Parameter '{vparam}' must be a list of {expected_len} numbers, got {n_components}."
+                                f"Parameter '{reported_vparam}' must be a list of {expected_len} numbers, "
+                                f"got {n_components}."
                             )
                         }
                     ],
@@ -5799,7 +5845,12 @@ class MuJoCoSimEngine(
                     return None, {
                         "status": "error",
                         "content": [
-                            {"text": (f"Parameter '{vparam}'[{i}] must be numeric, got {type(component).__name__}.")}
+                            {
+                                "text": (
+                                    f"Parameter '{reported_vparam}'[{i}] must be numeric, "
+                                    f"got {type(component).__name__}."
+                                )
+                            }
                         ],
                     }
 
@@ -5813,9 +5864,10 @@ class MuJoCoSimEngine(
             elif param_name in remapped:
                 kwargs[param_name] = remapped[param_name]
             elif param.default is inspect.Parameter.empty:
+                reported_missing = _reported_param_name(param_name, self._FIELD_ALIASES, received)
                 return None, {
                     "status": "error",
-                    "content": [{"text": f"Action '{action}' requires parameter '{param_name}'."}],
+                    "content": [{"text": f"Action '{action}' requires parameter '{reported_missing}'."}],
                 }
 
         # 5) Residual keys for **kwargs methods. The unknown-key check above is
@@ -5838,7 +5890,12 @@ class MuJoCoSimEngine(
           * a field the schema publishes as a string is refused unless it is
             one, before the method body assumes it,
           * vector params have length + numeric dtype checked before the
-            value reaches numpy / MuJoCo.
+            value reaches numpy / MuJoCo,
+          * and every one of those refusals names the field by the spelling the
+            caller sent, or by the one the schema publishes - see
+            :func:`_reported_param_name`, since the alias rewriting above runs
+            first and a refusal echoing the rewritten name can point at a field
+            the schema does not carry.
 
         Policy-provider kwargs are nested under ``policy_config`` (never
         top-level) so the dispatcher stays backend-agnostic.

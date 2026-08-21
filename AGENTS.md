@@ -1100,6 +1100,38 @@ hatch run format            # ruff check --fix, ruff format
    nothing to resolve, which is why `mergeStateStatus: CLEAN` is not merely
    unhelpful here but actively reassuring.
 
+   **What the sweep cannot see, and why it is not worth a heuristic.** Every
+   relation it computes intersects changed *paths*, so a test resolving its
+   population from a filesystem walk is invisible to it: the grader is coupled to
+   files it never names, and its intersection with the sibling it grades is empty.
+   #2557 added `tests/test_log_strings_are_ascii.py`, a walk of the package, and
+   merged in a batch with #2559 and #2560 - both of which added exactly the
+   tool-result prose that grader scores - at a pairwise path intersection of `[]`
+   with each. The batch was safe, but only because it was checked by hand.
+
+   Do not widen the path set to the walked root. Measured on the open set of 9,
+   that relation selects **11 of 36 pairs, 9 of them new, and none a defect**:
+   125 of the 1136 test files resolve a population from a walk, and the ones that
+   reach furthest are rooted at `strands_robots` entire, so they intersect nearly
+   every open branch, while a narrowly-rooted grader (`strands_robots/mesh/`)
+   selects only the pair the path intersection already reports. That is the
+   `awaiting-first-review` failure mode from step 8 in a different field: a
+   finding on a third of the queue is boilerplate, and the batch where it
+   mattered is not distinguishable from the rest.
+
+   What does separate them is composing the two branches and running the grader,
+   which needs no model of what the grader reads. Run by hand over the open set
+   for #2562's whole-tree grader it cost ~10 s per composition, and it correctly
+   left alone three siblings whose new `except` tuples a path-or-keyword
+   heuristic would have flagged - `(KeyboardInterrupt, Exception)` among them,
+   which is correct code. Two branches were `CONFLICTING` and so honestly
+   `skipped`, not green. That relation cannot live in `--all-open`: the sweep
+   reads the open set from the API and **no checkout at all**, which is what lets
+   a health report run it without a clone, and every sweep test pins that by
+   running from a directory that is not a repository. So the sweep reports what
+   it measured - shared paths - and names the class it cannot describe (#2561).
+   A composition run stays a manual step, below.
+
    Read that run as a **delta, not an absolute**. The environment you verify in
    is almost never the one CI uses, and a partial one fails tests for reasons
    that have nothing to do with the merge. Composing #1786 and #1804 - both
@@ -1392,7 +1424,7 @@ Corrections from code review that apply to all future contributions:
 - **Name a test for its behaviour, not for its provenance** - a test class or function must not carry the release (`TestHardwareConfigV040Followups`) or review round (`...Followups`) that produced it. The name is the first thing a maintainer reads, so it has to say what is verified; and a name tied to a shipped release reads as historical, which invites skipping it. A bundle named for a review round is usually a bundle of unrelated checks - split it into one behaviour per class rather than inventing a name that covers all of them. Provenance belongs in the docstring, where the `#NNN` reference stays useful. A version token of one or two digits is fine: it names a *data format* under test (`test_load_v3_parses_every_field`), not a release. `Pinned by` `tests/test_test_case_names_describe_behaviour.py`.
 
 ### Performance
-- **Don't create executors in hot loops** - Reuse a single `ThreadPoolExecutor` instance instead of creating one per call at 50Hz.
+- **Don't create executors in hot loops** - Reuse a single `ThreadPoolExecutor` instance instead of creating one per call at 50Hz. A `with ThreadPoolExecutor(...)` block joins its worker before returning, so the live thread *count* never grows and nothing watching thread counts can see the churn - count `Thread.start` instead. For resolving a coroutine in a sync context the reuse already exists: `strands_robots._async_utils` owns that rule and submits to one module-level worker, so a sync wrapper delegates to it rather than building a private executor. Pinned by tests/policies/test_base.py.
 - **Cache expensive JSON parsing** - If a `@property` re-parses a JSON file on every access, cache the result at module load or first access.
 
 
@@ -1414,6 +1446,7 @@ Corrections from code review that apply to all future contributions:
   tests/test_except_tuples_state_their_real_scope.py, over builtins, the standard library and
   this package; a third-party tree is left alone because a dependency can re-parent its classes
   between releases, so naming both it and a builtin superclass is a hedge.
+- **A `try` covers only the operation whose exception it classifies** - where a handler exists to read a *verdict* out of an exception class, anything else inside the same `try` that can raise that class is read as the verdict. `asyncio.get_running_loop()` reports "no running loop" by raising `RuntimeError`, so with the offload it guards inside the same `try`, a `RuntimeError` raised by the awaited coroutine was taken for that verdict and the caller was handed `asyncio.run() cannot be called from a running event loop` in place of what the coroutine said - the whole family (`NotImplementedError`, `RecursionError`) with it. Put the guarded call after the `except`, so the handler can only ever see the operation it is classifying. Pinned by tests/test_async_utils.py.
 - **USB / hardware probing** - use `except (ImportError, OSError)`. `PermissionError` is an `OSError`, `FileNotFoundError` is an `OSError`, etc.
 
 ### Actuators: a joint pose goes only where `ctrl` IS a joint pose
@@ -1796,18 +1829,26 @@ Corrections from code review that apply to all future contributions:
 - **One alert class clears under none of the three, and the question that settles
   it is which thread you marshal onto.** `py/catch-base-exception` never fires on
   cleanup-and-reraise: the query accepts a handler that re-raises *lexically*, and
-  six of the tree's seven `except BaseException` handlers do, so they have never
-  been flagged.
+  every `except BaseException` handler in this tree does so but one, which is why
+  none of them has ever been flagged. A count would rot here, so the census below
+  is stated as the property that matters and is derived from the tree by
+  `tests/test_codeql_query_filters.py` rather than copied into this file.
+
+  Every handler in `strands_robots/`, named by the function that owns it because a
+  line number is the part that goes stale:
 
   | handler | ends in | flagged |
   |---|---|---|
-  | `robot.py:368` | `sim.destroy()`, bare `raise` | no |
-  | `policies/persistent.py:193` | `handoff.abandon()`, bare `raise` | no |
-  | `simulation/safe_output.py:185` | `os.unlink(tmp)`, bare `raise` | no |
-  | `hardware_robot.py:1865` | `self._release_task()`, bare `raise` | no |
-  | `tests/policies/lerobot_local/test_list_policy_types.py:70` | `raise AssertionError(...) from exc` | no |
-  | `tests/policies/lerobot_local/test_vla_jepa.py:164` | `raise AssertionError(...) from exc` | no |
-  | `simulation/isaac/simulation.py:5125` | `box["exc"] = exc`, no lexical raise | **yes** |
+  | `strands_robots/episode_labels.py::_write_document` | `os.unlink(tmp_name)`, bare `raise` | no |
+  | `strands_robots/hardware_robot.py::start_task` | `self._release_task()`, bare `raise` | no |
+  | `strands_robots/policies/persistent.py::get_actions` | `handoff.abandon()`, bare `raise` | no |
+  | `strands_robots/robot.py::Robot` | `sim.destroy()`, bare `raise` | no |
+  | `strands_robots/simulation/safe_output.py::atomic_write_bytes` | `os.unlink(tmp)`, bare `raise` | no |
+  | `strands_robots/simulation/isaac/simulation.py::_job` | `box["exc"] = exc`, no lexical raise | **yes** |
+
+  The handlers under `tests/`, `examples/` and `scripts/` re-raise lexically too,
+  several as `raise AssertionError(...) from exc` rather than a bare `raise`: the
+  query accepts either, because what it reads is the lexical raise.
 
   The rule's entire alert surface here is therefore one construct: a
   **cross-thread exception-marshal box**, which parks the exception for *another*
@@ -1851,8 +1892,8 @@ Corrections from code review that apply to all future contributions:
   must keep failing the two-id set `tests/test_codeql_query_filters.py` pins.
 
   What makes the class worth naming is that both answers are live right now and
-  nothing else records why they differ. Alert #691 - `run_on_main`'s box at
-  `simulation/isaac/simulation.py:5125` - has been open on `refs/heads/main` since
+  nothing else records why they differ. Alert #691 - `run_on_main`'s box in
+  `strands_robots.simulation.isaac.simulation` - has been open on `refs/heads/main` since
   2026-07-07 at note severity, gating nothing, carrying only a
   `# noqa: BLE001` that CodeQL does not read. Alerts #853 and #854 are the same
   idiom raised on a branch, one of them in that same file, and each opened a
