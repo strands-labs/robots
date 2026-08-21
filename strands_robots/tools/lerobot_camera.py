@@ -36,7 +36,7 @@ except ImportError as e:
 
 from strands import tool
 
-from strands_robots.tools._path_validation import validate_save_path
+from strands_robots.tools._path_validation import resolve_output_path, validate_save_path
 from strands_robots.utils import positive_finite_number_error, positive_whole_number_error
 
 # Configure logging
@@ -83,6 +83,25 @@ def _frame_to_image_content(frame: np.ndarray, format: str = "jpg") -> dict[str,
 # "discover"/"list" open no camera with caller-supplied geometry at all. Every
 # handler that selects the asynchronous read hands the caller's timeout_ms to it,
 # so each of those actions carries that row.
+#: Accepted ``color_mode`` spellings, each mapped to the LeRobot enum member it
+#: selects. This dict is the single owner of that vocabulary: both
+#: :func:`_create_camera`, which resolves a spelling to an enum, and
+#: :func:`_vocabulary_option_error`, which refuses a spelling that resolves to
+#: nothing, read it, so the accepted set and the enforced set cannot diverge.
+_COLOR_MODES: dict[str, ColorMode] = {
+    "RGB": ColorMode.RGB,
+    "BGR": ColorMode.BGR,
+}
+
+#: Accepted ``rotation`` spellings, mapped to the LeRobot enum member each
+#: selects. Same single-owner contract as :data:`_COLOR_MODES`.
+_ROTATIONS: dict[str, Cv2Rotation] = {
+    "NO_ROTATION": Cv2Rotation.NO_ROTATION,
+    "ROTATE_90": Cv2Rotation.ROTATE_90,
+    "ROTATE_180": Cv2Rotation.ROTATE_180,
+    "ROTATE_270": Cv2Rotation.ROTATE_270,
+}
+
 _ACTION_NUMERIC_OPTIONS: dict[str, tuple[str, ...]] = {
     "capture": ("width", "height", "fps", "timeout_ms"),
     "capture_batch": ("width", "height", "fps", "timeout_ms"),
@@ -160,6 +179,77 @@ def _numeric_option_error(
     return None
 
 
+# Which enumerated vocabularies each action actually consumes. Every action that
+# opens a camera hands the caller's ``color_mode`` and ``rotation`` to
+# :func:`_create_camera`, so each carries both rows; "discover" and "list" probe
+# devices without applying either.
+_ACTION_VOCABULARY_OPTIONS: dict[str, tuple[str, ...]] = {
+    "capture": ("color_mode", "rotation"),
+    "capture_batch": ("color_mode", "rotation"),
+    "record": ("color_mode", "rotation"),
+    "preview": ("color_mode", "rotation"),
+    "test": ("color_mode", "rotation"),
+    "configure": ("color_mode", "rotation"),
+}
+
+
+def _vocabulary_option_error(action: str, *, color_mode: Any, rotation: Any) -> str | None:
+    """Error text for the first enumerated option ``action`` reads but cannot honor.
+
+    The enum-valued counterpart to :func:`_numeric_option_error`, and it exists for
+    the same reason that one records: every value here is agent-supplied, and the
+    check belongs in front of the camera rather than behind it. Unlike a frame rate,
+    though, neither of these is ever refused downstream - each names a closed
+    vocabulary that :func:`_create_camera` resolves by lookup, and an unrecognised
+    spelling resolved to a *plausible neighbour* instead of failing: anything other
+    than ``RGB`` selected ``BGR``, and any rotation the map did not name selected
+    ``NO_ROTATION``. Both substitutions reported success.
+
+    That is what makes the substitution expensive rather than merely wrong. A
+    ``color_mode`` the driver reads as ``BGR`` is delivered in that channel order,
+    and the capture path converts the frame it is handed with ``COLOR_RGB2BGR``
+    unconditionally, so the saved image has its red and blue channels transposed -
+    a photograph of a red object is written blue - while the result says
+    "Image Capture Success". A ``rotation`` that resolves to ``NO_ROTATION`` is the
+    quieter half: the frame is simply not rotated, so the caller receives a correct
+    image of the wrong orientation. Neither is visible in the tool result, and a
+    trailing space or a transposed pair of letters is enough to reach either.
+
+    Both spellings are compared case-insensitively, matching how
+    :func:`_create_camera` resolves them, so every value that worked before still
+    works: this refuses only the spellings that used to be silently replaced.
+
+    Only the options ``action`` actually reads are checked, so a caller is never
+    refused for a value the requested action ignores.
+
+    Args:
+        action: The requested action; decides which options are effective.
+        color_mode: Channel order selector, as supplied.
+        rotation: Frame rotation selector, as supplied.
+
+    Returns:
+        An error message naming the action, the option and the accepted
+        vocabulary, or ``None`` when every option this action reads is usable.
+    """
+    consumed = _ACTION_VOCABULARY_OPTIONS.get(action, ())
+    for param, value, vocabulary in (
+        ("color_mode", color_mode, _COLOR_MODES),
+        ("rotation", rotation, _ROTATIONS),
+    ):
+        if param not in consumed:
+            continue
+        # Total over any input: a non-string is refused here rather than reaching
+        # ``.upper()``, where it would raise past the tool's structured result.
+        if not isinstance(value, str) or value.upper() not in vocabulary:
+            accepted = ", ".join(vocabulary)
+            return (
+                f"{action}: {param} must be one of {accepted} (compared "
+                f"case-insensitively), got {value!r}. An unrecognised value used to "
+                f"select a different one silently."
+            )
+    return None
+
+
 @tool
 def lerobot_camera(
     action: str = "list",
@@ -196,14 +286,21 @@ def lerobot_camera(
         camera_type: Camera type ("opencv" or "realsense")
         camera_id: Camera device ID (int for index, str for path like "/dev/video0")
         save_path: Directory to save captured images/videos
-        filename: Custom filename (without extension)
+        filename: Custom filename (without extension). Resolved inside
+            save_path; a value naming a location outside it is refused rather
+            than written there.
         camera_ids: List of camera IDs for batch operations
         width: Frame width in pixels (a positive whole number)
         height: Frame height in pixels (a positive whole number)
         fps: Frames per second (a positive whole number)
-        color_mode: Color mode ("RGB" or "BGR")
-        rotation: Image rotation ("NO_ROTATION", "ROTATE_90", "ROTATE_180", "ROTATE_270")
-        format: Image format ("jpg", "png", "bmp")
+        color_mode: Color mode; one of "RGB" or "BGR", compared case-insensitively.
+            Any other value is refused rather than silently read as "BGR".
+        rotation: Image rotation; one of "NO_ROTATION", "ROTATE_90", "ROTATE_180"
+            or "ROTATE_270", compared case-insensitively. Any other value is
+            refused rather than silently read as "NO_ROTATION".
+        format: Image format ("jpg", "png", "bmp"). Becomes the saved file's
+            extension, so like filename it is resolved inside save_path and
+            refused if it names a location outside it.
         capture_duration: Duration for video recording (positive seconds)
         preview_duration: Duration for preview display (positive seconds)
         async_mode: Use async reading for better performance
@@ -228,6 +325,9 @@ def lerobot_camera(
         )
         if numeric_error:
             return {"status": "error", "content": [{"text": numeric_error}]}
+        vocabulary_error = _vocabulary_option_error(action, color_mode=color_mode, rotation=rotation)
+        if vocabulary_error:
+            return {"status": "error", "content": [{"text": vocabulary_error}]}
         if action in _ACTION_NUMERIC_OPTIONS:
             # Accepted above as integral values; coerce so the camera config's
             # declared int fields, the VideoWriter frame size and the progress
@@ -512,7 +612,7 @@ def _capture_single_image(
             cam_name = str(camera_id).replace("/dev/", "").replace("/", "_")
             filename = f"lerobot_{camera_type}_{cam_name}_{timestamp}"
 
-        file_path = os.path.join(save_path, f"{filename}.{format}")
+        file_path = resolve_output_path(save_path, f"{filename}.{format}", label="filename and format")
 
         # Create camera configuration
         camera = _create_camera(camera_type, camera_id, width, height, fps, color_mode, rotation)
@@ -605,7 +705,7 @@ def _capture_batch_images(
                 else:
                     cam_filename = f"batch_{camera_type}_{cam_name}_{timestamp}"
 
-                file_path = os.path.join(save_path, f"{cam_filename}.{format}")
+                file_path = resolve_output_path(save_path, f"{cam_filename}.{format}", label="filename and format")
 
                 # Create and use camera
                 camera = _create_camera(camera_type, cam_id, width, height, fps, color_mode, rotation)
@@ -726,7 +826,7 @@ def _record_video_sequence(
             cam_name = str(camera_id).replace("/dev/", "").replace("/", "_")
             filename = f"lerobot_video_{camera_type}_{cam_name}_{timestamp}"
 
-        video_path = os.path.join(save_path, f"{filename}.mp4")
+        video_path = resolve_output_path(save_path, f"{filename}.mp4", label="filename")
 
         # Create camera
         camera = _create_camera(camera_type, camera_id, width, height, fps, color_mode, rotation)
@@ -1072,16 +1172,12 @@ def _create_camera(
     """Create and configure a camera instance."""
 
     if camera_type.lower() == "opencv":
-        # Convert string enums to proper types
-        color_mode_enum = ColorMode.RGB if color_mode.upper() == "RGB" else ColorMode.BGR
-
-        rotation_map = {
-            "NO_ROTATION": Cv2Rotation.NO_ROTATION,
-            "ROTATE_90": Cv2Rotation.ROTATE_90,
-            "ROTATE_180": Cv2Rotation.ROTATE_180,
-            "ROTATE_270": Cv2Rotation.ROTATE_270,
-        }
-        rotation_enum = rotation_map.get(rotation.upper(), Cv2Rotation.NO_ROTATION)
+        # Resolve the string selectors through the module-level vocabularies, which
+        # are the same maps the dispatcher validates against. The fallbacks are
+        # unreachable for a value that came through the tool - it is refused by
+        # then - and keep this helper total for a direct caller.
+        color_mode_enum = _COLOR_MODES.get(color_mode.upper(), ColorMode.BGR)
+        rotation_enum = _ROTATIONS.get(rotation.upper(), Cv2Rotation.NO_ROTATION)
 
         config = OpenCVCameraConfig(
             index_or_path=camera_id,

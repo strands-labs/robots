@@ -1,0 +1,3 @@
+### Fixed
+
+- **tools/lerobot_train**: `device` is now held to torch's own device-string domain at the dispatch boundary, like the run-size numerics beside it in the same detached argv. `device="gpu"` (or `"CUDA"`, or `"cuda:x"`) is refused up front, naming the parameter and a spelling to use instead, rather than aborting the detached run after the tool has already reported it started with a pid. The admitted set is torch's own - the value is handed to `torch.device` rather than compared against a copied list - and only the spelling is graded, so naming a device the dispatching machine does not currently have still builds an argv. A resumed run, whose argv carries no `--policy.device`, is not refused for one.

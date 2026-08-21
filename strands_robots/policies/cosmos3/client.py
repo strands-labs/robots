@@ -129,7 +129,7 @@ class Cosmos3WebsocketClient:
             return self._client
         try:
             self._client = _RawWebsocketTransport(self.host, self.port, self.api_key)
-        except (ConnectionRefusedError, OSError) as e:
+        except OSError as e:
             raise ConnectionError(self._server_hint()) from e
         logger.info(
             "Cosmos3WebsocketClient ready for ws://%s:%s (transport=raw)",
@@ -143,7 +143,7 @@ class Cosmos3WebsocketClient:
         client = self._ensure_client()
         try:
             return client.get_server_metadata()
-        except (ConnectionRefusedError, OSError) as e:
+        except OSError as e:
             raise ConnectionError(self._server_hint()) from e
 
     def infer(self, observation: dict[str, Any]) -> dict[str, Any]:
@@ -161,7 +161,7 @@ class Cosmos3WebsocketClient:
         client = self._ensure_client()
         try:
             return client.infer(observation)
-        except (ConnectionRefusedError, OSError) as e:
+        except OSError as e:
             raise ConnectionError(self._server_hint()) from e
 
     def reset(self) -> None:

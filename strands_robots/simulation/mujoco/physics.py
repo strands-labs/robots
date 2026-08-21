@@ -807,7 +807,7 @@ class PhysicsMixin:
                     "text": (
                         f"Force applied to '{body_name}' (body {body_id})\n"
                         f"Force: {f.tolist()} N\n"
-                        f"Torque: {t.tolist()} N·m\n"
+                        f"Torque: {t.tolist()} N*m\n"
                         f"Point: {p.tolist()}"
                     )
                 }
@@ -1165,7 +1165,7 @@ class PhysicsMixin:
         return {
             "status": "success",
             "content": [
-                {"text": f"Mass matrix: {nv}×{nv}, rank={rank}, cond={cond:.2e}"},
+                {"text": f"Mass matrix: {nv}x{nv}, rank={rank}, cond={cond:.2e}"},
                 {
                     "json": {
                         "shape": [nv, nv],
@@ -1910,7 +1910,7 @@ class PhysicsMixin:
                 if reason := persist_body_mass(self._world, body_id, mass_ratio=mass_ratio):
                     return {"status": "error", "content": [{"text": f"set_body_properties: {reason}"}]}
                 model.body_mass[body_id] = mass
-                changes.append(f"mass: {old_mass:.3f} → {mass:.3f}")
+                changes.append(f"mass: {old_mass:.3f} -> {mass:.3f}")
                 # Inertia tracks mass for fixed geometry: setting a rigid body's
                 # mass to a new value at constant shape is a uniform density
                 # change, which scales its inertia tensor by the same factor
@@ -2147,12 +2147,12 @@ class PhysicsMixin:
             if color is not None:
                 # Already coerced to 4 components (RGB got an opaque alpha).
                 model.geom_rgba[gid] = color
-                changes.append(f"color → {model.geom_rgba[gid].tolist()}")
+                changes.append(f"color -> {model.geom_rgba[gid].tolist()}")
 
             if friction is not None:
                 # Validated as exactly the three MuJoCo coefficients.
                 model.geom_friction[gid] = friction
-                changes.append(f"friction → {friction}")
+                changes.append(f"friction -> {friction}")
 
             if size is not None:
                 # A resize changes the shape the owning body's inertial row was
@@ -2175,7 +2175,7 @@ class PhysicsMixin:
                 # smaller collision bounds and other bodies silently pass through
                 # it. Recompute both for size-defined primitives.
                 _recompute_primitive_geom_bounds(mj, model, gid)
-                changes.append(f"size → {model.geom_size[gid].tolist()}")
+                changes.append(f"size -> {model.geom_size[gid].tolist()}")
 
         return {
             "status": "success",
@@ -2237,7 +2237,7 @@ class PhysicsMixin:
 
         lines = [f"{len(contacts)} contacts:"]
         for c in contacts[:15]:
-            lines.append(f"{c['geom1']} ↔ {c['geom2']}: normal={c['normal_force']:.3f}N, dist={c['distance']:.4f}m")
+            lines.append(f"{c['geom1']} <-> {c['geom2']}: normal={c['normal_force']:.3f}N, dist={c['distance']:.4f}m")
         if len(contacts) > 15:
             lines.append(f"  ... and {len(contacts) - 15} more")
 
