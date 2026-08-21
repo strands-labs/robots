@@ -489,7 +489,10 @@ def gr00t_inference(
         - ``stop``: Terminate a running service on the specified ``port``.
         - ``status``: Check whether a service is running on the specified ``port``.
         - ``list``: Discover all running services across common ports (5555-5558, 8000-8003).
-        - ``restart``: Stop and re-start a service (e.g., to swap checkpoints). Requires ``checkpoint_path``.
+        - ``restart``: Stop and re-start a service (e.g., to swap checkpoints). Requires
+          ``checkpoint_path``. Refused when the running service cannot be stopped: the
+          port is still held, so the new checkpoint cannot bind it and the previous one
+          keeps serving.
         - ``find_containers``: List available Isaac-GR00T Docker containers.
         - ``build_image``: Clone Isaac-GR00T at ``repo_tag`` and run ``bash docker/build.sh``.
           Idempotent - skips the build when ``image_name`` already exists in the local
@@ -937,8 +940,34 @@ def gr00t_inference(
     elif action == "restart":
         if checkpoint_path is None:
             return {"status": "error", "message": "Checkpoint path required for restart"}
-        # Stop existing service and start new one
-        _stop_service(port)
+        # Stop the existing service, then rebind the port for the new checkpoint.
+        # The teardown verdict is the PRECONDITION for that rebind, not a
+        # progress note: ``_stop_service`` reports an error exactly when
+        # something still holds ``port`` after SIGTERM and SIGKILL, and its
+        # message says so in as many words ("a restart will fail to bind it").
+        #
+        # Discarding it sent the rebind ahead anyway, and the rebind cannot
+        # detect the collision on its own. The launch is a detached
+        # ``docker exec -d``, so ``subprocess.run`` returns 0 as soon as the
+        # daemon accepts it - it says nothing about whether the server inside
+        # bound the port - and the readiness wait is a bare TCP connect to
+        # ``port``, which the SURVIVING server answers on the first poll. The
+        # result was ``status="success"`` naming the new ``checkpoint_path`` as
+        # the one serving, byte-identical to a restart that really did swap it,
+        # while every inference request still reached the old checkpoint. Swapping
+        # checkpoints is the documented reason this action exists, so that is the
+        # one thing a caller cannot be left guessing about.
+        stop_result = _stop_service(port)
+        if stop_result["status"] == "error":
+            return {
+                "status": "error",
+                "port": port,
+                "message": (
+                    f"Restart aborted: the service on port {port} could not be stopped, so "
+                    f"{checkpoint_path!r} was not started and the previous checkpoint is still "
+                    f"serving. {stop_result.get('message', '')}"
+                ),
+            }
         time.sleep(2)  # Brief pause to allow port release before rebind
         return _start_service(
             checkpoint_path=checkpoint_path,

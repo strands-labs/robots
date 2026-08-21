@@ -159,6 +159,20 @@ class _CountingBenchmark(BenchmarkProtocol):
         return self.on_step_calls >= self.fail_after
 
 
+class _RefusedRobotBenchmark(_CountingBenchmark):
+    """Accepts any robot and names one the sim under test refuses to add."""
+
+    max_steps = 3
+
+    @property
+    def supported_robots(self) -> list[str]:
+        return []
+
+    @property
+    def default_robot(self) -> str:
+        return "reachy2"
+
+
 class _DoneAfterBenchmark(BenchmarkProtocol):
     """Returns StepInfo(done=True) on the Nth step."""
 
@@ -439,6 +453,85 @@ class TestSpecLifecycleHookFailures:
         assert "on_step failed" in text
         assert "_BoomStep" in text
         assert "step boom" in text
+
+
+class TestARefusedDefaultRobotIsReportedNotScored:
+    """A benchmark whose ``default_robot`` cannot be loaded reports a setup error.
+
+    ``on_episode_start``'s auto-load runs when the sim is empty, and the sim can
+    be empty at that point even though ``evaluate_benchmark``'s up-front
+    "No robots in sim" guard passed: a spec that declares a ``scene`` loads it
+    first, and ``load_scene`` rebuilds the world, so the robot registry is empty
+    by the time the base hook looks. If the auto-load is then refused - a
+    ``default_robot`` naming a hardware-only registry entry, an asset that is
+    not on disk - the episode has no robot at all.
+
+    That is the distinction ``LiberoAdapter`` already documents for its own
+    controller install: a failure in *setup* must not read as a *policy* that
+    scored zero on an exit-0 run. So the refusal has to arrive as the structured
+    error :class:`TestSpecLifecycleHookFailures` pins, not as a success payload
+    carrying ``success_rate: 0.0`` and ``success_measured: True``.
+    """
+
+    @staticmethod
+    def _empty_sim_refusing_add(reason: str) -> FakeSim:
+        class _RefusingSim(FakeSim):
+            def __init__(self) -> None:
+                super().__init__()
+                # The state a scene load leaves behind: a rebuilt world whose
+                # robot registry is empty, so the base hook auto-loads.
+                self._world.robots.clear()
+
+            def add_robot(self, name, **kw):  # type: ignore[override]
+                return {"status": "error", "content": [{"text": reason}]}
+
+        return _RefusingSim()
+
+    def test_the_eval_reports_the_refusal_instead_of_a_success_rate(self):
+        reason = "Robot 'reachy2' is registered for real hardware only: no simulation asset."
+        sim = self._empty_sim_refusing_add(reason)
+        assert sim.list_robots() == [], "premise: the hook must take the auto-load path"
+
+        policy = MockPolicy()
+        policy.set_robot_state_keys(sim.robot_joint_names("fake_robot"))
+
+        result = PolicyRunner(sim).evaluate(
+            "fake_robot",
+            policy,
+            spec=_RefusedRobotBenchmark(),
+            n_episodes=1,
+        )
+
+        assert result["status"] == "error"
+        text = result["content"][0]["text"]
+        assert "on_episode_start failed" in text
+        assert "_RefusedRobotBenchmark" in text
+        # The backend's reason travels all the way out, so the caller can act on
+        # it without re-running to find out which robot was refused.
+        assert "reachy2" in text
+        assert "no simulation asset" in text
+        # And no rate is reported for a rollout that had nothing to drive.
+        payloads = [b["json"] for b in result["content"] if isinstance(b, dict) and "json" in b]
+        assert not any("success_rate" in pl for pl in payloads)
+
+    def test_an_accepted_add_still_scores_the_episode(self):
+        """Control: when the auto-load succeeds the eval reports a rate as before."""
+        sim = FakeSim()
+        sim._world.robots.clear()
+        policy = MockPolicy()
+        policy.set_robot_state_keys(sim.robot_joint_names("fake_robot"))
+
+        result = PolicyRunner(sim).evaluate(
+            "fake_robot",
+            policy,
+            spec=_RefusedRobotBenchmark(),
+            n_episodes=1,
+        )
+
+        assert result["status"] == "success"
+        payload = next(b["json"] for b in result["content"] if isinstance(b, dict) and "json" in b)
+        assert payload["success_rate"] == 0.0
+        assert payload["episodes_completed"] == 1
 
 
 # Legacy success_fn path still works

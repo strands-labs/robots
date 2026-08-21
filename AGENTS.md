@@ -749,6 +749,93 @@ hatch run format            # ruff check --fix, ruff format
      `require_last_push_approval` then disqualifies the pushing account from
      re-supplying it, turning a one-approval merge into one that needs a second
      reviewer.
+   - *And that the head it names is the branch's tip.* A pull request has two
+     answers to "what is the head commit" and they can disagree for hours.
+     `headRefOid` is the value the pull request *records*; the tip of the branch
+     in the head repository is the value that exists. GitHub normally reconciles
+     them within a second of a push, and when it does not, nothing on the pull
+     request says so - because every gate this step tells you to poll resolves
+     the head *through the pull request's own view of it*, so they all agree
+     with each other and all of them are answering about a commit that is no
+     longer the tip.
+
+     #2508 sat approved, green and unmergeable for over five hours that way:
+
+     | | commit | pushed | check suites |
+     |---|---|---|---|
+     | `headRefOid` as reported | `21ea097e` | 07:56:47 | 8, all green |
+     | actual tip of the head branch | `271ec912` | 13:58:16 | **0** |
+
+     What that costs is the diagnosis, because the refusal names a gate this
+     repository does not have:
+
+     ```
+     mergePullRequest       ->  Head branch is out of date. Review and try the merge again.
+     PUT /pulls/2508/merge  ->  409  Head branch is out of date. ...
+     ```
+
+     There is no staleness requirement here to satisfy. The `default` ruleset
+     sets `strict_required_status_checks_policy: false` and `main` has no
+     classic protection (`GET /branches/main/protection` -> `404 Branch not
+     protected`), and the branch was not in conflict either -
+     `git merge-tree --write-tree --messages main <head>` returned a tree and
+     zero conflict messages. So the message invites the one action that makes
+     things worse: pushing a refresh onto a contributor's branch consumes the
+     approval of whoever owns the pushing token under
+     `require_last_push_approval`, which is the state #1035 cannot leave. On
+     #2508 the branch needed nothing - the author had already merged the base
+     cleanly.
+
+     `mergeable` / `mergeStateStatus` pinned at `UNKNOWN` is the only anomaly,
+     and it is the weakest signal available, because this step already documents
+     `mergeable` as lazily computed - it "reads `unknown` first and the settled
+     value second". A single `UNKNOWN` is therefore both expected and benign,
+     and "read it once more" is indistinguishable from that benign case for as
+     long as you are willing to keep reading. Five consecutive reads on #2508
+     returned `UNKNOWN` across both the GraphQL and REST shapes; every other
+     signal - `reviewDecision: APPROVED`, `call-test-lint` `SUCCESS`, no
+     unresolved thread, and *both* `--all-open` sweeps below - read ready.
+
+     Ask the head repository, which is the one side not under suspicion:
+
+     ```graphql
+     repository(owner: $headOwner, name: $headName) {
+       ref(qualifiedName: "refs/heads/<headRefName>") { target { oid } }
+     }
+     ```
+
+     resolved from `pullRequest { headRepository { nameWithOwner } headRefName }`
+     and compared against `headRefOid`. Reading the tip through the pull request
+     cannot work by construction - that is the field being checked.
+
+     **Reopen it; do not push it.** A close/reopen reconciles the record without
+     touching the branch, and on #2508 it moved `headRefOid` to `271ec912` and
+     queued the nine check suites that commit had never had. Same remedy and
+     nearly the same reason as the no-check-suite case above (#1987):
+     `reopened` recomputes with no commit, therefore no push, therefore neither
+     `dismiss_stale_reviews_on_push` nor a new last pusher. Read the flip
+     history first and count `nodes`, per the *Before* bullet - #2508 had zero.
+
+     Expect `reviewDecision` to move to `REVIEW_REQUIRED` once the record
+     catches up, and read that as bookkeeping rather than lost review: the
+     approval was already attributed to a commit that was not the tip. Check
+     whether the new head moved the pull request's *own* diff before asking for
+     a re-review - `271ec912` was a clean base merge, `git show --cc` 0 lines,
+     old head an ancestor of the new one, diff against the merge base
+     byte-identical at `3 files, +438`, which is the #1821 shape.
+
+     The lag is not only a merge blocker. It is also a window in which
+     `APPROVED` names the wrong commit, so a record reconciled while the head
+     carries *new* content leaves an approval covering a tree nobody read.
+     Sweep it when reporting repository health, alongside the two `--all-open`
+     checks above:
+
+     ```
+     python3 scripts/check_pr_head_is_current.py --repo <owner/name> --all-open
+     ```
+
+     It agreed with `git ls-remote` on all 10 open pull requests, so it needs no
+     clone. Pinned by tests/test_pr_head_is_current.py. See #2538.
    And before merging, `reviewDecision: APPROVED` alone is not the gate: poll
    the **required** contexts' own conclusions and `mergeStateStatus == CLEAN`
    together, since `reviewDecision` flips before the checks finish.
@@ -1286,7 +1373,7 @@ Corrections from code review that apply to all future contributions:
 - **Fail-fast with `strict=True`** - Silent frame dropping or catch-all `except Exception` with logging is forbidden unless gated behind a `strict=False` parameter.
 
 ### API Consistency
-- **Don't export private functions** - `_`-prefixed names must never appear in `__all__`.
+- **Don't export private functions** - `_`-prefixed names must never appear in `__all__`. A star-import skips underscore names *unless* `__all__` lists them, so an entry there is the sole reason `from <pkg> import *` binds one: `strands_robots/mesh/__init__.py` listed `_LOCAL_ROBOTS` (the in-process registry dict) and `_LOCAL_ROBOTS_LOCK` under the comment "exposed for test patching only", and that reason does not hold - `__all__` has no bearing on the attribute access both registry-touching test files actually use, one of which already reached `strands_robots.mesh.core` where the two are defined. What such an entry usually is load-bearing for is silencing `F401` on an import whose only purpose is to place the name on the package namespace, which is what ruff's own remedy text ("consider removing, adding to `__all__`, or using a redundant alias") describes - so drop the import along with the entry, and export a public accessor instead. Pinned by `tests/test_all_exports_are_statically_defined.py::TestNoExportIsPrivate`, which grades this over the same population as the definedness half.
 - **Match docstrings to semantics** - If the docstring says "single-shot" but the code is "latched", one of them must change. Always verify by reading the underlying library docs.
 - **Forward all advertised kwargs** - If `tool_spec.json` exposes a parameter, the dispatch chain must forward it all the way through. Silent drops are bugs.
 - **Centralize import checks at init** - Prefer checking optional deps once in `__init__` over scattered `_ensure_X()` guards. Consumers catch issues at init time.
@@ -1588,6 +1675,7 @@ which side the enum is on.
 
 ### Env Vars
 - **Warn on unrecognized values** - `STRANDS_ROBOT_MODE=foo` (typo) must `logger.warning(...)`, not silently fall through. Silent typo'd env vars surprise users hours later.
+- **The report belongs to the resolver that runs first** - a variable read by two resolvers is reported by whichever one an unknown value actually reaches. `STRANDS_MESH_BACKEND` had a report in `mesh.transport.factory._select_backend` and none in `mesh.session._backend_choice`, and the second is the gate the first sits behind: an unknown value resolves to `zenoh` there, so the factory is never consulted and its report cannot fire for the input class it names. A typo therefore produced a plain Zenoh session indistinguishable from an explicit `zenoh`, on a variable `mesh.iot.provision` writes into an operator's environment file. Give the vocabulary one owner and delegate to it, rather than a second inline copy that reports differently; and if that owner sits on a per-message path, key the report by the offending value so it is emitted once per distinct typo instead of once per published sample. Pinned by `tests/mesh/test_session_backend_select.py::TestAnUnknownBackendIsReported`.
 - **Document every env var in README.md** - if you introduce a new `STRANDS_*` variable, add it to the Configuration section in the same PR. The list is the single source of truth for users.
 - **A kill switch is honoured by every path that can start the thing it kills** - and by exactly one predicate. `STRANDS_MESH=false` is documented in README as overriding even an explicit `mesh=True`, but it was resolved by an inline `os.getenv` inside `init_mesh`, and `robot_mesh._gateway_mesh` builds its robot-less coordinator `Mesh` without going through `init_mesh`. So an operator who asked for no mesh still got a real Zenoh session, a `gateway-*` peer advertised to the fleet, and the nine threads `Mesh.start` spawns - cached until `atexit`, because the switch had no reach there. The second-order cost is test isolation: `tests/conftest.py` sets the same variable to keep the suite off Zenoh, so the escape put nine publishing threads inside unrelated tests and one of them failed on a `/health` payload it never provoked. When a flag means "do not start X", give it one predicate and call it at every construction site of X; a second inline spelling is how the first site gets forgotten. Pinned by `tests/mesh/test_gateway_mesh_kill_switch.py`.
 - **Currently tracked**: `STRANDS_ROBOT_MODE`, `STRANDS_TRUST_REMOTE_CODE`, `MUJOCO_GL`.
@@ -1850,6 +1938,25 @@ From the `robot_mesh` human-in-the-loop review trail (#227). Apply to the
   flat, fixed sentinel to the model. Echoing the operator's typed reply turns the
   human into a prompt-injection content side-channel (the agent could phrase the
   approval reason so the operator's answer leaks data into the context).
+- **The record half is owed by EVERY gate, not just the mesh tool.** Three tools
+  stop and ask a human - `robot_mesh` for the physical-actuation actions, `use_ros`
+  for a publish/service_call/action_send_goal aimed at a safety-critical graph
+  surface, and `lerobot_train` for the `extra_flags` that control output paths,
+  telemetry and code loading - and each of them returned the flat sentinel while
+  only the mesh tool wrote the row. A declined `/cmd_vel` publish and a declined
+  `output_dir` override left no audit row, no log record, and so no trace that a
+  gate had fired at all. Every gate accepts a canonical affirmative only, so a
+  reply carrying a reason is always a decline and that row is the ONLY place the
+  reason survives; record the approval too, because "did a human authorise this"
+  is the first question an incident asks. One owner writes the row
+  (`strands_robots.tools._hitl_audit.log_operator_response`) so its wording
+  cannot differ between two gates writing to the same log - a reader greps one
+  phrasing, and a gate that spelled the row itself could drift to another and
+  become invisible to that search.
+- Pinned by `tests/tools/test_hitl_operator_response_audit.py`, which derives the
+  graded set from the `interrupt()` call sites so a fourth gate is graded on
+  arrival, and whose controls assert the reply still never reaches the model and
+  that an unwritable audit log does not change a gate's verdict.
 
 ### Audit completeness
 - **Audit read-only/observation actions too, not just actuation.** `peers`,

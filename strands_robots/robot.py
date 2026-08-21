@@ -283,6 +283,8 @@ def Robot(  # noqa: N802 - uppercase by design (factory mimicking a class constr
         urdf_path: Explicit path to URDF/MJCF file. If not provided,
                    resolved via ``strands_robots.simulation.model_registry``
                    (asset manager or ``STRANDS_ASSETS_DIR`` search paths).
+                   Only applies to ``mode="sim"``; in ``mode="real"`` it is
+                   ignored and reported at debug level.
         cameras: Camera config for real hardware. Example::
 
             {"wrist": {"type": "opencv", "index_or_path": "/dev/video0", "fps": 30}}
@@ -296,16 +298,23 @@ def Robot(  # noqa: N802 - uppercase by design (factory mimicking a class constr
             contract governs: omitting it spawns at the origin, and a
             wrong-length, non-numeric or non-finite vector is refused with an
             actionable message (surfaced here as ``RuntimeError``) instead of
-            being replaced by the origin.
+            being replaced by the origin. Only applies to ``mode="sim"``; in
+            ``mode="real"`` it is ignored and reported at debug level.
         data_config: Data configuration name for observation/action schema.
-                     Defaults to the canonical robot name. For multi-camera
-                     setups, specify explicitly: ``data_config="so100_dualcam"``.
+                     For multi-camera setups, specify explicitly:
+                     ``data_config="so100_dualcam"``. Honoured in both modes:
+                     ``mode="sim"`` defaults it to the canonical robot name,
+                     and ``mode="real"`` forwards it verbatim to
+                     ``strands_robots.hardware_robot.Robot``, which carries it
+                     into the ``policy_config`` a policy is built with.
         orientation: Robot base orientation in the sim world as a quaternion
             ``[w, x, y, z]``. Forwarded to the backend's ``add_robot`` verbatim
             on the same terms as ``position``: omitting it spawns unrotated, and
             a wrong-length, non-numeric or non-finite quaternion is refused with
             an actionable message (surfaced here as ``RuntimeError``) rather
-            than being replaced by the identity rotation.
+            than being replaced by the identity rotation. Only applies to
+            ``mode="sim"``; in ``mode="real"`` it is ignored and reported at
+            debug level.
         keyframe: Spawn the robot in a canonical pose declared by a
             ``<keyframe>`` in its source model (e.g. panda ``"home"``, aloha
             ``"neutral_pose"``) instead of the default all-zero configuration.
@@ -314,7 +323,8 @@ def Robot(  # noqa: N802 - uppercase by design (factory mimicking a class constr
             contract governs: the pose is sticky across ``reset()`` and an
             unknown keyframe is a hard error naming the available keyframes
             (surfaced here as ``RuntimeError``) instead of a silent zero-pose
-            spawn.
+            spawn. Only applies to ``mode="sim"``; in ``mode="real"`` it is
+            ignored and reported at debug level.
         mesh: Attach a Zenoh fleet-coordination mesh. ``None`` (default) keeps
               mesh OFF for a quiet bare ``Robot(...)`` but honours the
               ``STRANDS_MESH=true`` opt-in. Pass ``True`` to force it on or
@@ -492,6 +502,32 @@ def Robot(  # noqa: N802 - uppercase by design (factory mimicking a class constr
                 backend,
             )
 
+        # Report the spawn parameters this branch cannot honour. They describe a
+        # pose in a simulated world - where to place a base, how to rotate it,
+        # which <keyframe> to spawn in, which model file to load - and a physical
+        # arm is already wherever it is, so ``hardware_robot.Robot`` accepts none
+        # of them. Ignoring them is right; ignoring them silently is not, which is
+        # why ``backend`` above says so. Read by ``is not None`` rather than by
+        # truthiness: ``keyframe=0`` is a valid keyframe index and an empty
+        # ``position``/``orientation`` was still supplied, so a truthiness test
+        # would drop exactly the values a caller is most likely to be surprised by.
+        ignored_spawn_args = [
+            f"{param}={value!r}"
+            for param, value in (
+                ("urdf_path", urdf_path),
+                ("position", position),
+                ("orientation", orientation),
+                ("keyframe", keyframe),
+            )
+            if value is not None
+        ]
+        if ignored_spawn_args:
+            logger.debug(
+                "%s ignored in mode='real' (spawn pose applies to a simulated world; "
+                "a physical robot is already where it is)",
+                ", ".join(ignored_spawn_args),
+            )
+
         from strands_robots.hardware_robot import Robot as HardwareRobotCls
 
         real_type = get_hardware_type(canonical) or canonical
@@ -499,6 +535,14 @@ def Robot(  # noqa: N802 - uppercase by design (factory mimicking a class constr
             tool_name=canonical,
             robot=real_type,
             cameras=cameras,
+            # Forwarded, not reported: unlike the spawn parameters above, the
+            # hardware class declares ``data_config`` and reads it - it is what
+            # ends up in the ``policy_config`` a policy is built with, so a
+            # multi-camera schema selected here has to arrive. Passed verbatim
+            # (``None`` is the hardware class's own default) rather than defaulted
+            # to the canonical name the way the sim path does, so a caller who
+            # names no config keeps today's behaviour.
+            data_config=data_config,
             **kwargs,
         )
 
