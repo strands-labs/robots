@@ -68,7 +68,7 @@ def user_registry_mtime() -> float | None:
     """
     try:
         return _get_user_registry_path().stat().st_mtime
-    except (FileNotFoundError, OSError):
+    except OSError:
         return None
 
 
