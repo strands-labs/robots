@@ -558,7 +558,7 @@ class TestNarrowExceptionsR3:
             "bare `except Exception` reintroduced in bridge_transport.py "
             "(AGENTS.md > Review Learnings forbids non-recovery use). "
             "Narrow to the documented transport-failure tuple "
-            "((RuntimeError, ConnectionError, OSError) for IO; "
+            "((RuntimeError, OSError) for IO; "
             "(RuntimeError, AttributeError, OSError) for teardown). "
             f"Offending lines: {offending}"
         )

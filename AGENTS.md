@@ -1100,6 +1100,38 @@ hatch run format            # ruff check --fix, ruff format
    nothing to resolve, which is why `mergeStateStatus: CLEAN` is not merely
    unhelpful here but actively reassuring.
 
+   **What the sweep cannot see, and why it is not worth a heuristic.** Every
+   relation it computes intersects changed *paths*, so a test resolving its
+   population from a filesystem walk is invisible to it: the grader is coupled to
+   files it never names, and its intersection with the sibling it grades is empty.
+   #2557 added `tests/test_log_strings_are_ascii.py`, a walk of the package, and
+   merged in a batch with #2559 and #2560 - both of which added exactly the
+   tool-result prose that grader scores - at a pairwise path intersection of `[]`
+   with each. The batch was safe, but only because it was checked by hand.
+
+   Do not widen the path set to the walked root. Measured on the open set of 9,
+   that relation selects **11 of 36 pairs, 9 of them new, and none a defect**:
+   125 of the 1136 test files resolve a population from a walk, and the ones that
+   reach furthest are rooted at `strands_robots` entire, so they intersect nearly
+   every open branch, while a narrowly-rooted grader (`strands_robots/mesh/`)
+   selects only the pair the path intersection already reports. That is the
+   `awaiting-first-review` failure mode from step 8 in a different field: a
+   finding on a third of the queue is boilerplate, and the batch where it
+   mattered is not distinguishable from the rest.
+
+   What does separate them is composing the two branches and running the grader,
+   which needs no model of what the grader reads. Run by hand over the open set
+   for #2562's whole-tree grader it cost ~10 s per composition, and it correctly
+   left alone three siblings whose new `except` tuples a path-or-keyword
+   heuristic would have flagged - `(KeyboardInterrupt, Exception)` among them,
+   which is correct code. Two branches were `CONFLICTING` and so honestly
+   `skipped`, not green. That relation cannot live in `--all-open`: the sweep
+   reads the open set from the API and **no checkout at all**, which is what lets
+   a health report run it without a clone, and every sweep test pins that by
+   running from a directory that is not a repository. So the sweep reports what
+   it measured - shared paths - and names the class it cannot describe (#2561).
+   A composition run stays a manual step, below.
+
    Read that run as a **delta, not an absolute**. The environment you verify in
    is almost never the one CI uses, and a partial one fails tests for reasons
    that have nothing to do with the merge. Composing #1786 and #1804 - both
@@ -1392,7 +1424,7 @@ Corrections from code review that apply to all future contributions:
 - **Name a test for its behaviour, not for its provenance** - a test class or function must not carry the release (`TestHardwareConfigV040Followups`) or review round (`...Followups`) that produced it. The name is the first thing a maintainer reads, so it has to say what is verified; and a name tied to a shipped release reads as historical, which invites skipping it. A bundle named for a review round is usually a bundle of unrelated checks - split it into one behaviour per class rather than inventing a name that covers all of them. Provenance belongs in the docstring, where the `#NNN` reference stays useful. A version token of one or two digits is fine: it names a *data format* under test (`test_load_v3_parses_every_field`), not a release. `Pinned by` `tests/test_test_case_names_describe_behaviour.py`.
 
 ### Performance
-- **Don't create executors in hot loops** - Reuse a single `ThreadPoolExecutor` instance instead of creating one per call at 50Hz.
+- **Don't create executors in hot loops** - Reuse a single `ThreadPoolExecutor` instance instead of creating one per call at 50Hz. A `with ThreadPoolExecutor(...)` block joins its worker before returning, so the live thread *count* never grows and nothing watching thread counts can see the churn - count `Thread.start` instead. For resolving a coroutine in a sync context the reuse already exists: `strands_robots._async_utils` owns that rule and submits to one module-level worker, so a sync wrapper delegates to it rather than building a private executor. Pinned by tests/policies/test_base.py.
 - **Cache expensive JSON parsing** - If a `@property` re-parses a JSON file on every access, cache the result at module load or first access.
 
 
@@ -1407,7 +1439,14 @@ Corrections from code review that apply to all future contributions:
 
 ### Exception Clauses Must Be Narrow
 - **`except Exception` is forbidden** for non-recovery code paths. Use the smallest superset of expected exception types.
-- **`except (ImportError, Exception)` is a bug** - `Exception` is a superclass of `ImportError`, so the tuple collapses to `except Exception`. Lint/review will catch this; don't write it.
+- **`except (ImportError, Exception)` is a bug** - `Exception` is a superclass of `ImportError`, so the tuple collapses to `except Exception`. The same collapse happens for any member another member already covers: `except (FileNotFoundError, OSError)` is `except OSError`, and with it `PermissionError`, `TimeoutError` and the whole `ConnectionError` family. The covered name contributes no scope, only the impression of a smaller superset than the handler has - and where the prose on the handler enumerates the tuple, that impression becomes a claim the handler does not keep. No linter reports it: ruff's `B014` covers a *duplicate* member only, and the full
+  catalogue (`--select ALL`) reports neither `(FileNotFoundError, OSError)` nor
+  `(ImportError, Exception)`. Drop the covered member - that changes no behaviour. Narrowing the
+  handler's real surface is a separate behaviour change, one per site. Pinned by
+  tests/test_except_tuples_state_their_real_scope.py, over builtins, the standard library and
+  this package; a third-party tree is left alone because a dependency can re-parent its classes
+  between releases, so naming both it and a builtin superclass is a hedge.
+- **A `try` covers only the operation whose exception it classifies** - where a handler exists to read a *verdict* out of an exception class, anything else inside the same `try` that can raise that class is read as the verdict. `asyncio.get_running_loop()` reports "no running loop" by raising `RuntimeError`, so with the offload it guards inside the same `try`, a `RuntimeError` raised by the awaited coroutine was taken for that verdict and the caller was handed `asyncio.run() cannot be called from a running event loop` in place of what the coroutine said - the whole family (`NotImplementedError`, `RecursionError`) with it. Put the guarded call after the `except`, so the handler can only ever see the operation it is classifying. Pinned by tests/test_async_utils.py.
 - **USB / hardware probing** - use `except (ImportError, OSError)`. `PermissionError` is an `OSError`, `FileNotFoundError` is an `OSError`, etc.
 
 ### Actuators: a joint pose goes only where `ctrl` IS a joint pose
@@ -1695,6 +1734,7 @@ which side the enum is on.
 
 ### Unicode & String Hygiene
 - **No emojis in user-facing strings** - this is a project rule. Tool result dicts (`{"content": [{"text": ...}]}`), log messages, error messages: plain ASCII only. Agents read these strings programmatically; emojis just add tokenizer noise.
+- **All three surfaces are graded, and the tool result needs a flow step.** A log line and a `raise` message hold their text inline, so a scan of the call site sees it. A handler's report is usually built up in a local and joined into the returned dict - `lines.append(...)` in a loop, then the joined list as the `text` value - so a scan of the `return` expression alone sees nothing - which is how ten glyphs (`U+2194` in `get_contact_forces`, `U+2192` in `set_geom_properties` / `set_body_properties`, `U+00D7` in `get_mass_matrix`, `U+00B7` in `apply_force`, `U+00B1` in `randomize`, `U+2022` in `list_benchmarks`) sat in text an agent reads back out of its own tool call, on the surface this rule names first. Prefer the spelling the package already uses for the same content: `simulation.mujoco.rendering` listed a contact pair `geom1 <-> geom2` while `simulation.mujoco.physics` listed it `geom1 U+2194 geom2`. ASCII renderings: `->`, `<->`, `+/-`, `x`, `N*m`, `  - ` for a bullet. Semantic Unicode in a *docstring* stays - the rule is about what a caller reads back, not about how the source documents itself. Pinned by `tests/test_log_strings_are_ascii.py::test_tool_result_strings_are_ascii`.
 - **Hunt orphan combining marks after any emoji sweep** - `⏱️` is `U+23F1` + `U+FE0F` (variation selector). Stripping `U+23F1` leaves a stray invisible `U+FE0F` in the output. Sweep with:
   ```bash
   grep -nP '[^\x00-\x7F]' path/to/file.py

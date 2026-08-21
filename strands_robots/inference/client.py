@@ -110,7 +110,8 @@ class RemotePolicy(Policy):
         # holds the value, because the transport's own reaction to one is
         # indistinguishable from an absent server: ``0``, a negative and ``True``
         # all raise ``TimeoutError`` out of ``connect`` against a server that is
-        # running, and ``_connect`` catches ``TimeoutError`` to report "could not
+        # running, and ``_connect``'s ``except OSError`` covers it (a
+        # ``TimeoutError`` is an ``OSError``) to report "could not
         # reach a PolicyServer ... Start one first" - pointing the operator at the
         # one thing that is not wrong. ``nan``, ``inf`` and a numeric string
         # instead escape that clause as a ``ValueError`` / ``OverflowError`` /
@@ -176,7 +177,7 @@ class RemotePolicy(Policy):
                 max_size=None,
                 compression=None,
             )
-        except (OSError, TimeoutError) as exc:
+        except OSError as exc:
             raise ConnectionError(
                 f"RemotePolicy could not reach a PolicyServer at {self.uri}. "
                 f"Start one first, e.g.:\n"

@@ -148,7 +148,7 @@ def verify_dataset(
     # traceback - this is exactly the corruption verify_dataset exists to flag.
     try:
         info = read_dataset_episode_indices(root_path)
-    except (FileNotFoundError, ImportError, ValueError, OSError) as e:
+    except (ImportError, ValueError, OSError) as e:
         problems.append(f"could not read episode parquet: {e}")
         return report
 

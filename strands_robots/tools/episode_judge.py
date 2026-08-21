@@ -302,7 +302,7 @@ def load_episode(root: str, episode: int) -> dict[str, Any]:
                 {"json": payload},
             ],
         }
-    except (ValueError, FileNotFoundError, OSError) as e:
+    except (ValueError, OSError) as e:
         return _error(f"load_episode: {e}")
 
 
@@ -409,7 +409,6 @@ def sample_frames(root: str, episode: int, n_frames: int = 4, include_images: bo
         return {"status": "success", "content": content}
     except (
         ValueError,
-        FileNotFoundError,
         ImportError,
         OSError,
         KeyError,
@@ -456,7 +455,7 @@ def read_predicate_verdict(root: str, episode: int) -> dict[str, Any]:
                 {"json": verdict},
             ],
         }
-    except (ValueError, FileNotFoundError, OSError) as e:
+    except (ValueError, OSError) as e:
         return _error(f"read_predicate_verdict: {e}")
 
 
@@ -538,7 +537,7 @@ def write_label(
                 {"json": record},
             ],
         }
-    except (ValueError, FileNotFoundError, OSError) as e:
+    except (ValueError, OSError) as e:
         return _error(f"write_label: {e}")
 
 

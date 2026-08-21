@@ -95,6 +95,42 @@ date before merging". That setting demands an update plus a full re-run before
 This demands one only when the branch and its base actually edited the same
 file, which is the only case where the base moving can invalidate a result.
 
+What the path relation cannot see
+---------------------------------
+Every relation here intersects changed **paths**, and a test that resolves its
+population from a filesystem walk is coupled to files it never names. Its
+intersection with the sibling it grades is empty, so the sweep reports clean
+while the composition is in fact untested. #2557 added
+``tests/test_log_strings_are_ascii.py``, whose population is a walk of the
+package, and merged in a batch with #2559 and #2560; both siblings added
+tool-result prose, which is exactly the surface that grader scores, and the
+pairwise path intersection with each was ``[]``. The batch was safe, but only
+because it was checked by hand.
+
+Widening the path set to the *walked root* is not the remedy. Measured on this
+repository's open set of 9 pull requests, that relation selects 11 of the 36
+pairs -- 9 of them not already reported by the path intersection, and none of
+them a defect. The reason is structural: of the 125 walk-population tests in
+the tree, the ones that reach furthest are rooted at ``strands_robots`` entire,
+so they intersect nearly every open branch, while a narrowly-rooted grader
+(``strands_robots/mesh/``) selects only the pair the path intersection already
+reports. A relation that fires on a third of all pairs and names no defect is
+the ``awaiting-first-review`` failure mode: a finding attached to that much of
+the queue reads as boilerplate, and the one batch where it mattered is not
+distinguishable from the rest.
+
+What does separate them is composing the two branches and running the grader --
+it needs no model of what the grader reads, because the grader reads it. Run by
+hand over the open set for #2562's whole-tree grader, that cost about 10 s per
+composition and correctly left alone three siblings whose new ``except`` tuples
+a naive path-or-keyword heuristic would have flagged. It cannot live in this
+mode: the sweep reads the open set from the API and no checkout at all, which
+is what lets a caller reporting repository health run it without a clone (pinned
+by ``tests/test_merge_base_overlap.py``, whose every sweep test runs from a
+directory that is not a repository). So the honest change here is scope, not a
+new heuristic: this mode reports what it measured -- shared paths -- and names
+the composition class it cannot describe. See #2561.
+
 Prose is reported but does not block
 ------------------------------------
 An overlap confined to ``.md`` / ``.rst`` / ``.txt`` cannot change what the test
@@ -563,7 +599,11 @@ def render_sweep(
     blocking_stale = [row for row in stale if row[2]]
 
     if not blocking_pairs and not blocking_stale:
-        lines.append("No untested composition in the open set. Nothing here needs a merge-order decision.")
+        clean = (
+            "No pair in the open set shares a changed path, and no pull request shares one "
+            + "with what has landed on its base. Nothing here needs a merge-order decision."
+        )
+        lines.append(clean)
         lines.append("")
     if blocking_pairs:
         pair_heading = f"### Pairs editing the same behaviour-bearing path ({len(blocking_pairs)})"
@@ -628,6 +668,19 @@ def render_sweep(
         + "no push by either author makes a *pair* green."
     )
     lines.append(remedy)
+    lines.append("")
+    # Unconditional, and last: it qualifies a clean report at least as much as a
+    # populated one. A reader who sees no rows is entitled to know which
+    # compositions the relations above were never able to describe.
+    limits = (
+        "**What no relation above covers:** each one intersects changed *paths*. A test that "
+        + "resolves its population from a filesystem walk grades files it never names, so it "
+        + "shares no path with the siblings it grades and no row above can describe that "
+        + "composition. Widening the path set to the walked root was measured and rejected as "
+        + "unselective; only composing the branches and running the grader settles those, and "
+        + "that needs a checkout this mode does not have. See #2561."
+    )
+    lines.append(limits)
     return "\n".join(lines) + "\n"
 
 

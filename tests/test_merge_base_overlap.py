@@ -592,7 +592,69 @@ def test_disjoint_open_pull_requests_report_nothing(
     )
 
     assert _sweep(monkeypatch, get, tmp_path) == 0
-    assert "No untested composition" in capsys.readouterr().out
+    assert "shares a changed path" in capsys.readouterr().out
+
+
+def test_a_clean_sweep_claims_only_the_paths_it_compared(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A clean report may not claim there is no untested composition.
+
+    It compared changed *paths*, and a test resolving its population from a
+    filesystem walk is coupled to files it never names -- so its intersection
+    with the sibling it grades is empty and this mode cannot describe that
+    composition at all. #2557's whole-tree ASCII grader merged in a batch with
+    two siblings that added exactly the prose it scores, at a pairwise path
+    intersection of ``[]``.
+
+    The wording is the whole finding: "no untested composition in the open set"
+    is a claim about compositions, which is strictly more than the relation
+    measured, and a reader who trusts it stops looking. Widening the path set to
+    the walked root was measured and is not the remedy -- it selects 11 of 36
+    pairs on the live open set and names no defect -- and the relation that does
+    settle it needs a checkout ``_sweep`` deliberately does not have. So the
+    report is scoped instead. See issue #2561.
+    """
+    get = _api(
+        [_pull(10, "head10"), _pull(20, "head20")],
+        {
+            "main...head10": _compare(["strands_robots/one.py"]),
+            "head10...main": _compare([]),
+            "main...head20": _compare(["strands_robots/two.py"]),
+            "head20...main": _compare([]),
+        },
+    )
+
+    assert _sweep(monkeypatch, get, tmp_path) == 0
+    report = capsys.readouterr().out
+    assert "No untested composition" not in report
+    assert "resolves its population from a filesystem walk" in report
+    assert "#2561" in report
+
+
+def test_the_named_blind_spot_survives_a_populated_report(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The caveat is unconditional, because the blind spot is.
+
+    A populated report is the case where a reader is most likely to treat the
+    rows as the full set of untested compositions, so the paragraph that says
+    which class is missing cannot be attached to the clean branch only.
+    """
+    get = _api(
+        [_pull(10, "head10"), _pull(20, "head20")],
+        {
+            "main...head10": _compare(["strands_robots/shared.py"]),
+            "head10...main": _compare([]),
+            "main...head20": _compare(["strands_robots/shared.py"]),
+            "head20...main": _compare([]),
+        },
+    )
+
+    assert _sweep(monkeypatch, get, tmp_path) == 1
+    report = capsys.readouterr().out
+    assert "#10 + #20" in report
+    assert "resolves its population from a filesystem walk" in report
 
 
 def test_a_draft_pull_request_is_excluded_from_the_sweep(
