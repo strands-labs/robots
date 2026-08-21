@@ -90,7 +90,11 @@ _NAMES_REPOSITORY: dict[str, tuple[str, str | None]] = {
     "check_duplicate_claim.py": ("--repo", None),
     "check_last_push_approval.py": ("--repo", None),
     "check_merge_base_overlap.py": ("--github-repo", "--all-open"),
+    "check_merge_blockers.py": ("--repo", None),
     "check_pr_head_is_current.py": ("--repo", None),
+    # Both modes reach the API, so both owe the flag and there is no marker to
+    # scope it to: --pr resolves one pull request and --all-open sweeps them.
+    "check_thread_is_answered.py": ("--repo", None),
 }
 
 

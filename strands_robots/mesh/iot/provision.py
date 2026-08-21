@@ -73,6 +73,12 @@ _AMAZON_ROOT_CA1_URL = "https://www.amazontrust.com/repository/AmazonRootCA1.pem
 #
 # Last verified 2026-05.
 #
+# The ordered procedure for an actual rotation -- verify out of band,
+# ship a release carrying both pins, wait for fleet uptake, drop the old
+# one in a follow-up -- is published for operators in README >
+# "CA Pin Rotation Runbook" (issue #250). Every refusal below names it, so
+# the procedure is reachable from the failure that needs it.
+#
 # this is now a TUPLE so a CA rotation can ship as a code change
 # that adds the new pin in advance and removes the old one in a follow-
 # up after rollout. Operators can also extend the accepted pins via
@@ -85,6 +91,11 @@ _AMAZON_ROOT_CA1_PINS: tuple[str, ...] = ("2c43952ee9e000ff2acc4e2ed0897c0a72ad5
 # code references the tuple directly; error messages now format the
 # full pin set via ``_resolve_ca_pins`` so operators see every
 # accepted pin (not just the canonical first one).
+
+# Where the rotation procedure is published. One owner, so the three pin
+# refusals below cannot name three different places (or drift from the
+# heading AGENTS.md > "Operational Runbooks for Security Pins" cites).
+_CA_ROTATION_RUNBOOK = 'README > "CA Pin Rotation Runbook"'
 
 # Regex: 64 hex chars, lowercase. Matches what hashlib.sha256(...).hexdigest()
 # emits and rejects anything else (operator typos surface immediately).
@@ -869,11 +880,16 @@ def _ensure_ca(ca_path: Path) -> None:
                 "[provision] existing CA at %s does NOT match pinned SHA-256. "
                 "Refusing to use it (STRANDS_MESH_DISABLE_CA_PIN does not "
                 "apply to the on-disk re-use path). Delete the file to "
-                "force re-download.",
+                "force re-download. If AWS has rotated the root, re-downloading "
+                "fetches the same unpinned bytes and is refused again: follow %s.",
                 ca_path,
+                _CA_ROTATION_RUNBOOK,
             )
             accepted = ", ".join(sorted(_resolve_ca_pins()))
-            raise RuntimeError(f"AmazonRootCA1 at {ca_path} failed pin check; accepted pins: {accepted}")
+            raise RuntimeError(
+                f"AmazonRootCA1 at {ca_path} failed pin check; accepted pins: {accepted}. "
+                f"Rotation procedure: {_CA_ROTATION_RUNBOOK}."
+            )
         # Issue #261: WARN if this CA was originally downloaded under
         # the STRANDS_MESH_DISABLE_CA_PIN break-glass. The pin check above
         # passed (so the bytes match a known good pin), but the operator
@@ -914,7 +930,10 @@ def _ensure_ca(ca_path: Path) -> None:
         accepted = ", ".join(sorted(_resolve_ca_pins()))
         raise RuntimeError(
             "AmazonRootCA1 SHA-256 mismatch -- refusing to write rogue CA. "
-            f"Got {hashlib.sha256(body).hexdigest()}; accepted pins: {accepted}"
+            f"Got {hashlib.sha256(body).hexdigest()}; accepted pins: {accepted}. "
+            f"If AWS has rotated the root, follow {_CA_ROTATION_RUNBOOK}: verify the "
+            "new certificate out of band first -- this digest is not evidence of "
+            "anything on its own."
         )
 
     ca_path.write_bytes(body)
