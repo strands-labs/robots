@@ -36,7 +36,7 @@ except ImportError as e:
 
 from strands import tool
 
-from strands_robots.tools._path_validation import validate_save_path
+from strands_robots.tools._path_validation import resolve_output_path, validate_save_path
 from strands_robots.utils import positive_finite_number_error, positive_whole_number_error
 
 # Configure logging
@@ -286,7 +286,9 @@ def lerobot_camera(
         camera_type: Camera type ("opencv" or "realsense")
         camera_id: Camera device ID (int for index, str for path like "/dev/video0")
         save_path: Directory to save captured images/videos
-        filename: Custom filename (without extension)
+        filename: Custom filename (without extension). Resolved inside
+            save_path; a value naming a location outside it is refused rather
+            than written there.
         camera_ids: List of camera IDs for batch operations
         width: Frame width in pixels (a positive whole number)
         height: Frame height in pixels (a positive whole number)
@@ -296,7 +298,9 @@ def lerobot_camera(
         rotation: Image rotation; one of "NO_ROTATION", "ROTATE_90", "ROTATE_180"
             or "ROTATE_270", compared case-insensitively. Any other value is
             refused rather than silently read as "NO_ROTATION".
-        format: Image format ("jpg", "png", "bmp")
+        format: Image format ("jpg", "png", "bmp"). Becomes the saved file's
+            extension, so like filename it is resolved inside save_path and
+            refused if it names a location outside it.
         capture_duration: Duration for video recording (positive seconds)
         preview_duration: Duration for preview display (positive seconds)
         async_mode: Use async reading for better performance
@@ -608,7 +612,7 @@ def _capture_single_image(
             cam_name = str(camera_id).replace("/dev/", "").replace("/", "_")
             filename = f"lerobot_{camera_type}_{cam_name}_{timestamp}"
 
-        file_path = os.path.join(save_path, f"{filename}.{format}")
+        file_path = resolve_output_path(save_path, f"{filename}.{format}", label="filename and format")
 
         # Create camera configuration
         camera = _create_camera(camera_type, camera_id, width, height, fps, color_mode, rotation)
@@ -701,7 +705,7 @@ def _capture_batch_images(
                 else:
                     cam_filename = f"batch_{camera_type}_{cam_name}_{timestamp}"
 
-                file_path = os.path.join(save_path, f"{cam_filename}.{format}")
+                file_path = resolve_output_path(save_path, f"{cam_filename}.{format}", label="filename and format")
 
                 # Create and use camera
                 camera = _create_camera(camera_type, cam_id, width, height, fps, color_mode, rotation)
@@ -822,7 +826,7 @@ def _record_video_sequence(
             cam_name = str(camera_id).replace("/dev/", "").replace("/", "_")
             filename = f"lerobot_video_{camera_type}_{cam_name}_{timestamp}"
 
-        video_path = os.path.join(save_path, f"{filename}.mp4")
+        video_path = resolve_output_path(save_path, f"{filename}.mp4", label="filename")
 
         # Create camera
         camera = _create_camera(camera_type, camera_id, width, height, fps, color_mode, rotation)
