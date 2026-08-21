@@ -1232,26 +1232,46 @@ class RenderingMixin:
                         }
                     ],
                 }
-            if cam_id >= 0:
-                renderer.update_scene(self._world._data, camera=cam_id, scene_option=self._get_viz_option())
-            else:
-                renderer.update_scene(self._world._data, scene_option=self._get_viz_option())
-            # MuJoCo prints a one-time ARB_clip_control warning on macOS
-            # when depth precision is reduced. Capture stderr on the first
-            # depth render so we can surface the warning in the response
-            # text (the LLM otherwise never hears about it).
+            # Reading mjData (update_scene copies xpos/xquat/xmat/geom poses)
+            # races a concurrent mj_step from a policy worker or the step()
+            # loop, producing a torn depth map and risking a native crash -
+            # the same hazard render() and get_frame() serialize against, for
+            # the same reason: the blanket dispatch lock covers the tool
+            # surface only, so a caller reaching this method directly, or from
+            # its own thread, holds nothing. The .copy() inside the lock hands
+            # back an independent buffer so the sanitize + PNG encoding below
+            # run unlocked, and so a render on another thread cannot overwrite
+            # the renderer's buffer out from under them.
+            #
+            # MuJoCo prints a one-time ARB_clip_control warning on macOS when
+            # depth precision is reduced. Capture stderr on the first depth
+            # render so we can surface the warning in the response text (the
+            # LLM otherwise never hears about it). That capture wraps the
+            # render itself - the notice is a C-level write to fd 2, which
+            # Python's contextlib.redirect_stderr cannot see - so it stays
+            # inside the critical section with it.
+            first_depth_render = getattr(self, "_depth_warn_text", None) is None
+            captured = ""
+            with self._lock:
+                if cam_id >= 0:
+                    renderer.update_scene(self._world._data, camera=cam_id, scene_option=self._get_viz_option())
+                else:
+                    renderer.update_scene(self._world._data, scene_option=self._get_viz_option())
+                if first_depth_render:
+                    with capture_stderr_fd() as _cap:
+                        renderer.enable_depth_rendering()
+                        depth = renderer.render().copy()
+                        renderer.disable_depth_rendering()
+                    captured = _cap[0]
+                else:
+                    renderer.enable_depth_rendering()
+                    depth = renderer.render().copy()
+                    renderer.disable_depth_rendering()
+
             clip_warn = getattr(self, "_depth_warn_text", None)
-            if clip_warn is None:
+            if first_depth_render:
                 import sys as _sys
 
-                # MuJoCo's ARB_clip_control notice is a C-level write to fd 2,
-                # so Python's contextlib.redirect_stderr (which only swaps the
-                # sys.stderr object) cannot see it. Capture the real fd.
-                with capture_stderr_fd() as _cap:
-                    renderer.enable_depth_rendering()
-                    depth = renderer.render()
-                    renderer.disable_depth_rendering()
-                captured = _cap[0]
                 # Forward captured stderr, but drop the ARB_clip_control line
                 # -- it's now surfaced in the response text below, so echoing
                 # it to the console too would be duplicate noise. Anything
@@ -1289,10 +1309,6 @@ class RenderingMixin:
                 else:
                     self._depth_warn_text = ""
                 clip_warn = self._depth_warn_text
-            else:
-                renderer.enable_depth_rendering()
-                depth = renderer.render()
-                renderer.disable_depth_rendering()
 
             # MuJoCo >= 3.0's ``Renderer.enable_depth_rendering()`` returns
             # METRIC depth in meters directly (distance from the camera to the

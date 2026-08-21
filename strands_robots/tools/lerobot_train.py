@@ -368,6 +368,55 @@ def _has_resumable_checkpoint(output_dir: str) -> Path | None:
     return last if last.exists() else None
 
 
+def _torch_device_error(device: Any) -> str | None:
+    """Error text for a ``device`` no torch build can parse, or ``None``.
+
+    ``device`` is interpolated into ``--policy.device=`` in the argv of a
+    DETACHED process, so an unusable value is not refused where the caller can
+    see it: the tool reports a started run with a PID and a log path, and only
+    the training log records that lerobot aborted before the first step. That is
+    the reason the run-size numerics in the same argv are refused up front, and
+    ``device`` is the one token beside them that was carried through unchecked.
+
+    The admitted domain is torch's own, read by handing the value to
+    ``torch.device`` rather than by comparing against a copied list of device
+    types - the same "source the domain live" shape as
+    :func:`_expert_only_policy_types` and :func:`_policy_config_field_names`
+    above. A torch build that gains a backend is admitted here with no change,
+    and torch's own exception enumerates the types it accepts, so the refusal
+    names the admitted set without restating it.
+
+    Only the spelling is graded, never availability: ``torch.device("cuda")``
+    constructs on a CPU-only box and must keep building an argv there, because a
+    queued or containerised run legitimately names a device the dispatching
+    machine does not currently have. A non-``str`` is refused before torch is
+    consulted for that reason - ``torch.device(0)`` reads the accelerator
+    inventory (``Cannot access accelerator device when none is available``),
+    which would make the same request build here and refuse there.
+
+    When torch is not importable the domain is unknown and the value passes
+    through unguarded, as :func:`_policy_config_field_names` documents for its
+    own field set.
+    """
+    if not isinstance(device, str):
+        return (
+            f"lerobot_train: device must be a torch device string, got {type(device).__name__}. "
+            "Pass a device type, optionally with an index (e.g. 'cuda', 'cuda:0', 'cpu', 'mps')."
+        )
+    try:
+        import torch
+    except Exception:  # noqa: BLE001 - torch missing -> domain unknown, pass through
+        return None
+    try:
+        torch.device(device)
+    except (RuntimeError, ValueError) as e:
+        return (
+            f"lerobot_train: device={device!r} is not a torch device string ({e}). "
+            "Pass a device type, optionally with an index (e.g. 'cuda', 'cuda:0', 'cpu', 'mps')."
+        )
+    return None
+
+
 def build_train_command(
     dataset_root: str,
     policy_type: str = "act",
@@ -412,7 +461,8 @@ def build_train_command(
             freeze the VLM and are mutually exclusive), if ``train_expert_only``
             is requested for a non-expert policy, if ``num_gpus < 1``, or if a
             supplied ``steps`` / ``batch_size`` - or, under ``lora``, a supplied
-            ``lora_r`` / ``lora_alpha`` - is not a positive integer.
+            ``lora_r`` / ``lora_alpha`` - is not a positive integer, or if a
+            fresh run's ``device`` is not a device string torch can parse.
     """
     if lora and train_expert_only:
         raise ValueError(
@@ -459,6 +509,14 @@ def build_train_command(
         # only honors --config_path + --resume. Other flags are ignored on resume.
         cmd.extend([f"--config_path={resume_config}", "--resume=true"])
         return cmd
+
+    # The one selector string in the fresh-run argv. Checked here rather than
+    # beside the size guards above so a resumed run - which returned already, with
+    # only --config_path + --resume and no --policy.device - is never refused for a
+    # value its argv does not carry.
+    device_error = _torch_device_error(device)
+    if device_error:
+        raise ValueError(device_error)
 
     # Fresh-run flags.
     cmd.extend(
@@ -648,7 +706,10 @@ def lerobot_train(
         steps: Number of training steps.
         batch_size: Training batch size.
         save_freq: Checkpoint save frequency in steps.
-        device: Torch device (cuda, cuda:0, cpu, mps).
+        device: Torch device type, optionally with an index (cuda, cuda:0,
+            cpu, mps). Refused before launch if torch cannot parse it; only
+            the spelling is graded, so naming a device this machine does not
+            have is allowed.
         dtype: Policy dtype (bfloat16, float32) for policies whose lerobot
             config declares a dtype field (e.g. the pi0 family, xvla). Default
             None lets lerobot pick; ACT and most policies have no dtype field,

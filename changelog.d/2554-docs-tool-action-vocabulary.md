@@ -1,0 +1,3 @@
+### Fixed
+
+- **docs**: the hardware-tools page named nine `action` values no tool dispatches, in its "Key actions" table and in two of its runnable examples. `pose_tool`'s row advertised forward/inverse kinematics and gripper control, none of which that tool has - it is joint-space only, and Cartesian IK is `Simulation.move_to`. `serial_tool(action="list")` was the quietest: it is not reported as an unknown action at all, so a reader supplies the port the refusal asks for and fails to open it next, two steps away from `list_ports`, which needs no port. The rows and examples now name only actions the tools dispatch, and a new sweep grades every action value `docs/**/*.md` and `README.md` attribute to a `@tool` against the vocabulary that tool really dispatches.
