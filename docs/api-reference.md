@@ -122,7 +122,7 @@ from strands_robots.policies.cosmos3 import Cosmos3Policy
 | `create_policy(provider, **kw)` | Resolve + construct. Accepts `zmq://`, `cosmos3://`, HF `org/model`. |
 | `register_policy(name, loader, aliases)` | Runtime registration. |
 | `list_providers()` | Sorted canonical names of every JSON-registered provider, plus any runtime `register_policy` names and their aliases. Canonical names only for the JSON registry: pair it with `list_aliases()` for the rest. |
-| `list_aliases()` | Every provider alias and the canonical name it resolves to, across both registries. Together with `list_providers()` they are every spelling `create_policy` accepts. |
+| `list_aliases()` | Every provider alias and the canonical name it resolves to, across both registries. Together with `list_providers()` they are every *registered* spelling - not every spelling `create_policy` resolves. A module under `strands_robots.policies` exporting a `Policy` subclass also resolves under its own module name: `composite` (builds through the factory) and `persistent` (resolves; constructed directly). |
 | `list_policy_types()` | `policy_type` strings the installed lerobot resolves; `[]` without lerobot. Discovery peer of `list_providers`. |
 | `UntrustedRemoteCodeError` | Raised when `STRANDS_TRUST_REMOTE_CODE` is required but unset. |
 | `Gr00tPolicy` | GR00T N1.5/N1.6/N1.7 via ZMQ (service) or in-process. |

@@ -63,10 +63,29 @@ def list_aliases() -> dict[str, str]:
     :func:`create_policy` accepts a provider's declared aliases and
     shorthands as readily as its canonical name, but
     :func:`list_providers` reports the canonical names from the JSON
-    registry. Together the two surfaces enumerate every spelling
-    :func:`create_policy` accepts::
+    registry. Together the two surfaces enumerate every spelling the
+    registries hold::
 
-        accepted = set(list_providers()) | set(list_aliases())
+        registered = set(list_providers()) | set(list_aliases())
+
+    That is every *registered* spelling, not every spelling
+    :func:`create_policy` resolves.
+    :func:`~strands_robots.registry.policies.import_policy_class` falls back
+    to auto-discovery, so a module under ``strands_robots.policies`` that
+    exports a :class:`~strands_robots.policies.base.Policy` subclass resolves
+    under its own module name with no registry entry. Two ship, and neither is
+    a registry provider because each wraps a policy the caller already holds
+    rather than building one from config:
+
+    * ``composite``
+      (:class:`~strands_robots.policies.composite.CompositePolicy`) builds
+      through this factory -- ``create_policy("composite", lower=..., upper=...)``
+      -- and is the one spelling ``registered`` above omits.
+    * ``persistent``
+      (:class:`~strands_robots.policies.persistent.PersistentPolicy`) resolves
+      but cannot be built here: its first parameter is named ``provider``,
+      which :func:`create_policy` has already bound, so it is constructed
+      directly.
 
     Covers both registries, matching the union :func:`list_providers`
     reports: aliases declared in ``policies.json`` and aliases passed to

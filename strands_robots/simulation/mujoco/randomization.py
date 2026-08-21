@@ -138,14 +138,26 @@ class RandomizationMixin:
 
         "No flags" means "nothing is randomized" - the call is a no-op. This
         matches the LLM ergonomics principle: explicit is better than implicit.
-        Randomization IS destructive; recompile the scene to undo. Every axis
-        persists for the rest of the scene's life, including across
-        :meth:`reset`: the colour, friction and mass axes write ``model``
-        arrays, and the position axis writes ``model.qpos0`` (the pose a reset
-        restores) alongside the live ``data.qpos``. That uniformity is what
-        makes the axis usable from a rollout entry point at all -- ``run_policy``
-        and ``eval_policy`` reset before an episode's first step, so an axis a
-        reset undoes would never reach a rollout.
+        Randomization IS destructive, and it survives a :meth:`reset` but not a
+        scene mutation. Every axis writes the compiled ``model``: the colour,
+        friction and mass axes write their arrays, and the position axis writes
+        ``model.qpos0`` (the pose a reset restores) alongside the live
+        ``data.qpos``. That uniformity is what makes the axis usable from a
+        rollout entry point at all -- ``run_policy`` and ``eval_policy`` reset
+        before an episode's first step, so an axis a reset undoes would never
+        reach a rollout.
+
+        The compiled model is derived state, though, and every scene mutation
+        rebuilds it from the scene spec, which carries the authored values --
+        deliberately, because the lighting and position axes measure their
+        bounded offsets from that reference. So :meth:`add_object`,
+        :meth:`remove_object`, :meth:`add_camera`, :meth:`remove_camera`,
+        :meth:`add_robot`, :meth:`remove_robot` and :meth:`patch_scene_mjcf`
+        each restore the authored scene, and there is no ``recompile`` action to
+        reach for -- any of those is the undo. Randomizing *before* one of them
+        is a no-op this call cannot report: both calls return
+        ``status="success"`` and the policy's first observation sees an
+        unrandomized scene. Randomize after the episode's scene is built.
 
         Args:
             randomize_colors:     Re-sample every non-ground geom's RGB (and

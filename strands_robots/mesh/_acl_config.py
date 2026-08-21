@@ -526,12 +526,27 @@ def _file_identity(path: Path) -> tuple | None:
 
 
 def _load_acl_cached(path: Path) -> dict[str, Any]:
-    """Load + cache an ACL file, keyed on its identity tuple.
+    """Load an ACL file once per file identity, keyed on its identity tuple.
 
-    Two callers in the same ``Mesh.start`` flow (the gate check and the
-    config builder) get the same dict object instead of two independent
-    reads -- closing the prior TOCTOU surface. If the file changes a
-    later call computes a fresh identity tuple and re-loads.
+    Three callers read the file through here: :func:`snapshot_acl`,
+    :func:`resolve_acl` and :func:`is_default_acl_in_use`. Only
+    :func:`snapshot_acl` is reached from outside this module - by the
+    ``Mesh.start`` shape gate and by the wire-config builder - so it is the
+    one whose two reads per flow this cache collapses. The other two are the
+    single-read spellings of the superseded two-call pattern the comment above
+    describes, which no caller outside this module wires any more.
+
+    Callers share the file's *contents*, not one object: every return path
+    deep-copies, so a caller mutating what it got can poison neither the cache
+    nor another caller's dict. The identity is deliberately not shared - the
+    deep-copy comments below say why, and one of them records that returning
+    the parsed dict directly is what this replaced.
+
+    This is the identity-keyed tier, not the TOCTOU defence. A file rewritten
+    between two reads computes a fresh identity tuple and re-loads, which is
+    the by-design refresh window :func:`snapshot_acl` documents; what closes
+    the window inside one ``Mesh.start`` flow is that function's thread-local
+    snapshot, taken via :func:`_set_thread_snapshot`.
     """
     identity = _file_identity(path)
     if identity is None:

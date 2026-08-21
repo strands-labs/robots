@@ -75,11 +75,18 @@ _GATE = "Check whether you are already the thread's last author before replying.
 #: rule gets "simplified" back into the loop it exists to stop.
 _PER_CONCERN = "per-*concern* obligation, not a per-*cycle* one"
 
-#: The two dispositions, each paired with its directive. The pairing is the
-#: point: naming the fields without "do not reply" documents a payload, not a
-#: rule.
+#: The dispositions, each paired with its directive. The pairing is the point:
+#: naming the fields without a directive documents a payload, not a rule.
 _OWN_REPLY_DIRECTIVE = "is **yours** -> do not reply"
-_TERMINAL_STATE_DIRECTIVE = "`isResolved` or `isOutdated`** -> do not reply"
+
+#: Resolution is terminal, and it is now the *only* state that is. ``isOutdated``
+#: was paired with it in one directive until the pairing was measured false, so
+#: the correction is pinned from both sides - the terminal directive, the explicit
+#: denial, and the disposition that replaces it. Re-merging the two fields into
+#: one "do not reply" reads as a tightening and fails here.
+_RESOLVED_DIRECTIVE = "`isResolved`** -> do not reply"
+_OUTDATED_NOT_TERMINAL = "`isOutdated` is **not** terminal"
+_OUTDATED_DISPOSITION = "Decide an outdated thread on authorship like any other"
 
 #: The single-reply case, so the gate cannot be read as "never reply".
 _REPLY_ONCE = "reply once, then resolve"
@@ -156,11 +163,38 @@ def test_both_do_not_reply_dispositions_survive_with_their_directive() -> None:
         "author of the last comment - and on its own it would have prevented ten "
         "of the twelve replies on #1899."
     )
-    assert _TERMINAL_STATE_DIRECTIVE in prose, (
-        "AGENTS.md > PR Workflow step 5 no longer treats isResolved / isOutdated "
-        "as terminal. Both fields are already in the context payload; on #1899 "
-        "they were fetched and not read, and ten replies landed on a thread "
-        "carrying both."
+    assert _RESOLVED_DIRECTIVE in prose, (
+        "AGENTS.md > PR Workflow step 5 no longer treats isResolved as terminal. "
+        "The field is already in the context payload; on #1899 it was fetched and "
+        "not read, and ten replies landed on a thread carrying it."
+    )
+
+
+def test_outdated_is_denied_terminality_and_given_a_disposition() -> None:
+    """``isOutdated`` is the one payload field the gate must NOT read as terminal.
+
+    It was paired with ``isResolved`` in a single "do not reply" directive, and the
+    pairing is false in both directions: a thread keeps accepting comments after it
+    flips, and it reads ``false`` on threads that are genuinely answered when the
+    fix adds its lines elsewhere. So the denial and its replacement disposition are
+    pinned together - a denial that removes the rule without supplying one leaves an
+    outdated thread undecided, which is how a reviewer's new demand on a moved line
+    gets filed as settled.
+    """
+    prose = _step_5_prose()
+    assert _OUTDATED_NOT_TERMINAL in prose, (
+        "AGENTS.md > PR Workflow step 5 no longer denies that isOutdated is "
+        "terminal. It describes the diff rather than the conversation, so a thread "
+        "keeps accepting comments after it flips, and it is false on threads that "
+        "ARE answered when the fix adds lines elsewhere. Reading it as terminal "
+        "files a reviewer's new demand on a moved line as settled - the opposite "
+        "failure to #1899's, and the one a reviewer pays for."
+    )
+    assert _OUTDATED_DISPOSITION in prose, (
+        "AGENTS.md > PR Workflow step 5 denies that isOutdated is terminal without "
+        "saying what to do instead. The denial alone removes a rule and leaves no "
+        "rule; an outdated thread is decided on authorship like any other, and "
+        "that sentence is the whole replacement."
     )
 
 
