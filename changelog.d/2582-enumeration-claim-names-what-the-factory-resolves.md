@@ -1,0 +1,3 @@
+### Fixed
+
+- **policies**: `list_providers()` and `list_aliases()` are documented as every *registered* provider spelling rather than every spelling `create_policy` accepts. `import_policy_class` also resolves a module under `strands_robots.policies` that exports a `Policy` subclass, so the union omitted `composite` - which `create_policy` builds - and `persistent`, which resolves but is constructed directly because its first parameter is named `provider`. Both are now named where enumeration is taught, and a guard derives them from the resolution path so a third such module is held to the same rule.
