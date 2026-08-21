@@ -89,6 +89,14 @@ Newton backend, so a rollout rig can be enumerated instead of guessed.
     listed in `sim.describe()["methods"]`, so an agent can enumerate the full
     rendering surface in one call instead of guessing method names.
 
+!!! note "Frame reads are serialised against physics"
+    `render`, `render_depth` and `get_frame` copy mjData into the renderer under
+    the simulation lock and hand back an independent buffer, so a frame captured
+    while a policy worker, the `step()` loop or the camera recorder is advancing
+    physics is a consistent snapshot rather than a torn one. Only the PNG
+    encoding runs unlocked. This holds for a direct Python call and for a call
+    from your own thread, not just through the tool surface.
+
 !!! note "Camera intrinsics follow the renderer"
     `sim.get_camera_params(camera_name)` returns the pinhole `K` of the frame
     the renderer actually draws. A camera declaring a physical sensor (MJCF

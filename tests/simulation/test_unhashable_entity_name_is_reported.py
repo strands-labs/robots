@@ -17,6 +17,7 @@ check at the end is what keeps a lookup added later inside that rule.
 from __future__ import annotations
 
 import ast
+import functools
 import inspect
 import threading
 from collections.abc import Callable
@@ -477,11 +478,43 @@ _REGISTRY_ATTRS = frozenset(
 # this exemption cannot outlive them.
 _CREATION_FUNCTIONS = frozenset({"add_robot", "add_object", "add_camera"})
 
+# Two WBC helpers read the robot registry directly, and neither is reachable
+# with a name a caller supplied: both are internal, and the only route into
+# them is ``MuJoCoSimEngine._maybe_install_wbc_torque_control``, which
+# ``run_policy`` / ``eval_policy`` / ``start_policy`` reach only after refusing
+# a ``robot_name`` that is not in ``list_robots()`` - a *list* membership test,
+# total for any type. That refusal is the whole reason this exemption is safe,
+# so :class:`TestTheRefusalTheUpstreamExemptionRestsOn` asserts it rather than
+# leaving the coupling to be remembered.
+_RESOLVED_UPSTREAM = frozenset({"from_sim", "wbc_uses_position_servo"})
 
-def _backend_dirs() -> list[Path]:
-    """The backend packages, located from a symbol rather than a path literal."""
-    simulation_dir = Path(inspect.getfile(registered)).parent
-    return [simulation_dir / "mujoco", simulation_dir / "newton", simulation_dir / "isaac"]
+# A floor on the scan, not an exact count: a ``_scanned_modules`` that stopped
+# resolving would report an empty offender list and read as a clean package.
+_MINIMUM_SCANNED_MODULES = 150
+
+
+# A lookup can only be handed a name that cannot be a key if the name is a
+# caller's. Two shapes never are, and both are decidable from the AST, so they
+# need no exemption list that could go stale: a literal, and a name the engine
+# read out of its own entity listing. ``_LISTING_METHODS`` is that second
+# source - whatever ``list_robots()`` and its siblings returned are names the
+# code produced, so a lookup keyed on one is total by construction.
+_LISTING_METHODS = frozenset({"list_robots", "list_objects", "list_cameras"})
+
+
+def _scanned_modules() -> list[Path]:
+    """Every module in the package, located from a symbol rather than a path literal.
+
+    Scoped to the whole package rather than the three backend directories,
+    because a registry read is not confined to a backend: the shape already
+    appears in :mod:`strands_robots.simulation.benchmark`,
+    :mod:`strands_robots.policies.wbc.sim_control` and
+    :mod:`strands_robots.benchmarks.libero.adapter`, none of which a
+    backend-directory scan looks at. A check that reports clean over 11% of the
+    files it is read as covering is the failure mode this widening removes.
+    """
+    package_dir = Path(inspect.getfile(registered)).parents[1]
+    return sorted(package_dir.rglob("*.py"))
 
 
 def _is_registry(node: ast.AST) -> bool:
@@ -489,60 +522,295 @@ def _is_registry(node: ast.AST) -> bool:
     return isinstance(node, ast.Attribute) and node.attr in _REGISTRY_ATTRS
 
 
+def _lookup_name(node: ast.AST) -> ast.AST | None:
+    """The expression a raw registry lookup resolves, or ``None`` for other nodes.
+
+    A ``registry.get()`` written with no argument yields the call itself, which
+    is neither a literal nor a local name and so stays reported - the shape is
+    matched on the registry, and a lookup whose name cannot be read is not a
+    lookup that has been shown to be total.
+    """
+    if isinstance(node, ast.Compare) and any(isinstance(op, ast.In | ast.NotIn) for op in node.ops):
+        return node.left if any(_is_registry(c) for c in node.comparators) else None
+    if isinstance(node, ast.Call):
+        fn = node.func
+        if isinstance(fn, ast.Attribute) and fn.attr == "get" and _is_registry(fn.value):
+            return node.args[0] if node.args else node
+    return None
+
+
+def _calls_a_listing(node: ast.AST) -> bool:
+    """Whether ``node`` contains a call to one of the engine's listing methods."""
+    return any(
+        isinstance(inner, ast.Call) and isinstance(inner.func, ast.Attribute) and inner.func.attr in _LISTING_METHODS
+        for inner in ast.walk(node)
+    )
+
+
+def _code_owned_names(scope: ast.AST) -> set[str]:
+    """Local names this scope read out of the engine's own entity listing.
+
+    A caller never supplies one of these, so a lookup keyed on it cannot receive
+    a value that is not hashable however wrong the caller was. Both spellings
+    that appear in the tree are followed: iterating the listing call directly,
+    and iterating a local the listing call was assigned to (which is what
+    :meth:`BenchmarkProtocol.on_episode_start` does).
+    """
+    from_listing = {
+        target.id
+        for node in ast.walk(scope)
+        if isinstance(node, ast.Assign) and _calls_a_listing(node.value)
+        for target in node.targets
+        if isinstance(target, ast.Name)
+    }
+    owned: set[str] = set()
+    for node in ast.walk(scope):
+        if not isinstance(node, ast.For):
+            continue
+        if _calls_a_listing(node.iter) or (isinstance(node.iter, ast.Name) and node.iter.id in from_listing):
+            owned |= {t.id for t in ast.walk(node.target) if isinstance(t, ast.Name)}
+    return owned
+
+
 def _raw_lookups(source: str) -> list[tuple[str, int]]:
-    """(enclosing function, line) for each registry lookup not using the helpers."""
+    """(enclosing function, line) for each registry lookup that is not total.
+
+    A lookup is reported unless it goes through the shared helpers or its name
+    cannot be a caller value - see :func:`_code_owned_names` for the two shapes
+    that cannot, which are skipped structurally rather than by name.
+    """
     tree = ast.parse(source)
     owner: dict[int, str] = {}
+    scopes: dict[int, ast.AST] = {}
 
-    def annotate(node: ast.AST, name: str) -> None:
+    def annotate(node: ast.AST, name: str, scope: ast.AST) -> None:
         for child in ast.iter_child_nodes(node):
             if isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef):
-                annotate(child, child.name)
+                annotate(child, child.name, child)
             else:
                 if hasattr(child, "lineno"):
                     owner[child.lineno] = name
-                annotate(child, name)
+                    scopes[child.lineno] = scope
+                annotate(child, name, scope)
 
-    annotate(tree, "<module>")
+    annotate(tree, "<module>", tree)
+    owned_by_scope: dict[int, set[str]] = {}
     found = []
     for node in ast.walk(tree):
-        if isinstance(node, ast.Compare) and any(isinstance(op, ast.In | ast.NotIn) for op in node.ops):
-            hit = any(_is_registry(c) for c in node.comparators)
-        elif isinstance(node, ast.Call):
-            fn = node.func
-            hit = isinstance(fn, ast.Attribute) and fn.attr == "get" and _is_registry(fn.value)
-        else:
+        # Narrowed to the two node types a lookup can be before reading
+        # ``lineno``, which ``ast.AST`` does not declare.
+        if not isinstance(node, ast.Compare | ast.Call):
             continue
-        if hit:
-            found.append((owner.get(node.lineno, "<module>"), node.lineno))
+        name_node = _lookup_name(node)
+        if name_node is None:
+            continue
+        if isinstance(name_node, ast.Constant):
+            continue
+        scope = scopes.get(node.lineno, tree)
+        if id(scope) not in owned_by_scope:
+            owned_by_scope[id(scope)] = _code_owned_names(scope)
+        if isinstance(name_node, ast.Name) and name_node.id in owned_by_scope[id(scope)]:
+            continue
+        found.append((owner.get(node.lineno, "<module>"), node.lineno))
     return found
 
 
-def test_every_backend_lookup_uses_the_shared_rule():
-    """Only entity creation may test a registry directly."""
-    offenders = []
-    for directory in _backend_dirs():
-        for path in sorted(directory.glob("*.py")):
-            for function, line in _raw_lookups(path.read_text()):
-                if function not in _CREATION_FUNCTIONS:
-                    offenders.append(f"{path.name}:{line} in {function}()")
+@functools.lru_cache(maxsize=1)
+def _package_lookups() -> tuple[tuple[Path, str, int], ...]:
+    """(path, enclosing function, line) for every non-total lookup in the package.
+
+    Cached: parsing the package costs about half a second and the checks below
+    read this five times. A tuple rather than a list, so a caller cannot mutate
+    the shared result.
+    """
+    return tuple(
+        (path, function, line) for path in _scanned_modules() for function, line in _raw_lookups(path.read_text())
+    )
+
+
+def test_every_lookup_in_the_package_uses_the_shared_rule():
+    """Only entity creation and the upstream-resolved helpers may test a registry."""
+    exempt = _CREATION_FUNCTIONS | _RESOLVED_UPSTREAM
+    offenders = [
+        f"{path.name}:{line} in {function}()" for path, function, line in _package_lookups() if function not in exempt
+    ]
     assert not offenders, "these registry lookups are not total:\n" + "\n".join(f"  {o}" for o in offenders)
 
 
-def test_the_creation_exemption_still_describes_real_code():
+class TestTheScanCoversThePackage:
+    """The scope of the check above, which is what makes reporting clean mean something."""
+
+    def test_the_scan_resolves_the_whole_package(self):
+        """A scan that stopped resolving would report no offenders, not no scope."""
+        modules = _scanned_modules()
+        assert len(modules) >= _MINIMUM_SCANNED_MODULES, (
+            f"the scan resolved only {len(modules)} modules; it no longer covers the package"
+        )
+        assert all(path.suffix == ".py" for path in modules)
+
+    def test_the_scan_reaches_beyond_the_backend_directories(self):
+        """The shape appears outside the backends, so a backend-only scan is blind.
+
+        Pinned as a property of the scan rather than of any one file: reverting
+        to the three backend directories leaves every module below unscanned,
+        and two of them hold a registry read today.
+        """
+        backends = {"mujoco", "newton", "isaac"}
+        outside = [path for path in _scanned_modules() if path.parent.name not in backends]
+        assert len(outside) >= _MINIMUM_SCANNED_MODULES - 30, (
+            f"only {len(outside)} modules outside the backend directories are scanned"
+        )
+        reached = {path.relative_to(Path(inspect.getfile(registered)).parents[1]).as_posix() for path in outside}
+        assert {
+            "simulation/benchmark.py",
+            "policies/wbc/sim_control.py",
+            "benchmarks/libero/adapter.py",
+        } <= reached
+
+
+class TestTheExemptionsStillDescribeRealCode:
     """A stale exemption must be deleted, not left as a hole in the check."""
-    exempt = {
-        function
-        for directory in _backend_dirs()
-        for path in directory.glob("*.py")
-        for function, _line in _raw_lookups(path.read_text())
-    }
-    assert exempt and exempt <= _CREATION_FUNCTIONS, f"the exemption no longer matches the code: found {sorted(exempt)}"
+
+    def test_no_exemption_names_a_function_that_no_longer_reads_a_registry(self):
+        exempt = {function for _path, function, _line in _package_lookups()}
+        allowed = _CREATION_FUNCTIONS | _RESOLVED_UPSTREAM
+        assert exempt and exempt <= allowed, f"the exemption no longer matches the code: found {sorted(exempt)}"
+
+    def test_the_creation_exemption_is_still_load_bearing(self):
+        """Creation claims a name rather than resolving one, so it stays exempt."""
+        exempt = {function for _path, function, _line in _package_lookups()}
+        assert exempt & _CREATION_FUNCTIONS, "no creation function reads a registry directly any more"
+
+    def test_the_upstream_exemption_is_still_load_bearing(self):
+        """Both WBC helpers still hold the read the exemption is written for."""
+        exempt = {function for _path, function, _line in _package_lookups()}
+        assert _RESOLVED_UPSTREAM <= exempt, (
+            f"the upstream exemption no longer describes real code: found {sorted(exempt & _RESOLVED_UPSTREAM)}"
+        )
 
 
-def test_the_check_detects_a_partial_lookup():
-    """A scanner that silently matched nothing would look like a clean backend."""
-    planted = "def look(self, name):\n    if name not in self._world.robots:\n        return None\n"
-    assert _raw_lookups(planted) == [("look", 2)]
-    guarded = "def look(self, name):\n    if not registered(self._world.robots, name):\n        return None\n"
-    assert _raw_lookups(guarded) == []
+class TestTheRefusalTheUpstreamExemptionRestsOn:
+    """The exempt WBC lookups are total only because their one route refuses first.
+
+    ``_maybe_install_wbc_torque_control`` is not wrapped by the guarded binding
+    above it, so a name it is handed reaches ``wbc_uses_position_servo`` and the
+    partial ``world.robots.get(...)`` inside it. What keeps that unreachable is
+    the entry point resolving ``robot_name`` first. Asserting the ordering here
+    is what stops the exemption outliving it.
+    """
+
+    @pytest.mark.parametrize(("label", "name"), UNHASHABLE, ids=[lbl for lbl, _ in UNHASHABLE])
+    def test_the_policy_hook_is_never_reached_for_a_refused_name(self, sim, label, name):
+        calls: list[Any] = []
+        original = sim._maybe_install_wbc_torque_control
+
+        def spy(policy: Any, robot_name: Any) -> Any:
+            calls.append(robot_name)
+            return original(policy, robot_name)
+
+        sim._maybe_install_wbc_torque_control = spy  # type: ignore[method-assign]
+        try:
+            for method, call in (
+                ("run_policy", lambda n: sim.run_policy(robot_name=n, n_steps=2)),
+                ("eval_policy", lambda n: sim.eval_policy(robot_name=n, n_episodes=1, max_steps=2)),
+            ):
+                result = call(name)
+                assert isinstance(result, dict) and result.get("status") == "error", (
+                    f"{method} accepted a {label} robot_name: {result!r}"
+                )
+            assert not calls, f"a {label} robot_name reached the WBC hook via {calls!r}"
+        finally:
+            del sim._maybe_install_wbc_torque_control
+
+    def test_the_hook_runs_for_a_name_the_entry_point_resolves(self, sim):
+        """The premise: the hook is on the rollout path, so skipping it is a real skip."""
+        calls: list[Any] = []
+        original = sim._maybe_install_wbc_torque_control
+
+        def spy(policy: Any, robot_name: Any) -> Any:
+            calls.append(robot_name)
+            return original(policy, robot_name)
+
+        sim._maybe_install_wbc_torque_control = spy  # type: ignore[method-assign]
+        try:
+            rollout = sim.run_policy(robot_name="arm", n_steps=2)
+        finally:
+            del sim._maybe_install_wbc_torque_control
+        assert rollout["status"] == "success", f"the premise rollout did not run: {rollout!r}"
+        assert calls == ["arm"], f"the hook did not run for a resolvable robot: {calls!r}"
+
+    def test_the_sibling_binding_hook_resolves_the_name_through_the_shared_rule(self, sim):
+        """``bind_policy_sim_context`` is the other internal route, and it is total.
+
+        It reaches the same registry with the same unresolved name, and reports
+        rather than raising because it asks through ``registered``. Pinned so the
+        two internal hooks cannot diverge on how a name is resolved.
+        """
+
+        class _OptsIn:
+            def __init__(self) -> None:
+                self.bound: list[Any] = []
+
+            def set_sim_context(self, model: Any, namespace: str) -> None:
+                self.bound.append(namespace)
+
+        policy = _OptsIn()
+        for _label, name in UNHASHABLE:
+            reported = sim.bind_policy_sim_context(policy, name)
+            assert reported is None
+        assert policy.bound == [], "an unresolved name was bound as a namespace"
+        bound = sim.bind_policy_sim_context(policy, "arm")
+        assert bound is None
+        assert policy.bound == ["arm/"], f"a registered robot was not bound: {policy.bound!r}"
+
+
+class TestTheCheckDetectsAPartialLookup:
+    """A scanner that silently matched nothing would look like a clean package."""
+
+    def test_a_caller_name_is_reported(self):
+        planted = "def look(self, name):\n    if name not in self._world.robots:\n        return None\n"
+        assert _raw_lookups(planted) == [("look", 2)]
+
+    def test_the_shared_rule_is_accepted(self):
+        guarded = "def look(self, name):\n    if not registered(self._world.robots, name):\n        return None\n"
+        assert _raw_lookups(guarded) == []
+
+    def test_a_literal_name_is_not_a_caller_value(self):
+        """``"robot" in world.robots`` cannot be handed a value that is not a key."""
+        literal = 'def look(self, sim):\n    if "robot" in sim._world.robots:\n        return None\n'
+        assert _raw_lookups(literal) == []
+
+    def test_a_name_iterated_from_the_listing_call_is_not_a_caller_value(self):
+        direct = (
+            "def look(self, sim):\n"
+            "    for name in sim.list_robots():\n"
+            "        if sim._world.robots.get(name) is None:\n"
+            "            return None\n"
+        )
+        assert _raw_lookups(direct) == []
+
+    def test_a_name_iterated_from_a_local_the_listing_call_filled_is_not_a_caller_value(self):
+        """The spelling ``BenchmarkProtocol.on_episode_start`` uses, one hop apart."""
+        via_local = (
+            "def look(self, sim):\n"
+            "    robots = sim.list_robots()\n"
+            "    for name in robots:\n"
+            "        if sim._world.robots.get(name) is None:\n"
+            "            return None\n"
+        )
+        assert _raw_lookups(via_local) == []
+
+    def test_a_local_filled_from_anywhere_else_is_still_a_caller_value(self):
+        """The skip is the listing call, not the fact that a local was iterated."""
+        from_caller = (
+            "def look(self, sim, names):\n"
+            "    for name in names:\n"
+            "        if sim._world.robots.get(name) is None:\n"
+            "            return None\n"
+        )
+        assert _raw_lookups(from_caller) == [("look", 3)]
+
+    def test_a_lookup_with_no_name_to_read_is_still_reported(self):
+        """``registry.get()`` has not been shown to be total, so it is not skipped."""
+        argless = "def look(self, sim):\n    return sim._world.robots.get()\n"
+        assert _raw_lookups(argless) == [("look", 2)]

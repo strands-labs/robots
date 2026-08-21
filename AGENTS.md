@@ -1365,6 +1365,7 @@ Corrections from code review that apply to all future contributions:
 ### Thread Safety
 - **Lock ALL model/data mutations** - MuJoCo `model`/`data` are not thread-safe. Any method that writes `qpos`, `qvel`, `ctrl`, `qfrc_applied`, `body_mass`, `geom_friction`, or calls `mj_step`/`mj_forward`/`mj_resetData` MUST hold `self._lock`.
 - **Guard scene mutations during policy** - Use `_require_no_running_policy()` before any action that recompiles or replaces the model/data objects.
+- **Lock a read that copies model/data out too** - the rule above is stated for writes, but a read that copies mjData into another buffer races a concurrent `mj_step` exactly as a write does, and the corrupt half is the copy. `Renderer.update_scene` copies `xpos`/`xquat`/`xmat` and the geom poses, and `Renderer.render` dereferences `data.contact`, so every method that drives that pair must hold `self._lock` across it and `.copy()` the frame inside, leaving only the encoding unlocked. The blanket dispatch lock is not that guarantee: it covers the tool surface only, so a direct Python call, a recorder daemon, or a `PolicyRunner` worker holds nothing. `render` and `get_frame` serialised this read and `render_depth` did not - identical operations on the same buffers, and with a policy worker stepping on its own thread 3 of 60 depth reads landed inside a physics step while 0 of 60 RGB reads did. Where the read lives in a private helper, lock the public facade across the delegation instead (`get_observation` -> `_get_sim_observation`) and pin *that*, rather than exempting the helper. `Pinned by` `tests/simulation/mujoco/test_frame_readers_serialize_the_mjdata_read.py`, which derives the graded set from the module's AST so a reader added later is held to the rule, and `tests/simulation/mujoco/test_concurrency_lock_audit.py` for the read-only physics queries.
 - **Document the concurrency contract** - If a method is safe to call concurrently, say so. If not, say so.
 
 ### Error Handling Contracts
@@ -1721,14 +1722,24 @@ Corrections from code review that apply to all future contributions:
   into `subprocess.run`, `subprocess.Popen`, MJCF / XML interpolation, or filesystem
   path construction MUST be validated up front via regex allowlist, enum match, or
   range check. Argv-style subprocess does not exempt you - defense-in-depth.
-- **Centralise validation in one function** - pattern: a `validate_inputs(...)` helper
-  at the top of the tool module that takes every user-supplied param as a keyword arg
-  and raises `ValueError` with a clear message on any rejection. Single entry-point
-  is independently testable. PR #90's `gr00t_inference.validate_inputs()` is the
-  canonical example.
+- **Group the check by what consumes the value, and run it at the dispatch
+  boundary** - one `..._option_error(action, *, <params>) -> str | None` helper per
+  *kind* of value, called before any expensive work starts, returning the reason for
+  the dispatcher to fold into its error dict. Keying it on the action means a caller
+  is never refused for a value the requested action ignores.
+  `gr00t_inference._numeric_option_error` and its enum-valued sibling
+  `_enumerable_option_error` are the shipped pair: both cover options that are
+  interpolated into a `docker exec` command line run **detached**, where a value the
+  server's own flag parser rejects surfaces minutes later in the container log
+  instead of as the call's result. Note the shape returns rather than raises, so
+  **Return error dicts, never raise** above still holds at the tool surface.
 - **Allowlist enumerable values** - `data_config`, `embodiment_tag`, dtype strings,
   container names: all match `^[a-z][a-z0-9_]+$` or an explicit `{"fp16", "fp8", ...}`
-  set. Never accept arbitrary strings into enumerable surfaces.
+  set. Never accept arbitrary strings into enumerable surfaces. Derive the
+  "refuses nothing real" half from a shipped catalogue rather than a copied list -
+  `data_configs.json` names every valid `data_config`, so a config added there is
+  admitted by construction. Pinned by
+  `tests/tools/test_gr00t_enumerable_option_guards.py`.
 - **Reject shell metacharacters in paths** - `;`, `|`, `$`, backticks, `>`, `<`,
   `\n`, `\r`, `\x00`. Also reject `..` path traversal components. Apply even when
   using argv-style subprocess.
