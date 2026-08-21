@@ -294,6 +294,14 @@ action_unnorm = (clip(action, -1, 1) + 1) * (q99 - q01) / 2 + q01
 When a stats file declares multiple embodiment tags, pass `norm_tag=` to select
 one; a single-tag file is auto-detected.
 
+A `norm_tag` the stats file does not declare is refused rather than absorbed. The
+tag is a free-form string, so a misspelling would otherwise skip normalization
+entirely - state reaching the policy un-normalized and actions reaching the robot
+un-unnormalized, with usable stats sitting unused in the payload. The load report
+names the tag that was asked for and the tags the checkpoint declares, instead of
+blaming a missing `policy_postprocessor.json` the checkpoint was never going to
+ship.
+
 ### Device-pinned checkpoints
 
 A checkpoint trained on GPU bakes `device_processor.device = "cuda"` into its

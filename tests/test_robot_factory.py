@@ -2170,3 +2170,231 @@ class TestHardwareSendActionTeleopContract:
         assert isinstance(r, TeleopMixin)
         for m in ("attach_teleop", "teleoperate", "stop_teleoperate", "send_action"):
             assert callable(getattr(r, m, None)), f"missing {m}"
+
+
+class TestRealModeAccountsForEverySpawnParameter:
+    """In ``mode="real"`` every declared parameter either arrives or says it did not.
+
+    ``Robot()`` is one front door onto two destinations, and its signature is the
+    union of what they accept. Two parameters already handle the mismatch: a
+    real-only ``cameras`` supplied in ``mode="sim"`` is refused with the route
+    that does work, and a sim-only ``backend`` supplied in ``mode="real"`` is
+    reported at debug level - the hardware path has no backend, so ignoring it is
+    right, and saying so is what keeps it from looking honoured.
+
+    The five remaining parameters the sim path hands to ``add_robot`` -
+    ``urdf_path``, ``data_config``, ``position``, ``orientation``, ``keyframe`` -
+    had neither. They are bound by name, so they never reach the hardware
+    constructor's ``**kwargs``, and the real branch never read them: a caller
+    asking a physical arm to come up at its ``home`` keyframe, or at a base
+    position, got a working robot that discarded the request with nothing emitted
+    at any log level.
+
+    ``data_config`` was the one with a consequence beyond silence.
+    ``hardware_robot.Robot`` declares it and carries it into the ``policy_config``
+    a policy is built with, so the schema selector its own docstring tells a
+    multi-camera user to "specify explicitly" was dropped between the two, and
+    the policy came up on its default embodiment. It is forwarded now. The four
+    that describe a pose in a simulated world cannot be forwarded anywhere - a
+    physical arm is already where it is - so they take the mechanism ``backend``
+    already uses.
+
+    The contract graded here is the union of both: a parameter the sim path
+    forwards must, in ``mode="real"``, either have its value reach the hardware
+    class or be named in a debug record. That is derived from the ``add_robot``
+    call itself rather than from a list here, so a sixth spawn parameter is held
+    to it on arrival.
+    """
+
+    # Sentinels per parameter. ``name`` has to be a registry name because the
+    # factory resolves it before either branch; the rest are only carried.
+    SENTINELS: dict[str, object] = {
+        "name": "so100",
+        "urdf_path": "/tmp/sentinel-model.xml",
+        "data_config": "so100_dualcam",
+        "position": [1.0, 2.0, 0.5],
+        "orientation": [0.0, 1.0, 0.0, 0.0],
+        "keyframe": "home",
+    }
+
+    @staticmethod
+    def _sim_forwarded_params() -> list[str]:
+        """Parameters the sim branch hands to ``add_robot``, read from the source.
+
+        The graded set is the ``add_robot`` call's own keyword arguments whose
+        value is a bare factory parameter, so it tracks that call instead of a
+        second copy of it maintained here.
+        """
+        import ast
+        import inspect
+
+        from strands_robots import robot as robot_mod
+
+        tree = ast.parse(inspect.getsource(robot_mod))
+        impl = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "Robot"][-1]
+        declared = {a.arg for a in impl.args.args} | {a.arg for a in impl.args.kwonlyargs}
+        for node in ast.walk(impl):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "add_robot":
+                found = [kw.arg for kw in node.keywords if kw.arg in declared]
+                if found:
+                    return found
+        raise AssertionError("no sim-path add_robot call found in the Robot() implementation")
+
+    def _call_real(self, caplog, **kwargs):
+        """Build in ``mode="real"``; return (hardware kwargs, debug records).
+
+        ``caplog`` is cleared per call so a record left by an earlier build in the
+        same test cannot answer for this one.
+        """
+        import logging
+        from unittest.mock import MagicMock, patch
+
+        caplog.clear()
+        with caplog.at_level(logging.DEBUG, logger="strands_robots.robot"):
+            with (
+                patch("strands_robots.robot.get_hardware_type", return_value="so100_follower"),
+                patch("strands_robots.hardware_robot.Robot", return_value=MagicMock()) as mock_hw,
+                patch("strands_robots.mesh.init_mesh", return_value=None),
+            ):
+                Robot(kwargs.pop("name", "so100"), mode="real", **kwargs)
+        return mock_hw.call_args.kwargs, [r.getMessage() for r in caplog.records]
+
+    def test_every_parameter_the_sim_path_forwards_is_carried_or_reported(self, caplog):
+        """The headline contract, graded over the parameters the sim path forwards."""
+        graded = self._sim_forwarded_params()
+        assert len(graded) >= 5, f"premise: the sim path should forward several spawn parameters, got {graded}"
+        assert set(graded) <= set(self.SENTINELS), (
+            f"premise: no sentinel for {sorted(set(graded) - set(self.SENTINELS))}; add one so it is graded"
+        )
+
+        unaccounted = {}
+        for param in graded:
+            value = self.SENTINELS[param]
+            hw_kwargs, records = self._call_real(caplog, **{param: value})
+            carried = any(v == value for v in hw_kwargs.values())
+            reported = any(param in m and "ignored in mode='real'" in m for m in records)
+            if not (carried or reported):
+                unaccounted[param] = f"carried={carried} reported={reported}"
+        assert not unaccounted, (
+            "mode='real' neither carried nor reported these parameters, so a caller who "
+            f"supplied one got a working robot that discarded it in silence: {unaccounted}"
+        )
+
+    @pytest.mark.parametrize("param", ["urdf_path", "position", "orientation", "keyframe"])
+    def test_a_supplied_spawn_pose_parameter_is_reported(self, param, caplog):
+        """Each pose parameter the hardware path cannot honour names itself."""
+        value = self.SENTINELS[param]
+        _, records = self._call_real(caplog, **{param: value})
+        named = [m for m in records if param in m and "ignored in mode='real'" in m]
+        assert named, f"{param}={value!r} was ignored with nothing said; records: {records}"
+
+    def test_a_falsy_but_supplied_keyframe_index_is_reported(self, caplog):
+        """``keyframe=0`` is a valid keyframe index, so supply is read by identity.
+
+        A truthiness test would drop it, and index 0 is the first keyframe a model
+        declares - the value a caller reaches for when naming one by position.
+        """
+        _, records = self._call_real(caplog, keyframe=0)
+        assert [m for m in records if "keyframe=0" in m and "ignored in mode='real'" in m], (
+            f"keyframe=0 was supplied and ignored without a word; records: {records}"
+        )
+
+    def test_supplying_several_reports_all_of_them_once(self, caplog):
+        """One record names every ignored parameter, rather than one record each."""
+        _, records = self._call_real(
+            caplog,
+            urdf_path="/tmp/a.xml",
+            position=[1.0, 2.0, 3.0],
+            orientation=[1.0, 0.0, 0.0, 0.0],
+            keyframe=2,
+        )
+        spawn = [m for m in records if "spawn pose applies to a simulated world" in m]
+        assert len(spawn) == 1, f"expected exactly one spawn-pose record, got {spawn}"
+        for param in ("urdf_path", "position", "orientation", "keyframe"):
+            assert param in spawn[0], f"{param} missing from {spawn[0]!r}"
+
+    def test_supplying_none_of_them_reports_nothing(self, caplog):
+        """A bare hardware build stays quiet - the report is about a supplied value."""
+        _, records = self._call_real(caplog)
+        assert not [m for m in records if "spawn pose applies to a simulated world" in m], (
+            f"nothing was supplied, so nothing should be reported; records: {records}"
+        )
+
+    def test_data_config_reaches_the_hardware_class(self, caplog):
+        """The schema selector arrives, because the hardware class reads it.
+
+        ``hardware_robot.Robot`` declares ``data_config`` and puts it into the
+        ``policy_config`` a policy is built with, so dropping it here selected the
+        policy's default embodiment for a caller who named one.
+        """
+        hw_kwargs, _ = self._call_real(caplog, data_config="so100_dualcam")
+        assert hw_kwargs.get("data_config") == "so100_dualcam", (
+            f"data_config did not reach the hardware class; got kwargs {sorted(hw_kwargs)}"
+        )
+
+    def test_data_config_is_not_reported_as_ignored(self, caplog):
+        """It is forwarded, so it must not also claim to have been dropped."""
+        _, records = self._call_real(caplog, data_config="so100_dualcam")
+        assert not [m for m in records if "data_config" in m and "ignored in mode='real'" in m], (
+            f"data_config is forwarded and must not be reported as ignored; records: {records}"
+        )
+
+    def test_an_unnamed_data_config_forwards_the_hardware_default(self, caplog):
+        """Omitting it forwards ``None`` - the hardware class's own default.
+
+        The sim path defaults it to the canonical robot name; applying that here
+        would change what every existing hardware caller's policy is built with,
+        so the value is passed verbatim instead.
+        """
+        hw_kwargs, _ = self._call_real(caplog)
+        assert hw_kwargs.get("data_config", "<absent>") is None, (
+            f"an unnamed data_config must forward None, got {hw_kwargs.get('data_config', '<absent>')!r}"
+        )
+
+    def test_the_sibling_backend_report_is_unchanged(self, caplog):
+        """The parameter that already had this mechanism keeps it."""
+        _, records = self._call_real(caplog, backend="isaac")
+        assert [m for m in records if "backend='isaac'" in m and "ignored in mode='real'" in m], (
+            f"the backend report regressed; records: {records}"
+        )
+
+    def test_a_real_only_parameter_is_still_refused_in_sim(self):
+        """The opposite direction is untouched: ``cameras`` still refuses in sim.
+
+        ``cameras`` is refused rather than reported because sim cameras exist and
+        are added another way, so the caller is pointed at the route that works.
+        Reporting it instead would be a regression.
+        """
+        with pytest.raises(ValueError, match="cameras= is only supported in mode='real'"):
+            Robot("so100", mode="sim", cameras={"wrist": {"type": "opencv", "index_or_path": 0}})
+
+    @pytest.mark.parametrize("param", ["urdf_path", "position", "orientation", "keyframe"])
+    def test_each_ignored_parameter_documents_its_scope(self, param):
+        """The docstring says so too - the rule is stated as documentation and a log.
+
+        A reader deciding whether ``keyframe`` means anything on hardware reads the
+        parameter's own entry, not a debug stream they would have to enable first.
+        """
+        import inspect
+        import re
+
+        doc = inspect.getdoc(Robot) or ""
+        lines = doc.splitlines()
+        start = next(i for i, line in enumerate(lines) if line.strip() == "Args:")
+        entries: dict[str, str] = {}
+        current: str | None = None
+        indent: int | None = None
+        for line in lines[start + 1 :]:
+            if line.strip() in ("Returns:", "Raises:", "Example:", "Examples:", "Note:"):
+                break
+            match = re.match(r"^(\s+)(\*{0,2}\w+):\s?(.*)$", line)
+            width = len(line) - len(line.lstrip()) if line.strip() else None
+            if match and (indent is None or width == indent):
+                indent = len(match.group(1))
+                current = match.group(2)
+                entries[current] = match.group(3)
+            elif current is not None:
+                entries[current] += " " + line.strip()
+        assert param in entries, f"premise: no Args entry parsed for {param}; parsed {sorted(entries)}"
+        text = " ".join(entries[param].split())
+        assert 'mode="real"' in text, f"the {param} entry does not say what mode='real' does with it: {text!r}"

@@ -48,6 +48,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+from strands_robots.mesh._backend_select import select_backend
 from strands_robots.utils import partial_construction_repr
 
 logger = logging.getLogger(__name__)
@@ -237,11 +238,15 @@ def stream_min_period_from_env() -> float:
 
 def _backend_choice() -> str:
     """Read STRANDS_MESH_BACKEND. Defaults to ``zenoh``. Unknown values fall
-    back to ``zenoh`` (matches strands_robots.mesh.transport.factory)."""
-    raw = os.getenv("STRANDS_MESH_BACKEND", "zenoh").strip().lower()
-    if raw not in ("zenoh", "iot", "bridge"):
-        return "zenoh"
-    return raw
+    back to ``zenoh`` with a report.
+
+    Resolved by :func:`strands_robots.mesh._backend_select.select_backend`
+    rather than re-read here, so the accepted values and the report of an
+    unrecognized one have a single owner. This resolver is the gate the
+    transport factory sits behind, so a report living only in the factory could
+    never reach an operator who mistyped the variable.
+    """
+    return select_backend()
 
 
 def _is_transport_backend() -> bool:
