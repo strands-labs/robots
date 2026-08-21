@@ -1005,7 +1005,11 @@ for action Y. Valid: [...]"*, missing required params produce *"Action X
 requires parameter Y."*, a field the schema publishes as a string is refused
 unless it is one (*"Action X: 'Y' must be a string, got 7 (int)"*), and
 vectors/dtypes are validated before MuJoCo sees them - so the agent learns the
-contract without crashing the process.
+contract without crashing the process. Every one of those refusals names the
+field by the spelling you sent, or by the one this schema publishes: the router
+rewrites a few wire names to their method parameter (`torque_vec` -> `torque`)
+before validating, and a refusal naming the rewritten name would point at a
+field the schema does not carry.
 
 **Third-party backends.** `create_simulation(name)` discovers backends beyond
 the built-in `mujoco`/`newton`/`isaac` registry via Python

@@ -1,0 +1,3 @@
+### Fixed
+
+- **sim/isaac**: `render` refuses a `camera_name` that names a camera the scene does not carry, with the same `Camera '<name>' not found. Available: [...]` verdict its own `get_frame` raises and the MuJoCo and Newton `render` give. It previously reported `status="success"` with an all-black frame sized from the config default, `pixel_mean` `0.0` as a measurement, the missing name in the `camera` field, and the PNG block the shared frame extractor reads - so a rollout recording a mistyped camera wrote an all-black video and reported success. A `camera_name` that names no camera at all (`None`, `""`, `"default"`, `"free"`) keeps that blank frame unchanged: this backend has no free camera to fall back to, and `"default"` is `render`'s own signature default.

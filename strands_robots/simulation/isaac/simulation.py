@@ -45,6 +45,7 @@ from strands_robots.simulation.isaac.recording import IsaacRecordingMixin
 from strands_robots.simulation.models import registered, registry_entry
 from strands_robots.simulation.terrain import validate_difficulty
 from strands_robots.utils import (
+    FREE_CAMERA_TOKENS,
     camera_fov_error,
     coerce_pose_vector,
     coerce_rgba,
@@ -4009,9 +4010,19 @@ class IsaacSimulation(IsaacMotionPrimitivesMixin, IsaacRecordingMixin, SimEngine
         * ``Rendered (headless, no RTX)`` -- ``IsaacConfig.render_mode``
           is ``"headless"``; RTX path-tracing is unavailable. Most CI
           and GR00T server flows hit this path.
-        * ``Rendered (no camera)`` -- ``camera_name`` is unknown to
-          ``self._cameras``. Caller probably forgot to call ``add_camera``
-          (or typo'd the name).
+        * ``Rendered (no camera)`` -- no camera was *named*: ``camera_name``
+          is one of :data:`~strands_robots.utils.FREE_CAMERA_TOKENS` (this
+          method's own ``"default"`` signature default, ``None``, ``""`` or
+          ``"free"``) and this scene carries no camera under it. Caller
+          probably forgot to call ``add_camera``. Isaac has no free camera to
+          fall back to, unlike the backends whose render entry points resolve
+          those tokens to one, so a blank frame is the degradation. A
+          ``camera_name`` that *names* a camera this scene does not carry is a
+          caller mistake rather than a degradation and is refused with
+          ``Camera '<name>' not found. Available: [...]`` - the same verdict
+          :meth:`get_frame` gives for the identical name, and that the MuJoCo
+          and Newton ``render`` give too, so a typo cannot read as a
+          successful render of black pixels.
         * ``Rendered (Phase-1 camera, no RTX handle)`` -- the camera
           exists in ``self._cameras`` but its ``handle`` is ``None``.
           Happens when the camera was added before the
@@ -4099,7 +4110,8 @@ class IsaacSimulation(IsaacMotionPrimitivesMixin, IsaacRecordingMixin, SimEngine
             ``(H, W, 3)`` array, ``depth`` a float32 ``(H, W)`` array, and
             ``meta`` carries ``text`` plus (RTX path) a ``json`` sub-dict. On
             failure ``rgb`` / ``depth`` are ``None`` and ``meta["error"]``
-            holds the human-readable reason.
+            holds the human-readable reason - an unusable pixel count, or a
+            ``camera_name`` that names a camera this scene does not carry.
         """
         with self._lock:
             if not self._world_created:
@@ -4131,8 +4143,34 @@ class IsaacSimulation(IsaacMotionPrimitivesMixin, IsaacRecordingMixin, SimEngine
                 )
 
             if not registered(self._cameras, camera_name):
-                # No camera configured - return blank. Caller probably
-                # forgot to call add_camera or typo'd the name.
+                # Two causes reach here and they need different answers. A
+                # caller who *named* a camera this scene does not carry made a
+                # mistake this method can name: refuse it with the same verdict
+                # this backend's own ``get_frame`` gives for the identical
+                # name, and that the MuJoCo and Newton ``render`` give too. A
+                # black frame under ``status="success"`` is not an answer to it
+                # - the json block reports ``pixel_mean`` 0.0 as a measurement
+                # and ``camera`` as the name that does not exist, the frame is
+                # sized from the config default rather than any camera, and the
+                # PNG block above it feeds the shared
+                # ``PolicyRunner._extract_frame_ndarray``, so a rollout
+                # recording that camera writes an all-black video and reports
+                # success.
+                #
+                # A caller who named *no* camera is the other cause, and the
+                # blank frame is this backend's documented degradation for it:
+                # Isaac has no free camera to fall back to, unlike the two
+                # backends whose render entry points resolve every
+                # ``FREE_CAMERA_TOKENS`` member to one, and ``"default"`` is
+                # this method's own signature default. Membership in that
+                # shared token set is the test, so the tuple's ``==`` per
+                # element keeps it total for an unhashable name.
+                if camera_name not in FREE_CAMERA_TOKENS:
+                    return (
+                        None,
+                        None,
+                        {"error": f"Camera '{camera_name}' not found. Available: {sorted(self._cameras)}"},
+                    )
                 return (
                     np.zeros((h, w, 3), dtype=np.uint8),
                     np.zeros((h, w), dtype=np.float32),
