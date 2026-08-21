@@ -52,7 +52,11 @@ domain, so an axis you can turn off on one is not left on by the other. The
 numeric knobs in the same signature keep their own domain: a `mass_range` is a
 quantity, and it is still refused as a range rather than as a flag.
 
-**Destructive** - writes into MuJoCo model arrays. To restore: `load_scene(...)` or recreate the sim.
+**Destructive** - writes into MuJoCo model arrays. To restore: `load_scene(...)` or recreate
+the sim. Every *other* scene mutation restores it too, as a side effect of rebuilding the
+model from the spec: `add_object`, `remove_object`, `add_camera`, `remove_camera`,
+`add_robot`, `remove_robot` and `patch_scene_mjcf`. There is no `recompile` action - any of
+those is the undo, so randomize **after** the episode's scene is built.
 
 **Every axis survives `reset()`.** A reset restores the world's initial state,
 and each axis writes that initial state rather than only the live state - the
@@ -101,6 +105,9 @@ for episode in range(N):
     # eval_policy has no randomize= kwarg - call sim.randomize() before each episode.
     # It resets at the start of every episode, which is why the perturbation has to
     # survive a reset; no explicit sim.reset() is needed here.
+    # Order matters: a scene mutation after randomize() (adding this episode's
+    # distractors, say) rebuilds the model from the spec and undoes every axis, so
+    # build the episode's scene first and randomize last.
     result = sim.eval_policy(robot_name="so100", n_episodes=1, max_steps=300,
                              success_fn=my_fn)
 ```
