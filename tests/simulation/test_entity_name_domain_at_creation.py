@@ -542,3 +542,192 @@ class TestEveryBackendGivesTheSameVerdict:
         ic = IsaacSimulation.add_camera(_isaac_stub(), name)  # type: ignore[arg-type]
         assert mj["status"] == nt["status"] == ic["status"] == "error", (mj, nt, ic)
         assert mj["content"][0]["text"] == nt["content"][0]["text"] == ic["content"][0]["text"]
+
+
+# --------------------------------------------------------------------------- #
+# MuJoCo: the fourth creation door (patch_scene_mjcf)                         #
+# --------------------------------------------------------------------------- #
+#: The ``patch_scene_mjcf`` ops that CLAIM a name, so the name has to address
+#: the entity they create.
+_CLAIMING_OPS = ("add_body", "add_geom", "add_site")
+
+#: The ops that instead LOOK a name UP. A name addressing nothing is honestly
+#: absent there, which their own "not found" message already reports, so they
+#: are deliberately outside this domain.
+_LOOKUP_OPS = ("set_body_pos", "set_body_quat", "delete_body")
+
+
+def _claim_ops(name: object) -> dict[str, list[dict[str, object]]]:
+    """A minimal batch per claiming op, each claiming ``name``."""
+    return {
+        "add_body": [{"op": "add_body", "parent": "world", "name": name}],
+        "add_geom": [
+            {"op": "add_body", "parent": "world", "name": "host"},
+            {"op": "add_geom", "body": "host", "type": "sphere", "size": [0.08], "name": name},
+        ],
+        "add_site": [
+            {"op": "add_body", "parent": "world", "name": "host"},
+            {"op": "add_site", "body": "host", "name": name},
+        ],
+    }
+
+
+def _geom_names(sim) -> list[str | None]:
+    import mujoco
+
+    model = sim._world._model
+    return [mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, i) for i in range(model.ngeom)]
+
+
+def _op_branch_source(kind: str) -> str:
+    """The body of ``_apply_patch_op``'s ``if kind == "<kind>":`` branch."""
+    import ast
+    import inspect
+    import textwrap
+
+    from strands_robots.simulation.mujoco import scene_ops
+
+    tree = ast.parse(textwrap.dedent(inspect.getsource(scene_ops._apply_patch_op)))
+    fn = tree.body[0]
+    assert isinstance(fn, ast.FunctionDef)
+    for node in fn.body:
+        if isinstance(node, ast.If) and ast.unparse(node.test) == f"kind == '{kind}'":
+            return "\n".join(ast.unparse(stmt) for stmt in node.body)
+    raise AssertionError(f"no branch for op {kind!r} in _apply_patch_op")
+
+
+class TestMujocoPatchSceneMjcf:
+    """The patch ops that claim a name refuse the names the methods refuse.
+
+    ``patch_scene_mjcf`` is a published action and its ``add_body`` /
+    ``add_geom`` / ``add_site`` ops claim a name in the same spec ``add_object``
+    writes into, but they checked only that the name was truthy. So the two
+    values this domain exists to refuse were accepted at that door:
+
+    * ``{"op": "add_body", "name": "a\\x00b"}`` -> ``status="success"``, and the
+      body compiled as ``a``: ``list_bodies()`` reported ``['world', 'a']``, and
+      a later op that genuinely asked for ``a`` was refused
+      ``Error: repeated name 'a' in body`` - blaming a collision with a name the
+      caller never used.
+    * ``{"op": "add_geom", "name": ""}`` -> ``status="success"`` with the geom
+      compiled unnamed, so ``set_geom_properties(geom_name="")`` answered
+      ``Geom 'None' not found``: the caller claimed a name and got an entity the
+      only name-addressed geom surface cannot reach.
+
+    A non-string reached MuJoCo's binding instead and raised a C++ overload
+    table naming neither the op nor the field.
+    """
+
+    @pytest.mark.parametrize("kind", _CLAIMING_OPS)
+    @pytest.mark.parametrize("name", (*_NON_STRING_NAMES, "", *_NUL_NAMES))
+    def test_unaddressable_name_is_refused(self, sim, kind, name):
+        result = sim.patch_scene_mjcf(_claim_ops(name)[kind])
+        assert result["status"] == "error", (kind, name, result)
+        text = result["content"][0]["text"]
+        assert "'name'" in text, (kind, name, text)
+        assert kind in text, (kind, name, text)
+
+    @pytest.mark.parametrize("kind", _CLAIMING_OPS)
+    @pytest.mark.parametrize("name", ("", "a\x00b"))
+    def test_a_refused_batch_compiles_nothing(self, sim, kind, name):
+        """The rejected batch leaves no entity behind under any spelling."""
+        before_bodies, before_geoms = _body_names(sim), _geom_names(sim)
+        sim.patch_scene_mjcf(_claim_ops(name)[kind])
+        assert _body_names(sim) == before_bodies, (kind, name)
+        assert _geom_names(sim) == before_geoms, (kind, name)
+
+    def test_a_nul_name_does_not_reserve_its_truncation(self, sim):
+        """The collision half: the requested name and the compiled one differed.
+
+        Pre-fix ``add_body("a\\x00b")`` succeeded as ``a``, so this second
+        ``add_body("a")`` - a different name, legitimately asked for - was
+        refused ``repeated name 'a' in body``.
+        """
+        refused = sim.patch_scene_mjcf([{"op": "add_body", "parent": "world", "name": "a\x00b"}])
+        assert refused["status"] == "error", refused
+        result = sim.patch_scene_mjcf([{"op": "add_body", "parent": "world", "name": "a"}])
+        assert result["status"] == "success", result
+        assert "a" in _body_names(sim)
+
+    def test_an_empty_geom_name_compiles_no_unnamed_geom(self, sim):
+        """Pre-fix the geom compiled with ``None`` for a name."""
+        sim.patch_scene_mjcf(_claim_ops("")["add_geom"])
+        assert None not in _geom_names(sim)
+
+    @pytest.mark.parametrize("name", (7, ["x"], "", "a\x00b"))
+    def test_the_patch_door_and_add_object_agree(self, sim, name):
+        """One backend, one domain: both doors refuse with the same sentence."""
+        patched = sim.patch_scene_mjcf(_claim_ops(name)["add_body"])
+        method = sim.add_object(name, shape="box")
+        assert patched["status"] == method["status"] == "error", (patched, method)
+        assert entity_name_error("add_body", "name", name) in patched["content"][0]["text"]
+
+    # ---- controls: these pass before the fix too -------------------------- #
+
+    def test_an_omitted_geom_name_is_still_legal(self, sim):
+        """Not supplying a name is not claiming one - the geom stays unnamed."""
+        result = sim.patch_scene_mjcf(
+            [
+                {"op": "add_body", "parent": "world", "name": "host"},
+                {"op": "add_geom", "body": "host", "type": "sphere", "size": [0.08]},
+            ]
+        )
+        assert result["status"] == "success", result
+        assert None in _geom_names(sim)
+
+    @pytest.mark.parametrize("kind", ("add_body", "add_site"))
+    def test_an_absent_name_keeps_its_own_message(self, sim, kind):
+        """A missing key is a different report from an unusable value."""
+        ops: list[dict[str, object]] = [{"op": "add_body", "parent": "world"}]
+        if kind == "add_site":
+            ops = [{"op": "add_body", "parent": "world", "name": "host"}, {"op": "add_site", "body": "host"}]
+        result = sim.patch_scene_mjcf(ops)
+        assert result["status"] == "error"
+        assert f"{kind} requires 'name'" in result["content"][0]["text"]
+
+    @pytest.mark.parametrize("name", _GOOD_NAMES)
+    def test_addressable_names_still_round_trip(self, sim, name):
+        result = sim.patch_scene_mjcf(
+            [
+                {"op": "add_body", "parent": "world", "name": name, "pos": [0.0, 0.0, 0.5]},
+                {"op": "add_geom", "body": name, "type": "sphere", "size": [0.08], "name": f"{name}_g"},
+                {"op": "add_site", "body": name, "name": f"{name}_s"},
+            ]
+        )
+        assert result["status"] == "success", (name, result)
+        assert name in _body_names(sim)
+        assert sim.get_body_state(body_name=name)["status"] == "success"
+
+    @pytest.mark.parametrize("kind", _LOOKUP_OPS)
+    def test_a_lookup_op_still_reports_absence(self, sim, kind):
+        """A name that addresses nothing is absent, not refused, at a lookup."""
+        op: dict[str, object] = {"op": kind, "name": "ghost"}
+        if kind == "set_body_pos":
+            op["pos"] = [0.0, 0.0, 1.0]
+        elif kind == "set_body_quat":
+            op["quat"] = [1.0, 0.0, 0.0, 0.0]
+        result = sim.patch_scene_mjcf([op])
+        assert result["status"] == "error"
+        assert "not found" in result["content"][0]["text"]
+
+
+class TestEveryClaimingOpRoutesThroughTheDomain:
+    """The root cause, so a seventh op cannot arrive unclassified.
+
+    Derived from ``_PATCH_OP_KEYS`` rather than a list here: an op added to the
+    table is graded the moment it exists, and has to be either a claiming op
+    that consults the domain or a lookup op that does not.
+    """
+
+    def test_every_supported_op_is_classified(self):
+        from strands_robots.simulation.mujoco.scene_ops import _PATCH_OP_KEYS
+
+        assert set(_PATCH_OP_KEYS) == set(_CLAIMING_OPS) | set(_LOOKUP_OPS)
+
+    @pytest.mark.parametrize("kind", _CLAIMING_OPS)
+    def test_a_claiming_op_consults_the_shared_domain(self, kind):
+        assert "entity_name_error" in _op_branch_source(kind), kind
+
+    @pytest.mark.parametrize("kind", _LOOKUP_OPS)
+    def test_a_lookup_op_does_not(self, kind):
+        assert "entity_name_error" not in _op_branch_source(kind), kind

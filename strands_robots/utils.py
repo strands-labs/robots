@@ -2266,7 +2266,10 @@ def entity_name_error(method: str, param_name: str, name: Any) -> str | None:
     does: ``add_object`` / ``add_camera`` / ``add_robot`` exist on more than one
     backend and their accepted domain must not diverge - a name one backend
     refuses must be refused by the others, and a second copy of the rule would
-    drift from the first.
+    drift from the first. The MuJoCo ``patch_scene_mjcf`` ops that claim a name
+    (``add_body`` / ``add_geom`` / ``add_site``) are a fourth door onto the same
+    spec and route through it too, because "which names may address an entity"
+    is a property of the backend, not of the call used to create one.
 
     Three values are refused, each because it produces an entity that some part
     of this API cannot address (measured on MuJoCo 3.11.0, one ``create_world``

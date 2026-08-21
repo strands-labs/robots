@@ -1107,6 +1107,24 @@ class MuJoCoSimEngine(
         keyword, and MuJoCo reports a mismatch there by dumping a C++ overload
         table that names neither the op nor the field.
 
+        The three ops that CLAIM a name - ``add_body``, ``add_geom`` and
+        ``add_site`` - hold it to the same
+        :func:`~strands_robots.utils.entity_name_error` domain that
+        ``add_object`` / ``add_camera`` / ``add_robot`` apply, so a name one
+        door refuses is refused at all of them. Supplying ``""`` or a name
+        carrying a NUL leaves an entity this API cannot then address: MuJoCo
+        reads a name only up to the first NUL, so ``{"op": "add_body", "name":
+        "a\x00b"}`` used to report success while compiling the body as ``a`` -
+        ``list_bodies`` showed only ``a``, and a later op that genuinely asked
+        for ``a`` was refused as a repeated name the caller never used. An
+        empty ``add_geom`` name compiled an unnamed geom, which
+        ``set_geom_properties(geom_name=...)`` cannot reach at all. Omitting
+        ``name`` on ``add_geom`` is unaffected and still produces an unnamed
+        geom, which is legal MJCF; the three ops that instead LOOK a name UP
+        (``set_body_pos`` / ``set_body_quat`` / ``delete_body``) are unchanged,
+        because a name that addresses nothing is honestly absent there and
+        those ops already say so.
+
         The whole batch is applied, then the spec is recompiled once. If any
         op fails, the batch is rejected and the world is rolled back to its
         pre-patch state (from a deep copy of the spec). Use this for fast
