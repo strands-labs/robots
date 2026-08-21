@@ -157,16 +157,21 @@ Usage
                 because every input below is read from the object database and
                 never from the working tree.
 ``--repo``      repository root (default: the current working directory).
+                Refused with ``--all-open``, which reads no checkout.
 
 ``--all-open``  Sweep the open set instead of one branch (see above). Mutually
-                exclusive with ``--head``, which names one commit.
+                exclusive with ``--head`` and with ``--repo``, neither of which
+                it reads.
 ``--github-repo``
                 ``owner/name`` for ``--all-open`` (default:
                 ``$GITHUB_REPOSITORY``). Deliberately not ``--repo``: in this
                 script ``--repo`` is already a local checkout path, and one flag
                 that means a filesystem path in one mode and a slug in the other
                 is the kind of ambiguity a caller discovers by getting a wrong
-                answer.
+                answer. Distinct spellings only keep the two apart for a caller
+                who already knows which is which, so ``--all-open --repo`` is
+                refused by a message naming this flag rather than accepted and
+                dropped.
 ``--token``     API token for ``--all-open`` (default: ``$GITHUB_TOKEN``). Needs
                 ``pull-requests: read``.
 
@@ -823,6 +828,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     # not ask while looking like it had.
     if args.all_open and args.head is not None:
         parser.error("--all-open sweeps the open set and reads no local commit; --head names one branch")
+    # Same rule for --repo, which the sweep reads no more than it reads --head.
+    # This one earns a message naming --github-repo because the value a caller
+    # puts after --repo is evidence of what they meant: the sibling intake check
+    # spells owner/name that way, so reaching for it here is reaching for the
+    # repository to sweep, and accepting it silently answers for whatever
+    # $GITHUB_REPOSITORY happened to be -- a clean report about another
+    # repository, which is the shape of wrong answer this mode is least able to
+    # make a reader suspicious of.
+    if args.all_open and args.repo is not None:
+        parser.error(
+            "--all-open sweeps the open set and reads no checkout; --repo is a local path. "
+            "Name the repository to sweep with --github-repo owner/name"
+        )
     if args.all_open:
         if not args.github_repo:
             parser.error("--all-open needs --github-repo owner/name (or $GITHUB_REPOSITORY)")

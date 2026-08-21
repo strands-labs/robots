@@ -952,6 +952,70 @@ def test_all_open_and_head_are_mutually_exclusive(tmp_path: Path) -> None:
     assert raised.value.code == 2
 
 
+def _refuse_all_open_with_repo(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> SystemExit:
+    """Run ``--all-open --repo <slug>`` with the wrong answer made available.
+
+    ``GITHUB_REPOSITORY`` is set to a repository the caller did not name and the
+    API is wired to a stand-in that fails if reached, so a refusal is the only way
+    through: dropping ``--repo`` and sweeping the inferred repository trips the
+    stand-in instead of exiting 2.
+    """
+    monkeypatch.setenv("GITHUB_REPOSITORY", "someone/elsewhere")
+
+    def unreachable(url: str, token: str) -> object:
+        raise AssertionError(f"the sweep read the API for a repository the caller did not name: {url}")
+
+    monkeypatch.setattr(check, "_get", unreachable)
+    monkeypatch.chdir(tmp_path)
+
+    with pytest.raises(SystemExit) as raised:
+        check.main(["--all-open", "--repo", "strands-labs/robots", "--token", "t"])
+    return raised.value
+
+
+def test_all_open_and_repo_are_mutually_exclusive(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """``--repo`` is a checkout path, and the sweep reads no checkout.
+
+    Accepting it was not inert, which is why this is a behavioural pin rather than
+    an argument-parsing detail. Measured in the field (#2569): a scheduled agent
+    ran ``--repo strands-labs/robots --all-open`` from a checkout of another
+    repository and got exit ``0`` and a clean report naming
+    ``cagataycali/strands-gtc-nvidia`` -- the value was dropped, the API read went
+    to ``$GITHUB_REPOSITORY``, and the sweep answered for a repository nobody
+    asked about. Re-run against the intended one, the same command reported 11
+    open pull requests and 2 blocking pairs, so the clean report was not merely
+    misattributed; it was hiding findings.
+
+    The property was already asserted in prose by
+    ``test_the_sweep_refuses_to_run_without_its_own_inputs`` ("``--repo`` is not
+    consulted ... the sweep reads no checkout") and enforced by nothing.
+
+    That the refusal is not over-broad is pinned by the single-branch tests, which
+    reach ``main`` through ``--repo`` on every call (see ``_run_at``): the mode
+    that does read a checkout keeps the flag.
+    """
+    assert _refuse_all_open_with_repo(monkeypatch, tmp_path).code == 2
+
+
+def test_the_refusal_names_the_flag_that_does_name_a_repository(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Exit 2 alone leaves the caller where the wrong answer did: guessing a spelling.
+
+    A caller who reaches for ``--repo`` to name the repository to sweep has
+    written the *sibling* intake check's flag for ``owner/name``
+    (``check_duplicate_claim.py --repo strands-labs/robots``), so the one thing
+    they need back is the spelling that works here. A refusal that only says
+    ``--repo`` is wrong sends them to ``--help`` to re-derive it, and the two
+    flags differ by a prefix, which is exactly the confusion that produced the
+    wrong report.
+    """
+    _refuse_all_open_with_repo(monkeypatch, tmp_path)
+
+    message = capsys.readouterr().err
+    assert "--github-repo" in message, message
+
+
 @pytest.mark.parametrize("missing", ["--github-repo", "--token"])
 def test_the_sweep_refuses_to_run_without_its_own_inputs(monkeypatch: pytest.MonkeyPatch, missing: str) -> None:
     """Neither input has a local fallback, so a missing one is refused, not guessed.
