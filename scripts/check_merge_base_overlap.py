@@ -156,10 +156,17 @@ Usage
                 landed does not carry that gate's script (issue #1791). Sound
                 because every input below is read from the object database and
                 never from the working tree.
-``--repo``      repository root (default: the current working directory).
+``--repo``      repository root (default: the current working directory). One
+                branch only: the sweep reads no checkout, so ``--all-open``
+                refuses it rather than ignoring it. The sibling gate scripts
+                spell ``owner/name`` ``--repo``, so a caller who reaches for it
+                here names a path, the sweep reads ``$GITHUB_REPOSITORY``
+                instead, and the report describes a repository nobody asked
+                about (issue #2569).
 
 ``--all-open``  Sweep the open set instead of one branch (see above). Mutually
-                exclusive with ``--head``, which names one commit.
+                exclusive with ``--head`` and ``--repo``, which name a local
+                commit and a local checkout.
 ``--github-repo``
                 ``owner/name`` for ``--all-open`` (default:
                 ``$GITHUB_REPOSITORY``). Deliberately not ``--repo``: in this
@@ -818,11 +825,21 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    # Mutually exclusive rather than ignored: --head names one commit and the
-    # sweep reads none, so honouring both would answer a question the caller did
-    # not ask while looking like it had.
+    # Mutually exclusive rather than ignored: --head names one commit and --repo
+    # one checkout, and the sweep reads neither, so honouring either would answer
+    # a question the caller did not ask while looking like it had. --repo is the
+    # one a caller is most likely to pass by mistake, because the sibling gate
+    # scripts spell owner/name --repo: accepted as a path, it leaves the sweep
+    # reading $GITHUB_REPOSITORY and reporting on a repository nobody asked about
+    # (issue #2569). Every value-bearing flag the sweep does read is passed to
+    # _run_sweep below, which is what pins this partition rather than a list.
     if args.all_open and args.head is not None:
         parser.error("--all-open sweeps the open set and reads no local commit; --head names one branch")
+    if args.all_open and args.repo is not None:
+        parser.error(
+            "--all-open sweeps the open set from the API and reads no local checkout; --repo names one. "
+            "To name the repository the sweep reads, pass --github-repo owner/name."
+        )
     if args.all_open:
         if not args.github_repo:
             parser.error("--all-open needs --github-repo owner/name (or $GITHUB_REPOSITORY)")
