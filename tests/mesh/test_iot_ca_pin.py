@@ -359,8 +359,13 @@ class TestUnverifiedReuseWarning:
         )
 
 
-class TestEnsureCaV040Followups:
-    """v0.4.0 mesh-iot follow-ups (#388) from the #228 review trail."""
+class TestEnsureCaFilesystemDiscipline:
+    """``_ensure_ca``'s own writes: refuse a symlink at either path, marker owner-only.
+
+    The CA path and the break-glass ``.unverified`` sidecar are both opened
+    ``O_NOFOLLOW``, and the sidecar is created ``0o600`` in one step - no
+    create-then-chmod window, and no write-through to a pre-planted symlink.
+    """
 
     def test_ensure_ca_rejects_symlinked_path_with_explicit_message(self, tmp_path):
         """#312: a symlinked CA path must be rejected with an EXPLICIT 'SYMLINK'

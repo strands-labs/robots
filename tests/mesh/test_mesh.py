@@ -16,8 +16,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from strands_robots import mesh as mesh_mod
 from strands_robots.mesh import Mesh, get_local_robots, init_mesh
+from strands_robots.mesh import core as mesh_core
 from strands_robots.mesh import session as mesh_session
 
 # ---------------------------------------------------------------------------
@@ -68,12 +68,12 @@ class _FakeRobot:
 def _clean_state() -> Iterator[None]:
     """Reset peer registry and local-robot registry between tests."""
     mesh_session.clear_peers()
-    with mesh_mod._LOCAL_ROBOTS_LOCK:
-        mesh_mod._LOCAL_ROBOTS.clear()
+    with mesh_core._LOCAL_ROBOTS_LOCK:
+        mesh_core._LOCAL_ROBOTS.clear()
     yield
     mesh_session.clear_peers()
-    with mesh_mod._LOCAL_ROBOTS_LOCK:
-        mesh_mod._LOCAL_ROBOTS.clear()
+    with mesh_core._LOCAL_ROBOTS_LOCK:
+        mesh_core._LOCAL_ROBOTS.clear()
 
 
 @pytest.fixture

@@ -74,6 +74,35 @@ Scope, measured on this tree rather than assumed:
 A ``TYPE_CHECKING`` import counts as a definition, which is the point -- the
 remedy must stay free at runtime, or the guard would argue for eagerly
 importing the very modules the lazy loader exists to defer.
+
+``__all__`` makes two promises about each name it lists, and being defined is
+only the first. The second is that the name is part of the module's public
+surface, which ``AGENTS.md`` states directly under *API Consistency*:
+``_``-prefixed names must never appear in ``__all__``. That half went ungraded,
+and one module had drifted -- ``strands_robots/mesh/__init__.py`` listed
+``_LOCAL_ROBOTS`` (the in-process registry dict) and ``_LOCAL_ROBOTS_LOCK``
+under the comment *"Private (exposed for test patching only)"*.
+
+The stated reason does not hold. ``__all__`` governs star-imports; it has no
+bearing on attribute access, which is how both test files that touch the
+registry actually reach it -- and one of them (``tests/mesh/test_deep_mesh.py``)
+already reached ``strands_robots.mesh.core``, where the two objects are defined.
+What the entries did govern is measurable: a star-import skips underscore names
+*unless* ``__all__`` lists them, so listing them was the sole reason
+``from strands_robots.mesh import *`` bound a mutable registry dict and its lock
+into the importer's namespace. Measured on that module, the star-import bound 20
+names before and 18 after, and the two it stopped binding were exactly those.
+
+The entries were load-bearing for one thing only, and it was not test patching:
+they silenced ``F401`` on an import whose sole purpose was to place the names on
+the package namespace, which is what ruff's own remedy text ("consider removing,
+adding to ``__all__``, or using a redundant alias") describes. Removing the
+import along with the entries is therefore the whole fix, and the public
+accessor for the same state -- :func:`strands_robots.mesh.get_local_robots` --
+was already exported.
+
+Both halves are scanned over the same population, so a module cannot satisfy one
+and quietly fail the other.
 """
 
 import ast
@@ -169,6 +198,21 @@ def undefined_exports(source: str) -> list[str]:
     return sorted(name for name in names if name not in bound)
 
 
+def private_exports(source: str) -> list[str]:
+    """Names promised by a literal ``__all__`` that are not public.
+
+    A leading underscore is the whole test: it is the convention the rest of the
+    tree is written in, and the one ``AGENTS.md`` states. Dunders are excluded
+    because a module re-exporting ``__version__`` is naming a documented
+    attribute rather than reaching into a private one.
+    """
+    tree = ast.parse(source)
+    declares, names = declared_all(tree)
+    if not declares or names is None:
+        return []
+    return sorted(name for name in names if name.startswith("_") and not name.startswith("__"))
+
+
 def scanned_modules() -> dict[str, list[str]]:
     """Every module with a literal ``__all__``, mapped to its undefined exports."""
     found: dict[str, list[str]] = {}
@@ -190,6 +234,25 @@ class TestEveryExportIsDefined:
             "__all__ names with no module-scope definition. A lazily resolved "
             "symbol needs a matching 'if TYPE_CHECKING:' import so it is "
             "statically defined (this costs nothing at runtime): "
+            f"{offenders}"
+        )
+
+
+class TestNoExportIsPrivate:
+    """The other half of the promise, over the same population."""
+
+    def test_no_module_exports_a_private_name(self):
+        offenders = {
+            module: private_exports((PACKAGE_ROOT / module).read_text(encoding="utf-8")) for module in scanned_modules()
+        }
+        offenders = {module: names for module, names in offenders.items() if names}
+        assert not offenders, (
+            "__all__ lists names that are not public. A star-import skips "
+            "underscore names unless __all__ overrides that, so listing one "
+            "publishes it; and an entry added to silence F401 on an import that "
+            "exists only to place a name on the package namespace should drop "
+            "the import too. Export a public accessor instead, or reach the "
+            "private name in the module that defines it: "
             f"{offenders}"
         )
 
@@ -278,6 +341,29 @@ class TestTheDetectorItself:
 
     def test_a_module_without_all_is_not_inspected(self):
         assert undefined_exports("class Thing:\n    pass\n") == []
+
+    def test_a_private_export_is_reported(self):
+        source = '_REGISTRY = {}\n\n\nclass Public:\n    pass\n\n\n__all__ = ["Public", "_REGISTRY"]\n'
+        assert private_exports(source) == ["_REGISTRY"]
+
+    def test_a_public_only_all_is_not_reported(self):
+        # The tree is in this state, so this is what fails if the underscore
+        # test were inverted or the scan started reporting everything.
+        source = 'class Public:\n    pass\n\n\n__all__ = ["Public"]\n'
+        assert private_exports(source) == []
+
+    def test_a_dunder_export_is_not_reported(self):
+        # ``__version__`` is a documented module attribute, not a private one.
+        source = '__version__ = "1.0"\n__all__ = ["__version__"]\n'
+        assert private_exports(source) == []
+
+    def test_a_private_name_is_reported_even_when_it_is_defined(self):
+        # The two halves ask different questions: this name is bound at module
+        # scope, so the definedness check is satisfied and only the public
+        # check has anything to say. That is the gap the second half closes.
+        source = '_thing = 1\n__all__ = ["_thing"]\n'
+        assert undefined_exports(source) == []
+        assert private_exports(source) == ["_thing"]
 
     def test_a_getattr_alone_does_not_count_as_a_definition(self):
         # The pre-fix shape of both offending modules: runtime resolution via

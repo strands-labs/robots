@@ -1,0 +1,3 @@
+### Fixed
+
+- **simulation/mujoco**: the `patch_scene_mjcf` ops that claim a name (`add_body`, `add_geom`, `add_site`) now hold it to the same `entity_name_error` domain `add_object` / `add_camera` / `add_robot` apply. A name carrying a NUL used to report success and compile the entity under the truncated name, so a later op that genuinely asked for that shorter name was refused as a repeated name the caller never used; an empty `add_geom` name compiled an unnamed geom that `set_geom_properties(geom_name=...)` could not reach. Omitting `add_geom`'s name still produces an unnamed geom, and the ops that look a name up are unchanged.
