@@ -1,0 +1,3 @@
+### Fixed
+
+- **simulation/mujoco**: a router refusal now names the field by a spelling the tool schema publishes. The dispatcher rewrites `_FIELD_ALIASES` to method parameter names before validating, and `apply_force`'s torque - published as `torque_vec`, validated as `torque` - has no property of its own, so the vector arity check, the per-component check and the unknown-parameter `Valid:` list all reported a field a schema-constrained caller cannot emit. The resolution the string-type check already performed is now one owner consulted by every site that names a field; a parameter with no published spelling at all keeps its own name, so the dispatcher's deliberate width for Python callers is unchanged.
