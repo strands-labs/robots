@@ -97,6 +97,15 @@ that peer has timed out (10s), which peer the registry evicts when it hits
 move. So bringing a robot's clock into sync to satisfy the forward bound above
 will not make the next heartbeat tick drop every peer it can still hear.
 
+**Nor are those durations the measured peer's to report.** `age` is *your*
+process's reading of when it last heard from a peer, and the `peer_id` a peer is
+filed under is the one its topic and certificate bind - not a field inside the
+payload. A presence payload is merged into what you read about a peer so you get
+its capabilities (`tool_name`, `connected`, `cameras`, ...), and those four
+locally decided keys - `peer_id`, `type`, `hostname`, `age` - win a name
+collision with it. A peer heartbeating `"age": 0` does not report itself fresh,
+and one naming another peer's id does not answer a lookup for that peer.
+
 Repeated wrong codes arm a brute-force cooldown
 (`STRANDS_MESH_RESUME_MAX_FAILS`, `STRANDS_MESH_RESUME_BACKOFF_S`): during the
 cooldown even the correct code is refused, so wait it out rather than retrying in
@@ -128,6 +137,30 @@ identically). `theta` and `quat` are decomposed from the same matrix, so they
 always agree: both describe the full rotation for every orientation, including
 the half of SO(3) past 120 degrees that a robot turning back the way it came
 lands in.
+
+### Rejoining the mesh
+
+`stop()` then `start()` is how a peer leaves and rejoins - after a config
+change, or a hub that went away and came back. The peer keeps its identity
+across it: the `peer_id` is unchanged, and an engaged e-stop lockout stays
+engaged, so a network blip is not a way to forget a stop.
+
+What does not survive is your own `subscribe()` topics. `start()` re-declares
+the peer's built-in topics from the table above; the subscribers `subscribe()`
+returned are undeclared with the session reference and their callbacks are not
+retained, so a rejoining consumer re-declares its own. `stop()` reports at INFO
+how many it dropped and their names, and `subscribe()` says at WARNING when it
+refuses - naming the topic and whether the peer is off the mesh, has no session,
+or had the declare itself fail - so a rejoin that has not finished is visible
+rather than a silent `None`.
+
+```python
+sim.mesh.stop()
+sim.mesh.start()
+name = sim.mesh.subscribe("strands/*/state", callback=on_state)
+if name is None:
+    ...  # the WARNING says which of the three refusals it was
+```
 
 ## Agent-driven mesh
 

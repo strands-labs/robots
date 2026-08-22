@@ -4,6 +4,7 @@ import logging
 import os
 from collections.abc import Callable, Mapping
 
+from strands_robots import refusal_codes
 from strands_robots.policies.base import Policy
 from strands_robots.registry import (
     import_policy_class,
@@ -100,7 +101,34 @@ def list_aliases() -> dict[str, str]:
 
 
 class UntrustedRemoteCodeError(RuntimeError):
-    """Raised when a HF model requires trust_remote_code but the user has not opted in."""
+    """Raised when a HF model requires trust_remote_code but the user has not opted in.
+
+    Carries a stable machine-readable :attr:`code`
+    (:data:`~strands_robots.refusal_codes.TRUST_REMOTE_CODE_REQUIRED`) and the
+    :attr:`subject` provider, so a consumer offering the operator the opt-in
+    classifies on identity instead of matching the message text. The message
+    is unchanged by this. See :mod:`strands_robots.refusal_codes`.
+
+    Args:
+        message: The operator-facing reason, unchanged by the code.
+        code: A member of :data:`~strands_robots.refusal_codes.REFUSAL_CODES`.
+        subject: The policy provider the gate refused.
+
+    Attributes:
+        code: The stable identifier for this refusal, or ``None``.
+        subject: The policy provider the gate refused, or ``None``.
+    """
+
+    def __init__(
+        self,
+        message: str = "",
+        *,
+        code: str | None = None,
+        subject: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.subject = subject
 
 
 # Providers whose HuggingFace model loading path calls ``trust_remote_code=True``.
@@ -136,7 +164,9 @@ def _check_trust_remote_code(provider: str) -> None:
         f"from the model repository.\n\n"
         f"Only load models from organisations you trust.\n\n"
         f"To acknowledge this risk and proceed, set the environment variable:\n"
-        f"    export STRANDS_TRUST_REMOTE_CODE=1\n"
+        f"    export STRANDS_TRUST_REMOTE_CODE=1\n",
+        code=refusal_codes.TRUST_REMOTE_CODE_REQUIRED,
+        subject=provider,
     )
 
 

@@ -2655,17 +2655,64 @@ class Robot(TeleopMixin, AgentTool):
             pass  # Ignore errors in destructor
 
     async def get_status(self) -> dict[str, Any]:
-        """Get robot status including connection and task state."""
+        """Report the device's measured state plus this robot's task state.
+
+        Two fields answer different questions about cameras, and the pair is
+        what makes an unhealthy device attributable:
+
+        * ``cameras`` enumerates the camera names the device is *configured*
+          for - which image streams exist at all.
+        * ``cameras_connected`` maps each live camera to its own
+          ``is_connected`` reading - which of those streams are actually up.
+
+        ``is_connected`` on a lerobot arm is ``bus and all(cameras)``, so a
+        single dropped camera pulls it to ``False`` without naming which of the
+        N+1 facts fell. Reported beside the per-camera readings, a ``False``
+        becomes attributable: a camera reading ``False`` is the culprit, and
+        every camera reading ``True`` leaves the motor bus as the one by
+        elimination.
+
+        Best-effort per camera, mirroring the observation path: a camera whose
+        ``is_connected`` probe raises is omitted from ``cameras_connected``
+        rather than failing the whole probe, so a name present in ``cameras``
+        and absent from ``cameras_connected`` is one whose state could not be
+        read. A device exposing no live camera objects reports an empty map.
+
+        Returns:
+            Status dict of measured facts. An unexpected failure anywhere in
+            the probe degrades to ``{"robot_name", "error", "is_connected":
+            False, "task_status": "error"}`` rather than propagating, so a
+            supervising agent reads a verdict instead of taking an exception.
+        """
         try:
             # Get robot connection status
             is_connected = self.robot.is_connected if hasattr(self.robot, "is_connected") else False
             is_calibrated = self.robot.is_calibrated if hasattr(self.robot, "is_calibrated") else True
 
-            # Get camera status
+            # The configured enumeration: which image streams the device was
+            # asked for. Says nothing about whether any of them came up.
             camera_status = []
             if hasattr(self.robot, "config") and hasattr(self.robot.config, "cameras"):
                 for name in self.robot.config.cameras.keys():
                     camera_status.append(name)
+
+            # The measured reading, one entry per live camera. The camera
+            # objects hang off the device beside the config, and each carries
+            # the ``is_connected`` that the device's own aggregate is built
+            # from - so reading them here is what turns an aggregate ``False``
+            # into a named culprit instead of a set to guess from.
+            cameras_connected: dict[str, bool] = {}
+            live_cameras = getattr(self.robot, "cameras", None)
+            if isinstance(live_cameras, dict):
+                for name, camera in live_cameras.items():
+                    try:
+                        cameras_connected[name] = bool(camera.is_connected)
+                    except Exception as e:  # noqa: BLE001 - a camera that cannot answer is omitted, not fatal
+                        # Breadth is the camera backend's, not ours: the default
+                        # OpenCV camera answers through ``cv2.VideoCapture``, and
+                        # ``cv2.error`` subclasses ``Exception`` directly, so any
+                        # narrower tuple would let the shipped camera through.
+                        logger.debug("camera %r on %s could not report is_connected: %s", name, self.tool_name_str, e)
 
             # Build status dict
             status_data = {
@@ -2676,6 +2723,7 @@ class Robot(TeleopMixin, AgentTool):
                 "is_connected": is_connected,
                 "is_calibrated": is_calibrated,
                 "cameras": camera_status,
+                "cameras_connected": cameras_connected,
                 "ros2_bridge": bool(getattr(self, "_ros_bridge", None) is not None),
                 "ros2_transport": getattr(self, "_ros2_transport", "rclpy")
                 if getattr(self, "_ros_bridge", None) is not None

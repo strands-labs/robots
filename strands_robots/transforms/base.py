@@ -196,26 +196,42 @@ def derive_variant_seed(seed: int | None, source_episode: int, variant: int) -> 
     same spec always reproduces the same output.
 
     Args:
-        seed: The spec's base seed (:attr:`TransformSpec.seed`).
+        seed: The spec's base seed (:attr:`TransformSpec.seed`), a non-negative
+            whole number or ``None`` to opt out of determinism.
         source_episode: Source episode index the variant is generated from.
         variant: Variant counter within that episode
-            (``0 .. variants_per_episode - 1``).
+            (``0 .. variants_per_episode - 1``), a non-negative whole number.
 
     Returns:
         A 32-bit seed, or ``None`` when ``seed`` is ``None``.
 
     Raises:
-        ValueError: ``source_episode`` is outside the non-negative
-            whole-number domain every episode-resolving surface shares.
-            ``True`` is the value worth naming: unrefused it derives episode
-            1's seed, so a variant of episode ``True`` silently collides with
-            a variant of episode 1.
+        ValueError: Any of the three inputs is outside the non-negative
+            whole-number domain the key needs (``seed=None`` excepted - that
+            spelling opts out of determinism rather than naming a stream).
+            Each is checked because each spreads into the same
+            :class:`~numpy.random.SeedSequence`, so an unusable value on any
+            of them yields a key some other triple already owns: ``True`` is
+            the value worth naming, since unrefused it is ``1`` to NumPy, and
+            a str spelling of a whole number is coerced to it. Episode
+            ``True`` therefore silently collided with episode 1, variant
+            ``True`` (or ``"1"``) with variant 1, and ``seed=True`` with
+            ``seed=1`` - two "distinct" variants generated from one stream,
+            written as two episodes whose pixels are byte-identical. The
+            values NumPy refuses on its own reached here as its internal
+            ``TypeError``/``ValueError`` naming neither the parameter nor this
+            surface.
     """
-    if text := non_negative_whole_number_error(source_episode, "source_episode", "derive_variant_seed"):
-        raise ValueError(text)
+    for name, value in (("seed", seed), ("source_episode", source_episode), ("variant", variant)):
+        if name == "seed" and value is None:
+            continue  # documented opt-out, not a stream name
+        if text := non_negative_whole_number_error(value, name, "derive_variant_seed"):
+            raise ValueError(text)
     if seed is None:
         return None
-    return int(np.random.SeedSequence([seed, int(source_episode), variant]).generate_state(1)[0])
+    # int() after the guard, never before: the shared rule has already
+    # compared the coercion back against the value it was given.
+    return int(np.random.SeedSequence([int(seed), int(source_episode), int(variant)]).generate_state(1)[0])
 
 
 class DatasetTransform(ABC):
@@ -290,6 +306,13 @@ class DatasetTransform(ABC):
             variant: Variant counter within that episode. Together with
                 :attr:`TransformSpec.seed` and ``source_episode`` this is the
                 determinism key - see :func:`derive_variant_seed`.
+                Implementations refuse a value outside the same non-negative
+                whole-number domain, for the same reason they refuse one on
+                ``source_episode``: an unusable counter names a stream another
+                variant already owns. The guard lives in each implementation
+                because a backend may never reach
+                :func:`derive_variant_seed` (a fixed shift reads no key), and
+                this abstract declaration carries no body.
 
         Returns:
             Transformed pixels with the SAME shape and dtype as ``frames``.

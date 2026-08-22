@@ -317,13 +317,26 @@ class PeerInfo:
         return time.monotonic() - self.last_seen_mono
 
     def to_dict(self) -> dict[str, Any]:
-        """Serialise to a plain dict (JSON-friendly)."""
+        """Serialise to a plain dict (JSON-friendly).
+
+        ``caps`` merges *first* so the four locally-decided fields win a name
+        collision. ``caps`` is the peer's own presence payload, and every field
+        below it is something this process decided about the peer rather than
+        something the peer reported about itself: ``age`` is the observation
+        described on :attr:`last_seen_mono`, and ``peer_id`` is the key the
+        registry files it under.
+
+        Spread last, a payload carrying any of those four names replaced the
+        local reading. An ``age`` the sender chooses defeats every staleness
+        verdict read from it, and a ``peer_id`` the sender chooses is the key
+        ``Mesh.peers_by_id`` and ``Mesh.get_peer`` look the peer up by.
+        """
         return {
+            **self.caps,
             "peer_id": self.peer_id,
             "type": self.peer_type,
             "hostname": self.hostname,
             "age": round(self.age, 1),
-            **self.caps,
         }
 
     def __repr__(self) -> str:
