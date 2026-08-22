@@ -131,3 +131,66 @@ class TestEndToEnd:
         spec = TransformSpec(source_root=source_root, output_root=str(tmp_path / "cosmos_bad"))
         with pytest.raises(ValueError, match="a transform changes pixels, never the stream's schema"):
             CosmosTransferTransform(pipeline=WrongShapePipeline()).transform(spec)
+
+
+class TestCallShapedAdapterExample:
+    """The documented ``__call__``-shaped adapter is a working remedy, not prose.
+
+    Diffusers-family video pipelines (including the diffusers-hosted Cosmos
+    Transfer checkpoints) expose ``__call__``, return an object carrying
+    ``.frames``, seed via ``generator=`` and emit ``float`` frames in
+    ``[0, 1]``. ``_PIPELINE_HELP`` documents a thin adapter closing those
+    gaps; these tests pin that the guidance is present in every pipeline
+    refusal and that an adapter written exactly as documented satisfies the
+    seam, so the example cannot rot into the guesswork it exists to remove.
+    """
+
+    def test_pipeline_refusals_carry_the_adapter_guidance(self):
+        problems = CosmosTransferTransform().validate(TransformSpec())
+        assert any("__call__-shaped" in p for p in problems)
+        assert any(".frames" in p for p in problems)
+
+    def test_documented_adapter_bridges_a_call_shaped_pipeline(self):
+        torch = pytest.importorskip("torch")
+
+        class FakeDiffusersOutput:
+            def __init__(self, frames):
+                self.frames = frames
+
+        class FakeDiffusersPipe:
+            """``__call__``-shaped, ``.frames``-returning, ``generator=``-seeded."""
+
+            def __init__(self):
+                self.calls = []
+
+            def __call__(self, *, video, prompt, output_type, generator):
+                self.calls.append({"n_frames": len(video), "prompt": prompt, "generator": generator})
+                assert output_type == "np"
+                batch = np.stack([np.asarray(f, dtype=np.float64) / 255.0 for f in video])
+                return FakeDiffusersOutput(frames=[batch])  # float in [0, 1], batched
+
+        pipe = FakeDiffusersPipe()
+
+        # The adapter exactly as _PIPELINE_HELP and the module docstring show it.
+        class Adapter:
+            def generate(self, video, prompt="", seed=None):
+                g = None if seed is None else torch.Generator().manual_seed(seed)
+                f = pipe(video=list(video), prompt=prompt, output_type="np", generator=g).frames[0]
+                return np.clip(np.round(np.asarray(f) * 255.0), 0, 255).astype(np.uint8)
+
+        transform = CosmosTransferTransform(pipeline=Adapter())
+        assert transform._pipeline_problems() == []
+
+        spec = TransformSpec(prompt="the same scene at night", seed=11)
+        out = transform.transform_frames("cam", _frames(), spec, source_episode=2, variant=1)
+        # The round-trip through the float [0, 1] convention lands back on the contract.
+        assert out.shape == _frames().shape
+        assert out.dtype == np.uint8
+        np.testing.assert_array_equal(out, _frames())
+        # The derived seed reaches the pipeline as a generator, not a raw int.
+        assert pipe.calls[0]["prompt"] == "the same scene at night"
+        assert pipe.calls[0]["generator"].initial_seed() == derive_variant_seed(11, 2, 1)
+
+        # An unseeded spec stays unseeded: no generator is fabricated for None.
+        transform.transform_frames("cam", _frames(), TransformSpec(), source_episode=0, variant=0)
+        assert pipe.calls[1]["generator"] is None

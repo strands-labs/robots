@@ -293,6 +293,28 @@ def _resolve_host_path(host_path: str) -> str:
     return os.path.realpath(os.path.expanduser(host_path))
 
 
+def _with_resolved(paths: tuple[str, ...]) -> set[str]:
+    """Return each protected path AND the path its symlinks resolve to.
+
+    The blocklist names a path, but docker mounts the directory that path
+    resolves to, so a protected directory reachable under two names has to be
+    blocked under both. A host that reaches a protected directory through a
+    symlink whose target escapes the blocklist is the case this covers: macOS
+    ships ``/etc -> /private/etc``, and a Linux server with a separate data
+    volume may ship ``/home -> /mnt/home``. Resolving only the candidate mount
+    (#384 item 2) refuses the symlink spelling and admits the target spelling,
+    which is the same directory.
+
+    A path that is not a symlink contributes one entry, so on a host whose
+    protected paths are all real directories the returned set is the blocklist.
+    """
+    out: set[str] = set()
+    for raw in paths:
+        out.add(os.path.normpath(raw))
+        out.add(os.path.realpath(raw))
+    return out
+
+
 def _check_volume_safety(volumes: dict[str, str] | None) -> str | None:
     """Return None if all bind-mount host paths are safe, else a reason.
 
@@ -303,8 +325,12 @@ def _check_volume_safety(volumes: dict[str, str] | None) -> str | None:
     """
     if not volumes:
         return None
-    blocked_dirs = {os.path.normpath(p) for p in _BLOCKED_VOLUME_HOST_PATHS}
-    blocked_exact = {os.path.normpath(p) for p in _BLOCKED_VOLUME_EXACT}
+    # Both sides of the comparison are resolved: the candidate mount (#384
+    # item 2) and the blocklist itself. Resolving one side only compares a
+    # directory against a name, so a protected directory reachable under a
+    # second name was refused under one spelling and admitted under the other.
+    blocked_dirs = _with_resolved(_BLOCKED_VOLUME_HOST_PATHS)
+    blocked_exact = _with_resolved(_BLOCKED_VOLUME_EXACT)
     for host_path in volumes:
         norm = _normalize_host_path(str(host_path))
         # #384 item 2: also evaluate the symlink-resolved path so a host symlink

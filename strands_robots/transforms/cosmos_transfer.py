@@ -32,6 +32,32 @@ Pipeline protocol::
 
 An optional ``version`` attribute on the pipeline is recorded into each
 generated episode's provenance.
+
+Adapting a ``__call__``-shaped pipeline
+---------------------------------------
+
+Diffusers-family video pipelines - including the diffusers-hosted Cosmos
+Transfer checkpoints - do not expose ``generate``: they expose ``__call__``,
+return an output object carrying ``.frames``, and seed via a
+``generator=torch.Generator()`` argument rather than ``seed=``. Their
+``output_type="np"`` frames are also ``float`` in ``[0, 1]``, where this seam
+requires the source's ``(T, H, W, 3) uint8``. A thin adapter closes all three
+gaps::
+
+    class Adapter:
+        version = "cosmos-transfer-2.5"  # recorded into provenance
+
+        def generate(self, video, prompt="", seed=None):
+            out = pipe(  # exact conditioning kwargs vary per pipeline
+                video=list(video), prompt=prompt, output_type="np",
+                generator=None if seed is None else torch.Generator().manual_seed(seed),
+            )
+            return np.clip(np.round(np.asarray(out.frames[0]) * 255.0), 0, 255).astype(np.uint8)
+
+The conditioning kwargs are the one per-pipeline part: Cosmos Predict's
+video2world pipelines take the source pixels as ``video=``, while Cosmos
+Transfer conditions on ``controls=`` derived from them (edge / depth /
+segmentation maps), so the adapter is also where that derivation lives.
 """
 
 from __future__ import annotations
@@ -42,11 +68,21 @@ from typing import Any
 import numpy as np
 
 from strands_robots.transforms.base import DatasetTransform, TransformSpec, derive_variant_seed
+from strands_robots.utils import non_negative_whole_number_error
 
 _PIPELINE_HELP = (
     "pass pipeline= a constructed video2video object exposing "
     "generate(video, prompt=..., seed=...) -> ndarray, or a dotted import path "
     "('pkg.mod:attr') naming one (or a zero-arg factory returning one). "
+    "A diffusers-family pipeline is __call__-shaped, returns an object "
+    "carrying .frames and seeds via generator=, so wrap it:\n"
+    "    class Adapter:\n"
+    "        def generate(self, video, prompt='', seed=None):\n"
+    "            g = None if seed is None else torch.Generator().manual_seed(seed)\n"
+    "            f = pipe(video=list(video), prompt=prompt, output_type='np', generator=g).frames[0]\n"
+    "            return np.clip(np.round(np.asarray(f) * 255.0), 0, 255).astype(np.uint8)\n"
+    "(per-pipeline conditioning kwargs vary; worked example in the "
+    "strands_robots.transforms.cosmos_transfer module docstring). "
     "NVIDIA Cosmos-Transfer is the intended first pipeline; its models ship "
     "from source (github.com/nvidia-cosmos) under the NVIDIA Open Model "
     "License - verify availability and licensing for your deployment before "
@@ -168,12 +204,19 @@ class CosmosTransferTransform(DatasetTransform):
             refuses anything else loudly).
 
         Raises:
+            ValueError: ``source_episode`` is outside the non-negative
+                whole-number domain shared by every episode-resolving surface
+                (see :func:`~strands_robots.transforms.base.derive_variant_seed`).
             RuntimeError: No pipeline is bound. Unreachable through
                 :meth:`~strands_robots.transforms.base.DatasetTransform.transform`,
                 which validates first; raised for a direct caller so the
                 refusal names the remedy instead of surfacing as an
                 ``AttributeError`` on ``None``.
         """
+        if text := non_negative_whole_number_error(
+            source_episode, "source_episode", "cosmos_transfer.transform_frames"
+        ):
+            raise ValueError(text)
         if self._pipeline is None and self._pipeline_problems():
             raise RuntimeError(f"cosmos_transfer.transform_frames: no video2video pipeline is bound - {_PIPELINE_HELP}")
         pipeline = self._pipeline

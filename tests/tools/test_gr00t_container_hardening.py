@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import importlib
 import inspect
+import os
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -591,3 +592,128 @@ def test_resolve_host_path_does_not_raise_on_missing_path():
     mount source (realpath resolves as far as it can, never raises)."""
     out = gi._resolve_host_path("/does/not/exist/yet/ckpt")
     assert isinstance(out, str) and out.startswith("/")
+
+
+# --------------------------------------------------------------------------- #
+# Both sides of the blocklist comparison are resolved                          #
+# --------------------------------------------------------------------------- #
+def _host_with_a_symlinked_protected_dir(tmp_path):
+    """Build a host whose protected dir is reached through an escaping symlink.
+
+    ``<host>/etc -> <host>/private/etc``, and the blocklist names ``<host>/etc``
+    -- the shape macOS ships (``/etc -> /private/etc``) and that a Linux server
+    with a separate data volume ships (``/home -> /mnt/home``). The target
+    spelling is deliberately outside the blocklist, which is what makes the two
+    names distinguishable to a comparison that resolves only one side.
+    """
+    root = os.path.realpath(str(tmp_path))
+    os.makedirs(f"{root}/private/etc", exist_ok=True)
+    os.makedirs(f"{root}/safe", exist_ok=True)
+    with open(f"{root}/private/etc/shadow", "w"):
+        pass
+    os.symlink(f"{root}/private/etc", f"{root}/etc")
+    return root
+
+
+class TestTheBlocklistIsResolvedOnBothSides:
+    """A protected directory is refused under every name that reaches it.
+
+    ``_check_volume_safety`` resolves the candidate mount through symlinks
+    (#384 item 2) and used to compare it against a literal blocklist, so it
+    compared a directory against a name. Docker mounts the directory, so a
+    protected directory reachable under a second name was refused under one
+    spelling and admitted under the other -- and the admitted spelling reaches
+    the same files.
+    """
+
+    def test_the_layout_under_test_really_escapes_the_blocklist(self, tmp_path):
+        """Premise: the symlink exists and its target is not a blocklist entry."""
+        root = _host_with_a_symlinked_protected_dir(tmp_path)
+        assert os.path.islink(f"{root}/etc")
+        assert os.path.realpath(f"{root}/etc") == f"{root}/private/etc"
+        literal = {os.path.normpath(p) for p in (f"{root}/etc",)}
+        assert f"{root}/private/etc" not in literal
+
+    def test_the_resolved_spelling_of_a_protected_directory_is_refused(self, monkeypatch, tmp_path):
+        """The target spelling names the same directory, so it is refused too."""
+        root = _host_with_a_symlinked_protected_dir(tmp_path)
+        monkeypatch.setattr(gi, "_BLOCKED_VOLUME_HOST_PATHS", (f"{root}/etc",))
+        monkeypatch.setattr(gi, "_BLOCKED_VOLUME_EXACT", ())
+        by_name = gi._check_volume_safety({f"{root}/etc": "/data/checkpoints"})
+        by_target = gi._check_volume_safety({f"{root}/private/etc": "/data/checkpoints"})
+        assert by_name is not None, "premise: the symlink spelling was already refused"
+        assert by_target is not None, (
+            f"{root}/private/etc is the directory {root}/etc resolves to, and docker mounts "
+            f"that directory, but the blocklist admitted it: {by_target!r}"
+        )
+
+    def test_a_child_of_the_resolved_spelling_is_refused(self, monkeypatch, tmp_path):
+        """The files the blocklist exists to protect are under the target name."""
+        root = _host_with_a_symlinked_protected_dir(tmp_path)
+        monkeypatch.setattr(gi, "_BLOCKED_VOLUME_HOST_PATHS", (f"{root}/etc",))
+        monkeypatch.setattr(gi, "_BLOCKED_VOLUME_EXACT", ())
+        reason = gi._check_volume_safety({f"{root}/private/etc/shadow": "/data/checkpoints"})
+        assert reason is not None, "a file inside the protected directory was admitted by its other name"
+
+    def test_an_agent_supplied_hf_local_dir_cannot_name_the_resolved_spelling(self, monkeypatch, tmp_path):
+        """``hf_local_dir`` is agent-supplied and reaches a host write directly.
+
+        ``_download_checkpoint`` writes the snapshot to it on the host with no
+        docker mediation, so this sink turns the admitted spelling into an
+        agent-reachable write into a protected directory.
+        """
+        root = _host_with_a_symlinked_protected_dir(tmp_path)
+        monkeypatch.setattr(gi, "_BLOCKED_VOLUME_HOST_PATHS", (f"{root}/etc",))
+        monkeypatch.setattr(gi, "_BLOCKED_VOLUME_EXACT", ())
+        assert gi._check_hf_local_dir_safety(f"{root}/private/etc") is not None
+
+    def test_an_exact_match_entry_is_refused_under_its_resolved_name(self, monkeypatch, tmp_path):
+        """A socket reachable under two names is refused under both."""
+        root = os.path.realpath(str(tmp_path))
+        os.makedirs(f"{root}/run", exist_ok=True)
+        os.symlink(f"{root}/run", f"{root}/var_run")
+        with open(f"{root}/run/docker.sock", "w"):
+            pass
+        monkeypatch.setattr(gi, "_BLOCKED_VOLUME_HOST_PATHS", ())
+        monkeypatch.setattr(gi, "_BLOCKED_VOLUME_EXACT", (f"{root}/var_run/docker.sock",))
+        assert gi._check_volume_safety({f"{root}/run/docker.sock": "/x"}) is not None
+
+    @pytest.mark.parametrize("blocked", gi._BLOCKED_VOLUME_HOST_PATHS, ids=str)
+    def test_every_shipped_blocklist_entry_refuses_its_own_resolved_path(self, blocked):
+        """Stated for every entry, so an entry added later is covered too.
+
+        On a host whose protected paths are real directories, or whose symlinks
+        resolve inside another blocked prefix, this already held -- it is the
+        invariant that makes the blocklist about directories rather than names.
+        """
+        resolved = os.path.realpath(blocked)
+        if resolved == os.sep:
+            pytest.skip("root is matched exactly, not by prefix")
+        assert gi._check_volume_safety({resolved: "/data/checkpoints"}) is not None
+
+    def test_a_blocklist_of_real_directories_changes_no_verdict(self, monkeypatch, tmp_path):
+        """No-op where nothing is a symlink: resolution adds no entry.
+
+        A protected path that is a real directory resolves to itself, so on a
+        host whose blocklist holds no symlink every verdict is the one it was.
+        """
+        root = os.path.realpath(str(tmp_path))
+        os.makedirs(f"{root}/etc", exist_ok=True)
+        os.makedirs(f"{root}/elsewhere", exist_ok=True)
+        with open(f"{root}/etc/shadow", "w"):
+            pass
+        monkeypatch.setattr(gi, "_BLOCKED_VOLUME_HOST_PATHS", (f"{root}/etc",))
+        monkeypatch.setattr(gi, "_BLOCKED_VOLUME_EXACT", ())
+        assert gi._check_volume_safety({f"{root}/etc": "/x"}) is not None
+        assert gi._check_volume_safety({f"{root}/etc/shadow": "/x"}) is not None
+        assert gi._check_volume_safety({f"{root}/elsewhere": "/x"}) is None
+
+    def test_a_symlink_into_a_safe_directory_is_still_allowed(self, monkeypatch, tmp_path):
+        """Resolving the blocklist must not refuse an unprotected target."""
+        root = _host_with_a_symlinked_protected_dir(tmp_path)
+        monkeypatch.setattr(gi, "_BLOCKED_VOLUME_HOST_PATHS", (f"{root}/etc",))
+        monkeypatch.setattr(gi, "_BLOCKED_VOLUME_EXACT", ())
+        link = f"{root}/models_link"
+        os.symlink(f"{root}/safe", link)
+        assert gi._check_volume_safety({link: "/data/checkpoints"}) is None
+        assert gi._check_volume_safety({f"{root}/safe": "/data/checkpoints"}) is None
