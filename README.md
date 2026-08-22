@@ -540,7 +540,7 @@ AgentTool returning `{"status", "content"}`.
 | `start` | `instruction`, `policy_port`, `duration` | Non-blocking async start |
 | `status` | - | Current task status |
 | `stop` | - | Interrupt running task (emergency stop) |
-In sim mode the same tool exposes the 67 Simulation actions - see Simulation (MuJoCo).
+In sim mode the same tool exposes the 77 Simulation actions - see Simulation (MuJoCo).
 </details>
 
 <details>
@@ -924,7 +924,7 @@ the library.
 ## Simulation (MuJoCo)
 
 `Robot("so100")` (sim mode) returns a `Simulation` - a MuJoCo-backed AgentTool
-exposing **67 actions** for world composition, physics, rendering, policy
+exposing **77 actions** for world composition, physics, rendering, policy
 execution, and dataset recording. Build it directly when you want full control:
 
 ```python

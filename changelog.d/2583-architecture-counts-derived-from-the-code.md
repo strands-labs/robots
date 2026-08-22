@@ -1,0 +1,3 @@
+### Fixed
+
+- **docs**: `docs/architecture.md`'s module table and `Policy` contract paragraph, plus README's Simulation action count, are now derived from the code by a guard rather than restated by hand. The page had claimed 4 policy providers for 14, 8 `@tool` helpers for 20, and four `Policy` implementations of fifteen; README quoted 67 published actions for 77. The `Policy` paragraph also named only one of the three "policy declares, runtime supplies" seams, so a policy conforming to the documented contract received no body pose at all - `base_quat` is the pelvis, which diverges from `torso_link` by 34.4 degrees at 0.6 rad of waist yaw.
