@@ -57,6 +57,8 @@ if TYPE_CHECKING:
 
     from strands_robots.hardware_robot import Robot
 
+from strands_robots.mesh.pacing import Ticker
+
 logger = logging.getLogger(__name__)
 
 # ROS 2 type strings this bridge publishes/subscribes. All must be present in
@@ -365,14 +367,24 @@ class HardwareRtpsBridge(RosTelemetryBase):
 
         cyclonedds has no rclpy-style executor; we ``take()`` available samples
         each tick. ``take`` (not ``read``) so each command is delivered once.
+
+        Paced by :class:`~strands_robots.mesh.pacing.Ticker` rather than
+        ``self._stop.wait(period)``. That wait is a delay, so the time spent
+        delivering a batch of commands was added to the poll period instead of
+        being subtracted from it -- at the 0.02s default an inbound actuation
+        request sat unread in the reader for longer than the 50Hz the period
+        asks for. Nothing here reported that: the loop keeps no rate counter,
+        and ``take`` returning a batch makes a late poll look like a busy one.
         """
-        while not self._stop.is_set():
-            try:
-                for sample in self._command_reader.take(N=10):
-                    self._on_command(sample)
-            except Exception:
-                logger.debug("HardwareRtpsBridge: command poll raised", exc_info=True)
-            self._stop.wait(self._poll_period)
+        with Ticker(self._poll_period, self._stop) as ticker:
+            while not self._stop.is_set():
+                try:
+                    for sample in self._command_reader.take(N=10):
+                        self._on_command(sample)
+                except Exception:
+                    logger.debug("HardwareRtpsBridge: command poll raised", exc_info=True)
+                if ticker.wait():
+                    break
 
     def _start_poll(self) -> None:
         if self._poll_thread is not None and self._poll_thread.is_alive():

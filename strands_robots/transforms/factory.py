@@ -9,6 +9,10 @@ exactly as trainers use a ``"trainer"`` block; the built-in transforms
 (``mock``, ``cosmos_transfer``) are registered at package import through the
 runtime registry instead, because ``cosmos_transfer`` is a generation model
 with no policy identity to hang a JSON block on.
+
+Both routes resolve through :func:`import_transform_class`, so
+:func:`list_transforms`, :func:`import_transform_class` and
+:func:`create_transform` answer for the same set of names.
 """
 
 from __future__ import annotations
@@ -77,16 +81,33 @@ def list_transforms() -> list[str]:
 def import_transform_class(provider: str) -> type[DatasetTransform]:
     """Import and return the :class:`DatasetTransform` subclass for a provider.
 
-    Resolution order:
-      1. The provider's ``"transform"`` block in policies.json.
-      2. Auto-discovery fallback: ``strands_robots.transforms.<provider>`` with
+    The one resolver behind :func:`create_transform`, which adds nothing but
+    the constructor call - so a name either function can resolve is a name both
+    can. Resolution order mirrors
+    :func:`~strands_robots.training.factory.import_trainer_class`:
+
+      1. The runtime registry (:func:`register_transform`), resolving an alias
+         to its provider first. This rung comes first so re-registering a name
+         overrides a shipped ``transform`` block rather than being ignored by
+         it.
+      2. The provider's ``"transform"`` block in policies.json.
+      3. Auto-discovery fallback: ``strands_robots.transforms.<provider>`` with
          a class named ``<Provider>Transform`` or the first
          :class:`DatasetTransform` subclass.
 
+    Rung 1 is not optional for the shipped transforms either: ``mock`` and
+    ``cosmos_transfer`` register at runtime, so without it they resolve only
+    because their modules happen to be auto-discoverable - and a provider
+    registered through the documented :func:`register_transform` route, which
+    ships no module under ``strands_robots.transforms``, has no other rung at
+    all.
+
     Raises:
-        ValueError: If no transform can be resolved for the provider - no
-            ``transform`` block in policies.json and no
-            ``strands_robots.transforms.<provider>`` module exists.
+        ValueError: If no transform can be resolved for the provider - not in
+            the runtime registry, no ``transform`` block in policies.json and
+            no ``strands_robots.transforms.<provider>`` module exists. The
+            message names the providers this resolver can serve, which is the
+            same set :func:`list_transforms` advertises.
         ImportError: If a module that DOES exist can't be imported: the
             declared policies.json module, or the auto-discovered provider
             module whose own dependency is missing. "Your dependency is
@@ -95,6 +116,11 @@ def import_transform_class(provider: str) -> type[DatasetTransform]:
             "available transforms" list and sending the caller to the
             wrong one.
     """
+    # 1. Runtime registry (register_transform), alias first.
+    resolved = _runtime_aliases.get(provider, provider)
+    if resolved in _runtime_registry:
+        return _runtime_registry[resolved]()
+
     cfg = get_policy_provider(provider)
     if cfg and "transform" in cfg:
         tcfg = cfg["transform"]
@@ -143,11 +169,5 @@ def create_transform(provider: str, **kwargs: Any) -> DatasetTransform:
     Raises:
         ValueError: If no transform is registered for the provider.
     """
-    # 1. Runtime registry first (built-ins and user-registered transforms).
-    resolved = _runtime_aliases.get(provider, provider)
-    if resolved in _runtime_registry:
-        return _runtime_registry[resolved]()(**kwargs)
-
-    # 2. Registry / auto-discovery.
     TransformClass = import_transform_class(provider)
     return TransformClass(**kwargs)

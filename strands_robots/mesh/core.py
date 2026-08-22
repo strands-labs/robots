@@ -23,8 +23,10 @@ from collections.abc import Callable
 from typing import Any
 
 from strands_robots._mesh_switch import mesh_env_request
+from strands_robots.bus_access import read_joints, read_observation
 from strands_robots.mesh import security as _security
 from strands_robots.mesh.audit import log_safety_event
+from strands_robots.mesh.pacing import Ticker
 from strands_robots.mesh.sensors import SensorLoopsMixin
 from strands_robots.mesh.session import (
     CAMERA_HZ,
@@ -1011,15 +1013,26 @@ class Mesh(SensorLoopsMixin):
         return payload
 
     def _heartbeat_loop(self) -> None:
-        period = 1.0 / HEARTBEAT_HZ
-        while self._running:
-            try:
-                self.publish(f"strands/{self.peer_id}/presence", self._build_presence())
-                prune_peers()
-            except Exception as exc:
-                logger.debug("[mesh] %s: heartbeat tick error: %s", self.peer_id, exc)
-            if self._stop_event.wait(period):
-                break
+        """Announce this peer and prune stale ones at ``HEARTBEAT_HZ``.
+
+        Paced by :class:`~strands_robots.mesh.pacing.Ticker`, and the stakes here
+        are the smallest of the converted loops -- worth saying rather than
+        borrowing the camera loop's severity. ``HEARTBEAT_HZ`` is 2.0 and the tick
+        body is cheap, so the period the old ``Event.wait`` added the work to was
+        already close to right. ``PEER_TIMEOUT`` is 10s, so staleness was never at
+        risk; what suffered was freshness -- how fast a newly started robot
+        appears in the fleet view, how recent "last seen" really is, and how
+        promptly the pruning that shares this tick notices a peer that went away.
+        """
+        with Ticker(1.0 / HEARTBEAT_HZ, self._stop_event) as ticker:
+            while self._running:
+                try:
+                    self.publish(f"strands/{self.peer_id}/presence", self._build_presence())
+                    prune_peers()
+                except Exception as exc:
+                    logger.debug("[mesh] %s: heartbeat tick error: %s", self.peer_id, exc)
+                if ticker.wait():
+                    break
 
     def _on_presence(self, sample: Any) -> None:
         """Handle a peer's presence broadcast.
@@ -1087,16 +1100,27 @@ class Mesh(SensorLoopsMixin):
 
     # State - outgoing
     def _state_loop(self) -> None:
-        period = 1.0 / STATE_HZ
-        while self._running:
-            try:
-                state = self._read_state()
-                if state:
-                    self.publish(f"strands/{self.peer_id}/state", state)
-            except Exception as exc:
-                logger.debug("[mesh] %s: state tick error: %s", self.peer_id, exc)
-            if self._stop_event.wait(period):
-                break
+        """Publish this peer's state at ``STATE_HZ``.
+
+        Paced by :class:`~strands_robots.mesh.pacing.Ticker` rather than by
+        ``self._stop_event.wait(period)``, which is a delay where a rate needs a
+        deadline: the time :meth:`_read_state` spends on the serial bus was added
+        to the period instead of being subtracted from it, so the loop published
+        at ``1 / (period + read)`` and the achieved rate was reported as if it
+        were the robot's limit. ``wait()`` keeps ``Event.wait``'s sense -- True
+        means stop -- and notices a stop within a 10ms slice rather than at the
+        end of a tick.
+        """
+        with Ticker(1.0 / STATE_HZ, self._stop_event) as ticker:
+            while self._running:
+                try:
+                    state = self._read_state()
+                    if state:
+                        self.publish(f"strands/{self.peer_id}/state", state)
+                except Exception as exc:
+                    logger.debug("[mesh] %s: state tick error: %s", self.peer_id, exc)
+                if ticker.wait():
+                    break
 
     def _warn_read_state_once(self, category: str, exc: BaseException) -> None:
         """Report a degraded :meth:`_read_state` probe, once per category.
@@ -1148,7 +1172,14 @@ class Mesh(SensorLoopsMixin):
         try:
             inner = getattr(r, "robot", None)
             if inner is not None and hasattr(inner, "get_observation") and getattr(inner, "is_connected", False):
-                obs = inner.get_observation()
+                # Through the device's bus lock: this probe shares one serial
+                # conversation with the camera publisher, the sensors probe and
+                # teleop, and two readers at once make the SDK refuse the whole
+                # exchange ("Port is in use!"). Joints ONLY, because a camera
+                # raising inside get_observation() discards the joint positions
+                # already in hand -- one dead USB camera used to erase an arm's
+                # entire joint telemetry while its presence stayed healthy.
+                obs = read_joints(inner)
                 cam_keys = set(getattr(getattr(inner, "config", None), "cameras", {}).keys())
                 joints: dict[str, Any] = {}
                 for key, value in obs.items():
@@ -1239,14 +1270,27 @@ class Mesh(SensorLoopsMixin):
         return hz if hz > 0 else 0.0
 
     def _camera_loop(self, hz: float) -> None:
-        period = 1.0 / hz
-        while self._running:
-            try:
-                self._publish_cameras_once()
-            except Exception as exc:
-                logger.debug("[mesh] %s: camera tick error: %s", self.peer_id, exc)
-            if self._stop_event.wait(period):
-                break
+        """Publish camera frames at ``hz``.
+
+        This is the loop where the old pacing cost the most, because grabbing a
+        frame is slow AND that cost was added on top of the period rather than
+        subtracted from it -- and the rate a recorded dataset's video was
+        actually captured at is the rate this loop achieved, not the ``hz`` the
+        run reported. The ticker treats the period as a deadline, and it DROPS
+        missed deadlines rather than chasing them: a burst of frames stamped
+        microseconds apart is a worse lie about a camera than a gap.
+
+        ``hz`` is resolved by :meth:`_resolve_camera_hz`, which returns 0.0 for
+        anything unusable and disables the loop, so the division is safe.
+        """
+        with Ticker(1.0 / hz, self._stop_event) as ticker:
+            while self._running:
+                try:
+                    self._publish_cameras_once()
+                except Exception as exc:
+                    logger.debug("[mesh] %s: camera tick error: %s", self.peer_id, exc)
+                if ticker.wait():
+                    break
 
     def _publish_cameras_once(self) -> None:
         # Privacy kill switch. Operators on sensitive deployments set
@@ -1277,7 +1321,9 @@ class Mesh(SensorLoopsMixin):
 
         obs = None
         try:
-            obs = inner.get_observation()
+            # lerobot reads the MOTORS before it grabs any frame, so this is a
+            # bus reader too and must take the same lock as the probes.
+            obs = read_observation(inner)
         except Exception:
             pass
 
