@@ -61,9 +61,9 @@ def test_policy_mode_returns_action_chunk_and_world_video(policy):
     the predicted world video on last_rollout. The diffusers backend emits the
     model's raw unified action (DROID = 9D end-effector pose + 1D gripper), so
     the step layout and dimensionality are derived from the embodiment registry
-    rather than restated here, and every value is asserted finite and within the
-    raw normalized [-1, 1] range - isinstance(v, float) alone passes on NaN/inf,
-    which is exactly what a bad checkpoint or dtype drift emits.
+    rather than restated here, and every value is asserted finite and of sane
+    magnitude - isinstance(v, float) alone passes on NaN/inf, which is exactly
+    what a bad checkpoint or dtype drift emits.
     """
     from strands_robots.policies.cosmos3.embodiments import get_embodiment
 
@@ -79,16 +79,20 @@ def test_policy_mode_returns_action_chunk_and_world_video(policy):
     assert policy.last_rollout["video"] is not None  # predicted world video
 
     # The raw chunk is the model's quantile-normalized unified action: every
-    # value finite and in [-1, 1] (small eps for numeric slop), the second
-    # dimension the embodiment's raw action dim, and not identically zero -
-    # an all-zeros chunk is the classic silent-failure shape this repo forbids
-    # as a failure default.
+    # value finite and of sane magnitude, the second dimension the embodiment's
+    # raw action dim, and not identically zero - an all-zeros chunk is the
+    # classic silent-failure shape this repo forbids as a failure default.
+    # The normalization maps q01 -> -1 and q99 -> +1 (action_decode.
+    # denormalize_quantile), so the distribution's outer 2 percent sits beyond
+    # magnitude 1 by construction and nothing in the cosmos3 path clamps the
+    # sampler output - a hard |v| <= 1 bound would fail on a legitimate tail
+    # value and report it as a bad checkpoint. Bounding the *scale* instead
+    # keeps every mis-scale and dtype-drift failure this assertion is for.
     chunk = np.asarray(policy.last_rollout["action"], dtype=np.float64)
     assert chunk.ndim == 2
     assert chunk.shape[1] == embodiment.raw_action_dim
     assert np.isfinite(chunk).all()
-    eps = 1e-4
-    assert (np.abs(chunk) <= 1.0 + eps).all(), (chunk.min(), chunk.max())
+    assert (np.abs(chunk) <= 10.0).all(), (chunk.min(), chunk.max())
     assert np.any(chunk != 0.0)
 
 
