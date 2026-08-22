@@ -401,8 +401,8 @@ class Cosmos3Policy(Policy):
                 than raise (:meth:`~strands_robots.policies.base.Policy.get_actions`),
                 and this provider's answer depends on the ``backend`` it was
                 constructed with. None of the well-known keys the ABC lists
-                (``target_pose``, ``target_joints``, ``world_update``) is read by
-                either backend.
+                (``target_pose``, ``target_joints``, ``target_velocity``,
+                ``world_update``) is read by either backend.
 
         Returns:
             ``list[dict]`` - one action dict per predicted timestep.

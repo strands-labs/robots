@@ -288,9 +288,9 @@ class TestStopRecordingEmptyDataset:
     NOT fail a dataset that was filled via per-episode save_episode.
 
     Regression for the silent empty-dataset bug. A recording driven by a path
-    that never feeds the dataset recorder (eval_policy / evaluate /
-    replay_episode / a bare step loop - only run_policy's on_frame hook calls
-    add_frame) leaves the recorder with zero frames. Previously stop_recording
+    that never fed the dataset recorder (replay_episode, teleoperate or a bare
+    step loop - none of which takes an on_frame hook, while run_policy installs
+    one itself) leaves the recorder with zero frames. Previously stop_recording
     called save_episode unconditionally, discarded its error return, and
     reported success with "0 frames, 0 episode(s)", producing a dataset with
     only meta/info.json (no parquet/video).
@@ -311,7 +311,7 @@ class TestStopRecordingEmptyDataset:
         text = result["content"][0]["text"]
         assert "captured no frames" in text
         assert "0 frames" in text
-        # actionable guidance: point to the only path that records frames.
+        # actionable guidance: name the path that records frames on its own.
         assert "run_policy" in text
         # save_episode must NOT be called on the empty buffer.
         assert rec.calls == []

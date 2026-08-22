@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import re
 import threading
 from typing import Any
 
@@ -79,24 +80,64 @@ def test_reset_default_is_noop():
     assert p.reset(seed=42) is None
 
 
+def _documented_well_known_keys() -> list[str]:
+    """The well-known goal keys ``Policy.get_actions`` documents, from its docstring."""
+    doc = Policy.get_actions.__doc__ or ""
+    start = doc.find("are **well-known**")
+    end = doc.find("Providers MUST ignore unknown")
+    if start == -1 or end == -1 or end <= start:
+        return []
+    return re.findall(r"^\s*-\s+``([A-Za-z_][A-Za-z0-9_]*)\s*:", doc[start:end], re.MULTILINE)
+
+
+# One representative value per well-known goal key, on that key's documented
+# domain. Keyed by name so the round-trip below covers whatever
+# ``Policy.get_actions`` currently documents rather than a copy of the list that
+# can fall behind it -- this smoke test asserted only the first three for as long
+# as ``target_velocity`` was missing from the ABC, so it agreed with the omission
+# instead of catching it. A key added to the contract with no sample here fails
+# the completeness assertion rather than being silently skipped.
+_WELL_KNOWN_KWARG_SAMPLES: dict[str, Any] = {
+    "target_pose": [0.5, 0.0, 0.3, 1.0, 0.0, 0.0, 0.0],
+    "target_joints": {"j0": 0.1, "j1": -0.2},
+    "target_velocity": [0.5, 0.0, 0.0],
+    "world_update": None,
+}
+
+
 def test_well_known_kwargs_are_accepted_by_contract():
-    """Non-VLA providers receive goals via ``**kwargs`` (target_pose,
-    target_joints, world_update). The Policy contract requires get_actions
-    to ignore unknown kwargs rather than raising, so callers can pass
-    shared keys across providers without coupling to a backend."""
+    """Every well-known goal key the ABC documents must round-trip through a provider.
+
+    Non-VLA providers receive goals via the well-known ``**kwargs`` keys, and the
+    Policy contract requires ``get_actions`` to ignore unknown kwargs rather than
+    raising, so callers can pass shared keys across providers without coupling to
+    a backend.
+
+    The key set is read from the contract itself. The exact vocabulary and its
+    parity with shipped provider code are pinned in
+    ``test_well_known_goal_kwargs_have_one_definition.py``; this is the
+    behavioural half -- that passing all of them at once is actually accepted.
+    """
+    documented = set(_documented_well_known_keys())
+    assert documented, "parsed no well-known goal keys from the Policy.get_actions contract"
+    unsampled = sorted(documented - set(_WELL_KNOWN_KWARG_SAMPLES))
+    assert not unsampled, (
+        f"Policy.get_actions documents well-known goal keys with no sample value "
+        f"here: {unsampled}. Add one on that key's documented domain so this "
+        "round-trip covers the whole contract."
+    )
+
     p = MockPolicy()
     p.set_robot_state_keys(["j0", "j1"])
     obs = {"observation.state": [0.0, 0.0]}
 
-    # All three well-known kwargs together must round-trip cleanly through
-    # the sync wrapper -- this is the smoke test that pins the documented
-    # API surface for non-VLA providers.
+    # All well-known kwargs together must round-trip cleanly through the sync
+    # wrapper -- this is the smoke test that pins the documented API surface for
+    # non-VLA providers.
     actions = p.get_actions_sync(
         obs,
         instruction="",
-        target_pose=[0.5, 0.0, 0.3, 1.0, 0.0, 0.0, 0.0],
-        target_joints={"j0": 0.1, "j1": -0.2},
-        world_update=None,
+        **{key: _WELL_KNOWN_KWARG_SAMPLES[key] for key in sorted(documented)},
     )
     assert isinstance(actions, list) and actions, "Policy must return a non-empty action list"
     assert all(isinstance(a, dict) for a in actions)
