@@ -63,6 +63,7 @@ nav:
 - Datasets:
   - Recording: recording.md
   - Steerable Annotation: data/annotation.md
+  - Augmentation Transforms: data/transforms.md
   - Episode Labels (VLM judge): data/episode-labels.md
 - Remote Inference: inference/remote.md
 - Examples:
