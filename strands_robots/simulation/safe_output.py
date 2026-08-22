@@ -128,6 +128,60 @@ def _confinement_refusal(
     )
 
 
+def _symlink_destination_hint(raw: Path, *, sandbox_root: Path | None, allow_abs: bool) -> str:
+    """Return a suffix naming where a refused symlink points, or ``""``.
+
+    Refusing to follow a link planted at the target is right - it is an
+    arbitrary-write vector - but the refusal has to leave the caller somewhere
+    to go, and on macOS the single most reachable scratch path IS a symlink:
+    ``/tmp`` points at ``/private/tmp``. A caller (often an LLM) that asked for
+    the most ordinary directory on the machine got a refusal that read like an
+    attack had been detected and named no way forward. Naming the destination is
+    the missing step; the link itself is still never followed.
+
+    Two things this must not do.
+
+    It must not raise. Building a refusal is part of answering the caller, and
+    ``Path.resolve(strict=False)`` is not total: on CPython 3.12 a symlink cycle
+    raises ``RuntimeError("Symlink loop from ...")`` (3.13 returns the link
+    unresolved instead), and both are inside this package's supported range. A
+    handler naming only ``OSError`` would therefore catch neither, letting a
+    ``RuntimeError`` escape a function documented to raise ``ValueError`` - past
+    the ``except ValueError`` every sink maps to a structured tool error.
+
+    It must not advertise a path this same call would refuse. Under active
+    confinement a link pointing outside the sandbox has its destination named as
+    a diagnosis rather than offered as a remedy, so a caller who follows the
+    message cannot land in a second refusal.
+
+    Args:
+        raw: The symlink the caller supplied, already ``expanduser()``-expanded.
+        sandbox_root: Directory the path must resolve under, or ``None`` for
+            guards-only mode.
+        allow_abs: Whether the absolute-path opt-in is in force for this sink.
+
+    Returns:
+        A suffix beginning ``" - it points at ..."``, or ``""`` when there is
+        nothing honest to say: a link this call cannot resolve, or one that
+        resolves to itself.
+    """
+    try:
+        dest = raw.resolve(strict=False)
+    except (OSError, RuntimeError):
+        return ""
+    if dest == raw:
+        return ""
+    if sandbox_root is not None and not allow_abs:
+        try:
+            dest.relative_to(sandbox_root)
+        except ValueError:
+            return (
+                f" - it points at {str(dest)!r}, which is outside the sandbox "
+                f"{sandbox_root} (pass a path under the sandbox instead)"
+            )
+    return f" - it points at {str(dest)!r}, pass that path instead"
+
+
 def validate_output_path(
     output_path: str,
     *,
@@ -191,7 +245,10 @@ def validate_output_path(
         raw = sandbox_root / raw
     # Refuse to follow a symlink planted at the target (arbitrary-write vector).
     if raw.is_symlink():
-        raise ValueError(f"{label} {output_path!r} is a symlink - refusing to follow")
+        raise ValueError(
+            f"{label} {output_path!r} is a symlink - refusing to follow"
+            f"{_symlink_destination_hint(raw, sandbox_root=sandbox_root, allow_abs=allow_abs)}"
+        )
 
     # resolve() normalizes "..", expands the chain, and follows any intermediate
     # symlinks, so the confinement check below sees the true on-disk destination.

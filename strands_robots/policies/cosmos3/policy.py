@@ -64,6 +64,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
+from strands_robots.policies._state_keys import drop_velocity_siblings
 from strands_robots.policies.base import Policy
 from strands_robots.utils import name_list_error, tcp_port_error
 
@@ -498,6 +499,13 @@ class Cosmos3Policy(Policy):
         Priority:
             1. Explicit keys already present in robot_obs / via obs_mapping.
             2. ``robot_state_keys`` (first 7 = joints, a 'gripper'-named key).
+            3. When no ``robot_state_keys`` was declared, the observation's own
+               scalar keys in insertion order. That ordering is position-only:
+               :func:`~strands_robots.policies._state_keys.drop_velocity_siblings`
+               drops each ``<joint>.vel`` whose ``<joint>`` is present, so a sim
+               observation - which emits a velocity companion beside every joint
+               position - does not put a velocity in every other slot of the
+               7-joint request and truncate the trailing joints away.
         """
         if "observation/joint_position" in obs and "observation/gripper_position" in obs:
             return  # already provided via mapping
@@ -505,8 +513,11 @@ class Cosmos3Policy(Policy):
         joints: list[float] = []
         gripper: float | None = None
 
-        # Use declared state-key order when available.
-        state_keys = self.robot_state_keys or [k for k, v in robot_obs.items() if np.isscalar(v) or np.ndim(v) == 0]
+        # Use declared state-key order when available; an ordering inferred from
+        # the observation is position-only (see drop_velocity_siblings).
+        state_keys = self.robot_state_keys or drop_velocity_siblings(
+            [k for k, v in robot_obs.items() if np.isscalar(v) or np.ndim(v) == 0]
+        )
         present = [k for k in state_keys if k in robot_obs]
         # First pass: pull any explicitly gripper/finger-named key as the gripper.
         gripper_keys = [k for k in present if ("gripper" in k.lower() or "finger" in k.lower())]

@@ -685,10 +685,14 @@ class CuroboPolicy(Policy):
         Dispatch order for joint-space goals:
 
         1. New API: ``MotionPlanner.plan_js(JointState, JointState)``
-           (or any other goal-aware joint-space entry point cuRobo
-           lands; we probe ``plan_js`` first, then ``plan_single_js``,
-           then ``plan_single`` as a last resort).
-        2. Legacy / stub API: ``plan_single_js(JointState, JointState)``.
+        2. Legacy / stub API: ``plan_single_js(JointState, JointState)``
+        3. Last resort: ``plan_single(JointState, JointState)`` - a planner
+           exposing neither joint-space entry point still plans a joint-space
+           goal through its Cartesian-shaped entry point.
+
+        Both joint-space names exist because cuRobo renamed that entry point
+        between its legacy and ``main`` surfaces, so a planner is free to
+        expose either one and the first it has is the one used.
         """
         # Refresh the collision scene if requested.
         if world_update is not None:
