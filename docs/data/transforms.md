@@ -41,7 +41,13 @@ record (strands-robots)  ->  transform (this page)  ->  train (create_trainer)
    flip. The surface measures which columns the verdict consulted, and a run
    whose verdict read no image column is reported as ungated
    (`revalidated=False`, with the cause in `message`) rather than as a clean
-   gated pass.
+   gated pass. Any way the verdict reads a column counts - subscripting it,
+   `get()`, iterating `items()` / `values()`, comparing the whole mapping, or
+   taking a copy first (`dict(episode)`, `{**episode}`, `episode.copy()`) -
+   because each of those hands the verdict the pixel values, and the
+   accusation is only honest when the measurement saw everything the verdict
+   saw. Only reads that reach no value at all (`keys()`, iterating keys, `in`,
+   `len()`) leave a verdict pixel-blind.
 
 ## Usage
 

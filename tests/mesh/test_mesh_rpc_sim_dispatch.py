@@ -5,7 +5,8 @@ module pins the sim-peer branch added by issue #303: ``tell()`` against a
 peer whose ``robot`` is a ``Simulation`` (or any ``SimEngine``-shaped
 object) routes ``execute`` -> ``run_policy`` and ``start`` -> ``start_policy``
 with the issue #300 well-known goal payload (``target_pose`` /
-``target_joints`` / ``world_update``) forwarded into ``policy_kwargs`` - the
+``target_joints`` / ``target_velocity`` / ``world_update``) forwarded into
+``policy_kwargs`` - the
 runner parameter that reaches ``get_actions(obs, instruction, **kwargs)``,
 which is where every provider reads that goal. Constructor extras
 (``model_path`` / ``server_address`` / ...) keep travelling in
@@ -176,6 +177,7 @@ def test_planner_providers_read_the_goal_per_call_not_at_construction() -> None:
     """
     from strands_robots.policies.curobo.policy import CuroboPolicy
     from strands_robots.policies.moveit2.policy import MoveIt2Policy
+    from strands_robots.policies.wbc.policy import WBCPolicy
 
     for policy_class in (CuroboPolicy, MoveIt2Policy):
         constructor = inspect.signature(policy_class.__init__).parameters
@@ -186,10 +188,27 @@ def test_planner_providers_read_the_goal_per_call_not_at_construction() -> None:
             "filled from a different payload"
         )
 
-        per_call = inspect.signature(policy_class.get_actions).parameters
+    for goal_reader in (CuroboPolicy, MoveIt2Policy, WBCPolicy):
+        per_call = inspect.signature(goal_reader.get_actions).parameters
         assert any(p.kind is p.VAR_KEYWORD for p in per_call.values()), (
-            f"{policy_class.__name__}.get_actions takes no **kwargs, so it cannot receive the goal"
+            f"{goal_reader.__name__}.get_actions takes no **kwargs, so it cannot receive the goal"
         )
+
+    # WBC is the one provider that names a goal key in BOTH places, so
+    # "no constructor parameter" is not the invariant that covers it. What
+    # makes ``policy_kwargs`` the right sink there is precedence: the
+    # constructor value is a documented STATIC default and a per-call kwarg
+    # overrides it. Were that reversed, a mesh caller telling a walking peer
+    # a new direction would be answered with the one it was built with.
+    assert "target_velocity" in inspect.signature(WBCPolicy.__init__).parameters
+    policy = WBCPolicy(allow_missing_models=True, target_velocity=[0.1, 0.0, 0.0])
+    _, built_with = policy._resolve_command({})
+    _, told_over_the_mesh = policy._resolve_command({"target_velocity": [0.9, 0.0, 0.0]})
+    assert list(built_with) == [0.1, 0.0, 0.0]
+    assert list(told_over_the_mesh) == [0.9, 0.0, 0.0], (
+        "a per-call target_velocity must override the constructor default, or the goal the mesh "
+        "forwards is discarded in favour of the one the peer was built with"
+    )
 
 
 def test_execute_forwards_constructor_extras_via_policy_config() -> None:
@@ -371,3 +390,121 @@ def test_hardware_path_unchanged_when_run_policy_absent() -> None:
     )
     assert out == {"executed": "go"}
     assert len(hw.calls) == 1
+
+
+# The documented goal set, graded against both layers that carry it
+def _documented_goal_keys() -> list[str]:
+    """The #300 goal keys ``SimEngine.run_policy`` documents, read from its docstring.
+
+    Derived rather than listed so a key added to that contract is graded on
+    arrival. ``run_policy``'s ``policy_kwargs`` entry is the surface that
+    offers the mesh path as the analogue of the local call, which is what
+    makes it the authority on which keys the mesh has to carry.
+    """
+    import ast
+    import re
+    from pathlib import Path
+
+    import strands_robots.simulation.base as base_module
+
+    source = Path(base_module.__file__).read_text(encoding="utf-8")
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.FunctionDef) and node.name == "run_policy":
+            doc = ast.get_docstring(node) or ""
+            break
+    else:  # pragma: no cover - run_policy is defined on the ABC
+        raise AssertionError("SimEngine.run_policy not found in strands_robots.simulation.base")
+
+    start = doc.index("policy_kwargs:")
+    # The entry runs to the next same-indent Args label; ``n_episodes`` is
+    # the one that follows it. Read to there rather than to a blank line,
+    # because the entry itself wraps across several.
+    entry = " ".join(doc[start : doc.index("n_episodes:", start)].split())
+    return sorted({t for t in re.findall(r"``(\w+)``", entry) if t.startswith("target_") or t == "world_update"})
+
+
+def test_the_documented_goal_set_is_not_empty() -> None:
+    """Non-vacuity: a docstring reflow that hides the entry must not read as clean."""
+    keys = _documented_goal_keys()
+    assert len(keys) >= 3, f"only {keys} parsed out of run_policy's policy_kwargs entry"
+    assert "target_velocity" in keys
+
+
+def test_the_wire_admits_every_documented_goal_key() -> None:
+    """A key the wire validator omits is dropped, not refused.
+
+    ``validate_command`` builds its output key by key from an allowlist, so
+    an unlisted field never reaches the dispatcher and nothing says so.
+    """
+    from strands_robots.mesh import security
+
+    sample: dict[str, Any] = {
+        "target_pose": [0.3, 0.0, 0.4, 1.0, 0.0, 0.0, 0.0],
+        "target_joints": {"joint_0": 0.5},
+        "target_velocity": [0.5, 0.0, 0.2],
+        "world_update": {"obstacles": []},
+    }
+    dropped = []
+    for key in _documented_goal_keys():
+        assert key in sample, f"no probe value for {key}; extend `sample`"
+        out = security.validate_command(
+            {"action": "execute", "instruction": "go", "policy_provider": "mock", key: sample[key]}
+        )
+        if key not in out:
+            dropped.append(key)
+    assert not dropped, f"the wire validator drops documented #300 goal keys: {dropped}"
+
+
+def test_the_dispatcher_forwards_every_documented_goal_key() -> None:
+    """A key the wire admits and this tuple omits is dropped one layer later."""
+    missing = [key for key in _documented_goal_keys() if key not in Mesh._SIM_WELL_KNOWN_POLICY_KWARGS]
+    assert not missing, (
+        f"_SIM_WELL_KNOWN_POLICY_KWARGS omits documented #300 goal keys {missing}; "
+        f"it carries {list(Mesh._SIM_WELL_KNOWN_POLICY_KWARGS)}"
+    )
+
+
+def test_the_locomotion_goal_reaches_policy_kwargs() -> None:
+    """Telling a walking peer where to walk arrives as a per-call goal.
+
+    ``target_velocity`` is the whole locomotion command for WBC / wbc_gait,
+    and those providers are reachable over the mesh because the policy
+    provider allowlist is derived from the registry. Without this the peer
+    ran the rollout with no goal and reported success.
+    """
+    sim = _FakeSim(robots=["unitree_g1"])
+    m = Mesh(sim, peer_id="sim-locomotion")
+    out = m._dispatch(
+        {
+            "action": "execute",
+            "instruction": "walk forward",
+            "policy_provider": "wbc",
+            "target_velocity": [0.5, 0.0, 0.2],
+        }
+    )
+    assert out["status"] == "success"
+    _, kwargs = sim.run_policy_calls[0]
+    assert kwargs["policy_kwargs"]["target_velocity"] == [0.5, 0.0, 0.2]
+    # The goal is a per-call kwarg, never a constructor kwarg.
+    assert "target_velocity" not in kwargs.get("policy_config", {})
+
+
+def test_an_undocumented_goal_shaped_key_is_still_dropped() -> None:
+    """The allowlist is not widened generally - only the documented set travels."""
+    from strands_robots.mesh import security
+
+    out = security.validate_command(
+        {
+            "action": "execute",
+            "instruction": "go",
+            "policy_provider": "mock",
+            "target_acceleration": [1.0, 0.0, 0.0],
+        }
+    )
+    assert "target_acceleration" not in out
+
+    sim = _FakeSim(robots=["unitree_g1"])
+    m = Mesh(sim, peer_id="sim-unknown-goal")
+    m._dispatch({**out, "target_acceleration": [1.0, 0.0, 0.0]})
+    _, kwargs = sim.run_policy_calls[0]
+    assert "target_acceleration" not in kwargs["policy_kwargs"]

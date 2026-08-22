@@ -131,6 +131,14 @@ command at all the controller holds a standing balance (zero velocity, default
 height + level orientation). Omitting a key (or passing `None`) selects the next
 source in the precedence chain, so `None` is how a kwarg spells "not supplied".
 
+`target_velocity` is one of the issue #300 well-known goal keys, so the mesh
+path forwards it the same way it forwards a planner's goal:
+`mesh.tell(peer, "walk forward", policy_provider="wbc", target_velocity=[0.5, 0.0, 0.0])`.
+It travels as a per-call kwarg, which is why it overrides the constructor
+default rather than being read as one. `target_orientation` and `height` are
+WBC's own kwargs rather than part of that shared vocabulary - set them on a
+local `run_policy(policy_kwargs=...)` call, or as constructor defaults.
+
 Each key's accepted domain is the one `WBCConfig` enforces for the field it
 overrides - `height` for `height_cmd`, `target_orientation` for `rpy_cmd` - so a
 value the config refuses is not reachable through the kwarg documented to take

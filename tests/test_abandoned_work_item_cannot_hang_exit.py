@@ -323,6 +323,7 @@ class TestEveryAbandoningFixtureUsesTheDaemonExecutor:
             if _executor_constructors(tree := ast.parse(path.read_text())) and _abandons_a_work_item(tree)
         }
         assert abandoning == {
+            "test_hardware_bus_is_shared_with_the_mesh.py",
             "test_hardware_cleanup_disconnects.py",
             "test_hardware_policy_port_domain.py",
             "test_hardware_robot_lifecycle.py",

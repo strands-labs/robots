@@ -36,6 +36,7 @@ from strands.tools.tools import AgentTool
 from strands.types._events import ToolResultEvent
 from strands.types.tools import ToolResult, ToolSpec, ToolUse
 
+from strands_robots.bus_access import read_observation, write_action
 from strands_robots.ros_telemetry import ROS2_SYSTEM_INSTALL_HINT
 from strands_robots.teleop_mixin import TeleopMixin
 from strands_robots.utils import (
@@ -887,7 +888,7 @@ class Robot(TeleopMixin, AgentTool):
                     }
                 ],
             }
-        observation = self.robot.get_observation()
+        observation = read_observation(self.robot)
         self._publish_ros_telemetry(observation, skip_images=skip_images)
         return {
             "status": "success",
@@ -1423,7 +1424,7 @@ class Robot(TeleopMixin, AgentTool):
         """Initialize policy with robot state keys."""
         try:
             # Get robot state keys from observation
-            test_obs = await asyncio.to_thread(self.robot.get_observation)
+            test_obs = await asyncio.to_thread(read_observation, self.robot)
 
             # Filter out camera keys to get robot state keys
             camera_keys = []
@@ -1594,7 +1595,7 @@ class Robot(TeleopMixin, AgentTool):
                 and not self._shutdown_event.is_set()
             ):
                 # Get observation from robot
-                observation = await asyncio.to_thread(self.robot.get_observation)
+                observation = await asyncio.to_thread(read_observation, self.robot)
 
                 # Mirror the live observation on ROS 2 (no-op unless the bridge
                 # is enabled). Best-effort: never blocks or breaks the loop.
@@ -1627,7 +1628,7 @@ class Robot(TeleopMixin, AgentTool):
                         break
                     if n_steps is not None and self._task_state.step_count >= n_steps:
                         break
-                    await asyncio.to_thread(self.robot.send_action, action_dict)
+                    await asyncio.to_thread(write_action, self.robot, action_dict)
                     self._task_state.step_count += 1
                     # Per-step mesh telemetry: publish_step had consumers
                     # (robot_mesh watch, dashboards) but no producers. Rate-
@@ -2709,7 +2710,9 @@ class Robot(TeleopMixin, AgentTool):
 
         Synchronous so it can be driven from the :class:`TeleopMixin` teleop
         loop thread. Ensures the underlying lerobot robot is connected, then
-        delegates to ``self.robot.send_action``. ``robot_name`` is accepted
+        delegates through :func:`strands_robots.bus_access.write_action`, so a
+        teleop or ROS 2 command shares the bus with the mesh's readers instead of
+        racing them. ``robot_name`` is accepted
         for parity with the multi-robot simulation host but ignored here - a
         hardware ``Robot`` wraps exactly one device.
 
@@ -2731,7 +2734,7 @@ class Robot(TeleopMixin, AgentTool):
                 except Exception:
                     self._close_open_devices()
                     raise
-            self.robot.send_action(action)
+            write_action(self.robot, action)
             return {"status": "success", "content": [{"text": "ok"}]}
         except Exception as e:  # noqa: BLE001 - surface as status, never kill the loop
             logger.error("%s send_action failed: %s", self.tool_name_str, e)

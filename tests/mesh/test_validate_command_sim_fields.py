@@ -4,8 +4,9 @@ The validator at ``strands_robots.mesh.security.validate_command`` now
 admits a small set of sim-peer fields used by ``Mesh._dispatch_sim_policy``:
 
 * ``robot_name`` - disambiguates which robot in a multi-robot sim
-* ``target_pose`` / ``target_joints`` / ``world_update`` - issue #300
-  well-known per-call kwargs forwarded to planner-style policies
+* ``target_pose`` / ``target_joints`` / ``target_velocity`` /
+  ``world_update`` - the issue #300 well-known per-call goal kwargs,
+  forwarded to whichever goal-conditioned policy reads them
 * ``control_frequency`` / ``action_horizon`` / ``fast_mode`` / ``n_steps``
   - sim-side runner controls
 
@@ -113,6 +114,70 @@ class TestTargetJoints:
         joints = {f"j{i}": 0.0 for i in range(sec.MAX_TARGET_JOINTS + 1)}
         with pytest.raises(sec.ValidationError, match="target_joints"):
             sec.validate_command({**_base(), "target_joints": joints})
+
+
+# target_velocity
+class TestTargetVelocity:
+    """The locomotion goal: WBC / wbc_gait ``[vx, vy, omega]``, MotionBricks a direction.
+
+    Its component domain is ``target_pose``'s - finite, in range, a bool
+    refused by name. Its component COUNT is bounded only as DoS defence
+    (:data:`~strands_robots.mesh.security.MAX_TARGET_VELOCITY_COMPONENTS`):
+    the receivers disagree on arity, so the wire cannot pick one without
+    refusing a shape one of them accepts, and each names its own
+    requirement. ``test_the_arity_verdict_belongs_to_the_receiving_policy``
+    pins that division.
+    """
+
+    def test_happy_path(self) -> None:
+        out = sec.validate_command({**_base(), "target_velocity": [0.5, 0.0, 0.2]})
+        assert out["target_velocity"] == [0.5, 0.0, 0.2]
+
+    def test_non_list_rejected(self) -> None:
+        with pytest.raises(sec.ValidationError, match="target_velocity"):
+            sec.validate_command({**_base(), "target_velocity": "0.5,0,0"})
+
+    def test_empty_rejected(self) -> None:
+        with pytest.raises(sec.ValidationError, match="target_velocity"):
+            sec.validate_command({**_base(), "target_velocity": []})
+
+    def test_nan_component_rejected(self) -> None:
+        with pytest.raises(sec.ValidationError, match="target_velocity"):
+            sec.validate_command({**_base(), "target_velocity": [0.5, float("nan"), 0.0]})
+
+    def test_inf_component_rejected(self) -> None:
+        with pytest.raises(sec.ValidationError, match="target_velocity"):
+            sec.validate_command({**_base(), "target_velocity": [0.5, 0.0, float("inf")]})
+
+    def test_bool_component_rejected(self) -> None:
+        """A bool is an ``int`` subclass; read as 1.0 it is a 1 m/s command."""
+        with pytest.raises(sec.ValidationError, match="target_velocity"):
+            sec.validate_command({**_base(), "target_velocity": [True, 0.0, 0.0]})
+
+    def test_oversize_component_rejected(self) -> None:
+        with pytest.raises(sec.ValidationError, match="target_velocity"):
+            sec.validate_command({**_base(), "target_velocity": [1e12, 0.0, 0.0]})
+
+    def test_too_many_components_rejected(self) -> None:
+        velocity = [0.0] * (sec.MAX_TARGET_VELOCITY_COMPONENTS + 1)
+        with pytest.raises(sec.ValidationError, match="target_velocity"):
+            sec.validate_command({**_base(), "target_velocity": velocity})
+
+    def test_the_arity_verdict_belongs_to_the_receiving_policy(self) -> None:
+        """A two-component velocity crosses the wire and the policy refuses it.
+
+        MotionBricks reads ``[vx, vy]``, so refusing two components here
+        would refuse a shape a shipped receiver accepts. WBC needs three and
+        says so itself, naming the field and the count it got.
+        """
+        out = sec.validate_command({**_base(), "target_velocity": [0.5, 0.0]})
+        assert out["target_velocity"] == [0.5, 0.0]
+
+        from strands_robots.policies.wbc.policy import WBCPolicy
+
+        policy = WBCPolicy(allow_missing_models=True)
+        with pytest.raises(ValueError, match=r"target_velocity must have at least 3 elements"):
+            policy._resolve_command({"target_velocity": out["target_velocity"]})
 
 
 # world_update

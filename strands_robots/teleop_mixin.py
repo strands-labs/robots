@@ -736,15 +736,21 @@ class TeleopMixin:
             merge_slew_baseline,
         )
 
-        # The local path uses a wider default than the mesh path because the
-        # shipped SO hardware defaults speak degrees (90 deg/s for a calm sweep,
-        # 372 deg/s for the STS3215 no-load max) and the gripper speaks 0-100.
-        # The mesh path's 8*pi default is radian-scoped and already requires
-        # explicit widening for driver-unit devices; imposing it on the local
-        # loop would refuse ordinary human teleop at default hardware settings.
-        # 500 units/s is above the fastest servo in any shipped unit system
-        # (deg, range-0-100, rad) while still catching encoder glitches and
-        # full-scale jumps that would strip gears.
+        # This default is sized directly against the shipped SO hardware units:
+        # the joints speak degrees (90 deg/s for a calm sweep, 372 deg/s for the
+        # STS3215 no-load max) and the gripper speaks 0-100. 500 units/s is above
+        # the fastest servo in any shipped unit system (deg, range-0-100, rad)
+        # while still catching encoder glitches and full-scale jumps that would
+        # strip gears.
+        #
+        # It stays a constant of its own now that the mesh path is frame-unit
+        # scoped too, because the two bound different things rather than the same
+        # thing at two scales: the mesh default is its whole value envelope
+        # traversed once per second, deliberately loose enough to admit any
+        # driver unit on a stream arriving from another machine, while this loop
+        # reads a leader attached to this host whose unit system is known. So the
+        # mesh bound is the looser of the two, and narrowing it here would be a
+        # policy decision about remote streams made in the local path.
         _LOCAL_SLEW_DEFAULT = 500.0
         _local_slew_str = os.environ.get("STRANDS_TELEOP_SLEW_ABS", "")
         if _local_slew_str:
@@ -784,80 +790,87 @@ class TeleopMixin:
         # bound is that key set, not a time window.
         _LOCAL_VALUE_ABS = math.inf
 
-        while self._teleop_running and not self._teleop_stop_event.is_set():
-            loop_start = time.perf_counter()
-            # ``duration`` is an elapsed-time budget, so the deadline is
-            # compared on the clock it was built from. Read on ``time.time()``
-            # an NTP correction or a resume from suspend moved this comparison
-            # by the size of the step: forward the session ended early with the
-            # leader still held, and backward it kept driving the follower past
-            # the budget the caller asked for. Neither was reported.
-            if deadline is not None and time.monotonic() >= deadline:
-                logger.info("[teleop] duration elapsed (%.1fs); stopping", duration)
-                break
+        # Paced by mesh.pacing.Ticker. Like InputPublisher._publish_loop this loop
+        # already subtracted its own body from the period with perf_counter, so the
+        # arithmetic was not what was wrong with it -- the wait that arithmetic fed
+        # was. The subtraction now has one owner instead of a copy per loop, and on a
+        # host that inflates Event.wait (see mesh.pacing) this loop no longer pays it.
+        # Imported here rather than at module scope: this module is imported by
+        # hardware paths that must not pull in the mesh package on import.
+        from strands_robots.mesh.pacing import Ticker
 
-            merged: ActionDict = {}
-            try:
-                for n in selected:
-                    att = self._teleops[n]
-                    action = att.device.get_action()
-                    action = _normalize_action(action)
-                    if att.map_fn is not None:
-                        action = att.map_fn(action)
-                    # Merge: last-wins, warn once per conflicting key.
-                    for k, v in action.items():
-                        if k in merged and k not in warned_conflicts:
-                            logger.warning(
-                                "[teleop] key %r set by multiple devices; last-wins "
-                                "(device %r). Use map_fn to namespace if unintended.",
-                                k,
-                                n,
-                            )
-                            warned_conflicts.add(k)
-                        merged[k] = v
+        with Ticker(period, self._teleop_stop_event) as ticker:
+            while self._teleop_running and not self._teleop_stop_event.is_set():
+                # ``duration`` is an elapsed-time budget, so the deadline is
+                # compared on the clock it was built from. Read on ``time.time()``
+                # an NTP correction or a resume from suspend moved this comparison
+                # by the size of the step: forward the session ended early with the
+                # leader still held, and backward it kept driving the follower past
+                # the budget the caller asked for. Neither was reported.
+                if deadline is not None and time.monotonic() >= deadline:
+                    logger.info("[teleop] duration elapsed (%.1fs); stopping", duration)
+                    break
 
-                if merged:
-                    # Refuse-and-count, matching the mesh path: clamping toward
-                    # the commanded value would silently alter an actuator
-                    # command. The bound is measured per joint from that joint's
-                    # last sent value, so the allowance grows while a joint is
-                    # still and a refused stream resumes by itself once the
-                    # commanded pose is reachable safely - no resync handshake.
-                    apply_mono = time.perf_counter()
-                    slew_reason = input_frame_slew_violation(
-                        merged, self._teleop_slew_baseline, apply_mono, period, max_slew=_local_slew
-                    )
-                    if slew_reason is not None:
-                        self._teleop_slew_rejected += 1
-                        if self._teleop_slew_rejected <= 5:
-                            logger.warning("[teleop] frame refused: %s", slew_reason)
-                    else:
-                        result = self.send_action(merged, robot_name=robot_name)
-                        if isinstance(result, dict) and result.get("status") == "error":
-                            self._teleop_errors += 1
-                            if self._teleop_errors <= 5:
-                                txt = result.get("content", [{}])[0].get("text", "")
-                                logger.warning("[teleop] send_action error: %s", txt)
-                        # Explicitly parameterised, like the check above: a
-                        # mesh default reaching either call site describes a
-                        # bound this path does not enforce.
-                        self._teleop_slew_baseline = merge_slew_baseline(
-                            self._teleop_slew_baseline,
-                            merged,
-                            apply_mono,
-                            max_slew=_local_slew,
-                            value_abs=_LOCAL_VALUE_ABS,
+                merged: ActionDict = {}
+                try:
+                    for n in selected:
+                        att = self._teleops[n]
+                        action = att.device.get_action()
+                        action = _normalize_action(action)
+                        if att.map_fn is not None:
+                            action = att.map_fn(action)
+                        # Merge: last-wins, warn once per conflicting key.
+                        for k, v in action.items():
+                            if k in merged and k not in warned_conflicts:
+                                logger.warning(
+                                    "[teleop] key %r set by multiple devices; last-wins "
+                                    "(device %r). Use map_fn to namespace if unintended.",
+                                    k,
+                                    n,
+                                )
+                                warned_conflicts.add(k)
+                            merged[k] = v
+
+                    if merged:
+                        # Refuse-and-count, matching the mesh path: clamping toward
+                        # the commanded value would silently alter an actuator
+                        # command. The bound is measured per joint from that joint's
+                        # last sent value, so the allowance grows while a joint is
+                        # still and a refused stream resumes by itself once the
+                        # commanded pose is reachable safely - no resync handshake.
+                        apply_mono = time.perf_counter()
+                        slew_reason = input_frame_slew_violation(
+                            merged, self._teleop_slew_baseline, apply_mono, period, max_slew=_local_slew
                         )
-                        self._teleop_frames += 1
-            except Exception as exc:  # noqa: BLE001 - hot loop, count + rate-limit
-                self._teleop_errors += 1
-                if self._teleop_errors <= 5:
-                    logger.warning("[teleop] loop error: %s", exc)
+                        if slew_reason is not None:
+                            self._teleop_slew_rejected += 1
+                            if self._teleop_slew_rejected <= 5:
+                                logger.warning("[teleop] frame refused: %s", slew_reason)
+                        else:
+                            result = self.send_action(merged, robot_name=robot_name)
+                            if isinstance(result, dict) and result.get("status") == "error":
+                                self._teleop_errors += 1
+                                if self._teleop_errors <= 5:
+                                    txt = result.get("content", [{}])[0].get("text", "")
+                                    logger.warning("[teleop] send_action error: %s", txt)
+                            # Explicitly parameterised, like the check above: a
+                            # mesh default reaching either call site describes a
+                            # bound this path does not enforce.
+                            self._teleop_slew_baseline = merge_slew_baseline(
+                                self._teleop_slew_baseline,
+                                merged,
+                                apply_mono,
+                                max_slew=_local_slew,
+                                value_abs=_LOCAL_VALUE_ABS,
+                            )
+                            self._teleop_frames += 1
+                except Exception as exc:  # noqa: BLE001 - hot loop, count + rate-limit
+                    self._teleop_errors += 1
+                    if self._teleop_errors <= 5:
+                        logger.warning("[teleop] loop error: %s", exc)
 
-            elapsed = time.perf_counter() - loop_start
-            sleep_time = period - elapsed
-            if sleep_time > 0:
-                self._teleop_stop_event.wait(sleep_time)
+                if ticker.wait():
+                    break
 
         self._teleop_running = False
         logger.info("[teleop] loop stopped (%d frames, %d errors)", self._teleop_frames, self._teleop_errors)
