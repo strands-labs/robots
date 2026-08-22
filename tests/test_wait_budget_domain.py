@@ -2,10 +2,11 @@
 
 Both hardware bridges run a background thread that services inbound commands,
 and both let the caller name its cadence: ``HardwareRosBridge``'s ``spin_period``
-and ``HardwareRtpsBridge``'s ``poll_period``. The value is a wait budget handed
-to :meth:`threading.Event.wait`, so unlike a domain id it is not a value the
-transport ever gets to reject - the loop simply runs at whatever cadence the
-argument implies.
+and ``HardwareRtpsBridge``'s ``poll_period``. The value is a wait budget - handed
+to :meth:`threading.Event.wait` on the rclpy bridge and to a
+:class:`~strands_robots.mesh.pacing.Ticker` on the RTPS one - so unlike a domain
+id it is not a value the transport ever gets to reject; the loop simply runs at
+whatever cadence the argument implies.
 
 That makes the failure a hot thread rather than a refused connection.
 ``0``, a negative and ``nan`` all return from ``wait`` immediately, so the loop
@@ -106,6 +107,35 @@ class _RecordingStop:
         return False
 
 
+class _RecordingTicker:
+    """A ticker that records the period it was built with instead of sleeping.
+
+    The RTPS poll loop hands its stored period to a ticker rather than to the
+    stop event, so this stands where :class:`_RecordingStop` stands for the rclpy
+    loop: it makes "which value paces this loop" answerable without a wall clock.
+    """
+
+    def __init__(self, period: Any, stop_event: Any = None) -> None:
+        self.period = period
+        self.stop_event = stop_event
+        self.waits = 0
+        self.closed = False
+
+    def wait(self) -> bool:
+        self.waits += 1
+        return False
+
+    def close(self) -> None:
+        self.closed = True
+
+    # The poll loop enters the ticker with `with`, so the double matches.
+    def __enter__(self) -> _RecordingTicker:
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self.close()
+
+
 class TestWhyAnUnusablePeriodCannotPaceALoop:
     """Executable premise: what :meth:`threading.Event.wait` does with each value.
 
@@ -166,14 +196,34 @@ class TestTheStoredPeriodIsTheWholeCadenceOfTheLoop:
     budget the loop *asks for* rather than on throughput this host achieved.
     """
 
-    def test_the_rtps_poll_loop_paces_itself_with_the_stored_period(self) -> None:
+    def test_the_rtps_poll_loop_paces_itself_with_the_stored_period(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The stored period is what the loop's ticker is built with.
+
+        The loop paces on a ticker rather than on ``_stop.wait(period)``, so the
+        budget is spent once at construction instead of once per iteration. The
+        claim is unchanged - the stored value is the only thing pacing the loop -
+        and it is still checked over a fixed iteration count with no wall clock:
+        the ticker is asked to pace every iteration, and it is released after.
+        """
+        tickers: list[_RecordingTicker] = []
+
+        def _make(period: Any, stop_event: Any = None) -> _RecordingTicker:
+            tickers.append(_RecordingTicker(period, stop_event))
+            return tickers[-1]
+
+        monkeypatch.setattr(rtps_mod, "Ticker", _make)
         bridge = HardwareRtpsBridge.__new__(HardwareRtpsBridge)
         stop = _RecordingStop(iterations=4)
-        bridge._stop = stop  # type: ignore[assignment]  # records the budget instead of waiting
+        bridge._stop = stop  # type: ignore[assignment]  # bounds the loop; no wall-clock wait
         bridge._command_reader = type("_Reader", (), {"take": lambda self, N=10: []})()
         bridge._poll_period = 0.02
         bridge._poll_loop()
-        assert stop.waits == [0.02] * 4
+        assert len(tickers) == 1, "one ticker per loop, built from the stored period"
+        assert tickers[0].period == 0.02
+        assert tickers[0].stop_event is stop, "the loop's stop event must reach the ticker"
+        assert tickers[0].waits == 4, "the ticker paces every iteration"
+        assert tickers[0].closed, "the selector must be released when the loop ends"
+        assert stop.waits == [], "the period is no longer spent on an Event.wait"
 
     def test_the_ros_spin_loop_forwards_the_stored_period_to_the_executor(self) -> None:
         """The rclpy loop spends the period as a ``spin_once`` timeout.

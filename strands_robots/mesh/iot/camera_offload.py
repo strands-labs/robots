@@ -64,6 +64,8 @@ import os
 import time
 from typing import Any
 
+from strands_robots.bus_access import read_observation
+
 logger = logging.getLogger(__name__)
 
 
@@ -253,7 +255,7 @@ def enable_for_mesh(mesh: Any, offloader: CameraOffloader | None = None) -> Came
             return
 
         try:
-            obs = inner.get_observation()
+            obs = read_observation(inner)
         except Exception as exc:  # noqa: BLE001 -- LeRobot get_observation() may raise hardware-specific errors
             logger.debug("[camera_offload] get_observation failed: %s", exc)
             return

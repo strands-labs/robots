@@ -3,10 +3,17 @@ LeRobotDataset, and the result is loadable via create_policy.
 
 Slow + requires lerobot + mujoco. Skipped automatically if either is absent.
 Runs CPU-only, 2 steps - just enough to prove the record->train->load loop.
+
+Hermetic: this trains a real policy inside the *unit* suite, which is the one
+required status check gating every pull request, so anything it fetches becomes a
+merge dependency on a third party answering. The loop reaches the network for
+nothing, and :func:`_record_outbound_connects` holds it to that.
 """
 
 import os
+import socket
 import sys
+from typing import Any
 
 import pytest
 
@@ -14,6 +21,31 @@ lerobot = pytest.importorskip("lerobot")
 pytest.importorskip("mujoco")
 
 from strands_robots.training import TrainSpec, create_trainer  # noqa: E402
+
+
+def _record_outbound_connects(monkeypatch: pytest.MonkeyPatch) -> list[Any]:
+    """Record every non-loopback peer a socket is connected to from here on.
+
+    Records rather than blocks: a refusal would surface as whatever error the
+    caller makes of it, while the recorded address names the host and lets the
+    failure say which dependency was contacted.
+
+    Args:
+        monkeypatch: Pytest fixture; restores the real ``connect`` on teardown.
+
+    Returns:
+        The list the spy appends peer addresses to, empty until something dials.
+    """
+    reached: list[Any] = []
+    real = socket.socket.connect
+
+    def spy(self: socket.socket, address: Any) -> Any:
+        if not (isinstance(address, tuple) and str(address[0]).startswith(("127.", "::1", "localhost"))):
+            reached.append(address)
+        return real(self, address)
+
+    monkeypatch.setattr(socket.socket, "connect", spy)
+    return reached
 
 
 @pytest.fixture(scope="module")
@@ -49,7 +81,8 @@ def recorded_dataset(tmp_path_factory):
 
 
 @pytest.mark.slow
-def test_record_train_load_loop(recorded_dataset, tmp_path):
+def test_record_train_load_loop(recorded_dataset, tmp_path, monkeypatch):
+    reached = _record_outbound_connects(monkeypatch)
     out = str(tmp_path / "e2e_out")
     trainer = create_trainer("lerobot_local", device="cpu")
 
@@ -60,7 +93,17 @@ def test_record_train_load_loop(recorded_dataset, tmp_path):
         steps=2,
         save_freq=2,
         global_batch_size=2,
-        extra={"policy_type": "act", "num_workers": 0},
+        extra={
+            "policy_type": "act",
+            "num_workers": 0,
+            # ACT's config defaults its resnet18 backbone to ImageNet weights,
+            # which is a 47 MB fetch from an external CDN on every run of this
+            # suite. ``base_model=""`` above already asks for ACT from scratch,
+            # and two steps prove the record->train->load seam whether or not
+            # the backbone carries ImageNet priors, so the download buys the
+            # assertions below nothing and makes them depend on that CDN.
+            "policy.pretrained_backbone_weights": None,
+        },
     )
 
     assert trainer.validate(spec) == []
@@ -80,3 +123,12 @@ def test_record_train_load_loop(recorded_dataset, tmp_path):
 
     policy = create_policy(exported, device="cpu")
     assert policy.provider_name == "lerobot_local"
+
+    # Nothing above needs a third party: the dataset is local and the policy
+    # trains from scratch. A reached host here is a merge gate that can go red
+    # for a pull request that changed none of this.
+    assert not reached, (
+        f"the record->train->load loop reached {len(reached)} external host(s) {reached}; "
+        f"this suite is the required check for every pull request, so a fetch here makes "
+        f"the merge gate depend on that host answering"
+    )

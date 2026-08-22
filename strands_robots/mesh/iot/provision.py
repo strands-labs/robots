@@ -49,6 +49,7 @@ import logging
 import os
 import re
 import urllib.request
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -388,6 +389,44 @@ _OPERATOR_POLICY_DOC: dict[str, Any] = {
 _THING_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]{1,128}$")
 
 
+#: Thing attribute the provisioners inject to route fleet safety. The e-stop
+#: fan-out (:data:`~strands_robots.mesh.iot.bootstrap._ESTOP_LAMBDA_SOURCE`)
+#: enumerates every Thing and publishes ``{"action": "stop"}`` only to those
+#: whose value is exactly ``"robot"``, and the ``OperatorShadow`` statement in
+#: :data:`_OPERATOR_POLICY_DOC` reads the same attribute. It is therefore the
+#: module's own routing key rather than a caller-supplied label.
+_MESH_ROLE_ATTRIBUTE = "strands-mesh-role"
+
+
+def _reserved_attribute_error(attributes: Any) -> str | None:
+    """Return a refusal when *attributes* claims the module's routing key.
+
+    The provisioners inject :data:`_MESH_ROLE_ATTRIBUTE` for their own
+    safety routing, so a caller entry of the same name is refused rather
+    than merged: the value decides whether a fleet-wide e-stop reaches the
+    Thing at all, and a Thing carrying any other value is skipped by the
+    fan-out with no error on either side.
+
+    Args:
+        attributes: The caller's ``attributes`` argument, in whatever shape
+            it arrived. A non-mapping is left alone - ``dict(attributes)``
+            downstream owns that refusal, and this check only decides
+            whether a *key* was claimed.
+
+    Returns:
+        The refusal text, or ``None`` when the caller claimed nothing.
+    """
+    if not isinstance(attributes, Mapping) or _MESH_ROLE_ATTRIBUTE not in attributes:
+        return None
+    return (
+        f"attributes may not contain {_MESH_ROLE_ATTRIBUTE!r}: it is set by this "
+        "module to route fleet safety, not a label a caller supplies. The e-stop "
+        'fan-out publishes {"action": "stop"} only to Things whose value is '
+        '"robot", so a caller-supplied value silently excludes this robot from '
+        "every fleet-wide stop. Drop the key and pass the remaining attributes."
+    )
+
+
 def _validate_thing_name(thing_name: str) -> None:
     """Raise :class:`ValueError` when *thing_name* is unsafe for use as a
     filesystem component AND as an AWS IoT Thing name.
@@ -438,7 +477,14 @@ def provision_robot(
             topic ACL substitution. Should be DNS-safe (alphanumeric + ``-_``).
         region: AWS region. Defaults to the default boto3 session region.
         cert_dir: Where to write certs. Defaults to ``~/.strands_robots/iot``.
-        attributes: Optional thing-attribute dict (<=3 keys, <=800 chars total).
+        attributes: Optional thing attributes. AWS IoT allows three
+            attributes per Thing, each name up to 128 characters and each
+            value up to 800 - so 800 bounds one value, not the dict - and
+            this function spends one of the three on
+            ``strands-mesh-role``, leaving two for the caller. Supplying
+            ``strands-mesh-role`` is refused rather than merged: it is the
+            key the e-stop fan-out routes on, and any other value silently
+            excludes the robot from every fleet-wide stop.
         allow_estop_publish: When True (default) the robot certificate gets the
             ``strands-robot`` policy, which may publish ``strands/safety/estop``
             and therefore originate a fleet-wide stop. Pass False for the common
@@ -452,9 +498,11 @@ def provision_robot(
         :class:`ProvisionedThing` describing the artefacts.
 
     Raises:
-        ValueError: If *thing_name* is outside the accepted charset, or
-            *allow_estop_publish* is not a boolean. Both are checked before
-            any AWS call, so a refused call provisions nothing.
+        ValueError: If *thing_name* is outside the accepted charset, if
+            *allow_estop_publish* is not a boolean, or if *attributes*
+            claims the reserved ``strands-mesh-role`` key. All three are
+            checked before any AWS call, so a refused call provisions
+            nothing.
         ImportError: If ``boto3`` is not installed.
         botocore.exceptions.ClientError: For AWS-side failures (auth, throttling).
 
@@ -473,6 +521,13 @@ def provision_robot(
     # grant-bearing policy, so the opt-out would fail open.
     if flag_error := boolean_flag_error(allow_estop_publish, "allow_estop_publish", "provision_robot"):
         raise ValueError(flag_error)
+    # Same rung as the flag above, and for the same reason: the value decides
+    # whether a fleet-wide e-stop reaches this Thing, so it is refused before a
+    # Thing, policy or certificate can exist under a routing label the caller
+    # chose. Reading it by precedence - what ``setdefault`` did - let a caller
+    # key win over the one this module injects for its own fan-out.
+    if attr_error := _reserved_attribute_error(attributes):
+        raise ValueError(attr_error)
     # Normalised so the value handed to _robot_policy_doc, and echoed in the
     # log below, really is the ``bool`` both are annotated for: is_boolean
     # also accepts a numpy boolean, which is not a ``bool`` subclass.
@@ -484,7 +539,7 @@ def provision_robot(
     # Inject strands-mesh-role attribute for ACL - the OperatorShadow policy
     # uses an attribute condition to scope shadow access to robot Things only.
     attributes = dict(attributes) if attributes else {}
-    attributes.setdefault("strands-mesh-role", "robot")
+    attributes[_MESH_ROLE_ATTRIBUTE] = "robot"
 
     cert_dir = Path(cert_dir) if cert_dir else DEFAULT_CERT_DIR
     cert_dir.mkdir(parents=True, exist_ok=True)
@@ -552,10 +607,26 @@ def provision_operator(
 
     Same as :func:`provision_robot` but with the operator policy
     (``strands-operator``) which can publish ``cmd`` / ``broadcast`` and
-    observe the whole fleet.
+    observe the whole fleet. ``strands-mesh-role`` is set to ``operator``
+    here, so the e-stop fan-out - which enumerates Things and stops only
+    those labelled ``robot`` - passes the console over; a caller entry of
+    the same name is refused for that reason, leaving two of AWS's three
+    Thing attributes for the caller.
+
+    Raises:
+        ValueError: If *thing_name* is outside the accepted charset, or if
+            *attributes* claims the reserved ``strands-mesh-role`` key.
+            Both are checked before any AWS call, so a refused call
+            provisions nothing.
     """
 
     _validate_thing_name(thing_name)
+    # Refused before boto3 is resolved, as in :func:`provision_robot`: the
+    # attribute is this module's fan-out routing key, and an operator Thing
+    # relabelled ``robot`` is enumerated by the e-stop fan-out and sent a stop
+    # on its own ``cmd`` inbox.
+    if attr_error := _reserved_attribute_error(attributes):
+        raise ValueError(attr_error)
     boto3 = _require_boto3()
     iot = boto3.client("iot", region_name=region)
     region = iot.meta.region_name
@@ -563,7 +634,7 @@ def provision_operator(
     # Inject strands-mesh-role attribute - operators get role=operator so the
     # OperatorShadow attribute condition (role=robot) excludes their shadows.
     attributes = dict(attributes) if attributes else {}
-    attributes.setdefault("strands-mesh-role", "operator")
+    attributes[_MESH_ROLE_ATTRIBUTE] = "operator"
 
     cert_dir = Path(cert_dir) if cert_dir else DEFAULT_CERT_DIR
     cert_dir.mkdir(parents=True, exist_ok=True)
