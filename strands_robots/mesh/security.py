@@ -57,6 +57,8 @@ import re
 from collections.abc import Mapping
 from typing import Any
 
+from strands_robots import refusal_codes
+
 logger = logging.getLogger(__name__)
 
 # --- Constants -----------------------------------------------------------
@@ -387,7 +389,35 @@ _DEFAULT_POLICY_HOSTS: frozenset[str] = frozenset({"localhost", "127.0.0.1", "::
 
 
 class SecurityError(Exception):
-    """Base class for payload-validation rejections."""
+    """Base class for payload-validation rejections.
+
+    A *continuable* rejection also carries a stable machine-readable
+    :attr:`code` from :data:`~strands_robots.refusal_codes.REFUSAL_CODES` and
+    the :attr:`subject` the refusal is about, so a consumer offering the
+    operator a choice classifies on identity instead of matching the message
+    text. Both default to ``None``: a rejection with no operator grant behind
+    it -- a schema or bounds failure -- has nothing for a consumer to offer.
+
+    The message is unchanged by this and stays free to improve. See
+    :mod:`strands_robots.refusal_codes`.
+
+    Args:
+        message: The operator-facing reason, unchanged by the code.
+        code: A member of :data:`~strands_robots.refusal_codes.REFUSAL_CODES`,
+            or ``None`` when the rejection is not continuable.
+        subject: What the refusal is about -- the repo, host, policy type or
+            joint key -- so a consumer need not parse it back out of
+            ``message``.
+
+    Attributes:
+        code: The stable identifier for this refusal, or ``None``.
+        subject: What the refusal is about, or ``None``.
+    """
+
+    def __init__(self, message: str = "", *, code: str | None = None, subject: str | None = None) -> None:
+        super().__init__(message)
+        self.code = code
+        self.subject = subject
 
 
 class ValidationError(SecurityError):
@@ -978,7 +1008,9 @@ def validate_command(cmd: dict[str, Any]) -> dict[str, Any]:
         policy_host = cmd.get("policy_host", "localhost")
         if not is_safe_policy_host(str(policy_host)):
             raise ValidationError(
-                f"policy_host={policy_host!r} not in allowlist. Set STRANDS_MESH_POLICY_HOST_ALLOW to extend."
+                f"policy_host={policy_host!r} not in allowlist. Set STRANDS_MESH_POLICY_HOST_ALLOW to extend.",
+                code=refusal_codes.POLICY_HOST_NOT_ALLOWED,
+                subject=str(policy_host),
             )
         # R7 defence-in-depth. ``is_safe_policy_host`` now applies the
         # same charset gate before its internal strip, so this
@@ -1009,7 +1041,9 @@ def validate_command(cmd: dict[str, Any]) -> dict[str, Any]:
             if not isinstance(value, str) or not is_safe_model_path(value, hf_only=True):
                 raise ValidationError(
                     f"pretrained_name_or_path={value!r} not in allowlist. Set "
-                    "STRANDS_MESH_HF_REPO_ALLOW to add an org/repo prefix."
+                    "STRANDS_MESH_HF_REPO_ALLOW to add an org/repo prefix.",
+                    code=refusal_codes.HF_REPO_NOT_ALLOWED,
+                    subject=value if isinstance(value, str) else None,
                 )
             out["pretrained_name_or_path"] = value
 
@@ -1025,7 +1059,9 @@ def validate_command(cmd: dict[str, Any]) -> dict[str, Any]:
             value = cmd["policy_type"]
             if not isinstance(value, str) or not is_safe_policy_type(value):
                 raise ValidationError(
-                    f"policy_type={value!r} not in allowlist. Set STRANDS_MESH_POLICY_TYPE_ALLOW to extend."
+                    f"policy_type={value!r} not in allowlist. Set STRANDS_MESH_POLICY_TYPE_ALLOW to extend.",
+                    code=refusal_codes.POLICY_TYPE_NOT_ALLOWED,
+                    subject=value if isinstance(value, str) else None,
                 )
             out["policy_type"] = value.strip().lower()
 
@@ -1035,7 +1071,9 @@ def validate_command(cmd: dict[str, Any]) -> dict[str, Any]:
                 raise ValidationError(
                     f"policy_provider={value!r} not in allowlist. "
                     "Set STRANDS_MESH_POLICY_TYPE_ALLOW to extend "
-                    "(provider and policy_type share one allowlist)."
+                    "(provider and policy_type share one allowlist).",
+                    code=refusal_codes.POLICY_TYPE_NOT_ALLOWED,
+                    subject=value if isinstance(value, str) else None,
                 )
             out["policy_provider"] = value.strip().lower()
         else:
@@ -1049,7 +1087,9 @@ def validate_command(cmd: dict[str, Any]) -> dict[str, Any]:
             value = cmd["server_address"]
             if not isinstance(value, str) or not is_safe_server_address(value):
                 raise ValidationError(
-                    f"server_address={value!r} host not in allowlist. Set STRANDS_MESH_POLICY_HOST_ALLOW to extend."
+                    f"server_address={value!r} host not in allowlist. Set STRANDS_MESH_POLICY_HOST_ALLOW to extend.",
+                    code=refusal_codes.POLICY_HOST_NOT_ALLOWED,
+                    subject=value if isinstance(value, str) else None,
                 )
             # Same CRLF/NUL/control-byte gate as policy_host.
             if not _SAFE_PASSTHROUGH_RE.fullmatch(value):
@@ -1365,7 +1405,11 @@ def validate_input_frame(action: Any) -> dict[str, float]:
             raise ValidationError(f"input frame value for {key!r} must be finite, got {fval}")
         _value_abs = _input_value_abs()
         if abs(fval) > _value_abs:
-            raise ValidationError(f"input frame value for {key!r} out of range: |{fval}| > {_value_abs}")
+            raise ValidationError(
+                f"input frame value for {key!r} out of range: |{fval}| > {_value_abs}",
+                code=refusal_codes.TELEOP_VALUE_OUT_OF_RANGE,
+                subject=key,
+            )
         out[key] = fval
 
     return out

@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from strands_robots.utils import require_optional
+from strands_robots.utils import non_negative_whole_number_error, require_optional
 
 logger = logging.getLogger(__name__)
 
@@ -264,6 +264,45 @@ class ProtoMotionsConfig:
     )
     metadata: dict[str, Any] = field(default_factory=dict)
 
+    def __post_init__(self) -> None:
+        """Refuse a body index that cannot address :attr:`body_names`.
+
+        The two indices are the only fields this config resolves a body NAME
+        from, and an index that misses is not a value the control path can
+        report: :attr:`anchor_body_name` and :attr:`root_body_name` index a
+        tuple, so a negative index silently names a real but different link,
+        and the tracker then anchors on it consistently -
+        :attr:`~strands_robots.policies.base.Policy.required_bodies` declares
+        that link, the runtime supplies its quaternion, and the future-reference
+        window reads the same row. Every stage agrees, and every stage is wrong.
+
+        Each index goes through the shared whole-number domain BEFORE the
+        ``int()`` normalisation, not after: that conversion is what laundered a
+        yaml ``anchor_body_index: true`` into row 1 (``head``) and a ``2.7``
+        into row 2 (``left_hip_pitch_link``).
+
+        Raises:
+            ValueError: If either body index is not a non-negative whole number,
+                or is not a row of :attr:`body_names`.
+        """
+        num_bodies = len(self.body_names)
+        for name in ("anchor_body_index", "root_body_index"):
+            raw = getattr(self, name)
+            if error := non_negative_whole_number_error(raw, name, "ProtoMotionsConfig"):
+                raise ValueError(error)
+            index = int(raw)
+            if index >= num_bodies:
+                raise ValueError(
+                    f"ProtoMotionsConfig.{name} must be a row of body_names "
+                    f"(0..{num_bodies - 1}), got {index} for {num_bodies} bodies. "
+                    "The index is an offset into body_names, so one that misses "
+                    "cannot resolve the body it names."
+                )
+            # Normalise to a plain int (frozen -> object.__setattr__) so an
+            # integral float the domain admits is stored as the row number the
+            # observation lookup and the future-reference slice both index with.
+            object.__setattr__(self, name, index)
+
     # ------------------------------------------------------------------
     # Derived properties - computed on read, never stored, so a frozen
     # dataclass with a single source of truth for each field stays that way.
@@ -293,9 +332,9 @@ class ProtoMotionsConfig:
         :attr:`~strands_robots.policies.base.Policy.required_bodies` and the
         observation lookup reading one source of truth.
 
-        Raises:
-            IndexError: If :attr:`anchor_body_index` is out of range for
-                :attr:`body_names`.
+        Always resolves: :meth:`__post_init__` refuses an
+        :attr:`anchor_body_index` that is not a row of :attr:`body_names`, so
+        the lookup here cannot miss.
         """
         return self.body_names[self.anchor_body_index]
 
@@ -303,9 +342,8 @@ class ProtoMotionsConfig:
     def root_body_name(self) -> str:
         """Name of the root (floating-base) body - ``pelvis`` on the G1.
 
-        Raises:
-            IndexError: If :attr:`root_body_index` is out of range for
-                :attr:`body_names`.
+        Always resolves: :meth:`__post_init__` refuses a
+        :attr:`root_body_index` that is not a row of :attr:`body_names`.
         """
         return self.body_names[self.root_body_index]
 
@@ -337,8 +375,12 @@ def load_config_from_yaml(path: str | Path) -> ProtoMotionsConfig:
     Raises:
         FileNotFoundError: If ``path`` does not exist.
         ImportError: If ``pyyaml`` is not installed.
-        ValueError: If the yaml contains an inconsistent dimension (e.g.
-            ``stiffness`` length != number of joints).
+        ValueError: If the yaml contains an inconsistent dimension: a
+            ``stiffness`` or ``damping`` length that is not the joint count, or
+            an ``anchor_body_index`` / ``root_body_index`` that is not a row of
+            ``body_names`` (refused by
+            :meth:`ProtoMotionsConfig.__post_init__`, so a config built by hand
+            reports the same value the same way).
     """
     yaml = require_optional(
         "yaml",
@@ -358,8 +400,12 @@ def load_config_from_yaml(path: str | Path) -> ProtoMotionsConfig:
     body_names = tuple(data.get("body_names", GTP_G1_BODY_NAMES))
 
     robot = data.get("robot", {})
-    anchor_idx = int(robot.get("anchor_body_index", GTP_G1_ANCHOR_BODY_INDEX))
-    root_idx = int(robot.get("root_body_index", GTP_G1_ROOT_BODY_INDEX))
+    # Handed through raw, not through int(): ProtoMotionsConfig.__post_init__ is
+    # the single owner of what a body index may be, and coercing here first is
+    # what turned a yaml ``anchor_body_index: true`` into row 1 before the
+    # domain could see it.
+    anchor_idx = robot.get("anchor_body_index", GTP_G1_ANCHOR_BODY_INDEX)
+    root_idx = robot.get("root_body_index", GTP_G1_ROOT_BODY_INDEX)
 
     control = data.get("control", {})
     stiffness = tuple(control.get("stiffness", data.get("default_joint_stiffness", _G1_STIFFNESS)))

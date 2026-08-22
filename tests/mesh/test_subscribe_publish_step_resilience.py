@@ -11,10 +11,16 @@ future refactor cannot silently regress them:
   failure as well as a subscriber already absent from the tracking list.
 - ``publish_step`` serializes list/tuple observation and action values into
   JSON-safe lists before publishing the VLA execution step.
+- A user subscription never silently fails to exist: every ``subscribe``
+  refusal says why, and ``stop`` says how many it dropped. The cases above
+  pinned the ``None`` *return* for two of the three refusal paths and nothing
+  about the report, so the two that answered without a word - not on the mesh,
+  no session - were the ones a caller re-subscribing after a ``stop()`` hit.
 """
 
 from __future__ import annotations
 
+import logging
 from unittest.mock import MagicMock
 
 import pytest
@@ -193,3 +199,156 @@ class TestPublishStepSerialization:
 
         mesh.publish_step(step=0, observation={}, action={})
         assert published == []
+
+
+_CORE_LOGGER = "strands_robots.mesh.core"
+
+
+def _refusals(caplog, topic: str) -> list[str]:
+    """Every WARNING naming *topic*, i.e. what the caller is told about it.
+
+    Keyed on the topic rather than a call spelling: the three refusal paths
+    word themselves differently (``subscribe(...) refused`` for the two this
+    class added, ``declare_subscriber(...) failed`` for the pre-existing one)
+    and the contract is that the caller learns which topic did not attach.
+    """
+    return [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING and topic in r.getMessage()]
+
+
+class TestASubscriptionNeverSilentlyFailsToExist:
+    """Each way a subscription fails to exist reports itself.
+
+    ``subscribe`` has three ``None`` returns. One - a raising
+    ``declare_subscriber`` - has always logged a WARNING naming the topic, in
+    line with the six other client-side refusals in
+    :mod:`strands_robots.mesh.core`. The other two answered ``None`` with no
+    record at all, and they are the pair a caller meets on the only rejoin the
+    class offers: ``stop()`` drops every subscription this method records, so
+    the re-subscribe that follows a ``start()`` is exactly where a caller needs
+    to be told why nothing was declared.
+    """
+
+    def test_a_subscribe_before_start_says_why(self, caplog):
+        """Not on the mesh is a refusal, so it names itself and the topic."""
+        mesh = Mesh(_FakeRobot(), peer_id="quiet-peer")
+
+        with caplog.at_level(logging.DEBUG, logger=_CORE_LOGGER):
+            result = mesh.subscribe("strands/quiet/topic")
+
+        assert result is None
+        said = _refusals(caplog, "strands/quiet/topic")
+        assert said, "subscribe answered None and said nothing"
+        assert "not on the mesh" in said[0], said
+
+    def test_a_subscribe_after_a_stop_says_why(self, caplog, monkeypatch):
+        """The rejoin path: a subscription dropped by stop() cannot be replaced silently."""
+        session = MagicMock()
+        monkeypatch.setattr(mesh_core, "current_session", lambda: session)
+        mesh = _running_mesh("rejoin-peer")
+        attached = mesh.subscribe("strands/rejoin/topic", name="t")
+        assert attached == "t", "premise: it subscribes while running"
+
+        mesh.stop()
+        caplog.clear()
+        with caplog.at_level(logging.DEBUG, logger=_CORE_LOGGER):
+            result = mesh.subscribe("strands/rejoin/topic", name="t")
+
+        assert result is None
+        said = _refusals(caplog, "strands/rejoin/topic")
+        assert said, "a re-subscribe after stop() answered None and said nothing"
+        assert "not on the mesh" in said[0], said
+
+    def test_a_subscribe_without_a_session_says_why(self, caplog, monkeypatch):
+        """No session is a refusal too, and it is distinguishable from the others."""
+        monkeypatch.setattr(mesh_core, "current_session", lambda: None)
+        mesh = _running_mesh("sessionless-peer")
+
+        with caplog.at_level(logging.DEBUG, logger=_CORE_LOGGER):
+            result = mesh.subscribe("strands/sessionless/topic")
+
+        assert result is None
+        said = _refusals(caplog, "strands/sessionless/topic")
+        assert said, "subscribe answered None and said nothing"
+        assert "no mesh session" in said[0], said
+
+    def test_the_declare_failure_still_says_why(self, caplog, monkeypatch):
+        """Control: the one path that always reported still reports, unchanged."""
+        session = MagicMock()
+        session.declare_subscriber.side_effect = RuntimeError("router unreachable")
+        monkeypatch.setattr(mesh_core, "current_session", lambda: session)
+        mesh = _running_mesh("declare-fail-peer")
+
+        with caplog.at_level(logging.DEBUG, logger=_CORE_LOGGER):
+            refused = mesh.subscribe("strands/declare/topic")
+        assert refused is None
+
+        said = _refusals(caplog, "strands/declare/topic")
+        assert said, "the pre-existing declare_subscriber WARNING was lost"
+        assert "router unreachable" in said[0], said
+
+    def test_a_successful_subscribe_says_nothing_about_refusing(self, caplog, monkeypatch):
+        """Control: the accepted path is not made noisy by the refusals above."""
+        session = MagicMock()
+        monkeypatch.setattr(mesh_core, "current_session", lambda: session)
+        mesh = _running_mesh("accepted-peer")
+
+        with caplog.at_level(logging.DEBUG, logger=_CORE_LOGGER):
+            accepted = mesh.subscribe("strands/accepted/topic", name="ok")
+        assert accepted == "ok"
+
+        assert _refusals(caplog, "strands/accepted/topic") == []
+
+    def test_stop_reports_the_subscriptions_it_dropped(self, caplog, monkeypatch):
+        """A rejoining caller is told what it has to re-declare."""
+        session = MagicMock()
+        monkeypatch.setattr(mesh_core, "current_session", lambda: session)
+        mesh = _running_mesh("dropping-peer")
+        first = mesh.subscribe("strands/a", name="a")
+        second = mesh.subscribe("strands/b", name="b")
+        assert (first, second) == ("a", "b"), "premise: two subscriptions to drop"
+
+        caplog.clear()
+        with caplog.at_level(logging.DEBUG, logger=_CORE_LOGGER):
+            mesh.stop()
+
+        dropped = [r.getMessage() for r in caplog.records if "dropped" in r.getMessage()]
+        assert dropped, "stop() discarded two subscriptions and said nothing"
+        assert "2 subscription" in dropped[0], dropped
+        assert "a" in dropped[0] and "b" in dropped[0], dropped
+        assert mesh._user_subs == {}, "premise: they really are gone"
+
+    def test_a_stop_with_no_subscriptions_says_nothing_about_dropping(self, caplog):
+        """Control: ordinary teardown stays quiet, so the notice means something."""
+        mesh = _running_mesh("undropping-peer")
+
+        with caplog.at_level(logging.DEBUG, logger=_CORE_LOGGER):
+            mesh.stop()
+
+        assert [r.getMessage() for r in caplog.records if "dropped" in r.getMessage()] == []
+
+    def test_a_stop_keeps_the_peer_id_and_the_lockout(self, monkeypatch):
+        """Control: leaving the mesh is not a way to forget an e-stop.
+
+        The lockout and the peer's identity are what a rejoin has to preserve,
+        and both already survive ``stop()``. Pinned here so the reporting added
+        beside them cannot be mistaken for - or grow into - a reset.
+        """
+        session = MagicMock()
+        monkeypatch.setattr(mesh_core, "current_session", lambda: session)
+        mesh = _running_mesh("latched-peer")
+        mesh._estop_lockout.set()
+        mesh._last_estop_ts = 12345.0
+
+        mesh.stop()
+
+        assert mesh.peer_id == "latched-peer"
+        assert mesh._estop_lockout.is_set(), "stop() forgot an engaged e-stop"
+        assert mesh._last_estop_ts == 12345.0
+
+    def test_the_return_contract_names_every_refusal(self):
+        """The docstring accounts for all three ways it answers None."""
+        doc = Mesh.subscribe.__doc__ or ""
+        assert "Returns:" in doc, "subscribe documents no return"
+        for reason in ("not on the mesh", "no session", "declare_subscriber"):
+            assert reason in doc, f"the {reason!r} refusal is undocumented: {doc!r}"
+        assert "does not survive" in doc, "the stop() interaction is undocumented"

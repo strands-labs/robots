@@ -82,14 +82,18 @@ class MockTransform(DatasetTransform):
             Shifted pixels, same shape and dtype.
 
         Raises:
-            ValueError: ``source_episode`` is outside the non-negative
-                whole-number domain shared by every episode-resolving surface
+            ValueError: ``source_episode`` or ``variant`` is outside the
+                non-negative whole-number domain the determinism key needs
                 (see :func:`~strands_robots.transforms.base.derive_variant_seed`).
-                Refused before the explicit ``pixel_shift`` short-circuit, so
-                the two constructor modes agree on the accepted domain.
+                Both are refused before the explicit ``pixel_shift``
+                short-circuit, so the two constructor modes agree on the
+                accepted domain - and ``variant`` has to be refused here as
+                well as there, because that short-circuit never derives a key
+                to be refused by.
         """
-        if text := non_negative_whole_number_error(source_episode, "source_episode", "mock.transform_frames"):
-            raise ValueError(text)
+        for name, value in (("source_episode", source_episode), ("variant", variant)):
+            if text := non_negative_whole_number_error(value, name, "mock.transform_frames"):
+                raise ValueError(text)
         if self._pixel_shift is not None:
             shift = self._pixel_shift
         else:

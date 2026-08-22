@@ -97,6 +97,32 @@ What this looks like in practice, and how to configure it:
 
 Reference: `strands_robots.tools.robot_mesh`.
 
+## Refusal codes are the stable contract; prose is not
+
+Some refusals are *continuable*: the request was well formed, and an operator who accepts the risk can grant something that makes the identical request succeed. An untrusted policy provider, a repo or host or policy type outside a mesh allowlist, a teleop frame past the value envelope - each of these has an operator answer behind it. Anything that offers that answer (a UI consent card, an approval endpoint, a supervising agent) first has to recognise *which* refusal it is looking at and *what* it is about.
+
+Recognise it by its `code`, never by its message text:
+
+```python
+from strands_robots import refusal_codes
+from strands_robots.mesh.security import ValidationError, validate_command
+
+try:
+    validate_command(cmd)
+except ValidationError as refusal:
+    if refusal.code == refusal_codes.HF_REPO_NOT_ALLOWED:
+        offer_to_allowlist(refusal.subject)          # the repo, already parsed out
+        print(refusal_codes.REFUSAL_GRANTS[refusal.code])   # STRANDS_MESH_HF_REPO_ALLOW
+```
+
+- **`code` is stable; the message is not.** `code` is a member of `refusal_codes.REFUSAL_CODES`, a closed vocabulary you may switch on. The message is an operator-facing sentence and may be reworded at any time to explain the refusal better. Matching on prose - looking for an env-var name in the sentence, or pulling the subject back out with a regex - couples you to wording that is free to change, and neither this package's tests nor yours will notice when it does.
+- **`subject` is what the refusal is about**, so you do not have to parse it back out: the repo id, the host or whole `server_address`, the policy type or provider name, the joint key, the refused provider.
+- **`REFUSAL_GRANTS` names the environment variable that lifts each refusal.** Read it from there rather than hard-coding it, so your consumer and this package cannot drift apart.
+- **A refusal with no code is not continuable.** `code` is `None` for rejections an operator cannot grant their way past - a schema failure, an over-long instruction, a lockout. There is nothing to offer, so there is nothing to recognise. Treat `code is None` as "show the message and stop", not as an unknown code.
+- **Codes are additive.** They were introduced without changing a single refusal message, and new codes may be added for refusals that become continuable later. Switch on the codes you know and fall through to the message for the rest.
+
+Reference: `strands_robots.refusal_codes`; `strands_robots.mesh.security.SecurityError`; `strands_robots.policies.factory.UntrustedRemoteCodeError`.
+
 ## HuggingFace policy code execution (`trust_remote_code`)
 
 Some policy providers load models from the HuggingFace Hub with `trust_remote_code=True`. That flag instructs the HuggingFace libraries to download and execute Python code from the model repository on your machine, with the privileges of the process running the agent. A malicious or compromised model repository can therefore achieve arbitrary code execution - read your credentials, open a reverse shell, or command your robot directly - simply by being loaded.
