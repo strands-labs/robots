@@ -131,11 +131,21 @@ def resolve_policy(policy: str, **extra_kwargs) -> tuple[str, dict[str, Any]]:
     and returns the canonical provider + ready-to-use kwargs.
 
     Resolution order:
-        1. URL patterns (ws://, zmq://, grpc://, host:port)
+        1. URL patterns declared in ``policies.json`` (ws://, wss://, zmq://,
+           grpc://, cosmos3://, vera://)
         2. Shorthand names (mock, groot, lerobot_local, ...)
         3. HuggingFace model IDs (org/model)
         4. Registered provider name
         5. Fallback to lerobot_local
+
+    Stage 1 recognises exactly the forms the registry declares: the
+    ``url_patterns`` entries providers carry are the whole vocabulary, so a
+    scheme this package does not ship is not a URL here. A scheme-less
+    ``host:port`` address is matched only by a provider that declares a
+    scheme-less pattern -- the generic ``server_address`` branch below exists
+    for that -- and none of the shipped providers declares one, so with the
+    shipped registry such a string reaches stage 5 and is forwarded to
+    ``lerobot_local`` as a checkpoint id rather than dialled as an address.
 
     Every stage matches case-insensitively. A URL scheme is folded per RFC 3986
     section 3.1 (``ZMQ://gpu:5555`` resolves exactly as ``zmq://gpu:5555``, and
@@ -216,6 +226,13 @@ def resolve_policy(policy: str, **extra_kwargs) -> tuple[str, dict[str, Any]]:
                 elif pattern.startswith("^grpc://"):
                     kwargs["server_address"] = url.removeprefix("grpc://")
                 elif ":" in url and "/" not in url:
+                    # Generic scheme-less ``host:port``. Reached only when a
+                    # provider declares a scheme-less ``url_patterns`` entry
+                    # (e.g. ``^[^/]+:[0-9]+$``). None of the shipped providers
+                    # does, so against the shipped registry this is an
+                    # extension point rather than a live path, and a bare
+                    # ``host:port`` falls through to stage 5 instead. It is
+                    # exercised by injecting a provider that declares one.
                     kwargs["server_address"] = url
                 kwargs.update(extra_kwargs)
                 return prov_name, kwargs

@@ -2,10 +2,11 @@
 
 ``strands_robots.registry.policies.resolve_policy`` documents a five-step
 resolution order (URL patterns -> shorthands -> HF model IDs -> registered
-provider name -> lerobot_local fallback). The shipped ``policies.json`` only
-declares ``zmq://`` and ``cosmos3://`` URL patterns, so the generic parser
-branches for ``ws(s)://``, ``grpc://`` and bare ``host:port`` addresses - part
-of the public resolution contract - had no exercising input.
+provider name -> lerobot_local fallback). The shipped ``policies.json`` declares
+five URL patterns - ``^zmq://``, ``^grpc://``, ``^cosmos3://``, ``^vera://`` and
+``^wss?://`` - so only the generic scheme-less ``host:port`` branch, part of the
+public resolution contract and reachable by a provider that declares a
+scheme-less pattern, has no exercising input from the shipped registry.
 
 These tests inject a synthetic provider registry (via ``monkeypatch``) so the
 generic parser branches run, plus cover the HF-org routing, canonical-name

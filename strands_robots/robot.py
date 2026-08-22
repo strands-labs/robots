@@ -45,6 +45,7 @@ import os
 import threading
 from typing import TYPE_CHECKING, Any, Literal, cast, overload
 
+from strands_robots._mesh_switch import mesh_env_request
 from strands_robots.registry import (
     get_hardware_type,
     get_robot,
@@ -145,10 +146,17 @@ def _mesh_env_opt_in() -> bool:
     explicit ``mesh=True``; the env var never forces mesh ON there, so an
     explicit ``mesh=False`` is always respected.
 
+    Resolved by :func:`strands_robots._mesh_switch.mesh_env_request` rather
+    than re-read here, so the accepted spellings and the report of an
+    unrecognized one have a single owner. This reader owns only the
+    affirmative half of the vocabulary, so it cannot tell a typo from the kill
+    switch's spellings on its own -- ``mesh_env_request`` holds both halves and
+    reports the values that belong to neither.
+
     Returns:
         True when the environment opts in, False otherwise.
     """
-    return os.getenv("STRANDS_MESH", "").strip().lower() in ("true", "1", "yes")
+    return mesh_env_request() is True
 
 
 def _validate_known_robot(canonical: str, original: str, urdf_path: str | None) -> None:

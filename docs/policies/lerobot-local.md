@@ -41,7 +41,7 @@ LerobotLocalPolicy(
     inference_action_mode="continuous",  # "continuous" | "discrete"
     camera_key_map=None,                 # {robot_cam_name: policy_image_key}
     obs_rename_override=None,            # {runtime_obs_key: "observation.images.*"} merged over embodiment.obs_rename (value None/"" DROPS that key)
-    strict_keys=False,                   # raise instead of positional camera fallback
+    strict_keys=False,                   # raise instead of a degraded camera OR joint-state binding
     cache_model=True,                    # reuse a process-cached model across instances
     revision=None,                       # pin a HF Hub revision (branch/tag/commit SHA)
 )
