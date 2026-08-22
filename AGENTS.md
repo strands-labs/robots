@@ -291,9 +291,15 @@ hatch run format            # ruff check --fix, ruff format
    - Thread's last non-bot comment is **yours** -> do not reply. You have
      already said it. If there is code to push, push it; the push is the
      message.
-   - Thread is **`isResolved` or `isOutdated`** -> do not reply. Resolution is
-     terminal. Reopening it to restate a landed fix reads as noise, not
-     diligence.
+   - Thread is **`isResolved`** -> do not reply. Resolution is a reviewer action
+     and terminal. Reopening it to restate a landed fix reads as noise, not
+     diligence. `isOutdated` is **not** terminal, measured: it describes the diff
+     rather than the conversation, and a thread keeps accepting comments after it
+     flips - #2577's took two more after `d04a8969` moved its lines. It is also
+     `false` on threads that *are* answered, when the fix adds lines elsewhere
+     (#2480, still `false` after `e83cf51` fixed it). Decide an outdated thread on
+     authorship like any other, or a reviewer's new demand on a moved line is
+     filed as settled.
    - Last comment is **someone else's** and your existing replies do not answer
      it -> reply once, then resolve.
 
@@ -301,6 +307,26 @@ hatch run format            # ruff check --fix, ruff format
    those twelve comments on its own: no semantic comparison, just the author of
    the last comment. Both `isResolved` and the comment authors are already in
    the context payload - they were fetched and not read.
+
+   **Ask for the verdict rather than re-deriving it.** "Fetched and not read" is
+   the whole failure, and it recurred after this rule was written: #2511 took
+   four author replies to one question and #2577 took two, with every field
+   needed to refuse them present in the payload each time. Re-deriving one
+   boolean from a payload that also contains a reviewer's question addressed to
+   you is the part that does not survive a context rebuild, so ask a command:
+
+   ```
+   python3 scripts/check_thread_is_answered.py --repo strands-labs/robots --pr <N>
+   python3 scripts/check_thread_is_answered.py --repo strands-labs/robots --all-open
+   ```
+
+   `settled` and `answered` are not work. `awaiting-the-author` is, and it is the
+   only outcome that exits 1 - so the sweep answers "which of my open pull
+   requests actually need me" in one read. The report also names the commit each
+   thread was written against beside the pull request's head, which is what tells
+   "already fixed at `<oid>`" apart from "not yet fixed" without re-deriving the
+   fix (#2520). It reports and does not gate: what an author should do next is not
+   something a branch can turn green.
 
    What makes this worth writing down is that the previous rule was *satisfied*
    by all twelve. "Address all review comments", and "reply when a thread asks
@@ -985,10 +1011,21 @@ hatch run format            # ruff check --fix, ruff format
    unresolved thread or a failing check (the author), a missing approval (any
    reviewer), an approval only its own pusher supplied (a different reviewer,
    per #1905), a required check absent because a fork run is held at
-   `action_required` (a maintainer), a check still running (nobody), or no
-   unsatisfied rule at all, which is the #2574 case and the one worth saying out
-   loud. A conflict or a draft is reported as *gating*: the rules behind it
-   cannot be assessed, so an approval there is necessary but not sufficient.
+   `action_required` (a maintainer), a check still running (nobody), a
+   mergeability GitHub has not finished computing (nobody, until a re-read), or
+   no unsatisfied rule at all, which is the #2574 case and the one worth saying
+   out loud. A conflict, a draft, or an uncomputed mergeability is reported as
+   *gating*: the rules behind it cannot be assessed, so an approval there is
+   necessary but not sufficient.
+
+   That last one is why the sweep is worth re-reading rather than trusting once.
+   `mergeable` is `bool | None`, and a merge into `main` invalidates the cached
+   value for **every** open pull request -- so a sweep run just after a merge is
+   exactly when the null appears, which is also when a health pass is most likely
+   to run. #1035 was measured reading `pusher-only-approval` (owed by a reviewer)
+   while it was in fact `CONFLICTING`/`DIRTY`, and an otherwise-satisfied pull
+   request in the same state read `no-unsatisfied-rule`, whose printed remedy is
+   to attempt the merge. Both are now `merge-state-unknown`. See #2585.
 
    It composes `check_last_push_approval.py` rather than restating it, so what
    counts as a current approval has one owner. Neither script gates a merge.
@@ -1454,6 +1491,7 @@ Corrections from code review that apply to all future contributions:
 ### API Consistency
 - **Don't export private functions** - `_`-prefixed names must never appear in `__all__`. A star-import skips underscore names *unless* `__all__` lists them, so an entry there is the sole reason `from <pkg> import *` binds one: `strands_robots/mesh/__init__.py` listed `_LOCAL_ROBOTS` (the in-process registry dict) and `_LOCAL_ROBOTS_LOCK` under the comment "exposed for test patching only", and that reason does not hold - `__all__` has no bearing on the attribute access both registry-touching test files actually use, one of which already reached `strands_robots.mesh.core` where the two are defined. What such an entry usually is load-bearing for is silencing `F401` on an import whose only purpose is to place the name on the package namespace, which is what ruff's own remedy text ("consider removing, adding to `__all__`, or using a redundant alias") describes - so drop the import along with the entry, and export a public accessor instead. Pinned by `tests/test_all_exports_are_statically_defined.py::TestNoExportIsPrivate`, which grades this over the same population as the definedness half.
 - **Match docstrings to semantics** - If the docstring says "single-shot" but the code is "latched", one of them must change. Always verify by reading the underlying library docs.
+- **A `Raises:` block names every refusal the function itself makes** - it is the only place a caller learns which `except` clause to write, so a refusal added later must be added to it. `build_lerobot_command` documented `ValueError` alone and 28 days later gained a preflight raising `RuntimeError` for a lerobot without the DAgger rollout entry point (#1614 against a block written in #732), so a caller who wrote exactly the handler the docstring licensed took an escaped exception. Only the forward direction is a rule: a documented class raised by a helper the function delegates to is legitimate and common (80 surfaces do it), and a class raised *and caught* in one function must not be documented at all. Pinned by `tests/test_raises_docstring_completeness.py`, which grades module-level functions as well as methods - the surface above is not a method, so the `Args:` guard's population would not have seen it.
 - **Forward all advertised kwargs** - If `tool_spec.json` exposes a parameter, the dispatch chain must forward it all the way through. Silent drops are bugs.
 - **Centralize import checks at init** - Prefer checking optional deps once in `__init__` over scattered `_ensure_X()` guards. Consumers catch issues at init time.
 

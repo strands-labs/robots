@@ -14,7 +14,9 @@ python -c 'from strands_robots.policies import list_providers; print(list_provid
 
 `create_policy` also accepts each provider's declared aliases and shorthands,
 which `list_providers()` does not repeat. `list_aliases()` reports those, so
-the two together are every spelling `create_policy` accepts:
+the two together are every *registered* spelling. They are not every spelling
+`create_policy` resolves: `composite` and `persistent` resolve with no registry
+entry, as described under [Beyond the registry](#beyond-the-registry) below.
 
 ```bash
 python -c 'from strands_robots.policies import list_aliases; print(list_aliases())'
@@ -34,6 +36,20 @@ policy = create_policy("lerobot_local", pretrained_name_or_path="lerobot/pi0_so1
 policy = create_policy("cosmos3", embodiment="droid", port=8000)
 policy = create_policy("remote", endpoint="ws://gpu-box:8765")
 ```
+
+### Beyond the registry
+
+`import_policy_class` falls back to auto-discovery, so a module under
+`strands_robots.policies` that exports a `Policy` subclass resolves under its
+own module name with no registry entry. Two ship, and neither is a registry
+provider because each wraps a policy you already hold rather than building one
+from config:
+
+- **`composite`** ([`CompositePolicy`](wbc.md#composing-an-upper-body-manipulation-on-top-of-wbc))
+  builds through the factory: `create_policy("composite", lower=..., upper=...)`.
+- **`persistent`** ([`PersistentPolicy`](persistent-worker.md)) resolves but
+  cannot be built through `create_policy`: its first parameter is named
+  `provider`, which `create_policy` has already bound. Construct it directly.
 
 ## Providers
 

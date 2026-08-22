@@ -364,6 +364,69 @@ def test_an_unknown_mergeability_is_not_reported_as_a_conflict() -> None:
     assert mod.MERGE_CONFLICT not in outcomes(mod.evaluate(state(mergeable=None), MAIN))
 
 
+def test_an_unknown_mergeability_is_named_rather_than_passed_over() -> None:
+    """Silence is not neutral here: it reads identically to ``mergeable: true``.
+
+    The assertion above pins that ``None`` is not called a conflict. This pins the
+    other half -- that it is not called nothing either, which is what let the
+    rules underneath it own the next action.
+    """
+    blockers = mod.evaluate(state(mergeable=None), MAIN)
+    assert mod.MERGE_STATE_UNKNOWN in outcomes(blockers)
+    assert mod.NO_UNSATISFIED_RULE not in outcomes(blockers)
+    unknown = next(b for b in blockers if b.outcome == mod.MERGE_STATE_UNKNOWN)
+    assert "Re-read" in unknown.detail
+
+
+def test_an_unknown_mergeability_is_owed_by_nobody_and_is_not_a_finding() -> None:
+    """The answer is not in yet, so there is nobody to route it to.
+
+    Not a finding for the same reason ``required-check-pending`` is not one: the
+    exit status is for what a scheduled author-side pass can act on alone, and a
+    value the caller can only wait for is not that.
+    """
+    blocker = mod.primary(mod.evaluate(state(mergeable=None), MAIN))
+    assert blocker.outcome == mod.MERGE_STATE_UNKNOWN
+    assert blocker.owed_by == mod.NOBODY
+    assert blocker.is_finding is False
+    assert blocker.is_gating is True
+
+
+def test_an_unknown_mergeability_does_not_hand_a_conflicted_branch_to_a_reviewer() -> None:
+    """The measured regression: #1035 read ``pusher-only-approval`` while it was DIRTY.
+
+    Identical inputs to the conflict case above except the one field GitHub had
+    not finished computing. Measured 2026-08-21 23:07 UTC, a minute after two
+    merges moved ``main`` and invalidated the cached value for every open pull
+    request -- so the sweep named a reviewer, and #1905 records that an approval
+    there is dismissed by the resolving push rather than merging anything.
+    """
+    st = state(
+        mergeable=None,
+        merge_state="unknown",
+        approvers=("cagataycali",),
+        pusher="cagataycali",
+    )
+    blockers = mod.evaluate(st, MAIN)
+    assert outcomes(blockers) == [mod.MERGE_STATE_UNKNOWN, mod.PUSHER_ONLY_APPROVAL]
+    assert mod.primary(blockers).owed_by == mod.NOBODY
+    rendered = mod.render(st, MAIN, blockers, "o/r")
+    assert "necessary but not sufficient" in rendered
+    # The reviewer must not be offered as the next action while the question is open.
+    assert f"Next action is owed by {mod.OTHER_REVIEWER}" not in rendered
+
+
+def test_an_unknown_mergeability_does_not_read_as_the_stale_state_case() -> None:
+    """#2574's remedy is a merge attempt; an uncomputed mergeability's is a re-read.
+
+    Attempting the merge on a branch whose conflict status is still being
+    computed is how a null gets resolved as a failed mutation instead of a read.
+    """
+    st = state(mergeable=None)
+    rendered = mod.render(st, MAIN, mod.evaluate(st, MAIN), "o/r")
+    assert "Attempt the merge" not in rendered
+
+
 def test_the_next_action_line_names_one_owner_when_a_gating_blocker_is_present() -> None:
     blockers = mod.evaluate(state(mergeable=False, approvers=()), MAIN)
     rendered = mod.render(state(mergeable=False, approvers=()), MAIN, blockers, "o/r")
