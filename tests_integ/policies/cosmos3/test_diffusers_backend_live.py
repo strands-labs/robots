@@ -107,11 +107,12 @@ def test_policy_mode_returns_action_chunk_and_world_video(policy):
 def test_cosmos_action_drives_mujoco_arm_within_tracking_bar(policy):
     """End-to-end on real weights: Cosmos chunk -> joint targets the arm tracks.
 
-    The diffusers backend emits the raw [-1, 1] unified action; the sim bridge
-    de-normalizes it (bundled q01/q99), decodes the relative EE-pose deltas to an
-    absolute trajectory, and solves IK on the same MuJoCo model. A reachable
-    trajectory must track to mean <= 12 mm / max <= 45 mm (the bar verified on
-    Thor; the unit test tests/policies/cosmos3/test_sim_ik.py pins it off-GPU).
+    The diffusers backend emits the raw quantile-normalized unified action; the
+    sim bridge de-normalizes it (bundled q01/q99), decodes the relative EE-pose
+    deltas to an absolute trajectory, and solves IK on the same MuJoCo model. A
+    reachable trajectory must track to mean <= 12 mm / max <= 45 mm (the bar
+    verified on Thor; the unit test tests/policies/cosmos3/test_sim_ik.py pins
+    it off-GPU).
     """
     mujoco = pytest.importorskip("mujoco", reason="cosmos3-sim extra (mujoco) not installed")
     pytest.importorskip("mink", reason="cosmos3-sim extra (mink) not installed")
@@ -121,7 +122,7 @@ def test_cosmos_action_drives_mujoco_arm_within_tracking_bar(policy):
     from strands_robots.policies.cosmos3 import MinkIKBridge, decode_cosmos_chunk_to_targets
     from strands_robots.policies.cosmos3.embodiments import get_embodiment
 
-    # Real in-process Cosmos forward pass -> raw [-1, 1] action chunk.
+    # Real in-process Cosmos forward pass -> raw quantile-normalized chunk.
     policy.get_actions_sync(_obs(), "pick up the red cube")
     assert policy.last_rollout is not None
     raw_chunk = policy.last_rollout["action"]
