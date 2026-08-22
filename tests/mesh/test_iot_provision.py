@@ -283,18 +283,26 @@ class TestProvisionRobot:
         assert attrs["strands-mesh-role"] == "robot"
         assert attrs["hw"] == "so100"
 
-    def test_user_can_override_role_attribute(self, fake_iot_client, tmp_cert_dir, monkeypatch):
-        """If user explicitly sets strands-mesh-role, their value is kept."""
+    def test_user_cannot_override_role_attribute(self, fake_iot_client, tmp_cert_dir, monkeypatch):
+        """A caller-supplied strands-mesh-role is refused, not merged.
+
+        This test previously asserted the caller's value was kept. That is the
+        behaviour the reservation removes: the e-stop fan-out publishes
+        ``{"action": "stop"}`` only to Things labelled ``robot``, so a
+        caller-chosen value silently excluded the robot from every fleet-wide
+        stop while provisioning reported success. See
+        ``test_mesh_role_attribute_is_reserved.py``, which drives the shipped
+        fan-out source over such a Thing.
+        """
         monkeypatch.setattr(
             "strands_robots.mesh.iot.provision._require_boto3",
             lambda: MagicMock(client=lambda *a, **kw: fake_iot_client),
         )
 
-        provision_robot("my-robot", cert_dir=tmp_cert_dir, attributes={"strands-mesh-role": "custom"})
+        with pytest.raises(ValueError, match="strands-mesh-role"):
+            provision_robot("my-robot", cert_dir=tmp_cert_dir, attributes={"strands-mesh-role": "custom"})
 
-        call_kwargs = fake_iot_client.create_thing.call_args.kwargs
-        attrs = call_kwargs["attributePayload"]["attributes"]
-        assert attrs["strands-mesh-role"] == "custom"
+        assert fake_iot_client.create_thing.call_count == 0
 
 
 class TestProvisionOperator:

@@ -1204,7 +1204,7 @@ class LerobotTrainer(Trainer):
         for key, value in spec.extra.items():
             if key in _consumed:
                 continue
-            cmd.append(f"--{key}={value}")
+            cmd.append(f"--{key}={_render_extra_value(value)}")
         return cmd
 
     def _reward_model_command_flags(self, rm: dict[str, Any], base_model: str = "") -> list[str]:
@@ -1797,6 +1797,31 @@ def _annotation_admits_text(hint: Any) -> bool:
     if origin is typing.Union or origin is types.UnionType:
         return any(_annotation_admits_text(arg) for arg in typing.get_args(hint))
     return False
+
+
+def _render_extra_value(value: Any) -> str:
+    """Render an ``extra`` value as the CLI token that decodes back to it.
+
+    :meth:`LerobotTrainer.build_command` renders each ``extra`` entry as
+    ``--key=value`` for lerobot's draccus CLI, and draccus reads that token as a
+    YAML scalar before decoding it to the field's declared type. Python's own
+    text for ``None`` is not YAML's: ``None`` is a plain scalar, so a
+    ``str | None`` field receiving ``--key=None`` is assigned the *string*
+    ``"None"`` while the in-process path assigns ``None`` - and the two paths
+    stop meaning one run. ACT's ``pretrained_backbone_weights`` is such a field,
+    and the string reaches torchvision as a weights *name*
+    (``KeyError: 'None'``) rather than as "no pretrained weights".
+
+    Every other type already renders as text draccus reads back unchanged, so
+    only the null literal is translated.
+
+    Args:
+        value: Value from ``spec.extra`` for a key this command carries.
+
+    Returns:
+        The token to place after ``--key=``.
+    """
+    return "null" if value is None else str(value)
 
 
 def _decode_extra_value(target: Any, attr: str, key: str, value: Any) -> Any:

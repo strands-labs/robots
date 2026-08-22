@@ -45,10 +45,16 @@ from .test_input_stream_lifecycle import _make_receiver, _RecvMesh
 #: A 50 Hz frame period - the rate InputPublisher streams at by default.
 FRAME_S = 1.0 / mesh_input.INPUT_HZ_DEFAULT
 
+#: The teleop envelope is sized in the unit the leader driver publishes, and an
+#: SO leader publishes degrees (``use_degrees=True`` by default). The magnitudes
+#: below were chosen relative to that bound, so they are stated in frame units
+#: via this factor; scaling them together preserves every verdict here.
+FRAME_UNITS_PER_RADIAN = 180.0 / math.pi
+
 #: Feetech STS3215 no-load speed at 12 V is ~6.5 rad/s, so a leader arm on an
 #: SO-100 class follower cannot travel more than this in one 50 Hz frame. Any
 #: bound that refuses it would refuse legitimate teleoperation.
-LEADER_MAX_STEP = 6.5 * FRAME_S
+LEADER_MAX_STEP = 6.5 * FRAME_UNITS_PER_RADIAN * FRAME_S
 
 
 class _Clock:
@@ -151,8 +157,12 @@ class TestInputSlewAbs:
 
     def test_default_is_above_leader_servo_speed(self):
         # The bound must sit above what the leader hardware itself can produce,
-        # or legitimate teleoperation trips it.
-        assert DEFAULT_INPUT_SLEW_ABS > 6.5
+        # or legitimate teleoperation trips it -- measured in the unit the frames
+        # carry. The Feetech STS3215 tops out near 6.5 rad/s at 12 V, and an SO
+        # leader publishes degrees (``use_degrees=True`` by default), so the
+        # speed to clear is that figure converted, not the radian figure itself.
+        no_load_deg_s = 6.5 * 180.0 / math.pi  # ~372 deg/s
+        assert DEFAULT_INPUT_SLEW_ABS > no_load_deg_s
 
 
 # --- the decision function ----------------------------------------------
@@ -163,10 +173,13 @@ class TestInputFrameSlewViolation:
         assert input_frame_slew_violation({"j0": 0.1}, _base({"j0": 0.0}), FRAME_S, 0.0) is None
 
     def test_full_scale_reversal_refused(self):
-        reason = input_frame_slew_violation({"j0": -0.9}, _base({"j0": 0.9}), FRAME_S, 0.0)
+        reason = input_frame_slew_violation(
+            {"j0": -0.9 * FRAME_UNITS_PER_RADIAN}, _base({"j0": 0.9 * FRAME_UNITS_PER_RADIAN}), FRAME_S, 0.0
+        )
         assert reason is not None
         assert "j0" in reason
-        assert "90.0" in reason  # 1.8 units in 0.02 s
+        # 1.8 rad-equivalent units traversed in 0.02 s, in frame units.
+        assert f"{1.8 * FRAME_UNITS_PER_RADIAN / FRAME_S:.1f}" in reason
 
     def test_no_baseline_allowed(self):
         # The first frame of a stream has nothing to measure against.
@@ -178,7 +191,12 @@ class TestInputFrameSlewViolation:
         assert input_frame_slew_violation({"j1": 9.9}, _base({"j0": 0.0}), FRAME_S, 0.0) is None
 
     def test_unchanged_pose_allowed(self):
-        assert input_frame_slew_violation({"j0": 0.9}, _base({"j0": 0.9}), 1e-9, 0.0) is None
+        assert (
+            input_frame_slew_violation(
+                {"j0": 0.9 * FRAME_UNITS_PER_RADIAN}, _base({"j0": 0.9 * FRAME_UNITS_PER_RADIAN}), 1e-9, 0.0
+            )
+            is None
+        )
 
     def test_zero_interval_with_movement_refused(self):
         reason = input_frame_slew_violation({"j0": 0.5}, _base({"j0": 0.0}), 0.0, 0.0)
@@ -195,18 +213,21 @@ class TestInputFrameSlewViolation:
         # The same displacement is refused over one frame and allowed once
         # enough time has passed for it to be travelled safely. This is what
         # makes a refusal self-healing instead of a permanent stall.
-        jump = {"j0": 3.0}
+        jump = {"j0": 3.0 * FRAME_UNITS_PER_RADIAN}
         base = _base({"j0": 0.0})
         assert input_frame_slew_violation(jump, base, FRAME_S, 0.0) is not None
-        assert input_frame_slew_violation(jump, base, 3.0 / DEFAULT_INPUT_SLEW_ABS + 0.01, 0.0) is None
+        assert (
+            input_frame_slew_violation(jump, base, 3.0 * FRAME_UNITS_PER_RADIAN / DEFAULT_INPUT_SLEW_ABS + 0.01, 0.0)
+            is None
+        )
 
     def test_each_joint_is_measured_against_its_own_last_command(self):
         # j0 last moved a second ago, j1 a frame ago. The same displacement is
         # reachable safely for the first and not for the second, so a shared
         # interval could only be wrong for one of them.
         base = {"j0": (0.0, 0.0), "j1": (0.0, 0.98)}
-        assert input_frame_slew_violation({"j0": 3.0}, base, 1.0, 0.0) is None
-        reason = input_frame_slew_violation({"j1": 3.0}, base, 1.0, 0.0)
+        assert input_frame_slew_violation({"j0": 3.0 * FRAME_UNITS_PER_RADIAN}, base, 1.0, 0.0) is None
+        reason = input_frame_slew_violation({"j1": 3.0 * FRAME_UNITS_PER_RADIAN}, base, 1.0, 0.0)
         assert reason is not None and "j1" in reason
 
     def test_interval_is_floored_at_the_minimum_apply_interval(self):
@@ -218,42 +239,49 @@ class TestInputFrameSlewViolation:
 
     def test_reports_worst_offender_regardless_of_key_order(self):
         base = _base({"a": 0.0, "b": 0.0, "c": 0.0})
-        fast = {"a": 1.0, "b": 5.0, "c": 2.0}
+        fast = {"a": 1.0, "b": 5.0 * FRAME_UNITS_PER_RADIAN, "c": 2.0}
         reason = input_frame_slew_violation(fast, base, FRAME_S, 0.0)
         assert reason is not None and "'b'" in reason
         # Same frame, keys inserted in a different order -> same verdict.
-        reordered = {"c": 2.0, "b": 5.0, "a": 1.0}
+        reordered = {"c": 2.0, "b": 5.0 * FRAME_UNITS_PER_RADIAN, "a": 1.0}
         assert input_frame_slew_violation(reordered, base, FRAME_S, 0.0) == reason
 
     def test_equally_fast_joints_report_deterministically(self):
         # Equal speeds are broken by joint name, so neither insertion order nor
         # a tie can change the message.
         base = _base({"a": 0.0, "b": 0.0})
-        forward = input_frame_slew_violation({"a": 5.0, "b": 5.0}, base, FRAME_S, 0.0)
-        backward = input_frame_slew_violation({"b": 5.0, "a": 5.0}, base, FRAME_S, 0.0)
+        forward = input_frame_slew_violation(
+            {"a": 5.0 * FRAME_UNITS_PER_RADIAN, "b": 5.0 * FRAME_UNITS_PER_RADIAN}, base, FRAME_S, 0.0
+        )
+        backward = input_frame_slew_violation(
+            {"b": 5.0 * FRAME_UNITS_PER_RADIAN, "a": 5.0 * FRAME_UNITS_PER_RADIAN}, base, FRAME_S, 0.0
+        )
         assert forward is not None and forward == backward
 
     def test_one_fast_joint_refuses_the_frame(self):
-        reason = input_frame_slew_violation({"j0": 0.01, "j1": 9.9}, _base({"j0": 0.0, "j1": 0.0}), FRAME_S, 0.0)
+        reason = input_frame_slew_violation(
+            {"j0": 0.01, "j1": 9.9 * FRAME_UNITS_PER_RADIAN}, _base({"j0": 0.0, "j1": 0.0}), FRAME_S, 0.0
+        )
         assert reason is not None and "j1" in reason
 
     def test_explicit_bound_honoured(self):
         # A move refused at the default bound is allowed under a wider one.
-        move, base = {"j0": 1.0}, _base({"j0": 0.0})
+        move, base = {"j0": 1.0 * FRAME_UNITS_PER_RADIAN}, _base({"j0": 0.0})
         assert input_frame_slew_violation(move, base, FRAME_S, 0.0) is not None
         assert input_frame_slew_violation(move, base, FRAME_S, 0.0, max_slew=1e6) is None
 
     def test_env_widens_the_bound(self, monkeypatch):
-        move, base = {"j0": 1.0}, _base({"j0": 0.0})
+        move, base = {"j0": 1.0 * FRAME_UNITS_PER_RADIAN}, _base({"j0": 0.0})
         assert input_frame_slew_violation(move, base, FRAME_S, 0.0) is not None
-        monkeypatch.setenv("STRANDS_MESH_INPUT_SLEW_ABS", "1000")
+        monkeypatch.setenv("STRANDS_MESH_INPUT_SLEW_ABS", "1000000")
         assert input_frame_slew_violation(move, base, FRAME_S, 0.0) is None
 
     def test_reason_names_the_bound_and_the_measured_speed(self):
-        # 30 units in 1 s is 30 units/s, just over the default bound.
-        reason = input_frame_slew_violation({"j0": 30.0}, _base({"j0": 0.0}), 1.0, 0.0)
+        # This many units in 1 s is that many units/s, just over the bound.
+        step = 30.0 * FRAME_UNITS_PER_RADIAN
+        reason = input_frame_slew_violation({"j0": step}, _base({"j0": 0.0}), 1.0, 0.0)
         assert reason is not None
-        assert "30.0" in reason and f"{DEFAULT_INPUT_SLEW_ABS:g}" in reason
+        assert f"{step:.1f}" in reason and f"{DEFAULT_INPUT_SLEW_ABS:g}" in reason
         assert "1.0000s" in reason  # the offending joint's own interval
 
     def test_leader_at_max_servo_speed_allowed(self):
@@ -277,9 +305,9 @@ class TestMergeSlewBaseline:
     def test_omitted_joints_keep_their_previous_entry(self):
         # The bypass this closes: a frame carrying one joint must not erase the
         # baseline of the joints it does not mention.
-        previous = {"j0": (0.9, 10.0), "j1": (0.1, 10.0)}
+        previous = {"j0": (0.9 * FRAME_UNITS_PER_RADIAN, 10.0), "j1": (0.1, 10.0)}
         merged = merge_slew_baseline(previous, {"j1": 0.2}, 10.02)
-        assert merged["j0"] == (0.9, 10.0)
+        assert merged["j0"] == (0.9 * FRAME_UNITS_PER_RADIAN, 10.0)
         assert merged["j1"] == (0.2, 10.02)
 
     def test_an_entry_that_can_still_refuse_a_frame_is_kept(self):
@@ -321,9 +349,9 @@ class TestMergeSlewBaseline:
         assert isinstance(merged["j0"][0], float)
 
     def test_previous_is_not_mutated(self):
-        previous = {"j0": (0.9, 10.0)}
+        previous = {"j0": (0.9 * FRAME_UNITS_PER_RADIAN, 10.0)}
         merge_slew_baseline(previous, {"j0": 0.1}, 10.02)
-        assert previous == {"j0": (0.9, 10.0)}
+        assert previous == {"j0": (0.9 * FRAME_UNITS_PER_RADIAN, 10.0)}
 
 
 # --- the receiver guard --------------------------------------------------
@@ -337,18 +365,21 @@ class TestReceiverRefusesOverSpeedFrames:
         recv, applied = _make_receiver()
         for i in range(60):
             clock.advance(FRAME_S)
-            recv._on_input(recv.topic, _frame({"j0": 0.9 if i % 2 == 0 else -0.9}, seq=i))
+            recv._on_input(
+                recv.topic,
+                _frame({"j0": 0.9 * FRAME_UNITS_PER_RADIAN if i % 2 == 0 else -0.9 * FRAME_UNITS_PER_RADIAN}, seq=i),
+            )
 
         assert recv.stats["slew_rejected"] == 30
         # Only the opening pose and its repeats survive, so the commanded pose
         # never actually changes: the joint holds still instead of oscillating.
-        assert {a["j0"] for a in applied} == {0.9}
+        assert {a["j0"] for a in applied} == {0.9 * FRAME_UNITS_PER_RADIAN}
 
     def test_first_frame_is_applied(self, clock):
         recv, applied = _make_receiver()
         clock.advance(FRAME_S)
-        recv._on_input(recv.topic, _frame({"j0": 5.0}))
-        assert applied == [{"j0": 5.0}]
+        recv._on_input(recv.topic, _frame({"j0": 5.0 * FRAME_UNITS_PER_RADIAN}))
+        assert applied == [{"j0": 5.0 * FRAME_UNITS_PER_RADIAN}]
         assert recv.stats["slew_rejected"] == 0
 
     def test_leader_at_max_servo_speed_is_never_refused(self, clock):
@@ -367,7 +398,7 @@ class TestReceiverRefusesOverSpeedFrames:
         clock.advance(FRAME_S)
         recv._on_input(recv.topic, _frame({"j0": 0.0}, seq=0))
         clock.advance(FRAME_S)
-        recv._on_input(recv.topic, _frame({"j0": 9.0}, seq=1))
+        recv._on_input(recv.topic, _frame({"j0": 9.0 * FRAME_UNITS_PER_RADIAN}, seq=1))
 
         assert applied == [{"j0": 0.0}]
         assert recv.stats["frames_received"] == 1
@@ -379,9 +410,9 @@ class TestReceiverRefusesOverSpeedFrames:
         clock.advance(FRAME_S)
         recv._on_input(recv.topic, _frame({"j0": 0.0}, seq=0))
         clock.advance(FRAME_S)
-        recv._on_input(recv.topic, _frame({"j0": 9.0}, seq=1))  # refused
+        recv._on_input(recv.topic, _frame({"j0": 9.0 * FRAME_UNITS_PER_RADIAN}, seq=1))  # refused
         clock.advance(FRAME_S)
-        recv._on_input(recv.topic, _frame({"j0": 9.05}, seq=2))  # near the refused pose
+        recv._on_input(recv.topic, _frame({"j0": 9.05 * FRAME_UNITS_PER_RADIAN}, seq=2))  # near the refused pose
 
         assert recv.stats["slew_rejected"] == 2
         assert applied == [{"j0": 0.0}]
@@ -393,13 +424,13 @@ class TestReceiverRefusesOverSpeedFrames:
         clock.advance(FRAME_S)
         recv._on_input(recv.topic, _frame({"j0": 0.0}, seq=0))
         clock.advance(FRAME_S)
-        recv._on_input(recv.topic, _frame({"j0": 3.0}, seq=1))
+        recv._on_input(recv.topic, _frame({"j0": 3.0 * FRAME_UNITS_PER_RADIAN}, seq=1))
         assert recv.stats["slew_rejected"] == 1
 
-        clock.advance(3.0 / DEFAULT_INPUT_SLEW_ABS + 0.01)
-        recv._on_input(recv.topic, _frame({"j0": 3.0}, seq=2))
+        clock.advance(3.0 * FRAME_UNITS_PER_RADIAN / DEFAULT_INPUT_SLEW_ABS + 0.01)
+        recv._on_input(recv.topic, _frame({"j0": 3.0 * FRAME_UNITS_PER_RADIAN}, seq=2))
 
-        assert applied == [{"j0": 0.0}, {"j0": 3.0}]
+        assert applied == [{"j0": 0.0}, {"j0": 3.0 * FRAME_UNITS_PER_RADIAN}]
         assert recv.stats["slew_rejected"] == 1
 
     def test_stats_reports_slew_rejections(self, clock):
@@ -408,7 +439,7 @@ class TestReceiverRefusesOverSpeedFrames:
         clock.advance(FRAME_S)
         recv._on_input(recv.topic, _frame({"j0": 0.0}, seq=0))
         clock.advance(FRAME_S)
-        recv._on_input(recv.topic, _frame({"j0": 9.0}, seq=1))
+        recv._on_input(recv.topic, _frame({"j0": 9.0 * FRAME_UNITS_PER_RADIAN}, seq=1))
         assert recv.stats["slew_rejected"] == 1
 
     def test_warning_is_rate_limited(self, clock, caplog):
@@ -421,7 +452,7 @@ class TestReceiverRefusesOverSpeedFrames:
         with caplog.at_level(logging.WARNING, logger="strands_robots.mesh.input"):
             for i in range(20):
                 clock.advance(0.015)
-                recv._on_input(recv.topic, _frame({"j0": 12.0}, seq=i + 1))
+                recv._on_input(recv.topic, _frame({"j0": 12.0 * FRAME_UNITS_PER_RADIAN}, seq=i + 1))
 
         assert recv.stats["slew_rejected"] == 20
         refusals = [r for r in caplog.records if "slew" in r.getMessage()]
@@ -434,7 +465,7 @@ class TestReceiverRefusesOverSpeedFrames:
         clock.advance(FRAME_S)
         recv._on_input(recv.topic, _frame({"j0": 0.0}, seq=0))
         clock.advance(FRAME_S)
-        recv._on_input(recv.topic, _frame({"j0": 9.0}, seq=1))
+        recv._on_input(recv.topic, _frame({"j0": 9.0 * FRAME_UNITS_PER_RADIAN}, seq=1))
 
         assert recv.stats["slew_rejected"] == 1
         assert recv.stats["rejected"] == 0
@@ -471,10 +502,13 @@ class TestSlewBoundComposesWithRateCap:
         monkeypatch.setenv("STRANDS_MESH_INPUT_MAX_HZ", "0")
         recv, applied = _make_receiver()
         for i in range(20):
-            recv._on_input(recv.topic, _frame({"j0": 0.9 if i % 2 == 0 else -0.9}, seq=i))
+            recv._on_input(
+                recv.topic,
+                _frame({"j0": 0.9 * FRAME_UNITS_PER_RADIAN if i % 2 == 0 else -0.9 * FRAME_UNITS_PER_RADIAN}, seq=i),
+            )
 
         assert recv.stats["slew_rejected"] == 10
-        assert {a["j0"] for a in applied} == {0.9}
+        assert {a["j0"] for a in applied} == {0.9 * FRAME_UNITS_PER_RADIAN}
 
     def test_frames_closer_than_the_cap_are_the_cap_s_business(self, clock, monkeypatch):
         # With the cap on, a frame arriving inside the minimum interval is
@@ -484,7 +518,7 @@ class TestSlewBoundComposesWithRateCap:
         clock.advance(FRAME_S)
         recv._on_input(recv.topic, _frame({"j0": 0.0}, seq=0))
         clock.advance(0.001)
-        recv._on_input(recv.topic, _frame({"j0": 9.0}, seq=1))
+        recv._on_input(recv.topic, _frame({"j0": 9.0 * FRAME_UNITS_PER_RADIAN}, seq=1))
 
         assert recv.stats["rate_dropped"] == 1
         assert recv.stats["slew_rejected"] == 0
@@ -507,7 +541,7 @@ class TestFrameShapeCannotChangeTheVerdict:
         joints = ("j0", "j1")
         for i in range(60):
             clock.advance(FRAME_S)
-            value = 0.9 if (i // 2) % 2 == 0 else -0.9
+            value = 0.9 * FRAME_UNITS_PER_RADIAN if (i // 2) % 2 == 0 else -0.9 * FRAME_UNITS_PER_RADIAN
             recv._on_input(recv.topic, _frame({joints[i % 2]: value}, seq=i))
 
         assert recv.stats["slew_rejected"] > 0
@@ -518,14 +552,14 @@ class TestFrameShapeCannotChangeTheVerdict:
     def test_a_frame_that_omits_a_joint_does_not_clear_its_baseline(self, clock):
         recv, applied = _timed_receiver(clock)
         clock.advance(FRAME_S)
-        recv._on_input(recv.topic, _frame({"j0": 0.9, "j1": 0.0}, seq=0))
+        recv._on_input(recv.topic, _frame({"j0": 0.9 * FRAME_UNITS_PER_RADIAN, "j1": 0.0}, seq=0))
         clock.advance(FRAME_S)
         recv._on_input(recv.topic, _frame({"j1": 0.01}, seq=1))  # j0 not mentioned
         clock.advance(FRAME_S)
-        recv._on_input(recv.topic, _frame({"j0": -0.9}, seq=2))  # full-scale reversal
+        recv._on_input(recv.topic, _frame({"j0": -0.9 * FRAME_UNITS_PER_RADIAN}, seq=2))  # full-scale reversal
 
         assert recv.stats["slew_rejected"] == 1
-        assert [action for _, action in applied] == [{"j0": 0.9, "j1": 0.0}, {"j1": 0.01}]
+        assert [action for _, action in applied] == [{"j0": 0.9 * FRAME_UNITS_PER_RADIAN, "j1": 0.0}, {"j1": 0.01}]
 
     def test_a_flood_of_unseen_joint_names_does_not_dislodge_a_live_joint(self, clock):
         # A frame may carry up to MAX_INPUT_FRAME_KEYS joints, so a baseline
@@ -533,15 +567,15 @@ class TestFrameShapeCannotChangeTheVerdict:
         # follower does not even have. Retention is by relevance, not capacity.
         recv, applied = _timed_receiver(clock)
         clock.advance(FRAME_S)
-        recv._on_input(recv.topic, _frame({"j0": 0.9}, seq=0))
+        recv._on_input(recv.topic, _frame({"j0": 0.9 * FRAME_UNITS_PER_RADIAN}, seq=0))
         clock.advance(FRAME_S)
         flood = {f"f{n}": 0.0 for n in range(security.MAX_INPUT_FRAME_KEYS - 1)}
         recv._on_input(recv.topic, _frame(flood, seq=1))
         clock.advance(FRAME_S)
-        recv._on_input(recv.topic, _frame({"j0": -0.9}, seq=2))
+        recv._on_input(recv.topic, _frame({"j0": -0.9 * FRAME_UNITS_PER_RADIAN}, seq=2))
 
         assert recv.stats["slew_rejected"] == 1
-        assert [action for _, action in applied] == [{"j0": 0.9}, flood]
+        assert [action for _, action in applied] == [{"j0": 0.9 * FRAME_UNITS_PER_RADIAN}, flood]
 
     def test_a_paused_joint_is_not_over_refused_when_it_moves_again(self, clock):
         # The flip side: measuring every joint against the stream's last apply
@@ -557,7 +591,7 @@ class TestFrameShapeCannotChangeTheVerdict:
         # j0's baseline is still there - a move too fast for the elapsed 0.32 s
         # is still refused ...
         clock.advance(FRAME_S)
-        recv._on_input(recv.topic, _frame({"j0": 12.0}, seq=100))
+        recv._on_input(recv.topic, _frame({"j0": 12.0 * FRAME_UNITS_PER_RADIAN}, seq=100))
         assert recv.stats["slew_rejected"] == 1
         # ... but one reachable within the bound over that interval is applied.
         clock.advance(FRAME_S)

@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import threading
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 
@@ -215,13 +216,15 @@ def test_the_peer_cap_evicts_the_oldest_peer_across_a_wall_clock_step(
 # LiDAR state throttle
 
 
-class _ScriptedStopEvent:
-    """Stands in for the loop's stop event, advancing the clock per tick.
+class _ScriptedTicker:
+    """Stands in for the loop's ticker, advancing the clock per tick.
 
-    The loop's own ``_stop_event.wait(period)`` is where a real run spends its
-    time, so driving it is what makes the cadence deterministic: each call
-    advances the double by exactly one period, applies any scripted wall-clock
-    step, and stops the loop after ``ticks`` iterations.
+    The ticker's ``wait()`` is where a real run spends its time, so driving it is
+    what makes the cadence deterministic: each call advances the double by exactly
+    one period, applies any scripted wall-clock step, and stops the loop after
+    ``ticks`` iterations. It sits exactly where the loop's old
+    ``_stop_event.wait(period)`` sat, so the cadence this drives is unchanged -
+    only the primitive being driven moved.
     """
 
     def __init__(self, clock: SteppableClock, ticks: int, step_at: int | None, step: float) -> None:
@@ -230,16 +233,32 @@ class _ScriptedStopEvent:
         self._step_at = step_at
         self._step = step
         self.count = 0
+        self.period = 0.0
+        self.closed = False
 
-    def wait(self, period: float) -> bool:
+    def build(self, period: float, stop_event: Any = None) -> _ScriptedTicker:
+        """Ticker-shaped constructor, so the loop builds THIS from its period."""
+        self.period = period
+        return self
+
+    def wait(self) -> bool:
         self.count += 1
-        self._clock.advance(period)
+        self._clock.advance(self.period)
         if self._step_at is not None and self.count == self._step_at:
             self._clock.step_wall(self._step)
         return self.count >= self._ticks
 
-    def set(self) -> None:  # pragma: no cover - the loop exits via wait()
-        self._ticks = 0
+    def close(self) -> None:
+        self.closed = True
+
+    # The loops enter the ticker with `with`, so the double carries the same
+    # protocol: a stand-in that is not a context manager would fail on the
+    # construct rather than on the cadence this test is about.
+    def __enter__(self) -> _ScriptedTicker:
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self.close()
 
 
 class _LidarHost:
@@ -250,7 +269,7 @@ class _LidarHost:
     state was published rather than only how often.
     """
 
-    def __init__(self, clock: SteppableClock, stop_event: _ScriptedStopEvent) -> None:
+    def __init__(self, clock: SteppableClock, stop_event: threading.Event) -> None:
         self.peer_id = "test-peer"
         self.robot = None
         self._running = True
@@ -259,6 +278,11 @@ class _LidarHost:
         self._origin = clock.monotonic()
         self.state_at: list[float] = []
         self.summary_at: list[float] = []
+
+    # The real pacing generator, so this drives the shipped ownership rules
+    # (one ticker per loop, released even when the body raises) rather than a
+    # reimplementation of them. The ticker it builds is the scripted double.
+    _paced = mesh_sensors.SensorLoopsMixin._paced
 
     def publish(self, topic: str, payload: dict[str, Any]) -> None:
         elapsed = round(self._clock.monotonic() - self._origin, 6)
@@ -276,9 +300,14 @@ class _LidarHost:
 
 def _run_lidar(clock: SteppableClock, ticks: int, step_at: int | None = None, step: float = 0.0) -> _LidarHost:
     """Run the real loop for *ticks* summary ticks against the clock double."""
-    stop_event = _ScriptedStopEvent(clock, ticks, step_at, step)
-    host = _LidarHost(clock, stop_event)
-    mesh_sensors.SensorLoopsMixin._lidar_loop(host)  # type: ignore[arg-type]
+    ticker = _ScriptedTicker(clock, ticks, step_at, step)
+    host = _LidarHost(clock, threading.Event())
+    with patch.object(mesh_sensors, "Ticker", ticker.build):
+        mesh_sensors.SensorLoopsMixin._lidar_loop(host)  # type: ignore[arg-type]
+    assert ticker.period == pytest.approx(1.0 / mesh_sensors.LIDAR_SUMMARY_HZ), (
+        "the loop must pace on its summary period"
+    )
+    assert ticker.closed, "the loop must release its ticker"
     return host
 
 

@@ -544,13 +544,31 @@ class _KeyRecordingEpisode(dict):
     the consulted keys is what lets the orchestration refuse to report that
     vacuous gate as a clean gated pass.
 
-    ``items()`` / ``values()`` / ``==`` / ``!=`` conservatively record every
-    key: a verdict iterating the former or comparing the whole mapping
-    received every column's value, so accusing it of reading no pixels would
-    be the false refusal. Overriding equality also keeps the added
-    ``consulted`` attribute out of the comparison on purpose - the probe is a
-    transparent stand-in for the episode dict, so it compares by episode
-    contents exactly as the wrapped dict would.
+    Recording is over every way a mapping can hand a stored value to its
+    caller, not just subscription, because the accusation is only honest if
+    the probe saw everything the verdict saw:
+
+    * ``[]`` / ``get()`` / ``pop()`` / ``popitem()`` / ``setdefault()`` name
+      one key, so they record that key.
+    * ``items()`` / ``values()`` / ``==`` / ``!=`` / ``copy()`` / ``|``
+      conservatively record every key: a verdict that iterated, compared or
+      **copied** the whole mapping received every column's value, so accusing
+      it of reading no pixels would be the false refusal. ``dict(episode)``
+      and ``{**episode}`` are that same bulk read - the defensive copy a
+      verdict makes before touching the caller's mapping - and they are why
+      ``__iter__`` is overridden: it records nothing itself (iteration yields
+      keys, never values), but CPython takes its dict-merge fast path, which
+      reads the C table directly and invisibly to ``__getitem__``, only while
+      ``tp_iter`` is ``dict.__iter__``. Overriding it routes both spellings
+      through ``keys()`` and ``__getitem__`` per key instead, which the
+      totality tests pin so an interpreter change fails loudly rather than
+      silently returning the probe to under-reporting.
+
+    Overriding equality also keeps the added ``consulted`` attribute out of
+    the comparison on purpose - the probe is a transparent stand-in for the
+    episode dict, so it compares by episode contents exactly as the wrapped
+    dict would, and ``copy()`` / ``|`` likewise return a plain ``dict`` just
+    as they do for any other ``dict`` subclass.
     """
 
     def __init__(self, episode: dict[str, Any]) -> None:
@@ -565,21 +583,60 @@ class _KeyRecordingEpisode(dict):
         self.consulted.add(key)
         return super().get(key, default)
 
-    def items(self) -> Any:
+    def _record_every_key(self) -> None:
+        """Conservative record for a bulk read that hands out every value."""
         self.consulted.update(super().keys())
+
+    def items(self) -> Any:
+        self._record_every_key()
         return super().items()
 
     def values(self) -> Any:
-        self.consulted.update(super().keys())
+        self._record_every_key()
         return super().values()
 
     def __eq__(self, other: Any) -> bool:
-        self.consulted.update(super().keys())
+        self._record_every_key()
         return super().__eq__(other)
 
     def __ne__(self, other: Any) -> bool:
-        self.consulted.update(super().keys())
+        self._record_every_key()
         return super().__ne__(other)
+
+    def copy(self) -> dict[str, Any]:
+        self._record_every_key()
+        return dict(super().items())
+
+    # ``Any`` return: ``dict.__or__`` / ``__ror__`` are overloaded in typeshed
+    # over the operand's key and value types, and a single concrete signature
+    # is not compatible with that. The runtime result is a plain ``dict``, as
+    # it is for any other ``dict`` subclass, which the transparency tests pin.
+    def __or__(self, other: Any) -> Any:
+        self._record_every_key()
+        return dict(super().items()) | dict(other)
+
+    def __ror__(self, other: Any) -> Any:
+        self._record_every_key()
+        return dict(other) | dict(super().items())
+
+    def pop(self, key: Any, *default: Any) -> Any:
+        self.consulted.add(key)
+        return super().pop(key, *default)
+
+    def popitem(self) -> Any:
+        key, value = super().popitem()
+        self.consulted.add(key)
+        return key, value
+
+    def setdefault(self, key: Any, default: Any = None) -> Any:
+        self.consulted.add(key)
+        return super().setdefault(key, default)
+
+    def __iter__(self) -> Any:
+        # Records nothing: iteration yields keys, never values. The override
+        # exists so ``dict(probe)`` and ``{**probe}`` are recorded at all -
+        # see the class docstring on CPython's dict-merge fast path.
+        return super().__iter__()
 
     # dict subclasses are unhashable by default; equality above compares by
     # episode contents (``consulted`` is instrumentation, not identity), so
