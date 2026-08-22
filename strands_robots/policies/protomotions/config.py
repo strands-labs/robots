@@ -221,6 +221,16 @@ class ProtoMotionsConfig:
             steps.
         action_ema_alpha: Optional exponential-moving-average smoothing on the
             joint target output (``1.0`` = passthrough, upstream default).
+        onnx_in_names: Input tensor names in the order the exported session
+            declares them, so the session's ``get_inputs()`` order can be
+            validated against this tuple at load.
+        onnx_out_names: Output tensor names requested from the session. Outputs
+            are paired to these names rather than by position, so a config that
+            declares the checkpoint's outputs in a different order still reads
+            the right tensor.
+        metadata: Free-form provenance carried alongside the config, populated
+            from a sidecar's own ``metadata`` key. Never read by the control
+            path.
     """
 
     joint_names: tuple[str, ...] = GTP_G1_JOINT_NAMES

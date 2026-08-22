@@ -49,8 +49,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from strands_robots._mesh_switch import NEGATIVE as _MESH_KILL_SWITCH_VALUES
 from strands_robots.mesh import core as mesh_core
-from strands_robots.mesh.core import _MESH_KILL_SWITCH_VALUES, init_mesh, mesh_disabled_by_env
+from strands_robots.mesh.core import init_mesh, mesh_disabled_by_env
 
 # ``from strands_robots.tools import robot_mesh`` yields the tool rather than the
 # module, so the module-level cache and lock under test are unreachable that way.

@@ -78,6 +78,16 @@ is*, so the outcomes group that way rather than by severity:
 ``required-check-pending``
     Nobody. The answer is not in yet.
 
+``merge-state-unknown``
+    Nobody, for now, and the same shape as the entry above one field over.
+    ``mergeable`` is ``bool | None``: GitHub computes it on demand and returns
+    null while it works, which is neither "conflicts" nor "merges cleanly". A
+    merge into the base invalidates it for every open pull request, so a sweep
+    run just after a merge is precisely when it is null. Reported as *gating*,
+    because reading the null as clean is how a conflicted branch is reported as
+    owed by a reviewer -- measured on #1035, which read
+    ``pusher-only-approval`` while it was ``DIRTY``. Re-read to resolve it.
+
 ``required-check-absent``
     A **maintainer**, by authorising or re-running the workflow. A fork pull
     request whose runs are held at ``action_required`` reports ``completed``
@@ -176,6 +186,7 @@ resolve_reviews = _approval.resolve_reviews
 # order they are reported in: a conflict makes the approval question moot, and
 # an unresolved thread makes it moot for a different reason.
 MERGE_CONFLICT = "merge-conflict"
+MERGE_STATE_UNKNOWN = "merge-state-unknown"
 DRAFT = "draft"
 REQUIRED_CHECK_FAILING = "required-check-failing"
 REQUIRED_CHECK_PENDING = "required-check-pending"
@@ -195,6 +206,7 @@ ANYONE = "anyone, by attempting the merge"
 
 _OWED_BY: dict[str, str] = {
     MERGE_CONFLICT: AUTHOR,
+    MERGE_STATE_UNKNOWN: NOBODY,
     DRAFT: AUTHOR,
     REQUIRED_CHECK_FAILING: AUTHOR,
     REQUIRED_CHECK_PENDING: NOBODY,
@@ -211,7 +223,13 @@ _OWED_BY: dict[str, str] = {
 # that would merge. Distinguished so the report names one next action instead
 # of a set the reader has to order, which is the mistake #1905 records as
 # "necessary but no longer sufficient".
-_GATING: frozenset[str] = frozenset({MERGE_CONFLICT, DRAFT})
+#
+# An unknown mergeability gates for the weaker reason that the conflict question
+# is still open: it may turn out to gate nothing at all. It is grouped here
+# because the cost is asymmetric -- reporting the approval rule as the next
+# action on a branch that turns out to be conflicted burns an approval, and
+# reporting it as necessary-but-not-sufficient costs one re-read (#2585).
+_GATING: frozenset[str] = frozenset({MERGE_CONFLICT, MERGE_STATE_UNKNOWN, DRAFT})
 
 
 # The outcomes a scheduled author-side pass can act on without anyone else.
@@ -332,6 +350,13 @@ def evaluate(state: PullRequestState, rules: Ruleset) -> tuple[Blocker, ...]:
     # Upstream of every rule below: a branch that does not merge cleanly cannot
     # be merged by satisfying anything else, and the required check that is
     # green is green on a head that predates the conflict.
+    #
+    # Three states, not two. GitHub computes mergeability on demand and returns
+    # null while it works, and a merge into the base invalidates it for every
+    # open pull request -- so a sweep run just after a merge is exactly when the
+    # null shows up. Falling through to the rules below would report it as
+    # cleanly mergeable, which is how #1035 came back as owed by a reviewer
+    # while it was in fact DIRTY (#2585).
     if state.mergeable is False:
         found.append(
             Blocker(
@@ -341,6 +366,20 @@ def evaluate(state: PullRequestState, rules: Ruleset) -> tuple[Blocker, ...]:
                 f"{state.merge_state or 'dirty'}. No approval can merge it while "
                 f"this stands, and the required check's green describes a head "
                 f"that predates the conflict.",
+            )
+        )
+    elif state.mergeable is None:
+        found.append(
+            Blocker(
+                MERGE_STATE_UNKNOWN,
+                "(not a ruleset rule)",
+                f"GitHub has not finished computing whether this branch merges "
+                f"cleanly into {state.base_ref}; merge state is "
+                f"{state.merge_state or 'unknown'}. No conflict is alleged and "
+                f"none is ruled out -- the question is open, so the rules below "
+                f"are reported as necessary rather than sufficient. Re-read the "
+                f"pull request: mergeability is computed on demand and settles "
+                f"on a later read.",
             )
         )
 
