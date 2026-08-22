@@ -208,3 +208,74 @@ def test_every_renderer_consumer_has_a_pinned_no_gl_channel():
         f"stale={sorted(set(_NO_GL_CHANNEL) - consumers)}. "
         "Decide what the new consumer does without a GL context, pin it, and record it here."
     )
+
+
+# ---------------------------------------------------------------------------
+# The advice has to be true on the host that is reading it
+# ---------------------------------------------------------------------------
+
+
+class TestTheFixIsPlatformCorrect:
+    """``apt-get install libosmesa6-dev`` is right on Linux and false on macOS.
+
+    macOS ships neither EGL nor OSMesa (MuJoCo renders through CGL there), so
+    the old single-sentence advice sent a Mac operator to install a package that
+    does not exist for their machine - and while they chased it, the real cause
+    kept its cover. This pins both halves: Linux keeps the packages, darwin gets
+    a cause it can actually act on.
+
+    ``platform=`` is injected rather than read from the host, so both halves are
+    graded on every runner - nothing here skips on a Linux CI box.
+    """
+
+    def test_linux_keeps_the_package_advice(self):
+        text = rendering.no_gl_context_message(platform="linux")
+        assert "apt-get install libosmesa6-dev" in text
+        assert "macOS" not in text
+
+    def test_macos_is_not_told_to_apt_get(self):
+        text = rendering.no_gl_context_message(platform="darwin")
+        assert "apt-get" not in text, "there is no apt on macOS"
+        assert "CGL" in text, "name the API that actually renders there"
+        assert "launchd" in text, "the daemon-with-no-window-server case is the common one"
+
+    def test_macos_names_the_lost_context_case_no_install_can_fix(self):
+        """A context that worked and then vanished is not a missing install.
+
+        The two macOS causes need opposite actions: no window-server session is
+        fixed by where the process is started from, a context that worked
+        EARLIER in this same process is fixed by starting a fresh one. Naming
+        only the first sends the second case chasing a session it already had.
+        """
+        text = rendering.no_gl_context_message(platform="darwin")
+        assert "EARLIER" in text and "fresh process" in text
+
+    def test_both_platforms_stay_within_the_shared_contract(self):
+        for plat in ("linux", "darwin", "win32"):
+            for depth in (False, True):
+                text = rendering.no_gl_context_message(depth=depth, platform=plat)
+                assert text == text.strip()
+                assert "OpenGL" in text
+                # The existing consumers' assertions: EGL/OSMesa is named either
+                # as the fix (Linux) or as the thing that does not exist (macOS).
+                assert ("EGL" in text) or ("OSMesa" in text)
+                head = "Depth rendering unavailable" if depth else "Rendering unavailable"
+                assert text.startswith(head)
+
+    def test_the_running_platform_is_the_default(self):
+        """Every consumer calls the helper with no ``platform=``.
+
+        The injected argument exists for the tests; the shipped call sites pass
+        nothing, so the default has to be the host actually reading the message.
+        """
+        import sys
+
+        assert rendering.no_gl_context_message() == rendering.no_gl_context_message(platform=sys.platform)
+
+    def test_every_consumer_goes_through_the_helper(self):
+        """No consumer may keep its own hardcoded sentence and drift."""
+        src = inspect.getsource(rendering)
+        assert src.count("apt-get install libosmesa6-dev") == 1, (
+            "the Linux advice lives in no_gl_context_message and nowhere else"
+        )
+        assert src.count("no_gl_context_message(") >= 4  # def + 3 call sites

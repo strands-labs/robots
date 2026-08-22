@@ -9,7 +9,9 @@ context and on both Linux and macOS.
 """
 
 import os
+import re
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -51,6 +53,141 @@ def test_rejects_symlink_target(tmp_path):
     link.symlink_to(victim)
     with pytest.raises(ValueError, match="symlink"):
         validate_output_path(str(link), sandbox_root=None, allow_abs=True)
+
+
+# --- the symlink refusal names where the link points (issue #327) ---
+#
+# Refusing is right, but the refusal has to leave the caller somewhere to go.
+# On macOS the single most reachable scratch path IS a symlink (/tmp ->
+# /private/tmp), so a caller that asked for the most ordinary directory on the
+# machine got a refusal that read like an attack had been detected and named no
+# way forward. These pin both halves of the fix: the destination is named, and
+# every path the message *offers* is one this same call accepts.
+
+
+def _macos_tmp_shape(tmp_path):
+    """Build the /tmp -> /private/tmp shape: a real dir reached through a link."""
+    real = tmp_path / "private_tmp"
+    real.mkdir()
+    link = tmp_path / "tmp"
+    link.symlink_to(real)
+    return link, real
+
+
+def test_symlink_refusal_names_the_destination_it_will_not_follow(tmp_path):
+    """The refusal names where the link points, not just that it is a link.
+
+    The verdict must not soften into advice either: naming a way forward is an
+    addition to the refusal, not a replacement for it, so "refusing to follow"
+    still has to be in the message a caller reads.
+    """
+    link, real = _macos_tmp_shape(tmp_path)
+    with pytest.raises(ValueError, match="symlink") as excinfo:
+        validate_output_path(str(link), sandbox_root=None, allow_abs=True, label="output_dir")
+    message = str(excinfo.value)
+    assert "refusing to follow" in message, message
+    assert str(real) in message, message
+
+
+def test_the_path_the_symlink_refusal_offers_is_one_this_call_accepts(tmp_path):
+    """Follow the remedy verbatim: an offered path must not hit a second refusal.
+
+    Parses the destination back out of the message and passes it, which is what
+    a caller acting on the refusal does. A message that offers a path this same
+    call would reject is a dead end wearing a remedy.
+    """
+    link, real = _macos_tmp_shape(tmp_path)
+    with pytest.raises(ValueError) as excinfo:
+        validate_output_path(str(link), sandbox_root=None, allow_abs=True, label="output_dir")
+    offered = re.search(r"it points at '([^']+)', pass that path instead", str(excinfo.value))
+    assert offered, f"no path offered: {excinfo.value}"
+    resolved = validate_output_path(offered.group(1), sandbox_root=None, allow_abs=True, label="output_dir")
+    assert resolved == real.resolve()
+
+
+@pytest.mark.parametrize("unresolvable", [RuntimeError("Symlink loop from 'x'"), OSError("ELOOP")])
+def test_a_symlink_the_call_cannot_resolve_is_still_a_value_error(tmp_path, monkeypatch, unresolvable):
+    """Naming the destination must not change which exception class escapes.
+
+    ``Path.resolve(strict=False)`` is not total, and which class it raises for a
+    cycle depends on the interpreter: CPython 3.12 raises ``RuntimeError``
+    ("Symlink loop from ...") while 3.13 returns the link unresolved. Both are
+    inside ``requires-python = ">=3.12"``, so a handler naming only ``OSError``
+    would let 3.12's ``RuntimeError`` escape a function documented to raise
+    ``ValueError`` - past the ``except ValueError`` every sink maps to a
+    structured tool error. Both classes are driven here so the guard holds on
+    either interpreter rather than only the one running it.
+    """
+    link = tmp_path / "link"
+    link.symlink_to(tmp_path / "target")
+
+    def boom(self, strict=False):
+        raise unresolvable
+
+    monkeypatch.setattr(Path, "resolve", boom)
+    with pytest.raises(ValueError, match="symlink"):
+        validate_output_path(str(link), sandbox_root=None, allow_abs=True, label="output_dir")
+
+
+def test_a_real_symlink_loop_is_refused_without_a_hint(tmp_path):
+    """A cycle has no destination to name, so the refusal stays bare."""
+    a, b = tmp_path / "a", tmp_path / "b"
+    a.symlink_to(b)
+    b.symlink_to(a)
+    with pytest.raises(ValueError, match="symlink") as excinfo:
+        validate_output_path(str(a), sandbox_root=None, allow_abs=True, label="output_dir")
+    assert "it points at" not in str(excinfo.value), str(excinfo.value)
+
+
+def test_a_broken_symlink_still_names_its_destination(tmp_path):
+    """A dangling link resolves fine, and its destination is a usable target.
+
+    ``resolve(strict=False)`` does not raise for a link whose target is absent -
+    it returns the target path - and a not-yet-existing path is exactly what an
+    output sink is about to create. So this case gets a hint like any other.
+    """
+    link = tmp_path / "broken"
+    target = tmp_path / "not_created_yet"
+    link.symlink_to(target)
+    with pytest.raises(ValueError, match="symlink") as excinfo:
+        validate_output_path(str(link), sandbox_root=None, allow_abs=True, label="output_dir")
+    assert str(target) in str(excinfo.value), str(excinfo.value)
+    assert validate_output_path(str(target), sandbox_root=None, allow_abs=True) == target.resolve()
+
+
+def test_a_confined_symlink_pointing_outside_is_named_but_not_offered(tmp_path):
+    """Under confinement, an outside destination is a diagnosis, not a remedy.
+
+    Offering it would send the caller straight into the confinement refusal, so
+    the message names where the link goes and then points back into the sandbox.
+    """
+    sandbox = tmp_path / "sandbox"
+    sandbox.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    link = sandbox / "escape"
+    link.symlink_to(outside)
+    with pytest.raises(ValueError, match="symlink") as excinfo:
+        validate_output_path(str(link), sandbox_root=sandbox, allow_abs=False)
+    message = str(excinfo.value)
+    assert str(outside) in message, message
+    assert "pass that path instead" not in message, message
+    assert "outside the sandbox" in message, message
+
+
+def test_a_confined_symlink_pointing_inside_the_sandbox_is_offered(tmp_path):
+    """A destination confinement would accept is offered as the way forward."""
+    sandbox = tmp_path / "sandbox"
+    sandbox.mkdir()
+    inner = sandbox / "inner"
+    inner.mkdir()
+    link = sandbox / "shortcut"
+    link.symlink_to(inner)
+    with pytest.raises(ValueError, match="symlink") as excinfo:
+        validate_output_path(str(link), sandbox_root=sandbox, allow_abs=False)
+    offered = re.search(r"it points at '([^']+)', pass that path instead", str(excinfo.value))
+    assert offered, f"no path offered: {excinfo.value}"
+    assert validate_output_path(offered.group(1), sandbox_root=sandbox, allow_abs=False) == inner.resolve()
 
 
 @pytest.mark.parametrize("bad", ["../escape.mp4", "../../etc/x.mp4", "sub/../../etc/x.mp4"])

@@ -406,6 +406,11 @@ class Mesh(SensorLoopsMixin):
         self._inbox_lock = threading.Lock()
         self._stop_event = threading.Event()
 
+        # Which _read_state probe categories have already been warned about.
+        # The state loop retries at STATE_HZ, so a persistent fault is reported
+        # once and then kept at debug level rather than once per tick.
+        self._read_state_warned: set[str] = set()
+
         # RPC correlation state.
         #
         # _expected_responders maps turn_id -> the peer_id we expect to
@@ -1093,6 +1098,49 @@ class Mesh(SensorLoopsMixin):
             if self._stop_event.wait(period):
                 break
 
+    def _warn_read_state_once(self, category: str, exc: BaseException) -> None:
+        """Report a degraded :meth:`_read_state` probe, once per category.
+
+        Args:
+            category: Which probe degraded -- ``hw_joints``, ``task_state``,
+                ``sim_world`` or ``sim_joints``.
+            exc: The exception the probe raised. Logged as ``repr`` so the type
+                survives even when the message is empty, because the type is
+                what selects the operator's next move: a ``ConnectionError``
+                from a contended serial port and a ``RuntimeError`` from an
+                uncalibrated arm need different actions.
+
+        Each probe stays wrapped in ``except Exception`` on purpose -- a flaky
+        read must not kill the state thread -- so this exists to keep that
+        recovery from also being silent. Only the FIRST failure of each category
+        is warned about; the rest drop to debug, because the loop retries at
+        ``STATE_HZ`` and a persistent fault would otherwise emit ten warnings a
+        second.
+        """
+        warned = getattr(self, "_read_state_warned", None)
+        if warned is None:
+            # A Mesh built through __new__ (several tests, and the sim paths)
+            # never ran __init__. Bookkeeping must not be able to raise inside
+            # the handler that exists to report a failure.
+            warned = set()
+            self._read_state_warned = warned
+        if category in warned:
+            logger.debug(
+                "[mesh] %s: state probe %r still failing: %r",
+                self.peer_id,
+                category,
+                exc,
+            )
+            return
+        warned.add(category)
+        logger.warning(
+            "[mesh] %s: state probe %r failed, that section of the snapshot is "
+            "omitted (further failures logged at debug): %r",
+            self.peer_id,
+            category,
+            exc,
+        )
+
     def _read_state(self) -> dict[str, Any] | None:
         r = self.robot
         snapshot: dict[str, Any] = {"peer_id": self.peer_id, "t": time.time()}
@@ -1115,8 +1163,8 @@ class Mesh(SensorLoopsMixin):
                         joints[key] = value
                 if joints:
                     snapshot["joints"] = joints
-        except Exception:
-            pass
+        except Exception as exc:
+            self._warn_read_state_once("hw_joints", exc)
 
         try:
             ts = getattr(r, "_task_state", None)
@@ -1128,8 +1176,8 @@ class Mesh(SensorLoopsMixin):
                     "steps": getattr(ts, "step_count", 0),
                     "duration": getattr(ts, "duration", 0.0),
                 }
-        except Exception:
-            pass
+        except Exception as exc:
+            self._warn_read_state_once("task_state", exc)
 
         try:
             world = getattr(r, "_world", None)
@@ -1163,10 +1211,10 @@ class Mesh(SensorLoopsMixin):
                                 }
                         if sim_joints:
                             snapshot["joints"] = sim_joints
-                    except Exception:
-                        pass
-        except Exception:
-            pass
+                    except Exception as exc:
+                        self._warn_read_state_once("sim_joints", exc)
+        except Exception as exc:
+            self._warn_read_state_once("sim_world", exc)
 
         return snapshot if len(snapshot) > 2 else None
 

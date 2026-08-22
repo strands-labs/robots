@@ -69,6 +69,23 @@ keys must be columns of the active space. Mapping the gripper is therefore
 `{"grasp": ...}` under `midtrain` and `{"gripper": ...}` under `joint_pos`; a key
 that names no column is refused, listing the ones that are valid.
 
+`joint_pos` needs seven joint values plus a gripper, and it reads them in the
+order you declare with `set_robot_state_keys()`. Declaring that order is what
+every example here does, and it is what binds the request to the joints you mean.
+
+Without it the order is inferred from the observation's own scalar keys, and that
+inferred ordering is **position-only**: a `<joint>.vel` entry is dropped when the
+observation also carries its `<joint>` position companion. Every sim backend
+emits a velocity sibling beside each joint position, so taking the keys in
+observation order would otherwise put a velocity in every other slot of the
+seven and truncate the trailing joints away. A `.vel` key with no position
+companion is kept, because some embodiments legitimately declare velocity state
+(LeKiwi's body-frame base velocities `x.vel` / `y.vel` / `theta.vel`). Explicit
+`robot_state_keys` are never filtered - naming `elbow.vel` there states the
+model's input. This is the same rule the LeRobot provider applies to its own
+inferred ordering, so one observation reads as one state vector whichever
+provider consumes it.
+
 ## Backends
 
 Cosmos3Policy can run Cosmos 3 two ways. The default is unchanged.

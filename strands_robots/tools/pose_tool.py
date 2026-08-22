@@ -657,7 +657,6 @@ def pose_tool(
         - "incremental_move": Small incremental motor movement
         - "read_position": Read current motor position
         - "read_all": Read all motor positions
-        - "calibrate_motor": Interactive motor calibration
 
         System:
         - "connect": Test robot connection
@@ -666,6 +665,14 @@ def pose_tool(
           anything it is grasping is dropped. Reports an error when any motor
           could not be released.
         - "reset_to_home": Move to safe home position
+
+    Calibration:
+        This tool performs no calibration - every action above drives or reads a
+        motor through the calibration already on disk. Stored calibrations are
+        managed by the separate lerobot_calibrate tool (list, view, backup,
+        restore), and the interactive prompt LeRobot shows when a device has
+        none is answered by a lerobot_teleoperate session's
+        ``auto_accept_calibration``.
 
     Args:
         action: Action to perform
