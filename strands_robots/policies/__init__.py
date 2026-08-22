@@ -8,7 +8,7 @@ produced, so the same interface fits VLA-style providers (consume images +
 instruction) and non-VLA providers (cuRobo, MoveIt2, MPC, pure-IK / scripted
 trajectories).  Non-VLA providers typically set ``requires_images=False`` and
 read their goal from the well-known ``**kwargs`` keys (``target_pose``,
-``target_joints``, ``world_update``) documented on
+``target_joints``, ``target_velocity``, ``world_update``) documented on
 :meth:`Policy.get_actions`.
 
 Built-in providers (see policies.json for full list):

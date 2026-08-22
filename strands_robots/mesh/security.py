@@ -220,6 +220,18 @@ MAX_INPUT_KEY_LEN: int = 64
 #: keeps a malicious payload from forcing an unbounded dict walk.
 MAX_TARGET_JOINTS: int = 256
 
+#: Bound on the number of components accepted in a sim ``execute`` /
+#: ``start`` payload's ``target_velocity`` list (issue #300 well-known
+#: kwarg). The wire cannot own the arity verdict: WBC and ``wbc_gait``
+#: require at least ``[vx, vy, omega]`` and read the first three, while
+#: MotionBricks reads ``[vx, vy]`` or ``[vx, vy, vz]`` - so a fixed
+#: length here would refuse a shape one of them accepts, and each names
+#: its own requirement when a caller gets it wrong. This cap is purely
+#: DoS defence, the same role :data:`MAX_TARGET_JOINTS` plays: 16 is well
+#: above any shipped receiver's read and keeps a malicious payload from
+#: forcing an unbounded list walk.
+MAX_TARGET_VELOCITY_COMPONENTS: int = 16
+
 #: Bound on a sim ``execute`` / ``start`` payload's ``world_update``
 #: nested dict size, in JSON-encoded bytes. Mesh does not interpret the
 #: per-call collision-world refresh payload; it forwards it to the
@@ -892,6 +904,11 @@ def validate_command(cmd: dict[str, Any]) -> dict[str, Any]:
         - ``target_joints`` (optional): dict of joint-name to float
           (issue #300 well-known kwarg). Bounded by
           :data:`MAX_TARGET_JOINTS`.
+        - ``target_velocity`` (optional): list of floats
+          ``[vx, vy, omega]`` (m/s, m/s, rad/s) for locomotion providers
+          (issue #300 well-known kwarg). Component count bounded by
+          :data:`MAX_TARGET_VELOCITY_COMPONENTS`; the arity a given
+          policy needs is that policy's verdict, not the wire's.
         - ``world_update`` (optional): opaque dict forwarded to the
           policy via ``policy_config``. Bounded by
           :data:`MAX_WORLD_UPDATE_BYTES` JSON-encoded bytes.
@@ -1062,8 +1079,17 @@ def validate_command(cmd: dict[str, Any]) -> dict[str, Any]:
             out["robot_name"] = value
 
         # Issue #300 well-known per-call policy kwargs. Forwarded into
-        # ``policy_config`` by the dispatcher; planner-style providers
-        # (cuRobo, MoveIt2, MPC) consume them, VLA providers ignore them.
+        # ``policy_kwargs`` by the dispatcher, which is what reaches
+        # ``get_actions(obs, instruction, **policy_kwargs)``. Planner-style
+        # providers (cuRobo, MoveIt2) read a Cartesian or joint-space goal;
+        # locomotion providers (WBC, wbc_gait, MotionBricks) read
+        # ``target_velocity``. VLA providers ignore all of them.
+        #
+        # Every key ``SimEngine.run_policy`` documents as a #300 goal key is
+        # admitted here, because that docstring offers the mesh ``tell()``
+        # path as the analogue of the local call. A key it names and this
+        # allowlist omits is dropped without a word - the ``out`` dict below
+        # is built key by key, so an unlisted one simply never arrives.
         if "target_pose" in cmd:
             value = cmd["target_pose"]
             if not isinstance(value, list) or len(value) != 7:
@@ -1098,6 +1124,28 @@ def validate_command(cmd: dict[str, Any]) -> dict[str, Any]:
                     f"target_joints[{joint_name}]", joint_value, lo=-1e6, hi=1e6, default=None
                 )
             out["target_joints"] = coerced_joints
+
+        if "target_velocity" in cmd:
+            value = cmd["target_velocity"]
+            if not isinstance(value, list) or not value:
+                raise ValidationError(
+                    "target_velocity must be a non-empty list of floats [vx, vy, omega] (m/s, m/s, rad/s)"
+                )
+            if len(value) > MAX_TARGET_VELOCITY_COMPONENTS:
+                raise ValidationError(
+                    f"target_velocity has {len(value)} components > "
+                    f"MAX_TARGET_VELOCITY_COMPONENTS ({MAX_TARGET_VELOCITY_COMPONENTS})."
+                )
+            # Per-component domain shared with ``target_pose``: finite, in
+            # range, and a bool is refused by name rather than read as 1.
+            # The component COUNT is not checked against any receiver's
+            # arity here - see :data:`MAX_TARGET_VELOCITY_COMPONENTS`.
+            coerced_velocity: list[float] = []
+            for i, component in enumerate(value):
+                coerced_velocity.append(
+                    _coerce_float(f"target_velocity[{i}]", component, lo=-1e6, hi=1e6, default=None)
+                )
+            out["target_velocity"] = coerced_velocity
 
         if "world_update" in cmd:
             value = cmd["world_update"]

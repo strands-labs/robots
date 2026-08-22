@@ -1920,12 +1920,11 @@ class Mesh(SensorLoopsMixin):
             # has neither, so this is unambiguous.
             #
             # Forwards the well-known per-call kwargs from #300
-            # (``target_pose`` / ``target_joints`` / ``world_update``) plus
-            # the existing ``extra`` set (model_path / server_address / ...)
-            # via ``policy_config``. ``create_policy(provider, **policy_config)``
-            # passes them to the Policy constructor; per the #300 contract
-            # planner-style providers consume them and VLA providers ignore
-            # unknown kwargs without raising.
+            # (``target_pose`` / ``target_joints`` / ``target_velocity`` /
+            # ``world_update``) via ``policy_kwargs``, and the ``extra`` set
+            # (model_path / server_address / ...) via ``policy_config``.
+            # Per the #300 contract a goal-conditioned provider consumes the
+            # goal keys and a VLA provider ignores them without raising.
             # Child SimRobot peer: a SimRobot dataclass carries no
             # run_policy/list_robots of its own - delegate to the parent
             # Simulation with robot_name pre-bound to this robot, so a task
@@ -2008,19 +2007,35 @@ class Mesh(SensorLoopsMixin):
             return {"error": "robot does not support stop_teleop"}
         return {"error": f"unknown action: {action}"}
 
-    # Well-known per-call policy kwargs from issue #300 - keys that planner-
-    # style providers (cuRobo, MoveIt2, MPC) consume to encode goals beyond
-    # natural-language ``instruction``. Forwarded from the ``tell()``
-    # payload into ``policy_kwargs`` -- the run_policy/start_policy parameter
-    # that reaches ``get_actions(obs, instruction, **policy_kwargs)`` -- so a
-    # ``policy_provider="curobo"`` peer sees the ``target_pose`` it needs
-    # without the dispatch layer dropping it silently.
+    # Well-known per-call policy kwargs from issue #300 - keys a goal-
+    # conditioned provider consumes to encode a goal beyond natural-language
+    # ``instruction``. Forwarded from the ``tell()`` payload into
+    # ``policy_kwargs`` -- the run_policy/start_policy parameter that reaches
+    # ``get_actions(obs, instruction, **policy_kwargs)`` -- so a
+    # ``policy_provider="curobo"`` peer sees the ``target_pose`` it needs and a
+    # ``policy_provider="wbc"`` peer sees the ``target_velocity`` it needs,
+    # without the dispatch layer dropping either silently.
+    #
+    # This is the set ``SimEngine.run_policy`` documents, because its
+    # ``policy_kwargs`` entry offers this path as the analogue of the local
+    # call ("the local-sim analogue of the mesh ``tell()`` path, which already
+    # forwards these keys"). Two directions, both mechanical: a key that
+    # docstring names and this tuple omits is dropped after the wire admits
+    # it, and a key admitted here that no provider reads is inert.
+    #
+    # ``target_velocity`` is the locomotion goal - WBC / wbc_gait read
+    # ``[vx, vy, omega]``, MotionBricks reads a planar direction. Every one of
+    # those providers is reachable over the mesh: the policy-provider
+    # allowlist is derived from the registry (see
+    # ``strands_robots.mesh.security``), so a locomotion peer can be told to
+    # walk and has to be able to receive where.
     #
     # See AGENTS.md > Public API Hygiene: "Forward all advertised kwargs
     # end-to-end. Silent drops are bugs masquerading as features."
     _SIM_WELL_KNOWN_POLICY_KWARGS: tuple[str, ...] = (
         "target_pose",
         "target_joints",
+        "target_velocity",
         "world_update",
     )
 
@@ -2053,12 +2068,16 @@ class Mesh(SensorLoopsMixin):
         ``policy_type``, ``pretrained_name_or_path``) travel in
         ``policy_config``, which ``create_policy`` hands to the Policy
         constructor. The issue #300 well-known per-call goal
-        (``target_pose``, ``target_joints``, ``world_update``) travels in
-        ``policy_kwargs``, which the runner forwards verbatim to every
-        ``get_actions(obs, instruction, **policy_kwargs)`` call: no provider
-        names a goal key on its constructor, so ``policy_config`` would hand
-        the goal to a forward-compatibility absorber that ignores it and the
-        planner would then refuse the payload the caller supplied. Per #300
+        (``target_pose``, ``target_joints``, ``target_velocity``,
+        ``world_update``) travels in ``policy_kwargs``, which the runner
+        forwards verbatim to every
+        ``get_actions(obs, instruction, **policy_kwargs)`` call. Sent as
+        ``policy_config`` instead, a goal reaches the Policy constructor,
+        where no provider reads it as a per-call goal - cuRobo and MoveIt2
+        name no goal key there at all, and WBC's constructor
+        ``target_velocity`` is a *static* default a per-call kwarg overrides -
+        so the goal would be absorbed and the provider would then refuse the
+        payload the caller supplied. Per #300
         the receiving Policy ignores unknown per-call kwargs rather than
         raising, so VLA providers stay compatible.
         """

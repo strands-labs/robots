@@ -207,6 +207,76 @@ class TestVacuousGateIsReported:
         assert result.revalidated is True
         assert "NOT gated" not in result.message
 
+    @pytest.mark.parametrize(
+        ("spelling", "verdict"),
+        [
+            ("dict(episode)", lambda ep: float(dict(ep)["observation.images.cam"].mean()) < 50.0),
+            ("{**episode}", lambda ep: float({**ep}["observation.images.cam"].mean()) < 50.0),
+            ("episode.copy()", lambda ep: float(ep.copy()["observation.images.cam"].mean()) < 50.0),
+            ("episode | {}", lambda ep: float((ep | {})["observation.images.cam"].mean()) < 50.0),
+        ],
+        ids=["dict_call", "splat", "copy_method", "union"],
+    )
+    def test_a_verdict_reading_pixels_through_a_defensive_copy_is_not_accused(
+        self, record_source_dataset, tmp_path, spelling, verdict
+    ):
+        """Copying the mapping before reading it is still receiving every value.
+
+        Each verdict here is the same predicate as ``_mean_pixel_below_50``,
+        spelled with the defensive copy a verdict makes before touching the
+        caller's mapping. The copy hands over every column, pixels included, so
+        the run is gated - and it demonstrably is, because the shift flips the
+        verdict and the variant is discarded. Reporting such a run as ungated
+        would put "discarded 1 on the re-validation gate" and "this verdict
+        cannot flip" in one payload.
+        """
+        source_root = record_source_dataset([0])
+        spec = TransformSpec(
+            source_root=source_root,
+            output_root=str(tmp_path / "copy_gated"),
+            revalidate=verdict,
+        )
+        result = MockTransform(pixel_shift=100).transform(spec)
+        assert result.status == "success", result.message
+        assert result.episodes_discarded == 1, f"premise: {spelling} must flip on this shift - {result.message}"
+        assert result.revalidated is True, (
+            f"a verdict reading pixels through {spelling} received them, yet the run refuses the gated label"
+        )
+        assert "NOT gated" not in result.message
+        assert "observation.images" not in result.message
+
+    @pytest.mark.parametrize(
+        ("spelling", "verdict"),
+        [
+            ("episode[key]", _mean_pixel_below_50),
+            ("dict(episode)", lambda ep: float(dict(ep)["observation.images.cam"].mean()) < 50.0),
+            ("{**episode}", lambda ep: float({**ep}["observation.images.cam"].mean()) < 50.0),
+            ("episode.items()", lambda ep: any(float(v.mean()) < 50.0 for k, v in ep.items() if k.endswith(".cam"))),
+        ],
+        ids=["subscript", "dict_call", "splat", "items"],
+    )
+    def test_a_discarding_run_never_reports_itself_ungated(self, record_source_dataset, tmp_path, spelling, verdict):
+        """The invariant: a gate that discarded provably discriminated.
+
+        ``episodes_discarded > 0`` is a measurement that the verdict answered
+        differently on a generated variant than on its source. A run reporting
+        that alongside ``revalidated=False`` - whose message says the verdict
+        cannot flip - contradicts itself, whichever read path the verdict used.
+        """
+        source_root = record_source_dataset([0])
+        spec = TransformSpec(
+            source_root=source_root,
+            output_root=str(tmp_path / "no_contradiction"),
+            revalidate=verdict,
+        )
+        result = MockTransform(pixel_shift=100).transform(spec)
+        assert result.status == "success", result.message
+        assert result.episodes_discarded > 0, f"premise: {spelling} must flip on this shift - {result.message}"
+        assert result.revalidated is True, (
+            f"{spelling}: discarded {result.episodes_discarded} on the gate and still reports it ungated - "
+            f"{result.message}"
+        )
+
     def test_the_vacuous_gate_still_flips_on_a_pixel_verdict_elsewhere(self, record_source_dataset, tmp_path):
         """The discard machinery is untouched: the pixel verdict still discards a flip."""
         source_root = record_source_dataset([0])
