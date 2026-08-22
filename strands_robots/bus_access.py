@@ -18,6 +18,13 @@ the reads collided continuously and every joint consumer drew nothing: no
 positions in the fleet snapshot, no history traces, no motion detection. The
 SDK's three retries did not help: all three landed inside the same collision.
 
+A policy rollout is a participant too, and the asymmetry matters: the caller
+that loses a collision is the one NOT holding the lock. With the mesh converted
+and ``hardware_robot`` not, a mesh reader took the lock and always won while the
+rollout took nothing and always lost -- one refused read ended the whole rollout,
+reported as a policy fault for a run that never commanded the arm once, while
+the reader beside it logged nothing at all.
+
 The lock lives on the DEVICE, not on any one caller, because that is what is
 actually being shared: the mesh modules, the teleop rail and any application on
 top of them all hold different wrappers around the same lerobot robot. It is an ``RLock`` so a

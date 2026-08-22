@@ -89,6 +89,38 @@ _PIPELINE_HELP = (
     "wiring it in."
 )
 
+#: Sentinel for "the pipeline exposes no ``generate`` attribute at all", kept
+#: distinct from a ``generate`` that is present but ``None`` so the probe below
+#: classifies both exactly as ``hasattr`` / ``getattr`` did.
+_UNSET: Any = object()
+
+
+def _generate_surface(obj: Any, subject: str) -> tuple[Any, str | None]:
+    """Read ``obj.generate`` for the probe, or report why the read failed.
+
+    The pipeline is caller-supplied, so reading an attribute off it runs the
+    caller's code: a lazy handle that initialises a CUDA context on first
+    access raises here, and ``getattr``'s default only absorbs
+    ``AttributeError``. Reporting keeps this probe inside
+    :meth:`~strands_robots.transforms.base.DatasetTransform.validate`'s
+    "return problems" contract.
+
+    Args:
+        obj: The candidate pipeline - an injected object or a resolved import
+            target.
+        subject: How the caller named it, for the problem text.
+
+    Returns:
+        ``(surface, None)`` where ``surface`` is the attribute or :data:`_UNSET`
+        when absent, or ``(_UNSET, problem)`` when the read itself raised.
+    """
+    try:
+        return getattr(obj, "generate", _UNSET), None
+    except Exception as exc:  # noqa: BLE001 - never fatal while probing a caller's object
+        return _UNSET, (
+            f"{subject} raised {type(exc).__name__} while its generate() surface was read ({exc}) - {_PIPELINE_HELP}"
+        )
+
 
 class CosmosTransferTransform(DatasetTransform):
     """Video2video episode augmentation behind a vendor-neutral pipeline seam.
@@ -143,10 +175,12 @@ class CosmosTransferTransform(DatasetTransform):
         instance validate approved.
         """
         if self._pipeline is not None:
-            if not callable(getattr(self._pipeline, "generate", None)):
-                return [
-                    f"pipeline object {type(self._pipeline).__name__} has no callable generate() - {_PIPELINE_HELP}"
-                ]
+            subject = f"pipeline object {type(self._pipeline).__name__}"
+            surface, problem = _generate_surface(self._pipeline, subject)
+            if problem:
+                return [problem]
+            if not callable(surface):
+                return [f"{subject} has no callable generate() - {_PIPELINE_HELP}"]
             return []
         if self._pipeline_spec is None:
             return [f"no video2video pipeline is bound - {_PIPELINE_HELP}"]
@@ -156,20 +190,39 @@ class CosmosTransferTransform(DatasetTransform):
         module_name, _, attr_name = path.partition(":") if ":" in path else path.rpartition(".")
         if not module_name or not attr_name:
             return [f"pipeline import path {path!r} is not 'pkg.mod:attr' or 'pkg.mod.attr' - {_PIPELINE_HELP}"]
+        subject = f"pipeline import path {path!r}"
         try:
             candidate = getattr(importlib.import_module(module_name), attr_name)
-        except (ImportError, AttributeError) as exc:
-            return [f"pipeline import path {path!r} did not resolve ({exc}) - {_PIPELINE_HELP}"]
+        except Exception as exc:  # noqa: BLE001 - never fatal during name resolution
+            # Not only ``ImportError`` / ``AttributeError``: a module body runs
+            # arbitrary caller code on first import, and a module-level
+            # ``__getattr__`` runs it again on the attribute lookup.
+            return [f"{subject} did not resolve ({type(exc).__name__}: {exc}) - {_PIPELINE_HELP}"]
+        surface, problem = _generate_surface(candidate, subject)
+        if problem:
+            return [problem]
         # A class target (or a factory with no generate of its own) is
         # constructed zero-arg; an unconstructed class would otherwise pass the
         # generate() probe and then receive the video as its ``self``.
-        if isinstance(candidate, type) or (callable(candidate) and not hasattr(candidate, "generate")):
+        if isinstance(candidate, type) or (callable(candidate) and surface is _UNSET):
             try:
                 candidate = candidate()
             except TypeError as exc:
-                return [f"pipeline import path {path!r} is not constructible zero-arg ({exc}) - {_PIPELINE_HELP}"]
-        if not callable(getattr(candidate, "generate", None)):
-            return [f"pipeline import path {path!r} resolves to no generate() surface - {_PIPELINE_HELP}"]
+                return [f"{subject} is not constructible zero-arg ({exc}) - {_PIPELINE_HELP}"]
+            except Exception as exc:  # noqa: BLE001 - never fatal during name resolution
+                # Constructing a real generation pipeline loads weights and
+                # touches a device, so the failures are the deployment's, not
+                # the signature's: no driver (``RuntimeError``), weights absent
+                # (``OSError``), an optional dep imported inside the factory
+                # body (``ImportError``), a malformed config (``ValueError``).
+                # Reported with an accurate subject rather than folded into the
+                # zero-arg wording above, which would name the wrong cause.
+                return [f"{subject} raised {type(exc).__name__} while being constructed ({exc}) - {_PIPELINE_HELP}"]
+            surface, problem = _generate_surface(candidate, subject)
+            if problem:
+                return [problem]
+        if not callable(surface):
+            return [f"{subject} resolves to no generate() surface - {_PIPELINE_HELP}"]
         self._pipeline = candidate
         return []
 
@@ -204,19 +257,20 @@ class CosmosTransferTransform(DatasetTransform):
             refuses anything else loudly).
 
         Raises:
-            ValueError: ``source_episode`` is outside the non-negative
-                whole-number domain shared by every episode-resolving surface
+            ValueError: ``source_episode`` or ``variant`` is outside the
+                non-negative whole-number domain the determinism key needs
                 (see :func:`~strands_robots.transforms.base.derive_variant_seed`).
+                Both are refused ahead of the pipeline-binding check, so an
+                unusable counter is not reported as a wiring problem.
             RuntimeError: No pipeline is bound. Unreachable through
                 :meth:`~strands_robots.transforms.base.DatasetTransform.transform`,
                 which validates first; raised for a direct caller so the
                 refusal names the remedy instead of surfacing as an
                 ``AttributeError`` on ``None``.
         """
-        if text := non_negative_whole_number_error(
-            source_episode, "source_episode", "cosmos_transfer.transform_frames"
-        ):
-            raise ValueError(text)
+        for name, value in (("source_episode", source_episode), ("variant", variant)):
+            if text := non_negative_whole_number_error(value, name, "cosmos_transfer.transform_frames"):
+                raise ValueError(text)
         if self._pipeline is None and self._pipeline_problems():
             raise RuntimeError(f"cosmos_transfer.transform_frames: no video2video pipeline is bound - {_PIPELINE_HELP}")
         pipeline = self._pipeline

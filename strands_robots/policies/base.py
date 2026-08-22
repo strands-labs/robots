@@ -170,6 +170,15 @@ class Policy(ABC):
                 - ``target_joints: dict[str, float]`` - joint-space goal
                   keyed by joint name; values are in radians (revolute) or
                   metres (prismatic).
+                - ``target_velocity: list[float]`` - base-velocity goal as
+                  ``[vx, vy, omega]`` (linear m/s, angular rad/s, in the robot
+                  base frame), read by locomotion providers.  Unlike the keys
+                  above, the component count is deliberately NOT fixed by this
+                  contract, because shipped receivers disagree: whole-body
+                  controllers require the three components named above, while
+                  planar drivers read ``[vx, vy]``.  Each receiver states its
+                  own arity and refuses a shape it cannot use, so this key
+                  crosses a transport on the per-component domain alone.
                 - ``world_update: dict | None`` - per-call world refresh
                   for collision-aware planners (e.g. point cloud / depth
                   image / mesh updates).  ``None`` means "reuse the world
