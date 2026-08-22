@@ -5,7 +5,7 @@
   `teleoperate(publish=True)` drives a local follower and, from the same `get_action()` stream, every
   remote one, but only the mesh path bounded how fast a single joint could be commanded to travel.
   The merged frame is now checked against the same helper the mesh path calls, but with its own default
-  bound: `STRANDS_TELEOP_SLEW_ABS` defaults to 500 units/s (vs the mesh path's 8*pi for radian streams),
+  bound: `STRANDS_TELEOP_SLEW_ABS` defaults to 500 units/s (the mesh receive path keeps its own, looser bound),
   so the shipped SO hardware defaults (joints in degrees, gripper in 0-100 range) work without env-var
   tuning -- a calm 90 deg/s sweep, a half-second gripper close (200 units/s), and even the STS3215
   no-load max (~372 deg/s) all pass, while encoder glitches (>1000 units/s) are still caught. An

@@ -473,6 +473,13 @@ _REPLAY_EPISODE_SURFACES = {
     # not a different contract, so these are graded like the bare parameter.
     ("strands_robots/episode_labels.py", "record_deterministic_verdicts"),
     ("strands_robots/episode_labels.py", "measure_agreement"),
+    # The transform surfaces (``derive_variant_seed``, each backend's
+    # ``transform_frames``) apply the same shared guard but are deliberately
+    # NOT pinned here: they only receive an already-resolved index as a
+    # determinism-key input and carry no repo_id/root/dataset locator, so they
+    # resolve nothing against a dataset - see ``_resolves_against_a_dataset``.
+    # Their validation is pinned by
+    # ``tests/transforms/test_frame_surface_episode_domain.py`` instead.
 }
 
 _REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]

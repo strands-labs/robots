@@ -38,7 +38,6 @@ from strands_robots.hardware_ros_bridge import HardwareRosBridge
 from strands_robots.hardware_rtps_bridge import HardwareRtpsBridge
 from strands_robots.ros_telemetry import RosTelemetryBase
 from tests.test_hardware_rtps_bridge import _FakeReader, _FakeRobot, _JointState
-from tests.test_wait_budget_domain import _RecordingStop
 
 _LOGGER = "strands_robots.ros_telemetry"
 
@@ -60,6 +59,25 @@ _READABLE = [
 ]
 
 
+class _StopAfterPolls:
+    """A stop flag shaped like :class:`threading.Event`, bounded by reader polls.
+
+    ``is_set`` is idempotent, which a real event's is. Counting *calls to
+    is_set* instead - which an earlier version of this helper did - only worked
+    while exactly one caller asked once per iteration; the loop's ticker asks as
+    well, so half the iterations went missing. The bound is therefore expressed
+    in the quantity these tests are actually about: how many times the loop
+    polled the reader.
+    """
+
+    def __init__(self, iterations: int) -> None:
+        self.polls = 0
+        self._iterations = iterations
+
+    def is_set(self) -> bool:
+        return self.polls >= self._iterations
+
+
 def _poll_skeleton(reader: Any, robot: Any, *, iterations: int) -> Any:
     """A bridge whose poll loop can be driven in the traced test thread.
 
@@ -67,13 +85,25 @@ def _poll_skeleton(reader: Any, robot: Any, *, iterations: int) -> Any:
     thread is started; the loop body then runs synchronously with no race
     against a live daemon. Typed ``Any`` because the skeleton is deliberately
     partial - only what ``_poll_loop`` reads is wired.
+
+    The loop is bounded by wrapping ``reader.take`` so each poll advances the
+    stop flag, including a poll that raises: a reader failure must cost that tick
+    and no more, which is exactly what one of these tests asserts.
     """
     bridge: Any = HardwareRtpsBridge.__new__(HardwareRtpsBridge)
     bridge._robot = robot
     bridge._command_reader = reader
     bridge._poll_period = 0.001
     bridge._joint_limits = None
-    bridge._stop = _RecordingStop(iterations)
+    stop = _StopAfterPolls(iterations)
+    bridge._stop = stop
+    inner_take = reader.take
+
+    def _counted_take(N: int = 10) -> Any:
+        stop.polls += 1
+        return inner_take(N=N)
+
+    reader.take = _counted_take
     return bridge
 
 

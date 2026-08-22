@@ -305,10 +305,10 @@ class TestCameraOffloaderClientLazy:
 
     def test_boto3_missing_returns_none(self, monkeypatch):
         c = CameraOffloader(bucket="b")
-        # Force ImportError inside _client by removing boto3 from sys.modules
-        # and blocking its import.
+        # Force ImportError inside _client by blocking the import. This must not
+        # reach into sys.modules: a removal there is not undone, and it orphans
+        # the module-level `import boto3` sibling test modules patch attributes on.
         import builtins
-        import sys
 
         original_import = builtins.__import__
 
@@ -318,7 +318,6 @@ class TestCameraOffloaderClientLazy:
             return original_import(name, *a, **kw)
 
         monkeypatch.setattr(builtins, "__import__", blocked)
-        sys.modules.pop("boto3", None)
         assert c._client() is None
         # Subsequent calls also return None (cached miss is acceptable; we
         # just check the public contract: never raises, always returns None

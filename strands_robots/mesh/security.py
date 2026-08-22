@@ -157,13 +157,21 @@ def _env_pos_float(env_var: str, default: float) -> float:
     return val
 
 
-# Operators with degree-valued
-#: actuators or multi-turn joints can widen via
+#: Default per-joint magnitude bound, in *frame units*: how far a single
+#: teleop command may reach. The unit is whichever one the leader driver puts
+#: on the wire, so the default is sized for that unit rather than for radians.
+#: lerobot's SO leader/follower default to ``use_degrees=True``
+#: (:class:`~lerobot.motors.MotorNormMode` ``DEGREES``), and its gripper is
+#: ``RANGE_0_100`` whatever ``use_degrees`` says, so a shipped SO-100 class arm
+#: streams degrees and a 0-100 gripper -- never radians. The bound is two full
+#: turns, which clears a multi-turn wrist with headroom while still refusing a
+#: runaway three orders of magnitude out. Operators whose actuators use a
+#: smaller unit (radians, or normalized -1..1) can narrow it via
 #: ``STRANDS_MESH_INPUT_VALUE_ABS``. The module-level constant is captured
 #: at import for backward compat; the hot path calls
 #: :func:`_input_value_abs` so an operator-set env var takes effect
 #: without a process restart.
-DEFAULT_INPUT_VALUE_ABS: float = 12.566370614359172  # 4 * pi
+DEFAULT_INPUT_VALUE_ABS: float = 720.0  # two full turns, in frame units
 MAX_INPUT_VALUE_ABS: float = _env_pos_float("STRANDS_MESH_INPUT_VALUE_ABS", DEFAULT_INPUT_VALUE_ABS)
 
 
@@ -179,14 +187,15 @@ def _input_value_abs() -> float:
 #: :data:`MAX_INPUT_VALUE_ABS` bounds how far a command may reach and
 #: ``STRANDS_MESH_INPUT_MAX_HZ`` bounds how densely frames may arrive, but
 #: neither bounds the distance between consecutive commands for one joint, so a
-#: stream inside both caps can still command a full-scale reversal every frame
-#: (a 1.8-unit step at 50 Hz is 90 units/s). The default is the full
-#: :data:`MAX_INPUT_VALUE_ABS` envelope traversed once per second (2 * 4 * pi),
-#: roughly 4x the no-load speed of the Feetech STS3215 servos on an SO-100 class
-#: arm (~6.5 rad/s at 12 V): a physical leader arm cannot reach it, so only a
-#: synthetic stream trips it. Widen via ``STRANDS_MESH_INPUT_SLEW_ABS`` for
-#: degree-valued or normalized-percent actuators, whose units are larger.
-DEFAULT_INPUT_SLEW_ABS: float = 25.132741228718345  # 8 * pi units/second
+#: stream inside both caps can still command a full-scale reversal every frame.
+#: The default is the full :data:`MAX_INPUT_VALUE_ABS` envelope traversed once
+#: per second (2 * 720), which is roughly 4x the no-load speed of the Feetech
+#: STS3215 servos on an SO-100 class arm -- ~6.5 rad/s at 12 V, and those frames
+#: arrive in degrees, so ~372 deg/s. Sized against the unit the frames carry, a
+#: physical leader arm cannot reach the bound and only a synthetic stream trips
+#: it. Operators whose actuators use a smaller unit (radians, or normalized
+#: -1..1) can narrow it via ``STRANDS_MESH_INPUT_SLEW_ABS``.
+DEFAULT_INPUT_SLEW_ABS: float = 1440.0  # frame units/second (2 * 720)
 MAX_INPUT_SLEW_ABS: float = _env_pos_float("STRANDS_MESH_INPUT_SLEW_ABS", DEFAULT_INPUT_SLEW_ABS)
 
 

@@ -45,6 +45,45 @@ logger = logging.getLogger(__name__)
 _DEFAULT_MAX_RENDER_BYTES = 50 * 1024 * 1024  # 50 MB
 
 
+def no_gl_context_message(*, depth: bool = False, platform: str | None = None) -> str:
+    """The one sentence every renderer consumer says when there is no GL context.
+
+    The advice was a Linux package install on every host. macOS has neither EGL
+    nor OSMesa - MuJoCo renders through CGL there - so on a Mac the reader was
+    sent to install a package that does not exist for their machine while the
+    real cause kept its cover: a CGL context needs a window-server session,
+    which a process started by launchd, cron or a bare ssh login does not have.
+    The Linux advice is kept, because on Linux it is exactly right.
+
+    Args:
+        depth: ``True`` when the caller is the depth renderer, so the sentence
+            names depth rendering rather than rendering.
+        platform: Platform to answer for, spelled as ``sys.platform`` spells it.
+            Defaults to the running platform; a caller passes it explicitly to
+            answer for a host it is not running on.
+
+    Returns:
+        One stripped sentence naming the failure and a fix that exists on
+        ``platform``.
+    """
+    import sys as _sys
+
+    system = platform or _sys.platform
+    head = (
+        "Depth rendering unavailable (no OpenGL context). " if depth else "Rendering unavailable (no OpenGL context). "
+    )
+    if system == "darwin":
+        return head + (
+            "macOS has no EGL or OSMesa - MuJoCo renders through CGL - so installing "
+            "Linux GL packages cannot help here. A CGL context needs a window-server "
+            "session, which a process started by launchd, cron or a bare ssh login does "
+            "not have; run it from a terminal on the logged-in desktop. If rendering "
+            "worked EARLIER in this same process, the context was lost rather than "
+            "missing, and a fresh process is the fix."
+        )
+    return head + ("Install EGL or OSMesa for offscreen rendering: apt-get install libosmesa6-dev")
+
+
 def _is_pixel_count(value: Any) -> bool:
     """True when ``value`` is usable as a pixel dimension (an int, not a bool)."""
     return isinstance(value, int) and not isinstance(value, bool)
@@ -1071,15 +1110,7 @@ class RenderingMixin:
             if renderer is None:
                 return {
                     "status": "error",
-                    "content": [
-                        {
-                            "text": (
-                                "Rendering unavailable (no OpenGL context). "
-                                "Install EGL or OSMesa for offscreen rendering: "
-                                "apt-get install libosmesa6-dev"
-                            )
-                        }
-                    ],
+                    "content": [{"text": no_gl_context_message()}],
                 }
             # strict camera validation - no silent fallback to default.
             # Special 'default' / 'free' tokens route to the free camera; any
@@ -1223,14 +1254,7 @@ class RenderingMixin:
             if renderer is None:
                 return {
                     "status": "error",
-                    "content": [
-                        {
-                            "text": (
-                                "Depth rendering unavailable (no OpenGL context). "
-                                "Install EGL or OSMesa for offscreen rendering."
-                            )
-                        }
-                    ],
+                    "content": [{"text": no_gl_context_message(depth=True)}],
                 }
             # Reading mjData (update_scene copies xpos/xquat/xmat/geom poses)
             # races a concurrent mj_step from a policy worker or the step()
@@ -1421,10 +1445,7 @@ class RenderingMixin:
         with self._lock:
             renderer = self._get_renderer(w, h)
             if renderer is None:
-                raise RuntimeError(
-                    "Rendering unavailable (no OpenGL context). "
-                    "Install EGL or OSMesa for offscreen rendering: apt-get install libosmesa6-dev"
-                )
+                raise RuntimeError(no_gl_context_message())
             if camera_name in FREE_CAMERA_TOKENS:
                 cam_id = -1
             else:
@@ -2173,6 +2194,13 @@ class RenderingMixin:
             _max_warmup_attempts = 30
             _cold_std_threshold = 5.0
             _warm: dict[str, bool] = dict.fromkeys(names, False)
+            # A render can come back as a structured ERROR RESULT rather than a
+            # frame ("Rendering unavailable (no OpenGL context)"). That is not a
+            # cold context that will settle with more attempts, and because it is
+            # a returned dict and not a raised exception, the ``except`` branch
+            # below never sees it: without this capture the reason is lost at
+            # every log level and the operator is told the camera is merely cold.
+            _refusals: dict[str, str] = {}
             for _attempt in range(_max_warmup_attempts):
                 if all(_warm.values()):
                     break
@@ -2186,6 +2214,14 @@ class RenderingMixin:
                         logger.debug("recorder thread warmup render failed for %s: %s", cam, e)
                         continue
                     if arr is None:
+                        if isinstance(r, dict) and r.get("status") == "error":
+                            # The narrowest superset the read can raise: a
+                            # missing key, an empty content list, and a
+                            # non-subscriptable content or block.
+                            try:
+                                _refusals[cam] = str(r["content"][0]["text"])
+                            except (IndexError, KeyError, TypeError):
+                                _refusals[cam] = "render returned an error result with no text"
                         continue
                     # arr.std(axis=0) is per-column std-dev; .mean()
                     # collapses to a scalar. Cold gradients have
@@ -2201,13 +2237,31 @@ class RenderingMixin:
                         )
             if not all(_warm.values()):
                 cold = [c for c, w in _warm.items() if not w]
-                logger.warning(
-                    "recorder thread warmup: %d cameras still cold after %d attempts: %s. "
-                    "First captured frames may show gradient artifact.",
-                    len(cold),
-                    _max_warmup_attempts,
-                    cold,
-                )
+                refused = {c: _refusals[c] for c in cold if c in _refusals}
+                if refused:
+                    # Rendering REFUSED, so "cold" would be a lie: no number of
+                    # attempts fixes a missing GL context, every capture will be
+                    # empty, and stop_cameras_recording would otherwise report
+                    # success with 0 frames and an empty MP4 - the failure the
+                    # preflight guards exist to make impossible.
+                    state["refusals"] = refused
+                    logger.warning(
+                        "recorder thread warmup: rendering REFUSED for %d of %d cameras: %s. "
+                        "This is not a cold context that settles - every captured frame will be "
+                        "empty. First reason: %s",
+                        len(refused),
+                        len(names),
+                        list(refused),
+                        next(iter(refused.values())),
+                    )
+                if [c for c in cold if c not in refused]:
+                    logger.warning(
+                        "recorder thread warmup: %d cameras still cold after %d attempts: %s. "
+                        "First captured frames may show gradient artifact.",
+                        len([c for c in cold if c not in refused]),
+                        _max_warmup_attempts,
+                        [c for c in cold if c not in refused],
+                    )
 
             # Warmup done (or capped) - capture loop is about to run. Unblock
             # the caller waiting in start_cameras_recording so the success
@@ -2392,6 +2446,14 @@ class RenderingMixin:
                 artifact["frames_skipped_size_mismatch"] = frames_skipped
             if flush_error:
                 artifact["flush_error"] = flush_error
+            # A render refusal caught during warmup is WHY this camera has no
+            # frames. Without it the caller sees frames=0 next to status
+            # "success" and has to guess between an empty scene, a too-short
+            # window and a machine that cannot render at all.
+            refusal = (state.get("refusals") or {}).get(cam)
+            if refusal:
+                artifact["render_refused"] = refusal
+                lines.append(f"   {cam:20s} rendering refused: {refusal}")
             artifacts.append(artifact)
 
         return {

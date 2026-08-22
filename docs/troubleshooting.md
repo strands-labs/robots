@@ -75,6 +75,7 @@ description: Error → fix table for the most common gotchas across install, sim
 | Port already bound | Another zenoh process | Mesh auto falls back to client mode; or set `STRANDS_MESH_PORT` |
 | `mesh.alive` is `False`, `mesh.peers` stays empty | `eclipse-zenoh` missing (logged at WARNING: "eclipse-zenoh is not installed") | `uv pip install "strands-robots[mesh]"` |
 | Want mesh off | - | `STRANDS_MESH=false` or `Robot(..., mesh=False)` |
+| Peer is present and `connected`, but publishes no `state` (no joints) | A `_read_state` probe raised. Logged once per category at WARNING: "state probe 'hw_joints' failed" | Read the named probe: `hw_joints` is the motor bus (contended port, missing calibration), `sim_world` / `sim_joints` a sim back-reference, `task_state` the task record. Repeat failures are at DEBUG |
 
 ## Agent integration
 

@@ -176,6 +176,16 @@ field's declared type is refused naming the field and its type, rather than
 stored as-is: a stored string is truthy, so `"false"` would otherwise read as
 "true" and silently invert the flag.
 
+`None` clears an optional field, and the shelled-out command renders it as the
+YAML null literal so it decodes back to `None` rather than to the *text*
+`"None"`. That is how you ask a policy not to load a pretrained asset - ACT, for
+instance, defaults its resnet18 backbone to ImageNet weights, which is a
+download the from-scratch path does not need:
+
+```python
+extra={"policy_type": "act", "policy.pretrained_backbone_weights": None}
+```
+
 Some policies freeze most of themselves by default, which `method="full"` does
 not override - it selects strands' tuning strategy, not lerobot's per-policy
 defaults. SmolVLA, for instance, ships `freeze_vision_encoder=True` and

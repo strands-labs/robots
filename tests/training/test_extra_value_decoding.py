@@ -53,6 +53,19 @@ def spec(dataset_root, tmp_path):
     )
 
 
+@pytest.fixture
+def act_spec(spec):
+    """A spec on ACT, whose config is the one with a ``str | None`` to clear.
+
+    ``pretrained_backbone_weights`` is the only ``str | None`` field in
+    lerobot's policy configs carrying a non-``None`` default, so it is the only
+    one where passing ``None`` is a request rather than a restatement - which is
+    why the null rendering had no reachable caller until now.
+    """
+    spec.extra["policy_type"] = "act"
+    return spec
+
+
 def _cli_value(trainer, spec, dotted):
     """Value ``dotted`` takes when ``build_command``'s argv goes through the CLI.
 
@@ -63,7 +76,8 @@ def _cli_value(trainer, spec, dotted):
     import draccus
 
     # The policy choice registry is populated by importing the config module.
-    __import__("lerobot.policies.smolvla.configuration_smolvla")
+    ptype = spec.extra.get("policy_type", "smolvla")
+    __import__(f"lerobot.policies.{ptype}.configuration_{ptype}")
     from lerobot.configs.train import TrainPipelineConfig
 
     argv = trainer.build_command(spec)[1:]  # drop the "lerobot-train" head
@@ -176,6 +190,82 @@ class TestTheFieldTypeIsResolvedNotReadRaw:
         assert typing.get_type_hints(Postponed)["flag"] is bool
         assert _extra_field_type(Postponed(), "flag") is bool
         assert _decode_extra_value(Postponed(), "flag", "flag", "false") is False
+
+
+class TestATypedValueMeansTheSameOnBothPaths:
+    """A value already of the field's type must survive the CLI rendering too.
+
+    :func:`_decode_extra_value` returns a non-``str`` unchanged, which settles
+    the in-process half - a caller who passed the field's own type never went
+    through text. The other half is :meth:`build_command`, which renders every
+    entry with an f-string, and Python's text for ``None`` is not YAML's:
+    draccus reads ``None`` as a plain scalar, so a ``str | None`` field given
+    ``--key=None`` is assigned the *string* ``"None"`` while ``build_config``
+    assigns ``None``. For ACT's ``pretrained_backbone_weights`` the string then
+    reaches torchvision as a weights *name* (``KeyError: 'None'``) instead of
+    as "no pretrained weights", so the subprocess path crashes on the spec the
+    in-process path runs.
+    """
+
+    def test_a_none_reaches_the_field_as_none(self, act_spec):
+        """The in-process half: a typed ``None`` is assigned, not stringified."""
+        pytest.importorskip("lerobot")
+        act_spec.extra["policy.pretrained_backbone_weights"] = None
+        got = _config_value(LerobotTrainer(device="cpu"), act_spec, "policy.pretrained_backbone_weights")
+        assert got is None, f"a typed None reached the config as {got!r} ({type(got).__name__})"
+
+    def test_a_none_agrees_with_lerobots_own_cli_parser(self, act_spec):
+        """Both paths built from one spec must land on the same value."""
+        pytest.importorskip("lerobot")
+        pytest.importorskip("draccus")
+        trainer = LerobotTrainer(device="cpu")
+        act_spec.extra["policy.pretrained_backbone_weights"] = None
+        expected = _cli_value(trainer, act_spec, "policy.pretrained_backbone_weights")
+        got = _config_value(trainer, act_spec, "policy.pretrained_backbone_weights")
+        assert got == expected and isinstance(got, type(expected)), (
+            f"the CLI resolves --policy.pretrained_backbone_weights to {expected!r} but build_config produced {got!r}"
+        )
+
+    def test_the_rendered_token_is_the_yaml_null_not_pythons(self, act_spec):
+        """``None`` renders as ``null``; ``None`` as text is a plain scalar."""
+        pytest.importorskip("lerobot")
+        act_spec.extra["policy.pretrained_backbone_weights"] = None
+        argv = LerobotTrainer(device="cpu").build_command(act_spec)
+        rendered = [a for a in argv if a.startswith("--policy.pretrained_backbone_weights=")]
+        assert rendered == ["--policy.pretrained_backbone_weights=null"], rendered
+
+    @pytest.mark.parametrize(
+        ("key", "value"),
+        [
+            ("num_workers", 6),
+            ("policy.optimizer_lr", 0.0001),
+            # Falsy but not null: a rule keyed on truthiness rather than on
+            # ``is None`` would render these as ``null`` and clear the field.
+            ("num_workers", 0),
+            ("policy.freeze_vision_encoder", False),
+        ],
+    )
+    def test_a_non_null_typed_value_still_renders_as_its_own_text(self, spec, key, value):
+        """Only the null literal is translated - everything else is unchanged."""
+        pytest.importorskip("lerobot")
+        spec.extra[key] = value
+        argv = LerobotTrainer(device="cpu").build_command(spec)
+        assert f"--{key}={value}" in argv, [a for a in argv if a.startswith(f"--{key}=")]
+
+    def test_a_string_field_still_carries_the_literal_text_none(self, spec):
+        """A caller naming something ``None`` on a ``str`` field keeps that name.
+
+        draccus reads the token as a YAML scalar and decodes it to ``str``, so
+        ``"None"`` survives as ``"None"`` on both paths. Translating the *string*
+        as well as the value would corrupt a legitimate name.
+        """
+        pytest.importorskip("lerobot")
+        pytest.importorskip("draccus")
+        trainer = LerobotTrainer(device="cpu")
+        spec.extra["wandb.project"] = "None"
+        assert "--wandb.project=None" in trainer.build_command(spec)
+        assert _cli_value(trainer, spec, "wandb.project") == "None"
+        assert _config_value(trainer, spec, "wandb.project") == "None"
 
 
 class TestNothingElseChanges:

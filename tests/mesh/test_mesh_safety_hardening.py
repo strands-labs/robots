@@ -70,9 +70,10 @@ class TestC1InputLockout:
 class TestH2TeleopBoundAndRate:
     def test_default_bound_rejects_large_slew(self, monkeypatch):
         monkeypatch.delenv("STRANDS_MESH_INPUT_VALUE_ABS", raising=False)
-        # 4*pi default ~= 12.57; 31 rad must reject
+        # Derived from the bound rather than written as a literal, so the
+        # stimulus stays outside the envelope if the default is ever retuned.
         with pytest.raises(_sec.ValidationError):
-            _sec.validate_input_frame({"j0": 31.0})
+            _sec.validate_input_frame({"j0": _sec.DEFAULT_INPUT_VALUE_ABS * 2.5})
 
     def test_default_bound_accepts_normal_radian(self, monkeypatch):
         monkeypatch.delenv("STRANDS_MESH_INPUT_VALUE_ABS", raising=False)
