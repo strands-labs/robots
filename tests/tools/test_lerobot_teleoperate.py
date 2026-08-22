@@ -13,8 +13,10 @@ exercise every action branch hardware-free by substituting fakes for
 
 from __future__ import annotations
 
+import builtins
 import json
 import os
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -517,6 +519,60 @@ def test_build_dagger_command_preflights_missing_rollout_module(monkeypatch: pyt
             policy_path="user/act_fold",
             dataset_repo_id="user/fold_corrections",
         )
+
+
+def test_dagger_preflight_is_a_class_the_docstring_licenses(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A caller can only handle what the ``Raises:`` block names.
+
+    The preflight above is the one refusal ``build_lerobot_command`` makes that
+    is not a bad argument, and it landed 28 days after the block was written
+    (#1614 against #732). A caller who wrote exactly the handler the docstring
+    licensed took an escaped exception instead - so the class is read back out
+    of the block rather than hard-coded here, and the refusal must be one the
+    block names.
+    """
+    import ast
+    import importlib.util as _iu
+
+    source = Path(tele_mod.__file__).read_text(encoding="utf-8")
+    builder = next(
+        node
+        for node in ast.parse(source).body
+        if isinstance(node, ast.FunctionDef) and node.name == "build_lerobot_command"
+    )
+    doc = ast.get_docstring(builder)
+    assert doc is not None
+    block = doc[doc.index("Raises:") :]
+    documented = {name for name in dir(builtins) if f"{name}:" in block or f"{name} " in block}
+    assert "ValueError" in documented, "premise: the block still names the argument refusal"
+
+    real_find_spec = _iu.find_spec
+
+    def fake_find_spec(name: str, *args: Any, **kw: Any):
+        if name == "lerobot.scripts.lerobot_rollout":
+            return None
+        return real_find_spec(name, *args, **kw)
+
+    monkeypatch.setattr(tele_mod.importlib.util, "find_spec", fake_find_spec)
+    try:
+        build_lerobot_command(
+            action="dagger",
+            robot_type="so101_follower",
+            robot_port="/dev/ttyACM0",
+            teleop_type="so101_leader",
+            teleop_port="/dev/ttyACM1",
+            policy_path="user/act_fold",
+            dataset_repo_id="user/fold_corrections",
+        )
+    except Exception as refused:  # noqa: BLE001 - the class under test is the assertion
+        raised = type(refused).__name__
+        assert raised in documented, (
+            f"dagger on a lerobot without the rollout entry point raises {raised}, "
+            f"which the Raises: block does not name (it names {sorted(documented)}); "
+            "a caller handling only the documented classes takes it unhandled"
+        )
+    else:
+        pytest.fail("the preflight did not refuse a missing rollout entry point")
 
 
 # ---------------------------------------------------------------------------
