@@ -313,9 +313,11 @@ def policy_provider_error(provider: str, **kwargs) -> str | None:
 
     Probes the SAME resolution path :func:`create_policy` uses, without
     instantiating anything, so every spelling that provider accepts -- a
-    registered name, a HuggingFace model ID, a ``zmq://`` / ``ws://`` URL, a
-    ``host:port`` pair -- resolves here too. Only a name no spelling can reach
-    yields a reason.
+    registered name, a HuggingFace model ID, a ``zmq://`` / ``ws://`` URL --
+    resolves here too. Only a name no spelling can reach yields a reason. A
+    scheme-less ``host:port`` is not among them: no shipped provider declares a
+    scheme-less ``url_patterns`` entry, so such a string is resolvable only as a
+    checkpoint id and this preflight reports no reason for it.
 
     This is the agent-tool companion to :func:`preflight_policy`, which
     deliberately swallows resolution failures on the stated grounds that
