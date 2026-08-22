@@ -522,6 +522,12 @@ def build_lerobot_command(
             or boolean flag (see :data:`_MODE_FLAG_OPTIONS`) the requested mode
             emits cannot be honored. The refusal precedes the argv, so no
             subprocess is launched.
+        RuntimeError: If ``dagger`` is requested on an install whose lerobot has
+            no ``lerobot.scripts.lerobot_rollout`` - the DAgger rollout entry
+            point, which landed in lerobot 0.6.0. A missing module is an
+            environment problem rather than a bad argument, so it is not a
+            ``ValueError``; it likewise precedes the argv. Documented because a
+            caller handling only the class above does not catch it.
     """
     # Every numeric knob below is interpolated into a detached subprocess's
     # command line, which is not a channel this call can read a failure back

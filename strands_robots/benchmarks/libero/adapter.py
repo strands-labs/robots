@@ -4056,7 +4056,15 @@ def _extract_pose(state: dict[str, Any] | None) -> tuple[list[float] | None, lis
             pos = [float(c) for c in raw_pos]
         raw_quat = json_block.get("quaternion")
         if isinstance(raw_quat, list) and len(raw_quat) == 4 and all(isinstance(c, (int, float)) for c in raw_quat):
-            quat = [float(c) for c in raw_quat]
+            if _rotation_quat_norm(raw_quat) is None:
+                # Four numbers that encode no rotation are an unreadable
+                # orientation, not the identity one - dropped exactly like a
+                # wrong-length quaternion above, so the caller takes its
+                # existing "reported no orientation" path instead of adding a
+                # body-frame offset in a rotation the body does not have.
+                logger.debug("LiberoAdapter: body-state quaternion encodes no rotation; dropped: %r", raw_quat)
+            else:
+                quat = [float(c) for c in raw_quat]
     return (pos, quat)
 
 
@@ -4091,10 +4099,57 @@ def _quat_wxyz_multiply(a: list[float], b: list[float]) -> list[float]:
     ]
 
 
+#: Below this norm a quaternion's direction is numerically unrecoverable, so it
+#: encodes no rotation. Same boundary as the settled sibling
+#: ``policies/wbc/control.quat_rotate_inverse``, so the two agree on where the
+#: domain ends rather than merely on the idea that it ends somewhere.
+_MIN_ROTATION_QUAT_NORM = 1e-8
+
+
+def _rotation_quat_norm(quat_wxyz: list[float]) -> float | None:
+    """Return the norm of ``quat_wxyz`` when it encodes a rotation, else ``None``.
+
+    ``None`` means the four numbers are not an orientation: a non-finite
+    component, or a norm too small for the direction to be recovered. Both are
+    spellings of an orientation that was never written, and neither is the
+    identity - #2588 measured the all-zero one being read as exactly that.
+
+    A large magnitude is *not* out of domain: a quaternion and its scaling encode
+    one rotation, so ``[1e200, 1e200, 0, 0]`` normalizes to a perfectly ordinary
+    45-degree rotation. ``math.hypot`` is used rather than ``np.linalg.norm`` for
+    exactly that case - the latter squares before summing, so it overflows to
+    ``inf`` and would refuse a rotation it could have recovered.
+    """
+    try:
+        q = [float(c) for c in quat_wxyz]
+    except (TypeError, ValueError):
+        return None
+    if len(q) != 4 or not all(math.isfinite(c) for c in q):
+        return None
+    norm = math.hypot(*q)
+    if not math.isfinite(norm) or norm <= _MIN_ROTATION_QUAT_NORM:
+        return None
+    return norm
+
+
 def _quat_wxyz_rotate_vec(quat_wxyz: list[float], vec: list[float]) -> list[float]:
-    """Rotate ``vec`` by the (normalized) wxyz quaternion: ``R(q) @ vec``."""
+    """Rotate ``vec`` by the wxyz quaternion: ``R(q) @ vec``.
+
+    ``quat_wxyz`` need not be exactly unit - it is normalized here - but it must
+    encode a rotation. A quaternion that does not is refused rather than
+    normalized by a substituted ``1.0``: that substitution makes an orientation
+    that was never written return the vector unrotated, which is what the
+    identity rotation returns, so the caller adds a body-frame offset along a
+    world axis and reports the result as corrected (#2588). The refusal matches
+    the same-shaped sibling ``policies/wbc/control.quat_rotate_inverse``.
+
+    Raises:
+        ValueError: If ``quat_wxyz`` encodes no rotation.
+    """
+    norm = _rotation_quat_norm(quat_wxyz)
+    if norm is None:
+        raise ValueError(f"_quat_wxyz_rotate_vec: quaternion encodes no rotation; got {quat_wxyz!r}")
     q = np.asarray(quat_wxyz, dtype=np.float64)
-    norm = float(np.linalg.norm(q)) or 1.0
     w, x, y, z = q / norm
     u = np.array([x, y, z], dtype=np.float64)
     v = np.asarray(vec, dtype=np.float64)

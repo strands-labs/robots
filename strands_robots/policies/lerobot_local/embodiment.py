@@ -626,6 +626,21 @@ def register_pack_state_step() -> type | None:
             state_keys: Ordered robot/sim scalar keys composing the state vector.
             expected_dim: Model's declared ``observation.state`` dimension.
             dim_policy: ``"strict"`` | ``"pad"`` | ``"truncate"``.
+            state_units: ``"native"`` (the default - pack the sim's own values)
+                or ``"degrees"`` (convert the sim's radian joints to the model's
+                training units before packing). Mirrors
+                :attr:`EmbodimentMap.state_units`, which is where this step's
+                value comes from.
+            gripper_index: Column of the gripper inside ``state_keys``, which
+                speaks ``RANGE_0_100`` rather than degrees. ``-1`` (the default)
+                = no distinct gripper column.
+            gripper_joint_range: The sim gripper joint's ``[min, max]`` radians,
+                used to map that column onto 0..100. Empty (the default) =
+                convert the gripper like an arm joint.
+            joint_mids: Per-joint calibration mid-points in degrees, aligned to
+                ``state_keys``, subtracted from the arm columns so the packed
+                state is mid-centered like LeRobot's ``DEGREES`` mode. Empty
+                (the default) = mid 0.
         """
 
         state_keys: list[str] = field(default_factory=list)
@@ -777,6 +792,26 @@ class EmbodimentMap:
         action_keys: Ordered robot actuator names for the action tensor's
             index→name mapping (output side).
         dim_policy: ``"strict"`` | ``"pad"`` | ``"truncate"`` for state dim.
+        state_units: Unit convention of the sim state vector this map packs:
+            ``"native"`` (the default - no conversion) or ``"degrees"`` (arm
+            columns in degrees, gripper column in ``RANGE_0_100``), which is
+            what :meth:`sim_state_to_model` converts from.
+        action_units: Unit convention of the model's action vector, same
+            vocabulary as ``state_units``. On ``"degrees"``
+            :meth:`model_action_to_sim` converts the model's degrees back to sim
+            radians; left ``"native"`` for a degrees-trained SO-arm checkpoint,
+            the raw degree values reach the sim unconverted and saturate its
+            radian joint limits.
+        gripper_index: Column of the gripper inside ``state_keys`` /
+            ``action_keys``, which speaks ``RANGE_0_100`` rather than degrees.
+            ``-1`` (the default) = no distinct gripper column; SO arms use ``5``.
+        gripper_joint_range: The sim gripper joint's ``[min, max]`` radians, used
+            to map that column's 0..100 command onto the joint and back. Empty
+            (the default) = convert the gripper like an arm joint.
+        joint_mids: Per-joint calibration mid-points in degrees, aligned to
+            ``state_keys`` / ``action_keys``, because LeRobot's ``DEGREES`` mode
+            is mid-point-centered. Empty (the default) = mid 0, i.e. sim
+            ``qpos=0`` is assumed to be the calibration mid.
     """
 
     name: str = ""

@@ -56,6 +56,7 @@ from strands_robots.utils import (
     non_negative_count_error,
     positive_count_error,
     positive_finite_number_error,
+    process_rss_mb,
     sequence_length,
 )
 
@@ -2591,6 +2592,23 @@ class SimEngine(ABC):
             ``rtc_prefetch_blocks``, ``rtc_avg_inference_ms`` and
             ``rtc_max_inference_ms``.
 
+            Across episodes (``n_episodes > 1``): the aggregate payload adds
+            ``total_steps``, the per-episode ``episodes`` records,
+            ``stopped_reasons`` (aligned with ``episodes``) and
+            ``video_paths``, and keeps every field above whose value the call
+            already knows - the identity fields, the policy-binding flags and
+            the policy-load telemetry, all read off the ONE policy object the
+            episodes shared. Per-episode action health (``action_errors``,
+            ``action_resolution_rate``, ``partial_action_failure_rate``) and
+            the per-episode horizon/video fields are reported by each record in
+            ``episodes`` rather than summarised, because a rate has no single
+            aggregate an N-episode call can report without choosing a summary::
+
+                worst = max(e["partial_action_failure_rate"] for e in report["episodes"])
+
+            So the binding-degradation gate reads the same way at any episode
+            count, and the action-health gate is per episode.
+
             Fail-fast: if EVERY action step in the opening probe window drives
             zero actuators - none of the policy's emitted keys resolve to any of
             the robot's actuators - the rollout can never move the robot, so it
@@ -3164,6 +3182,9 @@ class SimEngine(ABC):
                     total_steps,
                     n_episodes,
                     status="error",
+                    robot_name=robot_name,
+                    policy=policy,
+                    instruction=instruction,
                     extra=(
                         f"Episode {ep} rollout failed; aborting remaining "
                         f"{n_episodes - ep - 1} episode(s). {self._first_text(result)}"
@@ -3182,6 +3203,9 @@ class SimEngine(ABC):
                         total_steps,
                         n_episodes,
                         status="error",
+                        robot_name=robot_name,
+                        policy=policy,
+                        instruction=instruction,
                         extra=f"save_episode failed after episode {ep}: {self._first_text(save)}",
                     )
                 episodes_saved += 1
@@ -3199,10 +3223,22 @@ class SimEngine(ABC):
                         total_steps,
                         n_episodes,
                         status="error",
+                        robot_name=robot_name,
+                        policy=policy,
+                        instruction=instruction,
                         extra=f"reset() failed after episode {ep}: {self._first_text(reset_result)}",
                     )
 
-        return self._episodes_result(episodes, episodes_saved, total_steps, n_episodes, status="success")
+        return self._episodes_result(
+            episodes,
+            episodes_saved,
+            total_steps,
+            n_episodes,
+            status="success",
+            robot_name=robot_name,
+            policy=policy,
+            instruction=instruction,
+        )
 
     @staticmethod
     def _first_text(result: dict[str, Any]) -> str:
@@ -3260,20 +3296,67 @@ class SimEngine(ABC):
         n_episodes: int,
         *,
         status: str,
+        robot_name: str,
+        policy: Policy,
+        instruction: str,
         extra: str = "",
     ) -> dict[str, Any]:
         """Aggregate per-episode records into one ``run_policy`` status dict.
 
         Mirrors the single-rollout result shape: a human-readable ``text``
-        block plus an agent-consumable ``{"json": {...}}`` block carrying typed
-        aggregate fields (``n_episodes_completed``, ``episodes_saved``,
-        ``total_steps``, per-episode list, ``video_paths``). The payload keeps
-        ONE shape across episode counts: ``stopped_reason`` / ``steps_used``
-        are present here just as on the single-episode payload -
+        block plus an agent-consumable ``{"json": {...}}`` block. Three groups
+        of field carry over from the single-episode payload, because their
+        aggregate value is one the call already knows:
+
+        * **Identity** - ``robot_name``, ``policy``, ``instruction`` are the
+          call's own inputs, so they are constant across the episodes rather
+          than something to aggregate.
+        * **Policy binding** - ``positional_fallback_used``,
+          ``generic_state_keys_used`` and ``missing_state_keys_used``, read off
+          the ONE policy object every episode ran with. A True flag is the
+          signature of a robot moving on meaningless inputs, and
+          :meth:`run_policy` tells callers to gate on it - so dropping it from
+          the loop's payload leaves that gate reading the healthy default.
+        * **Policy load** - ``policy_load_time_s``, ``policy_load_cache_hit``
+          and ``policy_resident_rss_mb``. Both of the latter are documented
+          for a LOOP specifically (a cache miss on episode 2+ means the caller
+          rebuilt the policy; RSS staying flat means the model stayed
+          resident), so the multi-episode payload is the one that has to carry
+          them.
+
+        Reading the six policy fields off the shared policy object after the
+        last episode is exactly what :meth:`eval_policy` and
+        :meth:`evaluate_benchmark` already do for their own multi-episode
+        aggregates, so the aggregation is the established one rather than a
+        new choice here.
+
+        Aggregate-only fields: ``n_episodes_completed``, ``episodes_saved``,
+        ``total_steps``, the per-episode ``episodes`` list and ``video_paths``.
         ``stopped_reason`` is ``"error"`` on error results and otherwise the
         LAST episode's reason (why the call as a whole stopped running), with
         the per-episode attribution in ``stopped_reasons`` (aligned with
         ``episodes``); ``steps_used`` equals ``total_steps``.
+
+        Per-episode action health (``action_errors``,
+        ``action_resolution_rate``, ``partial_action_failure_rate``) and the
+        per-episode horizon/video fields stay in the ``episodes`` records: a
+        rate or a per-step count has no single aggregate an N-episode call can
+        report without choosing a summary, so each episode reports its own.
+
+        Args:
+            episodes: Per-episode records collected so far.
+            episodes_saved: Episodes flushed to a dataset by this call.
+            total_steps: Control steps summed over ``episodes``.
+            n_episodes: Episodes the caller requested.
+            status: ``"success"`` or ``"error"`` for the call as a whole.
+            robot_name: Robot every episode drove; echoed as identity.
+            policy: The ONE policy object every episode ran with, read for the
+                binding and load telemetry.
+            instruction: Instruction every episode ran with.
+            extra: Optional human-readable note appended to the text block.
+
+        Returns:
+            The standard agent-tool envelope, shaped as described above.
         """
         completed = len(episodes)
         video_paths = [e["video_path"] for e in episodes if e.get("video_path")]
@@ -3297,6 +3380,10 @@ class SimEngine(ABC):
             total_episodes = int(getattr(meta, "total_episodes", 0) or 0) if meta is not None else 0
             dataset_episode_indices = list(range(total_episodes))
         payload: dict[str, Any] = {
+            # Identity: the call's own inputs, constant across the episodes.
+            "robot_name": robot_name,
+            "policy": type(policy).__name__,
+            "instruction": instruction,
             "n_episodes_requested": n_episodes,
             "n_episodes_completed": completed,
             "episodes_saved": episodes_saved,
@@ -3305,6 +3392,17 @@ class SimEngine(ABC):
             "steps_used": total_steps,
             "stopped_reason": stopped_reason,
             "stopped_reasons": stopped_reasons,
+            # Binding + load telemetry of the ONE policy object every episode
+            # ran with, read the same way eval_policy reads it for its own
+            # multi-episode aggregate. run_policy tells callers to gate on the
+            # binding flags, so a loop that omitted them left that gate
+            # reading the healthy default on the shape used to collect data.
+            "positional_fallback_used": bool(getattr(policy, "positional_fallback_used", False)),
+            "generic_state_keys_used": bool(getattr(policy, "generic_state_keys_used", False)),
+            "missing_state_keys_used": bool(getattr(policy, "missing_state_keys_used", False)),
+            "policy_load_time_s": round(float(getattr(policy, "load_time_s", 0.0)), 3),
+            "policy_load_cache_hit": bool(getattr(policy, "load_cache_hit", False)),
+            "policy_resident_rss_mb": process_rss_mb(),
             "episodes": episodes,
             "video_paths": video_paths,
         }
