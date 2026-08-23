@@ -180,9 +180,8 @@ class Cosmos3Policy(Policy):
         * Auxiliary rollout outputs are surfaced on :attr:`last_rollout` after
           each ``get_actions`` call, leaving the ``list[dict]`` return type
           (the Policy ABC contract) unchanged. Both backends populate
-          ``last_rollout["action"]`` whenever a chunk was predicted - an
-          ``np.ndarray[T, D]`` on the service backend, the pipeline's own array
-          on ``diffusers`` - and it is ``None`` on the world-only
+          ``last_rollout["action"]`` with the predicted ``np.ndarray[T, D]``
+          chunk, and leave it ``None`` on the world-only
           ``mode="forward_dynamics"`` path, which predicts no actions. The
           predicted world ``video``/``sound`` come from the diffusers backend
           (the service server sends ``video`` only when launched with
@@ -254,8 +253,7 @@ class Cosmos3Policy(Policy):
         # Auxiliary rollout outputs (raw action chunk, predicted video / sound)
         # from the last get_actions call, surfaced WITHOUT changing the Policy
         # ABC return type. None until the first inference. Both backends
-        # populate "action" whenever a chunk was predicted (an ndarray on the
-        # service backend, the pipeline's own array on diffusers); it is None
+        # populate "action" with the predicted [T, D] ndarray chunk; it is None
         # on the world-only mode="forward_dynamics" path, which predicts no
         # actions. "video"/"sound" are the diffusers backend's world outputs
         # (the service server sends "video" only when launched to emit rollout
