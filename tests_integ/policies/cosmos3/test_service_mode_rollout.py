@@ -18,7 +18,12 @@ Environment knobs:
 
 * ``COSMOS3_MODEL`` - checkpoint the spawned server loads
   (default ``nvidia/Cosmos3-Nano-Policy-DROID``).
-* ``COSMOS3_SERVER_PORT`` - WebSocket port (default 8000).
+* ``COSMOS3_SERVER_PORT`` - WebSocket port (default 8000). The port must be
+  **free**: this file spawns its own server, so the fixture refuses an
+  occupied port before spawning (a pre-running server - e.g. the one
+  tests_integ/policies/cosmos3/test_service_mode_live.py consumes, which
+  reads the same variable and default - would otherwise answer the readiness
+  probe while the spawned child dies of EADDRINUSE unobserved).
 * ``COSMOS3_SERVER_TIMEOUT`` - readiness deadline in seconds (default 600;
   a cold checkpoint download + model load can take minutes).
 
