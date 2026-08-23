@@ -7,5 +7,6 @@ render time (`HybridCompositor.set_background` backdrop swaps over the same
 trajectories, with the CUDA-only `GsplatBackground` path documented), and train
 time (`TrainSpec.augmentation` inspected via `Gr00tTrainer.build_command`).
 Generative augmentation is documented in a markdown-only closing section - the
-perturb-vs-generate framing and the provenance doctrine - with no code cells
-until the #2466 dataset transform ships. (#2467)
+perturb-vs-generate framing and the provenance doctrine of the shipped
+`strands_robots.transforms` surface (see `docs/data/transforms.md`) - with no
+code cells because generation needs a GPU and the notebook is CPU-only. (#2467)
