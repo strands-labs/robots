@@ -53,6 +53,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from strands_robots.mesh.session import _report_unencodable_payload
 from strands_robots.utils import positive_finite_number_error
 
 logger = logging.getLogger(__name__)
@@ -527,6 +528,13 @@ class IotMqttTransport:
         Per-topic QoS and retain flags come from :data:`_TOPIC_POLICY`.
         Topics in :data:`_NEVER_BRIDGE_PREFIXES` (camera/input/hand) are
         silently dropped - they belong on Zenoh-LAN, not MQTT-WAN.
+
+        A broker or client failure stays at DEBUG: it is transient and the next
+        tick retries it. A payload the JSON encoder refuses is not, so it is
+        reported at ERROR once per topic through
+        :func:`~strands_robots.mesh.session._report_unencodable_payload` - the
+        same report the Zenoh leg emits, so a reader grepping the log for one
+        transport's wording finds the other's.
         """
         if self._client is None or not self._connected.is_set():
             return
@@ -538,6 +546,18 @@ class IotMqttTransport:
         if qos < 0:
             return  # explicit DROP
 
+        # Encoded BEFORE the publish attempt, and outside its handler: a payload
+        # the encoder refuses can never be published, whereas a broker failure is
+        # transient and the next tick retries it. Absorbing both in one DEBUG line
+        # made a permanently-undeliverable message indistinguishable from a
+        # dropped one. Hoisting the encode above the ``awscrt`` import also keeps
+        # the two apart: an absent [mesh-iot] extra is not a bad payload.
+        try:
+            encoded = json.dumps(data).encode()
+        except Exception as exc:  # noqa: BLE001 - the encoder's raise set is payload-defined
+            _report_unencodable_payload("MQTT", key, exc)
+            return
+
         try:
             from awscrt import mqtt5
 
@@ -545,7 +565,7 @@ class IotMqttTransport:
             self._client.publish(
                 mqtt5.PublishPacket(
                     topic=key,
-                    payload=json.dumps(data).encode(),
+                    payload=encoded,
                     qos=qos_enum,
                     retain=retain,
                 )

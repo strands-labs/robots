@@ -4,6 +4,7 @@ import contextlib
 import ctypes
 import logging
 import os
+import platform
 import re
 import subprocess
 import sys
@@ -43,6 +44,95 @@ def _is_headless() -> bool:
     if os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"):
         return False
     return True
+
+
+# MuJoCo's own ``MUJOCO_GL`` vocabulary, transcribed from ``mujoco.gl_context``:
+# it folds the value with ``.lower().strip()``, reads one family as "build no GL
+# context at all", accepts a platform-dependent set of backend names, and raises
+# ``RuntimeError`` at import time for anything else.
+#
+# Transcribed rather than asked. ``mujoco.gl_context`` computes its copy of this
+# at module import, so it is already stale relative to a caller's environment;
+# importing it is itself what raises for exactly the values a caller needs told
+# about; and mujoco may not be installed at all, which is a separate question.
+# Same reasoning as ``doctor._hf_token_path``, which transcribes the Hub's
+# token-path rule for a Hub that may not be installed either.
+_MUJOCO_GL_DISABLE: frozenset[str] = frozenset({"disable", "disabled", "off", "false", "0"})
+_MUJOCO_GL_ANY_PLATFORM: frozenset[str] = frozenset({"enable", "enabled", "on", "true", "1", "glfw", ""})
+_MUJOCO_GL_PLATFORM_ONLY: dict[str, frozenset[str]] = {
+    "Linux": frozenset({"glx", "egl", "osmesa"}),
+    "Windows": frozenset({"wgl"}),
+    "Darwin": frozenset({"cgl"}),
+}
+# Backends that render with no display server: MuJoCo routes Linux ``egl`` and
+# ``osmesa`` to offscreen contexts, while every other backend it selects (GLFW on
+# Linux and Windows, CGL on macOS) draws through the platform's window server.
+_MUJOCO_GL_OFFSCREEN: frozenset[str] = frozenset({"egl", "osmesa"})
+
+
+def _mujoco_gl_value() -> str:
+    """The ``MUJOCO_GL`` value MuJoCo will read, folded the way MuJoCo folds it.
+
+    MuJoCo reads ``os.environ.get("MUJOCO_GL", "").lower().strip()``, so ``EGL``,
+    ``egl`` and ``" egl "`` all select the same backend. Comparing the raw string
+    instead answers about a spelling rather than about a backend: ``MUJOCO_GL=EGL``
+    renders through EGL, while a case-sensitive test reads it as a value nobody
+    recognises.
+
+    Returns:
+        The folded value. Empty both for an unset variable and for one holding
+        only whitespace, which MuJoCo also reads as "no preference".
+    """
+    return os.environ.get("MUJOCO_GL", "").lower().strip()
+
+
+def _mujoco_gl_valid_values(system: str | None = None) -> frozenset[str]:
+    """Values MuJoCo accepts for ``MUJOCO_GL`` on a platform.
+
+    Args:
+        system: Platform name as :func:`platform.system` reports it. Defaults to
+            the running platform.
+
+    Returns:
+        The platform-independent names together with that platform's own backend
+        names. A folded value outside this set and outside
+        :data:`_MUJOCO_GL_DISABLE` makes ``import mujoco`` raise ``RuntimeError``.
+    """
+    name = platform.system() if system is None else system
+    return _MUJOCO_GL_ANY_PLATFORM | _MUJOCO_GL_PLATFORM_ONLY.get(name, frozenset())
+
+
+def _mujoco_gl_disables_rendering(value: str) -> bool:
+    """Whether a folded ``MUJOCO_GL`` value builds no GL context at all.
+
+    MuJoCo accepts this family and then defines no ``GLContext``, so rendering is
+    unavailable rather than misconfigured. It is a different answer from a value
+    MuJoCo refuses at import, and naming the wrong one sends a caller after the
+    wrong remedy.
+
+    Args:
+        value: A value already folded by :func:`_mujoco_gl_value`.
+
+    Returns:
+        True when MuJoCo will skip GL context creation entirely.
+    """
+    return value in _MUJOCO_GL_DISABLE
+
+
+def _mujoco_gl_offscreen_values(system: str | None = None) -> frozenset[str]:
+    """Accepted values that render on a platform with no display server.
+
+    Empty on a platform whose only backend draws through the window server, which
+    is what a caller needs in order not to recommend a value MuJoCo refuses there.
+
+    Args:
+        system: Platform name as :func:`platform.system` reports it. Defaults to
+            the running platform.
+
+    Returns:
+        The offscreen backends that platform accepts.
+    """
+    return _MUJOCO_GL_OFFSCREEN & _mujoco_gl_valid_values(system)
 
 
 # glvnd EGL vendor ICD payload that points at the NVIDIA EGL library, plus the
@@ -159,15 +249,26 @@ def _configure_gl_backend() -> None:  # noqa: C901
     - "osmesa" - OSMesa (CPU software rendering, slower but always works)
     - "glfw"   - GLFW (default, requires X11/Wayland display server)
 
+    MuJoCo folds the value with ``.lower().strip()`` before reading it, so
+    ``EGL`` and ``" egl "`` select EGL as well (see :func:`_mujoco_gl_value`).
+
     This function MUST be called before `import mujoco`. Setting MUJOCO_GL
     after import has no effect - the backend is locked at import time.
 
     Never overrides a user-set MUJOCO_GL value.
     """
     existing = os.environ.get("MUJOCO_GL")
-    if existing:
+    # Read the folded value, because that is the backend MuJoCo will select.
+    # ``MUJOCO_GL=EGL`` renders through EGL and so has to reach the vendor-ICD
+    # guarantee too; a case-sensitive test here left glvnd on its default, which
+    # on an NVIDIA host missing the NVIDIA ICD is Mesa llvmpipe - the silent
+    # software-rasterizer fallback ``_ensure_nvidia_egl_vendor_icd`` exists to
+    # prevent. A whitespace-only value is not a preference: MuJoCo reads it as
+    # unset, so auto-configuration is what respects it.
+    value = _mujoco_gl_value()
+    if value:
         logger.debug(f"MUJOCO_GL already set to '{existing}', respecting user config")
-        if existing == "egl":
+        if value == "egl":
             _ensure_nvidia_egl_vendor_icd()
         return
 

@@ -23,8 +23,20 @@ pin the contract that replaced the silence:
   the peer and the exception's ``repr``;
 * later failures of the same category drop to debug, because the loop retries at
   ``STATE_HZ`` and a persistent fault would otherwise emit ten warnings a second;
-* what is *published* is byte-for-byte what it was before -- this changes the
-  report, not the snapshot.
+* a healthy peer's snapshot is byte-for-byte what it always was.
+
+The log was the whole of that first fix, and reporting a fault only where the
+peer's own process can see it left the harm above standing: an observer still
+had to read that peer's log to explain an absent section, so the fleet dashboard
+grew a regex over mesh's log lines and used it as an API. So the snapshot now
+carries the same verdict the log does, in a ``degraded`` block keyed by category
+-- ``reason`` (the exception's type name, which the reporter's own docstring
+names as the discriminator that selects the operator's next move), ``detail``,
+``failures`` and ``for_seconds``. Two consequences are pinned below: while a
+probe fails the snapshot says so, and because it says so the snapshot is no
+longer empty, so the hardware-only peer above keeps publishing instead of going
+silent. See :mod:`tests.mesh.test_state_degraded_probes_are_published` for the
+block's own contract.
 """
 
 from __future__ import annotations
@@ -129,7 +141,11 @@ class TestAFailedProbeIsReported:
         with caplog.at_level(logging.DEBUG, logger=CORE_LOGGER):
             out = m._read_state()
 
-        assert out is None, "a snapshot with no readable section is still not published"
+        assert out is not None, "a probe failure is a diagnosis to publish, not a reason to go quiet"
+        assert "joints" not in out, "the failed section is still omitted"
+        assert out["degraded"]["hw_joints"]["reason"] == type(exc).__name__, (
+            "the wire must carry the same discriminator the log does"
+        )
         warned = _warnings(caplog)
         assert len(warned) == 1, f"expected exactly one warning, got {warned}"
         assert "hw_joints" in warned[0]
@@ -152,6 +168,7 @@ class TestAFailedProbeIsReported:
         assert out is not None
         assert out["joints"] == {"j1": 0.5}, "the readable section still publishes"
         assert "task" not in out, "the failed section is still omitted"
+        assert set(out["degraded"]) == {"task_state"}, "only the probe that failed is named"
         warned = _warnings(caplog)
         assert len(warned) == 1, f"expected exactly one warning, got {warned}"
         assert "task_state" in warned[0]
@@ -170,7 +187,8 @@ class TestAFailedProbeIsReported:
         with caplog.at_level(logging.DEBUG, logger=CORE_LOGGER):
             out = m._read_state()
 
-        assert out is None
+        assert out is not None, "a probe failure is a diagnosis to publish, not a reason to go quiet"
+        assert out["degraded"]["sim_world"]["reason"] == "RuntimeError"
         warned = _warnings(caplog)
         assert len(warned) == 1, f"expected exactly one warning, got {warned}"
         assert "sim_world" in warned[0]

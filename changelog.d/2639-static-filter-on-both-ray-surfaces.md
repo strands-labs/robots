@@ -1,0 +1,5 @@
+### Fixed: the static-geom filter is expressible on both ray surfaces, and checked on both
+
+`include_static` decides whether a geom on a body with no degrees of freedom - the ground plane, a wall, a fixed fixture - can be the answer to a clearance question. `raycast` exposed it; `multi_raycast` hardcoded the include, so a lidar fan could not ask the question a single ray can ask, and passing the flag refused the call as an unknown parameter even though the tool schema publishes `include_static` for both actions. A 72-ray fan around a walled scene holding one movable crate answered 72 of 72 bearings with the wall where the caller had asked for the movable scene only; it now answers the 6 the crate occupies.
+
+Both surfaces now hold the flag to the shared boolean domain the module already applies to `set_joint_positions`' `hold`. Read by truthiness the filter inverted for exactly the spellings a caller opting out reaches for, since `"false"`, `"no"` and `"0"` are all truthy: each of them selected the include it names the opposite of. A boolean caller is unaffected and a caller who omits the flag gets the identical fan; a non-boolean value is now refused by name.

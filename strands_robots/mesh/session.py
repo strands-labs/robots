@@ -45,6 +45,7 @@ import math
 import os
 import threading
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -69,6 +70,18 @@ _SESSION_REFS: int = 0
 # same shape as ``_software_render_warned`` in the MuJoCo backend.  Mutated only
 # under ``_SESSION_LOCK``.
 _zenoh_missing_warned: set[str] = set()
+
+# One-shot-per-topic guard for a payload that cannot be JSON-encoded.  Unlike a
+# transient wire failure, an unencodable payload fails identically on every
+# retry, so a 50 Hz publisher would otherwise emit one report per tick forever.
+# Keyed on the topic because the payload builder is per-topic: a broken builder
+# is broken for every tick of ITS key and says nothing about any other.  A set
+# (mutated via .add, never reassigned) avoids a `global` rebind so static
+# analysis sees it as used.  Read and mutated WITHOUT ``_SESSION_LOCK``, because
+# :func:`_put_zenoh_directly` deliberately does not take it (a 50 Hz teleop loop
+# must not serialise on the session lock); the worst race is two threads each
+# reporting the same topic once.
+_unencodable_topics_warned: set[str] = set()
 
 
 # Constants
@@ -317,13 +330,26 @@ class PeerInfo:
         return time.monotonic() - self.last_seen_mono
 
     def to_dict(self) -> dict[str, Any]:
-        """Serialise to a plain dict (JSON-friendly)."""
+        """Serialise to a plain dict (JSON-friendly).
+
+        ``caps`` merges *first* so the four locally-decided fields win a name
+        collision. ``caps`` is the peer's own presence payload, and every field
+        below it is something this process decided about the peer rather than
+        something the peer reported about itself: ``age`` is the observation
+        described on :attr:`last_seen_mono`, and ``peer_id`` is the key the
+        registry files it under.
+
+        Spread last, a payload carrying any of those four names replaced the
+        local reading. An ``age`` the sender chooses defeats every staleness
+        verdict read from it, and a ``peer_id`` the sender chooses is the key
+        ``Mesh.peers_by_id`` and ``Mesh.get_peer`` look the peer up by.
+        """
         return {
+            **self.caps,
             "peer_id": self.peer_id,
             "type": self.peer_type,
             "hostname": self.hostname,
             "age": round(self.age, 1),
-            **self.caps,
         }
 
     def __repr__(self) -> str:
@@ -331,6 +357,69 @@ class PeerInfo:
             return f"PeerInfo(peer_id={self.peer_id!r}, type={self.peer_type!r}, age={self.age:.1f}s)"
         except AttributeError:
             return partial_construction_repr(self)
+
+
+#: Presence ``robot_type`` values that name a simulation rather than metal.
+#: The two in-tree publishers set ``peer_type="sim"`` for a
+#: :class:`~strands_robots.simulation.mujoco.simulation.MuJoCoSimEngine` and
+#: ``"robot"`` for hardware; ``"simulation"`` / ``"mujoco"`` are accepted so a
+#: third-party publisher spelling the same fact differently is still read.
+_SIM_PEER_TYPES: frozenset[str] = frozenset({"sim", "simulation", "mujoco"})
+
+
+def peer_is_physical(peer: Mapping[str, Any] | None) -> tuple[bool, str]:
+    """Is this peer metal? Returns ``(physical, why)``, failing closed.
+
+    Reads one entry of the :func:`get_peers` snapshot - the flat dict
+    :meth:`PeerInfo.to_dict` returns, which spreads the peer's presence payload
+    at the top level rather than nesting it under a ``presence`` key. Every
+    marker below is a key some publisher in
+    :meth:`~strands_robots.mesh.core.Mesh._build_presence` really sets, so no
+    rung is dead on arrival.
+
+    Fail-closed means: physical unless the peer can be SHOWN to be a sim. An
+    absent peer, a peer whose presence carries no sim marker, and a marker this
+    function cannot read are all metal. The direction of each rung follows from
+    that, and the two directions are deliberately different:
+
+    * ``hw`` is a positive METAL marker, so it is read permissively (any
+      non-empty string) and checked first - a peer reporting real hardware is
+      metal whatever else it claims.
+    * ``robot_type`` and ``world`` are positive SIM markers, so they are read
+      strictly (an exact token; ``world is True``, not merely truthy). A value
+      this function cannot read falls through to metal instead of being taken
+      for a sim.
+
+    The verdict is a description, never an authorisation: ``robot_type`` and
+    ``world`` arrive over the wire from the peer itself and
+    :meth:`~strands_robots.mesh.core.Mesh._on_presence` authenticates neither,
+    so a peer can claim to be a sim. That is fit to tell an operator what the
+    peer says about itself, and unfit to stand in for the operator.
+
+    Args:
+        peer: One entry of the :func:`get_peers` snapshot, or ``None`` when the
+            peer is not on it.
+
+    Returns:
+        ``(physical, why)`` - the verdict, and the reason it was reached, phrased
+        to read after the peer's name ("it reports real hardware (...)").
+    """
+    if not peer:
+        return True, "it is not on the fleet snapshot, so it cannot be shown to be a sim"
+
+    hw = peer.get("hw")
+    if isinstance(hw, str) and hw.strip():
+        return True, f"it reports real hardware ({hw.strip()})"
+
+    declared = str(peer.get("robot_type") or peer.get("type") or "").strip().lower()
+    if declared in _SIM_PEER_TYPES:
+        return False, f"it reports itself as {declared}"
+
+    sim_robots = peer.get("sim_robots")
+    if peer.get("world") is True or (isinstance(sim_robots, (list, tuple)) and len(sim_robots) > 0):
+        return False, "it reports a simulation world"
+
+    return True, "it did not report itself as a simulation"
 
 
 # Peer registry - shared across all Mesh instances in the same process
@@ -1058,6 +1147,53 @@ def put(key: str, data: dict[str, Any]) -> None:
     _put_zenoh_directly(key, data)
 
 
+def _report_unencodable_payload(transport: str, key: str, exc: BaseException) -> None:
+    """Report a payload that can never reach *key*, at ERROR, once per topic.
+
+    Every transport's ``put`` is fire-and-forget and
+    :meth:`strands_robots.mesh.transport.base.MeshTransport.put`
+    scopes that tolerance to a TRANSIENT failure - a closed session, a dropped broker, a
+    socket-level write - which the next tick retries. A payload the JSON encoder
+    refuses is not transient: it fails identically forever, so the message never
+    goes out at all and no retry can change that.
+
+    Reporting it at DEBUG left the two halves of one call disagreeing.
+    :meth:`strands_robots.mesh.sensors.SensorLoopsMixin.publish_safety_event`
+    writes the event to the wire AND to the local audit log; on an unencodable
+    payload the audit half records a ``sig="SERIALISE_FAILED"`` poison record and
+    logs at ERROR (naming the peer and the reason), while the wire half dropped
+    the event silently. A default-configured operator therefore saw a forensic
+    trail asserting that a safety event had been raised, with no peer having
+    received it and nothing above DEBUG to say so.
+
+    Once per topic, because a payload builder is per-topic: the same builder runs
+    on every tick of ITS key, so a 50 Hz publisher would otherwise emit one
+    report per tick, while a different key says nothing about it. Per TOPIC and
+    not per (topic, transport): under the bridge backend both legs encode the
+    same payload with the same encoder, so the second leg's report would restate
+    one fact. The leg that noticed is named in the line rather than keyed on,
+    which is why the wording does not claim the other leg is unaffected.
+
+    Args:
+        transport: Which leg could not encode, for the log line (``"Zenoh"`` /
+            ``"MQTT"``). The wording is shared so a reader grepping the log for
+            one transport's report finds the other's.
+        key: The topic the payload was addressed to; also the once-guard key.
+        exc: What the encoder raised, quoted as the reason.
+    """
+    if key in _unencodable_topics_warned:
+        return
+    _unencodable_topics_warned.add(key)
+    logger.error(
+        "put on %s: the payload cannot be JSON-encoded, so this message and every "
+        "later one built the same way is dropped before it reaches the wire "
+        "(noticed on the %s leg; reported once for this topic): %s",
+        key,
+        transport,
+        exc,
+    )
+
+
 def _put_zenoh_directly(key: str, data: dict[str, Any]) -> None:
     """Publish to the raw Zenoh session, bypassing transport-backend routing.
 
@@ -1076,11 +1212,28 @@ def _put_zenoh_directly(key: str, data: dict[str, Any]) -> None:
     Fire-and-forget, and it reads ``_SESSION`` without taking
     ``_SESSION_LOCK`` exactly as :func:`put` always has: a 50 Hz teleop loop
     must not serialise on the session lock.
+
+    The JSON encode is attempted OUTSIDE the handler that absorbs a wire
+    failure, because the two outcomes are not the same kind of failure. A wire
+    failure is transient and the next tick retries it, so it stays at DEBUG. A
+    payload the encoder refuses can never be published, so it is reported
+    through :func:`_report_unencodable_payload` instead of being absorbed by the
+    same DEBUG line. Neither raises: the ``put`` contract is fire-and-forget
+    either way. The encode catch is deliberately wide because an arbitrary
+    payload object can carry an arbitrary ``__reduce__`` / ``keys`` / ``default``
+    hook, so the encoder's raise set is not enumerable here (``json.dumps``
+    itself raises ``TypeError`` for an unsupported type and ``ValueError`` for a
+    circular reference).
     """
     if _SESSION is None:
         return
     try:
-        _SESSION.put(key, json.dumps(data).encode())
+        encoded = json.dumps(data).encode()
+    except Exception as exc:  # noqa: BLE001 - see the encode note in the docstring
+        _report_unencodable_payload("Zenoh", key, exc)
+        return
+    try:
+        _SESSION.put(key, encoded)
     except Exception as exc:
         logger.debug("Zenoh put error on %s: %s", key, exc)
 
