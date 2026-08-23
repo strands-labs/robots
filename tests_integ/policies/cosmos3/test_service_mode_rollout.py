@@ -33,6 +33,7 @@ from __future__ import annotations
 import importlib.util
 import os
 import signal
+import socket
 import subprocess
 import sys
 import time
@@ -125,6 +126,38 @@ def _wait_until_serving(proc: subprocess.Popen, log_path: Path) -> None:
     )
 
 
+def _fail_unless_port_is_free() -> None:
+    """Refuse to spawn onto a ``HOST:PORT`` something else already serves.
+
+    ``_wait_until_serving`` probes the port, not the child: a foreign server
+    already bound there answers the readiness probe, the fixture yields, and
+    the child this fixture spawned dies of EADDRINUSE unobserved - after
+    which the teardown's leak assert passes *because* the child crashed. The
+    collision is reachable, not hypothetical: the sibling
+    tests_integ/policies/cosmos3/test_service_mode_live.py points at a
+    pre-running server through the same ``COSMOS3_SERVER_PORT`` with the
+    same default, on the same pinned ``127.0.0.1``. Binding first turns the
+    collision into a named refusal. ``SO_REUSEADDR`` matches the posture of
+    the server the child will run, so a TIME_WAIT remnant from a previous
+    run does not refuse a port the child could in fact bind.
+    """
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        probe.bind((HOST, PORT))
+    except OSError as exc:
+        pytest.fail(
+            f"{HOST}:{PORT} is already in use ({exc}), so a server this fixture "
+            f"did not spawn would answer the readiness probe while the spawned "
+            f"child dies of EADDRINUSE unobserved. Stop the other server (the "
+            f"pre-running one test_service_mode_live.py consumes shares this "
+            f"port's variable and default) or set COSMOS3_SERVER_PORT to a "
+            f"free port."
+        )
+    finally:
+        probe.close()
+
+
 def _terminate(proc: subprocess.Popen) -> None:
     """SIGTERM the server's process group; SIGKILL if it does not exit."""
     if proc.poll() is not None:
@@ -155,6 +188,10 @@ def cosmos3_server(tmp_path_factory):
     on test failure and must leave no orphan GPU-holding process - the
     finalizer itself asserts the process is gone.
     """
+    # Before spawning: the readiness probe below checks the port, not the
+    # child, so a port already held by a foreign server must be a named
+    # refusal here rather than a false ready.
+    _fail_unless_port_is_free()
     log_path = tmp_path_factory.mktemp("cosmos3-server") / "server.log"
     cmd = [
         sys.executable,
