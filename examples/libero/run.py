@@ -42,9 +42,9 @@ Usage
     #    starts the inference server before the eval, then tears down on
     #    exit. Each step is idempotent so re-runs are cheap.
     #
-    #    Pre-condition: an HF token (the HF_TOKEN env var, or
-    #    `~/.cache/huggingface/token` from `huggingface-cli login`) with
-    #    access to `nvidia/Cosmos-Reason2-2B` (the gated VLM backbone) +
+    #    Pre-condition: an HF token (the HF_TOKEN env var, or the Hub's
+    #    cached login from `hf auth login`) with access to
+    #    `nvidia/Cosmos-Reason2-2B` (the gated VLM backbone) +
     #    Docker + an NVIDIA GPU.
     python examples/libero/run.py mujoco --policy groot --port 8000 --n-episodes 50
 
@@ -265,23 +265,43 @@ def _resolve_hf_token() -> str:
     """Resolve a HuggingFace token for the gated GR00T checkpoint download.
 
     Prefers the ``HF_TOKEN`` (or ``HUGGING_FACE_HUB_TOKEN``) environment
-    variable - CI / container environments typically inject the token that
-    way and don't have the ``~/.cache/huggingface/token`` file that
-    ``huggingface-cli login`` writes. Falls back to that file for interactive
-    dev boxes. Raises if neither is present.
-    """
-    from pathlib import Path
+    variable - CI / container environments typically inject the token
+    that way and have no cached login. Otherwise takes the cached login,
+    asking ``huggingface_hub`` where that lives rather than assuming: it
+    resolves ``HF_TOKEN_PATH``, else ``<HF_HOME>/token``, else
+    ``<XDG_CACHE_HOME>/huggingface/token``, else ``~/.cache/huggingface/token``.
+    Reading the last of those directly names a file the Hub will not open on a
+    host that relocated its cache, so a logged-in box was refused here.
 
+    Raises:
+        RuntimeError: Neither source yields a token. The message names the
+            path the Hub resolves on this host, so a relocated cache is
+            actionable, and ``hf auth login`` - the login entry point the
+            declared ``huggingface_hub>=1.5`` floor ships. ``huggingface-cli``
+            is not published as a console script at that floor, and the later
+            1.x releases that do install it exit "deprecated and no longer
+            works", so it is a dead end across the whole declared range.
+    """
     env_token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
     if env_token and env_token.strip():
         return env_token.strip()
-    hf_token_path = Path("~/.cache/huggingface/token").expanduser()
-    if hf_token_path.is_file():
-        return hf_token_path.read_text().strip()
+    token_path = "the Hub's cached login"
+    try:
+        from huggingface_hub import get_token
+        from huggingface_hub.constants import HF_TOKEN_PATH
+    except ImportError:
+        # No Hub installed to ask where its cached login lives; the
+        # checkpoint download reports that missing dependency itself.
+        pass
+    else:
+        token_path = HF_TOKEN_PATH
+        cached = get_token()
+        if cached and cached.strip():
+            return cached.strip()
     raise RuntimeError(
         "--policy groot needs an HF token (Cosmos-Reason2-2B is gated). "
-        "Set the HF_TOKEN env var (preferred for CI), or run "
-        "`huggingface-cli login` to write ~/.cache/huggingface/token, then retry."
+        "Set the HF_TOKEN env var (preferred for CI), or run `hf auth login` "
+        f"to write {token_path}, then retry."
     )
 
 

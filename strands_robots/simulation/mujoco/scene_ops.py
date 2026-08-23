@@ -42,7 +42,7 @@ from typing import Any
 
 from strands_robots.simulation.models import SimCamera, SimObject, SimRobot, SimWorld
 from strands_robots.simulation.mujoco.backend import _ensure_mujoco, filter_mujoco_attach_noise, mj_name_to_id
-from strands_robots.simulation.mujoco.spec_builder import SpecBuilder
+from strands_robots.simulation.mujoco.spec_builder import _SIZE_LAYOUT, SpecBuilder
 from strands_robots.utils import coerce_rgba, entity_name_error, finite_vector_error, pose_vector_error
 
 logger = logging.getLogger(__name__)
@@ -2270,6 +2270,48 @@ def _normalized_op_vector_fields(kind: str, op: Mapping[str, Any]) -> tuple[dict
     return normalized, None
 
 
+# The shapes ``add_geom`` cannot honour, however well-formed the op is. A mesh
+# geom takes its extent from a mesh asset, and this op's key set
+# (:data:`_PATCH_OP_KEYS`) has no key that could name one - so a mesh geom it
+# adds carries no meshid, and MuJoCo refuses it at the batch's recompile with
+# ``mesh geom '<name>' (id = N) must have valid meshid``. That refusal arrives
+# too late to be either actionable or survivable: it names a MuJoCo id rather
+# than the op, and it fires OUTSIDE the try/except that rolls a rejected batch
+# back, so the mutated spec stays installed and every later mutation of that
+# world - a valid patch, an ``add_object`` - re-fails on the same leftover geom.
+# Measured on a default world: three successive mutations after one such patch
+# all returned the meshid error. Refusing the value at the door is what keeps
+# the atomicity ``patch_scene_mjcf`` documents true for every op it accepts.
+_UNSUPPORTED_GEOM_SHAPES = frozenset({"mesh"})
+
+
+def _geom_shape_error(shape: Any) -> str | None:
+    """Reject an ``add_geom`` ``type`` this op cannot compile, before it mutates.
+
+    Only the shapes in :data:`_UNSUPPORTED_GEOM_SHAPES` are handled here. A
+    shape outside the vocabulary altogether is left to
+    :func:`~strands_robots.simulation.mujoco.spec_builder._geom_type`, whose own
+    message already names it and which raises inside the op loop, where the
+    rollback applies.
+
+    Args:
+        shape: The caller-supplied ``type`` value.
+
+    Returns:
+        A message naming the refused value and the surface that does support it,
+        or ``None`` when the shape is one this op may attempt.
+    """
+    if shape not in _UNSUPPORTED_GEOM_SHAPES:
+        return None
+    accepted = ", ".join(sorted(set(_SIZE_LAYOUT) - _UNSUPPORTED_GEOM_SHAPES))
+    return (
+        f"add_geom: 'type' cannot be {shape!r} - this op has no key that names a mesh asset, "
+        "so the geom it would add has no mesh to take its extent from and MuJoCo refuses the "
+        'whole scene at recompile. Add a mesh with add_object(shape="mesh", mesh_path=...), '
+        f"which registers the asset alongside the body. Accepted 'type' values: {accepted}."
+    )
+
+
 def _find_body(spec: Any, name: str, new_bodies: dict[str, Any]) -> Any:
     """Locate a body by name in a live spec, checking batch-local additions.
 
@@ -2349,6 +2391,8 @@ def _apply_patch_op(spec: Any, op: dict[str, Any], new_bodies: dict[str, Any]) -
             raise ValueError(f"add_geom: body '{body_name}' not found")
 
         shape = op.get("type", "box")
+        if (shape_err := _geom_shape_error(shape)) is not None:
+            raise ValueError(shape_err)
         from strands_robots.simulation.mujoco.spec_builder import (
             _geom_type,
             _normalize_size,
@@ -2443,7 +2487,10 @@ def patch_scene_mjcf(world: SimWorld, ops: list[dict[str, Any]]) -> int:
     (RGB, completed with an opaque alpha) or 4 - because MuJoCo bakes a
     ``nan``/``inf`` component into the model without complaint, and reports a
     width mismatch on the attribute writes by dumping a C++ overload table that
-    names neither the op nor the field.
+    names neither the op nor the field. ``add_geom``'s ``type`` is held to the
+    same standard: ``"mesh"`` is refused by :func:`_geom_shape_error` rather than
+    attempted, because this op cannot name the asset such a geom needs and
+    MuJoCo's own refusal for it lands past the rollback below.
 
     The list is applied atomically: if any op raises, the whole patch is
     rejected and the world is left in its original state. After all ops

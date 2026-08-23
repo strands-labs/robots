@@ -492,6 +492,20 @@ calls apply to the same buffer:
 | `rgba` | 3 (RGB, completed with an opaque alpha) or 4 finite components |
 | `size` | finite components, in the count the geom's shape consumes |
 
+`add_geom`'s `type` takes the primitive shapes - `box`, `capsule`, `cylinder`,
+`ellipsoid`, `plane`, `sphere` - and refuses `"mesh"`: the op has no key that
+could name a mesh asset, so the geom would have no mesh to take its extent from
+and MuJoCo would refuse the whole scene at recompile. Add a mesh through
+`add_object(shape="mesh", mesh_path=...)`, which registers the asset alongside
+the body:
+
+```python
+sim.patch_scene_mjcf([{"op": "add_geom", "body": "rig", "type": "mesh"}])
+# status=error: add_geom: 'type' cannot be 'mesh' - this op has no key that names
+#               a mesh asset ... Add a mesh with add_object(shape="mesh",
+#               mesh_path=...), which registers the asset alongside the body.
+```
+
 MuJoCo bakes a `nan`/`inf` component into the model without complaint, so an
 unchecked one reports success and only surfaces later as a poisoned physics
 state. A wrong component count is reported by the library rather than left to

@@ -283,7 +283,7 @@ def _normalize_size(shape: str, size: list[float]) -> list[float]:
     * ``capsule``:   ``[radius, half-height]``  (cap hemisphere radius = radius)
     * ``ellipsoid``: ``[rx, ry, rz]``
     * ``plane``:     ``[hx, hy, grid_spacing]`` (hx/hy are half-sizes)
-    * ``mesh``:      ``[]``            (mesh asset dictates extent; size ignored)
+    * ``mesh``:      refused           (see below - no caller normalizes one)
 
     Box/ellipsoid use all 3 components as full extents, sphere uses ``size[0]``
     as diameter (MuJoCo halves it to radius), cylinder/capsule use ``size[0]``
@@ -292,12 +292,23 @@ def _normalize_size(shape: str, size: list[float]) -> list[float]:
     visual half-widths (a plane is infinite for collision, so only its rendered
     grid extent matters) and ``size[1]`` mirrors ``size[0]`` when omitted.
 
+    ``mesh`` is deliberately absent from the branches below and falls through to
+    the trailing ``raise``. A mesh geom takes its extent from the asset, so it
+    carries no ``size`` at all: ``SpecBuilder.build`` passes ``meshname``
+    instead of calling this function, and the ``add_geom`` patch op refuses
+    ``type="mesh"`` outright (:func:`~strands_robots.simulation.mujoco.scene_ops._geom_shape_error`)
+    because it has no key that could name the asset. So nothing should be
+    asking, and the branch that used to answer ``[0.0, 0.0, 0.0]`` -- a third
+    statement of the contract, and one the docstring above contradicted -- was
+    unreachable on both paths.
+
     Raises:
         ValueError: When :func:`_validate_size` rejects ``size`` -- too few
             components for the shape to consume, more than three, or a
             non-positive consumed extent. Every component this function reads
             is guaranteed present by that check, so a partial vector is never
-            silently completed from a default.
+            silently completed from a default. Also when ``shape`` is one no
+            caller normalizes, ``mesh`` included.
     """
     if (msg := _validate_size(shape, size)) is not None:
         raise ValueError(msg)
@@ -312,8 +323,6 @@ def _normalize_size(shape: str, size: list[float]) -> list[float]:
         sx = size[0]
         sy = size[1] if len(size) > 1 else sx
         return [sx, sy, 0.01]
-    if shape == "mesh":
-        return [0.0, 0.0, 0.0]
     raise ValueError(f"Cannot normalize size for shape {shape!r}.")
 
 

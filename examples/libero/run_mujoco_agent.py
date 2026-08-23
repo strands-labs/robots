@@ -72,7 +72,7 @@ Usage
 
     # 2) Real run against `nvidia/GR00T-N1.7-LIBERO`. Script auto-
     #    orchestrates the GR00T inference container (idempotent). Pre-
-    #    condition: HF token at `~/.cache/huggingface/token` (gated
+    #    condition: an HF token, from HF_TOKEN or `hf auth login` (gated
     #    Cosmos-Reason2-2B backbone) + Docker + an NVIDIA GPU.
     python examples/libero/run_mujoco_agent.py --policy groot --port 8000 --n-episodes 5
 
@@ -217,6 +217,50 @@ def _configure_gr00t_image(image: str) -> None:
         os.environ["STRANDS_GR00T_IMAGE_ALLOW"] = ",".join(patterns)
 
 
+def _resolve_hf_token() -> str:
+    """Resolve a HuggingFace token for the gated GR00T checkpoint download.
+
+    Prefers the ``HF_TOKEN`` (or ``HUGGING_FACE_HUB_TOKEN``) environment
+    variable -- CI / container environments typically inject the token
+    that way and have no cached login. Otherwise takes the cached login,
+    asking ``huggingface_hub`` where that lives rather than assuming: it
+    resolves ``HF_TOKEN_PATH``, else ``<HF_HOME>/token``, else
+    ``<XDG_CACHE_HOME>/huggingface/token``, else ``~/.cache/huggingface/token``.
+    Reading the last of those directly names a file the Hub will not open on a
+    host that relocated its cache, so a logged-in box was refused here.
+
+    Raises:
+        RuntimeError: Neither source yields a token. The message names the
+            path the Hub resolves on this host, so a relocated cache is
+            actionable, and ``hf auth login`` - the login entry point the
+            declared ``huggingface_hub>=1.5`` floor ships. ``huggingface-cli``
+            is not published as a console script at that floor, and the later
+            1.x releases that do install it exit "deprecated and no longer
+            works", so it is a dead end across the whole declared range.
+    """
+    env_token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
+    if env_token and env_token.strip():
+        return env_token.strip()
+    token_path = "the Hub's cached login"
+    try:
+        from huggingface_hub import get_token
+        from huggingface_hub.constants import HF_TOKEN_PATH
+    except ImportError:
+        # No Hub installed to ask where its cached login lives; the
+        # checkpoint download reports that missing dependency itself.
+        pass
+    else:
+        token_path = HF_TOKEN_PATH
+        cached = get_token()
+        if cached and cached.strip():
+            return cached.strip()
+    raise RuntimeError(
+        "--policy groot needs an HF token (Cosmos-Reason2-2B is gated). "
+        "Set the HF_TOKEN env var (preferred for CI), or run `hf auth login` "
+        f"to write {token_path}, then retry."
+    )
+
+
 def _bring_up_gr00t_server(args: argparse.Namespace, suite: str) -> dict | None:
     """Start the GR00T inference container and block until model is loaded.
 
@@ -228,7 +272,6 @@ def _bring_up_gr00t_server(args: argparse.Namespace, suite: str) -> dict | None:
         return None
 
     import subprocess
-    from pathlib import Path
     from time import monotonic, sleep
 
     _configure_gr00t_image(args.image)
@@ -240,12 +283,7 @@ def _bring_up_gr00t_server(args: argparse.Namespace, suite: str) -> dict | None:
         args.checkpoint_dir = _default_checkpoint_dir()
     print(f"[setup] checkpoint dir: {args.checkpoint_dir}")
 
-    hf_token_path = Path("~/.cache/huggingface/token").expanduser()
-    if not hf_token_path.is_file():
-        raise RuntimeError(
-            "--policy groot needs an HF token (Cosmos-Reason2-2B is gated). "
-            "Run `huggingface-cli login` first, then retry."
-        )
+    hf_token = _resolve_hf_token()
     result = gr00t_inference(
         action="lifecycle",
         lifecycle="full",
@@ -253,7 +291,7 @@ def _bring_up_gr00t_server(args: argparse.Namespace, suite: str) -> dict | None:
         hf_subfolder=suite,
         hf_local_dir=args.checkpoint_dir,
         container_name=args.container,
-        hf_token=hf_token_path.read_text().strip(),
+        hf_token=hf_token,
         checkpoint_path=f"/data/checkpoints/{suite}",
         embodiment_tag="libero_sim",
         protocol="n1.7",

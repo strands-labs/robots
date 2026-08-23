@@ -94,7 +94,10 @@ evaluates the `mujoco` and Isaac single-env (`isaac-1`) rows.
 - `STRANDS_GR00T_IMAGE` / `STRANDS_GR00T_IMAGE_ALLOW` - operator-configured
   GR00T docker image + allowlist (`--image` sets these).
 - `HF_TOKEN` (or `HUGGING_FACE_HUB_TOKEN`) - HuggingFace token for the gated
-  GR00T checkpoint download (`--policy groot`).
+  GR00T checkpoint download (`--policy groot`). With neither set, the drivers
+  fall back to the Hub's cached login (`hf auth login`), asking
+  `huggingface_hub` where that lives - so a relocated `HF_HOME` /
+  `XDG_CACHE_HOME` / `HF_TOKEN_PATH` is honoured.
 - `STRANDS_GR00T_SERVER_SEED` / `STRANDS_GR00T_STRICT_DETERMINISTIC` - consumed
   by the packaged determinism wrapper
   (`strands_robots/policies/groot/server_wrapper.py`) inside the GR00T
