@@ -17,4 +17,8 @@ grep-stable result line, including `resolved_task=` and `backend=`
 (previously Isaac-only fields; the matrix parser already tolerated
 them). `libero_backend_matrix.py` invokes `run.py <backend>`, and the
 output-line contract is pinned against the driver's own formatter in
-`tests/test_examples_libero_drivers.py`.
+`tests/test_examples_libero_drivers.py`. The `--container` default is
+now derived per subcommand (`gr00t-libero-<backend>`), preserving the
+two old drivers' hardcoded names so side-by-side runs keep separate
+containers; that derivation - and an explicit `--container` surviving
+it verbatim - is pinned in the same test file.

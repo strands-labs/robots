@@ -174,6 +174,44 @@ def test_isaac_only_flags_do_not_exist_on_the_mujoco_subcommand() -> None:
     assert not hasattr(mj, "robot_usd"), "mujoco subcommand should not carry Isaac-only namespace attrs"
 
 
+@pytest.mark.parametrize(
+    ("backend", "expected"),
+    [("mujoco", "gr00t-libero-mujoco"), ("isaac", "gr00t-libero-isaac")],
+)
+def test_container_default_derives_from_the_backend_subcommand(backend: str, expected: str) -> None:
+    """The ``--container`` default is computed per subcommand.
+
+    The merge replaced two hardcoded container names with one f-string
+    derived from the subparser's ``dest="backend"`` - the only
+    behavioral mechanism the refactor changed. If either the f-string
+    or the dest drifts, both subcommands resolve to one container name,
+    which is exactly what the flag's help text promises cannot happen
+    ("don't clobber each other's containers when run side-by-side").
+    That failure surfaces as a GR00T lifecycle collision on a GPU host
+    CI does not have, so this is the pin - it also documents that the
+    two pre-merge drivers' defaults were preserved deliberately.
+    """
+    run = _load_example("run.py")
+    args = run._build_parser().parse_args([backend])
+    # Parse-time sentinel: None keeps an explicit --container
+    # distinguishable from the derived default.
+    assert args.container is None
+    run._resolve_container_name(args)
+    assert args.container == expected
+
+
+def test_explicit_container_survives_default_resolution() -> None:
+    """An explicit ``--container`` passes through resolution unchanged.
+
+    The resolver guards on ``is None``, not truthiness - the half a
+    naive ``args.container or f"..."`` rewrite would break.
+    """
+    run = _load_example("run.py")
+    args = run._build_parser().parse_args(["mujoco", "--container", "my-name"])
+    run._resolve_container_name(args)
+    assert args.container == "my-name"
+
+
 @pytest.mark.parametrize("filename", ["run.py", "run_mujoco_agent.py"])
 def test_drivers_do_not_call_private_scene_generation(filename: str) -> None:
     """Public-API hygiene: the drivers must use ``LiberoAdapter.ensure_scene``

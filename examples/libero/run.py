@@ -1148,9 +1148,26 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(args: argparse.Namespace) -> None:
+def _resolve_container_name(args: argparse.Namespace) -> None:
+    """Resolve the ``--container`` default from the parsed subcommand, in place.
+
+    ``--container`` parses to ``None`` so an explicit value stays
+    distinguishable from the default; the default is derived here as
+    ``gr00t-libero-<backend>`` so the two subcommands never resolve to
+    the same container name - the flag's own help text promises MuJoCo
+    and Isaac runs don't clobber each other's containers when run
+    side-by-side on one host. This preserves the two hardcoded defaults
+    the pre-merge ``run_mujoco.py`` / ``run_isaac.py`` shipped. The
+    ``is None`` guard (not a truthiness ``or``) is deliberate: an
+    explicit value must survive resolution verbatim. Pinned by
+    ``tests/test_examples_libero_drivers.py``.
+    """
     if args.container is None:
         args.container = f"gr00t-libero-{args.backend}"
+
+
+def main(args: argparse.Namespace) -> None:
+    _resolve_container_name(args)
     suite = _suite_for_task(args.task)
 
     if args.backend == "isaac":
