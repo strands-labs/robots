@@ -46,6 +46,7 @@ import threading
 from typing import TYPE_CHECKING, Any, Literal, cast, overload
 
 from strands_robots._mesh_switch import mesh_env_request
+from strands_robots._serial_discovery import scan_serial_devices
 from strands_robots.registry import (
     get_hardware_type,
     get_robot,
@@ -89,44 +90,20 @@ def _auto_detect_mode(canonical: str) -> str:
     elif env_mode:
         logger.warning("STRANDS_ROBOT_MODE=%r ignored (expected 'sim', 'real', or 'auto')", env_mode)
 
-    # Only probe USB if the robot actually has hardware support
+    # Only probe USB if the robot actually has hardware support. Which serial
+    # device is a robot's motor bus is decided once, by
+    # :func:`~strands_robots._serial_discovery.matches_servo_bus`: the hardware
+    # layer needs the same answer to name the candidates when the caller did not
+    # supply the ``port`` its robot requires, and a second copy of the vendor-id
+    # table would let the two disagree about what a robot is. Enumeration there
+    # is best-effort (pyserial is not a declared dependency of this package), so
+    # a host that cannot enumerate reports no devices and falls back to sim,
+    # which is always safe.
     if has_hardware(canonical):
-        try:
-            import serial.tools.list_ports
-
-            ports = list(serial.tools.list_ports.comports())
-            servo_keywords = ["feetech", "dynamixel", "sts3215", "xl430", "xl330", "ch340", "ch343"]
-            # Servo-bus USB bridge vendor IDs. Feetech/SO-10x controller boards
-            # carry WCH CH34x chips that enumerate with the generic description
-            # "USB Single Serial" (observed on macOS with SO-101, vid 0x1a86
-            # pid 0x55d3), so keyword matching alone misses them entirely and
-            # mode="auto" silently falls back to sim with hardware attached.
-            servo_vids = {0x1A86, 0x0403}  # WCH CH34x, FTDI
-            exclude = ["bluetooth", "internal", "debug", "apple", "modem"]
-            robot_ports = [
-                p
-                for p in ports
-                if (
-                    any(
-                        kw in ((p.description or "") + (getattr(p, "manufacturer", None) or "")).lower()
-                        for kw in servo_keywords
-                    )
-                    or (getattr(p, "vid", None) in servo_vids)
-                )
-                and not any(s in (p.description or "").lower() for s in exclude)
-            ]
-            if robot_ports:
-                logger.info(
-                    "Auto-detected robot hardware: %s",
-                    [p.device for p in robot_ports],
-                )
-                return "real"
-        except Exception as e:
-            # USB enumeration is best-effort. pyserial usually raises OSError
-            # (incl. PermissionError, SerialException) but libusb backends have
-            # been observed to raise RuntimeError on hub glitches. Falling back
-            # to sim is always safe; we log at debug for diagnosis.
-            logger.debug("USB probe failed (%s: %s); falling back to sim", type(e).__name__, e)
+        servo_ports = [device.port for device in scan_serial_devices() if device.likely_servo_bus]
+        if servo_ports:
+            logger.info("Auto-detected robot hardware: %s", servo_ports)
+            return "real"
 
     return "sim"
 

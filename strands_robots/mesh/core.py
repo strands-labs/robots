@@ -190,6 +190,13 @@ RESUME_FORWARD_SKEW_S: float = _parse_positive_float_env("STRANDS_MESH_RESUME_FO
 #: See :data:`RESUME_FRESHNESS_WINDOW_S` for lazy-resolution note.
 RESUME_REPLAY_CACHE_MAX: int = _parse_positive_int_env("STRANDS_MESH_RESUME_REPLAY_CACHE_MAX", "4096")
 
+#: Longest ``detail`` string a degraded-probe record carries onto the state
+#: topic. The text is a third-party driver's exception message, the state topic
+#: publishes at ``STATE_HZ``, and a driver that puts a whole device dump in that
+#: message would otherwise put ten copies of it on the wire every second. The
+#: ``reason`` beside it is the exception's type name, which is bounded already.
+MAX_DEGRADED_DETAIL_LEN: int = 256
+
 
 def _resume_freshness_window_s() -> float:
     """Lazy resolver for ``STRANDS_MESH_RESUME_FRESHNESS_S``.
@@ -414,6 +421,14 @@ class Mesh(SensorLoopsMixin):
         # The state loop retries at STATE_HZ, so a persistent fault is reported
         # once and then kept at debug level rather than once per tick.
         self._read_state_warned: set[str] = set()
+
+        # Which _read_state probes are degraded RIGHT NOW, keyed by category.
+        # Separate from _read_state_warned, which answers a different question:
+        # this one is cleared when a probe answers again, so the published
+        # snapshot stops claiming a fault that has cleared, while the log gate
+        # above stays armed for the life of the peer so a probe that flaps at
+        # STATE_HZ cannot re-arm the warning ten times a second.
+        self._read_state_degraded: dict[str, dict[str, Any]] = {}
 
         # RPC correlation state.
         #
@@ -1155,7 +1170,8 @@ class Mesh(SensorLoopsMixin):
                 survives even when the message is empty, because the type is
                 what selects the operator's next move: a ``ConnectionError``
                 from a contended serial port and a ``RuntimeError`` from an
-                uncalibrated arm need different actions.
+                uncalibrated arm need different actions. That same type name is
+                what the published record carries as its ``reason``.
 
         Each probe stays wrapped in ``except Exception`` on purpose -- a flaky
         read must not kill the state thread -- so this exists to keep that
@@ -1163,12 +1179,41 @@ class Mesh(SensorLoopsMixin):
         is warned about; the rest drop to debug, because the loop retries at
         ``STATE_HZ`` and a persistent fault would otherwise emit ten warnings a
         second.
+
+        The log gate and the published record are deliberately separate. The
+        gate arms once and stays armed for the life of the peer, so a probe that
+        flaps cannot emit a warning per tick; the record is cleared by
+        :meth:`_note_read_state_ok` as soon as the probe answers, so the
+        snapshot stops claiming a fault the moment it clears. Every call updates
+        the record's failure count, reason and detail, because a probe whose
+        failure mode CHANGES -- a contended port that becomes an uncalibrated
+        arm -- would otherwise keep publishing the first reason forever.
         """
-        warned = getattr(self, "_read_state_warned", None)
-        if warned is None:
+        records = getattr(self, "_read_state_degraded", None)
+        if records is None:
             # A Mesh built through __new__ (several tests, and the sim paths)
             # never ran __init__. Bookkeeping must not be able to raise inside
             # the handler that exists to report a failure.
+            records = {}
+            self._read_state_degraded = records
+        record = records.get(category)
+        if record is None:
+            records[category] = {
+                "reason": type(exc).__name__,
+                "detail": str(exc)[:MAX_DEGRADED_DETAIL_LEN],
+                "failures": 1,
+                # Monotonic: for_seconds answers "how long has this been
+                # failing", a duration, and a wall-clock stamp would make that
+                # duration jump by the size of any NTP correction mid-fault.
+                "since_mono": time.monotonic(),
+            }
+        else:
+            record["failures"] = int(record.get("failures", 0)) + 1
+            record["reason"] = type(exc).__name__
+            record["detail"] = str(exc)[:MAX_DEGRADED_DETAIL_LEN]
+
+        warned = getattr(self, "_read_state_warned", None)
+        if warned is None:
             warned = set()
             self._read_state_warned = warned
         if category in warned:
@@ -1188,7 +1233,95 @@ class Mesh(SensorLoopsMixin):
             exc,
         )
 
+    def _note_read_state_ok(self, category: str) -> None:
+        """Clear ``category``'s degraded record: the probe answered.
+
+        Called from inside each probe once the operation that can raise has
+        returned, so the record is dropped only on a real answer and never on a
+        tick where the probe did not run at all -- a sim peer with no hardware
+        must not read as an ``hw_joints`` recovery.
+
+        Args:
+            category: The probe that answered. Unknown or already-clear
+                categories are a no-op, so a probe may call this every tick.
+
+        The recovery is reported on the wire -- the record disappears from the
+        next snapshot -- and at debug in the log. It is deliberately not a
+        warning: the whole point of publishing the record is that an observer no
+        longer has to read the log, and a probe flapping at ``STATE_HZ`` would
+        otherwise trade ten silent ticks for twenty noisy lines.
+        """
+        records = getattr(self, "_read_state_degraded", None)
+        if not records:
+            return
+        record = records.pop(category, None)
+        if record is None:
+            return
+        logger.debug(
+            "[mesh] %s: state probe %r answered again after %d failure(s) over %.1fs",
+            self.peer_id,
+            category,
+            int(record.get("failures", 0)),
+            time.monotonic() - float(record.get("since_mono", time.monotonic())),
+        )
+
+    def _degraded_probes(self) -> dict[str, dict[str, Any]] | None:
+        """The ``degraded`` block for the snapshot, or ``None`` when healthy.
+
+        Returns:
+            One entry per currently-degraded probe, keyed by category, each
+            carrying ``reason`` (the exception's type name -- the discriminator
+            :meth:`_warn_read_state_once` documents as selecting the operator's
+            next move), ``detail`` (that exception's message, bounded by
+            :data:`MAX_DEGRADED_DETAIL_LEN`), ``failures`` (how many ticks have
+            raised since the fault began) and ``for_seconds`` (how long it has
+            been failing). ``None`` when no probe is degraded, so a healthy
+            peer's snapshot is byte-for-byte what it always was.
+
+        ``since_mono`` is process-local and stays off the wire: seconds of local
+        uptime mean nothing to the machine reading the snapshot, so the elapsed
+        duration is computed here and only the difference is published.
+        """
+        records = getattr(self, "_read_state_degraded", None)
+        if not records:
+            return None
+        now = time.monotonic()
+        return {
+            category: {
+                "reason": record.get("reason", ""),
+                "detail": record.get("detail", ""),
+                "failures": int(record.get("failures", 0)),
+                "for_seconds": round(now - float(record.get("since_mono", now)), 3),
+            }
+            for category, record in sorted(records.items())
+        }
+
     def _read_state(self) -> dict[str, Any] | None:
+        """Build this peer's state snapshot for ``strands/{peer_id}/state``.
+
+        Returns:
+            The snapshot, or ``None`` when nothing but ``peer_id`` and ``t``
+            survived -- the state loop publishes nothing for a ``None``.
+
+        Every section is optional and probed defensively, because a robot may be
+        hardware, sim, both or neither. A section is present when its probe
+        answered and has something to report: ``joints`` (per-joint positions,
+        from the motor bus or from the sim world), ``task`` (the running
+        rollout's status), ``sim_time`` and ``robots``.
+
+        A section that is ABSENT is therefore ambiguous on its own -- a robot
+        with no joints and a robot whose joint probe just raised look identical
+        -- so a probe that fails names itself in ``degraded``, keyed by
+        category, with the ``reason`` / ``detail`` / ``failures`` /
+        ``for_seconds`` block :meth:`_degraded_probes` documents. That block is
+        the guarantee: while a probe is failing the snapshot says so, and the
+        entry disappears on the tick the probe answers again. It also keeps the
+        peer publishing at all. Before it, a hardware peer whose only section
+        was ``joints`` returned ``None`` for every tick of a contended bus, so
+        it went silent on the state topic while its presence heartbeat kept
+        advertising it -- indistinguishable from a peer whose state thread had
+        died, and explicable only by reading that peer's log.
+        """
         r = self.robot
         snapshot: dict[str, Any] = {"peer_id": self.peer_id, "t": time.time()}
 
@@ -1203,6 +1336,7 @@ class Mesh(SensorLoopsMixin):
                 # already in hand -- one dead USB camera used to erase an arm's
                 # entire joint telemetry while its presence stayed healthy.
                 obs = read_joints(inner)
+                self._note_read_state_ok("hw_joints")
                 cam_keys = set(getattr(getattr(inner, "config", None), "cameras", {}).keys())
                 joints: dict[str, Any] = {}
                 for key, value in obs.items():
@@ -1230,6 +1364,7 @@ class Mesh(SensorLoopsMixin):
                     "steps": getattr(ts, "step_count", 0),
                     "duration": getattr(ts, "duration", 0.0),
                 }
+                self._note_read_state_ok("task_state")
         except Exception as exc:
             self._warn_read_state_once("task_state", exc)
 
@@ -1265,10 +1400,19 @@ class Mesh(SensorLoopsMixin):
                                 }
                         if sim_joints:
                             snapshot["joints"] = sim_joints
+                        self._note_read_state_ok("sim_joints")
                     except Exception as exc:
                         self._warn_read_state_once("sim_joints", exc)
+                self._note_read_state_ok("sim_world")
         except Exception as exc:
             self._warn_read_state_once("sim_world", exc)
+
+        # Unconditional: a probe that is failing says so on the wire for as long
+        # as it fails, which is also what keeps a hardware-only peer publishing
+        # at all when its one section is the one that raised.
+        degraded = self._degraded_probes()
+        if degraded is not None:
+            snapshot["degraded"] = degraded
 
         return snapshot if len(snapshot) > 2 else None
 
