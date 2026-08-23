@@ -743,14 +743,17 @@ def load_usd(path: str) -> ProceduralRobot:
 # the Panda separately via ``add_robot``) as USD prims on the stage so the
 # Isaac LIBERO eval renders a populated scene instead of an empty one.
 #
-# LIBERO object meshes are not portable to the Isaac stage (their asset
-# paths live inside the upstream ``libero`` package and aren't resolvable
-# as USD references here). So instead of meshes we approximate each object
-# with a single box primitive sized to the axis-aligned bounding box (AABB)
-# of its *collision* geoms (MuJoCo ``group="0"``), which robosuite always
-# emits as analytic primitives (boxes / spheres / cylinders) even when the
-# visual geom is a mesh. That gives a faithful-enough footprint for
-# rollout-video parity with the MuJoCo driver without needing the meshes.
+# COLLISION stays a box proxy: each object's physics footprint is the
+# axis-aligned bounding box (AABB) of its collision geoms (MuJoCo
+# ``group="0"``), which robosuite always emits as analytic primitives
+# (boxes / spheres / cylinders) even when the visual geom is a mesh. That
+# preserves the physics behaviour the MuJoCo-parity evals were validated
+# against. The VISUAL is the real mesh where the MJCF declares one (#2459):
+# each SceneObject additionally carries the resolved mesh asset path +
+# scale of its first visual mesh geom, so the Isaac realization can render
+# the bowl/plate a pixel-conditioned policy was trained on instead of a
+# gray box. A body whose declared mesh asset file is MISSING on disk is a
+# hard ValueError - never a silent box (the loaders' fail-loud contract).
 
 # MJCF body-name prefixes/exact-names that are NOT task objects and must be
 # skipped when realizing a LIBERO scene as Isaac prims:
@@ -764,11 +767,14 @@ _MJCF_SCENE_SKIP_PREFIXES = ("robot0", "robot_", "gripper0", "mount0")
 class SceneObject:
     """A single object extracted from a LIBERO/BDDL MJCF scene.
 
-    Carries just enough geometry for ``IsaacSimulation.load_scene`` to call
-    ``add_object(...)``: a box-AABB approximation of the object's collision
-    geometry, its world position (body ``pos`` + AABB centre), and whether
-    it is a static fixture (no free joint) or a dynamic, physics-driven
-    object (has a ``<freejoint>`` / ``<joint type="free">``).
+    Carries just enough geometry for ``IsaacSimulation.load_scene`` to
+    realize the object: a box-AABB approximation of the object's collision
+    geometry, its world position (body ``pos`` + AABB centre), whether it
+    is a static fixture (no free joint) or a dynamic, physics-driven
+    object (has a ``<freejoint>`` / ``<joint type="free">``), and - when
+    the MJCF declares one - the object's visual mesh asset (path + scale +
+    body-frame pose), so the realization can render the real mesh while
+    keeping the AABB box as the collision proxy (#2459).
 
     Attributes
     ----------
@@ -792,6 +798,23 @@ class SceneObject:
         new body pose maps to prim pose ``body_pos + R(body_quat) @
         offset``. Without this field the offset is unrecoverable from
         ``position`` alone once the body moves.
+    mesh_path : str or None
+        Resolved absolute path of the object's visual mesh asset (the
+        first mesh geom in the body subtree, preferring non-collision
+        groups), or ``None`` when the body declares no mesh. The Isaac
+        realization renders this mesh as the visual while keeping the
+        AABB box as the collision proxy (#2459); the file is verified to
+        exist at parse time - a declared-but-missing asset raises rather
+        than degrading to a silent box.
+    mesh_scale : tuple[float, float, float]
+        Per-axis scale from the MJCF ``<mesh scale=...>`` asset attribute
+        (unit scale when absent). Applied on the visual prim's xform.
+    mesh_pos : tuple[float, float, float]
+        Body-frame position of the visual mesh geom (nested-body offsets
+        folded in, matching how ``offset`` accumulates collision AABBs).
+    mesh_quat : tuple[float, float, float, float]
+        Body-frame orientation ``[w, x, y, z]`` of the visual mesh geom
+        (identity when absent).
     """
 
     name: str
@@ -800,6 +823,10 @@ class SceneObject:
     is_static: bool
     quat: tuple[float, float, float, float] = (1.0, 0.0, 0.0, 0.0)
     offset: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    mesh_path: str | None = None
+    mesh_scale: tuple[float, float, float] = (1.0, 1.0, 1.0)
+    mesh_pos: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    mesh_quat: tuple[float, float, float, float] = (1.0, 0.0, 0.0, 0.0)
 
 
 def _parse_quat(quat_str: str | None) -> tuple[float, float, float, float]:
@@ -821,6 +848,83 @@ def _is_skipped_scene_body(name: str) -> bool:
     if lname in _MJCF_SCENE_SKIP_EXACT:
         return True
     return any(lname.startswith(p) for p in _MJCF_SCENE_SKIP_PREFIXES)
+
+
+def _parse_mjcf_mesh_assets(root: ET.Element, mjcf_dir: str) -> dict[str, tuple[str, tuple[float, float, float]]]:
+    """Collect the MJCF's ``<asset><mesh>`` registry: name -> (file path, scale).
+
+    File paths resolve the way MuJoCo's compiler does: an absolute ``file``
+    is used as-is; a relative one is joined against ``<compiler meshdir=...>``
+    (or ``assetdir``), itself resolved against the MJCF's own directory;
+    with no meshdir the MJCF directory is the base. Paths are resolved but
+    NOT existence-checked here - only meshes actually consumed by a task
+    object are checked (at selection time in
+    :func:`load_mjcf_scene_objects`), so an unused stale asset entry cannot
+    fail a scene that never touches it.
+
+    A ``<mesh>`` without a ``name`` defaults to the file's basename without
+    extension, per the MJCF spec.
+    """
+    mesh_base = mjcf_dir
+    for compiler_el in root.findall("compiler"):
+        for attr in ("meshdir", "assetdir"):
+            d = compiler_el.get(attr)
+            if d:
+                mesh_base = d if os.path.isabs(d) else os.path.join(mjcf_dir, d)
+                break
+
+    registry: dict[str, tuple[str, tuple[float, float, float]]] = {}
+    for asset_el in root.findall("asset"):
+        for mesh_el in asset_el.findall("mesh"):
+            file_attr = mesh_el.get("file")
+            if not file_attr:
+                continue
+            name = mesh_el.get("name") or os.path.splitext(os.path.basename(file_attr))[0]
+            resolved = file_attr if os.path.isabs(file_attr) else os.path.join(mesh_base, file_attr)
+            scale = _parse_axis(mesh_el.get("scale"), default=(1.0, 1.0, 1.0))
+            registry[name] = (os.path.normpath(resolved), scale)
+    return registry
+
+
+def _find_body_mesh(
+    body_el: ET.Element,
+    offset: tuple[float, float, float] = (0.0, 0.0, 0.0),
+) -> tuple[str, tuple[float, float, float], tuple[float, float, float, float], bool] | None:
+    """First mesh geom in a body subtree: ``(mesh name, body-frame pos, quat, is_visual)``.
+
+    Prefers a *visual* mesh geom (MuJoCo ``group`` other than the collision
+    group ``"0"``; robosuite emits visual geoms as ``group="1"``) over a
+    collision mesh, because the visual asset is the one a pixel-conditioned
+    policy was trained on. Recurses into nested bodies, folding their
+    ``pos`` offsets into the returned body-frame position the same way
+    :func:`_recursive_collision_aabb` accumulates AABBs (nested body
+    rotations are not composed - LIBERO's compiled object bodies do not
+    rotate their nested visual bodies). Returns ``None`` when the subtree
+    declares no mesh geom.
+    """
+    first_any: tuple[str, tuple[float, float, float], tuple[float, float, float, float], bool] | None = None
+    for geom in body_el.findall("geom"):
+        mesh_name = geom.get("mesh")
+        if not mesh_name:
+            continue
+        gpos = _parse_xyz(geom.get("pos"))
+        pos = (offset[0] + gpos[0], offset[1] + gpos[1], offset[2] + gpos[2])
+        quat = _parse_quat(geom.get("quat"))
+        is_visual = (geom.get("group") or "0") != "0"
+        if is_visual:
+            return (mesh_name, pos, quat, True)
+        if first_any is None:
+            first_any = (mesh_name, pos, quat, False)
+    for child in body_el.findall("body"):
+        child_off = _parse_xyz(child.get("pos"))
+        new_off = (offset[0] + child_off[0], offset[1] + child_off[1], offset[2] + child_off[2])
+        found = _find_body_mesh(child, new_off)
+        if found is not None:
+            if found[3]:
+                return found
+            if first_any is None:
+                first_any = found
+    return first_any
 
 
 def _geom_aabb(geom: ET.Element) -> tuple[tuple[float, float, float], tuple[float, float, float]] | None:
@@ -938,14 +1042,32 @@ def load_mjcf_scene_objects(path: str) -> list[SceneObject]:
 
     Walks the MJCF ``<worldbody>`` top-level bodies, skips the floor and
     the robot, and emits one :class:`SceneObject` per remaining body (table
-    fixtures and movable task objects). Each object's geometry is the
-    axis-aligned bounding box of its collision geoms (recursing into nested
-    bodies so multi-link fixtures like tables are captured), approximated as
-    a single box primitive.
+    fixtures and movable task objects). Each object's *collision* geometry
+    is the axis-aligned bounding box of its collision geoms (recursing into
+    nested bodies so multi-link fixtures like tables are captured),
+    approximated as a single box primitive. Where the body declares a mesh
+    geom, the resolved asset path + scale ride along as the object's
+    *visual* (#2459) - preferring a visual-group mesh over a collision one
+    - so the Isaac realization renders the real bowl/plate instead of a
+    gray box while the physics footprint stays the validated AABB proxy.
+
+    Fail-loud contract for meshes: a body whose selected mesh asset is
+    declared in ``<asset>`` but MISSING on disk raises :class:`ValueError`
+    (never a silent box) - a policy conditioned on that object's pixels
+    would otherwise be evaluated against a proxy with nothing in the
+    output saying so. A mesh in a format this backend cannot convert
+    (outside OBJ/STL/MSH/USD) is surfaced as ``mesh_path=None`` (box proxy),
+    as is a mesh reference with no ``<asset>`` entry at all - which cannot
+    occur in a robosuite-compiled scene, since MuJoCo refuses to compile
+    it. A body with a mesh but NO analytic collision geometry gets the
+    mesh's computed bounds as its box proxy instead of the historical
+    hardcoded 0.05 m fallback.
 
     This is the parse half of ``IsaacSimulation.load_scene``: pure stdlib
-    (no ``mujoco`` / ``pxr`` dependency), so it is unit-testable on CPU-only
-    CI without Isaac Sim installed.
+    (no ``mujoco`` / ``pxr`` dependency; mesh bounds are read with the
+    stdlib OBJ/STL/MSH parser in
+    :mod:`strands_robots.simulation.isaac.mesh_assets`), so it is
+    unit-testable on CPU-only CI without Isaac Sim installed.
 
     Parameters
     ----------
@@ -963,9 +1085,11 @@ def load_mjcf_scene_objects(path: str) -> list[SceneObject]:
     FileNotFoundError
         If ``path`` doesn't exist.
     ValueError
-        If the XML is malformed, the root isn't ``<mujoco>``, or there is no
-        ``<worldbody>``.
+        If the XML is malformed, the root isn't ``<mujoco>``, there is no
+        ``<worldbody>``, or a selected mesh asset file is missing on disk.
     """
+    from strands_robots.simulation.isaac.mesh_assets import MESH_EXTENSIONS, USD_EXTENSIONS, mesh_aabb
+
     _require_existing_file(path, "MJCF scene")
     root = _parse_xml(path, "MJCF scene")
     if root.tag != "mujoco":
@@ -973,6 +1097,8 @@ def load_mjcf_scene_objects(path: str) -> list[SceneObject]:
     worldbody = root.find("worldbody")
     if worldbody is None:
         raise ValueError(f"MJCF scene loader: {path} has no <worldbody>")
+
+    mesh_registry = _parse_mjcf_mesh_assets(root, os.path.dirname(os.path.abspath(path)))
 
     objects: list[SceneObject] = []
     for body_el in worldbody.findall("body"):
@@ -989,6 +1115,35 @@ def load_mjcf_scene_objects(path: str) -> list[SceneObject]:
             j.get("type") == "free" for j in body_el.findall("joint")
         )
 
+        # Visual mesh passthrough (#2459). Resolved before the AABB so a
+        # mesh-only body can fall back to the mesh's own bounds below.
+        mesh_path: str | None = None
+        mesh_scale: tuple[float, float, float] = (1.0, 1.0, 1.0)
+        mesh_pos: tuple[float, float, float] = (0.0, 0.0, 0.0)
+        mesh_quat: tuple[float, float, float, float] = (1.0, 0.0, 0.0, 0.0)
+        mesh_ref = _find_body_mesh(body_el)
+        if mesh_ref is not None:
+            mesh_name, mesh_pos, mesh_quat, _is_visual = mesh_ref
+            asset = mesh_registry.get(mesh_name)
+            if asset is not None:
+                candidate_path, mesh_scale = asset
+                ext = os.path.splitext(candidate_path)[1].lower()
+                if ext in MESH_EXTENSIONS or ext in USD_EXTENSIONS:
+                    if not os.path.isfile(candidate_path):
+                        raise ValueError(
+                            f"MJCF scene loader: mesh asset {candidate_path!r} for body {name!r} in "
+                            f"{path} is missing on disk - refusing to degrade the object to a silent "
+                            f"box proxy (#2459 fail-loud contract)"
+                        )
+                    mesh_path = candidate_path
+                # An unconvertible format (e.g. a COLLADA .dae)
+                # keeps mesh_path=None: the realization uses the box proxy
+                # and load_scene reports the object among the proxies.
+            # A mesh reference with no <asset> entry cannot occur in a
+            # robosuite-COMPILED scene (MuJoCo refuses to compile it), so it
+            # is hand-written test scaffolding: keep the historical
+            # degrade-cleanly box fallback rather than failing the scene.
+
         # Gather collision geometry from this body and any nested bodies
         # (e.g. ``living_room_table`` -> ``living_room_table_col``), folding
         # nested-body offsets into the AABB.
@@ -996,15 +1151,24 @@ def load_mjcf_scene_objects(path: str) -> list[SceneObject]:
         found = _recursive_collision_aabb(body_el, (0.0, 0.0, 0.0), bounds)
         mins, maxs = bounds[0], bounds[1]
 
-        if not found:
-            # No analytic collision geometry (mesh-only with no convex
-            # decomposition). Fall back to a small default box so the
-            # object still appears on the stage.
-            center = (0.0, 0.0, 0.0)
-            size = (0.05, 0.05, 0.05)
-        else:
+        if found:
             center = tuple((mins[i] + maxs[i]) / 2.0 for i in range(3))  # type: ignore[assignment]
             size = tuple(max(maxs[i] - mins[i], 1e-3) for i in range(3))  # type: ignore[assignment]
+        elif mesh_path is not None and os.path.splitext(mesh_path)[1].lower() in MESH_EXTENSIONS:
+            # No analytic collision geometry, but the mesh itself is
+            # parseable: use its real bounds as the proxy instead of the
+            # historical 0.05 m guess. The mesh geom's own rotation is not
+            # composed into the bounds (an AABB of a rotated mesh is still
+            # an approximation either way); its body-frame position is.
+            mcenter, msize = mesh_aabb(mesh_path, mesh_scale)
+            center = tuple(mesh_pos[i] + mcenter[i] for i in range(3))  # type: ignore[assignment]
+            size = msize
+        else:
+            # No analytic collision geometry and no parseable mesh. Fall
+            # back to a small default box so the object still appears on
+            # the stage.
+            center = (0.0, 0.0, 0.0)
+            size = (0.05, 0.05, 0.05)
 
         world_pos = tuple(body_pos[i] + center[i] for i in range(3))
         objects.append(
@@ -1015,6 +1179,10 @@ def load_mjcf_scene_objects(path: str) -> list[SceneObject]:
                 is_static=not has_freejoint,
                 quat=body_quat,
                 offset=center,  # type: ignore[arg-type]
+                mesh_path=mesh_path,
+                mesh_scale=mesh_scale,
+                mesh_pos=mesh_pos,
+                mesh_quat=mesh_quat,
             )
         )
 

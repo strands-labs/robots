@@ -244,6 +244,34 @@ sidecar; omit it to use the defaults, which match the shipped export.
 | `control_dt` | `0.02` | Seconds per control tick (50 Hz) |
 | `future_step_indices` | `(1, 2, 4, 8)` | Lookahead offsets, in control steps |
 
+### A body index has to address a body
+
+The two body indices are offsets into `body_names`, so an index that misses is
+the config-side mirror of the model-side row shift above - and it is refused the
+same way, when the config is built rather than when something reads it:
+
+```text
+ValueError: ProtoMotionsConfig.anchor_body_index must be a row of body_names
+(0..32), got 99 for 33 bodies. The index is an offset into body_names, so one
+that misses cannot resolve the body it names.
+```
+
+Both directions are checked, because they fail differently. A negative index is
+a valid tuple lookup: `body_names[-1]` is `right_rubber_hand`, so an
+`anchor_body_index: -1` sidecar resolves a real link and the tracker anchors on
+it consistently - `required_bodies` declares that link, the runtime supplies its
+quaternion, and the future-reference window slices the same row. Nothing
+disagrees, and on the tracker's own embodiment that link's world orientation is
+20 degrees from `torso_link` with the waist turned and an arm raised. An index
+past the end used to surface only as `IndexError: tuple index out of range` from
+whichever property read the name first.
+
+The index also goes through the shared whole-number domain, so a yaml
+`anchor_body_index: true` is refused instead of being read as row 1 (`head`),
+and a hand-built `ProtoMotionsConfig(...)` reports the same value the same way a
+sidecar does. An integral float such as `16.0` addresses a row and is kept,
+normalised to the row number both consumers index with.
+
 ## Testing without weights
 
 `session=` injects anything satisfying the `ProtoMotionsSession` protocol

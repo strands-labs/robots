@@ -20,10 +20,11 @@ Covers:
 from __future__ import annotations
 
 import os
+import sys
 
 import numpy as np
 
-os.environ.setdefault("MUJOCO_GL", "glfw")
+os.environ.setdefault("MUJOCO_GL", "cgl" if sys.platform == "darwin" else "egl")
 
 from strands_robots.policies.mock import MockPolicy
 from strands_robots.simulation.policy_runner import (

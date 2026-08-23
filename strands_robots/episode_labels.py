@@ -131,6 +131,124 @@ def labels_path(root: str | Path) -> Path:
     return Path(root) / SIDECAR_FILENAME
 
 
+#: The label keys a reader turns into a verdict, and the domain each is held to.
+#: Every one is a field a reader BRANCHES on: ``deterministic.success`` is the
+#: authoritative verdict :func:`filter_episodes` gates ``require_success`` on,
+#: ``judge.quality`` is the grade its quality bar ranks and
+#: :func:`measure_agreement` calibrates against, ``judge.failure_mode`` is the
+#: tag that measurement compares, and ``judge.disputes_verdict`` is what
+#: ``exclude_disputed`` drops on. The descriptive keys (``steps``,
+#: ``cumulative_reward``, ``seed``, ``note``, ``model``, ``labeled_at``,
+#: ``success_opinion``) are carried through untouched: no reader branches on
+#: them, so a surprising value there is a record to read, not a verdict to
+#: refuse. That is the same split :func:`record_deterministic_verdicts` and
+#: :func:`annotate_episode` already make on the way IN, and the one
+#: :mod:`strands_robots.transforms.provenance` - the other per-episode sidecar,
+#: which cites this module for it - makes at both ends.
+_DETERMINISTIC_VERDICT_KEYS = {"success": boolean_flag_error, "failure": boolean_flag_error}
+
+#: Keys a block must carry to state the thing it exists to state. A
+#: ``deterministic`` block with no ``success`` cannot say what the predicates
+#: measured; a ``judge`` block with no ``quality`` cannot clear a quality bar.
+#: Both are read by subscript downstream, so absence is a ``KeyError`` from
+#: inside a filter rather than an answer.
+_REQUIRED_DETERMINISTIC_KEYS = ("success",)
+_REQUIRED_JUDGE_KEYS = ("quality",)
+
+
+def _record_problem(key: str, record: Any, context: str) -> str | None:
+    """Error text when a sidecar record cannot answer what it is read for.
+
+    The one owner of "is this record readable as a label?", so every reader
+    reaches the same verdict about the same bytes. :func:`read_labels` calls
+    it on every record, which is what makes a sidecar this module did not
+    write hold to the domains its own writers enforce on the way in - and
+    :func:`filter_episodes` / :func:`measure_agreement` / :func:`annotate_episode`
+    inherit the check by reading through it rather than each re-deriving one.
+
+    An unreadable record is refused rather than skipped: silently dropping it
+    would make a filter's answer depend on how much of the sidecar it could
+    parse, which is the same reason :func:`read_labels` refuses an unknown
+    ``schema_version`` instead of projecting it onto this version's meanings.
+
+    Args:
+        key: The ``episodes`` mapping key, for the message.
+        record: The record to grade.
+        context: Surface name for the message (the sidecar path).
+
+    Returns:
+        The error text, or ``None`` when the record is readable.
+    """
+    # JSON object keys are strings, so the shared whole-number domain grades the
+    # index this key SPELLS, not the key itself. The spelling has to be the
+    # canonical one the writers produce (``str(index)``): measure_agreement looks
+    # an episode up as ``str(int(index))``, so a non-canonical ``"00"`` is
+    # invisible to it while filter_episodes would return ``int("00") == 0`` - one
+    # sidecar, two answers about which episode a record is about.
+    spelled = None
+    if isinstance(key, str):
+        try:
+            spelled = int(key)
+        except ValueError:
+            spelled = None
+    if spelled is None or str(spelled) != key:
+        return (
+            f"{context}: episodes key {key!r} is not the decimal spelling of a whole number. "
+            "This mapping is keyed by str(episode_index), so a key a reader cannot turn back "
+            "into that index selects no episode."
+        )
+    if msg := non_negative_whole_number_error(spelled, f"episodes key {key!r}", context):
+        return msg
+    if not isinstance(record, dict):
+        return f"{context}: episodes[{key!r}] is {type(record).__name__}, expected a JSON object."
+
+    if "deterministic" in record:
+        block = record["deterministic"]
+        if not isinstance(block, dict):
+            return f"{context}: episodes[{key!r}]['deterministic'] is {type(block).__name__}, expected a JSON object."
+        for required in _REQUIRED_DETERMINISTIC_KEYS:
+            if required not in block:
+                return (
+                    f"{context}: episodes[{key!r}]['deterministic'] has no {required!r} - "
+                    "a verdict block that cannot state the outcome is not a verdict."
+                )
+        for field, domain in _DETERMINISTIC_VERDICT_KEYS.items():
+            if field in block and (
+                msg := domain(block[field], f"episodes[{key!r}]['deterministic'][{field!r}]", context)
+            ):
+                return msg
+
+    if "judge" in record:
+        judge = record["judge"]
+        if not isinstance(judge, dict):
+            return f"{context}: episodes[{key!r}]['judge'] is {type(judge).__name__}, expected a JSON object."
+        for required in _REQUIRED_JUDGE_KEYS:
+            if required not in judge:
+                return (
+                    f"{context}: episodes[{key!r}]['judge'] has no {required!r} - "
+                    f"an annotation with no grade cannot clear a quality bar. One of {QUALITY_GRADES}."
+                )
+        if judge["quality"] not in QUALITY_GRADES:
+            return (
+                f"{context}: episodes[{key!r}]['judge']['quality'] is {judge['quality']!r}, "
+                f"which is not one of {QUALITY_GRADES}. A grade outside the vocabulary cannot be "
+                "ranked against a quality bar."
+            )
+        mode = judge.get("failure_mode")
+        if mode is not None and mode not in FAILURE_MODES:
+            return (
+                f"{context}: episodes[{key!r}]['judge']['failure_mode'] is {mode!r}, which is not "
+                f"None or one of {FAILURE_MODES}."
+            )
+        if "disputes_verdict" in judge and (
+            msg := boolean_flag_error(
+                judge["disputes_verdict"], f"episodes[{key!r}]['judge']['disputes_verdict']", context
+            )
+        ):
+            return msg
+    return None
+
+
 def _empty_document(benchmark: str) -> dict[str, Any]:
     return {"schema_version": LABEL_SCHEMA_VERSION, "benchmark": benchmark, "episodes": {}}
 
@@ -171,11 +289,18 @@ def read_labels(root: str | Path) -> dict[str, Any]:
     Raises:
         FileNotFoundError: If no sidecar exists yet - record deterministic
             verdicts first (:func:`record_deterministic_verdicts`).
-        ValueError: If the sidecar is unparseable, or carries a
-            ``schema_version`` this module does not know. A future schema is
+        ValueError: If the sidecar is unparseable, carries a
+            ``schema_version`` this module does not know, or holds a record
+            this module cannot read as a label - a verdict-bearing field
+            outside its domain, or a block that cannot state the thing it
+            exists to state. A future schema is
             refused rather than misread: silently projecting it onto this
             version's field meanings would hand downstream filters wrong
-            answers with nothing raised.
+            answers with nothing raised, and a record whose ``success`` is the
+            string ``"false"`` or whose ``quality`` is outside
+            :data:`QUALITY_GRADES` does exactly that one level down. This is
+            the boundary for a sidecar this module did not write, so a value
+            its own writers refuse on the way in is refused on the way out.
     """
     path = labels_path(root)
     if not path.is_file():
@@ -195,6 +320,15 @@ def read_labels(root: str | Path) -> dict[str, Any]:
             f"Label sidecar {path} has schema_version {version!r}; this build reads "
             f"version {LABEL_SCHEMA_VERSION}. Refusing to reinterpret an unknown schema."
         )
+    episodes = document.get("episodes")
+    if not isinstance(episodes, dict):
+        raise ValueError(
+            f"Label sidecar {path} has an 'episodes' of {type(episodes).__name__}, expected a JSON "
+            "object keyed by episode index."
+        )
+    for key, record in episodes.items():
+        if msg := _record_problem(key, record, f"Label sidecar {path}"):
+            raise ValueError(msg)
     return document
 
 

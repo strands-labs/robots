@@ -27,7 +27,7 @@ surface.
 LIBERO benchmark on Isaac is NOT yet runnable end-to-end
 --------------------------------------------------------
 The agent's ``evaluate_isaac_benchmark`` tool call routes through the
-same ``IsaacSimulation.evaluate_benchmark`` path as ``run_isaac.py``,
+same ``IsaacSimulation.evaluate_benchmark`` path as ``run.py isaac``,
 so it runs the same way: ``LiberoAdapter.on_episode_start`` calls
 ``sim.load_scene(...)`` and ``IsaacSimulation.load_scene`` now realizes
 the LIBERO/BDDL-compiled MJCF as USD prims on the Isaac stage (the
@@ -142,7 +142,7 @@ Usage
 
     # 2) Real run against `nvidia/GR00T-N1.7-LIBERO`. Script auto-
     #    orchestrates the GR00T inference container (idempotent). Pre-
-    #    condition: HF token at `~/.cache/huggingface/token` (gated
+    #    condition: an HF token, from HF_TOKEN or `hf auth login` (gated
     #    Cosmos-Reason2-2B backbone) + Docker + an NVIDIA GPU + Isaac
     #    Sim 6.0+ installed.
     python examples/libero/run_isaac_agent.py --policy groot --port 8000 --n-episodes 5
@@ -162,7 +162,7 @@ Requires
 Notes
 -----
 - Output is non-deterministic by design (LLM-generated summary); the
-  R15 backend matrix consumes ``run_isaac.py`` (sibling file) for
+  R15 backend matrix consumes ``run.py isaac`` (sibling file) for
   grep-stable numbers.
 - Rollout video is recorded via the synchronous Isaac recorder (one
   ``render()`` frame per control step), producing a real
@@ -314,23 +314,43 @@ def _resolve_hf_token() -> str:
     """Resolve a HuggingFace token for the gated GR00T checkpoint download.
 
     Prefers the ``HF_TOKEN`` (or ``HUGGING_FACE_HUB_TOKEN``) environment
-    variable -- CI / container environments typically inject the token that
-    way and don't have the ``~/.cache/huggingface/token`` file that
-    ``huggingface-cli login`` writes. Falls back to that file for interactive
-    dev boxes. Raises if neither is present.
-    """
-    from pathlib import Path
+    variable -- CI / container environments typically inject the token
+    that way and have no cached login. Otherwise takes the cached login,
+    asking ``huggingface_hub`` where that lives rather than assuming: it
+    resolves ``HF_TOKEN_PATH``, else ``<HF_HOME>/token``, else
+    ``<XDG_CACHE_HOME>/huggingface/token``, else ``~/.cache/huggingface/token``.
+    Reading the last of those directly names a file the Hub will not open on a
+    host that relocated its cache, so a logged-in box was refused here.
 
+    Raises:
+        RuntimeError: Neither source yields a token. The message names the
+            path the Hub resolves on this host, so a relocated cache is
+            actionable, and ``hf auth login`` - the login entry point the
+            declared ``huggingface_hub>=1.5`` floor ships. ``huggingface-cli``
+            is not published as a console script at that floor, and the later
+            1.x releases that do install it exit "deprecated and no longer
+            works", so it is a dead end across the whole declared range.
+    """
     env_token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
     if env_token and env_token.strip():
         return env_token.strip()
-    hf_token_path = Path("~/.cache/huggingface/token").expanduser()
-    if hf_token_path.is_file():
-        return hf_token_path.read_text().strip()
+    token_path = "the Hub's cached login"
+    try:
+        from huggingface_hub import get_token
+        from huggingface_hub.constants import HF_TOKEN_PATH
+    except ImportError:
+        # No Hub installed to ask where its cached login lives; the
+        # checkpoint download reports that missing dependency itself.
+        pass
+    else:
+        token_path = HF_TOKEN_PATH
+        cached = get_token()
+        if cached and cached.strip():
+            return cached.strip()
     raise RuntimeError(
         "--policy groot needs an HF token (Cosmos-Reason2-2B is gated). "
-        "Set the HF_TOKEN env var (preferred for CI), or run "
-        "`huggingface-cli login` to write ~/.cache/huggingface/token, then retry."
+        "Set the HF_TOKEN env var (preferred for CI), or run `hf auth login` "
+        f"to write {token_path}, then retry."
     )
 
 
@@ -500,7 +520,7 @@ def _build_parser() -> argparse.ArgumentParser:
     """Mirror ``run_mujoco_agent.py``'s parser surface.
 
     Argument names / defaults are kept identical to the MuJoCo file
-    (and to ``run_isaac.py``) so a matrix-driver shell wrapper that
+    (and to ``run.py isaac``) so a matrix-driver shell wrapper that
     supplies the same flags works against any of the three.
     """
     p = argparse.ArgumentParser()
@@ -627,13 +647,14 @@ def _resolve_default_franka_usd(assets_root: str) -> str:
 def _resolve_robot_asset(args: argparse.Namespace) -> tuple[str | None, str | None]:
     """Resolve which robot asset to load → ``(usd_path, urdf_path)``.
 
-    Same contract as ``run_isaac.py._resolve_robot_asset``: ``--robot-urdf``
-    > ``--robot-usd`` > default Franka Panda USD from the assets root. The
+    Same contract as ``run._resolve_robot_asset`` (sibling ``run.py``):
+    ``--robot-urdf`` > ``--robot-usd`` > default Franka Panda USD from the
+    assets root. The
     asset sub-path moved under a vendor folder in Isaac Sim 6.0
     (``Isaac/Robots/FrankaRobotics/FrankaPanda/franka.usd``) from the legacy
     4.x layout (``Isaac/Robots/Franka/franka.usd``); the resolver
     HEAD-probes both and uses whichever exists. Loads a *real* robot rather
-    than the procedural stick-figure (see ``run_isaac.py`` for the
+    than the procedural stick-figure (see ``run.py`` for the
     rationale). ``get_assets_root_path`` is imported lazily (only resolvable
     after ``create_world``) and tries the modern ``isaacsim.storage.native``
     namespace first, falling back to the legacy ``omni.isaac.nucleus`` shim
@@ -672,7 +693,7 @@ def main() -> None:
         raise SystemExit("--robot-usd and --robot-urdf are mutually exclusive; pass at most one.")
     suite = _suite_for_task(args.task)
 
-    # Fail-fast on hosts without Isaac Sim. Same probe as run_isaac.py
+    # Fail-fast on hosts without Isaac Sim. Same probe as run.py isaac
     # -- runs before the GR00T container side effects so a CPU-only
     # host exits cleanly without wasting docker bandwidth.
     available, reason = IsaacSimulation.is_available()
@@ -718,7 +739,7 @@ def main() -> None:
         # add_robot's usd_path / urdf_path branch (real Articulation,
         # observable joints) rather than the procedural builder, which
         # produces a kinematically-approximate stick-figure unusable for
-        # LIBERO. See run_isaac.py's _resolve_robot_asset docstring.
+        # LIBERO. See run.py's _resolve_robot_asset docstring.
         robot_usd, robot_urdf = _resolve_robot_asset(args)
         if robot_urdf is not None:
             print(f"[setup] loading robot from URDF: {robot_urdf}")
@@ -772,7 +793,7 @@ def main() -> None:
         print(f"[setup] RTX camera {recording_camera!r} warmed up; render product populated")
 
         # Resolve the LIBERO task. Same default-aspirational fallback
-        # as run_mujoco_agent.py / run_isaac.py. Keep the CLI-requested
+        # as run_mujoco_agent.py / run.py. Keep the CLI-requested
         # task distinct from the resolved one so the [agent-eval] line
         # below echoes what the caller passed (replayable) while the
         # actual eval / filename use what really ran.

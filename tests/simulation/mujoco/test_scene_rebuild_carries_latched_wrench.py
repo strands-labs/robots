@@ -3,10 +3,9 @@
 :meth:`~strands_robots.simulation.mujoco.MuJoCoSimEngine.apply_force` latches a
 wrench in the target body's own ``xfrc_applied`` row and documents exactly two
 ways that latch ends: the next ``apply_force`` on the same body, or a
-``reset()``. Five other operations ended it too, because every one of them
-rebuilds the model and ``xfrc_applied`` is not carried across that rebuild --
-``spec.recompile`` returns the whole buffer zeroed, and the eject path allocates
-a fresh ``MjData``. Each op reported ``"success"``, nothing was logged, and the
+``reset()``. Every operation that rebuilds the model ended it too, because
+``xfrc_applied`` is not carried across that rebuild -- ``spec.recompile`` returns
+the whole buffer zeroed, and the eject path allocates a fresh ``MjData``. Each op reported ``"success"``, nothing was logged, and the
 wrench was simply not applied on any later step: an object a thruster or a wind
 field was holding up began to fall one ``add_camera`` later.
 
@@ -62,7 +61,20 @@ _HOVER_TOL = 1e-3
 # Every operation that rebuilds the model. ``set_geom_properties`` deliberately
 # does not appear: it mutates the compiled model in place, so it never lost the
 # wrench and is a control below.
-_REBUILD_OPS = ("add_robot", "add_object", "add_camera", "remove_object", "remove_robot")
+#
+# ``patch_scene_mjcf`` was the omitted sixth. It rebuilds the model like the rest
+# but was the one path that did not recompile through
+# ``scene_ops._recompile_preserving_state`` -- it called ``spec.recompile``
+# directly -- so it kept none of what that helper carries, and this list read as
+# complete without it.
+_REBUILD_OPS = (
+    "add_robot",
+    "add_object",
+    "add_camera",
+    "remove_object",
+    "remove_robot",
+    "patch_scene_mjcf",
+)
 
 
 @pytest.fixture
@@ -147,6 +159,12 @@ def _rebuild(sim: Simulation, op: str, tmp_path) -> None:
         result = sim.remove_object("spare")
     elif op == "remove_robot":
         result = sim.remove_robot("doomed")
+    elif op == "patch_scene_mjcf":
+        # A batch that only adds a body, so the rebuild is the whole effect and
+        # nothing about the puck is touched by the ops themselves.
+        result = sim.patch_scene_mjcf(
+            [{"op": "add_body", "parent": "world", "name": "newcomer", "pos": [1.2, 0.0, 0.4]}]
+        )
     else:  # pragma: no cover - guards the parametrization against a typo
         raise AssertionError(f"unknown rebuild op {op!r}")
     assert result["status"] == "success", result

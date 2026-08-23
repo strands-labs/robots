@@ -77,8 +77,15 @@ class TestNormalizeSize:
         assert out[0] == 2.0
         assert out[1] == 2.0
 
-    def test_mesh_returns_zeros(self):
-        assert _normalize_size("mesh", [0.1, 0.2, 0.3]) == [0.0, 0.0, 0.0]
+    def test_mesh_is_refused_because_no_call_site_normalizes_one(self):
+        # A mesh geom takes its extent from the asset, so it carries no `size`:
+        # `SpecBuilder.build` passes `meshname` instead of calling this, and the
+        # `add_geom` patch op refuses `type="mesh"` before reaching it. The
+        # branch that answered [0.0, 0.0, 0.0] was unreachable on both paths and
+        # was a third statement of the contract - the docstring said `[]`. See
+        # tests/simulation/mujoco/test_patch_op_geom_shape_domain.py (#2310).
+        with pytest.raises(ValueError, match="Cannot normalize size"):
+            _normalize_size("mesh", [0.1, 0.2, 0.3])
 
     def test_ellipsoid_halves_all_three_full_extents(self):
         # An ellipsoid's three full diameters become per-axis radii (each /2).

@@ -1,6 +1,7 @@
 """Regression pins for the Isaac Sim 6.0.x deferred-physics + camera-warmup fixes.
 
-Both defects were found running ``examples/libero/run_isaac.py`` end-to-end on
+Both defects were found running the LIBERO Isaac driver (now
+``examples/libero/run.py isaac``) end-to-end on
 the pip ``isaacsim`` wheels (verified on 6.0.0.1; 6.0.1.0 fails identically by
 mechanism) and each has an isolated live repro recorded in the fixing PR:
 

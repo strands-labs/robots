@@ -168,15 +168,74 @@ def check_mujoco() -> str:
 
 
 def check_mujoco_gl() -> str:
-    """MUJOCO_GL set for headless rendering."""
-    gl = os.environ.get("MUJOCO_GL", "")
-    if gl in ("egl", "osmesa"):
-        return _pass(f"MUJOCO_GL={gl}")
-    if gl == "glfw":
-        return _warn("MUJOCO_GL=glfw (needs display)", note="Set MUJOCO_GL=egl or osmesa for headless")
-    # Not set - check if a display exists
-    if os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"):
-        return _pass("MUJOCO_GL unset (display detected, glfw will work)")
+    """MUJOCO_GL names a backend MuJoCo accepts, and one that can render here.
+
+    Answers about the value MuJoCo will read rather than about the string that was
+    typed. MuJoCo folds ``MUJOCO_GL`` with ``.lower().strip()``, reads one family
+    of values as "build no GL context at all", and raises ``RuntimeError`` at
+    import for anything outside the set it builds for the platform. Re-deriving
+    that vocabulary loosely answered about a spelling: ``MUJOCO_GL=EGL`` renders
+    through EGL and read as unrecognised, while every unrecognised value - a
+    disabled GL context, or one MuJoCo refuses outright - read as "not set" and so
+    passed on any machine with a display.
+
+    The vocabulary and the display question both belong to the MuJoCo backend
+    module, which sets this variable when it is unset, so both are asked there
+    rather than restated here.
+    """
+    from strands_robots.simulation.mujoco.backend import (
+        _is_headless,
+        _mujoco_gl_disables_rendering,
+        _mujoco_gl_offscreen_values,
+        _mujoco_gl_valid_values,
+        _mujoco_gl_value,
+    )
+
+    raw = os.environ.get("MUJOCO_GL", "")
+    value = _mujoco_gl_value()
+    # Name the value MuJoCo reads whenever folding changed it, so a verdict about
+    # ``EGL`` does not read as a verdict about a variable nobody set.
+    shown = f"MUJOCO_GL={raw}" if raw == value else f"MUJOCO_GL={raw!r} (MuJoCo reads it as {value!r})"
+    valid = _mujoco_gl_valid_values()
+    # What to recommend has to be valid here: on a platform whose only backend
+    # draws through the window server there is no offscreen value to offer, and
+    # naming one would send the reader after a value MuJoCo refuses.
+    offscreen_here = sorted(_mujoco_gl_offscreen_values())
+
+    if _mujoco_gl_disables_rendering(value):
+        fix = (
+            f"export MUJOCO_GL={offscreen_here[0]}  # or unset it for the platform default"
+            if offscreen_here
+            else "unset MUJOCO_GL  # the platform's own backend renders through its window server"
+        )
+        return _fail(f"{shown} disables MuJoCo's GL context, so nothing can render", fix=fix)
+
+    if value not in valid:
+        offered = ", ".join(sorted(v for v in valid if v))
+        return _fail(
+            f"{shown} is a value MuJoCo refuses at import on {platform.system()}",
+            fix=f"export MUJOCO_GL=<one of: {offered}>  # or unset it for the platform default",
+        )
+
+    if value in offscreen_here:
+        return _pass(shown)
+
+    # Every remaining accepted value routes MuJoCo to a backend that draws through
+    # the platform's window server.
+    if value:
+        note = (
+            f"Set MUJOCO_GL={' or '.join(offscreen_here)} for headless"
+            if offscreen_here
+            else f"{platform.system()} has no offscreen MuJoCo backend, so a window server is required"
+        )
+        return _warn(f"{shown} (needs display)", note=note)
+
+    if not _is_headless():
+        if platform.system() == "Linux":
+            return _pass("MUJOCO_GL unset (display detected, glfw will work)")
+        return _pass(f"MUJOCO_GL unset ({platform.system()} renders through its native backend)")
+    # ``_is_headless`` is only ever true on Linux, so the remedy below is reached
+    # on the one platform where those two backends exist.
     return _fail(
         "MUJOCO_GL not set and no display detected",
         fix="export MUJOCO_GL=egl  # or osmesa; add to ~/.bashrc",

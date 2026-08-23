@@ -62,6 +62,7 @@ from strands_robots.utils import (
 if TYPE_CHECKING:
     from strands_robots.policies.base import Policy
     from strands_robots.rendering import CameraParams
+    from strands_robots.simulation.isaac.loaders import SceneObject
 
 logger = logging.getLogger(__name__)
 
@@ -240,6 +241,29 @@ class SimulationAppLaunchConfig(TypedDict, total=False):
 # throughout the docs; it normalizes to the canonical ``"box"`` (see #88).
 # A unit test pins this mapping so docs and code can't drift apart again.
 _SHAPE_ALIASES: dict[str, str] = {"cuboid": "box"}
+
+
+def _mesh_path_error(method: str, mesh_path: Any) -> str | None:
+    """Refusal text for a ``mesh_path`` this backend cannot realize, else ``None``.
+
+    Checks type, existence and format up front (#2459) so a refused mesh add
+    constructs no prim and boots nothing: the checks read only the call and
+    the filesystem, which is what lets the mesh contract hold on hosts
+    without Isaac Sim. Conversion itself (OBJ/STL/MSH -> USD) happens later, on
+    the stage-mutation path.
+    """
+    from strands_robots.simulation.isaac.mesh_assets import MESH_EXTENSIONS, USD_EXTENSIONS
+
+    if not isinstance(mesh_path, str):
+        return f"{method}: 'mesh_path' must be a string path to a mesh asset, got {type(mesh_path).__name__}."
+    if not os.path.isfile(mesh_path):
+        return f"{method}: mesh asset not found: {mesh_path!r}."
+    ext = os.path.splitext(mesh_path)[1].lower()
+    supported = MESH_EXTENSIONS + USD_EXTENSIONS
+    if ext not in supported:
+        return f"{method}: unsupported mesh format {ext!r} for {mesh_path!r}; supported: {supported}."
+    return None
+
 
 # Every keyword :meth:`IsaacSimulation.add_object` honors, including the one it
 # reads out of its own ``**kwargs`` (``scale``, the ``size`` alias). Doubles as
@@ -1926,7 +1950,8 @@ class IsaacSimulation(IsaacMotionPrimitivesMixin, IsaacRecordingMixin, SimEngine
             the existing prim.
         shape : str
             Shape type: ``"box"`` (default), ``"sphere"``, ``"capsule"``,
-            ``"cylinder"``. ``"cuboid"`` is accepted as an alias for
+            ``"cylinder"``, or ``"mesh"`` (a triangle-mesh asset; requires
+            ``mesh_path``). ``"cuboid"`` is accepted as an alias for
             ``"box"`` (it mirrors Isaac's ``DynamicCuboid`` class name and
             the docs vocabulary; it normalizes to ``"box"``, which is the
             value reported back in the result ``json``). Anything else
@@ -1948,6 +1973,11 @@ class IsaacSimulation(IsaacMotionPrimitivesMixin, IsaacRecordingMixin, SimEngine
             * ``sphere``:   ``[radius]`` (default ``[0.05]``).
             * ``cylinder``: ``[radius, height]`` (default ``[0.05, 0.10]``).
             * ``capsule``:  ``[radius, height]`` (default ``[0.05, 0.10]``).
+            * ``mesh``:     ignored -- the asset's own units define the extent
+              (the MuJoCo backend's contract for a mesh ``size``; the Newton
+              backend consumes it as a scale instead, see #2300). The result
+              reports the extent computed from the asset rather than echoing
+              a request no component of which was consumed.
 
             Lists shorter than the convention fall back to defaults for
             the missing trailing components. Whether that fallback should
@@ -1987,12 +2017,21 @@ class IsaacSimulation(IsaacMotionPrimitivesMixin, IsaacRecordingMixin, SimEngine
             this backend derives nothing from ``shape``, so it resolves to
             ``False``.
         mesh_path : str, optional
-            Path to a custom mesh asset. Loading custom meshes is not
-            supported by the Isaac backend yet; a non-``None`` value is
-            rejected with an actionable error rather than being silently
-            ignored (honouring the
-            :class:`~strands_robots.simulation.base.SimEngine` ``add_object``
-            contract). Use ``create_simulation(backend='mujoco')`` for meshes.
+            Path to a custom mesh asset; required and only used when
+            ``shape="mesh"`` (a ``mesh_path`` on a primitive shape is
+            refused rather than silently ignored). OBJ, STL and legacy MuJoCo
+            binary MSH assets are
+            converted to USD once and cached under
+            ``$STRANDS_BASE_DIR/asset_cache/usd_meshes/`` (see
+            :func:`~strands_robots.simulation.isaac.mesh_assets.convert_mesh_to_usd`);
+            ``.usd``/``.usda``/``.usdc``/``.usdz`` assets are referenced
+            directly. The asset defines the object's extent, and collision
+            uses the mesh's **convex hull** (PhysX ``convexHull``
+            approximation) - the same collision contract as the MuJoCo
+            backend's mesh objects, with the same consequence for concave
+            assets: the hull fills every cavity. A missing file or an
+            unsupported format is rejected with an actionable error before
+            anything touches the stage.
         material : dict, optional
             Visual material/texture spec. NOT supported by the Isaac backend
             yet; a non-``None`` value is rejected loudly rather than silently
@@ -2070,20 +2109,33 @@ class IsaacSimulation(IsaacMotionPrimitivesMixin, IsaacRecordingMixin, SimEngine
                     }
                 ],
             }
-        if mesh_path is not None:
+        # Mesh contract (#2459), validated before the world check - like the
+        # ``material`` refusal above - because every check here reads only the
+        # call and the filesystem, so the contract holds on any host, Isaac
+        # Sim present or not. ``shape`` is compared before alias normalization
+        # deliberately: no alias maps to ``"mesh"``.
+        if mesh_path is not None and shape != "mesh":
             return {
                 "status": "error",
                 "content": [
                     {
                         "text": (
-                            "add_object: mesh_path=/custom mesh objects are not "
-                            "supported on the Isaac backend yet; use "
-                            "create_simulation(backend='mujoco') for meshes, or a "
-                            "primitive shape (box/sphere/capsule/cylinder)."
+                            f"add_object: mesh_path= requires shape='mesh' (got shape={shape!r}); "
+                            "a mesh_path on a primitive shape would be silently ignored."
                         )
                     }
                 ],
             }
+        if shape == "mesh":
+            if not mesh_path:
+                return {
+                    "status": "error",
+                    "content": [
+                        {"text": "add_object: shape='mesh' requires mesh_path (path to an STL/OBJ/MSH asset)."}
+                    ],
+                }
+            if mesh_err := _mesh_path_error("add_object", mesh_path):
+                return {"status": "error", "content": [{"text": mesh_err}]}
         with self._lock:
             if not self._world_created:
                 return {"status": "error", "content": [{"text": "No world created."}]}
@@ -2109,7 +2161,7 @@ class IsaacSimulation(IsaacMotionPrimitivesMixin, IsaacRecordingMixin, SimEngine
             shape = _SHAPE_ALIASES.get(shape, shape)
 
             # Validate shape
-            valid_shapes = ("box", "sphere", "capsule", "cylinder")
+            valid_shapes = ("box", "sphere", "capsule", "cylinder", "mesh")
             if shape not in valid_shapes:
                 accepted = valid_shapes + tuple(_SHAPE_ALIASES)
                 return {
@@ -2212,6 +2264,7 @@ class IsaacSimulation(IsaacMotionPrimitivesMixin, IsaacRecordingMixin, SimEngine
                     color=color,
                     mass=mass,
                     is_static=is_static,
+                    mesh_path=mesh_path,
                 )
                 # ``world.scene.add`` registers the wrapper so that
                 # ``world.reset()`` re-initialises it on the same
@@ -2308,6 +2361,7 @@ class IsaacSimulation(IsaacMotionPrimitivesMixin, IsaacRecordingMixin, SimEngine
         color: list[float] | None,
         mass: float,
         is_static: bool,
+        mesh_path: str | None = None,
     ) -> tuple[Any, list[float]]:
         """Construct a shape prim, deferring physics init for dynamic bodies.
 
@@ -2374,6 +2428,7 @@ class IsaacSimulation(IsaacMotionPrimitivesMixin, IsaacRecordingMixin, SimEngine
             color=color,
             mass=mass,
             is_static=is_static,
+            mesh_path=mesh_path,
         )
 
     @staticmethod
@@ -2440,6 +2495,7 @@ class IsaacSimulation(IsaacMotionPrimitivesMixin, IsaacRecordingMixin, SimEngine
         color: list[float] | None,
         mass: float,
         is_static: bool,
+        mesh_path: str | None = None,
     ) -> tuple[Any, list[float]]:
         """Construct the omni.isaac.core.objects shape wrapper.
 
@@ -2453,8 +2509,28 @@ class IsaacSimulation(IsaacMotionPrimitivesMixin, IsaacRecordingMixin, SimEngine
         Isaac Sim 6.0 exposes these under ``isaacsim.core.api.objects``;
         the legacy 4.x path was ``omni.isaac.core.objects``. Try modern
         first, fall back so 4.x installs keep working.
+
+        ``shape="mesh"`` takes its own path (:meth:`_create_mesh_prim`):
+        the asset is referenced onto the stage rather than constructed
+        from a primitive class.
         """
         import numpy as np  # type: ignore[import-not-found]
+
+        if shape == "mesh":
+            if not mesh_path:
+                # add_object validated this before the lock; a future caller
+                # bypassing that guard must fail loud, not build a default.
+                raise ValueError("shape='mesh' requires mesh_path")
+            return self._create_mesh_prim(
+                prim_path=prim_path,
+                name=name,
+                position=position,
+                orientation=orientation,
+                color=color,
+                mass=mass,
+                is_static=is_static,
+                mesh_path=mesh_path,
+            )
 
         try:
             from isaacsim.core.api.objects import (  # type: ignore[import-not-found]
@@ -2529,6 +2605,119 @@ class IsaacSimulation(IsaacMotionPrimitivesMixin, IsaacRecordingMixin, SimEngine
         # raise loudly if a future caller bypasses that guard.
         raise ValueError(f"Unknown shape: {shape!r}")
 
+    def _create_mesh_prim(
+        self,
+        *,
+        prim_path: str,
+        name: str,
+        position: list[float],
+        orientation: list[float],
+        color: list[float] | None,
+        mass: float,
+        is_static: bool,
+        mesh_path: str,
+    ) -> tuple[Any, list[float]]:
+        """Realize a custom mesh asset as a stage prim (#2459).
+
+        The asset is converted to USD once (content-addressed cache, see
+        :func:`~strands_robots.simulation.isaac.mesh_assets.convert_mesh_to_usd`;
+        a USD input is referenced verbatim) and referenced onto the stage at
+        ``prim_path``. Collision uses PhysX's ``convexHull`` approximation of
+        the referenced geometry - the MuJoCo backend's collision contract for
+        a mesh geom - via the ``GeometryPrim`` wrapper; a dynamic object is
+        additionally wrapped as a ``RigidPrim`` carrying ``mass``, which is
+        the handle registered with the scene (so ``move_object`` can zero its
+        velocities on teleport, same as the primitive shapes).
+
+        Returns ``(handle, resolved_size)`` where ``resolved_size`` is the
+        asset's own extent (full extents per axis) for a parseable OBJ/STL/MSH,
+        or ``[]`` for a USD input whose extent is not recomputed here -
+        matching MuJoCo's "report what compiled, not what was asked" rule
+        for a shape that consumes no ``size`` component.
+
+        Raises propagate to :meth:`add_object`'s standard cleanup clause
+        ``(RuntimeError, ValueError, OSError, AttributeError, TypeError,
+        ImportError)``, so a failed conversion / reference / wrap returns a
+        structured error envelope and leaves the name reusable.
+        """
+        import numpy as np  # type: ignore[import-not-found]
+
+        from strands_robots.simulation.isaac.mesh_assets import (
+            MESH_EXTENSIONS,
+            convert_mesh_to_usd,
+            mesh_aabb,
+        )
+
+        usd_path = convert_mesh_to_usd(mesh_path)
+        ext = os.path.splitext(mesh_path)[1].lower()
+        if ext in MESH_EXTENSIONS:
+            _center, extent = mesh_aabb(mesh_path)
+            resolved_size = [float(v) for v in extent]
+        else:
+            # A caller-supplied USD asset: its extent lives in the asset and
+            # is not recomputed here (no triangle parse for USD).
+            resolved_size = []
+
+        try:
+            from isaacsim.core.utils.stage import (  # type: ignore[import-not-found]
+                add_reference_to_stage,
+            )
+        except ImportError:
+            from omni.isaac.core.utils.stage import (  # type: ignore[import-not-found]
+                add_reference_to_stage,
+            )
+        add_reference_to_stage(usd_path=usd_path, prim_path=prim_path)
+
+        # Isaac Sim 6.0 exposes the single-prim wrappers under
+        # ``isaacsim.core.prims``; the legacy 4.x names lack the ``Single``
+        # prefix. Same modern-first probe as the primitive constructors.
+        try:
+            from isaacsim.core.prims import (  # type: ignore[import-not-found]
+                SingleGeometryPrim,
+                SingleRigidPrim,
+            )
+        except ImportError:
+            from omni.isaac.core.prims import (  # type: ignore[import-not-found]
+                GeometryPrim as SingleGeometryPrim,
+            )
+            from omni.isaac.core.prims import (  # type: ignore[import-not-found]
+                RigidPrim as SingleRigidPrim,
+            )
+
+        pos = np.asarray(position, dtype=float)
+        orient = np.asarray(orientation, dtype=float)
+        # The geometry wrapper owns pose + collision. For a dynamic object it
+        # is construction plumbing only (the RigidPrim below is the scene
+        # handle), so it takes a derived name to keep the caller's ``name``
+        # free for the handle the scene registers.
+        geom = SingleGeometryPrim(
+            prim_path,
+            name=name if is_static else f"{name}_geom",
+            position=pos,
+            orientation=orient,
+            collision=True,
+        )
+        # MuJoCo collides a mesh geom as its convex hull; match that contract
+        # (PhysX's triangle-mesh collision is unavailable for dynamic bodies
+        # anyway, so the hull is also the only uniform choice).
+        geom.set_collision_approximation("convexHull")
+
+        if color is not None:
+            # displayColor is the USD-native flat colour the RTX renderer
+            # reads without a material; RGBA was normalized by add_object,
+            # and the alpha channel has no displayColor slot (same RGB-only
+            # contract as the primitive constructors).
+            from pxr import Gf, UsdGeom  # type: ignore[import-not-found]
+
+            UsdGeom.Gprim(geom.prim).CreateDisplayColorAttr(
+                [Gf.Vec3f(float(color[0]), float(color[1]), float(color[2]))]
+            )
+
+        if is_static:
+            return geom, resolved_size
+        handle = SingleRigidPrim(prim_path, name=name, mass=float(mass))
+        return handle, resolved_size
+
     # --- SimEngine: Scene loading -------------------------------------------
 
     def load_scene(self, scene_path: str) -> dict[str, Any]:
@@ -2553,13 +2742,23 @@ class IsaacSimulation(IsaacMotionPrimitivesMixin, IsaacRecordingMixin, SimEngine
               :meth:`create_world`) and the Panda robot (the adapter loads
               it separately via :meth:`add_robot`), and returns one
               :class:`SceneObject` per task object / fixture.
-            * LIBERO object meshes aren't portable to the Isaac stage, so
-              each object is approximated by a box primitive sized to the
-              axis-aligned bounding box of its collision geoms and placed
-              at its MJCF body pose. That's faithful enough for
-              rollout-video parity with the MuJoCo driver.
-            * Each object is realized via :meth:`add_object` (static
-              fixtures -> ``Fixed*``; movable objects -> ``Dynamic*``).
+            * COLLISION stays a box proxy: each object's physics footprint
+              is a box primitive sized to the axis-aligned bounding box of
+              its collision geoms, placed at its MJCF body pose - the
+              behaviour the MuJoCo-parity evals were validated against.
+              The VISUAL is the real mesh where the MJCF declares one
+              (#2459): the OBJ/STL/MSH asset is converted to USD once (cached,
+              see :mod:`~strands_robots.simulation.isaac.mesh_assets`) and
+              referenced as the render geometry over the invisible
+              collision box, so a pixel-conditioned policy observes the
+              bowls/plates it was trained on rather than gray boxes.
+              Objects with no convertible mesh keep the visible box proxy,
+              and the result names them (``box_proxies``) together with a
+              cross-backend comparability caveat.
+            * Each proxy-only object is realized via :meth:`add_object`
+              (static fixtures -> ``Fixed*``; movable objects ->
+              ``Dynamic*``); mesh-visual objects via
+              :meth:`_add_scene_mesh_object`.
 
         Idempotency: a fresh ``load_scene`` first removes any objects left
         over from a prior episode's scene (tracked in ``_scene_objects``)
@@ -2652,6 +2851,8 @@ class IsaacSimulation(IsaacMotionPrimitivesMixin, IsaacRecordingMixin, SimEngine
                     logger.warning("load_scene: invalidating the physics view after removals failed: %s", e)
 
             realized: list[str] = []
+            mesh_visuals: list[str] = []
+            box_proxies: list[str] = []
             skipped: list[dict[str, Any]] = []
             for obj in scene_objects:
                 # ``add_object`` rejects duplicate names; if a manually-added
@@ -2659,17 +2860,23 @@ class IsaacSimulation(IsaacMotionPrimitivesMixin, IsaacRecordingMixin, SimEngine
                 if registered(self._objects, obj.name):
                     skipped.append({"name": obj.name, "reason": "name already in use"})
                     continue
-                result = self.add_object(
-                    name=obj.name,
-                    shape="box",
-                    position=list(obj.position),
-                    orientation=list(obj.quat),
-                    size=list(obj.size),
-                    mass=0.1,
-                    is_static=obj.is_static,
-                )
+                if obj.mesh_path:
+                    # The MJCF declares a real mesh for this object (#2459):
+                    # render it, keep the AABB box as the collision proxy.
+                    result = self._add_scene_mesh_object(obj)
+                else:
+                    result = self.add_object(
+                        name=obj.name,
+                        shape="box",
+                        position=list(obj.position),
+                        orientation=list(obj.quat),
+                        size=list(obj.size),
+                        mass=0.1,
+                        is_static=obj.is_static,
+                    )
                 if result.get("status") == "success":
                     realized.append(obj.name)
+                    (mesh_visuals if obj.mesh_path else box_proxies).append(obj.name)
                     self._scene_objects.add(obj.name)
                 else:
                     text = (result.get("content") or [{}])[0].get("text", "")
@@ -2677,10 +2884,25 @@ class IsaacSimulation(IsaacMotionPrimitivesMixin, IsaacRecordingMixin, SimEngine
 
             summary = (
                 f"Loaded LIBERO scene from {os.path.basename(scene_path)}: "
-                f"realized {len(realized)} object(s) as Isaac stage prims"
+                f"realized {len(realized)} object(s) as Isaac stage prims "
+                f"({len(mesh_visuals)} with mesh visuals, {len(box_proxies)} as box proxies)"
             )
             if skipped:
                 summary += f" ({len(skipped)} skipped)"
+            visual_caveat: str | None = None
+            if box_proxies:
+                # Eval-integrity caveat (#2459): a pixel-conditioned policy
+                # trained on MuJoCo-rendered LIBERO visuals observes proxies
+                # here, so a cross-backend success_rate comparison measures
+                # the visual domain gap as much as the policy. The sentence
+                # disappears from the report the moment every object carries
+                # a mesh visual.
+                visual_caveat = (
+                    f"{len(box_proxies)} object(s) rendered as box proxies (no convertible mesh "
+                    f"asset): pixel-conditioned policy scores on this scene are not comparable "
+                    f"across backends (#2459)."
+                )
+                summary += f" NOTE: {visual_caveat}"
 
             # Re-initialize physics views (#1802). Realizing new prims on a
             # stage that has ALREADY STEPPED invalidates PhysX's simulation
@@ -2824,12 +3046,181 @@ class IsaacSimulation(IsaacMotionPrimitivesMixin, IsaacRecordingMixin, SimEngine
                             "realized": realized,
                             "skipped": skipped,
                             "object_count": len(realized),
+                            "mesh_visuals": mesh_visuals,
+                            "box_proxies": box_proxies,
+                            "visual_caveat": visual_caveat,
                         },
                     }
                 ],
             }
 
     # --- SimEngine: Introspection / Removal ---------------------------------
+
+    @staticmethod
+    def _author_local_xform(
+        prim: Any,
+        *,
+        translate: tuple[float, float, float] | None = None,
+        orient_wxyz: tuple[float, float, float, float] | None = None,
+        scale: tuple[float, float, float] | None = None,
+    ) -> None:
+        """Author a local TRS xform-op stack on ``prim`` (translate/orient/scale).
+
+        Clears any locally authored ops first so re-realizing a scene never
+        stacks a second translate onto a stale one; ops inside a referenced
+        asset are untouched (they live on the referenced layer's prims, not
+        on this one).
+        """
+        from pxr import Gf, UsdGeom  # type: ignore[import-not-found]
+
+        xf = UsdGeom.Xformable(prim)
+        xf.ClearXformOpOrder()
+        if translate is not None:
+            xf.AddTranslateOp().Set(Gf.Vec3d(float(translate[0]), float(translate[1]), float(translate[2])))
+        if orient_wxyz is not None:
+            w, x, y, z = (float(c) for c in orient_wxyz)
+            xf.AddOrientOp().Set(Gf.Quatf(w, x, y, z))
+        if scale is not None:
+            xf.AddScaleOp().Set(Gf.Vec3f(float(scale[0]), float(scale[1]), float(scale[2])))
+
+    def _add_scene_mesh_object(self, obj: SceneObject) -> dict[str, Any]:
+        """Realize one LIBERO scene object with its real mesh visual (#2459).
+
+        Structure on the stage (root at the collision-AABB centre, exactly
+        where the box realization puts its prim, so ``move_object`` and the
+        adapter's ``xpos + R(xquat) @ offset`` teleports are unchanged)::
+
+            {stage}/Objects/{name}            Xform (+ RigidBodyAPI/mass when dynamic)
+            {stage}/Objects/{name}/collision  Cube: the AABB proxy, CollisionAPI, INVISIBLE
+            {stage}/Objects/{name}/visual     reference -> converted mesh USD (render only)
+
+        The collision Cube is byte-for-byte the physics footprint the box
+        realization had (same AABB extents, same pose); making it invisible
+        hides only its own subtree, so the sibling ``visual`` mesh is what
+        the RTX cameras see. The visual reference carries no collision API -
+        switching collision to the mesh stays an explicit follow-up, per the
+        issue's "collision unchanged unless explicitly switched" contract.
+
+        Called from :meth:`load_scene` under ``self._lock`` (RLock). Errors
+        return the standard structured envelope; ``load_scene`` surfaces
+        them in its ``skipped`` list rather than degrading the object to a
+        silent visible box.
+        """
+        prim_path = f"{self._config.stage_path}/Objects/{obj.name}"
+        try:
+            from strands_robots.simulation.isaac.mesh_assets import convert_mesh_to_usd
+
+            if obj.mesh_path is None:
+                raise ValueError(f"scene object {obj.name!r} has no mesh_path")
+            usd_path = convert_mesh_to_usd(obj.mesh_path)
+
+            # Dynamic prims defer physics init exactly like the primitive
+            # path (#159): stop the timeline + invalidate the tensor view
+            # BEFORE the RigidPrim wrapper below runs its eager velocity
+            # query. load_scene restarts the timeline once at the end.
+            if not obj.is_static:
+                self._stop_timeline_for_deferred_physics()
+
+            import omni.usd  # type: ignore[import-not-found]
+            from pxr import UsdGeom, UsdPhysics  # type: ignore[import-not-found]
+
+            try:
+                from isaacsim.core.prims import (  # type: ignore[import-not-found]
+                    SingleRigidPrim,
+                    SingleXFormPrim,
+                )
+            except ImportError:
+                from omni.isaac.core.prims import (  # type: ignore[import-not-found]
+                    RigidPrim as SingleRigidPrim,
+                )
+                from omni.isaac.core.prims import (  # type: ignore[import-not-found]
+                    XFormPrim as SingleXFormPrim,
+                )
+            try:
+                from isaacsim.core.utils.stage import (  # type: ignore[import-not-found]
+                    add_reference_to_stage,
+                )
+            except ImportError:
+                from omni.isaac.core.utils.stage import (  # type: ignore[import-not-found]
+                    add_reference_to_stage,
+                )
+
+            stage = omni.usd.get_context().get_stage()
+            UsdGeom.Xform.Define(stage, prim_path)
+
+            # Collision proxy: unit cube scaled to the AABB's full extents
+            # (Cube ``size=1`` -> edge 1 m before scale), centred on the
+            # root - the identical footprint the box realization compiled.
+            cube = UsdGeom.Cube.Define(stage, f"{prim_path}/collision")
+            cube.CreateSizeAttr(1.0)
+            self._author_local_xform(cube.GetPrim(), scale=obj.size)
+            UsdPhysics.CollisionAPI.Apply(cube.GetPrim())
+            UsdGeom.Imageable(cube.GetPrim()).MakeInvisible()
+
+            # Visual: the real mesh, posed relative to the AABB centre. The
+            # SceneObject records the mesh geom's body-frame pose; the root
+            # sits at body origin + offset, so the local translate is
+            # ``mesh_pos - offset``.
+            visual_path = f"{prim_path}/visual"
+            add_reference_to_stage(usd_path=usd_path, prim_path=visual_path)
+            local_pos = tuple(obj.mesh_pos[i] - obj.offset[i] for i in range(3))
+            self._author_local_xform(
+                stage.GetPrimAtPath(visual_path),
+                translate=local_pos,  # type: ignore[arg-type]
+                orient_wxyz=obj.mesh_quat,
+                scale=obj.mesh_scale,
+            )
+
+            pos = np.asarray(obj.position, dtype=float)
+            orient = np.asarray(obj.quat, dtype=float)
+            if obj.is_static:
+                handle = SingleXFormPrim(prim_path, name=obj.name, position=pos, orientation=orient)
+            else:
+                # Same default mass the proxy realization passes to
+                # add_object; RigidBodyAPI + MassAPI land on the root Xform
+                # so PhysX composes the child collision cube into one body.
+                handle = SingleRigidPrim(prim_path, name=obj.name, position=pos, orientation=orient, mass=0.1)
+            self._world.scene.add(handle)
+        except (RuntimeError, ValueError, OSError, AttributeError, TypeError, ImportError) as e:
+            # Same cleanup-clause tuple as add_object; programming bugs
+            # propagate. The caller records the reason in ``skipped``.
+            logger.error(
+                "Failed to realize scene object '%s' with mesh visual (%s): %s",
+                obj.name,
+                obj.mesh_path,
+                e,
+            )
+            return {
+                "status": "error",
+                "content": [{"text": f"Failed to add scene object '{obj.name}' (mesh visual {obj.mesh_path!r}): {e}"}],
+            }
+
+        self._prim_registry.append(prim_path)
+        self._objects[obj.name] = _ObjectState(
+            name=obj.name,
+            prim_path=prim_path,
+            shape="mesh",
+            is_static=obj.is_static,
+            handle=handle,
+        )
+        return {
+            "status": "success",
+            "content": [
+                {
+                    "text": f"Scene object '{obj.name}' added (mesh visual, AABB collision proxy).",
+                    "json": {
+                        "name": obj.name,
+                        "prim_path": prim_path,
+                        "shape": "mesh",
+                        "mesh_path": obj.mesh_path,
+                        "position": list(obj.position),
+                        "orientation": list(obj.quat),
+                        "size": list(obj.size),
+                        "is_static": bool(obj.is_static),
+                    },
+                }
+            ],
+        }
 
     def list_robots(self) -> list[str]:
         """Return ordered list of robot names currently in the world.

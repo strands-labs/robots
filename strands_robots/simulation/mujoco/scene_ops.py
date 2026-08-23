@@ -42,7 +42,7 @@ from typing import Any
 
 from strands_robots.simulation.models import SimCamera, SimObject, SimRobot, SimWorld
 from strands_robots.simulation.mujoco.backend import _ensure_mujoco, filter_mujoco_attach_noise, mj_name_to_id
-from strands_robots.simulation.mujoco.spec_builder import SpecBuilder
+from strands_robots.simulation.mujoco.spec_builder import _SIZE_LAYOUT, SpecBuilder
 from strands_robots.utils import coerce_rgba, entity_name_error, finite_vector_error, pose_vector_error
 
 logger = logging.getLogger(__name__)
@@ -2270,6 +2270,47 @@ def _normalized_op_vector_fields(kind: str, op: Mapping[str, Any]) -> tuple[dict
     return normalized, None
 
 
+# The shapes ``add_geom`` cannot honour, however well-formed the op is. A mesh
+# geom takes its extent from a mesh asset, and this op's key set
+# (:data:`_PATCH_OP_KEYS`) has no key that could name one - so a mesh geom it
+# adds carries no meshid, and MuJoCo refuses it at the batch's recompile with
+# ``mesh geom '<name>' (id = N) must have valid meshid``. That refusal is rolled
+# back like any other now that the recompile goes through
+# :func:`_recompile_preserving_state` inside the batch's try/except, but it is
+# still not actionable: it names a MuJoCo id rather than the op the caller
+# wrote. Refusing the value at the door is what lets the message name the op,
+# and it keeps the atomicity ``patch_scene_mjcf`` documents true for every op it
+# accepts without leaning on the compiler to describe a caller's mistake.
+_UNSUPPORTED_GEOM_SHAPES = frozenset({"mesh"})
+
+
+def _geom_shape_error(shape: Any) -> str | None:
+    """Reject an ``add_geom`` ``type`` this op cannot compile, before it mutates.
+
+    Only the shapes in :data:`_UNSUPPORTED_GEOM_SHAPES` are handled here. A
+    shape outside the vocabulary altogether is left to
+    :func:`~strands_robots.simulation.mujoco.spec_builder._geom_type`, whose own
+    message already names it and which raises inside the op loop, where the
+    rollback applies.
+
+    Args:
+        shape: The caller-supplied ``type`` value.
+
+    Returns:
+        A message naming the refused value and the surface that does support it,
+        or ``None`` when the shape is one this op may attempt.
+    """
+    if shape not in _UNSUPPORTED_GEOM_SHAPES:
+        return None
+    accepted = ", ".join(sorted(set(_SIZE_LAYOUT) - _UNSUPPORTED_GEOM_SHAPES))
+    return (
+        f"add_geom: 'type' cannot be {shape!r} - this op has no key that names a mesh asset, "
+        "so the geom it would add has no mesh to take its extent from and MuJoCo refuses the "
+        'whole scene at recompile. Add a mesh with add_object(shape="mesh", mesh_path=...), '
+        f"which registers the asset alongside the body. Accepted 'type' values: {accepted}."
+    )
+
+
 def _find_body(spec: Any, name: str, new_bodies: dict[str, Any]) -> Any:
     """Locate a body by name in a live spec, checking batch-local additions.
 
@@ -2349,6 +2390,8 @@ def _apply_patch_op(spec: Any, op: dict[str, Any], new_bodies: dict[str, Any]) -
             raise ValueError(f"add_geom: body '{body_name}' not found")
 
         shape = op.get("type", "box")
+        if (shape_err := _geom_shape_error(shape)) is not None:
+            raise ValueError(shape_err)
         from strands_robots.simulation.mujoco.spec_builder import (
             _geom_type,
             _normalize_size,
@@ -2443,12 +2486,21 @@ def patch_scene_mjcf(world: SimWorld, ops: list[dict[str, Any]]) -> int:
     (RGB, completed with an opaque alpha) or 4 - because MuJoCo bakes a
     ``nan``/``inf`` component into the model without complaint, and reports a
     width mismatch on the attribute writes by dumping a C++ overload table that
-    names neither the op nor the field.
+    names neither the op nor the field. ``add_geom``'s ``type`` is held to the
+    same standard: ``"mesh"`` is refused by :func:`_geom_shape_error` rather than
+    attempted, because this op cannot name the asset such a geom needs and
+    MuJoCo's own refusal for it lands past the rollback below.
 
     The list is applied atomically: if any op raises, the whole patch is
     rejected and the world is left in its original state. After all ops
-    succeed, ``spec.recompile(model, data)`` is called once, so joint
-    qpos/qvel for unchanged joints are preserved automatically.
+    succeed the batch is recompiled once, through the same
+    :func:`_recompile_preserving_state` every other scene mutation uses, so joint
+    qpos/qvel for unchanged joints are preserved automatically and so is the rest
+    of the state that helper carries -- notably a latched ``apply_force`` wrench,
+    which ``spec.recompile`` returns zeroed. That recompile is inside the
+    rollback too: a batch whose ops all apply and whose compiled model the
+    compiler then refuses leaves the pre-patch spec live, so the refusal costs
+    exactly the batch that was refused rather than every later mutation.
 
     Returns the number of ops applied (same as ``len(ops)`` on success).
     """
@@ -2477,16 +2529,29 @@ def patch_scene_mjcf(world: SimWorld, ops: list[dict[str, Any]]) -> int:
         world._backend_state["spec"] = backup_spec
         raise ValueError(f"patch op #{applied + 1} failed: {err}") from err
 
-    # One recompile for the whole batch - preserves qpos/qvel for unchanged joints.
-    with filter_mujoco_attach_noise():
-        new_model, new_data = spec.recompile(world._model, world._data)
-    install_compiled_model(world, new_model, new_data)
+    # One recompile for the whole batch, through the same helper every other
+    # scene mutation uses. Hand-rolled here, this path kept none of what that
+    # helper preserves: it re-latches the applied-force buffers ``spec.recompile``
+    # carries no part of, defines every buffer entry the positional transfer
+    # leaves untouched, re-discovers per-robot joint and actuator ids, and runs
+    # the forward pass. A latched ``apply_force`` wrench is documented to hold
+    # until the next ``apply_force`` on that body or a ``reset()``, and a patch
+    # is neither, yet a bare recompile zeroed it -- so a crate held against
+    # gravity fell out of the sky on the first step after any successful patch,
+    # under a "status": "success".
+    #
+    # The call sits inside the rollback's scope, mirroring
+    # :func:`inject_robot_into_scene`: the ops all landed in the spec but the
+    # model they produced was refused, so the entire batch is sitting in the live
+    # spec while the caller is about to be told the patch failed. That spec is
+    # what every later mutation recompiles from, so the refusal was permanent
+    # rather than per-call -- a subsequent unrelated ``add_object`` failed too,
+    # naming the leftover element from a batch the caller was told had failed.
+    # Put the pre-patch spec back, then let the compiler's reason travel.
+    try:
+        _recompile_preserving_state(world, spec, raise_on_refusal=True)
+    except (ValueError, RuntimeError):
+        world._backend_state["spec"] = backup_spec
+        raise
 
-    # Forward pass so new bodies' xpos / xquat / cam_xmat are populated for
-    # the very next render() or get_body_state() call. Same reasoning as
-    # replace_scene_mjcf.
-    mj = _ensure_mujoco()
-    mj.mj_forward(world._model, world._data)
-
-    _sync_cached_xml(world, spec)
     return applied

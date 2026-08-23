@@ -785,6 +785,207 @@ class TestStatusSurface:
 
 
 # ---------------------------------------------------------------------------
+# Camera health: which stream is down, not just that something is
+# ---------------------------------------------------------------------------
+
+
+class _Cam:
+    """Stand-in for a lerobot ``Camera``; only ``is_connected`` is read here."""
+
+    def __init__(self, connected: bool) -> None:
+        self._connected = connected
+
+    @property
+    def is_connected(self) -> bool:
+        return self._connected
+
+
+class _CamThatCannotAnswer:
+    """A camera whose probe raises, the way a yanked USB device can.
+
+    ``OpenCVCamera.is_connected`` answers through ``cv2.VideoCapture.isOpened()``,
+    and ``cv2.error`` subclasses ``Exception`` directly, so a real backend can
+    raise something outside the usual attribute/value families.
+    """
+
+    @property
+    def is_connected(self) -> bool:
+        raise RuntimeError("VIDIOC_QUERYCAP: Inappropriate ioctl for device")
+
+
+class _ArmWithCameras:
+    """Mirrors a lerobot SO-arm: ``is_connected`` is ``bus and all(cameras)``.
+
+    The live camera objects hang off ``cameras`` and the requested ones off
+    ``config.cameras``, which is the split the status probe reads.
+    """
+
+    name = "so101_follower"
+    robot_type = "so101_follower"
+
+    def __init__(self, cameras: dict[str, Any], *, bus_connected: bool = True) -> None:
+        self.cameras = dict(cameras)
+        self.config = types.SimpleNamespace(cameras={name: object() for name in cameras})
+        self._bus_connected = bus_connected
+
+    @property
+    def is_connected(self) -> bool:
+        try:
+            cameras_up = all(cam.is_connected for cam in self.cameras.values())
+        except Exception:  # noqa: BLE001 - the device aggregate is fail-closed too
+            cameras_up = False
+        return self._bus_connected and cameras_up
+
+    @property
+    def is_calibrated(self) -> bool:
+        return True
+
+    def __str__(self) -> str:
+        return "SOFollower(so101)"
+
+
+def _status_of(arm: Any) -> dict[str, Any]:
+    hw = _make_robot()
+    hw.robot = arm
+    try:
+        return asyncio.run(hw.get_status())
+    finally:
+        hw.cleanup()
+
+
+class TestCameraHealthIsAttributable:
+    """``get_status`` is the operator's health probe, so an unhealthy device
+    must say *which* fact fell.
+
+    ``is_connected`` on a lerobot arm is ``bus and all(cameras)``: it collapses
+    N+1 independent facts into one boolean. ``cameras`` answers a different
+    question - which streams the device was configured for - so on its own it
+    is identical whether every camera is streaming or every one is dead. These
+    pin the per-camera readings that make the aggregate attributable.
+    """
+
+    def test_each_live_camera_reports_its_own_measured_connection(self):
+        """A dropped camera is named, not merely counted.
+
+        The device is configured for two cameras and one of them is down. The
+        probe must report each camera's own ``is_connected`` reading, so the
+        operator learns it is ``front_cam`` rather than "something in this set".
+        """
+        status = _status_of(_ArmWithCameras({"wrist_cam": _Cam(True), "front_cam": _Cam(False)}))
+        assert status["is_connected"] is False
+        readings = status.get("cameras_connected")
+        if readings is None:
+            pytest.fail(
+                "the health probe answered is_connected=False with cameras="
+                f"{status['cameras']} and no per-camera reading, so which of the "
+                "motor bus and the two cameras fell is not in the report"
+            )
+        assert readings == {"wrist_cam": True, "front_cam": False}
+
+    def test_a_partial_camera_failure_is_distinguishable_from_a_total_one(self):
+        """One camera down and both cameras down are different faults.
+
+        Both pull the device aggregate to ``False`` and both leave the
+        configured enumeration untouched, so without the per-camera readings
+        the two reports are identical.
+        """
+        partial = _status_of(_ArmWithCameras({"wrist_cam": _Cam(True), "front_cam": _Cam(False)}))
+        total = _status_of(_ArmWithCameras({"wrist_cam": _Cam(False), "front_cam": _Cam(False)}))
+
+        # The two facts that cannot tell them apart, pinned so the reason the
+        # per-camera map is needed stays visible.
+        assert partial["is_connected"] == total["is_connected"] is False
+        assert partial["cameras"] == total["cameras"]
+
+        if partial.get("cameras_connected") == total.get("cameras_connected"):
+            pytest.fail(
+                "one dropped camera and two dropped cameras produce the same report: "
+                f"is_connected={partial['is_connected']}, cameras={partial['cameras']}, "
+                f"cameras_connected={partial.get('cameras_connected')!r}"
+            )
+        assert partial["cameras_connected"] == {"wrist_cam": True, "front_cam": False}
+        assert total["cameras_connected"] == {"wrist_cam": False, "front_cam": False}
+
+    def test_every_camera_up_leaves_the_motor_bus_as_the_only_culprit(self):
+        """A ``False`` aggregate with every camera reading ``True`` isolates the bus.
+
+        The probe has no direct reading for the motor bus, so the per-camera
+        readings are what turn "one of bus-plus-two-cameras fell" into "the bus
+        fell" by elimination.
+        """
+        status = _status_of(_ArmWithCameras({"wrist_cam": _Cam(True), "front_cam": _Cam(True)}, bus_connected=False))
+        assert status["is_connected"] is False
+        assert status["cameras_connected"] == {"wrist_cam": True, "front_cam": True}
+
+    def test_a_camera_that_cannot_answer_is_omitted_rather_than_guessed(self):
+        """An unreadable probe is absent from the map, not reported as ``False``.
+
+        Reporting ``False`` would claim a measurement the device never made and
+        make an unreadable camera indistinguishable from a disconnected one.
+        Omitting it mirrors the observation path, where a camera that cannot
+        answer is left out rather than failing the whole read; the name is still
+        in ``cameras``, so the difference between the two sets is exactly the
+        cameras whose state could not be read.
+        """
+        status = _status_of(_ArmWithCameras({"wrist_cam": _Cam(True), "front_cam": _CamThatCannotAnswer()}))
+        assert status["cameras_connected"] == {"wrist_cam": True}
+        assert "front_cam" not in status["cameras_connected"]
+        assert set(status["cameras"]) - set(status["cameras_connected"]) == {"front_cam"}
+
+    def test_a_device_with_no_live_camera_objects_reports_an_empty_map(self):
+        """An arm with no cameras reports an empty map, not a missing field.
+
+        A caller reading ``cameras_connected`` must not have to distinguish
+        "this arm has no cameras" from "this build does not report them".
+        """
+        status = _status_of(_ArmWithCameras({}))
+        assert status["cameras"] == []
+        assert status["cameras_connected"] == {}
+
+    # -- the probe's existing guarantees, which the per-camera reads must keep --
+
+    def test_the_probe_survives_a_camera_that_cannot_answer(self):
+        """A raising camera must not blank the health probe.
+
+        The fail-soft contract is that a device read which raises degrades to a
+        structured error rather than propagating; a *per-camera* failure is
+        narrower still and must not cost the caller the rest of the status.
+        """
+        status = _status_of(_ArmWithCameras({"wrist_cam": _Cam(True), "front_cam": _CamThatCannotAnswer()}))
+        assert "error" not in status
+        assert status["task_status"] == "idle"
+        assert status["robot_name"] == "test_arm"
+        assert status["robot_type"] == "so101_follower"
+
+    def test_the_configured_enumeration_still_names_every_camera(self):
+        """``cameras`` keeps answering "which streams exist", unfiltered.
+
+        It must not become a health field: a camera that is down, or one whose
+        state could not be read, is still a stream the device is configured
+        for, and filtering it out would lose the set difference that identifies
+        the unreadable ones.
+        """
+        status = _status_of(
+            _ArmWithCameras({"wrist_cam": _Cam(False), "front_cam": _CamThatCannotAnswer(), "top_cam": _Cam(True)})
+        )
+        assert status["cameras"] == ["wrist_cam", "front_cam", "top_cam"]
+
+    def test_a_device_whose_cameras_attribute_is_not_a_mapping_is_left_alone(self):
+        """A non-mapping ``cameras`` attribute yields an empty map, not an error.
+
+        ``Robot`` wraps whatever lerobot hands it, and the health probe must not
+        be the thing that breaks on an unfamiliar shape: the rest of the status
+        still has to arrive.
+        """
+        arm = _ArmWithCameras({})
+        arm.cameras = ["wrist_cam", "front_cam"]  # type: ignore[assignment]
+        status = _status_of(arm)
+        assert "error" not in status
+        assert status["cameras_connected"] == {}
+        assert status["task_status"] == "idle"
+
+
+# ---------------------------------------------------------------------------
 # Robot construction: input validation
 # ---------------------------------------------------------------------------
 

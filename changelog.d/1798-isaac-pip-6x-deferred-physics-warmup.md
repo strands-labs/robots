@@ -13,5 +13,5 @@ accumulated a frame (`video.wrist_image` missing on the LIBERO GR00T path);
 `_warmup_camera` now re-asserts `timeline.play()` each iteration, because a
 queued stop can land mid-loop and undo a single pre-loop resume. The LIBERO
 backend-matrix parser also accepts drivers that add extra `key=value` fields
-(e.g. `run_isaac.py`'s `resolved_task=`), so the isaac row reports its real
+(e.g. `run.py isaac`'s `resolved_task=`), so the isaac row reports its real
 success rate instead of empty cells.

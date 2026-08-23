@@ -650,11 +650,14 @@ class DatasetRecordingMixin:
                     {
                         "text": (
                             "stop_recording captured no frames - dataset would be empty "
-                            "(0 frames). Frames are written only by run_policy(...) while "
-                            "recording is active (its on_frame hook calls add_frame). "
-                            "eval_policy / evaluate / replay_episode and bare step loops do "
-                            "NOT feed the recorder. To record a dataset: start_recording -> "
-                            "run_policy (once per episode) -> stop_recording."
+                            "(0 frames). run_policy(...) feeds the recorder on its own: it "
+                            "installs the per-step on_frame hook that calls add_frame. "
+                            "eval_policy / evaluate_benchmark take an on_frame hook, so they "
+                            "record only when the caller passes one that calls add_frame. "
+                            "replay_episode, teleoperate and bare step loops have no such "
+                            "hook and cannot feed the recorder. To record a dataset: "
+                            "start_recording -> run_policy (once per episode) -> "
+                            "stop_recording."
                         )
                     }
                 ],

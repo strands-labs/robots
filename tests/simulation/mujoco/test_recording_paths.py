@@ -14,13 +14,14 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import sys
 import tempfile
 
 import pytest
 
 pytest.importorskip("mujoco")
 
-os.environ.setdefault("MUJOCO_GL", "glfw")
+os.environ.setdefault("MUJOCO_GL", "cgl" if sys.platform == "darwin" else "egl")
 
 from tests.tool_result_contract import tool_json  # noqa: E402
 

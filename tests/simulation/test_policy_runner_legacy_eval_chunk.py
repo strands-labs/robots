@@ -19,9 +19,10 @@ with the benchmark path so the three rollout routes never drift again.
 from __future__ import annotations
 
 import os
+import sys
 from typing import Any
 
-os.environ.setdefault("MUJOCO_GL", "glfw")
+os.environ.setdefault("MUJOCO_GL", "cgl" if sys.platform == "darwin" else "egl")
 
 from strands_robots.policies.base import Policy
 from strands_robots.simulation.base import SimEngine

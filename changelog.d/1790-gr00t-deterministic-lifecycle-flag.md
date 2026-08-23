@@ -16,7 +16,7 @@ parameter to the agent, and the guard rejects everything it rejected
 before. `deterministic=False` (default) is byte-identical to the previous
 behavior. The wrapper itself was promoted from `examples/libero/` into the
 package (`strands_robots/policies/groot/server_wrapper.py`, shipped in the
-wheel); the example path keeps a thin re-export. `run_mujoco.py --policy
+wheel); the example path keeps a thin re-export. `run.py mujoco --policy
 groot` grows a `--deterministic` passthrough, and the
 `STRANDS_GR00T_SERVER_SEED` / `STRANDS_GR00T_STRICT_DETERMINISTIC` env vars
 are forwarded into the container and documented in the README env-var

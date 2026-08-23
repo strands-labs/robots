@@ -296,7 +296,7 @@ def load_libero_suite(
         adapter_kwargs: Extra keyword arguments forwarded verbatim to every
             :meth:`LiberoAdapter.from_file` call - the hook backend drivers
             use to configure backend-specific state sources (#1802:
-            ``examples/libero/run_isaac.py`` passes ``eef_body_name`` /
+            ``examples/libero/run.py isaac`` passes ``eef_body_name`` /
             ``eef_pos_offset`` / ``eef_quat_offset`` / gripper joint names
             that resolve on the Isaac Franka USD, where the MuJoCo defaults
             do not exist). Unknown keys raise ``TypeError`` from the adapter

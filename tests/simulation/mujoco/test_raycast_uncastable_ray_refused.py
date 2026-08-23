@@ -16,7 +16,16 @@ produce that answer without casting anything:
   ``nan`` raised ``TypeError`` out of the pybind11 signature, and an id outside
   ``[0, model.nbody)`` matched no body - so the geoms the caller asked the ray to
   pass through were included and could be reported as the obstacle.
+* ``include_static`` - the filter that decides whether the static world answers a
+  clearance question - was a parameter of ``raycast`` only. ``multi_raycast``
+  hardcoded the include, so a lidar fan could not ask about dynamic obstacles the
+  way a single ray could, and passing the flag refused the call as an unknown
+  parameter even though the tool schema publishes it for both actions. On the one
+  surface that did accept it the flag was read by truthiness, so ``"false"``,
+  ``"no"`` and ``"0"`` all selected the include they name the opposite of.
 """
+
+import inspect
 
 import numpy as np
 import pytest
@@ -24,6 +33,14 @@ import pytest
 pytest.importorskip("mujoco")
 
 from strands_robots.simulation.mujoco.simulation import Simulation  # noqa: E402
+
+# Rays the ``sim`` fixture below makes meaningful. Straight down from above:
+# ``OFF_CUBE`` clears the cube so only the static ground can answer, which is what
+# makes the static filter observable; ``OVER_CUBE`` hits the dynamic cube, which
+# the filter must not touch.
+DOWN = [0.0, 0.0, -1.0]
+OFF_CUBE = [0.5, 0.0, 1.0]
+OVER_CUBE = [0.0, 0.0, 1.0]
 
 # Directions that name no castable ray. Each must be refused identically by the
 # single-ray and the batch entry point - a caller must not get two contracts for
@@ -47,6 +64,23 @@ UNHONORABLE_EXCLUSIONS = [
     pytest.param(2.7, id="fractional"),
     pytest.param("1", id="string"),
     pytest.param(True, id="bool"),
+    pytest.param(float("nan"), id="nan"),
+]
+
+# Static-filter values that are not booleans. The string spellings are the ones
+# worth naming: read by truthiness every one of them selects the include it asks
+# to switch off, so a clearance check would be answered by the static world after
+# the caller told it not to be.
+NON_BOOLEAN_STATIC_FILTERS = [
+    pytest.param("false", id="str-false"),
+    pytest.param("no", id="str-no"),
+    pytest.param("0", id="str-zero"),
+    pytest.param("true", id="str-true"),
+    pytest.param(0, id="int-zero"),
+    pytest.param(1, id="int-one"),
+    pytest.param(None, id="none"),
+    pytest.param([], id="empty-list"),
+    pytest.param(2.7, id="fractional"),
     pytest.param(float("nan"), id="nan"),
 ]
 
@@ -171,3 +205,96 @@ class TestCastableBatchStillResolves:
         result = sim.multi_raycast(origin=[0, 0, 1.0], directions=np.array([[0.0, 0.0, -1.0]]))
         assert result["status"] == "success"
         assert _json(result)["hits"] == 1
+
+
+class TestStaticFilterIsExpressibleOnBothRaySurfaces:
+    """A lidar fan can ask the question a single ray can ask.
+
+    ``include_static`` decides whether a geom on a body with no degrees of freedom
+    - the ground plane, a wall - can be the answer to a clearance question. The
+    batch entry point hardcoded the include, so the two surfaces disagreed about a
+    ray semantic while ``multi_raycast``'s own docstring points at ``raycast`` for
+    the sibling ``exclude_body`` parameter.
+    """
+
+    @pytest.mark.parametrize("method", ["raycast", "multi_raycast"])
+    def test_the_filter_is_a_parameter_of_both_surfaces(self, method):
+        """Neither surface may leave the caller unable to name the filter."""
+        signature = inspect.signature(getattr(Simulation, method))
+        assert "include_static" in signature.parameters, (
+            f"{method} cannot express the static filter its sibling exposes, so a "
+            "clearance check cannot ask about dynamic obstacles here"
+        )
+        assert signature.parameters["include_static"].default is True
+
+    @pytest.mark.parametrize("include_static", [True, False])
+    def test_single_and_batch_report_the_same_distance(self, sim, include_static):
+        """One filter value, one answer - a caller must not get two contracts."""
+        single = _json(sim.raycast(origin=OFF_CUBE, direction=DOWN, include_static=include_static))
+        batch = _json(sim.multi_raycast(origin=OFF_CUBE, directions=[DOWN], include_static=include_static))
+        assert batch["rays"][0]["distance"] == single["distance"]
+
+    def test_excluding_statics_is_actually_applied_by_the_batch(self, sim):
+        """The ground stops answering, so the fan reports the free space it found."""
+        included = _json(sim.multi_raycast(origin=OFF_CUBE, directions=[DOWN], include_static=True))
+        excluded = _json(sim.multi_raycast(origin=OFF_CUBE, directions=[DOWN], include_static=False))
+        assert included["hits"] == 1
+        assert included["rays"][0]["distance"] == pytest.approx(1.0, abs=1e-6)
+        assert excluded["hits"] == 0
+        assert excluded["rays"][0]["distance"] is None
+
+    @pytest.mark.parametrize("include_static", [True, False])
+    def test_a_dynamic_hit_is_unaffected_by_the_filter(self, sim, include_static):
+        """The filter selects statics only; the movable scene answers either way."""
+        for payload in (
+            _json(sim.raycast(origin=OVER_CUBE, direction=DOWN, include_static=include_static)),
+            _json(sim.multi_raycast(origin=OVER_CUBE, directions=[DOWN], include_static=include_static)),
+        ):
+            distance = payload.get("distance", (payload.get("rays") or [{}])[0].get("distance"))
+            assert distance == pytest.approx(0.8, abs=1e-6)
+
+    @pytest.mark.parametrize("action", ["raycast", "multi_raycast"])
+    def test_the_agent_surface_accepts_the_published_flag(self, sim, action):
+        """``include_static`` is a published tool_spec property, so both actions take it."""
+        rays = {"direction": DOWN} if action == "raycast" else {"directions": [DOWN]}
+        result = sim(action=action, origin=OFF_CUBE, include_static=False, **rays)
+        assert result["status"] == "success", _text(result)
+
+
+class TestStaticFilterDomain:
+    """The filter is checked on both surfaces, not read by truthiness."""
+
+    @pytest.mark.parametrize("method", ["raycast", "multi_raycast"])
+    @pytest.mark.parametrize("include_static", NON_BOOLEAN_STATIC_FILTERS)
+    def test_a_non_boolean_filter_is_refused_by_both(self, sim, method, include_static):
+        if method == "raycast":
+            result = sim.raycast(origin=OFF_CUBE, direction=DOWN, include_static=include_static)
+        else:
+            result = sim.multi_raycast(origin=OFF_CUBE, directions=[DOWN], include_static=include_static)
+        assert result["status"] == "error"
+        text = _text(result)
+        assert "include_static" in text
+        assert method in text
+
+    @pytest.mark.parametrize("method", ["raycast", "multi_raycast"])
+    @pytest.mark.parametrize("include_static", [True, False, np.bool_(True), np.bool_(False)])
+    def test_a_boolean_filter_is_accepted_by_both(self, sim, method, include_static):
+        """The domain accepts a numpy boolean, so a mask element is a usable value."""
+        if method == "raycast":
+            result = sim.raycast(origin=OFF_CUBE, direction=DOWN, include_static=include_static)
+        else:
+            result = sim.multi_raycast(origin=OFF_CUBE, directions=[DOWN], include_static=include_static)
+        assert result["status"] == "success", _text(result)
+
+    def test_a_malformed_direction_outranks_a_malformed_filter(self, sim):
+        """The vector refusals keep the precedence they had before the filter check.
+
+        A caller who passes both a bad direction and a bad filter got the direction
+        message before this parameter was checked at all, so it still does: adding
+        a guard must not change which refusal an existing caller reads.
+        """
+        result = sim.raycast(origin=OFF_CUBE, direction=[0.0, 1.0], include_static="false")
+        assert result["status"] == "error"
+        text = _text(result)
+        assert "'direction' must be 3 elements" in text
+        assert "include_static" not in text

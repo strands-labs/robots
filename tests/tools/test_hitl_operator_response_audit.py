@@ -33,7 +33,7 @@ import strands_robots
 import strands_robots.tools.lerobot_train as train_mod
 import strands_robots.tools.robot_mesh as mesh_mod
 import strands_robots.tools.use_ros as ros_mod
-from strands_robots.mesh.audit import read_audit_log
+from strands_robots.mesh.audit import audit_log_path, read_audit_log
 
 # A reply that carries a reason. Every gate accepts a canonical affirmative only,
 # so this is always a decline - which is exactly why the audit row is the only
@@ -143,6 +143,29 @@ def audit_rows(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str, dict[str
 
     monkeypatch.setattr("strands_robots.mesh.audit.log_safety_event", _record)
     return recorded
+
+
+@pytest.fixture(autouse=True)
+def audit_dir_is_this_tests_own(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Keep every gate driven in this file off the developer's real audit trail.
+
+    ``audit_log_path()`` falls back to ``~/.strands_robots`` when
+    ``STRANDS_MESH_AUDIT_DIR`` is unset, so a test that drives a real gate
+    reaches the real writer. Measured before this fixture existed: one run of
+    the rate-limit-race control appended an ``operator approved: 'y'`` row for
+    action ``tell`` with ``success: true`` to the developer's own
+    ``mesh_audit.jsonl`` and advanced the signed ``mesh_audit.seq.json``
+    sidecar beside it. That row is indistinguishable from a genuine human
+    authorisation to exactly the incident reader this file exists to serve, and
+    it accumulates on every local run.
+
+    Autouse rather than one line in the offending test, because the hole is
+    structural: capturing ``log_safety_event`` is a choice each test makes, so a
+    gate-driving test added later re-grows the same contamination in silence and
+    nothing fails. A test that wants a directory it can read back still names one
+    itself - its own ``setenv`` runs after this one and wins.
+    """
+    monkeypatch.setenv("STRANDS_MESH_AUDIT_DIR", str(tmp_path / "audit"))
 
 
 class TestEveryGateRecordsTheOperatorReply:
@@ -272,6 +295,50 @@ class TestTheGatedSetIsDerivedFromTheInterruptSites:
             f"{gate.label}'s gate does not record the operator's reply through the shared owner"
         )
 
+    @pytest.mark.parametrize("gate", _GATES, ids=_GATE_IDS)
+    def test_each_gate_records_from_one_site_no_later_refusal_can_return_past(self, gate: _Gate) -> None:
+        """One site, reached as soon as the verdict is known.
+
+        Two per-branch sites are what let a third exit skip both: the mesh tool
+        recorded ``approved=False`` in its decline branch and ``approved=True``
+        after its post-approval rate-limit re-check, so the raced refusal between
+        them returned with the operator's verdict unrecorded. A single site the
+        gate reaches before it can return again cannot be bypassed that way, and
+        it is the shape the other two gates already had.
+        """
+        fn_src = textwrap.dedent(inspect.getsource(getattr(gate.module, gate.function)))
+        fn = next(
+            node
+            for node in ast.walk(ast.parse(fn_src))
+            if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and node.name == gate.function
+        )
+        calls = self._own_calls(fn)
+
+        sites = [call.lineno for call in calls if ast.unparse(call.func) == "log_operator_response"]
+        assert len(sites) == 1, (
+            f"{gate.label} records the operator's verdict at {len(sites)} sites {sites}; want one that every "
+            "path reaches once the verdict is known, so a later refusal cannot return past all of them"
+        )
+
+        verdicts = [
+            call
+            for call in calls
+            if "approve" in ast.unparse(call.func) and ast.unparse(call.func) != "log_operator_response"
+        ]
+        assert len(verdicts) == 1, (
+            f"{gate.label} computes the operator verdict at {len(verdicts)} sites; the rule below reads the first"
+        )
+
+        escapes = [
+            node.lineno
+            for node in ast.walk(fn)
+            if isinstance(node, ast.Return) and verdicts[0].lineno < node.lineno < sites[0]
+        ]
+        assert not escapes, (
+            f"{gate.label} can return at lines {escapes} between computing the operator's verdict and recording "
+            "it, so that path leaves no row saying whether a human authorised the action"
+        )
+
 
 class TestTheMeshToolRowIsUnchanged:
     """Control: the tool that already recorded keeps writing the same row."""
@@ -312,3 +379,140 @@ class TestAnUnwritableAuditLogDoesNotChangeTheVerdict:
         assert (result is not None and result.get("status") == "error") is declined, (
             f"{gate.label} changed its verdict when the audit write failed: {result}"
         )
+
+
+def _drive_robot_mesh_racing_the_rate_limit(response: object) -> tuple[dict[str, Any] | None, MagicMock]:
+    """A ``tell`` that a concurrent invocation out-races while the operator decides.
+
+    The pre-interrupt rate-limit check deliberately does not consume a slot, so a
+    second invocation can take the last one while the human is deciding; the
+    re-check under the lock then refuses an action the operator APPROVED. Draining
+    the bucket from inside ``interrupt()`` is that concurrency, made deterministic
+    without threads: the slot goes while the gate is blocked on the human.
+    """
+    fn = getattr(mesh_mod.robot_mesh, "__wrapped__", None) or mesh_mod.robot_mesh
+    mesh = MagicMock()
+    mesh.tell.return_value = {"status": "ok"}
+    mesh_mod._reset_rate_limits()
+    mesh_mod._reset_interrupt_actions_cache()
+
+    taken = 0
+
+    def _interrupt(*_a: object, **_k: object) -> object:
+        nonlocal taken
+        while mesh_mod._rate_limit_check_and_record("tell") is None and taken < 500:
+            taken += 1
+        return response
+
+    ctx = MagicMock(name="ToolContext")
+    ctx.interrupt.side_effect = _interrupt
+    with (
+        patch.object(mesh_mod, "_gateway_mesh", lambda: None),
+        patch.object(mesh_mod, "_resolve_mesh", return_value=mesh),
+    ):
+        result = fn(action="tell", tool_context=ctx, target="peer-a", instruction="go")
+
+    assert taken, "premise: no slot was taken while the operator was deciding, so nothing raced"
+    return result, mesh
+
+
+class TestAnApprovedActionRefusedForAnotherReasonStillRecordsTheHuman:
+    """The verdict is recorded even when the gate then refuses the action itself.
+
+    A gate can refuse an action the operator approved: the mesh tool re-checks its
+    rate limit under the lock, and a concurrent invocation can take the last slot
+    while the human is deciding. Recording per-branch after that check left the
+    raced path with no operator row at all - the audit log carried only
+    ``rate_limit_race``, which says why the action was refused and nothing about
+    who authorised it, so an incident audit asking "did a human approve this?"
+    found no answer for the one gate that reaches physical actuation.
+    """
+
+    def test_the_human_verdict_is_recorded_even_though_the_action_was_refused(
+        self, audit_rows: list[tuple[str, str, dict[str, Any]]]
+    ) -> None:
+        result, mesh = _drive_robot_mesh_racing_the_rate_limit(APPROVAL)
+
+        assert result is not None and result["status"] == "error", f"premise: the race did not refuse: {result}"
+        assert "rate limit" in result["content"][0]["text"].lower(), (
+            f"premise: the refusal was not the rate-limit race: {result['content'][0]['text']}"
+        )
+        mesh.tell.assert_not_called()
+
+        rows = _operator_rows(audit_rows)
+        assert len(rows) == 1, (
+            "a human approved a physical actuation and the audit log has no row saying so; "
+            f"rows a forensic reader would find: {audit_rows}"
+        )
+        source, payload = rows[0]
+        assert source == "robot_mesh_tool"
+        assert payload["success"] is True, f"the operator's approval was recorded as a non-approval: {payload}"
+        assert repr(APPROVAL) in str(payload["detail"]), f"the recorded row does not carry the reply: {payload}"
+
+    def test_the_reason_the_action_was_refused_is_recorded_alongside_it(
+        self, audit_rows: list[tuple[str, str, dict[str, Any]]]
+    ) -> None:
+        """Two rows, two facts: a human authorised it, and it was refused anyway."""
+        _drive_robot_mesh_racing_the_rate_limit(APPROVAL)
+
+        raced = [p for _e, _s, p in audit_rows if "rate_limit_race" in str(p.get("detail", ""))]
+        assert len(raced) == 1, f"the refusal reason is not recorded: {audit_rows}"
+        assert raced[0]["success"] is False
+
+    def test_the_model_is_told_the_rate_limit_refused_it_not_the_operator(self) -> None:
+        """Control: the operator approved, so the text must not blame a human."""
+        result, _mesh = _drive_robot_mesh_racing_the_rate_limit(APPROVAL)
+
+        assert result is not None
+        text = result["content"][0]["text"].lower()
+        assert "declined by the operator" not in text, (
+            f"an approved action was reported to the model as an operator decline: {text}"
+        )
+
+    def test_an_unraced_approval_records_the_same_row_it_always_did(
+        self, audit_rows: list[tuple[str, str, dict[str, Any]]]
+    ) -> None:
+        """Control: moving the site changes nothing on the path that already worked."""
+        _drive_robot_mesh(APPROVAL)
+
+        assert _operator_rows(audit_rows) == [
+            (
+                "robot_mesh_tool",
+                {
+                    "action": "emergency_stop",
+                    "target": "",
+                    "success": True,
+                    "detail": f"operator approved: {APPROVAL!r}",
+                },
+            )
+        ]
+
+
+class TestTheAuditTrailATestWritesIsItsOwn:
+    """A gate driven by this suite must not write where an incident audit reads.
+
+    AGENTS.md item 16 exempts ``tests/`` from whole-log attestation *because* a
+    test redirects the audit directory. That exemption is only sound while the
+    redirect actually holds, so it is pinned here rather than assumed.
+    """
+
+    def test_the_resolved_audit_log_is_not_the_real_home(self, tmp_path: Path) -> None:
+        """The fallback in ``audit_log_path()`` is never the path under test."""
+        resolved = audit_log_path()
+
+        assert resolved.parent != Path.home() / ".strands_robots", (
+            "a gate driven by this suite would write to the developer's real audit trail at "
+            f"{resolved}, where a fabricated 'operator approved' row is indistinguishable "
+            "from a genuine human authorisation"
+        )
+        assert tmp_path in resolved.parents, f"the audit log is not this test's own: {resolved}"
+
+    def test_driving_a_real_gate_writes_only_under_this_tests_directory(self, tmp_path: Path) -> None:
+        """The row the rate-limit-race control used to plant lands in tmp_path."""
+        _drive_robot_mesh_racing_the_rate_limit(APPROVAL)
+
+        details = [str(rec.get("payload", {}).get("detail", "")) for rec in read_audit_log(since=0)]
+        assert any(detail.startswith("operator approved") for detail in details), (
+            f"premise: driving the gate left no operator row to locate: {details}"
+        )
+        assert tmp_path in audit_log_path().parents, "the operator row was written outside this test"

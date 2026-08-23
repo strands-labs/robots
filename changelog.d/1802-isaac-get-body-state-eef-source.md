@@ -1,6 +1,6 @@
 ### Added: `IsaacSimulation.get_body_state` + an EEF state source for LIBERO-on-Isaac
 
-`examples/libero/run_isaac.py --policy groot` failed every inference call with
+`examples/libero/run.py isaac --policy groot` failed every inference call with
 `Server error: State key 'state.x' must be in observation`: the
 `libero_panda` GR00T data-config requires `state.x/y/z/roll/pitch/yaw/gripper`,
 and both of `LiberoAdapter`'s EEF pose sources were MuJoCo-shaped - the direct
@@ -21,7 +21,7 @@ applied in the body's local frame), an observation-dict gripper source
 and a loud, actionable ERROR - replacing a DEBUG skip - when EEF injection is
 enabled but produces no state keys. `load_libero_suite(adapter_kwargs=...)`
 forwards backend-specific state-source config to every registered task, and
-`run_isaac.py` plumbs the measured Isaac Franka calibration (`panda_hand`
+`run.py isaac` plumbs the measured Isaac Franka calibration (`panda_hand`
 + `[0, 0, 0.097]` grip-site offset; the Isaac `panda_hand` frame was measured
 to coincide with RoboSuite's `robot0_right_hand` within 0.03 degrees, so no
 quaternion correction applies) via a new `--eef-body-name` flag.

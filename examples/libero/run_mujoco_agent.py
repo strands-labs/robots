@@ -5,7 +5,7 @@ The agent receives a single prompt describing the eval, picks
 ``evaluate_benchmark`` on the registered ``Simulation`` tool, sets the
 kwargs from prompt context, runs, and returns a natural-language
 summary. For the scripted / deterministic version of the same eval,
-see ``run_mujoco.py`` (sibling file); for the Isaac Sim equivalent,
+see ``run.py`` (sibling file, ``mujoco`` subcommand); for the Isaac Sim equivalent,
 see ``run_isaac_agent.py``.
 
 What the script handles deterministically (NOT the agent)
@@ -22,7 +22,7 @@ Owned by the script:
 
 * GR00T inference container lifecycle (start, wait-for-load, teardown
   on exit) via ``gr00t_inference(action='lifecycle', ...)`` - same
-  block as ``run_mujoco.py``. Idempotent: reuses an already-running
+  block as ``run.py``. Idempotent: reuses an already-running
   container with the matching name on ``--port``; no redundant
   checkpoint re-download if the cache is already populated.
 * LIBERO scene pre-warm: ``spec.ensure_scene()`` ->
@@ -31,7 +31,7 @@ Owned by the script:
   'video.image' must be in observation`` because the scene's cameras
   haven't been registered yet.
 * MP4 recording via ``start_cameras_recording`` (daemon-thread
-  recorder, same path as ``run_mujoco.py``). Under Strands ``Agent``
+  recorder, same path as ``run.py``). Under Strands ``Agent``
   tool dispatch the eval runs on a worker thread distinct from the
   recorder thread, and the two race on shared ``mjData``; in practice
   this means lower frame coverage and the occasional greenish GL
@@ -49,7 +49,7 @@ Owned by the script:
   the simpler daemon-thread shape here for matrix-quality wall-time
   and so the agent demo exercises the natural-language -> action-pick
   -> kwarg-fill flow over the real ``Simulation`` surface; users who
-  need guaranteed-clean video should use ``run_mujoco.py``
+  need guaranteed-clean video should use ``run.py mujoco``
   programmatically. The agent does *not* pick a recorder API -
   earlier shapes of this script let the agent decide and it
   consistently picked LeRobot's ``Dataset`` recorder which then
@@ -72,7 +72,7 @@ Usage
 
     # 2) Real run against `nvidia/GR00T-N1.7-LIBERO`. Script auto-
     #    orchestrates the GR00T inference container (idempotent). Pre-
-    #    condition: HF token at `~/.cache/huggingface/token` (gated
+    #    condition: an HF token, from HF_TOKEN or `hf auth login` (gated
     #    Cosmos-Reason2-2B backbone) + Docker + an NVIDIA GPU.
     python examples/libero/run_mujoco_agent.py --policy groot --port 8000 --n-episodes 5
 
@@ -101,7 +101,7 @@ Notes
 -----
 - Output is non-deterministic by design (LLM-generated summary). The
   backend matrix (``libero_backend_matrix.py``) does not ingest this
-  file; the deterministic numbers live in ``run_mujoco.py`` (sibling
+  file; the deterministic numbers live in ``run.py`` (sibling
   file).
 - Records video to ``rollouts/YYYY_MM_DD/`` with a filename that ends
   ``--policy=mock|groot--agent`` so post-hoc analysis can tell which
@@ -135,7 +135,7 @@ def _date_dir(date_root: str = "rollouts") -> str:
 def _suite_for_task(task: str) -> str:
     """Auto-derive a LIBERO suite name from a benchmark task ID.
 
-    Same shape as ``run_mujoco.py``'s helper; see that file for the
+    Same shape as ``run.py``'s helper; see that file for the
     canonical doctest examples.
     """
     parts = task.split("-", 2)
@@ -217,10 +217,54 @@ def _configure_gr00t_image(image: str) -> None:
         os.environ["STRANDS_GR00T_IMAGE_ALLOW"] = ",".join(patterns)
 
 
+def _resolve_hf_token() -> str:
+    """Resolve a HuggingFace token for the gated GR00T checkpoint download.
+
+    Prefers the ``HF_TOKEN`` (or ``HUGGING_FACE_HUB_TOKEN``) environment
+    variable -- CI / container environments typically inject the token
+    that way and have no cached login. Otherwise takes the cached login,
+    asking ``huggingface_hub`` where that lives rather than assuming: it
+    resolves ``HF_TOKEN_PATH``, else ``<HF_HOME>/token``, else
+    ``<XDG_CACHE_HOME>/huggingface/token``, else ``~/.cache/huggingface/token``.
+    Reading the last of those directly names a file the Hub will not open on a
+    host that relocated its cache, so a logged-in box was refused here.
+
+    Raises:
+        RuntimeError: Neither source yields a token. The message names the
+            path the Hub resolves on this host, so a relocated cache is
+            actionable, and ``hf auth login`` - the login entry point the
+            declared ``huggingface_hub>=1.5`` floor ships. ``huggingface-cli``
+            is not published as a console script at that floor, and the later
+            1.x releases that do install it exit "deprecated and no longer
+            works", so it is a dead end across the whole declared range.
+    """
+    env_token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
+    if env_token and env_token.strip():
+        return env_token.strip()
+    token_path = "the Hub's cached login"
+    try:
+        from huggingface_hub import get_token
+        from huggingface_hub.constants import HF_TOKEN_PATH
+    except ImportError:
+        # No Hub installed to ask where its cached login lives; the
+        # checkpoint download reports that missing dependency itself.
+        pass
+    else:
+        token_path = HF_TOKEN_PATH
+        cached = get_token()
+        if cached and cached.strip():
+            return cached.strip()
+    raise RuntimeError(
+        "--policy groot needs an HF token (Cosmos-Reason2-2B is gated). "
+        "Set the HF_TOKEN env var (preferred for CI), or run `hf auth login` "
+        f"to write {token_path}, then retry."
+    )
+
+
 def _bring_up_gr00t_server(args: argparse.Namespace, suite: str) -> dict | None:
     """Start the GR00T inference container and block until model is loaded.
 
-    Mirrors the lifecycle block in ``run_mujoco.py`` so the agent file
+    Mirrors the lifecycle block in ``run.py`` so the agent file
     has identical "real-eval" plumbing. Returns the lifecycle handle
     (or ``None`` if ``--policy=mock`` / ``--no-auto-server``).
     """
@@ -228,7 +272,6 @@ def _bring_up_gr00t_server(args: argparse.Namespace, suite: str) -> dict | None:
         return None
 
     import subprocess
-    from pathlib import Path
     from time import monotonic, sleep
 
     _configure_gr00t_image(args.image)
@@ -240,12 +283,7 @@ def _bring_up_gr00t_server(args: argparse.Namespace, suite: str) -> dict | None:
         args.checkpoint_dir = _default_checkpoint_dir()
     print(f"[setup] checkpoint dir: {args.checkpoint_dir}")
 
-    hf_token_path = Path("~/.cache/huggingface/token").expanduser()
-    if not hf_token_path.is_file():
-        raise RuntimeError(
-            "--policy groot needs an HF token (Cosmos-Reason2-2B is gated). "
-            "Run `huggingface-cli login` first, then retry."
-        )
+    hf_token = _resolve_hf_token()
     result = gr00t_inference(
         action="lifecycle",
         lifecycle="full",
@@ -253,7 +291,7 @@ def _bring_up_gr00t_server(args: argparse.Namespace, suite: str) -> dict | None:
         hf_subfolder=suite,
         hf_local_dir=args.checkpoint_dir,
         container_name=args.container,
-        hf_token=hf_token_path.read_text().strip(),
+        hf_token=hf_token,
         checkpoint_path=f"/data/checkpoints/{suite}",
         embodiment_tag="libero_sim",
         protocol="n1.7",
@@ -264,7 +302,7 @@ def _bring_up_gr00t_server(args: argparse.Namespace, suite: str) -> dict | None:
         raise RuntimeError(_explain_lifecycle_failure(result, args.checkpoint_dir, args.container))
     print(f"[setup] {result.get('message')}")
 
-    # Same readiness wait as run_mujoco.py - the lifecycle tool returns
+    # Same readiness wait as run.py - the lifecycle tool returns
     # success when the port is bound, but the model loads asynchronously
     # after that. Block until GPU memory crosses a heuristic threshold.
     deadline = monotonic() + 180
@@ -408,7 +446,7 @@ def main() -> None:
 
         # Pre-warm the LIBERO scene so the cameras the GR00T server
         # expects (`image`, `wrist_image`) are registered before
-        # recording / inference starts. Same block as run_mujoco.py;
+        # recording / inference starts. Same block as run.py;
         # see that file for the longer rationale on ordering.
         if args.policy == "groot":
             from strands_robots.simulation.benchmark import get_benchmark

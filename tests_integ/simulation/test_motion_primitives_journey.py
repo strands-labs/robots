@@ -16,6 +16,7 @@ Skips cleanly when the SO-100 asset or the mink/qpsolvers stack is absent.
 from __future__ import annotations
 
 import os
+import sys
 from typing import Any
 
 import pytest
@@ -23,7 +24,7 @@ import pytest
 pytest.importorskip("mujoco")
 pytest.importorskip("mink")
 
-os.environ.setdefault("MUJOCO_GL", "glfw")
+os.environ.setdefault("MUJOCO_GL", "cgl" if sys.platform == "darwin" else "egl")
 
 
 @pytest.fixture

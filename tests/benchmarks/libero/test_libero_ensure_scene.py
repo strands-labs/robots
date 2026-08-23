@@ -1,6 +1,6 @@
 """Tests for :meth:`LiberoAdapter.ensure_scene` - the public scene-resolution API.
 
-Driver scripts (``examples/libero/run_mujoco.py`` /
+Driver scripts (``examples/libero/run.py`` /
 ``run_mujoco_agent.py``) need the LIBERO scene - and the cameras it
 supplies - available *before* ``evaluate_benchmark`` runs, so
 ``start_cameras_recording`` can resolve the camera names. Pre-fix they

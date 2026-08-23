@@ -16,13 +16,14 @@ from __future__ import annotations
 
 import os
 import shutil
+import sys
 import tempfile
 
 import pytest
 
 mj = pytest.importorskip("mujoco")
 
-os.environ.setdefault("MUJOCO_GL", "glfw")
+os.environ.setdefault("MUJOCO_GL", "cgl" if sys.platform == "darwin" else "egl")
 from strands_robots.simulation.mujoco.backend import _can_render  # noqa: E402
 
 requires_gl = pytest.mark.skipif(

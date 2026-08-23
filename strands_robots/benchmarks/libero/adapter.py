@@ -65,7 +65,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # #1812 - LIBERO-on-Isaac Franka joint/link names. The Isaac eval path
-# (``examples/libero/run_isaac.py``) loads Isaac Sim's bundled Franka USD,
+# (``examples/libero/run.py isaac``) loads Isaac Sim's bundled Franka USD,
 # whose articulation DOFs are named ``panda_joint1..7`` (arm) plus
 # ``panda_finger_joint1/2`` (0..0.04 m prismatic fingers), with the
 # end-effector link ``panda_hand``. LIBERO is a Franka-only benchmark, so

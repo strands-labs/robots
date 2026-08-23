@@ -355,7 +355,8 @@ and one bad add never bricks later scene edits.
 Beyond primitives, `add_object` can inject a triangle-mesh asset (STL/OBJ) into
 the live scene at runtime. Pass `shape="mesh"` with a `mesh_path` to the asset
 file; the extent is defined by the mesh's own units, so `size` is ignored on
-this backend. The Newton backend consumes it instead, as a per-axis scale on the
+this backend - a read the Isaac backend's mesh `add_object` shares. The Newton
+backend consumes it instead, as a per-axis scale on the
 loaded geometry, so a mesh add carrying a `size` does not mean the same thing
 there - which meaning is right is tracked in
 [#2300](https://github.com/strands-labs/robots/issues/2300).
@@ -491,6 +492,20 @@ calls apply to the same buffer:
 | `rgba` | 3 (RGB, completed with an opaque alpha) or 4 finite components |
 | `size` | finite components, in the count the geom's shape consumes |
 
+`add_geom`'s `type` takes the primitive shapes - `box`, `capsule`, `cylinder`,
+`ellipsoid`, `plane`, `sphere` - and refuses `"mesh"`: the op has no key that
+could name a mesh asset, so the geom would have no mesh to take its extent from
+and MuJoCo would refuse the whole scene at recompile. Add a mesh through
+`add_object(shape="mesh", mesh_path=...)`, which registers the asset alongside
+the body:
+
+```python
+sim.patch_scene_mjcf([{"op": "add_geom", "body": "rig", "type": "mesh"}])
+# status=error: add_geom: 'type' cannot be 'mesh' - this op has no key that names
+#               a mesh asset ... Add a mesh with add_object(shape="mesh",
+#               mesh_path=...), which registers the asset alongside the body.
+```
+
 MuJoCo bakes a `nan`/`inf` component into the model without complaint, so an
 unchecked one reports success and only surfaces later as a poisoned physics
 state. A wrong component count is reported by the library rather than left to
@@ -517,7 +532,14 @@ sim.patch_scene_mjcf([{"op": "add_geom", "body": "rig", "type": "box",
 
 The batch is atomic: if any op is rejected the world is rolled back to its
 pre-patch state, so a bad key or a non-finite component never leaves a
-half-applied scene. Use
+half-applied scene. A batch every op accepts can still be refused by MuJoCo when
+the model they add up to is one it will not build, and that refusal is rolled
+back on the same terms - it costs the batch, not the world, so the next mutation
+still succeeds.
+
+A successful batch recompiles the model once, so it keeps the dynamic state every
+other scene mutation keeps: joint positions and velocities, actuator setpoints,
+and a latched `apply_force` wrench. Use
 `replace_scene_mjcf(xml)` for MJCF elements this vocabulary does not cover.
 
 ## Exporting a scene

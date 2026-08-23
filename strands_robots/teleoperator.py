@@ -144,6 +144,67 @@ def _ensure_lerobot_teleoperators_registered() -> None:
             logger.warning("[teleoperator] third-party plugin registration failed: %s", exc)
 
 
+def _other_lerobot_kind_refusal(requested: str, *, wanted: str) -> str | None:
+    """Name ``requested`` as the OTHER kind of lerobot device, or ``None``.
+
+    lerobot keeps two ChoiceRegistries: ``RobotConfig`` for the arm that is
+    driven and ``TeleoperatorConfig`` for the one a human holds. A leader and
+    the follower it drives carry the same servo bus and the same USB-serial
+    shape, so a request for one kind that names a device of the other kind is a
+    wrong entry point, not a typo -- and answering it with the names of the kind
+    it is not answers the wrong question. For ``Robot("so101_leader")`` that
+    list is every follower type, which is exactly the retry that torque-enables
+    the arm a human is holding; :func:`strands_robots.robot.Robot` already
+    refuses an unregistered ``*_leader`` name without listing the registry for
+    that reason, and this is the same refusal for a name lerobot knows.
+
+    Args:
+        requested: The device type string the caller asked to build.
+        wanted: The kind the caller asked for -- ``"robot"`` or
+            ``"teleoperator"``.
+
+    Returns:
+        A refusal naming the kind ``requested`` really is and the entry point
+        that builds it, or ``None`` when the other registry does not know
+        ``requested`` either. ``None`` means the name is genuinely unknown, so
+        the caller keeps its own listing of the kind that was asked for.
+
+    Raises:
+        ValueError: If ``wanted`` is neither ``"robot"`` nor
+            ``"teleoperator"``.
+    """
+    if wanted == "robot":
+        from lerobot.teleoperators.config import TeleoperatorConfig
+
+        _ensure_lerobot_teleoperators_registered()
+        if requested not in TeleoperatorConfig.get_known_choices():
+            return None
+        return (
+            f"Unsupported robot type: {requested!r}. That is a lerobot teleoperator "
+            f"(leader) device, not a robot: build it with "
+            f"``Teleoperator({requested!r}, port=...)`` and attach it to the follower "
+            f"it drives. Passing a leader to ``Robot()`` would drive the arm a human "
+            f"is holding as a position servo."
+        )
+    if wanted == "teleoperator":
+        from lerobot.robots.config import RobotConfig
+
+        # Imported here, not at module scope: this module is deliberately
+        # stdlib-only so it stays import-safe, and the robot registry is only
+        # needed on a refusal path.
+        from strands_robots.hardware_robot import _ensure_lerobot_robots_registered
+
+        _ensure_lerobot_robots_registered()
+        if requested not in RobotConfig.get_known_choices():
+            return None
+        return (
+            f"Unsupported teleoperator type: {requested!r}. That is a lerobot robot "
+            f"(follower) device, not a teleoperator: build it with "
+            f"``Robot({requested!r}, mode='real', port=...)``."
+        )
+    raise ValueError(f"wanted must be 'robot' or 'teleoperator', got {wanted!r}")
+
+
 def _build_teleop_config(teleop_type: str, **kwargs: Any) -> Any:
     """Resolve + construct a lerobot ``TeleoperatorConfig`` for ``teleop_type``.
 
@@ -161,6 +222,8 @@ def _build_teleop_config(teleop_type: str, **kwargs: Any) -> Any:
     try:
         ConfigClass = TeleoperatorConfig.get_choice_class(teleop_type)
     except KeyError:
+        if other := _other_lerobot_kind_refusal(teleop_type, wanted="teleoperator"):
+            raise ValueError(other) from None
         available = sorted(TeleoperatorConfig.get_known_choices().keys())
         raise ValueError(
             f"Unsupported teleoperator type: {teleop_type!r}. Known lerobot teleoperator types: {available}"

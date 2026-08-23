@@ -14,10 +14,11 @@ agent driving ``run_policy`` can react instead of crashing.
 from __future__ import annotations
 
 import os
+import sys
 
 import numpy as np
 
-os.environ.setdefault("MUJOCO_GL", "glfw")
+os.environ.setdefault("MUJOCO_GL", "cgl" if sys.platform == "darwin" else "egl")
 
 import imageio
 

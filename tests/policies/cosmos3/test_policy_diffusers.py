@@ -138,7 +138,10 @@ def test_condition_params_use_embodiment_metadata():
 
 def test_service_backend_byte_identical_regression():
     """backend='service' (default) path is unchanged: it never touches the
-    diffusers backend and returns the service action chunk verbatim."""
+    diffusers backend and returns the service action chunk verbatim. The raw
+    chunk is also surfaced on last_rollout (parity with the diffusers backend,
+    #2512) so callers can assert on the un-unpacked [T, D] array; the world
+    video stays None unless the server sends one."""
 
     class FakeClient:
         def __init__(self, action):
@@ -155,14 +158,17 @@ def test_service_backend_byte_identical_regression():
     action = np.arange(32 * 8, dtype=np.float32).reshape(32, 8)
     p = Cosmos3Policy(embodiment="droid", client=FakeClient(action.copy()), robot="panda")
     assert p.backend == "service"
-    assert p.last_rollout is None  # service never populates the world channel
+    assert p.last_rollout is None  # None until the first inference
     p.set_robot_state_keys([f"joint_{i}" for i in range(7)] + ["gripper"])
     out = p.get_actions_sync(_obs_with_state_and_images(), "go")
     # Reconstruct the chunk from the per-step dicts and compare to the input.
     cols = [f"joint{i}" for i in range(1, 8)] + ["finger_joint1"]
     recon = np.asarray([[step[c] for c in cols] for step in out], dtype=np.float32)
     np.testing.assert_array_equal(recon, action)
-    assert p.last_rollout is None
+    # The raw chunk surfaces on last_rollout; no video was sent by the server.
+    assert p.last_rollout is not None
+    np.testing.assert_array_equal(np.asarray(p.last_rollout["action"]), action)
+    assert p.last_rollout["video"] is None
 
 
 def test_missing_diffusers_raises_actionable_error(monkeypatch):

@@ -49,9 +49,16 @@ def log_operator_response(
 ) -> None:
     """Record an operator's HITL interrupt reply in the local audit log.
 
-    Call this on BOTH outcomes. A decline is the row that carries the operator's
-    reason; an approval is the record that a human authorised an agent to reach a
-    physical surface, which is the question an audit of an incident asks first.
+    Call this on BOTH outcomes, from ONE site the gate reaches as soon as the
+    verdict is known and before any later refusal can return. A decline is the row
+    that carries the operator's reason; an approval is the record that a human
+    authorised an agent to reach a physical surface, which is the question an audit
+    of an incident asks first - and a gate may still refuse an APPROVED action for
+    its own reasons (the mesh tool re-checks its rate limit under the lock, and a
+    concurrent invocation can take the last slot while the operator is deciding).
+    Recording per-branch after such a check leaves that path with no operator row
+    at all, so the log says only why the action was refused and nothing about who
+    authorised it.
 
     Args:
         source: Which tool asked, e.g. ``"use_ros_tool"``. Recorded as the event

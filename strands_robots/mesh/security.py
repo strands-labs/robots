@@ -57,6 +57,8 @@ import re
 from collections.abc import Mapping
 from typing import Any
 
+from strands_robots import refusal_codes
+
 logger = logging.getLogger(__name__)
 
 # --- Constants -----------------------------------------------------------
@@ -387,7 +389,35 @@ _DEFAULT_POLICY_HOSTS: frozenset[str] = frozenset({"localhost", "127.0.0.1", "::
 
 
 class SecurityError(Exception):
-    """Base class for payload-validation rejections."""
+    """Base class for payload-validation rejections.
+
+    A *continuable* rejection also carries a stable machine-readable
+    :attr:`code` from :data:`~strands_robots.refusal_codes.REFUSAL_CODES` and
+    the :attr:`subject` the refusal is about, so a consumer offering the
+    operator a choice classifies on identity instead of matching the message
+    text. Both default to ``None``: a rejection with no operator grant behind
+    it -- a schema or bounds failure -- has nothing for a consumer to offer.
+
+    The message is unchanged by this and stays free to improve. See
+    :mod:`strands_robots.refusal_codes`.
+
+    Args:
+        message: The operator-facing reason, unchanged by the code.
+        code: A member of :data:`~strands_robots.refusal_codes.REFUSAL_CODES`,
+            or ``None`` when the rejection is not continuable.
+        subject: What the refusal is about -- the repo, host, policy type or
+            joint key -- so a consumer need not parse it back out of
+            ``message``.
+
+    Attributes:
+        code: The stable identifier for this refusal, or ``None``.
+        subject: What the refusal is about, or ``None``.
+    """
+
+    def __init__(self, message: str = "", *, code: str | None = None, subject: str | None = None) -> None:
+        super().__init__(message)
+        self.code = code
+        self.subject = subject
 
 
 class ValidationError(SecurityError):
@@ -881,6 +911,15 @@ def validate_command(cmd: dict[str, Any]) -> dict[str, Any]:
     Performed checks:
 
     * ``action`` must be a string and a member of :data:`ALLOWED_ACTIONS`.
+    * ``turn_id`` and ``sender_id`` (both optional) are checked on *every*
+      action, not per-action: each must be a str of at most
+      :data:`MAX_PASSTHROUGH_LEN` characters, printable ASCII only (no C0/DEL
+      or non-printable byte). They are wire-routing fields rather than action
+      payload -- ``Mesh`` correlates an RPC turn on ``turn_id`` and keys its
+      command-replay cache on ``(sender_id, turn_id)`` -- so a publisher
+      minting them needs the bound, and a control byte must not reach the
+      audit trail through either. Any other unvalidated key is dropped from
+      the sanitised copy rather than refused.
     * ``execute`` and ``start`` actions require:
         - ``instruction``: non-empty str up to :data:`MAX_INSTRUCTION_LEN`,
           carrying no C0/DEL/C1 control character. Printable non-ASCII is
@@ -896,14 +935,16 @@ def validate_command(cmd: dict[str, Any]) -> dict[str, Any]:
           No silent default -- a peer that omits this is rejected so it is
           never ambiguous whether ``mock`` was an explicit choice or a bug.
         - ``server_address`` (optional): in :func:`is_safe_server_address`.
-        - ``robot_name`` (optional): peer-id charset, used by sim peers
+        - ``robot_name`` (optional): peer-id charset, at most
+          :data:`MAX_PEER_ID_LEN` characters, used by sim peers
           to disambiguate which robot in the world the policy targets.
         - ``target_pose`` (optional): list of 7 floats
           ``[x, y, z, qw, qx, qy, qz]`` for planner-style providers
           (issue #300 well-known kwarg).
         - ``target_joints`` (optional): dict of joint-name to float
-          (issue #300 well-known kwarg). Bounded by
-          :data:`MAX_TARGET_JOINTS`.
+          (issue #300 well-known kwarg). Key count bounded by
+          :data:`MAX_TARGET_JOINTS`, and each key by
+          :data:`MAX_PEER_ID_LEN` characters.
         - ``target_velocity`` (optional): list of floats
           ``[vx, vy, omega]`` (m/s, m/s, rad/s) for locomotion providers
           (issue #300 well-known kwarg). Component count bounded by
@@ -917,7 +958,19 @@ def validate_command(cmd: dict[str, Any]) -> dict[str, Any]:
         - ``fast_mode`` (optional): boolean.
         - ``n_steps`` (optional): integer in ``[1, 10_000_000]``.
     * ``step``: ``steps`` integer in ``[1, 10_000]``, defaults to 1.
-    * ``teleop_receive``: ``source_peer_id`` non-empty str.
+    * ``teleop_receive``: both identifiers are checked by
+      :func:`validate_mesh_identifier`, so the admitted charset is
+      ``[A-Za-z0-9_.-]+`` rather than any non-empty string -- a Zenoh
+      wildcard is refused instead of silently widening the subscription
+      the follower builds out of them.
+        - ``source_peer_id``: REQUIRED.
+        - ``device_name`` (optional): defaults to ``"leader"`` downstream.
+    * ``teleop_stop``: ``device_name`` (optional) must be a str or null.
+    * ``resume``: ``override_code`` (optional, defaults to ``""``): str of at
+      most :data:`MAX_OVERRIDE_CODE_LEN` characters, printable ASCII only
+      (no C0/DEL/CRLF). The operator's second factor for clearing an e-stop
+      lockout is bounded here so it cannot carry a control character into the
+      audit trail, and cannot reach ``Mesh._resume_lockout`` as a non-string.
 
     Raises :class:`ValidationError` on any rule violation.
     """
@@ -978,7 +1031,9 @@ def validate_command(cmd: dict[str, Any]) -> dict[str, Any]:
         policy_host = cmd.get("policy_host", "localhost")
         if not is_safe_policy_host(str(policy_host)):
             raise ValidationError(
-                f"policy_host={policy_host!r} not in allowlist. Set STRANDS_MESH_POLICY_HOST_ALLOW to extend."
+                f"policy_host={policy_host!r} not in allowlist. Set STRANDS_MESH_POLICY_HOST_ALLOW to extend.",
+                code=refusal_codes.POLICY_HOST_NOT_ALLOWED,
+                subject=str(policy_host),
             )
         # R7 defence-in-depth. ``is_safe_policy_host`` now applies the
         # same charset gate before its internal strip, so this
@@ -1009,7 +1064,9 @@ def validate_command(cmd: dict[str, Any]) -> dict[str, Any]:
             if not isinstance(value, str) or not is_safe_model_path(value, hf_only=True):
                 raise ValidationError(
                     f"pretrained_name_or_path={value!r} not in allowlist. Set "
-                    "STRANDS_MESH_HF_REPO_ALLOW to add an org/repo prefix."
+                    "STRANDS_MESH_HF_REPO_ALLOW to add an org/repo prefix.",
+                    code=refusal_codes.HF_REPO_NOT_ALLOWED,
+                    subject=value if isinstance(value, str) else None,
                 )
             out["pretrained_name_or_path"] = value
 
@@ -1025,7 +1082,9 @@ def validate_command(cmd: dict[str, Any]) -> dict[str, Any]:
             value = cmd["policy_type"]
             if not isinstance(value, str) or not is_safe_policy_type(value):
                 raise ValidationError(
-                    f"policy_type={value!r} not in allowlist. Set STRANDS_MESH_POLICY_TYPE_ALLOW to extend."
+                    f"policy_type={value!r} not in allowlist. Set STRANDS_MESH_POLICY_TYPE_ALLOW to extend.",
+                    code=refusal_codes.POLICY_TYPE_NOT_ALLOWED,
+                    subject=value if isinstance(value, str) else None,
                 )
             out["policy_type"] = value.strip().lower()
 
@@ -1035,7 +1094,9 @@ def validate_command(cmd: dict[str, Any]) -> dict[str, Any]:
                 raise ValidationError(
                     f"policy_provider={value!r} not in allowlist. "
                     "Set STRANDS_MESH_POLICY_TYPE_ALLOW to extend "
-                    "(provider and policy_type share one allowlist)."
+                    "(provider and policy_type share one allowlist).",
+                    code=refusal_codes.POLICY_TYPE_NOT_ALLOWED,
+                    subject=value if isinstance(value, str) else None,
                 )
             out["policy_provider"] = value.strip().lower()
         else:
@@ -1049,7 +1110,9 @@ def validate_command(cmd: dict[str, Any]) -> dict[str, Any]:
             value = cmd["server_address"]
             if not isinstance(value, str) or not is_safe_server_address(value):
                 raise ValidationError(
-                    f"server_address={value!r} host not in allowlist. Set STRANDS_MESH_POLICY_HOST_ALLOW to extend."
+                    f"server_address={value!r} host not in allowlist. Set STRANDS_MESH_POLICY_HOST_ALLOW to extend.",
+                    code=refusal_codes.POLICY_HOST_NOT_ALLOWED,
+                    subject=value if isinstance(value, str) else None,
                 )
             # Same CRLF/NUL/control-byte gate as policy_host.
             if not _SAFE_PASSTHROUGH_RE.fullmatch(value):
@@ -1319,11 +1382,21 @@ def validate_input_frame(action: Any) -> dict[str, float]:
 
     * Frame must be a ``dict``.
     * At most :data:`MAX_INPUT_FRAME_KEYS` keys (DoS bound).
-    * Each key: ``str``, ``<= MAX_INPUT_KEY_LEN`` chars, matching
-      :data:`_INPUT_KEY_RE` (no control bytes / path separators / shell
-      metacharacters).
-    * Each value: coercible to ``float``, **finite** (no ``nan`` /
-      ``inf``), and within ``+/- MAX_INPUT_VALUE_ABS``.
+    * Each key: a non-empty ``str`` of at most ``MAX_INPUT_KEY_LEN`` chars,
+      matching :data:`_INPUT_KEY_RE` (no control bytes / path separators /
+      shell metacharacters).
+    * Each value: an ``int`` or a ``float``. The *type* is checked rather than
+      the value's coercibility, so a numeric-looking ``str`` is refused. A
+      numpy scalar is unwrapped to a python scalar first, and a ``bool`` is
+      then refused explicitly: ``bool`` is an ``int`` subclass, so ``True``
+      would otherwise reach an actuator as a ``1.0`` command.
+    * Each value: **finite** (no ``nan`` / ``inf``) and within ``+/-``
+      :func:`_input_value_abs` (``STRANDS_MESH_INPUT_VALUE_ABS``).
+
+    The envelope the last check applies is that resolver, not the import-time
+    :data:`MAX_INPUT_VALUE_ABS` snapshot of it, so an operator who narrows the
+    teleop envelope takes effect without a process restart. The two agree until
+    the env var is set after import, and it is the resolver that refuses.
 
     Returns a sanitised ``dict[str, float]`` containing only validated
     entries. Raises :class:`ValidationError` on any violation.
@@ -1365,7 +1438,11 @@ def validate_input_frame(action: Any) -> dict[str, float]:
             raise ValidationError(f"input frame value for {key!r} must be finite, got {fval}")
         _value_abs = _input_value_abs()
         if abs(fval) > _value_abs:
-            raise ValidationError(f"input frame value for {key!r} out of range: |{fval}| > {_value_abs}")
+            raise ValidationError(
+                f"input frame value for {key!r} out of range: |{fval}| > {_value_abs}",
+                code=refusal_codes.TELEOP_VALUE_OUT_OF_RANGE,
+                subject=key,
+            )
         out[key] = fval
 
     return out

@@ -80,9 +80,8 @@ record→train→deploy loop) as Jupyter notebooks - all CPU-only, no hardware o
 | [`lerobot/hub_to_hardware.py`](lerobot/hub_to_hardware.py) | Full agent-driven pipeline: record, train, deploy |
 | [`fleet/05_work_order_dispatch.py`](fleet/05_work_order_dispatch.py) | Structured work-order ingress (JSONL queue) mapped onto per-site capability manifests: deterministic feasibility filter + NACK, mesh dispatch behind HITL, order_id threaded through the signed audit log. **GPU: No** (`--dry-run` is dependency-free) |
 | [`so101_curobo/`](so101_curobo/) | SO-101 tabletop pick-and-place: cuRobo motion planning + LeRobot dataset capture. Backend-agnostic (`SimEngine`): MuJoCo today, Isaac when `strands-robots[sim-isaac]` is installed. **GPU: Optional** (cuRobo / Isaac) |
-| [`libero/run_mujoco.py`](libero/run_mujoco.py) | LIBERO benchmark eval on the default MuJoCo backend with whole-run MP4 recording. **GPU: Optional** (`--policy mock` is CPU-only; `--policy groot` needs Docker + NVIDIA GPU) |
+| [`libero/run.py`](libero/run.py) | LIBERO benchmark eval with backend subcommands (`run.py mujoco` / `run.py isaac`) and rollout-MP4 recording. **GPU: Optional** for `mujoco` (`--policy mock` is CPU-only; `--policy groot` needs Docker + NVIDIA GPU); **GPU: Yes** for `isaac` (Isaac Sim 6.0+) |
 | [`libero/run_mujoco_agent.py`](libero/run_mujoco_agent.py) | LIBERO-on-MuJoCo driven by a Strands `Agent` in natural language. **GPU: Optional** (needs LLM API) |
-| [`libero/run_isaac.py`](libero/run_isaac.py) | LIBERO benchmark eval on the Isaac Sim backend (`create_simulation("isaac")`) with rollout-MP4 recording. **GPU: Yes** (Isaac Sim 6.0+) |
 | [`libero/run_isaac_agent.py`](libero/run_isaac_agent.py) | LIBERO-on-Isaac driven by a Strands `Agent` in natural language. **GPU: Yes** (Isaac Sim 6.0+, needs LLM API) |
 | [`libero/libero_backend_matrix.py`](libero/libero_backend_matrix.py) | Run one LIBERO task across every installed backend, side-by-side `success_rate` / `wall_time` table |
 

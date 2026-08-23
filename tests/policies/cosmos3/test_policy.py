@@ -130,6 +130,30 @@ def test_get_actions_sync_wrapper():
     assert len(out) == 32
 
 
+def test_service_backend_surfaces_raw_chunk_and_server_video_on_last_rollout():
+    """Service mode surfaces the raw [T, D] chunk (and the server's optional
+    rollout video) on last_rollout, matching the diffusers backend (#2512).
+    Pins the parity so callers and the live integration test can assert on the
+    un-unpacked chunk rather than reconstructing it from per-step dicts.
+    """
+
+    class VideoClient(FakeClient):
+        def infer(self, observation):
+            self.last_obs = observation
+            return {"action": self._action, "video": "rollout.mp4"}
+
+    action = _droid_chunk()
+    p = Cosmos3Policy(embodiment="droid", client=VideoClient(action))
+    assert p.last_rollout is None  # None until the first inference
+    p.set_robot_state_keys([f"joint_{i}" for i in range(7)] + ["gripper"])
+    p.get_actions_sync(_obs_with_state_and_images(), "go")
+    assert p.last_rollout is not None
+    chunk = np.asarray(p.last_rollout["action"])
+    assert chunk.ndim == 2 and chunk.shape == action.shape
+    np.testing.assert_array_equal(chunk, action)
+    assert p.last_rollout["video"] == "rollout.mp4"
+
+
 def test_unpack_1d_action_promoted():
     p = _make_droid_policy()
     steps = p._unpack_actions(np.zeros(8, dtype=np.float32))

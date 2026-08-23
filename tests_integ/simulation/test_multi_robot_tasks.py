@@ -21,10 +21,11 @@ from __future__ import annotations
 import glob
 import json
 import os
+import sys
 
 import pytest
 
-os.environ.setdefault("MUJOCO_GL", "glfw")
+os.environ.setdefault("MUJOCO_GL", "cgl" if sys.platform == "darwin" else "egl")
 
 
 @pytest.fixture
