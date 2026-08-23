@@ -102,6 +102,11 @@ _GATEABLE_ACTIONS: frozenset[str] = frozenset(
 # env var below.
 _DEFAULT_INTERRUPT_ACTIONS: frozenset[str] = frozenset({"emergency_stop", "broadcast", "tell", "send", "stop", "rpc"})
 
+#: The gated actions that reach EVERY peer rather than one target. Named here so
+#: the approval prompt's scope branch and its blast-radius wording read the same
+#: set, and a third fleet-wide action cannot be added to one and not the other.
+_FLEET_WIDE_ACTIONS: frozenset[str] = frozenset({"emergency_stop", "broadcast"})
+
 
 # Sentinel raised by the resolver when the env var holds an unknown token.
 # Surfaced as a structured tool error so a typo fails loud rather than
@@ -298,6 +303,66 @@ def _is_allowed_subscribe_target(target: str) -> bool:
 # Affirmative responses accepted from the interrupt prompt. Anything else
 # (empty string, "n", "no", "cancel", whitespace) is treated as decline.
 _AFFIRMATIVE_RESPONSES: frozenset[str] = frozenset({"y", "yes", "approve", "approved"})
+
+
+def _peer_snapshot(peer_id: str) -> dict[str, Any] | None:
+    """The :func:`~strands_robots.mesh.session.get_peers` entry for *peer_id*.
+
+    ``None`` when the peer is not on the snapshot, which the classifier reads as
+    metal. Reads the in-process peer registry only - it never starts the gateway
+    mesh, because this runs inside the approval gate and a gate must not acquire
+    a transport to decide what to tell the operator.
+    """
+    from strands_robots.mesh.session import get_peers
+
+    for entry in get_peers():
+        if entry.get("peer_id") == peer_id:
+            return entry
+    return None
+
+
+def _approval_warning(action: str, target: str) -> tuple[str, bool, str]:
+    """The operator prompt's warning line, and the classification behind it.
+
+    Returns ``(warning, physical, verified)``. The warning states what the gate
+    established rather than asserting a physical effect it never checked: this
+    tool gates by ACTION, so before this it told the operator "Physical effect on
+    peer '<target>'" for every gated single-target call, including one aimed at a
+    peer that reports itself as a sim.
+
+    Fail-closed, in both scopes:
+
+    * single target - :func:`~strands_robots.mesh.session.peer_is_physical`
+      decides, so an absent or unclassifiable peer is still announced as
+      physical;
+    * fleet-wide (``emergency_stop`` / ``broadcast``) - physical unless EVERY
+      peer on the snapshot is a classified sim, and physical when the snapshot is
+      empty, because a peer this process has not discovered yet cannot be shown
+      to be a sim.
+
+    The verdict never changes WHICH actions are gated: an operator is asked for
+    exactly the same set of actions as before, and is told what the peer says
+    about itself.
+    """
+    from strands_robots.mesh.session import get_peers, peer_is_physical
+
+    reply = "Reply 'y' to approve, anything else to deny."
+    if action in _FLEET_WIDE_ACTIONS:
+        peers = get_peers()
+        physical_peers = [p for p in peers if peer_is_physical(p)[0]]
+        if not peers:
+            verified = "no peer is on the fleet snapshot, so none can be shown to be a sim"
+            return f"Fleet-wide physical effect: {verified}. {reply}", True, verified
+        if physical_peers:
+            verified = f"{len(physical_peers)} of {len(peers)} peers on the snapshot are not known to be sims"
+            return f"Fleet-wide physical effect: {verified}. {reply}", True, verified
+        verified = f"all {len(peers)} peers on the snapshot report themselves as sims"
+        return f"Fleet-wide effect, but {verified}. {reply}", False, verified
+
+    physical, verified = peer_is_physical(_peer_snapshot(target))
+    if physical:
+        return f"Physical effect on peer '{target}': {verified}. {reply}", True, verified
+    return f"Peer '{target}' is not known to be physical: {verified}. {reply}", False, verified
 
 
 def _interrupt_approves(response: object) -> bool:
@@ -1176,13 +1241,9 @@ def robot_mesh(
         # Fleet-wide actions reach every peer; single-target actions hit
         # one peer. Surface the right scope so the operator's confirmation
         # reflects the real blast radius.
-        _fleet_wide = action in ("emergency_stop", "broadcast")
+        _fleet_wide = action in _FLEET_WIDE_ACTIONS
         _approval_target = "*ALL_PEERS*" if _fleet_wide else (target or "*ALL_PEERS*")
-        _scope_warning = (
-            "Fleet-wide physical effect. Reply 'y' to approve, anything else to deny."
-            if _fleet_wide
-            else f"Physical effect on peer '{target}'. Reply 'y' to approve, anything else to deny."
-        )
+        _scope_warning, _target_physical, _target_verified = _approval_warning(action, target)
         # Surface the validated command (post-validation form) so the
         # operator approves what will actually dispatch, not the raw LLM
         # string. tell/stop/emergency_stop have no JSON command body.
@@ -1203,6 +1264,11 @@ def robot_mesh(
                     "command": _approval_command,
                     "instruction": instruction,
                     "warning": _scope_warning,
+                    # What the gate established about the target, so a host UI
+                    # can show the verdict without re-deriving it - and so the
+                    # prompt and the structured reason cannot disagree.
+                    "physical": _target_physical,
+                    "verified": _target_verified,
                 },
             )
         except RuntimeError as exc:

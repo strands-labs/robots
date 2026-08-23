@@ -117,8 +117,8 @@ Newton backend, so a rollout rig can be enumerated instead of guessed.
 | `set_timestep` | `timestep` |
 | `get_contacts` / `get_contact_forces` | - . `get_contacts` lists every geom pair inside the detection range (`margin` + `gap`) and marks each one `active` - MuJoCo hands only the pairs inside `margin` to the solver, so a pair between the two thresholds is a proximity report carrying no force. Contact predicates count only `active` pairs; `get_contact_forces` gives the load a touching pair carries |
 | `apply_force` | `body_name`, `force`, `torque`, `point` - latched on that body and re-applied every step until the next `apply_force` for it, so several bodies can hold wrenches at once (`force=[0,0,0]` stops one, `reset()` stops all) |
-| `get_jacobian` | `body_name` *or* `site_name` *or* `geom_name` |
-| `get_mass_matrix` | - |
+| `get_jacobian` | `body_name` *or* `site_name` *or* `geom_name`. Columns are DOFs of the whole compiled model, so the width is not the robot's joint count: a free or ball joint owns several consecutive columns, and a scene holding two robots reports one width spanning both. The `json` block's `dof_joint_names` names the joint owning each column - pair `dq` with that, not with `robot_joint_names`, or one robot's Jacobian reads as another's |
+| `get_mass_matrix` | - . The reported `diagonal` is DOF-indexed on the same terms, and `dof_joint_names` names each entry's joint |
 | `inverse_dynamics` | - (compensation torques to hold the current `qpos`/`qvel`) |
 | `forward_kinematics` | `body_name` (optional) |
 | `save_state` / `load_state` | `name` - snapshot/restore full physics. A checkpoint is valid only for the model it was taken against: any scene mutation that swaps the compiled model (`add_object`, `add_robot`, `add_camera`, `remove_camera`, `remove_robot`, `patch_scene_mjcf`, `replace_scene_mjcf`) invalidates it, and `load_state` then returns a structured error instead of writing a state vector whose indices now mean something else. Save a fresh checkpoint after mutating the scene |

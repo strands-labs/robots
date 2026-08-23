@@ -453,7 +453,7 @@
     },
     "include_static": {
       "type": "boolean",
-      "description": "Include static geoms in raycast"
+      "description": "Whether a ray sees static geoms - a geom on a body with no degrees of freedom, such as the ground plane or a wall. Read by both raycast and multi_raycast; false casts against the movable scene only, so a clearance check can ask about dynamic obstacles without the static world answering first"
     },
     "positions": {
       "type": "object",

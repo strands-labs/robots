@@ -97,6 +97,15 @@ that peer has timed out (10s), which peer the registry evicts when it hits
 move. So bringing a robot's clock into sync to satisfy the forward bound above
 will not make the next heartbeat tick drop every peer it can still hear.
 
+**Nor are those durations the measured peer's to report.** `age` is *your*
+process's reading of when it last heard from a peer, and the `peer_id` a peer is
+filed under is the one its topic and certificate bind - not a field inside the
+payload. A presence payload is merged into what you read about a peer so you get
+its capabilities (`tool_name`, `connected`, `cameras`, ...), and those four
+locally decided keys - `peer_id`, `type`, `hostname`, `age` - win a name
+collision with it. A peer heartbeating `"age": 0` does not report itself fresh,
+and one naming another peer's id does not answer a lookup for that peer.
+
 Repeated wrong codes arm a brute-force cooldown
 (`STRANDS_MESH_RESUME_MAX_FAILS`, `STRANDS_MESH_RESUME_BACKOFF_S`): during the
 cooldown even the correct code is refused, so wait it out rather than retrying in
@@ -107,7 +116,7 @@ a loop. Every attempt, granted or refused, is written to the safety audit log.
 | Topic | Rate | Content |
 |-------|------|---------|
 | `strands/{peer_id}/presence` | 2 Hz | heartbeat / peer discovery |
-| `strands/{peer_id}/state` | 10 Hz | joints, sim time, task status |
+| `strands/{peer_id}/state` | 10 Hz | joints, sim time, task status, degraded probes |
 | `strands/{peer_id}/cmd` | on demand | incoming RPC commands |
 | `strands/{peer_id}/response/{id}` | on demand | RPC replies (turn_id correlated) |
 | `strands/{peer_id}/stream` | on demand | VLA execution steps |
@@ -117,6 +126,51 @@ a loop. Every attempt, granted or refused, is written to the safety audit log.
 | `strands/broadcast` | on demand | fan-out RPC |
 
 Sensor topics only publish when the robot exposes the attribute. Zero cost when unused.
+
+### Degraded state probes
+
+Every section of a state snapshot is optional, because a robot may be hardware,
+sim, both or neither. So an absent section is ambiguous on its own: a robot with
+no joints and a robot whose joint read just failed publish the same thing.
+
+A probe that fails therefore names itself, keyed by category, so the fault is on
+the wire rather than only in that peer's log:
+
+```json
+{
+  "peer_id": "arm-a1",
+  "t": 1755900000.123,
+  "degraded": {
+    "hw_joints": {
+      "reason": "ConnectionError",
+      "detail": "Port is in use!",
+      "failures": 37,
+      "for_seconds": 3.7
+    }
+  }
+}
+```
+
+`reason` is the exception's type name, which is what selects the next move: a
+`ConnectionError` from a contended serial port is a different job from a
+`RuntimeError` from an arm nobody calibrated, and both used to arrive as an
+absent `joints`. `detail` is that exception's message, bounded because it comes
+from a driver and the topic publishes ten times a second. `failures` counts the
+ticks that have raised since the fault began and `for_seconds` how long it has
+been failing, so one unlucky read is distinguishable from a standing fault.
+
+The entry is removed on the tick the probe answers again, so the block always
+describes the current state rather than the worst thing that ever happened. The
+key is absent entirely when nothing is degraded.
+
+It also keeps such a peer talking. A snapshot with nothing to report is not
+published, so a hardware-only peer whose one section was `joints` used to go
+silent on this topic for as long as its bus was contended -- while its presence
+heartbeat kept advertising it, and with nothing on the wire to inspect. A
+diagnosis is something to report, so the peer publishes it.
+
+The categories are `hw_joints` (the motor bus), `task_state` (the running
+rollout), `sim_world` and `sim_joints`.
 
 ### Pose orientation
 
@@ -128,6 +182,30 @@ identically). `theta` and `quat` are decomposed from the same matrix, so they
 always agree: both describe the full rotation for every orientation, including
 the half of SO(3) past 120 degrees that a robot turning back the way it came
 lands in.
+
+### Rejoining the mesh
+
+`stop()` then `start()` is how a peer leaves and rejoins - after a config
+change, or a hub that went away and came back. The peer keeps its identity
+across it: the `peer_id` is unchanged, and an engaged e-stop lockout stays
+engaged, so a network blip is not a way to forget a stop.
+
+What does not survive is your own `subscribe()` topics. `start()` re-declares
+the peer's built-in topics from the table above; the subscribers `subscribe()`
+returned are undeclared with the session reference and their callbacks are not
+retained, so a rejoining consumer re-declares its own. `stop()` reports at INFO
+how many it dropped and their names, and `subscribe()` says at WARNING when it
+refuses - naming the topic and whether the peer is off the mesh, has no session,
+or had the declare itself fail - so a rejoin that has not finished is visible
+rather than a silent `None`.
+
+```python
+sim.mesh.stop()
+sim.mesh.start()
+name = sim.mesh.subscribe("strands/*/state", callback=on_state)
+if name is None:
+    ...  # the WARNING says which of the three refusals it was
+```
 
 ## Agent-driven mesh
 

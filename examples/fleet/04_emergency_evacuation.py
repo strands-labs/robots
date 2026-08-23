@@ -44,8 +44,8 @@ Note: The live lockout drill needs `STRANDS_MESH_OVERRIDE_CODE`; when unset,
 
 Part of the fleet suite (epic #2179). The retreat sits behind the small
 ``EvacuationWorld`` seam so the Isaac adapter (#2123) drops in later; the
-read-only Rerun fleet dashboard (#2181) attaches to the same mesh and shows
-the safety events live once it lands.
+read-only Rerun fleet dashboard (``examples/fleet/dashboard.py``) attaches to
+the same mesh and shows the safety events live.
 """
 
 from __future__ import annotations

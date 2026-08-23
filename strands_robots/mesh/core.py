@@ -190,6 +190,13 @@ RESUME_FORWARD_SKEW_S: float = _parse_positive_float_env("STRANDS_MESH_RESUME_FO
 #: See :data:`RESUME_FRESHNESS_WINDOW_S` for lazy-resolution note.
 RESUME_REPLAY_CACHE_MAX: int = _parse_positive_int_env("STRANDS_MESH_RESUME_REPLAY_CACHE_MAX", "4096")
 
+#: Longest ``detail`` string a degraded-probe record carries onto the state
+#: topic. The text is a third-party driver's exception message, the state topic
+#: publishes at ``STATE_HZ``, and a driver that puts a whole device dump in that
+#: message would otherwise put ten copies of it on the wire every second. The
+#: ``reason`` beside it is the exception's type name, which is bounded already.
+MAX_DEGRADED_DETAIL_LEN: int = 256
+
 
 def _resume_freshness_window_s() -> float:
     """Lazy resolver for ``STRANDS_MESH_RESUME_FRESHNESS_S``.
@@ -352,10 +359,12 @@ def _extract_sample_source_zid(sample: Any) -> str | None:
 def _peers_that_did_not_stop(responses: list[dict[str, Any]]) -> set[str]:
     """Identify responders that explicitly reported they did NOT stop.
 
-    An emergency stop is only as trustworthy as its accounting. A peer whose
-    registered robot exposes no ``stop_task`` answers ``{"ok": False, ...}``
-    (see ``Mesh._dispatch``), and a peer whose ``stop_task`` itself failed
-    answers ``{"status": "error", ...}``. Counting either as an acknowledgement
+    An emergency stop is only as trustworthy as its accounting. Three shapes
+    from ``Mesh._dispatch`` report a stop that did not happen: a peer whose
+    registered robot exposes no ``stop_task`` answers ``{"ok": False, ...}``, a
+    hardware stop that failed answers ``{"ok": False, "error": "stop_task
+    failed: ..."}``, and a sim peer whose ``stop_policy`` refused answers
+    ``{"status": "error", ...}``. Counting any of them as an acknowledgement
     tells the operator the fleet halted while a robot is still executing.
 
     Deliberately conservative: only responses that AFFIRMATIVELY report failure
@@ -412,6 +421,14 @@ class Mesh(SensorLoopsMixin):
         # The state loop retries at STATE_HZ, so a persistent fault is reported
         # once and then kept at debug level rather than once per tick.
         self._read_state_warned: set[str] = set()
+
+        # Which _read_state probes are degraded RIGHT NOW, keyed by category.
+        # Separate from _read_state_warned, which answers a different question:
+        # this one is cleared when a probe answers again, so the published
+        # snapshot stops claiming a fault that has cleared, while the log gate
+        # above stays armed for the life of the peer so a probe that flaps at
+        # STATE_HZ cannot re-arm the warning ten times a second.
+        self._read_state_degraded: dict[str, dict[str, Any]] = {}
 
         # RPC correlation state.
         #
@@ -825,7 +842,15 @@ class Mesh(SensorLoopsMixin):
             logger.info("[mesh] %s on mesh (%s)", self.peer_id, self.peer_type)
 
     def stop(self) -> None:
-        """Stop all loops and release the session reference."""
+        """Stop all loops and release the session reference.
+
+        Drops every :meth:`subscribe` subscription and clears :attr:`inbox`:
+        the subscribers are undeclared with the session reference, and the
+        ``(topic, callback)`` pairs behind them are not retained, so
+        :meth:`start` re-declares only this peer's built-in topics. A rejoining
+        caller re-declares its own subscriptions; the count dropped is reported
+        at INFO so that is visible rather than inferred.
+        """
         with self._lifecycle_lock:
             if not self._running:
                 return
@@ -837,10 +862,23 @@ class Mesh(SensorLoopsMixin):
 
         with self._subs_lock:
             subs_to_drop = list(self._subs)
+            user_sub_names = sorted(self._user_subs)
             self._subs.clear()
             self._user_subs.clear()
         with self._inbox_lock:
             self.inbox.clear()
+
+        # The peer's own built-in topics are re-declared by ``start()``; a
+        # caller's :meth:`subscribe` topics are not, and their callbacks are
+        # not retained anywhere, so this is the only notice that a rejoin
+        # leaves them to be re-declared.
+        if user_sub_names:
+            logger.info(
+                "[mesh] %s: dropped %d subscription(s) on leaving the mesh (%s); re-declare after start()",
+                self.peer_id,
+                len(user_sub_names),
+                ", ".join(user_sub_names),
+            )
 
         for sub in subs_to_drop:
             try:
@@ -1132,7 +1170,8 @@ class Mesh(SensorLoopsMixin):
                 survives even when the message is empty, because the type is
                 what selects the operator's next move: a ``ConnectionError``
                 from a contended serial port and a ``RuntimeError`` from an
-                uncalibrated arm need different actions.
+                uncalibrated arm need different actions. That same type name is
+                what the published record carries as its ``reason``.
 
         Each probe stays wrapped in ``except Exception`` on purpose -- a flaky
         read must not kill the state thread -- so this exists to keep that
@@ -1140,12 +1179,41 @@ class Mesh(SensorLoopsMixin):
         is warned about; the rest drop to debug, because the loop retries at
         ``STATE_HZ`` and a persistent fault would otherwise emit ten warnings a
         second.
+
+        The log gate and the published record are deliberately separate. The
+        gate arms once and stays armed for the life of the peer, so a probe that
+        flaps cannot emit a warning per tick; the record is cleared by
+        :meth:`_note_read_state_ok` as soon as the probe answers, so the
+        snapshot stops claiming a fault the moment it clears. Every call updates
+        the record's failure count, reason and detail, because a probe whose
+        failure mode CHANGES -- a contended port that becomes an uncalibrated
+        arm -- would otherwise keep publishing the first reason forever.
         """
-        warned = getattr(self, "_read_state_warned", None)
-        if warned is None:
+        records = getattr(self, "_read_state_degraded", None)
+        if records is None:
             # A Mesh built through __new__ (several tests, and the sim paths)
             # never ran __init__. Bookkeeping must not be able to raise inside
             # the handler that exists to report a failure.
+            records = {}
+            self._read_state_degraded = records
+        record = records.get(category)
+        if record is None:
+            records[category] = {
+                "reason": type(exc).__name__,
+                "detail": str(exc)[:MAX_DEGRADED_DETAIL_LEN],
+                "failures": 1,
+                # Monotonic: for_seconds answers "how long has this been
+                # failing", a duration, and a wall-clock stamp would make that
+                # duration jump by the size of any NTP correction mid-fault.
+                "since_mono": time.monotonic(),
+            }
+        else:
+            record["failures"] = int(record.get("failures", 0)) + 1
+            record["reason"] = type(exc).__name__
+            record["detail"] = str(exc)[:MAX_DEGRADED_DETAIL_LEN]
+
+        warned = getattr(self, "_read_state_warned", None)
+        if warned is None:
             warned = set()
             self._read_state_warned = warned
         if category in warned:
@@ -1165,7 +1233,95 @@ class Mesh(SensorLoopsMixin):
             exc,
         )
 
+    def _note_read_state_ok(self, category: str) -> None:
+        """Clear ``category``'s degraded record: the probe answered.
+
+        Called from inside each probe once the operation that can raise has
+        returned, so the record is dropped only on a real answer and never on a
+        tick where the probe did not run at all -- a sim peer with no hardware
+        must not read as an ``hw_joints`` recovery.
+
+        Args:
+            category: The probe that answered. Unknown or already-clear
+                categories are a no-op, so a probe may call this every tick.
+
+        The recovery is reported on the wire -- the record disappears from the
+        next snapshot -- and at debug in the log. It is deliberately not a
+        warning: the whole point of publishing the record is that an observer no
+        longer has to read the log, and a probe flapping at ``STATE_HZ`` would
+        otherwise trade ten silent ticks for twenty noisy lines.
+        """
+        records = getattr(self, "_read_state_degraded", None)
+        if not records:
+            return
+        record = records.pop(category, None)
+        if record is None:
+            return
+        logger.debug(
+            "[mesh] %s: state probe %r answered again after %d failure(s) over %.1fs",
+            self.peer_id,
+            category,
+            int(record.get("failures", 0)),
+            time.monotonic() - float(record.get("since_mono", time.monotonic())),
+        )
+
+    def _degraded_probes(self) -> dict[str, dict[str, Any]] | None:
+        """The ``degraded`` block for the snapshot, or ``None`` when healthy.
+
+        Returns:
+            One entry per currently-degraded probe, keyed by category, each
+            carrying ``reason`` (the exception's type name -- the discriminator
+            :meth:`_warn_read_state_once` documents as selecting the operator's
+            next move), ``detail`` (that exception's message, bounded by
+            :data:`MAX_DEGRADED_DETAIL_LEN`), ``failures`` (how many ticks have
+            raised since the fault began) and ``for_seconds`` (how long it has
+            been failing). ``None`` when no probe is degraded, so a healthy
+            peer's snapshot is byte-for-byte what it always was.
+
+        ``since_mono`` is process-local and stays off the wire: seconds of local
+        uptime mean nothing to the machine reading the snapshot, so the elapsed
+        duration is computed here and only the difference is published.
+        """
+        records = getattr(self, "_read_state_degraded", None)
+        if not records:
+            return None
+        now = time.monotonic()
+        return {
+            category: {
+                "reason": record.get("reason", ""),
+                "detail": record.get("detail", ""),
+                "failures": int(record.get("failures", 0)),
+                "for_seconds": round(now - float(record.get("since_mono", now)), 3),
+            }
+            for category, record in sorted(records.items())
+        }
+
     def _read_state(self) -> dict[str, Any] | None:
+        """Build this peer's state snapshot for ``strands/{peer_id}/state``.
+
+        Returns:
+            The snapshot, or ``None`` when nothing but ``peer_id`` and ``t``
+            survived -- the state loop publishes nothing for a ``None``.
+
+        Every section is optional and probed defensively, because a robot may be
+        hardware, sim, both or neither. A section is present when its probe
+        answered and has something to report: ``joints`` (per-joint positions,
+        from the motor bus or from the sim world), ``task`` (the running
+        rollout's status), ``sim_time`` and ``robots``.
+
+        A section that is ABSENT is therefore ambiguous on its own -- a robot
+        with no joints and a robot whose joint probe just raised look identical
+        -- so a probe that fails names itself in ``degraded``, keyed by
+        category, with the ``reason`` / ``detail`` / ``failures`` /
+        ``for_seconds`` block :meth:`_degraded_probes` documents. That block is
+        the guarantee: while a probe is failing the snapshot says so, and the
+        entry disappears on the tick the probe answers again. It also keeps the
+        peer publishing at all. Before it, a hardware peer whose only section
+        was ``joints`` returned ``None`` for every tick of a contended bus, so
+        it went silent on the state topic while its presence heartbeat kept
+        advertising it -- indistinguishable from a peer whose state thread had
+        died, and explicable only by reading that peer's log.
+        """
         r = self.robot
         snapshot: dict[str, Any] = {"peer_id": self.peer_id, "t": time.time()}
 
@@ -1180,6 +1336,7 @@ class Mesh(SensorLoopsMixin):
                 # already in hand -- one dead USB camera used to erase an arm's
                 # entire joint telemetry while its presence stayed healthy.
                 obs = read_joints(inner)
+                self._note_read_state_ok("hw_joints")
                 cam_keys = set(getattr(getattr(inner, "config", None), "cameras", {}).keys())
                 joints: dict[str, Any] = {}
                 for key, value in obs.items():
@@ -1207,6 +1364,7 @@ class Mesh(SensorLoopsMixin):
                     "steps": getattr(ts, "step_count", 0),
                     "duration": getattr(ts, "duration", 0.0),
                 }
+                self._note_read_state_ok("task_state")
         except Exception as exc:
             self._warn_read_state_once("task_state", exc)
 
@@ -1242,10 +1400,19 @@ class Mesh(SensorLoopsMixin):
                                 }
                         if sim_joints:
                             snapshot["joints"] = sim_joints
+                        self._note_read_state_ok("sim_joints")
                     except Exception as exc:
                         self._warn_read_state_once("sim_joints", exc)
+                self._note_read_state_ok("sim_world")
         except Exception as exc:
             self._warn_read_state_once("sim_world", exc)
+
+        # Unconditional: a probe that is failing says so on the wire for as long
+        # as it fails, which is also what keeps a hardware-only peer publishing
+        # at all when its one section is the one that raised.
+        degraded = self._degraded_probes()
+        if degraded is not None:
+            snapshot["degraded"] = degraded
 
         return snapshot if len(snapshot) > 2 else None
 
@@ -1845,7 +2012,25 @@ class Mesh(SensorLoopsMixin):
             if r is None:
                 return {"ok": True, "stopped": [], "note": "no robot registered on this peer"}
             if hasattr(r, "stop_task"):
-                return dict(r.stop_task())
+                # A hardware stop that fails must ANSWER, exactly as the two sim
+                # branches below do ("stop must answer, not raise"). An exception
+                # escaping here reaches ``_exec_cmd``, which publishes
+                # ``{"type": "error", "error": "dispatch error"}`` -- an envelope
+                # carrying no ``result``, so :func:`_peers_that_did_not_stop`
+                # finds neither ``ok`` nor ``status`` and ``emergency_stop``
+                # counts the peer as having halted. Raising is the ONLY way a
+                # hardware stop reports failure: both return paths of
+                # ``Robot.stop_task`` answer ``status="success"``.
+                try:
+                    return dict(r.stop_task())
+                except Exception as exc:  # noqa: BLE001 - stop must answer, not raise
+                    logger.error(
+                        "[safety] %s: stop_task() failed; NOTHING was stopped on this peer: %s",
+                        self.peer_id,
+                        exc,
+                        exc_info=True,
+                    )
+                    return {"ok": False, "error": f"stop_task failed: {exc}"}
             # Sim peer: route to stop_policy (cooperative cancellation).
             # Without this branch every sim peer was UNSTOPPABLE over the
             # mesh - {"action": "stop"} answered "peer exposes no stop_task"
@@ -2972,6 +3157,43 @@ class Mesh(SensorLoopsMixin):
                 )
 
     # RPC -- outgoing
+    def _cmd_topic_size_problem(self, msg: dict[str, Any]) -> str | None:
+        """Report why *msg* would be dropped by the cmd-topic byte cap.
+
+        The transport's ``low_pass_filter`` caps ``**/cmd`` AND
+        ``**/broadcast`` with one rule (``strands_cmd_size_cap``, default
+        16 KiB, ingress and egress) while the command validator admits a
+        ``world_update`` up to :data:`~strands_robots.mesh.security.MAX_WORLD_UPDATE_BYTES`
+        (64 KiB). A valid command in that gap is silently dropped, so both
+        publishers on that rule ask this before handing the payload over.
+
+        One owner rather than a copy per publisher: a second inline check is
+        how the two topics come to disagree about the cap they share.
+
+        Returns:
+            A reason naming the encoded size, the cap and the env var that
+            raises it, or ``None`` when the message fits -- and also ``None``
+            when the cap cannot be read at all. The check is a diagnostic, not
+            part of publishing: it turns a silent transport drop into a
+            reported one. If the config helper cannot be imported there is no
+            cap to compare against, so the caller publishes and an over-cap
+            message behaves as it did before this check existed. Failing every
+            command because an optional module is missing would be worse.
+        """
+        try:
+            from strands_robots.mesh._zenoh_config import cmd_bytes_cap
+        except ImportError:
+            return None
+        encoded_len = len(json.dumps(msg).encode("utf-8"))
+        cap = cmd_bytes_cap()
+        if encoded_len <= cap:
+            return None
+        return (
+            f"command message is {encoded_len} bytes; the transport drops "
+            f"cmd messages over {cap} bytes (STRANDS_MESH_MAX_CMD_BYTES). "
+            "Shrink world_update/instruction or raise the cap on BOTH peers."
+        )
+
     def send(self, target: str, cmd: dict[str, Any], timeout: float = 30.0) -> dict[str, Any]:
         """Send a command to a single peer and return the first response.
 
@@ -3029,39 +3251,15 @@ class Mesh(SensorLoopsMixin):
                 raise ValueError("send: target may not equal BROADCAST_RESPONDER or contain NUL")
             self._expected_responders[turn] = target
         msg = {"sender_id": self.peer_id, "turn_id": turn, "command": cmd, "timestamp": time.time()}
-        # The transport's low-pass filter silently drops cmd-topic
-        # messages above its byte cap (default 16 KiB) BOTH ways, while the
-        # validator admits world_update payloads up to 64 KiB - a valid
-        # command in that gap timed out with zero diagnostics. Check the
-        # encoded size here and answer with a structured error instead.
-        try:
-            from strands_robots.mesh._zenoh_config import cmd_bytes_cap as _cmd_cap
-
-            _encoded_len = len(json.dumps(msg).encode("utf-8"))
-            _cap = _cmd_cap()
-            if _encoded_len > _cap:
-                with self._rpc_lock:
-                    self._pending.pop(turn, None)
-                    self._responses.pop(turn, None)
-                    self._expected_responders.pop(turn, None)
-                return {
-                    "status": "error",
-                    "error": (
-                        f"command message is {_encoded_len} bytes; the transport drops "
-                        f"cmd messages over {_cap} bytes (STRANDS_MESH_MAX_CMD_BYTES). "
-                        "Shrink world_update/instruction or raise the cap on BOTH peers."
-                    ),
-                }
-        except ImportError:
-            # The size pre-check is a diagnostic, not part of sending: it turns
-            # a silent transport drop into a structured error naming the cap.
-            # If the config helper cannot be imported there is no cap to read,
-            # so skip the check and publish. An over-cap message then behaves as
-            # it did before the check existed - dropped by the low-pass filter,
-            # surfacing as the {"status": "timeout"} below - which is worse
-            # diagnostics but still a correct send. Raising instead would let a
-            # missing optional module fail every command on this path.
-            pass
+        # An over-cap command is dropped by the transport with no diagnostics,
+        # so report it here instead of publishing into the filter.
+        size_problem = self._cmd_topic_size_problem(msg)
+        if size_problem is not None:
+            with self._rpc_lock:
+                self._pending.pop(turn, None)
+                self._responses.pop(turn, None)
+                self._expected_responders.pop(turn, None)
+            return {"status": "error", "error": size_problem}
         try:
             self.publish(f"strands/{target}/cmd", msg)
             event.wait(timeout=timeout)
@@ -3099,6 +3297,19 @@ class Mesh(SensorLoopsMixin):
             # Sentinel -- broadcast accepts responses from any peer.
             self._expected_responders[turn] = BROADCAST_RESPONDER
         msg = {"sender_id": self.peer_id, "turn_id": turn, "command": cmd, "timestamp": time.time()}
+        # ``strands/broadcast`` shares the cmd-topic byte cap with ``**/cmd``
+        # (one ``strands_cmd_size_cap`` rule), so an over-cap broadcast is
+        # dropped by the filter and returns the same empty list a broadcast
+        # nobody answered returns. Report it the way this method already
+        # reports a client-side rejection: log the reason, return no responses.
+        size_problem = self._cmd_topic_size_problem(msg)
+        if size_problem is not None:
+            logger.warning("[mesh] %s: broadcast rejected client-side: %s", self.peer_id, size_problem)
+            with self._rpc_lock:
+                self._pending.pop(turn, None)
+                self._responses.pop(turn, None)
+                self._expected_responders.pop(turn, None)
+            return []
         try:
             self.publish("strands/broadcast", msg)
             # A broadcast has no single expected responder, so collect acks for
@@ -3124,11 +3335,40 @@ class Mesh(SensorLoopsMixin):
     def subscribe(
         self, topic: str, callback: Callable[[str, dict[str, Any]], None] | None = None, name: str | None = None
     ) -> str | None:
-        """Subscribe to any Zenoh topic and receive parsed JSON dicts."""
+        """Subscribe to any Zenoh topic and receive parsed JSON dicts.
+
+        Returns:
+            The subscription name (``name`` when given, else *topic*) once the
+            subscriber is declared, or ``None`` when it was not. Every
+            ``None`` says why at WARNING, matching how the rest of this class
+            reports a client-side refusal: the peer is not on the mesh, there
+            is no session to declare against, or ``declare_subscriber`` itself
+            failed.
+
+        A subscription does not survive :meth:`stop`. That method drops every
+        subscription this one records and :meth:`start` re-declares only the
+        peer's own built-in topics, so a caller that rejoins the mesh
+        re-declares its own subscriptions - which is what the WARNING above
+        makes visible when a rejoin has not happened yet.
+        """
         if not self._running:
+            # Silent until now, unlike the declare_subscriber failure below and
+            # every other client-side refusal in this class. A caller
+            # re-subscribing after a stop()/start() round trip reads the
+            # ``None`` as "subscribed" unless it checks, so name the reason.
+            logger.warning(
+                "[mesh] %s: subscribe(%s) refused: peer is not on the mesh (start() first)",
+                self.peer_id,
+                topic,
+            )
             return None
         session = current_session()
         if session is None:
+            logger.warning(
+                "[mesh] %s: subscribe(%s) refused: no mesh session",
+                self.peer_id,
+                topic,
+            )
             return None
         sub_name = name or topic
         with self._inbox_lock:
