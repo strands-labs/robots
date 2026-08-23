@@ -6,11 +6,23 @@
 SO101Follower driver on the leader's motor bus - torque-enabling the arm a
 human is holding and turning it into a rigid position servo. These tests pin
 the refusal and the registry invariant behind it.
+
+That refusal is reachable only while the leader name is *unregistered*: it sits
+behind ``get_robot(canonical) is None and not has_hardware(canonical)``. An
+operator who registers their leader arm -- as itself, with
+``hardware.lerobot_type="so101_leader"``, which is the honest thing to register
+and satisfies the invariant above -- makes it unreachable, and the request fell
+through to lerobot's ``RobotConfig`` lookup instead. That answered
+``Unsupported robot type: 'so101_leader'. Known lerobot robot types: [...]``,
+whose list is every follower type: the retry this refusal exists to remove.
+lerobot knows ``so101_leader`` perfectly well -- as a *teleoperator* -- so the
+deeper site names the kind it really is, in both directions.
 """
 
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -114,3 +126,196 @@ def test_an_unknown_non_leader_name_keeps_the_registry_listing(monkeypatch: pyte
 
     with pytest.raises(ValueError, match="Unknown robot 'so101_leaderr'"):
         Robot("so101_leaderr", mode="sim")
+
+
+# --- The deeper site: a name lerobot knows, as the other kind of device -------
+#
+# ``Robot()``'s registry guard above only sees an UNREGISTERED ``*_leader``
+# name. These pin the refusal a registered leader actually receives, and the
+# mirror-image refusal on the teleoperator side.
+
+
+LEROBOT_LEADERS = [
+    "so100_leader",
+    "so101_leader",
+    "koch_leader",
+    "bi_so_leader",
+]
+
+LEROBOT_FOLLOWERS = [
+    "so100_follower",
+    "so101_follower",
+    "koch_follower",
+]
+
+
+@pytest.fixture
+def isolated_registry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
+    """Point the user registry + asset paths at temp dirs.
+
+    Mirrors ``tests/registry/conftest.py``'s autouse fixture so registering a
+    probe robot here cannot touch the developer's ``~/.strands_robots``.
+    """
+    from strands_robots.registry.user_registry import _invalidate_cache
+
+    assets = tmp_path / "assets"
+    assets.mkdir()
+    monkeypatch.setenv("STRANDS_BASE_DIR", str(tmp_path))
+    monkeypatch.setenv("STRANDS_ASSETS_DIR", str(assets))
+    _invalidate_cache()
+    yield assets
+    _invalidate_cache()
+
+
+def _register_leader(assets: Path, name: str, lerobot_type: str) -> None:
+    """Register ``name`` as the leader device it is, the way an operator would."""
+    from strands_robots.registry import register_robot
+
+    model = assets / name / "so101"
+    model.mkdir(parents=True, exist_ok=True)
+    (model / "so101.xml").write_text(
+        '<mujoco model="stub"><worldbody><body name="link">'
+        '<joint name="j1" type="hinge" axis="0 0 1"/>'
+        '<geom type="capsule" size="0.02 0.1"/></body></worldbody></mujoco>'
+    )
+    register_robot(
+        name=name,
+        model_xml="so101/so101.xml",
+        description="SO-101 leader arm on this rig",
+        category="arm",
+        joints=6,
+        hardware={"lerobot_type": lerobot_type, "port": "/dev/ttyACM0"},
+        overwrite=True,
+    )
+
+
+def test_a_registered_leader_is_named_as_a_teleoperator(isolated_registry: Path) -> None:
+    """The reachability half: registering the leader must not lose the refusal.
+
+    ``Robot()``'s registry guard cannot fire once the name is registered, so
+    this is the path a real rig takes. It has to arrive at the same verdict.
+    """
+    _register_leader(isolated_registry, "probe_rig_leader", "so101_leader")
+
+    with pytest.raises(ValueError) as exc:
+        Robot("probe_rig_leader", mode="real")
+
+    msg = str(exc.value)
+    assert "teleoperator" in msg, msg
+    assert "Teleoperator('so101_leader', port=...)" in msg, msg
+    assert "drive the arm a human is holding" in msg, msg
+
+
+def test_the_registered_leader_refusal_never_offers_the_follower_types(
+    isolated_registry: Path,
+) -> None:
+    """The safety half, and the whole reason this refusal is special.
+
+    A list of robot types is a list of followers, and retrying with one of them
+    on the leader's port is the mistake being prevented. A caller whose name IS
+    a known teleoperator has not made a typo, so there is nothing a listing
+    could usefully offer.
+    """
+    _register_leader(isolated_registry, "probe_rig_leader", "so101_leader")
+
+    with pytest.raises(ValueError) as exc:
+        Robot("probe_rig_leader", mode="real")
+
+    msg = str(exc.value)
+    assert "Known lerobot robot types" not in msg, msg
+    assert "so101_follower" not in msg, msg
+
+
+@pytest.mark.parametrize("leader", LEROBOT_LEADERS)
+def test_every_lerobot_leader_type_is_refused_as_a_teleoperator(leader: str) -> None:
+    """Not just ``so101_leader``: every leader lerobot ships behaves the same.
+
+    Driven at the config site so the assertion is about the refusal rather than
+    about any one registry entry.
+    """
+    pytest.importorskip("lerobot")
+    inst = hardware_robot.Robot.__new__(hardware_robot.Robot)
+
+    with pytest.raises(ValueError) as exc:
+        inst._create_minimal_config(leader, None)
+
+    msg = str(exc.value)
+    assert "teleoperator" in msg, msg
+    assert f"Teleoperator({leader!r}, port=...)" in msg, msg
+    assert "Known lerobot robot types" not in msg, msg
+
+
+@pytest.mark.parametrize("follower", LEROBOT_FOLLOWERS)
+def test_a_follower_handed_to_teleoperator_is_named_as_a_robot(follower: str) -> None:
+    """The mirror image: the other entry point is equally blind on its own.
+
+    Not a safety case -- driving a follower is the normal thing -- but the same
+    wrong-entry-point answer, so it gets the same treatment.
+    """
+    pytest.importorskip("lerobot")
+    from strands_robots.teleoperator import _build_teleop_config
+
+    with pytest.raises(ValueError) as exc:
+        _build_teleop_config(follower, port="/dev/null")
+
+    msg = str(exc.value)
+    assert "robot" in msg, msg
+    assert f"Robot({follower!r}, mode='real', port=...)" in msg, msg
+    assert "Known lerobot teleoperator types" not in msg, msg
+
+
+def test_an_unknown_robot_type_keeps_its_listing() -> None:
+    """Control: a genuinely unknown name is a typo, and a listing helps.
+
+    Fails if the cross-kind branch widens into every refusal.
+    """
+    pytest.importorskip("lerobot")
+    inst = hardware_robot.Robot.__new__(hardware_robot.Robot)
+
+    with pytest.raises(ValueError) as exc:
+        inst._create_minimal_config("not_a_real_robot", None)
+
+    msg = str(exc.value)
+    assert "Unsupported robot type: 'not_a_real_robot'" in msg, msg
+    assert "Known lerobot robot types" in msg, msg
+    assert "teleoperator" not in msg, msg
+
+
+def test_an_unknown_teleoperator_type_keeps_its_listing() -> None:
+    """Control: the same, on the teleoperator side."""
+    pytest.importorskip("lerobot")
+    from strands_robots.teleoperator import _build_teleop_config
+
+    with pytest.raises(ValueError) as exc:
+        _build_teleop_config("not_a_real_teleoperator", port="/dev/null")
+
+    msg = str(exc.value)
+    assert "Unsupported teleoperator type: 'not_a_real_teleoperator'" in msg, msg
+    assert "Known lerobot teleoperator types" in msg, msg
+
+
+def test_a_follower_type_still_builds_a_config() -> None:
+    """Control: the accepted path is untouched -- only refusals changed."""
+    pytest.importorskip("lerobot")
+    inst = hardware_robot.Robot.__new__(hardware_robot.Robot)
+    # The accepted path reads ``tool_name_str`` to namespace lerobot's
+    # calibration files; the refusal path above never gets that far.
+    inst.tool_name_str = "probe"
+
+    config = inst._create_minimal_config("so101_follower", None, port="/dev/null")
+
+    assert config.port == "/dev/null"
+    assert config.id == "probe"
+
+
+def test_the_rule_refuses_a_kind_it_does_not_know() -> None:
+    """A ``wanted`` that names neither kind is a caller error, not a silent None.
+
+    The helper answers a question about two registries; asked about a third it
+    has no honest answer, so it says so rather than reporting "not the other
+    kind".
+    """
+    from strands_robots.teleoperator import _other_lerobot_kind_refusal
+
+    with pytest.raises(ValueError, match="wanted must be 'robot' or 'teleoperator'"):
+        _other_lerobot_kind_refusal("so101_leader", wanted="gripper")
