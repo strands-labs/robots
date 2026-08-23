@@ -37,6 +37,18 @@ filter without rewriting a single parquet shard. The file is schema-versioned
 (`schema_version: 1`); a version this build does not know is refused on read
 rather than misread. Writes are two-phase (temp file + atomic rename).
 
+Reading is the boundary for a sidecar this build did not write, so the same
+refusal reaches the records: a verdict-bearing field outside its domain, or a
+block that cannot state the thing it exists to state, is reported against the
+file and the episode rather than reinterpreted. That is where the harm lands -
+a `success` spelled `"false"` is truthy, so a deterministically *failed*
+episode would clear `require_success=True`, and a `quality` outside the
+vocabulary reached `filter_episodes` as `tuple.index(x): x not in tuple` and
+`measure_agreement` as a silently understated agreement figure. The descriptive
+fields (`steps`, `cumulative_reward`, `seed`, `note`, `model`, `labeled_at`,
+`success_opinion`) are carried through untouched: nothing branches on them, so
+a surprising value there is a record to read rather than a verdict to refuse.
+
 ```json
 {
   "schema_version": 1,
@@ -63,7 +75,9 @@ rather than misread. Writes are two-phase (temp file + atomic rename).
 }
 ```
 
-Field domains:
+Field domains. Each holds in both directions - the writer refuses a value
+outside it, and so does the reader, so a sidecar another writer produced is
+held to the same domains as one this build wrote:
 
 | field | domain |
 |---|---|

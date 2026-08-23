@@ -672,10 +672,22 @@ class TestTelemetryRobustness:
         assert p["topics"] == ["health"]
 
     def test_read_state_swallows_every_attribute_error(self) -> None:
-        """A hostile robot yields no useful state -> None, never an exception."""
+        """A hostile robot yields no telemetry, but says which probes failed.
+
+        The contract is that nothing propagates: every probe is wrapped in
+        ``except Exception`` so a hostile driver cannot kill the state thread.
+        What it yields is not nothing, though -- each probe that raised names
+        itself in ``degraded``, so a peer whose every read fails is
+        distinguishable on the wire from one that simply has nothing to report.
+        """
         m = Mesh(_HostileRobot(), peer_id="hostile-2")
 
-        assert m._read_state() is None  # must not raise
+        out = m._read_state()  # must not raise
+
+        assert out is not None
+        assert "joints" not in out and "task" not in out, "no telemetry survived"
+        assert set(out["degraded"]) == {"hw_joints", "task_state", "sim_world"}
+        assert {r["reason"] for r in out["degraded"].values()} == {"RuntimeError"}
 
 
 class TestOnPresenceNonDict:

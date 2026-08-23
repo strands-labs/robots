@@ -681,8 +681,19 @@ class BridgeTransport:
         an ``OSError`` subclass). Both names are class trees rather than
         single classes, so the absorbed surface is wider than the two:
         ``NotImplementedError`` and ``RecursionError`` are ``RuntimeError``
-        subclasses and are swallowed here too. An exception outside both
-        trees - a serialisation ``ValueError``, say - propagates.
+        subclasses and are swallowed here too.
+
+        These handlers cover a leg that raises, which no shipped leg does: both
+        :meth:`~strands_robots.mesh.transport.zenoh_transport.ZenohTransport.put`
+        and :meth:`~strands_robots.mesh.transport.iot_transport.IotMqttTransport.put`
+        honour the fire-and-forget contract themselves. In particular an
+        unencodable payload - once cited here as an example of something that
+        propagates - does not: each leg encodes on its own and reports the
+        permanent failure through
+        :func:`~strands_robots.mesh.session._report_unencodable_payload`, once
+        per topic across both legs, then returns. So this method raises nothing
+        for a bad payload, and the operator gets one ERROR naming the topic
+        rather than an exception the mesh's publish paths do not expect.
         """
         # AWS IoT reserved topics ($aws/..., e.g. named-shadow updates) are
         # cloud-plane only. They are meaningless on the Zenoh LAN (and would

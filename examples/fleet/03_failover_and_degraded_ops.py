@@ -30,8 +30,9 @@ Note: The live estop drill leaves the surviving robots in safety lockout by
       Set STRANDS_MESH_LOCAL_DEV=1 (defaulted below) to skip TLS locally.
 
 Part of the fleet suite (epic #2179); the shared manifest schema lives in
-``capabilities.py``. The read-only Rerun fleet dashboard (#2181) attaches to
-the same mesh and shows the peer loss and the recovery live once it lands.
+``capabilities.py``. The read-only Rerun fleet dashboard
+(``examples/fleet/dashboard.py``) attaches to the same mesh and shows the peer
+loss and the recovery live.
 """
 
 from __future__ import annotations

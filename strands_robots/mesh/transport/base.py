@@ -91,8 +91,21 @@ class MeshTransport(Protocol):
     def put(self, key: str, data: dict[str, Any]) -> None:
         """Publish a JSON-serialisable payload to the wire.
 
-        Fire-and-forget. MUST NOT raise on transient failure. Implementations
-        should log at debug and continue, matching the Zenoh behaviour today.
+        Fire-and-forget: MUST NOT raise, whatever goes wrong.
+
+        The tolerance is scoped by WHETHER A RETRY COULD SUCCEED, because the two
+        cases are not equally reportable:
+
+        * A TRANSIENT failure - a closed session, a dropped broker, a
+          socket-level write error - is retried by the caller's next tick.
+          Implementations log at debug and continue, matching the Zenoh
+          behaviour today.
+        * A payload the JSON encoder refuses can NEVER reach the wire, and no
+          retry changes that. Implementations report it at ERROR once per topic
+          via :func:`~strands_robots.mesh.session._report_unencodable_payload`,
+          which owns the wording so one grep finds every transport's report.
+          Absorbing it into the transient DEBUG line made a permanently
+          undeliverable message indistinguishable from a delivered one.
 
         Args:
             key: The topic / Zenoh key expression. For MQTT-backed transports
