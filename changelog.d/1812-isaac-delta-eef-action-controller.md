@@ -1,6 +1,6 @@
 ### Added: Isaac-side GR00T action actuation - delta-EEF differential-IK controller
 
-With the observation pipeline fixed (#1811), `examples/libero/run_isaac.py
+With the observation pipeline fixed (#1811), `examples/libero/run.py isaac
 --policy groot` ran end-to-end but scored `success_rate 0.00` against the
 MuJoCo baseline's 1.00: `LiberoAdapter._install_action_controller` builds
 robosuite's `OSC_POSE` controller against the compiled MuJoCo model, so on
@@ -33,7 +33,7 @@ LIBERO Franka layout (`panda_joint1..7`, `panda_finger_joint1/2`,
 surface at episode start under the existing strict/non-strict policy. Setup
 breakage on a genuine Isaac engine stays loud; engines with neither path keep
 the pre-existing warn-and-degrade behaviour, and the warning now names both
-unavailable paths. `run_isaac.py` passes `control_frequency=20.0` (the rate
+unavailable paths. `run.py isaac` passes `control_frequency=20.0` (the rate
 GR00T-N1.7-LIBERO was trained at) instead of inheriting the 50 Hz default.
 
 Validation status (4x L4, Isaac Sim 6.0): the controller is GPU-verified at

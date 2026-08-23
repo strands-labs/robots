@@ -36,6 +36,6 @@ A GPU integration test (`tests_integ/simulation/test_isaac_scene_physics_gpu.py`
 pins the gate frozen physics cannot fake: after `load_scene` (twice - the
 episode-2 reload included) the timeline is playing and a joint-target
 `send_action` measurably moves the articulation, with all joints finite.
-Verified end-to-end on Isaac Sim 6.0 / L4: `run_isaac.py --policy mock
+Verified end-to-end on Isaac Sim 6.0 / L4: `run.py isaac --policy mock
 --n-episodes 2` completes both episodes with zero PhysX broadphase errors
 (previously a storm of them).
