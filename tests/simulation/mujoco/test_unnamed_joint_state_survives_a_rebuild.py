@@ -143,6 +143,7 @@ def scene(tmp_path: Path) -> Any:
     assert sim.add_robot(name="fur", urdf_path=str(tmp_path / "furniture.xml"))["status"] == "success"
 
     world = sim._world
+    assert world is not None
     model = world._model
     unnamed = _unnamed_joint_ids(model)
     # The premise: the furniture really did compile to three unnamed joints, so a
@@ -316,11 +317,14 @@ class TestTheEjectStillDoesWhatItDidBefore:
             sim.add_robot(name="a", urdf_path=str(tmp_path / "a.xml"))
             sim.add_robot(name="b", urdf_path=str(tmp_path / "a.xml"))
             world = sim._world
+            assert world is not None
             keep = _joint_id(world._model, "b/pan")
             _write(world, keep, (0.55, -0.9))
             mujoco.mj_forward(world._model, world._data)
             assert sim.remove_robot("a")["status"] == "success"
-            assert _read(sim._world, _joint_id(sim._world._model, "b/pan")) == (0.55, -0.9)
+            rebuilt = sim._world
+            assert rebuilt is not None
+            assert _read(rebuilt, _joint_id(rebuilt._model, "b/pan")) == (0.55, -0.9)
         finally:
             sim.cleanup()
 
