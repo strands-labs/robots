@@ -47,21 +47,48 @@ rate the in-process API refuses"), so ``MSG_SET_STATE_KEYS`` now forwards
 verbatim too. ``RemotePolicy`` validates before its own ``list(...)`` for the
 same reason, on the outbound side.
 
-Three providers needed no guard and deliberately did not get one.
-``WBCPolicy``, ``MotionBricksPolicy`` and ``KimodoPolicy`` resolve every G1 joint
-they drive BY NAME inside the caller's list, so a bare string, a mapping, a
-one-shot iterator, and non-string or blank entries all fail that membership
-check already - measured, all five refused with a message naming the missing
-joints. They also tolerate a repeated name on purpose: for the two
-index-resolved ones, ``test_flat_state_name_resolved_first_occurrence_wins``
-pins that a duplicate resolves to its FIRST occurrence and must not shift the
-resolved slot, which is a reviewed decision this change does not reopen.
-``KimodoPolicy`` is total for a second, stronger reason: it keys the emitted
-action dict off the canonical ``KIMODO_G1_JOINTS`` tuple rather than off the
-caller's list, so the width this file is about cannot be narrowed by a
-duplicate at all - pinned below. All three are therefore classified as
-already-total rather than exempted, and each claim is pinned behaviourally so
-the classification cannot hide a silent accept.
+Four providers needed no guard and deliberately did not get one.
+``WBCPolicy``, ``MotionBricksPolicy``, ``KimodoPolicy`` and
+``ProtoMotionsPolicy`` resolve every G1 joint they drive BY NAME inside the
+caller's list, so a bare string, a mapping, a one-shot iterator, and non-string
+or blank entries all fail that membership check already - measured, all five
+refused with a message naming the missing joints. They also tolerate a repeated
+name on purpose: where a slot is resolved by index,
+``test_flat_state_name_resolved_first_occurrence_wins`` pins that a duplicate
+resolves to its FIRST occurrence and must not shift the resolved slot, which is
+a reviewed decision this change does not reopen. ``KimodoPolicy`` and
+``ProtoMotionsPolicy`` are total for a second, stronger reason: each keys the
+emitted action dict off its canonical joint tuple rather than off the caller's
+list, so the width this file is about cannot be narrowed by a duplicate at all -
+both pinned below. All four are therefore classified as already-total rather
+than exempted, and each claim is pinned behaviourally so the classification
+cannot hide a silent accept.
+
+That last sentence was true of three of the four. ``ProtoMotionsPolicy`` was
+classified by the pull request that introduced the provider, as a one-line
+addition to ``_TOTAL_BY_MEMBERSHIP``, and the prose above still said three: the
+section that drives the by-name providers covered the other three, so the
+membership claim went unmeasured for it. Measured over all of ``tests/policies``
+before this change, 4499 passing on the unmodified tree:
+
+* Deleting its membership check outright failed exactly one test, the partial
+  list of 20 real joint names in ``tests/policies/protomotions``. None of the
+  five malformed shapes was refused by anything, which is the property being
+  claimed.
+* Making its setter fall back to the canonical joint order for any shape that is
+  not a joint list - the silent accept the classification rules out - left 4499
+  passing and 0 failing.
+* Keying its emitted action dict off the caller's list instead of the canonical
+  ``config.joint_names`` failed two, both in the observation-convention suite,
+  which resolves a REORDERED list of exactly the 29 joints and asserts the
+  resolved values. Neither reads the emitted key set, and the sim layout is not
+  that list: it prepends the free floating-base joint, so a caller list wider
+  than ``num_dofs`` was still unmeasured. The same mutation on ``KimodoPolicy``
+  fails its width pin.
+
+The by-name section below is now a table derived from ``_TOTAL_BY_MEMBERSHIP``,
+the guard the owning half already had, so a provider cannot be classified as
+already-total without being driven.
 
 ``None`` and an empty list keep their existing "auto-detect" meaning: like every
 other consumer of the shared domain, the check is gated on a truthy value.
@@ -116,10 +143,13 @@ _MUST_VALIDATE = {
 
 # Already total without the shared domain: every joint they drive is resolved by
 # name inside the caller's list, so a malformed shape fails that check instead.
-# The two index-resolved ones deliberately tolerate a repeated name (first
-# occurrence wins), so wiring them to the shared domain would reopen a reviewed
-# decision; KimodoPolicy keys its action dict off the canonical joint tuple, so
-# a duplicate cannot narrow the emitted width either way.
+# The index-resolved ones deliberately tolerate a repeated name (first occurrence
+# wins), so wiring them to the shared domain would reopen a reviewed decision;
+# KimodoPolicy and ProtoMotionsPolicy key their action dict off a canonical joint
+# tuple, so a duplicate cannot narrow the emitted width either way. Membership in
+# this set is an obligation, not an exemption: _MEMBERSHIP_SURFACES has to drive
+# every name here, which is what test_the_membership_table_covers_every_already_
+# total_surface holds.
 _TOTAL_BY_MEMBERSHIP = {
     "policies/kimodo/policy.py::KimodoPolicy",
     "policies/motionbricks/policy.py::MotionBricksPolicy",
@@ -417,7 +447,7 @@ def test_the_three_configuration_setters_now_agree() -> None:
 
 
 # --------------------------------------------------------------------------
-# The two already-total providers: pinned, not merely excused
+# The four already-total providers: pinned, not merely excused
 # --------------------------------------------------------------------------
 
 
@@ -439,62 +469,28 @@ def _wbc_policy() -> WBCPolicy:
     )
 
 
-@pytest.mark.parametrize(
-    "label,value",
-    [
-        ("bare string", "left_hip_pitch_joint"),
-        ("mapping", {"left_hip_pitch_joint": 1.0}),
-        ("non-string entry", [1, 2.5, None]),
-        ("blank name", ["", "  "]),
-    ],
-)
-def test_wbc_refuses_a_malformed_list_through_its_by_name_check(label: str, value: Any) -> None:
-    """No shared domain needed: the membership check is already total here."""
-    with pytest.raises(ValueError, match="missing expected G1"):
-        _wbc_policy().set_robot_state_keys(value)
-
-
-def test_wbc_refuses_a_one_shot_iterator_too() -> None:
-    """The iterator is consumed by the ``list(...)``, then fails membership."""
-    with pytest.raises(ValueError, match="missing expected G1"):
-        _wbc_policy().set_robot_state_keys(iter(["left_hip_pitch_joint"]))  # type: ignore[arg-type]
-
-
-@pytest.mark.parametrize(
-    "label,value",
-    [
-        ("bare string", "left_hip_pitch_joint"),
-        ("mapping", {"left_hip_pitch_joint": 1.0}),
-        ("non-string entry", [1, 2.5, None]),
-        ("blank name", ["", "  "]),
-    ],
-)
-def test_motionbricks_refuses_a_malformed_list_through_its_by_name_check(label: str, value: Any) -> None:
-    """Same shape of check, same verdict, so the same exemption is justified.
-
-    ``set_robot_state_keys`` reads no constructor state before it raises - only
-    the module-level joint list - so a bare instance is enough, as the config
-    resolution tests in ``tests/policies/wbc`` already do.
-    """
-    policy = object.__new__(MotionBricksPolicy)
-    with pytest.raises(ValueError, match="missing expected G1 joints"):
-        policy.set_robot_state_keys(value)
-
-
-def test_the_by_name_providers_still_tolerate_a_repeated_name() -> None:
-    """A reviewed decision this change deliberately does not reopen.
-
-    ``test_flat_state_name_resolved_first_occurrence_wins`` pins that a
-    duplicated joint name resolves to its FIRST occurrence. Wiring these two to
-    the shared domain would have turned that into a refusal, so the exemption is
-    load-bearing rather than convenient.
-    """
+def _wbc_keys() -> list[str]:
+    """A key list WBC accepts: the free base plus every whole-body joint."""
     from strands_robots.policies.wbc.policy import WBC_G1_ALL_JOINTS
 
-    policy = _wbc_policy()
-    keys = ["floating_base_joint", *WBC_G1_ALL_JOINTS, "left_hip_pitch_joint"]
-    policy.set_robot_state_keys(keys)
-    assert policy._robot_state_keys == keys
+    return ["floating_base_joint", *WBC_G1_ALL_JOINTS]
+
+
+def _motionbricks_policy() -> Any:
+    """A bare instance: ``set_robot_state_keys`` reads no constructor state.
+
+    It consults only the module-level joint list before it raises, so a bare
+    instance is enough - as the config resolution tests in ``tests/policies/wbc``
+    already do.
+    """
+    return object.__new__(MotionBricksPolicy)
+
+
+def _motionbricks_keys() -> list[str]:
+    """A key list MotionBricks accepts."""
+    from strands_robots.policies.motionbricks.policy import MOTIONBRICKS_G1_JOINTS
+
+    return ["floating_base_joint", *MOTIONBRICKS_G1_JOINTS]
 
 
 class _RampAgent:
@@ -532,47 +528,187 @@ def _kimodo_policy() -> Any:
     )
 
 
-@pytest.mark.parametrize(
-    "label,value",
-    [
-        ("bare string", "left_hip_pitch_joint"),
-        ("mapping", {"left_hip_pitch_joint": 1.0}),
-        ("non-string entry", [1, 2.5, None]),
-        ("blank name", ["", "  "]),
-    ],
-)
-def test_kimodo_refuses_a_malformed_list_through_its_by_name_check(label: str, value: Any) -> None:
-    """Third by-name provider, same verdict, so the same exemption is justified."""
-    with pytest.raises(ValueError, match="missing expected G1 joints"):
-        _kimodo_policy().set_robot_state_keys(value)
-
-
-def test_kimodo_refuses_a_one_shot_iterator_too() -> None:
-    """Consumed by the ``list(...)``, then it fails membership rather than binding."""
-    with pytest.raises(ValueError, match="missing expected G1 joints"):
-        _kimodo_policy().set_robot_state_keys(iter(["left_hip_pitch_joint"]))
-
-
-def test_kimodo_refusal_leaves_the_previous_joint_list_bound() -> None:
-    """Refusal binds nothing: no half-applied layout, as on every other surface."""
+def _kimodo_keys() -> list[str]:
+    """A key list Kimodo accepts."""
     from strands_robots.policies.kimodo.policy import KIMODO_G1_JOINTS
 
-    policy = _kimodo_policy()
-    good = ["floating_base_joint", *KIMODO_G1_JOINTS]
-    policy.set_robot_state_keys(good)
+    return ["floating_base_joint", *KIMODO_G1_JOINTS]
+
+
+class _RecordingSession:
+    """A deterministic stand-in for the GTP tracker session.
+
+    ``ProtoMotionsPolicy`` takes its session through the ``ProtoMotionsSession``
+    injection seam, so the construction below is the real class with the real
+    config - no onnxruntime, weights or CUDA. The inputs are recorded so a test
+    can read which joint value the tracker was actually handed.
+    """
+
+    def __init__(self) -> None:
+        self.last_inputs: dict[str, Any] = {}
+
+    def run(self, output_names: list[str] | None, inputs: dict[str, Any]) -> list[Any]:
+        """Record the inputs and return a fixed 29-DOF target vector."""
+        import numpy as np
+
+        self.last_inputs = {name: value.copy() for name, value in inputs.items()}
+        width = 29
+        targets = np.linspace(-0.1, 0.1, width, dtype=np.float32).reshape(1, width)
+        return [
+            targets,
+            targets,
+            np.full((1, width), 40.0, dtype=np.float32),
+            np.full((1, width), 2.5, dtype=np.float32),
+        ]
+
+
+def _protomotions_motion() -> Any:
+    """A flat 20-frame reference clip, so the tracker has a motion to follow."""
+    import numpy as np
+
+    from strands_robots.policies.protomotions import MotionPlayer
+
+    frames, bodies, dofs = 20, 33, 29
+    return MotionPlayer(
+        {
+            "dof_pos": np.zeros((frames, dofs), dtype=np.float32),
+            "dof_vel": np.zeros((frames, dofs), dtype=np.float32),
+            "body_rot": np.tile(np.array([0, 0, 0, 1], dtype=np.float32), (frames, bodies, 1)),
+            "body_pos": np.zeros((frames, bodies, 3), dtype=np.float32),
+            "body_vel": np.zeros((frames, bodies, 3), dtype=np.float32),
+            "body_ang_vel": np.zeros((frames, bodies, 3), dtype=np.float32),
+            "control_dt": 0.02,
+            "num_frames": frames,
+        }
+    )
+
+
+def _protomotions_policy() -> Any:
+    """A ProtoMotions tracker on the injected-session seam."""
+    from strands_robots.policies.protomotions import ProtoMotionsPolicy
+
+    return ProtoMotionsPolicy(session=_RecordingSession(), motion=_protomotions_motion())
+
+
+def _protomotions_keys() -> list[str]:
+    """A key list the GTP tracker accepts."""
+    from strands_robots.policies.protomotions import GTP_G1_JOINT_NAMES
+
+    return ["floating_base_joint", *GTP_G1_JOINT_NAMES]
+
+
+# (surface id as classified above, factory, the attribute the setter binds into,
+# a key list that surface accepts). Held against ``_TOTAL_BY_MEMBERSHIP`` by
+# ``test_the_membership_table_covers_every_already_total_surface``, so a provider
+# cannot be classified as already-total without being driven here.
+_Membership = tuple[str, Callable[[], Any], str, Callable[[], list[str]]]
+
+_MEMBERSHIP_SURFACES: list[_Membership] = [
+    ("policies/kimodo/policy.py::KimodoPolicy", _kimodo_policy, "_robot_state_keys", _kimodo_keys),
+    (
+        "policies/motionbricks/policy.py::MotionBricksPolicy",
+        _motionbricks_policy,
+        "_robot_state_keys",
+        _motionbricks_keys,
+    ),
+    (
+        "policies/protomotions/policy.py::ProtoMotionsPolicy",
+        _protomotions_policy,
+        "_robot_state_keys",
+        _protomotions_keys,
+    ),
+    ("policies/wbc/policy.py::WBCPolicy", _wbc_policy, "_robot_state_keys", _wbc_keys),
+]
+_MEMBERSHIP_IDS = [surface.split("::")[1] for surface, *_ in _MEMBERSHIP_SURFACES]
+
+# All four report the joints they could not find; WBC names the leg+waist subset
+# it drives, so this prefix is the part of the message the four have in common.
+_MEMBERSHIP_REFUSAL = "missing expected G1"
+
+# The shapes the shared domain exists for. A by-name provider has to refuse each
+# of them through its membership check, which is what "already total" asserts.
+_MALFORMED_BY_NAME: list[tuple[str, Any]] = [
+    ("bare-string", "left_hip_pitch_joint"),
+    ("mapping", {"left_hip_pitch_joint": 1.0}),
+    ("non-string-entry", [1, 2.5, None]),
+    ("blank-name", ["", "  "]),
+]
+
+
+def test_the_membership_table_covers_every_already_total_surface() -> None:
+    """Derived, so a provider cannot be classified as already-total unpinned.
+
+    The owning half carries the same guard. Without this one, the cheapest way to
+    satisfy ``test_every_surface_is_classified`` for a newly added provider is a
+    single line in ``_TOTAL_BY_MEMBERSHIP`` - which asserts totality rather than
+    measuring it, and that is how ``ProtoMotionsPolicy`` arrived.
+    """
+    assert {entry[0] for entry in _MEMBERSHIP_SURFACES} == _TOTAL_BY_MEMBERSHIP
+
+
+@pytest.mark.parametrize("label,value", _MALFORMED_BY_NAME, ids=[label for label, _ in _MALFORMED_BY_NAME])
+@pytest.mark.parametrize("entry", _MEMBERSHIP_SURFACES, ids=_MEMBERSHIP_IDS)
+def test_a_by_name_provider_refuses_a_malformed_list(entry: _Membership, label: str, value: Any) -> None:
+    """No shared domain needed: the membership check is already total here."""
+    policy = entry[1]()
+    with pytest.raises(ValueError, match=_MEMBERSHIP_REFUSAL):
+        policy.set_robot_state_keys(value)
+
+
+@pytest.mark.parametrize("entry", _MEMBERSHIP_SURFACES, ids=_MEMBERSHIP_IDS)
+def test_a_by_name_provider_refuses_a_one_shot_iterator(entry: _Membership) -> None:
+    """The iterator is consumed by the ``list(...)``, then it fails membership."""
+    policy = entry[1]()
+    with pytest.raises(ValueError, match=_MEMBERSHIP_REFUSAL):
+        policy.set_robot_state_keys(iter(["left_hip_pitch_joint"]))
+
+
+@pytest.mark.parametrize("entry", _MEMBERSHIP_SURFACES, ids=_MEMBERSHIP_IDS)
+def test_a_by_name_refusal_leaves_the_previously_bound_layout(entry: _Membership) -> None:
+    """Refusal binds nothing: no half-applied layout, as on every other surface."""
+    _, factory, attribute, accepted = entry
+    policy = factory()
+    keys = accepted()
+    policy.set_robot_state_keys(keys)
     with pytest.raises(ValueError):
         policy.set_robot_state_keys("left_hip_pitch_joint")
-    assert policy._robot_state_keys == good
+    assert getattr(policy, attribute) == keys
+
+
+@pytest.mark.parametrize("entry", _MEMBERSHIP_SURFACES, ids=_MEMBERSHIP_IDS)
+def test_a_by_name_provider_accepts_the_layout_it_resolves(entry: _Membership) -> None:
+    """The over-reach control: a list carrying every joint it drives is accepted."""
+    _, factory, attribute, accepted = entry
+    policy = factory()
+    keys = accepted()
+    policy.set_robot_state_keys(keys)
+    assert getattr(policy, attribute) == keys
+
+
+def test_the_by_name_providers_still_tolerate_a_repeated_name() -> None:
+    """A reviewed decision this change deliberately does not reopen.
+
+    ``test_flat_state_name_resolved_first_occurrence_wins`` pins that a
+    duplicated joint name resolves to its FIRST occurrence. Wiring the
+    index-resolved providers to the shared domain would have turned that into a
+    refusal, so the exemption is load-bearing rather than convenient.
+    """
+    from strands_robots.policies.wbc.policy import WBC_G1_ALL_JOINTS
+
+    policy = _wbc_policy()
+    keys = ["floating_base_joint", *WBC_G1_ALL_JOINTS, "left_hip_pitch_joint"]
+    policy.set_robot_state_keys(keys)
+    assert policy._robot_state_keys == keys
 
 
 def test_kimodo_emits_all_29_joints_even_when_the_caller_repeats_a_name() -> None:
     """The width this file is about cannot be narrowed by a duplicate here.
 
-    The other two by-name providers tolerate a repeated name because they
-    resolve a slot by index. ``KimodoPolicy`` keys the emitted action dict off
-    the canonical ``KIMODO_G1_JOINTS`` tuple instead of off the caller's list,
-    so a duplicate cannot collapse the emitted keys - the failure mode that
-    motivated the shared domain is unreachable rather than merely tolerated.
+    The index-resolved providers tolerate a repeated name because they resolve a
+    slot by index. ``KimodoPolicy`` keys the emitted action dict off the
+    canonical ``KIMODO_G1_JOINTS`` tuple instead of off the caller's list, so a
+    duplicate cannot collapse the emitted keys - the failure mode that motivated
+    the shared domain is unreachable rather than merely tolerated.
     """
     from strands_robots.policies.kimodo.policy import KIMODO_G1_JOINTS
 
@@ -581,6 +717,55 @@ def test_kimodo_emits_all_29_joints_even_when_the_caller_repeats_a_name() -> Non
     (action,) = asyncio.run(policy.get_actions({}, "walk forward"))
     assert sorted(action) == sorted(KIMODO_G1_JOINTS)
     assert len(action) == len(KIMODO_G1_JOINTS) == 29
+
+
+def test_protomotions_reads_the_first_occurrence_and_emits_the_canonical_29() -> None:
+    """The tracker's duplicate case, on the path that reads the caller's list.
+
+    ``KimodoPolicy`` ignores the observation, so its duplicate test is about the
+    emitted keys alone. The tracker resolves each joint's value by position
+    inside a flat ``observation.state``, so a repeat has two ways to go wrong
+    here: the emitted dict could be narrowed by the duplicated key, and the value
+    handed to the tracker could be read from the duplicate's slot rather than
+    from the first occurrence. Neither happens - the action dict is keyed off the
+    canonical ``config.joint_names``, and the lookup resolves to the first
+    occurrence, the rule ``test_flat_state_name_resolved_first_occurrence_wins``
+    pins for WBC.
+
+    The state vector holds its own slot index at every position, so the value the
+    tracker was handed names the slot it was read from; the duplicate's slot
+    carries a sentinel no first occurrence holds.
+    """
+    import numpy as np
+
+    from strands_robots.policies.protomotions import GTP_G1_JOINT_NAMES, ProtoMotionsPolicy
+
+    session = _RecordingSession()
+    policy = ProtoMotionsPolicy(session=session, motion=_protomotions_motion())
+    keys = ["floating_base_joint", *GTP_G1_JOINT_NAMES, GTP_G1_JOINT_NAMES[0]]
+    policy.set_robot_state_keys(keys)
+
+    state = np.arange(len(keys), dtype=np.float32)
+    sentinel = -99.0
+    state[-1] = sentinel
+
+    (action,) = asyncio.run(
+        policy.get_actions(
+            {"observation.state": state},
+            "track the clip",
+            anchor_rot_xyzw=np.array([0, 0, 0, 1], dtype=np.float32),
+            root_ang_vel_local=np.zeros(3, dtype=np.float32),
+            dof_vel=np.zeros(len(GTP_G1_JOINT_NAMES), dtype=np.float32),
+        )
+    )
+
+    assert sorted(action) == sorted(GTP_G1_JOINT_NAMES)
+    assert len(action) == len(GTP_G1_JOINT_NAMES) == 29
+
+    handed = session.last_inputs["current_dof_pos"].reshape(-1)
+    expected = np.array([keys.index(name) for name in GTP_G1_JOINT_NAMES], dtype=np.float32)
+    assert np.array_equal(handed, expected)
+    assert sentinel not in handed.tolist()
 
 
 # --------------------------------------------------------------------------
