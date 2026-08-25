@@ -1614,7 +1614,12 @@ def reposition_body_in_scene(
 # The two namespaces are kept apart in the key because MuJoCo's joint and body
 # names are independent: a joint may be named exactly like some body, so a
 # single flat string key could collide.
-_JointKey = tuple[str, str]
+#
+# Any other unnamed joint takes the three-element form
+# ``("body_joint", body_name, ordinal)``: the body alone does not single it out
+# because a body may carry several joints, but the position among them does.
+# See :func:`_joint_key`.
+_JointKey = tuple[str, str] | tuple[str, str, int]
 
 
 @dataclass(frozen=True)
@@ -1665,20 +1670,38 @@ def _joint_state_widths(jtype: int, mj: Any) -> tuple[int, int]:
 
 
 def _joint_key(model: Any, jid: int, mj: Any) -> _JointKey | None:
-    """Identify joint ``jid`` by name, or by its owning body when it has none.
+    """Identify joint ``jid`` by name, or through its owning body when it has none.
 
-    Returns ``None`` for a joint no namespace can name -- an unnamed non-free
-    joint (its body may carry several, so the body does not single it out), or
-    an unnamed free joint on an unnamed body. Such a joint cannot be matched
-    across a rebuild, so it is reported rather than guessed at.
+    Three key forms, in order of preference:
+
+    ``("joint", name)``
+        The joint carries a name, which is the handle a rebuild preserves.
+    ``("body", body_name)``
+        An unnamed free joint. The compiler refuses a free joint alongside any
+        other joint on the same body, so the body names it unambiguously.
+    ``("body_joint", body_name, ordinal)``
+        Any other unnamed joint, identified by its position among the joints of
+        its body. MuJoCo stores a body's joints contiguously from
+        ``body_jntadr`` in declaration order, so ``ordinal`` singles out one
+        joint of a body that carries several. An unnamed ``<joint>`` is the
+        ordinary MJCF spelling -- a door hinge or a drawer slide is rarely
+        named -- so dropping these would reset them on every rebuild.
+
+    Returns:
+        The key, or ``None`` when neither the joint nor its body carries a
+        name. Nothing then identifies it across a rebuild, so it is reported
+        rather than guessed at.
     """
     name = mj.mj_id2name(model, mj.mjtObj.mjOBJ_JOINT, jid)
     if name:
         return ("joint", name)
-    if int(model.jnt_type[jid]) != mj.mjtJoint.mjJNT_FREE:
+    body_id = int(model.jnt_bodyid[jid])
+    body_name = mj.mj_id2name(model, mj.mjtObj.mjOBJ_BODY, body_id)
+    if not body_name:
         return None
-    body_name = mj.mj_id2name(model, mj.mjtObj.mjOBJ_BODY, int(model.jnt_bodyid[jid]))
-    return ("body", body_name) if body_name else None
+    if int(model.jnt_type[jid]) == mj.mjtJoint.mjJNT_FREE:
+        return ("body", body_name)
+    return ("body_joint", body_name, jid - int(model.body_jntadr[body_id]))
 
 
 def _snapshot_scene_state(world: SimWorld) -> _SceneState:
@@ -1698,7 +1721,7 @@ def _snapshot_scene_state(world: SimWorld) -> _SceneState:
         key = _joint_key(model, jid, mj)
         if key is None:
             logger.debug(
-                "snapshot_scene_state: joint id %d has no name and no single owning body, state not carried over",
+                "snapshot_scene_state: neither joint id %d nor its body carries a name, state not carried over",
                 jid,
             )
             continue
@@ -1805,6 +1828,16 @@ def _restore_scene_state(world: SimWorld, snapshot: _SceneState) -> int:
 
 def _resolve_joint_key(model: Any, key: _JointKey, mj: Any) -> int:
     """Resolve a :data:`_JointKey` to a joint id in ``model``, or ``-1``."""
+    if len(key) == 3:
+        _, body_name, ordinal = key
+        bid = mj_name_to_id(model, mj.mjtObj.mjOBJ_BODY, body_name)
+        if bid < 0 or ordinal >= int(model.body_jntnum[bid]):
+            # The body is gone, or no longer carries a joint at that position.
+            return -1
+        jid = int(model.body_jntadr[bid]) + ordinal
+        # A joint that gained a name is carried by its own ``("joint", name)``
+        # key, so this handle must not also claim it.
+        return -1 if mj.mj_id2name(model, mj.mjtObj.mjOBJ_JOINT, jid) else jid
     kind, name = key
     if kind == "joint":
         return mj_name_to_id(model, mj.mjtObj.mjOBJ_JOINT, name)
