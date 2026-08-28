@@ -38,6 +38,7 @@ import numbers
 import os
 import random
 import time
+import uuid
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -47,6 +48,16 @@ import numpy as np
 from strands_robots._async_utils import _resolve_coroutine
 from strands_robots.dataset_recorder import RecordingFrameError
 from strands_robots.policies.base import resolve_chunk_length
+from strands_robots.simulation.observers import (
+    SCHEMA_VERSION as _OBSERVER_SCHEMA_VERSION,
+)
+from strands_robots.simulation.observers import (
+    RunPolicyEnded,
+    RunPolicyEvent,
+    RunPolicyObserver,
+    RunPolicyStarted,
+    RunPolicyStep,
+)
 from strands_robots.utils import (
     non_negative_whole_number_error,
     positive_count_error,
@@ -163,6 +174,13 @@ def set_eval_seed(seed: int) -> None:
 
 # Hook signature: called every control step after send_action.
 # on_frame(step_idx, observation, action) -> None
+#
+# NOTE: this is the BACKEND-OWNED hook, not a general observation seam. There is
+# exactly one per rollout and ``SimEngine.run_policy`` fills it from
+# ``_make_run_policy_hook`` (cancellation + trajectory + mesh + dataset
+# recording), so a caller supplying their own does not add observation - it
+# removes all of that. Read-only consumers belong on the ``observer`` lane
+# instead; see :mod:`strands_robots.simulation.observers`.
 OnFrame = Callable[[int, dict[str, Any], dict[str, Any]], None]
 
 # Success function: called after each step during evaluate().
@@ -1184,6 +1202,7 @@ class PolicyRunner:
         fast_mode: bool = False,
         video: VideoConfig | None = None,
         on_frame: OnFrame | None = None,
+        observer: RunPolicyObserver | None = None,
         max_onframe_failures: int | None = None,
         control_substeps: int | None = None,
         policy_kwargs: dict[str, Any] | None = None,
@@ -1232,6 +1251,36 @@ class PolicyRunner:
                 after every ``send_action``. Public extension point - backends
                 layer in recording / telemetry / graceful-stop via this hook
                 without subclassing the runner.
+
+                This is the hook the BACKEND owns. There is one per rollout and
+                :meth:`~strands_robots.simulation.base.SimEngine.run_policy`
+                fills it from ``_make_run_policy_hook``, so passing one here
+                replaces cooperative cancellation, the trajectory mirror, mesh
+                step telemetry and dataset recording rather than adding to them.
+                Read-only consumers want ``observer``.
+            observer: Optional read-only rollout observer. Receives one
+                :class:`~strands_robots.simulation.observers.RunPolicyStarted`,
+                one :class:`~strands_robots.simulation.observers.RunPolicyStep`
+                per physically applied action, and one
+                :class:`~strands_robots.simulation.observers.RunPolicyEnded` -
+                and reports the three things ``on_frame``'s signature cannot
+                carry: the backend's per-key ``send_action`` verdict, whether the
+                observation was a reused chunk snapshot, and what the legacy hook
+                did (including on the step it aborted, which the legacy step
+                accounting excludes).
+
+                Additive and independent: it does not consume the backend's hook
+                slot, and installing one changes neither the actions applied, the
+                result payload's existing fields, nor the number of observations
+                sampled. Called synchronously on this thread, so a blocking
+                observer blocks the robot; payloads are borrowed rather than
+                copied. Exceptions are contained - they never alter the rollout
+                outcome and never reach the ``max_onframe_failures`` watchdog,
+                which exists for a recorder losing dataset frames rather than a
+                visualiser that cannot draw - but each one is counted and
+                reported as ``observer_failures`` in the result json, so a stream
+                with holes says so. See
+                :mod:`strands_robots.simulation.observers`.
             policy_kwargs: Optional per-call goal payload forwarded verbatim to
                 every ``policy.get_actions(obs, instruction, **policy_kwargs)``
                 call. This is the local-sim analogue of the mesh ``tell()``
@@ -1569,6 +1618,115 @@ class PolicyRunner:
         # this they fall back to a hardcoded rate and mis-blend the chunk
         # seam at any other frequency.
         policy.set_control_frequency(control_frequency)
+
+        # Read-only observer lane. Everything below is inert when ``observer is
+        # None``: the counters stay at zero, ``_emit_event`` returns immediately,
+        # and no clock, id or sim-time read is performed - so a rollout that did
+        # not ask for the lane pays for nothing but that one identity check.
+        #
+        # ``uuid4`` rather than a counter because a run_id has to be unique
+        # across the sequential rollouts of a multi-episode ``run_policy`` AND
+        # across the concurrent ones of ``start_policy`` on different robots,
+        # and only one of those is visible from here.
+        _obs_run_id = uuid.uuid4().hex if observer is not None else ""
+        _obs_seq = 0
+        _obs_failures = 0
+        _obs_started = False
+        # Physically applied actions. Deliberately NOT ``step_count``: that one is
+        # incremented after the legacy hook, so it excludes an action the hook
+        # cancelled or lost a dataset frame on - an action the world has already
+        # executed. The lane reports what the robot did.
+        _applied_actions = 0
+        # One (wall, monotonic) anchor for the whole rollout. Event ORDER comes
+        # from the monotonic clock so an NTP correction or a ``date -s`` mid-
+        # rollout cannot reorder the stream, and the wall-clock label is derived
+        # from the anchor rather than re-read, so it cannot disagree with it.
+        _obs_anchor_utc_ns = time.time_ns() if observer is not None else 0
+        _obs_anchor_mono_ns = time.monotonic_ns() if observer is not None else 0
+
+        def _emit_event(build: Callable[[int, int, int], RunPolicyEvent]) -> None:
+            """Dispatch one observer event. Never raises, never alters the rollout.
+
+            ``build`` receives ``(event_seq, monotonic_ns, utc_ns)`` and returns
+            the event, so the sequence and both clocks are assigned in one place
+            and a caller cannot get them out of step.
+
+            The sequence number is consumed BEFORE dispatch, so an event whose
+            observer raised leaves a visible hole rather than silently renumbering
+            the ones after it.
+
+            ``except BaseException`` is deliberate and is the reason this helper
+            exists at all: ``CooperativeStop`` is a ``BaseException`` precisely so
+            a hook's broad ``except Exception`` cannot swallow a cancellation, and
+            without this an observer could raise it and cancel a rollout it is
+            only supposed to watch. ``KeyboardInterrupt`` / ``SystemExit`` are
+            re-raised because those are the operator's, not the observer's.
+            """
+            nonlocal _obs_seq, _obs_failures
+            if observer is None:
+                return
+            seq = _obs_seq
+            _obs_seq += 1
+            mono = time.monotonic_ns()
+            utc = _obs_anchor_utc_ns + (mono - _obs_anchor_mono_ns)
+            try:
+                observer(build(seq, mono, utc))
+            except (KeyboardInterrupt, SystemExit):
+                raise
+            except BaseException as e:  # noqa: BLE001 - telemetry is never fatal
+                _obs_failures += 1
+                logger.warning(
+                    "run_policy observer raised on event %d (%d failure(s) so far); "
+                    "the rollout is unaffected and the stream now has a hole: %r",
+                    seq,
+                    _obs_failures,
+                    e,
+                )
+
+        def _emit_ended(
+            *,
+            outcome: str,
+            stopped_reason: str,
+            error: BaseException | None = None,
+        ) -> None:
+            """Close the observer lifecycle. Idempotent, and a no-op if never opened.
+
+            Clearing ``_obs_started`` is what makes "exactly one Ended per
+            Started" a property of the code rather than of the call sites: the
+            terminal assembly has three exits and the error handler a fourth, and
+            a second call from any of them is dropped here instead of emitting a
+            duplicate close.
+
+            A rollout refused in pre-flight never opened a lifecycle, so there is
+            nothing to close and this returns immediately - which is what lets a
+            consumer treat an unmatched Started as a real anomaly.
+            """
+            nonlocal _obs_started
+            if not _obs_started:
+                return
+            _obs_started = False
+            _emit_event(
+                lambda seq, mono, utc: RunPolicyEnded(
+                    schema_version=_OBSERVER_SCHEMA_VERSION,
+                    run_id=_obs_run_id,
+                    event_seq=seq,
+                    monotonic_ns=mono,
+                    utc_ns=utc,
+                    outcome=outcome,
+                    stopped_reason=stopped_reason,
+                    applied_actions=_applied_actions,
+                    legacy_steps_used=step_count,
+                    action_errors=_action_errors,
+                    elapsed_s=time.monotonic() - start_mono,
+                    error_type=type(error).__name__ if error is not None else None,
+                    # Truncated: the full traceback is already in the log via
+                    # ``logger.exception``, and an event is not the place to ship
+                    # an unbounded string to a socket.
+                    error_message=str(error)[:512] if error is not None else None,
+                    observer_failures=_obs_failures,
+                )
+            )
+
         # Initialize BEFORE try so CooperativeStop never sees unbound names.
         # ``time.monotonic()``: the only thing derived from this base is how
         # long the rollout ran, and a duration is measured rather than
@@ -1580,6 +1738,10 @@ class PolicyRunner:
         # future reader does not reach for ``time.time()`` again.
         start_mono = time.monotonic()
         step_count = 0
+        # Bound before ``try`` for the same reason ``step_count`` is: the terminal
+        # observer event reports it, and setup inside the try (substep derivation,
+        # actuator discovery) can raise before the loop assigns it.
+        _action_errors = 0  # count send_action failures (unresolved keys)
         try:
             # Prefer an explicit integer step count when the caller resolved one
             # from ``n_steps`` (or the legacy ``max_steps`` alias). Recomputing
@@ -1592,6 +1754,29 @@ class PolicyRunner:
             else:
                 total_steps = int(duration * control_frequency)
             action_sleep = 1.0 / control_frequency
+
+            # Open the observer lifecycle. Emitted here rather than at the top of
+            # ``run`` so it describes a rollout that will actually begin: every
+            # pre-flight refusal above (horizon, seed, RTC deadline, callback
+            # limit, video path) has already raised or returned, so a caller can
+            # rely on "a Started is always followed by an Ended".
+            _obs_started = observer is not None
+            _emit_event(
+                lambda seq, mono, utc: RunPolicyStarted(
+                    schema_version=_OBSERVER_SCHEMA_VERSION,
+                    run_id=_obs_run_id,
+                    event_seq=seq,
+                    monotonic_ns=mono,
+                    utc_ns=utc,
+                    robot_name=robot_name,
+                    policy=type(policy).__name__,
+                    instruction=instruction,
+                    control_frequency=float(control_frequency),
+                    action_horizon=int(action_horizon),
+                    total_steps=int(total_steps),
+                    async_rtc=bool(async_rtc),
+                )
+            )
 
             # Control-rate substepping: a position-servo robot needs the physics
             # to advance for the FULL control period (1/control_frequency) after
@@ -1610,7 +1795,6 @@ class PolicyRunner:
                 control_frequency,
                 n_substeps,
             )
-            _action_errors = 0  # count send_action failures (unresolved keys)
             # Per-actuator resolution tracking (issue #165). Init a counter to 0
             # for EVERY robot actuator so a never-driven joint surfaces as
             # resolution_rate 0.0 in the result rather than being absent from the
@@ -1633,11 +1817,20 @@ class PolicyRunner:
             # the async-RTC pipeline so they send, record, count and pace
             # identically - only the chunk-ACQUISITION strategy differs between
             # the two paths.
-            def _apply(observation: dict[str, Any], action_dict: dict[str, Any]) -> None:
+            def _apply(
+                observation: dict[str, Any],
+                action_dict: dict[str, Any],
+                *,
+                obs_reused: bool = False,
+            ) -> None:
                 nonlocal step_count, _action_errors, consecutive_onframe_failures
-                nonlocal _total_failure_steps, _last_unresolved
+                nonlocal _total_failure_steps, _last_unresolved, _applied_actions
 
                 _send_result = self.sim.send_action(action_dict, robot_name=robot_name, n_substeps=n_substeps)
+                # The world has advanced. Count it here rather than beside
+                # ``step_count`` below so the tally survives a legacy hook that
+                # aborts this step.
+                _applied_actions += 1
                 _is_error = isinstance(_send_result, dict) and _send_result.get("status") == "error"
                 # Resolve which of the robot's actuators this step actually drove
                 # and which emitted keys no actuator could absorb. On the success
@@ -1675,41 +1868,91 @@ class PolicyRunner:
                     if _unresolved:
                         _last_unresolved = _unresolved
 
-                if on_frame is not None:
-                    try:
-                        on_frame(step_count, observation, action_dict)
-                        consecutive_onframe_failures = 0
-                    except CooperativeStop:
-                        # Backend (e.g. MuJoCo) signalled a graceful stop.
-                        raise
-                    except RecordingFrameError:
-                        # A frame the dataset recorder could not write is data
-                        # loss, not telemetry: the episode on disk is already
-                        # shorter than this rollout. Never counted against the
-                        # telemetry tolerance below, which resets on every
-                        # success and so would let an intermittent recorder
-                        # failure truncate the dataset without ever tripping.
-                        raise
-                    except Exception as e:
-                        # on_frame is user-provided telemetry - never fatal
-                        # *per call*. But if it fails on every step, a 500-
-                        # step episode completes "successfully" with zero
-                        # frames recorded and the dataset is silently empty.
-                        # Count consecutive failures and fail the episode
-                        # after ``onframe_failure_limit`` in a row. See GH #117.
-                        consecutive_onframe_failures += 1
-                        logger.warning(
-                            "on_frame hook failed (%d/%d consecutive): %s",
-                            consecutive_onframe_failures,
-                            onframe_failure_limit,
-                            e,
+                # The legacy hook runs inside a ``try/finally`` whose ONLY purpose
+                # is the observer emission below. Nothing about the hook's own
+                # behaviour changes: each ``except`` re-raises exactly what it
+                # raised before, so the exception type, its traceback and its
+                # ``__cause__`` reach the outer handler unchanged - the ``finally``
+                # merely runs first. That is what lets the lane report the step a
+                # cancellation or a lost dataset frame aborts on, which the legacy
+                # accounting below (``step_count += 1``) deliberately excludes.
+                _legacy_outcome = "absent"
+                try:
+                    if on_frame is not None:
+                        try:
+                            on_frame(step_count, observation, action_dict)
+                            consecutive_onframe_failures = 0
+                            _legacy_outcome = "ok"
+                        except CooperativeStop:
+                            # Backend (e.g. MuJoCo) signalled a graceful stop.
+                            _legacy_outcome = "cancelled"
+                            raise
+                        except RecordingFrameError:
+                            # A frame the dataset recorder could not write is data
+                            # loss, not telemetry: the episode on disk is already
+                            # shorter than this rollout. Never counted against the
+                            # telemetry tolerance below, which resets on every
+                            # success and so would let an intermittent recorder
+                            # failure truncate the dataset without ever tripping.
+                            _legacy_outcome = "recording_error"
+                            raise
+                        except Exception as e:
+                            # on_frame is user-provided telemetry - never fatal
+                            # *per call*. But if it fails on every step, a 500-
+                            # step episode completes "successfully" with zero
+                            # frames recorded and the dataset is silently empty.
+                            # Count consecutive failures and fail the episode
+                            # after ``onframe_failure_limit`` in a row. See GH #117.
+                            _legacy_outcome = "error"
+                            consecutive_onframe_failures += 1
+                            logger.warning(
+                                "on_frame hook failed (%d/%d consecutive): %s",
+                                consecutive_onframe_failures,
+                                onframe_failure_limit,
+                                e,
+                            )
+                            if consecutive_onframe_failures >= onframe_failure_limit:
+                                raise RuntimeError(
+                                    f"on_frame hook failed {onframe_failure_limit} times in a row; "
+                                    f"aborting episode to avoid silent dataset corruption. "
+                                    f"Last error: {e!r}"
+                                ) from e
+                finally:
+                    if observer is not None:
+                        # Normalise the backend's answer once, here, so no consumer
+                        # has to parse a ``send_action`` envelope to learn whether
+                        # the robot moved. "partial" is the case a single aggregate
+                        # error count hides: the step IS an error and the robot DID
+                        # move, so a rollout can look healthy while driving one
+                        # joint of six.
+                        if not _is_error:
+                            _resolution = "full"
+                        elif _applied:
+                            _resolution = "partial"
+                        elif _unresolved:
+                            _resolution = "none"
+                        else:
+                            _resolution = "unknown"
+                        _emit_event(
+                            lambda seq, mono, utc: RunPolicyStep(
+                                schema_version=_OBSERVER_SCHEMA_VERSION,
+                                run_id=_obs_run_id,
+                                event_seq=seq,
+                                monotonic_ns=mono,
+                                utc_ns=utc,
+                                applied_action_index=_applied_actions - 1,
+                                legacy_step_index=step_count,
+                                observation=observation,
+                                action=action_dict,
+                                observation_is_chunk_reused=obs_reused,
+                                action_resolution=_resolution,
+                                applied_action_keys=tuple(str(k) for k in _applied),
+                                unresolved_action_keys=tuple(str(k) for k in _unresolved),
+                                elapsed_s=time.monotonic() - start_mono,
+                                sim_time_s=self._maybe_sim_time(),
+                                legacy_hook_outcome=_legacy_outcome,
+                            )
                         )
-                        if consecutive_onframe_failures >= onframe_failure_limit:
-                            raise RuntimeError(
-                                f"on_frame hook failed {onframe_failure_limit} times in a row; "
-                                f"aborting episode to avoid silent dataset corruption. "
-                                f"Last error: {e!r}"
-                            ) from e
 
                 step_count += 1
 
@@ -1920,7 +2163,15 @@ class PolicyRunner:
                             step_obs = self._observe(robot_name, skip_images=_skip_images, bodies=_bodies)
                         else:
                             step_obs = cur_obs
-                        _apply(step_obs, cur_chunk[idx])
+                        # ``idx > 0`` means this action is replayed from the chunk
+                        # while ``cur_obs`` still holds the snapshot the chunk was
+                        # inferred from, so the observation is stale for it. A
+                        # recording refresh above makes it fresh again.
+                        _apply(
+                            step_obs,
+                            cur_chunk[idx],
+                            obs_reused=idx > 0 and not _record_per_step_obs,
+                        )
                         idx += 1
                         # Semantic early return: checked after EVERY applied
                         # action, so the stop lands within one control step of
@@ -1954,7 +2205,11 @@ class PolicyRunner:
                             step_obs = self._observe(robot_name, skip_images=_skip_images, bodies=_bodies)
                         else:
                             step_obs = observation
-                        _apply(step_obs, action_dict)
+                        _apply(
+                            step_obs,
+                            action_dict,
+                            obs_reused=chunk_idx > 0 and not _record_per_step_obs,
+                        )
                         # Semantic early return: checked after EVERY applied
                         # action (same cadence as the benchmark eval loop), so
                         # the remaining actions of the chunk are dropped as
@@ -1973,11 +2228,19 @@ class PolicyRunner:
             if vwriter is not None:
                 vwriter.close()
             logger.exception("PolicyRunner.run failed")
+            _emit_ended(outcome="error", stopped_reason="error", error=e)
+            _error_json: dict[str, Any] = {
+                **_rtc_telemetry(),
+                "stopped_reason": "error",
+                "steps_used": step_count,
+            }
+            if observer is not None:
+                _error_json["observer_failures"] = _obs_failures
             return {
                 "status": "error",
                 "content": [
                     {"text": f"Policy failed: {e}"},
-                    {"json": {**_rtc_telemetry(), "stopped_reason": "error", "steps_used": step_count}},
+                    {"json": _error_json},
                 ],
             }
 
@@ -2130,9 +2393,18 @@ class PolicyRunner:
             # rollout may have run its full budget, but the outcome is not a
             # retryable "budget" completion.
             payload["stopped_reason"] = "error"
+            _emit_ended(outcome="error", stopped_reason="error")
+            if observer is not None:
+                payload["observer_failures"] = _obs_failures
             return {"status": "error", "content": [{"text": text}, {"json": payload}]}
         if _action_errors > 0:
             text += f"\n\n{_action_errors}/{step_count} action steps had unresolved keys."
+        _emit_ended(outcome="success", stopped_reason=str(payload["stopped_reason"]))
+        # Read AFTER the terminal event so a failure dispatching that event is
+        # included too - the payload is the number a caller checks, so it must be
+        # the complete one.
+        if observer is not None:
+            payload["observer_failures"] = _obs_failures
         return {"status": "success", "content": [{"text": text}, {"json": payload}]}
 
     # replay(): replay a LeRobotDataset episode
@@ -3559,6 +3831,11 @@ class PolicyRunner:
 __all__ = [
     "PolicyRunner",
     "OnFrame",
+    "RunPolicyEnded",
+    "RunPolicyEvent",
+    "RunPolicyObserver",
+    "RunPolicyStarted",
+    "RunPolicyStep",
     "SuccessFn",
     "CooperativeStop",
     "TrajectoryStep",

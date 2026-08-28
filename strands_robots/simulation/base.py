@@ -48,6 +48,7 @@ if TYPE_CHECKING:
 # AST). Instead, we reference ``OnFrame`` in the ``evaluate_benchmark``
 # signature as a *string* annotation; ``from __future__ import
 # annotations`` (already in effect) makes that a no-op at runtime.
+from strands_robots.simulation.observers import RunPolicyObserver
 from strands_robots.simulation.policy_runner import PolicyRunner, VideoConfig
 from strands_robots.utils import (
     FREE_CAMERA_TOKENS,
@@ -2310,6 +2311,7 @@ class SimEngine(ABC):
         rtc_inference_timeout_s: float | None = None,
         wbc_install_torque_control: bool = True,
         stop_when: dict[str, Any] | Callable[[SimEngine], bool] | None = None,
+        observer: RunPolicyObserver | None = None,
     ) -> dict[str, Any]:
         """Run a policy loop in the simulation (blocking).
 
@@ -2513,6 +2515,29 @@ class SimEngine(ABC):
                 dict (the tool surface accepts dicts only). ``None`` (default)
                 keeps the pure step-budget horizon. The result json reports
                 why the rollout ended via ``stopped_reason``.
+            observer: Optional read-only rollout observer, forwarded verbatim to
+                :meth:`PolicyRunner.run`. Receives one
+                :class:`~strands_robots.simulation.observers.RunPolicyStarted`,
+                one :class:`~strands_robots.simulation.observers.RunPolicyStep`
+                per physically applied action and one
+                :class:`~strands_robots.simulation.observers.RunPolicyEnded`,
+                carrying the per-key ``send_action`` verdict, whether the
+                observation was a reused chunk snapshot, and what the backend's
+                own ``on_frame`` hook did.
+
+                This is a SECOND lane, not the backend's hook: the hook slot is
+                filled from ``_make_run_policy_hook`` (cancellation, trajectory,
+                mesh telemetry, dataset recording) and is not available to
+                callers, which is exactly why a read-only consumer needs this.
+                Installing one changes neither the actions applied nor any
+                existing field of the result json; it adds
+                ``observer_failures``. With ``n_episodes > 1`` each episode is
+                its own lifecycle with its own ``run_id``. Called synchronously,
+                so a blocking observer blocks the rollout, and payloads are
+                borrowed rather than copied - see
+                :mod:`strands_robots.simulation.observers` for the ownership
+                rules. Not yet wired into ``eval_policy``,
+                ``evaluate_benchmark`` or ``run_multi_policy``.
 
         Returns:
             The standard agent-tool envelope
@@ -2781,6 +2806,7 @@ class SimEngine(ABC):
                     fast_mode=fast_mode,
                     video=VideoConfig.from_dict(video),
                     on_frame=on_frame,
+                    observer=observer,
                     max_onframe_failures=max_onframe_failures,
                     control_substeps=control_substeps,
                     policy_kwargs=policy_kwargs,
@@ -2820,6 +2846,7 @@ class SimEngine(ABC):
                 async_rtc=async_rtc,
                 rtc_inference_timeout_s=rtc_inference_timeout_s,
                 stop_when=stop_when_fn,
+                observer=observer,
             )
         finally:
             if controller_cleanup is not None:
@@ -3125,6 +3152,7 @@ class SimEngine(ABC):
         async_rtc: bool | None = None,
         rtc_inference_timeout_s: float | None = None,
         stop_when: Callable[[SimEngine], bool] | None = None,
+        observer: RunPolicyObserver | None = None,
     ) -> dict[str, Any]:
         """Run ``n_episodes`` sequential rollouts; shared multi-episode driver.
 
@@ -3161,6 +3189,7 @@ class SimEngine(ABC):
                 fast_mode=fast_mode,
                 video=ep_video,
                 on_frame=on_frame,
+                observer=observer,
                 max_onframe_failures=max_onframe_failures,
                 control_substeps=control_substeps,
                 policy_kwargs=policy_kwargs,

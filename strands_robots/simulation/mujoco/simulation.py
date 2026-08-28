@@ -108,6 +108,7 @@ from strands_robots.simulation.mujoco.spec_builder import (
     _validate_size,
     material_spec_error,
 )
+from strands_robots.simulation.observers import RunPolicyObserver
 from strands_robots.simulation.policy_runner import CooperativeStop
 from strands_robots.simulation.recording import undriven_robot_state
 from strands_robots.simulation.terrain import SUPPORTED_TERRAINS, validate_difficulty, validate_terrain
@@ -5327,6 +5328,7 @@ class MuJoCoSimEngine(
         rtc_inference_timeout_s: float | None = None,
         wbc_install_torque_control: bool = True,
         stop_when: dict[str, Any] | Callable[[SimEngine], bool] | None = None,
+        observer: RunPolicyObserver | None = None,
     ) -> dict[str, Any]:
         """MuJoCo ``run_policy`` override: pre-flight world check + graceful stop.
 
@@ -5381,6 +5383,7 @@ class MuJoCoSimEngine(
                 rtc_inference_timeout_s=rtc_inference_timeout_s,
                 wbc_install_torque_control=wbc_install_torque_control,
                 stop_when=stop_when,
+                observer=observer,
             )
         finally:
             if self._world is not None and registered(self._world.robots, robot_name):

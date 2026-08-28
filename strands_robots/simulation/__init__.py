@@ -86,6 +86,13 @@ from strands_robots.simulation.models import (
     SimWorld,
     TrajectoryStep,
 )
+from strands_robots.simulation.observers import (
+    RunPolicyEnded,
+    RunPolicyEvent,
+    RunPolicyObserver,
+    RunPolicyStarted,
+    RunPolicyStep,
+)
 from strands_robots.simulation.predicates import (
     PREDICATE_REGISTRY,
     make_predicate,
@@ -130,6 +137,12 @@ __all__ = [
     "SimCamera",
     "SimWorld",
     "TrajectoryStep",
+    # Read-only rollout observability (light - stdlib dataclasses only)
+    "RunPolicyStarted",
+    "RunPolicyStep",
+    "RunPolicyEnded",
+    "RunPolicyEvent",
+    "RunPolicyObserver",
     # MuJoCo scene builder (MjSpec-based, replaces MJCFBuilder)
     "SpecBuilder",
     # Model registry
