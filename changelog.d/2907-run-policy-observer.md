@@ -50,11 +50,19 @@ Failures are contained but never hidden. An observer exception cannot change the
 rollout's outcome and never reaches the `max_onframe_failures` watchdog - that
 exists so a recorder losing dataset frames cannot produce a silently empty
 dataset (GH #117), which is not the same event as a visualiser that cannot draw.
-`CooperativeStop` is contained too, because it is a `BaseException` precisely so a
-hook's broad `except Exception` cannot swallow a cancellation, and without that
-guard any observer could cancel a rollout it is only supposed to watch. Every
-failure increments `observer_failures`, reported in the result json, so a stream
-with holes says it has them.
+`CooperativeStop` is contained too, and named explicitly: it is a `BaseException`
+precisely so a hook's broad `except Exception` cannot swallow a cancellation, and
+without naming it any observer could cancel a rollout it is only supposed to
+watch. That is the whole reason the guard cannot simply be `except Exception`,
+and it is why the clause is `except (CooperativeStop, Exception)` rather than
+`except BaseException` - the smallest superset that keeps a stop from escaping an
+observer. `KeyboardInterrupt`, `SystemExit`, `GeneratorExit` and
+`asyncio.CancelledError` propagate, none of them being an `Exception` subclass: a
+generator closed underneath a visualiser, or a task cancelled while one was
+drawing, is a teardown rather than a drawing failure, and counting it as an
+observer failure on a rollout that then ran to its full budget said the opposite.
+Every contained failure increments `observer_failures`, reported in the result
+json, so a stream with holes says it has them.
 
 The lane is inert when unused: no clock is read, no id is minted and no sim-time
 lookup is performed unless an observer is installed, and `observer_failures`

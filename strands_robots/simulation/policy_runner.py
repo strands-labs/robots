@@ -1655,12 +1655,19 @@ class PolicyRunner:
             observer raised leaves a visible hole rather than silently renumbering
             the ones after it.
 
-            ``except BaseException`` is deliberate and is the reason this helper
-            exists at all: ``CooperativeStop`` is a ``BaseException`` precisely so
-            a hook's broad ``except Exception`` cannot swallow a cancellation, and
-            without this an observer could raise it and cancel a rollout it is
-            only supposed to watch. ``KeyboardInterrupt`` / ``SystemExit`` are
-            re-raised because those are the operator's, not the observer's.
+            Naming ``CooperativeStop`` is the reason this helper exists at all:
+            it is a ``BaseException`` precisely so a hook's broad
+            ``except Exception`` cannot swallow a cancellation, so without it
+            here an observer could raise one and cancel a rollout it is only
+            supposed to watch. The tuple is the smallest superset that does
+            that job. ``except BaseException`` would also have done it, and it
+            covered three more signals that are not an observer's to absorb:
+            ``GeneratorExit`` and ``asyncio.CancelledError`` were counted as
+            observer telemetry failures and dropped, on the same reasoning that
+            already re-raises ``KeyboardInterrupt`` / ``SystemExit`` just below.
+            None of those four is an ``Exception`` subclass, so this tuple lets
+            them propagate by construction; the explicit re-raise is kept as a
+            guard against a future widening of the clause under it.
             """
             nonlocal _obs_seq, _obs_failures
             if observer is None:
@@ -1673,7 +1680,7 @@ class PolicyRunner:
                 observer(build(seq, mono, utc))
             except (KeyboardInterrupt, SystemExit):
                 raise
-            except BaseException as e:  # noqa: BLE001 - telemetry is never fatal
+            except (CooperativeStop, Exception) as e:
                 _obs_failures += 1
                 logger.warning(
                     "run_policy observer raised on event %d (%d failure(s) so far); "
@@ -1724,6 +1731,55 @@ class PolicyRunner:
                     # an unbounded string to a socket.
                     error_message=str(error)[:512] if error is not None else None,
                     observer_failures=_obs_failures,
+                )
+            )
+
+        def _emit_step(
+            *,
+            observation: dict[str, Any],
+            action: dict[str, Any],
+            observation_is_chunk_reused: bool,
+            action_resolution: str,
+            applied_action_keys: tuple[str, ...],
+            unresolved_action_keys: tuple[str, ...],
+            legacy_hook_outcome: str,
+        ) -> None:
+            """Emit one Step event.
+
+            Named rather than written as a ``lambda`` at the call site because
+            that call site is a ``finally`` block, and ``py/exit-from-finally``
+            reads a lambda body's implicit return as a ``return`` leaving the
+            block it sits in. That block contains no ``return`` / ``break`` /
+            ``continue`` of its own, so the report was about the closure's
+            position rather than about any control flow, and moving the closure
+            out of the block is what answers it. It also leaves the ``finally``
+            holding a single call, which is the shape :func:`_emit_ended`
+            already has.
+
+            The three values read from the enclosing scope - the applied-action
+            index, the elapsed duration and the sim clock - stay inside the
+            closure so they are still sampled when the event is built rather
+            than when this is called; ``_emit_event`` invokes the builder
+            synchronously, so both read the same values either way.
+            """
+            _emit_event(
+                lambda seq, mono, utc: RunPolicyStep(
+                    schema_version=_OBSERVER_SCHEMA_VERSION,
+                    run_id=_obs_run_id,
+                    event_seq=seq,
+                    monotonic_ns=mono,
+                    utc_ns=utc,
+                    applied_action_index=_applied_actions - 1,
+                    legacy_step_index=step_count,
+                    observation=observation,
+                    action=action,
+                    observation_is_chunk_reused=observation_is_chunk_reused,
+                    action_resolution=action_resolution,
+                    applied_action_keys=applied_action_keys,
+                    unresolved_action_keys=unresolved_action_keys,
+                    elapsed_s=time.monotonic() - start_mono,
+                    sim_time_s=self._maybe_sim_time(),
+                    legacy_hook_outcome=legacy_hook_outcome,
                 )
             )
 
@@ -1933,25 +1989,14 @@ class PolicyRunner:
                             _resolution = "none"
                         else:
                             _resolution = "unknown"
-                        _emit_event(
-                            lambda seq, mono, utc: RunPolicyStep(
-                                schema_version=_OBSERVER_SCHEMA_VERSION,
-                                run_id=_obs_run_id,
-                                event_seq=seq,
-                                monotonic_ns=mono,
-                                utc_ns=utc,
-                                applied_action_index=_applied_actions - 1,
-                                legacy_step_index=step_count,
-                                observation=observation,
-                                action=action_dict,
-                                observation_is_chunk_reused=obs_reused,
-                                action_resolution=_resolution,
-                                applied_action_keys=tuple(str(k) for k in _applied),
-                                unresolved_action_keys=tuple(str(k) for k in _unresolved),
-                                elapsed_s=time.monotonic() - start_mono,
-                                sim_time_s=self._maybe_sim_time(),
-                                legacy_hook_outcome=_legacy_outcome,
-                            )
+                        _emit_step(
+                            observation=observation,
+                            action=action_dict,
+                            observation_is_chunk_reused=obs_reused,
+                            action_resolution=_resolution,
+                            applied_action_keys=tuple(str(k) for k in _applied),
+                            unresolved_action_keys=tuple(str(k) for k in _unresolved),
+                            legacy_hook_outcome=_legacy_outcome,
                         )
 
                 step_count += 1
