@@ -67,6 +67,8 @@ from typing import Any
 
 from strands import tool
 
+from strands_robots.tools.g1._g1_common import snapshot_handle_refusal
+
 
 @tool
 def g1_mainboard(driver: Any) -> dict[str, Any]:
@@ -112,6 +114,10 @@ def g1_mainboard(driver: Any) -> dict[str, Any]:
         default), so a partial reading is decidable rather than
         surfaced as an empty dict.
     """
+    refusal = snapshot_handle_refusal("g1_mainboard", driver)
+    if refusal is not None:
+        return refusal
+
     snapshot = driver._snapshot("_mainboard")
     if snapshot is None:
         return {
