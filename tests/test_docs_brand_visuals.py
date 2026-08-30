@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import xml.dom.minidom
 from pathlib import Path
+from xml.etree import ElementTree
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DOCS = REPO_ROOT / "docs"
@@ -70,6 +71,26 @@ def test_readme_embeds_all_brand_svgs() -> None:
     text = README.read_text(encoding="utf-8")
     for name in BRAND_SVGS:
         assert f"docs/assets/{name}" in text, f"README no longer embeds {name}"
+
+
+def test_hero_loop_rails_sit_beside_the_node_that_references_them() -> None:
+    """ROBOTS rail is left (beside Tools); POLICIES rail is right (beside Act).
+
+    The hero loop's Tools node (left, ``sim - teleop - record - mesh``) faces
+    the robots, and its Act node (right, ``policy - IK - joint targets``) is
+    driven by a policy, so each capability rail must sit beside the loop node
+    that references it (#3007). Asserted as a relationship between the two
+    rail headings rather than as fixed coordinates, so a future re-layout
+    that keeps the semantics is free to move both rails.
+    """
+    root = ElementTree.fromstring((ASSETS / "hero_loop.svg").read_text(encoding="utf-8"))
+    ns = "{http://www.w3.org/2000/svg}"
+    heads = {t.text: float(t.get("x", "0")) for t in root.iter(f"{ns}text") if t.text in ("POLICIES", "ROBOTS")}
+    assert set(heads) == {"POLICIES", "ROBOTS"}, heads
+    assert heads["ROBOTS"] < heads["POLICIES"], (
+        "ROBOTS must be the left rail (beside Tools: sim/teleop/record/mesh) and "
+        "POLICIES the right rail (beside Act: policy/IK/joint targets)"
+    )
 
 
 def test_extra_css_defines_brand_figure() -> None:
