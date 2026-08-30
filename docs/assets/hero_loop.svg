@@ -225,32 +225,32 @@
     <line x1="526" y1="360" x2="408" y2="360"/>
   </g>
 
-  <!-- ===================== left rail: policy providers ===================== -->
+  <!-- ===================== left rail: embodiments ===================== -->
   <g font-size="12.5" font-weight="600" fill="#cfd3da">
-    <text x="80" y="150" font-size="11" font-weight="700" letter-spacing="2" fill="#00FF77">POLICIES</text>
-    <g><rect x="60" y="166" width="150" height="36" rx="18" fill="#ffffff" fill-opacity="0.05" stroke="#00FF77" stroke-opacity="0.4"/><text x="80" y="189">Cosmos 3</text>
+    <text x="80" y="150" font-size="11" font-weight="700" letter-spacing="2" fill="#22D3EE">ROBOTS</text>
+    <g><rect x="60" y="166" width="150" height="36" rx="18" fill="#ffffff" fill-opacity="0.05" stroke="#22D3EE" stroke-opacity="0.4"/><text x="80" y="189">SO-100 / SO-101</text>
        <animate attributeName="opacity" from="0" to="1" begin="0.1s" dur="0.5s" fill="freeze"/></g>
-    <g><rect x="60" y="212" width="150" height="36" rx="18" fill="#ffffff" fill-opacity="0.05" stroke="#00FF77" stroke-opacity="0.4"/><text x="80" y="235">MolmoAct2</text>
+    <g><rect x="60" y="212" width="150" height="36" rx="18" fill="#ffffff" fill-opacity="0.05" stroke="#22D3EE" stroke-opacity="0.4"/><text x="80" y="235">Franka / UR5e</text>
        <animate attributeName="opacity" from="0" to="1" begin="0.2s" dur="0.5s" fill="freeze"/></g>
-    <g><rect x="60" y="258" width="150" height="36" rx="18" fill="#ffffff" fill-opacity="0.05" stroke="#00FF77" stroke-opacity="0.4"/><text x="80" y="281">GR00T N1.7</text>
+    <g><rect x="60" y="258" width="150" height="36" rx="18" fill="#ffffff" fill-opacity="0.05" stroke="#22D3EE" stroke-opacity="0.4"/><text x="80" y="281">ALOHA bimanual</text>
        <animate attributeName="opacity" from="0" to="1" begin="0.3s" dur="0.5s" fill="freeze"/></g>
-    <g><rect x="60" y="304" width="150" height="36" rx="18" fill="#ffffff" fill-opacity="0.05" stroke="#00FF77" stroke-opacity="0.4"/><text x="80" y="327">Pi0.6</text>
+    <g><rect x="60" y="304" width="150" height="36" rx="18" fill="#ffffff" fill-opacity="0.05" stroke="#22D3EE" stroke-opacity="0.4"/><text x="80" y="327">Unitree G1 / Go2</text>
        <animate attributeName="opacity" from="0" to="1" begin="0.4s" dur="0.5s" fill="freeze"/></g>
-    <g><rect x="60" y="350" width="150" height="36" rx="18" fill="#ffffff" fill-opacity="0.05" stroke="#00FF77" stroke-opacity="0.4"/><text x="80" y="373">Curobo</text>
-       <animate attributeName="opacity" from="0" to="1" begin="0.5s" dur="0.5s" fill="freeze"/></g>
   </g>
 
-  <!-- ===================== right rail: embodiments ===================== -->
+  <!-- ===================== right rail: policy providers ===================== -->
   <g font-size="12.5" font-weight="600" fill="#cfd3da" text-anchor="end">
-    <text x="1120" y="150" font-size="11" font-weight="700" letter-spacing="2" fill="#22D3EE">ROBOTS</text>
-    <g><rect x="990" y="166" width="150" height="36" rx="18" fill="#ffffff" fill-opacity="0.05" stroke="#22D3EE" stroke-opacity="0.4"/><text x="1120" y="189">SO-100 / SO-101</text>
+    <text x="1120" y="150" font-size="11" font-weight="700" letter-spacing="2" fill="#00FF77">POLICIES</text>
+    <g><rect x="990" y="166" width="150" height="36" rx="18" fill="#ffffff" fill-opacity="0.05" stroke="#00FF77" stroke-opacity="0.4"/><text x="1120" y="189">Cosmos 3</text>
        <animate attributeName="opacity" from="0" to="1" begin="0.5s" dur="0.5s" fill="freeze"/></g>
-    <g><rect x="990" y="212" width="150" height="36" rx="18" fill="#ffffff" fill-opacity="0.05" stroke="#22D3EE" stroke-opacity="0.4"/><text x="1120" y="235">Franka / UR5e</text>
+    <g><rect x="990" y="212" width="150" height="36" rx="18" fill="#ffffff" fill-opacity="0.05" stroke="#00FF77" stroke-opacity="0.4"/><text x="1120" y="235">MolmoAct2</text>
        <animate attributeName="opacity" from="0" to="1" begin="0.6s" dur="0.5s" fill="freeze"/></g>
-    <g><rect x="990" y="258" width="150" height="36" rx="18" fill="#ffffff" fill-opacity="0.05" stroke="#22D3EE" stroke-opacity="0.4"/><text x="1120" y="281">ALOHA bimanual</text>
+    <g><rect x="990" y="258" width="150" height="36" rx="18" fill="#ffffff" fill-opacity="0.05" stroke="#00FF77" stroke-opacity="0.4"/><text x="1120" y="281">GR00T N1.7</text>
        <animate attributeName="opacity" from="0" to="1" begin="0.7s" dur="0.5s" fill="freeze"/></g>
-    <g><rect x="990" y="304" width="150" height="36" rx="18" fill="#ffffff" fill-opacity="0.05" stroke="#22D3EE" stroke-opacity="0.4"/><text x="1120" y="327">Unitree G1 / Go2</text>
+    <g><rect x="990" y="304" width="150" height="36" rx="18" fill="#ffffff" fill-opacity="0.05" stroke="#00FF77" stroke-opacity="0.4"/><text x="1120" y="327">Pi0.6</text>
        <animate attributeName="opacity" from="0" to="1" begin="0.8s" dur="0.5s" fill="freeze"/></g>
+    <g><rect x="990" y="350" width="150" height="36" rx="18" fill="#ffffff" fill-opacity="0.05" stroke="#00FF77" stroke-opacity="0.4"/><text x="1120" y="373">Curobo</text>
+       <animate attributeName="opacity" from="0" to="1" begin="0.9s" dur="0.5s" fill="freeze"/></g>
   </g>
 
   <!-- ===================== bottom proof ticker ===================== -->
