@@ -252,7 +252,7 @@ def test_2480_a_pending_check_does_not_mask_a_reviewer_who_can_act_now() -> None
     [
         ({REQUIRED: "failure"}, "required-check-failing", mod.AUTHOR),
         ({REQUIRED: "timed_out"}, "required-check-failing", mod.AUTHOR),
-        ({REQUIRED: "cancelled"}, "required-check-failing", mod.AUTHOR),
+        ({REQUIRED: "cancelled"}, "required-check-cancelled", mod.MAINTAINER),
         ({REQUIRED: None}, "required-check-pending", mod.NOBODY),
         ({}, "required-check-absent", mod.MAINTAINER),
         ({"some other check": "failure"}, "required-check-absent", mod.MAINTAINER),
@@ -747,6 +747,121 @@ def test_a_rerun_that_succeeded_does_not_retire_a_failing_sibling(
 
     monkeypatch.setattr(mod, "_get", fake_get)
     assert mod.resolve_check_conclusions("o/r", "abc", "t") == {REQUIRED: "failure"}
+
+
+@pytest.mark.parametrize(
+    "order",
+    [
+        ("live-first", (None, "cancelled")),
+        ("cancelled-first", ("cancelled", None)),
+    ],
+    ids=lambda case: case[0],
+)
+def test_3014_a_cancelled_run_does_not_answer_for_the_run_that_superseded_it(
+    monkeypatch: pytest.MonkeyPatch, order: tuple[str, tuple[str | None, ...]]
+) -> None:
+    """#3014's head carried the required context cancelled *and* still running.
+
+    Head ``ecb07a41`` at 2026-08-30: the run started 13:15:35Z was cancelled by
+    the concurrency group when a second ``pull_request`` event arrived for the
+    same sha, and the run that replaced it was still in progress at 13:45:32Z.
+    The sweep reported ``required-check-failing`` owed by *the author* and warned
+    that no reviewer could clear it. Nothing had failed.
+
+    Parametrized over both page orders because which run the API lists first is
+    its business, not this check's -- and #1914 measured exactly that
+    instability: two reads of one unchanged sha ten minutes apart disagreed.
+    """
+    _, conclusions = order
+
+    def fake_get(url: str, token: str) -> Any:
+        if "check-runs" in url:
+            return {"check_runs": [{"name": REQUIRED, "conclusion": c} for c in conclusions]}
+        return {"statuses": []}
+
+    monkeypatch.setattr(mod, "_get", fake_get)
+    assert mod.resolve_check_conclusions("o/r", "abc", "t") == {REQUIRED: None}
+
+
+@pytest.mark.parametrize("order", [("cancelled", "failure"), ("failure", "cancelled")])
+def test_a_cancellation_does_not_retire_a_real_failure_either(
+    monkeypatch: pytest.MonkeyPatch, order: tuple[str, str]
+) -> None:
+    """Ranking a cancellation below every verdict must not hide one.
+
+    The fix above makes a cancellation lose to a live sibling; this is the other
+    direction, and it is the one that would be expensive to get wrong -- a
+    genuinely failing required check reported as cancelled sends the author away
+    from work they do owe.
+    """
+
+    def fake_get(url: str, token: str) -> Any:
+        if "check-runs" in url:
+            return {"check_runs": [{"name": REQUIRED, "conclusion": c} for c in order]}
+        return {"statuses": []}
+
+    monkeypatch.setattr(mod, "_get", fake_get)
+    assert mod.resolve_check_conclusions("o/r", "abc", "t") == {REQUIRED: "failure"}
+
+
+def test_a_cancelled_required_check_is_not_owed_by_the_author() -> None:
+    """The two outcomes name opposite parties, so they cannot share a name.
+
+    A cancellation is a statement about the scheduler, not about the diff, so
+    there is nothing for the author to fix and the remedy is a re-run. It stays
+    a blocker -- the head carries no verdict for a required context -- but not a
+    *finding*, because a finding is defined as what an author-side pass can
+    clear alone, and this is not that.
+    """
+    blockers = mod.evaluate(state(check_conclusions={REQUIRED: "cancelled"}), MAIN)
+
+    assert outcomes(blockers) == [mod.REQUIRED_CHECK_CANCELLED]
+    assert blockers[0].owed_by == mod.MAINTAINER
+    assert not blockers[0].is_finding
+    # The remedy names the re-run, and warns off the push that would cost the
+    # approval twice under dismiss_stale_reviews_on_push plus
+    # require_last_push_approval.
+    assert "re-run" in blockers[0].detail.lower()
+    assert "dismiss" in blockers[0].detail.lower()
+
+
+def test_a_timed_out_required_check_is_still_the_authors() -> None:
+    """The boundary of the rule above, in the direction that costs more.
+
+    ``timed_out`` reads like a scheduler verdict and is not one: the job ran and
+    failed to finish inside its own deadline, which is a statement about the
+    tree. Folding it in with the cancellations would send a real failure to a
+    maintainer as a re-run.
+    """
+    blockers = mod.evaluate(state(check_conclusions={REQUIRED: "timed_out"}), MAIN)
+
+    assert outcomes(blockers) == [mod.REQUIRED_CHECK_FAILING]
+    assert blockers[0].owed_by == mod.AUTHOR
+
+
+def test_a_cancelled_required_check_does_not_warn_that_the_author_owes_it(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """End to end: the ``::warning`` and the exit status both stop firing.
+
+    This is the whole cost of the defect. The sweep printed "Blocked on
+    something no reviewer can clear" over #3014 and exited 1, which is the
+    signal a scheduled pass acts on -- so it spent a cycle looking for a failure
+    that did not exist, on the one pull request where the honest answer was that
+    the answer was not in yet.
+    """
+    monkeypatch.setattr(mod, "resolve_open_pull_requests", lambda repo, token: [3014])
+    monkeypatch.setattr(
+        mod, "resolve_state", lambda repo, pr, token: state(number=pr, check_conclusions={REQUIRED: "cancelled"})
+    )
+    monkeypatch.setattr(mod, "resolve_ruleset", lambda repo, base, token: MAIN)
+
+    exit_code = mod.main(["--repo", "o/r", "--token", "t", "--all-open"])
+    captured = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "::warning" not in captured
+    assert "required-check-cancelled | a maintainer" in captured
 
 
 def test_a_legacy_commit_status_can_supply_a_required_context(

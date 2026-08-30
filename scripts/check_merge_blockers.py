@@ -88,6 +88,27 @@ is*, so the outcomes group that way rather than by severity:
     owed by a reviewer -- measured on #1035, which read
     ``pusher-only-approval`` while it was ``DIRTY``. Re-read to resolve it.
 
+``required-check-cancelled``
+    A **maintainer**, by re-running the run. A cancelled run is not a verdict
+    about the tree; it is what the concurrency group leaves behind when a
+    second ``pull_request`` event arrives for one head, so the branch is
+    unjudged rather than judged badly. #1800 established that reading for the
+    roll-up and #1914 for a pull request head, and #1915 removed the producer
+    that was avoidable -- the sha-invariant ``types`` override. The producer
+    that remains is deliberate: reopening a pull request is this repository's
+    documented remedy both for a head carrying no check suite (#1987) and for a
+    stale ``headRefOid`` (#2508), and it necessarily cancels the run in flight.
+    So the state is reachable by following AGENTS.md, and cannot be removed --
+    only read correctly.
+
+    Kept apart from ``required-check-failing`` because the two name opposite
+    parties, and this one was misfiled as that one. Measured on #3014, whose
+    head ``ecb07a41`` carried the required context twice: ``cancelled`` at
+    13:15:35Z, superseded by the run still in progress at 13:45:32Z. This check
+    reported ``required-check-failing`` owed by *the author*, beside a
+    ``::warning`` asserting no reviewer could clear it. Nothing had failed and
+    the author owed nothing -- the answer was not in yet.
+
 ``required-check-absent``
     A **maintainer**. *Which* move is decided by the head's check-suite census,
     which is why that is read rather than assumed. Suites present with at least
@@ -206,6 +227,7 @@ MERGE_STATE_UNKNOWN = "merge-state-unknown"
 DRAFT = "draft"
 REQUIRED_CHECK_FAILING = "required-check-failing"
 REQUIRED_CHECK_PENDING = "required-check-pending"
+REQUIRED_CHECK_CANCELLED = "required-check-cancelled"
 REQUIRED_CHECK_ABSENT = "required-check-absent"
 CHECK_SUITE_ABSENT = "check-suite-absent"
 UNRESOLVED_THREADS = "unresolved-threads"
@@ -227,6 +249,7 @@ _OWED_BY: dict[str, str] = {
     DRAFT: AUTHOR,
     REQUIRED_CHECK_FAILING: AUTHOR,
     REQUIRED_CHECK_PENDING: NOBODY,
+    REQUIRED_CHECK_CANCELLED: MAINTAINER,
     REQUIRED_CHECK_ABSENT: MAINTAINER,
     CHECK_SUITE_ABSENT: MAINTAINER,
     UNRESOLVED_THREADS: AUTHOR,
@@ -352,6 +375,18 @@ def _plural(count: int, noun: str) -> str:
 
 
 _HELD = "action_required"
+_CANCELLED = "cancelled"
+
+
+def _is_cancelled(conclusion: str | None) -> bool:
+    """Whether a conclusion is a cancellation, i.e. the absence of a verdict.
+
+    ``timed_out`` is deliberately not folded in here. A job killed by its own
+    deadline did run and did fail to finish, which is a statement about the
+    tree the author owes; a cancellation is a statement about the *scheduler*
+    and says nothing about the diff.
+    """
+    return (conclusion or "").lower() == _CANCELLED
 
 
 def _held_suites(census: tuple[str | None, ...]) -> int:
@@ -493,6 +528,18 @@ def evaluate(state: PullRequestState, rules: Ruleset) -> tuple[Blocker, ...]:
                     REQUIRED_CHECK_PENDING,
                     "required_status_checks",
                     f"Required check {context!r} is still running.",
+                )
+            )
+        elif _is_cancelled(conclusion):
+            found.append(
+                Blocker(
+                    REQUIRED_CHECK_CANCELLED,
+                    "required_status_checks",
+                    f"Required check {context!r} was cancelled, so the head "
+                    f"carries no verdict for it and none is alleged. Re-run "
+                    f"the run rather than pushing: a push re-triggers the "
+                    f"check but dismisses every approval and makes the pushing "
+                    f"account ineligible to re-supply one.",
                 )
             )
         elif conclusion.lower() not in ("success", "neutral", "skipped"):
@@ -674,6 +721,10 @@ def resolve_check_conclusions(repo: str, head_sha: str, token: str) -> dict[str,
     kept as ``None`` rather than coerced: "still running" and "failed" ask for
     different things. Both surfaces are read because a required context can be
     supplied by either, and the ruleset names a context without saying which.
+
+    One context can appear more than once on a head, and then the answer kept is
+    the worst *verdict* -- with a cancellation ranked below all of them, because
+    it is not a verdict. See ``_is_cancelled``.
     """
     conclusions: dict[str, str | None] = {}
 
@@ -684,11 +735,21 @@ def resolve_check_conclusions(repo: str, head_sha: str, token: str) -> dict[str,
         if not name:
             continue
         conclusion = run.get("conclusion")
-        # A context appearing twice keeps its worst answer: a re-run that
-        # succeeded does not retire a sibling that did not.
-        if name in conclusions and conclusions[name] not in (None, "success"):
-            continue
-        conclusions[str(name)] = conclusion
+        key = str(name)
+        if key in conclusions:
+            recorded = conclusions[key]
+            # A cancelled run carries no verdict, so it neither displaces one
+            # nor survives one. Both directions are needed because the ordering
+            # of this page is the API's business: the superseded half of a
+            # restarted required check must not answer for the run that
+            # superseded it, whichever of the two is read first.
+            if _is_cancelled(conclusion):
+                continue
+            # Otherwise a context appearing twice keeps its worst answer: a
+            # re-run that succeeded does not retire a sibling that did not.
+            if not _is_cancelled(recorded) and recorded not in (None, "success"):
+                continue
+        conclusions[key] = conclusion
 
     status = _get(f"{API_ROOT}/repos/{repo}/commits/{head_sha}/status", token)
     if isinstance(status, dict):

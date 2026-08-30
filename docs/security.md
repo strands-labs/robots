@@ -55,7 +55,7 @@ mTLS alone is not sufficient - pair it with an access-control list:
 
 - The built-in default ACL is permissive: any CA-signed peer may publish and subscribe on any key. If you forget to supply an ACL, the SDK warns on every session open.
 - Supply an operator ACL via `STRANDS_MESH_ACL_FILE` that enumerates each peer's certificate CN and the key expressions it may use. See [`examples/mesh/mesh_acl_example.json5`](https://github.com/strands-labs/robots/blob/main/examples/mesh/mesh_acl_example.json5) and [`examples/mesh/mesh_acl_strict_per_peer.json5`](https://github.com/strands-labs/robots/blob/main/examples/mesh/mesh_acl_strict_per_peer.json5).
-- `STRANDS_MESH_ACCEPT_PERMISSIVE_ACL=1` exists only to silence the permissive-ACL warning when you have deliberately accepted it (e.g. a closed lab). Do not set it in production - it does not make the mesh safer, it only quiets the reminder that it is not.
+- `STRANDS_MESH_ACCEPT_PERMISSIVE_ACL=1` is the acknowledgement token that lets a **blacklist-shaped** operator ACL load. See [Blacklist ACL acknowledgement](#blacklist-acl-acknowledgement-strands_mesh_accept_permissive_acl) below.
 - An ACL file the loader cannot read is refused, not ignored. A missing, oversize, non-UTF-8, malformed, or too-deeply-nested file is reported as an unloadable ACL, which the start-time gate treats as the permissive default and therefore refuses to bring the wire up. The error names the path and the reason, so a typo in the ACL stops the mesh rather than quietly widening it.
 
 > ⚠️ **WAN/cloud Zenoh routers MUST deploy a topic-level ACL.**
@@ -95,6 +95,21 @@ None of the three may be a symlink: the loader rejects a symlinked CA, certifica
 - The default tracks the hardcoded `strands/...` prefix every mesh component emits (`mesh.core`, `mesh.sensors`, `mesh.input`, the IoT path). Change it *only* alongside every peer -- a rolling change across a fleet leaves one half unable to see the other for the duration of the roll.
 
 Reference: `strands_robots.mesh._zenoh_config.resolve_namespace`.
+
+### Blacklist ACL acknowledgement (`STRANDS_MESH_ACCEPT_PERMISSIVE_ACL`)
+
+An operator ACL supplied via `STRANDS_MESH_ACL_FILE` can be written in one of two shapes, and one of them is a load-bearing anti-pattern:
+
+- `default_permission: "deny"` **+ explicit `allow` rules** — a *whitelist* policy. Every key expression is denied by default; only the enumerated rules open a hole. Any gap in the rule set silently denies rather than exposes.
+- `default_permission: "allow"` **+ explicit `rules`** — a *blacklist* policy. Every key expression is permitted by default; the rules enumerate what to close. Any gap in the rule set — a key expression an operator forgot to name — is silently open on the wire.
+
+`_acl_config._load_acl_file` refuses the second shape at ACL load with a `PermissiveACLError` unless `STRANDS_MESH_ACCEPT_PERMISSIVE_ACL` is set to `1`, `true`, or `yes` (case-insensitive, whitespace-stripped). The refusal exists so a copy-pasted lab ACL — where `default_permission: "allow"` + one or two convenience `rules` is common — cannot ship to a production fleet without an operator writing the acknowledgement variable, which forces the trade-off into a config-file review rather than a silent widening at deploy time.
+
+- The token has **two further effects** on the built-in permissive default (`default_permission: "allow"` **with no rules**), which is a *different* posture from the blacklist shape above and reaches a *different* gate. Under `STRANDS_MESH_AUTH_MODE=mtls` that posture is refused-to-start by `Mesh._refuse_under_permissive_default_acl`; setting `STRANDS_MESH_ACCEPT_PERMISSIVE_ACL=1` is the opt-in that lets the wire come up (the refusal error's own remediation list names the token). And a per-session-open `WARNING` from `session._build_config` — "STRANDS_MESH_ACL_FILE unset -- using PERMISSIVE built-in default ACL" — is suppressed by the same token, because start already logged one INFO line about the opt-in and firing the WARNING on every session open would contradict the operator's explicit acknowledgement. Supplying an ACL with `default_permission: "deny"` (see [`examples/mesh/mesh_acl_strict_per_peer.json5`](https://github.com/strands-labs/robots/blob/main/examples/mesh/mesh_acl_strict_per_peer.json5)) is the *narrower* way to silence the WARNING — it fixes the posture that raised the WARNING rather than acknowledging it — but the token silences it too. An operator setting the token to load a blacklist ACL in CI is therefore also acknowledging the built-in-default posture: if `STRANDS_MESH_ACL_FILE` is later dropped from that environment (config error, deploy bug, drift), the same token waives the refuse-to-start gate AND suppresses the WARNING, and the fleet runs wire-open with zero log signal. That failure mode is why the token is a `1`/`true`/`yes` acknowledgement rather than an implicit default.
+- The `PermissiveACLError` message names the path, the rule count, and both remediations: rewrite as `deny` + `allow` rules, or set the acknowledgement token. An operator reading the refusal sees the two-choice fork rather than being pushed toward the token by omission.
+- Do not set this variable on a production fleet. The acknowledgement does not narrow the ACL; it records that an operator has accepted a posture where an unenumerated key expression is open on the wire. The variable exists for closed-lab and CI postures where the fleet operator has separately established that the LAN is trusted.
+
+Reference: `strands_robots.mesh._acl_config._load_acl_file`, `strands_robots.mesh._acl_config.PermissiveACLError`, `strands_robots.mesh.core.Mesh._refuse_under_permissive_default_acl`, `strands_robots.mesh.session._build_config`.
 
 ### Policy vocabulary allowlist (policy_type / policy_provider)
 
