@@ -59,7 +59,13 @@ from strands.tools.tools import AgentTool
 from strands.types._events import ToolResultEvent
 from strands.types.tools import ToolSpec, ToolUse
 
-from strands_robots.simulation.base import SimEngine, close_match_hint, reject_setup_kwargs
+from strands_robots.simulation.base import (
+    SimEngine,
+    close_match_hint,
+    own_keyword_names,
+    reject_misspelled_kwargs,
+    reject_setup_kwargs,
+)
 from strands_robots.simulation.ik import GRIPPER_BODY_HINTS, hint_matches_name
 from strands_robots.simulation.model_registry import (
     count_sim_robots,
@@ -492,8 +498,13 @@ class MuJoCoSimEngine(
                 (``robot_name`` / ``robot``) are rejected here rather than
                 dropped - a constructor builds an empty engine, so use
                 ``Robot("so101", mode="sim")`` or ``add_robot`` instead.
+                A name that *misspells* one of the parameters above (e.g.
+                ``defualt_timestep``) is likewise rejected rather than dropped:
+                no cross-backend call can intend it, and dropping it made the
+                requested value silently identical to omitting it.
         """
         reject_setup_kwargs(kwargs)
+        reject_misspelled_kwargs(kwargs, own_keyword_names(MuJoCoSimEngine), owner="MuJoCoSimEngine")
         super().__init__()
         self._init_ros_bridge(ros2_bridge=ros2_bridge, ros2_domain=ros2_domain)
         self.tool_name_str = tool_name
@@ -2459,7 +2470,7 @@ class MuJoCoSimEngine(
         # Has to happen before the global check so remove_robot works even
         # when the target robot has an active policy (the common case).
         if registered(self._policy_threads, name):
-            self._world.robots[name].policy_running = False
+            self._world.robots[name].request_policy_stop()
             fut = self._policy_threads[name]
             timeout = self._DEFAULT_POLICY_STOP_TIMEOUT
             with contextlib.suppress(Exception):
@@ -3288,8 +3299,20 @@ class MuJoCoSimEngine(
         # consistent with get_observation's base_quat / base_ang_vel. Recovered
         # from the kinematic tree when the free joint is unnamed and therefore
         # absent from ``joint_names`` (e.g. a mobile base like LeKiwi).
-        if free_jnt_id < 0:
-            free_jnt_id = self._robot_base_free_joint(model, robot, pfx)
+        # The base is whichever free joint the ownership-checked resolver names,
+        # never whichever one happens to come last in ``joint_names``. The loop
+        # above records a free joint only to skip its degenerate scalar; letting
+        # it also CHOOSE reported a sibling prop's pose as the robot's base on
+        # any scene that ships a free-jointed task object under the robot's own
+        # namespace - a kick ball, a Menagerie grasping cube - because such a
+        # joint is a named entry in ``joint_names`` too and the last write won.
+        # :meth:`_robot_base_free_joint` is the single owner of that question and
+        # already checks ownership; it also recovers an UNNAMED base the loop
+        # cannot see (a mobile base like LeKiwi), so it answers both cases. Its
+        # ``-1`` is not allowed to erase a base the loop did find.
+        owned_free_jnt_id = self._robot_base_free_joint(model, robot, pfx)
+        if owned_free_jnt_id >= 0:
+            free_jnt_id = owned_free_jnt_id
         base: dict[str, list[float]] | None = None
         if free_jnt_id >= 0:
             qadr = int(model.jnt_qposadr[free_jnt_id])
@@ -5036,6 +5059,49 @@ class MuJoCoSimEngine(
 
     # Policy orchestration overrides (MuJoCo-specific wiring)
 
+    def _announce_rollout(self, robot_name: str) -> None:
+        """Claim ``robot_name`` for a rollout this thread is about to launch.
+
+        Raising ``policy_running`` is the launcher's job, and it must happen on
+        the launching thread before the rollout can take its first frame. Two
+        entry points launch one: the blocking :meth:`run_policy`, whose caller
+        IS that thread, and :meth:`start_policy`, which calls this before it
+        submits to the executor.
+
+        The flag used to be raised by :meth:`_make_run_policy_hook`, which runs
+        on the worker. Between ``start_policy`` returning and the rollout's
+        first frame the flag therefore read ``False`` while
+        :meth:`_active_policy_robots` already listed the robot - so a stop in
+        that window was answered ``Was not running``, and the worker's own raise
+        then overwrote the lowered flag and the rollout ran to full duration
+        (#2833). Claiming the robot here closes the window: a stop can only ever
+        land on a raised flag, nothing re-raises it afterwards, and the hook's
+        own first-frame check refuses the rollout.
+        """
+        world = self._world
+        if world is not None and registered(world.robots, robot_name):
+            robot = world.robots[robot_name]
+            robot.policy_running = True
+            robot.policy_claim_stops = robot.policy_stops
+
+    def _drive_rollout(self, robot_name: str, **kwargs: Any) -> dict[str, Any]:
+        """Drive an already-announced rollout to completion, then release it.
+
+        The body shared by the blocking :meth:`run_policy` and the worker
+        :meth:`start_policy` submits, so both reach the same loop without either
+        one re-raising ``policy_running`` on the wrong thread (see
+        :meth:`_announce_rollout`). Lowers the flag in a ``finally`` so a
+        rollout that ends for any reason - completion, a cooperative stop, or a
+        raise - leaves the robot idle.
+        """
+        try:
+            return super().run_policy(robot_name, **kwargs)
+        finally:
+            if self._world is not None and registered(self._world.robots, robot_name):
+                robot = self._world.robots[robot_name]
+                robot.policy_running = False
+                robot.policy_claim_stops = None
+
     def start_policy(
         self,
         robot_name: str | None = None,
@@ -5141,8 +5207,14 @@ class MuJoCoSimEngine(
         if err := self._unresolvable_policy_provider_error(policy_provider, policy_config):
             return err
 
+        # Claim the robot on THIS thread, before the submit. A stop issued
+        # between this call returning and the rollout's first frame then lands
+        # on a raised flag, is reported as a stop, and is not overwritten by the
+        # worker (#2833). The worker runs the shared body rather than the public
+        # blocking entry, which is the half that must not re-claim the robot.
+        self._announce_rollout(robot_name)
         future = self._executor.submit(
-            self.run_policy,
+            self._drive_rollout,
             robot_name,
             policy_provider=policy_provider,
             policy_config=policy_config,
@@ -5170,7 +5242,8 @@ class MuJoCoSimEngine(
         """MuJoCo override: recording + policy_running flag + lock.
 
         Returns an ``on_frame(step, obs, action)`` closure that:
-        * flips ``robot.policy_running`` so ``stop_policy`` can interrupt,
+        * READS ``robot.policy_running`` so ``stop_policy`` can interrupt (the
+          launching thread raises it - see :meth:`_announce_rollout`),
         * appends to ``_backend_state["trajectory"]`` when recording,
         * forwards frames to the LeRobot ``dataset_recorder`` if attached,
         * raises ``PolicyStopped`` when the user calls ``stop_policy``.
@@ -5184,7 +5257,20 @@ class MuJoCoSimEngine(
             return None
 
         robot = world.robots[robot_name]
-        robot.policy_running = True
+        # Raise the flag for a rollout whose claim is still current, and ONLY
+        # then. This factory runs on the executor worker for a ``start_policy``
+        # rollout, so an unconditional raise here landed after the launch
+        # returned - it overwrote a stop issued in the launch window and the
+        # rollout ran to full duration having reported that it stopped (#2833).
+        # A claim carries the stop count its launcher observed
+        # (:meth:`_announce_rollout`); once a stop has landed against it the
+        # count has moved, and leaving the flag down here is what makes the
+        # hook's own first-frame check refuse the rollout. ``None`` means no
+        # launcher claimed the robot - a caller driving ``PolicyRunner`` with
+        # this hook directly - and that rollout is claimed here, on its own
+        # thread, exactly as before.
+        if robot.policy_claim_stops is None or robot.policy_claim_stops == robot.policy_stops:
+            robot.policy_running = True
         robot.policy_instruction = instruction
         robot.policy_steps = 0
 
@@ -5359,35 +5445,34 @@ class MuJoCoSimEngine(
         except ValueError as e:
             return {"status": "error", "content": [{"text": str(e)}]}
 
-        try:
-            return super().run_policy(
-                robot_name,
-                policy_provider=policy_provider,
-                policy_config=policy_config,
-                instruction=instruction,
-                duration=duration,
-                control_frequency=control_frequency,
-                action_horizon=action_horizon,
-                fast_mode=fast_mode,
-                video=video,
-                policy_object=policy_object,
-                n_steps=n_steps,
-                max_steps=max_steps,
-                max_onframe_failures=max_onframe_failures,
-                control_substeps=control_substeps,
-                policy_kwargs=policy_kwargs,
-                seed=seed,
-                n_episodes=n_episodes,
-                reset_between=reset_between,
-                async_rtc=async_rtc,
-                rtc_inference_timeout_s=rtc_inference_timeout_s,
-                wbc_install_torque_control=wbc_install_torque_control,
-                stop_when=stop_when,
-                observer=observer,
-            )
-        finally:
-            if self._world is not None and registered(self._world.robots, robot_name):
-                self._world.robots[robot_name].policy_running = False
+        # The blocking entry runs on the caller's own thread, so claiming the
+        # robot here is synchronous with the call and opens no window.
+        self._announce_rollout(robot_name)
+        return self._drive_rollout(
+            robot_name,
+            policy_provider=policy_provider,
+            policy_config=policy_config,
+            instruction=instruction,
+            duration=duration,
+            control_frequency=control_frequency,
+            action_horizon=action_horizon,
+            fast_mode=fast_mode,
+            video=video,
+            policy_object=policy_object,
+            n_steps=n_steps,
+            max_steps=max_steps,
+            max_onframe_failures=max_onframe_failures,
+            control_substeps=control_substeps,
+            policy_kwargs=policy_kwargs,
+            seed=seed,
+            n_episodes=n_episodes,
+            reset_between=reset_between,
+            async_rtc=async_rtc,
+            rtc_inference_timeout_s=rtc_inference_timeout_s,
+            wbc_install_torque_control=wbc_install_torque_control,
+            stop_when=stop_when,
+            observer=observer,
+        )
 
     def run_multi_policy(
         self,
@@ -6108,10 +6193,13 @@ class MuJoCoSimEngine(
     def stop_policy(self, robot_name: str = "") -> dict[str, Any]:
         """Stop a running policy on the given robot (cooperative cancellation).
 
-        Counterpart to :meth:`start_policy`. Flips the robot's
+        Counterpart to :meth:`start_policy`. Lowers the robot's
         ``policy_running`` flag; the background loop in
         :meth:`_run_policy_loop` sees it and raises :class:`PolicyStopped`
-        which is caught cleanly inside :meth:`start_policy`.
+        which is caught cleanly inside :meth:`start_policy`. The flag is raised
+        by whichever thread LAUNCHED the rollout (:meth:`_announce_rollout`), so
+        a stop issued at any point after ``start_policy`` returns lands on a
+        raised flag and nothing re-raises it behind the stop.
 
         idempotent - if the robot exists but no policy is running, we
         still return success with 'Was not running' so callers can call
@@ -6129,8 +6217,17 @@ class MuJoCoSimEngine(
         if self._world is None or not registered(self._world.robots, robot_name):
             return {"status": "error", "content": [{"text": self._unknown_robot_msg(robot_name)}]}
         robot = self._world.robots[robot_name]
-        was_running = robot.policy_running
-        robot.policy_running = False
+        # Answer from the same source :meth:`list_policies_running` answers
+        # from, not from the flag alone. A rollout is in flight from the moment
+        # its Future is registered, and the two surfaces reported opposite facts
+        # about the same instant while the flag was still down (#2833). The flag
+        # is now raised by the launcher, so the union only widens the answer at
+        # the tail of a rollout whose Future has not yet been pruned - where
+        # "there was one" is still the honest reading.
+        was_running = robot_name in self._active_policy_robots()
+        # Durable: moves this robot's claim out of date, so a worker that has
+        # not yet reached its first frame cannot raise the flag back over it.
+        was_running = robot.request_policy_stop() or was_running
         msg = f"Stopped on '{robot_name}'" if was_running else f"Was not running on '{robot_name}'"
         return {"status": "success", "content": [{"text": msg}]}
 
@@ -6278,7 +6375,7 @@ class MuJoCoSimEngine(
         # it here makes the worker raise CooperativeStop at its next step.
         if self._world is not None:
             for r in self._world.robots.values():
-                r.policy_running = False
+                r.request_policy_stop()
 
         # Prune completed futures so we only wait on genuinely-live ones.
         self._prune_done_futures()

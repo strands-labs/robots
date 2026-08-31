@@ -178,10 +178,23 @@ def _fake_driver(
             "_check_motion_gates",
             "_loop",
             "_task_admission",
+            "_tool_name",
+            "_refresh_fsm_id",
+            "_fsm_read_at",
+            "_motion_switcher_lock",
         ]
     )
     driver._mode_machine = mode_machine
     driver._fsm_id = fsm_id
+    driver._tool_name = "g1"
+    # The FSM refresher thread the loop owns calls this at ``_FSM_REFRESH_HZ``
+    # and stamps ``_fsm_read_at`` on every authoritative reading.  A no-op
+    # ``MagicMock`` plus a live timestamp is the healthy-wire case, which is
+    # what every test in this file is about; the refresher's own contract is
+    # graded in test_g1_fsm_refresh_is_off_the_control_loop_thread.py.
+    driver._refresh_fsm_id = MagicMock(side_effect=lambda: setattr(driver, "_fsm_read_at", time.monotonic()))
+    driver._fsm_read_at = time.monotonic()
+    driver._motion_switcher_lock = _threading.Lock()
     driver._battery = {"pct": 80.0}
     driver._imu = {"rpy": [0.0, 0.0, 0.0]}
     driver._pubs = publisher if publisher is not None else _RecordingPublisher()
@@ -441,10 +454,13 @@ class TestPerStepReGate:
         loop.start()
         _wait_finished(loop)
 
-        # ``_check_motion_gates("motion")`` on every call.
+        # ``_check_motion_gates("motion", refresh=False)`` on every call: scope
+        # is "motion", and the per-step re-gate consults the cache rather than
+        # performing a DDS round trip inside a 2 ms step.
         for call in driver._check_motion_gates.call_args_list:
-            args, _ = call
+            args, kwargs = call
             assert args == ("motion",)
+            assert kwargs == {"refresh": False}
 
 
 # ---------------------------------------------------------------------------
@@ -487,6 +503,8 @@ class TestSnapshot:
             "exit_reason",
             "exit_detail",
             "hz",
+            "fsm_refresh_hz",
+            "fsm_reads",
         }
         assert snap["running"] is False
         assert snap["elapsed_s"] is not None and snap["elapsed_s"] >= 0.0

@@ -243,22 +243,6 @@ def test_expansion_is_load_bearing_not_cosmetic(manifest: dict[str, Any], record
     assert mod.compare(unexpanded, recorded), "the unexpanded comparison agreed, so expansion cannot be load-bearing"
 
 
-def test_the_live_pair_carries_one_specifier_per_key(declared: set[Any], recorded: set[Any]) -> None:
-    """Recorded for honesty: nothing in today's files exercises the set-valued grouping.
-
-    uv's own lock at ``ad8696b`` recorded ``scipy`` twice under ``[all]``, at
-    ``>=1.10.0`` and ``>=1.14.0,<2.0.0``, so the grouping is required by observed
-    input rather than by this pair. That case is pinned behaviourally on a planted
-    pair below. If this assertion ever fails, the grouping has become live and
-    this test should be deleted rather than repaired.
-    """
-    for side in (declared, recorded):
-        counts: dict[Any, int] = {}
-        for row in side:
-            counts[row.key] = counts.get(row.key, 0) + 1
-        assert not {key: count for key, count in counts.items() if count > 1}
-
-
 def test_a_key_recorded_at_two_specifiers_is_compared_as_a_set(tmp_path: Path) -> None:
     """The ``scipy`` case, as observed in ``ad8696b``'s lock.
 

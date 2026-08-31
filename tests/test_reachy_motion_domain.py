@@ -29,8 +29,13 @@ all three mesh bridges; this package applied it nowhere. The constructor's own
 names the value, so it is the only point a caller can act on.
 
 ``TestWhyTheDriverOwnsTheDomain`` pins those premises rather than asserting
-them in prose. The reachable workspace is deliberately *not* bounded here: it
-depends on hardware this library does not model, and the daemon owns it.
+them in prose. Per-axis travel is bounded too, through the shared
+:func:`~strands_robots.tools.reachy.envelope_error`: this file's original
+scope note excused it as depending on hardware the library does not model,
+which stopped being true when that envelope landed. What is still the
+daemon's is whatever the envelope declares no limit for - ``look``'s
+millimetre offsets and the antenna angles - and the cells below hold that
+boundary from both sides.
 
 ``TestNoMotionRpcDrifts`` widens to every exported driver: an RPC carrying a
 number must either validate it or forward it to something that does. The two
@@ -72,7 +77,13 @@ UNUSABLE_MOTION_VALUES: list[Any] = [
     10**400,
 ]
 
-USABLE_MOTION_VALUES: list[Any] = [0, 0.0, -15.0, 15, 42.5, -0.5]
+# Values a motion RPC must still carry. Every one is inside the tightest axis
+# in ``MOTION_ENVELOPE_DEG`` (head pitch/roll, +/-40 deg), because these drive
+# every parameter of every RPC including the bounded ones - a value outside
+# that would be refused on travel and read as a finiteness regression. The
+# envelope's own suite grades the out-of-travel half; a cell there pins this
+# constant against the live limits so tightening an axis fails loudly here.
+USABLE_MOTION_VALUES: list[Any] = [0, 0.0, -15.0, 15, 32.5, -0.5]
 
 # Every motion RPC, and the parameters it carries, in signature order.
 MOTION_SURFACES: dict[str, list[str]] = {
@@ -156,7 +167,12 @@ class TestMotionArgumentDomain:
     @pytest.mark.parametrize("value", USABLE_MOTION_VALUES, ids=repr)
     @pytest.mark.parametrize("rpc_name", sorted(MOTION_SURFACES))
     def test_a_usable_argument_still_reaches_the_robot(self, rmd, rpc_name, value):
-        """The guard is additive: nothing that worked before is refused."""
+        """The finiteness guard is additive over values inside the envelope.
+
+        Scoped deliberately: a value outside an axis's travel is refused now,
+        which is the envelope's contract rather than a finiteness regression.
+        ``USABLE_MOTION_VALUES`` is bounded so the two cannot be confused.
+        """
         for param in MOTION_SURFACES[rpc_name]:
             driver, link = _driver(rmd)
             result = _call(driver, rpc_name, **{param: value})
@@ -165,7 +181,11 @@ class TestMotionArgumentDomain:
             assert json.dumps(link.commands[0], allow_nan=False)
 
     def test_the_accepted_domain_matches_the_shared_helper_exactly(self, rmd):
-        """Neither wider nor narrower than :func:`finite_number_error`."""
+        """Neither wider nor narrower than :func:`finite_number_error`.
+
+        Graded on ``body``, whose one parameter every value here is inside the
+        travel of, so the verdicts that differ can only differ on finiteness.
+        """
         for value in UNUSABLE_MOTION_VALUES + USABLE_MOTION_VALUES:
             shared_refuses = finite_number_error(value, "yaw", "body") is not None
             driver, _link = _driver(rmd)

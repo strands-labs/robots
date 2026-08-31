@@ -68,6 +68,15 @@ _DIRECTION_BIT = 15
 # Largest magnitude either register carries with ``_DIRECTION_BIT`` still clear.
 _MAX_MAGNITUDE = (1 << _DIRECTION_BIT) - 1
 
+# Largest index ``Goal_Position`` addresses, and the divisor that turns a count
+# into the reported angle. One name carries both because the ceiling's own reason
+# below claims the two are "the same full scale": while they were separate
+# literals that claim was asserted rather than enforced, so a correction to
+# either was invisible to the other. See issue #2812, which reports that the
+# right full scale is model-dependent -- the registry declares SCS-series servos
+# at a quarter of this -- and that the choice is still open.
+_MAX_POSITION = 4095
+
 # Inclusive bounds and the reason for each ceiling, keyed by the parameter that
 # carries the field. The floor and the type are delegated to the shared count
 # domains so an off-type or negative value is reported in the words every other
@@ -82,7 +91,7 @@ _REGISTER_FIELDS: dict[str, tuple[int, int, str]] = {
     ),
     "position": (
         0,
-        4095,
+        _MAX_POSITION,
         "Goal_Position is a 12-bit register, the same full scale the reported angle divides by",
     ),
     "velocity": (
@@ -266,7 +275,9 @@ def serial_tool(
             which 254 (0xfe) is the broadcast every servo receives. An action
             that reads a reply back accepts only a single servo, [1, 253]
         position: Target position for Feetech motors; an integer in [0, 4095]
-        velocity: Target velocity for Feetech motors; an integer in [0, 65535]
+        velocity: Target velocity for Feetech motors; an integer in [0, 32767].
+            Goal_Velocity is sign-magnitude, so a magnitude reaching bit 15
+            commands the opposite direction instead of a faster move
         read_bytes: Number of bytes to read; a positive integer
 
     Validation:
@@ -407,7 +418,9 @@ def serial_tool(
             return {
                 "status": "success",
                 "content": [
-                    {"text": f"Feetech Motor {motor_id} -> Position {position} ({position / 4095 * 360:.1f} deg)"}
+                    {
+                        "text": f"Feetech Motor {motor_id} -> Position {position} ({position / _MAX_POSITION * 360:.1f} deg)"
+                    }
                 ],
             }
 

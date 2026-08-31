@@ -77,11 +77,22 @@ def _recommended_values(verdict: str) -> set[str]:
 
 @pytest.fixture
 def linux_headless(monkeypatch: pytest.MonkeyPatch) -> pytest.MonkeyPatch:
-    """A headless Linux host: the platform where every backend name is available."""
+    """A headless Linux host: the platform where every backend name is available.
+
+    Availability has two axes and both are staged. The platform decides which
+    names MuJoCo *accepts*; the installed libraries decide which of them can
+    *render*, and a remedy is only worth offering when both hold. Staging only the
+    platform left every remedy assertion below reading the libraries of whichever
+    machine ran the suite, so a host without OSMesa disagreed about the advice
+    while agreeing about the verdict.
+    """
+    import strands_robots.simulation.mujoco.backend as backend
+
     monkeypatch.setattr(platform, "system", lambda: "Linux")
     monkeypatch.setattr(sys, "platform", "linux")
     monkeypatch.delenv("DISPLAY", raising=False)
     monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+    monkeypatch.setattr(backend, "_library_loads", lambda _name: True)
     return monkeypatch
 
 

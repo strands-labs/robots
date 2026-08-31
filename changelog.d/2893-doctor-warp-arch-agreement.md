@@ -17,6 +17,6 @@ CUDA-12 and CUDA-13 builds are indistinguishable by name, while the table is the
 reads. Warp ships in the `sim-newton` extra, and an install without it - or without a CUDA device - has
 no disagreement to report, so the check declines rather than failing.
 
-Only Warp is asked. torch reports an arch list too, but a torch build without the device's arch
-compiles from PTX instead, a documented fallback that still produces the right answer, and `check_cuda`
-already reports torch's posture.
+Only Warp is asked here. torch's arch table is asked by `check_torch_arch`, because the two builds
+fail differently: Warp substitutes a nearby architecture and keeps computing, while torch's own
+compatibility check reports the device as not compatible with the build.

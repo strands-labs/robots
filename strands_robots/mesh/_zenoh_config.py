@@ -87,16 +87,21 @@ Configuration env vars
     quirks made a true default-deny silently total-deny on first run).
 
 ``STRANDS_MESH_ACCEPT_PERMISSIVE_ACL``
-    Set to ``1`` / ``true`` / ``yes`` to acknowledge the permissive
-    built-in default ACL under ``STRANDS_MESH_AUTH_MODE=mtls``. When
-    unset, ``Mesh.start`` refuses to bring up the wire if the ACL shape
-    is permissive (default), preventing the "fleet thinks mTLS protects
-    them, but ACL is wide open" silent-misconfiguration footgun. The
-    opt-in is intended for dev/lab postures where role separation is
-    deliberately deferred; it does NOT silence the per-session
-    permissive WARNING (still emitted at INFO instead of ERROR so the
-    posture stays auditable). Production fleets must supply
-    ``STRANDS_MESH_ACL_FILE`` instead.
+    Set to ``1`` / ``true`` / ``yes`` to acknowledge a permissive ACL
+    posture under ``STRANDS_MESH_AUTH_MODE=mtls``. One spelling, three
+    effects, and setting it takes all three: ``Mesh.start`` refuses to
+    bring up the wire while the ACL shape is permissive and the token is
+    unset (``core.Mesh._refuse_under_permissive_default_acl``, whose
+    ERROR refusal downgrades to an INFO acknowledgement once set, so the
+    posture stays auditable); ``session._build_config`` skips the
+    per-session-open permissive WARNING while it is set; and
+    ``_acl_config`` loads a blacklist-shaped ``STRANDS_MESH_ACL_FILE``
+    (``allow`` + non-empty ``rules``) instead of raising
+    ``PermissiveACLError``. The opt-in is intended for dev/lab postures
+    where role separation is deliberately deferred. Production fleets
+    must supply ``STRANDS_MESH_ACL_FILE`` with
+    ``default_permission: "deny"`` instead; see ``docs/security.md`` >
+    Blacklist ACL acknowledgement.
 
 ``STRANDS_MESH_I_KNOW_THIS_IS_INSECURE``
     Set to ``1`` / ``true`` / ``yes`` to acknowledge running with

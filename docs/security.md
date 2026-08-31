@@ -55,7 +55,7 @@ mTLS alone is not sufficient - pair it with an access-control list:
 
 - The built-in default ACL is permissive: any CA-signed peer may publish and subscribe on any key. If you forget to supply an ACL, the SDK warns on every session open.
 - Supply an operator ACL via `STRANDS_MESH_ACL_FILE` that enumerates each peer's certificate CN and the key expressions it may use. See [`examples/mesh/mesh_acl_example.json5`](https://github.com/strands-labs/robots/blob/main/examples/mesh/mesh_acl_example.json5) and [`examples/mesh/mesh_acl_strict_per_peer.json5`](https://github.com/strands-labs/robots/blob/main/examples/mesh/mesh_acl_strict_per_peer.json5).
-- `STRANDS_MESH_ACCEPT_PERMISSIVE_ACL=1` exists only to silence the permissive-ACL warning when you have deliberately accepted it (e.g. a closed lab). Do not set it in production - it does not make the mesh safer, it only quiets the reminder that it is not.
+- `STRANDS_MESH_ACCEPT_PERMISSIVE_ACL=1` is the acknowledgement token that lets a **blacklist-shaped** operator ACL load. See [Blacklist ACL acknowledgement](#blacklist-acl-acknowledgement-strands_mesh_accept_permissive_acl) below.
 - An ACL file the loader cannot read is refused, not ignored. A missing, oversize, non-UTF-8, malformed, or too-deeply-nested file is reported as an unloadable ACL, which the start-time gate treats as the permissive default and therefore refuses to bring the wire up. The error names the path and the reason, so a typo in the ACL stops the mesh rather than quietly widening it.
 
 > ⚠️ **WAN/cloud Zenoh routers MUST deploy a topic-level ACL.**
@@ -75,6 +75,52 @@ mTLS alone is not sufficient - pair it with an access-control list:
 > internet-facing router**, not just on LAN peers. Without it, an
 > internet-reachable router is an unauthorized-fleet-control surface even
 > with mTLS enforced.
+
+### Transport credentials (mTLS material)
+
+`STRANDS_MESH_AUTH_MODE=mtls` is the default, so three filesystem paths are the whole of the Zenoh transport's TLS configuration. They are required *together*: with any one of them unset, `_resolve_tls_paths` raises `ValueError` naming all three and the session never opens. That is deliberate - the loader fails loud at session-open time rather than silently downgrading to plain TCP - and it is why a fleet that sets no dev flag and no TLS material does not come up at all.
+
+- `STRANDS_MESH_TLS_CA` - required under `mtls`. Path to the CA bundle used to validate peer certificates. This is the trust root that decides which peers are in the fleet, so the ACL's CN pinning above is only as good as the CA that issued those CNs.
+- `STRANDS_MESH_TLS_CERT` - required under `mtls`. Path to this peer's certificate (PEM). Its CN is what an operator ACL pins, so it must match the CN that ACL names.
+- `STRANDS_MESH_TLS_KEY` - required under `mtls`. Path to this peer's private key (PEM). On POSIX the loader enforces mode `0600` and refuses a more permissive key, because a `0644` key on a shared host is an exfiltration surface. On Windows that check is skipped - POSIX modes do not map onto NTFS ACLs - and the loader emits a one-shot WARNING saying so, so restrict the key file by ACL to the single account that runs the peer.
+
+None of the three may be a symlink: the loader rejects a symlinked CA, certificate, or key by path *before* it reads the file, so an attacker who can redirect a link cannot swap the material out from under the mode check.
+
+### Fleet routing isolation (namespace)
+
+`STRANDS_MESH_NAMESPACE` is the Zenoh `namespace` field on every peer of the fleet. It prefixes every mesh key-expression -- presence, safety, sensors, commands, the whole envelope -- and Zenoh only routes messages between peers whose namespaces match, so two fleets with different namespaces cannot exchange application traffic even when their key-expressions collide. That is the property fleet isolation depends on when a test rig sits on the same LAN as production hardware.
+
+- `STRANDS_MESH_NAMESPACE` - optional; defaults to `strands`. Must be set to the *same* value on every peer of one fleet: two peers with different namespaces connect at the transport layer (so TLS handshakes succeed and neither peer refuses the other loudly) and then exchange no application traffic, because their key-expressions never match. The failure mode of a mismatch is therefore silent -- a peer that appears absent from the fleet rather than one that raises -- so treat this variable like a fleet identifier that has to be provisioned alongside the TLS material.
+- Empty and whitespace-only values fall back to the default. `STRANDS_MESH_NAMESPACE=""` is treated identically to leaving it unset, because the alternative would be topics like `//presence` where the leading `/` is the missing namespace and one of the wildcards a permissive ACL admits could match against them.
+- The default tracks the hardcoded `strands/...` prefix every mesh component emits (`mesh.core`, `mesh.sensors`, `mesh.input`, the IoT path). Change it *only* alongside every peer -- a rolling change across a fleet leaves one half unable to see the other for the duration of the roll.
+
+Reference: `strands_robots.mesh._zenoh_config.resolve_namespace`.
+
+### Blacklist ACL acknowledgement (`STRANDS_MESH_ACCEPT_PERMISSIVE_ACL`)
+
+An operator ACL supplied via `STRANDS_MESH_ACL_FILE` can be written in one of two shapes, and one of them is a load-bearing anti-pattern:
+
+- `default_permission: "deny"` **+ explicit `allow` rules** — a *whitelist* policy. Every key expression is denied by default; only the enumerated rules open a hole. Any gap in the rule set silently denies rather than exposes.
+- `default_permission: "allow"` **+ explicit `rules`** — a *blacklist* policy. Every key expression is permitted by default; the rules enumerate what to close. Any gap in the rule set — a key expression an operator forgot to name — is silently open on the wire.
+
+`_acl_config._load_acl_file` refuses the second shape at ACL load with a `PermissiveACLError` unless `STRANDS_MESH_ACCEPT_PERMISSIVE_ACL` is set to `1`, `true`, or `yes` (case-insensitive, whitespace-stripped). The refusal exists so a copy-pasted lab ACL — where `default_permission: "allow"` + one or two convenience `rules` is common — cannot ship to a production fleet without an operator writing the acknowledgement variable, which forces the trade-off into a config-file review rather than a silent widening at deploy time.
+
+- The token has **two further effects** on the built-in permissive default (`default_permission: "allow"` **with no rules**), which is a *different* posture from the blacklist shape above and reaches a *different* gate. Under `STRANDS_MESH_AUTH_MODE=mtls` that posture is refused-to-start by `Mesh._refuse_under_permissive_default_acl`; setting `STRANDS_MESH_ACCEPT_PERMISSIVE_ACL=1` is the opt-in that lets the wire come up (the refusal error's own remediation list names the token). And a per-session-open `WARNING` from `session._build_config` — "STRANDS_MESH_ACL_FILE unset -- using PERMISSIVE built-in default ACL" — is suppressed by the same token, because start already logged one INFO line about the opt-in and firing the WARNING on every session open would contradict the operator's explicit acknowledgement. Supplying an ACL with `default_permission: "deny"` (see [`examples/mesh/mesh_acl_strict_per_peer.json5`](https://github.com/strands-labs/robots/blob/main/examples/mesh/mesh_acl_strict_per_peer.json5)) is the *narrower* way to silence the WARNING — it fixes the posture that raised the WARNING rather than acknowledging it — but the token silences it too. An operator setting the token to load a blacklist ACL in CI is therefore also acknowledging the built-in-default posture: if `STRANDS_MESH_ACL_FILE` is later dropped from that environment (config error, deploy bug, drift), the same token waives the refuse-to-start gate AND suppresses the WARNING, and the fleet runs wire-open with zero log signal. That failure mode is why the token is a `1`/`true`/`yes` acknowledgement rather than an implicit default.
+- The `PermissiveACLError` message names the path, the rule count, and both remediations: rewrite as `deny` + `allow` rules, or set the acknowledgement token. An operator reading the refusal sees the two-choice fork rather than being pushed toward the token by omission.
+- Do not set this variable on a production fleet. The acknowledgement does not narrow the ACL; it records that an operator has accepted a posture where an unenumerated key expression is open on the wire. The variable exists for closed-lab and CI postures where the fleet operator has separately established that the LAN is trusted.
+
+Reference: `strands_robots.mesh._acl_config._load_acl_file`, `strands_robots.mesh._acl_config.PermissiveACLError`, `strands_robots.mesh.core.Mesh._refuse_under_permissive_default_acl`, `strands_robots.mesh.session._build_config`.
+
+### Policy vocabulary allowlist (policy_type / policy_provider)
+
+`validate_command` gates every mesh `execute` / `start` payload's `policy_type` and `policy_provider` fields against a built-in allowlist. The two vocabularies share one allowlist by design: `policy_type` names a LeRobot policy *family* (`act`, `diffusion`, `pi0`, `smolvla`, ...) that some payloads carry, and `policy_provider` names a spelling this package's `create_policy` resolves (`groot`, `wbc`, `moveit`, `microduck`, ...). A provider or family that is not in the built-in list is refused on the mesh path -- the operator does not get the availability bug silently, they get a refusal naming the offending value.
+
+- `STRANDS_MESH_POLICY_TYPE_ALLOW` - optional; comma-separated extras appended to the built-in list. Widens both `policy_type` *and* `policy_provider` at once (the two share one allowlist), because a payload naming a new provider generally also names a new family. Each entry is charset-validated against `^[a-z][a-z0-9_]*$` at parse time; a malformed entry (embedded punctuation, whitespace, uppercase that survives normalisation) drops with a WARNING naming both this variable and the offending token, rather than widening the allowlist silently. Case-variant spellings are normalised through `.lower()` before the compare, so `STRANDS_MESH_POLICY_TYPE_ALLOW="FOO,BAR"` matches a payload naming `foo`.
+- Widening this set does not relax any other gate. `policy_host` (host / CIDR allowlist for the inference server), `server_address` (the address on that host), `pretrained_name_or_path` (HuggingFace repo allowlist under `trust_remote_code`) and `model_path` (path-traversal charset) are still enforced against every widened payload. This variable answers *which providers the mesh knows about*, not *which endpoints they may reach*.
+
+**Do not use this variable to work around a registry omission.** Adding a provider to `registry/policies.json` must include the corresponding edit to `_REGISTRY_POLICY_PROVIDERS` in `mesh/security.py`, and a guard test refuses any registry spelling that set omits -- the omission fails CI rather than shipping as a mesh-only availability bug that operators route around with this variable. `STRANDS_MESH_POLICY_TYPE_ALLOW` is for extending the vocabulary *beyond* what the registry knows (an out-of-tree provider a fleet operator ships behind their own gate), not for patching around a registry-side hole.
+
+Reference: `strands_robots.mesh.security._policy_type_allowlist`, `strands_robots.mesh.security._REGISTRY_POLICY_PROVIDERS`, `strands_robots.mesh.security._LEROBOT_POLICY_FAMILIES`.
 
 ### Cross-network fleets (AWS IoT Core)
 

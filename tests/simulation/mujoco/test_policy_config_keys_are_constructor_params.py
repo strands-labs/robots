@@ -1,12 +1,16 @@
 """Every ``policy_config`` key the schema attributes to a provider must exist.
 
 ``policy_config`` is a free-form dict splatted into
-:func:`strands_robots.policies.create_policy`, so a key no constructor declares
-is swallowed by that policy's ``**kwargs`` forward-compatibility absorber: the
-build reports success and the value is dropped without a warning. The router
-binds against the method signature and never inspects these names, so an
-advertised-but-absent key is never *refused* - it is simply never honoured,
-which reads as the capability being broken rather than as the key being wrong.
+:func:`strands_robots.policies.create_policy`, which calls
+``PolicyClass(**resolved_kwargs)`` without inspecting the names. What a key no
+constructor declares does therefore depends on the provider, and the registry
+holds both shapes: a provider whose ``__init__`` has a ``**kwargs``
+forward-compatibility absorber builds and drops the value without a warning,
+and a provider without one raises ``TypeError`` naming the keyword. Neither
+answer tells the caller that the key list they read is wrong - the drop is
+silent, and the ``TypeError`` names a Python keyword rather than the schema that
+advertised it. So an advertised-but-absent key is never refused *as a wrong
+key*, which is what these tests grade the description for.
 
 ``tool_spec.json``'s ``policy_config`` description is the only per-provider key
 list an agent driving the schema ever sees, so these tests grade it against the
@@ -24,10 +28,10 @@ import inspect
 import json
 import re
 from pathlib import Path
-from typing import Any
 
 import pytest
 
+from strands_robots.policies import create_policy
 from strands_robots.policies.factory import _resolve_policy_class
 from strands_robots.registry.policies import list_policy_providers
 
@@ -37,6 +41,10 @@ _SPEC_PATH = Path(__file__).resolve().parents[3] / "strands_robots/simulation/mu
 # grading test below vacuous, so the shape the parser depends on is pinned.
 _MINIMUM_PROVIDER_GROUPS = 3
 _MINIMUM_ADVERTISED_KEYS = 10
+
+# A key no provider declares, and the two things a constructor can do with one.
+_UNBACKED_KEY = "definitely_not_a_parameter"
+_OUTCOMES = ("dropped", "TypeError")
 
 # "For 'lerobot_local': a, b, c." - one group per provider the description
 # bothers to enumerate keys for.
@@ -63,28 +71,53 @@ def _advertised(description: str) -> dict[str, list[str]]:
     return groups
 
 
-def _constructor_parameters(provider: str) -> tuple[set[str], bool]:
-    """Return ``(explicit parameter names, accepts **kwargs)`` for a provider."""
+def _constructor_parameters(provider: str) -> set[str]:
+    """Return the parameter names a provider's constructor declares by name."""
     _, cls, _ = _resolve_policy_class(provider)
-    signature = inspect.signature(cls.__init__)
-    explicit = {
+    return {
         name
-        for name, parameter in signature.parameters.items()
+        for name, parameter in inspect.signature(cls.__init__).parameters.items()
         if name != "self" and parameter.kind not in (parameter.VAR_KEYWORD, parameter.VAR_POSITIONAL)
     }
-    accepts_kwargs = any(p.kind is p.VAR_KEYWORD for p in signature.parameters.values())
-    return explicit, accepts_kwargs
 
 
 def _unbacked_keys(description: str) -> dict[str, list[str]]:
     """Advertised keys, per provider, that the provider's constructor lacks."""
     unbacked: dict[str, list[str]] = {}
     for provider, keys in _advertised(description).items():
-        explicit, _ = _constructor_parameters(provider)
+        explicit = _constructor_parameters(provider)
         absent = [k for k in keys if k not in explicit]
         if absent:
             unbacked[provider] = absent
     return unbacked
+
+
+def _unknown_keyword_outcome(provider: str) -> str:
+    """Return what a provider's constructor does with an unbacked keyword.
+
+    ``"dropped"`` when a ``**kwargs`` absorber takes the name, ``"TypeError"``
+    when the signature refuses it. Read by binding against the signature, which
+    is the step Python performs at :func:`create_policy`'s
+    ``PolicyClass(**resolved_kwargs)`` call, so this needs neither the
+    provider's optional dependencies nor a constructed policy.
+    """
+    cls = _resolve_policy_class(provider)[1]
+    try:
+        inspect.signature(cls.__init__).bind_partial(None, **{_UNBACKED_KEY: True})
+    except TypeError:
+        return "TypeError"
+    return "dropped"
+
+
+def _a_provider_that_refuses() -> str:
+    """The first registered provider whose constructor refuses an unbacked keyword.
+
+    Derived rather than named: a provider that grows a ``**kwargs`` absorber must
+    not leave a cell pinned to a name that no longer refuses anything.
+    """
+    refusing = sorted(p for p in list_policy_providers() if _unknown_keyword_outcome(p) == "TypeError")
+    assert refusing, "no registered provider refuses an unbacked keyword"
+    return refusing[0]
 
 
 class TestTheSchemaOnlyAdvertisesKeysAProviderAccepts:
@@ -94,10 +127,10 @@ class TestTheSchemaOnlyAdvertisesKeysAProviderAccepts:
         unbacked = _unbacked_keys(_description())
         assert not unbacked, (
             "tool_spec.json's policy_config description attributes keys to providers whose "
-            f"constructors do not declare them: {unbacked}. create_policy splats policy_config, "
-            "so each of these is absorbed by that policy's **kwargs and silently dropped - the "
-            "build reports success and the value never reaches the policy. Name the parameter the "
-            "provider really accepts, or drop the key."
+            f"constructors do not declare them: {unbacked}. create_policy splats policy_config, so "
+            "each of these either lands in that policy's **kwargs and is silently dropped or "
+            "raises TypeError at the constructor - and neither answer tells the caller the key "
+            "list is wrong. Name the parameter the provider really accepts, or drop the key."
         )
 
     def test_every_named_provider_is_registered(self) -> None:
@@ -139,25 +172,39 @@ class TestTheGradingIsNotVacuous:
         assert _advertised(_description())["mock"] == []
 
 
-class TestWhyAnUnbackedKeyIsSilent:
-    """The absorber is what makes a wrong key a dropped value, not an error."""
+class TestWhatAnUnbackedKeyDoesAtTheConstructor:
+    """Both outcomes reach the caller, so no cell here may assume one of them."""
 
-    @pytest.mark.parametrize("provider", sorted(_advertised(_description())))
-    def test_the_constructor_absorbs_unknown_keywords(self, provider: str) -> None:
-        _, accepts_kwargs = _constructor_parameters(provider)
-        assert accepts_kwargs, (
-            f"'{provider}' no longer absorbs unknown constructor keywords, so an unbacked "
-            "policy_config key would now raise TypeError instead of being dropped. That is a "
-            "stricter contract than the one these tests assume - re-check whether the schema "
-            "still needs grading against the signature, or whether the constructor now does it."
+    def test_the_registry_holds_both_outcomes(self) -> None:
+        """A provider that refuses an unbacked key is a supported shape, not a defect."""
+        outcomes = {provider: _unknown_keyword_outcome(provider) for provider in list_policy_providers()}
+        assert set(outcomes.values()) == set(_OUTCOMES), (
+            f"every registered provider now answers an unbacked policy_config key the same way: "
+            f"{outcomes}. The cells below describe both answers, and a cell that assumed one of "
+            "them would be green or red by which providers the description happens to enumerate "
+            "rather than by whether the key list is right."
         )
 
-    def test_an_unknown_key_reaches_the_absorber_unvalidated(self) -> None:
-        """Nothing between the schema and the constructor filters these names."""
-        explicit, _ = _constructor_parameters("lerobot_local")
-        assert "definitely_not_a_parameter" not in explicit
-        policy: Any = _resolve_policy_class("lerobot_local")[1]
-        bound = inspect.signature(policy.__init__).bind_partial(
-            None, **dict.fromkeys(["definitely_not_a_parameter"], True)
+    def test_an_absorbing_provider_builds_and_drops_the_key(self) -> None:
+        """The silent answer: create_policy reports success and the value is gone."""
+        assert _unknown_keyword_outcome("mock") == "dropped", "this cell needs an absorbing provider"
+        policy = create_policy("mock", **{_UNBACKED_KEY: True})
+        assert not hasattr(policy, _UNBACKED_KEY), (
+            f"'mock' kept {_UNBACKED_KEY} rather than absorbing it into **kwargs; if a provider "
+            "now stores unknown keys, an unbacked schema key is no longer silently dropped"
         )
-        assert "definitely_not_a_parameter" in bound.kwargs or "definitely_not_a_parameter" in bound.arguments
+
+    def test_a_refusing_provider_raises_a_typeerror_naming_the_keyword(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The loud answer: a TypeError about a keyword, which names no schema."""
+        provider = _a_provider_that_refuses()
+        # A remote-code provider can sort first, and its gate runs before the
+        # constructor. Keyword binding fails before __init__ executes, so opening
+        # the gate here still touches no checkpoint.
+        monkeypatch.setenv("STRANDS_TRUST_REMOTE_CODE", "1")
+        with pytest.raises(TypeError, match=_UNBACKED_KEY) as refusal:
+            create_policy(provider, **{_UNBACKED_KEY: True})
+        assert "policy_config" not in str(refusal.value), (
+            f"'{provider}' now refuses the key as a schema key: {refusal.value}. That is a better "
+            "answer than a bare TypeError, and it means the grading above is no longer the only "
+            "thing that catches a wrong key - re-read this file's premise."
+        )

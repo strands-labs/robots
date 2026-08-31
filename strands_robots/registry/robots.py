@@ -93,7 +93,32 @@ def has_sim(name: str) -> bool:
 
 
 def has_hardware(name: str) -> bool:
-    """Check if a robot has real hardware support (LeRobot type)."""
+    """Check if a robot declares a real-hardware backend.
+
+    Reads the registry entry's ``hardware`` block, which has two independent
+    fields: ``lerobot_type`` names a lerobot robot type, and ``driver`` names
+    which driver builds the robot. Either alone is a hardware declaration --
+    the Reachy Mini and the Microduck declare only a ``driver``, because lerobot
+    has no robot type for them at all -- so this reads the block rather than one
+    field of it.
+
+    A robot may be drivable without declaring anything: a native driver
+    registered through
+    :func:`~strands_robots.drivers.register_native_driver` needs no registry
+    declaration, and several servo-bus arms are in exactly that position.
+    Declaration and registration are two different facts and this predicate
+    reports only the first, because it is the one a caller can read without
+    importing a driver package.
+    :func:`~strands_robots.drivers.list_driver_coverage` joins both and is what
+    answers "can this robot be driven for real" completely.
+
+    Args:
+        name: Robot name, alias, or data_config.
+
+    Returns:
+        True when the robot's registry entry carries a ``hardware`` block,
+        False when it does not or the robot is not registered at all.
+    """
     info = get_robot(name)
     return info is not None and "hardware" in info
 

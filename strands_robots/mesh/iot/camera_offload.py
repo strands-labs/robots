@@ -60,6 +60,7 @@ hardening is tracked in #249.
 from __future__ import annotations
 
 import logging
+import numbers
 import os
 import time
 from typing import Any
@@ -76,6 +77,83 @@ logger = logging.getLogger(__name__)
 # (1 hour) to prevent accidental day- or week-long URLs.
 DEFAULT_PRESIGN_TTL_SECONDS = 60
 MAX_PRESIGN_TTL_SECONDS = 3600
+
+
+def _whole_seconds_or_none(value: Any) -> int | None:
+    """Read *value* as a whole number of seconds, or ``None`` when it is not one.
+
+    The two ways a caller names this TTL resolved it differently. The
+    environment path runs ``int(raw)`` on a string and falls back to the
+    default when that raises, so ``STRANDS_MESH_CAMERA_PRESIGN_TTL`` of
+    ``2.5``, ``nan`` or ``inf`` each resolve to
+    :data:`DEFAULT_PRESIGN_TTL_SECONDS`. The ``presign_ttl=`` keyword had no
+    such step: whatever was passed went straight to the two clamps below,
+    which compare it and are therefore permeable to anything that compares
+    false against both bounds.
+
+    ``nan`` is the value that matters. ``nan > MAX_PRESIGN_TTL_SECONDS`` is
+    ``False`` and ``nan < 1`` is ``False``, so it passed the ceiling whose
+    documented purpose is to stop "accidental day- or week-long URLs" and
+    reached both consumers intact. ``botocore`` does not read ``ExpiresIn``
+    either, and what it does instead depends on the signer: the pure-python
+    one interpolates the value verbatim, so the presigned URL carried
+    ``X-Amz-Expires=nan`` -- a URL AWS refuses at request time, so the frame
+    is unreadable *and* the window was never bounded -- while the ``awscrt``
+    signer the ``[mesh-iot]`` extra installs fails inside the signer with a
+    bare ``AssertionError`` naming no TTL, losing the frame outright. The
+    ``/ref`` message published alongside carried ``expires_at: nan`` either
+    way.
+
+    Three more spellings resolved to something the caller did not name. A
+    fractional TTL survived both clamps and signed ``X-Amz-Expires=2.5``.
+    ``True`` is a ``numbers.Real``, so it stored a silent one-second TTL and
+    signed ``X-Amz-Expires=True``. ``inf`` did trip the ceiling, but the
+    clamp's own notice renders the value with ``%d``, and ``"%d" % inf``
+    raises inside ``logging`` -- so the operator saw
+    ``--- Logging error ---`` where the clamp notice belonged.
+
+    The signed values quoted above are the pure-python signer's. Under
+    ``awscrt`` every fractional TTL raises ``TypeError`` from inside the
+    signer instead, which is the same finding with a louder symptom: no
+    signer turns an unreadable TTL into the lifetime the caller named.
+
+    Only readability is decided here; the range is still the clamps' to
+    decide, which is why this is deliberately sign-agnostic. ``0`` remains
+    the documented keyword-versus-environment precedence sentinel and
+    ``-99`` remains a call-site bug that clamps to ``1`` with a warning
+    (#262). An integral float is accepted rather than refused: ``3600.0`` is
+    how ``json.dumps`` renders an integer held in a float, and nothing is
+    lost in reading it as ``3600`` -- the same split
+    :func:`~strands_robots.mesh.security._coerce_int` applies to the wire
+    counts it guards.
+
+    Args:
+        value: The keyword a caller passed, of any type.
+
+    Returns:
+        The value as an ``int`` when it names a whole number of seconds,
+        otherwise ``None``.
+    """
+    if isinstance(value, bool) or not isinstance(value, numbers.Real):
+        return None
+    try:
+        # ``numbers.Real`` carries no ``__int__`` in mypy's view, so the
+        # conversion needs the same waiver the shared whole-number domain in
+        # ``strands_robots.utils`` takes for the identical narrowing.
+        integral = int(value)  # type: ignore[call-overload]
+    except (OverflowError, TypeError, ValueError):
+        # One conversion answers every value no count of seconds can be read
+        # from: ``int(nan)`` raises ``ValueError`` and ``int(+-inf)``
+        # ``OverflowError``, so no separate ``isfinite`` is needed -- and none
+        # is possible, because ``isfinite`` needs a ``float()`` whose own
+        # ``OverflowError`` on an int wider than a float is the escape this
+        # form removes.
+        return None
+    if integral != value:
+        # Fractional: refused rather than truncated, so a TTL the caller never
+        # named is never honoured.
+        return None
+    return integral
 
 
 class CameraOffloader:
@@ -96,7 +174,15 @@ class CameraOffloader:
         self.bucket = bucket or os.getenv("STRANDS_MESH_CAMERA_S3_BUCKET", "")
         self.prefix = (prefix or os.getenv("STRANDS_MESH_CAMERA_S3_PREFIX") or "").strip("/")
         if presign_ttl is not None:
-            ttl_raw = presign_ttl
+            readable = _whole_seconds_or_none(presign_ttl)
+            if readable is None:
+                logger.warning(
+                    "[camera_offload] presign_ttl=%r is not a whole number of seconds; using default %ds",
+                    presign_ttl,
+                    DEFAULT_PRESIGN_TTL_SECONDS,
+                )
+                readable = DEFAULT_PRESIGN_TTL_SECONDS
+            ttl_raw = readable
         else:
             raw_env = os.getenv("STRANDS_MESH_CAMERA_PRESIGN_TTL")
             if raw_env is None or raw_env == "":

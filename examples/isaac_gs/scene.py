@@ -1,7 +1,7 @@
 """Default Isaac scene for the 3DGS hybrid-render demo.
 
 A real Franka Panda (loaded from Isaac's bundled USD, *not* the
-procedural stick-figure -- see ``examples/libero/run.py`` (the
+procedural stick-figure -- see ``docs/simulation/isaac.md`` (the
 ``isaac`` subcommand) for
 why) plus a small red cube on the ground, and an over-the-shoulder
 RTX camera. The robot + cube are the RTX foreground the compositor
@@ -275,7 +275,7 @@ def _default_franka_usd(sim: "object") -> str:
     """Resolve Isaac's bundled Franka Panda USD from the assets root.
 
     Reachable over HTTPS from the Omniverse CDN (no local Nucleus
-    required). Same default as ``examples/libero/run.py isaac``.
+    required). Same default as the Isaac backend's own scene loader.
 
     Tries the modern ``isaacsim.storage.native`` namespace first (Isaac
     Sim 6.0 supported path) and falls back to the legacy

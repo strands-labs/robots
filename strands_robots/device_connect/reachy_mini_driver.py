@@ -25,6 +25,7 @@ from strands_robots.device_connect.reachy_transport import (
     rpy_to_pose,
 )
 from strands_robots.mesh.security import ValidationError, validate_mesh_identifier
+from strands_robots.tools.reachy import envelope_error
 from strands_robots.utils import finite_number_error, tcp_port_error
 
 logger = logging.getLogger(__name__)
@@ -88,6 +89,20 @@ def _key_prefix_error(value: Any, param: str, cls_name: str) -> str | None:
     return None
 
 
+#: Per-RPC map from a movement RPC's own parameter name to the envelope axis it
+#: commands. This surface spells the head axes ``pitch`` / ``roll`` / ``yaw``
+#: where :data:`~strands_robots.tools.reachy.MOTION_ENVELOPE_DEG` keys them
+#: ``head_pitch`` / ``head_roll`` / ``head_yaw``, so the values have to be
+#: re-keyed before the envelope can bound them - handing it this RPC's own
+#: keyword dict would bound nothing, because it ignores a key it has no limit
+#: for. ``look``'s millimetre offsets and ``antennas``' angles carry no entry
+#: because the envelope declares no bound for them.
+_ENVELOPE_AXIS_BY_PARAM: dict[str, dict[str, str]] = {
+    "look": {"pitch": "head_pitch", "roll": "head_roll", "yaw": "head_yaw"},
+    "body": {"yaw": "body_yaw"},
+}
+
+
 def _motion_domain_error(rpc_name: str, values: dict[str, Any]) -> dict[str, str] | None:
     """Structured rejection when a motion argument cannot reach the robot.
 
@@ -108,11 +123,38 @@ def _motion_domain_error(rpc_name: str, values: dict[str, Any]) -> dict[str, str
     error`` out of the RPC from ``math.cos``, while an ``inf`` offset was
     divided by 1000 and reported as a successful move.
 
-    The bound is finiteness and numeric-ness only, via the shared
-    :func:`~strands_robots.utils.finite_number_error`. Both signs and zero are
-    legitimate (a negative pitch looks down, zero re-centres), and the robot's
-    reachable workspace is the daemon's to enforce -- it depends on hardware
-    this library does not model.
+    Two bounds, in this order. Finiteness and numeric-ness first, via the shared
+    :func:`~strands_robots.utils.finite_number_error`; both signs and zero are
+    legitimate there (a negative pitch looks down, zero re-centres). Then every
+    parameter that names a bounded joint is held to the shared travel envelope,
+    :func:`~strands_robots.tools.reachy.envelope_error`, through
+    :data:`_ENVELOPE_AXIS_BY_PARAM`.
+
+    That second bound used to be excused as the daemon's to enforce, on the
+    grounds that it depends on hardware this library does not model. That was
+    true when this helper was written and is no longer: the library models the
+    envelope. :data:`~strands_robots.tools.reachy.MOTION_ENVELOPE_DEG` gives
+    every bounded axis its travel in degrees, in a package whose own purpose
+    statement is "what the *two* Reachy consumers must agree on and neither
+    owns: the motion envelope", and which is importable with no Reachy and no
+    daemon attached. The other of those two consumers,
+    :meth:`~strands_robots.drivers.reachy.ReachyDriver.send_action`, already
+    consults it. So a head pitch of 200 degrees on a +/-40 degree axis was
+    refused by one driver and carried to the wire as 3.49 radians by the other,
+    for the same physical robot, and this RPC reported ``success``.
+
+    Finiteness is asked first for two reasons: an unusable value is then named
+    by the caller's own parameter spelling rather than by the axis it maps to,
+    and a travel comparison against ``nan`` is meaningless - ``abs(nan) <= 40``
+    is ``False``, so an unordered value would be refused with a message about
+    travel. That is the same ordering :func:`envelope_error` documents for its
+    own checks.
+
+    The head-body yaw coupling limit the envelope also carries is not reachable
+    from here: it bounds ``head_yaw - body_yaw`` and needs both values in one
+    call, where this surface splits them across :meth:`ReachyMiniDriver.look`
+    and :meth:`ReachyMiniDriver.body`. Per-axis travel is the half that
+    transfers; the pairwise limit stays with ``send_action``, which takes both.
 
     Args:
         rpc_name: The RPC that received the values, used as the message prefix.
@@ -126,6 +168,12 @@ def _motion_domain_error(rpc_name: str, values: dict[str, Any]) -> dict[str, str
         if (message := finite_number_error(value, param, rpc_name)) is not None:
             logger.warning("Rejected Reachy Mini %s: %s", rpc_name, message)
             return {"status": "error", "reason": message}
+
+    axis_by_param = _ENVELOPE_AXIS_BY_PARAM.get(rpc_name, {})
+    bounded = {axis: values[param] for param, axis in axis_by_param.items() if param in values}
+    if bounded and (message := envelope_error(bounded, rpc_name)) is not None:
+        logger.warning("Rejected Reachy Mini %s: %s", rpc_name, message)
+        return {"status": "error", "reason": message}
     return None
 
 
@@ -263,7 +311,9 @@ class ReachyMiniDriver(DeviceDriver):
             x: X offset in mm
             y: Y offset in mm
             z: Z offset in mm. Every value must be a finite number of
-                either sign; the workspace bound is the daemon's.
+                either sign, and ``pitch`` / ``roll`` / ``yaw`` must be inside
+                the shared travel envelope. The millimetre offsets carry no
+                envelope bound and are the daemon's to enforce.
 
         Returns:
             ``{"status": "success", ...}``, or a ``{"status": "error",
@@ -309,7 +359,7 @@ class ReachyMiniDriver(DeviceDriver):
 
         Args:
             yaw: Body yaw angle in degrees. Must be a finite number of
-                either sign.
+                either sign and inside the shared travel envelope.
 
         Returns:
             ``{"status": "success", ...}``, or a ``{"status": "error",

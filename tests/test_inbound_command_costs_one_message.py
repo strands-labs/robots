@@ -15,8 +15,7 @@ depended on the transport:
 
 The parser now reports the position and returns ``None``, so a malformed command
 costs itself on either transport. The classes below pin that, the values that
-were always readable (including ``nan``, whose finiteness ``send_action`` owns),
-and the three contracts of the cyclonedds poll loop that its rclpy sibling has
+were always readable, and the three contracts of the cyclonedds poll loop that its rclpy sibling has
 pinned all along in ``test_hardware_ros_bridge.py``: a sample taken by the loop
 is dispatched, a reader failure costs only that tick, and a second start spawns
 no second thread (that last one lives beside its siblings in
@@ -148,17 +147,19 @@ class TestEveryReadablePositionStaysReadable:
         base = RosTelemetryBase()
         assert base._command_action(_JointState(name=["j0"], position=[position])) == {"j0": expected}
 
-    def test_a_nan_position_is_still_read(self) -> None:
-        """Finiteness is not this parser's job.
+    def test_a_non_finite_position_is_refused_not_read(self) -> None:
+        """A readable number is not yet a usable position.
 
-        ``nan`` is a readable number, and ``send_action`` already refuses a
-        non-finite action value naming the joint - so checking it here would
-        move that report away from the surface that owns it.
+        This cell used to assert the opposite, on the stated grounds that
+        ``send_action`` owns finiteness. Only the simulation host's does; the
+        hardware bridge's reaches lerobot, whose bounding clamp resolves a
+        ``nan`` to a joint's ``range_min``. The refusal now happens here, where
+        the whole-message contract already lives -
+        ``test_inbound_command_refuses_a_non_finite_position.py`` measures both
+        halves.
         """
         base = RosTelemetryBase()
-        action = base._command_action(_JointState(name=["j0"], position=[float("nan")]))
-        assert action is not None
-        assert action["j0"] != action["j0"]  # nan
+        assert base._command_action(_JointState(name=["j0"], position=[float("nan")])) is None
 
 
 class TestBothTransportsGetTheSameRefusal:

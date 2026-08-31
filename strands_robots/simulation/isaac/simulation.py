@@ -6359,7 +6359,7 @@ class IsaacSimulation(IsaacMotionPrimitivesMixin, IsaacRecordingMixin, SimEngine
             "that created SimulationApp, so this call would block forever. Either call "
             "it from the owning thread, or have the owning thread run "
             "`run_pump_forever(stop_event=...)` and submit the call from the worker via "
-            "`run_on_main(lambda: ...)` (see examples/libero/run_isaac_agent.py for the "
+            "`run_on_main(lambda: ...)` (see docs/simulation/isaac.md for the "
             "agent-driven shape)."
         )
 

@@ -316,11 +316,14 @@ class ReachyDriver:
         elif action == "status":
             envelope = {"status": "success", "content": [{"json": await self.get_status()}]}
         else:  # "stop"
-            await self.stop()
-            envelope = {
-                "status": "success",
-                "content": [{"text": f"stop: asked the daemon at {self._host}:{self._api_port} to stop motion"}],
-            }
+            # Report the halt outcome rather than assert one.  ``stop`` is the
+            # protocol's shutdown hook and returns ``None``: a daemon that
+            # refuses the stop is logged and swallowed, so an envelope built
+            # beside it can only restate the intent - and its text named a
+            # daemon that had just declined.  ``stop_task`` posts the same
+            # ``/api/move/stop`` and already decides the verdict, so the verb
+            # returns that envelope rather than re-deriving one.
+            envelope = self.stop_task()
         yield {"toolUseId": tool_use_id, **envelope}
 
     # ------------------------------------------------------------------ #

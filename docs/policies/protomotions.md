@@ -89,6 +89,20 @@ await policy.get_actions(
 )
 ```
 
+Either signal can instead sit on the observation dict itself, under its bare
+name or its `observation.`-prefixed spelling - the shape a runtime that
+namespaces its observation keys produces:
+
+| signal | accepted observation keys |
+| --- | --- |
+| anchor rotation, `xyzw` | `anchor_rot_xyzw`, `observation.anchor_rot_xyzw` |
+| root angular velocity, local frame | `root_ang_vel_local`, `observation.root_ang_vel_local` |
+
+The prefixed spelling is the bare name with `observation.` in front in both
+rows, so one dict can carry both signals written the same way. (`anchor_rot`
+without the `_xyzw` suffix is also still accepted for the anchor rotation, but
+it does not say which component order it carries, so prefer the suffixed name.)
+
 If neither the declared body pose nor an explicit override is present the policy
 raises, naming the key it wanted. It will not fall back to `base_quat` unless
 the config's anchor body *is* the floating base, in which case the two are the

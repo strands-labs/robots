@@ -133,7 +133,7 @@ class SimulationDeviceDriver(DeviceDriver):
         world = getattr(self._sim, "_world", None)
         if world:
             for robot in world.robots.values():
-                robot.policy_running = False
+                robot.request_policy_stop()
         return {"status": "success", "content": [{"text": "All policies stopped"}]}
 
     @rpc()
@@ -237,7 +237,7 @@ class SimulationDeviceDriver(DeviceDriver):
             world = getattr(self._sim, "_world", None)
             if world:
                 for robot in world.robots.values():
-                    robot.policy_running = False
+                    robot.request_policy_stop()
         # Recovery path: catch broadly. A scene teardown racing this handler can
         # leave ``robots`` mid-mutation, and a safety handler must still attempt
         # the teleop stop below rather than crash out.

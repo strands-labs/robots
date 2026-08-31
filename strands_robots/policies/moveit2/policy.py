@@ -29,8 +29,9 @@ service mode:
 The ROS 2 / ``moveit_py`` deps stay out of ``pyproject.toml`` - only the
 client side (``pyzmq``, ``msgpack``) is installed via the ``[moveit2]`` extra.
 See :mod:`strands_robots.policies.moveit2.server` for the sidecar reference
-implementation and :mod:`strands_robots.policies.moveit2.server.docker-compose.yml`
-for the recommended deployment.
+implementation, and the ``docker-compose.yml`` beside it for the recommended
+deployment - a compose file is not an importable module, so it is named the way
+that package's own docstring names it rather than dressed as a :mod: target.
 """
 
 from __future__ import annotations

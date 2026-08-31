@@ -92,6 +92,22 @@ _DEFAULT_COMMAND_WIDTH = 13
 #: ONNX ``command_names`` metadata (dead-weight rule: slots stay present+zero).
 _COMMAND_COMPONENTS = {"twist": 3, "head_pose": 4, "body_pose": 6}
 
+#: Observation components that are NOT the command block: ``base_ang_vel`` (3)
+#: and ``projected_gravity`` (3). The rest of the fixed part is three per-joint
+#: blocks (``joint_pos``, ``joint_vel``, ``last_action``), so the full non-command
+#: width is ``_BASE_OBS_WIDTH + 3 * len(joint_names)`` - 48 for the 14-DOF biped.
+_BASE_OBS_WIDTH = 6
+
+
+#: The component counts :meth:`MicroduckPolicy.get_actions` documents for the
+#: well-known ``target_velocity`` kwarg: ``[vx, vy, omega]`` and ``[vx, vy]``.
+#: Single-sourced so the refusal and the docstring cannot drift apart. The
+#: two-component form is deliberately kept: this policy's command vector
+#: persists across ticks, so "set vx and vy, leave omega" is a coherent request
+#: - which is why the family's other readers, whose command is rebuilt per call,
+#: require three.
+TARGET_VELOCITY_WIDTHS: frozenset[int] = frozenset({2, 3})
+
 
 def _action_scale_error(value: Any, source: str) -> str | None:
     """Return why ``value`` cannot be an action scale, or ``None`` if it can.
@@ -183,6 +199,12 @@ class MicroduckPolicy(Policy):
             raise ValueError(error)
         self._action_scale: float | None = float(action_scale) if action_scale is not None else None
         self._command_names: list[str] | None = list(command_names) if command_names else None
+        # ``gravity_source`` is training-time and baked into the ONNX (Pollen's
+        # ``use_projected_gravity``); resolved from ``custom_metadata_map`` on
+        # first inference, matching the ``joint_names``/``default_pose``/etc.
+        # metadata-first pattern.  Kept ``None`` here so ``_ensure_config`` is
+        # the single owner of "which slot-two branch this checkpoint expects".
+        self._gravity_source: str | None = None
         self._configured = False
 
         self._initial_command = np.asarray(command, dtype=np.float32) if command is not None else None
@@ -247,10 +269,25 @@ class MicroduckPolicy(Policy):
 
         Recognised ``**kwargs``:
 
-        * ``command``: full command vector override for this tick.
-        * ``target_velocity``: ``[vx, vy, omega]`` (or ``[vx, vy]``) written
-          into the twist slots of the command vector - the well-known
-          locomotion goal kwarg.
+        * ``command``: full command vector override for this tick. Must be
+          ``command_names``-wide and finite.
+        * ``target_velocity``: ``[vx, vy, omega]`` (or ``[vx, vy]``, which leaves
+          ``omega`` at its current value) written into the twist slots of the
+          command vector - the well-known locomotion goal kwarg. Must carry
+          finite numbers and one of the two component counts above; any other
+          width is refused rather than truncated or partially written.
+
+        Note that what the twist slots MEAN is a property of the loaded weights,
+        not of this method. Pollen's locomotion exports read them as a velocity,
+        which is what ``target_velocity`` writes; other exports in the family read
+        the same three slots differently, and for those a caller supplies the
+        slots wholesale through ``command``.
+
+        Raises:
+            ValueError: If ``command`` or ``target_velocity`` carries a
+                non-numeric or non-finite component, if ``command`` is not
+                ``command_names``-wide, or if ``target_velocity``'s component
+                count is not in :data:`TARGET_VELOCITY_WIDTHS`.
         """
         self._ensure_config()
         assert self._joint_names is not None and self._default_pose is not None
@@ -267,6 +304,7 @@ class MicroduckPolicy(Policy):
             default_pose=self._default_pose,
             last_action=self._last_action,
             command=self._command,
+            gravity_source=self._gravity_source or obs_builder.GRAVITY_SOURCE_PROJECTED,
         )
 
         raw_action = self.infer_raw(vector)
@@ -333,6 +371,16 @@ class MicroduckPolicy(Policy):
         """Fold per-call command overrides into the running command vector."""
         assert self._command is not None
         if kwargs.get("command") is not None:
+            # Asked before the coercion, for the same two reasons as the sibling
+            # ``target_velocity`` below: a non-numeric element otherwise surfaced
+            # as a bare ``could not convert string to float`` from numpy, naming
+            # neither this policy nor the parameter; and a nan/inf one was
+            # assigned to ``self._command`` and only refused afterwards by
+            # ``build_observation``, so a caller that handled that error and kept
+            # ticking carried the poisoned command into every later tick and every
+            # later episode.
+            if error := finite_vector_error(f"{type(self).__name__}.get_actions", "command", kwargs["command"]):
+                raise ValueError(error)
             new = np.asarray(kwargs["command"], dtype=np.float32).reshape(-1)
             if new.shape[0] != self._command.shape[0]:
                 raise ValueError(
@@ -342,8 +390,33 @@ class MicroduckPolicy(Policy):
             self._command = new
         tv = kwargs.get("target_velocity")
         if tv is not None:
+            # Two sibling providers reading this same well-known goal key hold it
+            # to a domain that names it - ``WBCPolicy._validate_velocity`` and the
+            # ``param_name="target_velocity"`` guard MotionBricks applies on both
+            # its constructor and per-call paths - and this one did not. A
+            # non-finite component WAS still refused, but downstream by
+            # ``build_observation``, which names ``command`` and the assembled
+            # observation rather than the parameter the caller passed. Ask here,
+            # where the caller's own parameter name is still in hand.
+            if error := finite_vector_error(f"{type(self).__name__}.get_actions", "target_velocity", tv):
+                raise ValueError(error)
             tv = np.asarray(tv, dtype=np.float32).reshape(-1)
-            n = min(3, tv.shape[0], self._command.shape[0])
+            # This method documents exactly two spellings for the kwarg,
+            # ``[vx, vy, omega]`` and ``[vx, vy]``, and the write accepted any
+            # width. A longer one was silently truncated to its first three
+            # components; a shorter one wrote only the slots it covered, and the
+            # command vector persists across ticks, so ``target_velocity=[0.3]``
+            # left the PREVIOUS tick's lateral and yaw components commanding the
+            # robot under a reported success. The sibling ``command`` override in
+            # this same method already refuses a width it cannot honor, naming the
+            # expected width and its source; this one now does too.
+            if tv.shape[0] not in TARGET_VELOCITY_WIDTHS:
+                raise ValueError(
+                    f"MicroduckPolicy: target_velocity has {tv.shape[0]} component(s), "
+                    f"expected {' or '.join(f'{w}' for w in sorted(TARGET_VELOCITY_WIDTHS, reverse=True))} "
+                    f"([vx, vy, omega] or [vx, vy])."
+                )
+            n = min(tv.shape[0], self._command.shape[0])
             self._command[:n] = tv[:n]
 
     def _ensure_config(self) -> None:
@@ -374,6 +447,27 @@ class MicroduckPolicy(Policy):
         if self._command_names is None:
             cn = meta.get("command_names")
             self._command_names = [s.strip() for s in cn.split(",")] if cn else None
+
+        # ``gravity_source`` selects which base block feeds slot two of the
+        # observation vector.  ``projected_gravity`` (default, every shipped
+        # alpha policy) reads ``base_quat`` and rotates world ``-Z`` into the
+        # base frame; ``raw_accel`` reads ``base_acc`` verbatim (older exports,
+        # backlash variants).  Refuse any other spelling here rather than at
+        # the builder seam so a mistyped metadata entry is caught once at
+        # first-inference configuration - the builder does the same check
+        # every tick, but this one names the SOURCE that supplied the value.
+        if self._gravity_source is None:
+            gravity_declared: str | None = meta.get("gravity_source")
+            source = gravity_declared.strip() if gravity_declared else obs_builder.GRAVITY_SOURCE_PROJECTED
+            if source not in obs_builder._GRAVITY_SOURCES:
+                raise ValueError(
+                    f"MicroduckPolicy: ONNX metadata gravity_source={gravity_declared!r} is not one "
+                    f"of {list(obs_builder._GRAVITY_SOURCES)}. This value is a training-time "
+                    f"flag baked into the export (Pollen's use_projected_gravity); the two "
+                    f"branches read different base keys (base_quat vs base_acc), so a third "
+                    f"spelling has no defined slot-two contract."
+                )
+            self._gravity_source = source
 
         if self._command is None:
             self._command = self._episode_start_command()
@@ -414,10 +508,55 @@ class MicroduckPolicy(Policy):
         return cmd.copy()
 
     def _command_width(self) -> int:
-        """Command vector width - summed from ``command_names``, else the 13-D default."""
+        """Command vector width the graph will accept.
+
+        The graph's own declared input width is the authority when it declares
+        one: it is a hard constraint, and ``command_names`` is not a width. The
+        metadata names which command slots a skill READS, and Pollen's reference
+        runner emits ONE unified 13-component command for every skill in a
+        bundle, leaving the slots a skill ignores present and zero (the
+        dead-weight rule this module's observation builder documents). Seven of
+        the nine shipped Pollen exports declare a narrower ``command_names``
+        than their graph consumes - ``roulade`` declares ``twist`` (3) against
+        an ``obs`` input of 61 - so summing the names built a 51-wide vector for
+        a 61-wide graph and onnxruntime refused it with ``Got: 51 Expected:
+        61``, making those seven policies unrunnable.
+
+        Falls back to the ``command_names`` sum, then the 13-D default, when the
+        session declares no usable width (an injected stub, or a graph with a
+        dynamic first-axis symbol rather than an integer).
+        """
+        declared = self._declared_command_width()
+        if declared is not None:
+            return declared
         if not self._command_names:
             return _DEFAULT_COMMAND_WIDTH
         return sum(_COMMAND_COMPONENTS.get(name, 0) for name in self._command_names)
+
+    def _declared_command_width(self) -> int | None:
+        """Command width implied by the graph's declared ``obs`` input, else ``None``.
+
+        Returns ``None`` rather than raising whenever the width cannot be read as
+        a positive integer - no declared shape, a dynamic-axis symbol, a shape
+        that does not exceed the fixed blocks - so an injected stub keeps the
+        ``command_names`` behaviour instead of being held to a shape it never
+        declared.
+        """
+        if self._joint_names is None:
+            return None
+        get_inputs = getattr(self._session, "get_inputs", None)
+        if not callable(get_inputs):
+            return None
+        try:
+            shape = list(get_inputs()[0].shape)
+            total = shape[-1]
+        except Exception:  # noqa: BLE001 - a stub need not declare a shape
+            return None
+        if not isinstance(total, int) or isinstance(total, bool):
+            return None
+        fixed = _BASE_OBS_WIDTH + 3 * len(self._joint_names)
+        width = total - fixed
+        return width if width > 0 else None
 
     def _read_metadata(self) -> dict[str, str]:
         """Best-effort read of the ONNX ``custom_metadata_map`` (empty if absent)."""

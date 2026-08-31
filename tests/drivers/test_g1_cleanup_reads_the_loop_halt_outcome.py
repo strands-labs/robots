@@ -89,6 +89,20 @@ _JOINT = "left_knee"
 _LONGER_THAN_THE_JOIN_BUDGET = 30.0
 
 
+class _AlwaysReadyMotionSwitcher:
+    """A ``MotionSwitcherClient`` stand-in that always reports FSM 500.
+
+    ``read_fsm_id`` calls ``CheckMode()`` and decodes ``(status, {"name",
+    "form"})``; 500 is in ``HANDSHAKE_FSMS``, which is the FSM these cells'
+    driver is primed with.  Returns instantly, so it models a healthy wire and
+    not the slow one graded in
+    ``test_g1_fsm_refresh_is_off_the_control_loop_thread``.
+    """
+
+    def CheckMode(self) -> Any:  # noqa: N802 - SDK spelling
+        return (0, {"name": "ai", "form": 500})
+
+
 def _connected_driver(publisher: _RecordingPublisher) -> Any:
     """A real ``G1Driver`` wired to ``publisher``, in the state a rollout runs in.
 
@@ -96,12 +110,28 @@ def _connected_driver(publisher: _RecordingPublisher) -> Any:
     are what these cells grade, and every attribute the loop reads is a real
     value so a typo fails on ``AttributeError`` rather than reading a stand-in.
     """
-    driver = g1_mod.G1Driver(port="127.0.0.1", network_interface="lo")
+    driver = g1_mod.G1Driver(
+        port="127.0.0.1",
+        network_interface="lo",
+        # A rollout runs on a driver whose FSM producer is wired: the loop's
+        # refresher thread re-reads through this client, which is what keeps
+        # the cached FSM inside the per-step gate's staleness bound.  Without
+        # a factory the refresher has nothing to read and a long rollout would
+        # exit on a stale cache - a real refusal, but not the one these cells
+        # grade.
+        motion_switcher_client_factory=lambda _iface: _AlwaysReadyMotionSwitcher(),
+    )
     driver._pubs = publisher  # type: ignore[assignment]
     driver._subs = None
     driver._connected = True
     driver._mode_machine = 9
     driver._fsm_id = 500
+    # ``_fsm_id`` and ``_fsm_read_at`` are one fact in production - the only
+    # writer of the id stamps the time in the same branch - so a fixture that
+    # assigns the id assigns the stamp too.  Set here as well as left to the
+    # refresher because the loop is started directly (no ``run_policy``
+    # admission), and step 1 can beat the refresher's first read.
+    driver._fsm_read_at = time.monotonic()
     driver._battery = {"pct": 80.0}
     driver._imu = {"rpy": [0.0, 0.0, 0.0]}
     return driver

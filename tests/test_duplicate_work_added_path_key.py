@@ -45,8 +45,11 @@ of AGENTS.md.
 
 from __future__ import annotations
 
+import ast
 import importlib.util
+import inspect
 import sys
+import textwrap
 from pathlib import Path
 from typing import Any
 
@@ -736,3 +739,220 @@ class TestTheModuleStatesTheMeasurementBehindTheRelation:
         doc = self._doc()
         assert "18 of the last 30 merges" in doc
         assert "collides it on what the two branches create" in doc
+
+
+class TestALongFileListIsCompletedRatherThanRefused:
+    """One pull request changing more files than a page does not blind the sweep.
+
+    :func:`file_sets` refuses a node whose file list stopped short of its own
+    ``totalCount``, because reading a prefix would report a clean answer computed
+    from part of a branch. That refusal is right about the node. What was missing
+    is that :func:`resolve_open_file_sets` handed it a node it had made no attempt
+    to complete, so one oversized pull request raised out of the whole sweep and
+    every pair on the board went ungraded -- including pairs that have nothing to
+    do with the long branch. The paths are still read whole; the reader now pages
+    until the node's own total is in hand, and the refusal stays as the backstop
+    for a list that cannot be completed inside the bound.
+    """
+
+    @staticmethod
+    def _open_page(nodes: list[dict[str, Any]]) -> dict[str, Any]:
+        """The single page of the open-pull-request query."""
+        return {
+            "data": {
+                "repository": {
+                    "pullRequests": {
+                        "pageInfo": {"hasNextPage": False, "endCursor": None},
+                        "nodes": nodes,
+                    }
+                }
+            }
+        }
+
+    @staticmethod
+    def _files_page(paths: list[str], *, cursor: str | None) -> dict[str, Any]:
+        """One page of a single pull request's own changed-file list."""
+        return {
+            "data": {
+                "repository": {
+                    "pullRequest": {
+                        "files": {
+                            "pageInfo": {
+                                "hasNextPage": cursor is not None,
+                                "endCursor": cursor,
+                            },
+                            "nodes": _added(*paths),
+                        }
+                    }
+                }
+            }
+        }
+
+    @staticmethod
+    def _long_node(number: int, paths: list[str], *, total: int, cursor: str | None) -> dict[str, Any]:
+        """A node whose file list is the first page of a longer list."""
+        node = _node(number, _added(*paths), total=total)
+        node["files"]["pageInfo"] = {
+            "hasNextPage": cursor is not None,
+            "endCursor": cursor,
+        }
+        return node
+
+    def _wire(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        nodes: list[dict[str, Any]],
+        file_pages: list[dict[str, Any]],
+    ) -> list[object]:
+        """Answer the open-set query once and the per-pull file query from a queue.
+
+        The two queries are told apart by their variables: only the file query
+        carries the pull request's own number.
+        """
+        cursors: list[object] = []
+
+        def fake_post(query: str, variables: dict[str, object], token: str) -> dict[str, Any]:
+            if "number" in variables:
+                cursors.append(variables.get("after"))
+                return file_pages[len(cursors) - 1]
+            return self._open_page(nodes)
+
+        monkeypatch.setattr(check, "_post", fake_post)
+        return cursors
+
+    def test_a_collision_in_a_later_page_is_reported(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The finding lives past the first page, which is the whole point.
+
+        A pull request long enough to be paged collides with a one-file sibling on
+        a path the first page does not carry. Reading the first page alone reports
+        a clean board; refusing the node reports nothing at all.
+        """
+        first = [f"src/module_{index}.py" for index in range(check.FILE_PAGE_SIZE)]
+        shared = "tests/test_shared_surface.py"
+        nodes = [
+            self._long_node(11, first, total=len(first) + 1, cursor="cursor-1"),
+            _node(12, _added(shared)),
+        ]
+        cursors = self._wire(monkeypatch, nodes, [self._files_page([shared], cursor=None)])
+
+        file_sets = check.resolve_open_file_sets("owner/name", "token")
+
+        assert cursors == ["cursor-1"], "the node's own cursor, followed once"
+        assert shared in file_sets[11].created
+        verdict = check.classify_additions(file_sets)
+        assert verdict.outcome == check.DUPLICATE_ADDITION
+        assert (11, 12) in [(low, high) for low, high, _ in verdict.collisions]
+
+    def test_one_long_pull_request_no_longer_blinds_the_rest_of_the_board(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The measured harm: a pair that shares nothing with the long branch.
+
+        Before this, the long node raised before any pair was compared, so the
+        sweep answered ``unknown-additions`` for the whole board and a duplicate
+        between two unrelated one-file pull requests went unreported.
+        """
+        first = [f"src/module_{index}.py" for index in range(check.FILE_PAGE_SIZE)]
+        shared = "tests/test_unrelated_pair.py"
+        nodes = [
+            self._long_node(11, first, total=len(first) + 1, cursor="cursor-1"),
+            _node(21, _added(shared)),
+            _node(22, _added(shared)),
+        ]
+        self._wire(
+            monkeypatch,
+            nodes,
+            [self._files_page(["src/only_mine.py"], cursor=None)],
+        )
+
+        verdict = check.classify_additions(check.resolve_open_file_sets("owner/name", "token"))
+
+        assert verdict.outcome == check.DUPLICATE_ADDITION
+        assert (21, 22) in [(low, high) for low, high, _ in verdict.collisions]
+
+    def test_a_single_page_pull_request_costs_no_extra_request(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Ordinary traffic is unchanged, which is the bound on the widening.
+
+        A node whose list is already whole reports ``hasNextPage: false``, so the
+        reader stops without asking for a page it does not need.
+        """
+        nodes = [_node(11, _added("tests/test_a.py"))]
+        cursors = self._wire(monkeypatch, nodes, [])
+
+        file_sets = check.resolve_open_file_sets("owner/name", "token")
+
+        assert cursors == [], "no page was requested for a list already in hand"
+        assert file_sets[11].created == ("tests/test_a.py",)
+
+    def test_a_list_longer_than_the_bound_is_still_refused(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The refusal survives as the backstop, naming the bound it hit.
+
+        Paging is bounded, so a list that cannot be completed inside it is
+        reported rather than read as a prefix -- the property the shipped refusal
+        was protecting, kept.
+        """
+        first = [f"src/module_{index}.py" for index in range(check.FILE_PAGE_SIZE)]
+        nodes = [self._long_node(11, first, total=10_000, cursor="cursor-1")]
+        pages = [
+            self._files_page([f"src/more_{page}.py"], cursor=f"cursor-{page + 2}")
+            for page in range(check.MAX_FILE_PAGES + 2)
+        ]
+        self._wire(monkeypatch, nodes, pages)
+
+        with pytest.raises(check.ClaimSetUnreadable) as raised:
+            check.resolve_open_file_sets("owner/name", "token")
+
+        message = str(raised.value)
+        assert "#11" in message
+        assert str(check.MAX_FILE_PAGES * check.FILE_PAGE_SIZE) in message
+
+    def test_a_list_that_runs_out_of_pages_short_of_its_total_is_refused(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Paging is not a licence to read a prefix.
+
+        A node that stops offering pages while its own ``totalCount`` is unmet is
+        reported, not treated as complete -- the refusal this reader exists to
+        stop reaching for an ordinary long branch is still the answer for a list
+        the API will not finish handing over.
+        """
+        nodes = [self._long_node(11, ["src/a.py"], total=500, cursor="cursor-1")]
+        self._wire(monkeypatch, nodes, [self._files_page(["src/b.py"], cursor=None)])
+
+        with pytest.raises(check.ClaimSetUnreadable) as raised:
+            check.resolve_open_file_sets("owner/name", "token")
+
+        message = str(raised.value)
+        assert "#11" in message
+        assert "500" in message and "2" in message, "the shortfall is quantified"
+
+    def test_a_page_that_promises_more_and_names_no_cursor_is_refused(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A reader that looped on a missing cursor would ask for the same page
+        forever, so the unusable answer is reported instead."""
+        node = _node(11, _added("src/a.py"), total=500)
+        node["files"]["pageInfo"] = {"hasNextPage": True, "endCursor": None}
+        self._wire(monkeypatch, [node], [])
+
+        with pytest.raises(check.ClaimSetUnreadable) as raised:
+            check.resolve_open_file_sets("owner/name", "token")
+
+        assert "#11" in str(raised.value)
+
+    def test_the_completion_precedes_the_read_that_would_refuse(self) -> None:
+        """Order, not presence: a node read before it is completed hits the
+        refusal the completion exists to make unnecessary."""
+        tree = ast.parse(textwrap.dedent(inspect.getsource(check.resolve_open_file_sets)))
+        function = tree.body[0]
+        assert isinstance(function, ast.FunctionDef)
+        # Drop the docstring: it names ``file_sets`` in prose, so an offset
+        # comparison over the raw source would grade that mention.
+        body = function.body[1:] if ast.get_docstring(function) else function.body
+        called = [
+            node.func.id
+            for statement in body
+            for node in ast.walk(statement)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        ]
+        assert "complete_file_nodes" in called, "the reader no longer completes a node's file list"
+        assert "file_sets" in called, "the reader no longer reads the file set"
+        assert called.index("complete_file_nodes") < called.index("file_sets"), (
+            "the node is read before it is completed, so the refusal fires first"
+        )

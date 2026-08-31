@@ -312,7 +312,13 @@ class ProtoMotionsPolicy(Policy):
                    ``anchor_rot_xyzw`` / ``root_ang_vel_local`` on ``kwargs``.
                 2. Per-joint entries under the GTP joint names (with ``.vel``
                    suffix for velocities), plus ``anchor_rot_xyzw`` /
-                   ``root_ang_vel_local`` on the obs dict itself.
+                   ``root_ang_vel_local`` on the obs dict itself. Each
+                   of those two is also read under its
+                   ``observation.``-prefixed spelling
+                   (``observation.anchor_rot_xyzw`` /
+                   ``observation.root_ang_vel_local``), which is the
+                   shape a runtime that namespaces its observation keys
+                   produces.
 
             instruction: Ignored - the tracker follows the loaded motion, not
                 a text prompt.
@@ -463,8 +469,18 @@ class ProtoMotionsPolicy(Policy):
         anchor_key = f"body.{self._config.anchor_body_name}.quat"
         if anchor_key in obs:
             return mujoco_wxyz_to_xyzw(np.asarray(obs[anchor_key], dtype=np.float32))
-        # Try well-known observation keys.
-        for key in ("anchor_rot_xyzw", "observation.anchor_rot"):
+        # Well-known observation keys. Every observation-key fallback ladder in
+        # this package pairs a bare key with ``observation.<that key>``: the
+        # sibling ladder in :meth:`_extract_root_local_ang_vel` below does, and
+        # so do both of ``WBCPolicy``'s. A caller who follows that convention
+        # therefore writes ``observation.anchor_rot_xyzw``, and that spelling
+        # was absent while the suffix-less ``observation.anchor_rot`` was
+        # accepted -- so one observation dict whose keys were both spelled to
+        # the convention had its angular velocity resolve and its anchor
+        # rotation raise. The suffix-less form is kept because it is accepted
+        # today; it is also the weaker name, since it does not say which
+        # component order it carries and this rung does not reorder.
+        for key in ("anchor_rot_xyzw", "observation.anchor_rot_xyzw", "observation.anchor_rot"):
             if key in obs:
                 return np.asarray(obs[key], dtype=np.float32)
         # Fallback: derive from a full body-rotation batch.
@@ -485,7 +501,9 @@ class ProtoMotionsPolicy(Policy):
             f"{anchor_key!r} in the observation. Through a simulation rollout "
             "the runtime supplies that key from this policy's "
             "`required_bodies`; a caller assembling observations by hand can "
-            "instead pass `anchor_rot_xyzw=[x,y,z,w]` via kwargs or supply "
+            "instead pass `anchor_rot_xyzw=[x,y,z,w]` via kwargs, or supply it "
+            "on the observation as `anchor_rot_xyzw` (or its prefixed spelling "
+            "`observation.anchor_rot_xyzw`), or supply "
             "`body_rot_xyzw`. Note that `base_quat` is the floating base "
             f"({self._config.root_body_name!r}), NOT the anchor."
         )

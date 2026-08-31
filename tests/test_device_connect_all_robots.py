@@ -20,6 +20,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from strands_robots.simulation.models import SimRobot
+
 # ── Mock heavy dependencies before importing ──────────────────────
 
 mock_device_connect_edge = MagicMock()
@@ -220,6 +222,19 @@ def _make_mock_robot(name, info, task_status="idle"):
     return robot
 
 
+def _robot_record(name, running=False):
+    """A world robot record with rollout state.
+
+    The real record rather than a ``MagicMock``: a stop is a call on it
+    (``request_policy_stop``) and a mock would absorb that call while leaving
+    ``policy_running`` exactly as the test set it, passing whatever the handler
+    did.
+    """
+    robot = SimRobot(name=name, urdf_path="")
+    robot.policy_running = running
+    return robot
+
+
 def _make_mock_sim(name, info, robots_in_world=None):
     """Create a mock simulation matching the registry entry's configuration."""
     sim = MagicMock()
@@ -227,11 +242,7 @@ def _make_mock_sim(name, info, robots_in_world=None):
 
     world = MagicMock()
     if robots_in_world is None:
-        robot_data = MagicMock()
-        robot_data.policy_running = False
-        robot_data.policy_steps = 0
-        robot_data.policy_instruction = ""
-        world.robots = {name: robot_data}
+        world.robots = {name: _robot_record(name)}
     else:
         world.robots = robots_in_world
     world.sim_time = 0.0
@@ -418,12 +429,8 @@ class TestRealOnlyRobots:
 class TestMultiRobotSimulation:
     """Tests for multi-robot simulation scenarios with diverse joint counts."""
 
-    def _make_robot_data(self, running=False):
-        robot_data = MagicMock()
-        robot_data.policy_running = running
-        robot_data.policy_steps = 0
-        robot_data.policy_instruction = ""
-        return robot_data
+    def _make_robot_data(self, running=False, name="robot"):
+        return _robot_record(name, running=running)
 
     def test_mixed_joint_counts(self):
         """so100 (6 joints) + unitree_g1 (46 joints) in one world."""

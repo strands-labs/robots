@@ -37,6 +37,17 @@ Examples::
         --onnx ../microduck/policies/alpha_stand.onnx \
         --duration 5 --out /tmp/microduck_viz/stand.mp4
 
+    # A skill trained in a variant scene names it with --scene. Without one the
+    # duck rolls on a floor with no wheels under its feet, or swings at a ball
+    # that is not there.
+    python examples/microduck/render_video.py \
+        --onnx ../microduck/policies/roller.onnx --scene scene_rollers.xml \
+        --vx 0.3 --duration 8 --out /tmp/microduck_viz/roller.mp4
+
+    python examples/microduck/render_video.py \
+        --onnx ../microduck/policies/ball_kick_left.onnx --scene scene_ball.xml \
+        --vx 0 --duration 4 --out /tmp/microduck_viz/kick.mp4
+
 Dependencies::
 
     pip install "strands-robots[sim-mujoco,microduck]"   # rollout + video
@@ -47,6 +58,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
+from pathlib import Path
 
 import numpy as np
 
@@ -117,13 +129,61 @@ def _encode_gif(frames, gif_path, gif_fps, gif_width):
     print(f"  wrote gif {gif_path} ({new_w}x{new_h}, {size_mb:.2f} MB)")
 
 
+def _resolve_scene(name: str) -> str:
+    """Resolve a Microduck scene file by name through the asset search paths.
+
+    A shipped weight and the scene it was trained in are one pair: ``roller`` and
+    ``roller_crouch`` need the four passive ankle wheels only ``scene_rollers.xml``
+    carries, and the ``ball_kick_*`` pair needs the prop only ``scene_ball.xml``
+    places. All three scenes ship in the one asset directory the registry entry
+    already downloads, so this resolves by name through
+    :func:`~strands_robots.utils.get_search_paths` - the same route
+    ``docs/policies/microduck.md`` documents - rather than taking a path the
+    caller has to spell out.
+
+    Args:
+        name: A scene file name under the ``microduck`` asset directory, such as
+            ``scene_rollers.xml``.
+
+    Returns:
+        The absolute path of the first match, searching the asset roots in the
+        order :func:`get_search_paths` returns them.
+
+    Raises:
+        SystemExit: If no asset root carries ``microduck/<name>``, naming the
+            roots that were searched. A misspelled scene is refused rather than
+            silently rendering the entry's declared scene, which reports success
+            and shows a duck standing still with no indication why.
+    """
+    from strands_robots.utils import get_search_paths  # noqa: PLC0415
+
+    roots = get_search_paths()
+    for root in roots:
+        candidate = Path(root) / "microduck" / name
+        if candidate.is_file():
+            return str(candidate)
+    searched = ", ".join(str(Path(root) / "microduck") for root in roots)
+    raise SystemExit(f"scene {name!r} not found; searched {searched}")
+
+
+def _sim_kwargs(args) -> dict[str, str]:
+    """The ``Robot(...)`` keyword arguments the requested scene needs.
+
+    Empty when no ``--scene`` was given, so the registry entry resolves its own
+    declared scene exactly as before.
+    """
+    if not getattr(args, "scene", None):
+        return {}
+    return {"urdf_path": _resolve_scene(args.scene)}
+
+
 async def _rollout(args):
     from strands_robots import Robot  # noqa: PLC0415
     from strands_robots.policies.microduck import MicroduckPolicy  # noqa: PLC0415
 
     mujoco = _load_mujoco()
 
-    sim = Robot("microduck", mesh=False)
+    sim = Robot("microduck", mesh=False, **_sim_kwargs(args))
     sim.reset()
     model, data = sim.mj_model, sim.mj_data
 
@@ -188,6 +248,13 @@ async def _rollout(args):
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--onnx", default="../microduck/policies/alpha_walking.onnx")
+    ap.add_argument(
+        "--scene",
+        default=None,
+        help="scene file under the microduck asset dir, for a skill trained in a "
+        "variant scene (scene_rollers.xml for the roller pair, scene_ball.xml for "
+        "the ball-kick pair); omit to use the scene the registry entry declares",
+    )
     ap.add_argument("--duration", type=float, default=8.0, help="seconds of rollout")
     ap.add_argument("--vx", type=float, default=0.3, help="forward velocity command (m/s)")
     ap.add_argument("--vy", type=float, default=0.0, help="lateral velocity command (m/s)")

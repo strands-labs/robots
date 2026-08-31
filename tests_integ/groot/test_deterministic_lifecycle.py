@@ -106,7 +106,7 @@ def _libero_obs(rng: np.random.Generator) -> dict:
     for key in ("x", "y", "z", "roll", "pitch", "yaw"):
         obs[key] = np.float32(rng.standard_normal())
     # LIBERO's gripper state is the two finger joints (see
-    # strands_robots.benchmarks.libero.adapter - `merged["gripper"]`).
+    # a delta-EEF benchmark adapter - `merged["gripper"]`).
     obs["gripper"] = rng.standard_normal(2).astype(np.float32)
     return obs
 

@@ -27,6 +27,7 @@ from __future__ import annotations
 import importlib
 import logging
 import threading
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -210,3 +211,104 @@ def reset_dds_state() -> None:
     with _DDS_INIT_LOCK:
         _dds_state["initialized"] = False
         _dds_state["interface"] = None
+
+
+def _handle_refusal_envelope(text: str) -> dict[str, Any]:
+    """Wrap a refusal sentence in the envelope every ``@tool`` owes a caller."""
+    return {"status": "error", "content": [{"text": text}]}
+
+
+def live_handle_refusal(
+    verb: str,
+    driver: Any,
+    *,
+    accessor: str,
+    reads: str,
+    expected: str,
+) -> dict[str, Any] | None:
+    """Return the refusal envelope for an unusable live-handle ``driver``, or ``None``.
+
+    Every verb in this package that takes a wired driver reads it through one
+    accessor, and the handle is a **live Python object** rather than a value an
+    agent can synthesize: it is typed :class:`~typing.Any` so this package stays
+    out of the import cycle the driver's reach into :func:`ensure_dds` would
+    close, and that annotation carries no type into the generated tool schema.
+    A caller therefore reaches these verbs with whatever it has, and a verb whose
+    first statement is the accessor call surfaces ``None``, a robot *name*, or
+    any object without the accessor as ``AttributeError`` naming a private
+    attribute rather than as a refusal naming the parameter.
+
+    This is the one implementation of that judgement, and it keeps four
+    invariants for every verb in the package: the answer is an error *envelope*
+    and never an exception, it names the verb, it names ``driver``, and it names
+    the type it received. The prose differs per accessor because the remedy does - which
+    object to pass, and what that object has to answer - so the wording is the
+    caller's parameter and the invariants are not.
+
+    Args:
+        verb: The tool name, used to open the message so a caller reading a
+            transcript can tell which verb refused.
+        driver: The handle to judge. Answers ``None`` only when the object can
+            answer ``accessor``; a wrong handle is refused rather than coerced.
+        accessor: The attribute the verb reads the handle through. It must be
+            *callable* on the handle, not merely present - a namespace built
+            from a cache dump carries the name as data, and a guard testing
+            only for presence would accept it and then fail on the call.
+        reads: Why an agent cannot supply the handle, completing the sentence
+            "an agent cannot synthesize it, because ...".
+        expected: What the handle failed to expose and what to pass instead,
+            completing the sentence "of type 'str' does not expose ...".
+
+    Returns:
+        ``None`` when ``driver`` exposes a callable ``accessor``, otherwise the
+        ``{"status": "error", "content": [...]}`` envelope every ``@tool`` owes
+        a caller instead of an exception.
+    """
+    if driver is None:
+        return _handle_refusal_envelope(
+            f"{verb}: `driver` is required. Pass the live G1Driver "
+            "handle the orchestrator constructed - an agent cannot "
+            f"synthesize it, because {reads}."
+        )
+    if not callable(getattr(driver, accessor, None)):
+        return _handle_refusal_envelope(
+            f"{verb}: `driver` of type {type(driver).__name__!r} does not expose {expected}"
+        )
+    return None
+
+
+def snapshot_handle_refusal(verb: str, driver: Any) -> dict[str, Any] | None:
+    """Return the refusal envelope for an unusable ``driver`` handle, or ``None``.
+
+    The sensor verbs in this package read a cache the driver's own DDS
+    subscriber writes, through the driver's ``_snapshot`` accessor. This is
+    :func:`live_handle_refusal` bound to that accessor, shared because five
+    verbs need it rather than restated in each.
+
+    ``strands_robots.tools.run_policy`` is the one ``@tool`` outside this
+    package whose parameter is a live handle typed :class:`~typing.Any`, and it
+    refuses both shapes with a message naming the parameter and the remedy.
+
+    Args:
+        verb: The tool name, used to open the message so a caller reading a
+            transcript can tell which verb refused.
+        driver: The handle to judge. Answers ``None`` only when the object can
+            answer the accessor; a wrong handle is refused rather than coerced.
+
+    Returns:
+        ``None`` when ``driver`` exposes a callable ``_snapshot``, otherwise the
+        ``{"status": "error", "content": [...]}`` envelope every ``@tool`` owes
+        a caller instead of an exception.
+    """
+    return live_handle_refusal(
+        verb,
+        driver,
+        accessor="_snapshot",
+        reads="the verb reads a cache the driver's own DDS subscriber writes",
+        expected=(
+            "the cached-snapshot accessor this verb reads. Pass a "
+            "strands_robots G1Driver, or an object with a callable "
+            "`_snapshot(attr)` answering the cache dict the driver's decoder "
+            "writes."
+        ),
+    )

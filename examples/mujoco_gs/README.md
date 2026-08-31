@@ -136,7 +136,7 @@ It's **agentic**: a Strands `Agent` is given the `Simulation` tool and a
 natural-language instruction, and it picks `evaluate_benchmark` off the tool's
 action surface, fills the kwargs, runs the eval, and reports the
 `success_rate` in plain language (the pattern from
-`examples/libero/run_mujoco_agent.py`). A background thread renders the scene
+`examples/mujoco_gs/agent.py`). A background thread renders the scene
 through the `HybridCompositor` into the `/live` MJPEG buffer so you watch the
 arm in near-real-time, and a clip is recorded.
 
@@ -171,7 +171,7 @@ Measured **`success_rate=1.00`** against `nvidia/GR00T-N1.7-LIBERO`
   serves `/data/checkpoints/libero_10`, so run **`libero_10`** tasks. A
   different suite against it is a skill mismatch → ~0% success. (Bring up a
   suite-matched checkpoint with `gr00t_inference(action="lifecycle", …,
-  hf_subfolder=<suite>)` — see `examples/libero/run.py`.)
+  hf_subfolder=<suite>)`.)
 * **Don't cap `max_steps`.** LIBERO-Long needs ~500 steps; capping truncates
   the episode before completion. The runner/script use the adapter default.
 * **Pre-warm the scene** (generate BDDL scene → `load_scene` → `prewarm`) so

@@ -319,10 +319,16 @@ OPEN_PAGE_SIZE = 100
 #: evidence of no collision.
 MAX_OPEN_PAGES = 20
 
-#: How many changed files to ask for per pull request. A longer list is refused
-#: rather than read short, for the reason :data:`LINK_PAGE_SIZE` gives: a file
-#: list cut off here could omit the very path that collides and report clean.
+#: How many changed files to ask for per page. A pull request with more is
+#: completed by :func:`complete_file_nodes` rather than read short, for the
+#: reason :data:`LINK_PAGE_SIZE` gives: a file list cut off here could omit the
+#: very path that collides and report clean.
 FILE_PAGE_SIZE = 100
+
+#: A bound on file pagination, in the shape :data:`MAX_OPEN_PAGES` uses. A pull
+#: request changing more files than this is still refused: a file list cut off
+#: here could omit the very path that collides.
+MAX_FILE_PAGES = 30
 
 NO_CLAIM = "no-claim"
 UNIQUE_CLAIM = "unique-claim"
@@ -471,6 +477,7 @@ query($owner: String!, $name: String!, $files: Int!, $open: Int!, $after: String
         number
         files(first: $files) {
           totalCount
+          pageInfo { hasNextPage endCursor }
           nodes { path changeType }
         }
       }
@@ -1004,6 +1011,75 @@ def resolve_open_claims(repo: str, token: str, pr: int | None = None) -> dict[in
     raise ClaimSetUnreadable(f"more than {MAX_OPEN_PAGES * OPEN_PAGE_SIZE} open pull requests; the list was truncated.")
 
 
+_PULL_FILES_QUERY = """
+query($owner: String!, $name: String!, $number: Int!, $files: Int!, $after: String) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      files(first: $files, after: $after) {
+        pageInfo { hasNextPage endCursor }
+        nodes { path changeType }
+      }
+    }
+  }
+}
+"""
+
+
+def complete_file_nodes(owner: str, name: str, pull: dict[str, object], token: str) -> None:
+    """Read the rest of one pull request's changed-file list into ``pull``, in place.
+
+    The first page arrives with the open-pull-request page it was requested
+    beside; a pull request changing more files than :data:`FILE_PAGE_SIZE`
+    carries a cursor, and the pages after it are read here so
+    :func:`file_sets` is handed the whole list rather than a prefix of it.
+
+    Refusing a long list instead is safe for that pull request and unsafe for
+    the sweep. :func:`resolve_open_file_sets` resolves every open pull request
+    before any pair is compared, so one refusal answers ``unknown-additions``
+    for the whole board -- reporting nothing about any other pair *because it
+    did not look far enough*, which is the one thing :func:`file_sets` says
+    this sweep must never do.
+
+    Bounded by :data:`MAX_FILE_PAGES`, so the ceiling moves rather than
+    disappearing: a list longer than that is still refused.
+    """
+    files = pull.get("files")
+    if not isinstance(files, dict):
+        return
+    nodes = files.get("nodes")
+    if not isinstance(nodes, list):
+        return
+    info: object = files.get("pageInfo") or {}
+    for _ in range(MAX_FILE_PAGES - 1):
+        if not isinstance(info, dict) or not info.get("hasNextPage"):
+            return
+        cursor = info.get("endCursor")
+        if not isinstance(cursor, str):
+            raise ClaimSetUnreadable(f"#{pull.get('number')}'s file list is paged but carried no cursor.")
+        repository = _repository(
+            _post(
+                _PULL_FILES_QUERY,
+                {
+                    "owner": owner,
+                    "name": name,
+                    "number": int(pull["number"]),  # type: ignore[arg-type]
+                    "files": FILE_PAGE_SIZE,
+                    "after": cursor,
+                },
+                token,
+            )
+        )
+        node = repository.get("pullRequest")
+        more = node.get("files") if isinstance(node, dict) else None
+        if not isinstance(more, dict):
+            raise ClaimSetUnreadable(f"#{pull.get('number')}'s file list stopped short of its own total.")
+        nodes.extend(entry for entry in (more.get("nodes") or []) if isinstance(entry, dict))
+        info = more.get("pageInfo") or {}
+    raise ClaimSetUnreadable(
+        f"#{pull.get('number')} changes more than {MAX_FILE_PAGES * FILE_PAGE_SIZE} files; the list was truncated."
+    )
+
+
 def resolve_open_file_sets(repo: str, token: str) -> dict[int, PullFiles]:
     """Return ``{open pull request number: the paths it creates and edits}``.
 
@@ -1013,7 +1089,10 @@ def resolve_open_file_sets(repo: str, token: str) -> dict[int, PullFiles]:
 
     Paginated for the reason :func:`resolve_open_claims` is -- a repository with
     more open pull requests than :data:`OPEN_PAGE_SIZE` would otherwise get a
-    clean answer computed from a prefix of the set.
+    clean answer computed from a prefix of the set. Each node's own file list is
+    completed by :func:`complete_file_nodes` before it is read, so one pull
+    request changing more files than :data:`FILE_PAGE_SIZE` cannot answer
+    ``unknown-additions`` for every pair on the board.
     """
     owner, _, name = repo.partition("/")
     if not owner or not name:
@@ -1040,6 +1119,7 @@ def resolve_open_file_sets(repo: str, token: str) -> dict[int, PullFiles]:
         for node in page.get("nodes") or []:
             if not isinstance(node, dict) or "number" not in node:
                 continue
+            complete_file_nodes(owner, name, node, token)
             files[int(node["number"])] = file_sets(node)
         info = page.get("pageInfo") or {}
         if not info.get("hasNextPage"):

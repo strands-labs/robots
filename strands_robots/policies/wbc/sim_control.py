@@ -8,8 +8,8 @@ stiff gain (``kp = 500`` uniform). That gain overrides SONIC's tuned per-joint P
 fraction of a second.
 
 This module provides the missing piece - a controller installed via the same
-``world._backend_state["action_controller"]`` hook the LIBERO adapter uses
-(see :class:`strands_robots.benchmarks.libero.adapter._LiberoOSCController`).
+``world._backend_state["action_controller"]`` hook a benchmark adapter uses to
+install its own controller.
 When installed it:
 
 1. Flips the G1's leg+waist+arm actuators to **torque (motor) mode** in the

@@ -340,8 +340,11 @@ class RosTelemetryBase:
         request) is dropped silently; an empty or length-mismatched message is
         otherwise rejected with a warning rather than partially applied, so a
         malformed command never drives the arm to a surprising pose. A position
-        that is not a readable number rejects the message the same way - it is
-        reported and returns ``None`` rather than raising, so the failure costs
+        that is not a readable number rejects the message the same way, and so
+        does one that is readable but not finite: ``nan``/``inf`` survive
+        ``float()`` and reach the actuator write, where lerobot's bounding
+        clamp resolves them to an end stop rather than refusing them. Both are
+        reported and return ``None`` rather than raising, so the failure costs
         exactly the one message on either transport.
 
         When ``joint_limits`` is supplied (``{"<motor>.pos": (min, max)}``), the
@@ -377,7 +380,7 @@ class RosTelemetryBase:
         action: dict[str, float] = {}
         for name, pos in zip(names, positions):
             try:
-                action[name] = float(pos)
+                value = float(pos)
             except (TypeError, ValueError):
                 # A position this cannot read is a malformed command, not a
                 # reason to raise: this method's contract is an action dict or
@@ -387,9 +390,7 @@ class RosTelemetryBase:
                 # the one message. Escaping instead reached each transport's
                 # loop tolerance, and the cyclonedds loop has already taken a
                 # batch by then, so the samples behind this one were dropped
-                # with it. Finiteness is deliberately not checked here: a nan
-                # position is a readable number that ``send_action`` refuses
-                # naming the joint.
+                # with it.
                 logger.warning(
                     "%s: ignoring joint_command with a non-numeric position for %r: %r",
                     type(self).__name__,
@@ -397,6 +398,23 @@ class RosTelemetryBase:
                     pos,
                 )
                 return None
+            # A readable number is not yet a usable position, and the refusal
+            # ``nan``/``inf`` were left to is not one both bridges have. The
+            # simulation host's ``send_action`` does refuse a non-finite action
+            # value naming the joint; the hardware path does not. lerobot bounds
+            # a normalized position with ``min(hi, max(lo, val))``, which
+            # ``nan`` defeats in both directions - measured through
+            # ``FeetechMotorsBus._unnormalize`` on an SO-101's own calibration,
+            # a ``nan`` shoulder position resolved to the joint's ``range_min``
+            # and an ``inf`` to its ``range_max``, so the arm drove to an end
+            # stop under a ``success`` envelope with nothing logged. The
+            # ``joint_limits`` branch below does catch it (``not (lo <= nan <=
+            # hi)`` is true), but it is optional and defaults to ``None``.
+            # Refused here, whole, on the domain those bounds already use.
+            if error := finite_number_error(value, f"position for {name!r}", type(self).__name__):
+                logger.warning("%s Whole command dropped, no partial application.", error)
+                return None
+            action[name] = value
         if joint_limits:
             for name, pos in action.items():
                 bounds = joint_limits.get(name)

@@ -17,6 +17,7 @@ import logging
 import os
 import platform
 import sys
+import warnings
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -184,8 +185,10 @@ def check_mujoco_gl() -> str:
     rather than restated here.
     """
     from strands_robots.simulation.mujoco.backend import (
+        _MUJOCO_GL_OFFSCREEN_LIBRARIES,
         _is_headless,
         _mujoco_gl_disables_rendering,
+        _mujoco_gl_loadable_offscreen_values,
         _mujoco_gl_offscreen_values,
         _mujoco_gl_valid_values,
         _mujoco_gl_value,
@@ -200,13 +203,43 @@ def check_mujoco_gl() -> str:
     # What to recommend has to be valid here: on a platform whose only backend
     # draws through the window server there is no offscreen value to offer, and
     # naming one would send the reader after a value MuJoCo refuses.
-    offscreen_here = sorted(_mujoco_gl_offscreen_values())
+    #
+    # Valid is not the same as reachable. Each offscreen backend loads a system
+    # library, so on a host missing them every offscreen value MuJoCo accepts is
+    # one no export can render through, and the remedy is the library rather than
+    # a different variable. Both sets are kept, to tell "this platform has no
+    # offscreen backend" apart from "this host is missing their libraries".
+    accepted_offscreen = sorted(_mujoco_gl_offscreen_values())
+    offscreen_here = sorted(_mujoco_gl_loadable_offscreen_values())
+    absent_libraries = [
+        library
+        for value, library in _MUJOCO_GL_OFFSCREEN_LIBRARIES
+        if value in accepted_offscreen and value not in offscreen_here
+    ]
+
+    def _no_offscreen_remedy(platform_has_none: str) -> str:
+        """The remedy when no offscreen backend is reachable.
+
+        Args:
+            platform_has_none: What to say when the platform accepts none of them,
+                which is a property of the platform rather than of this host.
+
+        Returns:
+            The library advice when the platform accepts offscreen backends and
+            none of their libraries loads here, ``platform_has_none`` otherwise.
+        """
+        if accepted_offscreen:
+            return (
+                f"install an offscreen GL library ({', '.join(absent_libraries)}) - "
+                "no exported value can render without one"
+            )
+        return platform_has_none
 
     if _mujoco_gl_disables_rendering(value):
         fix = (
             f"export MUJOCO_GL={offscreen_here[0]}  # or unset it for the platform default"
             if offscreen_here
-            else "unset MUJOCO_GL  # the platform's own backend renders through its window server"
+            else _no_offscreen_remedy("unset MUJOCO_GL  # the platform's own backend renders through its window server")
         )
         return _fail(f"{shown} disables MuJoCo's GL context, so nothing can render", fix=fix)
 
@@ -217,7 +250,12 @@ def check_mujoco_gl() -> str:
             fix=f"export MUJOCO_GL=<one of: {offered}>  # or unset it for the platform default",
         )
 
-    if value in offscreen_here:
+    # Classification is the platform's question, not this host's: an offscreen
+    # backend is one whether or not its library is installed here, so a value the
+    # reader set keeps the verdict it earns. Only what to *recommend* narrows to
+    # what can load, which is why this reads the accepted set and the remedies
+    # above and below read the reachable one.
+    if value in accepted_offscreen:
         return _pass(shown)
 
     # Every remaining accepted value routes MuJoCo to a backend that draws through
@@ -226,7 +264,9 @@ def check_mujoco_gl() -> str:
         note = (
             f"Set MUJOCO_GL={' or '.join(offscreen_here)} for headless"
             if offscreen_here
-            else f"{platform.system()} has no offscreen MuJoCo backend, so a window server is required"
+            else _no_offscreen_remedy(
+                f"{platform.system()} has no offscreen MuJoCo backend, so a window server is required"
+            )
         )
         return _warn(f"{shown} (needs display)", note=note)
 
@@ -234,12 +274,21 @@ def check_mujoco_gl() -> str:
         if platform.system() == "Linux":
             return _pass("MUJOCO_GL unset (display detected, glfw will work)")
         return _pass(f"MUJOCO_GL unset ({platform.system()} renders through its native backend)")
-    # ``_is_headless`` is only ever true on Linux, so the remedy below is reached
-    # on the one platform where those two backends exist.
-    return _fail(
-        "MUJOCO_GL not set and no display detected",
-        fix="export MUJOCO_GL=egl  # or osmesa; add to ~/.bashrc",
-    )
+    # ``_is_headless`` is only ever true on Linux, the one platform where those two
+    # backends exist - so what remains to decide is which of them this host can
+    # actually load.
+    if not offscreen_here:
+        return _fail(
+            "MUJOCO_GL not set and no display detected",
+            fix=_no_offscreen_remedy(
+                f"{platform.system()} has no offscreen MuJoCo backend, so a window server is required"
+            ),
+        )
+    # The command has to stay runnable, so any second choice goes in the comment.
+    alternatives = " or ".join(offscreen_here[1:])
+    fix = f"export MUJOCO_GL={offscreen_here[0]}  # "
+    fix += f"or {alternatives}; add to ~/.bashrc" if alternatives else "add to ~/.bashrc"
+    return _fail("MUJOCO_GL not set and no display detected", fix=fix)
 
 
 def check_lerobot() -> str:
@@ -323,6 +372,166 @@ def _warp_cuda_report() -> tuple[tuple[int, ...], int, tuple[int, int], tuple[in
     return supported, chosen, (int(toolkit[0]), int(toolkit[1])), (int(driver[0]), int(driver[1]))
 
 
+def _arch_entry_version(entry: str) -> int | None:
+    """The architecture an entry of torch's arch list names, as an ``sm_NN`` integer.
+
+    torch spells its entries ``sm_90`` and ``compute_80``, and appends a family
+    suffix for architecture-specific code (``sm_90a``, ``sm_120f``). That spelling
+    is torch's, so prefer torch's own parser and fall back to reading the
+    documented shape only on an install too old to expose it.
+
+    Args:
+        entry: One element of :func:`torch.cuda.get_arch_list`.
+
+    Returns:
+        The architecture as an integer (``90`` for ``sm_90a``), or ``None`` when
+        the entry does not carry one.
+    """
+    try:
+        import torch
+    except ImportError:  # pragma: no cover - the caller resolved a report first
+        parse = None
+    else:
+        parse = getattr(torch.cuda, "_extract_arch_version", None)
+    if parse is not None:
+        try:
+            return int(parse(entry))
+        except (IndexError, ValueError):
+            return None
+    parts = entry.split("_", maxsplit=2)
+    if len(parts) < 2:
+        return None
+    digits = parts[1].removesuffix("a").removesuffix("f")
+    return int(digits) if digits.isdigit() else None
+
+
+def _torch_cuda_report() -> tuple[tuple[int, ...], str] | None:
+    """The architectures the installed torch build carries, and its version.
+
+    Returns:
+        A ``(build_archs, version)`` tuple, or ``None`` when torch is not
+        installed - it ships in the extras that run a policy - or when it cannot
+        report an arch list at all.
+    """
+    try:
+        import torch
+    except ImportError:
+        return None
+    try:
+        entries = torch.cuda.get_arch_list()
+    except Exception:
+        return None
+    archs = tuple(arch for arch in (_arch_entry_version(entry) for entry in entries) if arch is not None)
+    return archs, str(torch.__version__)
+
+
+def _torch_build_supports(device_arch: int, build_archs: tuple[int, ...]) -> bool:
+    """Whether torch's own compatibility rule admits this device for this build.
+
+    The rule is torch's rather than one derived here, so this check and torch
+    cannot reach opposite verdicts about one install. ``_code_compatible_with_device``
+    is the predicate torch's own capability check consults, and it reads a table
+    of intervals: a build carrying ``sm_80`` code supports ``>=8.0,<9.0 except
+    {8.7}``, so it does *not* cover a Jetson Orin. The coarser
+    backward-compatible-within-a-major-version rule that torch's cubin check
+    documents admits that pair, which is why the interval table is preferred and
+    the coarse rule is only the fallback for an install too old to expose it.
+
+    Args:
+        device_arch: Architecture the driver reports, as an ``sm_NN`` integer.
+        build_archs: Architectures the installed build carries code for.
+
+    Returns:
+        ``True`` when some entry of the build covers the device.
+    """
+    compatible = None
+    try:
+        import torch
+    except ImportError:  # pragma: no cover - the caller resolved a report first
+        pass
+    else:
+        compatible = getattr(torch.cuda, "_code_compatible_with_device", None)
+
+    if compatible is None:
+        return any(arch // 10 == device_arch // 10 for arch in build_archs)
+
+    # The predicate warns when a build names an architecture its own table does
+    # not know - a note about the table's age rather than about this device. The
+    # verdict below carries that answer, so the note is suppressed rather than
+    # printed beside it.
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        return any(bool(compatible(device_arch, arch)) for arch in build_archs)
+
+
+def _torch_compatible_releases(device_arch: int) -> tuple[str, ...]:
+    """CUDA versions whose torch release carries code this device can run.
+
+    Read from the table torch ships for its own remedy, so the versions offered
+    are the ones torch would name rather than a guess about what PyPI serves.
+
+    Args:
+        device_arch: Architecture the driver reports, as an ``sm_NN`` integer.
+
+    Returns:
+        The CUDA versions, or an empty tuple when torch ships no such table.
+    """
+    try:
+        import torch
+    except ImportError:  # pragma: no cover - the caller resolved a report first
+        return ()
+    table = getattr(torch.cuda, "PYTORCH_RELEASES_CODE_CC", None)
+    if not isinstance(table, dict):
+        return ()
+    return tuple(str(cuda) for cuda, build_ccs in table.items() if _torch_build_supports(device_arch, tuple(build_ccs)))
+
+
+def check_torch_arch() -> str:
+    """torch's build carries CUDA code for the GPU architecture the driver reports.
+
+    A torch build that carries no code for the device runs no CUDA kernel at all,
+    and ``torch.cuda.is_available()`` is ``True`` regardless - it answers about the
+    driver, not about the build. So :func:`check_cuda` passes on such an install,
+    naming the device and the version, and the only signal is a ``warnings.warn``
+    torch emits on its first CUDA call: it goes to stderr while this table goes to
+    stdout, it is shown once per process, and it lands beside this command's "All
+    checks passed" verdict - the one place a new reader looks to find out whether
+    their setup is sound.
+
+    The verdict is torch's own (see :func:`_torch_build_supports`), so this check
+    reports what torch already decided rather than deciding it again. It is
+    reported as a failure rather than a warning because the consequence is total:
+    where Warp substitutes a nearby architecture and keeps returning right answers
+    for simple kernels, torch's own words for this build are "not compatible".
+    """
+    device_arch = _driver_compute_arch()
+    if device_arch is None:
+        return _skip("torch arch: no CUDA device to compare against")
+    report = _torch_cuda_report()
+    if report is None:
+        return _skip("torch arch: torch not installed (needed for policy inference)")
+    build_archs, version = report
+    if not build_archs:
+        return _skip(f"torch arch: torch {version} reports no CUDA architectures")
+
+    offered = " ".join(f"sm_{arch}" for arch in sorted(set(build_archs)))
+    if _torch_build_supports(device_arch, build_archs):
+        return _pass(f"torch {version} carries code for sm_{device_arch} (build: {offered})")
+
+    releases = _torch_compatible_releases(device_arch)
+    fix = "Install a torch build for this GPU: https://pytorch.org/get-started/locally/"
+    if releases:
+        fix = (
+            f"Install a torch release built against CUDA {', '.join(releases)} - torch's own table names "
+            f"those as carrying code for sm_{device_arch}: https://pytorch.org/get-started/locally/"
+        )
+    return _fail(
+        f"torch {version} carries code for {offered}, and torch's own compatibility check reports "
+        f"this sm_{device_arch} device as not compatible with that build",
+        fix=fix,
+    )
+
+
 def check_warp_arch() -> str:
     """Warp's build can compile for the GPU architecture the driver reports.
 
@@ -340,10 +549,10 @@ def check_warp_arch() -> str:
     CUDA-13 builds are indistinguishable by name, while the table is the value
     Warp itself reads.
 
-    Only Warp is asked here. torch reports an arch list too, but a torch build
-    without the device's arch compiles from PTX instead - a documented fallback
-    that still produces the right answer - and ``check_cuda`` already reports
-    torch's posture.
+    torch's arch table is asked by :func:`check_torch_arch` rather than here,
+    because the two builds fail differently: Warp substitutes a nearby
+    architecture and keeps computing, while torch's own compatibility check
+    reports the device as not compatible with the build.
     """
     device_arch = _driver_compute_arch()
     if device_arch is None:
@@ -504,6 +713,7 @@ def run_doctor() -> int:
         ("MuJoCo GL", check_mujoco_gl),
         ("LeRobot", check_lerobot),
         ("CUDA/GPU", check_cuda),
+        ("Torch Arch", check_torch_arch),
         ("Warp Arch", check_warp_arch),
         ("Serial", check_serial_permissions),
         ("HF Auth", check_hf_auth),

@@ -355,8 +355,7 @@ class RenderingMixin:
     def _get_viz_option(self) -> Any:
         """Return an ``mujoco.MjvOption`` from ``world._backend_state["viz_option"]``, or ``None``.
 
-        The optional ``viz_option`` override lets benchmark adapters (e.g.
-        :class:`~strands_robots.benchmarks.libero.adapter.LiberoAdapter`)
+        The optional ``viz_option`` override lets a benchmark adapter
         configure render-time visualisation flags - things like
         ``mjvOption.geomgroup[0] = 0`` to hide collision geoms,
         ``sitegroup[*] = 0`` to hide site markers, ``mjVIS_JOINT/mjVIS_ACTUATOR/mjVIS_COM = 0``
@@ -563,8 +562,20 @@ class RenderingMixin:
         # missed by the loop above. Recover it from the kinematic tree so a
         # mobile manipulator surfaces base state instead of being silently
         # treated as a fixed-base arm.
-        if free_jnt_id < 0:
-            free_jnt_id = self._robot_base_free_joint(model, robot, pfx)
+        # The base is whichever free joint the ownership-checked resolver names,
+        # never whichever one happens to come last in ``joint_names``. The loop
+        # above records a free joint only to skip its degenerate scalar; letting
+        # it also CHOOSE reported a sibling prop's pose as the robot's base on
+        # any scene that ships a free-jointed task object under the robot's own
+        # namespace - a kick ball, a Menagerie grasping cube - because such a
+        # joint is a named entry in ``joint_names`` too and the last write won.
+        # :meth:`_robot_base_free_joint` is the single owner of that question and
+        # already checks ownership; it also recovers an UNNAMED base the loop
+        # cannot see (a mobile base like LeKiwi), so it answers both cases. Its
+        # ``-1`` is not allowed to erase a base the loop did find.
+        owned_free_jnt_id = self._robot_base_free_joint(model, robot, pfx)
+        if owned_free_jnt_id >= 0:
+            free_jnt_id = owned_free_jnt_id
 
         # Floating-base signals from the free joint, when present. A free
         # joint's qpos is [xyz(3), quat(4)] and its qvel is [linvel(3),

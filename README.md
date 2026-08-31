@@ -161,7 +161,7 @@ extras you need:
 | Extra | Installs | Use for |
 |-------|----------|---------|
 | `sim-mujoco` | MuJoCo, robot_descriptions, imageio, mink + qpsolvers[daqp] | Simulation (recommended starting point). mink/qpsolvers are the differential-IK solver behind the `move_to` Cartesian transport primitive; `qpsolvers` ships no solver of its own, so the `[daqp]` backend extra is declared with it. |
-| `sim-newton` | Newton, Warp, MuJoCo-Warp, trimesh | GPU-native simulation (NVIDIA GPU; batched envs, headless ray-traced render) |
+| `sim-newton` | Newton, Warp, MuJoCo-Warp, trimesh, and the `[sim-mujoco]` stack with `mujoco` narrowed to the series the pinned Newton requires | GPU-native simulation (NVIDIA GPU; batched envs, headless ray-traced render). Newton declares its MuJoCo requirement only under its own `[sim]` extra, which the resolver never applies, so this extra pins `mujoco` and `mujoco-warp` to one series itself and caps `newton` at the next minor - the required series is chosen per Newton minor. |
 | `sim-isaac` | usd-core, imageio (Isaac Sim installed separately) | NVIDIA Isaac Sim backend - photorealistic RTX rendering, synthetic data, GPU-batched sensors, USD-native scenes. Install Isaac Sim itself separately: via its pip wheels on Python 3.12 (`isaacsim[all,extscache]` from pypi.nvidia.com - see the caveats in [`docs/simulation/isaac.md`](docs/simulation/isaac.md)), the Omniverse Launcher, Isaac Lab, or the NGC docker image. This extra pulls only the pip-installable Python helpers. (NVIDIA RTX GPU; GPU-only, not in `[all]`.) |
 | `sim-gs` | gsplat, plyfile, torch | 3D Gaussian Splatting hybrid rendering (`strands_robots.rendering`): composite any sim backend's robot over a captured photoreal 3DGS scene. `gsplat` ships as a source dist that JIT-compiles CUDA kernels via `nvcc` on first use - probe with `strands_robots.rendering.gsplat_rasterizer_available()`; the zero-GPU `PanoramaBackground` works without this extra. (CUDA GPU; GPU-only, not in `[all]`.) |
 | `lerobot` | LeRobot | Real hardware, local VLA inference, dataset recording |
@@ -175,7 +175,6 @@ extras you need:
 | `mesh-iot` | awsiotsdk, awscrt, boto3 | AWS IoT Core mesh transport for fleets |
 | `sagemaker` | boto3 | Submit a `TrainSpec` as a managed SageMaker training job (`create_trainer("sagemaker")`) |
 | `device-connect` | device-connect-edge, device-connect-agent-tools | Device-aware networking - discovery, RPC, events, safety (falls back to the built-in mesh if absent) |
-| `benchmark-libero` | libero | LIBERO benchmark evaluation |
 | `all` | everything above except the GPU-only `sim-isaac` / `sim-gs` extras | Kitchen sink |
 
 ```bash
@@ -1173,17 +1172,27 @@ touches ROS 2.
 |----------|-------------|---------|
 | `STRANDS_MESH_BACKEND` | Mesh transport: `zenoh` (LAN), `iot` (AWS IoT Core), or `bridge` (both - Zenoh locally, IoT for the bridged topics). Case and surrounding whitespace are ignored. This selects the transport; the `[mesh-iot]` extra only installs the dependency `iot`/`bridge` need, so installing it without setting this leaves the fleet on Zenoh. An unrecognized value falls back to the default and is logged once, naming the valid values | `zenoh` |
 | `STRANDS_MESH_AUTH_MODE` | Wire auth: `mtls` or `none` (`none` needs a second factor) | `mtls` |
+| `STRANDS_MESH_TLS_CA` | Path to the CA bundle that validates peer certificates. Required under `AUTH_MODE=mtls` (the default) | unset |
+| `STRANDS_MESH_TLS_CERT` | Path to this peer's certificate (PEM). Its CN is what an operator ACL pins. Required under `AUTH_MODE=mtls` | unset |
+| `STRANDS_MESH_TLS_KEY` | Path to this peer's private key (PEM). Enforced mode `0600` on POSIX; on Windows the mode gate is skipped with a one-shot WARNING, so restrict it by NTFS ACL. Required under `AUTH_MODE=mtls` | unset |
 | `STRANDS_MESH_I_KNOW_THIS_IS_INSECURE` | Second factor required to bring up `AUTH_MODE=none` | unset |
 | `STRANDS_MESH_PORT` | TCP port for the local Zenoh router | `7447` |
+| `STRANDS_MESH_FALLBACK_MODE` | Zenoh mode for a process that did NOT win the `STRANDS_MESH_PORT` listener and so connects to that hub: `client` (the hub relays, so siblings hear each other) or `peer` (direct links only, which the operator must then arrange). A Zenoh 1.x peer refuses relayed traffic, so `peer` children hear nothing a sibling child publishes. An unrecognized value warns and uses the default | `client` |
 | `ZENOH_CONNECT` | Comma-separated remote Zenoh endpoints to connect to | unset |
 | `ZENOH_LISTEN` | Comma-separated endpoints for the local Zenoh listener | unset |
 | `STRANDS_MESH_MULTICAST` | Opt in to multicast scouting for LAN discovery. Off by default: any device on the LAN can enumerate and attract the fleet, so enabling it logs a WARNING. Prefer explicit `ZENOH_CONNECT` endpoints | `false` |
+| `STRANDS_MESH_NAMESPACE` | Fleet namespace prefix on every mesh key-expression. The Zenoh `namespace` config field provides routing isolation -- two fleets with different namespaces cannot exchange messages even when their key-expressions collide, so this is the knob that keeps a co-located test fleet from receiving a production fleet's commands. Must match on every peer of one fleet; a mismatch is silent (peers connect at the transport layer and exchange no application traffic). Empty / whitespace values fall back to the default so `STRANDS_MESH_NAMESPACE=""` cannot accidentally produce keys like `"//presence"` | `strands` |
 | `STRANDS_MESH_AUDIT_DIR` | Directory for the safety audit log (`mesh_audit.jsonl`) | `~/.strands_robots/` |
+| `STRANDS_MESH_AUDIT_PSK` | Pre-shared key that keys the per-record HMAC in the audit log. When set, `verify_audit_integrity` refuses a record whose HMAC does not match and refuses the whole log if the PSK changes mid-run; when unset, the `sig` field is absent and a writer with directory access can edit records without failing the check. Set on every peer that writes to the same directory | unset |
+| `STRANDS_MESH_AUDIT_MAX_BYTES` | Rotate the active audit file once it crosses this size (bytes). Values above the 10 GiB hard cap are clamped with a warning; non-integer, zero, or negative values fall back to the default with a warning, so a misconfiguration cannot silently disable rotation | `104857600` (100 MiB) |
+| `STRANDS_MESH_AUDIT_MAX_FILES` | Number of rotated `mesh_audit.jsonl.N` files kept alongside the active file. Older rotations are deleted as new ones arrive; total disk use is bounded by `_MAX_BYTES × _MAX_FILES`. Same clamping/warning behaviour as `_MAX_BYTES`; hard upper cap 100 | `5` |
 | `STRANDS_MESH_CA_PINS` | Additional SHA-256 CA pins (comma-separated 64-char hex) | unset |
 | `STRANDS_MESH_DISABLE_CA_PIN` | Skip CA pin check on download path (break-glass) | `false` |
 | `STRANDS_MESH_CAMERA_PRESIGN_TTL` | TTL (s) for S3 presigned camera URLs; capped at 3600 | `60` |
 | `STRANDS_MESH_ACL_FILE` | Path to a JSON5 Zenoh ACL file; unset = permissive default. See `examples/mesh/mesh_acl_example.json5` (role-scoped) and `examples/mesh/mesh_acl_strict_per_peer.json5` (per-peer). **⚠️ Required on any WAN/cloud router: mTLS gives identity, not least-privilege — without a topic-level ACL one device cert can read all fleet traffic and command any robot. See [security docs](docs/security.md#production-posture-required-off-trusted-networks).** | unset |
+| `STRANDS_MESH_ACCEPT_PERMISSIVE_ACL` | Acknowledgement token with **three** distinct effects, all of them widening the mesh posture — set on a production fleet at your peril. (1) A `STRANDS_MESH_ACL_FILE` with `default_permission: "allow"` **and** one or more `rules` is refused at load by `_acl_config._load_acl_file` with `PermissiveACLError` unless this variable is set to `1`/`true`/`yes` — the allow + rules shape is a blacklist policy where any gap in the rule set exposes the mesh, and the refusal exists so it is not shipped by copy-paste from a lab template. (2) When `STRANDS_MESH_AUTH_MODE=mtls` **and** the resolved ACL is permissive-by-shape (built-in default *or* operator file with `allow` + no rules), `Mesh.start`'s refuse-to-start gate downgrades from `ERROR` refusal to an `INFO` acknowledgement — the token is the opt-in that lets the wire come up under the built-in permissive default. (3) The per-session-open `WARNING` that fires when the built-in permissive default is in use is suppressed — session and start emit one line each about the same posture, so silencing the WARNING here avoids contradicting the operator's explicit opt-in on every session open. Set to `1`/`true`/`yes` (case-insensitive, whitespace-stripped) to accept all three. The acknowledgement does not narrow the ACL; it records that an operator has accepted a wire-open posture. | unset (refuses blacklist ACL, refuses to start under built-in permissive default, warns on every session open) |
 | `STRANDS_MESH_POLICY_HOST_ALLOW` | Comma-separated allowlist of VLA policy-server hosts/CIDRs for inference | loopback only |
+| `STRANDS_MESH_POLICY_TYPE_ALLOW` | Comma-separated extras appended to the built-in `policy_type` / `policy_provider` allowlist (`validate_command` gates the mesh `execute` / `start` payloads against the union). Widens both vocabularies at once because the two share one allowlist by design. Each entry is charset-validated against a lowercase-identifier regex (`^[a-z][a-z0-9_]*$`) at parse time; case-variant typos are normalised via `.lower()` before the compare, so `"FOO,BAR"` matches `"foo,bar"`. A malformed entry drops with a WARNING naming the variable and the offender rather than widening the allowlist silently. Does not relax any adjacent gate: `policy_host`, `server_address`, `pretrained_name_or_path` and `model_path` are still allowlisted regardless of which provider the payload names. Adding a provider to `registry/policies.json` must include the corresponding edit to `_REGISTRY_POLICY_PROVIDERS` beside it; a guard test refuses any registry spelling that set omits, so the omission fails CI rather than shipping as a mesh-only availability bug the operator has to break-glass around with this variable | unset (built-in list only) |
 | `STRANDS_MESH_HITL_ACTIONS` | `robot_mesh` actions needing a human-in-the-loop interrupt: `all` / `none` / subset of `emergency_stop,broadcast,tell,send,stop,rpc,subscribe,watch` | actuation default |
 | `STRANDS_MESH_SUBSCRIBE_ALLOW` | Extra Zenoh key-expr patterns the `robot_mesh` `subscribe` action may target, beyond the built-in low-impact set | shared classes only |
 | `STRANDS_MESH_OVERRIDE_CODE` | Shared secret for e-stop resume HMAC proof; unset means no remote resume possible | unset |
@@ -1235,12 +1244,10 @@ other spelling is refused. See
 </details>
 
 <details>
-<summary><b>Benchmark / diagnostic env vars (LIBERO, GR00T bisection)</b></summary>
+<summary><b>Diagnostic env vars (GR00T bisection)</b></summary>
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `STRANDS_LIBERO_ACTION_LOG` / `_MAX` | Per-step OSC controller diagnostics | unset / `50` |
-| `STRANDS_LIBERO_STATE_LOG` / `_MAX` | Per-step state values fed to GR00T | unset / `50` |
 | `STRANDS_GROOT_WIRE_LOG` / `_MAX_CALLS` | Directory to dump pre/post inference payloads to, e.g. `/tmp/groot-wire`, to verify LOCAL vs SERVICE parity | unset / `10` |
 
 </details>
@@ -1312,12 +1319,11 @@ rotation - a rotation has a verified pin to stage.
 
 ## Benchmarks
 
-`strands-robots` ships a [LIBERO](https://github.com/Lifelong-Robot-Learning/LIBERO)
-benchmark integration on the MuJoCo backend - byte-equivalent to upstream
-LIBERO at the model level, reaching `success_rate >= 0.92` on libero-10/SCENE5.
 Register declarative benchmarks from file and evaluate policies via the
 `list_benchmarks`, `register_benchmark_from_file`, and `evaluate_benchmark`
-simulation actions. Install with `uv pip install "strands-robots[benchmark-libero]"`.
+simulation actions. `strands_robots/simulation/builtin_benchmarks.py` ships the
+canonical locomotion suites; a task-specific suite is a JSON file, not a
+vendored adapter.
 
 ## Project structure
 
@@ -1341,7 +1347,6 @@ strands_robots/
 ├── rendering/             # Hybrid rendering: CameraParams, backgrounds (panorama/3DGS),
 │                          #   HybridCompositor, encode_clip / mjpeg_frames
 ├── mesh/                  # Zenoh mesh: core, sensors, input, audit, transport, iot
-├── benchmarks/libero/     # LIBERO suite + BDDL parser + adapter
 └── tools/                 # gr00t_inference, lerobot_*, pose, serial, robot_mesh
 ```
 

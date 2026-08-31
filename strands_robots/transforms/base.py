@@ -826,8 +826,12 @@ class _SourceDataset:
         LeRobot 0.6 records the range in ``meta.episodes`` as
         ``dataset_from_index`` / ``dataset_to_index``; older versions expose an
         ``episode_data_index`` tensor dict; the last resort accumulates
-        per-episode ``length``. Same ladder as
-        :func:`~strands_robots.dataset_recorder.load_lerobot_episode`.
+        per-episode ``length``. Same three rungs, in the same order, as
+        :func:`~strands_robots.dataset_recorder.load_lerobot_episode`, which
+        adds a fourth (a frame-by-frame scan) behind a broad ``except`` that
+        this reader deliberately does not have: a transform that cannot read
+        the range should refuse rather than decode the whole dataset to guess
+        it.
         """
         ep_info = self.ds.meta.episodes[episode]
         if "dataset_from_index" in ep_info:

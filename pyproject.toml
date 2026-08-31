@@ -354,11 +354,47 @@ sim-mujoco = [
 # driver 545+, CUDA 12); on CPU-only hosts Warp falls back to the CPU device.
 # trimesh loads the collision/visual meshes referenced by the MJCF assets;
 # mujoco-warp provides the GPU MuJoCo solver used by the default `solver`.
+#
+# The two MuJoCo pins and the `newton` range are ONE decision, because newton
+# enforces its MuJoCo requirement at RUNTIME from a declaration the RESOLVER
+# never sees. newton declares it only under its own `[sim]` extra
+# (`mujoco~=3.11.0; extra == "sim"`), which this extra does not install, so
+# nothing bounds either package at resolution time -- while
+# `newton._src.solvers.mujoco.solver_mujoco._warn_if_mujoco_versions_mismatch`
+# reads newton's own METADATA at first solver construction and matches
+# `^mujoco(?=[<>=!~])([^;]+)`, which truncates at the `;` and so DISCARDS the
+# `extra == "sim"` marker. The pins are therefore unreachable by uv and binding
+# at import, which is why declaring them here is the only fix available on this
+# side: an unbounded resolve took mujoco and mujoco-warp to 3.12.0 against
+# newton 1.5.1 and warned, naming `.[examples]` -- newton's extra, not one of
+# ours -- as the remedy (#3012).
+#
+# The range moves with the pins rather than after them, because the requirement
+# is per newton MINOR and the ones the old `>=1.3.0,<2.0.0` admitted are
+# mutually exclusive: 1.3.0 requires `~=3.8.0`, 1.4.0 `~=3.10.0`, 1.5.0 and
+# 1.5.1 `~=3.11.0`. So no single mujoco pin satisfies that range and capping
+# MuJoCo alone cannot close this -- and for the same reason the cap here is a
+# MINOR one, deviating from the "cap the major" convention above. `<2.0.0` would
+# admit a newton 1.6 whose requirement is its own to choose, reopening this with
+# no edit to blame; a minor cap turns that into an unresolved bump somebody has
+# to look at. Both MuJoCo pins carry ONE series for one newton minor: capping
+# only `mujoco-warp` would leave the `mujoco` half of the warning standing.
+#
+# `mujoco` is named here rather than inherited because `[sim-mujoco]`'s
+# `>=3.5.0,<4.0.0` admits 3.12.0, so only the intersection narrows it. It stays
+# inside that range, so no `[sim-mujoco]`-only install is refused a version its
+# own extra allows, and `_MUJOCO_API_FLOOR` (3.5.0) is untouched -- this floor
+# is Newton's requirement, not an API floor of ours.
+#
+# Bumping newton means re-reading its `[sim]` extra and moving both MuJoCo pins
+# with it. tests/test_dependency_audit.py grades the shape that has to hold for
+# any such bump, so it cannot be half-applied.
 sim-newton = [
     "strands-robots[sim-mujoco]",
-    "newton>=1.3.0,<2.0.0",
+    "newton>=1.5.0,<1.6.0",
     "warp-lang>=1.14.0,<2.0.0",
-    "mujoco-warp>=3.8.0",
+    "mujoco>=3.11.0,<3.12.0",
+    "mujoco-warp>=3.11.0,<3.12.0",
     "trimesh>=4.0.0,<5.0.0",
 ]
 # Isaac Sim GPU-native backend (NVIDIA Isaac Sim / Omniverse). Selected via
@@ -420,9 +456,6 @@ sim-gs = [
     "gsplat>=1.4.0,<2.0.0",
     "plyfile>=1.0.0,<2.0.0",
     "torch>=2.2.0,<3.0.0",
-]
-benchmark-libero = [
-    "libero>=0.1.0,<1.0.0",
 ]
 # Peer-to-peer robot mesh. The floor is set by the wire-level source
 # attribution the safety handlers depend on: `zenoh.SourceInfo` (publisher
@@ -631,7 +664,6 @@ conflicts = [
     [{ extra = "vera-sim" }, { extra = "molmoact2" }],
     [{ extra = "vera-sim" }, { extra = "smolvla" }],
     [{ extra = "vera-sim" }, { extra = "all" }],
-    [{ extra = "vera-sim" }, { extra = "benchmark-libero" }],
 ]
 # SECURITY floors for transitive packages. Each of these arrives only through
 # another dependency (cbor2/ujson under autobahn, twisted under roslibpy,
@@ -697,6 +729,14 @@ test = "pytest {args:tests}"
 test-integ = "pytest tests_integ/ -v --timeout=300 {args}"
 lint = ["ruff check strands_robots tests tests_integ", "ruff format --check strands_robots tests tests_integ", "mypy strands_robots tests tests_integ"]
 format = ["ruff check --fix strands_robots tests tests_integ", "ruff format strands_robots tests tests_integ"]
+# Whole-tree graders a diff-scoped selector cannot see. Runs the tests whose
+# input is the rest of the repository rather than the file under change
+# (docstring xref roles, host-path literals, dependency audit, agent-tool
+# parameter descriptions, del-precedes-body). Fixed roster, no arguments -
+# the script is the safety net for a narrow local pytest run that would
+# otherwise ship a defect one of these graders would catch on CI. See
+# scripts/check_whole_tree_graders.py and issue #2940.
+whole-tree-check = "python scripts/check_whole_tree_graders.py"
 
 [tool.ruff]
 line-length = 120
@@ -743,7 +783,7 @@ ignore_missing_imports = false
 
 # Third-party libs without type stubs
 [[tool.mypy.overrides]]
-module = ["lerobot.*", "gr00t.*", "tyro", "draccus.*", "msgpack.*", "websockets", "websockets.*", "zmq.*", "huggingface_hub.*", "serial.*", "psutil.*", "torch.*", "torchvision.*", "transformers.*", "einops.*", "robot_descriptions.*", "mujoco.*", "imageio.*", "pyarrow", "pyarrow.*", "libero.*", "zenoh.*", "boto3", "boto3.*", "awscrt", "awscrt.*", "awsiot", "awsiot.*", "botocore.*", "strands_robots.policies.cosmos3._msgpack_numpy", "diffusers", "diffusers.*", "accelerate", "accelerate.*", "openpi_client", "openpi_client.*", "openpi_server", "openpi_server.*", "openpi", "openpi.*", "device_connect_edge", "device_connect_edge.*", "device_connect_agent_tools", "device_connect_agent_tools.*", "rclpy", "rclpy.*", "cyclonedds", "cyclonedds.*", "roslibpy", "roslibpy.*", "rosidl_runtime_py", "rosidl_runtime_py.*", "moveit", "moveit.*", "moveit_configs_utils", "moveit_configs_utils.*", "geometry_msgs", "geometry_msgs.*", "mink", "mink.*", "qpsolvers", "qpsolvers.*", "onnxruntime", "onnxruntime.*", "motionbricks", "motionbricks.*", "trimesh", "trimesh.*", "stable_baselines3", "stable_baselines3.*", "strands_robots_sim", "strands_robots_sim.*", "isaacsim", "isaacsim.*", "omni", "omni.*", "gsplat", "gsplat.*", "plyfile", "plyfile.*", "unitree_sdk2py.*"]
+module = ["lerobot.*", "gr00t.*", "tyro", "draccus.*", "msgpack.*", "websockets", "websockets.*", "zmq.*", "huggingface_hub.*", "serial.*", "psutil.*", "torch.*", "torchvision.*", "transformers.*", "einops.*", "robot_descriptions.*", "mujoco.*", "imageio.*", "pyarrow", "pyarrow.*", "zenoh.*", "boto3", "boto3.*", "awscrt", "awscrt.*", "awsiot", "awsiot.*", "botocore.*", "strands_robots.policies.cosmos3._msgpack_numpy", "diffusers", "diffusers.*", "accelerate", "accelerate.*", "openpi_client", "openpi_client.*", "openpi_server", "openpi_server.*", "openpi", "openpi.*", "device_connect_edge", "device_connect_edge.*", "device_connect_agent_tools", "device_connect_agent_tools.*", "rclpy", "rclpy.*", "cyclonedds", "cyclonedds.*", "roslibpy", "roslibpy.*", "rosidl_runtime_py", "rosidl_runtime_py.*", "moveit", "moveit.*", "moveit_configs_utils", "moveit_configs_utils.*", "geometry_msgs", "geometry_msgs.*", "mink", "mink.*", "qpsolvers", "qpsolvers.*", "onnxruntime", "onnxruntime.*", "motionbricks", "motionbricks.*", "trimesh", "trimesh.*", "stable_baselines3", "stable_baselines3.*", "strands_robots_sim", "strands_robots_sim.*", "isaacsim", "isaacsim.*", "omni", "omni.*", "gsplat", "gsplat.*", "plyfile", "plyfile.*", "unitree_sdk2py.*", "booster_robotics_sdk_python", "booster_robotics_sdk_python.*"]
 ignore_missing_imports = true
 
 # Device Connect drivers - thin wrappers over the untyped device_connect_edge

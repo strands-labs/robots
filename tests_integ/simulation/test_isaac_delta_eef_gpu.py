@@ -69,7 +69,7 @@ def _assets_root_path() -> str:
 def _add_franka(sim) -> None:
     """Load the bundled Franka, trying the 6.0 asset layout then the 4.x one.
 
-    Same dual-subpath fallback as ``examples/libero/run.py``'s
+    Same dual-subpath fallback as the Isaac drivers'
     ``_FRANKA_USD_SUBPATHS``: the Franka moved to
     ``Isaac/Robots/FrankaRobotics/FrankaPanda/`` in Isaac Sim 6.0.
     """

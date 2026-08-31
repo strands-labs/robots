@@ -252,9 +252,18 @@ def map_hardware_joints(values: list[float]) -> dict[str, float]:
     """Map robotd's 15-wide ``joints``/``targets`` to the 14 locomotion joints.
 
     Drops index 9 (``mouth``) and names the rest by
-    :data:`LOCOMOTION_JOINT_NAMES`. A vector that is not 15 wide is mapped by
-    position for whatever it does carry rather than raising - a robotd that grew
-    or shrank the vector should degrade to a partial read, not a crash.
+    :data:`LOCOMOTION_JOINT_NAMES`.
+
+    A vector that is not 15 wide is mapped positionally for whatever it does
+    carry rather than raising, so a robotd whose vector changed width degrades
+    instead of crashing the reader thread. What "degrades" means differs by
+    direction, and the two are not symmetric: a *shorter* vector yields a
+    partial read (only the joints it reaches are named), while a *longer* one
+    yields a full 14-joint read in which index 9 is no longer dropped, so every
+    joint after the mouth is named one position early. Which of those a 14-wide
+    vector is - robotd having dropped the mouth itself, or having dropped some
+    other joint - is not knowable from the width, so this maps by position and
+    leaves the reading to the caller rather than guessing.
     """
     if len(values) == len(HARDWARE_JOINT_NAMES):
         locomotion = [v for i, v in enumerate(values) if i != MOUTH_INDEX]
@@ -617,11 +626,15 @@ class MicroduckDriver:
         elif action == "status":
             envelope = {"status": "success", "content": [{"json": await self.get_status()}]}
         else:  # "stop"
-            await self.stop()
-            envelope = {
-                "status": "success",
-                "content": [{"text": f"stop: asked robotd at {self._socket_path} to stop the robot"}],
-            }
+            # Report the halt outcome rather than assert one.  ``stop`` is the
+            # protocol's shutdown hook and returns ``None``: it returns early
+            # for a client that is gone and swallows an ``OSError`` from
+            # robotd, so an envelope built beside it can only restate the
+            # intent - and its text named a socket nothing had been written to.
+            # ``stop_task`` performs the same ``robot.stop`` call and already
+            # decides the verdict, so the verb returns that envelope rather
+            # than re-deriving one.
+            envelope = self.stop_task()
         yield {"toolUseId": tool_use_id, **envelope}
 
     # ------------------------------------------------------------------ #

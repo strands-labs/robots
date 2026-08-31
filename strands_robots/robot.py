@@ -484,6 +484,22 @@ def Robot(  # noqa: N802 - uppercase by design (factory mimicking a class constr
             )
 
         from strands_robots.simulation import create_simulation
+        from strands_robots.simulation.base import own_keyword_names, reject_misspelled_kwargs
+
+        # The residual kwargs travel to the backend verbatim, and a backend
+        # constructor tolerates a name it cannot bind (that is what carries
+        # ``num_envs`` / ``device`` across backends). So a misspelling of one of
+        # THIS factory's own parameters would be dropped twice and reported by
+        # neither: ``Robot("so101", positon=[0.5, 0, 0])`` built a robot at the
+        # origin under ``status="success"``. That is the same failure the
+        # ``position`` / ``orientation`` / ``keyframe`` pass-through below was
+        # written to end - "absorbed by ``**kwargs``" - reaching the parameter
+        # names instead of their values. Screened here, where the caller wrote
+        # them, and against this signature only: a name that is not close to a
+        # parameter of the factory is still forwarded, so a genuine backend
+        # option (``default_timestep``, ``num_envs``) is untouched and the
+        # backend screens it against its own names in turn.
+        reject_misspelled_kwargs(kwargs, own_keyword_names(Robot), owner="Robot(mode='sim')")
 
         # Resolve the backend through create_simulation - the single source of
         # truth for backend selection (built-in registry + entry-point plugins +

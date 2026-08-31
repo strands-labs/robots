@@ -1222,7 +1222,10 @@ hatch run format            # ruff check --fix, ruff format
    unresolved thread or a failing check (the author), a missing approval (any
    reviewer), an approval only its own pusher supplied (a different reviewer,
    per #1905), a required check absent because a fork run is held at
-   `action_required` (a maintainer), a check still running (nobody), a
+   `action_required` (a maintainer, by approving each run), a required check
+   absent because the head carries no check suite at all (also a maintainer,
+   but by closing and reopening: there is no held run to approve and no
+   suite to re-run), a check still running (nobody), a
    mergeability GitHub has not finished computing (nobody, until a re-read), or
    no unsatisfied rule at all, which is the #2574 case and the one worth saying
    out loud. A conflict, a draft, or an uncomputed mergeability is reported as
@@ -1716,7 +1719,7 @@ Corrections from code review that apply to all future contributions:
 - **Test import paths must match production** - If `src/` imports `from lerobot.datasets.X`, tests must use the same path. Mismatched paths cause silent skips via `except ImportError`.
 - **Round-trip tests for recording** - Any recording feature needs: start -> write -> stop -> reopen -> assert non-empty. Schema-only tests miss silent data loss.
 - **Pin regression tests for reviewed fixes** - Every review fix gets a test that fails on pre-fix code. Otherwise the next refactor silently reintroduces the bug.
-- **No host paths in test files** - Never commit `/Users/<name>/` or `/home/<name>/` paths. CI test `test_no_host_paths.py` enforces this.
+- **No host paths in committed Python** - Never commit `/Users/<name>` or `/home/<name>` paths, with or without a trailing segment. `tests/test_no_host_paths.py` sweeps every top-level directory that ships Python, not just `tests/`: an `examples/` script carrying the author's home directory is the same defect propagated to whoever copies it. The area list is derived, so a directory added later is swept on arrival.
 - **Name a test for its behaviour, not for its provenance** - a test class or function must not carry the release (`TestHardwareConfigV040Followups`) or review round (`...Followups`) that produced it. The name is the first thing a maintainer reads, so it has to say what is verified; and a name tied to a shipped release reads as historical, which invites skipping it. A bundle named for a review round is usually a bundle of unrelated checks - split it into one behaviour per class rather than inventing a name that covers all of them. Provenance belongs in the docstring, where the `#NNN` reference stays useful. A version token of one or two digits is fine: it names a *data format* under test (`test_load_v3_parses_every_field`), not a release. `Pinned by` `tests/test_test_case_names_describe_behaviour.py`.
 
 ### Performance
@@ -2035,7 +2038,7 @@ which side the enum is on.
 ### Public API Hygiene
 - **Never recommend a `_method` in user-facing docstrings or error messages.** If `Robot()`'s docstring says "use `sim._dispatch_action(...)` to add a camera", you've just locked in a private dependency. Promote it (rename `_dispatch_action` → `dispatch_action`) or add public shorthands (`Simulation.add_camera()` / `.create_world()` / `.add_robot()`) before merging.
 - **Type factory returns precisely** - never return `Any` from a factory. Use `@typing.overload` keyed on `Literal` mode args so IDEs resolve `Simulation` vs `HardwareRobot` at the call site. `# noqa: N802` is acceptable on factory functions named like classes (`Robot`), with a comment.
-- **Reject silently-dropped kwargs** - if `Robot("so100", cameras={...})` is called in `mode="sim"` and the sim branch ignores `cameras`, raise `ValueError` instead of producing a sim with no cameras. Silent drops are bugs masquerading as features.
+- **Reject silently-dropped kwargs** - if `Robot("so100", cameras={...})` is called in `mode="sim"` and the sim branch ignores `cameras`, raise `ValueError` instead of producing a sim with no cameras. Silent drops are bugs masquerading as features. **A `**kwargs` sink that must stay permissive still owes the caller the misspelling case.** A backend constructor tolerates an unknown name deliberately - that is what carries `num_envs` / `device` across backends - so it cannot refuse everything it does not bind. But that reason covers a name *some* backend reads and says nothing about a misspelling of a name *this* receiver reads, which no portable call can intend: dropping `defualt_timestep=0.001` left the physics integrating at the 2 ms default under `status="success"`, and `positon=[...]` spawned the robot at the origin - the same "absorbed by `**kwargs`" failure the factory's `position`/`orientation`/`keyframe` pass-through was written to end, reaching the parameter *names* instead of their values. Screen the residual names against the receiver's *own* signature (`own_keyword_names`, so it cannot go stale) and refuse only the close matches; log the rest at DEBUG so a genuine cross-backend option is visible rather than silent. Derive the accepted set per receiver rather than from a union of every backend's options - a plugin's option names are not statically knowable, and a union refuses one plugin's option for a caller targeting another. Pinned by `tests/simulation/test_sink_refuses_a_misspelled_option.py`, including that the cutoff sits *above* `timestep` (0.667 against `default_timestep`, a real plugin option difflib's own 0.6 default would refuse) and below every real typo.
 - **Don't conflate identity with schema** - `data_config` (e.g. `so100_dualcam`) is a separate concept from robot name (`so100`). Defaulting `data_config=robot_name` silently locks out multi-cam configs. Use an explicit `data_config: str | None = None` kwarg that defaults to canonical name only when omitted.
 
 ### Env Vars

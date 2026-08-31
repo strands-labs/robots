@@ -1,11 +1,17 @@
 """The DDS domain id every ROS 2 surface publishes on is one shared domain.
 
 A ROS 2 / DDS domain id is an index into the RTPS port map, so only an ``int``
-in ``[0, MAX_DDS_DOMAIN_ID]`` names a domain. Five surfaces take one - the
+in ``[0, MAX_DDS_DOMAIN_ID]`` names a domain. Six surfaces take one - the
 hardware ``Robot``'s ``ros2_domain``, a simulation backend's ``ros2_domain``,
-and the ``domain_id`` of the rclpy telemetry bridge, its hardware subclass and
-the pure-RTPS bridge - and they must not disagree about which values name a
-domain, because the two transports exist to advertise the same topics.
+and the ``domain_id`` of the rclpy telemetry bridge, its hardware subclass, the
+pure-RTPS bridge and the Booster T1 native driver - and they must not disagree
+about which values name a domain, because those transports exist to advertise
+the same topics.
+
+A native driver belongs on that list for the reason the bridges do: it opens a
+DDS participant of its own (``ChannelFactory.Init(domain_id, ip)``), so a
+domain the bridges refuse and a driver accepts is a robot publishing where
+nothing subscribes.
 
 The rclpy bridge is why the range is load-bearing at the boundary rather than
 at the participant: it pins the domain by writing ``ROS_DOMAIN_ID`` into the
@@ -13,9 +19,9 @@ process environment, and that write lands *before* ``rclpy`` is imported. So an
 out-of-range value is never offered to the transport for rejection - it is
 published to the whole process, outliving the call that set it.
 
-``rclpy`` and ``cyclonedds`` are optional, so every refusal test here runs with
-both absent: each guard is placed ahead of its transport probe, which is what
-makes that possible and is asserted directly.
+``rclpy``, ``cyclonedds`` and the vendor SDKs are optional, so every refusal
+test here runs with all of them absent: each guard is placed ahead of its
+transport probe, which is what makes that possible and is asserted directly.
 """
 
 from __future__ import annotations
@@ -29,6 +35,7 @@ import pytest
 
 import strands_robots
 import strands_robots.hardware_rtps_bridge as rtps_mod
+from strands_robots.drivers.booster import BoosterDriver
 from strands_robots.hardware_robot import Robot as HwRobot
 from strands_robots.hardware_ros_bridge import HardwareRosBridge
 from strands_robots.hardware_rtps_bridge import HardwareRtpsBridge
@@ -120,6 +127,10 @@ SURFACES: list[tuple[str, Any]] = [
     ("HardwareRtpsBridge(domain_id=)", lambda v: HardwareRtpsBridge(domain_id=v)),
     ("Robot._init_ros_bridge(ros2_domain=)", _hardware_robot),
     ("SimEngine._init_ros_bridge(ros2_domain=)", _sim_engine),
+    # A native driver opens its own participant, so it is a domain surface in
+    # the same sense as the bridges - and the only one whose transport is a
+    # vendor wheel, which the constructor never touches.
+    ("BoosterDriver(domain_id=)", lambda v: BoosterDriver(domain_id=v)),
 ]
 SURFACE_IDS = [name.split("(")[0] for name, _ in SURFACES]
 
@@ -273,11 +284,27 @@ class TestEverySurfaceRoutesThroughTheSharedDomain:
     A surface that stores a caller-supplied domain id without either calling
     :func:`dds_domain_id_error` or handing the value to a surface that does is
     accepting a domain nothing can be reached on. Checked structurally so a
-    sixth surface cannot ship without joining the rule.
+    further surface cannot ship without joining the rule: the population is the
+    scan, so a surface joins the sweep by existing rather than by being listed.
     """
 
     #: Parameter names that carry a DDS domain id.
     DOMAIN_PARAMS = frozenset({"domain_id", "ros2_domain"})
+
+    #: The domain surfaces the sweep is known to reach, as ``file::function``.
+    #: A floor for the scan, not an inventory of what may exist: a scan that
+    #: stopped reaching these would report a clean sweep over nothing.
+    KNOWN_SURFACES = frozenset(
+        {
+            "hardware_robot.py::__init__",
+            "hardware_robot.py::_init_ros_bridge",
+            "hardware_ros_bridge.py::__init__",
+            "hardware_rtps_bridge.py::__init__",
+            "ros_telemetry.py::__init__",
+            "simulation/base.py::_init_ros_bridge",
+            "simulation/mujoco/simulation.py::__init__",
+        }
+    )
 
     @staticmethod
     def _package_root() -> pathlib.Path:
@@ -316,17 +343,17 @@ class TestEverySurfaceRoutesThroughTheSharedDomain:
                 surfaces[f"{path.relative_to(self._package_root())}::{name}"] = verdict
         return surfaces
 
-    def test_the_scan_finds_every_known_domain_surface(self) -> None:
-        """Non-vacuity: a scan rooted elsewhere would report a clean sweep."""
-        assert set(self._surfaces()) == {
-            "hardware_robot.py::__init__",
-            "hardware_robot.py::_init_ros_bridge",
-            "hardware_ros_bridge.py::__init__",
-            "hardware_rtps_bridge.py::__init__",
-            "ros_telemetry.py::__init__",
-            "simulation/base.py::_init_ros_bridge",
-            "simulation/mujoco/simulation.py::__init__",
-        }
+    def test_the_scan_reaches_every_surface_the_sweep_is_known_to_grade(self) -> None:
+        """Non-vacuity: a scan rooted elsewhere would report a clean sweep.
+
+        A floor, checked in the one direction that means the scan broke. The
+        other direction is not a defect: a new domain surface is graded by the
+        sweep below the moment it exists, so failing it for also being absent
+        from a list here would fail correct code and teach its author that
+        appending a name is the remedy, when the remedy is calling the guard.
+        """
+        missing = self.KNOWN_SURFACES - set(self._surfaces())
+        assert not missing, f"the scan no longer reaches {sorted(missing)}, so the sweep passes over nothing"
 
     def test_every_domain_surface_guards_or_forwards_the_value(self) -> None:
         adrift = {name for name, (guards, forwards) in self._surfaces().items() if not (guards or forwards)}
@@ -336,3 +363,28 @@ class TestEverySurfaceRoutesThroughTheSharedDomain:
         """A scanner that matched nothing would pass the sweep vacuously."""
         planted = "def brand_new_bridge(self, *, domain_id: int = 0) -> None:\n    self._domain = domain_id\n"
         assert self._classify(planted) == {"brand_new_bridge": (False, False)}
+
+    def test_the_scanner_recognises_a_new_surface_that_joins_the_rule(self) -> None:
+        """The other answer a new surface can give, so the floor is safe.
+
+        The sweep's population is whatever the scan finds, so growth needs no
+        edit here - but only if a compliant newcomer is actually read as
+        compliant. Both answers are pinned: a surface that calls the shared
+        guard clears the sweep, and one that hand-rolls its own range check is
+        named by it, which is the disagreement the shared domain exists to
+        prevent.
+        """
+        joins = (
+            "def __init__(self, *, domain_id: int = 0) -> None:\n"
+            "    if reason := dds_domain_id_error(domain_id, 'domain_id', 'NewBridge'):\n"
+            "        raise ValueError(reason)\n"
+            "    self._domain = domain_id\n"
+        )
+        hand_rolled = (
+            "def __init__(self, *, domain_id: int = 0) -> None:\n"
+            "    if domain_id < 0:\n"
+            "        raise ValueError('bad domain')\n"
+            "    self._domain = domain_id\n"
+        )
+        assert self._classify(joins) == {"__init__": (True, False)}
+        assert self._classify(hand_rolled) == {"__init__": (False, False)}

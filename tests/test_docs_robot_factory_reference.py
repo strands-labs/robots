@@ -207,3 +207,121 @@ class TestTheMeshSectionNamesTheSpellingThatEnablesMesh:
             assert sim.mesh is None
         finally:
             sim.destroy()
+
+
+class TestTheNativeDriverRefusalExampleIsStillTrue:
+    """The ``driver="strands"`` refusal example must name a robot that has no driver.
+
+    The page shows the refusal verbatim, as a ``>>>`` transcript, so it reads as
+    something the reader could paste. That makes it the one block on the page
+    whose *premise* can rot without a word of it changing: a robot named here
+    because it had no native driver acquires one the day a driver package
+    registers it, and the transcript then shows an error that no longer happens
+    for a robot that now builds fine.
+
+    It did rot. The example named ``so101``, and ``FeetechDriver`` came to serve
+    it - so the block asserted "no native driver is registered for 'so101'"
+    while ``Robot("so101", mode="real", driver="strands")`` returned a driver.
+    The enumerated list rotted with it, naming two robots when fourteen were
+    registered, which is worse than saying nothing: a reader looking up whether
+    their robot is natively driven found a list that omitted it and concluded no
+    driver existed.
+
+    So the names are graded, not the wording. Every robot the transcript claims
+    is natively driven must be, the robot it refuses must have no driver at all,
+    and the refusal must still be the one the code raises - checked by raising
+    it.
+
+    Correctness is graded, deliberately not completeness. A transcript is a
+    capture, and a fifteenth driver leaves it merely older rather than wrong, so
+    requiring the list to be exhaustive would fail this page on every driver that
+    lands - and the page names ``list_native_drivers()`` as the live answer for
+    that reason. A name that is *listed and has no driver* is the failure worth
+    catching, because that is the one that sends a reader looking for a driver
+    that does not exist.
+    """
+
+    @staticmethod
+    def _transcript() -> str:
+        """Return the fenced block holding the ``driver="strands"`` refusal.
+
+        Returns:
+            The block's text.
+
+        Raises:
+            AssertionError: If the page ships no such block - the guard would
+                otherwise report clean having read nothing.
+        """
+        text = _DOC.read_text(encoding="utf-8")
+        blocks = [
+            block
+            for block in re.findall(r"```[a-z]*\n(.*?)```", text, re.DOTALL)
+            if 'driver="strands"' in block and "No native driver is registered" in block
+        ]
+        assert len(blocks) == 1, (
+            f"expected exactly one transcript of the driver='strands' refusal, found {len(blocks)}. "
+            "This guard grades that block; without it a clean run proves nothing."
+        )
+        return blocks[0]
+
+    def test_the_refused_robot_really_has_no_native_driver(self) -> None:
+        """The premise the transcript rests on, and the one that rotted before."""
+        from strands_robots.drivers import get_native_driver_class
+
+        transcript = self._transcript()
+        match = re.search(r">>>\s*Robot\(\s*[\"']([^\"']+)[\"']", transcript)
+        assert match is not None, f"the transcript shows no Robot(...) call:\n{transcript}"
+        name = match.group(1)
+        driver_cls = get_native_driver_class(name)
+        assert driver_cls is None, (
+            f"The page refuses driver='strands' for {name!r} to show what happens when no native "
+            f"driver is registered, but {driver_cls.__name__} now serves it: "
+            f"Robot({name!r}, mode='real', driver='strands') builds a driver. "
+            "Name a robot that still has none, or drop the example."
+        )
+
+    def test_the_transcript_is_the_refusal_the_code_raises(self) -> None:
+        """Graded by raising it, so a reworded refusal cannot leave the page stale."""
+        from strands_robots import Robot
+
+        transcript = self._transcript()
+        match = re.search(r">>>\s*Robot\(\s*[\"']([^\"']+)[\"']", transcript)
+        assert match is not None
+        with pytest.raises(ValueError) as excinfo:
+            Robot(match.group(1), mode="real", driver="strands")
+        raised = str(excinfo.value)
+        for sentence in (
+            "No native driver is registered for",
+            "so driver='strands' cannot build",
+            "Robots with a native driver:",
+            "strands_robots.drivers.register_native_driver()",
+        ):
+            assert sentence in raised, f"the code no longer says {sentence!r}; the page still shows it"
+            assert sentence in transcript, f"the page dropped {sentence!r}, which the refusal still says"
+
+    def test_every_robot_the_page_calls_natively_driven_really_is(self) -> None:
+        """A name in the list must have a driver, or it sends a reader to a dead end."""
+        from strands_robots.drivers import get_native_driver_class, list_native_drivers
+
+        transcript = self._transcript()
+        listed = re.search(r"Robots with a native driver:\s*(.*?)\.\s", transcript, re.DOTALL)
+        assert listed is not None, f"the transcript shows no list of natively driven robots:\n{transcript}"
+        names = [
+            candidate
+            for candidate in re.findall(r"[A-Za-z_][A-Za-z0-9_]*", listed.group(1))
+            # The elision marker and any prose in the tail are not robot names.
+            if candidate in set(list_native_drivers()) or get_native_driver_class(candidate) is None
+        ]
+        assert names, f"no robot name was read out of {listed.group(1)!r}; the guard would prove nothing"
+        wrong = [name for name in names if get_native_driver_class(name) is None]
+        assert not wrong, (
+            f"The page lists {wrong} among robots with a native driver, but none is registered for them. "
+            "A reader checking whether their robot is natively driven is told yes and finds nothing."
+        )
+
+    def test_the_page_names_the_live_listing_helper(self) -> None:
+        """A captured list is only honest if the page says where the live one is."""
+        assert "list_native_drivers()" in _DOC.read_text(encoding="utf-8"), (
+            "The transcript's list of natively driven robots is a capture, so the page must name "
+            "list_native_drivers() as the way to get the current one."
+        )

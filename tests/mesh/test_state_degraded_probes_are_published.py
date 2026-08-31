@@ -15,6 +15,9 @@ API. These tests pin the contract that removes the need:
   ``reason`` (the exception's type name -- the discriminator
   ``_warn_read_state_once`` documents as selecting the operator's next move),
   ``detail`` (its message, bounded), ``failures`` and ``for_seconds``;
+* ``for_seconds`` is the interval that has elapsed since the fault began,
+  measured on the monotonic clock -- a duration a renderer could report as a
+  constant and satisfy every other assertion here;
 * the entry disappears on the tick the probe answers again;
 * a healthy peer's snapshot is unchanged -- no key is added when nothing failed;
 * the block makes the snapshot non-empty, so a hardware-only peer whose one
@@ -285,7 +288,57 @@ class TestTheSilencedPeerKeepsPublishing:
 
 
 class TestTheDurationIsMeasuredNotStamped:
-    """``for_seconds`` is a duration, so it belongs on the monotonic clock."""
+    """``for_seconds`` is a duration, so it is measured on the monotonic clock.
+
+    Two independent properties, and the second one is what stops the first from
+    being satisfiable by a literal: the duration must not track the wall clock,
+    AND it must actually be derived from a clock rather than reported as a
+    constant. A renderer that returns ``0.0`` unconditionally has the right
+    clock domain vacuously.
+    """
+
+    def test_the_duration_is_the_interval_the_probe_has_been_failing(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A constant satisfies every other assertion this file makes about it.
+
+        ``for_seconds >= 0.0`` in
+        :meth:`TestAFailingProbeNamesItselfOnTheWire.test_the_reason_is_the_exception_type`,
+        ``for_seconds < 60.0`` in the wall-clock test beside this one, and the
+        key-set check below are all true of a hardcoded ``0.0``, so the suite
+        graded the field's presence and its clock DOMAIN while asserting nothing
+        about whether it had been measured. Under that grading a renderer whose
+        duration is always zero -- because it subtracts a key no record carries,
+        which is the shape a second renderer of this block took in review -- is
+        green, and the operator-visible consequence is the one
+        :meth:`strands_robots.mesh.core.Mesh._degraded_probes` exists to
+        prevent: "this probe failed" and "this probe has been failing since it
+        was plugged in" want different responses, and a duration pinned at zero
+        reports the second as the first.
+
+        The clock is driven rather than slept on, so the interval is exact and
+        the test does not trade runtime for the assertion's strength.
+        """
+        from strands_robots.mesh import core
+
+        elapsed = [1000.0]
+        monkeypatch.setattr(core.time, "monotonic", lambda: elapsed[0])
+
+        m, bus = _hardware_peer()
+        bus.exc = ConnectionError("Port is in use!")
+        first = m._read_state()
+        elapsed[0] += 3.5
+        second = m._read_state()
+
+        assert first is not None and second is not None
+        assert first["degraded"]["hw_joints"]["for_seconds"] == pytest.approx(0.0), (
+            "premise: the tick that records the fault has measured no interval yet"
+        )
+        assert second["degraded"]["hw_joints"]["for_seconds"] == pytest.approx(3.5), (
+            "for_seconds must be the measured interval since the fault began, "
+            "not a constant that happens to be non-negative"
+        )
+        assert second["degraded"]["hw_joints"]["failures"] == 2, (
+            "premise: the second tick is the same standing fault, not a new one"
+        )
 
     def test_a_wall_clock_step_does_not_move_the_duration(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """An NTP correction mid-fault must not invent hours of downtime.

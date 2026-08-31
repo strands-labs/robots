@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import contextlib
 import difflib
+import functools
+import inspect
 import logging
 import math
 import numbers
@@ -105,6 +107,117 @@ def reject_setup_kwargs(kwargs: Mapping[str, Any]) -> None:
         'builds an empty engine, not a robot. Use Robot("so101", mode="sim") for '
         'one-step setup, or create_world() then add_robot("so101").'
     )
+
+
+# Ratio at which a residual keyword argument is called a *misspelling* of one of
+# the sink owner's own parameters rather than another backend's option name.
+# The two populations are far apart and this sits in the gap: single-edit typos
+# of the MuJoCo constructor's parameters score 0.889 (``tool_nmae``) to 0.968
+# (``default_timstep``), while the cross-backend option names the sink exists to
+# carry score at most 0.667 (``timestep``, which is a substring of
+# ``default_timestep``) and usually far less (``num_envs`` 0.500, ``device``
+# 0.364). ``difflib``'s own 0.6 default sits *below* that gap and would refuse
+# ``timestep`` - a genuine plugin option the suite exercises - so the cutoff is
+# stated here instead of inherited.
+_MISSPELLING_RATIO = 0.8
+
+
+@functools.cache
+def own_keyword_names(func: Callable[..., Any]) -> tuple[str, ...]:
+    """The keyword names a callable binds explicitly, for a sink to screen against.
+
+    Derived from the signature rather than listed by hand, so a parameter added
+    to (or renamed in) the owner is screened without a second place to update.
+
+    Args:
+        func: The callable whose own parameters are the accepted set - a backend
+            class (``inspect.signature`` of a class reports its constructor's
+            parameters, already without ``self``) or the
+            :func:`~strands_robots.robot.Robot` factory function.
+
+    Returns:
+        Every parameter that can be passed by keyword, in declaration order.
+        ``self``, the ``*args`` / ``**kwargs`` sinks and positional-only
+        parameters are omitted - a caller cannot spell any of them as a keyword,
+        so a residual name resembling one is not a misspelling of something that
+        would have worked. Empty when ``func`` has no introspectable signature
+        (a C-level callable), which degrades screening to a no-op rather than
+        refusing every keyword.
+    """
+    try:
+        params = inspect.signature(func).parameters
+    except (TypeError, ValueError):
+        return ()
+    return tuple(
+        name
+        for name, p in params.items()
+        if name != "self" and p.kind not in (p.VAR_KEYWORD, p.VAR_POSITIONAL, p.POSITIONAL_ONLY)
+    )
+
+
+def reject_misspelled_kwargs(kwargs: Mapping[str, Any], accepted: Sequence[str], *, owner: str) -> None:
+    """Refuse a residual keyword argument that misspells one the owner accepts.
+
+    A backend constructor's ``**kwargs`` is a third kind of sink, alongside the
+    *forwarding* and *discarding* sinks :func:`unknown_kwargs_error`
+    distinguishes: a **tolerating** sink. Dropping an unknown name is the
+    documented contract - it is what lets one call carry another backend's
+    options (``num_envs`` / ``device``) and resolve against whichever backend is
+    selected - so the sink cannot simply refuse everything it does not bind.
+
+    That contract covers a name *some* backend reads. It says nothing about a
+    **misspelling of a name this owner reads**, which no portable call can
+    intend, and which the sink otherwise makes byte-identical to omitting the
+    argument: ``defualt_timestep=0.001`` left the physics integrating at the
+    2 ms default under ``status="success"``, and ``positon=[...]`` spawned the
+    robot at the origin. Refusing exactly that subset keeps the portability case
+    intact while the typo becomes an error that names the parameter meant.
+
+    Names that are neither bound nor close to one are logged at DEBUG, so a
+    genuinely cross-backend option is visible in a log rather than silent -
+    matching the adjacent rule for a parameter that is legitimately out of scope
+    for the branch that received it.
+
+    Args:
+        kwargs: The residual keyword arguments the owner is about to drop into
+            its tolerating sink.
+        accepted: The keyword names the owner binds, normally
+            :func:`own_keyword_names` of its own signature.
+        owner: How to name the owner in the message (e.g. ``"MuJoCoSimEngine"``).
+
+    Raises:
+        TypeError: If any name in ``kwargs`` scores at least
+            :data:`_MISSPELLING_RATIO` against one in ``accepted``. Every such
+            name is reported, each with the parameter it misspells, so a caller
+            fixes them in one pass.
+    """
+    misspelled: list[str] = []
+    tolerated: list[str] = []
+    for name in kwargs:
+        if name in accepted:
+            continue
+        match = difflib.get_close_matches(name, list(accepted), n=1, cutoff=_MISSPELLING_RATIO)
+        if match:
+            misspelled.append(f"{name!r} (did you mean {match[0]!r}?)")
+        else:
+            tolerated.append(name)
+    if misspelled:
+        raise TypeError(
+            f"{owner} does not accept {', '.join(misspelled)}. An unrecognised "
+            "keyword is tolerated and dropped here so one call can carry "
+            "another backend's options (num_envs, device) and resolve against "
+            "whichever backend is selected - which is why this was applied as "
+            f"the default instead of refused. A misspelling of a parameter "
+            f"{owner} does read cannot be a cross-backend option, so it is "
+            "refused. Fix the spelling, or drop the argument."
+        )
+    if tolerated:
+        logger.debug(
+            "%s tolerated and dropped %s: no parameter of that name, and no close match to one. "
+            "Expected for another backend's options; otherwise it is an unsupported name.",
+            owner,
+            sorted(tolerated),
+        )
 
 
 def close_match_hint(requested: object, known: Sequence[str]) -> str:

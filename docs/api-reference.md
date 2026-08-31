@@ -179,13 +179,6 @@ from strands_robots.mesh import init_mesh, Mesh, InputPublisher, InputReceiver
 
 See [Multi-robot mesh](mesh.md).
 
-## `strands_robots.benchmarks.libero`
-
-```python
-from strands_robots.benchmarks.libero import LiberoSuite
-```
-
-LIBERO task suites, BDDL parser. Install: `uv pip install "strands-robots[benchmark-libero]"`.
 
 ## Environment variables
 

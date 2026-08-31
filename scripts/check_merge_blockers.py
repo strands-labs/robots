@@ -88,10 +88,47 @@ is*, so the outcomes group that way rather than by severity:
     owed by a reviewer -- measured on #1035, which read
     ``pusher-only-approval`` while it was ``DIRTY``. Re-read to resolve it.
 
+``required-check-cancelled``
+    A **maintainer**, by re-running the run. A cancelled run is not a verdict
+    about the tree; it is what the concurrency group leaves behind when a
+    second ``pull_request`` event arrives for one head, so the branch is
+    unjudged rather than judged badly. #1800 established that reading for the
+    roll-up and #1914 for a pull request head, and #1915 removed the producer
+    that was avoidable -- the sha-invariant ``types`` override. The producer
+    that remains is deliberate: reopening a pull request is this repository's
+    documented remedy both for a head carrying no check suite (#1987) and for a
+    stale ``headRefOid`` (#2508), and it necessarily cancels the run in flight.
+    So the state is reachable by following AGENTS.md, and cannot be removed --
+    only read correctly.
+
+    Kept apart from ``required-check-failing`` because the two name opposite
+    parties, and this one was misfiled as that one. Measured on #3014, whose
+    head ``ecb07a41`` carried the required context twice: ``cancelled`` at
+    13:15:35Z, superseded by the run still in progress at 13:45:32Z. This check
+    reported ``required-check-failing`` owed by *the author*, beside a
+    ``::warning`` asserting no reviewer could clear it. Nothing had failed and
+    the author owed nothing -- the answer was not in yet.
+
 ``required-check-absent``
-    A **maintainer**, by authorising or re-running the workflow. A fork pull
-    request whose runs are held at ``action_required`` reports ``completed``
-    with a null-ish rollup, which reads identically to "never ran".
+    A **maintainer**. *Which* move is decided by the head's check-suite census,
+    which is why that is read rather than assumed. Suites present with at least
+    one at ``conclusion: action_required`` is a fork run awaiting
+    authorisation: approve per run, and find the runs by ``head_sha`` and
+    recognise them by their *conclusion* -- a held run reports ``status:
+    "completed"``, so a client-side scan of the ``status`` field matches none of
+    them. Suites present and none held is the one shape for which "never
+    started" is the honest description.
+
+``check-suite-absent``
+    A **maintainer**, and not by anything they can authorise. Zero check suites
+    on the head means no run was ever created -- the shape a head commit written
+    through the API under the Actions ``GITHUB_TOKEN`` produces, whose events
+    are suppressed so a workflow cannot re-trigger itself. Authorising names an
+    authorisation that does not exist and re-running names a suite that does
+    not exist; the branch is closed and reopened with a personal access token.
+    Separated from the entry above because the reflex on a null-ish rollup is
+    that flip, and spending it on a *held* run re-queues nothing while looking
+    like a completed remedy.
 
 ``no-unsatisfied-rule``
     Every rule the branch carries is satisfied and it still reads blocked. This
@@ -190,7 +227,9 @@ MERGE_STATE_UNKNOWN = "merge-state-unknown"
 DRAFT = "draft"
 REQUIRED_CHECK_FAILING = "required-check-failing"
 REQUIRED_CHECK_PENDING = "required-check-pending"
+REQUIRED_CHECK_CANCELLED = "required-check-cancelled"
 REQUIRED_CHECK_ABSENT = "required-check-absent"
+CHECK_SUITE_ABSENT = "check-suite-absent"
 UNRESOLVED_THREADS = "unresolved-threads"
 MISSING_APPROVAL = "missing-approval"
 PUSHER_ONLY_APPROVAL = "pusher-only-approval"
@@ -210,7 +249,9 @@ _OWED_BY: dict[str, str] = {
     DRAFT: AUTHOR,
     REQUIRED_CHECK_FAILING: AUTHOR,
     REQUIRED_CHECK_PENDING: NOBODY,
+    REQUIRED_CHECK_CANCELLED: MAINTAINER,
     REQUIRED_CHECK_ABSENT: MAINTAINER,
+    CHECK_SUITE_ABSENT: MAINTAINER,
     UNRESOLVED_THREADS: AUTHOR,
     MISSING_APPROVAL: REVIEWER,
     PUSHER_ONLY_APPROVAL: OTHER_REVIEWER,
@@ -313,6 +354,12 @@ class PullRequestState:
     merge_state: str
     unresolved_threads: int
     check_conclusions: dict[str, str | None] = field(default_factory=dict)
+    # Each check suite's conclusion on the head, or ``None`` for a census that
+    # was not read. ``()`` is a positive observation -- zero suites exist -- and
+    # is not the same answer as "not read", which is why this is not an ``int``
+    # defaulting to zero: the two need opposite remedies and a default would
+    # silently pick one.
+    check_suite_conclusions: tuple[str | None, ...] | None = None
     approvers: tuple[str, ...] = ()
     pusher: str | None = None
 
@@ -325,6 +372,93 @@ class PullRequestState:
 
 def _plural(count: int, noun: str) -> str:
     return f"{count} {noun}" if count == 1 else f"{count} {noun}s"
+
+
+_HELD = "action_required"
+_CANCELLED = "cancelled"
+
+
+def _is_cancelled(conclusion: str | None) -> bool:
+    """Whether a conclusion is a cancellation, i.e. the absence of a verdict.
+
+    ``timed_out`` is deliberately not folded in here. A job killed by its own
+    deadline did run and did fail to finish, which is a statement about the
+    tree the author owes; a cancellation is a statement about the *scheduler*
+    and says nothing about the diff.
+    """
+    return (conclusion or "").lower() == _CANCELLED
+
+
+def _held_suites(census: tuple[str | None, ...]) -> int:
+    """Count the suites a maintainer can approve.
+
+    ``action_required`` is a *conclusion* on this surface, never a status, so it
+    is read from the conclusion field. That asymmetry is the whole reason this
+    counts rather than trusting a status filter.
+    """
+    return sum(1 for conclusion in census if (conclusion or "").lower() == _HELD)
+
+
+def _absent_check_blocker(context: str, state: PullRequestState) -> Blocker:
+    """Name the move for an absent required check; the suite census decides it.
+
+    A held fork run and a head that never had a run created are identical in
+    every other field: ``mergeStateStatus`` ``BLOCKED``, a null-ish rollup,
+    ``reviewDecision`` ``REVIEW_REQUIRED`` and the required context missing from
+    ``check_conclusions``. They need opposite actions, so reporting one outcome
+    for both prints a remedy that is wrong for one of them -- and the wrong
+    direction is not symmetric. The close/reopen reflex applied to a held run
+    re-queues nothing (the runs already exist and stay held) while looking like
+    a completed remedy, where offering to approve a run that does not exist is
+    simply unavailable.
+
+    An unread census keeps the older, deliberately ambiguous wording: naming a
+    remedy on an observation that was not made is the mistake this exists to
+    stop, so it says the census was not read instead.
+    """
+    head = state.head_sha[:8] or "(unknown head)"
+    census = state.check_suite_conclusions
+    if census is None:
+        return Blocker(
+            REQUIRED_CHECK_ABSENT,
+            "required_status_checks",
+            f"Required check {context!r} has not reported on {head}. A fork run "
+            f"held at action_required reads the same as one that never started, "
+            f"and the head's check-suite census was not read, so which of the "
+            f"two this is has not been established.",
+        )
+    if not census:
+        return Blocker(
+            CHECK_SUITE_ABSENT,
+            "required_status_checks",
+            f"Required check {context!r} has not reported on {head}, and the "
+            f"head carries no check suite at all -- no run was ever created for "
+            f"it. Neither authorising nor re-running is available: there is no "
+            f"held run to approve and no suite to re-run. Close and reopen the "
+            f"pull request with a personal access token, which is what creates "
+            f"the run.",
+        )
+    held = _held_suites(census)
+    if held:
+        return Blocker(
+            REQUIRED_CHECK_ABSENT,
+            "required_status_checks",
+            f"Required check {context!r} has not reported on {head}; "
+            f"{_plural(held, 'check suite')} on the head "
+            f"{'is' if held == 1 else 'are'} held at conclusion "
+            f"action_required, so this is a fork run awaiting authorisation. "
+            f"Approve per run: POST /repos/{{owner}}/{{repo}}/actions/runs/"
+            f"{{id}}/approve. Find the runs by head_sha and recognise them by "
+            f'their conclusion -- a held run reports status "completed", so a '
+            f"scan of the status field matches none of them.",
+        )
+    return Blocker(
+        REQUIRED_CHECK_ABSENT,
+        "required_status_checks",
+        f"Required check {context!r} has not reported on {head}. The head "
+        f"carries {_plural(len(census), 'check suite')} and none is held at "
+        f"action_required, so the check genuinely has not started.",
+    )
 
 
 def evaluate(state: PullRequestState, rules: Ruleset) -> tuple[Blocker, ...]:
@@ -385,15 +519,7 @@ def evaluate(state: PullRequestState, rules: Ruleset) -> tuple[Blocker, ...]:
 
     for context in rules.required_contexts:
         if context not in state.check_conclusions:
-            found.append(
-                Blocker(
-                    REQUIRED_CHECK_ABSENT,
-                    "required_status_checks",
-                    f"Required check {context!r} has not reported on "
-                    f"{state.head_sha[:8] or '(unknown head)'}. A fork run held at "
-                    f"action_required reads the same as one that never started.",
-                )
-            )
+            found.append(_absent_check_blocker(context, state))
             continue
         conclusion = state.check_conclusions[context]
         if conclusion is None:
@@ -402,6 +528,18 @@ def evaluate(state: PullRequestState, rules: Ruleset) -> tuple[Blocker, ...]:
                     REQUIRED_CHECK_PENDING,
                     "required_status_checks",
                     f"Required check {context!r} is still running.",
+                )
+            )
+        elif _is_cancelled(conclusion):
+            found.append(
+                Blocker(
+                    REQUIRED_CHECK_CANCELLED,
+                    "required_status_checks",
+                    f"Required check {context!r} was cancelled, so the head "
+                    f"carries no verdict for it and none is alleged. Re-run "
+                    f"the run rather than pushing: a push re-triggers the "
+                    f"check but dismisses every approval and makes the pushing "
+                    f"account ineligible to re-supply one.",
                 )
             )
         elif conclusion.lower() not in ("success", "neutral", "skipped"):
@@ -583,6 +721,10 @@ def resolve_check_conclusions(repo: str, head_sha: str, token: str) -> dict[str,
     kept as ``None`` rather than coerced: "still running" and "failed" ask for
     different things. Both surfaces are read because a required context can be
     supplied by either, and the ruleset names a context without saying which.
+
+    One context can appear more than once on a head, and then the answer kept is
+    the worst *verdict* -- with a cancellation ranked below all of them, because
+    it is not a verdict. See ``_is_cancelled``.
     """
     conclusions: dict[str, str | None] = {}
 
@@ -593,11 +735,21 @@ def resolve_check_conclusions(repo: str, head_sha: str, token: str) -> dict[str,
         if not name:
             continue
         conclusion = run.get("conclusion")
-        # A context appearing twice keeps its worst answer: a re-run that
-        # succeeded does not retire a sibling that did not.
-        if name in conclusions and conclusions[name] not in (None, "success"):
-            continue
-        conclusions[str(name)] = conclusion
+        key = str(name)
+        if key in conclusions:
+            recorded = conclusions[key]
+            # A cancelled run carries no verdict, so it neither displaces one
+            # nor survives one. Both directions are needed because the ordering
+            # of this page is the API's business: the superseded half of a
+            # restarted required check must not answer for the run that
+            # superseded it, whichever of the two is read first.
+            if _is_cancelled(conclusion):
+                continue
+            # Otherwise a context appearing twice keeps its worst answer: a
+            # re-run that succeeded does not retire a sibling that did not.
+            if not _is_cancelled(recorded) and recorded not in (None, "success"):
+                continue
+        conclusions[key] = conclusion
 
     status = _get(f"{API_ROOT}/repos/{repo}/commits/{head_sha}/status", token)
     if isinstance(status, dict):
@@ -608,6 +760,36 @@ def resolve_check_conclusions(repo: str, head_sha: str, token: str) -> dict[str,
                 conclusions[str(context)] = None if state == "pending" else state
 
     return conclusions
+
+
+def resolve_check_suites(repo: str, head_sha: str, token: str) -> tuple[str | None, ...]:
+    """Return each check suite's conclusion on the head, oldest surface first.
+
+    This is the one field that separates a fork run held at ``action_required``
+    from a head that never had a run created, which are otherwise identical in
+    every field the rules are evaluated against. An empty tuple is a positive
+    observation -- the head carries no suite -- and is reported as such rather
+    than folded into "the required check has not reported".
+
+    A conclusion is kept as ``None`` for a suite still running, matching the
+    sibling that reads check runs: "queued" and "concluded" ask for different
+    things. Read to a single page for the same reason as that sibling; a head
+    with more than a hundred suites is not a state this diagnosis has to
+    separate.
+    """
+    payload = _get(f"{API_ROOT}/repos/{repo}/commits/{head_sha}/check-suites?per_page=100", token)
+    if not isinstance(payload, dict):
+        return ()
+    suites = payload.get("check_suites")
+    if not isinstance(suites, list):
+        return ()
+    conclusions: list[str | None] = []
+    for suite in suites:
+        if not isinstance(suite, dict):
+            continue
+        conclusion = suite.get("conclusion")
+        conclusions.append(str(conclusion) if conclusion is not None else None)
+    return tuple(conclusions)
 
 
 def resolve_ruleset(repo: str, base_ref: str, token: str) -> Ruleset:
@@ -632,6 +814,7 @@ def resolve_state(repo: str, pr: int, token: str) -> PullRequestState:
         merge_state=str(payload.get("mergeable_state") or ""),
         unresolved_threads=resolve_unresolved_threads(repo, pr, token),
         check_conclusions=resolve_check_conclusions(repo, head_sha, token) if head_sha else {},
+        check_suite_conclusions=resolve_check_suites(repo, head_sha, token) if head_sha else None,
         approvers=current_approvers(reviews),
         pusher=resolve_pusher(repo, head_sha, token) if head_sha else None,
     )

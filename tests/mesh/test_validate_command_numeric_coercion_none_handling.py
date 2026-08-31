@@ -82,8 +82,12 @@ def test_start_control_frequency_rejects_bool():
 
 @pytest.mark.parametrize("bad", ["3", [3], {"n": 3}])
 def test_step_steps_rejects_non_integer(bad):
-    """``step.steps`` (an int field) rejects str / list / dict (a float is
-    accepted and truncated, matching ``int(...)`` semantics)."""
+    """``step.steps`` (an int field) rejects str / list / dict.
+
+    A float is accepted only when it is integral (``3.0``); a fractional one is
+    refused under its own name rather than truncated, which
+    ``test_validate_command_counts_are_whole_numbers`` pins.
+    """
     with pytest.raises(ValidationError, match="steps must be an integer"):
         validate_command({"action": "step", "steps": bad})
 

@@ -1265,7 +1265,9 @@ def dds_domain_id_error(value: Any, param: str, context: str) -> str | None:
     ``domain_id`` the rclpy telemetry bridge
     (:class:`~strands_robots.ros_telemetry.RosTelemetryBridge`) and the pure-RTPS
     bridge (:class:`~strands_robots.hardware_rtps_bridge.HardwareRtpsBridge`)
-    publish on. A domain id indexes the RTPS port map, so only an ``int`` in
+    publish on, and the ``domain_id`` a native driver opens its own DDS
+    participant on (:class:`~strands_robots.drivers.booster.BoosterDriver`). A
+    domain id indexes the RTPS port map, so only an ``int`` in
     ``[0, MAX_DDS_DOMAIN_ID]`` names one - see :data:`MAX_DDS_DOMAIN_ID` for the
     arithmetic that fixes the ceiling.
 
@@ -1279,8 +1281,9 @@ def dds_domain_id_error(value: Any, param: str, context: str) -> str | None:
 
     It lives here rather than beside one of its callers for the same reason
     :func:`tcp_port_error` does: those callers sit in different layers
-    (:mod:`strands_robots.hardware_robot`, :mod:`strands_robots.simulation` and
-    the two bridge modules) and the accepted domain must not diverge between
+    (:mod:`strands_robots.hardware_robot`, :mod:`strands_robots.simulation`,
+    :mod:`strands_robots.drivers` and the two bridge modules) and the accepted
+    domain must not diverge between
     them - the same domain id cannot be refused by the rclpy bridge and accepted
     by the RTPS one, when the two exist to advertise the same topics.
 

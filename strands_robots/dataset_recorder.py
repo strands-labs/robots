@@ -1879,8 +1879,8 @@ def load_lerobot_episode(repo_id: str, episode: int = 0, root: str | None = None
             with an integral value is accepted (a ``2.0`` from a config, a
             ``np.int64`` from arithmetic); the value is coerced with ``int()``
             once the shared guard has round-tripped it, so an accepted index
-            reaches the O(1) ``episode_data_index`` lookup rather than the
-            last-resort frame scan a float index falls through to.
+            reaches the O(1) episode-row lookup rather than the last-resort
+            frame scan a float index falls through to.
         root: Optional local dataset root override.
 
     Returns:
@@ -1926,16 +1926,25 @@ def load_lerobot_episode(repo_id: str, episode: int = 0, root: str | None = None
     episode_start = 0
     episode_length = 0
     try:
-        if hasattr(ds, "episode_data_index"):
+        ep_info = ds.meta.episodes[episode] if hasattr(ds.meta, "episodes") else {}
+        if "dataset_from_index" in ep_info:
+            # LeRobot 0.6 records the range on the episode's own metadata row,
+            # so this is one row read whatever the index is. Every lerobot in
+            # the declared range writes those columns, which is why this rung
+            # leads: the two below it are compatibility fallbacks, and the
+            # ``length`` accumulation reads one row per *preceding* episode to
+            # recompute a number this row already states.
+            episode_start = int(ep_info["dataset_from_index"])
+            episode_length = int(ep_info["dataset_to_index"]) - episode_start
+        elif hasattr(ds, "episode_data_index"):
             from_idx = ds.episode_data_index["from"][episode].item()
             to_idx = ds.episode_data_index["to"][episode].item()
             episode_start = from_idx
             episode_length = to_idx - from_idx
         else:
             for i in range(episode):
-                ep_info = ds.meta.episodes[i] if hasattr(ds.meta, "episodes") else {}
-                episode_start += ep_info.get("length", 0)
-            ep_info = ds.meta.episodes[episode] if hasattr(ds.meta, "episodes") else {}
+                prior_info = ds.meta.episodes[i] if hasattr(ds.meta, "episodes") else {}
+                episode_start += prior_info.get("length", 0)
             episode_length = ep_info.get("length", 0)
     except Exception:
         # Last resort: scan frames to find episode boundaries

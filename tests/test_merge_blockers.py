@@ -26,6 +26,7 @@ of AGENTS.md.
 
 from __future__ import annotations
 
+import ast
 import importlib.util
 import sys
 from pathlib import Path
@@ -251,7 +252,7 @@ def test_2480_a_pending_check_does_not_mask_a_reviewer_who_can_act_now() -> None
     [
         ({REQUIRED: "failure"}, "required-check-failing", mod.AUTHOR),
         ({REQUIRED: "timed_out"}, "required-check-failing", mod.AUTHOR),
-        ({REQUIRED: "cancelled"}, "required-check-failing", mod.AUTHOR),
+        ({REQUIRED: "cancelled"}, "required-check-cancelled", mod.MAINTAINER),
         ({REQUIRED: None}, "required-check-pending", mod.NOBODY),
         ({}, "required-check-absent", mod.MAINTAINER),
         ({"some other check": "failure"}, "required-check-absent", mod.MAINTAINER),
@@ -271,15 +272,135 @@ def test_a_check_that_did_not_fail_is_not_a_blocker(conclusion: str) -> None:
     assert outcomes(mod.evaluate(state(check_conclusions={REQUIRED: conclusion}), MAIN)) == [mod.NO_UNSATISFIED_RULE]
 
 
-def test_an_absent_required_check_names_the_held_fork_run() -> None:
-    """A fork run held at ``action_required`` reads the same as never having run.
+def test_an_unread_census_still_names_the_held_fork_run_it_cannot_rule_out() -> None:
+    """Without the census the two states are genuinely indistinguishable.
 
-    #1722 carried nine such runs, and three passes over #1905 described it as a
+    #1722 carried nine held runs, and three passes over #1905 described it as a
     missing run rather than a held one. The remedy differs: authorisation, not a
-    push, and it consumes no approval.
+    push, and it consumes no approval. That ambiguity is what the census below
+    resolves -- so with no census read this keeps naming the held run it cannot
+    rule out, and says the observation was not made rather than picking one.
     """
     blockers = mod.evaluate(state(check_conclusions={}), MAIN)
+    assert blockers[0].outcome == mod.REQUIRED_CHECK_ABSENT
     assert "action_required" in blockers[0].detail
+    assert "was not read" in blockers[0].detail
+
+
+# --------------------------------------------------------------------------
+# The head's check-suite census, which is what separates a held fork run from
+# a head that never had a run created. Measured shapes: #2907 carried two
+# suites at ``conclusion: action_required`` while eleven had concluded, every
+# commit on ``main`` carries suites with none held, and the #1987 shape (a head
+# written through the API under the Actions token) carries none at all.
+# --------------------------------------------------------------------------
+
+HELD_CENSUS = ("action_required", "success", "action_required", None)
+
+
+def test_a_held_fork_run_is_separated_from_a_head_with_no_run() -> None:
+    """One field decides it, so the two outcomes must not be the same name."""
+    held = mod.evaluate(state(check_conclusions={}, check_suite_conclusions=HELD_CENSUS), MAIN)[0]
+    none = mod.evaluate(state(check_conclusions={}, check_suite_conclusions=()), MAIN)[0]
+    assert held.outcome == mod.REQUIRED_CHECK_ABSENT
+    assert none.outcome == mod.CHECK_SUITE_ABSENT
+    assert held.outcome != none.outcome
+    # Both are still a maintainer's move; it is the printed action that differs.
+    assert held.owed_by == none.owed_by == mod.MAINTAINER
+
+
+def test_neither_remedy_is_printed_for_the_state_it_cannot_clear() -> None:
+    """The whole defect: one outcome printed a remedy wrong for half its cases.
+
+    Approving names an authorisation that does not exist on a head with no run,
+    and closing/reopening re-queues nothing on a run that is already held. Each
+    detail is asserted not to carry the other's move, because a reader following
+    the wrong one gets a no-op that reads like a completed remedy.
+    """
+    held = mod.evaluate(state(check_conclusions={}, check_suite_conclusions=HELD_CENSUS), MAIN)[0]
+    none = mod.evaluate(state(check_conclusions={}, check_suite_conclusions=()), MAIN)[0]
+
+    assert "approve" in held.detail.lower()
+    assert "reopen" not in held.detail.lower()
+
+    assert "reopen" in none.detail.lower()
+    assert "personal access token" in none.detail
+    assert "approve" not in none.detail.lower().replace("to approve", "")
+
+
+def test_the_held_remedy_names_the_conclusion_field_rather_than_the_status() -> None:
+    """``action_required`` is a conclusion here, and the status reads completed.
+
+    A held run reports ``status: "completed"``, so a client-side scan comparing
+    the status field matches none of them -- measured on #2907, where the field
+    matched zero and the conclusion matched two. The remedy has to say which
+    field to read or it sends the reader to the one that answers nothing.
+    """
+    detail = mod.evaluate(state(check_conclusions={}, check_suite_conclusions=HELD_CENSUS), MAIN)[0].detail
+    assert "head_sha" in detail
+    assert "conclusion" in detail
+    assert "status" in detail
+    assert "2 check suites" in detail
+
+
+def test_suites_present_and_none_held_is_where_never_started_is_honest() -> None:
+    """The residual case keeps the older description, which is true only here.
+
+    This is every commit on ``main``: suites exist, none is held, and the
+    required check has genuinely not reported yet. Naming a held run here would
+    be the same error in the opposite direction.
+    """
+    blocker = mod.evaluate(state(check_conclusions={}, check_suite_conclusions=("success", "success")), MAIN)[0]
+    assert blocker.outcome == mod.REQUIRED_CHECK_ABSENT
+    assert "has not started" in blocker.detail
+    assert "approve" not in blocker.detail.lower()
+    assert "reopen" not in blocker.detail.lower()
+
+
+def test_a_suite_still_running_is_not_counted_as_held() -> None:
+    """``None`` is "in progress", which nobody can approve."""
+    blocker = mod.evaluate(state(check_conclusions={}, check_suite_conclusions=(None, "success")), MAIN)[0]
+    assert blocker.outcome == mod.REQUIRED_CHECK_ABSENT
+    assert "has not started" in blocker.detail
+
+
+def test_a_reporting_required_check_is_unaffected_by_a_held_sibling_suite() -> None:
+    """#2907 today: two suites held, and the required context reports anyway.
+
+    The census only decides the wording of an *absent* required check, so a head
+    that carries held suites for other workflows is still read from the required
+    context itself.
+    """
+    running = state(check_conclusions={REQUIRED: None}, check_suite_conclusions=HELD_CENSUS)
+    assert outcomes(mod.evaluate(running, MAIN)) == [mod.REQUIRED_CHECK_PENDING]
+
+
+def test_every_outcome_the_report_can_emit_has_an_owner() -> None:
+    """A new outcome with no owner would print an empty next action.
+
+    Derived by dataflow rather than by spelling: the outcomes are whatever
+    constant is handed to ``Blocker`` as its name, so an outcome added later is
+    held to this the hour it lands. A spelling rule cannot do this job -- it
+    misses the single-word ``draft`` and, loosened to admit it, matches the
+    single-word owner ``nobody``, which is a table *value* and would report a
+    violation that is not one. ``_OWED_BY`` is the whole point of the report, so
+    a name missing from it is a blocker nobody is told to clear.
+    """
+    source = _SCRIPT.read_text(encoding="utf-8")
+    emitted = {
+        node.args[0].id
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "Blocker"
+        and node.args
+        and isinstance(node.args[0], ast.Name)
+    }
+    assert len(emitted) > 5, f"the outcome scan found only {sorted(emitted)}; it has gone blind"
+    values = {getattr(mod, name) for name in emitted}
+    assert mod.CHECK_SUITE_ABSENT in values
+    unowned = values - set(mod._OWED_BY)
+    assert not unowned, f"outcomes the report can emit with no owner: {sorted(unowned)}"
 
 
 # --------------------------------------------------------------------------
@@ -525,6 +646,84 @@ def _fake_urlopen(payload: Any) -> Any:
 
 
 # --------------------------------------------------------------------------
+# Check-suite parsing.
+# --------------------------------------------------------------------------
+
+
+def test_the_census_keeps_each_suite_conclusion_including_the_unfinished(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The shape measured on #2907: some held, some concluded, one running."""
+    monkeypatch.setattr(
+        mod.urllib.request,
+        "urlopen",
+        _fake_urlopen(
+            {
+                "total_count": 3,
+                "check_suites": [
+                    {"conclusion": "action_required"},
+                    {"conclusion": "success"},
+                    {"conclusion": None},
+                ],
+            }
+        ),
+    )
+    assert mod.resolve_check_suites("o/r", "abc", "t") == ("action_required", "success", None)
+
+
+def test_the_resolved_state_carries_the_census_it_read(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The census has to reach ``evaluate``, not merely be resolvable.
+
+    Every other case here is graded on a fixture, and a fixture cannot see a
+    resolver that is never called. The split is decided by this one field, so
+    populating it is part of the fix rather than plumbing: without the wiring
+    the field keeps its ``None`` default and every held fork run reports the
+    older ambiguous wording again.
+    """
+    monkeypatch.setattr(
+        mod,
+        "_get",
+        lambda url, token: {
+            "head": {"sha": "abc12345"},
+            "base": {"ref": "main"},
+            "draft": False,
+            "mergeable": True,
+            "mergeable_state": "blocked",
+        },
+    )
+    monkeypatch.setattr(mod, "resolve_reviews", lambda *a: [])
+    monkeypatch.setattr(mod, "resolve_unresolved_threads", lambda *a: 0)
+    monkeypatch.setattr(mod, "resolve_check_conclusions", lambda *a: {})
+    monkeypatch.setattr(mod, "resolve_check_suites", lambda *a: ("action_required", "success"))
+    monkeypatch.setattr(mod, "resolve_pusher", lambda *a: "the-author")
+
+    resolved = mod.resolve_state("o/r", 1, "t")
+
+    assert resolved.check_suite_conclusions == ("action_required", "success")
+    # And it lands where the split reads it.
+    assert mod.evaluate(resolved, MAIN)[0].outcome == mod.REQUIRED_CHECK_ABSENT
+    assert "approve" in mod.evaluate(resolved, MAIN)[0].detail.lower()
+
+
+def test_a_head_with_no_suite_reads_as_an_empty_census_not_a_missing_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``()`` is the positive observation the second outcome is derived from.
+
+    Returning ``None`` here would collapse it back into "not read", which is the
+    ambiguity this census exists to remove.
+    """
+    monkeypatch.setattr(
+        mod.urllib.request,
+        "urlopen",
+        _fake_urlopen({"total_count": 0, "check_suites": []}),
+    )
+    census = mod.resolve_check_suites("o/r", "abc", "t")
+    assert census == ()
+    assert census is not None
+
+
+# --------------------------------------------------------------------------
 # Check-run parsing.
 # --------------------------------------------------------------------------
 
@@ -548,6 +747,121 @@ def test_a_rerun_that_succeeded_does_not_retire_a_failing_sibling(
 
     monkeypatch.setattr(mod, "_get", fake_get)
     assert mod.resolve_check_conclusions("o/r", "abc", "t") == {REQUIRED: "failure"}
+
+
+@pytest.mark.parametrize(
+    "order",
+    [
+        ("live-first", (None, "cancelled")),
+        ("cancelled-first", ("cancelled", None)),
+    ],
+    ids=lambda case: case[0],
+)
+def test_3014_a_cancelled_run_does_not_answer_for_the_run_that_superseded_it(
+    monkeypatch: pytest.MonkeyPatch, order: tuple[str, tuple[str | None, ...]]
+) -> None:
+    """#3014's head carried the required context cancelled *and* still running.
+
+    Head ``ecb07a41`` at 2026-08-30: the run started 13:15:35Z was cancelled by
+    the concurrency group when a second ``pull_request`` event arrived for the
+    same sha, and the run that replaced it was still in progress at 13:45:32Z.
+    The sweep reported ``required-check-failing`` owed by *the author* and warned
+    that no reviewer could clear it. Nothing had failed.
+
+    Parametrized over both page orders because which run the API lists first is
+    its business, not this check's -- and #1914 measured exactly that
+    instability: two reads of one unchanged sha ten minutes apart disagreed.
+    """
+    _, conclusions = order
+
+    def fake_get(url: str, token: str) -> Any:
+        if "check-runs" in url:
+            return {"check_runs": [{"name": REQUIRED, "conclusion": c} for c in conclusions]}
+        return {"statuses": []}
+
+    monkeypatch.setattr(mod, "_get", fake_get)
+    assert mod.resolve_check_conclusions("o/r", "abc", "t") == {REQUIRED: None}
+
+
+@pytest.mark.parametrize("order", [("cancelled", "failure"), ("failure", "cancelled")])
+def test_a_cancellation_does_not_retire_a_real_failure_either(
+    monkeypatch: pytest.MonkeyPatch, order: tuple[str, str]
+) -> None:
+    """Ranking a cancellation below every verdict must not hide one.
+
+    The fix above makes a cancellation lose to a live sibling; this is the other
+    direction, and it is the one that would be expensive to get wrong -- a
+    genuinely failing required check reported as cancelled sends the author away
+    from work they do owe.
+    """
+
+    def fake_get(url: str, token: str) -> Any:
+        if "check-runs" in url:
+            return {"check_runs": [{"name": REQUIRED, "conclusion": c} for c in order]}
+        return {"statuses": []}
+
+    monkeypatch.setattr(mod, "_get", fake_get)
+    assert mod.resolve_check_conclusions("o/r", "abc", "t") == {REQUIRED: "failure"}
+
+
+def test_a_cancelled_required_check_is_not_owed_by_the_author() -> None:
+    """The two outcomes name opposite parties, so they cannot share a name.
+
+    A cancellation is a statement about the scheduler, not about the diff, so
+    there is nothing for the author to fix and the remedy is a re-run. It stays
+    a blocker -- the head carries no verdict for a required context -- but not a
+    *finding*, because a finding is defined as what an author-side pass can
+    clear alone, and this is not that.
+    """
+    blockers = mod.evaluate(state(check_conclusions={REQUIRED: "cancelled"}), MAIN)
+
+    assert outcomes(blockers) == [mod.REQUIRED_CHECK_CANCELLED]
+    assert blockers[0].owed_by == mod.MAINTAINER
+    assert not blockers[0].is_finding
+    # The remedy names the re-run, and warns off the push that would cost the
+    # approval twice under dismiss_stale_reviews_on_push plus
+    # require_last_push_approval.
+    assert "re-run" in blockers[0].detail.lower()
+    assert "dismiss" in blockers[0].detail.lower()
+
+
+def test_a_timed_out_required_check_is_still_the_authors() -> None:
+    """The boundary of the rule above, in the direction that costs more.
+
+    ``timed_out`` reads like a scheduler verdict and is not one: the job ran and
+    failed to finish inside its own deadline, which is a statement about the
+    tree. Folding it in with the cancellations would send a real failure to a
+    maintainer as a re-run.
+    """
+    blockers = mod.evaluate(state(check_conclusions={REQUIRED: "timed_out"}), MAIN)
+
+    assert outcomes(blockers) == [mod.REQUIRED_CHECK_FAILING]
+    assert blockers[0].owed_by == mod.AUTHOR
+
+
+def test_a_cancelled_required_check_does_not_warn_that_the_author_owes_it(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """End to end: the ``::warning`` and the exit status both stop firing.
+
+    This is the whole cost of the defect. The sweep printed "Blocked on
+    something no reviewer can clear" over #3014 and exited 1, which is the
+    signal a scheduled pass acts on -- so it spent a cycle looking for a failure
+    that did not exist, on the one pull request where the honest answer was that
+    the answer was not in yet.
+    """
+    monkeypatch.setattr(mod, "resolve_open_pull_requests", lambda repo, token: [3014])
+    monkeypatch.setattr(
+        mod, "resolve_state", lambda repo, pr, token: state(number=pr, check_conclusions={REQUIRED: "cancelled"})
+    )
+    monkeypatch.setattr(mod, "resolve_ruleset", lambda repo, base, token: MAIN)
+
+    exit_code = mod.main(["--repo", "o/r", "--token", "t", "--all-open"])
+    captured = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "::warning" not in captured
+    assert "required-check-cancelled | a maintainer" in captured
 
 
 def test_a_legacy_commit_status_can_supply_a_required_context(

@@ -135,6 +135,57 @@ def _mujoco_gl_offscreen_values(system: str | None = None) -> frozenset[str]:
     return _MUJOCO_GL_OFFSCREEN & _mujoco_gl_valid_values(system)
 
 
+# The system library each offscreen backend loads, in the order
+# ``_configure_gl_backend`` probes them. A caller deciding what to *recommend*
+# reads this rather than the platform vocabulary above: the two answer different
+# questions, and only this one says whether a host can reach the backend.
+_MUJOCO_GL_OFFSCREEN_LIBRARIES: tuple[tuple[str, str], ...] = (
+    ("egl", "libEGL.so.1"),
+    ("osmesa", "libOSMesa.so"),
+)
+
+
+def _library_loads(name: str) -> bool:
+    """Whether a shared library can be loaded on this host.
+
+    Args:
+        name: Library soname, as :func:`ctypes.cdll.LoadLibrary` takes it.
+
+    Returns:
+        Whether the loader found it.
+    """
+    try:
+        ctypes.cdll.LoadLibrary(name)
+    except OSError:
+        return False
+    return True
+
+
+def _mujoco_gl_loadable_offscreen_values(system: str | None = None) -> frozenset[str]:
+    """Offscreen backends this host can reach, not merely the ones it accepts.
+
+    :func:`_mujoco_gl_offscreen_values` answers a platform question: which
+    offscreen values MuJoCo accepts on this operating system. Whether one of them
+    can *render* is a different question, because each loads a system library that
+    may not be installed. Recommending a value whose library is absent sends the
+    reader after an export that changes nothing - which is why a verdict offering
+    an offscreen backend reads this set and keeps the platform set only to tell
+    "this platform has no offscreen backend" apart from "its libraries are
+    missing".
+
+    Args:
+        system: Platform name as :func:`platform.system` reports it. Defaults to
+            the running platform.
+
+    Returns:
+        The platform's offscreen backends whose library loads here.
+    """
+    accepted = _mujoco_gl_offscreen_values(system)
+    return frozenset(
+        value for value, library in _MUJOCO_GL_OFFSCREEN_LIBRARIES if value in accepted and _library_loads(library)
+    )
+
+
 # glvnd EGL vendor ICD payload that points at the NVIDIA EGL library, plus the
 # standard directories glvnd scans for vendor ICD JSON files. When MUJOCO_GL is
 # "egl", libglvnd loads the first vendor whose ICD JSON is registered here; an

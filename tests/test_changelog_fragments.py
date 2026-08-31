@@ -296,3 +296,74 @@ def test_check_mode_exits_non_zero_on_an_invalid_fragment(workspace: tuple[Path,
     _fragment(fragment_dir, "91-bad.md", "no heading\n")
     code = assemble.main(["--check", "--fragment-dir", str(fragment_dir), "--changelog", str(changelog)])
     assert code == 1
+
+
+# --- fragment numbers name the change that landed them --------------------------
+
+#: Fragment numbers at or above this are treated as pre-PR placeholders and
+#: refused. The repository's PR/issue counter is a single monotonic sequence
+#: (highest so far: the 2900s), so this floor leaves several years of headroom
+#: while still catching the ``999x`` names a branch reaches for before a PR
+#: number exists.
+_PLACEHOLDER_FLOOR = 9000
+
+
+def _real_fragment_numbers() -> list[tuple[int, str]]:
+    """Every ``(number, name)`` pair in the repository's own fragment directory."""
+    pairs = []
+    for path in sorted(_FRAGMENT_DIR.iterdir()):
+        if path.name in assemble.RESERVED_NAMES or path.is_dir():
+            continue
+        match = assemble.FRAGMENT_NAME.match(path.name)
+        if match is not None:
+            pairs.append((int(match.group("number")), path.name))
+    return pairs
+
+
+def test_no_fragment_uses_a_reserved_placeholder_number() -> None:
+    """A fragment is named for the PR (or issue) that landed it, per README.
+
+    A placeholder like ``9999-`` is a natural thing to write while a branch has
+    no PR number yet, and renaming it before merge is easy to forget: nothing
+    downstream fails, so the fragment survives review and merges under the
+    placeholder. Three did, from two separate PRs. The cost only becomes visible
+    at release time, and by then ``--apply`` has deleted the fragment, so the
+    number cannot be recovered from the log it produced.
+
+    Two things are lost. The number is the only pointer from a release-note
+    entry back to the change that made it, so a placeholder makes an entry
+    untraceable. And because assembly orders by *descending* number, the
+    placeholder sorts above every real entry - see the companion cell below.
+    """
+    offenders = [name for number, name in _real_fragment_numbers() if number >= _PLACEHOLDER_FLOOR]
+    assert not offenders, (
+        f"fragment(s) named with a reserved placeholder number (>= {_PLACEHOLDER_FLOOR}): "
+        f"{offenders}. Rename each to the PR or issue number that carries it, so the "
+        "release-note entry points back at the change and sorts in the right place."
+    )
+
+
+def test_a_placeholder_number_sorts_above_every_real_entry(workspace: tuple[Path, Path]) -> None:
+    """The ordering consequence, pinned so the rule above keeps its reason.
+
+    ``collect_fragments`` orders by descending number so the assembled section
+    reads newest-first. A placeholder number is not a position in that sequence,
+    so it does not read as "newest" - it reads as *first*, ahead of everything,
+    however old the change behind it is.
+    """
+    fragment_dir, _ = workspace
+    _fragment(fragment_dir, "2953-a-real-recent-change.md", "### Fixed: recent\n\nBody.\n")
+    _fragment(fragment_dir, "12-a-genuinely-old-change.md", "### Fixed: old\n\nBody.\n")
+    _fragment(fragment_dir, "9999-a-placeholder.md", "### Fixed: placeholder\n\nBody.\n")
+
+    order = [fragment.name for fragment in assemble.collect_fragments(fragment_dir)]
+
+    assert order[0] == "9999-a-placeholder.md", (
+        "expected the placeholder to sort first - if this no longer holds, the "
+        "ordering rationale in the companion cell needs rewriting"
+    )
+    assert order == [
+        "9999-a-placeholder.md",
+        "2953-a-real-recent-change.md",
+        "12-a-genuinely-old-change.md",
+    ]

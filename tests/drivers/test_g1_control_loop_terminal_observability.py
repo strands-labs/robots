@@ -168,6 +168,13 @@ def _fake_driver(monkeypatch: pytest.MonkeyPatch, *, fsm_id: int = 500) -> G1Dri
     driver._last_task_snapshot = None
     driver._task_admission = threading.Lock()
     driver._check_motion_gates = MagicMock(return_value=None)  # type: ignore[method-assign]
+    # The loop owns an FSM refresher thread that calls these two.  Stubbed for
+    # the same reason the gate above is: this driver is built with ``__new__``
+    # and has none of the motion-switcher state, and what these cells grade is
+    # terminal observability, not the FSM producer.  Its contract is graded in
+    # test_g1_fsm_refresh_is_off_the_control_loop_thread.py.
+    driver._refresh_fsm_id = MagicMock()  # type: ignore[method-assign]
+    driver._fsm_read_at = None
     return driver
 
 
@@ -260,7 +267,8 @@ class TestTerminalSnapshotSurvivesLoopTeardown:
             {"status": "error", "content": [{"text": "gate refused: FSM left the allowed set"}]},
         ]
         driver._check_motion_gates = MagicMock(  # type: ignore[method-assign]
-            side_effect=lambda _scope: answers.pop(0) if answers else answers[-1]
+            # ``**_kwargs`` absorbs the per-step re-gate's ``refresh=False``.
+            side_effect=lambda _scope, **_kwargs: answers.pop(0) if answers else answers[-1]
         )
 
         def policy(_obs: Any) -> dict[str, float]:

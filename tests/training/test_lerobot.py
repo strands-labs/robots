@@ -4,7 +4,10 @@ These are pure/offline (no GPU, no actual lerobot_train launch). The real
 end-to-end sim->train->load is exercised separately.
 """
 
+import ast
+import inspect
 import json
+import pathlib
 import sys
 from types import SimpleNamespace
 
@@ -1930,6 +1933,11 @@ class TestStreamingAndValidationSplitAreMutuallyExclusive:
                 streaming=True,
                 eval_split=0.25,
                 video_backend=None,
+                # lerobot's factory reads this on all three of its dataset
+                # constructions (stream, train split, eval split). Mirror its
+                # own default so the stand-in config carries the surface the
+                # real DatasetConfig does.
+                depth_output_unit="mm",
                 image_transforms=SimpleNamespace(enable=False),
                 use_imagenet_stats=False,
             ),
@@ -1942,3 +1950,82 @@ class TestStreamingAndValidationSplitAreMutuallyExclusive:
         assert built.count("_StubStreaming") == 1, "the stream is built once, to read metadata"
         assert type(train_dataset) is _StubMapStyle, "lerobot rebuilds the TRAIN split map-style, discarding the stream"
         assert type(eval_dataset) is _StubMapStyle
+
+
+class TestTheStandInConfigTracksLerobotsOwnFactory:
+    """A field lerobot's factory starts reading fails here, not inside lerobot.
+
+    ``make_train_eval_datasets`` reads ``cfg.dataset.<field>`` straight off the
+    config it is handed, so a stand-in missing one raises ``AttributeError``
+    from inside lerobot rather than failing an assertion in this suite. lerobot
+    is tracked from source, so that field set grows: ``depth_output_unit``
+    arrived with its depth-map support and the stand-in did not carry it, which
+    surfaced as this file's own split assertion appearing to break.
+
+    The expectation is derived from the function the split test actually calls,
+    not from the module. ``make_dataset`` also reads ``episodes``,
+    ``exclude_episodes`` and ``repo_type`` on paths the split test never
+    reaches, so a module-wide rule would demand three fields the stand-in has
+    no reason to carry.
+    """
+
+    @staticmethod
+    def _factory_dataset_fields(function_name: str) -> set[str]:
+        """Every ``cfg.dataset.<field>`` lerobot reads inside one function."""
+        factory = pytest.importorskip("lerobot.datasets.factory")
+        tree = ast.parse(inspect.getsource(factory))
+        target = next(
+            (n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == function_name),
+            None,
+        )
+        assert target is not None, f"lerobot.datasets.factory has no {function_name}"
+        return {
+            node.attr
+            for node in ast.walk(target)
+            if isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Attribute)
+            and node.value.attr == "dataset"
+            and isinstance(node.value.value, ast.Name)
+            and node.value.value.id == "cfg"
+        }
+
+    @staticmethod
+    def _stand_in_dataset_fields() -> set[str]:
+        """The keys this file's own stand-in ``cfg.dataset`` namespace carries."""
+        tree = ast.parse(pathlib.Path(__file__).read_text(encoding="utf-8"))
+        namespaces = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "SimpleNamespace"
+            and any(keyword.arg == "repo_id" for keyword in node.keywords)
+        ]
+        assert len(namespaces) == 1, f"expected one stand-in dataset namespace, found {len(namespaces)}"
+        return {keyword.arg for keyword in namespaces[0].keywords if keyword.arg}
+
+    def test_the_stand_in_carries_every_field_the_split_path_reads(self) -> None:
+        needed = self._factory_dataset_fields("make_train_eval_datasets")
+        carried = self._stand_in_dataset_fields()
+        missing = sorted(needed - carried)
+        assert not missing, (
+            f"lerobot's make_train_eval_datasets reads cfg.dataset.{missing} and the stand-in "
+            "config does not carry it, so the split test raises AttributeError from inside "
+            "lerobot instead of grading the split. Add the field to the stand-in, mirroring "
+            "lerobot's own default for it."
+        )
+
+    def test_both_derived_sets_are_populated(self) -> None:
+        needed = self._factory_dataset_fields("make_train_eval_datasets")
+        carried = self._stand_in_dataset_fields()
+        assert len(needed) >= 5, f"only {len(needed)} fields derived - the scan is looking in the wrong place"
+        assert len(carried) >= 5, f"only {len(carried)} stand-in keys derived - the scan is looking in the wrong place"
+
+    def test_the_module_wide_set_is_wider_than_the_path_the_split_test_drives(self) -> None:
+        """Why the expectation is function-scoped and not module-scoped."""
+        split_path = self._factory_dataset_fields("make_train_eval_datasets")
+        other_path = self._factory_dataset_fields("make_dataset")
+        assert other_path - split_path, (
+            "make_dataset no longer reads any field make_train_eval_datasets does not, so the "
+            "function scoping above no longer buys anything and could be widened to the module"
+        )

@@ -16,6 +16,8 @@ from dataclasses import dataclass
 from enum import Enum
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from strands_robots.simulation.models import SimRobot
+
 # ── Mock heavy dependencies before importing ──────────────────────
 
 # Mock device_connect_edge
@@ -200,10 +202,10 @@ def _make_mock_sim(tool_name="so100_sim"):
     sim.tool_name_str = tool_name
 
     # SimWorld-like structure
-    robot_data = MagicMock()
-    robot_data.policy_running = False
-    robot_data.policy_steps = 0
-    robot_data.policy_instruction = ""
+    # The real record rather than a ``MagicMock``: a stop is a call on it
+    # (``request_policy_stop``), and a mock absorbs that call while leaving
+    # ``policy_running`` exactly as the test set it.
+    robot_data = SimRobot(name="so100", urdf_path="")
 
     world = MagicMock()
     world.robots = {"so100": robot_data}

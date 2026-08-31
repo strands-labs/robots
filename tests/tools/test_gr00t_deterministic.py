@@ -347,13 +347,3 @@ class TestPackagedWrapper:
                     "it is mounted alone into the GR00T container where strands_robots "
                     "is not installed."
                 )
-
-    def test_example_shim_reexports_main(self):
-        """Back-compat: the old examples/ path still exposes main()."""
-        import runpy
-
-        example = Path(__file__).resolve().parents[2] / "examples" / "libero" / "gr00t_server_deterministic_wrapper.py"
-        ns = runpy.run_path(str(example))
-        from strands_robots.policies.groot.server_wrapper import main
-
-        assert ns["main"] is main
