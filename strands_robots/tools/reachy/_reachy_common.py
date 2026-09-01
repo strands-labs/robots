@@ -14,6 +14,35 @@ matter of taste, and they are not all of one kind:
   -60 are each individually legal and together ask for a 120-degree twist the
   neck cannot make.
 
+What the coupling limit refuses is a substitution, not an impossibility. The
+daemon's default kinematics solves the head pose through
+``inverse_kinematics_safe(pose, body_yaw, max_relative_yaw=65 deg,
+max_body_yaw=160 deg)``, and those two figures are
+:data:`HEAD_BODY_YAW_DELTA_LIMIT_DEG` and ``MOTION_ENVELOPE_DEG["body_yaw"]``.
+So the twist can never be mechanically violated: the solver keeps it inside the
+limit by *moving the body*, and the head pose is its primary task. A pair
+outside the limit therefore does not fail - it succeeds with a body yaw the
+caller did not ask for, which is the silent substitution this module exists to
+refuse.
+
+That makes the two directions of a lone yaw value different things, and the
+difference is why one of them is checked and the other is not:
+
+* A lone ``head_yaw`` is honored. Asking the head to face 180 degrees turns the
+  body to 115 so the twist lands at exactly the limit. Nothing is substituted,
+  because the caller named no body yaw - so this is legal motion and refusing it
+  would refuse the verb its own point.
+* A lone ``body_yaw`` is honored only within the limit *of the head yaw the
+  daemon is already targeting*. With the head target at 0, a body yaw of 160
+  reaches 65 and stops: the caller's own explicit value is substituted. That is
+  the same failure as an out-of-limit pair, and :func:`envelope_error` refuses it
+  when the caller can say what the head target is - see ``head_yaw_target``.
+
+The head pose is absolute, which is what makes the difference a difference: the
+daemon's IK sets the requested pose as the head's world frame and drives
+``body_yaw`` as a separate joint, so ``head_yaw - body_yaw`` really is the twist
+and a full-turn head bound is only coherent because the body carries it round.
+
 Kept in one module because two consumers need the same answer:
 :class:`~strands_robots.drivers.reachy.ReachyDriver` (the ``mode="real"``
 seam driver) and the agent ``@tool``s that will sit on the same daemon. A
@@ -57,10 +86,10 @@ HEAD_BODY_YAW_DELTA_LIMIT_DEG: float = 65.0
 _YAW_PAIR: tuple[str, str] = ("head_yaw", "body_yaw")
 
 
-def envelope_error(values: dict[str, Any], context: str) -> str | None:
+def envelope_error(values: dict[str, Any], context: str, head_yaw_target: float | None = None) -> str | None:
     """Report why ``values`` cannot be commanded, or ``None`` when they can.
 
-    Three checks, in this order, because each depends on the previous one
+    Four checks, in this order, because each depends on the previous one
     having passed:
 
     1. Each bounded axis that is present carries a finite number. A ``nan``
@@ -76,6 +105,22 @@ def envelope_error(values: dict[str, Any], context: str) -> str | None:
        only meaningful once both values are known to be finite and individually
        legal - otherwise a caller would be told about a coupling when the real
        problem is one value.
+    4. If ``body_yaw`` is present *without* ``head_yaw`` and the caller supplied
+       ``head_yaw_target``, the same limit applies against that target. Same
+       check, one value of which the caller rather than the action supplies:
+       the daemon holds the head pose and turns the body no further than the
+       limit, so a lone body yaw outside it is substituted exactly as an
+       out-of-limit pair is.
+
+    Check (3) is a property of one *action*; check (4) is what makes the limit a
+    property of the robot as well. This module has no robot to ask for a missing
+    half, so the caller supplies it: a surface that knows where the head is
+    pointing passes ``head_yaw_target`` and the coupling is enforced on a
+    body-only action too, which is the shape ``reachy_body_turn`` sends. A
+    surface that does not know - the Device Connect driver's ``body`` RPC, which
+    keeps no record of the pose its ``look`` RPC commanded - passes nothing, and
+    a lone ``body_yaw`` stays per-axis there rather than being judged against a
+    guess.
 
     A key this envelope does not know is ignored entirely - not bounded and not
     even checked for finiteness. The driver's action dict also carries antenna
@@ -90,6 +135,14 @@ def envelope_error(values: dict[str, Any], context: str) -> str | None:
             :data:`MOTION_ENVELOPE_DEG` are bounded; others are ignored.
         context: Calling surface to quote in the reason, so a caller can tell
             which of several verbs refused.
+        head_yaw_target: The head yaw, in degrees, the robot will be holding
+            while ``values`` is carried out, for the case where ``values``
+            names no ``head_yaw`` of its own. ``None`` means the caller cannot
+            know it - the coupling is then left unchecked rather than guessed
+            against a default, because refusing a body turn the robot could
+            actually have made is worse than the substitution it prevents.
+            Ignored when ``values`` carries ``head_yaw``, which is the stronger
+            answer to the same question.
 
     Returns:
         A reason naming the limit that refused, or ``None`` when every value in
@@ -105,14 +158,31 @@ def envelope_error(values: dict[str, Any], context: str) -> str | None:
             return f"{context}: {axis} {value:g} deg is outside the envelope +/-{limit:g} deg"
 
     head_key, body_key = _YAW_PAIR
-    if head_key in values and body_key in values:
-        delta = float(values[head_key]) - float(values[body_key])
+    if body_key not in values:
+        return None
+    body = float(values[body_key])
+    if head_key in values:
+        delta = float(values[head_key]) - body
         if abs(delta) > HEAD_BODY_YAW_DELTA_LIMIT_DEG:
             return (
                 f"{context}: {head_key} {float(values[head_key]):g} deg and {body_key} "
-                f"{float(values[body_key]):g} deg differ by {delta:g} deg, which exceeds the "
+                f"{body:g} deg differ by {delta:g} deg, which exceeds the "
                 f"head-body coupling limit of {HEAD_BODY_YAW_DELTA_LIMIT_DEG:g} deg"
             )
+        return None
+    if head_yaw_target is None:
+        return None
+    if (reason := finite_number_error(head_yaw_target, "head_yaw_target", context)) is not None:
+        return reason
+    delta = abs(float(head_yaw_target) - body)
+    if delta > HEAD_BODY_YAW_DELTA_LIMIT_DEG:
+        return (
+            f"{context}: {body_key} {body:g} deg is {delta:g} deg from the head yaw the daemon "
+            f"is targeting ({float(head_yaw_target):g} deg), which exceeds the head-body coupling "
+            f"limit of {HEAD_BODY_YAW_DELTA_LIMIT_DEG:g} deg - the head pose is the daemon's "
+            f"primary task, so it turns the body no further than the limit; name {head_key} in "
+            f"the same action to turn the head with the body"
+        )
     return None
 
 

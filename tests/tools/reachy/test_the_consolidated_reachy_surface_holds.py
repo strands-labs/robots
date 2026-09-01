@@ -2,7 +2,7 @@
 
 Facts x verbs, in the shape the g1 family's consolidation locked (refs #3037,
 #3070): the whole ``reachy_*`` surface is judged by rows in tables rather than
-by a file per fact. Four fact families:
+by a file per fact. Five fact families:
 
 1. Every verb refuses an unusable ``driver`` handle with an envelope that
    names the verb, the parameter and the received type - never an exception.
@@ -13,6 +13,10 @@ by a file per fact. Four fact families:
 4. The package surface holds: every ``@tool`` the two verb modules define is
    lazily importable from the package - the drift the g1 family actually
    shipped once and now pins against.
+5. No verb's description promises the head-body yaw coupling limit unless the
+   action that verb sends can reach it. That limit needs both members of the
+   pair in one action, so a verb sending one member is not refused by it - and
+   the description is the only thing the model driving the verb reads.
 
 Plus the new ``ReachyDriver`` accessor gates (connected-first, admitted sets,
 URL-safe move names) exercised on a bare instance with no daemon, and the move
@@ -91,6 +95,7 @@ def _bare_driver(connected: bool = True) -> ReachyDriver:
     driver = ReachyDriver.__new__(ReachyDriver)
     driver._connected = connected
     driver._cache_lock = threading.Lock()
+    driver._head_yaw_target = None
     driver._joints = None
     driver._pose = None
     driver._imu = None
@@ -274,6 +279,96 @@ class TestThePackageSurfaceHolds:
                 name for name in dir(module) if not name.startswith("_") and hasattr(getattr(module, name), "tool_spec")
             }
             assert tools == set(table)
+
+
+def _yaw_keys_one_call_carries(verb: str, kwargs: dict[str, Any]) -> set[str]:
+    """The members of the yaw pair ``verb`` puts in one action, from a live call.
+
+    Derived by calling the verb rather than read from a table, so a verb that
+    starts or stops sending a member is graded without this file being edited.
+    """
+    handle = _RecordingHandle()
+    ALL_VERBS[verb](driver=handle, **kwargs)
+    for accessor, args, _kwargs in handle.calls:
+        if accessor == "send_action" and args and isinstance(args[0], dict):
+            return {"head_yaw", "body_yaw"} & set(args[0])
+    return set()
+
+
+class TestNoVerbPromisesACouplingLimitItsOwnActionCannotReach:
+    """Fact family 5: a verb quoting the twist limit states the terms it applies on.
+
+    A tool description is the only thing the model driving the verb reads, so a
+    limit promised there is a limit the model plans against - and a promise of a
+    refusal that does not happen is worse than no promise, because it moves a
+    real robot. Which terms a verb owes depends on which member it can send
+    alone, and the two are not the same obligation:
+
+    * A lone ``head_yaw`` is not judged against a counterpart at all - the
+      daemon serves it by turning the body under the head - so a verb that can
+      omit ``body_yaw`` must say the limit applies only when both are sent.
+    * A lone ``body_yaw`` *is* judged, against the head yaw the driver last
+      commanded, so a verb that sends it alone must name that counterpart rather
+      than claim an exemption it does not have.
+
+    Derived from the tool specs and from what each verb actually sends, so
+    re-adding an unqualified sentence - or keeping a stale exemption - fails here
+    rather than shipping.
+    """
+
+    #: Either phrasing states the condition on a path where the limit is not
+    #: applied. The wording stays the author's; only the presence of a stated
+    #: condition is graded.
+    SCOPE_PHRASES: tuple[str, ...] = ("only when", "not checked")
+
+    #: What a verb sending a lone ``body_yaw`` must name instead: the head yaw
+    #: the limit is measured against, since for that member it is measured.
+    COUNTERPART_PHRASES: tuple[str, ...] = ("yaw target", "head's own yaw")
+
+    @pytest.mark.parametrize("verb", sorted(reachy_actions._ACTIONS))
+    def test_a_verb_that_can_send_one_member_states_the_condition(self, verb: str) -> None:
+        limit = f"{reachy_package.HEAD_BODY_YAW_DELTA_LIMIT_DEG:g} deg"
+        description = ALL_VERBS[verb].tool_spec["description"]
+        if limit not in description:
+            return  # says nothing about the coupling, so it promises nothing
+        yaw_keys = _yaw_keys_one_call_carries(verb, VERB_ARGS[verb])
+        if yaw_keys == {"head_yaw", "body_yaw"}:
+            return  # every call carries the pair, so the limit does apply
+        if yaw_keys == {"body_yaw"}:
+            assert any(phrase in description for phrase in self.COUNTERPART_PHRASES), (
+                f"{verb} sends body_yaw alone, where the {limit} coupling limit is applied "
+                "against the head yaw target, and quotes the limit without naming it"
+            )
+            return
+        assert any(phrase in description for phrase in self.SCOPE_PHRASES), (
+            f"{verb} sends {sorted(yaw_keys) or 'no yaw key'} in one action and quotes the "
+            f"{limit} coupling limit without stating when it applies"
+        )
+
+    def test_the_two_obligations_land_on_different_verbs(self) -> None:
+        """The premise the branch above rests on, measured from the verbs.
+
+        Without this, a single obligation applied to both would pass by accident
+        if the two verbs happened to share a phrase.
+        """
+        lone = {
+            verb: _yaw_keys_one_call_carries(verb, VERB_ARGS[verb])
+            for verb in reachy_actions._ACTIONS
+            if len(_yaw_keys_one_call_carries(verb, VERB_ARGS[verb])) == 1
+        }
+        assert lone == {"reachy_look": {"head_yaw"}, "reachy_body_turn": {"body_yaw"}}
+
+    def test_the_two_verbs_that_can_send_a_lone_member_are_the_documented_pair(self) -> None:
+        """The premise the rows above rest on, measured from the verbs."""
+        lone = {verb for verb in reachy_actions._ACTIONS if len(_yaw_keys_one_call_carries(verb, VERB_ARGS[verb])) == 1}
+        assert lone == {"reachy_look", "reachy_body_turn"}
+
+    def test_passing_body_yaw_puts_the_pair_in_one_action(self) -> None:
+        """``reachy_look``'s description offers this remedy, so it must exist."""
+        assert _yaw_keys_one_call_carries("reachy_look", {"yaw": 80.0, "body_yaw": 0.0}) == {
+            "head_yaw",
+            "body_yaw",
+        }
 
 
 #: (method invocation, fragment) rows for the driver's own gates, judged on a

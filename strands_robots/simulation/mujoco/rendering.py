@@ -117,6 +117,14 @@ def _max_render_bytes() -> int:
 # value read and the name quoted in a refusal cannot drift apart.
 _RENDER_ALLOW_ABS_ENV = "STRANDS_ROBOTS_RENDER_ALLOW_ABS"
 
+# How long ``stop_cameras_recording`` waits for the daemon recorder thread to
+# leave its capture loop. One owner for the value so the budget the join uses
+# and the number a refusal quotes cannot drift apart, matching
+# ``_TELEOP_JOIN_TIMEOUT_S`` and ``_FSM_REFRESHER_JOIN_S``. The loop checks
+# ``state["running"]`` once per camera, so the wait is one render call, not one
+# frame period -- the budget is sized for a slow render rather than a slow loop.
+_CAMS_REC_JOIN_TIMEOUT_S = 5.0
+
 
 def _validate_render_output_path(output_path: str) -> Path:
     """Validate an LLM-supplied render path, confined to the render sandbox.
@@ -1892,6 +1900,90 @@ class RenderingMixin:
     # background thread creates its own GL context. No shared state with
     # main dispatch thread.
 
+    def _cams_recording_phase(self):
+        """The registered camera recording and the phase it is in.
+
+        Returns ``(None, "idle")`` when nothing is registered, else the state
+        and one of:
+
+        * ``"recording"`` -- ``running`` set, the loop is capturing.
+        * ``"stopping"`` -- ``running`` cleared but the recorder thread is
+          still alive. :meth:`stop_cameras_recording` clears the flag before it
+          joins, so a loop wedged inside ``render`` outlives the flag that
+          describes it; reading the flag alone reported an idle recorder while
+          that loop was still rendering into the buffers.
+        * ``"unflushed"`` -- ``running`` cleared and the thread gone, but the
+          registration still standing. Only a flush deregisters, so this is a
+          buffer of captured frames that nothing has encoded: the state a stop
+          whose join expired decays into once the slow ``render`` returns and
+          the loop exits. Liveness cannot see it, and it is droppable, so every
+          read that decides whether a buffer may be replaced keys on the
+          registration instead.
+
+        Registration is the load-bearing half. ``_cams_rec_state`` is set by the
+        two start verbs and cleared only by a successful flush, so "registered"
+        means exactly "holds frames nobody has encoded" -- which is the question
+        the start guards are asking, and the reason they cannot ask about
+        liveness. The thread read only distinguishes the two registered phases
+        that are still moving from the one that has settled.
+
+        The synchronous recorder registers no thread, so its live phase is
+        ``"recording"`` on the flag alone and its ``finalize`` flushes and
+        deregisters in one step.
+        """
+        state = getattr(self, "_cams_rec_state", None)
+        if not state:
+            return None, "idle"
+        if state.get("running"):
+            return state, "recording"
+        thread = state.get("thread")
+        if thread is not None and thread.is_alive():
+            return state, "stopping"
+        return state, "unflushed"
+
+    def _refuse_replacing_cams_recording(self):
+        """The refusal a ``start_cameras_recording*`` verb owes a registered recording.
+
+        ``None`` when there is nothing registered and a start may proceed. Both
+        start verbs register into the same ``_cams_rec_state``, so both had the
+        same hole and both ask through here.
+
+        A start replaces that attribute, so on any registered phase it would
+        drop whatever the previous recording had buffered. While the previous
+        loop is alive that also puts two capture threads on one camera set; once
+        it has exited the damage is quieter and worse -- captured frames
+        discarded under ``status="success"``, with no warning and no flush,
+        which is the outcome :meth:`stop_cameras_recording` refuses to produce
+        on an expired join in the first place. Refusing every registered phase
+        is what makes the "call ``stop_cameras_recording()`` again" contract
+        that error advertises hold for the callers who hit it: a stop on a
+        settled recording joins immediately and encodes.
+        """
+        state, phase = self._cams_recording_phase()
+        if state is None:
+            return None
+        name = state["name"]
+        if phase == "unflushed":
+            buffered = {cam: len(state["buffers"][cam]) for cam in state["cameras"]}
+            return {
+                "status": "error",
+                "content": [
+                    {
+                        "text": (
+                            f"Camera recording '{name}' is still registered with frames no flush has "
+                            f"read: {buffered}. Its recorder thread has exited, so a stop now joins "
+                            f"immediately -- call stop_cameras_recording() first to encode them. "
+                            f"Starting a new recording here would discard them."
+                        )
+                    },
+                    {"json": {"phase": phase, "recording": name, "buffered_frames": buffered}},
+                ],
+            }
+        return {
+            "status": "error",
+            "content": [{"text": f"Already recording '{name}'. Call stop_cameras_recording() first."}],
+        }
+
     def _active_camera_list(self, cameras):
         """Resolve cameras to concrete camera names currently in the world.
 
@@ -2087,12 +2179,12 @@ class RenderingMixin:
         width = None if width is None else int(width)
         height = None if height is None else int(height)
 
-        if getattr(self, "_cams_rec_state", None) and self._cams_rec_state.get("running"):
-            cur = self._cams_rec_state["name"]
-            return {
-                "status": "error",
-                "content": [{"text": f"Already recording '{cur}'. Call stop_cameras_recording() first."}],
-            }
+        # Keyed on the registration, not on liveness: a start replaces
+        # ``_cams_rec_state``, so every registered phase has frames it would
+        # drop -- including the settled one a stop whose join expired decays
+        # into, which no liveness read can see.
+        if (refusal := self._refuse_replacing_cams_recording()) is not None:
+            return refusal
 
         names, unresolved = self._active_camera_list(cameras)
         # Strict validation: if user specified cameras, error on any unresolved names
@@ -2348,16 +2440,65 @@ class RenderingMixin:
           ``on_frame`` is the preferred entry point but
           ``stop_cameras_recording`` works equivalently for callers that
           don't keep the closure handle.
+
+        The returned envelope reports the join outcome. ``Thread.join`` returns
+        ``None`` whether or not the thread finished, so the liveness read after
+        it is the only thing that tells a stopped recorder from one that
+        outlasted :data:`_CAMS_REC_JOIN_TIMEOUT_S` - a ``render`` call blocking
+        on a wedged GL context is the ordinary case. That outcome decides all
+        three of what happens next:
+
+        * ``status="error"`` with ``stopped=False``, so a caller cannot read
+          "success" while frames are still being captured.
+        * **Nothing is encoded.** The flush walks each buffer twice (once to
+          find the dominant frame shape, once to select it) and a live capture
+          loop appending between the two passes makes the encoded clip and the
+          reported counts describe different frame lists. An unflushed buffer is
+          recoverable; an MP4 encoded from a moving one is not.
+        * The recording stays registered, so a later call re-joins that loop
+          and flushes it. The registration is also what keeps a second recorder
+          from starting on the same cameras, and it keeps doing so after the
+          slow ``render`` returns and the loop exits: the start guards read the
+          registration rather than the thread, because that settled state still
+          holds the frames this refusal promised were recoverable. See
+          :meth:`_cams_recording_phase`.
         """
         state = getattr(self, "_cams_rec_state", None)
-        if not state or not state.get("running"):
-            # idempotent - 'already stopped' is a success, not an error.
+        if not state:
+            # idempotent - 'already stopped' is a success, not an error. A
+            # successful flush is what clears the registration, so a state that
+            # is still registered is still stoppable even with ``running``
+            # already cleared: that is precisely the recording whose join
+            # expired, and reading the flag here would refuse to re-join it and
+            # leave its buffers unflushed for good.
             return {"status": "success", "content": [{"text": "Was not recording cameras."}]}
 
         state["running"] = False
         thread = state.get("thread")
+        joined = True
         if thread is not None:
-            thread.join(timeout=5.0)
+            thread.join(timeout=_CAMS_REC_JOIN_TIMEOUT_S)
+            joined = not thread.is_alive()
+
+        if not joined:
+            cams = list(state["cameras"])
+            buffered = {cam: len(state["buffers"][cam]) for cam in cams}
+            return {
+                "status": "error",
+                "content": [
+                    {
+                        "text": (
+                            f"Camera recording '{state['name']}' did not stop within "
+                            f"{_CAMS_REC_JOIN_TIMEOUT_S:.1f}s: the recorder thread is still rendering "
+                            f"{cams}. Its render() call is most likely blocking. Nothing was encoded - "
+                            f"the buffers are left unflushed rather than read while that thread appends "
+                            f"to them - and the recording is left registered; call "
+                            f"stop_cameras_recording() again to re-join it."
+                        )
+                    },
+                    {"json": {"stopped": False, "recording": state["name"], "buffered_frames": buffered}},
+                ],
+            }
 
         result = self._flush_cameras_recording_state(state)
         self._cams_rec_state = None
@@ -2369,8 +2510,12 @@ class RenderingMixin:
         Shared by :meth:`stop_cameras_recording` (daemon-thread path) and
         the ``finalize`` callable returned by
         :meth:`start_cameras_recording_synchronous`. ``state`` is mutated
-        in place - ``running`` should already be ``False`` before this
-        runs, and the daemon thread (if any) already joined.
+        in place, and both callers must have established that no one else
+        is writing to it: ``running`` already ``False``, and the daemon
+        thread (if any) *observed* to have exited rather than merely asked
+        to. Reading a buffer a capture loop is still appending to is what
+        :meth:`stop_cameras_recording` refuses on an expired join rather
+        than encoding.
 
         Best-effort: per-camera flush failures are reported in the result
         dict's text + JSON (``frames`` / ``errors`` / ``size_kb``) but
@@ -2596,12 +2741,12 @@ class RenderingMixin:
         width = None if width is None else int(width)
         height = None if height is None else int(height)
 
-        if getattr(self, "_cams_rec_state", None) and self._cams_rec_state.get("running"):
-            cur = self._cams_rec_state["name"]
-            return {
-                "status": "error",
-                "content": [{"text": f"Already recording '{cur}'. Call stop_cameras_recording() first."}],
-            }
+        # Keyed on the registration, not on liveness: a start replaces
+        # ``_cams_rec_state``, so every registered phase has frames it would
+        # drop -- including the settled one a stop whose join expired decays
+        # into, which no liveness read can see.
+        if (refusal := self._refuse_replacing_cams_recording()) is not None:
+            return refusal
 
         names, unresolved = self._active_camera_list(cameras)
         if cameras is not None and unresolved:
@@ -2724,16 +2869,52 @@ class RenderingMixin:
         }
 
     def get_cameras_recording_status(self):
-        """Cheap introspection of an ongoing multi-camera recording."""
+        """Cheap introspection of an ongoing multi-camera recording.
+
+        Four phases, and only one of them is ``[idle]``. ``[recording]`` is a
+        live capture; ``[stopping]`` is the window between a stop whose join
+        expired and the recorder thread actually exiting, where frames can still
+        land; ``[unflushed]`` is that window after the thread has gone, holding
+        frames no flush has read; and ``[idle]`` means nothing is registered at
+        all. The last distinction is the one worth stating: only a flush
+        deregisters a recording, so ``[idle]`` promises there is no buffer left
+        to encode, and answering it about a settled-but-registered state would
+        report captured frames as if they had never existed.
+
+        The JSON block carries ``phase`` alongside ``running`` and
+        ``thread_alive`` because the three registered phases need two booleans
+        to tell apart, and re-deriving them is the reading this verb exists to
+        hand over rather than leave to the caller.
+        """
         import time as _time
 
-        state = getattr(self, "_cams_rec_state", None)
-        if not state or not state.get("running"):
+        state, phase = self._cams_recording_phase()
+        if state is None:
             return {"status": "success", "content": [{"text": "[idle] No active camera recording."}]}
 
+        thread = state.get("thread")
         elapsed = _time.monotonic() - state["started_mono"]
-        lines = [f"[recording] '{state['name']}' for {elapsed:.1f}s  @ {state['fps']} FPS"]
+        head = f"[{phase}] '{state['name']}' for {elapsed:.1f}s  @ {state['fps']} FPS"
+        if phase == "stopping":
+            head += "  (stop requested; the recorder thread has not exited)"
+        elif phase == "unflushed":
+            head += "  (stopped, not encoded; call stop_cameras_recording() to flush)"
+        lines = [head]
         for cam in state["cameras"]:
             frames = len(state["buffers"][cam])
             lines.append(f"   {cam:20s} {frames:>5d} frames  ({state['errors'][cam]} errors)")
-        return {"status": "success", "content": [{"text": "\n".join(lines)}]}
+        return {
+            "status": "success",
+            "content": [
+                {"text": "\n".join(lines)},
+                {
+                    "json": {
+                        "recording": state["name"],
+                        "phase": phase,
+                        "running": bool(state.get("running")),
+                        "thread_alive": thread is not None and thread.is_alive(),
+                        "frames": {cam: len(state["buffers"][cam]) for cam in state["cameras"]},
+                    }
+                },
+            ],
+        }

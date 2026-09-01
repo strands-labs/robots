@@ -5,6 +5,7 @@ state as structured RPCs and events via Device Connect's DeviceDriver interface.
 """
 
 import logging
+from collections.abc import Mapping
 from typing import Any
 
 from device_connect_edge.drivers import (
@@ -18,6 +19,7 @@ from device_connect_edge.drivers import (
 from device_connect_edge.types import DeviceIdentity, DeviceStatus
 
 from strands_robots.device_connect._authz import authz_error, is_authorized_caller
+from strands_robots.mesh.core import _reports_failure_to_stop
 from strands_robots.mesh.security import is_safe_policy_provider
 from strands_robots.teleop_mixin import _stop_reported_stopped
 
@@ -125,16 +127,142 @@ class SimulationDeviceDriver(DeviceDriver):
 
     @rpc()
     async def stop(self) -> dict[str, Any]:
-        """Stop all running policies."""
+        """Stop every rollout in this simulation and report which ones halted.
+
+        Routes each robot through the simulation's own ``stop_policy``, the verb
+        that owns the question, and reads the verdict it returns. This used to
+        lower ``policy_running`` itself and answer a fixed "All policies
+        stopped", which made one sentence out of four different facts: a halted
+        rollout, an idle simulation, a world already torn down, and -- because
+        the loop had no guard -- a scene teardown racing it, which escaped as a
+        ``RuntimeError`` past the RPC instead of an envelope. None of the four
+        named a robot, so an operator could not tell what had been halted or
+        cross-check it against ``list_policies_running``.
+
+        The mesh fanout (:meth:`~strands_robots.mesh.Mesh._dispatch`, action
+        ``stop``) is the other remote way into this same simulation and it
+        already answers this way: per-robot ``stop_policy``, each answer graded
+        through :func:`~strands_robots.mesh.core._reports_failure_to_stop`, the
+        halted robots named. The rule has one owner and this is now its third
+        reader rather than a surface that produced no answer to grade.
+
+        A simulation with nothing to halt answers affirmatively-empty rather
+        than erroring, for the reason the mesh branch states in full: nothing to
+        stop makes "did not stop" wrong rather than conservative, and a false
+        negative on the safety path is what trains an operator to ignore the
+        warning.
+
+        Returns:
+            ``status="success"`` when no rollout refused, naming the halted ones
+            in the text and listing them under ``stopped`` in the ``json``
+            block. ``status="error"`` when a rollout refused or the world
+            mutated under the loop, with the refusals under ``not_stopped`` and
+            whatever did halt still under ``stopped``.
+        """
         caller = get_rpc_source_device()
         if not is_authorized_caller(caller, scope="rpc"):
             return authz_error(caller, "stop")
-        print("[policy] Stop command received - stopping all policies", flush=True)
+        print("[policy] Stop command received - stopping every rollout", flush=True)
+        halted: list[str] = []
+        refused: dict[str, dict[str, Any]] = {}
+        # Robots whose stop answered neither way. Tracked rather than folded
+        # into "was not running", so the affirmative sentence below is only
+        # spoken when something actually reported the fact.
+        unreported: list[str] = []
+        try:
+            for name in self._stop_targets():
+                answer = self._stop_one_rollout(name)
+                if _reports_failure_to_stop(answer):
+                    refused[name] = answer
+                elif (in_flight := _reported_a_rollout_in_flight(answer)) is None:
+                    unreported.append(name)
+                elif in_flight:
+                    halted.append(name)
+        # Recovery path: catch broadly. A scene teardown racing this handler can
+        # leave ``world.robots`` mid-mutation, and an RPC must answer rather
+        # than raise past the dispatcher -- the same reason ``onEmergencyStop``
+        # below and the mesh stop branch both guard their own stop loops.
+        except Exception as exc:  # noqa: BLE001 - a stop must answer, not raise
+            logger.error(
+                "[safety] stop: the simulation changed under the stop loop after halting %s; "
+                "rollouts may still be executing: %s",
+                halted or "nothing",
+                exc,
+                exc_info=True,
+            )
+            return {
+                "status": "error",
+                "content": [
+                    {
+                        "text": (
+                            f"The simulation changed under the stop loop: {exc}. "
+                            f"Halted {halted} before it did; anything else may still be executing."
+                        )
+                    },
+                    {"json": {"stopped": halted, "not_stopped": [], "unreported": unreported, "error": str(exc)}},
+                ],
+            }
+        if refused:
+            names = sorted(refused)
+            logger.error(
+                "[safety] stop: stop_policy refused for %d rollout(s): %s; those policies may still be executing",
+                len(names),
+                names,
+                exc_info=False,
+            )
+            return {
+                "status": "error",
+                "content": [
+                    {"text": f"stop_policy refused for: {', '.join(names)}. Those policies may still be executing."},
+                    {"json": {"stopped": halted, "not_stopped": names, "unreported": unreported, "results": refused}},
+                ],
+            }
+        if halted:
+            text = f"Halted {len(halted)} rollout(s): {', '.join(halted)}"
+        elif unreported:
+            text = f"Nothing reported a rollout in flight; {len(unreported)} stop(s) answered without a verdict"
+        else:
+            text = "No rollout was in flight"
+        return {
+            "status": "success",
+            "content": [
+                {"text": text},
+                {"json": {"stopped": halted, "not_stopped": [], "unreported": unreported}},
+            ],
+        }
+
+    def _stop_targets(self) -> list[str]:
+        """Robots this stop asks about - every robot in the world, or none.
+
+        The population is deliberately the whole world rather than the rollout
+        registry: ``stop_policy`` is idempotent, and a blocking ``run_policy``
+        raises ``policy_running`` without registering a Future, so a registry-
+        only population would leave that rollout untouched. Which of these was
+        actually in flight is the answer ``stop_policy`` gives, not a guess made
+        here.
+        """
         world = getattr(self._sim, "_world", None)
-        if world:
-            for robot in world.robots.values():
-                robot.request_policy_stop()
-        return {"status": "success", "content": [{"text": "All policies stopped"}]}
+        if world is None:
+            return []
+        return list(world.robots)
+
+    def _stop_one_rollout(self, robot_name: str) -> dict[str, Any]:
+        """Stop one robot's rollout through the verb that owns the question.
+
+        Falls back to the durable flag write for a backend that exposes no
+        ``stop_policy``: :meth:`~strands_robots.simulation.base.SimEngine.start_policy`
+        is a synchronous passthrough there, so no worker outlives the call and
+        the flag is the whole answer. The fallback returns the same envelope
+        shape so the caller above grades one thing.
+        """
+        stop_policy = getattr(self._sim, "stop_policy", None)
+        if callable(stop_policy):
+            return dict(stop_policy(robot_name=robot_name))
+        robot = self._sim._world.robots[robot_name]
+        return {
+            "status": "success",
+            "content": [{"json": {"robot": robot_name, "was_running": bool(robot.request_policy_stop())}}],
+        }
 
     @rpc()
     async def getStatus(self) -> dict[str, Any]:
@@ -371,3 +499,29 @@ class SimulationDeviceDriver(DeviceDriver):
             joints: Dict of joint name -> position (radians)
         """
         pass
+
+
+def _reported_a_rollout_in_flight(answer: Mapping[str, Any]) -> bool | None:
+    """Whether a ``stop_policy`` answer says a rollout really was in flight.
+
+    Reads the ``was_running`` key
+    :meth:`~strands_robots.simulation.mujoco.simulation.MuJoCoSimEngine.stop_policy`
+    puts in its ``json`` block. Tri-state on purpose, in the same conservative
+    direction as :func:`~strands_robots.mesh.core._reports_failure_to_stop`: an
+    envelope that reports the fact neither way is not read as either one.
+    Counting silence as a halt names a robot the answer never mentioned;
+    counting it as idle lets the caller state "no rollout was in flight" on no
+    evidence. Both are the affirmative lie this verb exists to stop telling.
+
+    Args:
+        answer: One envelope returned by a stop verb.
+
+    Returns:
+        ``True`` or ``False`` as the answer reports it, or ``None`` when the
+        answer carries no verdict at all.
+    """
+    for block in answer.get("content", []):
+        payload = block.get("json")
+        if isinstance(payload, dict) and "was_running" in payload:
+            return bool(payload["was_running"])
+    return None

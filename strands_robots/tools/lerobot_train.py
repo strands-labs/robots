@@ -29,6 +29,12 @@ from strands import tool
 from strands.types.tools import ToolContext
 
 from strands_robots.tools._hitl_audit import log_operator_response
+from strands_robots.tools._process_stop import (
+    SIGKILL_CONFIRM_S,
+    SIGTERM_GRACE_S,
+    confirm_exit,
+    unstopped_result,
+)
 from strands_robots.utils import (
     positive_count_error,
     step_cadence_error,
@@ -744,7 +750,8 @@ def lerobot_train(
     Actions:
         start: launch a new training run (default).
         status: report a run's PID, uptime, running flag, and recent log tail.
-        stop: terminate a running session by name (SIGTERM then SIGKILL).
+        stop: terminate a running session by name (SIGTERM then SIGKILL),
+            reported successful only once the process has exited.
         list: list tracked training sessions.
 
     Args:
@@ -957,25 +964,47 @@ def lerobot_train(
 
             pid_int = int(pid)
             try:
+                # Capture the process identity before signalling anything: psutil
+                # records the creation time here, so the escalation and the
+                # confirmation below are aimed at this process and not at
+                # whatever holds the PID once the grace period is over.
+                proc = psutil.Process(pid_int)
+
                 os.kill(pid_int, signal.SIGTERM)
-                time.sleep(2)
-                if psutil.pid_exists(pid_int):
+                if confirm_exit(proc, SIGTERM_GRACE_S) is not True:
                     os.kill(pid_int, signal.SIGKILL)
+                    verdict = confirm_exit(proc, SIGKILL_CONFIRM_S)
+                    if verdict is not True:
+                        # Sending SIGKILL is not the process exiting. Reporting
+                        # this stopped would also drop the record below, and that
+                        # store is the only place the detached PID is written
+                        # down, so the session would carry on with no supported
+                        # way left to stop it.
+                        return unstopped_result(session_name, pid_int, verdict, "training")
+
                 session_manager.remove_session(session_name)
                 return {
                     "status": "success",
                     "content": [
                         {"text": f"**Session Stopped**\nSession: `{session_name}`\nPID: {pid}"},
-                        {"json": {"session_name": session_name, "session_info": session_info}},
+                        {
+                            "json": {
+                                "session_name": session_name,
+                                "session_info": session_info,
+                                "stopped": True,
+                            }
+                        },
                     ],
                 }
-            except ProcessLookupError:
+            except (ProcessLookupError, psutil.NoSuchProcess):
+                # Already gone before this verb reached it: os.kill reports that
+                # as ProcessLookupError, psutil.Process as NoSuchProcess.
                 session_manager.remove_session(session_name)
                 return {
                     "status": "success",
                     "content": [
                         {"text": f"Session '{session_name}' was already stopped"},
-                        {"json": {"session_name": session_name}},
+                        {"json": {"session_name": session_name, "stopped": True}},
                     ],
                 }
 

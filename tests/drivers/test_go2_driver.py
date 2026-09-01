@@ -373,7 +373,8 @@ def test_per_joint_gains_override_the_reference_gains(stub_unitree_sdk: None) ->
         pytest.param({"elbow": 0.0}, "unknown joint name", id="unknown-joint"),
         pytest.param({"FL_hip_joint": {"kp": 1.0}}, "missing required key 'q'", id="missing-q"),
         pytest.param({"FL_hip_joint": {"q": 0.0, "kx": 1.0}}, "unknown per-joint keys", id="unknown-inner-key"),
-        pytest.param({"FL_hip_joint": "forward"}, "non-numeric target", id="non-numeric"),
+        pytest.param({"FL_hip_joint": "forward"}, "must be a finite number", id="not-a-number"),
+        pytest.param({"FL_hip_joint": float("nan")}, "must be a finite number", id="nan-target"),
     ],
 )
 def test_an_unusable_action_is_refused_and_nothing_reaches_the_wire(

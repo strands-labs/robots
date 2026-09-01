@@ -2445,7 +2445,10 @@ class SimEngine(ABC):
                 ``use_processor``, ``processor_overrides``, ``device``,
                 ...). Forwarded verbatim to ``create_policy``.
             instruction: Natural-language instruction for the policy.
-            duration: Wall-clock seconds to run. Used only when no ``n_steps``
+            duration: Wall-clock seconds to run, honored as such: the loop
+                paces on a deadline, so a step's own cost comes out of the
+                period rather than being added to it (``fast_mode=True``
+                removes the pacing entirely). Used only when no ``n_steps``
                 / ``max_steps`` is given (the step count wins and ``duration``
                 is recomputed from it). Must be a finite positive number; a
                 non-positive, non-finite, non-numeric, or bool value is
@@ -2472,7 +2475,11 @@ class SimEngine(ABC):
                 their own interval and ignore this entirely. Must be a
                 positive integer (>= 1); a non-positive or non-int value is
                 reported as a caller error.
-            fast_mode: Skip real-time sleep between steps.
+            fast_mode: Skip the real-time pacing and run as fast as inference
+                and physics allow. When False (default) the loop is paced on a
+                deadline at ``control_frequency``, so the wall clock a step
+                spends working is subtracted from the period rather than added
+                to it and ``duration`` is honored whatever a step costs.
             video: Optional video-recording config dict. Accepted keys:
                 ``path`` (str, output MP4 - required to enable recording),
                 ``fps`` (int, default 30), ``camera`` (str, default backend

@@ -54,13 +54,22 @@ def _live_pid() -> int:
 
 
 def _raise_on_probe(monkeypatch: pytest.MonkeyPatch, module: Any, exc: type[Exception]) -> None:
-    """Make ``is_running()`` raise ``exc`` while ``pid_exists`` stays truthful."""
+    """Make every probe of the process raise ``exc`` while ``pid_exists`` stays truthful.
+
+    ``stop`` confirms the exit with ``Process.wait()``, so a stand-in for an
+    uninspectable process has to refuse that the same way it refuses
+    ``is_running()``; answering one and not the other would model a process no
+    kernel produces.
+    """
 
     class _Probe:
         def __init__(self, pid: int) -> None:
             self._pid = pid
 
         def is_running(self) -> bool:
+            raise exc(self._pid)
+
+        def wait(self, timeout: float | None = None) -> int:
             raise exc(self._pid)
 
     monkeypatch.setattr(module.psutil, "Process", _Probe)
@@ -116,7 +125,15 @@ def test_adding_a_session_does_not_erase_an_uninspectable_sibling(monkeypatch: p
 
 
 def test_stop_can_still_reach_a_session_it_could_not_inspect(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The operator-visible point: such a session stays stoppable."""
+    """The operator-visible point: such a session stays stoppable.
+
+    Reaching it is the property being pinned - the record survives the load and
+    the signals go to the recorded PID. The *verdict* cannot be affirmative
+    here: the same ``AccessDenied`` that hid the process from the store also
+    hides whether it exited, and ``stop`` reports that as unknown rather than
+    claiming an exit it could not observe. The record is kept either way, which
+    is what keeps the session stoppable on the next attempt.
+    """
     pid = _live_pid()
     SessionManager().add_session("arm_teleop", {"pid": pid, "action": "teleoperate", "start_time": 0.0})
     _raise_on_probe(monkeypatch, tele_mod, tele_mod.psutil.AccessDenied)
@@ -126,8 +143,10 @@ def test_stop_can_still_reach_a_session_it_could_not_inspect(monkeypatch: pytest
 
     result = lerobot_teleoperate(action="stop", session_name="arm_teleop")
 
-    assert result["status"] == "success", "a live session the tool started must remain stoppable"
     assert signalled and signalled[0][0] == pid, "stop must signal the recorded PID"
+    verdict = next(block["json"] for block in result["content"] if "json" in block)["stopped"]
+    assert verdict is None, "an exit that could not be observed is unknown, not reported either way"
+    assert "arm_teleop" in _stored(SessionManager()), "the record must survive so the session stays stoppable"
 
 
 def test_retaining_the_record_is_reported(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:

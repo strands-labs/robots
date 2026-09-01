@@ -153,6 +153,15 @@ _LEG_KD: tuple[float, float, float] = (5.0, 5.0, 5.0)
 #: is the default gain for a joint.
 _SDK_KP: tuple[float, ...] = _LEG_KP * 4
 _SDK_KD: tuple[float, ...] = _LEG_KD * 4
+# The per-joint fields a caller may put on a ``LowCmd_`` motor slot, and the
+# whole set this module reads off an action dict. Every one of them is a
+# physical quantity the frame carries to the motor controller verbatim, so each
+# is held to :func:`~strands_robots.utils.finite_number_error` before it is
+# written: a ``nan`` target serializes as a valid IEEE-754 float and the
+# controller integrates it, which poisons the pose rather than refusing the
+# command. Single-sourced so the fields accepted and the fields checked cannot
+# drift apart.
+_WIRE_FIELDS: tuple[str, ...] = ("q", "kp", "kd", "dq", "tau")
 
 #: Joint name -> ``LowCmd_.motor_cmd`` slot.
 #:
@@ -326,6 +335,15 @@ def build_lowcmd_from_action(action: dict[str, Any]) -> tuple[Any, str | None]:
     * A dict value must carry ``"q"``; ``"kp"``, ``"kd"``, ``"dq"`` and
       ``"tau"`` are optional. An unknown inner key is refused for the same
       reason an unknown joint name is.
+    * Every field a caller supplies is held to
+      :func:`~strands_robots.utils.finite_number_error` before it is written -
+      the same domain the other native drivers put their action values through.
+      A ``nan`` or ``inf`` survives a bare ``float()`` and serializes onto the
+      wire as a valid IEEE-754 float, so the motor controller integrates it
+      instead of rejecting it; ``True`` would land as a silent ``1.0`` rad. This
+      is not a magnitude limit - it is the gate that keeps an unrepresentable
+      target off the wire, and refusing the whole action is the same posture an
+      unknown joint name gets, for the same reason.
 
     Wire-frame contract: the header and ``level_flag`` come from
     :func:`_new_lowcmd`; ``motor_cmd[i].mode`` is set to
@@ -347,7 +365,7 @@ def build_lowcmd_from_action(action: dict[str, Any]) -> tuple[Any, str | None]:
     cmd, err = _new_lowcmd()
     if err is not None:
         return None, err
-    known_inner = {"q", "kp", "kd", "dq", "tau"}
+    known_inner = set(_WIRE_FIELDS)
     for name, value in action.items():
         slot = GO2_JOINT_INDEX.get(name)
         if slot is None:
@@ -367,12 +385,16 @@ def build_lowcmd_from_action(action: dict[str, Any]) -> tuple[Any, str | None]:
             kd = value.get("kd", _SDK_KD[slot])
             dq = value.get("dq", 0.0)
             tau = value.get("tau", 0.0)
+            supplied = {key: value[key] for key in _WIRE_FIELDS if key in value}
         else:
             q, kp, kd, dq, tau = value, _SDK_KP[slot], _SDK_KD[slot], 0.0, 0.0
-        try:
-            q_f, kp_f, kd_f, dq_f, tau_f = float(q), float(kp), float(kd), float(dq), float(tau)
-        except (TypeError, ValueError) as exc:
-            return None, f"joint {name!r} carries a non-numeric target: {exc}"
+            supplied = {"q": value}
+        for key, raw in supplied.items():
+            reason = finite_number_error(raw, f"{name}.{key}", "send_action")
+            if reason is not None:
+                return None, reason
+        q_f, kp_f, kd_f = float(q), float(kp), float(kd)
+        dq_f, tau_f = float(dq), float(tau)
         motor = cmd.motor_cmd[slot]
         motor.mode = _MOTOR_MODE_SERVO
         motor.q = q_f
@@ -968,11 +990,14 @@ class Go2Driver:
         supplies either ``{joint_name: target_position_radians}`` to take the
         reference gains, or ``{joint_name: {"q": ..., "kp": ..., "kd": ...,
         "dq": ..., "tau": ...}}`` for per-joint control; a missing ``q`` refuses
-        the whole action so a silently-zeroed target cannot reach the wire.
+        the whole action so a silently-zeroed target cannot reach the wire, and
+        every field the caller does supply must be a finite number for the same
+        reason - see :func:`build_lowcmd_from_action`.
 
         Two things this deliberately is not: a control loop (a caller wanting
         500 Hz calls this on their own timer, or uses :meth:`run_policy`), and a
-        command-magnitude filter (the gates are the safety envelope).
+        command-magnitude filter (the gates are the safety envelope). Requiring
+        a field to be finite is not a magnitude limit: ``nan`` names no pose.
 
         Args:
             action: Joint-name-keyed targets.

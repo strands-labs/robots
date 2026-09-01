@@ -234,6 +234,15 @@ class ReachyDriver:
         self._battery: dict[str, Any] | None = None
         self._joints: dict[str, Any] | None = None
 
+        # The head yaw, in degrees, this driver last put on the wire, and so the
+        # one the daemon is still targeting. Not a sensor reading: no telemetry
+        # carries it, because the head IMU measures the head's orientation and
+        # nothing reports body yaw back. ``None`` means unknown - never
+        # commanded, or a path that re-pins the daemon's target has run since.
+        # Guarded by ``_cache_lock`` with the sensor caches: same kind of
+        # cross-thread read, same lock rather than a second one.
+        self._head_yaw_target: float | None = None
+
         # Connection state. ``None`` link on a machine that never connected is
         # a valid state for tests and for a peer built ahead of a bring-up.
         self._link: Any = None
@@ -524,6 +533,7 @@ class ReachyDriver:
         self._loop = None
         self._loop_thread = None
         self._connected = False
+        self._remember_head_yaw_target(None)
 
     # ------------------------------------------------------------------ #
     # Command path.                                                      #
@@ -543,7 +553,13 @@ class ReachyDriver:
         2. Every numeric value is finite, and every bounded axis is inside the
            envelope - both from the shared
            :func:`~strands_robots.tools.reachy.envelope_error`, so this driver
-           and the ``reachy_*`` tools cannot disagree about the same robot.
+           and the ``reachy_*`` tools cannot disagree about the same robot. An
+           action carrying ``body_yaw`` and no head pose is checked against the
+           head yaw this driver last commanded, so the head-body coupling limit
+           applies to a body-only turn as well as to a pair: the daemon holds
+           the head pose and turns the body no further than the limit, so a
+           lone body yaw beyond it would report success and stop short. The
+           limit is skipped, not guessed, while that target is unknown.
         3. The action names at least one thing this driver can send. An action
            dict of unknown keys is refused rather than reported as a successful
            no-op.
@@ -578,7 +594,9 @@ class ReachyDriver:
         for name, value in action.items():
             if (reason := finite_number_error(value, name, "send_action")) is not None:
                 return _refuse(reason)
-        if (reason := envelope_error(action, "send_action")) is not None:
+        commanded_head_yaw = _head_yaw_of(action)
+        held_head_yaw = commanded_head_yaw if commanded_head_yaw is not None else self._read_head_yaw_target()
+        if (reason := envelope_error(action, "send_action", head_yaw_target=held_head_yaw)) is not None:
             return _refuse(reason)
 
         commands = _wire_commands(action)
@@ -593,6 +611,8 @@ class ReachyDriver:
         for command in commands:
             if (error := self._send_cmd(command)) is not None:
                 return _refuse(f"send_action: {error}")
+        if commanded_head_yaw is not None:
+            self._remember_head_yaw_target(commanded_head_yaw)
         return {
             "status": "success",
             "content": [{"json": {"sent": [sorted(c) for c in commands], "robot": self._tool_name}}],
@@ -717,6 +737,7 @@ class ReachyDriver:
         result = self._daemon_post(_PATH_MOVE_PLAY.format(dataset=dataset, move=move_name))
         if (error := result.get("error")) is not None:
             return _refuse(f"play_move: daemon refused {move_name!r}: {error}")
+        self._remember_head_yaw_target(None)
         return {"status": "success", "content": [{"json": {"played": move_name, "library": library}}]}
 
     def list_moves(self, library: str = "emotions") -> dict[str, Any]:
@@ -753,6 +774,7 @@ class ReachyDriver:
         result = self._daemon_post(_PATH_WAKE)
         if (error := result.get("error")) is not None:
             return _refuse(f"wake_up: daemon refused: {error}")
+        self._remember_head_yaw_target(None)
         return {"status": "success", "content": [{"text": "asked the daemon to play the wake-up move"}]}
 
     def goto_sleep(self) -> dict[str, Any]:
@@ -766,6 +788,7 @@ class ReachyDriver:
         result = self._daemon_post(_PATH_SLEEP)
         if (error := result.get("error")) is not None:
             return _refuse(f"goto_sleep: daemon refused: {error}")
+        self._remember_head_yaw_target(None)
         return {"status": "success", "content": [{"text": "asked the daemon to play the go-to-sleep move"}]}
 
     def set_motors(self, mode: str) -> dict[str, Any]:
@@ -794,6 +817,7 @@ class ReachyDriver:
             )
         if (error := self._send_cmd({"torque": torque, "ids": None})) is not None:
             return _refuse(f"set_motors: {error}")
+        self._remember_head_yaw_target(None)
         return {"status": "success", "content": [{"json": {"motors": mode}}]}
 
     def state_snapshot(self) -> dict[str, Any]:
@@ -987,6 +1011,29 @@ class ReachyDriver:
             return f"link refused the command: {exc}"
         return None
 
+    def _remember_head_yaw_target(self, yaw: float | None) -> None:
+        """Record the head yaw the daemon is targeting, or ``None`` for unknown.
+
+        Called with a value after :meth:`send_action` puts a head pose on the
+        wire, and with ``None`` by every path that moves the head without one:
+        :meth:`play_move`, :meth:`wake_up` and :meth:`goto_sleep` hand the
+        daemon a whole choreography, :meth:`set_motors` lets it re-pin its own
+        target to wherever the head physically is when torque comes back, and
+        :meth:`cleanup` ends the session that knew. Forgetting is the safe
+        direction: an unknown target skips the coupling check, where a stale one
+        would refuse a turn the robot could make.
+
+        Args:
+            yaw: Degrees, or ``None`` to mark the target unknown.
+        """
+        with self._cache_lock:
+            self._head_yaw_target = yaw
+
+    def _read_head_yaw_target(self) -> float | None:
+        """The head yaw the daemon is targeting, or ``None`` when unknown."""
+        with self._cache_lock:
+            return self._head_yaw_target
+
     def _snapshot(self, attr: str) -> dict[str, Any] | None:
         """Return a copy of one cached sensor dict, or ``None``.
 
@@ -1023,6 +1070,29 @@ _ACTION_KEYS: frozenset[str] = frozenset(
 _HEAD_KEYS: tuple[str, ...] = ("head_pitch", "head_roll", "head_yaw", "head_x", "head_y", "head_z")
 
 
+def _head_yaw_of(action: dict[str, Any]) -> float | None:
+    """The head yaw, in degrees, ``action`` puts on the wire - ``None`` for no head pose.
+
+    The daemon's head command is a whole pose, so naming any one head key
+    commands all six: an action that moves the pitch and says nothing about the
+    yaw commands the yaw to zero. That makes the head yaw of a head-bearing
+    action knowable exactly, which is what the coupling limit needs, and it is
+    why this returns ``0.0`` rather than ``None`` for ``{"head_pitch": 10}``.
+    The single owner of that rule - :func:`_wire_commands` builds the pose from
+    it, and :meth:`ReachyDriver.send_action` checks the coupling against it.
+
+    Args:
+        action: An action dict; see :meth:`ReachyDriver.send_action`.
+
+    Returns:
+        The commanded head yaw in degrees, or ``None`` when the action names no
+        head axis and so leaves the head pose alone.
+    """
+    if not any(key in action for key in _HEAD_KEYS):
+        return None
+    return float(action.get("head_yaw", 0.0))
+
+
 def _wire_commands(action: dict[str, Any]) -> list[dict[str, Any]] | str:
     """Translate a degrees-and-millimetres action into link commands.
 
@@ -1050,13 +1120,14 @@ def _wire_commands(action: dict[str, Any]) -> list[dict[str, Any]] | str:
         return transport
 
     commands: list[dict[str, Any]] = []
-    if any(key in action for key in _HEAD_KEYS):
+    head_yaw = _head_yaw_of(action)
+    if head_yaw is not None:
         commands.append(
             {
                 "head_pose": transport.rpy_to_pose(
                     float(action.get("head_pitch", 0.0)),
                     float(action.get("head_roll", 0.0)),
-                    float(action.get("head_yaw", 0.0)),
+                    head_yaw,
                     float(action.get("head_x", 0.0)),
                     float(action.get("head_y", 0.0)),
                     float(action.get("head_z", 0.0)),

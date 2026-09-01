@@ -223,6 +223,15 @@ _LEG_KD: tuple[float, ...] = (1.0, 1.0, 1.0, 2.0, 1.0, 1.0)
 _WAIST_KD: tuple[float, ...] = (1.0, 1.0, 1.0)
 _ARM_KD: tuple[float, ...] = (1.0,) * 7
 _SDK_KD: tuple[float, ...] = _LEG_KD + _LEG_KD + _WAIST_KD + _ARM_KD + _ARM_KD
+# The per-joint fields a caller may put on a ``LowCmd_`` motor slot, and the
+# whole set this module reads off an action dict. Every one of them is a
+# physical quantity the frame carries to the motor controller verbatim, so each
+# is held to :func:`~strands_robots.utils.finite_number_error` before it is
+# written: a ``nan`` target serializes as a valid IEEE-754 float and the
+# controller integrates it, which poisons the pose rather than refusing the
+# command. Single-sourced so the fields accepted and the fields checked cannot
+# drift apart.
+_WIRE_FIELDS: tuple[str, ...] = ("q", "kp", "kd", "dq", "tau")
 
 
 class G1Driver:
@@ -1026,6 +1035,10 @@ class G1Driver:
            :meth:`run_policy` owns that loop today; this method is one frame.
         2. A safety filter.  The FSM and battery gates are the safety
            envelope; command-magnitude limits are the arm-SDK client's job.
+           Every commanded field is still required to be a finite number, which
+           is a different question from how large it may be: a ``nan`` target is
+           not a bold move the SDK can clamp, it is a value the motor controller
+           cannot honor at all.
 
         Scope is ``"arm"`` because ``send_action`` writes to ``rt/lowcmd`` for
         arm-SDK-shaped targets; base velocity is not a ``send_action`` verb.
@@ -1353,14 +1366,31 @@ class G1Driver:
             logger.debug("%s: lowstate decode failed: %s", self._tool_name, exc)
 
     def _on_bms(self, msg: Any) -> None:
-        """Decode ``rt/lf/bmsstate`` into :attr:`_battery`."""
+        """Decode ``rt/lf/bmsstate`` into :attr:`_battery`.
+
+        Every field is read through ``getattr(msg, name, None)`` and coerced
+        by :func:`_to_float` / :func:`_to_int`, so a name the message does
+        not carry lands ``None`` in the record rather than a typed default.
+        That distinction is the whole contract here: ``getattr`` with a
+        ``0`` default cannot fail and ``0`` is a well-formed reading, so a
+        default-carrying read of a name the IDL never declared publishes a
+        constant shaped exactly like telemetry - a zero-amp pack, a
+        zero-cycle count - for as long as the robot runs.
+
+        ``BmsState_`` declares thirteen fields (``version_high``,
+        ``version_low``, ``fn``, ``cell_vol``, ``bmsvoltage``, ``current``,
+        ``soc``, ``soh``, ``temperature``, ``cycle``, ``manufacturer_date``,
+        ``bmsstate``, ``reserve``) and none of them is a charge flag, so
+        the record carries no ``charging`` key: a flag the message never
+        carries would be a guess with the shape of a reading.  A layout
+        that does declare one is one read here plus one key on the
+        ``g1_battery`` envelope.
+        """
         try:
-            soc = getattr(msg, "soc", None)
             self._battery = {
-                "pct": float(soc) if soc is not None else None,
-                "charging": bool(getattr(msg, "charge", 0)),
-                "current": float(getattr(msg, "current", 0.0)),
-                "cycle": int(getattr(msg, "cycle", 0)),
+                "pct": _to_float(getattr(msg, "soc", None)),
+                "current": _to_float(getattr(msg, "current", None)),
+                "cycle": _to_int(getattr(msg, "cycle", None)),
                 "t": time.time(),
             }
         except Exception as exc:  # noqa: BLE001
@@ -1426,28 +1456,31 @@ class G1Driver:
     def _on_mainboard(self, msg: Any) -> None:
         """Decode ``rt/mainboardstate`` into :attr:`_mainboard`.
 
-        ``MainBoardState_`` is a firmware-version-dependent envelope: the fan
-        state, board temperatures and system-state fields it declares vary
-        across G1 releases, so the fields read here are the ones that appear
-        on the layout the current firmware ships with and every one is read
-        through ``getattr`` with a default so a name a future firmware
-        renames yields ``None`` on this side rather than raising on the DDS
-        thread.  A missing field surfaces to the ``g1_mainboard`` verb as
-        ``None`` for that key, which is decidable, rather than as an
-        exception the DDS thread swallows silently.
+        ``MainBoardState_`` declares exactly four fields and all four are
+        six-element vectors: ``fan_state`` (``uint16``, one flag per fan),
+        ``temperature`` (``int16``, one per thermistor), ``value``
+        (``float32``) and ``state`` (``uint32``).  The IDL documents no
+        semantics for the last two, so they are published under the vendor's
+        own names rather than being renamed into a reading this side cannot
+        justify.
 
-        ``fan_state`` and ``temperature`` are vector fields on the message
-        (one entry per fan / thermistor); they are cast to a plain
-        ``list[int]`` / ``list[float]`` under the copy the ``_snapshot``
-        accessor returns, so a caller mutating the returned dict does not
-        race the DDS thread writing into it.
+        Each is read through ``getattr`` with a ``None`` default so a name a
+        future firmware renames surfaces to the ``g1_mainboard`` verb as
+        ``None`` for that key - decidable - rather than as an exception the
+        DDS thread swallows silently.  A *typed* default would not be
+        decidable: it looks like a reading, which is how a name the IDL never
+        declared publishes a constant forever.
+
+        All four are cast to a plain ``list[int]`` / ``list[float]`` under
+        the copy the ``_snapshot`` accessor returns, so a caller mutating the
+        returned dict does not race the DDS thread writing into it.
         """
         try:
             self._mainboard = {
                 "fan_state": _to_int_list(getattr(msg, "fan_state", None)),
                 "temperature": _to_float_list(getattr(msg, "temperature", None)),
-                "sys_state": _to_int(getattr(msg, "sys_state", None)),
-                "tick": _to_int(getattr(msg, "tick", None)),
+                "value": _to_float_list(getattr(msg, "value", None)),
+                "state": _to_int_list(getattr(msg, "state", None)),
                 "t": time.time(),
             }
         except Exception as exc:  # noqa: BLE001 - IDL message can be anything
@@ -1502,19 +1535,35 @@ class G1Driver:
 def _to_int(value: Any) -> int | None:
     """Coerce ``value`` to ``int``, or return ``None`` if it will not.
 
-    ``MainBoardState_``'s scalar fields (``sys_state``, ``tick``) are declared
-    integer on the layout the current firmware ships with, but the value
-    landing here comes from ``getattr(msg, name, None)`` at
-    :meth:`G1Driver._on_mainboard`, so a firmware that renames one of them
-    yields ``None`` at this call.  Returning ``None`` decidably rather than
-    raising keeps the DDS thread's decoder swallowing nothing silently, and
-    the ``g1_mainboard`` verb reports the missing field as ``None`` in the
-    envelope instead of dropping the whole reading.
+    ``BmsState_.cycle`` is declared integer, but the value landing here comes
+    from ``getattr(msg, name, None)`` at :meth:`G1Driver._on_bms`, so a
+    firmware that renames the field yields ``None`` at this call.  Returning
+    ``None`` decidably rather than raising keeps the DDS thread's decoder
+    swallowing nothing silently, and the ``g1_battery`` verb reports the
+    missing field as ``None`` in the envelope instead of dropping the whole
+    reading.  The same rule is why no caller passes a typed default: ``0``
+    would be indistinguishable from a real zero-cycle pack.
     """
     if value is None:
         return None
     try:
         return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _to_float(value: Any) -> float | None:
+    """Coerce ``value`` to ``float``, or return ``None`` if it will not.
+
+    The float counterpart of :func:`_to_int`, for ``BmsState_``'s ``soc`` and
+    ``current``.  Same rule: the caller passes ``getattr(msg, name, None)``
+    rather than a typed default, so a renamed or undeclared field reaches the
+    ``g1_battery`` envelope as ``None`` instead of a plausible ``0.0``.
+    """
+    if value is None:
+        return None
+    try:
+        return float(value)
     except (TypeError, ValueError):
         return None
 
@@ -1614,6 +1663,15 @@ def _build_lowcmd_from_action(
       are optional.  An unknown key inside the inner dict is refused for the
       same reason as an unknown joint name: silent drop is worse than a
       caller-facing error.
+    * Every field a caller supplies is held to
+      :func:`~strands_robots.utils.finite_number_error` before it is written -
+      the same domain the other native drivers put their action values through.
+      A ``nan`` or ``inf`` survives a bare ``float()`` and serializes onto the
+      wire as a valid IEEE-754 float, so the motor controller integrates it
+      instead of rejecting it; ``True`` would land as a silent ``1.0`` rad. This
+      is not a magnitude limit - it is the gate that keeps an unrepresentable
+      target off the wire, and refusing the whole action is the same posture an
+      unknown joint name gets, for the same reason.
 
     Wire-frame contract:
 
@@ -1651,7 +1709,7 @@ def _build_lowcmd_from_action(
     cmd.mode_pr = 0
     if mode_machine is not None:
         cmd.mode_machine = int(mode_machine)
-    known_inner = {"q", "kp", "kd", "dq", "tau"}
+    known_inner = set(_WIRE_FIELDS)
     for name, value in action.items():
         slot = _G1_JOINT_INDEX.get(name)
         if slot is None:
@@ -1671,16 +1729,16 @@ def _build_lowcmd_from_action(
             kd = value.get("kd", _SDK_KD[slot])
             dq = value.get("dq", 0.0)
             tau = value.get("tau", 0.0)
+            supplied = {key: value[key] for key in _WIRE_FIELDS if key in value}
         else:
             q, kp, kd, dq, tau = value, _SDK_KP[slot], _SDK_KD[slot], 0.0, 0.0
-        try:
-            q_f = float(q)
-            kp_f = float(kp)
-            kd_f = float(kd)
-            dq_f = float(dq)
-            tau_f = float(tau)
-        except (TypeError, ValueError) as exc:
-            return None, f"joint {name!r} carries a non-numeric target: {exc}"
+            supplied = {"q": value}
+        for key, raw in supplied.items():
+            reason = finite_number_error(raw, f"{name}.{key}", "send_action")
+            if reason is not None:
+                return None, reason
+        q_f, kp_f, kd_f = float(q), float(kp), float(kd)
+        dq_f, tau_f = float(dq), float(tau)
         motor = cmd.motor_cmd[slot]
         motor.mode = 1  # Enable - a Disable slot commands nothing regardless of CRC.
         motor.q = q_f

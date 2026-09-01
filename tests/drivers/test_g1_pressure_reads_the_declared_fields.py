@@ -339,7 +339,7 @@ class TestTheFrozenDeclarationIsTrue:
         # The frozen set names the fields the driver reads; on a firmware
         # that declares a superset this cell fails, so a rewriter has to
         # decide which fields to lift into the cache before landing.
-        assert set(_DECLARED_PRESSURE_FIELDS) <= declared, (
+        assert declared == set(_DECLARED_PRESSURE_FIELDS), (
             f"PressSensorState_ dropped fields: "
             f"{sorted(set(_DECLARED_PRESSURE_FIELDS) - declared)}. "
             "Update _DECLARED_PRESSURE_FIELDS to the real declaration."

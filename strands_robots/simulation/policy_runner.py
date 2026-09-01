@@ -76,6 +76,7 @@ from strands_robots.utils import (
 )
 
 if TYPE_CHECKING:
+    from strands_robots.mesh.pacing import Ticker
     from strands_robots.policies.base import Policy
     from strands_robots.simulation.base import SimEngine
     from strands_robots.simulation.benchmark import BenchmarkProtocol
@@ -1332,7 +1333,16 @@ class PolicyRunner:
                 never asked for - or leaks a bare conversion error out of the
                 first inference, so it is refused here exactly as
                 ``run_policy`` refuses it.
-            fast_mode: If True, skip real-time ``time.sleep`` between steps.
+            fast_mode: If True, run unpaced - as fast as inference and physics
+                allow. If False (default) the loop is paced on a DEADLINE at
+                ``control_frequency``: the wall clock a step spends on
+                inference, physics substeps, rendering and recording is
+                subtracted from the period rather than added to it, so a
+                rollout of ``n`` steps takes ``n / control_frequency`` seconds
+                whatever a step costs, as long as it fits inside one period. A
+                step that overruns its period drops the missed deadlines
+                instead of chasing them, so a slow step is followed by a gap
+                rather than by a burst of back-to-back actions.
             video: Optional :class:`VideoConfig` - set ``video.path`` to enable
                 MP4 recording via :meth:`SimEngine.render`.
             on_frame: Optional hook ``(step_idx, obs, action) -> None`` called
@@ -1919,6 +1929,9 @@ class PolicyRunner:
         # observer event reports it, and setup inside the try (substep derivation,
         # actuator discovery) can raise before the loop assigns it.
         _action_errors = 0  # count send_action failures (unresolved keys)
+        # Bound before the try so the finally below can close it whatever the
+        # rollout did, the same reason ``start_mono`` is bound above.
+        ticker: Ticker | None = None
         try:
             # Prefer an explicit integer step count when the caller resolved one
             # from ``n_steps`` (or the legacy ``max_steps`` alias). Recomputing
@@ -1930,7 +1943,29 @@ class PolicyRunner:
                 total_steps = n_steps
             else:
                 total_steps = int(duration * control_frequency)
-            action_sleep = 1.0 / control_frequency
+            # Pace the loop on a DEADLINE, not a delay. ``time.sleep(1 /
+            # control_frequency)`` after each step ADDS that step's work -
+            # inference, the physics substeps, a render for the video, the
+            # recorder's frame write - to the period instead of subtracting it,
+            # so the loop runs at ``1 / (period + work)``. Measured on a MuJoCo
+            # so101 rollout asking for 2.0s: 2.15s with a free policy, 3.15s
+            # with 10ms of inference at 50Hz, and 3.90s at 30Hz with 30ms of
+            # inference - 15.4Hz achieved where 30Hz was asked for. ``duration``
+            # is documented as wall-clock seconds and ``fast_mode=False`` as
+            # real-time pacing, so both claims were false by the cost of a step.
+            # Ticker also DROPS missed deadlines rather than chasing them, so one
+            # slow step does not fire a burst of back-to-back actions at the arm.
+            #
+            # Imported here rather than at module scope: importing any
+            # ``strands_robots.mesh`` submodule executes the mesh package
+            # ``__init__``, which pulls the fleet stack (measured: 14 mesh
+            # modules plus boto3) - a cost a local rollout must not pay for a
+            # pure-timing helper. Same reason as the local imports in the MuJoCo
+            # backend and ``TeleopMixin._teleop_apply_loop``.
+            if not fast_mode:
+                from strands_robots.mesh.pacing import Ticker as _Ticker
+
+                ticker = _Ticker(1.0 / control_frequency)
 
             # Open the observer lifecycle. Emitted here rather than at the top of
             # ``run`` so it describes a rollout that will actually begin: every
@@ -2196,8 +2231,12 @@ class PolicyRunner:
                 if vwriter is not None:
                     vwriter.capture(step_count)
 
-                if not fast_mode:
-                    time.sleep(action_sleep)
+                if ticker is not None:
+                    # ``wait()`` returns the stop verdict of the event a Ticker
+                    # was given; this one has none - the runner's cooperative
+                    # stop arrives as an exception out of the on_frame hook
+                    # above - so there is no verdict here to read.
+                    ticker.wait()
 
             def _stop_when_fired() -> bool:
                 """Evaluate the caller's ``stop_when`` clause against the live sim.
@@ -2468,6 +2507,12 @@ class PolicyRunner:
                     {"json": _error_json},
                 ],
             }
+        finally:
+            # The Ticker owns a selector and a socketpair, so an unclosed one
+            # leaks two descriptors per rollout - which an eval loop repeats
+            # once per episode.
+            if ticker is not None:
+                ticker.close()
 
         # Either finished all steps, hit the stop_when condition, or was
         # cooperatively stopped.

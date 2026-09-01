@@ -420,7 +420,13 @@ class SensorLoopsMixin:
             if battery is not None:
                 if isinstance(battery, dict):
                     health["battery_pct"] = battery.get("pct", battery.get("percentage"))
-                    health["charging"] = battery.get("charging", False)
+                    if "charging" in battery:
+                        # Only a record that carries the reading gets to make
+                        # the claim.  Defaulting an absent key to False put a
+                        # charge state on the health wire that no driver had
+                        # reported, indistinguishable from a pack measured to
+                        # be discharging.
+                        health["charging"] = battery["charging"]
                 elif isinstance(battery, (int, float)):
                     health["battery_pct"] = float(battery)
                 has_data = True

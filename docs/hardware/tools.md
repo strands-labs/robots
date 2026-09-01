@@ -75,6 +75,25 @@ serial port - is still listed and still stoppable when the tool is later invoked
 as the unprivileged user. Being kept is not a claim that it is running: `list`
 and `status` each derive that from the pid's existence at the moment you ask.
 
+`stop` is held to the same standard from the other side. It captures the process
+identity *before* it signals - so the SIGKILL escalation is aimed at the process
+it found, not at whatever holds the pid once the grace period is over - and then
+reports only what it can establish:
+
+| After SIGTERM, then SIGKILL | `stopped` | Result |
+|-----------------------------|-----------|--------|
+| the process left the process table | `true` | success, record dropped |
+| it was already gone when `stop` looked | `true` | success ("already stopped"), record dropped |
+| it is still there | `false` | error, record kept |
+| whether it exited could not be determined (`AccessDenied`) | `null` | error, record kept |
+
+Sending SIGKILL is not the same as the process exiting: the kernel delivers it
+asynchronously, and a task inside an uninterruptible wait - a serial ioctl on the
+teleop bus, a stalled CUDA call in a training step - stays in the table until that
+wait returns. So the record is kept in exactly the cases where the exit was not
+observed, because dropping it would leave the process running with nothing left
+recording its pid.
+
 ### A raw servo write is bounded by the register it encodes into
 
 `serial_tool` writes Feetech registers by masking the value into fixed-width

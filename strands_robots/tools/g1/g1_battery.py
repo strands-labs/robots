@@ -1,9 +1,9 @@
 """Agent-facing wrapper for the driver's cached ``rt/lf/bmsstate`` snapshot.
 
 ``G1Driver`` subscribes ``rt/lf/bmsstate`` at connect time and decodes each
-message into a small ``_battery`` dict carrying the SOC percentage, a
-charging flag, the pack current (A), the pack cycle count and the wall time
-the last message decoded at. ``G1Driver.get_status`` publishes ``battery_pct``
+message into a small ``_battery`` dict carrying the SOC percentage, the
+pack current, the pack cycle count and the wall time the last message
+decoded at. ``G1Driver.get_status`` publishes ``battery_pct``
 from that same dict on the mesh's status wire, which the ``g1_get_state``
 verb already surfaces to an agent; this verb is the *cached-snapshot*
 companion the ``g1_state`` docstring names, returning every field the
@@ -39,9 +39,10 @@ What this module does not do.
   ``_on_bms`` handler; adding a second subscriber path would compete for
   ``rt/lf/bmsstate`` and double the bus touch ``_DDS_INIT_LOCK`` is meant
   to prevent.
-* Rewrite the driver's decode. ``_on_bms`` names ``pct`` / ``charging`` /
-  ``current`` / ``cycle`` / ``t``; those are what this verb returns
-  verbatim. A neon-side ``g1_battery`` port additionally read ``soh``,
+* Rewrite the driver's decode. ``_on_bms`` names ``pct`` / ``current`` /
+  ``cycle`` / ``t``; those are what this verb returns verbatim.  It names
+  no charge flag because ``BmsState_`` declares none - see that decoder's
+  docstring.  A neon-side ``g1_battery`` port additionally read ``soh``,
   cell-level voltages and a per-cell temperature vector off ``BmsState_``
   directly - fields the driver's decoder does not carry today. Adding
   them here would be a second decoder for the same message, so those
@@ -89,15 +90,17 @@ def g1_battery(driver: Any) -> dict[str, Any]:
 
     Returns:
         A dict with ``status``, a ``present`` flag naming whether the
-        driver has a cached reading yet, and the five fields ``_on_bms``
+        driver has a cached reading yet, and the four fields ``_on_bms``
         writes: ``pct`` (SOC percentage, ``float`` or ``None``),
-        ``charging`` (``bool`` or ``None``), ``current`` (pack current in
-        amps, ``float`` or ``None``), ``cycle`` (integer cycle count or
-        ``None``) and ``t`` (the wall time the reading was decoded at,
-        seconds since epoch, ``float`` or ``None``).  On a driver whose
-        subscriber has not received a BMS message yet the returned dict
-        carries ``present=False`` and every field ``None`` - the verb
-        does not fabricate a reading the driver does not have.
+        ``current`` (pack current as ``BmsState_.current`` reports it,
+        ``float`` or ``None``), ``cycle`` (integer cycle count or ``None``)
+        and ``t`` (the wall time the reading was decoded at, seconds since
+        epoch, ``float`` or ``None``).  There is no charging flag:
+        ``BmsState_`` declares no charge field, so reporting one would be a
+        guess with the shape of a reading.  On a driver whose subscriber has
+        not received a BMS message yet the returned dict carries
+        ``present=False`` and every field ``None`` - the verb does not
+        fabricate a reading the driver does not have.
     """
     refusal = snapshot_handle_refusal("g1_battery", driver)
     if refusal is not None:
@@ -109,7 +112,6 @@ def g1_battery(driver: Any) -> dict[str, Any]:
             "status": "success",
             "present": False,
             "pct": None,
-            "charging": None,
             "current": None,
             "cycle": None,
             "t": None,
@@ -118,7 +120,6 @@ def g1_battery(driver: Any) -> dict[str, Any]:
         "status": "success",
         "present": True,
         "pct": snapshot.get("pct"),
-        "charging": snapshot.get("charging"),
         "current": snapshot.get("current"),
         "cycle": snapshot.get("cycle"),
         "t": snapshot.get("t"),

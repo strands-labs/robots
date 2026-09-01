@@ -21,6 +21,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from strands_robots.simulation.models import SimRobot
+from tests._sim_stop_policy_stand_in import stop_policy_stand_in
 
 # ── Mock heavy dependencies before importing ──────────────────────
 
@@ -249,6 +250,9 @@ def _make_mock_sim(name, info, robots_in_world=None):
     world.step_count = 0
     sim._world = world
 
+    # See ``tests._sim_stop_policy_stand_in``: the driver's ``stop`` reads the
+    # verdict this returns, which a bare ``MagicMock`` does not carry.
+    sim.stop_policy.side_effect = stop_policy_stand_in(world)
     sim.start_policy.return_value = {"status": "success", "content": [{"text": "Policy started"}]}
     sim.get_state.return_value = {"status": "success", "content": [{"text": "State info"}]}
     sim.get_features.return_value = {"status": "success", "content": [{"json": {"features": {}}}]}

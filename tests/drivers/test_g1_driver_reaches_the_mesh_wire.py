@@ -82,7 +82,7 @@ def _lowstate() -> Any:
 
 def _bms() -> Any:
     """An ``rt/lf/bmsstate`` sample, with the charge as a float32."""
-    return types.SimpleNamespace(soc=np.float32(87.5), charge=0, current=np.float32(-2.4), cycle=np.int64(42))
+    return types.SimpleNamespace(soc=np.float32(87.5), current=np.float32(-2.4), cycle=np.int64(42))
 
 
 def _lidar_state() -> Any:
@@ -170,10 +170,21 @@ class TestTheCriterionTopicsArriveEncoded:
         assert imu["rpy"] == pytest.approx([0.01, -0.02, 0.5], rel=1e-6)
         assert imu["accelerometer"] == pytest.approx([0.0, 0.0, 9.81], rel=1e-6)
 
-    def test_the_health_record_carries_the_battery_charge(self, capture: _Capture) -> None:
+    def test_the_health_record_carries_the_battery_percentage(self, capture: _Capture) -> None:
         health = _tick(_driver(), capture).wire[f"strands/{_PEER}/health"]
         assert health["battery_pct"] == pytest.approx(87.5, rel=1e-6)
-        assert health["charging"] is False
+
+    def test_the_health_record_claims_no_charge_state_the_pack_never_reported(self, capture: _Capture) -> None:
+        """``BmsState_`` declares no charge flag, so the wire carries none.
+
+        The reader used to default an absent ``charging`` key to ``False``,
+        which put a charge state on the health wire for every G1 - a claim
+        indistinguishable from a pack measured to be discharging.  An
+        absent key is the honest encoding of a reading the robot does not
+        publish.
+        """
+        health = _tick(_driver(), capture).wire[f"strands/{_PEER}/health"]
+        assert "charging" not in health
 
     def test_the_lidar_summary_carries_the_cloud_size(self, capture: _Capture) -> None:
         summary = _tick(_driver(), capture).wire[f"strands/{_PEER}/lidar/summary"]

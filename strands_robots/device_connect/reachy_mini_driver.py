@@ -151,10 +151,18 @@ def _motion_domain_error(rpc_name: str, values: dict[str, Any]) -> dict[str, str
     own checks.
 
     The head-body yaw coupling limit the envelope also carries is not reachable
-    from here: it bounds ``head_yaw - body_yaw`` and needs both values in one
-    call, where this surface splits them across :meth:`ReachyMiniDriver.look`
-    and :meth:`ReachyMiniDriver.body`. Per-axis travel is the half that
-    transfers; the pairwise limit stays with ``send_action``, which takes both.
+    from here: it bounds ``head_yaw - body_yaw``, and this surface splits the
+    pair across :meth:`ReachyMiniDriver.look` and :meth:`ReachyMiniDriver.body`,
+    so neither RPC ever holds both. Per-axis travel is the half that transfers.
+
+    That is a scope and not a delegation. The other half needs the head yaw the
+    daemon is targeting while a lone ``body`` turn is carried out;
+    :meth:`~strands_robots.drivers.reachy.ReachyDriver.send_action` has that,
+    because it records the head pose it last sent, and so applies the coupling
+    to a body-only turn as well as to a pair. This driver keeps no such record,
+    so a ``body`` RPC here is per-axis only. Keeping no record is the invariant:
+    were one added, the limit would become reachable and this exclusion would
+    have to go with it.
 
     Args:
         rpc_name: The RPC that received the values, used as the message prefix.
