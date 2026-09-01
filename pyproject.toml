@@ -235,6 +235,24 @@ microduck = [
     # docs/policies/microduck.md.
     "onnxruntime>=1.17.0,<2.0.0",
 ]
+# Bitcraze client library for the Crazyflie 2.x native driver: CRTP over a
+# Crazyradio dongle (or the USB cable), the commander/high-level-commander
+# setpoint surface, and the log framework the driver's telemetry block uses. A
+# pure-Python package plus pyusb; no build step, no CUDA, so it installs on the
+# aarch64 edge machines that fly these.
+#
+# cflib is GPLv3 (its wheel METADATA declares `License: GPLv3`), and this project
+# is Apache-2.0. It is therefore deliberately NOT a member of [all]: a copyleft
+# dependency is only ever installed by a caller who names it, the way the NVIDIA
+# Open Model License weights above are only ever fetched by a caller who asked
+# for that policy. Nothing in [all]'s CI/exploration role needs it - the driver
+# degrades cleanly without cflib (_resolve_cflib returns a reason naming this
+# extra), so `pip install strands-robots[all]` still imports, registers and
+# tests the driver. See strands_robots/drivers/crazyflie.py and
+# docs/robots/mobile.md.
+crazyflie = [
+    "cflib>=0.1.25,<0.2.0",
+]
 lerobot = [
     # [dataset] bundles the read-back stack the streaming data loop needs:
     # datasets + pandas + pyarrow (parquet streaming) + av + torchcodec
@@ -579,6 +597,24 @@ rosbridge = [
 sagemaker = [
     "boto3>=1.34.0,<2.0.0",
 ]
+# The operator dashboard (``strands_robots.dashboard``) is a FastAPI + WebAuthn
+# app served with uvicorn. ``[tool.hatch.build.targets.wheel]`` packages
+# ``strands_robots`` entire, so the dashboard modules ship in every install while
+# these five do not -- this extra is what makes them reachable, and
+# ``strands_robots/dashboard/__init__.py`` names it in the refusal a caller gets
+# without it, rather than letting a bare ModuleNotFoundError read as a broken env.
+#
+# PyJWT is here because ``auth`` signs and verifies the operator session token
+# with it. It is absent from every other extra and from the core dependencies, so
+# without this line the only copy in a developer environment arrives transitively
+# through an unrelated package -- which is why the gap survived local runs.
+dashboard = [
+    "fastapi>=0.110,<1.0",
+    "uvicorn>=0.27,<1.0",
+    "webauthn>=2.0,<4.0",
+    "python-multipart>=0.0.9,<1.0",
+    "PyJWT>=2.0,<3.0",
+]
 all = [
     "strands-robots[groot-service]",
     "strands-robots[moveit2]",
@@ -598,6 +634,7 @@ all = [
     "strands-robots[inference]",
     "strands-robots[rosbridge]",
     "strands-robots[sagemaker]",
+    "strands-robots[dashboard]",
 ]
 dev = [
     "pytest>=6.0,<10.0.0",
@@ -732,7 +769,8 @@ format = ["ruff check --fix strands_robots tests tests_integ", "ruff format stra
 # Whole-tree graders a diff-scoped selector cannot see. Runs the tests whose
 # input is the rest of the repository rather than the file under change
 # (docstring xref roles, host-path literals, dependency audit, agent-tool
-# parameter descriptions, del-precedes-body). Fixed roster, no arguments -
+# parameter descriptions, del-precedes-body, test-module names). Fixed roster,
+# no arguments -
 # the script is the safety net for a narrow local pytest run that would
 # otherwise ship a defect one of these graders would catch on CI. See
 # scripts/check_whole_tree_graders.py and issue #2940.
@@ -783,7 +821,7 @@ ignore_missing_imports = false
 
 # Third-party libs without type stubs
 [[tool.mypy.overrides]]
-module = ["lerobot.*", "gr00t.*", "tyro", "draccus.*", "msgpack.*", "websockets", "websockets.*", "zmq.*", "huggingface_hub.*", "serial.*", "psutil.*", "torch.*", "torchvision.*", "transformers.*", "einops.*", "robot_descriptions.*", "mujoco.*", "imageio.*", "pyarrow", "pyarrow.*", "zenoh.*", "boto3", "boto3.*", "awscrt", "awscrt.*", "awsiot", "awsiot.*", "botocore.*", "strands_robots.policies.cosmos3._msgpack_numpy", "diffusers", "diffusers.*", "accelerate", "accelerate.*", "openpi_client", "openpi_client.*", "openpi_server", "openpi_server.*", "openpi", "openpi.*", "device_connect_edge", "device_connect_edge.*", "device_connect_agent_tools", "device_connect_agent_tools.*", "rclpy", "rclpy.*", "cyclonedds", "cyclonedds.*", "roslibpy", "roslibpy.*", "rosidl_runtime_py", "rosidl_runtime_py.*", "moveit", "moveit.*", "moveit_configs_utils", "moveit_configs_utils.*", "geometry_msgs", "geometry_msgs.*", "mink", "mink.*", "qpsolvers", "qpsolvers.*", "onnxruntime", "onnxruntime.*", "motionbricks", "motionbricks.*", "trimesh", "trimesh.*", "stable_baselines3", "stable_baselines3.*", "strands_robots_sim", "strands_robots_sim.*", "isaacsim", "isaacsim.*", "omni", "omni.*", "gsplat", "gsplat.*", "plyfile", "plyfile.*", "unitree_sdk2py.*", "booster_robotics_sdk_python", "booster_robotics_sdk_python.*"]
+module = ["lerobot.*", "gr00t.*", "tyro", "draccus.*", "msgpack.*", "websockets", "websockets.*", "zmq.*", "huggingface_hub.*", "serial.*", "psutil.*", "torch.*", "torchvision.*", "transformers.*", "einops.*", "robot_descriptions.*", "mujoco.*", "imageio.*", "pyarrow", "pyarrow.*", "zenoh.*", "boto3", "boto3.*", "awscrt", "awscrt.*", "awsiot", "awsiot.*", "botocore.*", "strands_robots.policies.cosmos3._msgpack_numpy", "diffusers", "diffusers.*", "accelerate", "accelerate.*", "openpi_client", "openpi_client.*", "openpi_server", "openpi_server.*", "openpi", "openpi.*", "device_connect_edge", "device_connect_edge.*", "device_connect_agent_tools", "device_connect_agent_tools.*", "rclpy", "rclpy.*", "cyclonedds", "cyclonedds.*", "roslibpy", "roslibpy.*", "rosidl_runtime_py", "rosidl_runtime_py.*", "moveit", "moveit.*", "moveit_configs_utils", "moveit_configs_utils.*", "geometry_msgs", "geometry_msgs.*", "mink", "mink.*", "qpsolvers", "qpsolvers.*", "onnxruntime", "onnxruntime.*", "motionbricks", "motionbricks.*", "trimesh", "trimesh.*", "stable_baselines3", "stable_baselines3.*", "strands_robots_sim", "strands_robots_sim.*", "isaacsim", "isaacsim.*", "omni", "omni.*", "gsplat", "gsplat.*", "plyfile", "plyfile.*", "unitree_sdk2py.*", "booster_robotics_sdk_python", "booster_robotics_sdk_python.*", "webauthn", "webauthn.*", "requests", "requests.*"]
 ignore_missing_imports = true
 
 # Device Connect drivers - thin wrappers over the untyped device_connect_edge

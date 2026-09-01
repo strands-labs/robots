@@ -1,4 +1,4 @@
-"""Feetech STS/SCS-series native driver package.
+"""Feetech STS/SMS-series native driver package.
 
 Three layers, each usable alone: the wire codec (:mod:`.protocol`), the serial
 bus that puts those frames on a port and converts units (:mod:`.bus`), and the
@@ -25,10 +25,14 @@ from strands_robots.drivers.feetech.driver import FeetechDriver
 from strands_robots.drivers.feetech.protocol import (
     BROADCAST_ID,
     HEADER,
+    MAX_GOAL_POSITION,
     MAX_UNICAST_ID,
+    WORD_LENGTH,
     Instruction,
     ProtocolError,
     build_packet,
+    decode_word,
+    encode_word,
     parse_status_packet,
     ping_packet,
     read_packet,
@@ -42,12 +46,16 @@ __all__ = [
     "FeetechDriver",
     "HEADER",
     "Instruction",
+    "MAX_GOAL_POSITION",
     "MAX_UNICAST_ID",
+    "WORD_LENGTH",
     "MotorSpec",
     "ProtocolError",
     "READABLE_REGISTERS",
     "SO_ARM_MOTORS",
     "build_packet",
+    "decode_word",
+    "encode_word",
     "parse_status_packet",
     "ping_packet",
     "read_packet",

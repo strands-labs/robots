@@ -1,4 +1,4 @@
-"""Raw serial-bus access: port discovery, byte-level I/O, and Feetech servo writes.
+"""Raw serial-bus access: port discovery, byte-level I/O, and STS/SMS servo writes.
 
 Every numeric option an action consumes is checked here, before the port is
 opened, because none of them is refused by the layer that finally consumes it.
@@ -51,7 +51,12 @@ import serial
 import serial.tools.list_ports
 from strands import tool
 
-from strands_robots.drivers.feetech.protocol import BROADCAST_ID, MAX_UNICAST_ID
+from strands_robots.drivers.feetech.protocol import (
+    BROADCAST_ID,
+    MAX_GOAL_POSITION,
+    MAX_UNICAST_ID,
+    encode_word,
+)
 from strands_robots.utils import (
     finite_number_error,
     non_negative_count_error,
@@ -68,15 +73,6 @@ _DIRECTION_BIT = 15
 # Largest magnitude either register carries with ``_DIRECTION_BIT`` still clear.
 _MAX_MAGNITUDE = (1 << _DIRECTION_BIT) - 1
 
-# Largest index ``Goal_Position`` addresses, and the divisor that turns a count
-# into the reported angle. One name carries both because the ceiling's own reason
-# below claims the two are "the same full scale": while they were separate
-# literals that claim was asserted rather than enforced, so a correction to
-# either was invisible to the other. See issue #2812, which reports that the
-# right full scale is model-dependent -- the registry declares SCS-series servos
-# at a quarter of this -- and that the choice is still open.
-_MAX_POSITION = 4095
-
 # Inclusive bounds and the reason for each ceiling, keyed by the parameter that
 # carries the field. The floor and the type are delegated to the shared count
 # domains so an off-type or negative value is reported in the words every other
@@ -91,8 +87,9 @@ _REGISTER_FIELDS: dict[str, tuple[int, int, str]] = {
     ),
     "position": (
         0,
-        _MAX_POSITION,
-        "Goal_Position is a 12-bit register, the same full scale the reported angle divides by",
+        MAX_GOAL_POSITION,
+        "Goal_Position is 12-bit on the STS/SMS series, the same full scale the reported angle "
+        "divides by; the SCS series is 10-bit and this module does not address it",
     ),
     "velocity": (
         0,
@@ -258,9 +255,9 @@ def serial_tool(
         - "send": Send data to serial port
         - "read": Read data from serial port
         - "send_read": Send data and read response
-        - "feetech_position": Control Feetech servo position
-        - "feetech_velocity": Control Feetech servo velocity
-        - "feetech_ping": Ping Feetech servo motor
+        - "feetech_position": Control STS/SMS servo position
+        - "feetech_velocity": Control STS/SMS servo velocity
+        - "feetech_ping": Ping a Feetech servo motor
         - "monitor": Monitor serial port (continuous read)
 
     Args:
@@ -274,10 +271,15 @@ def serial_tool(
         motor_id: Motor ID for Feetech commands; an integer in [1, 254], of
             which 254 (0xfe) is the broadcast every servo receives. An action
             that reads a reply back accepts only a single servo, [1, 253]
-        position: Target position for Feetech motors; an integer in [0, 4095]
-        velocity: Target velocity for Feetech motors; an integer in [0, 32767].
-            Goal_Velocity is sign-magnitude, so a magnitude reaching bit 15
-            commands the opposite direction instead of a faster move
+        position: Target position for STS/SMS-series motors; an integer in
+            [0, 4095]. That full scale and the two-byte order this tool encodes
+            into are both STS/SMS properties: the SCS series is 10-bit and reads
+            the same two bytes in the opposite order, so an SCS-series servo is
+            not addressed by this action at all
+        velocity: Target velocity for STS/SMS-series motors; an integer in
+            [0, 32767]. Goal_Velocity is sign-magnitude on that series, so a
+            magnitude reaching bit 15 commands the opposite direction instead of
+            a faster move
         read_bytes: Number of bytes to read; a positive integer
 
     Validation:
@@ -410,7 +412,7 @@ def serial_tool(
                 return {"status": "error", "content": [{"text": "motor_id and position required"}]}
 
             # Feetech position command: INST_WRITE (0x03), Goal_Position address (0x2A)
-            params = [0x2A, position & 0xFF, (position >> 8) & 0xFF]
+            params = [0x2A, *encode_word(position)]
             packet = build_feetech_packet(motor_id, 0x03, params)
             ser.write(packet)
             ser.close()
@@ -419,7 +421,8 @@ def serial_tool(
                 "status": "success",
                 "content": [
                     {
-                        "text": f"Feetech Motor {motor_id} -> Position {position} ({position / _MAX_POSITION * 360:.1f} deg)"
+                        "text": f"Feetech Motor {motor_id} -> Position {position} "
+                        f"({position / MAX_GOAL_POSITION * 360:.1f} deg)"
                     }
                 ],
             }
@@ -430,7 +433,7 @@ def serial_tool(
                 return {"status": "error", "content": [{"text": "motor_id and velocity required"}]}
 
             # Feetech velocity command: Goal_Velocity address (0x2E)
-            params = [0x2E, velocity & 0xFF, (velocity >> 8) & 0xFF]
+            params = [0x2E, *encode_word(velocity)]
             packet = build_feetech_packet(motor_id, 0x03, params)
             ser.write(packet)
             ser.close()

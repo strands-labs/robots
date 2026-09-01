@@ -179,7 +179,8 @@ def load_reward_model(
     if importlib.util.find_spec("lerobot.rewards") is None:
         raise ImportError(
             "reward-model inference requires lerobot >= 0.6.0 (the 'lerobot.rewards' "
-            "package). Reinstall 'strands-robots[lerobot]'."
+            "package). Reinstall 'strands-robots[lerobot]'.",
+            name="lerobot.rewards",
         )
     from lerobot.rewards import make_reward_model, make_reward_model_config
 

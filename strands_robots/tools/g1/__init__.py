@@ -16,9 +16,12 @@ Organizing principle (post-consolidation, refs #2928):
       * Driver-cache reads      (g1_state, g1_battery, g1_imu, g1_mainboard,
                                  g1_pressure, g1_lidar_state, g1_lidar_summary)
       * Driver-gated writes     (g1_send_action, g1_run_policy, g1_start_task,
-                                 g1_stop_task, g1_task_status,
+                                 g1_stop_task, g1_task_status, and the
+                                 execution verbs consolidated in g1_actions:
+                                 g1_set_fsm, g1_move_velocity, g1_stop_move,
                                  g1_set_stand_height, g1_set_swing_height,
-                                 g1_balance_stand)
+                                 g1_balance_stand, the safe posture
+                                 transitions, the arm and loco gestures)
       * Gate introspection      (g1_motion_gates)
       * Reference data          (g1_joints, g1_error_codes, g1_arm_actions)
       * The escape hatch        (use_unitree)
@@ -60,9 +63,20 @@ _LAZY_IMPORTS: dict[str, tuple[str, str]] = {
     "g1_start_task": (".g1_start_task", "g1_start_task"),
     "g1_stop_task": (".g1_stop_task", "g1_stop_task"),
     "g1_get_task_status": (".g1_task_status", "g1_get_task_status"),
-    "g1_set_stand_height": (".g1_set_stand_height", "g1_set_stand_height"),
-    "g1_set_swing_height": (".g1_set_swing_height", "g1_set_swing_height"),
-    "g1_balance_stand": (".g1_balance_stand", "g1_balance_stand"),
+    # Driver-gated execution verbs, consolidated in one table-driven module
+    "g1_arm_action": (".g1_actions", "g1_arm_action"),
+    "g1_balance_stand": (".g1_actions", "g1_balance_stand"),
+    "g1_move_velocity": (".g1_actions", "g1_move_velocity"),
+    "g1_release_arm": (".g1_actions", "g1_release_arm"),
+    "g1_safe_lie_to_stand": (".g1_actions", "g1_safe_lie_to_stand"),
+    "g1_safe_squat_to_stand": (".g1_actions", "g1_safe_squat_to_stand"),
+    "g1_safe_stand_to_squat": (".g1_actions", "g1_safe_stand_to_squat"),
+    "g1_set_fsm": (".g1_actions", "g1_set_fsm"),
+    "g1_set_stand_height": (".g1_actions", "g1_set_stand_height"),
+    "g1_set_swing_height": (".g1_actions", "g1_set_swing_height"),
+    "g1_shake_hand_loco": (".g1_actions", "g1_shake_hand_loco"),
+    "g1_stop_move": (".g1_actions", "g1_stop_move"),
+    "g1_wave_hand_loco": (".g1_actions", "g1_wave_hand_loco"),
     # Gate introspection
     "g1_list_motion_gates": (".g1_motion_gates", "g1_list_motion_gates"),
     "g1_fsm_admits": (".g1_motion_gates", "g1_fsm_admits"),

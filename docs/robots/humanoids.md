@@ -112,7 +112,12 @@ The SDK is a vendor wheel rather than a declared dependency of this project
 (`pip install booster_robotics_sdk_python`, linux wheels only) — the same footing
 as the G1's `unitree-sdk2`. Without it the driver still imports, builds and
 answers `get_status`; `connect_eagerly()` returns a reason naming the module and
-the install line.
+the install line. Because the wheel is pinned to the robot's firmware
+rather than resolved by this project, the *installed* build's vocabulary is an
+input: `ROBOT_MODES` and the two `cmd_type` conventions are names this driver
+spells so a caller sees them without the SDK, and a build that declares a
+different set is refused by name — naming the enum, the member and the modes
+that build does have — rather than raising out of the verb.
 
 ### `cassie`
 

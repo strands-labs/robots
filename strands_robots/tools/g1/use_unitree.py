@@ -39,7 +39,9 @@ Safety rails:
       in the response.
     * ``HIGH_DANGER_OPS`` names the calls that can drop or walk the robot
       (ZeroTorque, SetFsmId, SetVelocity, Move, ReleaseMode, ...); those
-      are flagged loudly in every response envelope.
+      are flagged loudly in every response envelope - including the error
+      envelope, where the flag is what says whether an unanswered command
+      may still be executing.
     * Prefer the FSM-gated verbs (``g1_send_action``, ``g1_run_policy``,
       ``g1_set_stand_height``, ...) for routine motion - they route
       through :meth:`~strands_robots.drivers.g1.G1Driver._check_motion_gates`.
@@ -445,6 +447,14 @@ def use_unitree(
         Dict with status/message plus service, operation, label, result,
         mutative and high_danger flags. On error: the message plus
         available_operations or the expected signature where useful.
+
+        The mutative and high_danger flags are present on BOTH outcomes,
+        because a call that failed is the one whose classification a caller
+        most needs. An RPC that times out is not evidence the command never
+        landed - a loco.SetVelocity answering RPC_CLIENT_API_TIMEOUT is
+        consistent with a robot that is walking - and an absent flag cannot be
+        told apart from ``False``, so ``.get("high_danger")`` would read a
+        failed ZeroTorque exactly like a failed GetFsmId.
     """
     params = parameters or {}
     label = label or f"{service_name}.{operation_name}"
@@ -499,26 +509,34 @@ def use_unitree(
             "HIGH_DANGER" if high_danger else "mutative",
         )
 
+    # What the call WAS, as opposed to how it went. This classification is a
+    # property of the operation name, so it is known before the RPC is attempted
+    # and stays true however the RPC ends - see the Returns section above for why
+    # a failed call is the outcome that needs it most.
+    classification = {
+        "service": service_name,
+        "operation": operation_name,
+        "label": label,
+        "mutative": mutative,
+        "high_danger": high_danger,
+    }
+
     res = _execute(service_name, operation_name, params, network_interface=network_interface)
 
     if not res.get("ok"):
         return {
             "status": "error",
             "message": f"{service_name}.{operation_name} failed: {res.get('error')}",
-            "service": service_name,
-            "operation": operation_name,
-            "label": label,
+            # ``_execute``'s own diagnostics first, so a key it happens to carry
+            # cannot shadow the classification.
             **{k: v for k, v in res.items() if k not in ("ok", "error")},
+            **classification,
         }
 
     return {
         "status": "success",
         "message": f"{service_name}.{operation_name} ok",
-        "service": service_name,
-        "operation": operation_name,
-        "label": label,
         "parameters": params,
         "result": res["result"],
-        "mutative": mutative,
-        "high_danger": high_danger,
+        **classification,
     }

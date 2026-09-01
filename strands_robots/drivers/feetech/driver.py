@@ -1,4 +1,4 @@
-"""Native Feetech STS/SCS-series driver satisfying :class:`HardwareDriver`.
+"""Native Feetech STS/SMS-series driver satisfying :class:`HardwareDriver`.
 
 This driver drives the arm. :mod:`~strands_robots.drivers.feetech.bus` opens
 the SCS serial port, so ``send_action`` writes goal positions and the joints
@@ -88,7 +88,14 @@ _NO_POLICY_LOOP = "not wired yet (the policy control loop)"
 
 
 class FeetechDriver:
-    """Native SCS-protocol driver for the arms in :data:`SUPPORTED_ROBOTS`.
+    """Native Feetech driver for the arms in :data:`SUPPORTED_ROBOTS`.
+
+    The bus writes STS/SMS-series frames: that series' two-byte word order and
+    its 12-bit ``Goal_Position`` full scale both come from
+    :mod:`~strands_robots.drivers.feetech.protocol`. An SCS-series servo reads
+    the same two bytes in the opposite order, so a bus of that series is not
+    addressed by this driver - which is why the one SCS-series robot the registry
+    declares, ``hope_jr_hand``, is absent from :data:`SUPPORTED_ROBOTS`.
 
     Constructor contract matches :class:`~strands_robots.drivers.base.HardwareDriver`
     - the factory builds every native driver as ``driver_cls(tool_name=...,
@@ -174,7 +181,7 @@ class FeetechDriver:
         return {
             "name": self._tool_name,
             "description": (
-                f"Feetech-native driver for {self._tool_name} (SCS protocol). Joint targets are degrees; "
+                f"Feetech-native driver for {self._tool_name} (STS/SMS series). Joint targets are degrees; "
                 "gripper is percent open."
             ),
             "inputSchema": {

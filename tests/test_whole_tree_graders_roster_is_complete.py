@@ -35,11 +35,20 @@ one line, this test's ``_ROSTERED_BY_ISSUE_2940`` set stays unchanged (its
 role is to pin the issue's roster, not to enumerate every future one), and
 ``scripts/check_whole_tree_graders.py``'s module docstring's list of graders
 grows alongside.
+
+A roster only helps a caller who knows to run it. Issue #2940's failure mode
+was a *green* narrow run, so the remedy is only reachable if the pre-push
+instructions a contributor reads name the command - which is why
+``test_agents_md_names_the_preflight_command`` reads the command's name out of
+``pyproject.toml`` and requires ``AGENTS.md`` to name it. Renaming the hatch
+script then fails here rather than leaving the document pointing at a command
+that no longer exists.
 """
 
 from __future__ import annotations
 
 import importlib.util
+import tomllib
 from pathlib import Path
 
 _TESTS_ROOT = Path(__file__).resolve().parent
@@ -139,4 +148,52 @@ def test_script_has_no_arguments_beyond_the_program_name() -> None:
         "check_whole_tree_graders.py accepted an argument other than its "
         "program name. The roster is meant to be fixed; a caller-composed "
         "input set defeats the point of the preflight script."
+    )
+
+
+def _preflight_hatch_script_name() -> str:
+    """The hatch script name that runs the preflight, read from ``pyproject.toml``.
+
+    Derived rather than repeated so this pin grades the document against the
+    command that exists, not against a string a previous edit happened to
+    write down.
+    """
+    pyproject = tomllib.loads((_REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    envs = pyproject.get("tool", {}).get("hatch", {}).get("envs", {})
+    script_path = _SCRIPT_PATH.relative_to(_REPO_ROOT).as_posix()
+    names = sorted(
+        {
+            name
+            for env in envs.values()
+            for name, command in (env.get("scripts") or {}).items()
+            if script_path in (command if isinstance(command, str) else " ".join(command))
+        }
+    )
+    assert len(names) == 1, (
+        f"expected exactly one hatch script to invoke {script_path!r}, found {names}. "
+        "This pin derives the documented command from pyproject.toml; with zero or "
+        "several it cannot say which name AGENTS.md should carry."
+    )
+    return names[0]
+
+
+def test_agents_md_names_the_preflight_command() -> None:
+    """The pre-push instructions name the command that runs these graders.
+
+    The graders in the roster are the ones a diff-scoped selector structurally
+    cannot collect, so an author who narrows the run to the area they changed
+    gets a green result that reads exactly like a green full run - the failure
+    mode issue #2940 documents, observed three times. A preflight command that
+    exists but is unnamed in the document a contributor reads before pushing
+    does not close it.
+    """
+    command = f"hatch run {_preflight_hatch_script_name()}"
+    agents_md = _REPO_ROOT / "AGENTS.md"
+    assert agents_md.is_file(), f"pin cannot locate {agents_md}"
+    assert command in agents_md.read_text(encoding="utf-8"), (
+        f"AGENTS.md does not name {command!r}. The roster in "
+        f"{_SCRIPT_PATH.relative_to(_REPO_ROOT).as_posix()} only helps a caller who "
+        "knows to run it, and the graders it collects are exactly the ones a "
+        "path-or-keyword selector over the changed area does not. Name it in the "
+        "pre-push instructions, or rename the hatch script and update both."
     )

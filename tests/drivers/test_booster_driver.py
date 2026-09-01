@@ -32,6 +32,7 @@ from strands_robots.drivers.booster import (
     FALL_STATE_NAMES,
     FALL_STATE_READY,
     POSITION_MODE,
+    ROBOT_MODES,
     UPPER_BODY_KD,
     UPPER_BODY_KP,
     UPPER_BODY_SLOTS,
@@ -681,7 +682,17 @@ class TestTheJointTableMatchesTheVendorEnum:
         assert set(CMD_TYPE_STATE_FIELD) == {"parallel", "serial"}
         for name in CMD_TYPE_STATE_FIELD:
             assert hasattr(sdk.LowCmdType, name.upper())
-        assert {mode for mode in dir(sdk.RobotMode) if mode.startswith("k")} >= {"kCustom", "kWalking"}
+        # Every mode this driver offers, not a sample of two: ROBOT_MODES is the
+        # set change_mode admits, and its one consumer reads the member off this
+        # enum. A subset assertion over two names cannot see a build that
+        # renamed or dropped one of the other three. kUnknown is excluded on
+        # purpose - see ROBOT_MODES - so the claim is one-directional.
+        vendor_modes = {mode for mode in dir(sdk.RobotMode) if mode.startswith("k")}
+        assert vendor_modes >= set(ROBOT_MODES), (
+            f"the SDK declares no {sorted(set(ROBOT_MODES) - vendor_modes)}; "
+            "ROBOT_MODES claims a vocabulary this build does not have"
+        )
+        assert "kUnknown" in vendor_modes and "kUnknown" not in ROBOT_MODES
 
 
 # --------------------------------------------------------------------------- #

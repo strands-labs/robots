@@ -44,7 +44,13 @@ def require_optional(
         The imported module object.
 
     Raises:
-        ImportError: With a helpful install instruction.
+        ImportError: With a helpful install instruction, and ``name`` set to
+            *module_name* so a caller can tell an absent optional dependency
+            from a broken package path without parsing the message. The
+            interpreter's own ``ModuleNotFoundError`` stays reachable on
+            ``__context__``, which names the module actually not found - that
+            differs from *module_name* when the requested module is present but
+            something it imports is not.
     """
     if module_name in _lazy_modules:
         return _lazy_modules[module_name]
@@ -67,7 +73,10 @@ def require_optional(
             if extra:
                 parts.append(f"  pip install 'strands-robots[{extra}]'")
             parts.append(f"  pip install {install_hint}")
-        raise ImportError("\n".join(parts)) from None
+        # ``name`` is the module that was attempted, which is what the message
+        # already claims is required; the chained ModuleNotFoundError keeps the
+        # module the interpreter actually could not find.
+        raise ImportError("\n".join(parts), name=module_name) from None
 
 
 def require_optionals(
@@ -75,6 +84,7 @@ def require_optionals(
     *,
     extra: str | None = None,
     purpose: str = "",
+    pip_install: Mapping[str, str] | None = None,
 ) -> None:
     """Require several optional dependencies, reporting ALL missing ones at once.
 
@@ -94,10 +104,23 @@ def require_optionals(
         extra: ``pyproject.toml`` extras group naming where the deps ship
             (e.g. ``"molmoact2"``); shown in the install hint.
         purpose: Human-readable description shown in the error message.
+        pip_install: Distribution name per module, for the modules whose import
+            name is not what pip installs. Only differing names need an entry;
+            anything absent from the mapping is named as-is. Without this the
+            per-module hint is built from import names, and for a module like
+            ``jwt`` that spelled a remedy -- ``pip install jwt`` -- which
+            resolves to a DIFFERENT project on PyPI than the ``PyJWT`` that
+            supplies it, so following it leaves the module exactly as missing.
+            :func:`require_optional` takes the same argument as a plain string.
 
     Raises:
         ImportError: If one or more modules are missing, listing every missing
-            module and an actionable install instruction.
+            module and an actionable install instruction, with ``name`` set to
+            the first missing module in the order given. The interpreter names
+            only the first module an import fails on too, and the full set stays
+            in the message. Nothing else carries it here: the raise is outside
+            the ``except`` block that probed the modules, so ``__context__`` is
+            empty and ``name`` is the only machine-readable report.
     """
     missing: list[str] = []
     for name in module_names:
@@ -119,8 +142,9 @@ def require_optionals(
     parts.append("Install with:")
     if extra:
         parts.append(f"  pip install 'strands-robots[{extra}]'")
-    parts.append(f"  pip install {' '.join(missing)}")
-    raise ImportError("\n".join(parts)) from None
+    distributions = [(pip_install or {}).get(name, name) for name in missing]
+    parts.append(f"  pip install {' '.join(distributions)}")
+    raise ImportError("\n".join(parts), name=missing[0]) from None
 
 
 def lerobot_version() -> str:

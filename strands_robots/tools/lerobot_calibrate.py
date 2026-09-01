@@ -313,7 +313,6 @@ def lerobot_calibrate(
     backup_dir: str | None = None,
     overwrite: bool = False,
     base_path: str | None = None,
-    format_output: str = "rich",
 ) -> dict[str, Any]:
     """
     Advanced LeRobot calibration management tool.
@@ -392,7 +391,6 @@ def lerobot_calibrate(
         backup_dir: Backup directory for restore action
         overwrite: Whether to overwrite existing files during restore
         base_path: Custom base path for calibrations (default: ~/.cache/huggingface/lerobot/calibration)
-        format_output: Output format (rich, simple, json)
 
     Returns:
         Dict with operation status and results

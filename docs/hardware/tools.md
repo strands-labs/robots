@@ -107,7 +107,7 @@ disagree about which address is a servo and which is the whole bus.
 | Option | Accepted | Why the bound is where it is |
 |--------|----------|------------------------------|
 | `motor_id` | integer in `[1, 254]`, or `[1, 253]` for an action that reads a reply | the frame carries the ID in one byte, of which `0xfd` is the highest a servo may hold and `0xfe` is the broadcast, while `0xff` is the header value |
-| `position` | integer in `[0, 4095]` | `Goal_Position` is a 12-bit register - the same full scale the reported angle divides by |
+| `position` | integer in `[0, 4095]` | `Goal_Position` is 12-bit on the STS/SMS series - the same full scale the reported angle divides by |
 | `velocity` | integer in `[0, 32767]` | `Goal_Velocity` is sign-magnitude with bit 15 the direction bit, so a larger magnitude commands the opposite direction |
 | `baudrate` | positive integer | pyserial coerces rather than checks, so `2.7` opens the port at 2 baud |
 | `read_bytes` | positive integer | pyserial's read loop is `while len(read) < size`, so a non-positive size returns no bytes and looks like a timeout |
@@ -121,6 +121,21 @@ own "required" message rather than as an unusable value.
 `pose_tool` writes the same `Goal_Position` register through the same mask and
 needs no bound of its own - it clamps to each motor's declared range before
 encoding, so the mask only ever sees a value that fits.
+
+Both bounds and the reported angle are STS/SMS-series properties, not properties
+of the register or of Feetech generally, and so is the two-byte order the value
+is encoded into. Feetech publishes one framing document for the whole family and
+ships one SDK for it, but that SDK's `PacketHandler` takes a per-model protocol
+number and reverses the word order on it: protocol 0 (STS3215, STS3250, SM8512BL)
+puts the low byte first, protocol 1 (the SCS series) puts the high byte first.
+A position framed for one series is therefore a *different position* on the
+other, not a mis-scaled one - `position=1023`, which is full scale on an
+`scs0009`, is read by it as 65283. `strands_robots.drivers.feetech.protocol`
+decides that order once (`encode_word` / `decode_word`) and holds the full scale
+once (`MAX_GOAL_POSITION`), and every Feetech write path in the package - this
+tool, `pose_tool`, and the native `FeetechDriver` bus - reads both from there.
+Addressing an SCS-series servo needs a second word order and a second full scale
+rather than a scale option, so no surface here offers one.
 
 ### A mesh wait budget is bounded where the command body cannot carry it
 

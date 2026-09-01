@@ -1,9 +1,11 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""The SCS/STS serial bus :class:`FeetechDriver` writes through.
+"""The Feetech serial bus :class:`FeetechDriver` writes through.
 
-:mod:`~strands_robots.drivers.feetech.protocol` builds and parses the frames;
-this module puts them on a wire and turns the two byte values a servo speaks
+:mod:`~strands_robots.drivers.feetech.protocol` builds and parses the frames -
+including the two-byte word order, which is a property of the STS/SMS series and
+not of the family, so it is read from there rather than spelled again here. This
+module puts those frames on a wire and turns the two byte values a servo speaks
 into the units a caller uses. It is the half :issue:`360` scope 1 named as
 deferred when the driver landed as a stub.
 
@@ -32,10 +34,13 @@ import time
 from typing import Any, Final
 
 from strands_robots.drivers.feetech.protocol import (
+    MAX_GOAL_POSITION,
     Instruction,
     ProtocolError,
     Register,
     build_packet,
+    decode_word,
+    encode_word,
     parse_status_packet,
     read_packet,
     sync_write_packet,
@@ -52,12 +57,15 @@ class MotorSpec:
         motor_id: The servo's ID on the shared half-duplex bus.
         low: Lowest caller value, in the joint's own unit.
         high: Highest caller value, in the joint's own unit.
-        resolution: Encoder counts spanning ``low``..``high``.
+        resolution: Encoder counts spanning ``low``..``high``. Defaults to
+            :data:`~strands_robots.drivers.feetech.protocol.MAX_GOAL_POSITION`,
+            the STS/SMS full scale - an SCS-series servo spans a quarter of it
+            and must be given its own.
     """
 
     __slots__ = ("high", "low", "motor_id", "resolution")
 
-    def __init__(self, motor_id: int, low: float, high: float, resolution: int = 4095) -> None:
+    def __init__(self, motor_id: int, low: float, high: float, resolution: int = MAX_GOAL_POSITION) -> None:
         self.motor_id = motor_id
         self.low = low
         self.high = high
@@ -135,16 +143,21 @@ _REPLY_SETTLE_S: Final[float] = 0.01
 
 
 def _decode(raw: bytes, sign_bit: int | None) -> int:
-    """Turn two little-endian reply bytes into a signed integer.
+    """Turn a two-byte reply into a signed integer.
+
+    The byte order comes from
+    :func:`~strands_robots.drivers.feetech.protocol.decode_word`; only the sign
+    convention is applied here, because which bit carries direction is a
+    per-register property the codec deliberately leaves to its caller.
 
     Args:
-        raw: The register's parameter bytes, low byte first.
+        raw: The register's parameter bytes, in the order the servo sent them.
         sign_bit: Bit carrying direction, or ``None`` when unsigned.
 
     Returns:
         The register value, negative when ``sign_bit`` is set.
     """
-    value = raw[0] | (raw[1] << 8)
+    value = decode_word(raw)
     if sign_bit is None:
         return value
     magnitude = value & ((1 << sign_bit) - 1)
@@ -152,7 +165,7 @@ def _decode(raw: bytes, sign_bit: int | None) -> int:
 
 
 class FeetechBus:
-    """A half-duplex SCS bus carrying one SO-arm's servos.
+    """A half-duplex Feetech bus carrying one SO-arm's servos.
 
     Args:
         port: Serial device path. ``None`` is accepted so a driver can be
@@ -316,7 +329,7 @@ class FeetechBus:
             if not math.isfinite(number):
                 raise ValueError(f"FeetechBus: {name} target must be finite, got {value!r}")
             counts = spec.to_counts(number)
-            motor_data.append((spec.motor_id, bytes([counts & 0xFF, (counts >> 8) & 0xFF])))
+            motor_data.append((spec.motor_id, encode_word(counts)))
         conn.write(sync_write_packet(Register.GOAL_POSITION, _REGISTER_WIDTH, motor_data))
 
     def set_torque(self, enabled: bool) -> list[str]:

@@ -38,7 +38,7 @@ except ImportError:  # pragma: no cover - exercised only without the extra
     if not TYPE_CHECKING:
 
         def dataclass(cls=None, **kwargs):  # type: ignore[no-redef]
-            raise ImportError(_INSTALL_HINT)
+            raise ImportError(_INSTALL_HINT, name="cyclonedds")
 
         class IdlStruct:  # type: ignore[no-redef]
             pass
@@ -195,7 +195,7 @@ def get_type(ros_type: str) -> Any:
             scope for v1 - see the module docstring).
     """
     if not _HAVE_CYCLONEDDS:
-        raise ImportError(_INSTALL_HINT)
+        raise ImportError(_INSTALL_HINT, name="cyclonedds")
     if ros_type not in REGISTRY:
         known = ", ".join(sorted(REGISTRY)) or "(none)"
         raise KeyError(

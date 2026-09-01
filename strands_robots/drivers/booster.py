@@ -148,13 +148,79 @@ FALL_STATE_NAMES: dict[int, str] = {0: "IS_READY", 1: "IS_FALLING", 2: "HAS_FALL
 FALL_STATE_READY: str = "IS_READY"
 
 #: The modes ``B1LocoClient.ChangeMode`` accepts, by the SDK's ``RobotMode``
-#: member name. Named here so a caller sees the set without the SDK installed.
+#: member name. Named here so a caller sees the set without the SDK installed -
+#: which makes it a claim about the vendor's vocabulary that an SDK build can
+#: contradict, so :func:`resolve_vendor_member` reads the member rather than
+#: assuming it. ``kUnknown`` is a value ``GetMode`` reports and not a mode a host
+#: may ask for, so it is deliberately absent: :meth:`BoosterDriver.read_mode`
+#: passes the vendor's name through verbatim, this set bounds the write.
 ROBOT_MODES: tuple[str, ...] = ("kDamping", "kPrepare", "kWalking", "kCustom", "kSoccer")
 
 
 def _refuse(reason: str) -> dict[str, Any]:
     """Wrap ``reason`` in the error envelope every driver verb returns."""
     return {"status": "error", "content": [{"text": reason}]}
+
+
+#: Attributes a pybind11 enum carries that are not members of it. Excluded from
+#: the vocabulary :func:`resolve_vendor_member` reports so an operator reads
+#: modes rather than binding noise.
+_ENUM_NON_MEMBERS: frozenset[str] = frozenset({"name", "value"})
+
+_ABSENT = object()
+
+
+def declared_members(enum: object) -> tuple[str, ...]:
+    """Return the member names the installed SDK's ``enum`` declares.
+
+    Args:
+        enum: A pybind11 enum type from ``booster_robotics_sdk_python`` -
+            ``RobotMode``, ``LowCmdType``, ``FallDownStateType``.
+
+    Returns:
+        The member names, sorted. Underscore-prefixed bindings and the
+        per-member ``name``/``value`` descriptors are not members and are left
+        out (:data:`_ENUM_NON_MEMBERS`).
+    """
+    return tuple(sorted(n for n in dir(enum) if not n.startswith("_") and n not in _ENUM_NON_MEMBERS))
+
+
+def resolve_vendor_member(enum: object, name: str, *, enum_name: str, verb: str) -> Any:
+    """Resolve a vendor enum member by name, or say why this build cannot.
+
+    Every name this driver hands an SDK enum is a *frozen claim about the
+    vendor's vocabulary*: :data:`ROBOT_MODES` and the keys of
+    :data:`CMD_TYPE_STATE_FIELD` are spelled here so a caller sees the set
+    without the SDK installed, and the SDK is a vendor wheel pinned to the
+    robot's firmware rather than a dependency this project resolves. A build
+    that declares a different set is therefore a normal operational state, not
+    an impossible one - and a bare ``getattr`` turns it into an
+    :exc:`AttributeError` leaving a driver verb, past the envelope every verb is
+    contracted to return.
+
+    Args:
+        enum: The SDK enum type to read the member off.
+        name: The member name to resolve.
+        enum_name: The enum's name as the vendor spells it, for the refusal.
+        verb: The driver verb resolving it, for the refusal.
+
+    Returns:
+        The enum member, or a :class:`str` naming what this SDK build declares.
+        A member is never a ``str`` - it is a pybind11 enum value - so
+        ``isinstance(result, str)`` is the caller's check, the same shape
+        :func:`resolve_targets` uses.
+    """
+    member = getattr(enum, name, _ABSENT)
+    if member is not _ABSENT:
+        return member
+    declared = declared_members(enum)
+    return (
+        f"{verb}: the installed booster_robotics_sdk_python declares no "
+        f"{enum_name}.{name}, so this build cannot be asked for it. It declares "
+        f"{', '.join(declared) if declared else '(no members)'}. The names this driver asks for are "
+        "the vendor's own, so a build that lacks one is an SDK version mismatch rather than a bad "
+        "argument - install the SDK wheel that matches the robot's firmware"
+    )
 
 
 def resolve_targets(action: dict[str, Any]) -> dict[int, dict[str, float]] | str:
@@ -694,8 +760,13 @@ class BoosterDriver:
             import booster_robotics_sdk_python as sdk
         except ImportError as exc:  # pragma: no cover - connect_eagerly already needed it
             return _refuse(f"booster_robotics_sdk_python is not installed: {exc}")
+        cmd_type = resolve_vendor_member(
+            sdk.LowCmdType, self._cmd_type.upper(), enum_name="LowCmdType", verb="send_action"
+        )
+        if isinstance(cmd_type, str):
+            return _refuse(cmd_type)
         cmd = sdk.LowCmd()
-        cmd.cmd_type = getattr(sdk.LowCmdType, self._cmd_type.upper())
+        cmd.cmd_type = cmd_type
         cmd.resize_motor_cmd(len(frame))
         for slot, values in enumerate(frame):
             motor = cmd.motor_cmd_at(slot)
@@ -783,7 +854,10 @@ class BoosterDriver:
 
         Args:
             mode: A member name of the SDK's ``RobotMode`` - see
-                :data:`ROBOT_MODES`.
+                :data:`ROBOT_MODES`. A name outside that set is refused here; a
+                name inside it that the *installed* SDK build does not declare
+                is refused by :func:`resolve_vendor_member`, which names the
+                vocabulary the build has.
 
         Returns:
             A success envelope naming the requested mode, or a refusal.
@@ -796,8 +870,11 @@ class BoosterDriver:
             import booster_robotics_sdk_python as sdk
         except ImportError as exc:  # pragma: no cover - connect_eagerly already needed it
             return _refuse(f"booster_robotics_sdk_python is not installed: {exc}")
+        member = resolve_vendor_member(sdk.RobotMode, mode, enum_name="RobotMode", verb="change_mode")
+        if isinstance(member, str):
+            return _refuse(member)
         try:
-            self._client.ChangeMode(getattr(sdk.RobotMode, mode))
+            self._client.ChangeMode(member)
         except (RuntimeError, OSError) as exc:
             return _refuse(f"change_mode: the T1 refused {mode}: {exc}")
         return {"status": "success", "content": [{"json": {"mode": mode}}]}

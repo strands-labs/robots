@@ -118,7 +118,7 @@ a loop. Every attempt, granted or refused, is written to the safety audit log.
 | `strands/{peer_id}/presence` | 2 Hz | heartbeat / peer discovery |
 | `strands/{peer_id}/state` | 10 Hz | joints, sim time, task status, which robots are running a policy, degraded probes |
 | `strands/{peer_id}/cmd` | on demand | incoming RPC commands |
-| `strands/{peer_id}/response/{id}` | on demand | RPC replies (turn_id correlated) |
+| `strands/{requester}/response/{responder}/{turn_id}` | on demand | RPC replies (turn_id correlated) |
 | `strands/{peer_id}/stream` | on demand | VLA execution steps |
 | `strands/{peer_id}/pose` | on demand | SE(3) from SLAM/odom/VIO |
 | `strands/{peer_id}/imu` | on demand | orientation, gyro, accel |
@@ -126,6 +126,20 @@ a loop. Every attempt, granted or refused, is written to the safety audit log.
 | `strands/broadcast` | on demand | fan-out RPC |
 
 Sensor topics only publish when the robot exposes the attribute. Zero cost when unused.
+
+**A reply key is built from the request envelope, so its routing fields are
+identifiers.** A command carries `sender_id` (where to answer) and `turn_id`
+(which turn is being answered), and the reply is published on
+`strands/{sender_id}/response/{responder}/{turn_id}`. Both fields must match
+`[A-Za-z0-9_.-]+` and be at most 128 characters -- the same rule the teleop
+identifiers follow -- because Zenoh routes a wildcard by intersection, so a
+segment holding one would address the reply at every peer's
+`strands/{peer}/response/**` subscription instead of at the peer that asked. A
+command whose envelope breaks the rule is refused whole: nothing is dispatched,
+nothing is published, and the refusal is written to the safety audit log.
+Omitting `sender_id` is unchanged and still means fire-and-forget -- the command
+runs and no reply is published.
+
 
 **A sensor record's identity is the publisher's too.** A reader seeds each record
 with what this process decided, merges the robot's provider mapping over it, and

@@ -58,6 +58,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import re
 import threading
 import time
 from collections.abc import AsyncGenerator
@@ -82,6 +83,23 @@ DEFAULT_API_PORT: int = 8000
 #: the same constants the driver sends.
 _PATH_STATUS = "/api/daemon/status"
 _PATH_STOP = "/api/move/stop"
+_PATH_WAKE = "/api/move/play/wake_up"
+_PATH_SLEEP = "/api/move/play/goto_sleep"
+_PATH_MOVE_PLAY = "/api/move/play/recorded-move-dataset/{dataset}/{move}"
+_PATH_MOVE_LIST = "/api/move/recorded-move-datasets/list/{dataset}"
+
+#: A recorded move's name goes into a URL path, so the admitted alphabet is the
+#: same one :mod:`strands_robots.device_connect.reachy_mini_driver` enforces -
+#: anything else is refused before a request is built from it.
+_MOVE_NAME_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
+
+#: The two recorded-move libraries the daemon serves, mapped to their
+#: HuggingFace dataset ids. A dict rather than string surgery so a refusal can
+#: name the admitted set.
+_MOVE_LIBRARIES: dict[str, str] = {
+    "emotions": "pollen-robotics/reachy-mini-emotions-library",
+    "dances": "pollen-robotics/reachy-mini-dances-library",
+}
 
 #: The module every daemon touch here goes through. It is a leaf that imports
 #: nothing but the standard library, and its parent package
@@ -667,6 +685,147 @@ class ReachyDriver:
         return {"status": "success", "content": [{"text": "asked the daemon to stop any recorded move in progress"}]}
 
     # ------------------------------------------------------------------ #
+    # Recorded-move and motor paths the reachy_* tools call.             #
+    # ------------------------------------------------------------------ #
+
+    def play_move(self, move_name: str, library: str = "emotions") -> dict[str, Any]:
+        """Play one recorded move (emotion or dance) by name through the daemon.
+
+        The Mini's expressive behaviour is a recorded head+antenna+body
+        choreography served by the daemon from a HuggingFace library - the same
+        rail :meth:`stop_task` halts. Three gates: connected, ``library`` in the
+        admitted set, ``move_name`` in the URL-safe alphabet.
+
+        Args:
+            move_name: The move's name in the library, e.g. ``'happy'``.
+            library: Which library, one of ``'emotions'`` or ``'dances'``.
+
+        Returns:
+            A success envelope naming the move, or an error envelope naming the
+            first gate that refused.
+        """
+        if not self._connected:
+            return _refuse("play_move: not connected - call connect_eagerly() first")
+        dataset = _MOVE_LIBRARIES.get(library)
+        if dataset is None:
+            return _refuse(f"play_move: unknown library {library!r}; expected one of {sorted(_MOVE_LIBRARIES)}")
+        if not _MOVE_NAME_RE.fullmatch(move_name or ""):
+            return _refuse(
+                f"play_move: invalid move_name {move_name!r}; expected 1-128 chars of [A-Za-z0-9._-] - "
+                "list_moves() names the library's catalogue"
+            )
+        result = self._daemon_post(_PATH_MOVE_PLAY.format(dataset=dataset, move=move_name))
+        if (error := result.get("error")) is not None:
+            return _refuse(f"play_move: daemon refused {move_name!r}: {error}")
+        return {"status": "success", "content": [{"json": {"played": move_name, "library": library}}]}
+
+    def list_moves(self, library: str = "emotions") -> dict[str, Any]:
+        """List the recorded moves one library serves.
+
+        Args:
+            library: Which library, one of ``'emotions'`` or ``'dances'``.
+
+        Returns:
+            A success envelope whose ``moves`` is the daemon's array of names,
+            or an error envelope naming what refused.
+        """
+        if not self._connected:
+            return _refuse("list_moves: not connected - call connect_eagerly() first")
+        dataset = _MOVE_LIBRARIES.get(library)
+        if dataset is None:
+            return _refuse(f"list_moves: unknown library {library!r}; expected one of {sorted(_MOVE_LIBRARIES)}")
+        result = self._daemon_get_list(_PATH_MOVE_LIST.format(dataset=dataset))
+        # A catalogue read succeeds as a JSON array. The only dict this endpoint
+        # can produce is the transport's {"error": ...} envelope, so a dict here
+        # is a failure whatever key it carries.
+        if isinstance(result, dict):
+            return _refuse(f"list_moves: daemon refused: {result.get('error', result)}")
+        return {"status": "success", "content": [{"json": {"library": library, "moves": result}}]}
+
+    def wake_up(self) -> dict[str, Any]:
+        """Play the daemon's built-in wake-up move (init pose, ears up).
+
+        Returns:
+            A success envelope, or an error envelope naming what refused.
+        """
+        if not self._connected:
+            return _refuse("wake_up: not connected - call connect_eagerly() first")
+        result = self._daemon_post(_PATH_WAKE)
+        if (error := result.get("error")) is not None:
+            return _refuse(f"wake_up: daemon refused: {error}")
+        return {"status": "success", "content": [{"text": "asked the daemon to play the wake-up move"}]}
+
+    def goto_sleep(self) -> dict[str, Any]:
+        """Play the daemon's built-in go-to-sleep move (head down, ears rest).
+
+        Returns:
+            A success envelope, or an error envelope naming what refused.
+        """
+        if not self._connected:
+            return _refuse("goto_sleep: not connected - call connect_eagerly() first")
+        result = self._daemon_post(_PATH_SLEEP)
+        if (error := result.get("error")) is not None:
+            return _refuse(f"goto_sleep: daemon refused: {error}")
+        return {"status": "success", "content": [{"text": "asked the daemon to play the go-to-sleep move"}]}
+
+    def set_motors(self, mode: str) -> dict[str, Any]:
+        """Set motor torque for all joints: ``'enabled'`` holds, ``'disabled'`` goes limp.
+
+        Sent on the real-time command link, the same rail
+        :meth:`send_action` writes. The SDK's third mode
+        (``gravity_compensation``) has no daemon-link command, so it is refused
+        by name rather than silently mapped to one of the two that do.
+
+        Args:
+            mode: ``'enabled'`` (torque on) or ``'disabled'`` (safe to move by
+                hand).
+
+        Returns:
+            A success envelope naming the mode, or an error envelope naming
+            what refused.
+        """
+        if not self._connected:
+            return _refuse("set_motors: not connected - call connect_eagerly() first")
+        torque = {"enabled": True, "disabled": False}.get(mode)
+        if torque is None:
+            return _refuse(
+                f"set_motors: unknown mode {mode!r}; expected 'enabled' or 'disabled' "
+                "(the SDK's gravity_compensation mode has no daemon-link command)"
+            )
+        if (error := self._send_cmd({"torque": torque, "ids": None})) is not None:
+            return _refuse(f"set_motors: {error}")
+        return {"status": "success", "content": [{"json": {"motors": mode}}]}
+
+    def state_snapshot(self) -> dict[str, Any]:
+        """Return the cached sensor state: joints, pose, IMU, battery.
+
+        A synchronous read off the caches the link thread fills - no daemon
+        round-trip, so it is cheap enough to call before and after every
+        motion. A ``None`` field means that stream has not delivered yet (IMU
+        and battery stay ``None`` forever on a Lite, which has neither).
+
+        Returns:
+            A success envelope carrying the four snapshots, or a refusal when
+            the driver was never connected (caches from a link that never ran
+            would be indistinguishable from a robot reporting nothing).
+        """
+        if not self._connected:
+            return _refuse("state_snapshot: not connected - call connect_eagerly() first")
+        return {
+            "status": "success",
+            "content": [
+                {
+                    "json": {
+                        "joints": self._snapshot("_joints"),
+                        "pose": self._snapshot("_pose"),
+                        "imu": self._snapshot("_imu"),
+                        "battery": self._snapshot("_battery"),
+                    }
+                }
+            ],
+        }
+
+    # ------------------------------------------------------------------ #
     # Link callbacks. Each runs on the loop thread; keep fast and pure.  #
     # ------------------------------------------------------------------ #
 
@@ -764,6 +923,34 @@ class ReachyDriver:
             return {"error": transport}
 
         result: dict[str, Any] = transport.api(self._host, self._api_port, path)
+        return result
+
+    def _daemon_get_list(self, path: str) -> list[Any] | dict[str, Any]:
+        """Call a daemon REST endpoint whose success body is a JSON array.
+
+        ``/api/move/recorded-move-datasets/list/{dataset}`` is declared
+        ``-> list[str]`` by the daemon, and
+        :func:`~strands_robots.device_connect.reachy_transport.api` hands the
+        decoded body back unreshaped, so a successful catalogue read is a
+        ``list`` while every failure is still the ``{"error": ...}`` dict.
+
+        Kept separate from :meth:`_daemon_get` rather than widening that
+        return type, so the union stays confined to the one endpoint that can
+        answer with an array and the dict-shaped callers keep narrowing for
+        free. Reading an error key off a catalogue is then a type error at
+        check time rather than an ``AttributeError`` on the happy path.
+
+        Args:
+            path: Request path, one of this module's ``_PATH_*`` constants.
+
+        Returns:
+            The decoded array on success, or ``{"error": ...}``.
+        """
+        transport = _resolve_transport()
+        if isinstance(transport, str):
+            return {"error": transport}
+
+        result: list[Any] | dict[str, Any] = transport.api(self._host, self._api_port, path)
         return result
 
     def _daemon_post(self, path: str, data: dict[str, Any] | None = None) -> dict[str, Any]:

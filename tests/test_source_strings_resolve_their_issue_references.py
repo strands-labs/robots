@@ -20,6 +20,11 @@ a real repository), and a maintainer reading a docstring has the git history and
 the sibling checkouts to hand. An operator holding a refusal envelope has
 neither, so the rule applies where the text reaches them.
 
+:mod:`test_test_module_names_do_not_spell_a_tracker_coordinate` applies this
+module's :func:`_unresolvable_references` to the *other* surface a coordinate
+gets written on -- a test module's own name -- so the two guards cannot drift to
+two definitions of "resolvable".
+
 It would have failed while ``G1Driver._check_motion_gates`` refused every write
 with "FSM id unknown - motion-switcher source has not been wired (harness#361
 PR-C); see #2765 for the wire-side decision". That refusal is the one every real

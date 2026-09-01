@@ -50,7 +50,8 @@ def _require_vera_installed(python_executable: str) -> None:
             "because PyPI rejects direct VCS references). Install it directly:\n"
             "  pip install 'vera @ git+https://github.com/sizhe-li/VERA.git'\n"
             "  # plus the client deps: pip install websockets msgpack 'numpy>=1.24'\n"
-            "See the ``strands_robots.policies.vera`` module docstring for the full quickstart."
+            "See the ``strands_robots.policies.vera`` module docstring for the full quickstart.",
+            name="vera",
         )
 
 

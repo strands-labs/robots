@@ -130,6 +130,15 @@ command the way a servo bus does - it accepts the register and performs nothing:
   proximal joints are held to 120 deg/s - so the same policy cadence can be admitted on
   one arm and refused on the other.
 
+Stopping a rollout is reported rather than asserted. `stop_task()` signals the loop,
+waits up to two seconds for its thread and decelerates the arm with `servoStop`; a
+policy blocking on a remote inference call outlasts that budget, and the envelope then
+carries `status="error"` with `stopped=False` and a reason naming the timeout, matching
+what `get_task_status()` says about the same loop. The arm is decelerated either way,
+and no further setpoint reaches the controller - the loop re-reads the stop signal after
+the policy returns and before it writes. `stop()` carries no verdict (the driver protocol
+annotates it `-> None`); read `stop_task()` when the outcome matters.
+
 Joint keys are the arm's own names, in RTDE wire order, and the MuJoCo assets declare
 them identically - so an action dict recorded in simulation streams to the controller
 with no remap:

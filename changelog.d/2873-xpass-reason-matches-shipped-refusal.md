@@ -1,7 +1,7 @@
 ### Tests: the harness#361 XPASS marker cites the refusal the driver actually returns
 
 The strict-xfail cell in
-`tests/drivers/test_g1_send_action_success_is_the_acceptance_criterion_for_harness_361.py`
+`tests/drivers/test_g1_send_action_succeeds_on_a_healthy_wired_driver.py`
 documented its deferral by quoting the shipped refusal.  When #2865 tightened
 that refusal (dropping the parenthetical `(harness#361 PR-C)` because the PR
 had landed and the issue reference alone is the resolvable pointer), the test

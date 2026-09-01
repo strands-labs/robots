@@ -191,12 +191,29 @@ def _input_value_abs() -> float:
 #: neither bounds the distance between consecutive commands for one joint, so a
 #: stream inside both caps can still command a full-scale reversal every frame.
 #: The default is the full :data:`MAX_INPUT_VALUE_ABS` envelope traversed once
-#: per second (2 * 720), which is roughly 4x the no-load speed of the Feetech
-#: STS3215 servos on an SO-100 class arm -- ~6.5 rad/s at 12 V, and those frames
-#: arrive in degrees, so ~372 deg/s. Sized against the unit the frames carry, a
-#: physical leader arm cannot reach the bound and only a synthetic stream trips
-#: it. Operators whose actuators use a smaller unit (radians, or normalized
-#: -1..1) can narrow it via ``STRANDS_MESH_INPUT_SLEW_ABS``.
+#: per second (2 * 720), in the unit the frames carry. Operators whose actuators
+#: use a smaller unit (radians, or normalized -1..1) can narrow it via
+#: ``STRANDS_MESH_INPUT_SLEW_ABS``.
+#:
+#: The margin is measured against recorded teleop rather than against the servo
+#: datasheet, because a leader arm is back-driven by hand: its own servos' no-load
+#: speed (~6.5 rad/s at 12 V for the Feetech STS3215 on an SO-100 class arm, so
+#: ~372 deg/s in the unit the frames carry) is a floor on what a real stream
+#: contains, not a ceiling. Across 176,293 action frames of SO-100/SO-101
+#: leader-follower teleop the fastest single commanded step is ~899 deg/s, 2.4x
+#: that figure. The bound clears every one of those frames, but by 1.6x rather
+#: than the ~3.9x the datasheet figure alone suggests, so a retune has less room
+#: than the datasheet reading implies.
+#:
+#: This axis is deliberately *not* bounded per declared unit the way reach is
+#: (:func:`input_value_abs_by_key`): full scale bounds reach because a command
+#: past it is unaddressable, but full scale is not a speed. A frame-unit speed
+#: converts to servo travel through the joint's *calibrated* range, which on a
+#: ``RANGE_0_100`` gripper is unrelated to its full scale of 100. Applying the
+#: reach rule to this axis would bound a percent gripper at 400 units/s, below
+#: the ~406 units/s that recorded teleop actually commands, so the per-unit row
+#: would refuse real frames on the one joint a hand can traverse full scale
+#: fastest -- a tighter number bought by refusing the motion it exists to carry.
 DEFAULT_INPUT_SLEW_ABS: float = 1440.0  # frame units/second (2 * 720)
 MAX_INPUT_SLEW_ABS: float = _env_pos_float("STRANDS_MESH_INPUT_SLEW_ABS", DEFAULT_INPUT_SLEW_ABS)
 
@@ -220,6 +237,9 @@ def _input_slew_abs() -> float:
 #: ``[-100, 100]`` / ``[0, 100]``), so a percent value past 100 is not a further
 #: reach - it is unaddressable. ``DEGREES`` is clamped in neither direction, and
 #: a full turn is the excursion the degree envelope has always been sized on.
+#:
+#: This table bounds *reach* only. It is not reused on the speed axis, for the
+#: reason recorded on :data:`DEFAULT_INPUT_SLEW_ABS`.
 INPUT_FULL_SCALE_BY_NORM_MODE: dict[str, float] = {
     "DEGREES": 360.0,
     "RANGE_M100_100": 100.0,
@@ -987,13 +1007,20 @@ def validate_mesh_identifier(value: Any, param: str) -> str:
     ``peer_id`` or a teleop ``device_name`` interpolated into
     ``strands/{peer_id}/input/{device_name}`` by
     :class:`~strands_robots.mesh.input.InputPublisher` and
-    :class:`~strands_robots.mesh.input.InputReceiver`.
+    :class:`~strands_robots.mesh.input.InputReceiver`, or the ``sender_id`` and
+    ``turn_id`` of an inbound command envelope, which
+    :class:`~strands_robots.mesh.core.Mesh` interpolates into
+    ``strands/{sender_id}/response/{responder}/{turn_id}`` to answer it.
 
     Zenoh treats ``*`` and ``**`` as key-expression wildcards, so an
     unvalidated segment silently widens a point-to-point subscription into a
     match-any one: a receiver built with ``source_peer_id="**"`` subscribes to
     ``strands/**/input/leader`` and applies joint commands from *every* peer on
-    the mesh, not just the configured leader. The remaining rejected shapes
+    the mesh, not just the configured leader. Publishing is exposed the same way,
+    because Zenoh accepts a wildcard on a ``put`` and routes it by intersection:
+    a reply key holding one is delivered to every peer's
+    ``strands/{peer}/response/**`` subscription rather than to the peer that
+    asked. The remaining rejected shapes
     (whitespace, NULs, C0 controls, shell metacharacters, ``/``) keep an
     identifier from smuggling extra key segments or corrupting the log lines
     and per-device state keys it also lands in.
@@ -1037,10 +1064,14 @@ def validate_command(cmd: dict[str, Any]) -> dict[str, Any]:
       action, not per-action: each must be a str of at most
       :data:`MAX_PASSTHROUGH_LEN` characters, printable ASCII only (no C0/DEL
       or non-printable byte). They are wire-routing fields rather than action
-      payload -- ``Mesh`` correlates an RPC turn on ``turn_id`` and keys its
-      command-replay cache on ``(sender_id, turn_id)`` -- so a publisher
-      minting them needs the bound, and a control byte must not reach the
-      audit trail through either. Any other unvalidated key is dropped from
+      payload, so a publisher minting them needs the bound and a control byte
+      must not reach the audit trail through either. These are the *command's*
+      copies: what :class:`~strands_robots.mesh.core.Mesh` routes on is the
+      enclosing envelope's own ``sender_id`` / ``turn_id`` one level up, which it
+      correlates a turn on, keys its command-replay cache on, and interpolates
+      into the reply key -- so those are held to the stricter
+      :func:`validate_mesh_identifier` charset where they are read, and this
+      check is not the routing gate. Any other unvalidated key is dropped from
       the sanitised copy rather than refused.
     * ``execute`` and ``start`` actions require:
         - ``instruction``: non-empty str up to :data:`MAX_INSTRUCTION_LEN`,

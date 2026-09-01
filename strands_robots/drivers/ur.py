@@ -702,7 +702,14 @@ class URDriver:
         }
 
     async def stop(self) -> None:
-        """Stop motion, leaving both interfaces connected."""
+        """Stop motion, leaving both interfaces connected.
+
+        Annotated ``-> None`` by the driver protocol, so it carries no verdict:
+        the rollout is signalled and not waited for, and the loop's own step
+        re-reads that signal before its next setpoint, which is what keeps a
+        servoJ from landing after this servoStop. A caller that needs the halt
+        outcome reads :meth:`stop_task`, which decides one.
+        """
         rollout = self._rollout
         if rollout is not None:
             rollout.request_stop()
@@ -717,7 +724,14 @@ class URDriver:
         self._drop_anchor()
 
     def cleanup(self) -> None:
-        """Stop the arm and release both interfaces. Idempotent."""
+        """Stop the arm and release both interfaces. Idempotent.
+
+        The join outcome is not reported - the protocol annotates this ``-> None``
+        - and it does not need to be: the interface handles are cleared under the
+        lock before either is disconnected, so a rollout thread that outlasted
+        the join finds ``None`` and refuses its own write rather than reaching a
+        disconnected interface.
+        """
         rollout = self._rollout
         if rollout is not None:
             rollout.request_stop()
@@ -1108,13 +1122,20 @@ class URDriver:
         """Stop the rollout and decelerate the arm.
 
         Returns:
-            A success envelope naming what was halted, or a refusal when the
-            controller declined the stop.
+            A success envelope naming what was halted when the rollout thread
+            left the loop, a refusal when the controller declined the stop, and
+            an *error* envelope carrying ``stopped=False`` when the thread is
+            still in the loop - a caller-supplied policy blocking on a remote
+            inference call is the ordinary case. The arm is decelerated either
+            way; what the third case refuses to do is claim a halt while
+            :meth:`get_task_status` would report ``running=True``.
         """
         rollout = self._rollout
+        unjoined: _Rollout | None = None
         if rollout is not None and rollout.is_running:
             rollout.request_stop()
-            rollout.join()
+            if not rollout.join():
+                unjoined = rollout
         halted = 0 if rollout is None else rollout.steps
         with self._lock:
             control = self._control
@@ -1125,6 +1146,21 @@ class URDriver:
         except (OSError, RuntimeError) as exc:
             return _refuse(f"stop_task: the controller refused servoStop: {exc}")
         self._drop_anchor()
+        if unjoined is not None:
+            # The thread is still in the loop. It will not write another
+            # setpoint - the step re-reads the stop event before sending - but it
+            # holds the rollout, so reporting success here would hand a caller
+            # that reads only ``status`` a halt the payload's own ``running``
+            # contradicts.
+            snapshot = unjoined.snapshot()
+            snapshot["stopped"] = False
+            snapshot["robot"] = self._tool_name
+            snapshot["reason"] = (
+                "stop_task: the rollout thread did not join within its budget; the policy is "
+                "likely blocking - the arm is decelerated and the loop writes no further "
+                "setpoint, but the task is still holding the arm"
+            )
+            return {"status": "error", "content": [{"json": snapshot}]}
         return {
             "status": "success",
             "content": [{"json": {"stopped": True, "steps": halted, "robot": self._tool_name}}],
@@ -1224,17 +1260,26 @@ class _Rollout:
         """Ask the loop to exit at its next tick."""
         self._stop.set()
 
-    def join(self, timeout: float = 2.0) -> None:
-        """Wait for the loop to exit.
+    def join(self, timeout: float = 2.0) -> bool:
+        """Wait for the loop to exit, reporting whether it did.
 
         Args:
             timeout: Seconds to wait. The loop checks the stop event once per
-                period, so a bound a few periods long is enough; exceeding it is
-                reported through the snapshot rather than raised.
+                period, so a bound a few periods long is enough.
+
+        Returns:
+            ``True`` when the thread is out of the loop - which is what makes a
+            halt claim true, because the loop cannot write another setpoint once
+            it has left. ``False`` when it is still in there: a caller-supplied
+            policy blocking on a remote inference call outlasts any join budget,
+            and :meth:`URDriver.stop_task` needs that fact rather than a
+            ``stopped`` claim its own ``running`` flag contradicts.
         """
         thread = self._thread
-        if thread is not None:
-            thread.join(timeout)
+        if thread is None:
+            return True
+        thread.join(timeout)
+        return not thread.is_alive()
 
     def snapshot(self) -> dict[str, Any]:
         """The counters and exit reason, as one dict for the status envelope."""
@@ -1274,6 +1319,16 @@ class _Rollout:
                     return
                 if not isinstance(action, dict) or not action:
                     self._finish("policy", f"the policy returned {action!r}, expected a joint-keyed action dict")
+                    return
+
+                if self._stop.is_set():
+                    # Re-read after the policy returns and before the setpoint
+                    # goes out. A policy call is the longest thing in a step, so
+                    # a stop signalled during one would otherwise be answered by
+                    # one more servoJ - landing after the servoStop the halt
+                    # verb just issued, and moving an arm an operator was told
+                    # had stopped.
+                    self._finish("stopped")
                     return
 
                 envelope = self._driver.send_action(action)

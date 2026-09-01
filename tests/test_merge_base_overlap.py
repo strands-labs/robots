@@ -331,6 +331,7 @@ def test_report_names_every_blocking_path_and_the_remedy() -> None:
         blocking=[_SHARED],
         prose=["CHANGELOG.md"],
         named=[],
+        orphaned=[],
         base_change_count=5,
     )
     assert _SHARED in report
@@ -347,6 +348,7 @@ def test_report_says_so_when_there_is_no_overlap() -> None:
         blocking=[],
         prose=[],
         named=[],
+        orphaned=[],
         base_change_count=0,
     )
     assert "No overlap" in report
@@ -1470,3 +1472,309 @@ def test_the_walk_blind_spot_is_still_named_now_that_a_name_is_reachable(
     report = capsys.readouterr().out
     assert "resolves its population from a filesystem walk" in report
     assert "#2561" in report
+
+
+# --- the role relation, over a removal -------------------------------------------
+#
+# `main` went red at `8d0298345` from a ninth pull request and eight that had
+# already landed. #3037 removed 96 g1 lookup modules; the eight verbs cited them
+# in docstring roles. The path intersection was empty in both directions - the
+# removal touches no verb, the verbs cite from files the removal does not open -
+# and git merged the two sides with no conflict, so the first tree holding both
+# the role and the deletion was `main`, where
+# `tests/test_docstring_xref_roles_resolve.py` reported 44 offending docstrings.
+#
+# The relation these pin reads a removal rather than a change, and reads both
+# trees rather than a diff, because a role only counts inside a docstring and a
+# hunk cannot be parsed for that. Issues #2791, #3065.
+
+#: The lookup module #3037 removed, standing for all 96.
+_CITED_MODULE = "strands_robots/tools/g1/g1_fsm_targets.py"
+
+#: Its dotted name, which is what a role spells.
+_CITED_TARGET = "strands_robots.tools.g1.g1_fsm_targets"
+
+#: The verb whose docstring cites it, standing for all eight.
+_CITING_VERB = "strands_robots/tools/g1/g1_set_fsm.py"
+
+#: The report heading the relation renders, used to tell "reported by this
+#: relation" from "reported by the path relation on the same run".
+_ROLE_HEADING = "compose to a tree carrying"
+
+
+def _module_citing(target: str, *, in_docstring: bool = True) -> str:
+    """Source for a verb whose module docstring - or a comment - cites ``target``."""
+    citation = f"See :mod:`{target}` for the admitted set."
+    head = f'"""One verb.\n\n{citation}\n"""' if in_docstring else f"# {citation}"
+    return f"{head}\n\nvalue = 1\n"
+
+
+def _land_the_cited_module(repo: Path) -> None:
+    """Put the lookup module on ``main``, so both sides fork with it present."""
+    _write(repo, _CITED_MODULE, '"""The admitted FSM targets."""\n\nTARGETS = (1, 2)\n')
+    _commit(repo, "the lookup module both sides know about")
+
+
+def _branch_deleting_the_cited_module(repo: Path) -> None:
+    """Branch off ``main`` and remove the lookup module, as #3037 did."""
+    _git(repo, "checkout", "-q", "-b", "pr")
+    _git(repo, "rm", "-q", _CITED_MODULE)
+    _commit(repo, "consolidate the lookup modules into the dispatcher")
+
+
+def _land_on_main_citing(repo: Path, *, in_docstring: bool = True) -> None:
+    """Land a verb on ``main`` whose docstring cites the module, as the eight did."""
+    _git(repo, "checkout", "-q", "main")
+    _write(repo, _CITING_VERB, _module_citing(_CITED_TARGET, in_docstring=in_docstring))
+    _commit(repo, "port a verb that cites the lookup module")
+    _git(repo, "checkout", "-q", "pr")
+
+
+def test_a_branch_deleting_a_module_the_base_cites_is_flagged(repo: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """The #3037 topology: the branch removes what the base went on to cite.
+
+    Neither side is wrong alone, and neither side's checks can see it - the role
+    and the deletion are in different trees until the merge. The report has to
+    name the citing file and the target, because the remedy is an edit to that
+    docstring rather than a merge.
+    """
+    _land_the_cited_module(repo)
+    _branch_deleting_the_cited_module(repo)
+    _land_on_main_citing(repo)
+
+    assert _run(repo) == 1
+
+    report = capsys.readouterr().out
+    assert _ROLE_HEADING in report
+    assert _CITING_VERB in report
+    assert _CITED_TARGET in report
+
+
+def test_the_role_finding_shares_no_path_and_no_literal_with_the_base(repo: Path) -> None:
+    """Premise: neither relation that already existed can reach this composition.
+
+    Without this the test above would pass on a tree where the two sides happen to
+    share a file, and the finding would be attributable to the path relation. The
+    literal relation is empty too: a docstring role is not a quoted whole-string
+    name, and the citing file is not under ``tests/``.
+    """
+    _land_the_cited_module(repo)
+    _branch_deleting_the_cited_module(repo)
+    _land_on_main_citing(repo)
+
+    fork_point = check.merge_base("main", "HEAD", repo=repo)
+    branch_paths = check.changed_paths(fork_point, "HEAD", repo=repo)
+    base_paths = check.changed_paths(fork_point, "main", repo=repo)
+    assert check.overlapping_paths(branch_paths, base_paths) == ()
+    literals = check.module_literals(check.diff_entries(fork_point, "HEAD", repo=repo))
+    assert check.named_module_overlaps(literals, base_paths) == ()
+    assert _CITED_MODULE in branch_paths
+    assert _CITING_VERB in base_paths
+
+
+def test_the_composition_merges_without_a_text_conflict(repo: Path) -> None:
+    """Non-vacuity: git has nothing to report, which is why a check is needed.
+
+    A removal on one side and a new file on the other is the cleanest merge there
+    is. The merge gate reports ``CLEAN`` and the merged tree carries a role
+    naming a module that is not in it.
+    """
+    _land_the_cited_module(repo)
+    _branch_deleting_the_cited_module(repo)
+    _land_on_main_citing(repo)
+
+    _git(repo, "merge", "--no-edit", "-q", "main")  # raises CalledProcessError on conflict
+    assert not (repo / _CITED_MODULE).exists()
+    assert _CITED_TARGET in (repo / _CITING_VERB).read_text(encoding="utf-8")
+
+
+def test_a_branch_citing_a_module_the_base_deleted_is_flagged(repo: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """The mirror direction, because either side can land last.
+
+    Same composition with the roles of the two branches swapped: here the branch
+    writes the docstring and the base removes the module. Reading only the
+    direction the incident arrived from would leave the citing author's own branch
+    unguarded, which is the half that is easiest to fix.
+    """
+    _land_the_cited_module(repo)
+    _git(repo, "checkout", "-q", "-b", "pr")
+    _write(repo, _CITING_VERB, _module_citing(_CITED_TARGET))
+    _commit(repo, "port a verb that cites the lookup module")
+    _git(repo, "checkout", "-q", "main")
+    _git(repo, "rm", "-q", _CITED_MODULE)
+    _commit(repo, "consolidate the lookup modules into the dispatcher")
+    _git(repo, "checkout", "-q", "pr")
+
+    assert _run(repo) == 1
+    report = capsys.readouterr().out
+    assert _ROLE_HEADING in report
+    assert _CITED_TARGET in report
+
+
+def test_merging_the_base_is_not_enough_and_editing_the_role_clears_it(repo: Path) -> None:
+    """This relation is not self-clearing, and it must not pretend to be.
+
+    The path relation clears on a merge because the merge is the whole remedy.
+    Here the merge produces exactly the tree the report is about: a role and no
+    module. The suite is red on that tree, so a check that went quiet would be
+    disagreeing with the thing it predicts. Dropping the role is what clears it,
+    which is what the remedy sentence asks for.
+    """
+    _land_the_cited_module(repo)
+    _branch_deleting_the_cited_module(repo)
+    _land_on_main_citing(repo)
+    assert _run(repo) == 1
+
+    _git(repo, "merge", "-q", "--no-edit", "main")
+    assert _run(repo) == 1
+
+    _write(repo, _CITING_VERB, '"""One verb."""\n\nvalue = 1\n')
+    _commit(repo, "drop the role that cited the removed module")
+    assert _run(repo) == 0
+
+
+def test_a_removal_nobody_cites_does_not_block(repo: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """Quiet where it cannot matter: removing a module is not itself a finding.
+
+    Consolidation is routine, and a relation that fired on any deletion would fire
+    on most refactors in the tree.
+    """
+    _land_the_cited_module(repo)
+    _branch_deleting_the_cited_module(repo)
+    _git(repo, "checkout", "-q", "main")
+    _write(repo, "strands_robots/unrelated.py", "value = 1\n")
+    _commit(repo, "an unrelated commit on main")
+    _git(repo, "checkout", "-q", "pr")
+
+    assert _run(repo) == 0
+    assert _ROLE_HEADING not in capsys.readouterr().out
+
+
+def test_a_role_the_composition_keeps_does_not_block(repo: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """The other half of quiet: citing a module is the normal way to reference one.
+
+    The base adds the same citing verb, and nothing removes the module. Every
+    docstring role in the tree would be a row if the relation keyed on the role
+    alone.
+    """
+    _land_the_cited_module(repo)
+    _git(repo, "checkout", "-q", "-b", "pr")
+    _edit_line(repo, _SHARED, 40, "line 40  # edited by the pull request")
+    _commit(repo, "the pull request's commit")
+    _land_on_main_citing(repo)
+
+    assert _run(repo) == 0
+    assert _ROLE_HEADING not in capsys.readouterr().out
+
+
+def test_a_role_outside_a_docstring_is_not_this_relations_business(
+    repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The population is the grader's: docstrings, not every line mentioning a name.
+
+    A role in a comment is a dead pointer on its own account, and it is not what
+    turns the suite red. Reporting it here would block a merge for something no
+    test grades, and the ``git grep`` narrowing step finds such a file - so this
+    pins the parse, not the search.
+    """
+    _land_the_cited_module(repo)
+    _branch_deleting_the_cited_module(repo)
+    _land_on_main_citing(repo, in_docstring=False)
+
+    assert _run(repo) == 0
+    assert _ROLE_HEADING not in capsys.readouterr().out
+
+
+def test_a_citing_file_the_branch_changes_is_left_to_the_branch_s_own_suite_run(
+    repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """One tree, one report: a branch holding both halves is graded by its own suite.
+
+    When the branch itself changes the citing file, the role and the deletion are
+    already in the same tree, so ``call-test-lint`` on that head reports it. A
+    second row here would spend a reader's attention describing a composition
+    that is not a composition.
+    """
+    _land_the_cited_module(repo)
+    _write(repo, _CITING_VERB, _module_citing(_CITED_TARGET))
+    _commit(repo, "a verb citing the lookup module, on main before either side")
+    _git(repo, "checkout", "-q", "-b", "pr")
+    _git(repo, "rm", "-q", _CITED_MODULE)
+    _write(repo, _CITING_VERB, _module_citing(_CITED_TARGET) + "# touched by this branch\n")
+    _commit(repo, "remove the module and edit the citing verb")
+
+    assert _run(repo) == 0
+    assert _ROLE_HEADING not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        pytest.param(f'"""Head.\n\n:mod:`{_CITED_TARGET}`\n"""\n', {_CITED_TARGET}, id="module-docstring"),
+        pytest.param(f'class C:\n    """:class:`{_CITED_TARGET}.T`"""\n', {f"{_CITED_TARGET}.T"}, id="class"),
+        pytest.param(f'def f():\n    """:func:`{_CITED_TARGET}.g`"""\n', {f"{_CITED_TARGET}.g"}, id="function"),
+        pytest.param(f"# :mod:`{_CITED_TARGET}`\n", set(), id="comment"),
+        pytest.param(f'X = ":mod:`{_CITED_TARGET}`"\n', set(), id="runtime-string"),
+        pytest.param(f'""":mod:`~{_CITED_TARGET}`"""\n', {_CITED_TARGET}, id="display-tilde"),
+        pytest.param('""":mod:`.protocol`"""\n', set(), id="relative-target"),
+        pytest.param('""":meth:`Cls.method`"""\n', set(), id="short-form"),
+        pytest.param('"""not a docstring below"""\nif True:\n    pass\n', set(), id="no-role"),
+        pytest.param("def f(:\n", set(), id="unparseable"),
+    ],
+)
+def test_role_targets_reads_the_docstrings_a_grader_would(source: str, expected: set[str]) -> None:
+    """Which spellings this relation can decide, and which it leaves to the grader.
+
+    A wrapped or short-form target has no module path to intersect, so admitting it
+    would mean guessing at a file. The grader reports both on their own account;
+    this relation only claims the contiguous qualified form.
+    """
+    assert check.role_targets(source) == expected
+
+
+@pytest.mark.parametrize(
+    ("paths", "expected"),
+    [
+        pytest.param([_CITED_MODULE], {_CITED_TARGET}, id="module"),
+        pytest.param(["strands_robots/tools/g1/__init__.py"], {"strands_robots.tools.g1"}, id="package"),
+        pytest.param(["strands_robots/__init__.py"], set(), id="bare-root"),
+        pytest.param(["strands_robots/one.py"], {"strands_robots.one"}, id="shallowest-resolvable"),
+        pytest.param(["tests/drivers/test_x.py"], set(), id="outside-the-package"),
+        pytest.param(["docs/guide.md"], set(), id="prose"),
+    ],
+)
+def test_a_deleted_path_becomes_a_search_key_only_when_a_role_could_name_it(
+    paths: list[str], expected: set[str]
+) -> None:
+    """The bare package root is excluded, for cost as well as for correctness.
+
+    ``named_module_paths`` cannot resolve a one-segment name, so such a key could
+    never produce a finding - and as a search key it matches every citing file in
+    the tree, which is the one input that would make this relation expensive.
+    """
+    assert check.dotted_module_names(paths) == expected
+
+
+def test_a_branch_deleting_no_module_asks_git_nothing(repo: Path) -> None:
+    """The relation costs nothing on the branches that are not about a removal.
+
+    Pinned through a revision that does not exist: reaching git at all would raise
+    rather than return an empty result, so an empty key set provably short-circuits
+    before the search.
+    """
+    assert check.files_naming("no-such-revision", (), ("*.py",), repo=repo) == ()
+    assert check.orphaned_roles("no-such-revision", (), ("*.py",), repo=repo) == ()
+
+
+def test_a_name_is_resolved_to_a_path_by_one_resolver() -> None:
+    """Both name relations answer "which files does this name need" the same way.
+
+    A role and a string literal are different spellings of one coupling, and the
+    prefix rule is the subtle part of resolving either: importing ``a.b.c`` runs
+    ``a/b/__init__.py``. Two resolvers would drift, and the drift would show up as
+    a relation that misses a package-level removal.
+    """
+    assert "named_module_paths(" in inspect.getsource(check.orphaned_roles)
+    resolved = check.named_module_paths({f"{_CITED_TARGET}.g1_fsm_target_admits"})
+    assert _CITED_MODULE in resolved
+    assert "strands_robots/tools/g1/__init__.py" in resolved

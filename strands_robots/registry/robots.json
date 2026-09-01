@@ -13,7 +13,10 @@
       "aliases": [
         "cf2",
         "bitcraze_crazyflie"
-      ]
+      ],
+      "hardware": {
+        "driver": "strands"
+      }
     },
     "skydio_x2": {
       "description": "Skydio X2 Autonomous Drone",
