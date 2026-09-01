@@ -15,7 +15,6 @@ from __future__ import annotations
 import base64
 import inspect
 import io
-import logging
 import os
 import sys
 import threading
@@ -887,16 +886,22 @@ class TestChunkNotTruncatedBelowActionsPerStep:
 
 
 #
-# evaluate(): per-episode recorder finalize is fault-tolerant (issue #708)
+# evaluate(): a per-episode recorder finalize that fails stops the eval
 #
 # `_finalize_recorder_episode` rolls the attached LeRobot dataset_recorder over
 # to a fresh episode at the end of each eval rollout so the dataset records
 # per-episode boundaries instead of collapsing every rollout into one
-# mega-episode. A recorder failure at that boundary (a non-success status dict,
-# or an exception from `save_episode`) must NOT abort the eval: the rollouts
-# already happened, and losing the episode-split is strictly better than losing
-# the whole eval summary. These pin that fault-tolerance contract through the
-# public `evaluate()` API.
+# mega-episode (issue #708). A failure at that boundary (a non-success status
+# dict, or an exception from `save_episode`) is not the loss of an episode
+# split: the recorder closes itself because the LeRobot episode buffer is in an
+# undefined state, and `add_frame` then returns on a closed recorder without
+# writing a frame, raising `RecordingFrameError`, or counting a
+# `dropped_frame_count` - so the remaining episodes are discarded in silence
+# and the whole dataset is lost, not just its boundaries. The eval therefore
+# stops at that episode and reports the reason in `recording_save_error`, the
+# same refusal every sibling flush makes. These pin that contract through the
+# public `evaluate()` API; the loop-level behaviour is pinned in
+# tests/simulation/test_recording_episode_loss_is_not_tolerated.py.
 
 
 class _FailingRecorder:
@@ -928,12 +933,13 @@ def _attach_recorder(sim: FakeSim, recorder: Any) -> None:
 
 
 @pytest.mark.parametrize("mode", ["non_success", "raise"])
-def test_evaluate_survives_per_episode_recorder_save_failure(mode, caplog):
-    """A failing per-episode recorder finalize must not abort the eval.
+def test_evaluate_reports_a_per_episode_recorder_save_failure(mode):
+    """A failing per-episode recorder finalize stops the eval and is reported.
 
     Whether `save_episode` returns a non-success status or raises, `evaluate`
-    still completes every requested episode and returns a success summary; the
-    failure is logged, not propagated.
+    ends after the episode whose flush failed and returns an error carrying the
+    reason - rather than measuring the remaining episodes into a closed recorder
+    and reporting a success summary over data that does not exist.
     """
     sim = FakeSim()
     recorder = _FailingRecorder(mode)
@@ -942,16 +948,16 @@ def test_evaluate_survives_per_episode_recorder_save_failure(mode, caplog):
     policy = MockPolicy()
     policy.set_robot_state_keys(sim.robot_joint_names("fake_robot"))
 
-    with caplog.at_level(logging.WARNING, logger="strands_robots.simulation.policy_runner"):
-        result = PolicyRunner(sim).evaluate("fake_robot", policy, n_episodes=2, max_steps=3)
+    result = PolicyRunner(sim).evaluate("fake_robot", policy, n_episodes=2, max_steps=3)
 
-    # Eval survives and reports a normal summary despite the recorder failing.
-    assert result["status"] == "success"
+    assert result["status"] == "error"
     payload = next(c["json"] for c in result["content"] if isinstance(c, dict) and "json" in c)
-    assert payload["episodes_completed"] == 2
+    # Episode 0 ran; episode 1 was never measured into the closed recorder.
+    assert payload["episodes_completed"] == 1
     assert payload["stopped_early"] is False
+    assert recorder.save_calls == 1
 
-    # The finalize was attempted once per episode (not silently skipped).
-    assert recorder.save_calls == 2
-    # The failure surfaced as a warning rather than an exception.
-    assert any("save_episode" in rec.message for rec in caplog.records)
+    # The reason reaches the caller in the payload, not only a log line.
+    reason = payload["recording_save_error"]
+    assert reason.startswith("episode 0: ")
+    assert ("simulated recorder disk failure" if mode == "raise" else "disk full") in reason

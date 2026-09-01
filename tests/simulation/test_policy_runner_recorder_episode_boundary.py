@@ -181,11 +181,17 @@ class TestRecorderEpisodeBoundary:
         # After save, buffer is reset.
         assert rec.episode_frame_count == 0
 
-    def test_finalize_helper_tolerates_save_exception(self, sim_with_robot):
-        """Recorder.save_episode raising must not abort the eval.
+    def test_finalize_helper_reports_a_save_exception_instead_of_raising(self, sim_with_robot):
+        """A failed flush reaches the caller as a reason, not as an exception.
 
-        Eval is the dominant use case; recording is opportunistic. Log and
-        continue — matches the existing on_frame failure handling pattern.
+        The helper still must not raise - the eval loop reports outcomes in an
+        envelope - but it no longer swallows the failure either. Continuing was
+        not the milder option: the recorder closes itself on a failed flush and
+        every later ``add_frame`` then writes nothing and counts no drop, so the
+        evaluation would report a ``success_rate`` over episodes whose data does
+        not exist. See
+        ``tests/simulation/test_recording_episode_loss_is_not_tolerated.py``,
+        which pins what the loops do with this reason.
         """
         rec = _attach_recorder(sim_with_robot)
         rec.episode_frame_count = 5  # non-empty buffer
@@ -196,5 +202,7 @@ class TestRecorderEpisodeBoundary:
         rec.save_episode = boom  # type: ignore[method-assign]
 
         runner = PolicyRunner(sim_with_robot)
-        # Must not raise.
-        runner._finalize_recorder_episode()
+        reason = runner._finalize_recorder_episode()  # must not raise
+
+        assert reason is not None
+        assert "simulated lerobot crash" in reason

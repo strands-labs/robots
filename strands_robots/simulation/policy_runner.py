@@ -1243,38 +1243,58 @@ class PolicyRunner:
     # Calling this at the end of each policy-runner episode forces a per-
     # episode boundary in the recorded dataset. Skipped silently when no
     # recorder is attached (eval without recording is the common case).
-    def _finalize_recorder_episode(self) -> None:
+    def _finalize_recorder_episode(self) -> str | None:
         """Roll the attached dataset_recorder over to a new episode.
 
         Called at end of each rollout iteration in ``evaluate`` and
         ``_evaluate_with_spec``. No-op when no recorder is attached or when
         the episode buffer is empty (e.g. degenerate policy returned no
         actions and ``add_frame`` was never called).
+
+        Returns:
+            ``None`` when the episode was flushed, or when there was nothing
+            to flush. A reason string when the flush FAILED, for the caller to
+            stop on and report.
+
+            A failed flush is not telemetry. The recorder marks itself closed
+            because the LeRobot episode buffer is in an undefined state, and
+            :meth:`~strands_robots.dataset_recorder.DatasetRecorder.add_frame`
+            then returns on a closed recorder without writing a frame or
+            counting a drop - so a later episode's frames reach no dataset and
+            leave no trace in the recorder's own accounting either. An
+            evaluation that carried on would report a ``success_rate`` over
+            episodes whose data does not exist. Every sibling flush already
+            refuses the same way: ``stop_recording`` and
+            :meth:`~strands_robots.simulation.base.SimEngine.save_episode`
+            drop the poisoned recorder and return an error,
+            :meth:`~strands_robots.simulation.base.SimEngine.run_policy` with
+            ``n_episodes`` aborts its remaining episodes, and the MuJoCo
+            backend's ``reset``
+            surfaces the failure rather than resetting into an undefined
+            state.
         """
         try:
             world = getattr(self.sim, "_world", None)
             if world is None:
-                return
+                return None
             recorder = world._backend_state.get("dataset_recorder")
         except AttributeError:
-            return
+            return None
         if recorder is None:
-            return
+            return None
         # Don't flush an empty buffer - LeRobot raises on save_episode with
         # zero frames, and a degenerate rollout still counts as "no data" for
         # this episode rather than an error.
         pending = getattr(recorder, "episode_frame_count", 0)
         if pending <= 0:
-            return
+            return None
         try:
             result = recorder.save_episode()
-            if isinstance(result, dict) and result.get("status") != "success":
-                logger.warning(
-                    "Per-episode save_episode returned non-success: %s",
-                    result.get("message", result),
-                )
-        except Exception as e:  # noqa: BLE001 - recorder errors must not abort eval
-            logger.warning("Per-episode save_episode raised: %s", e)
+        except Exception as e:  # noqa: BLE001 - reported to the caller, not raised
+            return f"save_episode raised: {e}"
+        if isinstance(result, dict) and result.get("status") != "success":
+            return f"save_episode: {result.get('message', result)}"
+        return None
 
     # run(): blocking policy execution
     @_close_started_lifecycle_on_escape
@@ -3176,6 +3196,13 @@ class PolicyRunner:
             the completed episodes: ``stopped_early=True`` and the aggregate
             metrics are computed over ``episodes_completed`` (which may be less
             than the requested ``n_episodes``).
+
+            ``recording_save_error`` is the third way an evaluation can cover
+            fewer episodes than asked for, and the only one that makes
+            ``status`` ``"error"``: it is ``None`` on every healthy run, and
+            the reason string when a per-episode dataset flush failed. See
+            :meth:`_finalize_recorder_episode` for why a lost episode stops
+            the evaluation instead of being averaged over.
         """
         # Refuse before any frame reaches the engine's open recording.
         self._reject_recording_rate_mismatch(control_frequency, "PolicyRunner.evaluate")
@@ -3407,6 +3434,7 @@ class PolicyRunner:
             global_step += 1
 
         stopped_early = False
+        recording_save_error: str | None = None
         try:
             for ep in range(n_episodes):
                 self.sim.reset()
@@ -3515,7 +3543,7 @@ class PolicyRunner:
                 # #708 - roll the attached recorder over to a new episode so the
                 # dataset records per-episode boundaries rather than collapsing
                 # every rollout into one mega-episode.
-                self._finalize_recorder_episode()
+                recording_save_error = self._finalize_recorder_episode()
 
                 if current_vwriter is not None:
                     current_vwriter.close()
@@ -3528,6 +3556,16 @@ class PolicyRunner:
                             current_vwriter.path,
                         )
                     current_vwriter = None
+
+                if recording_save_error is not None:
+                    # This episode's frames did not reach the dataset and the
+                    # recorder is now closed, so every later episode would run
+                    # into a recorder that drops frames without counting them.
+                    # Stop here and report, rather than measure a success_rate
+                    # over episodes whose data is gone. This episode's video is
+                    # already closed and collected above, so it is kept.
+                    recording_save_error = f"episode {ep}: {recording_save_error}"
+                    break
 
         except CooperativeStop:
             # A user/backend on_frame hook requested a graceful stop (the
@@ -3557,12 +3595,17 @@ class PolicyRunner:
         }
 
         return {
-            "status": "success",
+            "status": "error" if recording_save_error is not None else "success",
             "content": [
                 {
                     "text": (
                         f"Evaluation: {type(policy).__name__} on '{robot_name}'\n"
-                        f"Episodes: {n_completed}"
+                        + (
+                            f"Stopped after a lost recording episode - {recording_save_error}\n"
+                            if recording_save_error is not None
+                            else ""
+                        )
+                        + f"Episodes: {n_completed}"
                         + (f" of {n_episodes} (stopped early)" if stopped_early else "")
                         + f" | Success: {n_success}/{n_completed} ({success_rate:.1%})"
                         + ("" if success_measured else " [no success criterion - not measured]")
@@ -3577,6 +3620,7 @@ class PolicyRunner:
                         "n_episodes": n_episodes,
                         "episodes_completed": n_completed,
                         "stopped_early": stopped_early,
+                        "recording_save_error": recording_save_error,
                         "n_success": n_success,
                         "avg_steps": round(avg_steps, 1),
                         "max_steps": max_steps,
@@ -3733,6 +3777,7 @@ class PolicyRunner:
         current_vwriter: _RolloutVideoWriter | None = None
 
         stopped_early = False
+        recording_save_error: str | None = None
         try:
             for ep in range(n_episodes):
                 self.sim.reset()
@@ -3963,7 +4008,7 @@ class PolicyRunner:
                     }
                 )
                 # #708 - same per-episode recorder boundary as evaluate().
-                self._finalize_recorder_episode()
+                recording_save_error = self._finalize_recorder_episode()
 
                 if current_vwriter is not None:
                     current_vwriter.close()
@@ -3976,6 +4021,12 @@ class PolicyRunner:
                             current_vwriter.path,
                         )
                     current_vwriter = None
+
+                if recording_save_error is not None:
+                    # Same rule as evaluate(): a lost episode stops the
+                    # benchmark instead of being averaged over.
+                    recording_save_error = f"episode {ep}: {recording_save_error}"
+                    break
 
         except CooperativeStop:
             # A user/backend on_frame hook requested a graceful stop (the
@@ -3997,12 +4048,17 @@ class PolicyRunner:
         avg_reward = sum(r["cumulative_reward"] for r in results) / max(n_completed, 1)
 
         return {
-            "status": "success",
+            "status": "error" if recording_save_error is not None else "success",
             "content": [
                 {
                     "text": (
                         f"Benchmark: {spec_name} | policy {type(policy).__name__} on '{robot_name}'\n"
-                        f"Episodes: {n_completed}"
+                        + (
+                            f"Stopped after a lost recording episode - {recording_save_error}\n"
+                            if recording_save_error is not None
+                            else ""
+                        )
+                        + f"Episodes: {n_completed}"
                         + (f" of {n_episodes} (stopped early)" if stopped_early else "")
                         + f" | Success: {n_success} | Failure: {n_failure} ({success_rate:.1%} success)\n"
                         f"Avg reward: {avg_reward:.2f} | Avg steps: {avg_steps:.0f}/{max_steps}"
@@ -4015,6 +4071,7 @@ class PolicyRunner:
                         "n_episodes": n_episodes,
                         "episodes_completed": n_completed,
                         "stopped_early": stopped_early,
+                        "recording_save_error": recording_save_error,
                         "n_success": n_success,
                         "n_failure": n_failure,
                         "avg_steps": round(avg_steps, 1),

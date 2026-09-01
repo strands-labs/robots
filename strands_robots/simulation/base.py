@@ -4030,7 +4030,9 @@ class SimEngine(ABC):
 
             ``status`` reports whether the evaluation RAN, not whether the
             policy succeeded: an evaluation in which every episode failed is
-            still ``status="success"`` with ``success_rate=0.0``. Read
+            still ``status="success"`` with ``success_rate=0.0``. The one
+            thing that makes it ``"error"`` is a recording it could not keep:
+            see ``recording_save_error`` below. Read
             ``success_measured`` first - it is ``False`` when no
             ``success_fn`` / benchmark spec was supplied, in which case
             ``success_rate`` is ``0.0`` for every policy regardless of what it
@@ -4044,6 +4046,15 @@ class SimEngine(ABC):
 
             Horizon: ``n_episodes``, ``max_steps`` (the values the evaluation
             ran with) and ``stopped_early``.
+
+            Recording: ``recording_save_error`` - ``None`` on every healthy
+            evaluation, and the reason string when a per-episode dataset flush
+            failed. A failed flush closes the recorder, after which
+            ``add_frame`` writes nothing and counts no drop, so the evaluation
+            stops at that episode and ``status`` is ``"error"``:
+            ``episodes_completed`` is then the last episode attempted rather
+            than ``n_episodes``, and the aggregate covers only those episodes
+            instead of averaging over ones whose data does not exist.
 
             Video: ``video_paths`` (one MP4 per episode, empty when no
             recording was requested).
@@ -4277,6 +4288,12 @@ class SimEngine(ABC):
             reward + aggregate success_rate / avg_reward / avg_steps in the
             JSON payload, plus ``video_paths`` (the per-episode MP4s written
             when ``video`` is set).
+
+            ``recording_save_error`` is ``None`` on every healthy run and
+            carries the reason when a per-episode dataset flush failed, in
+            which case the benchmark stops at that episode and ``status`` is
+            ``"error"`` - see :meth:`eval_policy`, which reports it the same
+            way.
         """
         from strands_robots.policies import create_policy
         from strands_robots.simulation.benchmark import get_benchmark

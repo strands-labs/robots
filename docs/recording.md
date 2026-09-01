@@ -772,6 +772,34 @@ recording: a failed write is counted in `dropped_frame_count`, warned about at
 `WARNING` (on the 1st, 2nd, 4th, 8th ... failure so a 50 Hz loop cannot flood the
 log), and the rollout continues.
 
+### An episode the recorder cannot flush stops a recorded evaluation
+
+`save_episode` is the episode-level counterpart, and a failed flush is worse than
+a lost frame rather than milder. The recorder marks itself closed, because the
+LeRobot episode buffer is in an undefined state after a partial write - and
+`add_frame` returns immediately on a closed recorder, without writing a frame,
+without raising `RecordingFrameError`, and without counting a
+`dropped_frame_count`. Every later episode is therefore discarded in silence,
+leaving no trace even in the recorder's own accounting.
+
+So every flush refuses rather than continues. `save_episode()` and
+`stop_recording()` drop the poisoned recorder and return `status="error"`,
+`run_policy(n_episodes=N)` aborts its remaining episodes, `reset()` surfaces the
+failure instead of resetting into an undefined state, and a recorded
+`eval_policy` / `evaluate_benchmark` - one driven with an `on_frame` hook that
+calls `add_frame`, which is the only way those two feed a recorder - stops at the
+episode whose flush failed and reports the reason:
+
+```python
+result = sim.eval_policy(robot_name="so100", n_episodes=20, on_frame=hook)
+payload = next(b["json"] for b in result["content"] if "json" in b)
+if payload["recording_save_error"]:      # None on every healthy evaluation
+    ...   # status is "error"; episodes_completed is the episode it stopped at
+```
+
+`episodes_completed` and `success_rate` then cover only the episodes that ran, so
+an aggregate is never reported over episodes whose frames reached no dataset.
+
 ## Instance methods
 
 | Method | What |
