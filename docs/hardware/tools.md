@@ -59,9 +59,12 @@ Passing a value an action ignores is never an error: `action="start"` without a
 ### A session is only forgotten once its process is gone
 
 Because the session runs detached, the on-disk session store is the only place
-its pid is recorded - `stop` and `status` both look the session up there. Every
-load prunes finished sessions and writes the pruned store back, so what counts
-as "finished" decides whether a session stays stoppable:
+its pid is recorded - `stop` and `status` both look the session up there. Both
+stores load, modify and write back, so a record a load leaves out is erased from
+disk by the next session started or stopped. What a load counts as "finished"
+therefore decides whether a session stays stoppable.
+
+`lerobot_teleoperate` prunes a finished session:
 
 | What the probe reports | Verdict |
 |------------------------|---------|
@@ -74,6 +77,23 @@ The last row is why a session started under `sudo` - a common way to reach a
 serial port - is still listed and still stoppable when the tool is later invoked
 as the unprivileged user. Being kept is not a claim that it is running: `list`
 and `status` each derive that from the pid's existence at the moment you ask.
+
+`lerobot_train` keeps a store of the same shape, held to the same rule, with one
+deliberate difference: a finished run is *retained* so `status` can still show
+the final log tail. Its load therefore drops nothing at all, and `stop` -
+through `remove_session` - is what ends a record:
+
+| What the probe reports | Verdict |
+|------------------------|---------|
+| the pid no longer exists, or `is_running()` returns `False` | finished - kept for its log tail |
+| `psutil.NoSuchProcess` (reaped between the existence check and the probe) | the same finished run - kept |
+| `psutil.AccessDenied` (the pid exists, this user may not inspect it) | kept, and reported at `WARNING` |
+
+The first two rows are one state reached two ways, and which way a given run
+takes is a race between the two probes, so they are not classified differently.
+The last row is the one where dropping the record would lose a pid that still
+names a *live* process - a training run holding a GPU, with nothing left
+recording where it is.
 
 `stop` is held to the same standard from the other side. It captures the process
 identity *before* it signals - so the SIGKILL escalation is aimed at the process

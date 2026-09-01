@@ -366,15 +366,18 @@ hatch run format            # ruff check --fix, ruff format
    other observed collision shares, 14m 41s and 29m 26s apart.
 2. Make changes, run `hatch run format && hatch run lint && hatch run test`.
    If you narrow the test run to the area you changed (`pytest tests/drivers/ -k g1`),
-   run `hatch run whole-tree-check` alongside it. Around sixty graders take the
-   *rest of the repository* as their input rather than the file under change, so
-   no path or `-k` filter over your own area collects them - and a green narrow
+   run `hatch run whole-tree-check` alongside it. Just under seventy graders take
+   the *rest of the repository* as their input rather than the file under change,
+   so no path or `-k` filter over your own area collects them - and a green narrow
    run reads in a PR description exactly like a green full one. Two consecutive
    verb ports cited such a run and both landed with the required check red on the
    same grader (#2934, #2938, per #2940). That command derives its roster from
    the tree - a grader that walks the repository root or a top-level Python area
    is collected on arrival - so adding one needs no second edit to register it
-   (#3105).
+   (#3105). The area may be held in a loop variable (`for tree in _TREES`), which
+   is how most of them spell it; reading only a literal segment there left seven
+   graders invisible to the preflight while the roster's own pin stayed green
+   (#3111).
 3. Record the change as a news fragment: `changelog.d/<pr-number>-<slug>.md`
    (see [`changelog.d/README.md`](changelog.d/README.md)). **Never append to
    `## [Unreleased]` in `CHANGELOG.md` directly** - every branch inserts at the

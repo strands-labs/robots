@@ -582,17 +582,21 @@ def test_session_manager_retains_finished_session_with_dead_pid(tmp_path: Path) 
         pytest.param(train_mod.psutil.AccessDenied, id="access-denied"),
     ],
 )
-def test_session_with_pid_that_vanishes_mid_probe_is_dropped(monkeypatch: pytest.MonkeyPatch, exc_factory: Any) -> None:
-    """A session whose PID still exists at check time but whose process object
-    raises while being probed (a race where the process exits between
-    ``pid_exists`` and ``is_running``, or a process we may not inspect) is
-    dropped from the active set. The load must never raise and must never
-    report such a session as running.
+def test_session_whose_probe_raises_keeps_its_record(monkeypatch: pytest.MonkeyPatch, exc_factory: Any) -> None:
+    """A probe that raises must not cost the session its record, and must not raise.
 
-    This is the complement of the dead-PID case above: there ``pid_exists`` is
-    already False and the finished session is retained for its log tail, whereas
-    here the PID reads live but the probe fails, so the session cannot be
-    confirmed running and is excluded.
+    A PID that exists at check time whose process object then raises is either a
+    finished run reaped between the two probes (``NoSuchProcess``) or a live
+    process this user may not inspect (``AccessDenied``). Neither is grounds for
+    deleting the record: the store is the only place a detached PID is written
+    down, and ``add_session``/``remove_session`` write the loaded map back, so an
+    omission here is erased from disk by the next session started or stopped.
+
+    This is the same rule as the dead-PID case above rather than its complement:
+    "cannot be confirmed running" is not a reason to drop the record, because
+    being in the store is not the running claim - ``list`` and ``status`` derive
+    that from the PID when asked. The consequences are pinned in
+    ``tests.tools.test_train_session_store_keeps_a_live_pid``.
     """
     mgr = SessionManager()
     mgr.add_session("racy", {"pid": 4242, "action": "train"})
@@ -608,10 +612,7 @@ def test_session_with_pid_that_vanishes_mid_probe_is_dropped(monkeypatch: pytest
 
     monkeypatch.setattr(train_mod.psutil, "Process", _VanishingProcess)
 
-    sessions = mgr.list_sessions()
-    assert "racy" not in sessions, (
-        "a session whose process cannot be confirmed running must be dropped, not reported as active"
-    )
+    assert "racy" in mgr.list_sessions(), "a session whose probe raised must keep its record"
 
 
 def test_session_manager_get_and_remove_round_trip(tmp_path: Path) -> None:

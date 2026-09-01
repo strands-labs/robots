@@ -34,7 +34,15 @@ nothing reads exactly like a tree with nothing to select:
   was rejected because it could not tell those apart;
 - every entry in ``UNDERIVABLE_GRADERS`` is genuinely invisible to the
   derivation, so that list cannot quietly grow back into the hand roster this
-  replaced.
+  replaced;
+- an area held in a *loop variable* resolves, which issue #3111 records as the
+  third turn of the same screw. The derivation read a ``/`` segment only as a
+  string constant, and the idiom here is a tuple of area names walked one at a
+  time, so 15 of the 21 modules on that spelling were unrostered - while the
+  bullet above passed, because 5 of the remaining 6 were rescued incidentally
+  by a second, resolvable walk elsewhere in the same file. A pin that grades
+  only the graders an issue names cannot see a resolver gap that its own named
+  graders survive by accident, so the spellings are graded directly.
 
 A roster only helps a caller who knows to run it. Issue #2940's failure mode
 was a *green* narrow run, so the remedy is only reachable if the pre-push
@@ -67,9 +75,11 @@ _cwtg = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_cwtg)
 
 
-# The graders the two issues name by filename. #2940 named five; #3105 named
+# The graders the three issues name by filename. #2940 named five; #3105 named
 # the sixth, which a hand roster had omitted and which is the reason the roster
-# is derived rather than written down.
+# is derived rather than written down; #3111 named the seventh, which the
+# derivation itself could not see because it walks an area held in a loop
+# variable.
 _NAMED_BY_ISSUES: frozenset[str] = frozenset(
     {
         "tests/test_docstring_xref_roles_resolve.py",
@@ -78,6 +88,7 @@ _NAMED_BY_ISSUES: frozenset[str] = frozenset(
         "tests/tools/test_agent_tool_parameter_descriptions.py",
         "tests/test_parameter_deletes_precede_the_body_they_narrow.py",
         "tests/test_mesh_pacing_ticker.py",
+        "tests/test_except_tuples_state_their_real_scope.py",
     }
 )
 
@@ -123,7 +134,7 @@ def test_the_roster_covers_every_grader_the_issues_name(roster: tuple[str, ...])
 def test_the_derivation_is_not_vacuous(derived: tuple[str, ...]) -> None:
     """A derivation that selected nothing would report a clean sweep.
 
-    The floor is deliberately far below the measured count (60 at the time of
+    The floor is deliberately far below the measured count (68 at the time of
     writing): the point is to fail when the resolver breaks and selects
     almost nothing, not to pin a number that every added grader edits.
     """
@@ -187,6 +198,86 @@ def test_a_subject_scoped_walk_is_not_a_whole_tree_grader(label: str, walk: str)
         f"the derivation selected a module that only walks {label}. Every "
         "subject test that globs its own fixtures would join the preflight, "
         "which is the reason an earlier shape-based scan was rejected."
+    )
+
+
+@pytest.mark.parametrize(
+    ("label", "grader"),
+    [
+        (
+            "a module-level tuple walked in a comprehension",
+            "_TREES = ('strands_robots', 'tests')\n\nFILES = [p for tree in _TREES for p in (ROOT / tree).rglob('*.py')]",
+        ),
+        (
+            "a module-level tuple walked in a for statement",
+            "_TREES = ('strands_robots', 'tests')\n\nfor tree in _TREES:\n    for p in (ROOT / tree).rglob('*.py'):\n        pass",
+        ),
+        (
+            "a tuple written inline in the loop",
+            "for area in ('strands_robots', 'tests'):\n    for p in (ROOT / area).rglob('*.py'):\n        pass",
+        ),
+        (
+            "a module-level list",
+            "_AREAS = ['strands_robots']\n\nFILES = [p for a in _AREAS for p in (ROOT / a).rglob('*.py')]",
+        ),
+    ],
+)
+def test_an_area_held_in_a_loop_variable_resolves(label: str, grader: str) -> None:
+    """A grader that walks ``root / area`` for each name in a tuple is selected.
+
+    This is the spelling most whole-tree graders in this tree use, and #3111
+    measured 21 modules on it with 15 unrostered. The segment reaching ``/`` is
+    bound per iteration rather than written as a constant, so a resolver that
+    reads constants alone resolves the walk to nothing and skips the module -
+    silently, and in the reassuring direction. ``label`` names the spelling so a
+    failure says which one stopped resolving.
+    """
+    source = f"import pathlib\n\nimport strands_robots\n\nROOT = pathlib.Path(strands_robots.__file__).resolve().parents[1]\n\n{grader}\n"
+    assert _selects(source, _TESTS_ROOT / "test_planted.py"), (
+        f"the derivation cannot resolve an area spelled as {label}, so a grader "
+        "written that way is invisible to the preflight rather than merely "
+        "unrostered - which is the defect #3111 records."
+    )
+
+
+@pytest.mark.parametrize(
+    ("label", "grader"),
+    [
+        (
+            "a subpackage walked per backend",
+            "_BACKENDS = ('mujoco', 'newton', 'isaac')\n\nFILES = [p for b in _BACKENDS for p in (PKG / 'simulation' / b).rglob('*.py')]",
+        ),
+        (
+            "a loop over paths rather than name segments",
+            "_ROOTS = [PKG, PKG / 'policies']\n\nFILES = [p for r in _ROOTS for p in (PKG / r).rglob('*.py')]",
+        ),
+        (
+            "a loop whose iterable is computed at run time",
+            "_AREAS = os.environ['AREAS'].split(',')\n\nFILES = [p for a in _AREAS for p in (PKG / a).rglob('*.py')]",
+        ),
+    ],
+)
+def test_a_loop_variable_area_that_is_not_a_top_level_area_is_not_selected(label: str, grader: str) -> None:
+    """Resolving a loop variable must not widen *which* walks count as whole-tree.
+
+    The resolver contributes candidate paths; :func:`walk_targets` still decides
+    membership. The eight ``tests/simulation`` backend sweeps are the live
+    control - they walk ``_SIM_PACKAGE / backend``, so they resolve and are
+    still excluded, because a path-scoped run over the mirroring test directory
+    collects them. A loop over values that are not literal name segments stays
+    unresolved instead of contributing a partially understood walk.
+
+    The run-time case deliberately computes its areas from the environment
+    rather than from the tree. Spelling it ``sorted(PKG.iterdir())`` would not
+    grade this resolver at all: that walks ``PKG`` itself, which is a top-level
+    area, so the module is selected on the ``iterdir`` call alone and reads as
+    a pass here on ``main`` too.
+    """
+    source = f"import os\nimport pathlib\n\nimport strands_robots\n\nPKG = pathlib.Path(strands_robots.__file__).resolve().parent\n\n{grader}\n"
+    assert not _selects(source, _TESTS_ROOT / "simulation" / "test_planted.py"), (
+        f"the derivation selected a module walking {label}. Resolving a loop "
+        "variable is meant to read the same walks the tree already has, not to "
+        "widen the class of walk that counts as whole-tree."
     )
 
 

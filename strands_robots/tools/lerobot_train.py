@@ -235,37 +235,85 @@ def _gate_extra_flags(
 class SessionManager:
     """Track detached training sessions with on-disk persistence.
 
-    Sessions are keyed by name and stored as JSON. Dead processes are pruned on
-    every load so ``list``/``status`` never report a stale PID as running.
+    Sessions are keyed by name and stored as JSON. The load step classifies a
+    record as running or finished but never deletes one: :meth:`remove_session`
+    is the only thing that drops a record, because this store is the only place
+    a detached training process's pid is written down.
     """
 
     def __init__(self) -> None:
         self.sessions_file = SESSION_DIR / "active_sessions.json"
 
     def _load_sessions(self) -> dict[str, Any]:
+        """Load every stored session record, reporting any it could not inspect.
+
+        No record is dropped here, and that is what keeps a detached session
+        stoppable. :meth:`add_session` and :meth:`remove_session` are
+        load-modify-write, so a record this method leaves out is erased from disk
+        by the next session started or stopped - and this store is the only place
+        a detached training process's pid is written down, so the erased process
+        goes on holding the GPU with no supported way left to stop it.
+
+        Leaving a record out is not needed to avoid over-reporting it either:
+        presence here is not the running claim. ``list`` and ``status`` each
+        derive that from ``psutil.pid_exists`` at the moment they are asked, so a
+        retained record reads as running only while its pid really exists.
+
+        Returns:
+            Every stored session record, keyed by session name. A store that
+            cannot be read degrades to empty rather than raising.
+        """
         if not self.sessions_file.exists():
             return {}
         try:
             with open(self.sessions_file) as f:
-                sessions = json.load(f)
+                sessions: dict[str, Any] = json.load(f)
         except (OSError, json.JSONDecodeError) as e:
             logger.error(f"Error loading sessions: {e}")
             return {}
 
-        active: dict[str, Any] = {}
+        self._report_uninspectable(sessions)
+        return sessions
+
+    def _report_uninspectable(self, sessions: dict[str, Any]) -> None:
+        """Warn for each session whose process exists but cannot be inspected.
+
+        ``psutil.pid_exists`` answers existence and ``Process(pid).is_running()``
+        refines it. When the second raises :class:`psutil.AccessDenied` the
+        process is there and this user may not look at it - a session started
+        under ``sudo`` and later listed as the invoking user reads this way. That
+        denial is the operator's only clue that ``status`` is reporting on a
+        process it cannot see into, so it is said out loud.
+
+        :class:`psutil.NoSuchProcess` needs no report: it means the run was
+        reaped between the two probes, which is the same finished run as a pid
+        that was already gone, and those are retained for their log tail.
+
+        Args:
+            sessions: The loaded records. Inspected only; never modified.
+        """
         for name, info in sessions.items():
             pid = info.get("pid")
-            if pid and psutil.pid_exists(pid):
-                try:
-                    if psutil.Process(pid).is_running():
-                        active[name] = info
-                except (psutil.NoSuchProcess, psutil.AccessDenied):
-                    pass
-            else:
-                # Keep finished training sessions so status can report the
-                # final log tail; only the running flag is derived from the PID.
-                active[name] = info
-        return active
+            if not (pid and psutil.pid_exists(pid)):
+                continue
+            try:
+                # Called for what it raises, not for what it returns: the
+                # running/finished line is re-derived by ``list`` and ``status``,
+                # so this probe exists only to surface a denial.
+                psutil.Process(pid).is_running()
+            except psutil.NoSuchProcess:
+                # Reaped between the two probes: the same finished run as a pid
+                # that was already gone, and those are retained for their log
+                # tail. Nothing to report, so the denial below stays the only
+                # thing this loop says out loud.
+                pass
+            except psutil.AccessDenied:
+                logger.warning(
+                    "Training session '%s' (PID %s) exists but cannot be inspected; "
+                    "keeping its record so the session stays stoppable",
+                    name,
+                    pid,
+                )
 
     def _save_sessions(self, sessions: dict[str, Any]) -> None:
         try:
@@ -311,8 +359,8 @@ class SessionManager:
 
         Returns:
             The session's info dict, or ``None`` if no session is tracked under
-            ``name``. Dead processes are pruned on load, so a returned record is
-            one whose PID either is still running or belonged to a finished run.
+            ``name``. A record is returned whether its process is running or
+            finished; ``status`` derives that from the pid when asked.
         """
         return self._load_sessions().get(name)
 
@@ -320,11 +368,11 @@ class SessionManager:
         """Return every currently-tracked session keyed by name.
 
         Returns:
-            A ``name -> info`` map. Sessions whose PID is no longer a running
-            process are not dropped -- they are retained so ``status`` can still
-            report the final log tail -- but the load step is what derives the
-            live/finished distinction, so this never reports a stale PID as
-            running.
+            A ``name -> info`` map holding every tracked session. Sessions
+            whose PID is no longer a running process are not dropped -- they are
+            retained so ``status`` can still report the final log tail -- and
+            being listed is not a claim of running: the caller derives that from
+            the pid, so this never reports a stale PID as running.
         """
         return self._load_sessions()
 

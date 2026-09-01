@@ -19,6 +19,12 @@ These tests pin that only the first prunes, that no read path erases a record it
 could not inspect, and that ``stop`` can still reach such a session. The prune
 of a genuinely finished session is pinned unchanged alongside, so the retention
 cannot grow into "never prune anything".
+
+The training tool keeps a session store of the same shape and is held to the
+same rule -- no record dropped on the strength of a probe that could not be
+taken -- in ``tests.tools.test_train_session_store_keeps_a_live_pid``. Its
+retention policy differs: it keeps a finished run for its log tail where this
+one prunes it.
 """
 
 from __future__ import annotations
@@ -30,7 +36,6 @@ from typing import Any
 import pytest
 
 import strands_robots.tools.lerobot_teleoperate as tele_mod
-import strands_robots.tools.lerobot_train as train_mod
 
 SessionManager = tele_mod.SessionManager
 lerobot_teleoperate = tele_mod.lerobot_teleoperate
@@ -38,11 +43,10 @@ lerobot_teleoperate = tele_mod.lerobot_teleoperate
 
 @pytest.fixture(autouse=True)
 def _isolate_session_dir(tmp_path, monkeypatch: pytest.MonkeyPatch):
-    """Redirect both session stores to a temp dir so no test touches the tree."""
+    """Redirect the session store to a temp dir so no test touches the tree."""
     session_dir = tmp_path / ".sessions"
     session_dir.mkdir()
     monkeypatch.setattr(tele_mod, "SESSION_DIR", session_dir)
-    monkeypatch.setattr(train_mod, "SESSION_DIR", session_dir)
     return session_dir
 
 
@@ -205,20 +209,8 @@ def test_a_pid_that_is_not_running_is_still_pruned(monkeypatch: pytest.MonkeyPat
     assert _stored(mgr) == {}, "a PID that is not running must still be pruned"
 
 
-# ---------------------------------------------------------------------------
-# The sibling store this fix is measured against.
-# ---------------------------------------------------------------------------
-def test_the_training_session_store_prune_stays_non_destructive(monkeypatch: pytest.MonkeyPatch) -> None:
-    """``lerobot_train``'s prune never writes back, so its records survive.
-
-    Pinned here because it is the reference this store is aligned with: both
-    now keep a record whose process could not be inspected. If the training
-    store ever starts persisting its prune, it acquires the same defect.
-    """
-    mgr = train_mod.SessionManager()
-    mgr.add_session("training", {"pid": _live_pid(), "action": "train"})
-    _raise_on_probe(monkeypatch, train_mod, train_mod.psutil.AccessDenied)
-
-    mgr.list_sessions()
-
-    assert "training" in _stored(mgr), "the training store must not erase a record it could not inspect"
+# The sibling store is held to the same rule in
+# ``tests.tools.test_train_session_store_keeps_a_live_pid``. It used to be
+# checked from here, but only through ``list_sessions`` - a read - and that
+# store's prune reaches disk through ``add_session``/``remove_session``, so the
+# read alone could not see it drop the record. The write paths are graded there.

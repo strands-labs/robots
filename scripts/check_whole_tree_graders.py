@@ -46,11 +46,35 @@ good reason: a subject test globbing its own fixture directory is
 shape-identical to one walking the repository. It is not value-identical -
 ``Path(__file__).parent / "fixtures"`` and ``tmp_path`` are neither the
 repository root nor a top-level area - so resolving the path separates them.
-Measured over this repository, the derivation selects 60 of 1461 test modules.
+Measured over this repository, the derivation selects 68 of 1426 test modules.
+
+Resolving the *value* is also why the area a grader walks may be held in a loop
+variable. The idiom here is a tuple of area names walked one at a time::
+
+    _TREES = ("strands_robots", "tests", "tests_integ", "examples")
+    sorted(p for tree in _TREES for p in (_REPO_ROOT / tree).rglob("*.py"))
+
+The segment reaching ``/`` is an ``ast.Name`` bound per iteration, not a
+constant, so reading constants alone resolved this to nothing and skipped the
+module. Issue #3111 measured 21 modules on that spelling, 15 of them absent
+from the roster; the 5 that were present were rescued incidentally by a
+*second*, resolvable walk elsewhere in the same file, which is why the gap read
+as healthy from the roster's own pin. #3108 is the live instance - a redundant
+``except`` tuple took the required check red while this preflight passed,
+never having collected the grader that failed.
+
+:func:`_resolve_area_loop` contributes one candidate path per literal in the
+iterated tuple and leaves the membership question where it already was, which
+is what makes the change safe rather than merely wider.
 
 A walk rooted *inside* a subpackage (``strands_robots/policies/``) is
 deliberately not selected: a path-scoped run over the mirroring test directory
-does collect it, so it is not in the class this script exists to rescue.
+does collect it, so it is not in the class this script exists to rescue. The
+eight ``tests/simulation`` backend sweeps are the live measure of that rule
+holding across the loop-variable spelling - they walk ``_SIM_PACKAGE / backend``,
+so they resolve now and are still excluded. A resolver change that pulled them
+in would be over-selecting, so they are the control this one was measured
+against.
 
 :data:`UNDERIVABLE_GRADERS` carries the graders whose population is the tree
 but whose walk the derivation cannot resolve - one enumerates a package with
@@ -111,10 +135,6 @@ UNDERIVABLE_GRADERS: tuple[tuple[str, str], ...] = (
     (
         "tests/tools/test_agent_tool_parameter_descriptions.py",
         "enumerates the tool package with pkgutil.iter_modules, so it walks no path",
-    ),
-    (
-        "tests/test_test_module_names_do_not_spell_a_tracker_coordinate.py",
-        "walks (_REPO_ROOT / area) for area in a tuple, so the walked path is a loop variable",
     ),
 )
 
@@ -294,6 +314,96 @@ def _module_bindings(tree: ast.Module, module_path: Path, root: Path) -> dict[st
     return bindings
 
 
+def _literal_segments(node: ast.expr, sequences: dict[str, tuple[str, ...]]) -> tuple[str, ...]:
+    """Return the path segments ``node`` enumerates, or ``()`` if it is not a literal set of them.
+
+    A tuple, list or set of string constants answers for itself; a name answers
+    from ``sequences``, which carries the module-level ones. A container with a
+    single non-string element resolves to ``()`` rather than to its string
+    members: a partially understood iterable would contribute *some* of the
+    areas walked, and a subset is the one answer worse than none here - it
+    reads as a resolved walk while omitting directories the grader covers.
+
+    :param node: The expression a loop iterates.
+    :param sequences: Module-level names already known to hold literal segments.
+    """
+    if isinstance(node, (ast.Tuple, ast.List, ast.Set)):
+        values = [
+            element.value
+            for element in node.elts
+            if isinstance(element, ast.Constant) and isinstance(element.value, str)
+        ]
+        return tuple(values) if values and len(values) == len(node.elts) else ()
+    if isinstance(node, ast.Name):
+        return sequences.get(node.id, ())
+    return ()
+
+
+def _segment_bindings(tree: ast.Module) -> dict[str, tuple[str, ...]]:
+    """Map every loop variable that iterates literal path segments to those segments.
+
+    Both loop forms are read - a ``for`` statement and a comprehension's
+    ``for`` clause - because the graders in this tree use each, and the
+    comprehension spelling is the more common of the two. A name bound by
+    two different loops accumulates both sets, which is the safe direction:
+    the union over-approximates the paths one walk can take, and membership is
+    then decided by intersection with :func:`walk_targets`, so an extra
+    candidate that is not a walk target changes no verdict.
+
+    :param tree: The parsed module.
+    :returns: Loop variable name to the segments it takes.
+    """
+    sequences: dict[str, tuple[str, ...]] = {}
+    for stmt in tree.body:
+        if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1 and isinstance(stmt.targets[0], ast.Name):
+            name, value = stmt.targets[0].id, stmt.value
+        elif isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name) and stmt.value is not None:
+            name, value = stmt.target.id, stmt.value
+        else:
+            continue
+        found = _literal_segments(value, {})
+        if found:
+            sequences[name] = found
+
+    bindings: dict[str, set[str]] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension)) and isinstance(node.target, ast.Name):
+            found = _literal_segments(node.iter, sequences)
+            if found:
+                bindings.setdefault(node.target.id, set()).update(found)
+    return {name: tuple(sorted(values)) for name, values in bindings.items()}
+
+
+def _resolve_area_loop(
+    receiver: ast.expr,
+    module_path: Path,
+    bindings: dict[str, Path],
+    segments: dict[str, tuple[str, ...]],
+    root: Path,
+) -> set[Path]:
+    """Return every path a walk of ``base / <loop variable>`` reaches.
+
+    Empty unless the receiver is exactly that shape with a resolvable base and
+    a loop variable known to iterate literal segments. Anything else stays
+    unresolved, which :data:`UNDERIVABLE_GRADERS` reports rather than this
+    silently counting as a whole-tree walk.
+
+    :param receiver: The expression the walk method is called on.
+    :param module_path: Where the module lives, so ``__file__`` resolves.
+    :param bindings: Module-level names resolved to paths.
+    :param segments: Loop variables resolved to literal segments.
+    :param root: The repository root.
+    """
+    if not (
+        isinstance(receiver, ast.BinOp) and isinstance(receiver.op, ast.Div) and isinstance(receiver.right, ast.Name)
+    ):
+        return set()
+    base = _resolve(receiver.left, module_path, bindings, root)
+    if not isinstance(base, Path):
+        return set()
+    return {base / segment for segment in segments.get(receiver.right.id, ())}
+
+
 def walked_paths(source: str, module_path: Path, root: Path) -> set[Path]:
     """Return every directory ``source`` walks that resolves to a concrete path.
 
@@ -303,12 +413,16 @@ def walked_paths(source: str, module_path: Path, root: Path) -> set[Path]:
     """
     tree = ast.parse(source)
     bindings = _module_bindings(tree, module_path, root)
+    segments = _segment_bindings(tree)
     targets: set[Path] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in _WALK_METHODS:
-            resolved = _resolve(node.func.value, module_path, bindings, root)
+            receiver = node.func.value
+            resolved = _resolve(receiver, module_path, bindings, root)
             if isinstance(resolved, Path):
                 targets.add(resolved)
+                continue
+            targets.update(_resolve_area_loop(receiver, module_path, bindings, segments, root))
     return targets
 
 
