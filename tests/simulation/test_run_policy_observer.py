@@ -585,7 +585,8 @@ class TestActionResolution:
     @pytest.mark.parametrize("with_observer", [False, True])
     def test_terminal_result_retains_one_time_get_state_clock_fallback(self, with_observer: bool):
         events: list[Any] = []
-        runner, policy, sim = _runner_and_policy(_StateOnlyClockSim())
+        sim = _StateOnlyClockSim()
+        runner, policy, _ = _runner_and_policy(sim)
 
         result = _run(runner, policy, observer=events.append if with_observer else None)
 
@@ -821,7 +822,7 @@ class TestErrorPaths:
         # Another simulation test deliberately evicts and re-imports the module,
         # so patch the globals of the exact function object this collected class
         # will execute rather than whichever module object is currently cached.
-        run_impl = PolicyRunner.run.__wrapped__
+        run_impl = inspect.unwrap(PolicyRunner.run)
         monkeypatch.setitem(run_impl.__globals__, "process_rss_mb", explode)
 
         with pytest.raises(RuntimeError) as caught:
