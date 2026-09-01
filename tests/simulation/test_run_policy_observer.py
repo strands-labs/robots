@@ -41,6 +41,7 @@ Three properties are load-bearing and none of them is obvious:
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 from typing import Any
 
@@ -51,6 +52,7 @@ from strands_robots.dataset_recorder import RecordingFrameError
 from strands_robots.policies.mock import MockPolicy
 from strands_robots.simulation.base import SimEngine
 from strands_robots.simulation.observers import (
+    SCHEMA_VERSION,
     RunPolicyEnded,
     RunPolicyStarted,
     RunPolicyStep,
@@ -136,6 +138,49 @@ class _PartialResolutionSim(_FakeSim):
         }
 
 
+class _CoarseErrorSim(_FakeSim):
+    """Backend refusal with no complete per-key evidence."""
+
+    def send_action(self, action, robot_name=None, n_substeps=1):
+        self.calls.append(("send_action", robot_name))
+        return {"status": "error", "content": [{"text": "atomic refusal"}]}
+
+
+class _CoarseThenFullSim(_FakeSim):
+    """One unknown refusal followed by a fully applied action."""
+
+    def send_action(self, action, robot_name=None, n_substeps=1):
+        self.calls.append(("send_action", robot_name))
+        attempts = sum(name == "send_action" for name, _ in self.calls)
+        if attempts == 1:
+            return {"status": "error", "content": [{"text": "atomic refusal"}]}
+        self._step_count += 1
+        self._sim_time += 0.002
+        return None
+
+
+class _StateOnlyClockSim(_FakeSim):
+    """Backend whose terminal clock is available only through ``get_state``."""
+
+    def __init__(self):
+        super().__init__()
+        del self._sim_time
+        self.state_calls = 0
+
+    def send_action(self, action, robot_name=None, n_substeps=1):
+        self.calls.append(("send_action", robot_name))
+        self._step_count += 1
+
+    def get_state(self):
+        self.state_calls += 1
+        return {"content": [{"json": {"sim_time": 1.25}}]}
+
+
+class _RecordingSim(_FakeSim):
+    def _is_recording(self) -> bool:
+        return True
+
+
 def _runner_and_policy(sim: _FakeSim | None = None) -> tuple[PolicyRunner, MockPolicy, _FakeSim]:
     sim = sim if sim is not None else _FakeSim()
     policy = MockPolicy()
@@ -207,6 +252,8 @@ class TestEventSequence:
         assert isinstance(events[-1], RunPolicyEnded), "the last event must close it"
         assert sum(isinstance(e, RunPolicyStarted) for e in events) == 1
         assert sum(isinstance(e, RunPolicyEnded) for e in events) == 1
+        assert SCHEMA_VERSION == 2
+        assert {e.schema_version for e in events} == {2}
 
         steps = [e for e in events if isinstance(e, RunPolicyStep)]
         assert len(steps) == _json(result)["steps_used"] == 3
@@ -419,6 +466,7 @@ class TestAppliedActionsIncludesTheAbortingStep:
         assert len(steps) == 3
         assert payload["steps_used"] == 2, "legacy accounting excludes the cancelling step"
         assert steps[-1].applied_action_index == 2
+        assert steps[-1].legacy_step_index == steps[-1].applied_action_index
         assert steps[-1].legacy_hook_outcome == "cancelled"
 
         ended = events[-1]
@@ -441,6 +489,7 @@ class TestAppliedActionsIncludesTheAbortingStep:
         steps = [e for e in events if isinstance(e, RunPolicyStep)]
         assert steps[-1].legacy_hook_outcome == "recording_error"
         assert steps[-1].applied_action_index == 1
+        assert steps[-1].legacy_step_index == steps[-1].applied_action_index
 
         ended = events[-1]
         assert isinstance(ended, RunPolicyEnded)
@@ -491,6 +540,34 @@ class TestActionResolution:
             assert len(step.applied_action_keys) == 1
             assert len(step.unresolved_action_keys) == 2
 
+    def test_coarse_error_is_unknown_without_fabricated_keys(self):
+        events: list[Any] = []
+        runner, policy, _ = _runner_and_policy(_CoarseErrorSim())
+
+        result = _run(runner, policy, duration=0.1, observer=events.append)
+
+        assert result["status"] == "error"
+        step = next(e for e in events if isinstance(e, RunPolicyStep))
+        assert step.action_resolution == "unknown"
+        assert step.applied_action_keys == ()
+        assert step.unresolved_action_keys == ()
+        assert "physical application is unknown" in result["content"][0]["text"]
+
+    def test_coarse_step_is_excluded_from_aggregate_resolution_rates(self):
+        events: list[Any] = []
+        runner, policy, _ = _runner_and_policy(_CoarseThenFullSim())
+
+        result = _run(runner, policy, duration=0.2, observer=events.append)
+
+        assert result["status"] == "success"
+        payload = _json(result)
+        assert payload["action_errors"] == 1
+        assert payload["action_resolution_rate"] == {"j0": 1.0, "j1": 1.0, "j2": 1.0}
+        assert payload["partial_action_failure_rate"] == 0.0
+        assert "coarse backend errors" in result["content"][0]["text"]
+        steps = [event for event in events if isinstance(event, RunPolicyStep)]
+        assert [step.action_resolution for step in steps] == ["unknown", "full"]
+
     def test_elapsed_is_measured_and_sim_time_is_carried_when_available(self):
         events: list[Any] = []
         runner, policy, _ = _runner_and_policy()
@@ -500,10 +577,25 @@ class TestActionResolution:
         elapsed = [s.elapsed_s for s in steps]
         assert elapsed == sorted(elapsed)
         assert all(e >= 0.0 for e in elapsed)
-        # ``_FakeSim.get_state`` exposes sim_time, and it advances per action.
+        # ``_FakeSim._sim_time`` is a cheap cached engine clock.
         sim_times = [s.sim_time_s for s in steps]
         assert all(t is not None for t in sim_times)
         assert sim_times == sorted(sim_times)
+
+    @pytest.mark.parametrize("with_observer", [False, True])
+    def test_terminal_result_retains_one_time_get_state_clock_fallback(self, with_observer: bool):
+        events: list[Any] = []
+        runner, policy, sim = _runner_and_policy(_StateOnlyClockSim())
+
+        result = _run(runner, policy, observer=events.append if with_observer else None)
+
+        assert result["status"] == "success"
+        assert _json(result)["sim_time_s"] == 1.25
+        assert sim.state_calls == 1, "Step events must not add get_state calls"
+        if with_observer:
+            steps = [event for event in events if isinstance(event, RunPolicyStep)]
+            assert steps
+            assert {step.sim_time_s for step in steps} == {None}
 
 
 class TestObservationFreshness:
@@ -522,6 +614,52 @@ class TestObservationFreshness:
         assert any(s.observation_is_chunk_reused for s in steps[1:]), (
             "an action replayed from a chunk must not claim a fresh observation"
         )
+        assert [s.observation_age_steps for s in steps] == [0, 1, 2, 3]
+
+    def test_async_cross_boundary_ages_are_exact(self):
+        events: list[Any] = []
+        runner, policy, _ = _runner_and_policy()
+
+        _run(
+            runner,
+            policy,
+            duration=0.8,
+            action_horizon=4,
+            async_rtc=True,
+            observer=events.append,
+        )
+
+        steps = [e for e in events if isinstance(e, RunPolicyStep)]
+        assert [s.observation_age_steps for s in steps] == [0, 1, 2, 3, 2, 3, 4, 5]
+        assert [s.observation_is_chunk_reused for s in steps] == [
+            False,
+            True,
+            True,
+            True,
+            False,
+            True,
+            True,
+            True,
+        ]
+
+    @pytest.mark.parametrize("async_rtc", [False, True])
+    def test_recording_refresh_reports_zero_age_throughout(self, async_rtc: bool):
+        events: list[Any] = []
+        runner, policy, _ = _runner_and_policy(_RecordingSim())
+
+        _run(
+            runner,
+            policy,
+            duration=0.8,
+            action_horizon=4,
+            async_rtc=async_rtc,
+            observer=events.append,
+        )
+
+        steps = [e for e in events if isinstance(e, RunPolicyStep)]
+        assert len(steps) == 8
+        assert [s.observation_age_steps for s in steps] == [0] * 8
+        assert not any(s.observation_is_chunk_reused for s in steps)
 
 
 class TestSyncAsyncParity:
@@ -565,6 +703,162 @@ class TestErrorPaths:
         assert ended.stopped_reason == "error"
         assert ended.error_type == "RuntimeError"
         assert "inference exploded" in ended.error_message
+
+    @pytest.mark.parametrize(
+        "error",
+        [
+            pytest.param(KeyboardInterrupt("stop"), id="keyboard-interrupt"),
+            pytest.param(SystemExit("stop"), id="system-exit"),
+            pytest.param(GeneratorExit("stop"), id="generator-exit"),
+            pytest.param(asyncio.CancelledError("stop"), id="asyncio-cancelled-error"),
+        ],
+    )
+    def test_non_cooperative_base_exception_propagates_and_closes_once(self, error: BaseException):
+        events: list[Any] = []
+        runner, policy, _ = _runner_and_policy()
+
+        def explode(*_a: Any, **_k: Any):
+            raise error
+
+        policy.get_actions = explode  # type: ignore[method-assign]
+
+        with pytest.raises(type(error)) as caught:
+            _run(runner, policy, observer=events.append)
+
+        assert caught.value is error
+        ended = [event for event in events if isinstance(event, RunPolicyEnded)]
+        assert len(ended) == 1
+        assert ended[0].outcome == "error"
+        assert ended[0].error_type == type(error).__name__
+
+    def test_terminal_observer_base_exception_cannot_mask_original(self):
+        events: list[Any] = []
+        runner, policy, _ = _runner_and_policy()
+        original = KeyboardInterrupt("policy interrupted")
+        terminal = SystemExit("observer exit during Ended")
+
+        def explode(*_a: Any, **_k: Any):
+            raise original
+
+        def observer(event: Any) -> None:
+            events.append(event)
+            if isinstance(event, RunPolicyEnded):
+                raise terminal
+
+        policy.get_actions = explode  # type: ignore[method-assign]
+
+        with pytest.raises(KeyboardInterrupt) as caught:
+            _run(runner, policy, observer=observer)
+
+        assert caught.value is original
+        assert sum(isinstance(event, RunPolicyEnded) for event in events) == 1
+        assert any("SystemExit" in note for note in getattr(original, "__notes__", ()))
+        traceback_names: list[str] = []
+        current = caught.value.__traceback__
+        while current is not None:
+            traceback_names.append(current.tb_frame.f_code.co_name)
+            current = current.tb_next
+        assert "explode" in traceback_names
+
+    def test_step_observer_base_exception_cannot_mask_legacy_hook_exception(self):
+        events: list[Any] = []
+        runner, policy, _ = _runner_and_policy()
+        original = KeyboardInterrupt("legacy hook interrupted")
+        secondary = SystemExit("observer exit during Step")
+
+        def on_frame(*_a: Any, **_k: Any) -> None:
+            raise original
+
+        def observer(event: Any) -> None:
+            events.append(event)
+            if isinstance(event, RunPolicyStep):
+                raise secondary
+
+        with pytest.raises(KeyboardInterrupt) as caught:
+            _run(runner, policy, on_frame=on_frame, observer=observer)
+
+        assert caught.value is original
+        assert sum(isinstance(event, RunPolicyStep) for event in events) == 1
+        assert sum(isinstance(event, RunPolicyEnded) for event in events) == 1
+        assert any("SystemExit" in note for note in getattr(original, "__notes__", ()))
+        traceback_names: list[str] = []
+        current = caught.value.__traceback__
+        while current is not None:
+            traceback_names.append(current.tb_frame.f_code.co_name)
+            current = current.tb_next
+        assert "on_frame" in traceback_names
+
+    def test_outer_handled_exception_cannot_suppress_step_observer_escape(self):
+        events: list[Any] = []
+        runner, policy, _ = _runner_and_policy()
+        secondary = SystemExit("observer exit during Step")
+        handled = ValueError("already handled by caller")
+
+        def observer(event: Any) -> None:
+            events.append(event)
+            if isinstance(event, RunPolicyStep):
+                raise secondary
+
+        try:
+            raise handled
+        except ValueError:
+            with pytest.raises(SystemExit) as caught:
+                _run(runner, policy, observer=observer)
+
+        assert caught.value is secondary
+        assert not getattr(handled, "__notes__", ())
+        assert sum(isinstance(event, RunPolicyStep) for event in events) == 1
+        assert sum(isinstance(event, RunPolicyEnded) for event in events) == 1
+
+    def test_post_loop_result_assembly_error_closes_once(self, monkeypatch: pytest.MonkeyPatch):
+        events: list[Any] = []
+        runner, policy, _ = _runner_and_policy()
+        error = RuntimeError("result assembly exploded")
+
+        def explode() -> float:
+            raise error
+
+        # Another simulation test deliberately evicts and re-imports the module,
+        # so patch the globals of the exact function object this collected class
+        # will execute rather than whichever module object is currently cached.
+        run_impl = PolicyRunner.run.__wrapped__
+        monkeypatch.setitem(run_impl.__globals__, "process_rss_mb", explode)
+
+        with pytest.raises(RuntimeError) as caught:
+            _run(runner, policy, observer=events.append)
+
+        assert caught.value is error
+        ended = [event for event in events if isinstance(event, RunPolicyEnded)]
+        assert len(ended) == 1
+        assert ended[0].outcome == "error"
+        assert ended[0].error_message == "result assembly exploded"
+
+    def test_non_callable_observer_is_refused_before_direct_runner_side_effects(self):
+        runner, policy, sim = _runner_and_policy()
+
+        with pytest.raises(ValueError, match=r"PolicyRunner\.run: observer must be callable or None"):
+            _run(runner, policy, observer=42)  # type: ignore[arg-type]
+
+        assert sim.calls == []
+
+    def test_non_callable_observer_is_refused_by_facade_before_side_effects(self):
+        runner, policy, sim = _runner_and_policy()
+        del runner
+
+        result = sim.run_policy(
+            robot_name="fake_robot",
+            policy_object=policy,
+            n_steps=1,
+            control_frequency=10.0,
+            fast_mode=True,
+            observer=42,  # type: ignore[arg-type]
+        )
+
+        assert result == {
+            "status": "error",
+            "content": [{"text": "run_policy: observer must be callable or None, got 42."}],
+        }
+        assert sim.calls == []
 
     def test_a_preflight_refusal_emits_no_events_at_all(self):
         """No ``Started`` means no ``Ended``: the rollout never began."""

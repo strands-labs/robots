@@ -57,6 +57,7 @@ from strands_robots.utils import (
     dds_domain_id_error,
     is_boolean,
     non_negative_count_error,
+    optional_callable_error,
     positive_count_error,
     positive_finite_number_error,
     process_rss_mb,
@@ -2632,11 +2633,14 @@ class SimEngine(ABC):
                 :meth:`PolicyRunner.run`. Receives one
                 :class:`~strands_robots.simulation.observers.RunPolicyStarted`,
                 one :class:`~strands_robots.simulation.observers.RunPolicyStep`
-                per physically applied action and one
+                per completed ``send_action`` call and one
                 :class:`~strands_robots.simulation.observers.RunPolicyEnded`,
-                carrying the per-key ``send_action`` verdict, whether the
-                observation was a reused chunk snapshot, and what the backend's
-                own ``on_frame`` hook did.
+                carrying the per-key ``send_action`` verdict, authoritative
+                ``observation_age_steps`` (with the narrower
+                ``observation_is_chunk_reused`` chunk-position flag), and what
+                the backend's own ``on_frame`` hook did. Must be ``None`` or
+                callable; another value is refused before policy construction,
+                backend hook creation, or rollout side effects.
 
                 This is a SECOND lane, not the backend's hook: the hook slot is
                 filled from ``_make_run_policy_hook`` (cancellation, trajectory,
@@ -2675,8 +2679,11 @@ class SimEngine(ABC):
             operational), so ``status`` alone cannot see it: a policy driving 1
             of a Panda's 8 actuators returns ``status="success"`` with
             ``action_errors=0`` and ``partial_action_failure_rate=0.875``. Gate
-            on ``partial_action_failure_rate`` and the binding-degradation
-            flags below to decide whether a rollout is worth anything. A TOTAL
+            on ``action_errors``, ``partial_action_failure_rate`` and the
+            binding-degradation flags below to decide whether a rollout is worth
+            anything. Coarse backend errors remain in ``action_errors`` but are
+            excluded from action-rate denominators rather than fabricated as
+            confirmed misses. A TOTAL
             failure - no emitted key resolving to any actuator - is reported as
             ``status="error"``.
 
@@ -2694,13 +2701,16 @@ class SimEngine(ABC):
             ``stop_policy``; ``"error"`` on error results - so an agent
             deciding whether to retry knows WHY the rollout ended).
 
-            Action health: ``action_errors`` (steps where at least one emitted
-            key did not resolve), ``action_resolution_rate`` (an
-            ``{actuator_name: fraction_of_steps_driven}`` map, so a joint stuck
-            at ``0.0`` names the actuator the policy never drove) and
-            ``partial_action_failure_rate`` (the mean fraction of the robot's
-            DOF never driven; ``0.0`` == every actuator moved every step,
-            ``~0.83`` == only 1 of 6 actuators ever moved).
+            Action health: ``action_errors`` (steps where the backend reported
+            an error), ``action_resolution_rate`` (an
+            ``{actuator_name: fraction_of_resolution-known_steps_driven}`` map,
+            so a joint stuck at ``0.0`` names an actuator not confirmed on any
+            known step) and ``partial_action_failure_rate`` (the mean fraction
+            of the robot's DOF not confirmed driven across those known steps;
+            ``0.0`` == every actuator confirmed every known step, ``~0.83`` ==
+            only 1 of 6). A coarse backend error is excluded from both rate
+            denominators instead of being counted as a physical miss; it remains
+            visible in ``action_errors`` and the human-readable diagnostic.
 
             Video: ``video_path`` (``None`` when no MP4 was written) and
             ``video_frames``.
@@ -2757,6 +2767,11 @@ class SimEngine(ABC):
             surfaced via ``partial_action_failure_rate``.
         """
         from strands_robots.policies import create_policy
+
+        # Refuse a value outside the observer's domain before robot discovery,
+        # policy construction, backend hook creation, clocks, or rollout work.
+        if observer_error := optional_callable_error(observer, "observer", "run_policy"):
+            return {"status": "error", "content": [{"text": observer_error}]}
 
         robot_name = self._resolve_single_robot(robot_name)
 

@@ -18,10 +18,11 @@ These events are therefore emitted beside that hook, and deliberately report the
 three things the hook's own signature cannot carry:
 
 * **what the backend answered** - ``send_action``'s per-key verdict, normalised
-  to :data:`ACTION_RESOLUTIONS` so a consumer never parses a backend envelope;
-* **how fresh the observation was** - open-loop chunk replay feeds one
-  observation to a whole chunk, so ``observation_is_chunk_reused`` says which
-  actions were taken from a stale snapshot;
+  to :data:`ActionResolution` so a consumer never parses a backend envelope;
+* **how old the observation was** - ``observation_age_steps`` is the
+  authoritative number of completed rollout action attempts since the snapshot
+  was sampled; ``observation_is_chunk_reused`` only says that the same
+  chunk-start snapshot is being used by a later action in that chunk;
 * **what the legacy hook did** - including the step it aborted on, which the
   legacy step accounting excludes (see :class:`RunPolicyStep`).
 
@@ -42,11 +43,13 @@ contract is placed on the consumer instead, and it is narrow:
 
 An event is dispatched **synchronously** on the rollout thread. That makes the
 lane cheap and ordered, and it means a consumer that blocks, blocks the robot.
-Exceptions are contained - a raise never changes the rollout's outcome, and never
-reaches the ``on_frame`` consecutive-failure watchdog, which exists for a
-recorder losing dataset frames (GH #117) rather than for a visualiser that cannot
-draw - but containment is not isolation: this is telemetry, not a sandbox. Keep
-the callback short and non-blocking.
+Ordinary exceptions and ``CooperativeStop`` are contained - those raises never
+change the rollout's outcome, and never reach the ``on_frame`` consecutive-failure
+watchdog, which exists for a recorder losing dataset frames (GH #117) rather than
+for a visualiser that cannot draw. Process-control and cancellation
+``BaseException`` classes propagate after terminal dispatch is attempted. Containment
+is not isolation: this is telemetry, not a sandbox. Keep the callback short and
+non-blocking.
 
 Ordering guarantees
 -------------------
@@ -59,12 +62,12 @@ a wall-clock label never reorders the stream.
 Scope
 -----
 
-Single-policy simulation rollouts through :meth:`PolicyRunner.run` and the
-``n_episodes=1`` fast path of
-:meth:`~strands_robots.simulation.base.SimEngine.run_policy`. ``eval_policy``,
-``evaluate_benchmark``, ``run_multi_policy`` and hardware carry no observer yet -
-they are separate loops with different step semantics, and claiming them here
-would promise coverage this module does not have.
+Single-policy simulation rollouts through :meth:`PolicyRunner.run` and every
+episode of :meth:`~strands_robots.simulation.base.SimEngine.run_policy` (one
+lifecycle and ``run_id`` per episode). ``eval_policy``, ``evaluate_benchmark``,
+``run_multi_policy`` and hardware carry no observer yet - they are separate
+loops with different step semantics, and claiming them here would promise
+coverage this module does not have.
 
 Example::
 
@@ -79,49 +82,43 @@ Example::
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 __all__ = [
-    "ACTION_RESOLUTIONS",
-    "LEGACY_HOOK_OUTCOMES",
-    "STOPPED_REASONS",
+    "ActionResolution",
+    "LegacyHookOutcome",
     "RunPolicyEnded",
     "RunPolicyEvent",
     "RunPolicyObserver",
+    "RunPolicyOutcome",
     "RunPolicyStarted",
     "RunPolicyStep",
     "SCHEMA_VERSION",
+    "StoppedReason",
 ]
 
 #: Version of the event shape. Bumped when a field changes meaning or is
 #: removed, so a consumer can refuse a stream it does not understand instead of
 #: reading a renamed field as a missing one.
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
-#: The complete set of :attr:`RunPolicyStep.action_resolution` values.
+#: Normalised backend verdict for one action application.
 #:
-#: ``"full"`` every emitted key drove an actuator. ``"partial"`` some did, and
-#: the rollout continues - this is the silent-degradation case that a single
-#: aggregate error count hides, because the robot *does* move. ``"none"`` the
-#: policy emitted keys and none resolved, so the robot did not move at all.
-#: ``"unknown"`` the backend reported an error with no per-key breakdown (a
-#: missing world, a vector-length mismatch), so which keys landed is not
-#: knowable from the envelope.
-ACTION_RESOLUTIONS = ("full", "partial", "none", "unknown")
+#: ``"full"`` means every emitted key drove an actuator. ``"partial"`` and
+#: ``"none"`` are used only when the backend supplied a complete explicit
+#: per-key breakdown. ``"unknown"`` means the backend rejected the action
+#: without enough structured evidence to say which keys, if any, reached
+#: physical state.
+ActionResolution = Literal["full", "partial", "none", "unknown"]
 
-#: The complete set of :attr:`RunPolicyStep.legacy_hook_outcome` values.
-#:
-#: ``"absent"`` no ``on_frame`` was installed. ``"ok"`` it returned normally.
-#: ``"cancelled"`` it raised ``CooperativeStop`` (the documented graceful stop).
-#: ``"recording_error"`` it raised ``RecordingFrameError``, which is dataset
-#: loss and fatal on its first occurrence. ``"error"`` it raised anything else,
-#: which is tolerated per call and fatal only after the consecutive-failure
-#: limit.
-LEGACY_HOOK_OUTCOMES = ("absent", "ok", "cancelled", "recording_error", "error")
+#: Outcome of the backend-owned legacy hook for one applied action.
+LegacyHookOutcome = Literal["absent", "ok", "cancelled", "recording_error", "error"]
 
-#: The complete set of :attr:`RunPolicyEnded.stopped_reason` values, matching the
-#: ``stopped_reason`` field of the rollout's own result payload.
-STOPPED_REASONS = ("budget", "predicate", "cancelled", "error")
+#: Why a rollout terminated, matching the result payload's ``stopped_reason``.
+StoppedReason = Literal["budget", "predicate", "cancelled", "error"]
+
+#: Overall rollout outcome, matching the result envelope's status.
+RunPolicyOutcome = Literal["success", "error"]
 
 
 @dataclass(frozen=True)
@@ -173,41 +170,55 @@ class RunPolicyStarted:
 
 @dataclass(frozen=True)
 class RunPolicyStep:
-    """One physically applied action.
+    """One completed ``send_action`` call.
 
-    Emitted after ``send_action`` has driven the world and after the legacy
-    ``on_frame`` hook has run, whatever that hook did. That ordering is the
-    reason this event exists in the shape it does: the hook runs *after* the
-    action is applied, and ``step_count`` is incremented *after* the hook, so an
-    action the hook aborts on - a cancellation, a lost dataset frame - has
-    already moved the robot while being excluded from ``steps_used``, from the
-    video cadence and from the resolution denominator. :attr:`applied_action_index`
-    counts what the world did; :attr:`legacy_step_index` mirrors what the hook
-    was told. They differ by one on exactly that final step, which is the step a
-    user debugging a cancellation most needs to see.
+    Emitted after ``send_action`` has returned and after the legacy ``on_frame``
+    hook has run, whatever that hook did. The backend's physical state is known
+    to have advanced only when its result says so; on a coarse atomic refusal the
+    event reports ``action_resolution="unknown"`` rather than inventing applied
+    or unresolved keys.
+
+    The hook runs before the legacy ``step_count`` increments. Consequently
+    :attr:`applied_action_index` and :attr:`legacy_step_index` identify the same
+    zero-based action, including the action whose hook cancels or loses a dataset
+    frame. The abort is identified by :attr:`legacy_hook_outcome`. Terminal
+    accounting is intentionally different: :attr:`RunPolicyEnded.applied_actions`
+    counts calls made to ``send_action``, while
+    :attr:`RunPolicyEnded.legacy_steps_used` excludes a hook-aborted final step.
 
     Attributes:
         schema_version: :data:`SCHEMA_VERSION` at emission time.
         run_id: The rollout this step belongs to.
         event_seq: Dense, monotonic position in the rollout's event stream.
-        monotonic_ns: Ordering clock, sampled after the action was applied.
+        monotonic_ns: Ordering clock, sampled after ``send_action`` completed.
         utc_ns: Wall-clock label for the same instant.
-        applied_action_index: 0-based count of actions physically applied,
+        applied_action_index: 0-based count of ``send_action`` calls,
             including this one. Dense across the whole rollout.
         legacy_step_index: The index this step's ``on_frame`` call received, or
-            the index it would have received had a hook been installed.
+            the index it would have received had a hook been installed. Equal to
+            ``applied_action_index``; use ``legacy_hook_outcome`` to identify an
+            aborting step.
         observation: **Borrowed** pre-action observation - the same object the
             legacy hook received. Read-only; do not retain past the call. See the
             module docstring.
         action: **Borrowed** action sent to the backend. Usually a
             ``dict[str, float]``; a numeric vector for policies that bind
             positionally. Same ownership rule as ``observation``.
-        observation_is_chunk_reused: ``True`` when this action was replayed from
-            an action chunk and ``observation`` is the chunk-start snapshot
-            rather than the state this action was taken from. Open-loop chunk
-            replay makes that the normal case for every action after the first,
-            unless an active dataset recording forced a per-step refresh.
-        action_resolution: One of :data:`ACTION_RESOLUTIONS`.
+        observation_is_chunk_reused: ``True`` only when this is a later action
+            using the same chunk-start snapshot. It is not authoritative
+            freshness: the first action after an async prefetch swap has not
+            reused that snapshot within its new chunk, but the snapshot is
+            already old.
+        observation_age_steps: Authoritative nonnegative count of completed
+            rollout action attempts since ``observation`` was sampled. ``0``
+            means no intervening action attempt; a positive value means the
+            snapshot is older in control-step terms. It does not claim physical
+            advancement when ``action_resolution`` is ``"unknown"``. Dataset
+            recording refreshes the observation per step and therefore reports
+            ``0`` throughout.
+        action_resolution: A :data:`ActionResolution`. ``"partial"`` and
+            ``"none"`` require a complete explicit backend per-key breakdown;
+            a coarse error is ``"unknown"``.
         applied_action_keys: Keys that drove an actuator this step.
         unresolved_action_keys: Keys the backend could not absorb. Empty on the
             success path and on ``"unknown"`` resolutions without a breakdown.
@@ -215,7 +226,7 @@ class RunPolicyStep:
         sim_time_s: Backend simulation clock after the action, when the backend
             exposes one cheaply; ``None`` otherwise. Never fetched at the cost of
             an extra backend call.
-        legacy_hook_outcome: One of :data:`LEGACY_HOOK_OUTCOMES`.
+        legacy_hook_outcome: A :data:`LegacyHookOutcome`.
     """
 
     schema_version: int
@@ -228,12 +239,13 @@ class RunPolicyStep:
     observation: dict[str, Any]
     action: Any
     observation_is_chunk_reused: bool
-    action_resolution: str
+    observation_age_steps: int
+    action_resolution: ActionResolution
     applied_action_keys: tuple[str, ...]
     unresolved_action_keys: tuple[str, ...]
     elapsed_s: float
     sim_time_s: float | None
-    legacy_hook_outcome: str
+    legacy_hook_outcome: LegacyHookOutcome
 
 
 @dataclass(frozen=True)
@@ -254,12 +266,13 @@ class RunPolicyEnded:
         utc_ns: Wall-clock label for the same instant.
         outcome: ``"success"`` or ``"error"``, matching the rollout result's
             ``status``.
-        stopped_reason: One of :data:`STOPPED_REASONS`, matching the result
-            payload's own field.
-        applied_actions: Total actions physically applied. Equals the number of
-            :class:`RunPolicyStep` events emitted, and may exceed
-            :attr:`legacy_steps_used` by one when the legacy hook aborted the
-            final step.
+        stopped_reason: A :data:`StoppedReason`, matching the result payload's
+            own field.
+        applied_actions: Total ``send_action`` calls made. Equals the number of
+            :class:`RunPolicyStep` events whose dispatch was attempted, and may
+            exceed :attr:`legacy_steps_used` by one when the legacy hook aborted
+            the final step. On ``action_resolution="unknown"`` this count does
+            not claim that physical state changed.
         legacy_steps_used: The rollout's own ``steps_used`` / ``n_steps``.
         action_errors: Steps whose ``send_action`` reported an error, partial
             resolutions included.
@@ -268,9 +281,9 @@ class RunPolicyEnded:
             ``None``.
         error_message: Exception message when ``outcome == "error"``, else
             ``None``. Truncated; the full traceback stays in the log.
-        observer_failures: How many times this observer raised during the
-            rollout, across all three event kinds. Non-zero means the stream you
-            are reading has holes.
+        observer_failures: Contained failures before this terminal dispatch.
+            The returned result payload is authoritative and also includes a
+            contained failure raised while consuming this Ended event itself.
     """
 
     schema_version: int
@@ -278,8 +291,8 @@ class RunPolicyEnded:
     event_seq: int
     monotonic_ns: int
     utc_ns: int
-    outcome: str
-    stopped_reason: str
+    outcome: RunPolicyOutcome
+    stopped_reason: StoppedReason
     applied_actions: int
     legacy_steps_used: int
     action_errors: int

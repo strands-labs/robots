@@ -126,6 +126,7 @@ from strands_robots.utils import (
     entity_name_error,
     finite_vector_error,
     non_negative_whole_number_error,
+    optional_callable_error,
     positive_finite_number_error,
     positive_whole_number_error,
     published_string_error,
@@ -5437,6 +5438,13 @@ class MuJoCoSimEngine(
         validates it against the closed predicate registry; see its docstring
         for the schema and the ``stopped_reason`` telemetry contract.
         """
+        # This override claims the robot before delegating to the base facade,
+        # so it must enforce the shared observer domain first. An invalid
+        # callback is configuration, not a rollout, and must not inspect the
+        # world, resolve a robot, or raise ``policy_running``.
+        if observer_error := optional_callable_error(observer, "observer", "run_policy"):
+            return {"status": "error", "content": [{"text": observer_error}]}
+
         if self._world is None or self._world._model is None or self._world._data is None:
             return {"status": "error", "content": [{"text": _NO_WORLD_MSG}]}
 

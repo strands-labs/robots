@@ -87,11 +87,15 @@ from strands_robots.simulation.models import (
     TrajectoryStep,
 )
 from strands_robots.simulation.observers import (
+    ActionResolution,
+    LegacyHookOutcome,
     RunPolicyEnded,
     RunPolicyEvent,
     RunPolicyObserver,
+    RunPolicyOutcome,
     RunPolicyStarted,
     RunPolicyStep,
+    StoppedReason,
 )
 from strands_robots.simulation.predicates import (
     PREDICATE_REGISTRY,
@@ -138,6 +142,10 @@ __all__ = [
     "SimWorld",
     "TrajectoryStep",
     # Read-only rollout observability (light - stdlib dataclasses only)
+    "ActionResolution",
+    "LegacyHookOutcome",
+    "RunPolicyOutcome",
+    "StoppedReason",
     "RunPolicyStarted",
     "RunPolicyStep",
     "RunPolicyEnded",

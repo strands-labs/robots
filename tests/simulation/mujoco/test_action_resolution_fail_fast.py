@@ -220,11 +220,13 @@ class TestFailFastOnDictVectorValuedKey:
 
     The key itself may be a perfectly valid actuator name; it is the value shape
     that is wrong, so nothing on that step drives the robot. The runner must
-    still count the whole step as a 100% failure - crediting the dict's own keys
-    as unresolved from the unstructured error - so the fail-fast probe surfaces a
-    structurally-dead rollout instead of silently running the full episode with
-    an arm that never moves. Pre-pin, this unstructured-error branch (dict form,
-    no json breakdown) was the one action-failure path with no coverage.
+    still count the whole step as an operational probe failure so the fail-fast
+    surfaces a structurally-dead rollout instead of silently running the full
+    episode with an arm that never receives an accepted command. It must not,
+    however, fabricate ``unresolved_keys`` from the input: physical application
+    remains unknown without a complete backend breakdown. Pre-pin, this
+    unstructured-error branch (dict form, no json breakdown) was the one
+    action-failure path with no coverage.
     """
 
     def test_dict_with_vector_valued_key_fails_fast_within_probe_window(self, sim):
@@ -244,8 +246,27 @@ class TestFailFastOnDictVectorValuedKey:
         # Bailed in the probe window; did NOT run the full 50-step episode.
         assert "first 3 action steps" in text
         assert "50 steps" not in text
-        # The unstructured error is attributed to the dict's own key: the
-        # runner records "1" as unresolved for the dead step so the diagnostic
-        # names the offending key rather than reporting an empty key set.
-        assert "'1'" in text
+        # The backend's scalar-shape refusal is preserved as the diagnostic,
+        # while the runner is explicit that physical application is unknown and
+        # does not claim the input key was backend-confirmed unresolved.
+        assert "physical application is unknown" in text
+        assert "scalar number" in text
+        assert "Explicit unresolved keys: []" in text
         assert "get_features" in text
+
+
+class TestObserverPreflight:
+    def test_non_callable_observer_is_refused_before_mujoco_claim(self, sim, monkeypatch):
+        announcements: list[str] = []
+        monkeypatch.setattr(sim, "_announce_rollout", announcements.append)
+
+        result = sim.run_policy(robot_name="so101", observer=42)  # type: ignore[arg-type]
+
+        assert result == {
+            "status": "error",
+            "content": [{"text": "run_policy: observer must be callable or None, got 42."}],
+        }
+        assert announcements == []
+        robot = sim._world.robots["so101"]
+        assert robot.policy_running is False
+        assert robot.policy_claim_stops is None
