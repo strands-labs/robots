@@ -50,6 +50,7 @@ import pytest
 os.environ.setdefault("MUJOCO_GL", "cgl" if sys.platform == "darwin" else "egl")
 
 from strands_robots.policies.mock import MockPolicy
+from strands_robots.simulation.observers import RunPolicyStep
 from strands_robots.simulation.policy_runner import PolicyRunner
 from tests.simulation.test_policy_runner import FakeSim
 
@@ -78,7 +79,14 @@ def _busy_wait(seconds: float) -> None:
         pass
 
 
-def _run(*, n_steps: int, frequency: float, on_frame: Any = None, fast_mode: bool = False) -> float:
+def _run(
+    *,
+    n_steps: int,
+    frequency: float,
+    on_frame: Any = None,
+    observer: Any = None,
+    fast_mode: bool = False,
+) -> float:
     """Drive the real ``PolicyRunner.run`` loop; return the wall clock it took."""
     sim = FakeSim()
     policy = MockPolicy()
@@ -90,6 +98,7 @@ def _run(*, n_steps: int, frequency: float, on_frame: Any = None, fast_mode: boo
         control_frequency=frequency,
         fast_mode=fast_mode,
         on_frame=on_frame,
+        observer=observer,
     )
     elapsed = time.perf_counter() - start
     assert result["status"] == "success", result
@@ -124,6 +133,46 @@ class TestARolloutTakesTheWallClockItWasAskedFor:
             f"median step gap {median_gap * 1000:.1f}ms against a {period * 1000:.0f}ms period with "
             f"{work_s * 1000:.0f}ms of work per step - the work is being added to the period instead "
             "of subtracted from it, so the loop runs at 1 / (period + work). Use mesh.pacing.Ticker."
+        )
+
+    def test_an_observers_own_cost_comes_out_of_the_period_too(self) -> None:
+        """The same for the read-only observer lane, which is the other per-step cost.
+
+        :mod:`strands_robots.simulation.observers` dispatches synchronously on
+        the rollout thread - deliberately, so the stream is cheap and ordered -
+        which makes a consumer's own cost per-step work of exactly the kind the
+        cell above grades. It is also the only per-step cost a CALLER supplies
+        without owning the loop: ``on_frame`` belongs to the backend, so before
+        this lane existed every millisecond in the period was the library's own.
+        Under a delay pacer a visualiser would slow the arm by its full drawing
+        cost while the rollout still reported the duration it was asked for; on
+        a real MuJoCo so101 rollout asking for 2.0 s with a 8 ms observer, the
+        delay pacing returned in 2.5694 s and the deadline in 2.0092 s.
+
+        Graded here rather than beside the observer's own tests because the
+        property is the loop's, not the lane's, and this is the file that owns
+        it.
+        """
+        frequency, n_steps, work_s = 25.0, 20, 0.032
+        period = 1.0 / frequency
+        stamps: list[float] = []
+
+        def observer(event: Any) -> None:
+            # Only the per-step event: the lifecycle pair brackets the loop and
+            # its cost is not paid inside a period.
+            if not isinstance(event, RunPolicyStep):
+                return
+            _busy_wait(work_s)
+            stamps.append(time.perf_counter())
+
+        _run(n_steps=n_steps, frequency=frequency, observer=observer)
+        gaps = sorted(b - a for a, b in zip(stamps, stamps[1:], strict=False))
+        assert gaps, "the observer received no per-step events to measure"
+        median_gap = gaps[len(gaps) // 2]
+        assert median_gap < period * 1.5, (
+            f"median step gap {median_gap * 1000:.1f}ms against a {period * 1000:.0f}ms period with "
+            f"{work_s * 1000:.0f}ms spent in the observer - a read-only consumer is extending the "
+            "control period by its own cost instead of being absorbed by it. Use mesh.pacing.Ticker."
         )
 
     def test_a_free_step_still_takes_the_period(self) -> None:

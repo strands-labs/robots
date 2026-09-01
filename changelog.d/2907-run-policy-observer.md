@@ -105,6 +105,16 @@ synchronously. Dispatch is synchronous on the rollout thread, so this is telemet
 and not a sandbox: a blocking observer blocks the robot, and that is documented
 rather than defended against.
 
+What that costs the rollout is bounded by the loop's pacing, which is a deadline
+rather than a delay. A consumer therefore has a budget of one control period that
+costs no wall clock at all - its work is absorbed by the period instead of added
+to it - and overrunning the budget costs a dropped deadline rather than a burst of
+catch-up actions at the arm. This lane is the first per-step cost a *caller*
+supplies, so the property is now graded on it as well as on the backend's hook
+(`tests/simulation/test_rollout_loop_paces_on_a_deadline.py`): on a MuJoCo so101
+rollout asking for 2.0 s with an 8 ms observer, absorbing the cost returns in
+2.0092 s where adding it returned in 2.5694 s.
+
 Scoped to `run_policy` (its `n_episodes > 1` path included, one lifecycle and one
 `run_id` per episode) and `PolicyRunner.run`. `eval_policy`,
 `evaluate_benchmark` and `run_multi_policy` are separate loops with different step
