@@ -46,7 +46,7 @@ good reason: a subject test globbing its own fixture directory is
 shape-identical to one walking the repository. It is not value-identical -
 ``Path(__file__).parent / "fixtures"`` and ``tmp_path`` are neither the
 repository root nor a top-level area - so resolving the path separates them.
-Measured over this repository, the derivation selects 68 of 1426 test modules.
+Measured over this repository, the derivation selects 74 of 1461 test modules.
 
 Resolving the *value* is also why the area a grader walks may be held in a loop
 variable. The idiom here is a tuple of area names walked one at a time::
@@ -66,6 +66,25 @@ never having collected the grader that failed.
 :func:`_resolve_area_loop` contributes one candidate path per literal in the
 iterated tuple and leaves the membership question where it already was, which
 is what makes the change safe rather than merely wider.
+
+The root may also arrive as a *function parameter*. A grader that plants source
+for its own predicate factors the walk into a helper so the sweep and the
+planted cases share one implementation::
+
+    def _scan(root: Path) -> list[str]: ...       # root.rglob("*.py")
+    _SURFACES = _scan(_PACKAGE_ROOT)              # the real sweep
+    ... _scan(tmp_path)                           # a planted control
+
+The receiver is then an ``ast.Name`` bound per call rather than at module
+scope, so reading module-level bindings alone resolved it to nothing.
+:func:`_call_site_paths` resolves it from the module's *own* calls: every
+argument a call in the same module passes for that parameter, plus any default
+the helper carries. The planted call contributes nothing (``tmp_path`` resolves
+to no path) and the real one contributes the package root, which is exactly the
+asymmetry that makes the module a grader. Measured over this repository, five
+whole-tree graders were unrostered on this spelling - three docstring-
+completeness sweeps over the installed package, the package import-cycle graph,
+and the render-gating sweep over all of ``tests/``.
 
 A walk rooted *inside* a subpackage (``strands_robots/policies/``) is
 deliberately not selected: a path-scoped run over the mirroring test directory
@@ -404,6 +423,144 @@ def _resolve_area_loop(
     return {base / segment for segment in segments.get(receiver.right.id, ())}
 
 
+def _function_owners(tree: ast.Module) -> dict[ast.AST, ast.AST | None]:
+    """Map every node to the innermost function definition whose body holds it.
+
+    A walk receiver spelled as a bare name may be a parameter, and *which*
+    function's parameter it is decides what the module's own calls bind it to.
+    Nested definitions override, so a helper defined inside a test method
+    answers for its own parameters rather than for the method's.
+
+    :param tree: The parsed module.
+    :returns: Node to its innermost enclosing function, or ``None`` for a node
+        at module scope.
+    """
+    owners: dict[ast.AST, ast.AST | None] = {}
+
+    def visit(node: ast.AST, owner: ast.AST | None) -> None:
+        inner = node if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)) else owner
+        for child in ast.iter_child_nodes(node):
+            owners[child] = inner
+            visit(child, inner)
+
+    visit(tree, None)
+    return owners
+
+
+def _call_site_paths(
+    tree: ast.Module, module_path: Path, bindings: dict[str, Path], root: Path
+) -> dict[tuple[str, str], set[Path]]:
+    """Map ``(function name, parameter name)`` to the paths this module binds it to.
+
+    A grader that plants source for its own predicate factors the walk into a
+    helper taking the root as a parameter, then calls it once with the real
+    area and once per planted case. The parameter is resolvable from the
+    module's own calls, so those are read: every argument a call in this module
+    passes for that parameter, plus any default the helper declares.
+
+    A name matched as an attribute (``self._scan(root)``) is the same helper
+    reached another way, so both spellings are read - the alternative is being
+    blind to whichever spelling a grader happened to choose, which is the
+    defect this resolver keeps being widened for. Two definitions sharing a
+    name contribute to one entry; the union over-approximates the paths one
+    call can pass, and membership is then decided by intersection with
+    :func:`walk_targets`, so a candidate that is not a walk target changes no
+    verdict. A helper imported from a ``conftest`` stays unresolved, which
+    :data:`UNDERIVABLE_GRADERS` reports rather than this guessing.
+
+    :param tree: The parsed module.
+    :param module_path: Where the module lives, so ``__file__`` resolves.
+    :param bindings: Module-level names already resolved to paths.
+    :param root: The repository root.
+    """
+    definitions: dict[str, list[ast.FunctionDef | ast.AsyncFunctionDef]] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            definitions.setdefault(node.name, []).append(node)
+
+    found: dict[tuple[str, str], set[Path]] = {}
+
+    def record(name: str, parameter: str, value: ast.expr) -> None:
+        resolved = _resolve(value, module_path, bindings, root)
+        if isinstance(resolved, Path):
+            found.setdefault((name, parameter), set()).add(resolved)
+
+    for name, overloads in definitions.items():
+        for definition in overloads:
+            args = definition.args
+            positional = [*args.posonlyargs, *args.args]
+            # Defaults align with the *last* positional parameters.
+            for parameter, default in zip(positional[len(positional) - len(args.defaults) :], args.defaults):
+                record(name, parameter.arg, default)
+            for parameter, keyword_default in zip(args.kwonlyargs, args.kw_defaults):
+                if keyword_default is not None:
+                    record(name, parameter.arg, keyword_default)
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        called = node.func
+        called_name = called.attr if isinstance(called, ast.Attribute) else getattr(called, "id", "")
+        for definition in definitions.get(called_name, ()):
+            signature = definition.args
+            names = [parameter.arg for parameter in [*signature.posonlyargs, *signature.args]]
+            for index, value in enumerate(node.args):
+                if index < len(names):
+                    record(called_name, names[index], value)
+            accepted = {*names, *(parameter.arg for parameter in signature.kwonlyargs)}
+            for keyword in node.keywords:
+                if keyword.arg is not None and keyword.arg in accepted:
+                    record(called_name, keyword.arg, keyword.value)
+    return found
+
+
+def _parameter_scopes(
+    call: ast.Call,
+    owners: dict[ast.AST, ast.AST | None],
+    parameters: dict[tuple[str, str], set[Path]],
+    bindings: dict[str, Path],
+) -> list[dict[str, Path]]:
+    """Return ``bindings`` extended with one path a parameter in scope can take.
+
+    One scope per ``(parameter, candidate path)`` pair, so a helper called with
+    both a real area and a planted directory is read as reaching each in turn.
+    Empty for a walk at module scope, and for one inside a ``lambda``, which
+    has no name for a call site to name.
+
+    :param call: The walk call whose receiver did not resolve.
+    :param owners: Node to its innermost enclosing function.
+    :param parameters: What the module's own calls bind each parameter to.
+    :param bindings: Module-level names resolved to paths.
+    """
+    owner = owners.get(call)
+    if not isinstance(owner, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        return []
+    args = owner.args
+    scopes = []
+    for parameter in [*args.posonlyargs, *args.args, *args.kwonlyargs]:
+        for candidate in sorted(parameters.get((owner.name, parameter.arg), ())):
+            scopes.append({**bindings, parameter.arg: candidate})
+    return scopes
+
+
+def _receiver_targets(
+    receiver: ast.expr,
+    module_path: Path,
+    bindings: dict[str, Path],
+    segments: dict[str, tuple[str, ...]],
+    root: Path,
+) -> set[Path]:
+    """Return every directory a walk on ``receiver`` reaches under ``bindings``.
+
+    Both receiver shapes a grader uses: a name or expression resolving straight
+    to a path, and ``base / <loop variable>`` over literal area names.
+    """
+    resolved = _resolve(receiver, module_path, bindings, root)
+    if isinstance(resolved, Path):
+        return {resolved}
+    return _resolve_area_loop(receiver, module_path, bindings, segments, root)
+
+
 def walked_paths(source: str, module_path: Path, root: Path) -> set[Path]:
     """Return every directory ``source`` walks that resolves to a concrete path.
 
@@ -414,15 +571,18 @@ def walked_paths(source: str, module_path: Path, root: Path) -> set[Path]:
     tree = ast.parse(source)
     bindings = _module_bindings(tree, module_path, root)
     segments = _segment_bindings(tree)
+    parameters = _call_site_paths(tree, module_path, bindings, root)
+    owners = _function_owners(tree)
     targets: set[Path] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in _WALK_METHODS:
             receiver = node.func.value
-            resolved = _resolve(receiver, module_path, bindings, root)
-            if isinstance(resolved, Path):
-                targets.add(resolved)
+            found = _receiver_targets(receiver, module_path, bindings, segments, root)
+            if found:
+                targets.update(found)
                 continue
-            targets.update(_resolve_area_loop(receiver, module_path, bindings, segments, root))
+            for scope in _parameter_scopes(node, owners, parameters, bindings):
+                targets.update(_receiver_targets(receiver, module_path, scope, segments, root))
     return targets
 
 
