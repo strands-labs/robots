@@ -858,6 +858,31 @@ def get_session() -> Any | None:
         Backend-dependent: ``zenoh.Session``, ``IotMqttTransport``,
         ``BridgeTransport``, or ``None`` if the chosen backend is unavailable.
     """
+    # STRANDS_MESH=false is documented as a hard kill switch: no Zenoh session
+    # and no presence on the fleet. Every path that can OPEN one has to answer
+    # it, and this is the only path that opens one -- the two Mesh constructors
+    # (init_mesh, robot_mesh._gateway_mesh) each asked separately, so a caller
+    # that acquires the transport directly, as ZenohTransport and the bridge
+    # factory do, reached zenoh.open with the switch engaged. What arrived was
+    # not a quiet extra peer: with no explicit endpoints this path LISTENS, so
+    # the process the operator disabled the mesh on became the machine's hub,
+    # and every later process on the box connected to it as a client.
+    #
+    # Asked before the backend branch because the switch is about presence, not
+    # about Zenoh: an IoT/bridge transport publishes this robot to the fleet
+    # just as a Zenoh session does, and one gate covers every backend.
+    #
+    # Imported here rather than at module scope because mesh/__init__ imports
+    # this module while loading core, so a top-level import would be a cycle.
+    from strands_robots.mesh.core import mesh_disabled_by_env
+
+    if mesh_disabled_by_env():
+        logger.debug(
+            "Mesh transport not acquired: STRANDS_MESH=%r is a hard kill switch",
+            os.getenv("STRANDS_MESH", ""),
+        )
+        return None
+
     global _SESSION, _SESSION_REFS  # noqa: PLW0603
 
     if _is_transport_backend():
@@ -1024,6 +1049,18 @@ def _get_zenoh_session_directly() -> Any | None:
     ``STRANDS_MESH_BACKEND``. It shares the same ``_SESSION`` singleton and
     ``_SESSION_LOCK``.
     """
+    # The kill switch, for the same reason as ``get_session`` upstairs: this
+    # door exists to skip the transport factory, not to skip the switch, and
+    # it reaches the same ``zenoh.open``.
+    from strands_robots.mesh.core import mesh_disabled_by_env
+
+    if mesh_disabled_by_env():
+        logger.debug(
+            "Zenoh session not opened: STRANDS_MESH=%r is a hard kill switch",
+            os.getenv("STRANDS_MESH", ""),
+        )
+        return None
+
     global _SESSION, _SESSION_REFS  # noqa: PLW0603
 
     with _SESSION_LOCK:

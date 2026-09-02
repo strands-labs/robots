@@ -48,6 +48,11 @@ def _fresh_session_state(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(session_mod, "_zenoh_missing_warned", set(), raising=False)
     # Keep get_session on the raw zenoh path rather than the transport factory.
     monkeypatch.delenv("STRANDS_MESH_BACKEND", raising=False)
+    # These tests need the openers to REACH their zenoh import, so the kill switch must
+    # be off. tests/conftest.py sets STRANDS_MESH=false for the whole suite and documents
+    # that mesh tests opt back in explicitly; until the acquire doors asked the switch
+    # that opt-in was decorative here.
+    monkeypatch.delenv("STRANDS_MESH", raising=False)
 
 
 def _open_without_zenoh(opener: str) -> Any:

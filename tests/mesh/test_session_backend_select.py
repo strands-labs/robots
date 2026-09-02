@@ -20,6 +20,10 @@ def reset_state(monkeypatch):
     """Reset both session.py state AND the transport factory between tests."""
     from strands_robots.mesh.transport import factory
 
+    # These tests grade WHICH backend get_session() routes to, so it has to get past
+    # the kill switch. tests/conftest.py sets STRANDS_MESH=false suite-wide.
+    monkeypatch.delenv("STRANDS_MESH", raising=False)
+
     with sess_mod._SESSION_LOCK:
         sess_mod._SESSION = None
         sess_mod._SESSION_REFS = 0

@@ -168,6 +168,9 @@ def test_invalid_mesh_port_falls_back_to_default(
     monkeypatch.setenv("STRANDS_MESH_PORT", "definitely_not_a_number")
     monkeypatch.delenv("ZENOH_CONNECT", raising=False)
     monkeypatch.delenv("ZENOH_LISTEN", raising=False)
+    # get_session asks the kill switch before it reads the port, and
+    # tests/conftest.py sets STRANDS_MESH=false for the whole suite.
+    monkeypatch.delenv("STRANDS_MESH", raising=False)
     monkeypatch.setattr(ms, "_SESSION", None)
     monkeypatch.setattr(ms, "_SESSION_REFS", 0)
 
