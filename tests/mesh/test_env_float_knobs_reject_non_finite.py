@@ -21,8 +21,14 @@ The rule is not new to the package. Three of its five env-float resolvers
 already applied it, and :func:`strands_robots.mesh.security._env_pos_float`
 both documents it ("Non-numeric / non-positive / NaN / inf values fall back
 to the default") and names ``mesh.core._parse_positive_float_env`` as its
-analogue. So this pins the two that did not, the parity between them, and -
-structurally - that a sixth resolver cannot ship without the test.
+analogue. So this pins the two that did not and the parity between them.
+
+The structural half - that no resolver may ship without the test - is not a mesh
+property and is graded package-wide rather than here. A sweep rooted at this
+package reads a resolver anywhere else as absent rather than as unguarded, which
+is how the Isaac preview-cadence resolver came to admit ``inf``;
+``tests/test_env_float_knobs_resolve_to_a_finite_value.py`` walks the whole
+package, which is the scope of the rule.
 
 Deliberately out of scope: the ``0`` floor. ``_parse_positive_float_env``
 admits it (its ``minimum`` defaults to ``0.0``) while ``_env_pos_float``
@@ -42,7 +48,6 @@ keep naming the resolver.
 
 from __future__ import annotations
 
-import ast
 import inspect
 import math
 import pathlib
@@ -240,101 +245,6 @@ class TestTheZeroFloorIsUnchanged:
             assert core_mod._parse_positive_float_env("ZERO_PROBE", "60") == 60.0
         messages = [r.getMessage() for r in caplog.records]
         assert any("must be >=" in m for m in messages), messages
-
-
-# --- structural guard: no sixth resolver may ship without the test --------
-
-#: Every env-float resolver in the mesh package, as ``module::function``.
-EXPECTED_ENV_FLOAT_RESOLVERS = frozenset(
-    {
-        "_zenoh_config.py::_float_env",
-        "core.py::_parse_positive_float_env",
-        "security.py::_env_pos_float",
-        "session.py::hz_from_env",
-        "transport/bridge_transport.py::_resolve_dedup_ttl",
-    }
-)
-
-
-def _mesh_root() -> pathlib.Path:
-    """Derive the scanned package from an imported symbol, not a path literal."""
-    return pathlib.Path(inspect.getfile(core_mod)).parent
-
-
-def _reads_the_environment(fn: ast.AST) -> bool:
-    """True when *fn* really reads ``os.environ`` / ``os.getenv``.
-
-    Structural rather than textual: the safety handlers mention ``os.getenv``
-    in a comment explaining why they cache their knobs, and a text scan reads
-    that as an env-float site.
-    """
-    for node in ast.walk(fn):
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
-            value = node.func.value
-            if node.func.attr == "getenv" and isinstance(value, ast.Name) and value.id == "os":
-                return True
-            if node.func.attr == "get" and isinstance(value, ast.Attribute) and value.attr == "environ":
-                return True
-        if isinstance(node, ast.Subscript) and isinstance(node.value, ast.Attribute) and node.value.attr == "environ":
-            return True
-    return False
-
-
-def _calls(fn: ast.AST, name: str) -> bool:
-    for node in ast.walk(fn):
-        if isinstance(node, ast.Call):
-            func = node.func
-            if isinstance(func, ast.Name) and func.id == name:
-                return True
-            if isinstance(func, ast.Attribute) and func.attr == name:
-                return True
-    return False
-
-
-def _scan(root: pathlib.Path) -> dict[str, bool]:
-    """Map ``module::function`` to whether it tests finiteness."""
-    found: dict[str, bool] = {}
-    for path in sorted(root.rglob("*.py")):
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-        for node in ast.walk(tree):
-            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                continue
-            if _calls(node, "float") and _reads_the_environment(node):
-                found[f"{path.relative_to(root)}::{node.name}"] = _calls(node, "isfinite")
-    return found
-
-
-class TestEveryEnvFloatResolverTestsFiniteness:
-    """A structural guard, because the divergence is what let this happen."""
-
-    def test_the_scan_finds_exactly_the_known_resolvers(self):
-        """Non-vacuity: a scan rooted elsewhere, or a detector that stopped
-        matching, would report a clean sweep over nothing.
-        """
-        assert set(_scan(_mesh_root())) == set(EXPECTED_ENV_FLOAT_RESOLVERS)
-
-    def test_no_resolver_omits_the_finiteness_test(self):
-        adrift = sorted(name for name, guarded in _scan(_mesh_root()).items() if not guarded)
-        assert adrift == [], f"env-float resolvers with no finiteness test: {adrift}"
-
-    def test_the_scan_detects_a_planted_omission(self, tmp_path):
-        planted = tmp_path / "planted.py"
-        planted.write_text(
-            'import os\n\n\ndef _resolve(name: str) -> float:\n    return float(os.getenv(name, "1"))\n',
-            encoding="utf-8",
-        )
-        assert _scan(tmp_path) == {"planted.py::_resolve": False}
-
-    def test_the_scan_ignores_a_comment_mentioning_getenv(self, tmp_path):
-        """The detector must not re-acquire the text scan's false positive."""
-        planted = tmp_path / "commented.py"
-        planted.write_text(
-            "def _f(raw: str) -> float:\n"
-            "    # Reading them per-use parsed os.getenv on every reference.\n"
-            "    return float(raw)\n",
-            encoding="utf-8",
-        )
-        assert _scan(tmp_path) == {}
 
 
 @pytest.fixture(scope="module")

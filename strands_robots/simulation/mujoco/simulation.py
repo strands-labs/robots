@@ -39,6 +39,24 @@ call does not work any better than narrowing through a bound method
 dedup).
 
 So: the split is honest about being for file-size, not for decoupling.
+
+Scene mutation and ``self._lock``
+
+A verb that swaps the live scene must hold ``self._lock`` across the swap, not
+merely pass ``_require_no_running_policy()``. The two guards cover different
+readers: the policy gate refuses a *policy* worker, while the camera-recorder
+daemon renders on its own thread and is serialised only by the lock (see
+:mod:`strands_robots.simulation.mujoco.rendering`, whose render path takes the
+lock precisely because it "is NOT covered by the blanket dispatch lock").
+
+The swap is not atomic either. ``scene_ops.install_compiled_model`` rebinds
+``world._model`` and ``world._data`` in two separate assignments, so a reader
+that is not excluded can observe a model from after the swap paired with data
+from before it -- and MuJoCo dereferences that pair natively, indexing the new
+model's body count into the old data's arrays. Holding the lock over the swap is
+what makes the pair a reader observes always a matching one. The lock is an
+``RLock``, so the acquisition is a reentrant no-op on the dispatch path and the
+real guard when the verb is called directly as a Python API.
 """
 
 import contextlib
@@ -59,7 +77,13 @@ from strands.tools.tools import AgentTool
 from strands.types._events import ToolResultEvent
 from strands.types.tools import ToolSpec, ToolUse
 
-from strands_robots.simulation.base import SimEngine, close_match_hint, reject_setup_kwargs
+from strands_robots.simulation.base import (
+    SimEngine,
+    close_match_hint,
+    own_keyword_names,
+    reject_misspelled_kwargs,
+    reject_setup_kwargs,
+)
 from strands_robots.simulation.ik import GRIPPER_BODY_HINTS, hint_matches_name
 from strands_robots.simulation.model_registry import (
     count_sim_robots,
@@ -491,8 +515,13 @@ class MuJoCoSimEngine(
                 (``robot_name`` / ``robot``) are rejected here rather than
                 dropped - a constructor builds an empty engine, so use
                 ``Robot("so101", mode="sim")`` or ``add_robot`` instead.
+                A name that *misspells* one of the parameters above (e.g.
+                ``defualt_timestep``) is likewise rejected rather than dropped:
+                no cross-backend call can intend it, and dropping it made the
+                requested value silently identical to omitting it.
         """
         reject_setup_kwargs(kwargs)
+        reject_misspelled_kwargs(kwargs, own_keyword_names(MuJoCoSimEngine), owner="MuJoCoSimEngine")
         super().__init__()
         self._init_ros_bridge(ros2_bridge=ros2_bridge, ros2_domain=ros2_domain)
         self.tool_name_str = tool_name
@@ -928,23 +957,30 @@ class MuJoCoSimEngine(
                 return cast("dict[str, Any]", gravity_error)
             _gravity = normalized
 
-        self._world = SimWorld(
-            timestep=float(effective_timestep),
-            gravity=_gravity,
-            ground_plane=ground_plane,
-            terrain=terrain,
-            terrain_difficulty=float(difficulty),
-        )
+        # Rebinding self._world and compiling a model into it are one
+        # critical section (see "Scene mutation and self._lock" in the module
+        # docstring): a recorder thread still running against the previous
+        # world would otherwise observe the new SimWorld while its ``_model``
+        # is still None. No asset resolution happens here, so the lock is held
+        # only across the spec build and compile.
+        with self._lock:
+            self._world = SimWorld(
+                timestep=float(effective_timestep),
+                gravity=_gravity,
+                ground_plane=ground_plane,
+                terrain=terrain,
+                terrain_difficulty=float(difficulty),
+            )
 
-        self._world.cameras["default"] = SimCamera(
-            name="default",
-            position=[1.5, 1.5, 1.2],
-            target=[0.0, 0.0, 0.3],
-            width=self.default_width,
-            height=self.default_height,
-        )
+            self._world.cameras["default"] = SimCamera(
+                name="default",
+                position=[1.5, 1.5, 1.2],
+                target=[0.0, 0.0, 0.3],
+                width=self.default_width,
+                height=self.default_height,
+            )
 
-        self._compile_world()
+            self._compile_world()
 
         return {
             "status": "success",
@@ -1079,7 +1115,11 @@ class MuJoCoSimEngine(
             return err
 
         try:
-            replace_scene_mjcf(self._world, xml)
+            # Swap the live model under the lock (see "Scene mutation and
+            # self._lock" above): the recorder thread is not covered by the
+            # policy gate, and the rebind is two assignments wide.
+            with self._lock:
+                replace_scene_mjcf(self._world, xml)
         except (ValueError, RuntimeError) as e:
             return {"status": "error", "content": [{"text": f"MJCF compile failed: {e}"}]}
 
@@ -1182,7 +1222,9 @@ class MuJoCoSimEngine(
             return err
 
         try:
-            applied = patch_scene_mjcf(self._world, ops)
+            # Swap the live model under the lock (see the module docstring).
+            with self._lock:
+                applied = patch_scene_mjcf(self._world, ops)
         except (ValueError, RuntimeError) as e:
             return {"status": "error", "content": [{"text": f"MJCF patch failed: {e}"}]}
 
@@ -1218,13 +1260,19 @@ class MuJoCoSimEngine(
         self._world._backend_state["spec"] = spec
         with filter_mujoco_attach_noise():
             model = spec.compile()
-        install_compiled_model(self._world, model, mj.MjData(model))
-        # Forward the freshly-allocated MjData so derived state
-        # (xpos / xquat / xmat) is populated - same rationale as in
-        # ``load_scene`` (#168). Without this, the first
-        # render after ``_compile_world`` returns the skybox-only
-        # gradient because body transforms are zero-initialised.
-        mj.mj_forward(self._world._model, self._world._data)
+        # This function swaps the live model, so it holds the lock itself
+        # rather than relying on its caller (see "Scene mutation and
+        # self._lock" in the module docstring). RLock, so this is a reentrant
+        # no-op under ``create_world``'s acquisition, and it keeps the
+        # invariant local to the function that performs the swap.
+        with self._lock:
+            install_compiled_model(self._world, model, mj.MjData(model))
+            # Forward the freshly-allocated MjData so derived state
+            # (xpos / xquat / xmat) is populated - same rationale as in
+            # ``load_scene`` (#168). Without this, the first
+            # render after ``_compile_world`` returns the skybox-only
+            # gradient because body transforms are zero-initialised.
+            mj.mj_forward(self._world._model, self._world._data)
         try:
             with filter_mujoco_attach_noise():
                 self._world._backend_state["xml"] = spec.to_xml()
@@ -1886,24 +1934,31 @@ class MuJoCoSimEngine(
                 if kf_err is not None:
                     return kf_err
 
-            # Register the robot BEFORE attach so scene_ops can re-discover
-            # its joint/actuator IDs inside the merged model.
-            self._world.robots[name] = robot
-            # Track robot base path for asset path resolution.
-            if not self._world._backend_state.get("robot_base_xml"):
-                self._world._backend_state["robot_base_xml"] = resolved_path
+            # Registration, swap and rollback are one critical section (see
+            # "Scene mutation and self._lock" in the module docstring): the
+            # recorder thread is not covered by the policy gate above, so
+            # outside the lock it can observe the robot registered against a
+            # model that does not contain it. The asset is already resolved to
+            # ``resolved_path``, so no download happens under the lock.
+            with self._lock:
+                # Register the robot BEFORE attach so scene_ops can
+                # re-discover its joint/actuator IDs inside the merged model.
+                self._world.robots[name] = robot
+                # Track robot base path for asset path resolution.
+                if not self._world._backend_state.get("robot_base_xml"):
+                    self._world._backend_state["robot_base_xml"] = resolved_path
 
-            # Compose into the live spec via spec.attach(). The helper sets
-            # robot.joint_names from the source spec (pre-namespacing) and
-            # then scene_ops._recompile_preserving_state resolves the
-            # post-attach joint/actuator IDs on the compiled model.
-            ok = inject_robot_into_scene(self._world, robot, resolved_path)
-            if not ok:
-                del self._world.robots[name]
-                return {
-                    "status": "error",
-                    "content": [{"text": f"Failed to inject robot '{name}' into scene."}],
-                }
+                # Compose into the live spec via spec.attach(). The helper sets
+                # robot.joint_names from the source spec (pre-namespacing) and
+                # then scene_ops._recompile_preserving_state resolves the
+                # post-attach joint/actuator IDs on the compiled model.
+                ok = inject_robot_into_scene(self._world, robot, resolved_path)
+                if not ok:
+                    del self._world.robots[name]
+                    return {
+                        "status": "error",
+                        "content": [{"text": f"Failed to inject robot '{name}' into scene."}],
+                    }
 
             # Discover cameras that the robot's source MJCF declared. The
             # compiled model already has them namespaced under
@@ -2458,7 +2513,7 @@ class MuJoCoSimEngine(
         # Has to happen before the global check so remove_robot works even
         # when the target robot has an active policy (the common case).
         if registered(self._policy_threads, name):
-            self._world.robots[name].policy_running = False
+            self._world.robots[name].request_policy_stop()
             fut = self._policy_threads[name]
             timeout = self._DEFAULT_POLICY_STOP_TIMEOUT
             with contextlib.suppress(Exception):
@@ -2907,11 +2962,17 @@ class MuJoCoSimEngine(
         base["methods"]["stop_cameras_recording"] = (
             "() -> dict  # stop start_cameras_recording, flush each camera's "
             "buffer to an MP4, and report per-camera frame counts + paths; "
-            "idempotent. The inverse of start_cameras_recording"
+            "idempotent. The inverse of start_cameras_recording. status='error' "
+            "with stopped=False means the recorder thread outlived the join "
+            "budget: nothing was encoded and the recording is still registered, "
+            "so call it again to re-join that loop"
         )
         base["methods"]["get_cameras_recording_status"] = (
             "() -> dict  # inspect an in-progress start_cameras_recording "
-            "(elapsed time, per-camera frame counts); reports idle when none is active"
+            "(elapsed time, per-camera frame counts, running vs thread_alive); "
+            "phase is recording, stopping while a loop outlives the stop that "
+            "asked it to exit, unflushed once that loop has gone but its frames "
+            "are still unencoded, or idle only when no buffer is left to encode"
         )
 
         # Physics-introspection / grounding surface. The discovery surface
@@ -3705,21 +3766,28 @@ class MuJoCoSimEngine(
             material=material,
             is_static=is_static,
         )
-        self._world.objects[name] = obj
-
         # Every scene mutation goes through spec.recompile() - no branching
         # on robots / scene_loaded, and no XML round-trip. MjSpec preserves
         # existing joint state automatically on recompile.
+        #
+        # Registration, swap and rollback are one critical section (see "Scene
+        # mutation and self._lock" in the module docstring): the recorder thread
+        # is not covered by the policy gate, so outside the lock it can observe
+        # the object registered against a model that does not contain it, or a
+        # rolled-back registry against the recompiled model.
         try:
-            if not inject_object_into_scene(self._world, obj):
-                # Injection returned False (compile error). Clean up.
-                self._world.objects.pop(name, None)
-                return {
-                    "status": "error",
-                    "content": [{"text": f"Failed to inject '{name}': spec recompile refused."}],
-                }
+            with self._lock:
+                self._world.objects[name] = obj
+                if not inject_object_into_scene(self._world, obj):
+                    # Injection returned False (compile error). Clean up.
+                    self._world.objects.pop(name, None)
+                    return {
+                        "status": "error",
+                        "content": [{"text": f"Failed to inject '{name}': spec recompile refused."}],
+                    }
         except (ValueError, RuntimeError) as e:
-            self._world.objects.pop(name, None)
+            with self._lock:
+                self._world.objects.pop(name, None)
             return {
                 "status": "error",
                 "content": [{"text": f"Failed to inject '{name}' into live scene: {e}"}],
@@ -3792,10 +3860,15 @@ class MuJoCoSimEngine(
                     }
                 ],
             }
-        del self._world.objects[name]
-        # spec-based path: eject_body_from_scene looks up the body in the
-        # live MjSpec, deletes it, and recompiles preserving remaining state.
-        eject_body_from_scene(self._world, name)
+        # Deregistration and the recompile are one critical section (see the
+        # module docstring): outside the lock a recorder thread can observe the
+        # object already gone from the registry while the model it renders
+        # still contains the body.
+        with self._lock:
+            del self._world.objects[name]
+            # spec-based path: eject_body_from_scene looks up the body in the
+            # live MjSpec, deletes it, and recompiles preserving remaining state.
+            eject_body_from_scene(self._world, name)
         return {"status": "success", "content": [{"text": f"'{name}' removed."}]}
 
     def move_object(
@@ -4142,19 +4215,24 @@ class MuJoCoSimEngine(
             height=height,
             parent_body=parent_body or "",
         )
-        self._world.cameras[name] = cam
-
         # Spec-based path: inject_camera_into_scene adds the camera to the
-        # live spec and recompiles preserving state.
+        # live spec and recompiles preserving state. Registration, swap and
+        # rollback are one critical section (see the module docstring): a
+        # recorder thread resolves camera names against the registry and then
+        # renders them against the model, so outside the lock it can pick up a
+        # camera this recompile has not installed yet.
         try:
-            if not inject_camera_into_scene(self._world, cam):
-                self._world.cameras.pop(name, None)
-                return {
-                    "status": "error",
-                    "content": [{"text": f"Failed to inject camera '{name}': spec recompile refused."}],
-                }
+            with self._lock:
+                self._world.cameras[name] = cam
+                if not inject_camera_into_scene(self._world, cam):
+                    self._world.cameras.pop(name, None)
+                    return {
+                        "status": "error",
+                        "content": [{"text": f"Failed to inject camera '{name}': spec recompile refused."}],
+                    }
         except (ValueError, RuntimeError) as e:
-            self._world.cameras.pop(name, None)
+            with self._lock:
+                self._world.cameras.pop(name, None)
             return {
                 "status": "error",
                 "content": [{"text": f"Failed to inject camera '{name}' into live scene: {e}"}],
@@ -4207,24 +4285,30 @@ class MuJoCoSimEngine(
             return err
         cam = self._world.cameras[name]
 
-        if self._world._backend_state.get("spec") is not None:
-            # Use the namespaced MuJoCo name if we have it (camera came from
-            # a robot's URDF), else the short name.
-            if not eject_camera_from_scene(self._world, cam.name or name):
-                return {
-                    "status": "error",
-                    "content": [
-                        {
-                            "text": (
-                                f"Camera '{name}' was not removed: the scene would not "
-                                "recompile without it. The camera is still registered and "
-                                "the scene is unchanged; the compiler's reason is logged."
-                            )
-                        }
-                    ],
-                }
+        # The recompile and the deregistration are one critical section (see
+        # "Scene mutation and self._lock" in the module docstring): outside the
+        # lock a recorder thread can resolve this camera from the registry and
+        # then render it against the model the eject has already recompiled
+        # without it.
+        with self._lock:
+            if self._world._backend_state.get("spec") is not None:
+                # Use the namespaced MuJoCo name if we have it (camera came
+                # from a robot's URDF), else the short name.
+                if not eject_camera_from_scene(self._world, cam.name or name):
+                    return {
+                        "status": "error",
+                        "content": [
+                            {
+                                "text": (
+                                    f"Camera '{name}' was not removed: the scene would not "
+                                    "recompile without it. The camera is still registered and "
+                                    "the scene is unchanged; the compiler's reason is logged."
+                                )
+                            }
+                        ],
+                    }
 
-        del self._world.cameras[name]
+            del self._world.cameras[name]
         return {"status": "success", "content": [{"text": f"Camera '{name}' removed."}]}
 
     # Simulation Control
@@ -5047,6 +5131,49 @@ class MuJoCoSimEngine(
 
     # Policy orchestration overrides (MuJoCo-specific wiring)
 
+    def _announce_rollout(self, robot_name: str) -> None:
+        """Claim ``robot_name`` for a rollout this thread is about to launch.
+
+        Raising ``policy_running`` is the launcher's job, and it must happen on
+        the launching thread before the rollout can take its first frame. Two
+        entry points launch one: the blocking :meth:`run_policy`, whose caller
+        IS that thread, and :meth:`start_policy`, which calls this before it
+        submits to the executor.
+
+        The flag used to be raised by :meth:`_make_run_policy_hook`, which runs
+        on the worker. Between ``start_policy`` returning and the rollout's
+        first frame the flag therefore read ``False`` while
+        :meth:`_active_policy_robots` already listed the robot - so a stop in
+        that window was answered ``Was not running``, and the worker's own raise
+        then overwrote the lowered flag and the rollout ran to full duration
+        (#2833). Claiming the robot here closes the window: a stop can only ever
+        land on a raised flag, nothing re-raises it afterwards, and the hook's
+        own first-frame check refuses the rollout.
+        """
+        world = self._world
+        if world is not None and registered(world.robots, robot_name):
+            robot = world.robots[robot_name]
+            robot.policy_running = True
+            robot.policy_claim_stops = robot.policy_stops
+
+    def _drive_rollout(self, robot_name: str, **kwargs: Any) -> dict[str, Any]:
+        """Drive an already-announced rollout to completion, then release it.
+
+        The body shared by the blocking :meth:`run_policy` and the worker
+        :meth:`start_policy` submits, so both reach the same loop without either
+        one re-raising ``policy_running`` on the wrong thread (see
+        :meth:`_announce_rollout`). Lowers the flag in a ``finally`` so a
+        rollout that ends for any reason - completion, a cooperative stop, or a
+        raise - leaves the robot idle.
+        """
+        try:
+            return super().run_policy(robot_name, **kwargs)
+        finally:
+            if self._world is not None and registered(self._world.robots, robot_name):
+                robot = self._world.robots[robot_name]
+                robot.policy_running = False
+                robot.policy_claim_stops = None
+
     def start_policy(
         self,
         robot_name: str | None = None,
@@ -5096,7 +5223,8 @@ class MuJoCoSimEngine(
 
         # Validate the step horizon synchronously, before submitting to the
         # executor. run_policy runs on a background thread, so a malformed
-        # horizon (duration <= 0, n_steps <= 0, control_frequency <= 0) would
+        # horizon (a duration resolving to no steps, n_steps <= 0,
+        # control_frequency <= 0) would
         # otherwise be reported only inside the future - the caller would
         # receive a false "started" success and the robot would be left marked
         # as running. Both horizon knobs are covered: the step count via
@@ -5113,7 +5241,7 @@ class MuJoCoSimEngine(
         if horizon_error is not None:
             return horizon_error
         if resolved_n_steps is None:
-            if err := self._validate_duration(resolved_duration, "start_policy"):
+            if err := self._validate_duration(resolved_duration, "start_policy", control_frequency):
                 return err
         if err := self._validate_action_horizon(action_horizon, "start_policy"):
             return err
@@ -5152,8 +5280,14 @@ class MuJoCoSimEngine(
         if err := self._unresolvable_policy_provider_error(policy_provider, policy_config):
             return err
 
+        # Claim the robot on THIS thread, before the submit. A stop issued
+        # between this call returning and the rollout's first frame then lands
+        # on a raised flag, is reported as a stop, and is not overwritten by the
+        # worker (#2833). The worker runs the shared body rather than the public
+        # blocking entry, which is the half that must not re-claim the robot.
+        self._announce_rollout(robot_name)
         future = self._executor.submit(
-            self.run_policy,
+            self._drive_rollout,
             robot_name,
             policy_provider=policy_provider,
             policy_config=policy_config,
@@ -5181,7 +5315,8 @@ class MuJoCoSimEngine(
         """MuJoCo override: recording + policy_running flag + lock.
 
         Returns an ``on_frame(step, obs, action)`` closure that:
-        * flips ``robot.policy_running`` so ``stop_policy`` can interrupt,
+        * READS ``robot.policy_running`` so ``stop_policy`` can interrupt (the
+          launching thread raises it - see :meth:`_announce_rollout`),
         * appends to ``_backend_state["trajectory"]`` when recording,
         * forwards frames to the LeRobot ``dataset_recorder`` if attached,
         * raises ``PolicyStopped`` when the user calls ``stop_policy``.
@@ -5195,7 +5330,20 @@ class MuJoCoSimEngine(
             return None
 
         robot = world.robots[robot_name]
-        robot.policy_running = True
+        # Raise the flag for a rollout whose claim is still current, and ONLY
+        # then. This factory runs on the executor worker for a ``start_policy``
+        # rollout, so an unconditional raise here landed after the launch
+        # returned - it overwrote a stop issued in the launch window and the
+        # rollout ran to full duration having reported that it stopped (#2833).
+        # A claim carries the stop count its launcher observed
+        # (:meth:`_announce_rollout`); once a stop has landed against it the
+        # count has moved, and leaving the flag down here is what makes the
+        # hook's own first-frame check refuse the rollout. ``None`` means no
+        # launcher claimed the robot - a caller driving ``PolicyRunner`` with
+        # this hook directly - and that rollout is claimed here, on its own
+        # thread, exactly as before.
+        if robot.policy_claim_stops is None or robot.policy_claim_stops == robot.policy_stops:
+            robot.policy_running = True
         robot.policy_instruction = instruction
         robot.policy_steps = 0
 
@@ -5369,34 +5517,33 @@ class MuJoCoSimEngine(
         except ValueError as e:
             return {"status": "error", "content": [{"text": str(e)}]}
 
-        try:
-            return super().run_policy(
-                robot_name,
-                policy_provider=policy_provider,
-                policy_config=policy_config,
-                instruction=instruction,
-                duration=duration,
-                control_frequency=control_frequency,
-                action_horizon=action_horizon,
-                fast_mode=fast_mode,
-                video=video,
-                policy_object=policy_object,
-                n_steps=n_steps,
-                max_steps=max_steps,
-                max_onframe_failures=max_onframe_failures,
-                control_substeps=control_substeps,
-                policy_kwargs=policy_kwargs,
-                seed=seed,
-                n_episodes=n_episodes,
-                reset_between=reset_between,
-                async_rtc=async_rtc,
-                rtc_inference_timeout_s=rtc_inference_timeout_s,
-                wbc_install_torque_control=wbc_install_torque_control,
-                stop_when=stop_when,
-            )
-        finally:
-            if self._world is not None and registered(self._world.robots, robot_name):
-                self._world.robots[robot_name].policy_running = False
+        # The blocking entry runs on the caller's own thread, so claiming the
+        # robot here is synchronous with the call and opens no window.
+        self._announce_rollout(robot_name)
+        return self._drive_rollout(
+            robot_name,
+            policy_provider=policy_provider,
+            policy_config=policy_config,
+            instruction=instruction,
+            duration=duration,
+            control_frequency=control_frequency,
+            action_horizon=action_horizon,
+            fast_mode=fast_mode,
+            video=video,
+            policy_object=policy_object,
+            n_steps=n_steps,
+            max_steps=max_steps,
+            max_onframe_failures=max_onframe_failures,
+            control_substeps=control_substeps,
+            policy_kwargs=policy_kwargs,
+            seed=seed,
+            n_episodes=n_episodes,
+            reset_between=reset_between,
+            async_rtc=async_rtc,
+            rtc_inference_timeout_s=rtc_inference_timeout_s,
+            wbc_install_torque_control=wbc_install_torque_control,
+            stop_when=stop_when,
+        )
 
     def run_multi_policy(
         self,
@@ -5465,6 +5612,12 @@ class MuJoCoSimEngine(
                 must name robots driven by this call; a robot omitted from the
                 mapping uses the default horizon (8).
             n_steps: Alternate horizon in steps (overrides duration when set).
+                Honoured exactly: the loop runs this many synchronized steps,
+                and records this many merged frames when a recording is
+                attached. It is not re-derived as ``int(duration x
+                control_frequency)`` from the ``n_steps / control_frequency``
+                duration, which truncates at any rate the count does not
+                divide evenly (``29`` at 50 Hz, ``1`` at 49 Hz).
             max_steps: Legacy alias for ``n_steps``.
 
         Returns:
@@ -5522,7 +5675,7 @@ class MuJoCoSimEngine(
         if horizon_error is not None:
             return horizon_error
         if n_steps is None:
-            if err := self._validate_duration(duration, "run_multi_policy"):
+            if err := self._validate_duration(duration, "run_multi_policy", control_frequency):
                 return err
 
         # Normalize action_horizon to a per-robot mapping through the shared
@@ -5562,8 +5715,20 @@ class MuJoCoSimEngine(
         any_needs_images = any(getattr(p, "requires_images", True) for p in policies.values())
         skip_images = not (any_needs_images or recording)
 
-        total_steps = int(duration * control_frequency)
-        action_sleep = 1.0 / control_frequency if control_frequency > 0 else 0.0
+        # Honour the RESOLVED step count. ``_resolve_horizon`` above returns both
+        # the wall-clock ``duration`` and the normalized ``n_steps``, and the
+        # duration it returns on the horizon path is itself derived as ``n_steps
+        # / control_frequency``. Recomputing ``int(duration * control_frequency)``
+        # from that float truncates on any frequency the count does not divide
+        # evenly: ``n_steps=29`` at 50 Hz ran 28 steps, and ``n_steps=1`` at
+        # 49 Hz ran ZERO and still reported a completed rollout - the
+        # degenerate-success shape ``_validate_positive_int`` exists to refuse.
+        # One merged frame is recorded per timestep, so a truncated horizon is
+        # also a dataset episode one frame shorter than the caller asked for.
+        # The single-robot loop (``PolicyRunner.run``) already forwards the count
+        # verbatim for exactly this reason; this is that rule for the
+        # multi-robot loop.
+        total_steps = n_steps if n_steps is not None else int(duration * control_frequency)
 
         # Mark all robots as running so stop_policy can interrupt the loop.
         for rname in policies:
@@ -5587,134 +5752,151 @@ class MuJoCoSimEngine(
         # chunk) leaves a dangling partial episode we must discard so the next
         # recording starts at frame 0 rather than appending to a half-episode.
         completed_cleanly = False
+        # Pace on a DEADLINE, not a delay: ``time.sleep(1 / control_frequency)``
+        # added each step's work - N policy queries, one camera render, the
+        # recorder's frame write - to the period, so the loop ran at ``1 /
+        # (period + work)`` while ``duration`` is documented in wall-clock
+        # seconds. Missed deadlines are dropped rather than chased, so a slow
+        # step does not fire a burst of back-to-back actions at the robots.
+        # ``_validate_positive_frequency`` above has already refused a
+        # non-positive rate, so the period is always usable and the pace is
+        # unconditional. Acquired with ``with``: the ticker owns a selector and a
+        # socketpair, so releasing it is the language's job rather than this
+        # loop's to remember. Every paced loop in the package is held to that, so
+        # constructing a bare ``Ticker(...)`` here is a suite failure rather than
+        # one leaked descriptor pair per rollout. Local import: the mesh
+        # package __init__ pulls the fleet stack, the same reason ``init_mesh``
+        # is imported at its point of use in this module.
         try:
-            while step_count < total_steps:
-                # --- 1. Observe every robot + render cameras ONCE (under lock).
-                # get_observation renders ALL cameras, so we only need to fetch
-                # the camera images once (from any robot's observation); per-robot
-                # we keep the scalar joint values.
-                per_robot_obs: dict[str, dict[str, Any]] = {}
-                camera_imgs: dict[str, Any] = {}
-                first = True
-                for rname in policies:
-                    obs = self.get_observation(robot_name=rname, skip_images=(skip_images or not first))
-                    # Split scalars (joints) from ndarrays (camera images).
-                    scal = {k: v for k, v in obs.items() if not isinstance(v, np.ndarray)}
-                    per_robot_obs[rname] = scal
-                    if first:
-                        camera_imgs = {k: v for k, v in obs.items() if isinstance(v, np.ndarray)}
-                        first = False
+            from strands_robots.mesh.pacing import Ticker
 
-                # --- 2. Get each robot's action for THIS step.
-                # Re-query a policy ONLY when its action queue is empty (open-loop
-                # chunk execution). Between re-queries we replay the buffered
-                # chunk - so an expensive VLA runs inference once per horizon
-                # steps, not every step. Observation is still gathered every step
-                # (cheap) so recorded frames carry live state, and the chunk's
-                # first action is computed from a fresh observation.
-                per_robot_action: dict[str, dict[str, Any]] = {}
-                for rname, pol in policies.items():
-                    # Cooperative stop check.
-                    if not self._world.robots[rname].policy_running:
-                        raise CooperativeStop(f"Policy stopped on '{rname}'")
-                    if not action_queues[rname]:
-                        pol_obs = dict(per_robot_obs[rname])
-                        # Give the policy this robot's camera view(s) too.
-                        pol_obs.update(camera_imgs)
-                        coro = pol.get_actions(pol_obs, instr_map[rname])
-                        acts = _resolve_coroutine(coro)
-                        # Buffer the policy's chunk; re-query only when drained.
-                        # Size the chunk via the shared ChunkedPolicy rule so a
-                        # chunk-emitting policy (actions_per_step == N) keeps its
-                        # full trained chunk here exactly as the single-policy
-                        # runner does - clamping to action_horizon alone would
-                        # drop the chunk tail and force an out-of-distribution
-                        # re-query for one driver but not the other.
-                        _chunk = resolve_chunk_length(pol, horizon_map[rname])
-                        for a in acts[:_chunk]:
-                            action_queues[rname].append(a)
-                    if not action_queues[rname]:
-                        # A policy yielded no actions (empty chunk) -- emitting an
-                        # empty action dict here would remap downstream to all-zero
-                        # ctrl, silently corrupting the recording with dead frames.
-                        # Fail loudly instead (Key Conventions #6: no silent
-                        # zero-valued action on failure).
-                        raise RuntimeError(
-                            f"Policy for robot '{rname}' returned an empty action chunk; "
-                            "cannot advance the synchronized loop. Check the policy's "
-                            "get_actions() output."
-                        )
-                    per_robot_action[rname] = action_queues[rname].popleft()
-
-                # --- 3. Apply ALL robots' ctrl, then step physics ONCE.
-                with self._lock:
-                    mj = self._mj
-                    for rname, act in per_robot_action.items():
-                        # write ctrl only (no per-robot mj_step) - we step once
-                        # after every robot's ctrl is set.
-                        robot = self._world.robots[rname]
-                        pfx = robot.namespace or ""
-                        self._apply_action_by_name(self._world._model, self._world._data, act, pfx, mj)
-                    mj.mj_step(self._world._model, self._world._data)
-                    # Kinematic attachments (attach_bodies mode="kinematic")
-                    # follow their parent every physics step, on this
-                    # synchronized loop as much as on the single-robot policy
-                    # path. Fast no-op when none are registered.
-                    self._apply_kinematic_attachments()
-                    self._world.sim_time = self._world._data.time
-                    self._world.step_count += 1
-                    if hasattr(self, "_viewer_handle") and self._viewer_handle is not None:
-                        self._viewer_handle.sync()
-
-                # --- 4. Record ONE merged frame (all robots + all cameras).
-                # ``recording`` already implies ``recorder is not None`` (see its
-                # definition), but the explicit check narrows the Optional for the
-                # type checker at the add_frame call below.
-                if recording and recorder is not None:
-                    merged_obs: dict[str, Any] = {}
-                    merged_act: dict[str, Any] = {}
-                    # The schema declares a state column for every robot in the
-                    # scene, and ``policies`` need only name robots that exist -
-                    # not all of them. A robot this call does not drive is a
-                    # readable measurement, so its columns are filled from the
-                    # engine at this step rather than left to add_frame's 0.0
-                    # fill, which records them as a zero pose the robot is not
-                    # in. Merged first, so driven keys win any collision.
-                    merged_obs.update(undriven_robot_state(self, policies, self._world.robots))
+            with Ticker(1.0 / control_frequency) as ticker:
+                while step_count < total_steps:
+                    # --- 1. Observe every robot + render cameras ONCE (under lock).
+                    # get_observation renders ALL cameras, so we only need to fetch
+                    # the camera images once (from any robot's observation); per-robot
+                    # we keep the scalar joint values.
+                    per_robot_obs: dict[str, dict[str, Any]] = {}
+                    camera_imgs: dict[str, Any] = {}
+                    first = True
                     for rname in policies:
-                        if multi_robot:
-                            for k, v in per_robot_obs[rname].items():
-                                merged_obs[f"{rname}__{k}"] = v
-                            for k, v in per_robot_action[rname].items():
-                                merged_act[f"{rname}__{k}"] = v
-                        else:
-                            merged_obs.update(per_robot_obs[rname])
-                            merged_act.update(per_robot_action[rname])
-                    # Cameras are scene-global (already namespaced if injected
-                    # per-robot); keep ndarray keys as-is, minus any the caller
-                    # excluded via start_recording(cameras=...).
-                    rec_cams = self._world._backend_state.get("recording_cameras")
-                    merged_obs.update(_drop_unrecorded_cameras(camera_imgs, rec_cams))
-                    task = instr_map[next(iter(policies))]
-                    # add_frame writes to LeRobot's image-writer queue and parquet
-                    # buffer; it does not touch MuJoCo model/data. The consistent
-                    # state snapshot was already taken under self._lock in steps 1
-                    # and 3, and merged_obs/merged_act are plain copies, so holding
-                    # the physics lock across frame writeout would needlessly starve
-                    # other lock holders (viewer sync, concurrent tool reads).
-                    recorder.add_frame(
-                        observation=merged_obs,
-                        action=merged_act,
-                        task=task,
-                        required_action_keys=merged_required_action_keys,
-                    )
+                        obs = self.get_observation(robot_name=rname, skip_images=(skip_images or not first))
+                        # Split scalars (joints) from ndarrays (camera images).
+                        scal = {k: v for k, v in obs.items() if not isinstance(v, np.ndarray)}
+                        per_robot_obs[rname] = scal
+                        if first:
+                            camera_imgs = {k: v for k, v in obs.items() if isinstance(v, np.ndarray)}
+                            first = False
 
-                step_count += 1
-                for rname in policies:
-                    self._world.robots[rname].policy_steps = step_count
+                    # --- 2. Get each robot's action for THIS step.
+                    # Re-query a policy ONLY when its action queue is empty (open-loop
+                    # chunk execution). Between re-queries we replay the buffered
+                    # chunk - so an expensive VLA runs inference once per horizon
+                    # steps, not every step. Observation is still gathered every step
+                    # (cheap) so recorded frames carry live state, and the chunk's
+                    # first action is computed from a fresh observation.
+                    per_robot_action: dict[str, dict[str, Any]] = {}
+                    for rname, pol in policies.items():
+                        # Cooperative stop check.
+                        if not self._world.robots[rname].policy_running:
+                            raise CooperativeStop(f"Policy stopped on '{rname}'")
+                        if not action_queues[rname]:
+                            pol_obs = dict(per_robot_obs[rname])
+                            # Give the policy this robot's camera view(s) too.
+                            pol_obs.update(camera_imgs)
+                            coro = pol.get_actions(pol_obs, instr_map[rname])
+                            acts = _resolve_coroutine(coro)
+                            # Buffer the policy's chunk; re-query only when drained.
+                            # Size the chunk via the shared ChunkedPolicy rule so a
+                            # chunk-emitting policy (actions_per_step == N) keeps its
+                            # full trained chunk here exactly as the single-policy
+                            # runner does - clamping to action_horizon alone would
+                            # drop the chunk tail and force an out-of-distribution
+                            # re-query for one driver but not the other.
+                            _chunk = resolve_chunk_length(pol, horizon_map[rname])
+                            for a in acts[:_chunk]:
+                                action_queues[rname].append(a)
+                        if not action_queues[rname]:
+                            # A policy yielded no actions (empty chunk) -- emitting an
+                            # empty action dict here would remap downstream to all-zero
+                            # ctrl, silently corrupting the recording with dead frames.
+                            # Fail loudly instead (Key Conventions #6: no silent
+                            # zero-valued action on failure).
+                            raise RuntimeError(
+                                f"Policy for robot '{rname}' returned an empty action chunk; "
+                                "cannot advance the synchronized loop. Check the policy's "
+                                "get_actions() output."
+                            )
+                        per_robot_action[rname] = action_queues[rname].popleft()
 
-                if action_sleep:
-                    time.sleep(action_sleep)
+                    # --- 3. Apply ALL robots' ctrl, then step physics ONCE.
+                    with self._lock:
+                        mj = self._mj
+                        for rname, act in per_robot_action.items():
+                            # write ctrl only (no per-robot mj_step) - we step once
+                            # after every robot's ctrl is set.
+                            robot = self._world.robots[rname]
+                            pfx = robot.namespace or ""
+                            self._apply_action_by_name(self._world._model, self._world._data, act, pfx, mj)
+                        mj.mj_step(self._world._model, self._world._data)
+                        # Kinematic attachments (attach_bodies mode="kinematic")
+                        # follow their parent every physics step, on this
+                        # synchronized loop as much as on the single-robot policy
+                        # path. Fast no-op when none are registered.
+                        self._apply_kinematic_attachments()
+                        self._world.sim_time = self._world._data.time
+                        self._world.step_count += 1
+                        if hasattr(self, "_viewer_handle") and self._viewer_handle is not None:
+                            self._viewer_handle.sync()
+
+                    # --- 4. Record ONE merged frame (all robots + all cameras).
+                    # ``recording`` already implies ``recorder is not None`` (see its
+                    # definition), but the explicit check narrows the Optional for the
+                    # type checker at the add_frame call below.
+                    if recording and recorder is not None:
+                        merged_obs: dict[str, Any] = {}
+                        merged_act: dict[str, Any] = {}
+                        # The schema declares a state column for every robot in the
+                        # scene, and ``policies`` need only name robots that exist -
+                        # not all of them. A robot this call does not drive is a
+                        # readable measurement, so its columns are filled from the
+                        # engine at this step rather than left to add_frame's 0.0
+                        # fill, which records them as a zero pose the robot is not
+                        # in. Merged first, so driven keys win any collision.
+                        merged_obs.update(undriven_robot_state(self, policies, self._world.robots))
+                        for rname in policies:
+                            if multi_robot:
+                                for k, v in per_robot_obs[rname].items():
+                                    merged_obs[f"{rname}__{k}"] = v
+                                for k, v in per_robot_action[rname].items():
+                                    merged_act[f"{rname}__{k}"] = v
+                            else:
+                                merged_obs.update(per_robot_obs[rname])
+                                merged_act.update(per_robot_action[rname])
+                        # Cameras are scene-global (already namespaced if injected
+                        # per-robot); keep ndarray keys as-is, minus any the caller
+                        # excluded via start_recording(cameras=...).
+                        rec_cams = self._world._backend_state.get("recording_cameras")
+                        merged_obs.update(_drop_unrecorded_cameras(camera_imgs, rec_cams))
+                        task = instr_map[next(iter(policies))]
+                        # add_frame writes to LeRobot's image-writer queue and parquet
+                        # buffer; it does not touch MuJoCo model/data. The consistent
+                        # state snapshot was already taken under self._lock in steps 1
+                        # and 3, and merged_obs/merged_act are plain copies, so holding
+                        # the physics lock across frame writeout would needlessly starve
+                        # other lock holders (viewer sync, concurrent tool reads).
+                        recorder.add_frame(
+                            observation=merged_obs,
+                            action=merged_act,
+                            task=task,
+                            required_action_keys=merged_required_action_keys,
+                        )
+
+                    step_count += 1
+                    for rname in policies:
+                        self._world.robots[rname].policy_steps = step_count
+
+                    ticker.wait()
 
             completed_cleanly = True
         except CooperativeStop:
@@ -6117,10 +6299,13 @@ class MuJoCoSimEngine(
     def stop_policy(self, robot_name: str = "") -> dict[str, Any]:
         """Stop a running policy on the given robot (cooperative cancellation).
 
-        Counterpart to :meth:`start_policy`. Flips the robot's
+        Counterpart to :meth:`start_policy`. Lowers the robot's
         ``policy_running`` flag; the background loop in
         :meth:`_run_policy_loop` sees it and raises :class:`PolicyStopped`
-        which is caught cleanly inside :meth:`start_policy`.
+        which is caught cleanly inside :meth:`start_policy`. The flag is raised
+        by whichever thread LAUNCHED the rollout (:meth:`_announce_rollout`), so
+        a stop issued at any point after ``start_policy`` returns lands on a
+        raised flag and nothing re-raises it behind the stop.
 
         idempotent - if the robot exists but no policy is running, we
         still return success with 'Was not running' so callers can call
@@ -6129,6 +6314,12 @@ class MuJoCoSimEngine(
 
         empty robot_name returns a clear error instead of a silent
         match against the first robot.
+
+        Returns:
+            The agent-tool envelope. On success its ``json`` block reports
+            ``was_running`` - whether a rollout really was in flight when the
+            stop arrived - so a caller aggregating several of these answers
+            reads the verdict rather than matching on the sentence.
         """
         if not robot_name:
             return {
@@ -6138,10 +6329,34 @@ class MuJoCoSimEngine(
         if self._world is None or not registered(self._world.robots, robot_name):
             return {"status": "error", "content": [{"text": self._unknown_robot_msg(robot_name)}]}
         robot = self._world.robots[robot_name]
-        was_running = robot.policy_running
-        robot.policy_running = False
+        # Answer from the same source :meth:`list_policies_running` answers
+        # from, not from the flag alone. A rollout is in flight from the moment
+        # its Future is registered, and the two surfaces reported opposite facts
+        # about the same instant while the flag was still down (#2833). The flag
+        # is now raised by the launcher, so the union only widens the answer at
+        # the tail of a rollout whose Future has not yet been pruned - where
+        # "there was one" is still the honest reading.
+        was_running = robot_name in self._active_policy_robots()
+        # Durable: moves this robot's claim out of date, so a worker that has
+        # not yet reached its first frame cannot raise the flag back over it.
+        was_running = robot.request_policy_stop() or was_running
         msg = f"Stopped on '{robot_name}'" if was_running else f"Was not running on '{robot_name}'"
-        return {"status": "success", "content": [{"text": msg}]}
+        # The verdict travels as data as well as prose. A programmatic caller -
+        # the Device Connect ``stop`` RPC aggregates one of these answers per
+        # robot - otherwise has to re-derive "was a rollout in flight" from its
+        # own reading of the flag, which is the second source #2833 is about, or
+        # match on the sentence above. ``stop_task`` and ``stop_teleoperate``
+        # both carry their verdict in a ``json`` block for the same reason.
+        #
+        # Named ``was_running`` and not ``stopped`` deliberately: the ``stopped``
+        # key that :func:`~strands_robots.teleop_mixin._stop_reported_stopped`
+        # reads means "the loop is no longer running", which is TRUE for the
+        # nothing-to-stop case. This one is False there. Two keys spelled alike
+        # and opposite on that case is the drift worth spending a word to avoid.
+        return {
+            "status": "success",
+            "content": [{"text": msg}, {"json": {"robot": robot_name, "was_running": was_running}}],
+        }
 
     def list_policies_running(self) -> dict[str, Any]:
         """Return the names of robots currently running a policy.
@@ -6287,7 +6502,7 @@ class MuJoCoSimEngine(
         # it here makes the worker raise CooperativeStop at its next step.
         if self._world is not None:
             for r in self._world.robots.values():
-                r.policy_running = False
+                r.request_policy_stop()
 
         # Prune completed futures so we only wait on genuinely-live ones.
         self._prune_done_futures()

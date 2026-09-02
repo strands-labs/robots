@@ -474,10 +474,37 @@ class TestTheEnvelopeRefusesWhatTheNeckCannotDo:
         assert f"{HEAD_BODY_YAW_DELTA_LIMIT_DEG:g}" in _text(result)
         assert link.commands == []
 
-    def test_each_half_of_a_refused_pair_is_legal_on_its_own(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        driver, _, _ = _connected(monkeypatch)
+    def test_each_half_of_a_refused_pair_is_legal_against_a_robot_it_does_not_twist(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The discriminator: the pair is refused for being a pair, not for its values.
+
+        One driver each, so neither half is judged against the other. Without
+        this the coupling tests would pass against a driver that refuses 60
+        degrees of yaw outright.
+        """
+        head_only, _, _ = _connected(monkeypatch)
+        body_only, _, _ = _connected(monkeypatch)
+        assert head_only.send_action({"head_yaw": 60.0})["status"] == "success"
+        assert body_only.send_action({"body_yaw": -60.0})["status"] == "success"
+
+    def test_the_two_halves_in_sequence_are_still_the_pair(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Splitting a refused pair across two calls does not make it legal.
+
+        The head pose the first call commands is the one the daemon holds while
+        the second is carried out, so the twist is the same 120 degrees whether
+        the two values arrive together or apart. Owned by
+        ``tests/test_reachy_a_lone_body_yaw_is_bounded_by_the_head_target.py``.
+        """
+        driver, _, link = _connected(monkeypatch)
         assert driver.send_action({"head_yaw": 60.0})["status"] == "success"
-        assert driver.send_action({"body_yaw": -60.0})["status"] == "success"
+        link.commands.clear()
+
+        result = driver.send_action({"body_yaw": -60.0})
+
+        assert result["status"] == "error"
+        assert f"{HEAD_BODY_YAW_DELTA_LIMIT_DEG:g}" in _text(result)
+        assert link.commands == []
 
     def test_the_coupling_limit_is_inclusive(self, monkeypatch: pytest.MonkeyPatch) -> None:
         driver, _, _ = _connected(monkeypatch)

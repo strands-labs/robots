@@ -1,4 +1,4 @@
-"""Regression: no ``strands_robots`` module or test module may embed emoji.
+"""Regression: no package module, test module, or changelog fragment may embed emoji.
 
 AGENTS.md forbids emoji in code, logs, and error messages: agents read these
 strings programmatically, emoji are tokenizer noise, and they render
@@ -51,10 +51,10 @@ def test_package_sources_discovered() -> None:
     """Guard: the scan actually walked the whole package, not one subtree."""
     sources = _python_sources()
     # The package spans many subpackages; a healthy scan sees dozens of modules
-    # across simulation, tools, registry, benchmarks, device_connect, mesh, etc.
+    # across simulation, tools, registry, drivers, device_connect, mesh, etc.
     assert len(sources) > 50
     rel_dirs = {p.relative_to(_PACKAGE_DIR).parts[0] for p in sources if p.parent != _PACKAGE_DIR}
-    assert {"simulation", "tools", "registry", "benchmarks", "device_connect"} <= rel_dirs
+    assert {"simulation", "tools", "registry", "drivers", "device_connect"} <= rel_dirs
 
 
 def test_no_emoji_in_package_sources() -> None:
@@ -88,7 +88,7 @@ def test_test_sources_discovered() -> None:
     sources = _test_sources()
     assert len(sources) > 50
     rel_dirs = {p.relative_to(_TESTS_DIR).parts[0] for p in sources if p.parent != _TESTS_DIR}
-    assert {"simulation", "policies", "benchmarks"} <= rel_dirs
+    assert {"simulation", "policies", "drivers"} <= rel_dirs
 
 
 def test_no_emoji_in_test_sources() -> None:
@@ -102,3 +102,55 @@ def test_no_emoji_in_test_sources() -> None:
                     f"{path.relative_to(_TESTS_DIR.parent)}:{lineno}: U+{ord(cp[0]):04X} {line.strip()[:80]!r}"
                 )
     assert not offenders, "emoji found in test sources:\n" + "\n".join(offenders)
+
+
+# Changelog news fragments are the third graded surface. ``changelog.d/*.md`` is
+# folded *verbatim* into ``CHANGELOG.md`` by ``scripts/assemble_changelog.py
+# --apply``, so a glyph in a fragment is a glyph in the released notes - and
+# neither scan above can see it, because both walk ``*.py`` only. That is not
+# hypothetical: the ``U+1F6A8`` marker this directory's ``2982-`` fragment
+# describes as *stripped* was still sitting in the fragment prose, and would
+# have folded into the log on the next release, behind a fully green run.
+#
+# Every ``*.md`` in the directory is scanned, with no reserved-name exemption.
+# ``README.md`` documents the fragment convention and is the file a contributor
+# copies a skeleton out of, so holding it to the same bar is the point rather
+# than an oversight.
+_FRAGMENT_DIR = Path(__file__).resolve().parents[1] / "changelog.d"
+
+
+def _fragment_sources() -> list[Path]:
+    return sorted(_FRAGMENT_DIR.glob("*.md"))
+
+
+def test_fragment_dir_still_resolves() -> None:
+    """Guard: the scan points at the fragment directory rather than at nothing.
+
+    Deliberately *not* a file-count assertion, unlike the two guards above.
+    ``assemble_changelog.py --apply`` ``unlink``s every fragment it consumes, so
+    an empty ``changelog.d/`` is the legitimate state of the tree immediately
+    after a release, and a ``len(...) > N`` guard would turn ``main`` red on the
+    release commit itself. The failure actually worth catching is the scan
+    walking a path the fragments have moved out of; the convention doc lives
+    alongside them, so its presence is what proves the path still resolves.
+    """
+    assert _FRAGMENT_DIR.is_dir(), f"fragment directory is missing: {_FRAGMENT_DIR}"
+    assert (_FRAGMENT_DIR / "README.md").is_file(), (
+        f"{_FRAGMENT_DIR / 'README.md'} is absent - the fragment directory was moved or renamed "
+        "and this scan is now walking the wrong path"
+    )
+
+
+def test_no_emoji_in_changelog_fragments() -> None:
+    """No news fragment may embed emoji: its text is folded verbatim into the log."""
+    offenders: list[str] = []
+    for path in _fragment_sources():
+        for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            for match in _EMOJI.finditer(line):
+                cp = match.group()
+                offenders.append(
+                    f"{path.relative_to(_FRAGMENT_DIR.parent)}:{lineno}: U+{ord(cp[0]):04X} {line.strip()[:80]!r}"
+                )
+    assert not offenders, "emoji found in changelog fragments (folded verbatim into CHANGELOG.md):\n" + "\n".join(
+        offenders
+    )

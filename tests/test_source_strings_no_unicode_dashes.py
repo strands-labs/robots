@@ -38,7 +38,7 @@ def test_package_sources_discovered() -> None:
     sources = _python_sources()
     assert len(sources) > 50
     rel_dirs = {p.relative_to(_PACKAGE_DIR).parts[0] for p in sources if p.parent != _PACKAGE_DIR}
-    assert {"simulation", "tools", "registry", "benchmarks", "device_connect"} <= rel_dirs
+    assert {"simulation", "tools", "registry", "drivers", "device_connect"} <= rel_dirs
 
 
 def test_no_unicode_dashes_in_package_sources() -> None:

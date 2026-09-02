@@ -1,12 +1,17 @@
 """Choose which driver builds a ``mode="real"`` robot, and find it.
 
-Two questions, kept apart because they have different answers:
+Three questions, kept apart because they have different answers:
 
 * *Which driver?* :func:`resolve_driver` - a name, from the caller's ``driver=``
   or the robot's registry entry, defaulting to
   :data:`~strands_robots.drivers.base.DEFAULT_DRIVER`.
 * *Which class?* :func:`get_native_driver_class` - the class a native driver
   package registered for this robot, or ``None``.
+* *Which drivers could?* :func:`list_driver_coverage` - for every registered
+  robot, the driver names able to build it, joined from this table and the
+  package registry's declared lerobot types. Resolution picks one of them; the
+  join is the only surface that reports the robots for which there is nothing to
+  pick.
 
 The native table starts empty: every robot in the package registry is driven
 through lerobot, so nothing is registered until a driver package calls
@@ -21,7 +26,7 @@ from __future__ import annotations
 import logging
 
 from strands_robots.drivers.base import DEFAULT_DRIVER, DRIVER_CHOICES, missing_driver_members
-from strands_robots.registry import get_driver, resolve_name
+from strands_robots.registry import get_driver, get_hardware_type, list_robots, resolve_name
 
 logger = logging.getLogger(__name__)
 
@@ -154,6 +159,56 @@ def list_native_drivers() -> dict[str, str]:
         Canonical robot name -> driver class name, sorted by robot name.
     """
     return {name: cls.__name__ for name, cls in sorted(_NATIVE_DRIVERS.items())}
+
+
+def list_driver_coverage() -> dict[str, tuple[str, ...]]:
+    """Report which drivers can build each registered robot, for every robot.
+
+    :func:`list_native_drivers` answers half the question and
+    :func:`~strands_robots.registry.get_hardware_type` the other half, and
+    neither is a complete answer to "can I drive this robot for real". A robot
+    may be reachable through lerobot only, through a native driver only, through
+    both, or through neither -- and the last group is the one no existing surface
+    reports at all, because it is defined by two absences. Assembling it by hand
+    is how a coverage list goes stale: a robot that gained a native driver still
+    reads as a gap until someone re-runs the join.
+
+    Reports what the two registries *declare*, so it needs no optional
+    dependency and no hardware:
+
+    * ``"lerobot"`` when the robot declares a ``hardware.lerobot_type``. That is
+      the type string :class:`~strands_robots.hardware_robot.Robot` hands to
+      lerobot's ``RobotConfig``; whether lerobot is installed is a property of
+      the environment, not of the robot, so it is deliberately not consulted.
+    * ``"strands"`` when a native driver is registered for the robot -- by this
+      package's own :data:`~strands_robots.drivers._SHIPPED_DRIVERS`, or by any
+      driver package that has called :func:`register_native_driver`.
+
+    Both names are :data:`~strands_robots.drivers.base.DRIVER_CHOICES` values, so
+    an entry reads as the set of ``driver=`` arguments that can build that robot.
+    Which one *wins* for a robot that has both is :func:`resolve_driver`'s
+    answer, not this one's: coverage is about what exists, resolution about what
+    is chosen.
+
+    Returns:
+        Canonical robot name -> the driver names that can build it, sorted by
+        robot name. An empty tuple means the robot is simulation-only: neither
+        registry can reach hardware for it, and ``mode="real"`` has nowhere to
+        go until a driver is written or a lerobot type is declared.
+    """
+    coverage: dict[str, tuple[str, ...]] = {}
+    for entry in list_robots("all"):
+        name = str(entry["name"])
+        drivers: list[str] = []
+        if get_hardware_type(name) is not None:
+            drivers.append(DEFAULT_DRIVER)
+        if get_native_driver_class(name) is not None:
+            # The literal rather than a constant, matching the one call site
+            # that already reads it (``strands_robots.robot`` builds a native
+            # driver when the resolved name is this).
+            drivers.append("strands")
+        coverage[name] = tuple(drivers)
+    return coverage
 
 
 def _native_driver_refusal(robot_type: str) -> str | None:

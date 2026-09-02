@@ -455,6 +455,44 @@ then only a lower bound, reported in the `unreadable_files` diagnostics.
 | `save_episode` | `[lerobot]` | Close current rollout as one episode (call once per `run_policy` for N episodes) |
 | `start_cameras_recording` / `stop_cameras_recording` | `[sim-mujoco]` alone | Plain MP4, no parquet |
 
+`stop_cameras_recording` returns a verdict, not just a report. The daemon
+recorder runs in its own thread, so the stop asks that loop to exit and waits
+5 s for it; if the loop is still inside `render` when the budget expires -- a
+wedged GL context, an EGL device that stopped answering -- the call is a
+structured **error** carrying `stopped: False` and the per-camera buffered frame
+counts, and no MP4 is written:
+
+```python
+result = sim.stop_cameras_recording()
+if result["status"] == "error":
+    # The loop is still capturing. Nothing was encoded (an MP4 read from a
+    # buffer that is still growing would not describe either frame list), and
+    # the recording is still registered -- call stop again to re-join it.
+    result = sim.stop_cameras_recording()
+```
+
+Only a flush deregisters a recording, so being registered is exactly what "holds
+frames nobody has encoded" means -- and that is what both start verbs check.
+`start_cameras_recording` and `start_cameras_recording_synchronous` refuse a new
+recording for as long as the old one is registered, whether or not its thread is
+still alive: while it is, starting would put a second thread on the same cameras,
+and once it has exited, starting would silently discard the frames the failed
+stop just promised were recoverable. Retrying the stop is the remedy in both
+cases, and on a recording whose loop has exited it joins immediately and encodes.
+
+`get_cameras_recording_status` reports which of the four phases holds, in its
+text and as `phase` in its JSON block:
+
+| `phase` | `running` | `thread_alive` | Meaning |
+|---|---|---|---|
+| `recording` | `True` | `True` | Capturing normally. |
+| `stopping` | `False` | `True` | A stop's join expired; frames can still land. |
+| `unflushed` | `False` | `False` | The loop has exited, frames still unencoded -- stop again to flush. |
+| `idle` | - | - | Nothing registered; there is no buffer left to encode. |
+
+`[idle]` is therefore a promise that nothing is pending, which is why the
+settled-but-registered state gets its own name instead of borrowing it.
+
 `fps`, `width`, `height` and `max_frames_per_camera` on the plain-MP4 recorders
 must be positive whole numbers - the same domain `run_policy(video={...})`,
 `start_recording(fps=...)` and the shared encoder
@@ -733,6 +771,34 @@ Construct the recorder with `strict=False` to trade that for best-effort
 recording: a failed write is counted in `dropped_frame_count`, warned about at
 `WARNING` (on the 1st, 2nd, 4th, 8th ... failure so a 50 Hz loop cannot flood the
 log), and the rollout continues.
+
+### An episode the recorder cannot flush stops a recorded evaluation
+
+`save_episode` is the episode-level counterpart, and a failed flush is worse than
+a lost frame rather than milder. The recorder marks itself closed, because the
+LeRobot episode buffer is in an undefined state after a partial write - and
+`add_frame` returns immediately on a closed recorder, without writing a frame,
+without raising `RecordingFrameError`, and without counting a
+`dropped_frame_count`. Every later episode is therefore discarded in silence,
+leaving no trace even in the recorder's own accounting.
+
+So every flush refuses rather than continues. `save_episode()` and
+`stop_recording()` drop the poisoned recorder and return `status="error"`,
+`run_policy(n_episodes=N)` aborts its remaining episodes, `reset()` surfaces the
+failure instead of resetting into an undefined state, and a recorded
+`eval_policy` / `evaluate_benchmark` - one driven with an `on_frame` hook that
+calls `add_frame`, which is the only way those two feed a recorder - stops at the
+episode whose flush failed and reports the reason:
+
+```python
+result = sim.eval_policy(robot_name="so100", n_episodes=20, on_frame=hook)
+payload = next(b["json"] for b in result["content"] if "json" in b)
+if payload["recording_save_error"]:      # None on every healthy evaluation
+    ...   # status is "error"; episodes_completed is the episode it stopped at
+```
+
+`episodes_completed` and `success_rate` then cover only the episodes that ran, so
+an aggregate is never reported over episodes whose frames reached no dataset.
 
 ## Instance methods
 

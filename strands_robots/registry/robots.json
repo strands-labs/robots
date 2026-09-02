@@ -13,7 +13,10 @@
       "aliases": [
         "cf2",
         "bitcraze_crazyflie"
-      ]
+      ],
+      "hardware": {
+        "driver": "strands"
+      }
     },
     "skydio_x2": {
       "description": "Skydio X2 Autonomous Drone",
@@ -533,7 +536,10 @@
       },
       "aliases": [
         "robotiq"
-      ]
+      ],
+      "hardware": {
+        "driver": "strands"
+      }
     },
     "robotiq_2f85_v4": {
       "description": "Robotiq 2F-85 v4 Gripper (updated model)",
@@ -544,6 +550,9 @@
         "model_xml": "2f85.xml",
         "scene_xml": "scene.xml",
         "robot_descriptions_module": "robotiq_2f85_v4_mj_description"
+      },
+      "hardware": {
+        "driver": "strands"
       }
     },
     "shadow_dexee": {
@@ -623,6 +632,9 @@
         "model_xml": "t1.xml",
         "scene_xml": "scene.xml",
         "robot_descriptions_module": "booster_t1_mj_description"
+      },
+      "hardware": {
+        "driver": "strands"
       }
     },
     "cassie": {
@@ -1039,7 +1051,10 @@
       },
       "aliases": [
         "go2"
-      ]
+      ],
+      "hardware": {
+        "driver": "strands"
+      }
     },
     "google_robot": {
       "description": "Google Robot (mobile base + arm, RT-X)",

@@ -511,8 +511,8 @@ def test_ik_install_hints_name_only_declared_extras() -> None:
 # History: docs/policies/vera.md led its install section with
 # ``pip install 'strands-robots[vera]'`` -- an extra that pyproject.toml explains
 # at length can never exist, because VERA ships only as a git repository and PyPI
-# rejects metadata carrying a VCS reference. Two further sites named ``[isaac]``
-# and ``[sim-libero]`` for what are really ``sim-isaac`` and ``benchmark-libero``.
+# rejects metadata carrying a VCS reference. A further site named ``[isaac]``
+# for what is really ``sim-isaac``.
 #
 # The failure mode is silent in the worst direction: pip does NOT fail on an
 # unknown extra, and on a current pip it no longer even warns. Measured on pip
@@ -944,20 +944,16 @@ def test_declared_qp_backends_are_real_qpsolvers_extras() -> None:
 # Installing Isaac Sim via the pip wheels (`isaacsim[all,extscache]`) silently
 # downgrades `coverage` to the 7.4.4 that `isaacsim-kernel` pins. numba's
 # tracer probe then fails, and the first *visible* symptom lands far from the
-# cause: robosuite's OSC controller import dies inside the LIBERO adapter with
+# cause: robosuite's OSC controller import dies with
 #     AttributeError: module 'coverage.types' has no attribute 'Tracer'
-# The adapter already classifies that clash and appends the remedy (#522,
-# #1803), but only once an eval reaches the import. This guard turns the red
+# from whichever import happens to reach numba first. This guard turns the red
 # herring into a named error at test-collection time instead: if this
 # environment has numba and robosuite installed alongside a `coverage` old
 # enough to trip the clash, fail loudly with the remedy.
 #
-# The floor is the adapter's single source of truth (#1805 measured it:
-# coverage 7.6.0 still names the protocol `TracerCore`; `Tracer` exists only
-# from 7.6.1 onward), so this audit and the runtime remedy can never disagree.
-from strands_robots.benchmarks.libero.adapter import _COVERAGE_TRACER_MIN_VERSION  # noqa: E402
-
-_COVERAGE_CLASH_FLOOR = Version(_COVERAGE_TRACER_MIN_VERSION)
+# The floor was measured in #1805: coverage 7.6.0 still names the protocol
+# `TracerCore`; `Tracer` exists only from 7.6.1 onward.
+_COVERAGE_CLASH_FLOOR = Version("7.6.1")
 
 
 def test_environment_coverage_is_compatible_with_numba_robosuite() -> None:
@@ -977,10 +973,10 @@ def test_environment_coverage_is_compatible_with_numba_robosuite() -> None:
         f"numba=={versions['numba']} and robosuite=={versions['robosuite']}: numba's "
         "tracer probe fails on this coverage (AttributeError: module "
         "'coverage.types' has no attribute 'Tracer'), which breaks robosuite's OSC "
-        "controller import inside the LIBERO adapter with a red-herring error far "
-        "from the cause. This is the collateral of a pip-installed Isaac Sim "
-        "(isaacsim-kernel pins coverage==7.4.4). Remedy: pip install "
-        f"'coverage>={_COVERAGE_TRACER_MIN_VERSION}' "
+        "controller import with a red-herring error far from the cause. This is "
+        "the collateral of a pip-installed Isaac Sim (isaacsim-kernel pins "
+        "coverage==7.4.4). Remedy: pip install "
+        f"'coverage>={_COVERAGE_CLASH_FLOOR}' "
         "(the resulting pip conflict warning against isaacsim-kernel is cosmetic - "
         "coverage is kit test tooling, not a runtime dependency)."
     )
@@ -1597,3 +1593,165 @@ def test_the_rclpy_refusals_name_the_step_that_supplies_it() -> None:
         assert "Install with:\n  pip install 'strands-robots[ros2]'" not in message, (
             f"{label} leads with an extra that installs the cyclonedds binding and leaves rclpy missing:\n{message}"
         )
+
+
+# ---------------------------------------------------------------------------
+# [sim-newton]: one MuJoCo series for one newton minor (#3012)
+# ---------------------------------------------------------------------------
+# newton enforces its MuJoCo requirement at RUNTIME, from a declaration the
+# RESOLVER never sees: it lives under newton's own `[sim]` extra, which
+# `[sim-newton]` does not install, and
+# `solver_mujoco._warn_if_mujoco_versions_mismatch` reads newton's METADATA and
+# matches `^mujoco(?=[<>=!~])([^;]+)`, truncating at the `;` and discarding the
+# `extra == "sim"` marker. So the pins that bind at import are invisible to uv,
+# and the only place they can be stated is `[sim-newton]` itself.
+#
+# What that requirement is per release cannot be read offline - it is newton's
+# published metadata, not anything in this tree - so these tests grade the
+# SHAPE that has to hold for any newton the extra admits, rather than copying
+# newton's table here where it would rot. The requirement is always a single
+# `~=X.Y.0` series, which is what makes the shape decisive:
+#
+#   * both MuJoCo distributions carry ONE shared series - capping only
+#     `mujoco-warp` leaves the `mujoco` half of the warning standing;
+#   * the `newton` range admits ONE minor - the series is per minor, and the
+#     three the old `>=1.3.0,<2.0.0` admitted disagree (1.3.0 wants `~=3.8.0`,
+#     1.4.0 `~=3.10.0`, 1.5.x `~=3.11.0`), so no single MuJoCo pin can satisfy
+#     a multi-minor range;
+#   * the narrowed `mujoco` stays inside `[sim-mujoco]`'s own range, so an
+#     extra never refuses a sibling a version that sibling declares.
+_SIM_NEWTON_EXTRA = "sim-newton"
+_SIM_MUJOCO_EXTRA = "sim-mujoco"
+# Inputs to `SpecifierSet.contains`, not a claim about which releases exist, so
+# no published wheel can make this sweep stale.
+_VERSION_SWEEP = tuple(f"{major}.{minor}.{patch}" for major in range(7) for minor in range(41) for patch in (0, 1))
+
+
+def _declared_requirement(extra: str, distribution: str) -> Requirement | None:
+    """The requirement *extra* declares for *distribution*, if it declares one.
+
+    Args:
+        extra: Name of the extra in ``[project.optional-dependencies]``.
+        distribution: Canonical distribution name to look for.
+
+    Returns:
+        The parsed :class:`Requirement`, or ``None`` if *extra* names no such
+        distribution directly. A distribution reached only through a
+        ``strands-robots[...]`` self-reference is deliberately not found: what
+        these tests grade is what this extra itself narrows.
+    """
+    data = tomllib.loads(_PYPROJECT.read_text(encoding="utf-8"))
+    for raw in data["project"]["optional-dependencies"][extra]:
+        requirement = Requirement(raw)
+        if requirement.name == distribution:
+            return requirement
+    return None
+
+
+def _admitted_series(requirement: Requirement) -> set[tuple[int, int]]:
+    """The ``(major, minor)`` series *requirement* admits, over ``_VERSION_SWEEP``."""
+    admitted: set[tuple[int, int]] = set()
+    for candidate in _VERSION_SWEEP:
+        if requirement.specifier.contains(candidate):
+            version = Version(candidate)
+            admitted.add((version.major, version.minor))
+    return admitted
+
+
+def test_the_series_reader_separates_a_one_series_pin_from_a_wider_one() -> None:
+    """The shape rule must be able to both accept and reject.
+
+    The three rejected specifiers are the ones ``[sim-newton]`` carried before
+    #3012, so this also records that the rule fails on pre-fix pins rather than
+    being satisfied by them.
+    """
+    assert _admitted_series(Requirement("mujoco>=3.11.0,<3.12.0")) == {(3, 11)}
+    assert len(_admitted_series(Requirement("mujoco-warp>=3.8.0"))) > 1
+    assert len(_admitted_series(Requirement("newton>=1.3.0,<2.0.0"))) > 1
+    assert len(_admitted_series(Requirement("mujoco>=3.5.0,<4.0.0"))) > 1
+
+
+def test_sim_newton_declares_both_mujoco_distributions() -> None:
+    """``[sim-newton]`` must name ``mujoco`` itself, not inherit it.
+
+    Guards the three tests below against passing vacuously, and pins the
+    substance of the ``mujoco`` half: inheriting ``[sim-mujoco]``'s
+    ``>=3.5.0,<4.0.0`` is what let the resolver take mujoco to 3.12.0 while
+    newton required the 3.11 series.
+    """
+    missing = [
+        distribution
+        for distribution in ("mujoco", "mujoco-warp")
+        if _declared_requirement(_SIM_NEWTON_EXTRA, distribution) is None
+    ]
+    assert not missing, (
+        f"[sim-newton] does not declare {missing}; newton enforces a MuJoCo series at "
+        f"import that the resolver cannot see, so an inherited range does not bound it"
+    )
+
+
+def test_sim_newton_pins_both_mujoco_distributions_to_one_shared_series() -> None:
+    """The two MuJoCo pins must be the same single series.
+
+    newton requires one ``~=X.Y.0`` for both distributions and warns once per
+    distribution that misses it, so a pin on one of them alone closes half the
+    finding.
+    """
+    mujoco = _declared_requirement(_SIM_NEWTON_EXTRA, "mujoco")
+    mujoco_warp = _declared_requirement(_SIM_NEWTON_EXTRA, "mujoco-warp")
+    assert mujoco is not None and mujoco_warp is not None, (
+        "[sim-newton] must declare both mujoco and mujoco-warp directly; "
+        "test_sim_newton_declares_both_mujoco_distributions names why"
+    )
+    mujoco_series = _admitted_series(mujoco)
+    mujoco_warp_series = _admitted_series(mujoco_warp)
+    assert mujoco_series == mujoco_warp_series, (
+        f"[sim-newton] admits mujoco {sorted(mujoco_series)} but mujoco-warp "
+        f"{sorted(mujoco_warp_series)}; newton requires one series for both, so the "
+        f"distribution outside the agreed series still warns"
+    )
+    assert len(mujoco_series) == 1, (
+        f"[sim-newton] admits more than one MuJoCo series {sorted(mujoco_series)}; "
+        f"newton's requirement is a single ~=X.Y.0, so a wider range admits a resolve it refuses"
+    )
+
+
+def test_sim_newton_admits_a_single_newton_minor() -> None:
+    """The ``newton`` range must admit one minor, because the MuJoCo series follows it.
+
+    A cap at the next major would admit a newton minor free to require a
+    different MuJoCo series, reopening #3012 with no edit in this repository to
+    attribute it to. Capping the minor instead makes such a bump an unresolved
+    requirement somebody has to act on. This is a deliberate exception to the
+    cap-the-major convention, and it is scoped to this extra.
+    """
+    newton = _declared_requirement(_SIM_NEWTON_EXTRA, "newton")
+    assert newton is not None, "[sim-newton] declares no newton"
+    series = _admitted_series(newton)
+    assert len(series) == 1, (
+        f"[sim-newton] admits newton minors {sorted(series)}; each chooses its own MuJoCo "
+        f"series, so the pins here can only be correct for one of them"
+    )
+
+
+def test_the_sim_newton_mujoco_pin_stays_inside_the_sim_mujoco_range() -> None:
+    """Narrowing a sibling's pin may not refuse a version that sibling declares.
+
+    ``[sim-newton]`` depends on ``[sim-mujoco]``, and uv resolves one mujoco for
+    the environment, so this pin is what a joint install gets. Keeping it a
+    subset means the narrowing only moves a ``[sim-mujoco]`` user inside the
+    range their own extra already allows, and that the intersection is
+    non-empty rather than an unresolvable pair.
+    """
+    narrowed = _declared_requirement(_SIM_NEWTON_EXTRA, "mujoco")
+    inherited = _declared_requirement(_SIM_MUJOCO_EXTRA, "mujoco")
+    assert narrowed is not None and inherited is not None, (
+        "both [sim-newton] and [sim-mujoco] must declare mujoco for the subset relation between them to be checkable"
+    )
+    admitted = [c for c in _VERSION_SWEEP if narrowed.specifier.contains(c)]
+    assert admitted, f"[sim-newton]'s mujoco pin {narrowed.specifier} admits no release"
+    outside = [c for c in admitted if not inherited.specifier.contains(c)]
+    assert not outside, (
+        f"[sim-newton] admits mujoco {outside[:5]} which [sim-mujoco]'s {inherited.specifier} "
+        f"does not; the two extras would resolve to an empty intersection"
+    )

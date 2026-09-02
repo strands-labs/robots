@@ -21,15 +21,16 @@ something off this machine correlates it. That boundary is why
 ``timestamp`` in the records it returns does not, and it is pinned below in both
 directions.
 
-The scan is repository-wide over ``strands_robots/tools`` with no exemption
-list, so a new tool cannot reintroduce the idiom, and a meta-test plants a
-wall-clock wait to prove a clean result means the tools are right rather than
-that the scan sees nothing.
+The source scan that grades the idiom lives in
+``tests/test_expiry_gates_survive_a_clock_step.py``, which walks the whole
+package: its walk root used to be ``strands_robots/tools`` alone, which is
+narrower than the shape it grades, and it read clean while the one offender in
+the tree sat in the dashboard's challenge store. What remains here is the
+behaviour, driven through the real ``spin_for``.
 """
 
 from __future__ import annotations
 
-import ast
 import pathlib
 import time
 from typing import Any
@@ -38,90 +39,6 @@ import pytest
 
 import strands_robots.tools.serial_tool as serial_mod
 import strands_robots.tools.use_ros as ros_mod
-
-_TOOLS_DIR = pathlib.Path(ros_mod.__file__).parent
-
-
-# ---------------------------------------------------------------------------
-# The scan
-# ---------------------------------------------------------------------------
-def _reads_wall_clock(node: ast.AST) -> bool:
-    """True if ``node`` contains a ``time.time()`` / ``time.time_ns()`` read."""
-    for sub in ast.walk(node):
-        if (
-            isinstance(sub, ast.Call)
-            and isinstance(sub.func, ast.Attribute)
-            and sub.func.attr in ("time", "time_ns")
-            and isinstance(sub.func.value, ast.Name)
-            and sub.func.value.id == "time"
-        ):
-            return True
-    return False
-
-
-def _wall_clock_wait_decisions(source: str) -> list[tuple[int, str]]:
-    """Sites in ``source`` where a wall-clock read decides whether to keep waiting.
-
-    Two shapes carry that decision: a ``while`` whose test reads the wall clock,
-    and an ``if`` that reads it to leave a wait (``raise`` / ``break`` /
-    ``return`` / ``continue``). A wall-clock read that only *reports* -- a
-    record's timestamp, a logged duration -- is not a decision and is not
-    reported.
-    """
-    found: list[tuple[int, str]] = []
-    for node in ast.walk(ast.parse(source)):
-        if isinstance(node, ast.While) and _reads_wall_clock(node.test):
-            found.append((node.lineno, "while-gate"))
-        elif isinstance(node, ast.If) and _reads_wall_clock(node.test):
-            exits = {type(sub).__name__ for sub in ast.walk(ast.Module(body=node.body, type_ignores=[]))}
-            if exits & {"Raise", "Break", "Return", "Continue"}:
-                found.append((node.lineno, "wait-abort"))
-    return found
-
-
-def test_no_tool_lets_a_steppable_clock_decide_whether_to_keep_waiting() -> None:
-    """No module under ``strands_robots/tools`` gates a wait on ``time.time()``."""
-    offenders: list[str] = []
-    scanned = 0
-    for path in sorted(_TOOLS_DIR.rglob("*.py")):
-        scanned += 1
-        for lineno, shape in _wall_clock_wait_decisions(path.read_text(encoding="utf-8")):
-            offenders.append(f"{path.name}:{lineno} ({shape})")
-    assert scanned >= 10, f"premise: the scan reached only {scanned} tool modules"
-    assert not offenders, (
-        "these waits let the wall clock decide whether to keep waiting, so an NTP "
-        "step mid-wait moves the deadline by the size of the step: "
-        f"{offenders}. Measure a duration on time.monotonic(); the wall clock is "
-        "for absolute stamps something off this machine correlates."
-    )
-
-
-def test_the_scan_detects_a_planted_wall_clock_wait() -> None:
-    """A clean sweep means the tools are right, not that the scan sees nothing."""
-    planted = (
-        "import time\n"
-        "def wait(timeout):\n"
-        "    deadline = time.time() + timeout\n"
-        "    while time.time() < deadline:\n"
-        "        pass\n"
-        "def abort(deadline):\n"
-        "    if time.time() >= deadline:\n"
-        "        raise TimeoutError\n"
-    )
-    shapes = {shape for _, shape in _wall_clock_wait_decisions(planted)}
-    assert shapes == {"while-gate", "wait-abort"}, f"the scan missed a planted wait: {shapes}"
-
-
-def test_a_reported_wall_clock_stamp_is_not_read_as_a_wait_decision() -> None:
-    """Reporting the date is not deciding how long to wait, and stays allowed."""
-    reporting_only = (
-        "import time\n"
-        "def record(chunk):\n"
-        "    return {'timestamp': time.time(), 'data': chunk}\n"
-        "def log(start):\n"
-        "    print(time.time() - start)\n"
-    )
-    assert _wall_clock_wait_decisions(reporting_only) == []
 
 
 def test_every_deadline_in_the_ros_tool_is_built_on_one_clock() -> None:

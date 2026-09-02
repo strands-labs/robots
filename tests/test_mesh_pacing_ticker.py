@@ -30,6 +30,7 @@ import pytest
 import strands_robots
 from strands_robots.mesh import pacing
 from strands_robots.mesh.pacing import Ticker, sleep_penalty_s
+from strands_robots.simulation.policy_runner import PolicyRunner
 from strands_robots.utils import positive_finite_number_error
 
 
@@ -308,20 +309,85 @@ def _package_root() -> pathlib.Path:
     return pathlib.Path(inspect.getfile(strands_robots)).parent
 
 
+def _ticker_names(tree: ast.AST) -> tuple[set[str], set[str]]:
+    """The local names that reach ``Ticker``, and the aliases of its module.
+
+    A ticker is the same two descriptors whatever the importing module chose to
+    call it, so the sweep has to follow the *binding* rather than one spelling
+    of it. ``Ticker`` itself is always a candidate, because the planted-source
+    controls below name it with no import statement to resolve.
+    """
+    names = {"Ticker"}
+    modules = {"pacing"}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                if alias.name == "Ticker":
+                    names.add(alias.asname or alias.name)
+                elif alias.name == "pacing":
+                    modules.add(alias.asname or alias.name)
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name.endswith(".pacing") and alias.asname:
+                    modules.add(alias.asname)
+    return names, modules
+
+
+def _structurally_released(tree: ast.AST) -> set[int]:
+    """The ids of expressions whose value the language is obliged to release.
+
+    Two shapes qualify. A ``with`` item, which is the form every unconditional
+    pacer uses. And an argument to ``enter_context`` on a stack that is itself
+    ``with``-acquired, which is how the standard library expresses a resource
+    acquired *conditionally* - a ``with`` item cannot, since it would have to
+    construct the resource to decide not to use it. The stack's own acquisition
+    is checked rather than assumed: a hand-rolled ``ExitStack()`` closed in a
+    ``finally`` is the same discipline this module exists to remove, one layer
+    up, and it must not launder a ticker through it.
+    """
+    released: set[int] = set()
+    stacks: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.With | ast.AsyncWith):
+            continue
+        for item in node.items:
+            released.add(id(item.context_expr))
+            if (
+                isinstance(item.optional_vars, ast.Name)
+                and isinstance(item.context_expr, ast.Call)
+                and ast.unparse(item.context_expr.func).rpartition(".")[2] in {"ExitStack", "AsyncExitStack"}
+            ):
+                stacks.add(item.optional_vars.id)
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr in {"enter_context", "enter_async_context"}
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id in stacks
+            and node.args
+        ):
+            released.add(id(node.args[0]))
+    return released
+
+
 def _ticker_constructions(source: str) -> list[tuple[int, bool]]:
-    """``(lineno, acquired_with_with)`` for every ``Ticker(...)`` in ``source``."""
+    """``(lineno, release_is_structural)`` for every ticker built in ``source``."""
     tree = ast.parse(source)
-    acquired = {
-        id(item.context_expr)
-        for node in ast.walk(tree)
-        if isinstance(node, ast.With | ast.AsyncWith)
-        for item in node.items
-    }
-    return [
-        (node.lineno, id(node) in acquired)
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "Ticker"
-    ]
+    names, modules = _ticker_names(tree)
+    released = _structurally_released(tree)
+    found = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        target = ast.unparse(node.func)
+        module, _, attribute = target.rpartition(".")
+        reaches_ticker = target in names or (
+            attribute == "Ticker" and (module in modules or module.endswith(".pacing"))
+        )
+        if reaches_ticker:
+            found.append((node.lineno, id(node) in released))
+    return sorted(found)
 
 
 class TestEveryPacedLoopAcquiresItsTickerWithWith:
@@ -333,6 +399,14 @@ class TestEveryPacedLoopAcquiresItsTickerWithWith:
     loops get right and the seventh does not. ``with`` moves it from a
     discipline to the language, and it is checked here rather than left to
     review because the loops live in five files.
+
+    The sweep resolves the *binding* rather than the name ``Ticker``, because a
+    rule that reads one spelling does not report a loop it cannot see as
+    ungraded -- it reports the tree as clean. A ticker imported under an alias
+    or reached through its module was invisible, and an alias is what a module
+    writes when it already binds ``Ticker`` for a type annotation, so the
+    evasion is a side effect of correct code with nothing wrong at the call
+    site.
     """
 
     def test_no_paced_loop_hand_rolls_the_release(self) -> None:
@@ -350,7 +424,21 @@ class TestEveryPacedLoopAcquiresItsTickerWithWith:
     def test_the_scan_finds_every_paced_loop(self) -> None:
         """Non-vacuity: a scan that reached nothing would report a clean sweep."""
         found = sum(len(_ticker_constructions(path.read_text())) for path in sorted(_package_root().rglob("*.py")))
-        assert found >= 7, f"expected the mesh, teleop and RTPS publish loops, found {found}"
+        assert found >= 7, f"expected the mesh, teleop, RTPS and rollout loops, found {found}"
+
+    def test_the_conditionally_paced_rollout_runner_is_swept(self) -> None:
+        """The loop this rule could not see, pinned by the module that holds it.
+
+        ``PolicyRunner.run`` binds ``Ticker`` at module scope for its
+        ``ticker: Ticker | None`` annotation, so the runtime import inside the
+        rollout is necessarily aliased -- and while the sweep matched the name
+        ``Ticker`` alone, the tree's only conditional pacer was the one
+        construction it never looked at.
+        """
+        source = pathlib.Path(inspect.getfile(PolicyRunner)).read_text()
+        assert _ticker_constructions(source), (
+            "the rollout runner paces on a Ticker, so the sweep that grades every ticker's release must reach it"
+        )
 
     def test_the_scan_reports_a_hand_rolled_release(self) -> None:
         """A scanner that matched nothing would pass the sweep vacuously."""
@@ -367,6 +455,57 @@ class TestEveryPacedLoopAcquiresItsTickerWithWith:
     def test_the_scan_accepts_an_acquired_ticker(self) -> None:
         planted = "def loop(self):\n    with Ticker(0.02, self._stop) as ticker:\n        pass\n"
         assert _ticker_constructions(planted) == [(2, True)]
+
+    @pytest.mark.parametrize(
+        ("spelling", "construction"),
+        [
+            ("an alias", "from strands_robots.mesh.pacing import Ticker as _Ticker\n_Ticker(0.02)\n"),
+            ("its module", "from strands_robots.mesh import pacing\npacing.Ticker(0.02)\n"),
+            ("a module alias", "from strands_robots.mesh import pacing as _p\n_p.Ticker(0.02)\n"),
+            ("a dotted module", "import strands_robots.mesh.pacing\nstrands_robots.mesh.pacing.Ticker(0.02)\n"),
+        ],
+    )
+    def test_a_ticker_named_any_other_way_is_still_swept(self, spelling: str, construction: str) -> None:
+        """Each spelling was invisible, not ungraded: the sweep reported clean."""
+        found = _ticker_constructions(construction)
+        assert found == [(2, False)], f"a ticker reached through {spelling} escaped the sweep"
+
+    def test_a_name_that_does_not_reach_a_ticker_is_left_alone(self) -> None:
+        """The widening resolves bindings, so it must not sweep by resemblance."""
+        planted = (
+            "from strands_robots.mesh.pacing import sleep_penalty_s as _p\n"
+            "from somewhere.unrelated import metronome as pacer\n"
+            "_p()\n"
+            "pacer.Ticker(0.02)\n"
+        )
+        assert _ticker_constructions(planted) == []
+
+    def test_a_conditional_pacer_handed_to_an_acquired_stack_is_released(self) -> None:
+        """``enter_context`` is how the standard library acquires conditionally.
+
+        A ``with`` item cannot express it: to decide not to use a ticker the
+        loop would have to construct one, which is the mesh import a
+        ``fast_mode`` rollout exists to skip.
+        """
+        planted = (
+            "def run(self, fast_mode):\n"
+            "    with contextlib.ExitStack() as resources:\n"
+            "        if not fast_mode:\n"
+            "            ticker = resources.enter_context(Ticker(0.02))\n"
+        )
+        assert _ticker_constructions(planted) == [(4, True)]
+
+    def test_a_stack_that_hand_rolls_its_own_release_does_not_launder_a_ticker(self) -> None:
+        """Otherwise the discipline this rule removes just moves up one layer."""
+        planted = (
+            "def run(self):\n"
+            "    resources = contextlib.ExitStack()\n"
+            "    try:\n"
+            "        ticker = resources.enter_context(Ticker(0.02))\n"
+            "    finally:\n"
+            "        resources.close()\n"
+        )
+        assert _ticker_constructions(planted) == [(4, False)]
 
     def test_the_documented_usage_shows_the_shape_the_loops_use(self) -> None:
         """The class docstring taught the hand-rolled release it was flagged for.

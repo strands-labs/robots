@@ -27,6 +27,11 @@ from strands_robots.registry.user_registry import (
     register_robot,
 )
 
+#: This repository, located from this file: a relative literal resolves against
+#: the working directory, so the example read below raised ``FileNotFoundError``
+#: whenever the suite ran from anywhere but the repository root.
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+
 _MINIMAL_MJCF = '<mujoco><worldbody><body><geom size="0.1"/></body></worldbody></mujoco>'
 
 
@@ -809,7 +814,7 @@ class TestTheDirectoryResolverCanDeclineTheSameFetch:
         """
         import ast
 
-        source = Path("examples/so101_curobo/planner.py").read_text()
+        source = (_REPO_ROOT / "examples/so101_curobo/planner.py").read_text()
         helper = next(
             node
             for node in ast.walk(ast.parse(source))

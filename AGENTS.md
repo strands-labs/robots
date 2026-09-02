@@ -54,6 +54,7 @@ pip install -e ".[all,dev]"
 # Run tests
 hatch run test              # unit tests
 hatch run test-integ        # integration tests (needs GPU + model weights)
+hatch run whole-tree-check  # the graders whose input is the rest of the repo
 
 # Lint & format
 hatch run lint              # ruff check, ruff format --check, mypy
@@ -71,7 +72,24 @@ hatch run format            # ruff check --fix, ruff format
 4. **Imports at file top** - unless lazy-loading heavy deps with documented reason
 5. **Raise on fatal errors** - never warn-and-continue if the system will behave unexpectedly
 6. **No silent defaults on error** - returning zero-valued actions on failure is forbidden
-7. **Use `require_optional()`** - from `strands_robots/utils.py` for all optional deps
+7. **Use `require_optional()`** - from `strands_robots/utils.py` for all optional deps.
+   It reports the absent module in `ImportError.name`, so a caller can tell an absent
+   extra from a broken package path without parsing the message. A hand-rolled
+   `raise ImportError(...)` that reports an absent dependency must leave that module
+   recoverable from the exception for the same reason, and
+   `tests/test_absent_dependency_reports_name_the_module.py` refuses one that leaves it
+   readable only in prose. Three shapes satisfy it and the test grades them one by one:
+   `name=`, `raise ... from exc`, or raising lexically inside the `except` handler, which
+   sets `__context__` - `from None` suppresses the *rendering* of that chain but not the
+   attribute. `name=` is the only shape left once the raise moves out of the handler,
+   which is why `require_optionals` passes it explicitly. So this is not "every site
+   spells `name=`". Measured over the package with that test's own AST grader: 28
+   constructed sites, 7 spelling `name=`, 19 carrying the module on the chain instead
+   (18 `from exc`, one raising inside the handler), 2 exempt because they report a
+   rejected argument rather than an absent install, 0 blind. Adding the keyword to the
+   19 is not a compliance fix. Reach for the grader and not `grep -v name=` when
+   auditing this: `name=` on a continuation line of a multi-line `raise` is invisible to
+   a line-oriented grep, which reports those 7 as 5 and the 19 as 23
 8. **Integration tests required** - each policy needs `tests_integ/` tests with real inference
 9. **Test behavior, not implementation** - assert on outputs, not internal state
 10. **No dead code** - if it's not called and not part of base class, delete it
@@ -346,7 +364,26 @@ hatch run format            # ruff check --fix, ruff format
    why it belongs here and `--issue` belongs above. It still arrives early enough
    to matter - both claim-free pairs opened inside the same ~35-minute window every
    other observed collision shares, 14m 41s and 29m 26s apart.
-2. Make changes, run `hatch run format && hatch run lint && hatch run test`
+2. Make changes, run `hatch run format && hatch run lint && hatch run test`.
+   If you narrow the test run to the area you changed (`pytest tests/drivers/ -k g1`),
+   run `hatch run whole-tree-check` alongside it. Ninety-odd graders take
+   the *rest of the repository* as their input rather than the file under change,
+   so no path or `-k` filter over your own area collects them - and a green narrow
+   run reads in a PR description exactly like a green full one. Two consecutive
+   verb ports cited such a run and both landed with the required check red on the
+   same grader (#2934, #2938, per #2940). That command derives its roster from
+   the tree - a grader that walks the repository root or a top-level Python area
+   is collected on arrival - so adding one needs no second edit to register it
+   (#3105). The area may be held in a loop variable (`for tree in _TREES`), which
+   is how most of them spell it; reading only a literal segment there left seven
+   graders invisible to the preflight while the roster's own pin stayed green
+   (#3111). Derive the root from an imported symbol rather than a path literal
+   and name it however reads best - a module constant, a function parameter, a
+   local on the line above the walk, or a `@staticmethod` of the test class -
+   all of those resolve. The one shape that does not is a symbol imported from
+   a module that only *re-exports* it: the import does not say which file the
+   symbol came from, so it resolves to nothing rather than to a guess. Import
+   from the defining module.
 3. Record the change as a news fragment: `changelog.d/<pr-number>-<slug>.md`
    (see [`changelog.d/README.md`](changelog.d/README.md)). **Never append to
    `## [Unreleased]` in `CHANGELOG.md` directly** - every branch inserts at the
@@ -1820,9 +1857,16 @@ which side the enum is on.
   `time.time()`; the mesh keeps `_last_estop_mono` beside `_last_estop_ts` for the same
   reason. If one value is used both to decide and to report, split it rather than picking
   a compromise clock.
-- Pinned by `tests/tools/test_tool_wait_budgets_survive_a_clock_step.py` (a scan over the
-  agent-callable tools, no exemption list) and, for the safety subsystem, by
-  `tests/mesh/test_replay_cache_monotonic.py` and
+- **A scan whose walk root is one subsystem grades one subsystem.** The source scan for
+  this idiom walked `strands_robots/tools` alone and read clean while the one offender in
+  the tree sat in `dashboard/auth.py`, where a WebAuthn challenge's TTL was measured on the
+  wall clock. Same predicate, wider root, found it at once: a walk root narrower than the
+  shape being graded reports a clean tree, not an ungraded one.
+- Pinned by `tests/test_expiry_gates_survive_a_clock_step.py` (a scan over the whole
+  package, no exemption list), by `tests/tools/test_tool_wait_budgets_survive_a_clock_step.py`
+  for the real `spin_for` behaviour, by
+  `tests/test_dashboard_challenge_expiry_survives_a_clock_step.py` for the challenge store,
+  and, for the safety subsystem, by `tests/mesh/test_replay_cache_monotonic.py` and
   `tests/mesh/test_corroboration_clock_domain.py`. The frame pacer named above is pinned
   by `tests/simulation/test_rollout_durations_survive_a_clock_step.py`, which asserts the
   *achieved* frame interval across a clock step rather than the value the pacer computed,
@@ -2038,7 +2082,7 @@ which side the enum is on.
 ### Public API Hygiene
 - **Never recommend a `_method` in user-facing docstrings or error messages.** If `Robot()`'s docstring says "use `sim._dispatch_action(...)` to add a camera", you've just locked in a private dependency. Promote it (rename `_dispatch_action` → `dispatch_action`) or add public shorthands (`Simulation.add_camera()` / `.create_world()` / `.add_robot()`) before merging.
 - **Type factory returns precisely** - never return `Any` from a factory. Use `@typing.overload` keyed on `Literal` mode args so IDEs resolve `Simulation` vs `HardwareRobot` at the call site. `# noqa: N802` is acceptable on factory functions named like classes (`Robot`), with a comment.
-- **Reject silently-dropped kwargs** - if `Robot("so100", cameras={...})` is called in `mode="sim"` and the sim branch ignores `cameras`, raise `ValueError` instead of producing a sim with no cameras. Silent drops are bugs masquerading as features.
+- **Reject silently-dropped kwargs** - if `Robot("so100", cameras={...})` is called in `mode="sim"` and the sim branch ignores `cameras`, raise `ValueError` instead of producing a sim with no cameras. Silent drops are bugs masquerading as features. **A `**kwargs` sink that must stay permissive still owes the caller the misspelling case.** A backend constructor tolerates an unknown name deliberately - that is what carries `num_envs` / `device` across backends - so it cannot refuse everything it does not bind. But that reason covers a name *some* backend reads and says nothing about a misspelling of a name *this* receiver reads, which no portable call can intend: dropping `defualt_timestep=0.001` left the physics integrating at the 2 ms default under `status="success"`, and `positon=[...]` spawned the robot at the origin - the same "absorbed by `**kwargs`" failure the factory's `position`/`orientation`/`keyframe` pass-through was written to end, reaching the parameter *names* instead of their values. Screen the residual names against the receiver's *own* signature (`own_keyword_names`, so it cannot go stale) and refuse only the close matches; log the rest at DEBUG so a genuine cross-backend option is visible rather than silent. Derive the accepted set per receiver rather than from a union of every backend's options - a plugin's option names are not statically knowable, and a union refuses one plugin's option for a caller targeting another. Pinned by `tests/simulation/test_sink_refuses_a_misspelled_option.py`, including that the cutoff sits *above* `timestep` (0.667 against `default_timestep`, a real plugin option difflib's own 0.6 default would refuse) and below every real typo.
 - **Don't conflate identity with schema** - `data_config` (e.g. `so100_dualcam`) is a separate concept from robot name (`so100`). Defaulting `data_config=robot_name` silently locks out multi-cam configs. Use an explicit `data_config: str | None = None` kwarg that defaults to canonical name only when omitted.
 
 ### Env Vars
@@ -2057,6 +2101,7 @@ which side the enum is on.
 - **`robot.py` is for the `Robot()` factory**, the user-facing entry point. Hardware-specific code lives in `hardware_robot.py`. Don't have two files both named "robot something" with different responsibilities.
 - **Reference module names, not filenames, in docstrings** - `strands_robots.hardware_robot` not `robot.py`. Filenames change; module paths are the public contract.
 - **Keep a cross-reference target on one line** - a `:class:`/`:func:`/`:meth:` path is only a dotted path while it is contiguous. Wrapping `:class:`~strands_robots.policies.protomotions.motion_utils.MotionPlayer`` over a line break leaves a token carrying a newline and the next line's indentation, which imports nowhere. Break the prose before the role and give the path its own line.
+- **Do not point a qualified role at a module that lives in an open PR** - in a series that adds one sibling module per PR, the target exists in the author's mental model of the series and not in the branch's tree, so the role looks correct while it is being written and is dead on arrival. Write the sibling as a literal (``g1_motion_gates``, ``EarthRoverDriver``) and add the role in the PR that lands the target, or in a later one. Landing the sibling first is not a remedy: CI checks out the pull request head rather than the merge ref (PR Workflow step 8), so the branch stays red until it also absorbs `main` - which costs a re-approval round and imposes a landing order on PRs that are otherwise independent. Demoting to a literal has been the resolution every time it has come up (#2934 and #2938, both naming a module in a still-open sibling; #3084, naming a driver class from #3081). Graded by `tests/test_docstring_xref_roles_resolve.py`, which is one of the graders a narrowed selector cannot collect - see PR Workflow step 2.
 - **A cross-reference in a test docstring is graded too** - the roles in `tests/` and `tests_integ/` are checked against the real API alongside the package's, because a test module's docstring is where a maintainer working on that subsystem starts reading. Name the seam a fixture actually patches (`strands_robots.mesh.core.get_session`), not a local import alias dressed up as a module path.
 
 ### Unicode & String Hygiene
@@ -2169,6 +2214,8 @@ Corrections from code review that apply to all future contributions:
 
   | handler | ends in | flagged |
   |---|---|---|
+  | `strands_robots/dashboard/auth.py::_save_locked` | `os.unlink(tmp)`, bare `raise` | no |
+  | `strands_robots/dashboard/settings.py::_write_file` | `os.unlink(tmp)`, bare `raise` | no |
   | `strands_robots/episode_labels.py::_write_document` | `os.unlink(tmp_name)`, bare `raise` | no |
   | `strands_robots/hardware_robot.py::start_task` | `self._release_task()`, bare `raise` | no |
   | `strands_robots/policies/persistent.py::get_actions` | `handoff.abandon()`, bare `raise` | no |

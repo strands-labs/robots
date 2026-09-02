@@ -503,7 +503,7 @@ class TestFlushMixedFrameSizes:
     when a camera's buffer holds frames of different sizes.
 
     Regression for the LIBERO ``--policy groot`` whole-run recording path
-    (``examples/libero/run.py mujoco``): a benchmark's per-episode scene
+    (a benchmark driver on the MuJoCo backend): a benchmark's per-episode scene
     reload can re-install a camera at different dimensions mid-recording,
     so the daemon-thread buffer ends up with mixed frame shapes. Pre-fix,
     imageio's ``append_data`` raised ``ValueError: All images in a movie

@@ -248,6 +248,24 @@ class TestRequireOptionals:
         with pytest.raises(ImportError, match="are required"):
             require_optionals(["nope_two_a_xyz", "nope_two_b_xyz"])
 
+    def test_pip_install_names_the_distribution_not_the_import_name(self):
+        """A module whose distribution is spelled differently gets the real remedy.
+
+        ``jwt`` is supplied by ``PyJWT``, and ``pip install jwt`` resolves to an
+        unrelated project - so a hint built from import names is a remedy that
+        reports success and leaves the module exactly as missing. Mapped names
+        are substituted; unmapped ones are still named as-is in the same hint.
+        """
+        with pytest.raises(ImportError) as exc:
+            require_optionals(
+                ["nope_jwtish_xyz", "nope_plain_xyz"],
+                pip_install={"nope_jwtish_xyz": "Nope-Distribution"},
+            )
+        msg = str(exc.value)
+        assert "pip install Nope-Distribution nope_plain_xyz" in msg
+        # The module name still names WHAT is missing; only the remedy is mapped.
+        assert "'nope_jwtish_xyz' " in msg or "'nope_jwtish_xyz'," in msg
+
 
 # Path-resolution tests (get_base_dir / get_assets_dir / resolve_asset_path)
 

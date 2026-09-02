@@ -16,6 +16,9 @@ from dataclasses import dataclass
 from enum import Enum
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from strands_robots.simulation.models import SimRobot
+from tests._sim_stop_policy_stand_in import stop_policy_stand_in
+
 # ── Mock heavy dependencies before importing ──────────────────────
 
 # Mock device_connect_edge
@@ -200,10 +203,10 @@ def _make_mock_sim(tool_name="so100_sim"):
     sim.tool_name_str = tool_name
 
     # SimWorld-like structure
-    robot_data = MagicMock()
-    robot_data.policy_running = False
-    robot_data.policy_steps = 0
-    robot_data.policy_instruction = ""
+    # The real record rather than a ``MagicMock``: a stop is a call on it
+    # (``request_policy_stop``), and a mock absorbs that call while leaving
+    # ``policy_running`` exactly as the test set it.
+    robot_data = SimRobot(name="so100", urdf_path="")
 
     world = MagicMock()
     world.robots = {"so100": robot_data}
@@ -211,6 +214,11 @@ def _make_mock_sim(tool_name="so100_sim"):
     world.step_count = 0
     sim._world = world
 
+    # ``stop_policy`` is a dimension of the wrapped simulation, not a call to
+    # absorb: ``SimulationDeviceDriver.stop`` routes each robot through it and
+    # reads the verdict out of the answer, so a bare ``MagicMock`` here observes
+    # neither half of what the verb does. See ``tests._sim_stop_policy_stand_in``.
+    sim.stop_policy.side_effect = stop_policy_stand_in(world)
     sim.start_policy.return_value = {"status": "success", "content": [{"text": "Policy started"}]}
     sim.get_state.return_value = {"status": "success", "content": [{"text": "State info"}]}
     sim.get_features.return_value = {"status": "success", "content": [{"json": {"features": {}}}]}

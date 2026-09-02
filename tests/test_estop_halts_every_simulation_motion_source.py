@@ -1,7 +1,7 @@
 """An emergency stop on a simulation halts teleoperation as well as policies.
 
-``SimulationDeviceDriver.onEmergencyStop`` wrote ``robot.policy_running = False``
-over ``world.robots.values()`` and stopped there. A ``Simulation`` mixes in
+``SimulationDeviceDriver.onEmergencyStop`` stopped every robot's policy over
+``world.robots.values()`` (today via ``request_policy_stop``) and stopped there. A ``Simulation`` mixes in
 :class:`~strands_robots.teleop_mixin.TeleopMixin`, so a leader arm can be driving
 it from a thread that flag says nothing about: the teleop loop polls
 ``get_action()`` and applies the result through ``send_action`` on its own
@@ -33,6 +33,8 @@ from typing import Any
 
 import pytest
 
+from strands_robots.simulation.models import SimRobot
+
 # The autouse fixture below is what makes this import safe. A sibling test file
 # replaces the device_connect_edge submodules with MagicMocks at import time,
 # and this helper restores the real ones. Importing the helper does NOT bring the
@@ -63,12 +65,17 @@ def _run(coro: Any) -> Any:
     return asyncio.run(coro)
 
 
-class _Robot:
-    """A world robot, carrying only the flag the policy stop writes."""
+def _Robot(name: str) -> SimRobot:
+    """A world robot with a rollout in flight.
 
-    def __init__(self, name: str) -> None:
-        self.name = name
-        self.policy_running = True
+    The real record rather than a stand-in: the policy stop is a call on it
+    (``request_policy_stop``), not a flag assignment, so a local fake carrying
+    only ``policy_running`` would pass this file while the handler failed
+    against a real world.
+    """
+    robot = SimRobot(name=name, urdf_path="")
+    robot.policy_running = True
+    return robot
 
 
 class _World:
@@ -237,7 +244,7 @@ class TestEverySourceIsAttempted:
         policy_line = min(
             node.lineno
             for node in ast.walk(handler)
-            if isinstance(node, ast.Attribute) and node.attr == "policy_running"
+            if isinstance(node, ast.Call) and "request_policy_stop" in ast.unparse(node)
         )
         teleop_line = min(
             node.lineno

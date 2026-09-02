@@ -15,7 +15,7 @@ field ``_on_mainboard`` writes into ``_mainboard``.
 
 The cache field names are read here off the driver's own writer
 (:meth:`G1Driver._on_mainboard` names ``fan_state`` / ``temperature`` /
-``sys_state`` / ``tick`` / ``t``) rather than being restated in the
+``value`` / ``state`` / ``t``) rather than being restated in the
 tests, so a widen or rename on the driver side moves both the write
 path and this verb together.  What the tests do restate is the
 SDK-load-hygiene contract every file under
@@ -108,8 +108,8 @@ def test_a_driver_with_no_mainboard_message_yet_reports_absent() -> None:
     assert result["present"] is False
     assert result["fan_state"] is None
     assert result["temperature"] is None
-    assert result["sys_state"] is None
-    assert result["tick"] is None
+    assert result["value"] is None
+    assert result["state"] is None
     assert result["t"] is None
     assert driver.calls == ["_mainboard"], (
         f"g1_mainboard must read exactly _mainboard from the cache; got {driver.calls}"
@@ -121,17 +121,17 @@ def test_a_healthy_reading_reports_every_field_the_decoder_wrote() -> None:
 
     ``_on_mainboard`` writes ``fan_state`` (``list[int]``, one entry per
     fan flag), ``temperature`` (``list[float]``, one entry per board
-    thermistor in the units the firmware declares), ``sys_state`` (int),
-    ``tick`` (int) and ``t`` (wall time of decode).  The verb is not
-    the place to reword, convert or truncate those -- a caller reading
-    the values against a health chip on the mesh reads the same units
-    the driver wrote.
+    thermistor in the units the firmware declares), ``value``
+    (``list[float]``), ``state`` (``list[int]``) and ``t`` (wall time of
+    decode).  The verb is not the place to reword, convert or truncate
+    those -- a caller reading the values against a health chip on the
+    mesh reads the same units the driver wrote.
     """
     cache: dict[str, Any] = {
         "fan_state": [1, 1, 1, 0],
         "temperature": [42.5, 44.0, 41.75],
-        "sys_state": 0,
-        "tick": 12345,
+        "value": [1.5, 2.5, 3.5],
+        "state": [0, 1, 2],
         "t": 1_700_000_000.0,
     }
     result = _call(_StubG1Driver(cache=cache))
@@ -140,8 +140,8 @@ def test_a_healthy_reading_reports_every_field_the_decoder_wrote() -> None:
     assert result["present"] is True
     assert result["fan_state"] == [1, 1, 1, 0]
     assert result["temperature"] == [42.5, 44.0, 41.75]
-    assert result["sys_state"] == 0
-    assert result["tick"] == 12345
+    assert result["value"] == [1.5, 2.5, 3.5]
+    assert result["state"] == [0, 1, 2]
     assert result["t"] == 1_700_000_000.0
 
 
@@ -158,19 +158,19 @@ def test_a_hot_board_reading_is_returned_verbatim_not_clipped() -> None:
     cache: dict[str, Any] = {
         "fan_state": [1, 1, 1, 1],
         "temperature": [88.5, 91.25, 92.0],
-        "sys_state": 2,
-        "tick": 99999,
+        "value": [9.5, 9.75, 10.0],
+        "state": [2, 2, 2],
         "t": 1_700_000_100.0,
     }
     result = _call(_StubG1Driver(cache=cache))
 
     assert result["present"] is True
     assert result["temperature"] == [88.5, 91.25, 92.0]
-    assert result["sys_state"] == 2
+    assert result["state"] == [2, 2, 2]
 
 
 def test_a_missing_field_in_the_cache_reports_none() -> None:
-    """A cache dict missing one of the five fields returns ``None`` for it.
+    """A cache dict missing one of the five keys returns ``None`` for it.
 
     ``_on_mainboard`` reads through ``getattr(msg, name, None)`` at
     every field, so a firmware that renames one of the declared fields
@@ -183,15 +183,15 @@ def test_a_missing_field_in_the_cache_reports_none() -> None:
     cache: dict[str, Any] = {
         "fan_state": [1, 1, 1, 1],
         "temperature": [40.0],
-        # sys_state / tick / t deliberately absent
+        # value / state / t deliberately absent
     }
     result = _call(_StubG1Driver(cache=cache))
 
     assert result["present"] is True
     assert result["fan_state"] == [1, 1, 1, 1]
     assert result["temperature"] == [40.0]
-    assert result["sys_state"] is None
-    assert result["tick"] is None
+    assert result["value"] is None
+    assert result["state"] is None
     assert result["t"] is None
 
 
@@ -208,8 +208,8 @@ def test_the_verb_reads_the_snapshot_exactly_once() -> None:
         cache={
             "fan_state": [1, 1, 1, 1],
             "temperature": [40.0, 40.0, 40.0],
-            "sys_state": 0,
-            "tick": 1,
+            "value": [0.0, 0.0, 0.0],
+            "state": [0, 0, 0],
             "t": 1_700_000_300.0,
         }
     )
@@ -231,27 +231,26 @@ def test_mutating_the_result_does_not_alter_the_cache() -> None:
     cache: dict[str, Any] = {
         "fan_state": [1, 1, 1, 1],
         "temperature": [40.0, 40.0, 40.0],
-        "sys_state": 0,
-        "tick": 1,
+        "value": [0.0, 0.0, 0.0],
+        "state": [0, 0, 0],
         "t": 1_700_000_400.0,
     }
     driver = _StubG1Driver(cache=cache)
     result = _call(driver)
 
-    result["sys_state"] = 999
+    result["state"] = [999]
     result["injected"] = "should not appear in source"
 
-    assert cache["sys_state"] == 0, "mutating the verb's dict must not alter the driver's cache"
+    assert cache["state"] == [0, 0, 0], "mutating the verb's dict must not alter the driver's cache"
     assert "injected" not in cache
 
 
 def test_a_bare_zero_reading_is_still_present() -> None:
     """A cache carrying zero-valued fields still reports ``present=True``.
 
-    ``sys_state=0`` is the firmware's healthy-system code on the current
-    layout, ``tick=0`` is the firmware tick at boot before the first
-    increment, and an empty ``fan_state`` / ``temperature`` list is what
-    a build with no populated fans / thermistors would report.  Every
+    An all-zero ``state`` / ``value`` vector is what a board with nothing
+    latched reports, and an empty ``fan_state`` / ``temperature`` list is
+    what a build with no populated fans / thermistors would report.  Every
     one of those is a *reading*: ``_on_mainboard`` wrote something into
     ``_mainboard``, so ``_snapshot("_mainboard")`` returned a
     non-``None`` dict.  The verb reports the fact of the reading through
@@ -261,8 +260,8 @@ def test_a_bare_zero_reading_is_still_present() -> None:
     cache: dict[str, Any] = {
         "fan_state": [],
         "temperature": [],
-        "sys_state": 0,
-        "tick": 0,
+        "value": [0.0],
+        "state": [0],
         "t": 0.0,
     }
     result = _call(_StubG1Driver(cache=cache))
@@ -270,6 +269,6 @@ def test_a_bare_zero_reading_is_still_present() -> None:
     assert result["present"] is True
     assert result["fan_state"] == []
     assert result["temperature"] == []
-    assert result["sys_state"] == 0
-    assert result["tick"] == 0
+    assert result["value"] == [0.0]
+    assert result["state"] == [0]
     assert result["t"] == 0.0

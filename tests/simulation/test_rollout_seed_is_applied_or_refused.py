@@ -533,7 +533,13 @@ class TestNoRolloutSurfaceCanShipWithoutTheGuard:
     # submit to an executor instead does NOT delegate, and is pinned separately
     # below to guard directly - that is exactly the surface where the seed used
     # to fail on a worker thread after a false "started".
-    _DELEGATES_TO = {"run_policy"}
+    #
+    # ``_drive_rollout`` is the same funnel one hop further in: it is literally
+    # ``return super().run_policy(...)``, and exists because the blocking entry
+    # and the executor worker must reach that funnel without both of them
+    # claiming the robot (see ``MuJoCoSimEngine._announce_rollout``). A surface
+    # reaching it reaches every guard the funnel applies.
+    _DELEGATES_TO = {"run_policy", "_drive_rollout"}
 
     @staticmethod
     def _seed_taking_methods(module_path: Path) -> dict[str, set[str]]:

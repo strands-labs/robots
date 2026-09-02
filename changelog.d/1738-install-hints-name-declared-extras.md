@@ -18,8 +18,8 @@ git repository, PyPI rejects metadata carrying a VCS reference, and the extra
 was dropped for exactly that reason. `pyproject.toml` and the provider's module
 docstring both say so; only the doc still disagreed. It now gives the sequence
 those two already documented - client deps, then VERA from git, then
-`[vera-sim]` for the sim example. Two further sites named `[isaac]` and
-`[sim-libero]` for what are really `sim-isaac` and `benchmark-libero`.
+`[vera-sim]` for the sim example. A further site named `[isaac]` for what
+is really `sim-isaac`.
 
 Two guards pin the surfaces that hand an extra name to a user: a sweep of every
 qualified `strands-robots[...]` mention in the tree (358 today), and an AST

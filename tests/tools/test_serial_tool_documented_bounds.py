@@ -34,10 +34,16 @@ the divisor to be single-sourced whichever way the model question is settled.
 This module pins that, so the correction is one edit rather than two that can
 disagree.
 
-Deliberately out of scope: which full scale is right. Choosing between naming the
-model, reporting counts only, and narrowing the claim to the STS series is the
-open decision in #2812 and needs hardware this suite does not have. These cells
-grade only that the number is stated once and reported honestly.
+Which full scale is right was left open by that change and is settled here: it is
+the STS/SMS one, because the two-byte order this tool encodes a position into is
+itself an STS/SMS property. The vendor SDK reverses that order on a per-model
+protocol number, so an SCS-series servo reads the same two bytes as the
+byte-swapped value -- ``position=1023``, full scale on an ``scs0009``, reaches it
+as 65283. Covering that series is therefore a second word order and a second full
+scale, not a scale option on this action, and the number and the order now come
+from :mod:`strands_robots.drivers.feetech.protocol`, which decides both once.
+These cells grade that the bound is honest, that it is not restated here, and
+that the schema says which series it belongs to.
 """
 
 from __future__ import annotations
@@ -51,6 +57,7 @@ import pytest
 import serial
 
 import strands_robots.tools.serial_tool as serial_mod
+from strands_robots.drivers.feetech.protocol import MAX_GOAL_POSITION
 
 #: The bound a field's schema entry declares, as the model reads it. ``motor_id``
 #: carries a second interval for the reply-expecting actions, so the *first*
@@ -138,12 +145,58 @@ class TestTheDocumentedBoundIsTheEnforcedBound:
         assert str(ceiling) in _text(refused)
 
 
+class TestTheSchemaNamesTheSeriesTheBoundBelongsTo:
+    """A model reading the schema is told which servos the bound is true of.
+
+    ``[0, 4095]`` and the degrees the tool reports back are true of the STS/SMS
+    series and of nothing else on this bus: an ``scs0009`` addresses a quarter of
+    that range and reads the two bytes in the opposite order, so the same call
+    commands a different position. A schema entry that names the manufacturer and
+    not the series tells the model the action covers servos it cannot address,
+    and the refusal it would rather have -- the one this suite exists to keep
+    honest -- never comes, because the value is in range for the series the tool
+    does speak.
+    """
+
+    @pytest.mark.parametrize("field", ["position", "velocity"])
+    def test_the_schema_entry_names_the_series(self, field: str) -> None:
+        properties = serial_mod.serial_tool.tool_spec["inputSchema"]["json"]["properties"]
+        description = " ".join(properties[field]["description"].split())
+
+        assert "STS/SMS" in description, (
+            f"{field}: the schema tells the model {description!r}, which names the "
+            "manufacturer rather than the series the bound and the encoding belong to"
+        )
+
+    def test_the_position_reason_says_which_series_the_full_scale_is(self) -> None:
+        # The reason is what a refusal quotes back, so it is the one place a
+        # caller who was refused learns why the ceiling is where it is.
+        _floor, _ceiling, why = serial_mod._REGISTER_FIELDS["position"]
+
+        assert "STS/SMS" in why and "SCS" in why, (
+            f"the position ceiling's reason reads {why!r}; it states a 12-bit scale "
+            "without saying which series is 12-bit, and the family has a 10-bit half"
+        )
+
+    def test_a_refusal_names_the_series_alongside_the_ceiling(self, opened: list[_FakeSerial]) -> None:
+        ceiling = serial_mod._REGISTER_FIELDS["position"][1]
+
+        refused = _call(action="feetech_position", motor_id=1, position=ceiling + 1)
+
+        assert refused["status"] == "error"
+        assert "STS/SMS" in _text(refused), _text(refused)
+
+
 class TestTheFullScaleIsSingleSourced:
     """The ceiling and the report divisor are one number, not two that agree."""
 
-    def test_the_full_scale_appears_as_one_literal_in_the_module(self) -> None:
+    def test_the_full_scale_is_not_spelled_in_this_module_at_all(self) -> None:
         # Taken from the enforced ceiling rather than from the constant that now
         # holds it, so this cell states the property and not the fix's spelling.
+        # It is a property of the servo series, decided by the codec that frames
+        # the register, so this module reads it and never restates it: the
+        # ceiling, the reported angle's divisor and the byte order a correction
+        # would have to move together all read one name.
         full_scale = serial_mod._REGISTER_FIELDS["position"][1]
         tree = ast.parse(inspect.getsource(serial_mod))
         literals = [
@@ -152,12 +205,14 @@ class TestTheFullScaleIsSingleSourced:
             if isinstance(node, ast.Constant) and node.value.__class__ is int and node.value == full_scale
         ]
 
-        assert len(literals) == 1, (
+        assert literals == [], (
             f"the position full scale {full_scale} is spelled as {len(literals)} "
-            f"integer literals, on lines {[node.lineno for node in literals]}; the "
-            "ceiling and the reported angle's divisor must read one name so a "
-            "correction to either cannot leave the other behind"
+            f"integer literals, on lines {[node.lineno for node in literals]}; it is "
+            "an STS/SMS-series property and MAX_GOAL_POSITION is where it is decided"
         )
+
+    def test_the_ceiling_is_the_codec_full_scale(self) -> None:
+        assert serial_mod._REGISTER_FIELDS["position"][1] == MAX_GOAL_POSITION
 
     def test_the_reported_angle_divides_by_the_enforced_ceiling(self, opened: list[_FakeSerial]) -> None:
         _floor, ceiling, _reason = serial_mod._REGISTER_FIELDS["position"]

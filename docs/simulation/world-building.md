@@ -44,6 +44,30 @@ backend constructor. Passing it to the constructor
 silently ignored, so the mistake is caught up front instead of surfacing later
 as an unrelated `No world` error.
 
+### Unrecognised constructor keywords
+
+A backend constructor's `**kwargs` is a *tolerating* sink: a name it cannot bind
+is dropped, which is what lets one call carry another backend's options and
+resolve against whichever backend is selected.
+
+| You passed | Outcome |
+|------------|---------|
+| a name this backend binds (`default_timestep=0.001`) | applied |
+| a name no backend binds, but close to one this backend binds (`defualt_timestep=0.001`) | **`TypeError`** naming `default_timestep` |
+| a name another backend binds (`num_envs=4`, `device="cuda"`, a plugin's `timestep=`) | tolerated, dropped, logged at DEBUG |
+
+The middle row is the one that used to be silent, and it is the reason the sink
+is not simply permissive: dropping a misspelling made it byte-identical to
+omitting the argument, so `Robot("so101", defualt_timestep=0.001)` integrated the
+physics at the 2 ms default -- half the requested rate -- and reported success.
+No portable call can intend a misspelling of a parameter the receiver itself
+reads, so exactly that subset is refused while the portability case above it is
+untouched.
+
+`Robot(name, mode="sim")` screens its own parameters the same way, since it
+forwards the rest verbatim: `Robot("so101", positon=[0.5, 0, 0])` named
+`position` instead of spawning the robot at the origin.
+
 ## Strategies
 
 | Need | Approach |
@@ -617,4 +641,3 @@ sim.run_multi_policy(
 - [Simulation overview](overview.md)
 - [Domain randomization](domain-randomization.md)
 - [Simulation overview](../simulation/overview.md)
-- [LIBERO benchmark](https://github.com/strands-labs/robots/tree/main/strands_robots/benchmarks/libero)

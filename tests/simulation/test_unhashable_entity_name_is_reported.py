@@ -507,9 +507,8 @@ def _scanned_modules() -> list[Path]:
 
     Scoped to the whole package rather than the three backend directories,
     because a registry read is not confined to a backend: the shape already
-    appears in :mod:`strands_robots.simulation.benchmark`,
-    :mod:`strands_robots.policies.wbc.sim_control` and
-    :mod:`strands_robots.benchmarks.libero.adapter`, none of which a
+    appears in :mod:`strands_robots.simulation.benchmark` and
+    :mod:`strands_robots.policies.wbc.sim_control`, neither of which a
     backend-directory scan looks at. A check that reports clean over 11% of the
     files it is read as covering is the failure mode this widening removes.
     """
@@ -664,7 +663,6 @@ class TestTheScanCoversThePackage:
         assert {
             "simulation/benchmark.py",
             "policies/wbc/sim_control.py",
-            "benchmarks/libero/adapter.py",
         } <= reached
 
 

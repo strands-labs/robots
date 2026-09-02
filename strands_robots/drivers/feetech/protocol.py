@@ -1,4 +1,4 @@
-"""Feetech STS/SCS-series wire format. Pure, no I/O.
+"""Feetech STS/SMS-series wire format. Pure, no I/O.
 
 The STS3215 and its SCS/SMS siblings share a Protocol 1-shaped bus that is
 close to Dynamixel's older Protocol 1 but not identical to Protocol 2. This
@@ -7,6 +7,27 @@ PyPI); as with :mod:`~strands_robots.drivers.dynamixel.protocol`, the point of
 extracting it is not dependency avoidance but grading, since the SDK's own
 parser lives inside :meth:`PacketHandler.readTxRx` and cannot be exercised
 without a serial port.
+
+**Framing is shared across the family; the two-byte word order is not.** Feetech
+publishes one framing document for the whole family (`SCS Communication`_ below,
+which is where the frame above comes from), and the vendor SDK is one package for
+all of it - but that SDK carries a global end-ness its ``PacketHandler`` sets
+from a per-model protocol number, and the two orders are the reverse of each
+other:
+
+.. code-block:: text
+
+    protocol 0  STS3215, STS3250, SM8512BL   low byte first
+    protocol 1  SCS0009 and the SCS series   high byte first
+
+So a two-byte register value framed for one series is a *different value* on the
+other, not a mis-scaled one: 1023 written low-byte-first is read as 65283 by an
+SCS-series servo. This module implements protocol 0 - :func:`encode_word` and
+:func:`decode_word` are that order, named so the whole package reads it from one
+place, and :data:`MAX_GOAL_POSITION` is the STS/SMS full scale (the SCS series is
+10-bit, a quarter of it). Supporting an SCS-series servo is therefore a second
+word order and a second full scale rather than a parameter, and nothing here
+claims to do it; see :issue:`2812`.
 
 Wire frame (from the Feetech STS3215 datasheet, `SCS Communication`_):
 
@@ -49,7 +70,7 @@ the datasheet page it comes from.
 from __future__ import annotations
 
 import enum
-from typing import Final
+from typing import Final, Literal
 
 # ---------------------------------------------------------------------------
 # Framing constants. Two bytes named because the manual talks about them by
@@ -72,6 +93,86 @@ _MAX_PARAM_COUNT: Final[int] = 0xFA
 """``LEN`` is one byte, and it must carry ``params + 2``. Anything above
 ``0xFA`` (250) params would overflow ``LEN`` past ``0xFC`` and collide with
 the reserved range; the SDK caps writes below this and so does this codec."""
+
+MAX_GOAL_POSITION: Final[int] = 4095
+"""Highest index ``Goal_Position`` addresses on the STS/SMS series, and so the
+divisor that turns a count into a fraction of a full turn.
+
+12-bit, i.e. 4096 counts. This is a property of the *series*, not of the
+register: lerobot's ``MODEL_RESOLUTION`` gives 4096 counts for ``sts3215``,
+``sts3250`` and ``sm8512bl`` and 1024 for ``scs0009``, so on an SCS-series servo
+the ceiling and the divisor are both 1023. Every surface in this package that
+bounds or reports a Feetech position reads this name, so the series the number
+belongs to is stated once."""
+
+WORD_LENGTH: Final[int] = 2
+"""Bytes a two-byte register field occupies on the wire."""
+
+_MAX_WORD: Final[int] = (1 << (8 * WORD_LENGTH)) - 1
+
+_WORD_ORDER: Final[Literal["little"]] = "little"
+"""The STS/SMS (protocol 0) byte order, named rather than spelled as shifts so
+the one place it is decided reads as the property it is. The SCS series is
+``"big"``; nothing here emits that order."""
+
+
+def encode_word(value: int) -> bytes:
+    """Encode ``value`` as the two bytes an STS/SMS-series servo reads.
+
+    Low byte first - the vendor SDK's protocol 0 order, which its
+    ``SCS_LOBYTE`` / ``SCS_HIBYTE`` pair produces while its global end-ness is
+    0. The SCS series sets that global to 1 and reads the same two bytes in the
+    opposite order, so this encoder is series-specific by construction and is
+    not portable to it (see the module docstring).
+
+    Args:
+        value: The register value, ``0..0xFFFF``. A field narrower than the word
+            - ``Goal_Position`` at :data:`MAX_GOAL_POSITION`, ``Goal_Velocity``
+            at its direction bit - is bounded by the caller that owns the field's
+            meaning; this refuses only what the two bytes cannot carry at all.
+
+    Returns:
+        Exactly :data:`WORD_LENGTH` bytes, low byte first.
+
+    Raises:
+        TypeError: If ``value`` is not an :class:`int`. A :class:`bool` is
+            refused with it, since ``True`` would silently encode as 1.
+        ValueError: If ``value`` does not fit two bytes. Masking it instead
+            would put a different, reachable command on the wire and report the
+            number the caller asked for.
+    """
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise TypeError(f"word value must be int, got {type(value).__name__}")
+    if not 0 <= value <= _MAX_WORD:
+        raise ValueError(f"word value out of range 0..{_MAX_WORD}: {value}")
+    return value.to_bytes(WORD_LENGTH, _WORD_ORDER)
+
+
+def decode_word(raw: bytes) -> int:
+    """Read the two bytes an STS/SMS-series servo replied with.
+
+    The inverse of :func:`encode_word`, and the same protocol 0 order. Sign
+    handling is deliberately absent: which bit carries direction is a
+    per-register property (bit 15 on the goal and present pairs, bit 10 on
+    ``Present_Load``, and nothing at all on the SCS series), so it belongs to
+    the caller that knows which register it read.
+
+    Args:
+        raw: Exactly :data:`WORD_LENGTH` bytes, low byte first.
+
+    Returns:
+        The unsigned register value.
+
+    Raises:
+        TypeError: If ``raw`` is not bytes-like.
+        ValueError: If ``raw`` is not exactly :data:`WORD_LENGTH` bytes - a
+            short read decoded anyway reports a position the servo never sent.
+    """
+    if not isinstance(raw, (bytes, bytearray)):
+        raise TypeError(f"raw must be bytes, got {type(raw).__name__}")
+    if len(raw) != WORD_LENGTH:
+        raise ValueError(f"a register word is {WORD_LENGTH} bytes, got {len(raw)}")
+    return int.from_bytes(raw, _WORD_ORDER)
 
 
 class Instruction(enum.IntEnum):
@@ -112,7 +213,7 @@ class Register(enum.IntEnum):
     # SRAM
     TORQUE_ENABLE = 0x28
     ACCELERATION = 0x29
-    GOAL_POSITION = 0x2A  # 2 bytes, 0..4095 for STS3215
+    GOAL_POSITION = 0x2A  # 2 bytes, 0..MAX_GOAL_POSITION on the STS/SMS series
     GOAL_TIME = 0x2C  # 2 bytes
     GOAL_VELOCITY = 0x2E  # 2 bytes, sign-magnitude on bit 15
     LOCK = 0x37

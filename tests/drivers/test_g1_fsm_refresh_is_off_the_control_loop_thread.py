@@ -36,9 +36,9 @@ made it unsafe:
    quietly move it off ``send_action`` / ``run_policy`` too: those pay one round
    trip so the decision that opens the wire is made on a fresh reading.
 
-The sibling files stay where they were: the acceptance criterion
-(``test_g1_send_action_success_is_the_acceptance_criterion_for_harness_361``)
-grades that a healthy driver reaches the wire, and
+The sibling files stay where they were:
+``test_g1_send_action_succeeds_on_a_healthy_wired_driver`` grades that a healthy
+driver reaches the wire, and
 ``test_g1_battery_floor_reaches_with_wired_fsm`` grades the flipped
 reachability.  Neither can see a cadence property, because neither runs the
 loop against a slow wire.  This file is the one that does.

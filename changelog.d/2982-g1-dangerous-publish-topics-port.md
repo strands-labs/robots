@@ -13,7 +13,7 @@
   `g1_dds_publish` verb refuses membership on the set unless the
   caller passes an explicit `unsafe=True` override. Each descriptor
   carries a `description` label (the neon bundle's own topic-catalog
-  description with the `🚨` marker stripped so the string domain is
+  description with the `U+1F6A8` marker stripped so the string domain is
   plain text) plus a `dangerous_to_publish` flag (always `True` on
   membership - the set itself is the danger contract, surfaced for
   shape parity with the neon bundle's own `list_topics` payload).

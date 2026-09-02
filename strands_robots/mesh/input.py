@@ -30,11 +30,12 @@ import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
-from strands_robots.bus_access import write_action
+from strands_robots.bus_access import motor_norm_modes, write_action
 from strands_robots.mesh.pacing import Ticker
 from strands_robots.mesh.security import (
     ValidationError,
     input_frame_slew_violation,
+    input_value_abs_by_key,
     merge_slew_baseline,
     validate_input_frame,
     validate_mesh_identifier,
@@ -492,6 +493,15 @@ class InputReceiver:
         # merged rather than replaced, so a frame carrying a subset of the
         # joints cannot erase the baseline of the ones it omits.
         self._last_applied: dict[str, tuple[float, float]] = {}
+        # Per-joint magnitude bounds in the unit each of the FOLLOWER's joints
+        # declares, resolved once from its own bus. Read from the receiving
+        # robot rather than from the frame, because the bound that constrains a
+        # sender must not be chosen by that sender. Resolved on the first frame
+        # rather than here: a receiver may be constructed before the robot is
+        # connected, and the declaration is worth reading from the robot as it
+        # actually is when frames start arriving.
+        self._value_abs_by_key: dict[str, float] = {}
+        self._envelope_resolved = False
         self._start_mono = 0.0
 
     def __repr__(self) -> str:
@@ -711,8 +721,17 @@ class InputReceiver:
             # bounds key count, key charset, and clamps each value to a
             # finite magnitude. Rejected frames are counted + logged and
             # dropped (never applied) rather than crashing the receiver.
+            # One frame does not carry one unit: a shipped SO-100 class arm
+            # declares degrees for its five arm joints and 0-100 percent for its
+            # gripper, so a single scalar envelope has to be loose enough for the
+            # widest joint and is 7.2x full scale on the narrowest. The bound is
+            # therefore taken per joint, in the unit the FOLLOWER declares for
+            # it, and only ever tighter than the scalar envelope.
+            if not self._envelope_resolved:
+                self._value_abs_by_key = input_value_abs_by_key(motor_norm_modes(self.robot))
+                self._envelope_resolved = True
             try:
-                safe_action = validate_input_frame(action)
+                safe_action = validate_input_frame(action, self._value_abs_by_key)
             except ValidationError as verr:
                 self._refuse(
                     "invalid",

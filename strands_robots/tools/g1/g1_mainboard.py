@@ -42,14 +42,15 @@ What this module does not do.
   compete for ``rt/mainboardstate`` and double the bus touch
   ``_DDS_INIT_LOCK`` is meant to prevent.
 * Rewrite the driver's decode.  ``_on_mainboard`` names ``fan_state`` /
-  ``temperature`` / ``sys_state`` / ``tick`` / ``t``; those are what
-  this verb returns verbatim.  The neon-side ``g1_mainboard`` port
-  additionally read ``fan_speed`` / ``cpu_temperature`` / ``sys_bat_state``
-  / ``bms_state`` off ``MainBoardState_`` directly -- fields the current
-  firmware layout does not declare on every unit, and adding them on the
-  verb would be a second decoder for the same message that agrees with
-  the driver's writer only when both name the same fields.  Those fields
-  land (if at all) on the driver's ``_on_mainboard``, not this verb.
+  ``temperature`` / ``value`` / ``state`` / ``t``; those are what this
+  verb returns verbatim.  The neon-side ``g1_mainboard`` port additionally
+  read ``fan_speed`` / ``cpu_temperature`` / ``sys_state`` /
+  ``sys_bat_state`` / ``bms_state`` / ``tick`` off ``MainBoardState_``
+  directly, each behind a ``hasattr`` gate because the layout declares
+  none of them; adding them on the verb would be a second decoder for the
+  same message that agrees with the driver's writer only when both name
+  the same fields.  Those fields land (if at all) on the driver's
+  ``_on_mainboard``, not this verb.
 * Rewrite pressure-sensor readings.  ``rt/pressuresensorstate`` is a
   separate DDS topic with its own IDL (``PressSensorState_``); a
   ``g1_pressure`` port lands as its own verb once the driver caches
@@ -101,10 +102,12 @@ def g1_mainboard(driver: Any) -> dict[str, Any]:
         ``_on_mainboard`` writes: ``fan_state`` (a vector of integer
         fan flags as ``list[int]`` or ``None``), ``temperature`` (a
         vector of board-thermistor readings as ``list[float]`` or
-        ``None``), ``sys_state`` (the system-state code as integer or
-        ``None``), ``tick`` (the firmware tick counter as integer or
-        ``None``) and ``t`` (the wall time the reading was decoded at,
-        seconds since epoch, ``float`` or ``None``).  On a driver
+        ``None``), ``value`` and ``state`` (the two remaining vectors
+        ``MainBoardState_`` declares, as ``list[float]`` / ``list[int]``
+        or ``None``, under the vendor's own names because the IDL
+        documents no semantics for them) and ``t`` (the wall time the
+        reading was decoded at, seconds since epoch, ``float`` or
+        ``None``).  On a driver
         whose subscriber has not received a ``MainBoardState_``
         message yet the returned dict carries ``present=False`` and
         every field ``None`` -- the verb does not fabricate a reading
@@ -125,8 +128,8 @@ def g1_mainboard(driver: Any) -> dict[str, Any]:
             "present": False,
             "fan_state": None,
             "temperature": None,
-            "sys_state": None,
-            "tick": None,
+            "value": None,
+            "state": None,
             "t": None,
         }
     return {
@@ -134,7 +137,7 @@ def g1_mainboard(driver: Any) -> dict[str, Any]:
         "present": True,
         "fan_state": snapshot.get("fan_state"),
         "temperature": snapshot.get("temperature"),
-        "sys_state": snapshot.get("sys_state"),
-        "tick": snapshot.get("tick"),
+        "value": snapshot.get("value"),
+        "state": snapshot.get("state"),
         "t": snapshot.get("t"),
     }

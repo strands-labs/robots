@@ -69,9 +69,15 @@ wrong produces a guard that false-fails on a correct lock:
   Keying a dictionary by ``(extra, name, extras)`` drops one of those silently,
   and the dropped row then reads as drift against the other side -- a finding on
   a file that is correct. ``(extra, name, extras)`` therefore maps to a *set* of
-  specifiers on both sides. Today's manifest and relocked file happen to carry a
-  unique specifier per key, so nothing in the live pair exercises this; it is
-  pinned on a planted pair instead.
+  specifiers on both sides. The live pair exercises this as of #3012:
+  ``[sim-newton]`` narrows ``mujoco`` to the series its pinned ``newton``
+  requires, while still entering ``[sim-mujoco]`` through a self-reference, so
+  uv records that one key at **two** specifiers -- ``>=3.5.0,<4.0.0`` from the
+  expansion and ``>=3.11.0,<3.12.0`` from the narrowing. Both sides carry both,
+  the grouping compares them as a set, and the pair agrees. The ``scipy`` shape
+  above stays pinned on a planted pair, which is what keeps the observed-input
+  case graded independently of whichever narrowing the manifest happens to
+  carry.
 
 One fact worth recording because it makes the comparison exact rather than
 approximate: every marker in the lock's ``requires-dist`` is ``extra == '...'``
@@ -86,9 +92,8 @@ What it deliberately does not do
 - **It does not re-check that locked versions satisfy declared floors.**
   ``tests/test_lockfile_parity_gate.py`` does that, and duplicating it here would
   create two rulebooks for one rule that can drift apart -- including the
-  non-obvious "every locked version, not any" phrasing that ``robosuite``
-  (locked at ``1.4.0`` *and* ``1.4.1`` against a ``>=1.4.1`` floor, before and
-  after the relock) forces on it. This script compares the two transcriptions of
+  non-obvious "every locked version, not any" phrasing that a forked resolution
+  forces on it. This script compares the two transcriptions of
   the *manifest*; that module compares the lock against the *resolution*.
 - **It does not re-resolve.** Whether the recorded set is *achievable* is
   ``uv lock --check``'s question, and it needs the index to answer it. A stale

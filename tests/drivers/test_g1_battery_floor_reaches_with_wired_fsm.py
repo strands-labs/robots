@@ -93,10 +93,9 @@ class _RecordingMotionSwitcherClient:
         return self._return
 
 
-def _pack(pct: float) -> dict[str, float | bool | int]:
+def _pack(pct: float) -> dict[str, float | int]:
     return {
         "pct": pct,
-        "charging": False,
         "current": 0.0,
         "cycle": 0,
         "t": 0.0,

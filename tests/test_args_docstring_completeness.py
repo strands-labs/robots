@@ -214,14 +214,13 @@ class TestTheScanIsNonVacuous:
             "strands_robots/dataset_recorder.py::DatasetRecorder.create",
             "strands_robots/policies/cosmos3/policy.py::Cosmos3Policy.get_actions",
             "strands_robots/policies/lerobot_local/policy.py::LerobotLocalPolicy.get_actions",
-            "strands_robots/benchmarks/libero/adapter.py::LiberoAdapter.__init__",
         ],
         ids=lambda expected: expected.rsplit("::", 1)[-1],
     )
     def test_a_known_surface_is_in_scope(self, expected: str) -> None:
-        """The ten surfaces this guard was written for must actually be walked.
+        """The nine surfaces this guard was written for must actually be walked.
 
-        Six from the simulation subtree it started in, four from outside it, so
+        Six from the simulation subtree it started in, three from outside it, so
         a root that loses either half fails here rather than sweeping clean.
         """
         assert any(surface == expected for surface, _, _ in _SURFACES), expected

@@ -284,3 +284,44 @@ def joint_read_source(robot: Any) -> Any | None:
         # No inner device: a native driver owns its telemetry directly.
         device = robot
     return device if _answers_a_joint_read(device) else None
+
+
+def motor_norm_modes(robot: Any) -> dict[str, str]:
+    """The normalisation mode each of ``robot``'s motors declares.
+
+    A motor bus declares, per motor, the unit its positions are reported and
+    commanded in - lerobot spells them ``DEGREES``, ``RANGE_M100_100`` and
+    ``RANGE_0_100`` - and one arm mixes them: a shipped SO-100 class arm reports
+    degrees for its five arm joints and 0-100 percent for its gripper. A consumer
+    that bounds or scales joint values needs that declaration, and the robot it
+    is about to act on is the only trustworthy source of it.
+
+    Read through the same wrapper-or-driver resolution as
+    :func:`joint_read_source`, so a lerobot wrapper and a native driver answer
+    identically. Duck-typed, like the rest of this module: nothing is imported
+    from lerobot, and a bus that declares nothing is reported as such rather
+    than raising.
+
+    Args:
+        robot: A lerobot wrapper, a native driver, or anything else shaped like
+            one. Nothing on it is called and no bus traffic is generated: the
+            declaration is configuration, readable before ``connect()``.
+
+    Returns:
+        Motor name to the mode's own spelling (``getattr(mode, "name")`` for an
+        enum member, otherwise ``str(mode)``). Empty when the device exposes no
+        bus, no motors, or motors that declare no mode - "nothing declared",
+        which every caller must treat as "no per-motor knowledge" rather than as
+        a failure.
+    """
+    device = joint_read_source(robot) or robot
+    motors = getattr(getattr(device, "bus", None), "motors", None)
+    if not isinstance(motors, Mapping):
+        return {}
+    modes: dict[str, str] = {}
+    for name, motor in motors.items():
+        mode = getattr(motor, "norm_mode", None)
+        if mode is None:
+            continue
+        modes[str(name)] = str(getattr(mode, "name", None) or mode)
+    return modes

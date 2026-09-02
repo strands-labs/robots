@@ -412,16 +412,23 @@ def test_a_module_the_package_does_not_have_is_still_a_dead_pointer() -> None:
 def test_an_absent_extra_reported_without_a_name_is_undecidable_not_rot() -> None:
     """An ``ImportError`` the package constructs must not be read as package rot.
 
-    ``exc.name`` is populated only on an exception the interpreter raises itself,
-    so classifying on it alone put all 28 of the package's constructed raise sites
-    on the *rot* branch - the one the member walk answers with ``raise`` - and one
-    absent extra ended the whole sweep with nothing graded after it (#2963). Both
-    shapes the package actually uses are pinned here, because the surface exception
-    is identical in each and only the chain distinguishes them: the wrapping raise
-    at ``strands_robots/tools/lerobot_camera.py``, and
-    :func:`strands_robots.utils.require_optional`, which AGENTS.md convention 7
-    makes the mandatory mechanism - its ``raise ... from None`` suppresses only the
-    *rendering* of ``__context__``, which is why the same walk reaches both.
+    ``exc.name`` is populated by the interpreter on an exception it raises itself,
+    and by constructing code only where that code says ``name=``. Classifying on
+    the surface name alone therefore put every constructed raise site in the
+    package on the *rot* branch - the one the member walk answers with ``raise`` -
+    and one absent extra ended the whole sweep with nothing graded after it
+    (#2963).
+
+    Both shapes the package uses are pinned here, because each has to reach the
+    same verdict by a different route. :func:`strands_robots.utils.require_optional`
+    - the mechanism AGENTS.md convention 7 makes mandatory - names the module at
+    the source, so it is classified on the field and does not depend on this
+    reader's fallback. The wrapping raise at
+    ``strands_robots/tools/lerobot_camera.py`` names nothing, so the chain walk is
+    what decides it, and that walk stays load-bearing for every site of that shape.
+    ``require_optional`` also pins that its ``raise ... from None`` leaves
+    ``__context__`` intact - suppressing the chain's *rendering* is not clearing it
+    - which is what lets one walk reach both shapes.
     """
     absent = "a_module_this_environment_does_not_have"
 
@@ -435,8 +442,9 @@ def test_an_absent_extra_reported_without_a_name_is_undecidable_not_rot() -> Non
 
     with pytest.raises(ImportError) as required:
         require_optional(absent, extra="probe")
-    assert getattr(required.value, "name", None) is None
+    assert required.value.name == absent
     assert required.value.__cause__ is None
+    assert getattr(required.value.__context__, "name", None) == absent
     assert _undecidable_import(required.value) == absent
 
     # Neither a name nor a chain to read: still undecidable, because the interpreter

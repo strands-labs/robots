@@ -81,8 +81,10 @@ the clamp disabled.
 
 `mode="real"` builds a driver. By default that is the lerobot one - it constructs a lerobot
 `RobotConfig` and wraps a lerobot driver, which is what most robots in the shipped registry
-use. A robot that lerobot cannot model declares a native driver instead; `list_native_drivers()`
-reports which robots those are.
+use. A robot lerobot cannot model needs a native driver, but the two are not exclusive - a
+robot lerobot *can* build may have one as well, and then `driver=` decides which is used.
+`list_native_drivers()` reports every robot that has one, and is the answer to "is my robot
+driven natively" - the refusal below lists them only as of the day it was captured.
 
 `driver=` selects a different one:
 
@@ -91,6 +93,25 @@ reports which robots those are.
 | `"auto"` (default) | The robot's registry `hardware.driver` if it declares one, else the lerobot driver. |
 | `"lerobot"` | The lerobot driver, explicitly. |
 | `"strands"` | The native driver registered for this robot. |
+
+`list_driver_coverage()` reports the join for every registered robot: which `driver=` values
+can build it, and an empty tuple where neither can.
+
+```python
+from strands_robots.drivers import list_driver_coverage
+
+coverage = list_driver_coverage()
+coverage["so101"], coverage["vx300s"], coverage["panda"]
+# (('lerobot', 'strands'), ('strands',), ())
+
+sim_only = [name for name, drivers in coverage.items() if not drivers]
+```
+
+`so101` is reported as both and `resolve_driver("so101")` returns `"lerobot"` - coverage is
+what *can* build a robot, resolution is what *does*. `vx300s` has no lerobot robot type, so its
+native driver is the only one that can build it. An empty tuple is the driver gap: `sim_only`
+is every robot `mode="real"` has nowhere to go for, derived on each call rather than
+maintained by hand.
 
 A native driver is for a robot lerobot's arm/serial shape cannot model - a humanoid with its
 own state machine, a rover reporting GPS, a base publishing a point cloud. It is a separate
@@ -109,14 +130,25 @@ members it is missing, so a half-built driver fails at the line that registers i
 than on the first agent call. `port=` stays polymorphic - a serial path, an IP address or a
 URL - because only the driver knows how to read it.
 
+A driver has **two** ways to halt its robot and they are not the same contract. `stop_task()`
+returns a status envelope and decides an outcome, so that is what a caller reads. `stop()` is
+the lifecycle hook and is annotated `-> None`, so it carries no verdict at all - which makes
+its log the only place a halt it could not complete can be recorded. A `stop()` that
+delegates to a halt verb must therefore read that verb's envelope and log a non-success,
+naming what may still be moving; `strands_robots.drivers.halt_failure_detail` reads the
+reason out of one. Discarding it returns from shutdown reporting the robot as stopped on the
+one surface that has no way to say otherwise.
+
 Asking for a driver that is not there is refused, never quietly substituted:
 
 ```python
->>> Robot("so101", mode="real", driver="strands")
-ValueError: No native driver is registered for 'so101', so driver='strands' cannot build
-it. Robots with a native driver: reachy_mini, unitree_g1. Either use driver='lerobot'
-(today's default, which builds it through lerobot) or register one with
-strands_robots.drivers.register_native_driver().
+>>> Robot("xarm7", mode="real", driver="strands")
+ValueError: No native driver is registered for 'xarm7', so driver='strands' cannot build
+it. Robots with a native driver: aloha, dynamixel_2r, fr3, fr3_v2, hope_jr, koch, lekiwi,
+microduck, open_duck_mini, panda, reachy_mini, robotiq_2f85, robotiq_2f85_v4, so100,
+so101, trossen_wxai, unitree_g1, unitree_go2, ur10e, ur5e, vx300s, wx250s. Either use
+driver='lerobot' (today's default, which builds it through lerobot) or
+register one with strands_robots.drivers.register_native_driver().
 ```
 
 A robot may also declare its driver in the registry, so a caller needs no `driver=` at all:
@@ -130,6 +162,10 @@ A robot may also declare its driver in the registry, so a caller needs no `drive
 has a class for it, so `driver="lerobot"` remains a usable fallback. The Reachy Mini
 declares none: lerobot has no robot type for it, so the native driver is the only way
 to reach it and `driver="lerobot"` is refused by name.
+
+A robot that declares neither - the UR arms, for instance - still resolves to the
+default, so `driver="strands"` is how its native driver is reached, and the refusal
+`driver="lerobot"` produces names that driver rather than listing lerobot's types.
 
 A native driver reports what it cannot reach rather than raising. The Reachy Mini's
 daemon transport is a standard-library-only module in the core distribution, so

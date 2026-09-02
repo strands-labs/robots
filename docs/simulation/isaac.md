@@ -72,14 +72,14 @@ export OMNI_KIT_ACCEPT_EULA=YES
 
 Known collateral (observed with isaacsim 6.0.0.1 and 6.0.1.0):
 
-- **`coverage` downgrade breaks robosuite/LIBERO with a red-herring error.**
-  `isaacsim-kernel` pins `coverage==7.4.4`, silently downgrading modern
-  coverage. numba's tracer probe then fails, and the first visible symptom is
-  far from the cause - robosuite's OSC controller import dies inside the LIBERO
-  adapter with `module 'coverage.types' has no attribute 'Tracer'`. Verified
-  remedy: `pip install 'coverage>=7.6.1'` after the isaacsim install. The reverse
-  pip conflict warning (`isaacsim-kernel requires coverage==7.4.4`) is cosmetic:
-  coverage is test tooling for the kit, not a runtime dependency.
+- **`coverage` downgrade breaks any numba-backed import with a red-herring
+  error.** `isaacsim-kernel` pins `coverage==7.4.4`, silently downgrading modern
+  coverage. numba's tracer probe then fails, and the first visible symptom is far
+  from the cause: an unrelated import dies with `module 'coverage.types' has no
+  attribute 'Tracer'`. Verified remedy: `pip install 'coverage>=7.6.1'` after the
+  isaacsim install. The reverse pip conflict warning (`isaacsim-kernel requires
+  coverage==7.4.4`) is cosmetic: coverage is test tooling for the kit, not a
+  runtime dependency.
 - **torch stack bump vs lerobot pins.** The isaacsim install upgrades
   `torch`/`torchvision` (and numpy/scipy/pyarrow), leaving pip conflict
   warnings against lerobot's `torchvision` pin. Expect those warnings; they do
@@ -93,10 +93,8 @@ Known collateral (observed with isaacsim 6.0.0.1 and 6.0.1.0):
   `OMNI_KIT_ACCEPT_EULA=YES` is set.
 - **Exit code 134 after successful work.** Isaac Sim has a known atexit
   segfault that makes otherwise-clean scripts exit 134 *after* completing
-  successfully. The drivers in this repo guard with `os._exit(...)` after
-  SimulationApp teardown (see the `isaac` subcommand epilogue in
-  `examples/libero/run.py`); user scripts
-  that boot SimulationApp should do the same.
+  successfully. Scripts that boot SimulationApp should guard with
+  `os._exit(...)` after SimulationApp teardown.
 
 ## Usage
 
@@ -243,8 +241,8 @@ open a window.
 Because the joint-name and observation contract matches the MuJoCo backend,
 policies and observation mappings transfer unchanged between backends.
 
-LIBERO scenes get the same treatment for their *visuals*: `load_scene`
-renders each task object with its real mesh (bowls, plates - the assets a
+Mesh-bearing scenes get the same treatment for their *visuals*: `load_scene`
+renders each scene object with its real mesh (bowls, plates - the assets a
 pixel-conditioned policy was trained on) while keeping the validated
 collision-AABB box as the invisible physics proxy, so switching backends does
 not also switch what the cameras see. That box covers both MJCF spellings of a

@@ -60,7 +60,7 @@ def _call(tool: Any, **kwargs: Any) -> dict[str, Any]:
     the wrapper's contract is that it returns the wrapped function's
     return value verbatim. This helper is where a shape drift would
     surface once, rather than at every call site (same idiom as
-    :mod:`tests.drivers.test_g1_fsm_targets_reads_the_sdk_transition_set`).
+    ``test_g1_fsm_targets_reads_the_sdk_transition_set`` (removed)).
     """
     return tool(**kwargs)
 
@@ -111,7 +111,7 @@ def test_the_snapshot_names_the_loco_side_refusals() -> None:
 
     ``7301`` (LocoState not available), ``7302`` (Invalid FSM id -
     the SDK's own transition refusal that
-    :func:`~strands_robots.tools.g1.g1_fsm_targets.g1_fsm_target_admits`
+    ``g1_fsm_target_admits`` (removed lookup verb; clamps now live inline)
     surfaces), ``7303`` (Invalid task id - the same shape for the
     ``g1_loco_task_admits`` verb, which is not in this tree yet and so
     is named as a literal rather than cross-referenced): each of those
@@ -177,7 +177,7 @@ def test_g1_list_error_codes_returns_fresh_containers() -> None:
     into the module's constants. This cell is where a share-a-reference
     regression would surface once, not scattered across every call
     site (same guarantee as the ``fsm_targets`` snapshot in
-    :mod:`strands_robots.tools.g1.g1_fsm_targets`).
+    ``g1_fsm_targets`` (removed)).
     """
     result = _call(g1_list_error_codes)
     result["codes"].append(9999)
@@ -192,7 +192,7 @@ def test_g1_decode_error_code_resolves_a_known_code() -> None:
 
     ``7302`` is "Invalid FSM id (loco)" - the same rc the SDK's
     ``SetFsmId`` handler returns and that
-    :func:`~strands_robots.tools.g1.g1_fsm_targets.g1_fsm_target_admits`
+    ``g1_fsm_target_admits`` (removed lookup verb; clamps now live inline)
     surfaces on a refused query. The two sides quote the same text
     because both read the same catalogue.
     """
@@ -266,7 +266,7 @@ def test_g1_decode_error_code_refuses_a_bool_code() -> None:
     decode query. The verb refuses so a mis-typed argument surfaces
     at the lookup rather than reaching the catalogue's own dict
     coercion (same rule as
-    :func:`~strands_robots.tools.g1.g1_fsm_targets.g1_fsm_target_admits`).
+    ``g1_fsm_target_admits`` (removed lookup verb; clamps now live inline)).
     """
     result = _call(g1_decode_error_code, code=True)
     assert result["status"] == "error"
@@ -281,7 +281,7 @@ def test_g1_decode_error_code_refuses_a_non_int_code() -> None:
     refusal names the type and the value the caller passed, so a
     caller sees which of their many parallel tool calls hit the
     wrong shape (same refusal pattern as
-    :func:`~strands_robots.tools.g1.g1_fsm_targets.g1_fsm_target_admits`).
+    ``g1_fsm_target_admits`` (removed lookup verb; clamps now live inline)).
     """
     result = _call(g1_decode_error_code, code="7302")  # type: ignore[arg-type]
     assert result["status"] == "error"

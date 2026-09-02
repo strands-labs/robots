@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import contextlib
 import difflib
+import functools
+import inspect
 import logging
 import math
 import numbers
@@ -104,6 +106,117 @@ def reject_setup_kwargs(kwargs: Mapping[str, Any]) -> None:
         'builds an empty engine, not a robot. Use Robot("so101", mode="sim") for '
         'one-step setup, or create_world() then add_robot("so101").'
     )
+
+
+# Ratio at which a residual keyword argument is called a *misspelling* of one of
+# the sink owner's own parameters rather than another backend's option name.
+# The two populations are far apart and this sits in the gap: single-edit typos
+# of the MuJoCo constructor's parameters score 0.889 (``tool_nmae``) to 0.968
+# (``default_timstep``), while the cross-backend option names the sink exists to
+# carry score at most 0.667 (``timestep``, which is a substring of
+# ``default_timestep``) and usually far less (``num_envs`` 0.500, ``device``
+# 0.364). ``difflib``'s own 0.6 default sits *below* that gap and would refuse
+# ``timestep`` - a genuine plugin option the suite exercises - so the cutoff is
+# stated here instead of inherited.
+_MISSPELLING_RATIO = 0.8
+
+
+@functools.cache
+def own_keyword_names(func: Callable[..., Any]) -> tuple[str, ...]:
+    """The keyword names a callable binds explicitly, for a sink to screen against.
+
+    Derived from the signature rather than listed by hand, so a parameter added
+    to (or renamed in) the owner is screened without a second place to update.
+
+    Args:
+        func: The callable whose own parameters are the accepted set - a backend
+            class (``inspect.signature`` of a class reports its constructor's
+            parameters, already without ``self``) or the
+            :func:`~strands_robots.robot.Robot` factory function.
+
+    Returns:
+        Every parameter that can be passed by keyword, in declaration order.
+        ``self``, the ``*args`` / ``**kwargs`` sinks and positional-only
+        parameters are omitted - a caller cannot spell any of them as a keyword,
+        so a residual name resembling one is not a misspelling of something that
+        would have worked. Empty when ``func`` has no introspectable signature
+        (a C-level callable), which degrades screening to a no-op rather than
+        refusing every keyword.
+    """
+    try:
+        params = inspect.signature(func).parameters
+    except (TypeError, ValueError):
+        return ()
+    return tuple(
+        name
+        for name, p in params.items()
+        if name != "self" and p.kind not in (p.VAR_KEYWORD, p.VAR_POSITIONAL, p.POSITIONAL_ONLY)
+    )
+
+
+def reject_misspelled_kwargs(kwargs: Mapping[str, Any], accepted: Sequence[str], *, owner: str) -> None:
+    """Refuse a residual keyword argument that misspells one the owner accepts.
+
+    A backend constructor's ``**kwargs`` is a third kind of sink, alongside the
+    *forwarding* and *discarding* sinks :func:`unknown_kwargs_error`
+    distinguishes: a **tolerating** sink. Dropping an unknown name is the
+    documented contract - it is what lets one call carry another backend's
+    options (``num_envs`` / ``device``) and resolve against whichever backend is
+    selected - so the sink cannot simply refuse everything it does not bind.
+
+    That contract covers a name *some* backend reads. It says nothing about a
+    **misspelling of a name this owner reads**, which no portable call can
+    intend, and which the sink otherwise makes byte-identical to omitting the
+    argument: ``defualt_timestep=0.001`` left the physics integrating at the
+    2 ms default under ``status="success"``, and ``positon=[...]`` spawned the
+    robot at the origin. Refusing exactly that subset keeps the portability case
+    intact while the typo becomes an error that names the parameter meant.
+
+    Names that are neither bound nor close to one are logged at DEBUG, so a
+    genuinely cross-backend option is visible in a log rather than silent -
+    matching the adjacent rule for a parameter that is legitimately out of scope
+    for the branch that received it.
+
+    Args:
+        kwargs: The residual keyword arguments the owner is about to drop into
+            its tolerating sink.
+        accepted: The keyword names the owner binds, normally
+            :func:`own_keyword_names` of its own signature.
+        owner: How to name the owner in the message (e.g. ``"MuJoCoSimEngine"``).
+
+    Raises:
+        TypeError: If any name in ``kwargs`` scores at least
+            :data:`_MISSPELLING_RATIO` against one in ``accepted``. Every such
+            name is reported, each with the parameter it misspells, so a caller
+            fixes them in one pass.
+    """
+    misspelled: list[str] = []
+    tolerated: list[str] = []
+    for name in kwargs:
+        if name in accepted:
+            continue
+        match = difflib.get_close_matches(name, list(accepted), n=1, cutoff=_MISSPELLING_RATIO)
+        if match:
+            misspelled.append(f"{name!r} (did you mean {match[0]!r}?)")
+        else:
+            tolerated.append(name)
+    if misspelled:
+        raise TypeError(
+            f"{owner} does not accept {', '.join(misspelled)}. An unrecognised "
+            "keyword is tolerated and dropped here so one call can carry "
+            "another backend's options (num_envs, device) and resolve against "
+            "whichever backend is selected - which is why this was applied as "
+            f"the default instead of refused. A misspelling of a parameter "
+            f"{owner} does read cannot be a cross-backend option, so it is "
+            "refused. Fix the spelling, or drop the argument."
+        )
+    if tolerated:
+        logger.debug(
+            "%s tolerated and dropped %s: no parameter of that name, and no close match to one. "
+            "Expected for another backend's options; otherwise it is an unsupported name.",
+            owner,
+            sorted(tolerated),
+        )
 
 
 def close_match_hint(requested: object, known: Sequence[str]) -> str:
@@ -2013,7 +2126,7 @@ class SimEngine(ABC):
         return components, None
 
     @staticmethod
-    def _validate_duration(duration: Any, method: str) -> dict[str, Any] | None:
+    def _validate_duration(duration: Any, method: str, control_frequency: float) -> dict[str, Any] | None:
         """Reject a rollout ``duration`` that cannot produce a single control step.
 
         ``duration`` is the default horizon knob: when no ``n_steps`` /
@@ -2038,9 +2151,34 @@ class SimEngine(ABC):
         are rejected before the ``<= 0`` comparison so a ``nan`` - which is
         never ``<= 0`` - cannot slip through.
 
+        **The horizon is a product, so one factor's sign does not decide
+        whether a step can be produced.** ``positive_finite_number_error`` reads
+        ``duration`` alone, and at the default ``control_frequency=50.0`` every
+        duration below ``0.02`` is positive, finite, and resolves to ``int(duration
+        * control_frequency) == 0`` control steps - the empty rollout described
+        above, reported as ``status="success"`` with ``0 steps`` and, with a
+        ``video`` requested, "Video requested but 0 frames captured" and no MP4 on
+        disk. Measured on a MuJoCo ``so101`` rollout: ``duration=0.01`` at 50 Hz,
+        ``duration=0.5`` at 1 Hz and ``duration=1.0`` at 0.5 Hz all reported a
+        successful rollout that never queried the policy. Which side of the line a
+        duration falls on is not a property of the duration, so the rate has to be
+        passed in.
+
+        Refused rather than floored to one step, for the reason
+        :meth:`_resolve_horizon` gives for the ``n_steps`` path: a horizon that
+        cannot be honored as asked is a caller error, not a value to silently
+        substitute. A fractional duration that does produce steps stays perfectly
+        usable (``2.5`` seconds at 62.5 Hz is 156 of them) - the boundary is only
+        at zero.
+
         Args:
             duration: The caller-supplied value to validate.
             method: Public method name, used to prefix the error message.
+            control_frequency: Rate the rollout will step at, the other factor of
+                the horizon. Validate it with
+                :meth:`_validate_positive_frequency` first, so a non-finite rate
+                is reported as the parameter error it is rather than as an
+                unreachable horizon.
 
         Returns:
             An error dict naming the offending parameter, or ``None`` when the
@@ -2049,6 +2187,26 @@ class SimEngine(ABC):
         error = positive_finite_number_error(duration, "duration", method)
         if error:
             return {"status": "error", "content": [{"text": error}]}
+        # Compared as floats rather than through the consumer's ``int(...)``:
+        # both factors are bounded only by the float64 range, so their product
+        # can be ``inf`` and ``int(inf)`` raises ``OverflowError`` out of the
+        # guard that exists so a horizon never raises. For a non-negative
+        # product the two tests are equivalent - ``int(p) < 1`` iff ``p < 1``.
+        if float(duration) * float(control_frequency) < 1.0:
+            return {
+                "status": "error",
+                "content": [
+                    {
+                        "text": (
+                            f"{method}: duration={float(duration):g} at "
+                            f"control_frequency={float(control_frequency):g} resolves to 0 control "
+                            f"steps, so the rollout would query no policy and step no physics. "
+                            f"Raise duration to at least {1.0 / float(control_frequency):g}, or "
+                            f"pass n_steps to give the horizon as a step count."
+                        )
+                    }
+                ],
+            }
         return None
 
     @staticmethod
@@ -2329,12 +2487,17 @@ class SimEngine(ABC):
                 ``use_processor``, ``processor_overrides``, ``device``,
                 ...). Forwarded verbatim to ``create_policy``.
             instruction: Natural-language instruction for the policy.
-            duration: Wall-clock seconds to run. Used only when no ``n_steps``
+            duration: Wall-clock seconds to run, honored as such: the loop
+                paces on a deadline, so a step's own cost comes out of the
+                period rather than being added to it (``fast_mode=True``
+                removes the pacing entirely). Used only when no ``n_steps``
                 / ``max_steps`` is given (the step count wins and ``duration``
                 is recomputed from it). Must be a finite positive number; a
                 non-positive, non-finite, non-numeric, or bool value is
                 reported as a structured caller error rather than running a
-                zero-step rollout that reports success.
+                zero-step rollout that reports success - as is a span shorter
+                than one control period (``1 / control_frequency``), which
+                resolves to no steps at that rate.
             control_frequency: Target Hz for policy queries. Must be a
                 positive number; a non-positive, non-numeric, or bool value
                 is reported as a structured caller error.
@@ -2356,7 +2519,11 @@ class SimEngine(ABC):
                 their own interval and ignore this entirely. Must be a
                 positive integer (>= 1); a non-positive or non-int value is
                 reported as a caller error.
-            fast_mode: Skip real-time sleep between steps.
+            fast_mode: Skip the real-time pacing and run as fast as inference
+                and physics allow. When False (default) the loop is paced on a
+                deadline at ``control_frequency``, so the wall clock a step
+                spends working is subtracted from the period rather than added
+                to it and ``duration`` is honored whatever a step costs.
             video: Optional video-recording config dict. Accepted keys:
                 ``path`` (str, output MP4 - required to enable recording),
                 ``fps`` (int, default 30), ``camera`` (str, default backend
@@ -2648,7 +2815,7 @@ class SimEngine(ABC):
         # an ``n_steps`` the resolution above recomputes it - so validate the
         # value the rollout will actually run on, and only then.
         if n_steps is None:
-            if err := self._validate_duration(duration, "run_policy"):
+            if err := self._validate_duration(duration, "run_policy", control_frequency):
                 return err
 
         if err := self._validate_positive_int(n_episodes, "n_episodes", "run_policy"):
@@ -2887,7 +3054,8 @@ class SimEngine(ABC):
                 ``{robot_name: instruction}`` mapping (see contract above).
             duration: Episode length in seconds (steps = duration x freq).
                 Used only when no ``n_steps`` / ``max_steps`` is given. Must
-                be a finite positive number.
+                be a finite positive number of at least one control period, so
+                that product is at least one step.
             control_frequency: Target Hz for policy queries / physics. Must
                 be a positive number.
             action_horizon: Actions consumed from each policy's chunk before
@@ -3866,7 +4034,9 @@ class SimEngine(ABC):
 
             ``status`` reports whether the evaluation RAN, not whether the
             policy succeeded: an evaluation in which every episode failed is
-            still ``status="success"`` with ``success_rate=0.0``. Read
+            still ``status="success"`` with ``success_rate=0.0``. The one
+            thing that makes it ``"error"`` is a recording it could not keep:
+            see ``recording_save_error`` below. Read
             ``success_measured`` first - it is ``False`` when no
             ``success_fn`` / benchmark spec was supplied, in which case
             ``success_rate`` is ``0.0`` for every policy regardless of what it
@@ -3880,6 +4050,15 @@ class SimEngine(ABC):
 
             Horizon: ``n_episodes``, ``max_steps`` (the values the evaluation
             ran with) and ``stopped_early``.
+
+            Recording: ``recording_save_error`` - ``None`` on every healthy
+            evaluation, and the reason string when a per-episode dataset flush
+            failed. A failed flush closes the recorder, after which
+            ``add_frame`` writes nothing and counts no drop, so the evaluation
+            stops at that episode and ``status`` is ``"error"``:
+            ``episodes_completed`` is then the last episode attempted rather
+            than ``n_episodes``, and the aggregate covers only those episodes
+            instead of averaging over ones whose data does not exist.
 
             Video: ``video_paths`` (one MP4 per episode, empty when no
             recording was requested).
@@ -4113,6 +4292,12 @@ class SimEngine(ABC):
             reward + aggregate success_rate / avg_reward / avg_steps in the
             JSON payload, plus ``video_paths`` (the per-episode MP4s written
             when ``video`` is set).
+
+            ``recording_save_error`` is ``None`` on every healthy run and
+            carries the reason when a per-episode dataset flush failed, in
+            which case the benchmark stops at that episode and ``status`` is
+            ``"error"`` - see :meth:`eval_policy`, which reports it the same
+            way.
         """
         from strands_robots.policies import create_policy
         from strands_robots.simulation.benchmark import get_benchmark

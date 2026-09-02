@@ -7,7 +7,7 @@ by a mocked test passing, so it has read as complete thirteen times. The
 existing pin grades the *un*-reachability (the refusal must name the FSM, not
 the battery); nothing graded the positive outcome.
 
-`tests/drivers/test_g1_send_action_success_is_the_acceptance_criterion_for_harness_361.py`
+`tests/drivers/test_g1_send_action_succeeds_on_a_healthy_wired_driver.py`
 adds it as `pytest.mark.xfail(strict=True)`: today it xfails against the shipped
 `FSM id unknown` refusal, and the day a motion-switcher decoder gives `_fsm_id`
 a producer it XPASSes, which `strict=True` turns into a failure the wiring

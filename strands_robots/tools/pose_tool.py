@@ -22,6 +22,7 @@ import serial
 import serial.tools.list_ports
 from strands import tool
 
+from strands_robots.drivers.feetech.protocol import MAX_GOAL_POSITION, decode_word, encode_word
 from strands_robots.tools._path_validation import resolve_output_path, validate_save_path
 from strands_robots.utils import finite_number_error, positive_count_error, positive_finite_number_error
 
@@ -221,13 +222,18 @@ class MotorConfig(TypedDict):
 # that conversion could not represent. A second copy of these bounds could
 # disagree with the one the servo is actually driven from, which is the failure
 # the guard exists to prevent.
+#
+# ``resolution`` is the STS/SMS full scale for every joint, which is what an
+# SO-101's servos are; it is read from the codec that decides the wire format
+# rather than restated, so a bus of a different series cannot be described here
+# by changing one number and leaving the byte order behind.
 _DEFAULT_MOTOR_CONFIGS: dict[str, MotorConfig] = {
-    "shoulder_pan": {"id": 1, "range": (-180, 180), "resolution": 4095},
-    "shoulder_lift": {"id": 2, "range": (-90, 90), "resolution": 4095},
-    "elbow_flex": {"id": 3, "range": (-150, 150), "resolution": 4095},
-    "wrist_flex": {"id": 4, "range": (-90, 90), "resolution": 4095},
-    "wrist_roll": {"id": 5, "range": (-180, 180), "resolution": 4095},
-    "gripper": {"id": 6, "range": (0, 100), "resolution": 4095},
+    "shoulder_pan": {"id": 1, "range": (-180, 180), "resolution": MAX_GOAL_POSITION},
+    "shoulder_lift": {"id": 2, "range": (-90, 90), "resolution": MAX_GOAL_POSITION},
+    "elbow_flex": {"id": 3, "range": (-150, 150), "resolution": MAX_GOAL_POSITION},
+    "wrist_flex": {"id": 4, "range": (-90, 90), "resolution": MAX_GOAL_POSITION},
+    "wrist_roll": {"id": 5, "range": (-180, 180), "resolution": MAX_GOAL_POSITION},
+    "gripper": {"id": 6, "range": (0, 100), "resolution": MAX_GOAL_POSITION},
 }
 
 
@@ -572,7 +578,9 @@ class MotorController:
         # Clamp to range
         degrees = max(min_deg, min(max_deg, degrees))
 
-        # Convert to position (0-4095 for most servos)
+        # Convert to encoder counts. Each config's resolution is the STS/SMS
+        # full scale, which is the series every motor in
+        # ``_DEFAULT_MOTOR_CONFIGS`` is.
         if motor_name == "gripper":
             # Gripper uses 0-100 percentage
             return int((degrees / 100.0) * config["resolution"])
@@ -605,7 +613,7 @@ class MotorController:
             position = self.degrees_to_position(motor_name, position_degrees)
 
             # Feetech position command: INST_WRITE (0x03), Goal_Position address (0x2A)
-            params = [0x2A, position & 0xFF, (position >> 8) & 0xFF]
+            params = [0x2A, *encode_word(position)]
             packet = self.build_feetech_packet(motor_id, 0x03, params)
             self.serial_conn.write(packet)
             return True
@@ -687,7 +695,7 @@ class MotorController:
                     response.hex(" ") if response else "an empty read",
                 )
                 return None
-            position = reply[0] | (reply[1] << 8)
+            position = decode_word(bytes(reply))
             return self.position_to_degrees(motor_name, position)
         except Exception as e:
             logger.error(f"Failed to read motor {motor_name}: {e}")

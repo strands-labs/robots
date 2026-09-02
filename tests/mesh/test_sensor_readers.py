@@ -391,6 +391,21 @@ def test_read_health_dict_battery_and_temps() -> None:
     assert health["temps"] == {"cpu": 55.0}
 
 
+def test_read_health_makes_no_charge_claim_a_record_did_not_carry() -> None:
+    """A record with no charge reading gets no charge key on the wire.
+
+    The reader used to default an absent ``charging`` key to ``False``, so
+    every driver whose battery record carries no charge flag - the G1's
+    ``BmsState_`` declares none - published a charge state indistinguishable
+    from a pack measured to be discharging.  Absence is the honest encoding
+    of a question the robot does not answer.
+    """
+    health = _host(_battery={"pct": 80})._read_health()
+    assert health is not None
+    assert health["battery_pct"] == 80
+    assert "charging" not in health
+
+
 def test_read_health_scalar_battery() -> None:
     health = _host(_battery=42)._read_health()
     assert health is not None

@@ -69,6 +69,15 @@ class SimRobot:
     # byte-identical for those robots.
     home_actuators: dict[str, tuple[float, list[float]]] = field(default_factory=dict)
     policy_running: bool = False
+    # Cooperative-stop accounting. ``policy_stops`` counts the stops that have
+    # landed on a rollout of this robot; ``policy_claim_stops`` is the count the
+    # thread that LAUNCHED the current rollout observed when it claimed the
+    # robot, or ``None`` when no launcher did. A stop moves the count, so a
+    # rollout whose claim no longer matches has been stopped and must not have
+    # ``policy_running`` raised behind that stop - which is what let a stop
+    # issued inside the launch window be reported and then discarded (#2833).
+    policy_stops: int = 0
+    policy_claim_stops: int | None = None
     policy_steps: int = 0
     policy_instruction: str = ""
     # Per-robot mesh peer. Populated by ``Simulation.add_robot`` when the
@@ -86,6 +95,32 @@ class SimRobot:
     # parent Simulation (a bare SimRobot has no run_policy of its own).
     # None for off-mesh or standalone robots.
     _sim_parent: Any = field(default=None, repr=False)
+
+    def request_policy_stop(self) -> bool:
+        """Cooperatively stop this robot's rollout, durably, and report what was in flight.
+
+        A stop is a fact about the rollout and not only a flag: lowering
+        ``policy_running`` alone was overwritten by a worker that had not yet
+        reached its first frame, so the stop was reported and then discarded and
+        the rollout ran to full duration (#2833). Moving ``policy_stops`` puts
+        the launcher's claim out of date, which is what stops the worker raising
+        the flag back over this stop.
+
+        EVERY stop path goes through here rather than assigning
+        ``policy_running = False`` - the ``stop_policy`` action, ``remove_robot``,
+        teardown, and the Device Connect stop / emergency-stop handlers - so they
+        cannot drift to different answers about whether a rollout was halted.
+
+        Returns:
+            Whether this robot's ``policy_running`` flag was raised when the stop
+            arrived. A caller that also tracks rollout Futures should treat its
+            own registry as part of the answer (see
+            :meth:`~strands_robots.simulation.mujoco.simulation.MuJoCoSimEngine.stop_policy`).
+        """
+        was_running = self.policy_running
+        self.policy_stops += 1
+        self.policy_running = False
+        return was_running
 
 
 @dataclass

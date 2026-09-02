@@ -512,7 +512,7 @@ class TestDownloadCheckpoint:
         Regression: `hf_local_dir` populated with `libero_spatial/` made the
         `hf_subfolder="libero_10"` download report skipped=True, so the
         container started against a missing /data/checkpoints/libero_10 and
-        the model never loaded (examples/libero/run.py's multi-suite
+        the model never loaded (a driver's multi-suite
         `--task libero-10-...` flow timed out at the readiness gate).
         """
         local = tmp_path / "ckpt"

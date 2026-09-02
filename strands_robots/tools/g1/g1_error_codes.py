@@ -10,7 +10,7 @@ the caller and the driver both read the SDK's refusal by the same
 sentence. That table has lived in :mod:`._g1_common` since the package
 was created but no ``@tool``-callable verb has ever exposed it: an agent
 that reads the ``refusal_text`` a verb like
-:func:`~strands_robots.tools.g1.g1_fsm_targets.g1_fsm_target_admits`
+``g1_fsm_target_admits`` (removed lookup verb; clamps now live inline)
 returns sees a single decoded line and cannot ask the package what the
 other refusal codes are without importing the constant directly. This
 module closes that gap so an agent planning a call sequence can list
@@ -23,7 +23,7 @@ Two things this module is deliberately *not*:
   reading :data:`~strands_robots.tools.g1._g1_common.ERR_CODES`
   directly, and every field the verbs return is a snapshot of that
   dict. A verb like
-  :func:`~strands_robots.tools.g1.g1_fsm_targets.g1_fsm_target_admits`
+  ``g1_fsm_target_admits`` (removed lookup verb; clamps now live inline)
   already surfaces the decoded text on the write-planning side; this
   module is the read-only catalogue side of the same conversation, so
   a caller who receives a ``refusal_code`` from any other verb can

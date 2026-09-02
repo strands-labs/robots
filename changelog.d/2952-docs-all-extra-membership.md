@@ -12,8 +12,8 @@ called `# everything`.
 
 The two remaining claims were wrong in the other direction. `docs/architecture.md`
 gave the bundle's whole description as "union", and `docs/index.md`'s quickstart
-comment as "every policy", while eleven capability extras stay opt-in --
-`sim-isaac`, `sim-newton`, `sim-gs`, `curobo`, `ros2`, `benchmark-libero`,
+comment as "every policy", while ten capability extras stay opt-in --
+`sim-isaac`, `sim-newton`, `sim-gs`, `curobo`, `ros2`,
 `microduck`, `vera-sim` and the three `cosmos3-*` service and simulation extras.
 A reader who installed `[all]` expecting a union got a `ModuleNotFoundError` from
 the extra they actually needed, which is exactly the failure the extras table

@@ -161,7 +161,7 @@ extras you need:
 | Extra | Installs | Use for |
 |-------|----------|---------|
 | `sim-mujoco` | MuJoCo, robot_descriptions, imageio, mink + qpsolvers[daqp] | Simulation (recommended starting point). mink/qpsolvers are the differential-IK solver behind the `move_to` Cartesian transport primitive; `qpsolvers` ships no solver of its own, so the `[daqp]` backend extra is declared with it. |
-| `sim-newton` | Newton, Warp, MuJoCo-Warp, trimesh | GPU-native simulation (NVIDIA GPU; batched envs, headless ray-traced render) |
+| `sim-newton` | Newton, Warp, MuJoCo-Warp, trimesh, and the `[sim-mujoco]` stack with `mujoco` narrowed to the series the pinned Newton requires | GPU-native simulation (NVIDIA GPU; batched envs, headless ray-traced render). Newton declares its MuJoCo requirement only under its own `[sim]` extra, which the resolver never applies, so this extra pins `mujoco` and `mujoco-warp` to one series itself and caps `newton` at the next minor - the required series is chosen per Newton minor. |
 | `sim-isaac` | usd-core, imageio (Isaac Sim installed separately) | NVIDIA Isaac Sim backend - photorealistic RTX rendering, synthetic data, GPU-batched sensors, USD-native scenes. Install Isaac Sim itself separately: via its pip wheels on Python 3.12 (`isaacsim[all,extscache]` from pypi.nvidia.com - see the caveats in [`docs/simulation/isaac.md`](docs/simulation/isaac.md)), the Omniverse Launcher, Isaac Lab, or the NGC docker image. This extra pulls only the pip-installable Python helpers. (NVIDIA RTX GPU; GPU-only, not in `[all]`.) |
 | `sim-gs` | gsplat, plyfile, torch | 3D Gaussian Splatting hybrid rendering (`strands_robots.rendering`): composite any sim backend's robot over a captured photoreal 3DGS scene. `gsplat` ships as a source dist that JIT-compiles CUDA kernels via `nvcc` on first use - probe with `strands_robots.rendering.gsplat_rasterizer_available()`; the zero-GPU `PanoramaBackground` works without this extra. (CUDA GPU; GPU-only, not in `[all]`.) |
 | `lerobot` | LeRobot | Real hardware, local VLA inference, dataset recording |
@@ -175,7 +175,6 @@ extras you need:
 | `mesh-iot` | awsiotsdk, awscrt, boto3 | AWS IoT Core mesh transport for fleets |
 | `sagemaker` | boto3 | Submit a `TrainSpec` as a managed SageMaker training job (`create_trainer("sagemaker")`) |
 | `device-connect` | device-connect-edge, device-connect-agent-tools | Device-aware networking - discovery, RPC, events, safety (falls back to the built-in mesh if absent) |
-| `benchmark-libero` | libero | LIBERO benchmark evaluation |
 | `all` | everything above except the GPU-only `sim-isaac` / `sim-gs` extras | Kitchen sink |
 
 ```bash
@@ -1162,7 +1161,7 @@ touches ROS 2.
 | `STRANDS_ISAAC_RTX_PATHTRACING` | Isaac Sim backend: on (`1`/`true`/`yes`/`on`) enables RTX path-tracing (photorealistic, slow) instead of the default render mode; off leaves the render mode alone, any other spelling is refused | unset |
 | `STRANDS_ISAAC_NUCLEUS_URL` | Isaac Sim backend: override the Omniverse Nucleus asset-server URL | unset (Isaac default) |
 | `GROOT_API_TOKEN` | API token for the GR00T inference service | unset |
-| `STRANDS_MESH` | Opt a bare `Robot()` into the Zenoh mesh: `true`/`1`/`yes` turns it on. `false`/`0`/`no` is a hard kill switch that also overrides an explicit `mesh=True`, and refuses the robot-less gateway peer the `robot_mesh` tool would otherwise start in a coordinator process. Any other value -- including `off` and `on` -- is ignored, leaving the mesh neither opted into nor disabled, and is logged once as a warning naming the spellings above | unset (mesh off) |
+| `STRANDS_MESH` | Opt a bare `Robot()` into the Zenoh mesh: `true`/`1`/`yes` turns it on. `false`/`0`/`no` is a hard kill switch that also overrides an explicit `mesh=True`, refuses the robot-less gateway peer the `robot_mesh` tool would otherwise start in a coordinator process, and refuses the shared transport itself - so a direct `get_session()` / `ZenohTransport` caller opens no session and binds no `STRANDS_MESH_PORT` listener either. Any other value -- including `off` and `on` -- is ignored, leaving the mesh neither opted into nor disabled, and is logged once as a warning naming the spellings above | unset (mesh off) |
 | `STRANDS_MESH_LOCAL_DEV` | Set `1` for a one-var localhost preset (auth `none`, no second factor needed) | unset |
 | `STRANDS_ROS2_BRIDGE_I_KNOW_THIS_IS_INSECURE` | Second factor to expose a `Robot(ros2_transport="rtps")` inbound `joint_command` surface with no `dds_security_config` (DDS Security). Truthy: `1`/`true`/`yes` | unset |
 | `STRANDS_ROS2_COMMAND_ALLOW` | Comma-separated ROS 2 surfaces pre-approved for `use_ros` commands, for headless use where no operator can be prompted (e.g. `/cmd_vel,/navigate_to_pose`). An entry matches by base name, so `/cmd_vel` also pre-approves every namespaced `cmd_vel` in the graph - name the namespace (`/turtle1/cmd_vel`) to scope the approval to one robot. Every blocklisted surface with a base name no entry lists stays gated, including a zero-velocity halt: the gate is keyed on the surface, not on the payload, so a deployment that must halt unattended pre-approves its `cmd_vel` topic. Reads are never gated. See [safety-critical command surfaces](docs/ros2-integration.md#safety-critical-command-surfaces-need-operator-approval) | unset |
@@ -1178,6 +1177,7 @@ touches ROS 2.
 | `STRANDS_MESH_TLS_KEY` | Path to this peer's private key (PEM). Enforced mode `0600` on POSIX; on Windows the mode gate is skipped with a one-shot WARNING, so restrict it by NTFS ACL. Required under `AUTH_MODE=mtls` | unset |
 | `STRANDS_MESH_I_KNOW_THIS_IS_INSECURE` | Second factor required to bring up `AUTH_MODE=none` | unset |
 | `STRANDS_MESH_PORT` | TCP port for the local Zenoh router | `7447` |
+| `STRANDS_MESH_FALLBACK_MODE` | Zenoh mode for a process that did NOT win the `STRANDS_MESH_PORT` listener and so connects to that hub: `client` (the hub relays, so siblings hear each other) or `peer` (direct links only, which the operator must then arrange). A Zenoh 1.x peer refuses relayed traffic, so `peer` children hear nothing a sibling child publishes. An unrecognized value warns and uses the default | `client` |
 | `ZENOH_CONNECT` | Comma-separated remote Zenoh endpoints to connect to | unset |
 | `ZENOH_LISTEN` | Comma-separated endpoints for the local Zenoh listener | unset |
 | `STRANDS_MESH_MULTICAST` | Opt in to multicast scouting for LAN discovery. Off by default: any device on the LAN can enumerate and attract the fleet, so enabling it logs a WARNING. Prefer explicit `ZENOH_CONNECT` endpoints | `false` |
@@ -1244,12 +1244,10 @@ other spelling is refused. See
 </details>
 
 <details>
-<summary><b>Benchmark / diagnostic env vars (LIBERO, GR00T bisection)</b></summary>
+<summary><b>Diagnostic env vars (GR00T bisection)</b></summary>
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `STRANDS_LIBERO_ACTION_LOG` / `_MAX` | Per-step OSC controller diagnostics | unset / `50` |
-| `STRANDS_LIBERO_STATE_LOG` / `_MAX` | Per-step state values fed to GR00T | unset / `50` |
 | `STRANDS_GROOT_WIRE_LOG` / `_MAX_CALLS` | Directory to dump pre/post inference payloads to, e.g. `/tmp/groot-wire`, to verify LOCAL vs SERVICE parity | unset / `10` |
 
 </details>
@@ -1321,12 +1319,11 @@ rotation - a rotation has a verified pin to stage.
 
 ## Benchmarks
 
-`strands-robots` ships a [LIBERO](https://github.com/Lifelong-Robot-Learning/LIBERO)
-benchmark integration on the MuJoCo backend - byte-equivalent to upstream
-LIBERO at the model level, reaching `success_rate >= 0.92` on libero-10/SCENE5.
 Register declarative benchmarks from file and evaluate policies via the
 `list_benchmarks`, `register_benchmark_from_file`, and `evaluate_benchmark`
-simulation actions. Install with `uv pip install "strands-robots[benchmark-libero]"`.
+simulation actions. `strands_robots/simulation/builtin_benchmarks.py` ships the
+canonical locomotion suites; a task-specific suite is a JSON file, not a
+vendored adapter.
 
 ## Project structure
 
@@ -1350,7 +1347,6 @@ strands_robots/
 ├── rendering/             # Hybrid rendering: CameraParams, backgrounds (panorama/3DGS),
 │                          #   HybridCompositor, encode_clip / mjpeg_frames
 ├── mesh/                  # Zenoh mesh: core, sensors, input, audit, transport, iot
-├── benchmarks/libero/     # LIBERO suite + BDDL parser + adapter
 └── tools/                 # gr00t_inference, lerobot_*, pose, serial, robot_mesh
 ```
 

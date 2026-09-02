@@ -24,17 +24,23 @@ this suite grades only the codec.
 
 from __future__ import annotations
 
+import ast
 import importlib.util
+from pathlib import Path
 
 import pytest
 
 from strands_robots.drivers.feetech.protocol import (
     BROADCAST_ID,
     HEADER,
+    MAX_GOAL_POSITION,
     MAX_UNICAST_ID,
+    WORD_LENGTH,
     Instruction,
     ProtocolError,
     build_packet,
+    decode_word,
+    encode_word,
     parse_status_packet,
     ping_packet,
     read_packet,
@@ -319,6 +325,38 @@ class TestParseStatusPacket:
 # skips only this class's 2 cells.
 _scservo_sdk_available = importlib.util.find_spec("scservo_sdk") is not None
 
+#: Repository root, so the source-level cells read the shipped file rather than
+#: an ``inspect.getsource`` of an already-imported module.
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+
+#: Values spanning the word: both bytes zero, low byte only, high byte only, the
+#: STS/SMS position full scale, and the two-byte maximum.
+_WORD_VALUES = (0, 1, 255, 256, 511, 1023, 2048, MAX_GOAL_POSITION, 0xFFFF)
+
+
+def _sdk_word(sdk, value: int, *, protocol: int) -> list[int]:  # type: ignore[no-untyped-def]
+    """The two bytes the vendor SDK frames ``value`` as under ``protocol``.
+
+    ``SCS_LOBYTE`` / ``SCS_HIBYTE`` read a module-global end-ness rather than
+    taking it as an argument, and ``PacketHandler`` is what sets it. Selecting
+    protocol 0 again in a ``finally`` keeps that global from leaking into any
+    later cell.
+    """
+    try:
+        sdk.PacketHandler(protocol)
+        return [sdk.SCS_LOBYTE(value), sdk.SCS_HIBYTE(value)]
+    finally:
+        sdk.PacketHandler(0)
+
+
+def _sdk_make_word(sdk, low: int, high: int, *, protocol: int) -> int:  # type: ignore[no-untyped-def]
+    """The value a servo speaking ``protocol`` reads from the pair ``low, high``."""
+    try:
+        sdk.PacketHandler(protocol)
+        return int(sdk.SCS_MAKEWORD(low, high))
+    finally:
+        sdk.PacketHandler(0)
+
 
 @pytest.mark.skipif(
     not _scservo_sdk_available,
@@ -375,3 +413,184 @@ class TestTheVendorAgreesOnFraming:
         checksum = (~sum(payload)) & 0xFF
         expected = bytes([0xFF, 0xFF] + payload + [checksum])
         assert write_packet(motor_id, address, bytes(data)) == expected
+
+    @pytest.mark.parametrize("value", _WORD_VALUES)
+    def test_encode_word_matches_the_sdk_protocol_0_order(self, sdk, value: int) -> None:  # type: ignore[no-untyped-def]
+        # The SDK's LOBYTE/HIBYTE pair reads a module-global end-ness that
+        # ``PacketHandler`` sets, so select protocol 0 - the STS/SMS order - and
+        # restore it afterwards rather than leaving a global behind for whichever
+        # cell runs next.
+        assert encode_word(value) == bytes(_sdk_word(sdk, value, protocol=0))
+
+    @pytest.mark.parametrize("value", _WORD_VALUES)
+    def test_the_scs_series_reads_the_same_bytes_as_a_different_value(self, sdk, value: int) -> None:  # type: ignore[no-untyped-def]
+        """Why :func:`encode_word` is series-specific rather than mis-scaled.
+
+        ``PacketHandler(1)`` - the SCS series - reverses the pair, so the bytes
+        this package puts on the wire are read by an SCS-series servo as the
+        byte-swapped value. For every value whose two bytes differ that is a
+        different position, which is what makes covering the SCS series a second
+        word order rather than a scale option.
+        """
+        low, high = _sdk_word(sdk, value, protocol=0)
+        assert _sdk_word(sdk, value, protocol=1) == [high, low]
+
+        as_scs_reads_it = _sdk_make_word(sdk, low, high, protocol=1)
+        if low == high:
+            assert as_scs_reads_it == value, "a palindrome word is the one case both series agree on"
+        else:
+            assert as_scs_reads_it != value, (
+                f"position {value} is framed as {[low, high]} and read by an SCS-series servo as {as_scs_reads_it}"
+            )
+
+
+class TestTheRegisterWordIsTheStsSeriesOrder:
+    """A two-byte register value is framed low byte first, and only there.
+
+    The order is a property of the servo *series*, not of the register or of
+    Feetech generally: the vendor SDK reverses it on a per-model protocol number.
+    These cells state the protocol 0 order this codec implements from the
+    datasheet's own examples, so the SDK-graded cells above confirm rather than
+    define it.
+    """
+
+    @pytest.mark.parametrize(
+        "value,expected",
+        [
+            (0, b"\x00\x00"),
+            (1, b"\x01\x00"),
+            (255, b"\xff\x00"),
+            (256, b"\x00\x01"),
+            (1023, b"\xff\x03"),  # full scale on an SCS-series servo
+            (2048, b"\x00\x08"),  # mid-travel on an STS3215
+            (MAX_GOAL_POSITION, b"\xff\x0f"),
+            (0xFFFF, b"\xff\xff"),
+        ],
+    )
+    def test_a_word_is_framed_low_byte_first(self, value: int, expected: bytes) -> None:
+        assert encode_word(value) == expected
+        assert len(encode_word(value)) == WORD_LENGTH
+        assert decode_word(expected) == value
+
+    @pytest.mark.parametrize("value", _WORD_VALUES)
+    def test_a_word_survives_the_round_trip(self, value: int) -> None:
+        assert decode_word(encode_word(value)) == value
+
+    @pytest.mark.parametrize("value", [-1, 0x10000, 70000])
+    def test_a_value_the_word_cannot_carry_is_refused_not_masked(self, value: int) -> None:
+        # Masking would put a different, reachable command on the wire while the
+        # caller is told the number they asked for went out.
+        with pytest.raises(ValueError, match="out of range"):
+            encode_word(value)
+
+    @pytest.mark.parametrize("value", [True, 2.0, "2048", None])
+    def test_a_non_integer_word_is_refused(self, value: object) -> None:
+        # ``True`` is refused with the rest: it would silently encode as 1.
+        with pytest.raises(TypeError, match="must be int"):
+            encode_word(value)  # type: ignore[arg-type]
+
+    @pytest.mark.parametrize("raw", [b"", b"\x01", b"\x01\x02\x03"])
+    def test_a_reply_that_is_not_one_word_is_refused(self, raw: bytes) -> None:
+        # A short read decoded anyway reports a position the servo never sent.
+        with pytest.raises(ValueError, match="bytes"):
+            decode_word(raw)
+
+    def test_a_bytearray_reply_decodes(self) -> None:
+        # The bus reads into whatever pyserial hands back; both shapes decode.
+        assert decode_word(bytearray(b"\xff\x03")) == 1023
+
+    def test_a_reply_that_is_not_bytes_is_refused(self) -> None:
+        with pytest.raises(TypeError, match="must be bytes"):
+            decode_word([0xFF, 0x03])  # type: ignore[arg-type]
+
+
+class TestTheWireFormatIsDecidedInOnePlace:
+    """Every Feetech write path reads the word order and the full scale from here.
+
+    Both are series properties, and the package spelled each of them several
+    times: the two-byte split appeared as ``value & 0xFF, (value >> 8) & 0xFF``
+    in the bus, in ``serial_tool`` (twice) and in ``pose_tool``, with the joining
+    shift in two more places, and the STS/SMS full scale appeared as eight
+    integer literals. A second spelling is what lets one of them be corrected for
+    a different series while the others stay behind, which is the arrangement
+    :issue:`2812` reports.
+    """
+
+    #: The modules that frame or read a Feetech register word.
+    _WRITE_PATH = (
+        "strands_robots/drivers/feetech/bus.py",
+        "strands_robots/drivers/feetech/driver.py",
+        "strands_robots/tools/serial_tool.py",
+        "strands_robots/tools/pose_tool.py",
+    )
+
+    @staticmethod
+    def _shift_by_eight_sites(source: str) -> list[int]:
+        """Lines spelling a byte-order shift, i.e. ``<< 8`` or ``>> 8``."""
+        tree = ast.parse(source)
+        return sorted(
+            node.lineno
+            for node in ast.walk(tree)
+            if isinstance(node, ast.BinOp)
+            and isinstance(node.op, (ast.LShift, ast.RShift))
+            and isinstance(node.right, ast.Constant)
+            and node.right.value == 8
+        )
+
+    @pytest.mark.parametrize("module_path", _WRITE_PATH)
+    def test_no_consumer_spells_the_byte_order_itself(self, module_path: str) -> None:
+        source = (_REPO_ROOT / module_path).read_text(encoding="utf-8")
+
+        assert self._shift_by_eight_sites(source) == [], (
+            f"{module_path} shifts a byte into place on lines "
+            f"{self._shift_by_eight_sites(source)}; the order belongs to "
+            "encode_word / decode_word so a servo series with the opposite order "
+            "is one edit rather than six"
+        )
+
+    def test_the_codec_names_the_order_rather_than_shifting(self) -> None:
+        source = (_REPO_ROOT / "strands_robots/drivers/feetech/protocol.py").read_text(encoding="utf-8")
+
+        assert self._shift_by_eight_sites(source) == []
+        assert '"little"' in source, "the order the codec implements is named, not encoded in shifts"
+
+    @pytest.mark.parametrize("module_path", _WRITE_PATH)
+    def test_no_consumer_restates_the_full_scale(self, module_path: str) -> None:
+        tree = ast.parse((_REPO_ROOT / module_path).read_text(encoding="utf-8"))
+        literals = sorted(
+            node.lineno
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Constant) and node.value.__class__ is int and node.value == MAX_GOAL_POSITION
+        )
+
+        assert literals == [], (
+            f"{module_path} spells the STS/SMS full scale {MAX_GOAL_POSITION} on lines "
+            f"{literals}; it is a series property and MAX_GOAL_POSITION is where it is decided"
+        )
+
+
+@pytest.mark.skipif(
+    importlib.util.find_spec("lerobot") is None,
+    reason="lerobot not installed on this box",
+)
+class TestLerobotAgreesOnWhichSeriesTheFullScaleBelongsTo:
+    """lerobot's motor tables are the oracle for the resolution and the protocol.
+
+    Skipped where lerobot is absent, like the vendor-SDK class above: the codec's
+    own cells do not need it, and its tables are what let this package state that
+    4096 counts is the STS/SMS number rather than the Feetech number.
+    """
+
+    def test_the_full_scale_is_the_sts_series_resolution(self) -> None:
+        tables = pytest.importorskip("lerobot.motors.feetech.tables")
+
+        for model in ("sts3215", "sts3250", "sm8512bl"):
+            assert tables.MODEL_RESOLUTION[model] - 1 == MAX_GOAL_POSITION, model
+            assert tables.MODEL_PROTOCOL[model] == 0, f"{model} is the low-byte-first order"
+
+    def test_the_scs_series_is_a_different_scale_and_a_different_order(self) -> None:
+        tables = pytest.importorskip("lerobot.motors.feetech.tables")
+
+        assert tables.MODEL_RESOLUTION["scs0009"] - 1 != MAX_GOAL_POSITION
+        assert tables.MODEL_RESOLUTION["scs0009"] == 1024, "10-bit, a quarter of the STS/SMS scale"
+        assert tables.MODEL_PROTOCOL["scs0009"] == 1, "the high-byte-first order this codec does not emit"

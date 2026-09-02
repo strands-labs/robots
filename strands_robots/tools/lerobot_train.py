@@ -29,6 +29,12 @@ from strands import tool
 from strands.types.tools import ToolContext
 
 from strands_robots.tools._hitl_audit import log_operator_response
+from strands_robots.tools._process_stop import (
+    SIGKILL_CONFIRM_S,
+    SIGTERM_GRACE_S,
+    confirm_exit,
+    unstopped_result,
+)
 from strands_robots.utils import (
     positive_count_error,
     step_cadence_error,
@@ -229,37 +235,85 @@ def _gate_extra_flags(
 class SessionManager:
     """Track detached training sessions with on-disk persistence.
 
-    Sessions are keyed by name and stored as JSON. Dead processes are pruned on
-    every load so ``list``/``status`` never report a stale PID as running.
+    Sessions are keyed by name and stored as JSON. The load step classifies a
+    record as running or finished but never deletes one: :meth:`remove_session`
+    is the only thing that drops a record, because this store is the only place
+    a detached training process's pid is written down.
     """
 
     def __init__(self) -> None:
         self.sessions_file = SESSION_DIR / "active_sessions.json"
 
     def _load_sessions(self) -> dict[str, Any]:
+        """Load every stored session record, reporting any it could not inspect.
+
+        No record is dropped here, and that is what keeps a detached session
+        stoppable. :meth:`add_session` and :meth:`remove_session` are
+        load-modify-write, so a record this method leaves out is erased from disk
+        by the next session started or stopped - and this store is the only place
+        a detached training process's pid is written down, so the erased process
+        goes on holding the GPU with no supported way left to stop it.
+
+        Leaving a record out is not needed to avoid over-reporting it either:
+        presence here is not the running claim. ``list`` and ``status`` each
+        derive that from ``psutil.pid_exists`` at the moment they are asked, so a
+        retained record reads as running only while its pid really exists.
+
+        Returns:
+            Every stored session record, keyed by session name. A store that
+            cannot be read degrades to empty rather than raising.
+        """
         if not self.sessions_file.exists():
             return {}
         try:
             with open(self.sessions_file) as f:
-                sessions = json.load(f)
+                sessions: dict[str, Any] = json.load(f)
         except (OSError, json.JSONDecodeError) as e:
             logger.error(f"Error loading sessions: {e}")
             return {}
 
-        active: dict[str, Any] = {}
+        self._report_uninspectable(sessions)
+        return sessions
+
+    def _report_uninspectable(self, sessions: dict[str, Any]) -> None:
+        """Warn for each session whose process exists but cannot be inspected.
+
+        ``psutil.pid_exists`` answers existence and ``Process(pid).is_running()``
+        refines it. When the second raises :class:`psutil.AccessDenied` the
+        process is there and this user may not look at it - a session started
+        under ``sudo`` and later listed as the invoking user reads this way. That
+        denial is the operator's only clue that ``status`` is reporting on a
+        process it cannot see into, so it is said out loud.
+
+        :class:`psutil.NoSuchProcess` needs no report: it means the run was
+        reaped between the two probes, which is the same finished run as a pid
+        that was already gone, and those are retained for their log tail.
+
+        Args:
+            sessions: The loaded records. Inspected only; never modified.
+        """
         for name, info in sessions.items():
             pid = info.get("pid")
-            if pid and psutil.pid_exists(pid):
-                try:
-                    if psutil.Process(pid).is_running():
-                        active[name] = info
-                except (psutil.NoSuchProcess, psutil.AccessDenied):
-                    pass
-            else:
-                # Keep finished training sessions so status can report the
-                # final log tail; only the running flag is derived from the PID.
-                active[name] = info
-        return active
+            if not (pid and psutil.pid_exists(pid)):
+                continue
+            try:
+                # Called for what it raises, not for what it returns: the
+                # running/finished line is re-derived by ``list`` and ``status``,
+                # so this probe exists only to surface a denial.
+                psutil.Process(pid).is_running()
+            except psutil.NoSuchProcess:
+                # Reaped between the two probes: the same finished run as a pid
+                # that was already gone, and those are retained for their log
+                # tail. Nothing to report, so the denial below stays the only
+                # thing this loop says out loud.
+                pass
+            except psutil.AccessDenied:
+                logger.warning(
+                    "Training session '%s' (PID %s) exists but cannot be inspected; "
+                    "keeping its record so the session stays stoppable",
+                    name,
+                    pid,
+                )
 
     def _save_sessions(self, sessions: dict[str, Any]) -> None:
         try:
@@ -305,8 +359,8 @@ class SessionManager:
 
         Returns:
             The session's info dict, or ``None`` if no session is tracked under
-            ``name``. Dead processes are pruned on load, so a returned record is
-            one whose PID either is still running or belonged to a finished run.
+            ``name``. A record is returned whether its process is running or
+            finished; ``status`` derives that from the pid when asked.
         """
         return self._load_sessions().get(name)
 
@@ -314,11 +368,11 @@ class SessionManager:
         """Return every currently-tracked session keyed by name.
 
         Returns:
-            A ``name -> info`` map. Sessions whose PID is no longer a running
-            process are not dropped -- they are retained so ``status`` can still
-            report the final log tail -- but the load step is what derives the
-            live/finished distinction, so this never reports a stale PID as
-            running.
+            A ``name -> info`` map holding every tracked session. Sessions
+            whose PID is no longer a running process are not dropped -- they are
+            retained so ``status`` can still report the final log tail -- and
+            being listed is not a claim of running: the caller derives that from
+            the pid, so this never reports a stale PID as running.
         """
         return self._load_sessions()
 
@@ -496,17 +550,23 @@ def build_train_command(
     requires a positive integer. Passing ``None`` for either omits the flag and
     leaves lerobot's own default in place.
 
+    ``num_gpus`` is checked against that same domain, for the same reason and one
+    more: it is read twice, once as the ``num_gpus > 1`` launcher selector and
+    once as the ``--num_processes=`` token, so a value that is neither greater
+    than one nor refused selects a single-process run the caller did not ask for.
+
     ``save_freq`` is checked against the same ``int`` requirement by
     :func:`_save_freq_error`, without a floor: lerobot documents a non-positive
     cadence as "disables periodic saving".
 
     Raises:
         ValueError: if ``lora`` and ``train_expert_only`` are both set (both
-            freeze the VLM and are mutually exclusive), if ``train_expert_only``
-            is requested for a non-expert policy, if ``num_gpus < 1``, or if a
-            supplied ``steps`` / ``batch_size`` - or, under ``lora``, a supplied
-            ``lora_r`` / ``lora_alpha`` - is not a positive integer, or if a
-            fresh run's ``device`` is not a device string torch can parse or its
+            freeze the VLM and are mutually exclusive), if
+            ``train_expert_only`` is requested for a non-expert policy, if
+            ``num_gpus`` is not a positive integer, if a supplied ``steps``
+            / ``batch_size`` - or, under ``lora``, a supplied ``lora_r`` /
+            ``lora_alpha`` - is not a positive integer, or if a fresh run's
+            ``device`` is not a device string torch can parse or its
             ``save_freq`` is not a whole number of steps.
     """
     if lora and train_expert_only:
@@ -518,8 +578,19 @@ def build_train_command(
         raise ValueError(
             f"train_expert_only is only valid for {sorted(expert_only_policies)} policies, not '{policy_type}'."
         )
-    if num_gpus < 1:
-        raise ValueError(f"num_gpus must be >= 1, got {num_gpus}")
+    # The launch topology, read twice below: the ``num_gpus > 1`` selector that
+    # picks accelerate over a direct module run, and the ``--num_processes=``
+    # token that sizes the accelerate launch. A local comparison could not screen
+    # either read. ``nan`` and ``True`` are not greater than one, so they fell
+    # through to the single-process branch and the caller was told a run started
+    # on a topology nobody asked for; ``2.7`` and ``inf`` are, so they reached
+    # accelerate's own ``type=int`` parse inside the DETACHED process, where the
+    # only record is the training log. Held to the same shared domain
+    # ``LerobotTrainer.validate`` applies to this field, so the two surfaces that
+    # launch one lerobot run cannot disagree about the counts they accept.
+    topology_error = positive_count_error(num_gpus, "num_gpus", "lerobot_train")
+    if topology_error:
+        raise ValueError(topology_error)
     # The two knobs that size the run. An unusable value here is not merely
     # rejected downstream: it is written into the argv of a DETACHED process, so
     # the caller is told the run started and only the training log records that
@@ -744,7 +815,8 @@ def lerobot_train(
     Actions:
         start: launch a new training run (default).
         status: report a run's PID, uptime, running flag, and recent log tail.
-        stop: terminate a running session by name (SIGTERM then SIGKILL).
+        stop: terminate a running session by name (SIGTERM then SIGKILL),
+            reported successful only once the process has exited.
         list: list tracked training sessions.
 
     Args:
@@ -957,25 +1029,47 @@ def lerobot_train(
 
             pid_int = int(pid)
             try:
+                # Capture the process identity before signalling anything: psutil
+                # records the creation time here, so the escalation and the
+                # confirmation below are aimed at this process and not at
+                # whatever holds the PID once the grace period is over.
+                proc = psutil.Process(pid_int)
+
                 os.kill(pid_int, signal.SIGTERM)
-                time.sleep(2)
-                if psutil.pid_exists(pid_int):
+                if confirm_exit(proc, SIGTERM_GRACE_S) is not True:
                     os.kill(pid_int, signal.SIGKILL)
+                    verdict = confirm_exit(proc, SIGKILL_CONFIRM_S)
+                    if verdict is not True:
+                        # Sending SIGKILL is not the process exiting. Reporting
+                        # this stopped would also drop the record below, and that
+                        # store is the only place the detached PID is written
+                        # down, so the session would carry on with no supported
+                        # way left to stop it.
+                        return unstopped_result(session_name, pid_int, verdict, "training")
+
                 session_manager.remove_session(session_name)
                 return {
                     "status": "success",
                     "content": [
                         {"text": f"**Session Stopped**\nSession: `{session_name}`\nPID: {pid}"},
-                        {"json": {"session_name": session_name, "session_info": session_info}},
+                        {
+                            "json": {
+                                "session_name": session_name,
+                                "session_info": session_info,
+                                "stopped": True,
+                            }
+                        },
                     ],
                 }
-            except ProcessLookupError:
+            except (ProcessLookupError, psutil.NoSuchProcess):
+                # Already gone before this verb reached it: os.kill reports that
+                # as ProcessLookupError, psutil.Process as NoSuchProcess.
                 session_manager.remove_session(session_name)
                 return {
                     "status": "success",
                     "content": [
                         {"text": f"Session '{session_name}' was already stopped"},
-                        {"json": {"session_name": session_name}},
+                        {"json": {"session_name": session_name, "stopped": True}},
                     ],
                 }
 

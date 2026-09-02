@@ -31,6 +31,7 @@ methods (e.g. MuJoCo acquires a lock inside ``send_action`` / ``step``).
 
 from __future__ import annotations
 
+import contextlib
 import difflib
 import logging
 import math
@@ -57,6 +58,7 @@ from strands_robots.utils import (
 )
 
 if TYPE_CHECKING:
+    from strands_robots.mesh.pacing import Ticker
     from strands_robots.policies.base import Policy
     from strands_robots.simulation.base import SimEngine
     from strands_robots.simulation.benchmark import BenchmarkProtocol
@@ -1137,38 +1139,58 @@ class PolicyRunner:
     # Calling this at the end of each policy-runner episode forces a per-
     # episode boundary in the recorded dataset. Skipped silently when no
     # recorder is attached (eval without recording is the common case).
-    def _finalize_recorder_episode(self) -> None:
+    def _finalize_recorder_episode(self) -> str | None:
         """Roll the attached dataset_recorder over to a new episode.
 
         Called at end of each rollout iteration in ``evaluate`` and
         ``_evaluate_with_spec``. No-op when no recorder is attached or when
         the episode buffer is empty (e.g. degenerate policy returned no
         actions and ``add_frame`` was never called).
+
+        Returns:
+            ``None`` when the episode was flushed, or when there was nothing
+            to flush. A reason string when the flush FAILED, for the caller to
+            stop on and report.
+
+            A failed flush is not telemetry. The recorder marks itself closed
+            because the LeRobot episode buffer is in an undefined state, and
+            :meth:`~strands_robots.dataset_recorder.DatasetRecorder.add_frame`
+            then returns on a closed recorder without writing a frame or
+            counting a drop - so a later episode's frames reach no dataset and
+            leave no trace in the recorder's own accounting either. An
+            evaluation that carried on would report a ``success_rate`` over
+            episodes whose data does not exist. Every sibling flush already
+            refuses the same way: ``stop_recording`` and
+            :meth:`~strands_robots.simulation.base.SimEngine.save_episode`
+            drop the poisoned recorder and return an error,
+            :meth:`~strands_robots.simulation.base.SimEngine.run_policy` with
+            ``n_episodes`` aborts its remaining episodes, and the MuJoCo
+            backend's ``reset``
+            surfaces the failure rather than resetting into an undefined
+            state.
         """
         try:
             world = getattr(self.sim, "_world", None)
             if world is None:
-                return
+                return None
             recorder = world._backend_state.get("dataset_recorder")
         except AttributeError:
-            return
+            return None
         if recorder is None:
-            return
+            return None
         # Don't flush an empty buffer - LeRobot raises on save_episode with
         # zero frames, and a degenerate rollout still counts as "no data" for
         # this episode rather than an error.
         pending = getattr(recorder, "episode_frame_count", 0)
         if pending <= 0:
-            return
+            return None
         try:
             result = recorder.save_episode()
-            if isinstance(result, dict) and result.get("status") != "success":
-                logger.warning(
-                    "Per-episode save_episode returned non-success: %s",
-                    result.get("message", result),
-                )
-        except Exception as e:  # noqa: BLE001 - recorder errors must not abort eval
-            logger.warning("Per-episode save_episode raised: %s", e)
+        except Exception as e:  # noqa: BLE001 - reported to the caller, not raised
+            return f"save_episode raised: {e}"
+        if isinstance(result, dict) and result.get("status") != "success":
+            return f"save_episode: {result.get('message', result)}"
+        return None
 
     # run(): blocking policy execution
     def run(
@@ -1225,7 +1247,16 @@ class PolicyRunner:
                 never asked for - or leaks a bare conversion error out of the
                 first inference, so it is refused here exactly as
                 ``run_policy`` refuses it.
-            fast_mode: If True, skip real-time ``time.sleep`` between steps.
+            fast_mode: If True, run unpaced - as fast as inference and physics
+                allow. If False (default) the loop is paced on a DEADLINE at
+                ``control_frequency``: the wall clock a step spends on
+                inference, physics substeps, rendering and recording is
+                subtracted from the period rather than added to it, so a
+                rollout of ``n`` steps takes ``n / control_frequency`` seconds
+                whatever a step costs, as long as it fits inside one period. A
+                step that overruns its period drops the missed deadlines
+                instead of chasing them, so a slow step is followed by a gap
+                rather than by a burst of back-to-back actions.
             video: Optional :class:`VideoConfig` - set ``video.path`` to enable
                 MP4 recording via :meth:`SimEngine.render`.
             on_frame: Optional hook ``(step_idx, obs, action) -> None`` called
@@ -1580,406 +1611,446 @@ class PolicyRunner:
         # future reader does not reach for ``time.time()`` again.
         start_mono = time.monotonic()
         step_count = 0
-        try:
-            # Prefer an explicit integer step count when the caller resolved one
-            # from ``n_steps`` (or the legacy ``max_steps`` alias). Recomputing
-            # ``int(duration * control_frequency)`` from the float ``duration =
-            # n_steps / control_frequency`` truncates on any frequency that does
-            # not divide evenly (e.g. n_steps=1 @ 49 Hz -> 0 steps reported as
-            # success). Forwarding the count verbatim keeps the horizon exact.
-            if n_steps is not None:
-                total_steps = n_steps
-            else:
-                total_steps = int(duration * control_frequency)
-            action_sleep = 1.0 / control_frequency
-
-            # Control-rate substepping: a position-servo robot needs the physics
-            # to advance for the FULL control period (1/control_frequency) after
-            # each action so the joints actually track the commanded target
-            # before the next action overwrites ``ctrl``. With the default
-            # 1 substep/action, the arm only integrates one physics dt (~2 ms)
-            # per action and barely moves - the policy looks like a no-op even
-            # though it is sending valid targets. Derive substeps from the
-            # backend's physics timestep; fall back to 1 when unknown.
-            # Single source of truth for the derivation AND for the
-            # positive-integer contract on an explicit override: an inline copy
-            # here drifted from the shared helper the eval paths use.
-            n_substeps = self._control_substeps(control_frequency, control_substeps)
-            logger.info(
-                "PolicyRunner: control_frequency=%.1f Hz, physics substeps/action=%d",
-                control_frequency,
-                n_substeps,
-            )
-            _action_errors = 0  # count send_action failures (unresolved keys)
-            # Per-actuator resolution tracking (issue #165). Init a counter to 0
-            # for EVERY robot actuator so a never-driven joint surfaces as
-            # resolution_rate 0.0 in the result rather than being absent from the
-            # map. ``_total_failure_steps`` counts steps where the policy emitted
-            # keys but NONE resolved (100% failure) -- the fail-fast trigger.
+        # Bound before the rollout so the ``except CooperativeStop`` handler and
+        # the ``_apply`` closure never see an unbound name, the same reason
+        # ``start_mono`` is bound above.
+        ticker: Ticker | None = None
+        # The Ticker owns a selector and a socketpair, so an unclosed one leaks
+        # two descriptors per rollout - which an eval loop repeats once per
+        # episode. Released by an ExitStack rather than by a ``with Ticker(...)``
+        # item because the pacer is acquired CONDITIONALLY - a ``fast_mode``
+        # rollout must not construct one, nor pay the mesh import below - while
+        # its live region is the whole rollout body, which reaches it through the
+        # ``_apply`` closure rather than from a single loop. The stack expresses
+        # both, and hands the release to the language instead of to a ``finally``
+        # that every future edit to this body has to remember.
+        with contextlib.ExitStack() as pacing_resources:
             try:
-                _robot_actuators = list(self.sim.robot_action_keys(robot_name))
-            except Exception:  # noqa: BLE001 - stats are best-effort, never fatal
-                _robot_actuators = []
-            _actuator_resolved: dict[str, int] = dict.fromkeys(_robot_actuators, 0)
-            _total_failure_steps = 0
-            _last_unresolved: list[str] = []
-
-            onframe_failure_limit = (
-                max_onframe_failures if max_onframe_failures is not None else _MAX_CONSECUTIVE_ONFRAME_FAILURES
-            )
-            consecutive_onframe_failures = 0
-
-            # Per-action execution body shared by BOTH the synchronous loop and
-            # the async-RTC pipeline so they send, record, count and pace
-            # identically - only the chunk-ACQUISITION strategy differs between
-            # the two paths.
-            def _apply(observation: dict[str, Any], action_dict: dict[str, Any]) -> None:
-                nonlocal step_count, _action_errors, consecutive_onframe_failures
-                nonlocal _total_failure_steps, _last_unresolved
-
-                _send_result = self.sim.send_action(action_dict, robot_name=robot_name, n_substeps=n_substeps)
-                _is_error = isinstance(_send_result, dict) and _send_result.get("status") == "error"
-                # Resolve which of the robot's actuators this step actually drove
-                # and which emitted keys no actuator could absorb. On the success
-                # path send_action returns no json block, so every emitted key
-                # resolved; on the error path the block enumerates applied /
-                # unresolved keys.
-                _unresolved: list[str] = []
-                if _is_error:
-                    _action_errors += 1
-                    _json = _extract_result_json(_send_result)
-                    if _json is not None:
-                        _unresolved = list(_json.get("unresolved_keys", []))
-                        _applied = list(_json.get("applied", []))
-                    else:
-                        # Error without a per-key breakdown (e.g. missing world,
-                        # vector length mismatch): treat the whole step as a
-                        # 100% failure so it counts toward the fail-fast probe.
-                        _applied = []
-                        if isinstance(action_dict, dict):
-                            _unresolved = list(action_dict.keys())
-                elif isinstance(action_dict, dict):
-                    _applied = list(action_dict)
+                # Prefer an explicit integer step count when the caller resolved one
+                # from ``n_steps`` (or the legacy ``max_steps`` alias). Recomputing
+                # ``int(duration * control_frequency)`` from the float ``duration =
+                # n_steps / control_frequency`` truncates on any frequency that does
+                # not divide evenly (e.g. n_steps=1 @ 49 Hz -> 0 steps reported as
+                # success). Forwarding the count verbatim keeps the horizon exact.
+                if n_steps is not None:
+                    total_steps = n_steps
                 else:
-                    # A numeric vector binds positionally to every joint.
-                    _applied = list(_robot_actuators)
-                for _name in _applied:
-                    if _name in _actuator_resolved:
-                        _actuator_resolved[_name] += 1
-                # A step is a 100%-failure when the policy emitted keys but NONE
-                # resolved to an actuator (the robot did not move at all). A
-                # PARTIAL failure (some keys resolve) is operational and runs to
-                # completion -- reported via partial_action_failure_rate.
-                if _is_error and not _applied:
-                    _total_failure_steps += 1
-                    if _unresolved:
-                        _last_unresolved = _unresolved
+                    total_steps = int(duration * control_frequency)
+                # Pace the loop on a DEADLINE, not a delay. ``time.sleep(1 /
+                # control_frequency)`` after each step ADDS that step's work -
+                # inference, the physics substeps, a render for the video, the
+                # recorder's frame write - to the period instead of subtracting it,
+                # so the loop runs at ``1 / (period + work)``. Measured on a MuJoCo
+                # so101 rollout asking for 2.0s: 2.15s with a free policy, 3.15s
+                # with 10ms of inference at 50Hz, and 3.90s at 30Hz with 30ms of
+                # inference - 15.4Hz achieved where 30Hz was asked for. ``duration``
+                # is documented as wall-clock seconds and ``fast_mode=False`` as
+                # real-time pacing, so both claims were false by the cost of a step.
+                # Ticker also DROPS missed deadlines rather than chasing them, so one
+                # slow step does not fire a burst of back-to-back actions at the arm.
+                #
+                # Imported here rather than at module scope: importing any
+                # ``strands_robots.mesh`` submodule executes the mesh package
+                # ``__init__``, which pulls the fleet stack (measured: 14 mesh
+                # modules plus boto3) - a cost a local rollout must not pay for a
+                # pure-timing helper. Same reason as the local imports in the MuJoCo
+                # backend and ``TeleopMixin._teleop_apply_loop``.
+                if not fast_mode:
+                    from strands_robots.mesh.pacing import Ticker as _Ticker
 
-                if on_frame is not None:
-                    try:
-                        on_frame(step_count, observation, action_dict)
-                        consecutive_onframe_failures = 0
-                    except CooperativeStop:
-                        # Backend (e.g. MuJoCo) signalled a graceful stop.
-                        raise
-                    except RecordingFrameError:
-                        # A frame the dataset recorder could not write is data
-                        # loss, not telemetry: the episode on disk is already
-                        # shorter than this rollout. Never counted against the
-                        # telemetry tolerance below, which resets on every
-                        # success and so would let an intermittent recorder
-                        # failure truncate the dataset without ever tripping.
-                        raise
-                    except Exception as e:
-                        # on_frame is user-provided telemetry - never fatal
-                        # *per call*. But if it fails on every step, a 500-
-                        # step episode completes "successfully" with zero
-                        # frames recorded and the dataset is silently empty.
-                        # Count consecutive failures and fail the episode
-                        # after ``onframe_failure_limit`` in a row. See GH #117.
-                        consecutive_onframe_failures += 1
-                        logger.warning(
-                            "on_frame hook failed (%d/%d consecutive): %s",
-                            consecutive_onframe_failures,
-                            onframe_failure_limit,
-                            e,
+                    ticker = pacing_resources.enter_context(_Ticker(1.0 / control_frequency))
+
+                # Control-rate substepping: a position-servo robot needs the physics
+                # to advance for the FULL control period (1/control_frequency) after
+                # each action so the joints actually track the commanded target
+                # before the next action overwrites ``ctrl``. With the default
+                # 1 substep/action, the arm only integrates one physics dt (~2 ms)
+                # per action and barely moves - the policy looks like a no-op even
+                # though it is sending valid targets. Derive substeps from the
+                # backend's physics timestep; fall back to 1 when unknown.
+                # Single source of truth for the derivation AND for the
+                # positive-integer contract on an explicit override: an inline copy
+                # here drifted from the shared helper the eval paths use.
+                n_substeps = self._control_substeps(control_frequency, control_substeps)
+                logger.info(
+                    "PolicyRunner: control_frequency=%.1f Hz, physics substeps/action=%d",
+                    control_frequency,
+                    n_substeps,
+                )
+                _action_errors = 0  # count send_action failures (unresolved keys)
+                # Per-actuator resolution tracking (issue #165). Init a counter to 0
+                # for EVERY robot actuator so a never-driven joint surfaces as
+                # resolution_rate 0.0 in the result rather than being absent from the
+                # map. ``_total_failure_steps`` counts steps where the policy emitted
+                # keys but NONE resolved (100% failure) -- the fail-fast trigger.
+                try:
+                    _robot_actuators = list(self.sim.robot_action_keys(robot_name))
+                except Exception:  # noqa: BLE001 - stats are best-effort, never fatal
+                    _robot_actuators = []
+                _actuator_resolved: dict[str, int] = dict.fromkeys(_robot_actuators, 0)
+                _total_failure_steps = 0
+                _last_unresolved: list[str] = []
+
+                onframe_failure_limit = (
+                    max_onframe_failures if max_onframe_failures is not None else _MAX_CONSECUTIVE_ONFRAME_FAILURES
+                )
+                consecutive_onframe_failures = 0
+
+                # Per-action execution body shared by BOTH the synchronous loop and
+                # the async-RTC pipeline so they send, record, count and pace
+                # identically - only the chunk-ACQUISITION strategy differs between
+                # the two paths.
+                def _apply(observation: dict[str, Any], action_dict: dict[str, Any]) -> None:
+                    nonlocal step_count, _action_errors, consecutive_onframe_failures
+                    nonlocal _total_failure_steps, _last_unresolved
+
+                    _send_result = self.sim.send_action(action_dict, robot_name=robot_name, n_substeps=n_substeps)
+                    _is_error = isinstance(_send_result, dict) and _send_result.get("status") == "error"
+                    # Resolve which of the robot's actuators this step actually drove
+                    # and which emitted keys no actuator could absorb. On the success
+                    # path send_action returns no json block, so every emitted key
+                    # resolved; on the error path the block enumerates applied /
+                    # unresolved keys.
+                    _unresolved: list[str] = []
+                    if _is_error:
+                        _action_errors += 1
+                        _json = _extract_result_json(_send_result)
+                        if _json is not None:
+                            _unresolved = list(_json.get("unresolved_keys", []))
+                            _applied = list(_json.get("applied", []))
+                        else:
+                            # Error without a per-key breakdown (e.g. missing world,
+                            # vector length mismatch): treat the whole step as a
+                            # 100% failure so it counts toward the fail-fast probe.
+                            _applied = []
+                            if isinstance(action_dict, dict):
+                                _unresolved = list(action_dict.keys())
+                    elif isinstance(action_dict, dict):
+                        _applied = list(action_dict)
+                    else:
+                        # A numeric vector binds positionally to every joint.
+                        _applied = list(_robot_actuators)
+                    for _name in _applied:
+                        if _name in _actuator_resolved:
+                            _actuator_resolved[_name] += 1
+                    # A step is a 100%-failure when the policy emitted keys but NONE
+                    # resolved to an actuator (the robot did not move at all). A
+                    # PARTIAL failure (some keys resolve) is operational and runs to
+                    # completion -- reported via partial_action_failure_rate.
+                    if _is_error and not _applied:
+                        _total_failure_steps += 1
+                        if _unresolved:
+                            _last_unresolved = _unresolved
+
+                    if on_frame is not None:
+                        try:
+                            on_frame(step_count, observation, action_dict)
+                            consecutive_onframe_failures = 0
+                        except CooperativeStop:
+                            # Backend (e.g. MuJoCo) signalled a graceful stop.
+                            raise
+                        except RecordingFrameError:
+                            # A frame the dataset recorder could not write is data
+                            # loss, not telemetry: the episode on disk is already
+                            # shorter than this rollout. Never counted against the
+                            # telemetry tolerance below, which resets on every
+                            # success and so would let an intermittent recorder
+                            # failure truncate the dataset without ever tripping.
+                            raise
+                        except Exception as e:
+                            # on_frame is user-provided telemetry - never fatal
+                            # *per call*. But if it fails on every step, a 500-
+                            # step episode completes "successfully" with zero
+                            # frames recorded and the dataset is silently empty.
+                            # Count consecutive failures and fail the episode
+                            # after ``onframe_failure_limit`` in a row. See GH #117.
+                            consecutive_onframe_failures += 1
+                            logger.warning(
+                                "on_frame hook failed (%d/%d consecutive): %s",
+                                consecutive_onframe_failures,
+                                onframe_failure_limit,
+                                e,
+                            )
+                            if consecutive_onframe_failures >= onframe_failure_limit:
+                                raise RuntimeError(
+                                    f"on_frame hook failed {onframe_failure_limit} times in a row; "
+                                    f"aborting episode to avoid silent dataset corruption. "
+                                    f"Last error: {e!r}"
+                                ) from e
+
+                    step_count += 1
+
+                    # Fail fast: if EVERY step of the opening probe window drove zero
+                    # actuators, the policy's output keys cannot match this robot, so
+                    # the rollout is structurally dead -- raise now instead of running
+                    # the remaining steps (and inference / recording I/O). Once any
+                    # step resolves a key, _total_failure_steps < step_count forever
+                    # and this never fires.
+                    if step_count >= _FAIL_FAST_PROBE_STEPS and _total_failure_steps == step_count:
+                        try:
+                            _valid = self.sim.robot_action_keys(robot_name)
+                        except Exception:  # noqa: BLE001
+                            _valid = _robot_actuators
+                        raise RuntimeError(
+                            f"All of the first {step_count} action steps had 100% "
+                            f"unresolved keys on '{robot_name}' -- the robot has not "
+                            f"moved. Unresolved keys: {_last_unresolved}. Valid "
+                            f"actuator/joint names: {_valid}. The policy is almost "
+                            f"certainly running the wrong embodiment; inspect the "
+                            f"expected keys via sim.get_features(robot_name="
+                            f"'{robot_name}')."
                         )
-                        if consecutive_onframe_failures >= onframe_failure_limit:
+
+                    if vwriter is not None:
+                        vwriter.capture(step_count)
+
+                    if ticker is not None:
+                        # ``wait()`` returns the stop verdict of the event a Ticker
+                        # was given; this one has none - the runner's cooperative
+                        # stop arrives as an exception out of the on_frame hook
+                        # above - so there is no verdict here to read.
+                        ticker.wait()
+
+                def _stop_when_fired() -> bool:
+                    """Evaluate the caller's ``stop_when`` clause against the live sim.
+
+                    Called after every applied action on BOTH the synchronous and
+                    async-RTC paths, so the early-return latency bound is ONE
+                    control step regardless of chunk length: the check fires
+                    within the current chunk-slice and the remaining actions of
+                    the chunk are dropped. Call sites guard on ``stop_when is not
+                    None`` so the no-clause hot path pays no per-step call. A
+                    raising clause is fatal - the caller asked for early-return
+                    semantics the runner can no longer honor, and silently
+                    running to the step budget would misreport the rollout - so
+                    it surfaces as ``status="error"`` via the outer handler
+                    rather than being warn-and-continued.
+                    """
+                    nonlocal stop_predicate_fired
+                    assert stop_when is not None  # call sites hoist the None guard
+                    try:
+                        fired = bool(stop_when(self.sim))
+                    except Exception as e:
+                        raise RuntimeError(
+                            f"stop_when predicate raised at step {step_count}: {e!r}. The early-return "
+                            "condition cannot be evaluated, so the rollout is aborted rather than "
+                            "silently running to its step budget."
+                        ) from e
+                    if fired:
+                        stop_predicate_fired = True
+                        logger.info("stop_when fired at step %d; ending rollout early", step_count)
+                    return fired
+
+                def _query_chunk(observation: dict[str, Any], observed_delay: int = 0) -> list[dict[str, Any]]:
+                    # Resolve ONE action chunk from the policy. Never truncate below
+                    # the policy's own intended chunk size: a model trained for
+                    # N-step open-loop replay (policy.actions_per_step == N) must
+                    # have its full chunk consumed; clamping to a smaller
+                    # action_horizon drops the tail of every chunk and forces an
+                    # out-of-distribution re-query (see LerobotLocalPolicy
+                    # auto-detect of config.n_action_steps).
+                    #
+                    # Tell the policy how many control steps elapse between this
+                    # observation and the first application of the returned chunk so
+                    # latency-sensitive providers (RTC) slice the chunk-seam by an
+                    # EXACT integer instead of a non-reproducible wall-clock
+                    # estimate. The synchronous loop pauses the world during
+                    # inference (delay 0); the async pipeline supplies the count of
+                    # still-pending steps of the chunk currently executing. The set
+                    # and the get_actions call happen on the SAME thread (the worker
+                    # for a prefetch, the main thread otherwise), and at most one
+                    # inference is ever in flight, so this never races.
+                    policy.set_rtc_observed_delay(observed_delay)
+                    _t_infer = time.perf_counter()
+                    coro_or_result = policy.get_actions(observation, instruction, **_policy_kwargs)
+                    actions = _resolve_coroutine(coro_or_result)
+                    # Record inference wall-time (ms) for both the sync and async
+                    # paths. Under async this runs on the prefetch worker; list
+                    # append is atomic under the GIL so the read after
+                    # shutdown(wait=True) sees every entry.
+                    inference_ms.append((time.perf_counter() - _t_infer) * 1000.0)
+                    _chunk = resolve_chunk_length(policy, action_horizon)
+                    return list(actions[:_chunk])
+
+                if async_rtc:
+                    # Async chunk pipeline: overlap inference for chunk N+1 with the
+                    # EXECUTION of chunk N. While the current chunk drains we fire
+                    # the next get_actions() on a single background worker using a
+                    # mid-execution ("horizon-shifted") observation, then atomically
+                    # swap it in when the current chunk runs out. A policy whose
+                    # inference latency is <= the chunk's execution time pays
+                    # (almost) zero visible stall at the seam - exactly how an async
+                    # real-time controller hides latency on real hardware. RTC
+                    # policies blend the seam internally via their own prev-chunk
+                    # state, so the runner only schedules the overlap (it never
+                    # touches the policy's RTC machinery). The policy is invoked from
+                    # AT MOST one thread at a time (a new prefetch is only submitted
+                    # after the previous one has been consumed), and the sim is only
+                    # ever touched from THIS thread, so there is no MuJoCo data race.
+                    from concurrent.futures import Future, ThreadPoolExecutor
+                    from concurrent.futures import TimeoutError as FuturesTimeout
+
+                    def _swap_in(fut: Future[list[dict[str, Any]]]) -> list[dict[str, Any]]:
+                        # Block on the prefetched chunk at the seam. A prefetch HIT
+                        # means inference already finished (the seam is invisible); a
+                        # BLOCK means we still have to wait because inference ran
+                        # slower than the chunk's execution - the seam was starved,
+                        # which is the actionable "tune prefetch_trigger / shorten
+                        # the chunk" signal, so log it. A hard timeout turns a stuck
+                        # model into a structured error instead of an unbounded sim
+                        # hang.
+                        nonlocal rtc_prefetch_hits, rtc_prefetch_blocks
+                        if fut.done():
+                            rtc_prefetch_hits += 1
+                        else:
+                            rtc_prefetch_blocks += 1
+                            logger.warning(
+                                "async-RTC seam starvation: prefetched chunk was not ready at the "
+                                "swap point (inference slower than chunk execution). Blocking on it; "
+                                "consider a shorter chunk or an earlier prefetch_trigger."
+                            )
+                        try:
+                            return fut.result(timeout=rtc_inference_timeout_s)
+                        except FuturesTimeout as e:
                             raise RuntimeError(
-                                f"on_frame hook failed {onframe_failure_limit} times in a row; "
-                                f"aborting episode to avoid silent dataset corruption. "
-                                f"Last error: {e!r}"
+                                f"async-RTC prefetch exceeded rtc_inference_timeout_s="
+                                f"{rtc_inference_timeout_s}s; policy inference is stuck. Raise the "
+                                f"timeout or check the policy/server."
                             ) from e
 
-                step_count += 1
-
-                # Fail fast: if EVERY step of the opening probe window drove zero
-                # actuators, the policy's output keys cannot match this robot, so
-                # the rollout is structurally dead -- raise now instead of running
-                # the remaining steps (and inference / recording I/O). Once any
-                # step resolves a key, _total_failure_steps < step_count forever
-                # and this never fires.
-                if step_count >= _FAIL_FAST_PROBE_STEPS and _total_failure_steps == step_count:
+                    executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="rtc-prefetch")
                     try:
-                        _valid = self.sim.robot_action_keys(robot_name)
-                    except Exception:  # noqa: BLE001
-                        _valid = _robot_actuators
-                    raise RuntimeError(
-                        f"All of the first {step_count} action steps had 100% "
-                        f"unresolved keys on '{robot_name}' -- the robot has not "
-                        f"moved. Unresolved keys: {_last_unresolved}. Valid "
-                        f"actuator/joint names: {_valid}. The policy is almost "
-                        f"certainly running the wrong embodiment; inspect the "
-                        f"expected keys via sim.get_features(robot_name="
-                        f"'{robot_name}')."
-                    )
+                        cur_obs = self._observe(robot_name, skip_images=_skip_images, bodies=_bodies)
+                        cur_chunk = _query_chunk(cur_obs)
+                        rtc_chunks_acquired += 1
+                        if not cur_chunk:
+                            raise RuntimeError("policy returned an empty action chunk; cannot run rollout")
+                        idx = 0
+                        prefetch_trigger = max(1, len(cur_chunk) // 2)
+                        prefetch: Future[list[dict[str, Any]]] | None = None
+                        prefetch_obs: dict[str, Any] | None = None
 
-                if vwriter is not None:
-                    vwriter.capture(step_count)
-
-                if not fast_mode:
-                    time.sleep(action_sleep)
-
-            def _stop_when_fired() -> bool:
-                """Evaluate the caller's ``stop_when`` clause against the live sim.
-
-                Called after every applied action on BOTH the synchronous and
-                async-RTC paths, so the early-return latency bound is ONE
-                control step regardless of chunk length: the check fires
-                within the current chunk-slice and the remaining actions of
-                the chunk are dropped. Call sites guard on ``stop_when is not
-                None`` so the no-clause hot path pays no per-step call. A
-                raising clause is fatal - the caller asked for early-return
-                semantics the runner can no longer honor, and silently
-                running to the step budget would misreport the rollout - so
-                it surfaces as ``status="error"`` via the outer handler
-                rather than being warn-and-continued.
-                """
-                nonlocal stop_predicate_fired
-                assert stop_when is not None  # call sites hoist the None guard
-                try:
-                    fired = bool(stop_when(self.sim))
-                except Exception as e:
-                    raise RuntimeError(
-                        f"stop_when predicate raised at step {step_count}: {e!r}. The early-return "
-                        "condition cannot be evaluated, so the rollout is aborted rather than "
-                        "silently running to its step budget."
-                    ) from e
-                if fired:
-                    stop_predicate_fired = True
-                    logger.info("stop_when fired at step %d; ending rollout early", step_count)
-                return fired
-
-            def _query_chunk(observation: dict[str, Any], observed_delay: int = 0) -> list[dict[str, Any]]:
-                # Resolve ONE action chunk from the policy. Never truncate below
-                # the policy's own intended chunk size: a model trained for
-                # N-step open-loop replay (policy.actions_per_step == N) must
-                # have its full chunk consumed; clamping to a smaller
-                # action_horizon drops the tail of every chunk and forces an
-                # out-of-distribution re-query (see LerobotLocalPolicy
-                # auto-detect of config.n_action_steps).
-                #
-                # Tell the policy how many control steps elapse between this
-                # observation and the first application of the returned chunk so
-                # latency-sensitive providers (RTC) slice the chunk-seam by an
-                # EXACT integer instead of a non-reproducible wall-clock
-                # estimate. The synchronous loop pauses the world during
-                # inference (delay 0); the async pipeline supplies the count of
-                # still-pending steps of the chunk currently executing. The set
-                # and the get_actions call happen on the SAME thread (the worker
-                # for a prefetch, the main thread otherwise), and at most one
-                # inference is ever in flight, so this never races.
-                policy.set_rtc_observed_delay(observed_delay)
-                _t_infer = time.perf_counter()
-                coro_or_result = policy.get_actions(observation, instruction, **_policy_kwargs)
-                actions = _resolve_coroutine(coro_or_result)
-                # Record inference wall-time (ms) for both the sync and async
-                # paths. Under async this runs on the prefetch worker; list
-                # append is atomic under the GIL so the read after
-                # shutdown(wait=True) sees every entry.
-                inference_ms.append((time.perf_counter() - _t_infer) * 1000.0)
-                _chunk = resolve_chunk_length(policy, action_horizon)
-                return list(actions[:_chunk])
-
-            if async_rtc:
-                # Async chunk pipeline: overlap inference for chunk N+1 with the
-                # EXECUTION of chunk N. While the current chunk drains we fire
-                # the next get_actions() on a single background worker using a
-                # mid-execution ("horizon-shifted") observation, then atomically
-                # swap it in when the current chunk runs out. A policy whose
-                # inference latency is <= the chunk's execution time pays
-                # (almost) zero visible stall at the seam - exactly how an async
-                # real-time controller hides latency on real hardware. RTC
-                # policies blend the seam internally via their own prev-chunk
-                # state, so the runner only schedules the overlap (it never
-                # touches the policy's RTC machinery). The policy is invoked from
-                # AT MOST one thread at a time (a new prefetch is only submitted
-                # after the previous one has been consumed), and the sim is only
-                # ever touched from THIS thread, so there is no MuJoCo data race.
-                from concurrent.futures import Future, ThreadPoolExecutor
-                from concurrent.futures import TimeoutError as FuturesTimeout
-
-                def _swap_in(fut: Future[list[dict[str, Any]]]) -> list[dict[str, Any]]:
-                    # Block on the prefetched chunk at the seam. A prefetch HIT
-                    # means inference already finished (the seam is invisible); a
-                    # BLOCK means we still have to wait because inference ran
-                    # slower than the chunk's execution - the seam was starved,
-                    # which is the actionable "tune prefetch_trigger / shorten
-                    # the chunk" signal, so log it. A hard timeout turns a stuck
-                    # model into a structured error instead of an unbounded sim
-                    # hang.
-                    nonlocal rtc_prefetch_hits, rtc_prefetch_blocks
-                    if fut.done():
-                        rtc_prefetch_hits += 1
-                    else:
-                        rtc_prefetch_blocks += 1
-                        logger.warning(
-                            "async-RTC seam starvation: prefetched chunk was not ready at the "
-                            "swap point (inference slower than chunk execution). Blocking on it; "
-                            "consider a shorter chunk or an earlier prefetch_trigger."
-                        )
-                    try:
-                        return fut.result(timeout=rtc_inference_timeout_s)
-                    except FuturesTimeout as e:
-                        raise RuntimeError(
-                            f"async-RTC prefetch exceeded rtc_inference_timeout_s="
-                            f"{rtc_inference_timeout_s}s; policy inference is stuck. Raise the "
-                            f"timeout or check the policy/server."
-                        ) from e
-
-                executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="rtc-prefetch")
-                try:
-                    cur_obs = self._observe(robot_name, skip_images=_skip_images, bodies=_bodies)
-                    cur_chunk = _query_chunk(cur_obs)
-                    rtc_chunks_acquired += 1
-                    if not cur_chunk:
-                        raise RuntimeError("policy returned an empty action chunk; cannot run rollout")
-                    idx = 0
-                    prefetch_trigger = max(1, len(cur_chunk) // 2)
-                    prefetch: Future[list[dict[str, Any]]] | None = None
-                    prefetch_obs: dict[str, Any] | None = None
-
-                    while step_count < total_steps:
-                        if idx >= len(cur_chunk):
-                            # Current chunk drained -> swap in the next chunk.
-                            if prefetch is not None:
-                                cur_chunk = _swap_in(prefetch)
-                                if prefetch_obs is not None:
-                                    cur_obs = prefetch_obs
-                                prefetch = None
-                                prefetch_obs = None
-                            else:
-                                # Chunk was too short to trigger a prefetch;
-                                # fall back to a synchronous re-query.
-                                cur_obs = self._observe(robot_name, skip_images=_skip_images, bodies=_bodies)
-                                cur_chunk = _query_chunk(cur_obs)
-                            rtc_chunks_acquired += 1
-                            if not cur_chunk:
-                                # Drop-and-requery: a prefetched chunk arriving
-                                # empty (a transient policy hiccup) degrades to
-                                # ONE synchronous re-query before we give up,
-                                # rather than killing an otherwise-healthy
-                                # rollout on a single empty result.
-                                logger.warning(
-                                    "async-RTC chunk arrived empty; falling back to one "
-                                    "synchronous re-query before erroring."
-                                )
-                                cur_obs = self._observe(robot_name, skip_images=_skip_images, bodies=_bodies)
-                                cur_chunk = _query_chunk(cur_obs)
+                        while step_count < total_steps:
+                            if idx >= len(cur_chunk):
+                                # Current chunk drained -> swap in the next chunk.
+                                if prefetch is not None:
+                                    cur_chunk = _swap_in(prefetch)
+                                    if prefetch_obs is not None:
+                                        cur_obs = prefetch_obs
+                                    prefetch = None
+                                    prefetch_obs = None
+                                else:
+                                    # Chunk was too short to trigger a prefetch;
+                                    # fall back to a synchronous re-query.
+                                    cur_obs = self._observe(robot_name, skip_images=_skip_images, bodies=_bodies)
+                                    cur_chunk = _query_chunk(cur_obs)
                                 rtc_chunks_acquired += 1
                                 if not cur_chunk:
-                                    raise RuntimeError(
-                                        "policy returned an empty action chunk twice (prefetch + "
-                                        "synchronous re-query); cannot continue rollout"
+                                    # Drop-and-requery: a prefetched chunk arriving
+                                    # empty (a transient policy hiccup) degrades to
+                                    # ONE synchronous re-query before we give up,
+                                    # rather than killing an otherwise-healthy
+                                    # rollout on a single empty result.
+                                    logger.warning(
+                                        "async-RTC chunk arrived empty; falling back to one "
+                                        "synchronous re-query before erroring."
                                     )
-                            idx = 0
-                            prefetch_trigger = max(1, len(cur_chunk) // 2)
-                            continue
+                                    cur_obs = self._observe(robot_name, skip_images=_skip_images, bodies=_bodies)
+                                    cur_chunk = _query_chunk(cur_obs)
+                                    rtc_chunks_acquired += 1
+                                    if not cur_chunk:
+                                        raise RuntimeError(
+                                            "policy returned an empty action chunk twice (prefetch + "
+                                            "synchronous re-query); cannot continue rollout"
+                                        )
+                                idx = 0
+                                prefetch_trigger = max(1, len(cur_chunk) // 2)
+                                continue
 
-                        # Fire the next inference once we are ~50% through the
-                        # current chunk, on a fresh mid-chunk observation.
-                        if prefetch is None and idx >= prefetch_trigger:
-                            prefetch_obs = self._observe(robot_name, skip_images=_skip_images, bodies=_bodies)
-                            # The prefetched chunk first applies after the
-                            # remaining steps of the current chunk drain - a
-                            # known integer, independent of how long inference
-                            # actually takes in wall-clock time (a slow inference
-                            # just stalls the loop; the robot does not advance
-                            # past the chunk end while waiting).
-                            observed_delay = max(0, len(cur_chunk) - prefetch_trigger)
-                            prefetch = executor.submit(_query_chunk, prefetch_obs, observed_delay)
+                            # Fire the next inference once we are ~50% through the
+                            # current chunk, on a fresh mid-chunk observation.
+                            if prefetch is None and idx >= prefetch_trigger:
+                                prefetch_obs = self._observe(robot_name, skip_images=_skip_images, bodies=_bodies)
+                                # The prefetched chunk first applies after the
+                                # remaining steps of the current chunk drain - a
+                                # known integer, independent of how long inference
+                                # actually takes in wall-clock time (a slow inference
+                                # just stalls the loop; the robot does not advance
+                                # past the chunk end while waiting).
+                                observed_delay = max(0, len(cur_chunk) - prefetch_trigger)
+                                prefetch = executor.submit(_query_chunk, prefetch_obs, observed_delay)
 
-                        # When recording, the chunk observation (the initial
-                        # query obs, or a horizon-shifted prefetch obs after a
-                        # swap) is stale for the step being applied; refresh it
-                        # so the recorded frame is time-aligned (see the
-                        # _record_per_step_obs note above). Inference is
-                        # unaffected - it already consumed cur_obs to produce
-                        # this chunk.
-                        if _record_per_step_obs:
-                            step_obs = self._observe(robot_name, skip_images=_skip_images, bodies=_bodies)
-                        else:
-                            step_obs = cur_obs
-                        _apply(step_obs, cur_chunk[idx])
-                        idx += 1
-                        # Semantic early return: checked after EVERY applied
-                        # action, so the stop lands within one control step of
-                        # the world reaching the condition - the rest of the
-                        # in-flight chunk (and any prefetched chunk) is
-                        # dropped; the executor shutdown below joins the
-                        # in-flight prefetch worker. The None guard is hoisted
-                        # so the no-clause hot path pays no per-step call.
-                        if stop_when is not None and _stop_when_fired():
+                            # When recording, the chunk observation (the initial
+                            # query obs, or a horizon-shifted prefetch obs after a
+                            # swap) is stale for the step being applied; refresh it
+                            # so the recorded frame is time-aligned (see the
+                            # _record_per_step_obs note above). Inference is
+                            # unaffected - it already consumed cur_obs to produce
+                            # this chunk.
+                            if _record_per_step_obs:
+                                step_obs = self._observe(robot_name, skip_images=_skip_images, bodies=_bodies)
+                            else:
+                                step_obs = cur_obs
+                            _apply(step_obs, cur_chunk[idx])
+                            idx += 1
+                            # Semantic early return: checked after EVERY applied
+                            # action, so the stop lands within one control step of
+                            # the world reaching the condition - the rest of the
+                            # in-flight chunk (and any prefetched chunk) is
+                            # dropped; the executor shutdown below joins the
+                            # in-flight prefetch worker. The None guard is hoisted
+                            # so the no-clause hot path pays no per-step call.
+                            if stop_when is not None and _stop_when_fired():
+                                break
+                    finally:
+                        # Wait for any in-flight inference so no background thread
+                        # touches the policy/sim after run() returns (the caller may
+                        # immediately reset() or destroy() the world).
+                        executor.shutdown(wait=True)
+                else:
+                    while step_count < total_steps:
+                        observation = self._observe(robot_name, skip_images=_skip_images, bodies=_bodies)
+                        chunk = _query_chunk(observation)
+                        for chunk_idx, action_dict in enumerate(chunk):
+                            if step_count >= total_steps:
+                                break
+                            # The chunk-start observation is the correct pre-action
+                            # state for the first action only. When recording,
+                            # refresh it before each SUBSEQUENT action so the
+                            # recorded frame is time-aligned (see the
+                            # _record_per_step_obs note above). chunk_idx == 0 reuses
+                            # the freshly-queried observation (no re-render, sim has
+                            # not stepped yet). Inference is unaffected.
+                            if _record_per_step_obs and chunk_idx > 0:
+                                step_obs = self._observe(robot_name, skip_images=_skip_images, bodies=_bodies)
+                            else:
+                                step_obs = observation
+                            _apply(step_obs, action_dict)
+                            # Semantic early return: checked after EVERY applied
+                            # action (same cadence as the benchmark eval loop), so
+                            # the remaining actions of the chunk are dropped as
+                            # soon as the condition holds. The None guard is
+                            # hoisted so the no-clause hot path pays no per-step
+                            # call.
+                            if stop_when is not None and _stop_when_fired():
+                                break
+                        if stop_predicate_fired:
                             break
-                finally:
-                    # Wait for any in-flight inference so no background thread
-                    # touches the policy/sim after run() returns (the caller may
-                    # immediately reset() or destroy() the world).
-                    executor.shutdown(wait=True)
-            else:
-                while step_count < total_steps:
-                    observation = self._observe(robot_name, skip_images=_skip_images, bodies=_bodies)
-                    chunk = _query_chunk(observation)
-                    for chunk_idx, action_dict in enumerate(chunk):
-                        if step_count >= total_steps:
-                            break
-                        # The chunk-start observation is the correct pre-action
-                        # state for the first action only. When recording,
-                        # refresh it before each SUBSEQUENT action so the
-                        # recorded frame is time-aligned (see the
-                        # _record_per_step_obs note above). chunk_idx == 0 reuses
-                        # the freshly-queried observation (no re-render, sim has
-                        # not stepped yet). Inference is unaffected.
-                        if _record_per_step_obs and chunk_idx > 0:
-                            step_obs = self._observe(robot_name, skip_images=_skip_images, bodies=_bodies)
-                        else:
-                            step_obs = observation
-                        _apply(step_obs, action_dict)
-                        # Semantic early return: checked after EVERY applied
-                        # action (same cadence as the benchmark eval loop), so
-                        # the remaining actions of the chunk are dropped as
-                        # soon as the condition holds. The None guard is
-                        # hoisted so the no-clause hot path pays no per-step
-                        # call.
-                        if stop_when is not None and _stop_when_fired():
-                            break
-                    if stop_predicate_fired:
-                        break
 
-        except CooperativeStop:
-            stopped_early = True
-            stopped_reason = "cancelled"
-        except Exception as e:
-            if vwriter is not None:
-                vwriter.close()
-            logger.exception("PolicyRunner.run failed")
-            return {
-                "status": "error",
-                "content": [
-                    {"text": f"Policy failed: {e}"},
-                    {"json": {**_rtc_telemetry(), "stopped_reason": "error", "steps_used": step_count}},
-                ],
-            }
+            except CooperativeStop:
+                stopped_early = True
+                stopped_reason = "cancelled"
+            except Exception as e:
+                if vwriter is not None:
+                    vwriter.close()
+                logger.exception("PolicyRunner.run failed")
+                return {
+                    "status": "error",
+                    "content": [
+                        {"text": f"Policy failed: {e}"},
+                        {"json": {**_rtc_telemetry(), "stopped_reason": "error", "steps_used": step_count}},
+                    ],
+                }
 
         # Either finished all steps, hit the stop_when condition, or was
         # cooperatively stopped.
@@ -2623,6 +2694,13 @@ class PolicyRunner:
             the completed episodes: ``stopped_early=True`` and the aggregate
             metrics are computed over ``episodes_completed`` (which may be less
             than the requested ``n_episodes``).
+
+            ``recording_save_error`` is the third way an evaluation can cover
+            fewer episodes than asked for, and the only one that makes
+            ``status`` ``"error"``: it is ``None`` on every healthy run, and
+            the reason string when a per-episode dataset flush failed. See
+            :meth:`_finalize_recorder_episode` for why a lost episode stops
+            the evaluation instead of being averaged over.
         """
         # Refuse before any frame reaches the engine's open recording.
         self._reject_recording_rate_mismatch(control_frequency, "PolicyRunner.evaluate")
@@ -2854,6 +2932,7 @@ class PolicyRunner:
             global_step += 1
 
         stopped_early = False
+        recording_save_error: str | None = None
         try:
             for ep in range(n_episodes):
                 self.sim.reset()
@@ -2962,7 +3041,7 @@ class PolicyRunner:
                 # #708 - roll the attached recorder over to a new episode so the
                 # dataset records per-episode boundaries rather than collapsing
                 # every rollout into one mega-episode.
-                self._finalize_recorder_episode()
+                recording_save_error = self._finalize_recorder_episode()
 
                 if current_vwriter is not None:
                     current_vwriter.close()
@@ -2975,6 +3054,16 @@ class PolicyRunner:
                             current_vwriter.path,
                         )
                     current_vwriter = None
+
+                if recording_save_error is not None:
+                    # This episode's frames did not reach the dataset and the
+                    # recorder is now closed, so every later episode would run
+                    # into a recorder that drops frames without counting them.
+                    # Stop here and report, rather than measure a success_rate
+                    # over episodes whose data is gone. This episode's video is
+                    # already closed and collected above, so it is kept.
+                    recording_save_error = f"episode {ep}: {recording_save_error}"
+                    break
 
         except CooperativeStop:
             # A user/backend on_frame hook requested a graceful stop (the
@@ -3004,12 +3093,17 @@ class PolicyRunner:
         }
 
         return {
-            "status": "success",
+            "status": "error" if recording_save_error is not None else "success",
             "content": [
                 {
                     "text": (
                         f"Evaluation: {type(policy).__name__} on '{robot_name}'\n"
-                        f"Episodes: {n_completed}"
+                        + (
+                            f"Stopped after a lost recording episode - {recording_save_error}\n"
+                            if recording_save_error is not None
+                            else ""
+                        )
+                        + f"Episodes: {n_completed}"
                         + (f" of {n_episodes} (stopped early)" if stopped_early else "")
                         + f" | Success: {n_success}/{n_completed} ({success_rate:.1%})"
                         + ("" if success_measured else " [no success criterion - not measured]")
@@ -3024,6 +3118,7 @@ class PolicyRunner:
                         "n_episodes": n_episodes,
                         "episodes_completed": n_completed,
                         "stopped_early": stopped_early,
+                        "recording_save_error": recording_save_error,
                         "n_success": n_success,
                         "avg_steps": round(avg_steps, 1),
                         "max_steps": max_steps,
@@ -3180,6 +3275,7 @@ class PolicyRunner:
         current_vwriter: _RolloutVideoWriter | None = None
 
         stopped_early = False
+        recording_save_error: str | None = None
         try:
             for ep in range(n_episodes):
                 self.sim.reset()
@@ -3410,7 +3506,7 @@ class PolicyRunner:
                     }
                 )
                 # #708 - same per-episode recorder boundary as evaluate().
-                self._finalize_recorder_episode()
+                recording_save_error = self._finalize_recorder_episode()
 
                 if current_vwriter is not None:
                     current_vwriter.close()
@@ -3423,6 +3519,12 @@ class PolicyRunner:
                             current_vwriter.path,
                         )
                     current_vwriter = None
+
+                if recording_save_error is not None:
+                    # Same rule as evaluate(): a lost episode stops the
+                    # benchmark instead of being averaged over.
+                    recording_save_error = f"episode {ep}: {recording_save_error}"
+                    break
 
         except CooperativeStop:
             # A user/backend on_frame hook requested a graceful stop (the
@@ -3444,12 +3546,17 @@ class PolicyRunner:
         avg_reward = sum(r["cumulative_reward"] for r in results) / max(n_completed, 1)
 
         return {
-            "status": "success",
+            "status": "error" if recording_save_error is not None else "success",
             "content": [
                 {
                     "text": (
                         f"Benchmark: {spec_name} | policy {type(policy).__name__} on '{robot_name}'\n"
-                        f"Episodes: {n_completed}"
+                        + (
+                            f"Stopped after a lost recording episode - {recording_save_error}\n"
+                            if recording_save_error is not None
+                            else ""
+                        )
+                        + f"Episodes: {n_completed}"
                         + (f" of {n_episodes} (stopped early)" if stopped_early else "")
                         + f" | Success: {n_success} | Failure: {n_failure} ({success_rate:.1%} success)\n"
                         f"Avg reward: {avg_reward:.2f} | Avg steps: {avg_steps:.0f}/{max_steps}"
@@ -3462,6 +3569,7 @@ class PolicyRunner:
                         "n_episodes": n_episodes,
                         "episodes_completed": n_completed,
                         "stopped_early": stopped_early,
+                        "recording_save_error": recording_save_error,
                         "n_success": n_success,
                         "n_failure": n_failure,
                         "avg_steps": round(avg_steps, 1),

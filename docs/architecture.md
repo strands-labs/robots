@@ -45,7 +45,6 @@ graph TB
     subgraph extras[Cross-cutting]
         TOOLS["Tools<br/>tools/*.py"]
         RECORDER["DatasetRecorder<br/>dataset_recorder.py"]
-        BENCH["Benchmarks<br/>benchmarks/libero"]
     end
 
     AGENT --> FACTORY
@@ -70,7 +69,7 @@ graph TB
     class ROBOT,REGISTRY factory
     class SIM,HW,SIM_ABC backend
     class POLICY_ABC,MOCK,GROOT,LEROBOT,COSMOS3,FACTORY_FN policy
-    class TOOLS,RECORDER,BENCH cross
+    class TOOLS,RECORDER cross
 ```
 
 ## Modules
@@ -84,8 +83,7 @@ graph TB
 | `strands_robots/hardware_robot.py` | Real-servo path. Async task execution + status. | `Robot` (class), `TaskStatus`, `RobotTaskState` |
 | `strands_robots/policies/` | ABC + 15 providers + factory + JSON registry. | `Policy`, `create_policy()` |
 | `strands_robots/dataset_recorder.py` | LeRobot v3 writer. | `DatasetRecorder` |
-| `strands_robots/tools/` | 20 `@tool`-decorated helpers. | `lerobot_calibrate`, `serial_tool`, etc. |
-| `strands_robots/benchmarks/libero/` | LIBERO benchmark adapter. | `LiberoSuite` |
+| `strands_robots/tools/` | 26 `@tool`-decorated helpers. | `lerobot_calibrate`, `serial_tool`, etc. |
 
 ## ABCs
 
@@ -109,7 +107,7 @@ graph TB
 | `[cosmos3-service]` | `msgpack`, `websockets` | `Cosmos3Policy` WebSocket |
 | `[mesh]` | `eclipse-zenoh`, `json5` | Multi-robot mesh |
 | `[mesh-iot]` | above + `awsiotsdk`, `awscrt`, `boto3` | AWS IoT Core transport |
-| `[all]` | 19 of the 31 extras - not a union; see [installation](getting-started/installation.md) for the 11 it leaves opt-in | CI / exploration |
+| `[all]` | 20 of the 32 extras - not a union; see [installation](getting-started/installation.md) for the 11 it leaves opt-in | CI / exploration |
 
 ## See also
 

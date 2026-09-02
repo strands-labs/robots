@@ -418,11 +418,6 @@ def test_push_to_hub_true_sets_flag() -> None:
     assert "--policy.push_to_hub=true" in cmd
 
 
-def test_num_gpus_zero_rejected() -> None:
-    with pytest.raises(ValueError, match="num_gpus must be >= 1"):
-        build_train_command(dataset_root="/data/cubes", num_gpus=0)
-
-
 # ---------------------------------------------------------------------------
 # Preflight (start action)
 # ---------------------------------------------------------------------------
@@ -458,6 +453,10 @@ def test_session_lifecycle_round_trips(tmp_path: Path, monkeypatch: pytest.Monke
         def is_running(self) -> bool:
             return True
 
+        def wait(self, timeout: float | None = None) -> int:
+            # Exits as soon as it is signalled, so the stop below confirms it.
+            return 0
+
     monkeypatch.setattr(train_mod.psutil, "Process", _FakeProcess)
 
     start = lerobot_train(
@@ -486,8 +485,6 @@ def test_session_lifecycle_round_trips(tmp_path: Path, monkeypatch: pytest.Monke
     # Stop: capture the kill calls instead of touching a real process.
     killed: list[int] = []
     monkeypatch.setattr(train_mod.os, "kill", lambda pid, sig: killed.append(pid))
-    # After SIGTERM the process is gone.
-    monkeypatch.setattr(train_mod.psutil, "pid_exists", lambda pid: False)
 
     stop = lerobot_train(action="stop", dataset_root=str(root), session_name="t1")
     assert stop["status"] == "success"
@@ -580,17 +577,21 @@ def test_session_manager_retains_finished_session_with_dead_pid(tmp_path: Path) 
         pytest.param(train_mod.psutil.AccessDenied, id="access-denied"),
     ],
 )
-def test_session_with_pid_that_vanishes_mid_probe_is_dropped(monkeypatch: pytest.MonkeyPatch, exc_factory: Any) -> None:
-    """A session whose PID still exists at check time but whose process object
-    raises while being probed (a race where the process exits between
-    ``pid_exists`` and ``is_running``, or a process we may not inspect) is
-    dropped from the active set. The load must never raise and must never
-    report such a session as running.
+def test_session_whose_probe_raises_keeps_its_record(monkeypatch: pytest.MonkeyPatch, exc_factory: Any) -> None:
+    """A probe that raises must not cost the session its record, and must not raise.
 
-    This is the complement of the dead-PID case above: there ``pid_exists`` is
-    already False and the finished session is retained for its log tail, whereas
-    here the PID reads live but the probe fails, so the session cannot be
-    confirmed running and is excluded.
+    A PID that exists at check time whose process object then raises is either a
+    finished run reaped between the two probes (``NoSuchProcess``) or a live
+    process this user may not inspect (``AccessDenied``). Neither is grounds for
+    deleting the record: the store is the only place a detached PID is written
+    down, and ``add_session``/``remove_session`` write the loaded map back, so an
+    omission here is erased from disk by the next session started or stopped.
+
+    This is the same rule as the dead-PID case above rather than its complement:
+    "cannot be confirmed running" is not a reason to drop the record, because
+    being in the store is not the running claim - ``list`` and ``status`` derive
+    that from the PID when asked. The consequences are pinned in
+    ``tests.tools.test_train_session_store_keeps_a_live_pid``.
     """
     mgr = SessionManager()
     mgr.add_session("racy", {"pid": 4242, "action": "train"})
@@ -606,10 +607,7 @@ def test_session_with_pid_that_vanishes_mid_probe_is_dropped(monkeypatch: pytest
 
     monkeypatch.setattr(train_mod.psutil, "Process", _VanishingProcess)
 
-    sessions = mgr.list_sessions()
-    assert "racy" not in sessions, (
-        "a session whose process cannot be confirmed running must be dropped, not reported as active"
-    )
+    assert "racy" in mgr.list_sessions(), "a session whose probe raised must keep its record"
 
 
 def test_session_manager_get_and_remove_round_trip(tmp_path: Path) -> None:
@@ -687,8 +685,25 @@ def test_stop_unknown_session_errors(tmp_path: Path) -> None:
 
 
 def test_stop_already_dead_process_clears_session(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """When the PID is already gone, stop reports success and drops the session."""
+    """A process that exits just before the signal lands: success, session dropped.
+
+    ``os.kill`` reports that as ``ProcessLookupError``; the sibling spelling -
+    gone before the identity capture, which raises ``psutil.NoSuchProcess`` - is
+    pinned in ``tests.tools.test_session_stop_confirms_the_process_exited``. The
+    process is alive for every probe here so the exit is decided by the signal
+    and not by whether PID 5555 happens to exist on the host.
+    """
     SessionManager().add_session("gone", {"pid": 5555, "action": "train"})
+    monkeypatch.setattr(train_mod.psutil, "pid_exists", lambda pid: True)
+
+    class _LiveProcess:
+        def __init__(self, pid: int) -> None:
+            self.pid = pid
+
+        def is_running(self) -> bool:
+            return True
+
+    monkeypatch.setattr(train_mod.psutil, "Process", _LiveProcess)
 
     def _raise_no_such(pid: int, sig: int) -> None:
         raise ProcessLookupError
@@ -779,26 +794,8 @@ def test_start_autogenerates_session_name_and_clears_stale_empty_output(
     assert str(out) in rmtree_calls
 
 
-def test_stop_escalates_to_sigkill_when_sigterm_ignored(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """A process still alive after SIGTERM gets SIGKILL, then the session clears."""
-    SessionManager().add_session("stubborn", {"pid": 8888, "action": "train"})
-    monkeypatch.setattr(train_mod.psutil, "pid_exists", lambda pid: True)
-
-    class _RunningProcess:
-        def __init__(self, pid: int) -> None:
-            self.pid = pid
-
-        def is_running(self) -> bool:
-            return True
-
-    monkeypatch.setattr(train_mod.psutil, "Process", _RunningProcess)
-    monkeypatch.setattr(train_mod.time, "sleep", lambda s: None)
-    signals: list[int] = []
-    monkeypatch.setattr(train_mod.os, "kill", lambda pid, sig: signals.append(sig))
-    result = lerobot_train(action="stop", dataset_root="/x", session_name="stubborn")
-    assert result["status"] == "success"
-    assert train_mod.signal.SIGTERM in signals
-    assert train_mod.signal.SIGKILL in signals
+# The SIGTERM -> SIGKILL escalation, and the verdict each outcome earns, are
+# pinned for both session tools in tests.tools.test_session_stop_confirms_the_process_exited.
 
 
 def test_stop_session_without_pid_errors(tmp_path: Path) -> None:

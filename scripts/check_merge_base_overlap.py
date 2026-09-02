@@ -170,6 +170,44 @@ What stays out of reach is unchanged, and is still the walk. A population
 resolved by ``rglob`` names nothing, so it shares neither a path nor a literal
 with the siblings it grades, and the report says so unconditionally.
 
+A role naming a module the composition deletes
+----------------------------------------------
+The two relations above both read a *change*. This one reads a **removal**, and
+it is the direction that put ``main`` red at ``8d0298345``. #3037 removed 96 g1
+lookup modules; eight verb pull requests, each already merged, carried docstring
+roles citing them (``:mod:`strands_robots.tools.g1.g1_fsm_targets```). #3037
+branched before those verbs landed, so no tree ever held both the role and the
+deletion until the squash, where
+``tests/test_docstring_xref_roles_resolve.py`` -- which resolves every role in
+the tree -- reported 44 offending docstrings. git merged the two sides without a
+conflict, and the path intersection was empty: the branch deletes files no verb
+touches, and the verbs cite them from files the branch does not open.
+
+A role is a coupling stated by name, like the literals above, so the same
+resolver serves it: ``named_module_paths`` turns a dotted target into the module
+files it needs, and a target is dead when one of them is deleted by the other
+side. Both directions are read, because either side can land last:
+
+- the branch deletes the module and the base cites it, read from the base tip;
+- the branch cites the module and the base deleted it, read from the branch head.
+
+Each side is read from the tree rather than from a diff, which is what keeps the
+population identical to the grader's: a role only counts when it sits in a
+docstring, and a hunk cannot be parsed for that. Only *contiguous fully-qualified*
+targets are resolved -- a wrapped or short-form role has no decidable module path
+here, and the grader reports both on their own account.
+
+Two restrictions keep this quiet where it cannot matter. A base-side role in a
+file the branch itself changes is skipped: the branch's own tree holds both
+halves, so its own run of the grader already sees it. A base-side deletion of a
+file the branch also changes is skipped for the stronger reason that git reports
+that one as a conflict.
+
+This relation is absent from ``--all-open`` because it cannot be computed there.
+The sweep reads patches and no checkout, and a patch hunk does not say whether
+its role is inside a docstring -- so the sweep would have to either guess or
+grade a different population than the gate. It names the gap instead.
+
 Prose is reported but does not block
 ------------------------------------
 An overlap confined to ``.md`` / ``.rst`` / ``.txt`` cannot change what the test
@@ -227,6 +265,7 @@ whatever it is wired to.
 from __future__ import annotations
 
 import argparse
+import ast
 import dataclasses
 import itertools
 import json
@@ -302,6 +341,20 @@ def changed_paths(start: str, end: str, repo: Path | None = None) -> frozenset[s
     check whose failure mode is a missed overlap.
     """
     output = _git("diff", "--name-only", "--no-renames", f"{start}..{end}", repo=repo)
+    return frozenset(line for line in output.splitlines() if line)
+
+
+def deleted_paths(start: str, end: str, repo: Path | None = None) -> frozenset[str]:
+    """Return the paths that exist at ``start`` and not at ``end``.
+
+    The input to the role relation, which is the one relation here that reads a
+    removal rather than a change. ``--no-renames`` for the reason
+    :func:`changed_paths` gives, and it matters more here: with rename detection a
+    module moved to a new path is not reported as deleted at all, while a role
+    citing its old dotted name is dead in the merged tree exactly as if it had
+    been removed.
+    """
+    output = _git("diff", "--name-only", "--no-renames", "--diff-filter=D", f"{start}..{end}", repo=repo)
     return frozenset(line for line in output.splitlines() if line)
 
 
@@ -446,6 +499,161 @@ def named_module_paths(names: Iterable[str]) -> frozenset[str]:
 def named_module_overlaps(literals: Iterable[str], paths: Iterable[str]) -> tuple[str, ...]:
     """Return the sorted module files named by ``literals`` and changed in ``paths``."""
     return tuple(sorted(named_module_paths(literals) & frozenset(paths)))
+
+
+#: Sphinx cross-reference roles that name a dotted Python target, restricted to a
+#: contiguous fully-qualified :data:`PACKAGE_ROOT` path. The grader this predicts
+#: (``tests/test_docstring_xref_roles_resolve.py``) deliberately admits any
+#: non-backtick character, so it can report a role whose long path wrapped over a
+#: line break; that role has no decidable module path, and reporting it here would
+#: name a file this branch may not have touched for a defect the grader already
+#: describes better. Short-form targets (``Cls.method``) are out for the same
+#: reason: their head resolves against the citing module, which is not a path.
+_DOCSTRING_ROLE = re.compile(
+    r":(?:mod|class|func|meth|attr|data|obj|exc):`~?(?P<target>" + PACKAGE_ROOT + r"(?:\.[A-Za-z_][A-Za-z0-9_]*)+)`"
+)
+
+
+def dotted_module_names(paths: Iterable[str]) -> frozenset[str]:
+    """Return the dotted names under which a set of deleted module files were imported.
+
+    The narrowing key for :func:`orphaned_roles`: a role can only be orphaned by a
+    deletion whose dotted name the citing file spells, so this turns the deleted
+    paths into the strings to search for. Non-package and non-module paths drop
+    out, because no role can name them.
+
+    Names shallower than :data:`MIN_NAMED_MODULE_SEGMENTS` drop out too. That is
+    the bare package root, which :func:`named_module_paths` cannot resolve either,
+    so it could never produce a finding -- and as a search key it matches every
+    citing file in the tree, which is the one input that would make this relation
+    expensive.
+    """
+    found: set[str] = set()
+    for path in paths:
+        if not path.endswith(".py") or not path.startswith(f"{PACKAGE_ROOT}/"):
+            continue
+        stem = path[: -len("/__init__.py")] if path.endswith("/__init__.py") else path[: -len(".py")]
+        name = stem.replace("/", ".")
+        if len(name.split(".")) >= MIN_NAMED_MODULE_SEGMENTS:
+            found.add(name)
+    return frozenset(found)
+
+
+def role_targets(source: str) -> frozenset[str]:
+    """Return the qualified role targets named by the docstrings in one module's source.
+
+    Docstrings only, which is the population the grader reads. A role in a comment
+    or in a runtime string is a dead pointer on its own account and is not what
+    makes the suite red, and this check exists to predict the suite.
+
+    A file that does not parse yields nothing rather than raising: the tree side
+    this reads is a committed one, and refusing to report the other 43 findings
+    because one unrelated file is mid-refactor would trade a whole result for a
+    file nobody asked about.
+    """
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return frozenset()
+    found: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Module | ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef):
+            continue
+        text = ast.get_docstring(node, clean=False)
+        if text:
+            found.update(match.group("target") for match in _DOCSTRING_ROLE.finditer(text))
+    return frozenset(found)
+
+
+def files_naming(rev: str, names: Iterable[str], pathspecs: Sequence[str], repo: Path | None = None) -> tuple[str, ...]:
+    """Return the ``.py`` files at ``rev`` whose text contains one of ``names``.
+
+    A narrowing step, not the verdict: ``git grep`` finds the candidates cheaply so
+    only those files are parsed. An empty name set searches for nothing and returns
+    nothing without invoking git, which is the common case -- most branches delete
+    no module at all.
+
+    ``git grep`` exits 1 to mean "no match", which is a result and not a failure,
+    so that status is read rather than raised. Any other non-zero status is a
+    ``GitError`` for the reason :class:`GitError` gives: a relation that reports
+    nothing because it could not look is the failure mode this file is written
+    against.
+    """
+    keys = sorted(names)
+    if not keys or not pathspecs:
+        return ()
+    command = ["git"] + (["-C", str(repo)] if repo is not None else [])
+    command += ["grep", "--files-with-matches", "-I", "--fixed-strings"]
+    for key in keys:
+        command += ["-e", key]
+    command += [rev, "--", *pathspecs]
+    completed = subprocess.run(command, capture_output=True, text=True, check=False)
+    if completed.returncode == 1 and not completed.stdout:
+        return ()
+    if completed.returncode != 0:
+        raise GitError(f"{' '.join(command)} exited {completed.returncode}: {completed.stderr.strip()}")
+    prefix = f"{rev}:"
+    return tuple(
+        sorted(
+            line[len(prefix) :]
+            for line in completed.stdout.splitlines()
+            if line.startswith(prefix) and line.endswith(".py")
+        )
+    )
+
+
+def orphaned_roles(
+    rev: str,
+    deleted: Iterable[str],
+    pathspecs: Sequence[str],
+    repo: Path | None = None,
+) -> tuple[tuple[str, str], ...]:
+    """Return ``(citing file, target)`` for every docstring role at ``rev`` that ``deleted`` breaks.
+
+    One side of the role relation. ``rev`` is the tree the roles are read from and
+    ``deleted`` the paths the *other* side removes, so both directions are this
+    function with its two inputs swapped.
+
+    The verdict is :func:`named_module_paths`, the same resolver the literal
+    relation uses: a target names a module file, every prefix included, and the
+    role is dead when the other side deletes one of them.
+    """
+    removed = frozenset(deleted)
+    found: set[tuple[str, str]] = set()
+    for path in files_naming(rev, dotted_module_names(removed), pathspecs, repo=repo):
+        source = _git("show", f"{rev}:{path}", repo=repo)
+        for target in role_targets(source):
+            if named_module_paths({target}) & removed:
+                found.add((path, target))
+    return tuple(sorted(found))
+
+
+def orphaned_role_overlaps(
+    *,
+    base: str,
+    head: str,
+    branch_deletions: Iterable[str],
+    base_deletions: Iterable[str],
+    branch_paths: Iterable[str],
+    repo: Path | None = None,
+) -> tuple[tuple[str, str], ...]:
+    """Return every ``(citing file, target)`` the merged tree would leave unresolvable.
+
+    Both directions, because either side can land last, and both restricted to
+    what the merge would actually keep -- see the module docstring. Sorted and
+    de-duplicated so a role reachable from both directions is one row.
+    """
+    edits = frozenset(branch_paths)
+    from_base = tuple(
+        row for row in orphaned_roles(base, branch_deletions, ("*.py",), repo=repo) if row[0] not in edits
+    )
+    from_head = orphaned_roles(
+        head,
+        frozenset(base_deletions) - edits,
+        tuple(sorted(path for path in edits if path.endswith(".py"))),
+        repo=repo,
+    )
+    return tuple(sorted(frozenset(from_base) | frozenset(from_head)))
 
 
 API_ROOT = "https://api.github.com"
@@ -975,7 +1183,9 @@ def render_sweep(
         + "and no name with the siblings it grades, and no row above can describe that "
         + "composition. Widening the path set to the walked root was measured and rejected as "
         + "unselective; only composing the branches and running the grader settles those, and "
-        + "that needs a checkout this mode does not have. See #2561."
+        + "that needs a checkout this mode does not have. See #2561. The role relation the "
+        + "single-branch mode carries - a docstring citing a module the other side deletes - is "
+        + "absent here for the same reason: it reads two trees, and this mode reads patches."
     )
     lines.append(limits)
     return "\n".join(lines) + "\n"
@@ -1030,6 +1240,7 @@ def render_report(
     blocking: Sequence[str],
     prose: Sequence[str],
     named: Sequence[str],
+    orphaned: Sequence[tuple[str, str]],
     base_change_count: int,
 ) -> str:
     """Render the Markdown report written to stdout and the CI job summary.
@@ -1043,7 +1254,7 @@ def render_report(
     """
     lines = ["## Merge-base overlap check", ""]
 
-    if not blocking and not prose and not named:
+    if not blocking and not prose and not named and not orphaned:
         no_overlap = (
             f"No overlap. This branch edits nothing that `{base_ref}` has changed since "
             + f"the two diverged at `{merge_base_sha[:8]}` "
@@ -1105,8 +1316,36 @@ def render_report(
         lines.append("")
         lines.append(named_remedy)
 
-    if prose:
+    if orphaned:
         if blocking or named:
+            lines.append("")
+        orphaned_heading = (
+            f"This branch and `{base_ref}` compose to a tree carrying **{len(orphaned)}** "
+            + "docstring cross-reference role(s) that name a module the composition does not "
+            + "contain:"
+        )
+        orphaned_why = (
+            "One side removes the module and the other cites it, so neither branch is wrong on "
+            + "its own and neither one's checks can see it: the role and the deletion are never in "
+            + "the same tree until the merge. `tests/test_docstring_xref_roles_resolve.py` "
+            + "resolves every role in the tree, so the composition is red - with no conflict for "
+            + "git to report, because no file was written by both sides."
+        )
+        orphaned_remedy = (
+            f"**To clear this:** merge `{base_ref}` into this branch, then drop or repoint the "
+            + "role(s) above. This is the relation `main` needed at `8d0298345`, where a branch "
+            + "removing 96 lookup modules and eight branches citing them were each green."
+        )
+        lines.append(orphaned_heading)
+        lines.append("")
+        lines += [f"- `{path}` cites `{target}`" for path, target in orphaned]
+        lines.append("")
+        lines.append(orphaned_why)
+        lines.append("")
+        lines.append(orphaned_remedy)
+
+    if prose:
+        if blocking or named or orphaned:
             lines.append("")
         prose_heading = (
             f"Also overlapping, not blocking ({len(prose)} documentation path(s)) - "
@@ -1181,6 +1420,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         pr_paths = changed_paths(fork_point, head, repo=repo)
         base_paths = changed_paths(fork_point, base, repo=repo)
         literals = module_literals(diff_entries(fork_point, head, repo=repo))
+        orphaned = orphaned_role_overlaps(
+            base=base,
+            head=head,
+            branch_deletions=deleted_paths(fork_point, head, repo=repo),
+            base_deletions=deleted_paths(fork_point, base, repo=repo),
+            branch_paths=pr_paths,
+            repo=repo,
+        )
     except GitError as error:
         # Loud and non-zero: a check that cannot compute its answer must not
         # report the reassuring one.
@@ -1198,6 +1445,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         blocking=blocking,
         prose=prose,
         named=named,
+        orphaned=orphaned,
         base_change_count=len(base_paths),
     )
 
@@ -1222,7 +1470,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         print(annotation)
 
-    return 1 if blocking or named else 0
+    for path, target in orphaned:
+        annotation = (
+            f"::error file={path}::{path} cites {target} in a docstring, and this branch and "
+            + f"{args.base_ref} compose to a tree without that module; every role in the tree is "
+            + "resolved by the suite, so the composition is red with no conflict to resolve."
+        )
+        print(annotation)
+
+    return 1 if blocking or named or orphaned else 0
 
 
 if __name__ == "__main__":

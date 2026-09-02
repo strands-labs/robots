@@ -28,6 +28,16 @@ uv pip install "strands-robots[sim-newton]"
 This pulls in `newton`, `warp-lang`, `mujoco-warp`, and `trimesh` on top of the
 MuJoCo extra. The backend is lazy-loaded: MuJoCo-only users pay no import cost.
 
+It also *narrows* `mujoco`, which `[sim-mujoco]` declares as `>=3.5.0,<4.0.0`,
+to the single series the pinned `newton` requires. newton declares that
+requirement only under its own `[sim]` extra, so the resolver never applies it,
+while newton's solver reads its own metadata at first construction and warns if
+the installed pair misses it -- the pin has to be stated here for the
+documented install to produce a combination newton accepts. Both `mujoco` and
+`mujoco-warp` carry that one series, and `newton` is capped at the next *minor*
+rather than the next major for the same reason: the required series is chosen
+per newton minor. Bumping newton means moving all three together.
+
 ## Usage
 
 ```python

@@ -37,19 +37,20 @@ from strands_robots.drivers.g1 import (
     G1Driver,
 )
 
-#: Every field ``unitree_hg.msg.dds_.MainBoardState_`` declares on the layout
-#: the current firmware ships with.  Frozen here because that SDK is installed
-#: from a git clone rather than PyPI, so it cannot be a test dependency;
-#: :func:`test_the_frozen_declaration_matches_the_sdk` proves this copy is
-#: still true wherever the SDK *is* importable.  If a firmware update lands a
-#: field rename, the fidelity cell fails there first and the frozen copy is
-#: rewritten to match.
+#: Every field ``unitree_hg.msg.dds_.MainBoardState_`` declares, all four of
+#: them six-element vectors: ``fan_state`` (``uint16``), ``temperature``
+#: (``int16``), ``value`` (``float32``) and ``state`` (``uint32``).  Frozen
+#: here because that SDK is installed from a git clone rather than PyPI, so it
+#: cannot be a test dependency; :func:`test_the_frozen_declaration_matches_the_sdk`
+#: proves this copy is still true wherever the SDK *is* importable.  If a
+#: firmware update lands a field rename, the fidelity cell fails there first
+#: and the frozen copy is rewritten to match.
 _DECLARED_MAINBOARD_FIELDS: frozenset[str] = frozenset(
     {
         "fan_state",
         "temperature",
-        "sys_state",
-        "tick",
+        "value",
+        "state",
     }
 )
 
@@ -60,16 +61,16 @@ def _mainboard_message(**overrides: Any) -> types.SimpleNamespace:
     Faithful in the one way that matters here: it declares the names the
     real message declares and no others, so a decoder reaching for a name
     the IDL does not have gets ``getattr``'s default from this object
-    exactly as it would from the real one.  The default values are chosen
-    to be typed correctly (a list for the vector fields, an integer for
-    the scalars) so a decoder that reads them and coerces will succeed
-    end-to-end without needing a matching firmware on the box.
+    exactly as it would from the real one.  The defaults are six-element
+    vectors like the real declaration, so a decoder that reads them and
+    coerces will succeed end-to-end without needing a matching firmware
+    on the box.
     """
     fields: dict[str, Any] = {
-        "fan_state": [0, 0, 0, 0],
-        "temperature": [0.0, 0.0, 0.0],
-        "sys_state": 0,
-        "tick": 0,
+        "fan_state": [0] * 6,
+        "temperature": [0.0] * 6,
+        "value": [0.0] * 6,
+        "state": [0] * 6,
     }
     fields.update(overrides)
     return types.SimpleNamespace(**fields)
@@ -104,25 +105,31 @@ class TestThePremisesHold:
         msg = _mainboard_message()
         assert set(vars(msg)) == set(_DECLARED_MAINBOARD_FIELDS)
 
-    @pytest.mark.parametrize("undeclared", ["fan_speed", "cpu_temperature", "bms_state"])
+    @pytest.mark.parametrize(
+        "undeclared",
+        ["fan_speed", "cpu_temperature", "bms_state", "sys_bat_state", "sys_state", "tick"],
+    )
     def test_the_declaration_carries_no_such_field(self, undeclared: str) -> None:
         """The neon-side reads that are not on this firmware's layout.
 
-        The neon-the-g1 ``g1_mainboard`` port additionally read these fields
-        directly off the IDL.  On the layout the current firmware ships with
-        they are not declared, so a decoder reading them would land the
-        ``getattr`` default in the record forever.  If a future firmware
-        adds one back, this cell fires so the declaration and the decoder
-        can be updated together.
+        The neon-the-g1 ``g1_mainboard`` port read each of these off the IDL
+        behind a ``hasattr`` gate, so a name the message did not declare was
+        simply absent from its output.  ``sys_state`` and ``tick`` are the
+        two that reached this decoder without that gate, where an
+        undeclared read lands the ``getattr`` default in the record instead
+        (``tick`` is declared on ``LowState_``, not here).  If a future
+        firmware adds one back, this cell fires so the declaration and the
+        decoder can be updated together.
         """
         assert undeclared not in _DECLARED_MAINBOARD_FIELDS
         assert not hasattr(_mainboard_message(), undeclared)
 
     def test_an_undeclared_read_yields_the_default_rather_than_raising(self) -> None:
         """This is the whole mechanism: the miss is silent, not an error."""
-        msg = _mainboard_message(sys_state=1)
+        msg = _mainboard_message(state=[1] * 6)
         assert getattr(msg, "fan_speed", 0) == 0
         assert getattr(msg, "bms_state", 0) == 0
+        assert getattr(msg, "sys_state", 0) == 0
 
 
 # =========================================================================
@@ -147,26 +154,31 @@ class TestTheDecoderReadsTheDeclaredNames:
         assert driver._mainboard is not None
         assert driver._mainboard["temperature"] == pytest.approx([42.5, 44.0, 41.75])
 
-    def test_the_system_state_code_reaches_the_record(self) -> None:
-        """``sys_state`` is the firmware's system-state code as an integer."""
-        driver = G1Driver(tool_name="g1", port="1.2.3.4")
-        driver._on_mainboard(_mainboard_message(sys_state=2))
-        assert driver._mainboard is not None
-        assert driver._mainboard["sys_state"] == 2
+    def test_the_state_vector_reaches_the_record(self) -> None:
+        """``state`` is a ``uint32`` vector; the IDL gives it no semantics.
 
-    def test_the_firmware_tick_reaches_the_record(self) -> None:
-        """``tick`` is the firmware tick counter, monotonic within a boot."""
+        Published under the vendor's own name rather than interpreted, so
+        a caller reads what the board sent.  The decoder carrying it at
+        all is the point: a decoder that reads a name the IDL does not
+        declare drops this reading and reports a constant instead.
+        """
         driver = G1Driver(tool_name="g1", port="1.2.3.4")
-        driver._on_mainboard(_mainboard_message(tick=99999))
+        driver._on_mainboard(_mainboard_message(state=[2, 0, 0, 0, 0, 1]))
         assert driver._mainboard is not None
-        assert driver._mainboard["tick"] == 99999
+        assert driver._mainboard["state"] == [2, 0, 0, 0, 0, 1]
+
+    def test_the_value_vector_reaches_the_record(self) -> None:
+        """``value`` is a ``float32`` vector, likewise undocumented."""
+        driver = G1Driver(tool_name="g1", port="1.2.3.4")
+        driver._on_mainboard(_mainboard_message(value=[1.5, 2.5, 3.5, 4.5, 5.5, 6.5]))
+        assert driver._mainboard is not None
+        assert driver._mainboard["value"] == pytest.approx([1.5, 2.5, 3.5, 4.5, 5.5, 6.5])
 
     def test_the_wall_time_is_stamped(self) -> None:
         """``t`` is the wall time of decode, not a field on the message.
 
-        The IDL does not carry a wall-time field (its ``tick`` is a
-        firmware counter, not a host clock), so the decoder stamps
-        ``time.time()`` on every message.  This is how the mesh's health
+        The IDL declares four vectors and no clock of any kind, so the
+        decoder stamps ``time.time()`` on every message.  This is how the mesh's health
         chip knows whether the reading is stale.
         """
         driver = G1Driver(tool_name="g1", port="1.2.3.4")
@@ -175,44 +187,26 @@ class TestTheDecoderReadsTheDeclaredNames:
         assert driver._mainboard["t"] is not None
         assert driver._mainboard["t"] > 0.0
 
-    def test_a_missing_scalar_field_lands_none_not_zero(self) -> None:
-        """A firmware that renames ``sys_state`` yields ``None`` on this side.
+    @pytest.mark.parametrize("renamed", sorted(_DECLARED_MAINBOARD_FIELDS))
+    def test_a_missing_field_lands_none_not_a_plausible_reading(self, renamed: str) -> None:
+        """A firmware that renames a field yields ``None`` for it here.
 
         ``_on_mainboard`` reads through ``getattr(msg, name, None)`` at
-        every field so a firmware rename does not silently write ``0``
-        into the record (which would look like a healthy system on the
-        current layout).  A message stand-in that omits the attribute
-        entirely models exactly that miss.
+        every field, so a rename does not write a typed default into the
+        record.  That matters because every plausible default is also a
+        real reading: ``0`` looks like a healthy system, ``[]`` looks like
+        a unit reporting no fans.  ``None`` is the one value that cannot
+        be mistaken for a measurement, and the ``g1_mainboard`` verb
+        passes it through.  A stand-in that omits one attribute models
+        exactly that miss, one field at a time.
         """
+        fields = {name: [1] * 6 for name in _DECLARED_MAINBOARD_FIELDS if name != renamed}
         driver = G1Driver(tool_name="g1", port="1.2.3.4")
-        msg = types.SimpleNamespace(
-            fan_state=[1, 1, 1, 1],
-            temperature=[40.0],
-            # sys_state / tick deliberately absent
-        )
-        driver._on_mainboard(msg)
+        driver._on_mainboard(types.SimpleNamespace(**fields))
         assert driver._mainboard is not None
-        assert driver._mainboard["sys_state"] is None
-        assert driver._mainboard["tick"] is None
-
-    def test_a_missing_vector_field_lands_none_not_empty(self) -> None:
-        """An undeclared ``fan_state`` lands ``None`` in the record.
-
-        An empty list would be a plausible reading (a build with no fans
-        declared), but is not the same as a firmware rename where the
-        field is absent entirely.  ``None`` is the decidable value for
-        the missing case; the ``g1_mainboard`` verb passes it through.
-        """
-        driver = G1Driver(tool_name="g1", port="1.2.3.4")
-        msg = types.SimpleNamespace(
-            temperature=[40.0],
-            sys_state=0,
-            tick=1,
-            # fan_state deliberately absent
-        )
-        driver._on_mainboard(msg)
-        assert driver._mainboard is not None
-        assert driver._mainboard["fan_state"] is None
+        assert driver._mainboard[renamed] is None
+        for present in fields:
+            assert driver._mainboard[present] is not None
 
 
 # =========================================================================
@@ -322,10 +316,15 @@ class TestTheFrozenDeclarationIsTrue:
             reason="unitree_sdk2py is installed from a git clone, not PyPI",
         )
         declared = {field.name for field in dataclasses.fields(dds.MainBoardState_)}
-        # The frozen set names the fields the driver reads; on a firmware
-        # that declares a superset this cell fails, so a rewriter has to
-        # decide which fields to lift into the cache before landing.
-        assert set(_DECLARED_MAINBOARD_FIELDS) <= declared, (
-            f"MainBoardState_ dropped fields: {sorted(set(_DECLARED_MAINBOARD_FIELDS) - declared)}. "
-            "Update _DECLARED_MAINBOARD_FIELDS to the real declaration."
+        # Equality, not containment.  A subset check sees only the half of
+        # the drift that removes a field; the other half is a firmware that
+        # declares one this side never reads, which is a reading dropped on
+        # the floor rather than a constant published - both need a decision
+        # before landing, so both fail here.
+        assert declared == set(_DECLARED_MAINBOARD_FIELDS), (
+            f"MainBoardState_ declares {sorted(declared)}; the frozen copy says "
+            f"{sorted(_DECLARED_MAINBOARD_FIELDS)}. Fields gone: "
+            f"{sorted(set(_DECLARED_MAINBOARD_FIELDS) - declared)}; fields the decoder "
+            f"does not read: {sorted(declared - set(_DECLARED_MAINBOARD_FIELDS))}. "
+            "Update _DECLARED_MAINBOARD_FIELDS and _on_mainboard together."
         )

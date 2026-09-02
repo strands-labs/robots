@@ -53,6 +53,16 @@ Each robot is wrapped as a Device Connect device by a `DeviceDriver` adapter:
 | `RobotDeviceDriver` | a hardware `Robot` | the same RPC surface, driving real servos |
 | `ReachyMiniDriver` | a Pollen Reachy Mini | device-native RPCs (`look`, `nod`, …) over Zenoh / WebSocket |
 
+`stop` reports what it halted rather than asserting that it did. On a simulation
+it routes every robot through the simulation's own `stop_policy` and answers with
+the rollouts that really were in flight (`stopped`) and any that refused
+(`not_stopped`, under `status="error"`), so an idle simulation and a halted
+rollout are different answers and either can be checked against
+`list_policies_running`. A simulation with nothing to halt answers
+`status="success"` with an empty `stopped` list — never an error, because a peer
+reported as "did not stop" when it had nothing to stop is the false alarm that
+teaches an operator to ignore the warning.
+
 ### Published state events
 
 Besides answering RPCs, a driver publishes its own state on a 10 Hz loop while a

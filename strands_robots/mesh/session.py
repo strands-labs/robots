@@ -49,6 +49,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
+from strands_robots._mesh_switch import MESH_ENV_VAR
 from strands_robots.mesh._backend_select import select_backend
 from strands_robots.utils import partial_construction_repr
 
@@ -105,6 +106,99 @@ PEER_TIMEOUT: float = 10.0
 # A real fleet is tens-to-low-hundreds of robots; 1024 leaves generous
 # headroom while bounding the flood.
 MAX_PEERS_DEFAULT: int = 1024
+
+
+#: Mode used by every session that is NOT the machine's hub (the process that
+#: won the ``STRANDS_MESH_PORT`` listener). See :func:`_apply_fallback_topology`
+#: for why this is ``client`` and not ``peer``.
+FALLBACK_MODE_DEFAULT = "client"
+
+#: Backoff for the background connect-retry on a non-hub session. Deliberately
+#: gentle: the hub is on loopback, and a restarted hub only has to be noticed
+#: within a few seconds for a robot to rejoin.
+FALLBACK_RETRY = {"period_init_ms": 1000, "period_max_ms": 8000, "period_increase_factor": 2}
+
+
+def _fallback_mode() -> str:
+    """Resolve ``STRANDS_MESH_FALLBACK_MODE`` (``client`` | ``peer``).
+
+    Anything else warns and behaves as the default rather than raising: a
+    typo in this variable must not take a robot's mesh offline, and the
+    correct value is the one that works.
+    """
+    raw = (os.getenv("STRANDS_MESH_FALLBACK_MODE") or "").strip().lower()
+    if not raw:
+        return FALLBACK_MODE_DEFAULT
+    if raw in ("client", "peer"):
+        return raw
+    logger.warning(
+        "Invalid STRANDS_MESH_FALLBACK_MODE=%r (expected 'client' or 'peer') - using %r",
+        raw,
+        FALLBACK_MODE_DEFAULT,
+    )
+    return FALLBACK_MODE_DEFAULT
+
+
+def _apply_fallback_topology(cfg: Any, local_ep: str, scheme: str) -> str:
+    """Configure a non-hub session and return the mode it will open in.
+
+    The machine's first process listens on ``STRANDS_MESH_PORT`` and everyone
+    after it lands here, connecting to that hub. The mode chosen here decides
+    whether two *children* can hear each other at all, which is not obvious
+    and was measured rather than assumed (three throwaway sessions: hub,
+    publisher, then a LATE subscriber, hub as the only configured endpoint,
+    counting frames on ``strands/<peer>/input/<device>``):
+
+    ==============  ============  ==============
+    hub mode        child mode    frames arrived
+    ==============  ============  ==============
+    peer            peer          **0 of 62**
+    router          peer          **0 of 62**
+    peer            client        42 of 62
+    router          client        42 of 62
+    ==============  ============  ==============
+
+    A Zenoh 1.x **peer** assumes a full mesh and will not take traffic relayed
+    by an intermediary - not even by a router. ``routing/peer/mode`` (the knob
+    that used to make peers route for each other) no longer exists in 1.10:
+    ``insert_json5`` raises ``ZError("unknown key")``. So with peer-mode
+    children every child-to-child topic silently delivers nothing, while every
+    child-to-hub topic works, because that is the link the child opened
+    itself. That is exactly the teleop bug this fixes: a leader published 209
+    frames to a follower whose counters all read zero.
+
+    A **client** delegates routing to whatever it is connected to, so the hub
+    relays for it. The property the previous peer-mode fallback was chosen for
+    is kept: with ``connect/exit_on_failure=false`` plus ``connect/retry``, a
+    client re-links to a restarted hub on its own (measured: 30 frames before
+    the hub was killed, 0 during a 6s outage, 63 after it came back - no
+    process restart).
+
+    ``STRANDS_MESH_FALLBACK_MODE=peer`` restores the old topology for an
+    operator who wants direct peer links (and who must then arrange them:
+    a peer only hears publishers it is directly linked to).
+
+    Args:
+        cfg: The ``zenoh.Config`` to mutate (already built by ``_build_config``,
+            so namespace / mTLS / ACL / downsampling stay applied).
+        local_ep: The hub endpoint to dial, e.g. ``tcp/127.0.0.1:7447``.
+        scheme: ``tcp`` or ``tls``, matching the resolved auth mode.
+
+    Returns:
+        The mode the session will open in: ``"client"`` or ``"peer"``.
+    """
+    mode = _fallback_mode()
+    if mode == "peer":
+        # Ephemeral listener: a peer needs its own listener for another peer
+        # to dial it. Port 0 = let the OS choose.
+        cfg.insert_json5("listen/endpoints", json.dumps([f"{scheme}/127.0.0.1:0"]))
+    else:
+        cfg.insert_json5("mode", json.dumps("client"))
+    cfg.insert_json5("connect/endpoints", json.dumps([local_ep]))
+    # Never give up on the hub endpoint; retry with gentle backoff.
+    cfg.insert_json5("connect/exit_on_failure", "false")
+    cfg.insert_json5("connect/retry", json.dumps(FALLBACK_RETRY))
+    return mode
 
 
 def _max_peers() -> int:
@@ -765,6 +859,37 @@ def get_session() -> Any | None:
         Backend-dependent: ``zenoh.Session``, ``IotMqttTransport``,
         ``BridgeTransport``, or ``None`` if the chosen backend is unavailable.
     """
+    # STRANDS_MESH=false is documented as a hard kill switch: no Zenoh session
+    # and no presence on the fleet. Every path that can OPEN one has to answer
+    # it, and this is the only path that opens one -- the two Mesh constructors
+    # (init_mesh, robot_mesh._gateway_mesh) each asked separately, so a caller
+    # that acquires the transport directly, as ZenohTransport and the bridge
+    # factory do, reached zenoh.open with the switch engaged. What arrived was
+    # not a quiet extra peer: with no explicit endpoints this path LISTENS, so
+    # the process the operator disabled the mesh on became the machine's hub,
+    # and every later process on the box connected to it as a client.
+    #
+    # Asked before the backend branch because the switch is about presence, not
+    # about Zenoh: an IoT/bridge transport publishes this robot to the fleet
+    # just as a Zenoh session does, and one gate covers every backend.
+    #
+    # Imported inside the function, not at module scope: core imports this
+    # module (twice) while mesh/__init__ loads it, so a top-level import would
+    # be a genuine cycle. Reaching the mesh package lazily from inside the
+    # function that needs it is the technique _mesh_switch's docstring already
+    # describes for the same reason -- strands_robots.robot does it so that
+    # importing Robot does not eagerly pull in the Zenoh-backed session. The
+    # constant above comes from _mesh_switch instead, which imports nothing
+    # from the package and so is reachable at module scope.
+    from strands_robots.mesh.core import mesh_disabled_by_env
+
+    if mesh_disabled_by_env():
+        logger.debug(
+            "Mesh transport not acquired: STRANDS_MESH=%r is a hard kill switch",
+            os.getenv(MESH_ENV_VAR, ""),
+        )
+        return None
+
     global _SESSION, _SESSION_REFS  # noqa: PLW0603
 
     if _is_transport_backend():
@@ -878,33 +1003,23 @@ def get_session() -> Any | None:
                     exc,
                 )
 
-            # Fall back to PEER mode on an ephemeral listener with a
-            # background connect-retry to the hub endpoint (#9). The previous
-            # client-mode fallback never retried: when the hub process died,
-            # every client kept a dead session with no error surfaced - peers
-            # just went stale until the process was restarted. Peer mode keeps
-            # retrying ``connect/endpoints`` in the background, so a restarted
-            # hub (or any new listener on the port) re-links automatically,
-            # and surviving peers can also route to each other directly.
+            # Not the hub: connect to it, in the mode that actually receives
+            # relayed traffic. ``_apply_fallback_topology`` documents the
+            # measurement - a peer-mode child hears NOTHING a sibling child
+            # publishes, which is why teleop's receiver sat at zero frames
+            # while its leader published hundreds.
             # Build cfg OUTSIDE the try so a config-shape ValueError
             # (NaN env clamp, missing TLS file, bad ACL) propagates
             # loudly to Mesh.start instead of being silently downgraded
             # to "session unavailable".
             cfg = _build_config()
-            ephemeral_ep = f"{scheme}/127.0.0.1:0"
-            cfg.insert_json5("listen/endpoints", json.dumps([ephemeral_ep]))
-            cfg.insert_json5("connect/endpoints", json.dumps([local_ep]))
-            # Never give up on the hub endpoint; retry with gentle backoff.
-            cfg.insert_json5("connect/exit_on_failure", "false")
-            cfg.insert_json5(
-                "connect/retry",
-                json.dumps({"period_init_ms": 1000, "period_max_ms": 8000, "period_increase_factor": 2}),
-            )
+            fallback_mode = _apply_fallback_topology(cfg, local_ep, scheme)
             try:
                 _SESSION = zenoh.open(cfg)
                 _SESSION_REFS = 1
                 logger.info(
-                    "Zenoh mesh session opened (peer, ephemeral listener, retrying -> %s)",
+                    "Zenoh mesh session opened (%s, retrying -> %s)",
+                    fallback_mode,
                     local_ep,
                 )
                 return _SESSION
@@ -912,7 +1027,7 @@ def get_session() -> Any | None:
                 # Narrow tuple per AGENTS.md > Review Learnings (#86):
                 # transport-level failures only; config-shape ValueError
                 # propagates to caller so misconfigured mTLS surfaces loudly.
-                logger.warning("Zenoh session open failed (peer fallback): %s", exc)
+                logger.warning("Zenoh session open failed (%s fallback): %s", fallback_mode, exc)
                 return None
 
         # Explicit endpoints provided via env vars.
@@ -941,6 +1056,18 @@ def _get_zenoh_session_directly() -> Any | None:
     ``STRANDS_MESH_BACKEND``. It shares the same ``_SESSION`` singleton and
     ``_SESSION_LOCK``.
     """
+    # The kill switch, for the same reason as ``get_session`` upstairs: this
+    # door exists to skip the transport factory, not to skip the switch, and
+    # it reaches the same ``zenoh.open``.
+    from strands_robots.mesh.core import mesh_disabled_by_env
+
+    if mesh_disabled_by_env():
+        logger.debug(
+            "Zenoh session not opened: STRANDS_MESH=%r is a hard kill switch",
+            os.getenv(MESH_ENV_VAR, ""),
+        )
+        return None
+
     global _SESSION, _SESSION_REFS  # noqa: PLW0603
 
     with _SESSION_LOCK:
@@ -1015,16 +1142,27 @@ def _get_zenoh_session_directly() -> Any | None:
                     exc,
                 )
 
+            # Same topology as ``get_session`` upstairs, through the one
+            # helper. Before this, the two fallbacks disagreed: this site
+            # opened a client with no ``connect/retry`` and no
+            # ``exit_on_failure=false``, so when the hub process died the
+            # bridge-transport peer went permanently dark - no reconnect
+            # loop, no surfaced error. Both now retry the hub endpoint in
+            # the background (measured for client mode: delivery resumed
+            # after a 6s hub outage with no process restart).
             cfg = _build_config()
-            cfg.insert_json5("mode", '"client"')
-            cfg.insert_json5("connect/endpoints", json.dumps([local_ep]))
+            fallback_mode = _apply_fallback_topology(cfg, local_ep, scheme)
             try:
                 _SESSION = zenoh.open(cfg)
                 _SESSION_REFS = 1
-                logger.info("Zenoh mesh session opened (client -> %s)", local_ep)
+                logger.info(
+                    "Zenoh mesh session opened (%s, retrying -> %s)",
+                    fallback_mode,
+                    local_ep,
+                )
                 return _SESSION
             except zenoh_error_types() as exc:
-                logger.warning("Zenoh session open failed (client mode): %s", exc)
+                logger.warning("Zenoh session open failed (%s fallback): %s", fallback_mode, exc)
                 return None
 
         cfg = _build_config()

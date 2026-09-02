@@ -80,7 +80,7 @@ def _assets_root_path() -> str:
 
 
 # The bundled Franka USD moved between asset releases; probe the 6.0 layout
-# first, then the legacy 4.x one (same resolution examples/libero/run.py
+# first, then the legacy 4.x one (the same resolution an Isaac driver
 # ships, see strands-labs/robots-sim#110).
 _FRANKA_USD_SUBPATHS = (
     "Isaac/Robots/FrankaRobotics/FrankaPanda/franka.usd",  # Isaac Sim 6.0+

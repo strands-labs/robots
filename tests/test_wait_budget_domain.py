@@ -440,6 +440,7 @@ class TestEveryWaitBudgetSurfaceRoutesThroughTheSharedDomain:
     def test_the_scan_finds_every_known_wait_budget_surface(self) -> None:
         """Non-vacuity: a scan rooted elsewhere would report a clean sweep."""
         assert set(self._surfaces()) == {
+            "drivers/ur.py::targets_from_action",
             "hardware_ros_bridge.py::__init__",
             "hardware_rtps_bridge.py::__init__",
         }

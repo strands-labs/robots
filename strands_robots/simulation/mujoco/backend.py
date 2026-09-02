@@ -439,7 +439,7 @@ def _ensure_mujoco() -> "Any":
         # Not cached until it passes: a refused build must be re-checked (and
         # re-reported) on the next call rather than served from the global.
         if msg := _mujoco_api_floor_error(str(getattr(module, "__version__", ""))):
-            raise ImportError(msg)
+            raise ImportError(msg, name="mujoco")
         _mujoco = module
     if _mujoco_viewer is None and not _is_headless():
         try:

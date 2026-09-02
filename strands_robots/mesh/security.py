@@ -191,12 +191,29 @@ def _input_value_abs() -> float:
 #: neither bounds the distance between consecutive commands for one joint, so a
 #: stream inside both caps can still command a full-scale reversal every frame.
 #: The default is the full :data:`MAX_INPUT_VALUE_ABS` envelope traversed once
-#: per second (2 * 720), which is roughly 4x the no-load speed of the Feetech
-#: STS3215 servos on an SO-100 class arm -- ~6.5 rad/s at 12 V, and those frames
-#: arrive in degrees, so ~372 deg/s. Sized against the unit the frames carry, a
-#: physical leader arm cannot reach the bound and only a synthetic stream trips
-#: it. Operators whose actuators use a smaller unit (radians, or normalized
-#: -1..1) can narrow it via ``STRANDS_MESH_INPUT_SLEW_ABS``.
+#: per second (2 * 720), in the unit the frames carry. Operators whose actuators
+#: use a smaller unit (radians, or normalized -1..1) can narrow it via
+#: ``STRANDS_MESH_INPUT_SLEW_ABS``.
+#:
+#: The margin is measured against recorded teleop rather than against the servo
+#: datasheet, because a leader arm is back-driven by hand: its own servos' no-load
+#: speed (~6.5 rad/s at 12 V for the Feetech STS3215 on an SO-100 class arm, so
+#: ~372 deg/s in the unit the frames carry) is a floor on what a real stream
+#: contains, not a ceiling. Across 176,293 action frames of SO-100/SO-101
+#: leader-follower teleop the fastest single commanded step is ~899 deg/s, 2.4x
+#: that figure. The bound clears every one of those frames, but by 1.6x rather
+#: than the ~3.9x the datasheet figure alone suggests, so a retune has less room
+#: than the datasheet reading implies.
+#:
+#: This axis is deliberately *not* bounded per declared unit the way reach is
+#: (:func:`input_value_abs_by_key`): full scale bounds reach because a command
+#: past it is unaddressable, but full scale is not a speed. A frame-unit speed
+#: converts to servo travel through the joint's *calibrated* range, which on a
+#: ``RANGE_0_100`` gripper is unrelated to its full scale of 100. Applying the
+#: reach rule to this axis would bound a percent gripper at 400 units/s, below
+#: the ~406 units/s that recorded teleop actually commands, so the per-unit row
+#: would refuse real frames on the one joint a hand can traverse full scale
+#: fastest -- a tighter number bought by refusing the motion it exists to carry.
 DEFAULT_INPUT_SLEW_ABS: float = 1440.0  # frame units/second (2 * 720)
 MAX_INPUT_SLEW_ABS: float = _env_pos_float("STRANDS_MESH_INPUT_SLEW_ABS", DEFAULT_INPUT_SLEW_ABS)
 
@@ -206,6 +223,101 @@ def _input_slew_abs() -> float:
     :data:`MAX_INPUT_SLEW_ABS`). Re-reads env on every call so operators can
     tune the teleop safety envelope without a restart."""
     return _env_pos_float("STRANDS_MESH_INPUT_SLEW_ABS", DEFAULT_INPUT_SLEW_ABS)
+
+
+#: Largest magnitude one joint can reach, in frame units, under each
+#: normalisation mode a motor bus declares. Keyed by the mode's own spelling
+#: (:class:`~lerobot.motors.MotorNormMode` member names) but held as plain
+#: strings, so this module stays importable and testable with lerobot absent.
+#:
+#: The two percent modes share a row because they share a magnitude: lerobot's
+#: normaliser clamps both of them to the calibrated travel at full scale, on the
+#: way in (``_normalize`` bounds the raw count into ``[range_min, range_max]``
+#: before scaling) and on the way out (``_unnormalize`` bounds the command into
+#: ``[-100, 100]`` / ``[0, 100]``), so a percent value past 100 is not a further
+#: reach - it is unaddressable. ``DEGREES`` is clamped in neither direction, and
+#: a full turn is the excursion the degree envelope has always been sized on.
+#:
+#: This table bounds *reach* only. It is not reused on the speed axis, for the
+#: reason recorded on :data:`DEFAULT_INPUT_SLEW_ABS`.
+INPUT_FULL_SCALE_BY_NORM_MODE: dict[str, float] = {
+    "DEGREES": 360.0,
+    "RANGE_M100_100": 100.0,
+    "RANGE_0_100": 100.0,
+}
+
+#: How many full excursions of reach a joint is granted, derived from the
+#: default rather than restated: :data:`DEFAULT_INPUT_VALUE_ABS` is two full
+#: turns of a ``DEGREES`` joint, so every other unit gets the same multiple of
+#: its own full scale and a retune of the default moves all of them together.
+INPUT_ENVELOPE_FULL_SCALES: float = DEFAULT_INPUT_VALUE_ABS / INPUT_FULL_SCALE_BY_NORM_MODE["DEGREES"]
+
+
+def input_value_abs_by_key(norm_modes: Mapping[str, str] | None) -> dict[str, float]:
+    """Per-joint magnitude bounds for the units a receiving robot declares.
+
+    One teleop frame does not carry one unit. A shipped SO-100 class arm
+    declares ``DEGREES`` for its five arm joints and ``RANGE_0_100`` for the
+    gripper, so a single scalar envelope has to be loose enough for the widest
+    joint: at :data:`DEFAULT_INPUT_VALUE_ABS` the gripper is bounded at 7.2x its
+    own full scale. Bounding each joint in its own unit removes that slack
+    without touching the joints the scalar was sized for.
+
+    The unit is read from the robot the frame is about to be applied to, never
+    from the frame: the bound that constrains a sender must not be chosen by
+    that sender. :func:`strands_robots.bus_access.motor_norm_modes` is what
+    reads it.
+
+    Args:
+        norm_modes: Motor name to the normalisation mode that motor declares
+            (``"DEGREES"``, ``"RANGE_0_100"``, ...), case-insensitive. ``None``
+            or empty means nothing was declared, so nothing is bounded per
+            joint and the scalar envelope stands alone.
+
+    Returns:
+        Frame key to magnitude bound, holding only the joints whose mode is
+        recognised. Both spellings a frame may use for one motor are present:
+        the bare motor name and lerobot's ``<motor>.pos`` action key. A joint
+        whose declared mode is unrecognised is absent rather than widened, so it
+        keeps the scalar envelope.
+    """
+    if not norm_modes:
+        return {}
+    bounds: dict[str, float] = {}
+    for motor, mode in norm_modes.items():
+        full_scale = INPUT_FULL_SCALE_BY_NORM_MODE.get(str(mode).upper())
+        if full_scale is None:
+            continue
+        bounds[str(motor)] = bounds[f"{motor}.pos"] = INPUT_ENVELOPE_FULL_SCALES * full_scale
+    return bounds
+
+
+def _resolve_input_value_abs(key: str, value_abs_by_key: Mapping[str, float] | None) -> float:
+    """The magnitude bound in force for one frame key.
+
+    A per-joint bound only ever *tightens* the scalar envelope. That is what
+    keeps :func:`_input_value_abs` authoritative: an operator who narrows
+    ``STRANDS_MESH_INPUT_VALUE_ABS`` for a fleet whose actuators use a smaller
+    unit stays narrowed, instead of having the declared-unit row widen the
+    envelope back out underneath them.
+
+    Args:
+        key: The frame key being bounded.
+        value_abs_by_key: Per-joint bounds, as built by
+            :func:`input_value_abs_by_key` from the receiving robot's declared
+            units. ``None``, empty, or missing this key means the scalar
+            envelope applies.
+
+    Returns:
+        The bound to compare ``abs(value)`` against.
+    """
+    scalar = _input_value_abs()
+    if not value_abs_by_key:
+        return scalar
+    per_key = value_abs_by_key.get(key)
+    if per_key is None:
+        return scalar
+    return min(scalar, float(per_key))
 
 
 #: Charset for teleop input-frame keys (motor/joint names like
@@ -895,13 +1007,20 @@ def validate_mesh_identifier(value: Any, param: str) -> str:
     ``peer_id`` or a teleop ``device_name`` interpolated into
     ``strands/{peer_id}/input/{device_name}`` by
     :class:`~strands_robots.mesh.input.InputPublisher` and
-    :class:`~strands_robots.mesh.input.InputReceiver`.
+    :class:`~strands_robots.mesh.input.InputReceiver`, or the ``sender_id`` and
+    ``turn_id`` of an inbound command envelope, which
+    :class:`~strands_robots.mesh.core.Mesh` interpolates into
+    ``strands/{sender_id}/response/{responder}/{turn_id}`` to answer it.
 
     Zenoh treats ``*`` and ``**`` as key-expression wildcards, so an
     unvalidated segment silently widens a point-to-point subscription into a
     match-any one: a receiver built with ``source_peer_id="**"`` subscribes to
     ``strands/**/input/leader`` and applies joint commands from *every* peer on
-    the mesh, not just the configured leader. The remaining rejected shapes
+    the mesh, not just the configured leader. Publishing is exposed the same way,
+    because Zenoh accepts a wildcard on a ``put`` and routes it by intersection:
+    a reply key holding one is delivered to every peer's
+    ``strands/{peer}/response/**`` subscription rather than to the peer that
+    asked. The remaining rejected shapes
     (whitespace, NULs, C0 controls, shell metacharacters, ``/``) keep an
     identifier from smuggling extra key segments or corrupting the log lines
     and per-device state keys it also lands in.
@@ -945,10 +1064,14 @@ def validate_command(cmd: dict[str, Any]) -> dict[str, Any]:
       action, not per-action: each must be a str of at most
       :data:`MAX_PASSTHROUGH_LEN` characters, printable ASCII only (no C0/DEL
       or non-printable byte). They are wire-routing fields rather than action
-      payload -- ``Mesh`` correlates an RPC turn on ``turn_id`` and keys its
-      command-replay cache on ``(sender_id, turn_id)`` -- so a publisher
-      minting them needs the bound, and a control byte must not reach the
-      audit trail through either. Any other unvalidated key is dropped from
+      payload, so a publisher minting them needs the bound and a control byte
+      must not reach the audit trail through either. These are the *command's*
+      copies: what :class:`~strands_robots.mesh.core.Mesh` routes on is the
+      enclosing envelope's own ``sender_id`` / ``turn_id`` one level up, which it
+      correlates a turn on, keys its command-replay cache on, and interpolates
+      into the reply key -- so those are held to the stricter
+      :func:`validate_mesh_identifier` charset where they are read, and this
+      check is not the routing gate. Any other unvalidated key is dropped from
       the sanitised copy rather than refused.
     * ``execute`` and ``start`` actions require:
         - ``instruction``: non-empty str up to :data:`MAX_INSTRUCTION_LEN`,
@@ -1391,7 +1514,7 @@ def validate_device_rpc(function: str, params: Any = None) -> tuple[str, dict[st
     return function, dict(params)
 
 
-def validate_input_frame(action: Any) -> dict[str, float]:
+def validate_input_frame(action: Any, value_abs_by_key: Mapping[str, float] | None = None) -> dict[str, float]:
     """Validate and sanitise a teleop input frame, returning a clean copy.
 
     A teleop input frame is the flat ``{motor_name: float}`` payload
@@ -1421,15 +1544,28 @@ def validate_input_frame(action: Any) -> dict[str, float]:
       then refused explicitly: ``bool`` is an ``int`` subclass, so ``True``
       would otherwise reach an actuator as a ``1.0`` command.
     * Each value: **finite** (no ``nan`` / ``inf``) and within ``+/-``
-      :func:`_input_value_abs` (``STRANDS_MESH_INPUT_VALUE_ABS``).
+      :func:`_input_value_abs` (``STRANDS_MESH_INPUT_VALUE_ABS``), tightened
+      for that joint by *value_abs_by_key*.
 
     The envelope the last check applies is that resolver, not the import-time
     :data:`MAX_INPUT_VALUE_ABS` snapshot of it, so an operator who narrows the
     teleop envelope takes effect without a process restart. The two agree until
     the env var is set after import, and it is the resolver that refuses.
 
-    Returns a sanitised ``dict[str, float]`` containing only validated
-    entries. Raises :class:`ValidationError` on any violation.
+    Args:
+        action: The frame to validate.
+        value_abs_by_key: Per-joint magnitude bounds in the unit each joint
+            declares, as built by :func:`input_value_abs_by_key` from the
+            receiving robot. A joint listed here is bounded by the tighter of
+            its own bound and the scalar envelope; a joint absent from it keeps
+            the scalar envelope. ``None`` bounds every joint by the scalar,
+            which is what a caller with no bus to read declares.
+
+    Returns:
+        A sanitised ``dict[str, float]`` containing only validated entries.
+
+    Raises:
+        ValidationError: On any violation above.
     """
     if not isinstance(action, dict):
         raise ValidationError(f"input frame must be a dict (got {type(action).__name__})")
@@ -1466,7 +1602,7 @@ def validate_input_frame(action: Any) -> dict[str, float]:
         fval = float(value)
         if not math.isfinite(fval):
             raise ValidationError(f"input frame value for {key!r} must be finite, got {fval}")
-        _value_abs = _input_value_abs()
+        _value_abs = _resolve_input_value_abs(key, value_abs_by_key)
         if abs(fval) > _value_abs:
             raise ValidationError(
                 f"input frame value for {key!r} out of range: |{fval}| > {_value_abs}",
@@ -1642,6 +1778,9 @@ __all__ = [
     "is_safe_policy_provider",
     "is_safe_policy_type",
     "is_safe_server_address",
+    "INPUT_ENVELOPE_FULL_SCALES",
+    "INPUT_FULL_SCALE_BY_NORM_MODE",
+    "input_value_abs_by_key",
     "validate_command",
     "validate_device_rpc",
     "input_frame_slew_violation",

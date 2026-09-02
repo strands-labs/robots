@@ -45,7 +45,6 @@ RENDER_ATTRS = frozenset({"render", "render_depth", "render_all"})
 #: sweep over nothing.
 EXPECTED_IN_SCOPE = frozenset(
     {
-        "tests/benchmarks/libero/test_libero_camera_config_domain.py",
         "tests/simulation/mujoco/test_entity_name_lookup_type_safety.py",
         "tests/simulation/mujoco/test_remove_camera_refused_recompile.py",
         "tests/simulation/test_unhashable_entity_name_is_reported.py",

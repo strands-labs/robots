@@ -10,8 +10,8 @@ contract by handing a hand-rolled driver double to the verb and asserting
 the returned dict names each field ``_on_bms`` writes into ``_battery``.
 
 The cache field names are read here off the driver's own writer
-(:meth:`G1Driver._on_bms` names ``pct`` / ``charging`` / ``current`` /
-``cycle`` / ``t``) rather than being restated in the tests, so a widen
+(:meth:`G1Driver._on_bms` names ``pct`` / ``current`` / ``cycle`` /
+``t``) rather than being restated in the tests, so a widen
 or rename on the driver side moves both the write path and this verb
 together.  What the tests do restate is the SDK-load-hygiene contract
 every file under :mod:`strands_robots.tools.g1` carries: importing the
@@ -99,7 +99,6 @@ def test_a_driver_with_no_bms_message_yet_reports_absent() -> None:
     assert result["status"] == "success"
     assert result["present"] is False
     assert result["pct"] is None
-    assert result["charging"] is None
     assert result["current"] is None
     assert result["cycle"] is None
     assert result["t"] is None
@@ -107,18 +106,17 @@ def test_a_driver_with_no_bms_message_yet_reports_absent() -> None:
 
 
 def test_a_healthy_pack_reports_every_field_the_decoder_wrote() -> None:
-    """Each of the five ``_on_bms`` fields rides through unchanged.
+    """Each of the four ``_on_bms`` fields rides through unchanged.
 
-    ``_on_bms`` writes ``pct`` (SOC percent, float), ``charging`` (bool),
-    ``current`` (pack current in amps, float), ``cycle`` (integer cycle
-    count) and ``t`` (wall time of decode).  The verb is not the place
-    to reword or convert those - a caller comparing this reading against
-    the driver's ``_battery_floor_pct`` reads ``pct`` at the same units
-    the gate does.
+    ``_on_bms`` writes ``pct`` (SOC percent, float), ``current`` (pack
+    current as ``BmsState_.current`` reports it, float), ``cycle``
+    (integer cycle count) and ``t`` (wall time of decode).  The verb is
+    not the place to reword or convert those - a caller comparing this
+    reading against the driver's ``_battery_floor_pct`` reads ``pct`` at
+    the same units the gate does.
     """
     cache: dict[str, Any] = {
         "pct": 87.5,
-        "charging": False,
         "current": -1.25,
         "cycle": 42,
         "t": 1_700_000_000.0,
@@ -128,31 +126,9 @@ def test_a_healthy_pack_reports_every_field_the_decoder_wrote() -> None:
     assert result["status"] == "success"
     assert result["present"] is True
     assert result["pct"] == 87.5
-    assert result["charging"] is False
     assert result["current"] == -1.25
     assert result["cycle"] == 42
     assert result["t"] == 1_700_000_000.0
-
-
-def test_a_charging_pack_reports_charging_true() -> None:
-    """The ``charging`` flag round-trips from the driver's decode.
-
-    ``_on_bms`` writes ``bool(getattr(msg, "charge", 0))`` into
-    ``charging``; a firmware reporting a non-zero charge flag lands as
-    ``True`` in the cache, and this verb must not silently drop or
-    invert that.
-    """
-    cache: dict[str, Any] = {
-        "pct": 92.0,
-        "charging": True,
-        "current": 3.5,
-        "cycle": 100,
-        "t": 1_700_000_100.0,
-    }
-    result = _call(_StubG1Driver(cache=cache))
-
-    assert result["charging"] is True
-    assert result["current"] == 3.5
 
 
 def test_a_critical_pack_pct_is_reported_verbatim_not_clipped() -> None:
@@ -167,7 +143,6 @@ def test_a_critical_pack_pct_is_reported_verbatim_not_clipped() -> None:
     """
     cache: dict[str, Any] = {
         "pct": 5.0,
-        "charging": False,
         "current": -0.8,
         "cycle": 250,
         "t": 1_700_000_200.0,
@@ -179,7 +154,7 @@ def test_a_critical_pack_pct_is_reported_verbatim_not_clipped() -> None:
 
 
 def test_a_missing_field_in_the_cache_reports_none() -> None:
-    """A cache dict missing one of the five fields returns ``None`` for it.
+    """A cache dict missing one of the four fields returns ``None`` for it.
 
     ``_on_bms`` may in principle write a partial dict on a decode where
     one attribute was absent from the IDL message (the handler catches
@@ -190,14 +165,12 @@ def test_a_missing_field_in_the_cache_reports_none() -> None:
     """
     cache: dict[str, Any] = {
         "pct": 60.0,
-        "charging": False,
         # current / cycle / t missing
     }
     result = _call(_StubG1Driver(cache=cache))
 
     assert result["present"] is True
     assert result["pct"] == 60.0
-    assert result["charging"] is False
     assert result["current"] is None
     assert result["cycle"] is None
     assert result["t"] is None
@@ -215,7 +188,6 @@ def test_the_verb_reads_the_snapshot_exactly_once() -> None:
     driver = _StubG1Driver(
         cache={
             "pct": 75.0,
-            "charging": False,
             "current": -0.5,
             "cycle": 30,
             "t": 1_700_000_300.0,
@@ -239,7 +211,6 @@ def test_the_returned_dict_does_not_alias_the_cache() -> None:
     """
     original_cache: dict[str, Any] = {
         "pct": 80.0,
-        "charging": False,
         "current": -1.0,
         "cycle": 25,
         "t": 1_700_000_400.0,

@@ -1774,6 +1774,54 @@ class Mesh(SensorLoopsMixin):
         # could observe the response topic. D1 closed the outbound side;
         # this closes the symmetric receive-side surface.
         turn = data.get("turn_id") or uuid.uuid4().hex
+        # Both fields become key-expression segments: ``rkey`` below interpolates
+        # them into ``strands/{sender}/response/{responder}/{turn}``, and Zenoh
+        # accepts a wildcard on a ``put`` and routes it by intersection -- so a
+        # ``sender_id`` of ``**`` addresses the response at every peer's
+        # ``strands/{peer}/response/**`` subscription rather than at the one peer
+        # that asked, and this robot's dispatch result reaches the whole fleet.
+        # ``validate_command`` already type-checks, length-bounds and
+        # charset-validates a ``turn_id`` / ``sender_id`` carried INSIDE the
+        # command dict, but routing reads the envelope's own copy, which reached
+        # the key expression unchecked. So validate the pair that routes, with
+        # the rule this library already applies to the teleop identifiers it
+        # interpolates into a key expression -- printable ASCII is not enough
+        # here, because ``*`` and ``/`` are printable and are what widen a key.
+        #
+        # An ABSENT sender stays supported and means something else: "no response
+        # route" (``rkey`` is None below), the documented fire-and-forget shape.
+        # An invalid one names no peer this robot could answer, so the envelope
+        # is refused whole rather than executed with its routing fields dropped.
+        for field, value in (("sender_id", sender), ("turn_id", turn)):
+            if field == "sender_id" and value == "":
+                continue
+            try:
+                _security.validate_mesh_identifier(value, f"command envelope {field}")
+            except _security.ValidationError as exc:
+                # No wire bytes on the log line: the message names the field and
+                # the rule, never the rejected value, so a line break in it
+                # cannot split this record in two. The audit record carries a
+                # bounded ``repr`` instead -- a structured sink can hold the
+                # shape forensics wants without a line-oriented reader seeing a
+                # record this process never wrote. ``sender`` is recorded only
+                # once it has itself passed: the loop checks it first, so a
+                # ``turn_id`` rejection carries a sender known to be an
+                # identifier, and a sender rejection carries only the repr.
+                logger.warning("[mesh] %s: refused cmd with unroutable %s -- %s", self.peer_id, field, exc)
+                try:
+                    log_safety_event(
+                        "command_rejected",
+                        self.peer_id,
+                        {
+                            "sender": sender if field != "sender_id" else None,
+                            "field": field,
+                            "reason": str(exc),
+                            "value": repr(value)[: _security.MAX_PEER_ID_LEN],
+                        },
+                    )
+                except (TypeError, ValueError, OSError) as audit_exc:
+                    logger.debug("[mesh] %s: audit log unavailable: %s", self.peer_id, audit_exc)
+                return
         # require an explicit ``command`` key.
         # Earlier the fallback ``data.get("command", data)`` allowed a
         # peer to publish a flat-shape envelope (sender_id, turn_id,

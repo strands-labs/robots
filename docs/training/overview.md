@@ -107,7 +107,7 @@ supports and **ignores the rest** (the same tolerance rule as
 | `method` | `full` \| `lora` \| `expert_only` \| `frozen_backbone` | `lora`+`expert_only` are mutually exclusive |
 | `tune` | `{llm,visual,projector,diffusion}` | GR00T only |
 | `val_episodes` | hold out the LAST N episodes | deterministic split; must be a positive integer below the dataset's episode count, and that count must be readable from a local `meta/info.json` (see the Hub-source note below). `validate()` refuses `0` or a negative (they produced no split and no eval cadence at all - the run trained on everything and logged no validation loss), a `bool`, and a fractional value (`2.7` reserved 3 episodes, `0.5` reserved none while still evaluating); mutually exclusive with `streaming` |
-| `num_gpus` / `num_nodes` | multi-GPU / multi-node | selects the launcher |
+| `num_gpus` / `num_nodes` | multi-GPU / multi-node | selects the launcher; each must be a positive integer. `validate()` refuses `0`, a negative, a `bool` and a non-finite value (none of them read as greater than one, so the selector would route them to the single-process path and the run would proceed on a topology nobody asked for) and a fractional or integral float (`2.7`, `2.0` - greater than one, so they reach the launcher as the worker count) |
 | `seed` | reproducibility seed | must be a non-negative integer; `validate()` refuses a negative (`torch.manual_seed` would take it modulo `2**64`, so `-1` silently becomes `2**64 - 1`), a fractional or non-finite value, and a `bool`. `None` uses the backend's own default |
 | `extra["policy_type"]` | lerobot `--policy.type` | act/diffusion/smolvla/pi0/pi05/... |
 | `extra["groot_root"]` | Isaac-GR00T checkout | GR00T |

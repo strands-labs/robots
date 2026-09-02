@@ -180,20 +180,21 @@ def test_lowstate_populates_imu_and_mode_machine() -> None:
     assert isinstance(driver._imu["t"], float)
 
 
-def test_bms_populates_battery_with_pct_and_charging() -> None:
+def test_bms_populates_battery_with_the_fields_the_health_chip_reads() -> None:
     """``rt/lf/bmsstate`` yields the fields the mesh's health chip reads.
 
-    :mod:`strands_robots.mesh.sensors` reads ``battery.get("pct")`` and
-    ``battery.get("charging")`` - the names must match those keys or the
-    mesh publishes an empty health entry.
+    :mod:`strands_robots.mesh.sensors` reads ``battery.get("pct")`` - the
+    name must match that key or the mesh publishes an empty health entry.
+    A charge flag is deliberately absent from the record; see
+    :mod:`tests.drivers.test_g1_bms_reads_the_declared_fields`.
     """
     driver = G1Driver(tool_name="g1", port="1.2.3.4")
-    msg = types.SimpleNamespace(soc=87.5, charge=0, current=-1.2, cycle=42)
+    msg = types.SimpleNamespace(soc=87.5, current=-1.2, cycle=42)
     driver._on_bms(msg)
     assert driver._battery is not None
     assert driver._battery["pct"] == pytest.approx(87.5)
-    assert driver._battery["charging"] is False
     assert driver._battery["current"] == pytest.approx(-1.2)
+    assert driver._battery["cycle"] == 42
 
 
 def test_lidar_state_decodes_code() -> None:
@@ -396,7 +397,7 @@ def test_send_action_refuses_below_battery_floor() -> None:
     driver._connected = True
     driver._fsm_id = 501
     driver._mode_machine = 9  # uint8 layout id echoed from lowstate
-    driver._battery = {"pct": 12.0, "charging": False, "current": 0.0, "cycle": 0, "t": 0.0}
+    driver._battery = {"pct": 12.0, "current": 0.0, "cycle": 0, "t": 0.0}
     result = driver.send_action({"any": 0.0})
     assert result["status"] == "error"
     assert "battery" in result["content"][0]["text"]
@@ -416,7 +417,7 @@ def test_send_action_reports_motion_not_wired_when_gates_pass() -> None:
     driver._connected = True
     driver._fsm_id = 501
     driver._mode_machine = 9  # uint8 layout id echoed from lowstate
-    driver._battery = {"pct": 92.0, "charging": True, "current": 1.0, "cycle": 0, "t": 0.0}
+    driver._battery = {"pct": 92.0, "current": 1.0, "cycle": 0, "t": 0.0}
     result = driver.send_action({"left_shoulder_pitch": 0.1})
     assert result["status"] == "error"
     assert "publisher not initialised" in result["content"][0]["text"]
@@ -443,7 +444,7 @@ def test_task_and_policy_paths_report_not_wired_when_gates_pass() -> None:
     driver._connected = True
     driver._fsm_id = 501  # in both HANDSHAKE_FSMS and WALK_FSMS
     driver._mode_machine = 9  # uint8 layout id echoed from lowstate
-    driver._battery = {"pct": 92.0, "charging": True, "current": 1.0, "cycle": 0, "t": 0.0}
+    driver._battery = {"pct": 92.0, "current": 1.0, "cycle": 0, "t": 0.0}
 
     start = driver.start_task("do X", policy_port=8000)
     assert start["status"] == "error"
@@ -499,7 +500,7 @@ def test_task_paths_refuse_below_battery_floor(verb: str) -> None:
     driver._connected = True
     driver._fsm_id = 501  # walkable
     driver._mode_machine = 9  # uint8 layout id echoed from lowstate
-    driver._battery = {"pct": 4.0, "charging": False, "current": 0.0, "cycle": 0, "t": 0.0}
+    driver._battery = {"pct": 4.0, "current": 0.0, "cycle": 0, "t": 0.0}
     if verb == "start_task":
         result = driver.start_task("walk 1m")
     else:
@@ -524,7 +525,7 @@ def test_task_paths_refuse_outside_motion_fsm(verb: str) -> None:
     driver._connected = True
     driver._fsm_id = 0
     driver._mode_machine = 9  # uint8 layout id echoed from lowstate
-    driver._battery = {"pct": 92.0, "charging": True, "current": 1.0, "cycle": 0, "t": 0.0}
+    driver._battery = {"pct": 92.0, "current": 1.0, "cycle": 0, "t": 0.0}
     if verb == "start_task":
         result = driver.start_task("do X")
     else:
@@ -563,7 +564,7 @@ def test_send_action_admits_every_handshake_fsm(fsm: int) -> None:
     driver._connected = True
     driver._fsm_id = fsm
     driver._mode_machine = 9  # uint8 layout id echoed from lowstate
-    driver._battery = {"pct": 92.0, "charging": True, "current": 1.0, "cycle": 0, "t": 0.0}
+    driver._battery = {"pct": 92.0, "current": 1.0, "cycle": 0, "t": 0.0}
     result = driver.send_action({"any": 0.0})
     assert result["status"] == "error"
     text = result["content"][0]["text"]
@@ -591,7 +592,7 @@ def test_walk_fsms_has_a_consumer_and_a_documented_boundary() -> None:
     driver._connected = True
     driver._fsm_id = 500  # sitting: in HANDSHAKE_FSMS, not in WALK_FSMS
     driver._mode_machine = 9  # uint8 layout id echoed from lowstate
-    driver._battery = {"pct": 92.0, "charging": True, "current": 1.0, "cycle": 0, "t": 0.0}
+    driver._battery = {"pct": 92.0, "current": 1.0, "cycle": 0, "t": 0.0}
 
     # Arm-scoped write at 500 passes the gate (500 is in HANDSHAKE_FSMS).
     arm_result = driver.send_action({"any": 0.0})
@@ -661,7 +662,7 @@ def test_the_loco_gate_admits_every_walking_fsm(fsm: int) -> None:
     driver._connected = True
     driver._fsm_id = fsm
     driver._mode_machine = 9  # uint8 layout id echoed from lowstate
-    driver._battery = {"pct": 92.0, "charging": True, "current": 1.0, "cycle": 0, "t": 0.0}
+    driver._battery = {"pct": 92.0, "current": 1.0, "cycle": 0, "t": 0.0}
     assert driver._check_motion_gates("loco") is None
 
 
@@ -683,7 +684,7 @@ def test_motion_verbs_admit_a_literally_walkable_fsm(verb: str, fsm: int) -> Non
     driver._connected = True
     driver._fsm_id = fsm
     driver._mode_machine = 9  # uint8 layout id echoed from lowstate
-    driver._battery = {"pct": 92.0, "charging": True, "current": 1.0, "cycle": 0, "t": 0.0}
+    driver._battery = {"pct": 92.0, "current": 1.0, "cycle": 0, "t": 0.0}
     if verb == "start_task":
         result = driver.start_task("do X")
         expected_marker = "provider registry not wired yet"
@@ -955,7 +956,7 @@ def _gated_driver() -> tuple[G1Driver, _RecordingPublisher]:
     driver._connected = True
     driver._fsm_id = 501  # in HANDSHAKE_FSMS
     driver._mode_machine = 9  # uint8 layout id echoed from lowstate
-    driver._battery = {"pct": 92.0, "charging": True, "current": 1.0, "cycle": 0, "t": 0.0}
+    driver._battery = {"pct": 92.0, "current": 1.0, "cycle": 0, "t": 0.0}
     pub = _RecordingPublisher()
     driver._pubs = pub  # type: ignore[assignment]
     return driver, pub
@@ -1150,13 +1151,19 @@ def test_send_action_refuses_unknown_per_joint_key() -> None:
 
 
 @pytest.mark.usefixtures("_stub_unitree_sdk")
-def test_send_action_refuses_non_numeric_target() -> None:
-    """A non-numeric target is refused with the joint name in the reason."""
+def test_send_action_refuses_a_target_that_is_not_a_finite_number() -> None:
+    """A target outside the finite-number domain is refused, naming the field.
+
+    The reason comes from the shared
+    :func:`~strands_robots.utils.finite_number_error` domain, so it names the
+    joint *and* the field it was wrong on - a caller commanding five fields per
+    joint needs to know which one.
+    """
     driver, pub = _gated_driver()
     result = driver.send_action({"left_elbow": "hold"})
     assert result["status"] == "error"
-    assert "left_elbow" in result["content"][0]["text"]
-    assert "non-numeric" in result["content"][0]["text"]
+    assert "left_elbow.q" in result["content"][0]["text"]
+    assert "must be a finite number" in result["content"][0]["text"]
     assert pub.writes == []
 
 
@@ -1197,7 +1204,7 @@ def test_send_action_refuses_when_pubs_is_missing() -> None:
     driver._connected = True
     driver._fsm_id = 501
     driver._mode_machine = 9  # uint8 layout id echoed from lowstate
-    driver._battery = {"pct": 92.0, "charging": True, "current": 1.0, "cycle": 0, "t": 0.0}
+    driver._battery = {"pct": 92.0, "current": 1.0, "cycle": 0, "t": 0.0}
     # _pubs left at its __init__ default (None).
     result = driver.send_action({"left_elbow": 0.1})
     assert result["status"] == "error"

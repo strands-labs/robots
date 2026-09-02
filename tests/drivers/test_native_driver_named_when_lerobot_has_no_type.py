@@ -56,20 +56,31 @@ from strands_robots.registry import get_robot, list_robots
 #: them. Literal rather than derived: a rule narrowed by mistake would
 #: *deselect* a derived case and still report success, where a literal keeps
 #: running and fails. :class:`TestTheDerivedPopulationIsExactlyThese` grades the
-#: rule itself, so a fifth robot arriving in this position is caught there.
+#: rule itself, so another robot arriving in this position is caught there -
+#: which is how the Franka arms and the UR arms arrived here, each having moved
+#: out of :data:`NO_DRIVER_OF_EITHER_KIND` when its own driver landed.
 NATIVELY_DRIVEN_WITHOUT_A_LEROBOT_TYPE = (
     "vx300s",
     "wx250s",
     "trossen_wxai",
     "dynamixel_2r",
     "open_duck_mini",
+    "panda",
+    "fr3",
+    "fr3_v2",
+    "ur5e",
+    "ur10e",
 )
 
 #: Robots that reach the same site with no native driver, so the listing of
-#: lerobot's robot types is the right answer and must survive. Two grippers and
-#: two arms: every one is a real registry entry with a simulation asset and no
-#: real-mode support of any kind.
-NO_DRIVER_OF_EITHER_KIND = ("robotiq_2f85", "robotiq_2f85_v4", "ur5e", "panda")
+#: lerobot's robot types is the right answer and must survive. Two hands and an
+#: arm: every one is a real registry entry with a simulation asset and no
+#: real-mode support of any kind. ``panda`` was a member until
+#: :class:`~strands_robots.drivers.franka.driver.FrankaDriver` gave the Franka
+#: family a real-mode path, and ``ur5e`` until :class:`~strands_robots.drivers.ur.URDriver`
+#: did the same for the UR arms, which is exactly the transition these two tuples
+#: exist to keep honest. ``xarm7`` takes the slot ``ur5e`` vacated.
+NO_DRIVER_OF_EITHER_KIND = ("shadow_hand", "allegro_hand", "xarm7")
 
 #: The generic listing's own words, which must be absent from a refusal that has
 #: a better answer and present from one that does not.
@@ -160,7 +171,7 @@ class TestANativelyDrivenRobotIsNamed:
 
 
 class TestTheDerivedPopulationIsExactlyThese:
-    """The rule, graded rather than the four names: a fifth robot is caught here."""
+    """The rule, graded rather than the names: a robot arriving here is caught."""
 
     @staticmethod
     def _routed_to_lerobot_with_a_native_driver() -> set[str]:
@@ -243,7 +254,7 @@ class TestTheHelperReportsRatherThanRaises:
 
     def test_a_robot_with_no_native_driver_gets_no_reason(self) -> None:
         """``None`` is how the caller keeps its own listing."""
-        assert _native_driver_refusal("robotiq_2f85") is None
+        assert _native_driver_refusal("shadow_hand") is None
 
     def test_a_name_no_registry_knows_gets_no_reason(self) -> None:
         assert _native_driver_refusal("no-such-robot-anywhere") is None
@@ -272,9 +283,9 @@ class TestTheHelperReportsRatherThanRaises:
         class _PlantedDriver:
             pass
 
-        assert _native_driver_refusal("ur5e") is None, "premise: ur5e has no driver today"
-        monkeypatch.setitem(drivers_registry_mod._NATIVE_DRIVERS, "ur5e", _PlantedDriver)
-        reason = _native_driver_refusal("ur5e")
+        assert _native_driver_refusal("kuka_iiwa") is None, "premise: kuka_iiwa has no driver today"
+        monkeypatch.setitem(drivers_registry_mod._NATIVE_DRIVERS, "kuka_iiwa", _PlantedDriver)
+        reason = _native_driver_refusal("kuka_iiwa")
         assert reason is not None
         assert "_PlantedDriver" in reason
 

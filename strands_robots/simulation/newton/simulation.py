@@ -38,7 +38,12 @@ import numpy as np
 
 from strands_robots.assets import resolve_model_path, resolve_robot_name
 from strands_robots.registry.discovery import discover_urdf_path, list_urdf_discoverable
-from strands_robots.simulation.base import SimEngine, reject_setup_kwargs
+from strands_robots.simulation.base import (
+    SimEngine,
+    own_keyword_names,
+    reject_misspelled_kwargs,
+    reject_setup_kwargs,
+)
 from strands_robots.simulation.ik import GRIPPER_BODY_HINTS, hint_matches_name
 from strands_robots.simulation.model_registry import (
     list_available_models,
@@ -206,11 +211,16 @@ class NewtonSimEngine(DomainRandomizationMixin, NewtonRecordingMixin, SimEngine)
             **kwargs: Ignored; accepted for forward compatibility. Robot-setup
                 arguments (``robot_name`` / ``robot``) are rejected rather than
                 dropped - use ``Robot("so101", mode="sim")`` or ``add_robot``.
+                A name that misspells one of the parameters above (e.g.
+                ``defualt_timestep``) is rejected too: it cannot be another
+                backend's option, and dropping it made the requested value
+                silently identical to omitting it.
 
         Raises:
             ValueError: If ``solver`` is not a known solver name.
         """
         reject_setup_kwargs(kwargs)
+        reject_misspelled_kwargs(kwargs, own_keyword_names(NewtonSimEngine), owner="NewtonSimEngine")
         super().__init__()
         # State that teardown (destroy/cleanup/__del__) touches must be set
         # before any fallible construction step. Otherwise a partially built

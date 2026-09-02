@@ -299,7 +299,7 @@ class TestTheDelegationIsReal:
         driver._sim = _Sim()
         asyncio.run(driver.execute("task", duration=value, robot_name="arm"))
         assert recorded == [value], "the value must reach the guarded consumer verbatim"
-        assert SimEngine._validate_duration(value, "start_policy") is not None
+        assert SimEngine._validate_duration(value, "start_policy", 50.0) is not None
 
 
 def _exported_names(init_py: Path) -> list[str]:

@@ -73,6 +73,10 @@ _REFUSALS: tuple[tuple[str, tuple[Any, ...], type[BaseException]], ...] = (
     ("parse_status_packet", ("notbytes", 1, 0), TypeError),
     ("parse_status_packet", (_WELL_FORMED, 0x1FF, 0), ValueError),
     ("parse_status_packet", (b"\x00\x00", 1, 0), protocol.ProtocolError),
+    ("encode_word", (True,), TypeError),
+    ("encode_word", (0x10000,), ValueError),
+    ("decode_word", ([0xFF, 0x03],), TypeError),
+    ("decode_word", (b"\x01",), ValueError),
 )
 
 

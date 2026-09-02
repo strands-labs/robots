@@ -139,7 +139,7 @@ class TestSendActionSingleElementUnwrap:
     the LIBERO delta-EEF layout. The #1179 scalar validation rejected those
     values atomically, so EVERY ``send_action`` in a GR00T LIBERO eval
     errored and the benchmark silently no-opped to ``success_rate=0``
-    (`examples/libero/run.py mujoco --policy groot`). A single-element value
+    (a GR00T-driven benchmark rollout on the MuJoCo backend). A single-element value
     carries exactly one unambiguous scalar; it must apply, while
     multi-element values stay rejected (the actual #1179 crash class).
     """

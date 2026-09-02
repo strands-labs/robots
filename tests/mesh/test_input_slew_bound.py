@@ -52,8 +52,11 @@ FRAME_S = 1.0 / mesh_input.INPUT_HZ_DEFAULT
 FRAME_UNITS_PER_RADIAN = 180.0 / math.pi
 
 #: Feetech STS3215 no-load speed at 12 V is ~6.5 rad/s, so a leader arm on an
-#: SO-100 class follower cannot travel more than this in one 50 Hz frame. Any
-#: bound that refuses it would refuse legitimate teleoperation.
+#: SO-100 class follower travels at least this far in one 50 Hz frame, and any
+#: bound that refuses it would refuse legitimate teleoperation. It is a floor,
+#: not a ceiling - the leader is back-driven by hand, and recorded teleop reaches
+#: 2.4x it (``TestTheSpeedAxisIsSizedOnRecordedTeleop`` in
+#: ``tests/mesh/test_input_envelope_units.py``).
 LEADER_MAX_STEP = 6.5 * FRAME_UNITS_PER_RADIAN * FRAME_S
 
 

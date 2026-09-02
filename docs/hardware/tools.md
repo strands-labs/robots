@@ -59,9 +59,12 @@ Passing a value an action ignores is never an error: `action="start"` without a
 ### A session is only forgotten once its process is gone
 
 Because the session runs detached, the on-disk session store is the only place
-its pid is recorded - `stop` and `status` both look the session up there. Every
-load prunes finished sessions and writes the pruned store back, so what counts
-as "finished" decides whether a session stays stoppable:
+its pid is recorded - `stop` and `status` both look the session up there. Both
+stores load, modify and write back, so a record a load leaves out is erased from
+disk by the next session started or stopped. What a load counts as "finished"
+therefore decides whether a session stays stoppable.
+
+`lerobot_teleoperate` prunes a finished session:
 
 | What the probe reports | Verdict |
 |------------------------|---------|
@@ -74,6 +77,42 @@ The last row is why a session started under `sudo` - a common way to reach a
 serial port - is still listed and still stoppable when the tool is later invoked
 as the unprivileged user. Being kept is not a claim that it is running: `list`
 and `status` each derive that from the pid's existence at the moment you ask.
+
+`lerobot_train` keeps a store of the same shape, held to the same rule, with one
+deliberate difference: a finished run is *retained* so `status` can still show
+the final log tail. Its load therefore drops nothing at all, and `stop` -
+through `remove_session` - is what ends a record:
+
+| What the probe reports | Verdict |
+|------------------------|---------|
+| the pid no longer exists, or `is_running()` returns `False` | finished - kept for its log tail |
+| `psutil.NoSuchProcess` (reaped between the existence check and the probe) | the same finished run - kept |
+| `psutil.AccessDenied` (the pid exists, this user may not inspect it) | kept, and reported at `WARNING` |
+
+The first two rows are one state reached two ways, and which way a given run
+takes is a race between the two probes, so they are not classified differently.
+The last row is the one where dropping the record would lose a pid that still
+names a *live* process - a training run holding a GPU, with nothing left
+recording where it is.
+
+`stop` is held to the same standard from the other side. It captures the process
+identity *before* it signals - so the SIGKILL escalation is aimed at the process
+it found, not at whatever holds the pid once the grace period is over - and then
+reports only what it can establish:
+
+| After SIGTERM, then SIGKILL | `stopped` | Result |
+|-----------------------------|-----------|--------|
+| the process left the process table | `true` | success, record dropped |
+| it was already gone when `stop` looked | `true` | success ("already stopped"), record dropped |
+| it is still there | `false` | error, record kept |
+| whether it exited could not be determined (`AccessDenied`) | `null` | error, record kept |
+
+Sending SIGKILL is not the same as the process exiting: the kernel delivers it
+asynchronously, and a task inside an uninterruptible wait - a serial ioctl on the
+teleop bus, a stalled CUDA call in a training step - stays in the table until that
+wait returns. So the record is kept in exactly the cases where the exit was not
+observed, because dropping it would leave the process running with nothing left
+recording its pid.
 
 ### A raw servo write is bounded by the register it encodes into
 
@@ -107,7 +146,7 @@ disagree about which address is a servo and which is the whole bus.
 | Option | Accepted | Why the bound is where it is |
 |--------|----------|------------------------------|
 | `motor_id` | integer in `[1, 254]`, or `[1, 253]` for an action that reads a reply | the frame carries the ID in one byte, of which `0xfd` is the highest a servo may hold and `0xfe` is the broadcast, while `0xff` is the header value |
-| `position` | integer in `[0, 4095]` | `Goal_Position` is a 12-bit register - the same full scale the reported angle divides by |
+| `position` | integer in `[0, 4095]` | `Goal_Position` is 12-bit on the STS/SMS series - the same full scale the reported angle divides by |
 | `velocity` | integer in `[0, 32767]` | `Goal_Velocity` is sign-magnitude with bit 15 the direction bit, so a larger magnitude commands the opposite direction |
 | `baudrate` | positive integer | pyserial coerces rather than checks, so `2.7` opens the port at 2 baud |
 | `read_bytes` | positive integer | pyserial's read loop is `while len(read) < size`, so a non-positive size returns no bytes and looks like a timeout |
@@ -121,6 +160,21 @@ own "required" message rather than as an unusable value.
 `pose_tool` writes the same `Goal_Position` register through the same mask and
 needs no bound of its own - it clamps to each motor's declared range before
 encoding, so the mask only ever sees a value that fits.
+
+Both bounds and the reported angle are STS/SMS-series properties, not properties
+of the register or of Feetech generally, and so is the two-byte order the value
+is encoded into. Feetech publishes one framing document for the whole family and
+ships one SDK for it, but that SDK's `PacketHandler` takes a per-model protocol
+number and reverses the word order on it: protocol 0 (STS3215, STS3250, SM8512BL)
+puts the low byte first, protocol 1 (the SCS series) puts the high byte first.
+A position framed for one series is therefore a *different position* on the
+other, not a mis-scaled one - `position=1023`, which is full scale on an
+`scs0009`, is read by it as 65283. `strands_robots.drivers.feetech.protocol`
+decides that order once (`encode_word` / `decode_word`) and holds the full scale
+once (`MAX_GOAL_POSITION`), and every Feetech write path in the package - this
+tool, `pose_tool`, and the native `FeetechDriver` bus - reads both from there.
+Addressing an SCS-series servo needs a second word order and a second full scale
+rather than a scale option, so no surface here offers one.
 
 ### A mesh wait budget is bounded where the command body cannot carry it
 

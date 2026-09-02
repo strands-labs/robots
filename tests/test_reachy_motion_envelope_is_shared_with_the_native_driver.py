@@ -32,13 +32,18 @@ and reports no error. :data:`_ENVELOPE_AXIS_BY_PARAM` is that mapping, and
 axis added to the envelope cannot be silently unmapped.
 
 Scope. Per-axis travel is the half that transfers. The envelope's head-body yaw
-coupling limit bounds ``head_yaw - body_yaw`` and needs both values in one call,
-which this RPC surface does not offer - ``look`` carries the head yaw and
-``body`` the body yaw. ``TestTheCouplingLimitIsNotReachableHere`` pins that as a
-property of the mapping rather than leaving it implied. The millimetre offsets
-and the antenna angles carry no envelope entry and stay finiteness-only, which
-``TestWhatTheEnvelopeDoesNotBound`` holds from both sides so this change cannot
-grow into a bound the envelope never declared.
+coupling limit bounds ``head_yaw - body_yaw`` and no single RPC here carries both
+values - ``look`` carries the head yaw and ``body`` the body yaw.
+``TestTheCouplingLimitIsNotReachableHere`` pins that as a property of the mapping
+rather than leaving it implied, and grades the one-member case rather than
+assuming it: the native driver reaches the limit on a lone ``body_yaw`` too, by
+checking it against the head yaw it last commanded, and this surface keeps no
+such record, so its ``body`` RPC stays per-axis only. Both halves of that are
+asserted, so the difference between the two consumers is a measured property and
+not a paragraph. The millimetre offsets and the antenna angles carry no envelope
+entry and stay finiteness-only, which ``TestWhatTheEnvelopeDoesNotBound`` holds
+from both sides so this change cannot grow into a bound the envelope never
+declared.
 """
 
 from __future__ import annotations
@@ -48,6 +53,7 @@ import asyncio
 import inspect
 import pathlib
 import textwrap
+import threading
 from typing import Any
 
 import pytest
@@ -111,10 +117,17 @@ def _device_connect(rmd: Any) -> tuple[Any, _RecordingLink]:
 
 
 def _native() -> tuple[ReachyDriver, list[dict[str, Any]]]:
-    """A native driver reporting connected, recording what it would send."""
+    """A native driver reporting connected, recording what it would send.
+
+    Carries the cache lock and the head yaw target as well as the connection
+    flag: ``send_action`` reads the target when an action names no head pose, so
+    a stand-in without it could not reach the coupling check at all.
+    """
     driver = ReachyDriver.__new__(ReachyDriver)
     driver._tool_name = "reachy_mini"
     driver._connected = True
+    driver._cache_lock = threading.Lock()
+    driver._head_yaw_target = None
     sent: list[dict[str, Any]] = []
 
     def _send(command: dict[str, Any]) -> str | None:
@@ -286,11 +299,17 @@ class TestWhatTheEnvelopeDoesNotBound:
 
 
 class TestTheCouplingLimitIsNotReachableHere:
-    """Scope, pinned rather than implied: the pairwise limit needs both values.
+    """Scope, pinned rather than implied: no RPC here carries both values.
 
     Holds before and after the change. It records why the envelope's second
     limit is not part of it, so a reader does not take the omission for an
     oversight.
+
+    "No RPC maps both" is not on its own a reason the limit cannot apply, so the
+    one-member case is graded rather than assumed. What decides it is whether the
+    surface knows the counterpart: ``send_action`` records the head pose it last
+    sent and so applies the coupling to a lone ``body_yaw`` too, while this one
+    keeps no such record and stays per-axis. The rows below hold both halves.
     """
 
     def test_no_single_rpc_carries_both_members_of_the_yaw_pair(self, rmd: Any) -> None:
@@ -307,6 +326,61 @@ class TestTheCouplingLimitIsNotReachableHere:
         assert result["status"] == "error"
         assert sent == []
         assert "coupling" in _text(result)
+
+    def test_one_member_of_the_pair_alone_clears_the_check_without_a_counterpart(self) -> None:
+        """The single-member case, graded rather than left to be assumed.
+
+        The row above pins that no Device Connect RPC carries both members. That
+        is a property of the *pair*, not of that surface, so an action reaching
+        the envelope with one member reaches the check only if the counterpart is
+        supplied alongside it - which is the edited expectation #3094 asked for.
+        A lone ``head_yaw`` stays cleared on its own terms: the daemon serves it
+        by turning the body under the head, so there is no second value to bound.
+        """
+        far = HEAD_BODY_YAW_DELTA_LIMIT_DEG + 20.0
+        assert envelope_error({"head_yaw": far}, "reachy_look") is None
+        assert envelope_error({"body_yaw": far}, "reachy_body_turn") is None
+        assert envelope_error({"body_yaw": far}, "reachy_body_turn", head_yaw_target=0.0) is not None
+        # The same head value paired with a counterpart is refused, so what
+        # decides the verdict is the action's key set and not the angle.
+        assert envelope_error({"head_yaw": far, "body_yaw": 0.0}, "send_action") is not None
+
+    def test_a_lone_member_reaches_the_wire_until_the_driver_knows_the_counterpart(self) -> None:
+        """End to end: the envelope is consulted by a driver, not obeyed by one.
+
+        The same lone ``body_yaw``, twice: through a driver that has commanded no
+        head pose and so cannot know the twist, and through one that has.
+        """
+        far = HEAD_BODY_YAW_DELTA_LIMIT_DEG + 20.0
+
+        unaware, sent = _native()
+        assert unaware.send_action({"body_yaw": far})["status"] == "success"
+        assert len(sent) == 1
+
+        aware, sent = _native()
+        aware.send_action({"head_pitch": 0.0, "head_yaw": 0.0})
+        sent.clear()
+        refused = aware.send_action({"body_yaw": far})
+
+        assert refused["status"] == "error"
+        assert sent == []
+        assert "coupling" in _text(refused)
+
+    def test_this_surface_keeps_no_record_of_the_head_yaw_it_commanded(self, rmd: Any) -> None:
+        """Why it cannot do the same: the ``look`` RPC stores nothing.
+
+        Measured on the driver's own state rather than asserted in prose, so a
+        driver that grows such a record fails here and is told to apply the
+        limit rather than leaving this file's scope paragraph stale.
+        """
+        driver, link = _device_connect(rmd)
+        before = set(vars(driver))
+
+        _call(driver, "look", pitch=0.0, roll=0.0, yaw=_inside(MOTION_ENVELOPE_DEG["head_yaw"]))
+
+        assert link.commands, "the look RPC did reach the link"
+        assert set(vars(driver)) == before, "a new attribute here would be that record"
+        assert _call(driver, "body", yaw=MOTION_ENVELOPE_DEG["body_yaw"])["status"] == "success"
 
 
 class TestThePremisesThisRestsOn:

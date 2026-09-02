@@ -653,18 +653,9 @@ def test_status_running_session_is_ascii(monkeypatch: pytest.MonkeyPatch) -> Non
     _assert_ascii(_texts(result))
 
 
-def test_stop_session_terminates_and_removes(monkeypatch: pytest.MonkeyPatch) -> None:
-    mgr = SessionManager()
-    live_pid = os.getpid()
-    mgr.add_session("kill", {"pid": live_pid, "start_time": 0.0})
-    killed: list[tuple[int, int]] = []
-    monkeypatch.setattr(tele_mod.os, "kill", lambda pid, sig: killed.append((pid, sig)))
-    monkeypatch.setattr(tele_mod.time, "sleep", lambda s: None)
-    result = lerobot_teleoperate(action="stop", session_name="kill")
-    assert result["status"] == "success"
-    assert killed and killed[0][0] == live_pid
-    assert SessionManager().get_session("kill") is None
-    _assert_ascii(_texts(result))
+# stop's own verdict - what it signals, what it confirms, and what it reports
+# when the process does not exit - is pinned across both session tools in
+# tests.tools.test_session_stop_confirms_the_process_exited.
 
 
 def test_stop_without_name_errors() -> None:

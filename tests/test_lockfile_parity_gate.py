@@ -43,10 +43,13 @@ transitive pin, a marker change), and these fail in the required check, which
 **The floor pin refuses a distribution only when every locked version is below
 the floor, not when any is.**  That is measured, not cautious.  ``uv`` forks the
 resolution (``[tool.uv] conflicts``), so one distribution can legitimately appear
-at several versions, and ``robosuite`` is locked at both ``1.4.0`` and ``1.4.1``
-against a ``>=1.4.1`` floor from ``[vera-sim]``.  It reads that way **both before
-and after the relock**, so it is a property of forking rather than drift, and an
-"any version below the floor" rule would fail a correct lock.  The weaker rule
+at several versions: ``gymnasium``, ``torchcodec`` and ``transformers`` each do
+today.  The measurement that forced the weaker phrasing was ``robosuite``, locked
+at both ``1.4.0`` and ``1.4.1`` against a ``>=1.4.1`` floor from ``[vera-sim]`` -
+the ``1.4.0`` fork arrived through the LIBERO adapter's extra and left the lock
+with it, so no distribution carries a below-floor version today.  Forking has not
+gone away, so an "any version below the floor" rule would still fail a correct
+lock the next time one does.  The weaker rule
 still names the row that mattered: ``lerobot`` was locked at exactly one version,
 ``0.6.0``, below its floor from three separate extras.
 """
@@ -205,7 +208,7 @@ def test_no_locked_version_falls_below_its_declared_floor() -> None:
     the guarantee that pull request paid for.
 
     Phrased over *every* locked version rather than any: see this module's
-    docstring for the ``robosuite`` measurement that rules out the stronger form.
+    docstring for the measurement that rules out the stronger form.
     """
     locked = _locked_versions()
     violations: list[str] = []

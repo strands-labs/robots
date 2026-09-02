@@ -53,6 +53,7 @@ from strands_robots.utils import (
     coerce_rgba,
     coerce_size_vector,
     entity_name_error,
+    finite_number_error,
     name_list_error,
     non_negative_whole_number_error,
     partial_construction_repr,
@@ -116,12 +117,51 @@ def _env_int(name: str, default: int) -> int:
 
 
 def _env_float(name: str, default: float) -> float:
-    """Read a positive float from the environment (fallback to ``default``)."""
-    try:
-        v = float(os.environ.get(name, ""))
-        return v if v > 0 else default
-    except (TypeError, ValueError):
+    """Read a positive finite float from the environment (fallback to ``default``).
+
+    Finiteness is decided by the shared numeric domain
+    (:func:`~strands_robots.utils.finite_number_error`) rather than left to the
+    positivity bound, which cannot express it: ``inf > 0`` is ``True``, so
+    ``inf``, ``Infinity`` and an overflowing ``1e999`` all resolved to a knob no
+    consumer can honor. ``nan`` was refused only incidentally - ``nan > 0`` is
+    ``False`` - so it reached the default by the route a typo takes.
+
+    That mattered here because the one knob this resolver serves is
+    :attr:`IsaacSimulation._idle_render_period`, read by the idle live-preview
+    gate in :meth:`IsaacSimulation.run_pump_forever` as
+    ``now_mono - last_render_mono >= period``. No elapsed span satisfies that
+    comparison against an infinite period, so the preview refreshed once on the
+    first iteration and then never again while ``pump()`` kept draining the app -
+    a frozen viewport that reads as a stalled simulation rather than as a
+    misconfigured variable.
+
+    Every rejection is reported for that reason, as the analogous mesh resolver
+    :func:`~strands_robots.mesh.core._parse_positive_float_env` reports its own:
+    substituting the default in silence leaves the operator's model of the
+    cadence wrong with nothing to correct it against.
+
+    Args:
+        name: Environment variable to read. Unset, empty or unusable falls back.
+        default: Value applied when the variable names no usable period.
+
+    Returns:
+        The override when it is a positive finite number, else ``default``.
+    """
+    raw = os.environ.get(name, "")
+    if raw.strip() == "":
         return default
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        logger.warning("%s=%r is not a number; using %r", name, raw, default)
+        return default
+    reason = finite_number_error(value, name, "Isaac simulation")
+    if reason is None and value <= 0:
+        reason = f"Isaac simulation: {name} must be > 0, got {value!r}."
+    if reason is not None:
+        logger.warning("%s; using %r", reason, default)
+        return default
+    return value
 
 
 def _to_float_list(value: Any, n: int) -> list[float] | None:
@@ -4171,7 +4211,7 @@ class IsaacSimulation(IsaacMotionPrimitivesMixin, IsaacRecordingMixin, SimEngine
         if horizon_error is not None:
             return horizon_error
         if n_steps is None:
-            if err := self._validate_duration(duration, "run_multi_policy"):
+            if err := self._validate_duration(duration, "run_multi_policy", control_frequency):
                 return err
 
         # Normalize action_horizon to a per-robot mapping on the shared
@@ -4224,8 +4264,20 @@ class IsaacSimulation(IsaacMotionPrimitivesMixin, IsaacRecordingMixin, SimEngine
         render_on = self._config.render_mode != "headless"
         physics_dt = float(getattr(self._config, "physics_dt", 0.0) or 0.0)
 
-        total_steps = int(duration * control_frequency)
-        action_sleep = 1.0 / control_frequency if control_frequency > 0 else 0.0
+        # Honour the RESOLVED step count. ``_resolve_horizon`` above returns both
+        # the wall-clock ``duration`` and the normalized ``n_steps``, and the
+        # duration it returns on the horizon path is itself derived as ``n_steps
+        # / control_frequency``. Recomputing ``int(duration * control_frequency)``
+        # from that float truncates on any frequency the count does not divide
+        # evenly: ``n_steps=29`` at 50 Hz ran 28 steps, and ``n_steps=1`` at
+        # 49 Hz ran ZERO and still reported a completed rollout - the
+        # degenerate-success shape ``_validate_positive_int`` exists to refuse.
+        # One merged frame is recorded per timestep, so a truncated horizon is
+        # also a dataset episode one frame shorter than the caller asked for.
+        # The single-robot loop (``PolicyRunner.run``) already forwards the count
+        # verbatim for exactly this reason; this is that rule for the
+        # multi-robot loop.
+        total_steps = n_steps if n_steps is not None else int(duration * control_frequency)
 
         # Mark all robots as running so a cooperative stop can interrupt the
         # loop, and so a concurrent driver is refused by the busy check above.
@@ -4274,93 +4326,108 @@ class IsaacSimulation(IsaacMotionPrimitivesMixin, IsaacRecordingMixin, SimEngine
         # must discard so the next recording starts at frame 0 rather than
         # appending to a half-episode (MuJoCo parity).
         completed_cleanly = False
+        # Pace on a DEADLINE, not a delay (MuJoCo parity): ``time.sleep(1 /
+        # control_frequency)`` added each step's work - N policy queries, the
+        # main-thread observe hop, the recorder's frame write - to the period, so
+        # the loop ran at ``1 / (period + work)`` while ``duration`` is
+        # documented in wall-clock seconds. Missed deadlines are dropped rather
+        # than chased, so a slow step does not fire a burst of back-to-back
+        # actions at the robots. ``_validate_positive_frequency`` above has
+        # already refused a non-positive rate, so the period is always usable and
+        # the pace is unconditional. Acquired with ``with``: the ticker owns a
+        # selector and a socketpair, so releasing it is the language's job rather
+        # than this loop's to remember. Every paced loop in the package is held
+        # to that, so constructing a bare ``Ticker(...)`` here is a suite failure
+        # rather than one leaked descriptor pair per rollout.
         try:
-            while step_count < total_steps:
-                # --- 1. Observe every robot (one main-thread hop). No lock is
-                # held across the marshal (#1896); get_observation takes it.
-                per_robot_obs, camera_imgs = self.run_on_main(_observe_all)
+            from strands_robots.mesh.pacing import Ticker
 
-                # --- 2. Resolve each robot's action for THIS step, off the
-                # main thread. Re-query a policy ONLY when its buffered chunk
-                # drains (open-loop chunk execution).
-                per_robot_action: dict[str, dict[str, Any]] = {}
-                for rname, pol in policies.items():
-                    # Cooperative stop check.
-                    if not self._robots[rname].policy_running:
-                        raise CooperativeStop(f"Policy stopped on '{rname}'")
-                    if not action_queues[rname]:
-                        pol_obs = dict(per_robot_obs[rname])
-                        pol_obs.update(camera_imgs)
-                        coro = pol.get_actions(pol_obs, instr_map[rname])
-                        acts = _resolve_coroutine(coro)
-                        # Size the chunk via the shared ChunkedPolicy rule so a
-                        # chunk-emitting policy keeps its full trained chunk
-                        # here exactly as the single-policy runner does.
-                        _chunk = resolve_chunk_length(pol, horizon_map[rname])
-                        for a in acts[:_chunk]:
-                            action_queues[rname].append(a)
-                    if not action_queues[rname]:
-                        # Emitting a zero-valued substitute here would advance
-                        # a trajectory no policy commanded. Fail loudly
-                        # instead (Key Conventions #6).
-                        raise RuntimeError(
-                            f"Policy for robot '{rname}' returned an empty action chunk; "
-                            "cannot advance the synchronized loop. Check the policy's "
-                            "get_actions() output."
+            with Ticker(1.0 / control_frequency) as ticker:
+                while step_count < total_steps:
+                    # --- 1. Observe every robot (one main-thread hop). No lock is
+                    # held across the marshal (#1896); get_observation takes it.
+                    per_robot_obs, camera_imgs = self.run_on_main(_observe_all)
+
+                    # --- 2. Resolve each robot's action for THIS step, off the
+                    # main thread. Re-query a policy ONLY when its buffered chunk
+                    # drains (open-loop chunk execution).
+                    per_robot_action: dict[str, dict[str, Any]] = {}
+                    for rname, pol in policies.items():
+                        # Cooperative stop check.
+                        if not self._robots[rname].policy_running:
+                            raise CooperativeStop(f"Policy stopped on '{rname}'")
+                        if not action_queues[rname]:
+                            pol_obs = dict(per_robot_obs[rname])
+                            pol_obs.update(camera_imgs)
+                            coro = pol.get_actions(pol_obs, instr_map[rname])
+                            acts = _resolve_coroutine(coro)
+                            # Size the chunk via the shared ChunkedPolicy rule so a
+                            # chunk-emitting policy keeps its full trained chunk
+                            # here exactly as the single-policy runner does.
+                            _chunk = resolve_chunk_length(pol, horizon_map[rname])
+                            for a in acts[:_chunk]:
+                                action_queues[rname].append(a)
+                        if not action_queues[rname]:
+                            # Emitting a zero-valued substitute here would advance
+                            # a trajectory no policy commanded. Fail loudly
+                            # instead (Key Conventions #6).
+                            raise RuntimeError(
+                                f"Policy for robot '{rname}' returned an empty action chunk; "
+                                "cannot advance the synchronized loop. Check the policy's "
+                                "get_actions() output."
+                            )
+                        per_robot_action[rname] = action_queues[rname].popleft()
+
+                    # --- 3+4. Apply ALL robots' targets, then step physics ONCE
+                    # (one main-thread hop; the hop takes self._lock itself).
+                    self.run_on_main(lambda acts=per_robot_action: _apply_all_and_step(acts))
+
+                    # --- 5. Record ONE merged frame (all robots + all cameras),
+                    # off the main thread: add_frame writes to LeRobot's
+                    # image-writer queue and parquet buffer, never to Kit/USD, and
+                    # the consistent state snapshot was already taken inside the
+                    # two hops above.
+                    if recording and recorder is not None:
+                        merged_obs: dict[str, Any] = {}
+                        merged_act: dict[str, Any] = {}
+                        # The schema declares a state column for every robot in the
+                        # scene, and ``policies`` need only name robots that exist -
+                        # not all of them. A robot this call does not drive is a
+                        # readable measurement, so its columns are filled from the
+                        # engine at this step rather than left to add_frame's 0.0
+                        # fill, which records them as a zero pose the robot is not
+                        # in. Merged first, so driven keys win any collision.
+                        merged_obs.update(undriven_robot_state(self, policies, self._robots))
+                        for rname in policies:
+                            if multi_robot:
+                                for k, v in per_robot_obs[rname].items():
+                                    merged_obs[f"{rname}__{k}"] = v
+                                for k, v in per_robot_action[rname].items():
+                                    merged_act[f"{rname}__{k}"] = v
+                            else:
+                                merged_obs.update(per_robot_obs[rname])
+                                merged_act.update(per_robot_action[rname])
+                        # Cameras are scene-global: rename raw -> schema-safe and
+                        # drop any outside the start_recording(cameras=...) scope.
+                        for k, v in camera_imgs.items():
+                            safe = raw_to_safe.get(k)
+                            if safe is not None:
+                                merged_obs[safe] = v
+                        # LeRobot stores ONE task per frame: the first robot's
+                        # instruction (the shared normalizer already warned when
+                        # per-robot instructions are distinct).
+                        recorder.add_frame(
+                            observation=merged_obs,
+                            action=merged_act,
+                            task=instr_map[next(iter(policies))],
+                            required_action_keys=merged_required_action_keys,
                         )
-                    per_robot_action[rname] = action_queues[rname].popleft()
 
-                # --- 3+4. Apply ALL robots' targets, then step physics ONCE
-                # (one main-thread hop; the hop takes self._lock itself).
-                self.run_on_main(lambda acts=per_robot_action: _apply_all_and_step(acts))
-
-                # --- 5. Record ONE merged frame (all robots + all cameras),
-                # off the main thread: add_frame writes to LeRobot's
-                # image-writer queue and parquet buffer, never to Kit/USD, and
-                # the consistent state snapshot was already taken inside the
-                # two hops above.
-                if recording and recorder is not None:
-                    merged_obs: dict[str, Any] = {}
-                    merged_act: dict[str, Any] = {}
-                    # The schema declares a state column for every robot in the
-                    # scene, and ``policies`` need only name robots that exist -
-                    # not all of them. A robot this call does not drive is a
-                    # readable measurement, so its columns are filled from the
-                    # engine at this step rather than left to add_frame's 0.0
-                    # fill, which records them as a zero pose the robot is not
-                    # in. Merged first, so driven keys win any collision.
-                    merged_obs.update(undriven_robot_state(self, policies, self._robots))
+                    step_count += 1
                     for rname in policies:
-                        if multi_robot:
-                            for k, v in per_robot_obs[rname].items():
-                                merged_obs[f"{rname}__{k}"] = v
-                            for k, v in per_robot_action[rname].items():
-                                merged_act[f"{rname}__{k}"] = v
-                        else:
-                            merged_obs.update(per_robot_obs[rname])
-                            merged_act.update(per_robot_action[rname])
-                    # Cameras are scene-global: rename raw -> schema-safe and
-                    # drop any outside the start_recording(cameras=...) scope.
-                    for k, v in camera_imgs.items():
-                        safe = raw_to_safe.get(k)
-                        if safe is not None:
-                            merged_obs[safe] = v
-                    # LeRobot stores ONE task per frame: the first robot's
-                    # instruction (the shared normalizer already warned when
-                    # per-robot instructions are distinct).
-                    recorder.add_frame(
-                        observation=merged_obs,
-                        action=merged_act,
-                        task=instr_map[next(iter(policies))],
-                        required_action_keys=merged_required_action_keys,
-                    )
+                        self._robots[rname].policy_steps = step_count
 
-                step_count += 1
-                for rname in policies:
-                    self._robots[rname].policy_steps = step_count
-
-                if action_sleep:
-                    time.sleep(action_sleep)
+                    ticker.wait()
 
             completed_cleanly = True
         except CooperativeStop:
@@ -6359,7 +6426,7 @@ class IsaacSimulation(IsaacMotionPrimitivesMixin, IsaacRecordingMixin, SimEngine
             "that created SimulationApp, so this call would block forever. Either call "
             "it from the owning thread, or have the owning thread run "
             "`run_pump_forever(stop_event=...)` and submit the call from the worker via "
-            "`run_on_main(lambda: ...)` (see examples/libero/run_isaac_agent.py for the "
+            "`run_on_main(lambda: ...)` (see docs/simulation/isaac.md for the "
             "agent-driven shape)."
         )
 
