@@ -863,6 +863,17 @@ class DatasetRecordingMixin:
                 place). When no recording is open, syncs the last dataset this
                 sim finalized (errors if there is none).
             run_id: Optional subpath inside the bucket (defaults to dataset name).
+
+        Returns:
+            The standard agent-tool envelope. Its json block reports the episode
+            bookkeeping as three fields: ``episode_count`` (the canonical count -
+            the dataset's own when that could be read, else the recorder's),
+            ``parquet_episode_count`` (the dataset's ``meta.total_episodes``, or
+            ``None`` when the recorder exposes no dataset handle, that layout
+            carries no such attribute, or the value cannot be read as an int -
+            an unreadable count is reported as no reading, never as a zero) and
+            ``episode_count_mismatch`` (the two counts were both read and
+            disagreed, so the on-disk one won).
         """
         # ``push_to_hub`` selects whether the finished dataset is published, so
         # it is checked before it is read - by the idle path just below and by
@@ -963,8 +974,18 @@ class DatasetRecordingMixin:
         episode_count_mismatch_orig: int = episode_count
         try:
             ds_meta = getattr(getattr(recorder, "dataset", None), "meta", None)
-            if ds_meta is not None:
-                parquet_episode_count = int(getattr(ds_meta, "total_episodes", 0))
+            # A layout that exposes no ``total_episodes`` is a FAILED PROBE, not
+            # a dataset holding zero episodes. Reading it with a zero default
+            # would hand that zero to the gate below as ground truth and
+            # overwrite the episode count the recorder actually measured, so a
+            # session that saved N episodes would report 0 with the mismatch
+            # flag raised. Probe with ``None`` and skip the gate when the
+            # attribute is absent - the same "unavailable means skip" the
+            # missing-``dataset`` branch above and ``recorder_dataset_fps``
+            # already use on this path.
+            raw_total_episodes = getattr(ds_meta, "total_episodes", None) if ds_meta is not None else None
+            if raw_total_episodes is not None:
+                parquet_episode_count = int(raw_total_episodes)
                 if parquet_episode_count != episode_count:
                     episode_count_mismatch = True
                     logger.warning(

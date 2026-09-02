@@ -484,3 +484,43 @@ class TestStopRecordingParquetTruthGate:
         # Probe failed before assigning -> stays at the safe defaults.
         assert payload["parquet_episode_count"] is None
         assert payload["episode_count_mismatch"] is False
+
+    def test_meta_without_total_episodes_reports_no_reading_not_a_zero(self, recording_sim):
+        # ``meta`` present but exposing no ``total_episodes`` (a drifted or
+        # stubbed LeRobot layout) is a FAILED PROBE, not a dataset holding zero
+        # episodes. Read with a zero default it became the gate's ground truth
+        # and overwrote the count the recorder measured, so a session that saved
+        # 4 episodes reported episode_count=0 with the mismatch flag raised.
+        # Unavailable means skip, exactly as for a missing ``dataset`` handle.
+        rec = _FakeRecorder(meta_total_episodes=1)
+        del rec.dataset.meta.total_episodes
+        rec.episode_count = 4
+        assert not hasattr(rec.dataset.meta, "total_episodes")
+        _arm(recording_sim, rec)
+        result = recording_sim.stop_recording()
+        assert result["status"] == "success"
+        assert "finalize" in rec.calls
+        payload = result["content"][1]["json"]
+        assert payload["parquet_episode_count"] is None
+        assert payload["episode_count_mismatch"] is False
+        # The recorder's own count stands - in the payload and in the text.
+        assert payload["episode_count"] == 4
+        text = result["content"][0]["text"]
+        assert "4 episode(s)" in text
+        assert "#708 gate" not in text
+
+    def test_a_parquet_count_of_zero_is_still_judged(self, recording_sim):
+        # The control that gives the cell above its meaning: a layout that
+        # really reports zero episodes IS a reading, so the gate must still
+        # fire on it - collapsing an author-side count of 4 to the on-disk 0.
+        # Only an ABSENT attribute is the unreadable case.
+        rec = _FakeRecorder(meta_total_episodes=0)
+        rec.episode_count = 4
+        _arm(recording_sim, rec)
+        result = recording_sim.stop_recording()
+        assert result["status"] == "success"
+        payload = result["content"][1]["json"]
+        assert payload["parquet_episode_count"] == 0
+        assert payload["episode_count"] == 0
+        assert payload["episode_count_mismatch"] is True
+        assert "parquet has 0" in result["content"][0]["text"]
