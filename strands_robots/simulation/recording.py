@@ -236,8 +236,21 @@ def recorder_dataset_fps(recorder: Any) -> int | None:
         # catches ``numpy.bool_`` (not a ``bool`` subclass).
         if is_boolean(value) or not isinstance(value, numbers.Real):
             continue
-        if value > 0 and float(value).is_integer():
-            return int(value)
+        # Judged and returned through ``float``, the same hop both sibling
+        # guards take (``declared = float(fps)`` ... ``fps_int = int(declared)``):
+        # ``numbers.Real`` carries no ordering against ``int`` and no ``int()``
+        # overload, so asking ``value > 0`` or truncating it directly is
+        # untypeable. Deliberately not ``math.trunc(value)``, which would keep
+        # a >2**53 rate exact but raises ``TypeError`` on ``numpy.int64`` - it
+        # defines ``__int__``, not ``__trunc__`` - and numpy spellings are the
+        # reason this classifies on ``Real`` at all. A rate that large is
+        # float-rounded by both siblings too, so routing through ``float`` keeps
+        # the three guards answering identically, which is the property the
+        # cross-ordering test asserts. The conversion count is unchanged: the
+        # previous spelling already called ``float`` to ask ``is_integer``.
+        declared = float(value)
+        if declared > 0 and declared.is_integer():
+            return int(declared)
     return None
 
 

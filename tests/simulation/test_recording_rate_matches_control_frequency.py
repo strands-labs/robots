@@ -251,6 +251,11 @@ class TestTheGuardHelperIsRobust:
         """
         assert recorder_dataset_fps(_FakeRecorder(rate)) == 30
         assert recorder_dataset_fps(_MetaOnlyRecorder(rate)) == 30
+        # A built-in ``int``, not the numpy scalar passed through: the annotation
+        # says ``int``, and the value is handed to ``1.0 / fps`` and into a reason
+        # string. ``== 30`` holds for a numpy scalar too, so the identity is
+        # asserted rather than left implied by the equality above.
+        assert type(recorder_dataset_fps(_FakeRecorder(rate))) is int
 
 
 class TestTheRunnerLayerCarriesItsOwnGuarantee:
