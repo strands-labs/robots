@@ -366,7 +366,7 @@ hatch run format            # ruff check --fix, ruff format
    other observed collision shares, 14m 41s and 29m 26s apart.
 2. Make changes, run `hatch run format && hatch run lint && hatch run test`.
    If you narrow the test run to the area you changed (`pytest tests/drivers/ -k g1`),
-   run `hatch run whole-tree-check` alongside it. Just under seventy graders take
+   run `hatch run whole-tree-check` alongside it. Ninety-odd graders take
    the *rest of the repository* as their input rather than the file under change,
    so no path or `-k` filter over your own area collects them - and a green narrow
    run reads in a PR description exactly like a green full one. Two consecutive
@@ -377,7 +377,13 @@ hatch run format            # ruff check --fix, ruff format
    (#3105). The area may be held in a loop variable (`for tree in _TREES`), which
    is how most of them spell it; reading only a literal segment there left seven
    graders invisible to the preflight while the roster's own pin stayed green
-   (#3111).
+   (#3111). Derive the root from an imported symbol rather than a path literal
+   and name it however reads best - a module constant, a function parameter, a
+   local on the line above the walk, or a `@staticmethod` of the test class -
+   all of those resolve. The one shape that does not is a symbol imported from
+   a module that only *re-exports* it: the import does not say which file the
+   symbol came from, so it resolves to nothing rather than to a guess. Import
+   from the defining module.
 3. Record the change as a news fragment: `changelog.d/<pr-number>-<slug>.md`
    (see [`changelog.d/README.md`](changelog.d/README.md)). **Never append to
    `## [Unreleased]` in `CHANGELOG.md` directly** - every branch inserts at the
