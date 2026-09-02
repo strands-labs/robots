@@ -39,6 +39,7 @@ def _mesh_kill_switch_off(monkeypatch: pytest.MonkeyPatch) -> None:
     """
     monkeypatch.delenv("STRANDS_MESH", raising=False)
 
+
 # Protocol shape
 
 
