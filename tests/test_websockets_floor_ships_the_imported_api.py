@@ -22,8 +22,32 @@ release        names missing of the nine the sources reach for
 13.0 - 17.0.1  none
 =============  ================================================
 
-Nothing caught it because the import lives under ``TYPE_CHECKING`` and is never
-executed: on 12.0 the package imports, binds a port, serves and stops cleanly.
+A floor is not only about names. From 13.0 through 16.x,
+``websockets.sync.server.Server.shutdown()`` closed the listening socket and
+nothing else, so ``PolicyServer.stop()`` returned while a client that was already
+connected went on streaming observations in and receiving action chunks back -
+the wrapped policy still being invoked, and on a robot still driving the arm,
+after the caller was told the server stopped. 17.0 closes the connections it
+accepted (code 1001) and returns only once every connection handler has
+terminated, which is what makes that teardown hold. Measured against the released
+wheels, on the unchanged sources:
+
+=============  ================================================================
+release        a client connected when ``stop()`` is called
+=============  ================================================================
+16.1.1         still answered with action chunks afterwards
+17.0, 17.1     refused - the connection is closed and its handler joined
+=============  ================================================================
+
+So the declared floor is the maximum of two tables: the release that first ships
+each *name* the sources import (:data:`_WEBSOCKETS_SYMBOL_FLOORS`) and the
+release that first ships each *behaviour* they rely on
+(:data:`_WEBSOCKETS_BEHAVIOUR_FLOORS`). The second is what carries the floor
+today, and the property itself is graded from a client's point of view by
+tests/inference/test_a_stopped_server_stops_serving_its_clients.py.
+
+Nothing caught the 12.0 hole because the import lives under ``TYPE_CHECKING`` and
+is never executed: on 12.0 the package imports, binds a port, serves and stops cleanly.
 Only a type checker notices, and it reports the dependency by name -
 ``error: Module "websockets.sync.server" has no attribute "Server"
 [attr-defined]`` - so a 12.0 environment fails the type gate for a reason no
@@ -46,6 +70,7 @@ the table above records the releases that were probed, not a supported range.
 from __future__ import annotations
 
 import ast
+import inspect
 import tomllib
 from pathlib import Path
 
@@ -66,7 +91,23 @@ _DISTRIBUTION = "websockets"
 _MODULE = "<module>"
 
 #: The releases probed to produce the table below, oldest first.
-_PROBED_RELEASES = ("9.1", "10.0", "10.4", "11.0", "11.0.3", "12.0", "13.0", "13.1", "14.0", "15.0", "16.0", "17.0.1")
+_PROBED_RELEASES = (
+    "9.1",
+    "10.0",
+    "10.4",
+    "11.0",
+    "11.0.3",
+    "12.0",
+    "13.0",
+    "13.1",
+    "14.0",
+    "15.0",
+    "16.0",
+    "16.1.1",
+    "17.0",
+    "17.0.1",
+    "17.1",
+)
 
 # (module, symbol) -> first release that ships it, measured against the released
 # wheels across _PROBED_RELEASES. The synchronous implementation
@@ -87,14 +128,38 @@ _WEBSOCKETS_SYMBOL_FLOORS: dict[tuple[str, str], str] = {
     ("websockets.sync.server", "serve"): "11.0",
 }
 
+#: Behaviour -> first release that ships it, measured against the released wheels
+#: across _PROBED_RELEASES by running the teardown tests on the unchanged
+#: sources. A name resolving is not enough for these: the name existed all along
+#: and only what it does changed, so nothing but the floor can express the
+#: requirement. Each key names the observable the release is identified by, and
+#: :class:`TestTheInstalledWebsocketsShipsTheRequiredBehaviour` checks that the
+#: installed build actually has it - so a floor recorded here cannot be a claim
+#: about a wheel nobody probed.
+_WEBSOCKETS_BEHAVIOUR_FLOORS: dict[str, str] = {
+    # PolicyServer.stop() and a returning serve() both call Server.shutdown()
+    # and are documented to stop the server serving rather than listening.
+    # Through 16.x shutdown() closed the listening socket alone; 17.0 closes the
+    # accepted connections too and waits for their handlers, and it is the
+    # `close_connections` parameter that arrives with that change.
+    "websockets.sync.server.Server.shutdown closes accepted connections (close_connections)": "17.0",
+}
+
 # A refactor that stops the walk from reaching the sources would make the
 # self-maintaining checks vacuous, so pin the size of what it must find.
 _MINIMUM_IMPORTED_NAMES = 5
 
 
 def _required_floor() -> Version:
-    """The highest first-shipped release among the websockets names the package uses."""
-    return max(Version(v) for v in _WEBSOCKETS_SYMBOL_FLOORS.values())
+    """The highest first-shipped release among the names and behaviours used."""
+    return max(Version(v) for v in (*_WEBSOCKETS_SYMBOL_FLOORS.values(), *_WEBSOCKETS_BEHAVIOUR_FLOORS.values()))
+
+
+def _requirements_at(release: Version) -> list[str]:
+    """Every name and behaviour whose first-shipped release is ``release``."""
+    names = [f"{m}.{s}" for (m, s), v in _WEBSOCKETS_SYMBOL_FLOORS.items() if Version(v) == release]
+    behaviours = [k for k, v in _WEBSOCKETS_BEHAVIOUR_FLOORS.items() if Version(v) == release]
+    return sorted(names + behaviours)
 
 
 def _is_dep(module: str) -> bool:
@@ -204,9 +269,8 @@ class TestTheDeclaredFloorCoversEveryImportedName:
             if floor < required:
                 too_low[where] = str(req)
         assert not too_low, (
-            f"websockets floor must be >= {required} because the package reaches for "
-            f"{sorted(f'{m}.{s}' for (m, s), v in _WEBSOCKETS_SYMBOL_FLOORS.items() if Version(v) == required)}; "
-            f"these specifiers admit older releases: {too_low}"
+            f"websockets floor must be >= {required} because the package requires "
+            f"{_requirements_at(required)}; these specifiers admit older releases: {too_low}"
         )
 
     def test_the_floors_agree_across_every_extra(self) -> None:
@@ -247,9 +311,10 @@ class TestTheFloorIsSelfMaintaining:
     def test_every_recorded_release_was_probed(self) -> None:
         # A row invented from a changelog rather than measured against a wheel
         # could name a release that never shipped the name.
-        unprobed = sorted({v for v in _WEBSOCKETS_SYMBOL_FLOORS.values() if v not in _PROBED_RELEASES})
+        recorded = (*_WEBSOCKETS_SYMBOL_FLOORS.values(), *_WEBSOCKETS_BEHAVIOUR_FLOORS.values())
+        unprobed = sorted({v for v in recorded if v not in _PROBED_RELEASES})
         assert not unprobed, (
-            f"_WEBSOCKETS_SYMBOL_FLOORS records releases that are not in _PROBED_RELEASES: {unprobed}. "
+            f"the floor tables record releases that are not in _PROBED_RELEASES: {unprobed}. "
             "Probe the wheel and add it to _PROBED_RELEASES, so every number in the table is measured."
         )
 
@@ -258,6 +323,27 @@ class TestTheFloorIsSelfMaintaining:
         imported = set(_websockets_names_by_file())
         stale = sorted(f"{m}.{s}" for (m, s) in _WEBSOCKETS_SYMBOL_FLOORS if (m, s) not in imported)
         assert not stale, f"_WEBSOCKETS_SYMBOL_FLOORS records names the package no longer reaches for: {stale}"
+
+
+class TestTheInstalledWebsocketsShipsTheRequiredBehaviour:
+    """A behaviour floor is only worth the observable that identifies it."""
+
+    def test_shutdown_takes_the_close_connections_parameter(self) -> None:
+        # The parameter arrives with the change that closes accepted connections
+        # on shutdown, so its absence is how a downgrade below the recorded floor
+        # is caught here rather than in a robot's teardown. The default is the
+        # half that matters: PolicyServer calls shutdown() with no arguments.
+        server_module = pytest.importorskip("websockets.sync.server")
+        parameter = inspect.signature(server_module.Server.shutdown).parameters.get("close_connections")
+        assert parameter is not None, (
+            "the installed websockets Server.shutdown() takes no close_connections parameter, so it is "
+            "older than the floor recorded in _WEBSOCKETS_BEHAVIOUR_FLOORS and closes the listening "
+            "socket alone - PolicyServer.stop() would return while a connected client is still served"
+        )
+        assert parameter.default is True, (
+            f"PolicyServer calls Server.shutdown() with no arguments, so closing the accepted "
+            f"connections has to be the default; got {parameter.default!r}"
+        )
 
 
 class TestTheRecordedNamesExistInTheInstalledWebsockets:

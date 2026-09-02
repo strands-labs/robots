@@ -147,9 +147,12 @@ def test_connect_registers_sensor_callbacks(rmd):
 
 
 def test_disconnect_stops_link(rmd):
-    drv = _bare(rmd, _hw=AsyncMock())
-    _run(drv.disconnect())
-    drv._hw.stop.assert_awaited_once()
+    # The link is held locally rather than read back off the driver: disconnect
+    # drops its handle, which is what makes the "not connected" refusal below
+    # reachable at all.
+    hw = AsyncMock()
+    _run(_bare(rmd, _hw=hw).disconnect())
+    hw.stop.assert_awaited_once()
 
 
 def test_disconnect_without_link_is_noop(rmd):
@@ -159,6 +162,70 @@ def test_disconnect_without_link_is_noop(rmd):
 def test_send_cmd_without_link_raises(rmd):
     with pytest.raises(RuntimeError, match="not connected"):
         _run(_bare(rmd)._send_cmd({"torque": True}))
+
+
+class _RecordingTransport:
+    """Records what a real ZenohLink puts on the wire."""
+
+    def __init__(self):
+        self.published: list[tuple[str, bytes]] = []
+
+    async def publish(self, key, payload):
+        self.published.append((key, payload))
+
+    async def subscribe(self, key, callback):
+        pass
+
+
+def _wireless_driver(rmd):
+    """A driver connected over a real ZenohLink onto a recording transport."""
+    from strands_robots.device_connect.reachy_transport import ZenohLink
+
+    transport = _RecordingTransport()
+    drv = rmd.ReachyMiniDriver(host="h", prefix="reachy_mini")
+    with (
+        patch.object(rmd, "api", return_value={"wireless_version": True}),
+        patch.object(rmd, "ZenohLink", lambda _t, prefix: ZenohLink(transport, prefix)),
+    ):
+        _run(drv.connect())
+    return drv, transport
+
+
+def test_a_movement_rpc_reaches_the_wire_while_connected(rmd):
+    """Control for the refusal below: the connected path really actuates."""
+    drv, transport = _wireless_driver(rmd)
+
+    assert _run(drv.look(pitch=10))["status"] == "success"
+    assert [key for key, _ in transport.published] == ["reachy_mini/command"]
+
+
+def test_a_movement_rpc_after_disconnect_is_refused(rmd):
+    """A disconnected driver refuses to actuate rather than reporting success.
+
+    ``_send_cmd`` reads ``_hw`` as its "is the link connected?" test, so a
+    disconnect that stops the link but leaves the handle in place keeps that
+    guard unreachable -- and on the Wireless variant the command still lands on
+    ``<prefix>/command``, moving the head after the driver was told to let go.
+    """
+    drv, transport = _wireless_driver(rmd)
+    _run(drv.disconnect())
+
+    with pytest.raises(RuntimeError, match="not connected"):
+        _run(drv.look(pitch=10))
+    assert transport.published == []
+
+
+def test_a_disconnect_whose_stop_fails_still_refuses_commands(rmd):
+    """The link is being torn down whether or not its stop succeeded."""
+    hw = AsyncMock()
+    hw.stop.side_effect = ConnectionError("link teardown raced with the drop")
+    drv = _bare(rmd, _hw=hw)
+
+    with pytest.raises(ConnectionError):
+        _run(drv.disconnect())
+    with pytest.raises(RuntimeError, match="not connected"):
+        _run(drv.look(pitch=10))
+    hw.send_cmd.assert_not_awaited()
 
 
 # -- real-time movement -----------------------------------------------------

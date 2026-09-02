@@ -728,6 +728,10 @@ def test_get_session_falls_back_to_resolve_auth_mode_without_thread_local(
     from strands_robots.mesh import _acl_config, _zenoh_config
     from strands_robots.mesh import session as _session
 
+    # A direct caller still has to get past the kill switch, which get_session asks
+    # before resolving anything; tests/conftest.py sets STRANDS_MESH=false suite-wide.
+    monkeypatch.delenv("STRANDS_MESH", raising=False)
+
     _acl_config._clear_thread_snapshot()
     _session._SESSION = None
     _session._SESSION_REFS = 0

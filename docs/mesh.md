@@ -330,7 +330,7 @@ renderers and executor are always released.
 | `Robot("so100", mesh=True)` | per-robot opt-in |
 | `STRANDS_MESH=true` (or `1`/`yes`) | process-wide opt-in for a bare `Robot()` |
 | `sim.mesh = init_mesh(sim, ...)` | a `Simulation` built directly (see above) |
-| `STRANDS_MESH=false` | process-wide kill switch, overrides `mesh=True` |
+| `STRANDS_MESH=false` | process-wide kill switch, overrides `mesh=True`; also refuses the shared transport, so nothing in the process opens a session or binds the `STRANDS_MESH_PORT` listener |
 | `Robot("so100", mesh=False)` | per-robot opt-out |
 
 Unset `STRANDS_MESH` with no `mesh=` argument is the default, and it leaves the

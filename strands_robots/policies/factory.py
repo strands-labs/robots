@@ -330,12 +330,61 @@ def preflight_policy(provider: str, observation_keys: set[str], **kwargs) -> Non
         logger.debug("preflight_policy: could not resolve '%s' (%s); skipping", provider, e)
         return
 
-    hook = getattr(PolicyClass, "preflight", None)
-    base_hook = getattr(Policy.preflight, "__func__", Policy.preflight)
-    if hook is None or getattr(hook, "__func__", hook) is base_hook:
+    if not _overrides_preflight(PolicyClass):
         # Provider did not override the default no-op preflight.
         return
     PolicyClass.preflight(set(observation_keys), **resolved_kwargs)
+
+
+def _overrides_preflight(PolicyClass: type) -> bool:
+    """Whether ``PolicyClass`` replaces the default no-op :meth:`Policy.preflight`.
+
+    The single implementation of that rule, shared by :func:`preflight_policy`
+    (which runs the hook) and :func:`policy_overrides_preflight` (which lets a
+    caller find out before paying to build the hook's argument).
+    """
+    hook = getattr(PolicyClass, "preflight", None)
+    base_hook = getattr(Policy.preflight, "__func__", Policy.preflight)
+    return not (hook is None or getattr(hook, "__func__", hook) is base_hook)
+
+
+def policy_overrides_preflight(provider: str, **kwargs) -> bool:
+    """Whether ``provider`` has a real :meth:`Policy.preflight` to run.
+
+    Resolves ``provider`` to its policy class WITHOUT instantiating it (so no
+    model weights are downloaded) and reports whether that class overrides the
+    default no-op :meth:`Policy.preflight`.
+
+    This exists so a caller can find out whether :func:`preflight_policy` will
+    read its ``observation_keys`` argument BEFORE paying to produce it. That
+    argument is not always cheap: ``SimEngine._preflight_policy_config`` sources
+    it from ``get_observation``, which renders every camera in the scene. For
+    the providers that leave ``preflight`` alone - every shipped provider except
+    ``lerobot_local`` - those frames are gathered only to be discarded, once per
+    ``run_policy`` / ``eval_policy`` / ``start_policy``.
+
+    Args:
+        provider: Provider name, HF model ID, or server URL (as passed to
+            ``create_policy``).
+        **kwargs: Provider-specific parameters (the policy_config), which can
+            select the class that answers (a smart-string provider resolves
+            through them).
+
+    Returns:
+        ``True`` when the resolved class overrides ``preflight``; ``False`` when
+        it leaves the default no-op in place, and ``False`` when ``provider``
+        cannot be resolved at all - :func:`preflight_policy` swallows resolution
+        failures and degrades to a no-op for such a name, so there is likewise
+        no hook to feed here.
+    """
+    try:
+        _canonical, PolicyClass, _resolved_kwargs = _resolve_policy_class(provider, **kwargs)
+    except Exception as e:
+        # Same degrade-to-no-op as preflight_policy: resolution problems are
+        # create_policy's to report authoritatively, not this hook's.
+        logger.debug("policy_overrides_preflight: could not resolve '%s' (%s); skipping", provider, e)
+        return False
+    return _overrides_preflight(PolicyClass)
 
 
 def policy_provider_error(provider: str, **kwargs) -> str | None:

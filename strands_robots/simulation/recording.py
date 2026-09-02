@@ -222,14 +222,55 @@ def recorder_dataset_fps(recorder: Any) -> int | None:
     Returns:
         The dataset frame rate as an int, or ``None`` when the dataset does not
         report a usable whole rate (an unexpected LeRobot layout must not block
-        a valid resume).
+        a valid resume). A rate beyond the float64 range is reported that way
+        too: it is not a rate any recording can be written at, and raising the
+        conversion error out of this reader told the caller the dataset had
+        failed to open when it had opened fine.
     """
     dataset = getattr(recorder, "dataset", None)
     for value in (getattr(dataset, "fps", None), getattr(getattr(dataset, "meta", None), "fps", None)):
-        if isinstance(value, bool) or not isinstance(value, int | float):
+        # Classified on ``numbers.Real``, not ``int | float``: ``numpy.int64`` and
+        # ``numpy.float32`` are neither ``int`` nor ``float`` subclasses, so the
+        # narrower spelling read a whole rate this function calls "usable" as an
+        # unreadable layout and returned ``None`` - which the one caller treats as
+        # "do not judge", skipping the refusal. ``numpy.float64`` IS a ``float``
+        # subclass, so the narrowing failed for some numpy spellings and not
+        # others. The boolean question goes to the shared predicate, which also
+        # catches ``numpy.bool_`` (not a ``bool`` subclass).
+        if is_boolean(value) or not isinstance(value, numbers.Real):
             continue
-        if value > 0 and float(value).is_integer():
-            return int(value)
+        # Judged and returned through ``float``, the same hop both sibling
+        # guards take (``declared = float(fps)`` ... ``fps_int = int(declared)``):
+        # ``numbers.Real`` carries no ordering against ``int`` and no ``int()``
+        # overload, so asking ``value > 0`` or truncating it directly is
+        # untypeable. Deliberately not ``math.trunc(value)``, which would keep
+        # a >2**53 rate exact but raises ``TypeError`` on ``numpy.int64`` - it
+        # defines ``__int__``, not ``__trunc__`` - and numpy spellings are the
+        # reason this classifies on ``Real`` at all. A rate that large is
+        # float-rounded by both siblings too, so routing through ``float`` keeps
+        # the three guards answering identically, which is the property the
+        # cross-ordering test asserts. The conversion count is unchanged: the
+        # previous spelling already called ``float`` to ask ``is_integer``.
+        try:
+            declared = float(value)
+        except (OverflowError, TypeError, ValueError):
+            # Reported as the unreadable layout it is, not raised. This rate
+            # arrives off disk, where no domain has been asked: ``meta/info.json``
+            # is JSON, whose integer literals are unbounded, and LeRobot's ``fps``
+            # is an unenforced dataclass annotation, so ``LeRobotDataset`` opens
+            # such a dataset without complaint and hands the value straight here.
+            # Letting the conversion raise escaped a reader documented to answer
+            # ``None`` for a rate it cannot read, and ``start_recording`` reported
+            # it as ``Dataset init failed: int too large to convert to float`` -
+            # a subject that had not failed, naming neither the field nor a
+            # remedy. Resolving the rate through ``float`` converts before the
+            # sign can be tested, so both signs reach the conversion and both are
+            # answered here. Same handled exceptions, and the same reason, as
+            # :func:`requested_rate_mismatch_reason`: it is the other guard in
+            # this module asked before any domain has classified its rate.
+            continue
+        if declared > 0 and declared.is_integer():
+            return int(declared)
     return None
 
 
@@ -376,7 +417,10 @@ def rollout_rate_mismatch_reason(method: str, fps: Any, rates: Mapping[str, floa
         fps: Caller-supplied dataset frame rate. Validate it with
             :func:`dataset_recording_option_error` first; a value outside that
             domain returns ``None`` here so it is reported as the parameter
-            error it is rather than as a rate disagreement.
+            error it is rather than as a rate disagreement. Classified on
+            ``numbers.Real``, the predicate that domain uses, so every spelling
+            it accepts - a ``numpy.int64`` rate read out of a config included -
+            is judged here rather than silently passed through.
         rates: Capture rate in Hz per robot with a rollout in flight, as
             reported by
             :meth:`~strands_robots.simulation.base.SimEngine._active_rollout_rates`.
@@ -388,8 +432,19 @@ def rollout_rate_mismatch_reason(method: str, fps: Any, rates: Mapping[str, floa
     """
     if not rates:
         return None
-    if isinstance(fps, bool) or not isinstance(fps, int | float):
+    # ``numbers.Real``, the predicate ``positive_whole_number_error`` classifies
+    # this same ``fps`` with, so every spelling that domain accepts is judged
+    # here. The narrower ``int | float`` declined to judge ``numpy.int64(30)`` -
+    # a value that domain accepts, and is test-pinned as accepting - so the
+    # disagreement this function exists to refuse was skipped and the episode was
+    # written on a timebase that mislabels it. See the identical reasoning in
+    # :func:`requested_rate_mismatch_reason`.
+    if is_boolean(fps) or not isinstance(fps, numbers.Real):
         return None
+    # ``float()`` cannot overflow here: this guard is asked only after
+    # ``dataset_recording_option_error``, whose domain refuses an ``fps`` beyond
+    # the float64 range with a reason of its own. That is why it needs no
+    # ``try`` - unlike ``requested_rate_mismatch_reason``, which is asked first.
     declared = float(fps)
     if declared <= 0 or not declared.is_integer():
         return None
@@ -863,6 +918,17 @@ class DatasetRecordingMixin:
                 place). When no recording is open, syncs the last dataset this
                 sim finalized (errors if there is none).
             run_id: Optional subpath inside the bucket (defaults to dataset name).
+
+        Returns:
+            The standard agent-tool envelope. Its json block reports the episode
+            bookkeeping as three fields: ``episode_count`` (the canonical count -
+            the dataset's own when that could be read, else the recorder's),
+            ``parquet_episode_count`` (the dataset's ``meta.total_episodes``, or
+            ``None`` when the recorder exposes no dataset handle, that layout
+            carries no such attribute, or the value cannot be read as an int -
+            an unreadable count is reported as no reading, never as a zero) and
+            ``episode_count_mismatch`` (the two counts were both read and
+            disagreed, so the on-disk one won).
         """
         # ``push_to_hub`` selects whether the finished dataset is published, so
         # it is checked before it is read - by the idle path just below and by
@@ -963,8 +1029,18 @@ class DatasetRecordingMixin:
         episode_count_mismatch_orig: int = episode_count
         try:
             ds_meta = getattr(getattr(recorder, "dataset", None), "meta", None)
-            if ds_meta is not None:
-                parquet_episode_count = int(getattr(ds_meta, "total_episodes", 0))
+            # A layout that exposes no ``total_episodes`` is a FAILED PROBE, not
+            # a dataset holding zero episodes. Reading it with a zero default
+            # would hand that zero to the gate below as ground truth and
+            # overwrite the episode count the recorder actually measured, so a
+            # session that saved N episodes would report 0 with the mismatch
+            # flag raised. Probe with ``None`` and skip the gate when the
+            # attribute is absent - the same "unavailable means skip" the
+            # missing-``dataset`` branch above and ``recorder_dataset_fps``
+            # already use on this path.
+            raw_total_episodes = getattr(ds_meta, "total_episodes", None) if ds_meta is not None else None
+            if raw_total_episodes is not None:
+                parquet_episode_count = int(raw_total_episodes)
                 if parquet_episode_count != episode_count:
                     episode_count_mismatch = True
                     logger.warning(

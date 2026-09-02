@@ -147,6 +147,20 @@ def _numeric_option_error(
     ``timeout_ms`` is only effective under ``async_mode``: the synchronous read
     takes no timeout, so a value it never consumes is not refused.
 
+    **The frame count is a product, so one factor's sign does not decide whether a
+    frame can be captured.** ``positive_finite_number_error`` reads
+    ``capture_duration`` alone, and at the default ``fps=30`` every span below
+    ``0.0333`` is positive, finite, and makes the recording loop's bound
+    ``int(fps * capture_duration) == 0`` - the loop body never runs, and the tool
+    reports ``status="success"`` with ``Frames: 0`` while its ``Saved:`` line names
+    the same 258-byte MP4 that no decoder will open. Which side of the line a span
+    falls on is not a property of the span, so the rate is read with it. Refused
+    rather than floored to one frame: a recording that cannot be honored as asked
+    is a caller error, not a value to silently substitute. ``preview_duration`` is
+    deliberately not paired with ``fps`` this way - the preview is bounded by a
+    ``time.monotonic()`` deadline whose first iteration always runs, so a short
+    preview displays a frame rather than none.
+
     Args:
         action: The requested action; decides which options are effective.
         width: Frame width in pixels, as supplied.
@@ -176,6 +190,21 @@ def _numeric_option_error(
             error = check(value, param, action)
             if error:
                 return error
+    # Reaching here means every option this action consumes is individually
+    # usable, which is what lets the pair be judged together. Keyed on the two
+    # names being consumed rather than on ``action == "record"``, so an action
+    # that later gains a capture span is covered without a second edit.
+    # Compared as floats rather than through the consumer's ``int(...)``: both
+    # factors are bounded only by the float64 range, so their product can be
+    # ``inf``, and ``int(inf)`` raises out of the guard that exists so a frame
+    # count never raises. For a non-negative product the tests are equivalent -
+    # ``int(p) < 1`` iff ``p < 1``.
+    if {"fps", "capture_duration"} <= consumed and float(fps) * float(capture_duration) < 1.0:
+        return (
+            f"{action}: capture_duration={float(capture_duration):g} at fps={int(fps)} records 0 frames, "
+            f"so the file would contain no video. Raise capture_duration to at least "
+            f"{1.0 / float(fps):g}, or lower fps."
+        )
     return None
 
 

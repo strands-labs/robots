@@ -49,9 +49,38 @@ from strands_robots.policies import MockPolicy
 
 pytest.importorskip("websockets")
 
-#: Short enough that a parked reply misses the deadline promptly, long enough
-#: that an unparked round trip on loopback never does.
-REQUEST_TIMEOUT = 0.3
+#: Seconds the server holds a parked reply before giving up on it. This is what
+#: makes a missed read *deterministic* rather than a race: the reply is provably
+#: still withheld when the client's deadline expires, so every budget below that
+#: has to expire must stay well under this.
+PARK_HOLD = 10.0
+
+#: Deadline for a call that must *complete*. A successful call returns as soon as
+#: its reply lands, so this budget is never waited out on a passing run and a
+#: generous value costs one nothing - it buys immunity from the scheduling stalls
+#: a loaded runner adds to a loopback round trip, which are what a tight budget
+#: here measures instead of the behaviour under test. Generous but bounded: a
+#: genuinely hung call must still report ``TimeoutError`` from this client rather
+#: than be killed by the suite's ``--timeout=120``, which reports nothing useful.
+ROUND_TRIP_TIMEOUT = 5.0
+
+#: Deadline for the one read per scenario that must *miss* its reply. Unlike
+#: ``ROUND_TRIP_TIMEOUT`` this one is waited out in full on every run, so it is
+#: the budget that costs wall clock and the only reason to keep a value small.
+PARKED_READ_TIMEOUT = 0.3
+
+#: The concurrent-discard scenario cannot separate the two budgets above: thread
+#: A's completing call and thread B's missed read share one client, and
+#: ``_request`` takes its deadline from instance state with no per-call override,
+#: so one value serves both. Bounded on both sides - above a round trip on a
+#: loaded runner (A must finish), below ``THREAD_JOIN_TIMEOUT`` (B must be seen
+#: to time out).
+SHARED_DISCARD_TIMEOUT = 3.0
+
+#: How long to wait for a thread in that scenario to finish. Exceeds the deadline
+#: the thread is waiting out, and stays under ``PARK_HOLD`` so a join cannot
+#: outlive the park it depends on.
+THREAD_JOIN_TIMEOUT = 9.0
 
 
 class TaggedPolicy(MockPolicy):  # type: ignore[misc]
@@ -79,7 +108,7 @@ class TaggedPolicy(MockPolicy):  # type: ignore[misc]
             # every later request promptly.
             self.park.clear()
             self.parked.set()
-            self.release.wait(timeout=10.0)
+            self.release.wait(timeout=PARK_HOLD)
         return [{"tag": marker}]
 
 
@@ -88,7 +117,7 @@ def tagged() -> Any:
     """A live server whose policy tags chunks, plus a client pointed at it."""
     policy = TaggedPolicy()
     server = PolicyServer(policy=policy, host="127.0.0.1", port=0).start()
-    client = RemotePolicy(host="127.0.0.1", port=server.port, request_timeout=REQUEST_TIMEOUT)
+    client = RemotePolicy(host="127.0.0.1", port=server.port, request_timeout=ROUND_TRIP_TIMEOUT)
     try:
         yield policy, server, client
     finally:
@@ -102,12 +131,28 @@ def _strand(client: RemotePolicy, policy: TaggedPolicy) -> Any:
 
     Returns the connection the client was using when the read timed out, so a
     caller can ask what became of it.
+
+    Only the parked read is put on the short budget. The warm call above it has
+    to *complete* - it is what caches the connection this helper returns - so it
+    keeps the fixture's round-trip budget, and the narrowing is unwound in a
+    ``finally`` because callers go on using this client after the strand: a
+    failed assertion inside the window would otherwise leave the short deadline
+    on it and relocate this flake into whichever test ran next.
     """
     client.get_actions_sync({"marker": "warm"}, "")
     stranded = client._ws
     policy.park.set()
-    with pytest.raises(TimeoutError):
-        client.get_actions_sync({"marker": "OBS-A"}, "")
+    client.request_timeout = PARKED_READ_TIMEOUT
+    try:
+        started = time.monotonic()
+        with pytest.raises(TimeoutError):
+            client.get_actions_sync({"marker": "OBS-A"}, "")
+        # The read expired on its own deadline, not because the server stopped
+        # parking: past PARK_HOLD the reply is delivered and there is no missed
+        # read left for these scenarios to be about.
+        assert time.monotonic() - started < PARK_HOLD, "the parked reply was released before the read gave up"
+    finally:
+        client.request_timeout = ROUND_TRIP_TIMEOUT
     policy.release.set()
     # Give the server time to finish producing the reply nobody read.
     time.sleep(0.5)
@@ -166,6 +211,38 @@ class TestThePremisesThisRestsOn:
         except Exception:  # noqa: BLE001 - pre-fix this call reads a stale reply
             pass
         assert policy.seen == ["warm", "OBS-A", "OBS-B"]
+
+    def test_every_budget_that_must_expire_does_so_while_the_reply_is_still_parked(self) -> None:
+        """The ordering that makes a missed read deterministic rather than a race.
+
+        These scenarios need one read to *not* arrive, and what withholds it is
+        the server parking the reply for ``PARK_HOLD``. So each budget that has
+        to expire must expire inside that window: past it the reply is delivered,
+        the read succeeds, and the test goes green while asserting nothing about
+        the discard it names. That failure is silent - a delivered reply is
+        indistinguishable from a passing test - which is why it is pinned here
+        rather than left to the arithmetic between two unrelated literals.
+
+        The motive that produced the original single budget (keep the suite
+        quick) applies just as well to shortening ``PARK_HOLD``, so the guard is
+        on the relationship, not on any one value.
+
+        This pins the *meaning* of the parked scenarios. It cannot pin their
+        freedom from timing flakes: that a completing call fits inside
+        ``ROUND_TRIP_TIMEOUT`` depends on the runner and is not statically
+        assertable, which is the separate reason that budget is generous.
+        """
+        assert PARKED_READ_TIMEOUT < PARK_HOLD, "the strand's read would be answered instead of missed"
+        assert SHARED_DISCARD_TIMEOUT < PARK_HOLD, "thread B would be answered instead of timing out"
+
+        # A join has to outlast the deadline whose expiry it is waiting to
+        # observe, or B is still blocked when its result is read; and it has to
+        # stay inside the park, or it outlives what holds the reply back.
+        assert SHARED_DISCARD_TIMEOUT < THREAD_JOIN_TIMEOUT < PARK_HOLD
+
+        # The two budgets are separate so that the one paid on every run stays
+        # small while the one that is never waited out can be generous.
+        assert PARKED_READ_TIMEOUT < ROUND_TRIP_TIMEOUT
 
     def test_the_wire_lock_is_not_reentrant(self) -> None:
         """Which is why the discard is inlined instead of routed through ``close``.
@@ -446,6 +523,12 @@ class TestAConcurrentCallerSurvivesADiscardByAnotherThread:
         # Warm the connection so _ensure_connected's fast path passes for both.
         client.get_actions_sync({"marker": "warm"}, "")
 
+        # One deadline has to serve both threads here - B must miss its reply and
+        # A must complete on the same client, concurrently - so it is set once,
+        # after the warm call, and not restored: nothing runs on this client
+        # afterwards, and the fixture is per-test.
+        client.request_timeout = SHARED_DISCARD_TIMEOUT
+
         # Park one reply so thread B times out.
         policy.park.set()
 
@@ -453,10 +536,10 @@ class TestAConcurrentCallerSurvivesADiscardByAnotherThread:
         t_a = threading.Thread(target=thread_a)
         t_b.start()
         t_a.start()
-        t_b.join(timeout=5.0)
+        t_b.join(timeout=THREAD_JOIN_TIMEOUT)
         # Release the parked reply so the server can serve thread A's request.
         policy.release.set()
-        t_a.join(timeout=5.0)
+        t_a.join(timeout=THREAD_JOIN_TIMEOUT)
 
         # Thread B timed out (expected).
         assert "B" in errors, f"thread B should have timed out, got result: {results.get('B')}"

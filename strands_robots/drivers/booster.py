@@ -53,6 +53,7 @@ import threading
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Any, cast
 
+from strands_robots.drivers.base import halt_failure_detail
 from strands_robots.tools.g1._g1_common import _DDS_INIT_LOCK
 from strands_robots.utils import boolean_flag_error, dds_domain_id_error, finite_number_error
 
@@ -630,8 +631,21 @@ class BoosterDriver:
         }
 
     async def stop(self) -> None:
-        """Halt locomotion and hand the upper body back. Never raises."""
-        self.stop_task()
+        """Halt locomotion and hand the upper body back. Never raises.
+
+        Annotated ``-> None`` by the driver protocol, so it carries no verdict:
+        a caller that needs the halt outcome reads :meth:`stop_task`, which
+        decides one for each half. Both halves are attempted either way, and a
+        halt that did not complete is logged - the T1 walks under its own
+        controller, so a refused twist leaves it walking, and a refused release
+        leaves the host holding the arms.
+        """
+        if (detail := halt_failure_detail(self.stop_task())) is not None:
+            logger.error(
+                "%s.stop(): the halt did not complete, and the T1 may still be walking or holding the upper body: %s",
+                self._tool_name,
+                detail,
+            )
 
     def cleanup(self) -> None:
         """Release the SDK channels. Idempotent, and stops first."""

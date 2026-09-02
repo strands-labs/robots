@@ -24,6 +24,20 @@ from strands_robots.mesh.session import (
     update_peer,
 )
 
+
+@pytest.fixture(autouse=True)
+def _mesh_kill_switch_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    """This module acquires sessions, so it opts the kill switch off explicitly.
+
+    ``tests/conftest.py`` sets ``STRANDS_MESH=false`` for the whole suite and documents
+    that mesh tests opt back in "explicitly via ``monkeypatch.delenv``". That opt-in was
+    decorative until the acquire doors asked the switch, so the tests here were handed a
+    session without ever declaring they wanted one. A cell that grades the DISABLED
+    direction sets the variable itself and still wins, being the later write.
+    """
+    monkeypatch.delenv("STRANDS_MESH", raising=False)
+
+
 # ---------------------------------------------------------------------------
 # PeerInfo dataclass
 # ---------------------------------------------------------------------------
@@ -191,9 +205,12 @@ class TestSessionLifecycle:
     def test_returns_none_when_zenoh_missing(self) -> None:
         from strands_robots.mesh.session import get_session
 
+        # A ``None`` entry in ``sys.modules`` is what the interpreter treats as a
+        # halted import, so this is the whole of an absent extra. Patching
+        # ``builtins.__import__`` as well would break every OTHER import the
+        # function makes, which no missing dependency does.
         with patch.dict("sys.modules", {"zenoh": None}):
-            with patch("builtins.__import__", side_effect=ImportError("no zenoh")):
-                result = get_session()
+            result = get_session()
         assert result is None
 
     def test_session_opened_as_listener(self) -> None:
@@ -563,9 +580,10 @@ class TestGetZenohSessionDirectly:
         """No zenoh install -> None (mesh disabled), no crash."""
         import strands_robots.mesh.session as mod
 
+        # See the note in TestSessionLifecycle: the sys.modules entry alone is the
+        # absent extra; a blanket __import__ failure is a different fault.
         with patch.dict("sys.modules", {"zenoh": None}):
-            with patch("builtins.__import__", side_effect=ImportError("no zenoh")):
-                result = mod._get_zenoh_session_directly()
+            result = mod._get_zenoh_session_directly()
 
         assert result is None
         assert mod._SESSION is None

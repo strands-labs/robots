@@ -73,10 +73,11 @@ _EXPECTED_FUNCTIONS = {
     "robots.py::list_robots_by_category",
     "robots.py::resolve_name",
     "user_registry.py::get_user_robots",
+    "user_registry.py::parse_user_robots",
     "user_registry.py::list_user_robots",
     "user_registry.py::register_robot",
     "user_registry.py::unregister_robot",
-    "user_registry.py::user_registry_mtime",
+    "user_registry.py::user_registry_source",
 }
 
 

@@ -59,6 +59,11 @@ Aliases and shorthands are validated on load: each must be unique across provide
 
 ## ABC contract
 
+Every public member of `Policy`, so a subclass author can see the whole surface
+in one place. Three are abstract; the rest have a working default, and the last
+four are supplied *to* the policy by the runtime that drives it rather than
+implemented by it.
+
 | Method / property | Abstract | Default |
 |---|---|---|
 | `async get_actions(obs, instruction, **kw) -> list[dict]` | yes | - |
@@ -66,8 +71,38 @@ Aliases and shorthands are validated on load: each must be unique across provide
 | `provider_name` (property) | yes | - |
 | `requires_images` (property) | no | `True` |
 | `required_bodies` (property) | no | `()` |
+| `children` (property) | no | `()` |
+| `execution_horizon` (property) | no | `1` |
+| `is_chunk_emitting()` | no | `execution_horizon > 1` |
+| `preflight(observation_keys, **config)` (classmethod) | no | no-op |
 | `reset(seed=None)` | no | no-op |
 | `get_actions_sync(...)` | no | sync wrapper |
+| `set_control_frequency(hz)` | no | records the rate |
+| `control_frequency` (attribute) | no | `None` |
+| `set_rtc_observed_delay(steps)` | no | records the delay |
+| `rtc_observed_delay_steps` (attribute) | no | `None` |
+
+`preflight` is the fail-fast seam: the simulation calls it on your **class**,
+before `create_policy` constructs anything and therefore before any weight
+download, with the keys the runtime observation will carry (joint names plus
+camera names). Raise `ValueError` from it to reject a configuration your policy
+cannot consume - a declared image input that no sim camera can be routed to is
+the motivating case - instead of surfacing that deep inside the first inference.
+Implementations must be cheap: local metadata and the given keys, no network, no
+instantiation.
+
+`execution_horizon` is the single source of truth for the re-query interval: how
+many actions a consumer takes from one `get_actions` chunk before asking again.
+Leave it at `1` for a policy that returns one action per inference;
+`is_chunk_emitting()` is derived from it, so a chunk-emitting policy only needs
+to declare the horizon. `children` is what a *wrapper* returns so a capability
+probe reaches the policy inside it.
+
+The runtime calls `set_control_frequency` once before the rollout loop and
+`set_rtc_observed_delay` before each `get_actions`, so a provider that estimates
+an inference budget or does Real-Time Chunking can read the rate and the
+observed delay off itself. Both default to `None` - meaning not yet told - so
+read them defensively.
 
 ## Declaring body poses your policy needs
 

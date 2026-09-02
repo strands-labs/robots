@@ -1094,17 +1094,41 @@ class SimEngine(ABC):
         unresolvable name reach ``create_policy``, whose raise escapes the
         ``status=error`` envelope this method exists to produce.
 
+        The observation is looked up only when the resolved class actually
+        overrides ``preflight``
+        (:func:`~strands_robots.policies.policy_overrides_preflight`). It is not
+        a cheap lookup - ``get_observation`` without ``skip_images`` renders
+        every camera in the scene - and for a provider that leaves the default
+        no-op in place the frames are gathered purely to be discarded, delaying
+        the start of every rollout loop (and, for ``start_policy``, the first
+        cooperative-stop check) by a full render of the scene.
+
+        ``requires_images`` is deliberately NOT the question asked here. It is
+        an instance property, so it cannot be read off an uninstantiated class
+        (``MockPolicy.requires_images`` is the ``property`` object, which is
+        truthy despite the policy declaring ``False``), and an overriding
+        ``preflight`` needs the camera keys regardless of whether the policy
+        later consumes the frames: ``skip_images`` omits those keys entirely,
+        which is exactly the routing information such a hook validates.
+
         Returns:
             A ``status=error`` dict (for the caller to return) when the
             provider cannot be resolved or its preflight rejects the
             configuration; ``None`` when the check passes, is a no-op, or the
             observation is not yet available.
         """
-        from strands_robots.policies import policy_provider_error, preflight_policy
+        from strands_robots.policies import (
+            policy_overrides_preflight,
+            policy_provider_error,
+            preflight_policy,
+        )
 
         reason = policy_provider_error(policy_provider, **(policy_config or {}))
         if reason is not None:
             return {"status": "error", "content": [{"text": reason}]}
+
+        if not policy_overrides_preflight(policy_provider, **(policy_config or {})):
+            return None
 
         obs = self.get_observation(robot_name)
         if not isinstance(obs, dict) or not obs:
@@ -2128,7 +2152,7 @@ class SimEngine(ABC):
         return components, None
 
     @staticmethod
-    def _validate_duration(duration: Any, method: str) -> dict[str, Any] | None:
+    def _validate_duration(duration: Any, method: str, control_frequency: float) -> dict[str, Any] | None:
         """Reject a rollout ``duration`` that cannot produce a single control step.
 
         ``duration`` is the default horizon knob: when no ``n_steps`` /
@@ -2153,9 +2177,34 @@ class SimEngine(ABC):
         are rejected before the ``<= 0`` comparison so a ``nan`` - which is
         never ``<= 0`` - cannot slip through.
 
+        **The horizon is a product, so one factor's sign does not decide
+        whether a step can be produced.** ``positive_finite_number_error`` reads
+        ``duration`` alone, and at the default ``control_frequency=50.0`` every
+        duration below ``0.02`` is positive, finite, and resolves to ``int(duration
+        * control_frequency) == 0`` control steps - the empty rollout described
+        above, reported as ``status="success"`` with ``0 steps`` and, with a
+        ``video`` requested, "Video requested but 0 frames captured" and no MP4 on
+        disk. Measured on a MuJoCo ``so101`` rollout: ``duration=0.01`` at 50 Hz,
+        ``duration=0.5`` at 1 Hz and ``duration=1.0`` at 0.5 Hz all reported a
+        successful rollout that never queried the policy. Which side of the line a
+        duration falls on is not a property of the duration, so the rate has to be
+        passed in.
+
+        Refused rather than floored to one step, for the reason
+        :meth:`_resolve_horizon` gives for the ``n_steps`` path: a horizon that
+        cannot be honored as asked is a caller error, not a value to silently
+        substitute. A fractional duration that does produce steps stays perfectly
+        usable (``2.5`` seconds at 62.5 Hz is 156 of them) - the boundary is only
+        at zero.
+
         Args:
             duration: The caller-supplied value to validate.
             method: Public method name, used to prefix the error message.
+            control_frequency: Rate the rollout will step at, the other factor of
+                the horizon. Validate it with
+                :meth:`_validate_positive_frequency` first, so a non-finite rate
+                is reported as the parameter error it is rather than as an
+                unreachable horizon.
 
         Returns:
             An error dict naming the offending parameter, or ``None`` when the
@@ -2164,6 +2213,26 @@ class SimEngine(ABC):
         error = positive_finite_number_error(duration, "duration", method)
         if error:
             return {"status": "error", "content": [{"text": error}]}
+        # Compared as floats rather than through the consumer's ``int(...)``:
+        # both factors are bounded only by the float64 range, so their product
+        # can be ``inf`` and ``int(inf)`` raises ``OverflowError`` out of the
+        # guard that exists so a horizon never raises. For a non-negative
+        # product the two tests are equivalent - ``int(p) < 1`` iff ``p < 1``.
+        if float(duration) * float(control_frequency) < 1.0:
+            return {
+                "status": "error",
+                "content": [
+                    {
+                        "text": (
+                            f"{method}: duration={float(duration):g} at "
+                            f"control_frequency={float(control_frequency):g} resolves to 0 control "
+                            f"steps, so the rollout would query no policy and step no physics. "
+                            f"Raise duration to at least {1.0 / float(control_frequency):g}, or "
+                            f"pass n_steps to give the horizon as a step count."
+                        )
+                    }
+                ],
+            }
         return None
 
     @staticmethod
@@ -2453,7 +2522,9 @@ class SimEngine(ABC):
                 is recomputed from it). Must be a finite positive number; a
                 non-positive, non-finite, non-numeric, or bool value is
                 reported as a structured caller error rather than running a
-                zero-step rollout that reports success.
+                zero-step rollout that reports success - as is a span shorter
+                than one control period (``1 / control_frequency``), which
+                resolves to no steps at that rate.
             control_frequency: Target Hz for policy queries. Must be a
                 positive number; a non-positive, non-numeric, or bool value
                 is reported as a structured caller error.
@@ -2719,8 +2790,10 @@ class SimEngine(ABC):
             denominators instead of being counted as a physical miss; it remains
             visible in ``action_errors`` and the human-readable diagnostic.
 
-            Video: ``video_path`` (``None`` when no MP4 was written) and
-            ``video_frames``.
+            Video: ``video_path`` (``None`` when no MP4 was written),
+            ``video_frames`` and ``video_fps`` (the rate the MP4 plays at -
+            the requested ``fps`` capped to ``control_frequency``, since a
+            rollout renders at most one frame per control step).
 
             Episodes: ``n_episodes_requested``, ``n_episodes_completed``,
             ``episodes_saved`` and ``dataset_episode_indices`` (the dataset
@@ -2808,7 +2881,7 @@ class SimEngine(ABC):
         # an ``n_steps`` the resolution above recomputes it - so validate the
         # value the rollout will actually run on, and only then.
         if n_steps is None:
-            if err := self._validate_duration(duration, "run_policy"):
+            if err := self._validate_duration(duration, "run_policy", control_frequency):
                 return err
 
         if err := self._validate_positive_int(n_episodes, "n_episodes", "run_policy"):
@@ -3049,7 +3122,8 @@ class SimEngine(ABC):
                 ``{robot_name: instruction}`` mapping (see contract above).
             duration: Episode length in seconds (steps = duration x freq).
                 Used only when no ``n_steps`` / ``max_steps`` is given. Must
-                be a finite positive number.
+                be a finite positive number of at least one control period, so
+                that product is at least one step.
             control_frequency: Target Hz for policy queries / physics. Must
                 be a positive number.
             action_horizon: Actions consumed from each policy's chunk before

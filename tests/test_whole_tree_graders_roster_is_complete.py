@@ -43,6 +43,22 @@ nothing reads exactly like a tree with nothing to select:
   by a second, resolvable walk elsewhere in the same file. A pin that grades
   only the graders an issue names cannot see a resolver gap that its own named
   graders survive by accident, so the spellings are graded directly.
+- a root held in a *function parameter* resolves. This is the fourth turn of
+  the same screw and the one the previous three make predictable: a grader that
+  plants source for its own predicate factors the walk into a helper taking the
+  root as an argument, so the receiver is bound per call rather than at module
+  scope. Five graders were unrostered on it - three docstring-completeness
+  sweeps over the installed package, the package import-cycle graph, and the
+  render-gating sweep over all of ``tests/``. The asymmetry that makes such a
+  module a grader is visible in its own calls: the planted call passes a
+  ``tmp_path`` and resolves to nothing, the real one passes the package root.
+- a root bound *inside the function that walks it* resolves. This is the fifth
+  turn, and the plainest of the five: a grader that keeps its sweep beside the
+  assertion it feeds binds the root where it is used. Eight graders were
+  unrostered on it. Both directions are graded, because reading locals is the
+  first of these widenings that could over-select - a name assigned in one
+  function must not stand in for a receiver in another, and the tree carries a
+  live instance of exactly that pair.
 
 A roster only helps a caller who knows to run it. Issue #2940's failure mode
 was a *green* narrow run, so the remedy is only reachable if the pre-push
@@ -278,6 +294,396 @@ def test_a_loop_variable_area_that_is_not_a_top_level_area_is_not_selected(label
         f"the derivation selected a module walking {label}. Resolving a loop "
         "variable is meant to read the same walks the tree already has, not to "
         "widen the class of walk that counts as whole-tree."
+    )
+
+
+@pytest.mark.parametrize(
+    ("label", "grader"),
+    [
+        (
+            "a helper called at module scope with the package root",
+            "def _scan(root):\n    return [p for p in root.rglob('*.py')]\n\nFILES = _scan(PKG)",
+        ),
+        (
+            "a helper called with the root as a keyword",
+            "def _scan(root):\n    return [p for p in root.rglob('*.py')]\n\nFILES = _scan(root=PKG)",
+        ),
+        (
+            "a helper declaring the root as its default",
+            "def _scan(root=PKG):\n    return [p for p in root.rglob('*.py')]",
+        ),
+        (
+            "a helper reached as an attribute",
+            "def _scan(root):\n    return [p for p in root.rglob('*.py')]\n\n\nclass TestIt:\n"
+            "    def test_it(self):\n        assert self._scan(PKG)\n",
+        ),
+        (
+            "a parameter root combined with a loop-variable area",
+            "def _scan(root):\n    for area in ('strands_robots', 'tests'):\n"
+            "        for p in (root / area).rglob('*.py'):\n            pass\n\nFILES = _scan(PKG.parent)",
+        ),
+        (
+            "a helper the module calls with a tmp_path as well as the real root",
+            "def _scan(root):\n    return [p for p in root.rglob('*.py')]\n\nFILES = _scan(PKG)\n\n\n"
+            "def test_planted(tmp_path):\n    assert not _scan(tmp_path)\n",
+        ),
+    ],
+)
+def test_a_root_that_arrives_as_a_parameter_resolves(label: str, grader: str) -> None:
+    """A grader whose walk root is a function argument is selected.
+
+    The last case is the shape every real instance takes: the helper exists so
+    the sweep and the module's planted controls share one implementation, and
+    the real call is what makes the module a grader. Reading module-level
+    bindings alone resolved the receiver to nothing and skipped all six - in the
+    reassuring direction, exactly as #3105 and #3111 describe one spelling
+    each. ``label`` names the spelling so a failure says which one stopped
+    resolving.
+    """
+    source = f"import pathlib\n\nimport strands_robots\n\nPKG = pathlib.Path(strands_robots.__file__).resolve().parent\n\n{grader}\n"
+    assert _selects(source, _TESTS_ROOT / "test_planted.py"), (
+        f"the derivation cannot resolve a root spelled as {label}, so a grader "
+        "written that way is invisible to the preflight rather than merely "
+        "unrostered."
+    )
+
+
+@pytest.mark.parametrize(
+    ("label", "grader"),
+    [
+        (
+            "a parameter no call in the module binds",
+            "def _scan(root):\n    return [p for p in root.rglob('*.py')]",
+        ),
+        (
+            "a parameter bound only to a tmp_path",
+            "def _scan(root):\n    return [p for p in root.rglob('*.py')]\n\n\n"
+            "def test_it(tmp_path):\n    assert not _scan(tmp_path)\n",
+        ),
+        (
+            "a parameter bound only to a fixture directory beside the test",
+            "def _scan(root):\n    return [p for p in root.rglob('*.py')]\n\n"
+            "FILES = _scan(pathlib.Path(__file__).parent / 'fixtures')",
+        ),
+        (
+            "a parameter bound only to a subpackage",
+            "def _scan(root):\n    return [p for p in root.rglob('*.py')]\n\nFILES = _scan(PKG / 'policies')",
+        ),
+        (
+            "an inner helper's parameter, where only the outer one takes the root",
+            "def _outer(root):\n    def _inner(root):\n        return [p for p in root.rglob('*.py')]\n\n"
+            "    return _inner(root / 'policies')\n\nFILES = _outer(PKG)",
+        ),
+    ],
+)
+def test_a_parameter_the_module_does_not_bind_to_an_area_is_not_selected(label: str, grader: str) -> None:
+    """Resolving a parameter must not widen *which* walks count as whole-tree.
+
+    The resolver contributes candidate paths; :func:`walk_targets` still
+    decides membership, so a helper the module only ever hands a fixture
+    directory, a ``tmp_path`` or a subpackage stays out. The unbound case is
+    the safe direction stated directly: a helper whose caller lives in a
+    ``conftest`` resolves to nothing rather than to a guess.
+
+    The inner-helper case grades the attribution rather than the resolution.
+    ``_outer`` is handed the package root and ``_inner`` is handed a subpackage
+    of it; the walk sits in ``_inner``, so reading the *innermost* enclosing
+    function is what keeps the outer call from lending its root to a walk that
+    never sees it.
+    """
+    source = f"import pathlib\n\nimport strands_robots\n\nPKG = pathlib.Path(strands_robots.__file__).resolve().parent\n\n{grader}\n"
+    assert not _selects(source, _TESTS_ROOT / "subject" / "test_planted.py"), (
+        f"the derivation selected a module whose walk root is only ever {label}. "
+        "Resolving a parameter is meant to read the same walks the tree already "
+        "has, not to widen the class of walk that counts as whole-tree."
+    )
+
+
+@pytest.mark.parametrize(
+    ("label", "grader"),
+    [
+        (
+            "a local bound to a module constant",
+            "def test_it():\n    root = PKG\n    for p in root.rglob('*.py'):\n        pass\n",
+        ),
+        (
+            "a local assembled from the installed package's file",
+            "def test_it():\n    root = pathlib.Path(strands_robots.__file__).parent\n"
+            "    for p in root.rglob('*.py'):\n        pass\n",
+        ),
+        (
+            "a local returned by a zero-argument module helper",
+            "def _package_root():\n    return PKG\n\n\ndef test_it():\n    root = _package_root()\n"
+            "    for p in root.rglob('*.py'):\n        pass\n",
+        ),
+        (
+            "a local defined in terms of an earlier local",
+            "def test_it():\n    own = pathlib.Path(strands_robots.__file__).resolve()\n    root = own.parent\n"
+            "    for p in root.rglob('*.py'):\n        pass\n",
+        ),
+        (
+            "a local inside a test method on a class",
+            "class TestIt:\n    def test_it(self):\n        root = PKG\n"
+            "        for p in root.rglob('*.py'):\n            pass\n",
+        ),
+        (
+            "an enclosing function's local read by a nested one",
+            "def test_it():\n    root = PKG\n\n    def _sweep():\n        return [p for p in root.rglob('*.py')]\n\n"
+            "    assert _sweep() is not None\n",
+        ),
+        (
+            "a local assembled from a parameter the module binds",
+            "def _scan(base):\n    root = base / 'strands_robots'\n    return [p for p in root.rglob('*.py')]\n\n"
+            "FILES = _scan(PKG.parent)",
+        ),
+    ],
+)
+def test_a_root_bound_inside_the_function_resolves(label: str, grader: str) -> None:
+    """A grader whose walk root is assigned on a line of the function is selected.
+
+    This is the fifth turn of the same screw, and the plainest: a grader that
+    keeps its sweep beside the assertion it feeds has no reason to hoist the
+    root to module scope, so it binds it where it is used. Reading module-level
+    names and call-site arguments alone resolved the receiver to nothing, and
+    eight graders were unrostered on it - among them the sweep in
+    ``tests/test_mesh_state_loop_rate.py`` that grades every pacing loop in the
+    package, and three sweeps whose walk is the installed package root reached
+    through an imported module's ``__file__``.
+
+    The last case is the one neither resolver settles alone: the root is
+    *assembled* from a parameter, so the local and the argument have to compose.
+
+    ``label`` names the spelling so a failure says which one stopped resolving.
+    """
+    source = f"import pathlib\n\nimport strands_robots\n\nPKG = pathlib.Path(strands_robots.__file__).resolve().parent\n\n{grader}\n"
+    assert _selects(source, _TESTS_ROOT / "test_planted.py"), (
+        f"the derivation cannot resolve a root spelled as {label}, so a grader "
+        "written that way is invisible to the preflight rather than merely "
+        "unrostered."
+    )
+
+
+@pytest.mark.parametrize(
+    ("label", "grader"),
+    [
+        (
+            "a local in a different function than the walk",
+            "def test_reads_the_tree():\n    root = PKG\n    assert root.is_dir()\n\n\n"
+            "def test_walks_a_fixture(tmp_path):\n    root = tmp_path\n"
+            "    for p in root.rglob('*.py'):\n        pass\n",
+        ),
+        (
+            "a local rebound to a subpackage closer to the walk",
+            "def test_it():\n    root = PKG\n\n    def _sweep():\n        root = PKG / 'policies'\n"
+            "        return [p for p in root.rglob('*.py')]\n\n    assert _sweep() is not None\n",
+        ),
+        (
+            "a local bound to a fixture directory beside the test",
+            "def test_it():\n    root = pathlib.Path(__file__).parent / 'fixtures'\n"
+            "    for p in root.rglob('*.py'):\n        pass\n",
+        ),
+        (
+            "a local bound to a subpackage",
+            "def test_it():\n    root = PKG / 'policies'\n    for p in root.rglob('*.py'):\n        pass\n",
+        ),
+    ],
+)
+def test_a_local_the_walk_cannot_see_lends_nothing(label: str, grader: str) -> None:
+    """Reading locals must not lend a name across functions that do not share it.
+
+    The first case is the live shape this separation is measured against.
+    ``tests/policies/curobo/test_action_horizon_domain.py`` binds the repository
+    root in one test method - to *read* a file, not to walk one - and walks a
+    subpackage in another. Reading every assignment in the module would let the
+    first method's root stand in for the second method's receiver and select the
+    file; reading only the assignments the enclosing functions own leaves it
+    out, which is correct, because a path-scoped run over
+    ``tests/policies/`` does collect it.
+
+    The second case grades the same attribution one scope in: a nested function
+    that rebinds the name resolves to its own value, as Python does.
+    """
+    source = f"import pathlib\n\nimport strands_robots\n\nPKG = pathlib.Path(strands_robots.__file__).resolve().parent\n\n{grader}\n"
+    assert not _selects(source, _TESTS_ROOT / "subject" / "test_planted.py"), (
+        f"the derivation selected a module whose walk root is only ever {label}. "
+        "Resolving a local is meant to read the same walks the tree already has, "
+        "not to widen the class of walk that counts as whole-tree."
+    )
+
+
+@pytest.mark.parametrize(
+    ("label", "grader"),
+    [
+        (
+            "a class the named module defines",
+            "from strands_robots.simulation.base import SimEngine\n\n"
+            "ROOT = pathlib.Path(inspect.getfile(SimEngine)).parents[1]\n\n"
+            "for p in ROOT.rglob('*.py'):\n    pass\n",
+        ),
+        (
+            "a function the named module defines",
+            "from strands_robots.utils import sequence_length\n\n"
+            "ROOT = pathlib.Path(inspect.getfile(sequence_length)).parent\n\n"
+            "for p in ROOT.rglob('*.py'):\n    pass\n",
+        ),
+        (
+            "a symbol read through getsourcefile",
+            "from strands_robots.utils import sequence_length\n\n"
+            "ROOT = pathlib.Path(inspect.getsourcefile(sequence_length)).parent\n\n"
+            "for p in ROOT.rglob('*.py'):\n    pass\n",
+        ),
+        (
+            "a symbol bound under an alias",
+            "from strands_robots.simulation.base import SimEngine as Engine\n\n"
+            "ROOT = pathlib.Path(inspect.getfile(Engine)).parents[1]\n\n"
+            "for p in ROOT.rglob('*.py'):\n    pass\n",
+        ),
+    ],
+)
+def test_a_root_derived_from_an_imported_symbol_resolves(label: str, grader: str) -> None:
+    """A root derived from an imported class or function is selected.
+
+    Deriving the root from a symbol rather than from a path literal is what
+    this repository asks a grader to do, and ``inspect.getfile`` answers the
+    same fact for a class, a function or a module - the file the object was
+    loaded from. Reading only the module spelling resolved the symbol ones to
+    nothing, which skips the grader in the reassuring direction rather than
+    reporting it unrostered. ``label`` names the spelling so a failure says
+    which one stopped resolving.
+    """
+    source = f"import inspect\nimport pathlib\n\n{grader}"
+    assert _selects(source, _TESTS_ROOT / "test_planted.py"), (
+        f"the derivation cannot resolve a root derived from {label}, so a "
+        "grader written that way is invisible to the preflight rather than "
+        "merely unrostered."
+    )
+
+
+def test_a_symbol_the_named_module_does_not_define_is_not_resolved() -> None:
+    """A re-exported symbol resolves to nothing rather than to the re-exporter.
+
+    ``strands_robots.simulation`` re-exports ``Simulation``, which
+    ``strands_robots/simulation/mujoco/simulation.py`` defines. The import
+    statement does not say that, so guessing the re-exporting file would name
+    the wrong directory: ``parents[1]`` of ``simulation/__init__.py`` is the
+    package root - a whole-tree area - while ``parents[1]`` of the file
+    ``inspect.getfile`` really answers is the ``simulation`` subpackage, which
+    is deliberately not one. Resolving a symbol only through the module that
+    *defines* it is what keeps this a rescue rather than a wrong answer.
+    """
+    source = (
+        "import inspect\nimport pathlib\n\n"
+        "from strands_robots.simulation import Simulation\n\n"
+        "ROOT = pathlib.Path(inspect.getfile(Simulation)).parents[1]\n\n"
+        "for p in ROOT.rglob('*.py'):\n    pass\n"
+    )
+    assert not _selects(source, _TESTS_ROOT / "subject" / "test_planted.py"), (
+        "the derivation resolved a re-exported symbol to the file that "
+        "re-exports it. That file is not the one the running grader walks "
+        "from, so the path it yields is a guess, and here the guess is a "
+        "whole-tree area where the truth is a subpackage."
+    )
+
+
+@pytest.mark.parametrize(
+    ("label", "grader"),
+    [
+        (
+            "a static method called through the instance",
+            "class TestIt:\n    @staticmethod\n    def _package_root():\n        return PKG\n\n"
+            "    def test_it(self):\n        for p in self._package_root().rglob('*.py'):\n            pass\n",
+        ),
+        (
+            "a static method called through the class object",
+            "class TestIt:\n    @staticmethod\n    def _package_root():\n        return PKG\n\n"
+            "    @classmethod\n    def test_it(cls):\n"
+            "        for p in cls._package_root().rglob('*.py'):\n            pass\n",
+        ),
+        (
+            "a static method called through its class by name",
+            "class TestIt:\n    @staticmethod\n    def _package_root():\n        return PKG\n\n"
+            "    def test_it(self):\n        for p in TestIt._package_root().rglob('*.py'):\n            pass\n",
+        ),
+        (
+            "a class method",
+            "class TestIt:\n    @classmethod\n    def _package_root(cls):\n        return PKG\n\n"
+            "    def test_it(self):\n        for p in self._package_root().rglob('*.py'):\n            pass\n",
+        ),
+        (
+            "an instance method",
+            "class TestIt:\n    def _package_root(self):\n        return PKG\n\n"
+            "    def test_it(self):\n        for p in self._package_root().rglob('*.py'):\n            pass\n",
+        ),
+        (
+            "a method whose answer a local then holds",
+            "class TestIt:\n    @staticmethod\n    def _package_root():\n        return PKG\n\n"
+            "    def test_it(self):\n        root = self._package_root()\n"
+            "        for p in root.rglob('*.py'):\n            pass\n",
+        ),
+    ],
+)
+def test_a_root_answered_by_a_method_resolves(label: str, grader: str) -> None:
+    """A grader whose root comes from a method of its test class is selected.
+
+    A no-argument helper answering with the root already resolved at module
+    scope; declared as a member of the class that uses it, it is the same
+    helper reached one scope in, and reading only the plain spelling resolved
+    it to nothing. The last case is the live shape - every instance in this
+    tree hands the method's answer to a local and walks that - so the two
+    resolvers have to compose. ``label`` names the spelling so a failure says
+    which one stopped resolving.
+    """
+    source = f"import pathlib\n\nimport strands_robots\n\nPKG = pathlib.Path(strands_robots.__file__).resolve().parent\n\n\n{grader}"
+    assert _selects(source, _TESTS_ROOT / "test_planted.py"), (
+        f"the derivation cannot resolve a root answered by {label}, so a "
+        "grader written that way is invisible to the preflight rather than "
+        "merely unrostered."
+    )
+
+
+@pytest.mark.parametrize(
+    ("label", "grader"),
+    [
+        (
+            "a method that takes the root as an argument",
+            "class TestIt:\n    @staticmethod\n    def _package_root(area):\n        return area\n\n"
+            "    def test_it(self):\n"
+            "        for p in self._package_root(PKG / 'policies').rglob('*.py'):\n            pass\n",
+        ),
+        (
+            "a method answering with a subpackage",
+            "class TestIt:\n    @staticmethod\n    def _package_root():\n        return PKG / 'policies'\n\n"
+            "    def test_it(self):\n        for p in self._package_root().rglob('*.py'):\n            pass\n",
+        ),
+        (
+            "a method answering with a fixture directory beside the test",
+            "class TestIt:\n    @staticmethod\n    def _package_root():\n"
+            "        return pathlib.Path(__file__).parent / 'fixtures'\n\n"
+            "    def test_it(self):\n        for p in self._package_root().rglob('*.py'):\n            pass\n",
+        ),
+        (
+            "a method with two returns, so its answer needs a branch analysis",
+            "class TestIt:\n    @staticmethod\n    def _package_root(flag=True):\n"
+            "        if flag:\n            return PKG\n        return PKG / 'policies'\n\n"
+            "    def test_it(self):\n        for p in self._package_root().rglob('*.py'):\n            pass\n",
+        ),
+    ],
+)
+def test_a_method_that_does_not_answer_with_an_area_is_not_selected(label: str, grader: str) -> None:
+    """Reading a method must not widen *which* walks count as whole-tree.
+
+    The resolver contributes candidate paths; :func:`walk_targets` still
+    decides membership, so a method answering with a subpackage or with its own
+    fixture directory stays out. The first case keeps the no-argument rule
+    honest - a method taking the area is not a helper naming one - and the last
+    states the refusal directly: two returns is a branch this does not follow,
+    so it resolves to nothing rather than to whichever return comes first.
+    """
+    source = f"import pathlib\n\nimport strands_robots\n\nPKG = pathlib.Path(strands_robots.__file__).resolve().parent\n\n\n{grader}"
+    assert not _selects(source, _TESTS_ROOT / "subject" / "test_planted.py"), (
+        f"the derivation selected a module whose walk root is only ever {label}. "
+        "Reading a method is meant to read the same walks the tree already has, "
+        "not to widen the class of walk that counts as whole-tree."
     )
 
 

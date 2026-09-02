@@ -333,10 +333,13 @@ class VideoConfig:
             separators, shell metacharacters, or symlinked target) before a
             writer is opened; set ``STRANDS_ROBOTS_VIDEO_ROOT`` to confine it
             to a sandbox.
-        fps: Frames per second to write. Capped at ``control_frequency``
+        fps: Frames per second to *request*. Capped at ``control_frequency``
             when it would exceed it, so the rollout always plays back at
             real time (a rollout renders at most one frame per control
-            step and cannot be up-sampled).
+            step and cannot be up-sampled). The rate the MP4 was actually
+            written at is :attr:`_RolloutVideoWriter.write_fps`, reported as
+            ``video_fps`` in the :meth:`PolicyRunner.run` result - read that,
+            not this, to know how the file on disk plays.
         camera: Camera name to render from. ``None`` → backend default.
         width: Render width in pixels.
         height: Render height in pixels.
@@ -500,12 +503,30 @@ class _RolloutVideoWriter:
         writer: Any,
         resolved_path: str,
         control_frequency: float,
+        write_fps: int,
     ) -> None:
+        """Bind an opened writer to the rollout that feeds it.
+
+        Args:
+            sim: Backend the frames are rendered from.
+            video: The caller's requested config. ``video.fps`` is the
+                REQUESTED rate and may exceed what a rollout can produce;
+                it drives the capture cadence, not the file.
+            writer: The opened imageio writer.
+            resolved_path: Validated output path the writer holds open.
+            control_frequency: Applied control steps per second of sim time.
+            write_fps: The rate ``writer`` was opened at - the rate the MP4
+                on disk actually plays at, which is ``video.fps`` capped to
+                ``control_frequency`` (see :meth:`open`). Required rather
+                than re-derived, so no consumer reports the requested rate
+                for a file written at another one.
+        """
         self.sim = sim
         self.video = video
         self.path = resolved_path
         self._writer = writer
         self.frame_count = 0
+        self.write_fps = write_fps
         self._frame_interval = control_frequency / max(video.fps, 1)
         self._next_frame_step = 0.0
 
@@ -603,7 +624,7 @@ class _RolloutVideoWriter:
         writer = imageio.get_writer(  # type: ignore[attr-defined]
             resolved, fps=write_fps, quality=8, macro_block_size=1
         )
-        return cls(sim, video, writer, resolved, control_frequency), None
+        return cls(sim, video, writer, resolved, control_frequency, write_fps), None
 
     def capture(self, step_count: int) -> None:
         """Append one frame if the fps cadence is due at ``step_count``.
@@ -1530,8 +1551,11 @@ class PolicyRunner:
             cooperative stop, e.g. ``stop_policy``; on ``status="error"``
             results the field is ``"error"``), ``action_errors``,
             ``video_path`` (``None`` when
-            no MP4 was written), ``video_frames`` and ``sim_time_s`` (when the
-            backend reports sim time) - so callers can self-correct without
+            no MP4 was written), ``video_frames``, ``video_fps`` (the rate the
+            MP4 plays at - the requested ``fps`` capped to
+            ``control_frequency``, since a rollout renders at most one frame
+            per control step; ``None`` when no MP4 was written) and
+            ``sim_time_s`` (when the backend reports sim time) - so callers can self-correct without
             regex-parsing the human-readable ``text``. The block also carries the
             async-RTC telemetry (``rtc_async_enabled``, ``rtc_chunks_acquired``,
             ``rtc_prefetch_hits``, ``rtc_prefetch_blocks``, ``rtc_avg_inference_ms``,
@@ -2567,7 +2591,7 @@ class PolicyRunner:
                 file_kb = os.path.getsize(video_path) / 1024
                 text += (
                     f"\nVideo: {video_path}\n"
-                    f"{frame_count} frames, {video.fps}fps, "
+                    f"{frame_count} frames, {vwriter.write_fps}fps, "
                     f"{video.width}x{video.height} | {file_kb:.0f} KB"
                 )
             else:
@@ -2606,6 +2630,11 @@ class PolicyRunner:
             "action_errors": _action_errors,
             "video_path": None,
             "video_frames": 0,
+            # The rate the MP4 plays at, which is the requested ``fps`` capped
+            # to ``control_frequency`` (a rollout renders at most one frame per
+            # control step). ``None`` when no MP4 was written. Callers deriving
+            # playback length need this rather than the rate they asked for.
+            "video_fps": None,
             # Load telemetry of the policy that drove this rollout. For
             # LerobotLocalPolicy these reflect the process-level model cache:
             # policy_load_cache_hit=False on episode 2+ of a loop is a smell
@@ -2637,6 +2666,7 @@ class PolicyRunner:
             wrote_video = vwriter.frame_count > 0 and os.path.exists(_vp)
             payload["video_path"] = _vp if wrote_video else None
             payload["video_frames"] = vwriter.frame_count
+            payload["video_fps"] = vwriter.write_fps if wrote_video else None
         payload.update(_rtc_telemetry())
 
         # Per-actuator resolution stats (issue #165): fractions over the steps

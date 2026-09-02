@@ -263,7 +263,11 @@ class CompositeFrame:
         depth: ``(H, W) float32`` foreground depth in meters (the simulation
             depth, since the foreground is what the user usually cares about
             measuring).
-        camera: :class:`CameraParams` used to render this frame.
+        camera: :class:`CameraParams` used to render this frame. Every array
+            above is ``(camera.height, camera.width)``, so ``camera.K``
+            describes them - :meth:`HybridCompositor.render` refuses a layer
+            at any other size rather than returning a frame its own camera
+            cannot describe.
     """
 
     rgb: np.ndarray
@@ -432,6 +436,11 @@ class HybridCompositor:
                 compositing without depth would silently paint the background
                 over/under the wrong pixels, and silent wrong output is
                 forbidden. Use a depth-capable backend (MuJoCo, Isaac).
+                Also if any layer (either ``get_frame`` buffer, or either
+                buffer from the :class:`BackgroundRenderer`) is not the size
+                the resolved camera declares: the returned frame reports that
+                camera, so a layer at another size cannot be composited into
+                the image its ``K`` describes.
         """
         for label, size in (("width", width), ("height", height)):
             if size is not None and (text := positive_whole_number_error(size, label, "HybridCompositor.render")):
@@ -460,12 +469,44 @@ class HybridCompositor:
 
         bg_rgb, bg_depth = self._background_for(cam, camera_name)
 
-        # Align shapes defensively (foreground and background should both
-        # match the camera resolution, but guard against off-by-one).
-        h = min(fg_rgb.shape[0], bg_rgb.shape[0])
-        w = min(fg_rgb.shape[1], bg_rgb.shape[1])
-        fg_rgb, fg_depth = fg_rgb[:h, :w], fg_depth[:h, :w]
-        bg_rgb, bg_depth = bg_rgb[:h, :w], bg_depth[:h, :w]
+        # Every layer must be the size ``cam`` declares, because ``cam`` is
+        # what the returned frame reports: its ``K`` places the principal
+        # point at (cam.width / 2, cam.height / 2), and consumers project into
+        # an image of that size. Truncating to the shortest layer instead
+        # (``h = min(fg.shape[0], bg.shape[0])``) returned a composite ``cam``
+        # cannot describe - a 64x64 frame whose reported principal point
+        # (160, 120) lies outside it - at a size the caller never asked for
+        # and with nothing saying so. Refused for the reason the no-depth
+        # refusal above states: silent wrong output is forbidden. It is also
+        # the disposition the foreground's own producer already applies, since
+        # ``IsaacSimEngine.get_frame`` raises on a size it cannot render
+        # "rather than silently dropping the requested size".
+        for label, remedy, *layers in (
+            (
+                "foreground",
+                f"{type(self.sim).__name__}.get_frame must return arrays of the size it is asked for",
+                ("rgb", fg_rgb),
+                ("depth", fg_depth),
+            ),
+            (
+                "background",
+                f"{self.background.name!r} (a BackgroundRenderer) must return "
+                "(cam.height, cam.width) arrays for the CameraParams it is given",
+                ("rgb", bg_rgb),
+                ("depth", bg_depth),
+            ),
+        ):
+            for buffer_name, layer in layers:
+                got_h, got_w = layer.shape[0], layer.shape[1]
+                if (got_h, got_w) != (cam.height, cam.width):
+                    raise RuntimeError(
+                        f"HybridCompositor.render: the {label} {buffer_name} for camera "
+                        f"{camera_name!r} is {got_w}x{got_h}, not the {cam.width}x{cam.height} "
+                        f"the camera declares. The composited frame is described by its "
+                        f"camera parameters, whose principal point is "
+                        f"({cam.K[0, 2]:.1f}, {cam.K[1, 2]:.1f}) - a layer at another size "
+                        f"cannot be composited into that image. {remedy}."
+                    )
 
         # Foreground pixels are valid where the sim saw real geometry:
         # finite depth above epsilon (Isaac reports no-hit as 0 / inf) and
@@ -479,7 +520,7 @@ class HybridCompositor:
             # catcher plane the scene renders. They never win the composite --
             # the photoreal backdrop owns that surface -- but the shading the
             # simulator rendered onto them carries the robot's cast shadow.
-            plane_d = plane_depth(cam, self.shadow_plane_z)[:h, :w]
+            plane_d = plane_depth(cam, self.shadow_plane_z)
             catcher = valid_fg & np.isfinite(plane_d) & (np.abs(fg_depth - plane_d) <= self.shadow_plane_tolerance)
             valid_fg = valid_fg & ~catcher
 

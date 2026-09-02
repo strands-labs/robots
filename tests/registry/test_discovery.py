@@ -194,7 +194,6 @@ def test_resolve_model_path_uses_discovery_for_uncurated_robot(monkeypatch, tmp_
     (disc_dir / "discbot.xml").write_text(_MINIMAL_MJCF)
     monkeypatch.setenv("STRANDS_BASE_DIR", str(tmp_path))
     monkeypatch.setenv("STRANDS_ASSETS_DIR", str(assets_dir))
-    manager._MESH_CACHE.clear()
 
     synth = {
         "description": "discbot (discovered)",

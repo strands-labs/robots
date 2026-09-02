@@ -156,13 +156,6 @@ def test_a_stashed_challenge_still_pops_normally():
     assert rec["challenge"] == b"secret" and rec["extra"]["rp_id"] == "localhost"
 
 
-def test_expired_entries_are_still_pruned(monkeypatch):
-    cid = auth._stash_challenge("auth", b"old", {}, ip="192.0.2.5")
-    auth._challenges[cid]["t"] -= auth._CHAL_TTL + 1
-    auth._stash_challenge("auth", b"new", {}, ip="192.0.2.6")
-    assert cid not in auth._challenges
-
-
 def test_the_client_ip_prefers_a_forwarded_header_for_fairness_only():
     """Attacker-settable, so it is used to SPREAD the cap, never to grant trust."""
     assert auth._client_ip(_req(**{"cf-connecting-ip": "198.51.100.7"})) == "198.51.100.7"

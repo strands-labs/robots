@@ -286,9 +286,23 @@ class ReachyMiniDriver(DeviceDriver):
         )
 
     async def disconnect(self) -> None:
-        """Tear down the hardware link."""
-        if self._hw:
-            await self._hw.stop()
+        """Tear down the hardware link and drop the handle to it.
+
+        The handle is dropped before the stop is awaited because
+        :meth:`_send_cmd` reads it as its "is the link connected?" test, and a
+        link left in ``_hw`` keeps that guard unreachable. A movement RPC
+        issued after a disconnect is then not refused: on the Wireless variant
+        :meth:`ZenohLink.send_cmd` publishes to ``<prefix>/command`` and the
+        RPC reports success, actuating the head after the driver was told to
+        let go of it; on the Lite variant it reaches a closed socket instead.
+
+        Clearing first also holds when the stop itself fails - the link is
+        being torn down either way, so the driver must stop treating it as
+        connected.
+        """
+        hw, self._hw = self._hw, None
+        if hw:
+            await hw.stop()
 
     # ── Helpers ────────────────────────────────────────────────
 

@@ -23,13 +23,13 @@ hardware control loop - a remote one works too.
 ## Install
 
 ```bash
-pip install 'strands-robots[inference]'   # pulls websockets>=13.0 (numpy-agnostic)
+pip install 'strands-robots[inference]'   # pulls websockets>=17.0 (numpy-agnostic)
 ```
 
 The extra depends only on `websockets`, so it composes cleanly with `lerobot`
-(`numpy>=2`) in the same environment. The `>=13.0` floor is the release that
-first ships `websockets.sync.server.Server`, the class this module annotates
-`PolicyServer._server` with; 12.0 spells it `WebSocketServer`.
+(`numpy>=2`) in the same environment. The `>=17.0` floor is the release whose
+`Server.shutdown()` closes the connections it accepted rather than the listening
+socket alone - see the teardown contract below.
 
 ## 1. Start the server (GPU box)
 
@@ -62,6 +62,24 @@ print(server.port)
 ...
 server.stop()
 ```
+
+Either teardown stops the server *serving*, not just listening: `stop()` (and
+`serve()` returning) closes the listening socket **and** every client connection
+still open, and returns only once every connection handler has terminated. So the
+wrapped policy is no longer invoked for a client that was already connected, and
+neither call returns while a handler could still send one more action chunk. A
+handler inside an inference call notices the close when that call returns, so a
+teardown that lands mid-inference returns when that inference does.
+
+That contract is the reason for the `>=17.0` floor above rather than something
+this module implements: through websockets 16.x `Server.shutdown()` closed the
+listening socket and nothing else, each accepted connection was served on a
+thread that outlived the server object, and `stop()` returned in 0.18ms while the
+same open connection went on being answered with action chunks - on a robot, the
+policy still driving the arm after the operator was told the server stopped. The
+teardown is graded from a client's point of view by
+`tests/inference/test_a_stopped_server_stops_serving_its_clients.py`, which fails
+on 16.1.1 and passes from 17.0.
 
 `port` is an `int` in `[1, 65535]`, plus `0` for the ephemeral bind above. A
 value outside that - a negative, an out-of-range number, a float, a `bool`, a

@@ -183,7 +183,17 @@ class HardwareDriver(Protocol):
         """
 
     async def stop(self) -> None:
-        """Stop motion and any background loop, leaving the robot connected."""
+        """Stop motion and any background loop, leaving the robot connected.
+
+        Annotated ``-> None``, so it carries no verdict: a caller that needs the
+        halt outcome reads :meth:`stop_task`, which decides one. That is exactly
+        what makes the log the *only* place a halt this hook could not complete
+        can be recorded, so an implementation that delegates to a halt verb must
+        read that verb's envelope and log a non-success, naming what may still be
+        moving. Discarding it returns from shutdown reporting a robot as stopped
+        on the one surface that carries no way to say otherwise.
+        :func:`halt_failure_detail` reads the reason out of such an envelope.
+        """
 
     def cleanup(self) -> None:
         """Release the device and every background resource held for it."""
@@ -226,3 +236,37 @@ def missing_driver_members(candidate: object) -> tuple[str, ...]:
         satisfies the whole surface.
     """
     return tuple(name for name in DRIVER_SURFACE if not hasattr(candidate, name))
+
+
+def halt_failure_detail(envelope: dict[str, Any]) -> str | None:
+    """Read why a halt did not complete, or ``None`` when it did.
+
+    :meth:`HardwareDriver.stop` carries no verdict, so the envelope of the halt
+    verb it delegates to is the only one there is and the log is the only place
+    it survives. This renders that envelope as the detail such a log line
+    quotes, in one place rather than once per driver, because the shipped halt
+    verbs answer in two shapes: a refusal *text*, and a per-half *outcome* dict
+    naming which half of a two-part halt failed.
+
+    Args:
+        envelope: The halt verb's own status envelope.
+
+    Returns:
+        The reason, or ``None`` when ``envelope`` reports success. A non-success
+        envelope always yields a string - a failure whose content this cannot
+        parse still reports as a failure, because returning ``None`` there would
+        read as "the halt landed".
+    """
+    if envelope.get("status") == "success":
+        return None
+    blocks = [block for block in envelope.get("content") or [] if isinstance(block, dict)]
+    if texts := [str(block["text"]).strip() for block in blocks if block.get("text")]:
+        return " ".join(texts)
+    if payloads := [block["json"] for block in blocks if "json" in block]:
+        return "; ".join(
+            ", ".join(f"{key}={value!r}" for key, value in sorted(payload.items()))
+            if isinstance(payload, dict)
+            else repr(payload)
+            for payload in payloads
+        )
+    return "no detail reported"

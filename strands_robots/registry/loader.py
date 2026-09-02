@@ -1,4 +1,4 @@
-"""JSON registry loader with mtime-based hot-reload and validation.
+"""JSON registry loader with content-keyed hot-reload and validation.
 
 Loads robots.json and policies.json from the registry directory,
 re-reading only when the on-disk source changes.  Validates uniqueness of
@@ -7,11 +7,19 @@ aliases, shorthands, and URL patterns on every reload.
 The ``robots`` registry is not a single file: its effective contents are the
 package ``robots.json`` merged with the user-local overlay
 (``$STRANDS_BASE_DIR/user_robots.json`` - see :func:`_merge_user_robots`).  The
-hot-reload signature therefore tracks the mtimes of *both* files, so an edit to
-the user overlay made outside this process (a second process, a manual edit, or
-any writer that does not call :func:`invalidate_cache`) is picked up on the next
+hot-reload signature therefore covers *both* files, so an edit to the user
+overlay made outside this process (a second process, a manual edit, or any
+writer that does not call :func:`invalidate_cache`) is picked up on the next
 read - honoring the "re-read when the source changes" contract for the overlay
 just as for the package file.
+
+The signature is the file *contents*, not a stat.  A timestamp cannot express
+"the source changed": the kernel stamps ``st_mtime`` from a coarse clock, so
+two writes inside one tick share a timestamp and the second one is invisible -
+permanently, because that timestamp never changes again.  The bytes are the
+only field that always differs when the contents differ, so a cached value is
+served only while the file still holds the bytes it was parsed from.  The read
+is what licenses the hit; the parse and validation are the work it saves.
 """
 
 import json
@@ -22,36 +30,36 @@ logger = logging.getLogger(__name__)
 
 _REGISTRY_DIR = Path(__file__).parent
 _cache: dict[str, dict] = {}
-# Cache-validity signature per registry (a tuple of mtimes).  For ``robots``
-# the signature is (package_mtime, user_overlay_mtime_or_None); for every other
-# registry it is (package_mtime,).
-_mtimes: dict[str, tuple] = {}
+# Cache-validity signature per registry: the bytes the cached value was parsed
+# from.  For ``robots`` the signature is (package_source, overlay_source_or_None);
+# for every other registry it is (package_source,).
+_sources: dict[str, tuple] = {}
 
 
-def _user_registry_mtime() -> float | None:
-    """Modification time of the user-local robot overlay, or None if absent.
+def _user_registry_source() -> bytes | None:
+    """Contents of the user-local robot overlay, or None if absent.
 
     Kept in :mod:`user_registry` so the overlay path has a single source of
     truth; imported lazily to avoid an import cycle (``user_registry`` imports
     :func:`invalidate_cache` from this module).
     """
     try:
-        from .user_registry import user_registry_mtime
+        from .user_registry import user_registry_source
     except ImportError:
         return None
-    return user_registry_mtime()
+    return user_registry_source()
 
 
-def _registry_signature(name: str, pkg_mtime: float) -> tuple:
-    """Cache-validity signature for a registry.
+def _registry_signature(name: str, package_source: bytes) -> tuple:
+    """Cache-validity signature for a registry: the bytes it is parsed from.
 
     The ``robots`` registry merges the user overlay on top of the package JSON,
-    so its signature includes the overlay's mtime - otherwise an external edit
-    to ``user_robots.json`` would never invalidate the cached merge.
+    so its signature includes the overlay's contents - otherwise an external
+    edit to ``user_robots.json`` would never invalidate the cached merge.
     """
     if name != "robots":
-        return (pkg_mtime,)
-    return (pkg_mtime, _user_registry_mtime())
+        return (package_source,)
+    return (package_source, _user_registry_source())
 
 
 def _load(name: str) -> dict:
@@ -65,39 +73,47 @@ def _load(name: str) -> dict:
     """
     path = _REGISTRY_DIR / f"{name}.json"
     try:
-        pkg_mtime = path.stat().st_mtime
+        package_source = path.read_bytes()
     except FileNotFoundError:
         logger.error("Registry file not found: %s", path)
         return {}
 
-    signature = _registry_signature(name, pkg_mtime)
-    if name not in _cache or _mtimes.get(name) != signature:
-        with open(path, encoding="utf-8") as f:
-            data = json.load(f)
+    signature = _registry_signature(name, package_source)
+    if name not in _cache or _sources.get(name) != signature:
+        data = json.loads(package_source)
 
-        # Merge user-local robot registry (overlay on top of package JSON)
+        # Merge user-local robot registry (overlay on top of package JSON).
+        # Parsed from the bytes the signature was taken from, so the cached
+        # merge and the signature can never describe different overlay states.
         if name == "robots":
-            data = _merge_user_robots(data)
+            _, overlay_source = signature
+            data = _merge_user_robots(data, overlay_source)
 
         _validate(name, data)
         _cache[name] = data
-        _mtimes[name] = signature
-        logger.debug("Loaded registry: %s (%d bytes)", path, path.stat().st_size)
+        _sources[name] = signature
+        logger.debug("Loaded registry: %s (%d bytes)", path, len(package_source))
 
     return _cache[name]
 
 
-def _merge_user_robots(data: dict) -> dict:
+def _merge_user_robots(data: dict, overlay_source: bytes | None) -> dict:
     """Merge user-local robot registry on top of package robots.json.
 
     User entries override package entries on name collision.
+
+    Args:
+        data: Parsed package ``robots.json``.
+        overlay_source: Contents of ``user_robots.json``, or None when the
+            overlay is absent.  Taken from the caller rather than re-read so
+            the merged value and the cache signature describe the same bytes.
     """
     try:
-        from .user_registry import get_user_robots
+        from .user_registry import parse_user_robots
     except ImportError:
         return data
 
-    user_robots = get_user_robots()
+    user_robots = parse_user_robots(overlay_source)
     if not user_robots:
         return data
 
@@ -130,7 +146,7 @@ def _validate_robots(data: dict) -> None:
             robot name, or a ``hardware.driver`` outside
             :data:`~strands_robots.drivers.base.DRIVER_CHOICES`.
     """
-    # Imported lazily for the same reason as :func:`_user_registry_mtime` above:
+    # Imported lazily for the same reason as :func:`_user_registry_source` above:
     # the driver seam reads the registry, so importing it at module scope would
     # close an import cycle. A driver name is validated here rather than where it
     # is read, because every reader - the factory, a tool, a driver package -
@@ -204,9 +220,9 @@ def _validate_policies(data: dict) -> None:
 
 
 def reload() -> None:
-    """Force-reload all registry files (clears mtime cache)."""
+    """Force-reload all registry files (clears the cached sources)."""
     _cache.clear()
-    _mtimes.clear()
+    _sources.clear()
 
 
 def invalidate_cache(name: str | None = None) -> None:
@@ -217,7 +233,7 @@ def invalidate_cache(name: str | None = None) -> None:
     """
     if name is None:
         _cache.clear()
-        _mtimes.clear()
+        _sources.clear()
     else:
         _cache.pop(name, None)
-        _mtimes.pop(name, None)
+        _sources.pop(name, None)

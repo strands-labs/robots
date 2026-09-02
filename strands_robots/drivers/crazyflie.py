@@ -98,6 +98,7 @@ import threading
 from collections.abc import AsyncGenerator, Mapping
 from typing import TYPE_CHECKING, Any, cast
 
+from strands_robots.drivers.base import halt_failure_detail
 from strands_robots.mesh.pacing import Ticker
 from strands_robots.utils import (
     finite_number_error,
@@ -1082,10 +1083,15 @@ class CrazyflieDriver:
         the ground. So this **lands**; it never cuts the motors. Cutting them is
         :meth:`emergency_stop`, which a caller has to name.
         """
-        if self.is_connected:
-            self.land()
-        else:
+        if not self.is_connected:
             self._halt_repeater()
+            return
+        if (detail := halt_failure_detail(self.land())) is not None:
+            logger.error(
+                "%s.stop(): the descent was refused, and the aircraft may still be flying: %s",
+                self._tool_name,
+                detail,
+            )
 
     def cleanup(self) -> None:
         """Land, stop the log block and close the radio link.

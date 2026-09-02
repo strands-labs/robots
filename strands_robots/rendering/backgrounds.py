@@ -63,9 +63,14 @@ class BackgroundRenderer(Protocol):
 
         Returns:
             ``rgb`` as ``(H, W, 3) uint8`` and ``depth`` as ``(H, W) float32``
-            in meters. Pixels at "infinity" should report ``depth = np.inf``
-            (or any value larger than ``cam.zfar``) so the compositor's depth
-            test always picks the foreground.
+            in meters, where ``(H, W)`` is exactly
+            ``(cam.height, cam.width)`` - the composited frame reports ``cam``,
+            so a layer at any other size is refused by
+            :meth:`~strands_robots.rendering.HybridCompositor.render` rather
+            than truncated into a frame ``cam.K`` does not describe. Pixels at
+            "infinity" should report ``depth = np.inf`` (or any value larger
+            than ``cam.zfar``) so the compositor's depth test always picks the
+            foreground.
         """
 
 

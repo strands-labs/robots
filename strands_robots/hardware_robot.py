@@ -1852,6 +1852,15 @@ class Robot(TeleopMixin, AgentTool):
         so the same budget cannot be refused for a digital twin and accepted
         for the arm it mirrors.
 
+        That parity is over the value domain, and it stops one control period
+        short of zero. In sim ``duration`` is a FACTOR of the step count
+        (``int(duration * control_frequency)``), so the sim guard additionally
+        refuses a duration below one control period - it resolves to no steps
+        there. Here it is a deadline the loop compares elapsed time against, so
+        the first iteration always runs and any positive budget commands the arm
+        at least once. The difference is in what the parameter means, not in the
+        values the two layers consider usable.
+
         Args:
             duration: The caller-supplied value to validate.
             method: Public entry point name, used to prefix the message.

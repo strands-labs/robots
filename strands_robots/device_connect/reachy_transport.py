@@ -321,11 +321,23 @@ class WebSocketLink(HardwareLink):
                 pass  # skip malformed frame; keep reading
 
     async def stop(self) -> None:
-        """Cancel the read loop and close the WebSocket connection."""
+        """Cancel the read loop, drop the socket handle, and close it.
+
+        The handle is dropped before the close is awaited because
+        :meth:`send_cmd` reads it as its "is the socket connected?" test. A
+        closed socket left in ``_ws`` is still truthy, so that guard cannot see
+        a stop: the send goes ahead on a closed connection and surfaces as the
+        ``ConnectionClosed`` the socket raises, out of a method documented to
+        be a no-op when the socket is not connected.
+
+        Clearing first also holds when the close itself fails - the socket is
+        gone either way, so the link must stop offering it as connected.
+        """
         if self._read_task:
             self._read_task.cancel()
-        if self._ws:
-            await self._ws.close()
+        ws, self._ws = self._ws, None
+        if ws:
+            await ws.close()
 
     async def send_cmd(self, cmd: dict[str, Any]) -> None:
         """Translate the first recognised command key to the daemon wire format.

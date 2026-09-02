@@ -291,6 +291,18 @@ class TestPersistence:
         path.write_text("NOT JSON!!!")
         assert _load_user_registry() == {"robots": {}}
 
+    def test_bytes_that_are_not_utf8_return_empty(self):
+        """A corrupt overlay is ignored however it is corrupt.
+
+        Truncated JSON and undecodable bytes are the same failure to a reader -
+        the file does not hold robot definitions - so an overlay written by a
+        crashed writer must not raise out of ``get_robot()``.
+        """
+        path = _get_user_registry_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b'{"robots": {"\xff\xfe": {}}}')
+        assert _load_user_registry() == {"robots": {}}
+
     def test_valid_json_without_robots_key_returns_empty(self):
         path = _get_user_registry_path()
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -311,7 +323,7 @@ class TestLoaderMerge:
 
         data = {"robots": {"fake": {"description": "test"}}}
         with mock.patch.dict("sys.modules", {"strands_robots.registry.user_registry": None}):
-            result = _merge_user_robots(data)
+            result = _merge_user_robots(data, None)
         assert "fake" in result["robots"]
 
 

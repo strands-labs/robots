@@ -34,6 +34,11 @@ from strands_robots.tools.pose_tool import MotorController, pose_tool
 
 from .conftest import FakeSerial
 
+#: This repository's test tree, located from this file rather than from the
+#: working directory. ``Path("tests")`` named whichever directory the process
+#: happened to start in, so the hazard sweep below graded a tree that was not
+#: there and reported it clean.
+_TEST_TREE = Path(__file__).resolve().parents[2] / "tests"
 _PORT = "/dev/ttyTEST"
 _TORQUE_ENABLE_ADDR = 0x28
 _MOTOR_IDS = {"shoulder_pan": 1, "shoulder_lift": 2, "elbow_flex": 3, "wrist_flex": 4, "wrist_roll": 5, "gripper": 6}
@@ -173,9 +178,17 @@ def test_no_test_calls_emergency_stop_on_the_default_port():
     it silently passes on a developer box with nothing plugged in and drops a
     live arm on one that has hardware. Walk the whole test tree by AST so the
     hazard cannot be reintroduced in a file nobody thinks to check.
+
+    The tree is located from this file rather than from the working directory.
+    ``Path("tests")`` resolved against wherever the process started, so a run
+    from any other directory swept zero files and reported the tree clean - the
+    one direction a safety guard must never fail in. ``scanned`` carries that
+    proof: a sweep that saw nothing fails here instead of passing.
     """
     offenders = []
-    for path in sorted(Path("tests").rglob("*.py")):
+    scanned = 0
+    for path in sorted(_TEST_TREE.rglob("*.py")):
+        scanned += 1
         for node in ast.walk(ast.parse(path.read_text())):
             if not isinstance(node, ast.Call):
                 continue
@@ -191,4 +204,8 @@ def test_no_test_calls_emergency_stop_on_the_default_port():
             if action == "emergency_stop" and "port" not in kwargs:
                 offenders.append(f"{path}:{node.lineno}")
 
+    assert scanned > 100, (
+        f"the sweep read {scanned} test modules, so it graded almost nothing - it is rooted at "
+        f"{_TEST_TREE}, which is not this repository's test tree"
+    )
     assert not offenders, f"emergency_stop called without an explicit port: {offenders}"

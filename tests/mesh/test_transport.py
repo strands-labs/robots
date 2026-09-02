@@ -26,6 +26,20 @@ from strands_robots.mesh.transport.iot_transport import (
     _zenoh_to_mqtt_filter,
 )
 
+
+@pytest.fixture(autouse=True)
+def _mesh_kill_switch_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    """This module acquires sessions, so it opts the kill switch off explicitly.
+
+    ``tests/conftest.py`` sets ``STRANDS_MESH=false`` for the whole suite and documents
+    that mesh tests opt back in "explicitly via ``monkeypatch.delenv``". That opt-in was
+    decorative until the acquire doors asked the switch, so the tests here were handed a
+    session without ever declaring they wanted one. A cell that grades the DISABLED
+    direction sets the variable itself and still wins, being the later write.
+    """
+    monkeypatch.delenv("STRANDS_MESH", raising=False)
+
+
 # Protocol shape
 
 

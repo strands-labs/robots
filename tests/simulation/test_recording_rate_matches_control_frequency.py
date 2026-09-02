@@ -50,6 +50,7 @@ import contextlib
 import time
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 pytest.importorskip("mujoco")
@@ -61,6 +62,7 @@ from strands_robots.simulation.policy_runner import PolicyRunner  # noqa: E402
 from strands_robots.simulation.recording import (  # noqa: E402
     dataset_rate_mismatch_error,
     dataset_rate_mismatch_reason,
+    dataset_recording_option_error,
     rate_mismatch_explanation,
     recorder_dataset_fps,
     requested_rate_mismatch_reason,
@@ -234,6 +236,55 @@ class TestTheGuardHelperIsRobust:
 
     def test_a_boolean_rate_is_not_read_as_one(self):
         assert recorder_dataset_fps(_FakeRecorder(True)) is None
+        assert recorder_dataset_fps(_FakeRecorder(np.bool_(True))) is None
+
+    @pytest.mark.parametrize("rate", [np.int64(30), np.int32(30), np.float32(30.0), np.float64(30.0)])
+    def test_a_numpy_rate_is_read_rather_than_treated_as_an_unreadable_layout(self, rate):
+        """A whole rate is a whole rate whichever scalar type carries it.
+
+        ``numpy.int64`` and ``numpy.float32`` are not ``int``/``float``
+        subclasses, so classifying on ``int | float`` reported them as "no
+        readable rate" - and the one caller reads that as "do not judge", so the
+        mismatch refusal was skipped and the episode was written on a timebase
+        that mislabels it. ``numpy.float64`` IS a ``float`` subclass, so the
+        narrowing held for one numpy spelling and not its siblings.
+        """
+        assert recorder_dataset_fps(_FakeRecorder(rate)) == 30
+        assert recorder_dataset_fps(_MetaOnlyRecorder(rate)) == 30
+        # A built-in ``int``, not the numpy scalar passed through: the annotation
+        # says ``int``, and the value is handed to ``1.0 / fps`` and into a reason
+        # string. ``== 30`` holds for a numpy scalar too, so the identity is
+        # asserted rather than left implied by the equality above.
+        assert type(recorder_dataset_fps(_FakeRecorder(rate))) is int
+
+    @pytest.mark.parametrize("rate", [10**400, -(10**400)])
+    def test_a_rate_beyond_the_float_range_is_an_unreadable_layout_not_an_exception(self, rate):
+        """A rate no recording can be written at is reported, not raised.
+
+        This rate arrives off disk rather than from a caller, so no domain has
+        classified it: ``meta/info.json`` is JSON, whose integer literals are
+        unbounded, and LeRobot's ``fps`` field is an unenforced dataclass
+        annotation - so ``LeRobotDataset`` opens such a dataset without complaint
+        and hands the 401-digit ``int`` straight to this reader. Letting the
+        conversion raise escaped a function documented to answer ``None`` for a
+        layout it cannot read, and the caller reported it as the dataset having
+        failed to open, which it had not. Measured through ``start_recording``
+        against a recorded dataset whose on-disk ``fps`` was edited to that
+        value: ``error: Dataset init failed: int too large to convert to float``,
+        naming neither the field nor a remedy, while the fractional and infinite
+        rates beside it resumed as the unreadable layouts they are.
+
+        Both signs are asserted because resolving the rate through ``float`` -
+        which the typed spelling requires, ``numbers.Real`` carrying no ordering
+        against ``int`` - converts before it can test the sign, so a negative rate
+        reaches the conversion as well. Only the positive one changes what
+        ``start_recording`` reports: LeRobot refuses a negative rate as it opens
+        the dataset ("fps must be positive"), so that sign is a raise this reader
+        owes its own callers rather than a verdict the surface got wrong. It is
+        pinned here, where the contract is, for that reason.
+        """
+        assert recorder_dataset_fps(_FakeRecorder(rate)) is None
+        assert recorder_dataset_fps(_MetaOnlyRecorder(rate)) is None
 
 
 class TestTheRunnerLayerCarriesItsOwnGuarantee:
@@ -585,6 +636,21 @@ class TestTheRolloutRateGuardHelperIsRobust:
         assert rollout_rate_mismatch_reason("start_recording", 50.0, {"arm": 50.0}) is None
         assert rollout_rate_mismatch_reason("start_recording", 30.0, {"arm": 50.0}) is not None
 
+    @pytest.mark.parametrize("fps", [np.int64(30), np.int32(30), np.float32(30.0), np.float64(30.0)])
+    def test_a_numpy_fps_the_domain_accepts_is_judged_and_not_passed_through(self, fps):
+        """Declining to judge an in-domain rate is the distortion, not a nicety.
+
+        ``positive_whole_number_error`` - the domain ``start_recording`` runs
+        ``fps`` through before this guard is asked - accepts every one of these
+        (pinned by ``tests/simulation/test_dataset_recording_fps_contract.py``).
+        So an ``int | float`` narrowing here refuses nothing and reports nothing:
+        ``start_recording`` returns ``status="success"`` and the episode declares
+        30 fps for frames captured at 50 Hz.
+        """
+        assert dataset_recording_option_error("start_recording", fps) is None, "precondition: in domain"
+        assert rollout_rate_mismatch_reason("start_recording", fps, {"arm": 50.0}) is not None
+        assert rollout_rate_mismatch_reason("start_recording", fps, {"arm": 30.0}) is None, "agreeing rate"
+
     def test_a_fractional_capture_rate_offers_only_the_remedy_it_can(self):
         """``fps`` must be whole, so 33.3 Hz has no rate to advise recording at."""
         reason = rollout_rate_mismatch_reason("start_recording", 30, {"arm": 33.3})
@@ -613,7 +679,25 @@ class TestTheRolloutRateGuardHelperIsRobust:
 
 @pytest.mark.parametrize(
     ("fps", "rate"),
-    [(30, 50.0), (50, 30.0), (30, 30.0), (50, 50.0), (25, 25.0), (30, 33.3), (60, 50.0)],
+    [
+        (30, 50.0),
+        (50, 30.0),
+        (30, 30.0),
+        (50, 50.0),
+        (25, 25.0),
+        (30, 33.3),
+        (60, 50.0),
+        # The same pairs with ``fps`` carried by a numpy scalar. An ``fps`` read
+        # out of a config or computed from array shape arrives spelled this way,
+        # the fps domain accepts all of them, and two of the three orderings
+        # classified on ``int | float`` - so the orderings disagreed about a pair
+        # every one of them accepts, which is exactly what this test forbids.
+        (np.int64(30), 50.0),
+        (np.int32(30), 50.0),
+        (np.float32(30.0), 50.0),
+        (np.float64(30.0), 50.0),
+        (np.int64(50), 50.0),
+    ],
 )
 def test_every_ordering_reaches_the_same_verdict_and_explanation(fps, rate):
     """One disagreement, so its orderings may not disagree about it.

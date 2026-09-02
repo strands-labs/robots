@@ -154,17 +154,30 @@ class TestARefusedRateNeverReachesTheMeshPublisher:
 
 
 class TestOneDomainForEveryRateAndDurationKnob:
-    """The shared helper and the sim's rollout knobs cannot diverge."""
+    """The shared helper and the sim's rollout knobs cannot diverge.
+
+    The parity is over the VALUE domain: which durations and rates are usable at
+    all. ``_validate_duration`` then applies one further condition the shared
+    helper cannot express, because it is not a property of the value - a
+    duration shorter than one control period resolves to zero steps at that
+    rate. Every value below is checked at a rate that can execute it, so this
+    class pins the shared domain alone; the rate-dependent refusal is pinned in
+    ``tests/simulation/test_rollout_duration_must_produce_a_control_step.py``.
+    """
+
+    #: A rate at which every usable duration below is many control steps, so
+    #: the horizon condition cannot mask a value-domain disagreement.
+    RATE = 50.0
 
     @pytest.mark.parametrize("value", UNUSABLE + [1, 50.0, 62.5, np.float32(2.5)])
     def test_the_sim_rollout_knobs_agree_with_the_shared_domain(self, value):
         shared_rejects = positive_finite_number_error(value, "x", "m") is not None
-        assert (SimEngine._validate_duration(value, "run_policy") is not None) is shared_rejects
+        assert (SimEngine._validate_duration(value, "run_policy", self.RATE) is not None) is shared_rejects
         assert (SimEngine._validate_positive_frequency(value, "run_policy") is not None) is shared_rejects
 
     def test_the_sim_rollout_messages_are_unchanged(self):
         """Callers (and tests) pin this exact text."""
-        assert SimEngine._validate_duration(0, "run_policy")["content"][0]["text"] == (
+        assert SimEngine._validate_duration(0, "run_policy", self.RATE)["content"][0]["text"] == (
             "run_policy: duration must be > 0, got 0."
         )
         assert SimEngine._validate_positive_frequency(math.nan, "eval_policy")["content"][0]["text"] == (

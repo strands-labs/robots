@@ -284,6 +284,13 @@ _START_RECORDING_BACKENDS = (
     "strands_robots/simulation/newton/recording.py",
 )
 
+#: This repository, located from this file. Every path below is joined onto it:
+#: a relative literal resolves against the working directory, so the reads here
+#: raised ``FileNotFoundError`` and the sweep above graded nothing at all when
+#: the suite ran from anywhere but the repository root.
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_DOCS_TREE = _REPO_ROOT / "docs"
+
 
 def _method_node(module: str, method: str) -> ast.FunctionDef:
     """The ``def method`` node in ``module``, or fail naming what was not found.
@@ -292,7 +299,7 @@ def _method_node(module: str, method: str) -> ast.FunctionDef:
     no method would assert nothing at all - so a missing name fails the test
     rather than yielding an empty set.
     """
-    tree = ast.parse(Path(module).read_text())
+    tree = ast.parse((_REPO_ROOT / module).read_text())
     found = next(
         (node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef) and node.name == method),
         None,
@@ -457,10 +464,13 @@ class TestStartRecordingDocumentsWhereTheDatasetLands:
         The three were independent copies, which is why fixing one left two, so
         the property is asserted over the whole doc tree rather than per page.
         """
+        pages = sorted(_DOCS_TREE.rglob("*.md"))
+        assert len(pages) > 20, (
+            f"the sweep read {len(pages)} pages, so it graded almost nothing - it is rooted at "
+            f"{_DOCS_TREE}, which is not this repository's doc tree"
+        )
         offenders = [
-            path.as_posix()
-            for path in sorted(Path("docs").rglob("*.md"))
-            if "strands_robots/datasets" in path.read_text()
+            path.relative_to(_REPO_ROOT).as_posix() for path in pages if "strands_robots/datasets" in path.read_text()
         ]
         assert not offenders, (
             f"{', '.join(offenders)} names ~/.strands_robots/datasets as a dataset location; "

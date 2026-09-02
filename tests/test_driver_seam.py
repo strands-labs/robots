@@ -556,7 +556,7 @@ class TestARegistryDeclarationIsValidated:
         from strands_robots.registry import loader as loader_mod
 
         source = inspect.getsource(loader_mod._load)
-        merge_at = source.index("_merge_user_robots(data)")
+        merge_at = source.index("_merge_user_robots(data")
         validate_at = source.index("_validate(name, data)")
         assert merge_at < validate_at, (
             "the user overlay must be merged before validation, or a driver typo in user_robots.json is never graded"

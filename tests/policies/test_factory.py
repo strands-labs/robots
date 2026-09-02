@@ -13,6 +13,7 @@ from strands_robots.policies import (
     UntrustedRemoteCodeError,
     create_policy,
     list_providers,
+    policy_overrides_preflight,
     preflight_policy,
     register_policy,
 )
@@ -315,3 +316,45 @@ class TestPreflightPolicy:
         surfaced authoritatively by the subsequent ``create_policy`` call, so
         the preflight seam degrades to a no-op instead of masking that error."""
         assert preflight_policy("nonexistent_provider_xyz_123", {"joint_0"}) is None
+
+
+class TestPolicyOverridesPreflight:
+    """``policy_overrides_preflight`` answers whether ``preflight_policy`` will
+    read its ``observation_keys`` argument, so a caller can decide whether to
+    pay for producing it. The simulation's preflight sources those keys from a
+    ``get_observation`` that renders every camera in the scene.
+    """
+
+    @pytest.mark.parametrize(
+        ("provider", "overrides"),
+        [
+            ("mock", False),
+            ("lerobot_local", True),
+            ("nonexistent_provider_xyz_123", False),
+        ],
+    )
+    def test_the_shipped_verdicts(self, provider, overrides):
+        """``lerobot_local`` is the one shipped provider with a real hook. An
+        unresolvable name reports no hook, matching ``preflight_policy``, which
+        degrades to a no-op for a name it cannot resolve.
+        """
+        assert policy_overrides_preflight(provider) is overrides
+
+    def test_a_registered_override_is_reported(self):
+        register_policy("preflight_overrides_probe", loader=lambda: _PreflightPolicy)
+        assert policy_overrides_preflight("preflight_overrides_probe") is True
+
+    def test_the_answer_agrees_with_whether_the_hook_runs(self):
+        """The two functions must never disagree: a provider reported as having
+        no override must also leave ``_PreflightPolicy``'s recorder untouched.
+        """
+        register_policy("preflight_agreement_probe", loader=lambda: _PreflightPolicy)
+        _PreflightPolicy.preflight_calls.clear()
+
+        assert policy_overrides_preflight("preflight_agreement_probe") is True
+        preflight_policy("preflight_agreement_probe", {"joint_0", "camera_top"})
+        assert len(_PreflightPolicy.preflight_calls) == 1
+
+        assert policy_overrides_preflight("mock") is False
+        preflight_policy("mock", {"joint_0", "camera_top"})
+        assert len(_PreflightPolicy.preflight_calls) == 1

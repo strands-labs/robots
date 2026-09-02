@@ -46,8 +46,26 @@ class FakeSim:
         return CameraParams(K=K, T_world_cam=np.eye(4), width=w, height=h, znear=0.01, zfar=ZFAR)
 
     def get_frame(self, camera_name="default", width=None, height=None):
-        rgb = np.full((H, W, 3), 255, dtype=np.uint8)  # white robot pixels
-        return rgb, self._depth
+        """Return buffers at exactly the size asked for, as a real engine does.
+
+        The MuJoCo backend renders at the requested dimensions and the Isaac
+        one raises rather than return another size, so a double that ignored
+        the request could only be consumed by a compositor that truncated its
+        layers -- which
+        ``tests/rendering/test_composite_layer_size_matches_the_camera.py``
+        now refuses. At the default size this is the frame it always returned.
+        """
+        w, h = int(width or W), int(height or H)
+        rgb = np.full((h, w, 3), 255, dtype=np.uint8)  # white robot pixels
+        depth = self._depth
+        if depth is None or depth.shape == (h, w):
+            return rgb, depth
+        # Re-window the caller's depth pattern into the requested frame; sky
+        # (zfar) fills whatever the pattern does not cover.
+        sized = np.full((h, w), ZFAR, dtype=np.float32)
+        rows, cols = min(h, depth.shape[0]), min(w, depth.shape[1])
+        sized[:rows, :cols] = depth[:rows, :cols]
+        return rgb, sized
 
 
 def _square_depth() -> np.ndarray:

@@ -266,19 +266,33 @@ class TestDomainMatchesSimulation:
     ``SimEngine._validate_duration`` and the hardware guard both delegate to
     ``positive_finite_number_error``; this pins that they cannot diverge, so a
     budget rehearsed in sim is honored on the arm and vice versa.
+
+    The parity is over that shared value domain, and it stops one control period
+    short of zero: in sim ``duration`` is a FACTOR of the step count
+    (``int(duration * control_frequency)``), so a duration below one control
+    period resolves to no steps and is refused, while on the arm it is an
+    elapsed-time DEADLINE (``time.monotonic() - start < duration``) that still
+    admits the first iteration. Both budgets are checked here at a rate under
+    which every usable one is many steps, so the horizon condition cannot mask a
+    value-domain disagreement.
     """
+
+    #: Rate for the sim side of the comparison. Every entry in
+    #: ``USABLE_DURATIONS`` is >= 0.25s, so all of them are >= 12 control steps
+    #: here and the verdicts under test are the value domain's alone.
+    RATE = 50.0
 
     @pytest.mark.parametrize("duration", UNUSABLE_DURATIONS + USABLE_DURATIONS)
     def test_both_layers_agree(self, hw: Any, duration: Any):
         """Refused by one layer if and only if refused by the other."""
-        sim_refuses = SimEngine._validate_duration(duration, "run_policy") is not None
+        sim_refuses = SimEngine._validate_duration(duration, "run_policy", self.RATE) is not None
         hw_refuses = hw._duration_error(duration, "run_policy") is not None
 
         assert hw_refuses == sim_refuses, f"verdicts differ for duration={duration!r}"
 
     def test_the_message_is_the_shared_one(self, hw: Any):
         """Both layers name the parameter identically."""
-        sim_error = SimEngine._validate_duration(0, "run_policy")
+        sim_error = SimEngine._validate_duration(0, "run_policy", self.RATE)
         hw_error = hw._duration_error(0, "run_policy")
 
         assert sim_error is not None and hw_error is not None

@@ -197,7 +197,10 @@ class TestTheCameraToolRefusesAnEscapingName:
             camera_id=0,
             save_path=str(tmp_path / "captures"),
             filename=filename,
-            capture_duration=0.01,
+            # A span the rate can honor, so the refusal under test is the name and
+            # not the frame count: ``0.01`` at the default ``fps=30`` records no
+            # frame and is refused before the path is ever composed.
+            capture_duration=0.5,
         )
         assert result["status"] == "error", result
         assert "outside the directory it must be written into" in _text(result)

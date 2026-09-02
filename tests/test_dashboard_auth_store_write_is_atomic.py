@@ -204,16 +204,20 @@ class TestWhatTheAtomicWriteDoesNotChange:
         auth._save({"credentials": [], "jwt_secret": "s"})
         assert json.loads(nested.read_text())["jwt_secret"] == "s"
 
-    def test_the_cache_is_updated_so_the_next_read_needs_no_disk(self, tmp_path, monkeypatch):
-        """A save leaves the store readable without touching the file's contents again.
+    def test_the_cache_is_updated_so_the_next_read_needs_no_parse(self, tmp_path, monkeypatch):
+        """A save leaves the store readable without parsing the file again.
 
-        Asserted by making a body read fail: the store is still stat-ed, because that is what
-        detects a file somebody else changed, but on a hit its contents come from memory.
+        Asserted by making the parse fail: on a hit the store comes from memory. The body
+        is still read, and that read is what licenses skipping the parse - a stat tuple
+        cannot, because it names the file rather than a version of it (two writes inside
+        one coarse-clock mtime tick that keep the byte count share one). This cell asked
+        for no read at all while the tuple was trusted to have changed; what it grades
+        now is the work the cache actually saves.
         """
         auth._save({"credentials": [], "jwt_secret": "cached"})
 
-        def no_reads(self, *a, **k):
-            raise AssertionError(f"read the store body on a cache hit: {self}")
+        def no_parse(*a, **k):
+            raise AssertionError("parsed the store body on a cache hit")
 
-        monkeypatch.setattr(auth.Path, "read_text", no_reads)
+        monkeypatch.setattr(auth.json, "loads", no_parse)
         assert auth._load()["jwt_secret"] == "cached"

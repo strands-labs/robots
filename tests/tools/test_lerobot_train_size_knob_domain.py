@@ -15,7 +15,9 @@ than late - they are silent:
 The trainer surface for the same lerobot run already refused a non-positive
 ``steps`` (``LerobotTrainer.validate`` reports "steps must be > 0"), so one
 parameter had two contracts depending on which surface built the flag; and
-``build_train_command`` already refused ``num_gpus < 1``, a non-positive
+``build_train_command`` already refused a non-positive ``num_gpus`` (by a local
+comparison, since replaced by this same shared domain - see
+``test_lerobot_train_launch_topology_domain.py``), a non-positive
 ``val_episodes`` and two mutually-exclusive tuning strategies, leaving the batch
 size as the one knob sizing the run with no domain at all.
 
@@ -243,7 +245,7 @@ class TestTheScopeIsNoWiderThanTheDefect:
 
     def test_the_other_numeric_knobs_keep_their_own_guards(self) -> None:
         """The guards that already existed are untouched."""
-        with pytest.raises(ValueError, match="num_gpus must be >= 1"):
+        with pytest.raises(ValueError, match="num_gpus must be a positive integer"):
             _build(num_gpus=0)
         with pytest.raises(ValueError, match="val_episodes must be a positive integer"):
             _build(val_episodes=0)

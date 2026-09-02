@@ -21,6 +21,7 @@ from strands_robots.drivers.base import (
     DRIVER_CHOICES,
     DRIVER_SURFACE,
     HardwareDriver,
+    halt_failure_detail,
     missing_driver_members,
 )
 from strands_robots.drivers.registry import (
@@ -128,6 +129,7 @@ __all__ = [
     "HardwareDriver",
     "driver_choice_error",
     "get_native_driver_class",
+    "halt_failure_detail",
     "list_driver_coverage",
     "list_native_drivers",
     "missing_driver_members",

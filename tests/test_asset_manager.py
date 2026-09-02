@@ -9,7 +9,7 @@ a robot name to its MJCF model XML, directory, and availability status:
     - get_robot_info: enriched metadata with resolved path
     - list_available_robots: presence-filtered listing
     - path-traversal protection on registry-sourced path components
-    - _has_meshes: mesh detection with per-(dir, mtime) caching
+    - _has_meshes: mesh detection, with an optional per-scan memo
 
 These exercise observable behavior (returned paths, booleans, None) against a
 temp asset tree wired through STRANDS_ASSETS_DIR + the user registry, with no
@@ -27,6 +27,11 @@ from strands_robots.registry.user_registry import (
     register_robot,
 )
 
+#: This repository, located from this file: a relative literal resolves against
+#: the working directory, so the example read below raised ``FileNotFoundError``
+#: whenever the suite ran from anywhere but the repository root.
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+
 _MINIMAL_MJCF = '<mujoco><worldbody><body><geom size="0.1"/></body></worldbody></mujoco>'
 
 
@@ -38,10 +43,8 @@ def _isolate_assets(tmp_path, monkeypatch):
     monkeypatch.setenv("STRANDS_BASE_DIR", str(tmp_path))
     monkeypatch.setenv("STRANDS_ASSETS_DIR", str(assets_dir))
     _invalidate_cache()
-    manager._MESH_CACHE.clear()
     yield
     _invalidate_cache()
-    manager._MESH_CACHE.clear()
 
 
 def _register_bot(
@@ -208,27 +211,45 @@ class TestHasMeshes:
         (d / "meshes" / "link.obj").write_bytes(b"o")
         assert manager._has_meshes(d) is True
 
-    def test_result_is_cached_per_directory(self, tmp_path):
+    def test_a_memo_answers_a_repeat_of_the_same_directory(self, tmp_path):
+        """Within one scan the tree is walked once per directory.
+
+        This is the saving the memo exists for: ``resolve_model_path`` ranks
+        several candidate XMLs that can share a directory, and a mesh-less tree
+        is the case the walk cannot early-exit out of.
+        """
+        d = tmp_path / "cachedir"
+        d.mkdir()
+        memo: dict[str, bool] = {}
+        assert manager._has_meshes(d, memo) is False
+        assert memo == {str(d): False}
+        # A mesh arriving mid-scan is not re-walked: the memo is the answer.
+        (d / "late.stl").write_bytes(b"m")
+        assert manager._has_meshes(d, memo) is False
+
+    def test_a_scan_that_brings_no_memo_reads_the_tree(self, tmp_path):
+        """A mesh that appeared is observed even when no timestamp moved.
+
+        A directory's own ``st_mtime`` is held stable here, which is what a
+        write into one of its subdirectories does anyway. Mesh detection answers
+        from the tree, so nothing outside a caller-owned memo can go stale.
+        """
         d = tmp_path / "cachedir"
         d.mkdir()
         assert manager._has_meshes(d) is False
-        key = (str(d), d.stat().st_mtime)
-        assert manager._MESH_CACHE.get(key) is False
-        # Adding a mesh without busting the cache still returns the cached value
+        before = d.stat()
         (d / "late.stl").write_bytes(b"m")
-        os.utime(d, (d.stat().st_atime, key[1]))  # keep mtime stable
-        assert manager._has_meshes(d) is False
+        os.utime(d, ns=(before.st_atime_ns, before.st_mtime_ns))
+        assert d.stat().st_mtime_ns == before.st_mtime_ns
+        assert manager._has_meshes(d) is True
 
-    def test_stat_oserror_falls_back_to_stable_cache_key(self, tmp_path, monkeypatch):
+    def test_an_unstattable_directory_is_still_searched(self, tmp_path, monkeypatch):
         """A ``stat()`` failure after ``exists()`` must not crash mesh discovery.
 
-        There is a window between the ``directory.exists()`` guard and the
-        ``directory.stat().st_mtime`` cache-key read where the directory can
-        become un-stattable (a TOCTOU removal, or its permissions stripped).
-        Mesh detection degrades gracefully: it falls back to a stable
-        ``(path, 0.0)`` cache key and still walks the tree, rather than letting
-        the ``OSError`` escape and abort robot-asset resolution. Removing the
-        fallback would let the ``stat()`` raise propagate and break this.
+        A directory can become un-stattable between the ``exists()`` guard and
+        any later read of it (a TOCTOU removal, or its permissions stripped).
+        Mesh detection asks the tree and never the clock, so there is no
+        timestamp read left on this path for such a failure to escape from.
         """
         d = tmp_path / "withmesh"
         (d / "meshes").mkdir(parents=True)
@@ -243,9 +264,6 @@ class TestHasMeshes:
         monkeypatch.setattr(Path, "stat", _raise_stat)
 
         assert manager._has_meshes(d) is True
-        # The fallback key (mtime pinned to 0.0) was used, so the walk result
-        # is memoised there and served from cache on the next call.
-        assert manager._MESH_CACHE.get((str(d), 0.0)) is True
 
 
 class TestAutoDownloadFallback:
@@ -342,7 +360,6 @@ class TestDownloadCanBeDeclined:
 
         monkeypatch.setattr(manager, "_auto_download_robot", lambda _n, _i: False)
         failed_download = manager.resolve_model_path("unitbot")
-        manager._MESH_CACHE.clear()
 
         attempts: list[str] = []
         monkeypatch.setattr(manager, "_auto_download_robot", self._recording_downloader(attempts))
@@ -648,13 +665,46 @@ class TestResolveModelPathEdges:
 
         def fake_download(_name, _info):
             (robot_dir / "link.stl").write_bytes(b"meshbytes")
-            # A real download writes new files; invalidate the stale mtime-keyed
-            # mesh cache so the post-download re-scan observes them.
-            manager._MESH_CACHE.clear()
             return True
 
         monkeypatch.setattr(manager, "_auto_download_robot", fake_download)
         assert manager.resolve_model_path("unitbot") == xml
+
+
+class TestDownloadIntoTheDeclaredMeshdir:
+    """A download that lands meshes below the model directory is not discarded.
+
+    ``<compiler meshdir="assets"/>`` puts meshes one level down, and
+    :func:`strands_robots.assets.download._mjcf_mesh_subdir` exists to place
+    them there. A POSIX directory's own ``st_mtime`` does not move when a file
+    appears inside one of its subdirectories, so a reading of the model
+    directory taken before the download cannot describe the tree after it.
+    """
+
+    def test_the_post_download_pass_prefers_the_dir_the_meshes_landed_in(self, tmp_path, monkeypatch):
+        # Two candidate locations for one robot. The mesh-less one is ranked
+        # first, so a stale mesh answer is visible in the resolved path rather
+        # than in a log line alone.
+        _register_bot(tmp_path / "assets")  # candidate 0, never gets meshes
+        proj = tmp_path / "proj"  # CWD/assets is the second search path
+        downloaded = proj / "assets" / "unitbot"
+        downloaded.mkdir(parents=True)
+        (downloaded / "unitbot.xml").write_text(_MINIMAL_MJCF)
+        (downloaded / "assets").mkdir()  # declared meshdir: pre-exists, empty
+        monkeypatch.chdir(proj)
+        before = downloaded.stat().st_mtime_ns
+
+        def fake_download(_name, _info):
+            (downloaded / "assets" / "pelvis.stl").write_bytes(b"meshbytes")
+            return True
+
+        monkeypatch.setattr(manager, "_auto_download_robot", fake_download)
+        resolved = manager.resolve_model_path("unitbot")
+
+        # The write was invisible to the model directory's own timestamp, which
+        # is what makes this deterministic rather than a clock race.
+        assert downloaded.stat().st_mtime_ns == before
+        assert resolved == downloaded / "unitbot.xml"
 
 
 class TestResolveModelDirEdges:
@@ -809,7 +859,7 @@ class TestTheDirectoryResolverCanDeclineTheSameFetch:
         """
         import ast
 
-        source = Path("examples/so101_curobo/planner.py").read_text()
+        source = (_REPO_ROOT / "examples/so101_curobo/planner.py").read_text()
         helper = next(
             node
             for node in ast.walk(ast.parse(source))

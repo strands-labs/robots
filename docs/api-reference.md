@@ -31,6 +31,7 @@ from strands_robots.registry import (
     list_robots, resolve_name, get_robot, has_sim, has_hardware, get_hardware_type,
     list_robots_by_category, list_aliases, format_robot_table,
     register_robot, unregister_robot, list_user_robots,
+    user_registry_source, parse_user_robots,
     list_policy_providers, resolve_policy, import_policy_class, build_policy_kwargs,
 )
 ```
@@ -48,6 +49,8 @@ from strands_robots.registry import (
 | `register_robot(name, entry)` | Add user-defined robot at runtime. |
 | `unregister_robot(name)` | Remove a runtime-registered robot. |
 | `list_user_robots()` | Names from `register_robot`. |
+| `user_registry_source()` | Raw bytes of `user_robots.json`, or `None` when absent. What the loader keys its hot-reload cache on, so an edit by another writer is seen even when it lands inside one filesystem timestamp tick. |
+| `parse_user_robots(source)` | Robot definitions held in those bytes; empty when absent or malformed. Parsing the bytes the cache was keyed on is what keeps the cached merge and the key describing the same overlay. |
 | `list_policy_providers()` | Providers from `policies.json`, canonical names only. |
 | `list_policy_aliases()` | Alias/shorthand -> canonical provider, from `policies.json`. Peer of `list_aliases()` for robots. |
 | `resolve_policy(uri)` | URI → provider name. |

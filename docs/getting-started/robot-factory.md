@@ -130,6 +130,15 @@ members it is missing, so a half-built driver fails at the line that registers i
 than on the first agent call. `port=` stays polymorphic - a serial path, an IP address or a
 URL - because only the driver knows how to read it.
 
+A driver has **two** ways to halt its robot and they are not the same contract. `stop_task()`
+returns a status envelope and decides an outcome, so that is what a caller reads. `stop()` is
+the lifecycle hook and is annotated `-> None`, so it carries no verdict at all - which makes
+its log the only place a halt it could not complete can be recorded. A `stop()` that
+delegates to a halt verb must therefore read that verb's envelope and log a non-success,
+naming what may still be moving; `strands_robots.drivers.halt_failure_detail` reads the
+reason out of one. Discarding it returns from shutdown reporting the robot as stopped on the
+one surface that has no way to say otherwise.
+
 Asking for a driver that is not there is refused, never quietly substituted:
 
 ```python

@@ -239,7 +239,7 @@ class TestTheScopeIsNoWiderThanTheDefect:
         assert not [flag for flag in cmd if flag.startswith("--policy.device=")]
 
     def test_the_other_argv_guards_are_untouched(self) -> None:
-        with pytest.raises(ValueError, match="num_gpus must be >= 1"):
+        with pytest.raises(ValueError, match="num_gpus must be a positive integer"):
             _build(num_gpus=0)
         with pytest.raises(ValueError, match="steps must be a positive integer"):
             _build(steps=0)

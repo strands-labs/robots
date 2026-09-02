@@ -86,28 +86,29 @@ def _auto_download_robot(name: str, info: dict) -> bool:
 
 _MESH_EXTS = frozenset({".stl", ".obj", ".msh", ".ply"})
 
-# Cache of (directory, mtime) -> has_meshes result. Avoids re-walking the tree
-# when ``resolve_model_path`` checks multiple candidate locations for the same
-# robot and when it re-checks after auto-download.
-_MESH_CACHE: dict[tuple[str, float], bool] = {}
 
-
-def _has_meshes(directory: Path) -> bool:
-    """Check if a directory tree contains mesh files (cached, early-exit).
+def _has_meshes(directory: Path, memo: dict[str, bool] | None = None) -> bool:
+    """Check whether a directory tree contains mesh files (early-exit).
 
     Uses ``os.scandir`` with an early break on the first mesh found rather
-    than ``rglob("*")``, which stats every file. Result is cached per
-    (directory, mtime) so repeated calls are free.
+    than ``rglob("*")``, which stats every file.
+
+    Args:
+        directory: Root of the tree to search.
+        memo: Optional per-scan cache of ``str(directory) -> result``, shared by
+              the caller across one pass over candidate locations. It is the
+              caller's job to scope it: a memo must not outlive the scan it was
+              created for, because a mesh landing anywhere in the subtree makes
+              every answer in it stale. Omitting it always walks the tree.
+
+    Returns:
+        True when a mesh file exists anywhere under *directory*.
     """
     if not directory.exists():
         return False
-    try:
-        cache_key = (str(directory), directory.stat().st_mtime)
-    except OSError:
-        cache_key = (str(directory), 0.0)
-    cached = _MESH_CACHE.get(cache_key)
-    if cached is not None:
-        return cached
+    key = str(directory)
+    if memo is not None and key in memo:
+        return memo[key]
 
     def _walk(path: str) -> bool:
         try:
@@ -123,8 +124,9 @@ def _has_meshes(directory: Path) -> bool:
             return False
         return False
 
-    result = _walk(str(directory))
-    _MESH_CACHE[cache_key] = result
+    result = _walk(key)
+    if memo is not None:
+        memo[key] = result
     return result
 
 
@@ -287,9 +289,12 @@ def resolve_model_path(
         return None
 
     # Prefer the candidate whose directory contains mesh files,
-    # because an XML without meshes will fail to load in MuJoCo.
+    # because an XML without meshes will fail to load in MuJoCo. The memo spans
+    # this pass alone, so two candidates that share a directory are walked once
+    # and the download below cannot be answered from a pre-download reading.
+    scan: dict[str, bool] = {}
     for path in candidates:
-        if _has_meshes(path.parent):
+        if _has_meshes(path.parent, scan):
             logger.debug("Resolved %s -> %s (has meshes)", name, path)
             return Path(path)
 
@@ -299,10 +304,13 @@ def resolve_model_path(
     if allow_download:
         logger.info("XML found for %s but no meshes, attempting auto-download...", name)
         if _auto_download_robot(name, info):
-            # Re-scan after download (new symlinks may have appeared)
+            # Re-scan after download (new symlinks may have appeared). A new
+            # memo, because the download is exactly the change the pass above
+            # could not have observed.
             refreshed = _resolve_candidates(asset_dir_name, xml_file, name)
+            rescan: dict[str, bool] = {}
             for path in refreshed:
-                if _has_meshes(path.parent):
+                if _has_meshes(path.parent, rescan):
                     logger.debug("Resolved %s -> %s (auto-downloaded)", name, path)
                     return Path(path)
 

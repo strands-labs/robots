@@ -168,6 +168,28 @@ def _load_acl_file(path: Path) -> dict[str, Any]:
     Refuses any file that omits ``enabled: true`` -- Zenoh silently
     no-ops the block in that case, and the loader fails closed rather
     than ship a quietly-disabled gate.
+
+    The read and the parse are separate steps (:func:`_read_acl_bytes`,
+    :func:`_parse_acl_bytes`) so :func:`_load_acl_cached` can verify a cache
+    hit against the bytes on disk using the *same* read that would otherwise
+    have fed the parser -- verifying with a second read would reopen the
+    content race the bounded read below exists to close.
+    """
+    return _parse_acl_bytes(_read_acl_bytes(path), path)
+
+
+def _read_acl_bytes(path: Path) -> bytes:
+    """Return an ACL file's bytes, refusing a symlink and bounding the read.
+
+    Args:
+        path: The ACL file to read.
+
+    Returns:
+        The file's raw bytes, at most :data:`ACL_FILE_MAX_BYTES`.
+
+    Raises:
+        FileNotFoundError: ``path`` is not a regular file.
+        ValueError: ``path`` is a symlink, or is over the size cap.
     """
     # Defence: refuse to follow symlinks AND bound the read at
     # ACL_FILE_MAX_BYTES + 1 so an attacker who races content between
@@ -205,6 +227,25 @@ def _load_acl_file(path: Path) -> dict[str, Any]:
     raw_bytes = b"".join(chunks)
     if len(raw_bytes) > ACL_FILE_MAX_BYTES:
         raise ValueError(f"ACL file {path} is >{ACL_FILE_MAX_BYTES} bytes; refusing to load.")
+    return raw_bytes
+
+
+def _parse_acl_bytes(raw_bytes: bytes, path: Path) -> dict[str, Any]:
+    """Decode, parse and validate ACL file bytes.
+
+    Args:
+        raw_bytes: The bytes read from ``path`` by :func:`_read_acl_bytes`.
+        path: The file those bytes came from, named in every diagnostic.
+
+    Returns:
+        The validated ACL mapping.
+
+    Raises:
+        ValueError: The bytes are not UTF-8, not JSON5, not an object, or
+            fail shape validation.
+        PermissiveACLError: The file is an operator-written blacklist ACL
+            and ``STRANDS_MESH_ACCEPT_PERMISSIVE_ACL`` is not set.
+    """
     try:
         raw = raw_bytes.decode("utf-8")
     except UnicodeDecodeError as exc:
@@ -512,8 +553,20 @@ def default_acl(namespace: str) -> dict[str, Any]:
 # tuple ``(path, dev, ino, size, mtime_ns)``. Both functions take the
 # same snapshot; if the file changes mid-flight the next call refreshes,
 # but a single ``Mesh.start`` call sees one snapshot.
+#
+# That identity tuple *selects* a cache entry; it does not license serving
+# one. It cannot: the kernel stamps ``st_mtime_ns`` from a coarse clock, so
+# two writes inside one tick are stamped alike, and a rewrite that keeps the
+# byte count leaves ``st_size`` alone too. An in-place ACL edit of the same
+# length -- rotating an authorised ``cert_common_names`` entry is exactly
+# that shape -- therefore computes the identity the pre-edit contents were
+# cached under, and no later stat can tell the two apart. So each entry also
+# carries the bytes it was parsed from, and a hit is served only while the
+# file still holds them. The cache then saves the JSON5 parse and shape
+# validation, and the read is what licenses skipping them.
 _ACL_CACHE_LOCK = threading.Lock()
-_ACL_CACHE: dict[tuple, dict[str, Any]] = {}
+#: identity tuple -> (bytes the entry was parsed from, parsed ACL).
+_ACL_CACHE: dict[tuple, tuple[bytes, dict[str, Any]]] = {}
 
 
 def _file_identity(path: Path) -> tuple | None:
@@ -543,25 +596,31 @@ def _load_acl_cached(path: Path) -> dict[str, Any]:
     the parsed dict directly is what this replaced.
 
     This is the identity-keyed tier, not the TOCTOU defence. A file rewritten
-    between two reads computes a fresh identity tuple and re-loads, which is
-    the by-design refresh window :func:`snapshot_acl` documents; what closes
-    the window inside one ``Mesh.start`` flow is that function's thread-local
-    snapshot, taken via :func:`_set_thread_snapshot`.
+    between two reads re-loads -- the refresh window :func:`snapshot_acl`
+    documents as by design. The identity tuple alone cannot detect every
+    rewrite (the comment above the cache says which ones it misses), so the
+    entry also holds the bytes it was parsed from and a hit is served only
+    while the file still holds them. What closes the window inside one
+    ``Mesh.start`` flow is that function's thread-local snapshot, taken via
+    :func:`_set_thread_snapshot`.
     """
     identity = _file_identity(path)
     if identity is None:
         # Stat failed -- fall through to the loader so it raises with
         # the canonical error path (FileNotFoundError, etc.).
         return _load_acl_file(path)
+    # One read, shared by both branches: it verifies a hit and feeds the
+    # parser on a miss, so the bytes served are always the bytes read.
+    raw_bytes = _read_acl_bytes(path)
     with _ACL_CACHE_LOCK:
         cached = _ACL_CACHE.get(identity)
-        if cached is not None:
+        if cached is not None and cached[0] == raw_bytes:
             # Return a deep copy so
             # caller mutation does not poison the cache for subsequent
             # callers. The cost is a small dict copy on every hit (ACL
             # files are tiny by ACL_FILE_MAX_BYTES = 256KiB).
-            return copy.deepcopy(cached)
-    loaded = _load_acl_file(path)
+            return copy.deepcopy(cached[1])
+    loaded = _parse_acl_bytes(raw_bytes, path)
     with _ACL_CACHE_LOCK:
         # Cap the cache at 4 entries -- ACL files are tiny and the
         # operator usually has one. Bound prevents an attacker who can
@@ -571,7 +630,7 @@ def _load_acl_cached(path: Path) -> dict[str, Any]:
         # Store a deep copy in the cache so caller mutation of the
         # returned dict does NOT poison the cached entry. Symmetric
         # with the deep-copy on hit.
-        _ACL_CACHE[identity] = copy.deepcopy(loaded)
+        _ACL_CACHE[identity] = (raw_bytes, copy.deepcopy(loaded))
     # Return a deep copy on miss
     # too, so the FIRST caller for a given file identity sees the same
     # immutability contract subsequent callers get from the hit branch.
@@ -834,11 +893,14 @@ def snapshot_acl(namespace: str = "strands") -> tuple[bool, dict[str, Any]]:
        ``Mesh.start`` so subsequent calls re-resolve.
 
     2. **Identity-tuple cache hit**: the legacy
-       ``(path, dev, ino, size, mtime_ns)``-keyed cache. Same dict for
-       same file identity, but a rewrite between two ``snapshot_acl``
-       calls in *separate* threads (or after the thread-local clear)
-       still yields a fresh load. That is the by-design refresh window
-       -- the TOCTOU defence is local to a single ``Mesh.start`` flow.
+       ``(path, dev, ino, size, mtime_ns)``-keyed cache, whose entries are
+       served only while the file still holds the bytes they were parsed
+       from. A rewrite between two ``snapshot_acl`` calls in *separate*
+       threads (or after the thread-local clear) yields a fresh load, for
+       any rewrite -- including one the identity tuple cannot see, such as
+       an in-place edit of the same byte count. That is the by-design
+       refresh window -- the TOCTOU defence is local to a single
+       ``Mesh.start`` flow.
 
     Returns:
         (is_permissive_by_shape, resolved_acl_dict)

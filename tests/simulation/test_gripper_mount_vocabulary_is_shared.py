@@ -261,15 +261,16 @@ class TestTheVocabularyHasOneOwner:
     def test_no_backend_defines_a_gripper_vocabulary_of_its_own(self) -> None:
         """A per-backend copy is the shape that drifted; refuse a second one."""
         owners = []
-        for path in sorted(Path("strands_robots/simulation").rglob("*.py")):
+        package = Path(inspect.getfile(ik)).parent
+        for path in sorted(package.rglob("*.py")):
             for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
                 if not isinstance(node, ast.Assign):
                     continue
                 for target in node.targets:
                     if isinstance(target, ast.Name) and target.id.upper().endswith("GRIPPER_BODY_HINTS"):
-                        owners.append(f"{path}:{node.lineno} {target.id}")
+                        owners.append(f"{path.relative_to(package)}:{node.lineno} {target.id}")
         assert len(owners) == 1, owners
-        assert owners[0].startswith("strands_robots/simulation/ik.py"), owners
+        assert owners[0].startswith("ik.py"), owners
 
     def test_the_shipped_vocabulary_is_the_one_this_file_expects(self) -> None:
         """The single cell that couples this file to the shipped constant."""

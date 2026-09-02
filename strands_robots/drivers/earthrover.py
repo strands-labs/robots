@@ -38,6 +38,7 @@ import logging
 import threading
 from typing import TYPE_CHECKING, Any, cast
 
+from strands_robots.drivers.base import halt_failure_detail
 from strands_robots.utils import finite_number_error, positive_finite_number_error
 
 if TYPE_CHECKING:
@@ -332,8 +333,21 @@ class EarthRoverDriver:
         }
 
     async def stop(self) -> None:
-        """Command a zero twist, leaving the rover connected. Never raises."""
-        self.stop_task()
+        """Command a zero twist, leaving the rover connected. Never raises.
+
+        Annotated ``-> None`` by the driver protocol, so it carries no verdict:
+        a caller that needs the halt outcome reads :meth:`stop_task`, which
+        decides one. A zero twist that did not reach the SDK is logged, because
+        a velocity-commanded base holds its last command until another one
+        arrives - so an unsent halt leaves the rover driving.
+        """
+        if (detail := halt_failure_detail(self.stop_task())) is not None:
+            logger.error(
+                "%s.stop(): the zero twist did not reach the rover, which may still be "
+                "driving at the commanded velocity: %s",
+                self._tool_name,
+                detail,
+            )
 
     def cleanup(self) -> None:
         """Stop the wheels, then release the session. Idempotent.

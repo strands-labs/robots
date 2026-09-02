@@ -316,7 +316,22 @@ class PolicyServer:
         return self
 
     def stop(self) -> None:
-        """Stop the background server and join its thread. Safe to call twice."""
+        """Stop serving and join the accept loop. Safe to call twice.
+
+        Stops the server *serving*, not merely listening: ``Server.shutdown()``
+        closes the listening socket, closes every client connection still open
+        with code 1001, and returns only once every connection handler has
+        terminated - so the wrapped policy is no longer invoked for a client
+        that was already connected, and this call does not return while a
+        handler can still emit one more action chunk. A handler inside an
+        inference call notices the close when that call returns, so a stop
+        during inference returns when that inference does.
+
+        That is a guarantee of the declared ``websockets`` floor rather than of
+        this method, which is why the floor is >=17.0: 17.0 is the release that
+        closes accepted connections on shutdown, and through 16.x this returned
+        while a client that was already connected went on being served.
+        """
         # Before the close, not after: the serving thread races this and reads
         # the flag to tell a teardown apart from a real socket failure.
         self._stopping.set()

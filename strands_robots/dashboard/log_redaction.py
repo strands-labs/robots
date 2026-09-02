@@ -1,6 +1,7 @@
 """Keep credentials out of the log file. A browser cannot set headers on a WebSocket handshake, so
 every camera and mesh socket carries its JWT in the QUERY STRING - and uvicorn's access log
-writes the request line verbatim.
+writes the request line verbatim. A failing socket then writes that same URL a second time,
+inside a traceback, which a formatter appends after every filter has already run.
 """
 
 from __future__ import annotations
@@ -90,19 +91,85 @@ def redact_secrets(message: str) -> str:
     return out
 
 
+#: renders ``exc_info`` exactly as the default formatter would, so the text this filter
+#: redacts is the text that would otherwise have been written.
+_EXC_RENDERER = logging.Formatter()
+
+#: marks a record this filter has already redacted (see :class:`RedactingFilter`).
+_DONE = "_strands_robots_redacted"
+
+#: written in place of an appended part this filter could not redact. Withholding is the only
+#: fail-closed answer - the part may hold the credential - and a marker says why it is absent.
+_WITHHELD = "<withheld: this part of the record could not be redacted>"
+
+
 class RedactingFilter(logging.Filter):
-    """Redacts the FORMATTED message of every record that passes through."""
+    """Redacts every part of a record a formatter renders, and redacts it once.
+
+    ``logging.Formatter.format`` renders THREE parts and appends the last two: the
+    message, ``exc_text`` (rendered from ``exc_info``), and ``stack_info``. Both are
+    appended AFTER every filter has run, so a filter that reads ``getMessage()`` alone
+    never sees them - and an exception message is exactly where a request URL ends up,
+    so ``logger.exception(...)`` wrote the credential verbatim into the traceback while
+    the request line above it was redacted. ``exc_info`` is rendered here instead of
+    later because the formatter reuses an ``exc_text`` that is already set.
+
+    Redacting is idempotent per record because :func:`install_redaction` attaches this
+    filter at BOTH the logger and its handlers (a handler-level filter is what catches
+    records logged straight to a handler). Without the marker the handler pass redacted
+    the logger pass's OUTPUT: a fingerprint's own text matches the value pattern, so the
+    line printed a wrong length - ``?token=<redacted:18:aco>>`` for a 43-character token,
+    the same corruption the literals-last rail order exists to prevent.
+
+    An appended part this filter cannot render or redact is WITHHELD, not raised: a
+    ``Formatter`` runs inside ``Handler.emit``, where ``handleError`` degrades a broken
+    record to a note on stderr, and a filter has no such guard - so an escape here would
+    come out of the caller's own logging call, on any logger in :data:`_TARGETS`.
+    """
 
     def filter(self, record: logging.LogRecord) -> bool:
-        try:
-            original = record.getMessage()
-        except Exception:  # noqa: BLE001 - a broken record must not break logging
+        if getattr(record, _DONE, False):
             return True
-        cleaned = redact_secrets(original)
-        if cleaned != original:
-            record.msg = cleaned
-            record.args = ()
+        try:
+            original: str | None = record.getMessage()
+        except Exception:  # noqa: BLE001 - a broken record must not break logging
+            original = None
+        if original is not None:
+            cleaned = redact_secrets(original)
+            if cleaned != original:
+                record.msg = cleaned
+                record.args = ()
+        # Each appended rail carries the message rail's guard, and carries it SEPARATELY: a
+        # part that cannot be rendered must not exempt the part that can. Only the 3-tuple
+        # that logging documents is rendered here, but a shape check is not a guard: `Logger._log`
+        # accepts a 3-tuple whose middle value is not an exception, and rendering one raises.
+        if isinstance(record.exc_info, tuple) and len(record.exc_info) == 3 and not record.exc_text:
+            try:
+                record.exc_text = _EXC_RENDERER.formatException(record.exc_info)
+            except Exception:  # noqa: BLE001 - a broken record must not break logging
+                # Left unset: the formatter's own attempt at it runs inside `Handler.emit`,
+                # where `handleError` degrades to a note on stderr and the caller's logging
+                # call returns - which is what stock logging does with the same record.
+                record.exc_text = None
+        if record.exc_text:
+            record.exc_text = _redact_appended(record.exc_text)
+        if record.stack_info:
+            record.stack_info = _redact_appended(record.stack_info)
+        setattr(record, _DONE, True)
         return True
+
+
+def _redact_appended(part: object) -> str:
+    """Redact one appended part, withholding it rather than raising out of the logging call.
+
+    A `Formatter` runs inside `Handler.emit`, so a part it cannot render degrades through
+    `Handler.handleError`; a `Filter` has no such guard, and a hand-built non-str part
+    (bytes, say) made `redact_secrets` raise out of the caller's own logging call.
+    """
+    try:
+        return redact_secrets(part)  # type: ignore[arg-type]  # a hand-built part may be anything
+    except Exception:  # noqa: BLE001 - a broken record must not break logging
+        return _WITHHELD
 
 
 #: loggers that carry request lines; the root catches everything else

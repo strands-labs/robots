@@ -67,13 +67,18 @@ cosmos3-service = [
     # extra numpy-version agnostic so it composes cleanly with `lerobot`
     # (numpy>=2) for dataset recording in the same env.
     "msgpack>=1.0.0,<2.0.0",
-    # >=13.0 is the floor of the websockets API the package reaches for, not a
-    # preference: `websockets.sync.server.Server` (annotating
-    # PolicyServer._server) first ships in 13.0 - 12.0 spells that class
-    # `WebSocketServer`. One environment resolves one websockets, so this floor
-    # and [inference]'s are deliberately the same number. Owned and measured by
-    # tests/test_websockets_floor_ships_the_imported_api.py.
-    "websockets>=13.0",
+    # >=17.0 is the floor of the websockets behaviour the package relies on, not
+    # a preference. `Server.shutdown()` closes accepted connections and waits
+    # for their handlers from 17.0 on; through 16.x it closed the listening
+    # socket and nothing else, so `PolicyServer.stop()` returned while a client
+    # that was already connected went on being served - the wrapped policy still
+    # driving the arm after the operator was told the server stopped. Measured
+    # against the released wheels: 16.1.1 still serves that client, 17.0 does
+    # not. (13.0 remains the floor of the API *names* reached for -
+    # `websockets.sync.server.Server`.) One environment resolves one websockets,
+    # so this floor and [inference]'s are deliberately the same number. Owned
+    # and measured by tests/test_websockets_floor_ships_the_imported_api.py.
+    "websockets>=17.0",
 ]
 # In-process Cosmos 3 backend (Cosmos3Policy(backend="diffusers")). Loads the
 # Cosmos3OmniPipeline directly via native Hugging Face `diffusers` (no RoboLab
@@ -577,9 +582,10 @@ ollama = [
 # (numpy-version agnostic, so it composes with lerobot's numpy>=2). See
 # strands_robots/inference/ and docs/inference/remote.md.
 inference = [
-    # See [cosmos3-service]: >=13.0 is where `websockets.sync.server.Server`
-    # first ships, and both extras must declare the same floor.
-    "websockets>=13.0",
+    # See [cosmos3-service]: >=17.0 is where `Server.shutdown()` starts closing
+    # the connections it accepted, which is what makes `PolicyServer.stop()`
+    # stop the server *serving*, and both extras must declare the same floor.
+    "websockets>=17.0",
 ]
 # rosbridge WebSocket transport: drive ROS1 (or remote ROS 2) robots from a host
 # with no ROS install at all. Pure-pip `roslibpy` speaks the rosbridge JSON

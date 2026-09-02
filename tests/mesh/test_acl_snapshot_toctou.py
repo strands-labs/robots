@@ -60,7 +60,12 @@ def test_snapshot_acl_single_file_read(tmp_path, monkeypatch):
 
     The previous two-call pattern (is_default_acl_in_use + resolve_acl)
     invalidated the identity-tuple cache and re-read the file. Pinning
-    that snapshot_acl performs at most one _load_acl_file call.
+    that snapshot_acl performs exactly one read of the file.
+
+    The read is counted at ``_read_acl_bytes`` - the function that opens the
+    file - rather than at the ``_load_acl_file`` wrapper, which a cache hit
+    does not go through: counting the wrapper would report zero reads for a
+    hit and pass whatever the cache did underneath.
     """
     import json
 
@@ -70,28 +75,27 @@ def test_snapshot_acl_single_file_read(tmp_path, monkeypatch):
     acl_file.write_text(json.dumps({"enabled": True, "default_permission": "deny"}))
 
     monkeypatch.setenv("STRANDS_MESH_ACL_FILE", str(acl_file))
-    # Clear the cache so we get a fresh read
-    _acl_config._load_acl_cached.cache_clear() if hasattr(_acl_config._load_acl_cached, "cache_clear") else None
+    # Clear the cache so we get a fresh read.
+    _acl_config._clear_acl_cache_for_test()
+    _acl_config._clear_thread_snapshot()
 
     call_count = [0]
-    real_load_acl_file = _acl_config._load_acl_file
+    real_read_acl_bytes = _acl_config._read_acl_bytes
 
     def counted(path):
         call_count[0] += 1
-        return real_load_acl_file(path)
+        return real_read_acl_bytes(path)
 
-    monkeypatch.setattr(_acl_config, "_load_acl_file", counted)
-    # Also clear cache to ensure miss
-    if hasattr(_acl_config._load_acl_cached, "cache_clear"):
-        _acl_config._load_acl_cached.cache_clear()
+    monkeypatch.setattr(_acl_config, "_read_acl_bytes", counted)
 
     is_permissive, resolved = _acl_config.snapshot_acl("strands")
     # Sanity-check the return shape so the test fails loudly if the
     # signature changes (rather than silently passing on a refactor).
     assert isinstance(is_permissive, bool)
     assert isinstance(resolved, dict)
-    # Core invariant: snapshot_acl performs at most ONE _load_acl_file call
-    assert call_count[0] <= 1, f"snapshot_acl called _load_acl_file {call_count[0]} times; must be <= 1"
+    # Core invariant: snapshot_acl reads the ACL file exactly once -- the cache
+    # was cleared above, so a read must happen, and only one may.
+    assert call_count[0] == 1, f"snapshot_acl read the ACL file {call_count[0]} times; must be exactly 1"
 
 
 def test_acl_block_from_uses_provided_dict():
@@ -116,8 +120,12 @@ def test_mesh_start_reads_acl_file_once_end_to_end(tmp_path, monkeypatch, caplog
     snapshot_acl() call reads once. This pins the issue's exact criterion: the
     full Mesh.start() flow -- gate (_refuse_under_permissive_default_acl ->
     snapshot_acl) plus session._build_config (snapshot_acl -> acl_block_from) --
-    performs at most ONE _load_acl_file call, so an attacker rewriting the file
+    performs exactly ONE read of the ACL file, so an attacker rewriting the file
     between gate and build cannot make the wire observe a different snapshot.
+
+    Counted at ``_read_acl_bytes`` for the reason its sibling above gives: it is
+    the function that opens the file, so the count is a real read count whether
+    the flow hits the cache or misses it.
     """
     import logging
     from types import SimpleNamespace
@@ -135,13 +143,13 @@ def test_mesh_start_reads_acl_file_once_end_to_end(tmp_path, monkeypatch, caplog
     _acl_config._clear_thread_snapshot()
 
     call_count = [0]
-    real_load_acl_file = _acl_config._load_acl_file
+    real_read_acl_bytes = _acl_config._read_acl_bytes
 
     def counted(path):
         call_count[0] += 1
-        return real_load_acl_file(path)
+        return real_read_acl_bytes(path)
 
-    monkeypatch.setattr(_acl_config, "_load_acl_file", counted)
+    monkeypatch.setattr(_acl_config, "_read_acl_bytes", counted)
 
     robot = SimpleNamespace(
         tool_name_str="r218",
@@ -169,6 +177,6 @@ def test_mesh_start_reads_acl_file_once_end_to_end(tmp_path, monkeypatch, caplog
                     mesh.start()
                 mesh.stop()
 
-    assert call_count[0] <= 1, (
+    assert call_count[0] == 1, (
         f"Mesh.start() read the ACL file {call_count[0]} times; the TOCTOU defence requires exactly one read per start"
     )

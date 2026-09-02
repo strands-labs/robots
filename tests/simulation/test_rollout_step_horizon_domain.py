@@ -21,16 +21,52 @@ check rather than validated under its own name.
 These tests pin the corrected contract: the effective horizon is refused on the
 shared count domain, under the name the caller wrote, on every entry point that
 resolves one -- and every usable horizon is honoured exactly as before.
+
+"Honoured" is the half that has to be graded on the executed step count, not on
+the status string, and the probe values decide whether it can disagree at all.
+``USABLE`` held ``[1, 4, 7]``, every one of which round-trips exactly through
+``int((n_steps / control_frequency) * control_frequency)`` at the default 50 Hz,
+so the honour cell agreed with the code whatever the loop did with the count --
+and ``run_multi_policy`` was graded only on the refusal half. Measured on the
+multi-robot loop before this suite covered it, two arms in one MuJoCo world:
+
+| ``n_steps`` | ``control_frequency`` | steps executed |
+| --- | --- | --- |
+| ``1`` | ``49.0`` | **0** - "completed ... 0 synchronized steps" |
+| ``2`` | ``49.0`` | **1** |
+| ``29`` | ``50.0`` | **28** |
+| ``57`` | ``50.0`` | **56** |
+| ``113`` | ``50.0`` | **112** |
+| ``123`` | ``30.0`` | **122** |
+| ``4`` / ``10`` | ``50.0`` | 4 / 10 (exact - the old probe set) |
+
+``_resolve_horizon`` returns the normalized count alongside the duration it
+derives from it, and both multi-robot loops discarded the count and recomputed
+``int(duration * control_frequency)`` from the float. ``n_steps`` is documented
+as the exact horizon and as the parameter that "bypasses the lossy
+``int(duration * control_frequency)`` conversion", and one merged frame is
+recorded per timestep, so a truncated horizon is also a dataset episode short of
+the frames the caller asked for. At 49 Hz it is a rollout that never ran,
+reported as a completed success - the degenerate-success shape
+``_validate_positive_int`` exists to refuse.
+
+``LOSSY`` below carries those frequencies into the honour cells, and the
+structural sweep at the end derives the rule over every rollout loop in the
+package from the tree, so the Isaac loop is graded on a runner with no
+``isaacsim`` installed rather than inheriting an exemption by being unrunnable.
 """
 
 from __future__ import annotations
 
+import ast
 import inspect
+import pathlib
 from typing import Any
 
 import numpy as np
 import pytest
 
+import strands_robots
 from strands_robots.policies import MockPolicy
 from strands_robots.simulation import create_simulation
 from strands_robots.simulation.base import SimEngine
@@ -59,6 +95,18 @@ UNUSABLE: list[Any] = [
 
 #: Horizons the rollout can execute exactly.
 USABLE = [1, 4, 7]
+
+#: ``(n_steps, control_frequency)`` pairs where ``n_steps / control_frequency``
+#: is not exactly representable, so ``int(duration * control_frequency)`` lands
+#: one step below the count. Every value is a perfectly ordinary horizon at a
+#: perfectly ordinary rate; ``USABLE`` at the default 50 Hz cannot separate a
+#: loop that honours the resolved count from one that re-derives it.
+LOSSY = [
+    pytest.param(1, 49.0, id="1-at-49hz-truncated-to-zero"),
+    pytest.param(29, 50.0, id="29-at-50hz"),
+    pytest.param(57, 50.0, id="57-at-50hz"),
+    pytest.param(123, 30.0, id="123-at-30hz"),
+]
 
 #: The entry points that resolve a step horizon through ``_resolve_horizon``.
 HORIZON_PARAMS = ["n_steps", "max_steps"]
@@ -197,6 +245,39 @@ class TestUsableHorizonsAreUnchanged:
         assert result["status"] == "success", result
         assert _report(result)["n_steps"] == good
 
+    @pytest.mark.parametrize(("good", "frequency"), LOSSY)
+    @pytest.mark.parametrize("param", HORIZON_PARAMS)
+    def test_run_policy_executes_a_lossy_horizon_exactly(self, sim, param, frequency, good):
+        # Control for the multi-robot cell below: the single-robot loop forwards
+        # the resolved count rather than re-deriving it, so it is already exact
+        # at these frequencies.
+        result = sim.run_policy(
+            "arm1", policy_provider="mock", fast_mode=True, control_frequency=frequency, **{param: good}
+        )
+        assert result["status"] == "success", result
+        assert _report(result)["n_steps"] == good
+
+    @pytest.mark.parametrize("good", USABLE)
+    @pytest.mark.parametrize("param", HORIZON_PARAMS)
+    def test_run_multi_policy_executes_exactly_that_many_steps(self, sim, param, good):
+        result = sim.run_multi_policy({"arm1": MockPolicy()}, **{param: good})
+        assert result["status"] == "success", result
+        assert _report(result)["steps"] == good
+
+    @pytest.mark.parametrize(("good", "frequency"), LOSSY)
+    @pytest.mark.parametrize("param", HORIZON_PARAMS)
+    def test_run_multi_policy_executes_a_lossy_horizon_exactly(self, sim, param, frequency, good):
+        result = sim.run_multi_policy({"arm1": MockPolicy()}, control_frequency=frequency, **{param: good})
+        assert result["status"] == "success", result
+        assert _report(result)["steps"] == good
+
+    @pytest.mark.parametrize(("good", "frequency"), LOSSY)
+    def test_a_horizon_the_loop_truncated_to_zero_is_not_reported_as_completed(self, sim, good, frequency):
+        # The sharpest form of the finding: a rollout that never stepped came
+        # back as a completed success, so the report and the world disagreed.
+        result = sim.run_multi_policy({"arm1": MockPolicy()}, n_steps=good, control_frequency=frequency)
+        assert _report(result)["steps"] > 0, _text(result)
+
     def test_the_duration_path_needs_no_horizon(self, sim):
         # No step horizon given: duration still resolves the rollout length.
         result = sim.run_policy("arm1", policy_provider="mock", duration=0.1, control_frequency=50.0, fast_mode=True)
@@ -244,3 +325,134 @@ class TestTheHorizonParametersAreDiscoverable:
         signature = inspect.signature(SimEngine.run_policy)
         undocumented = [name for name in signature.parameters if name != "self" and f"\n    {name}:" not in doc]
         assert undocumented == [], undocumented
+
+
+def _package_root() -> pathlib.Path:
+    """The installed package directory, derived from an imported symbol.
+
+    A module-level helper rather than a literal, so the structural sweep below
+    grades the tree it was imported from and the whole-tree preflight can
+    resolve what this file walks.
+    """
+    return pathlib.Path(inspect.getfile(strands_robots)).parent
+
+
+def _bound_names(function: ast.AST) -> set[str]:
+    """Names bound in ``function`` - parameters and assignment targets."""
+    assert isinstance(function, ast.FunctionDef | ast.AsyncFunctionDef)
+    args = function.args
+    names = {a.arg for a in [*args.posonlyargs, *args.args, *args.kwonlyargs]}
+    for node in ast.walk(function):
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                names |= {n.id for n in ast.walk(target) if isinstance(n, ast.Name)}
+    return names
+
+
+def _derives_a_bound_from_the_duration(node: ast.AST) -> bool:
+    """Whether ``node``'s value multiplies the duration by the frequency."""
+    value = getattr(node, "value", None)
+    if not isinstance(node, ast.Assign | ast.AnnAssign) or value is None:
+        return False
+    for sub in ast.walk(value):
+        if isinstance(sub, ast.BinOp) and isinstance(sub.op, ast.Mult):
+            if {ast.unparse(sub.left), ast.unparse(sub.right)} == {"duration", "control_frequency"}:
+                return True
+    return False
+
+
+def _bounds_in(root: pathlib.Path) -> list[tuple[str, bool]]:
+    """Return ``(label, honours_the_count)`` for every derived bound."""
+    found: list[tuple[str, bool]] = []
+    for path in sorted(root.rglob("*.py")):
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+        except SyntaxError:  # pragma: no cover - the package always parses
+            continue
+        for function in ast.walk(tree):
+            if not isinstance(function, ast.FunctionDef | ast.AsyncFunctionDef):
+                continue
+            bounds = [
+                n
+                for n in ast.walk(function)
+                if isinstance(n, ast.Assign | ast.AnnAssign) and _derives_a_bound_from_the_duration(n)
+            ]
+            if not bounds or "n_steps" not in _bound_names(function):
+                continue
+            # Assignments reached only when a test on the count says so.
+            conditional = {
+                id(d)
+                for node in ast.walk(function)
+                if isinstance(node, ast.If) and "n_steps" in ast.unparse(node.test)
+                for d in ast.walk(node)
+            }
+            for bound in bounds:
+                assert bound.value is not None  # guaranteed by the predicate above
+                honours = "n_steps" in ast.unparse(bound.value) or id(bound) in conditional
+                label = f"{path.relative_to(root)}::{function.name}:{bound.lineno}"
+                found.append((label, honours))
+    return found
+
+
+class TestEveryRolloutLoopHonoursTheResolvedStepCount:
+    """A loop given a step count must not re-derive one from the duration.
+
+    ``_resolve_horizon`` returns ``(duration, n_steps, error)``: on the horizon
+    path the duration it returns is derived AS ``n_steps / control_frequency``,
+    so multiplying it back by the frequency is a float round trip, not a
+    conversion. The population is derived from the tree - every function that
+    assigns a value built from ``duration * control_frequency`` - so a fourth
+    rollout loop is graded on arrival instead of being absent from a tuple, and
+    the Isaac loop is graded on a runner with no ``isaacsim`` installed.
+
+    Both spellings of honouring the count are accepted, because both ship: the
+    conditional expression the multi-robot loops now use and the ``if n_steps is
+    not None:`` statement ``PolicyRunner.run`` has always used. Grading one
+    spelling would report a tree using the other as clean.
+    """
+
+    def test_every_loop_in_the_package_honours_it(self):
+        adrift = [label for label, honours in _bounds_in(_package_root()) if not honours]
+        assert adrift == [], adrift
+
+    def test_the_sweep_really_reaches_the_rollout_loops(self):
+        # Non-vacuity: a sweep that selected nothing would read as a clean tree.
+        # Floored well below the three loops shipped so a fourth needs no edit.
+        found = _bounds_in(_package_root())
+        assert len(found) >= 3, found
+        assert any("policy_runner.py" in label for label, _ in found), found
+        assert any("isaac" in label or "mujoco" in label for label, _ in found), found
+
+    @pytest.mark.parametrize(
+        ("body", "expected"),
+        [
+            pytest.param(
+                "    total_steps = n_steps if n_steps is not None else int(duration * control_frequency)",
+                True,
+                id="conditional-expression",
+            ),
+            pytest.param(
+                "    if n_steps is not None:\n"
+                "        total_steps = n_steps\n"
+                "    else:\n"
+                "        total_steps = int(duration * control_frequency)",
+                True,
+                id="if-statement",
+            ),
+            pytest.param("    total_steps = int(duration * control_frequency)", False, id="bare-re-derivation"),
+            pytest.param("    total_steps = int(control_frequency * duration)", False, id="bare-operands-reversed"),
+        ],
+    )
+    def test_both_spellings_of_honouring_the_count_are_recognized(self, tmp_path, body, expected):
+        header = "def run(policies, duration, control_frequency, n_steps):\n"
+        (tmp_path / "loop.py").write_text(header + body + "\n", encoding="utf-8")
+        assert [honours for _, honours in _bounds_in(tmp_path)] == [expected]
+
+    def test_a_loop_with_no_step_count_is_outside_the_population(self, tmp_path):
+        # ``duration`` is the only horizon some loops take; there is no count to
+        # honour there, so selecting it would need an exemption list.
+        (tmp_path / "loop.py").write_text(
+            "def run(duration, control_frequency):\n    total_steps = int(duration * control_frequency)\n",
+            encoding="utf-8",
+        )
+        assert _bounds_in(tmp_path) == []

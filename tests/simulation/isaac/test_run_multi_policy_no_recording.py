@@ -416,7 +416,7 @@ def test_run_multi_policy_rejects_a_duration_it_cannot_honor(sim_two_robots, bad
     sim = sim_two_robots
     result = sim.run_multi_policy(policies=_both(), duration=bad, control_frequency=500.0)
 
-    assert result == IsaacSimulation._validate_duration(bad, "run_multi_policy")
+    assert result == IsaacSimulation._validate_duration(bad, "run_multi_policy", 500.0)
     assert result["status"] == "error"
     _cost_nothing(sim)
 

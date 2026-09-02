@@ -550,17 +550,23 @@ def build_train_command(
     requires a positive integer. Passing ``None`` for either omits the flag and
     leaves lerobot's own default in place.
 
+    ``num_gpus`` is checked against that same domain, for the same reason and one
+    more: it is read twice, once as the ``num_gpus > 1`` launcher selector and
+    once as the ``--num_processes=`` token, so a value that is neither greater
+    than one nor refused selects a single-process run the caller did not ask for.
+
     ``save_freq`` is checked against the same ``int`` requirement by
     :func:`_save_freq_error`, without a floor: lerobot documents a non-positive
     cadence as "disables periodic saving".
 
     Raises:
         ValueError: if ``lora`` and ``train_expert_only`` are both set (both
-            freeze the VLM and are mutually exclusive), if ``train_expert_only``
-            is requested for a non-expert policy, if ``num_gpus < 1``, or if a
-            supplied ``steps`` / ``batch_size`` - or, under ``lora``, a supplied
-            ``lora_r`` / ``lora_alpha`` - is not a positive integer, or if a
-            fresh run's ``device`` is not a device string torch can parse or its
+            freeze the VLM and are mutually exclusive), if
+            ``train_expert_only`` is requested for a non-expert policy, if
+            ``num_gpus`` is not a positive integer, if a supplied ``steps``
+            / ``batch_size`` - or, under ``lora``, a supplied ``lora_r`` /
+            ``lora_alpha`` - is not a positive integer, or if a fresh run's
+            ``device`` is not a device string torch can parse or its
             ``save_freq`` is not a whole number of steps.
     """
     if lora and train_expert_only:
@@ -572,8 +578,19 @@ def build_train_command(
         raise ValueError(
             f"train_expert_only is only valid for {sorted(expert_only_policies)} policies, not '{policy_type}'."
         )
-    if num_gpus < 1:
-        raise ValueError(f"num_gpus must be >= 1, got {num_gpus}")
+    # The launch topology, read twice below: the ``num_gpus > 1`` selector that
+    # picks accelerate over a direct module run, and the ``--num_processes=``
+    # token that sizes the accelerate launch. A local comparison could not screen
+    # either read. ``nan`` and ``True`` are not greater than one, so they fell
+    # through to the single-process branch and the caller was told a run started
+    # on a topology nobody asked for; ``2.7`` and ``inf`` are, so they reached
+    # accelerate's own ``type=int`` parse inside the DETACHED process, where the
+    # only record is the training log. Held to the same shared domain
+    # ``LerobotTrainer.validate`` applies to this field, so the two surfaces that
+    # launch one lerobot run cannot disagree about the counts they accept.
+    topology_error = positive_count_error(num_gpus, "num_gpus", "lerobot_train")
+    if topology_error:
+        raise ValueError(topology_error)
     # The two knobs that size the run. An unusable value here is not merely
     # rejected downstream: it is written into the argv of a DETACHED process, so
     # the caller is told the run started and only the training log records that

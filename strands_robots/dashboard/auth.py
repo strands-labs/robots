@@ -34,7 +34,7 @@ import threading
 import time
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, NamedTuple, cast
 
 import jwt  # PyJWT
 from fastapi import HTTPException
@@ -120,15 +120,38 @@ def _forced_origin() -> str:
 
 _lock = threading.Lock()
 
-# The store, cached under the identity of the file it was read from. A value
-# global beside a parallel key global is an invariant maintained by hand at every
-# write - and the two can disagree, at which point a stale hit is
-# indistinguishable from a fresh one. Keyed this way they cannot: the key is the
-# dict's key, so a value is only reachable through the identity it was read
-# under. ``mesh/_acl_config.py`` keys its ACL cache on a file identity tuple for
-# the same reason. Holds at most one entry - there is one store path per process
-# - so an operator (or an attacker) rewriting the store cannot grow it.
-_cache: dict[tuple, dict[str, Any]] = {}
+# The store, cached under the identity of the file it was read from, together
+# with the bytes it was parsed from. A value global beside a parallel key global
+# is an invariant maintained by hand at every write - and the two can disagree,
+# at which point a stale hit is indistinguishable from a fresh one. Keyed this
+# way they cannot: the key is the dict's key, so a value is only reachable
+# through the identity it was read under. ``mesh/_acl_config.py`` keys its ACL
+# cache on a file identity tuple for the same reason. Holds at most one entry -
+# there is one store path per process - so an operator (or an attacker)
+# rewriting the store cannot grow it.
+#
+# The identity is the key; the bytes are the authority. A stat tuple names a
+# file, not a version of it: the kernel stamps ``st_mtime_ns`` from a coarse
+# clock, so two writes inside one tick carry the same mtime, and a rewrite that
+# keeps the byte count keeps ``st_size`` too. Eight successive same-size
+# rewrites of a store on ext4 can therefore share one identity tuple. Under a
+# stat-only hit that is a permanent stale read - the identity never changes
+# again, so the revocation that rewrote the file is never applied, on the file
+# that decides whether this dashboard is sealed. A hit is served only when the
+# file still holds the bytes the cached store was parsed from.
+_cache: dict[tuple, _CachedStore] = {}
+
+
+class _CachedStore(NamedTuple):
+    """A parsed store beside the exact bytes it was parsed from.
+
+    ``raw`` is what makes a hit checkable. Keeping it costs one copy of a file
+    that holds a JWT secret and a handful of passkey records, and buys the only
+    question a stat tuple cannot answer: are these still the file's contents?
+    """
+
+    raw: str
+    store: dict[str, Any]
 
 
 def _default_store() -> dict[str, Any]:
@@ -174,6 +197,12 @@ def _store_identity(path: Path) -> tuple | None:
     direction to fail in for the file that decides whether this dashboard is
     sealed: serving memory under a key that describes nothing is how a store
     replaced underneath the process goes unnoticed.
+
+    The tuple names a file, not a version of it. Two different contents can
+    share one: ``st_mtime_ns`` comes from a coarse kernel clock, so writes
+    inside one tick are stamped alike, and a rewrite of the same byte count
+    leaves ``st_size`` alone. That is why :func:`_load` checks the bytes a hit
+    was parsed from rather than trusting this tuple to have changed.
     """
     try:
         stat = path.stat()
@@ -182,32 +211,48 @@ def _store_identity(path: Path) -> tuple | None:
     return (str(path), stat.st_mtime_ns, stat.st_size)
 
 
-def _remember_locked(identity: tuple | None, store: dict[str, Any]) -> None:
+def _remember_locked(identity: tuple | None, raw: str, store: dict[str, Any]) -> None:
     """Make ``store`` the single cached entry, reachable only under ``identity``.
 
     Caller must hold :data:`_lock`. A None identity caches nothing, so the next
     :func:`_load` reads the file again instead of trusting memory.
+
+    Args:
+        identity: The stat tuple from :func:`_store_identity`, or None.
+        raw: The file contents ``store`` was parsed from - what :func:`_load`
+            compares against to decide a hit is still the file. Required
+            rather than defaulted, so a caller that cannot say what bytes it
+            holds fails here instead of caching an unverifiable entry.
+        store: The parsed store.
     """
     _cache.clear()
     if identity is not None:
-        _cache[identity] = store
+        _cache[identity] = _CachedStore(raw, store)
 
 
 def _load() -> dict[str, Any]:
-    """Read the store, re-reading the file whenever it changes on disk."""
+    """Read the store, serving memory only while the file still holds its bytes.
+
+    The cache spares a login the JSON parse, not the read: the read is what
+    establishes that the parse can be skipped. A stat tuple cannot establish it
+    - see :func:`_store_identity` for the two ways two contents come to share
+    one - and the store is the record that decides whether this dashboard is
+    sealed, so a hit is checked against the file rather than assumed.
+    """
     path = _store_path()
     with _lock:
         identity = _store_identity(path)
         if identity is not None:
-            cached = _cache.get(identity)
-            if cached is not None:
-                return cached
             try:
-                store: dict[str, Any] = json.loads(path.read_text())
+                raw = path.read_text()
+                cached = _cache.get(identity)
+                if cached is not None and cached.raw == raw:
+                    return cached.store
+                store: dict[str, Any] = json.loads(raw)
             except (OSError, ValueError) as exc:
                 _preserve_corrupt(path, exc)
             else:
-                _remember_locked(identity, store)
+                _remember_locked(identity, raw, store)
                 return store
         store = _default_store()
         _save_locked(store)
@@ -247,10 +292,11 @@ def _save_locked(store: dict[str, Any]) -> None:
     """
     path = _store_path()
     path.parent.mkdir(parents=True, exist_ok=True)
+    payload = json.dumps(store, indent=2)
     fd, tmp = tempfile.mkstemp(prefix=f"{path.name}.", suffix=".tmp", dir=path.parent)
     try:
         with os.fdopen(fd, "w") as handle:
-            handle.write(json.dumps(store, indent=2))
+            handle.write(payload)
         os.replace(tmp, path)
     except BaseException:
         # Leave no debris behind a failed save: the store on disk is still
@@ -259,10 +305,12 @@ def _save_locked(store: dict[str, Any]) -> None:
         with contextlib.suppress(OSError):
             os.unlink(tmp)
         raise
-    # Re-key on the file just written. A store that vanished between the replace
-    # and this stat has no identity, so nothing is cached and the next _load
-    # re-reads - see _store_identity.
-    _remember_locked(_store_identity(path), store)
+    # Re-key on the file just written, under the payload that is now its
+    # contents. A store that vanished between the replace and this stat has no
+    # identity, so nothing is cached and the next _load re-reads - see
+    # _store_identity. A store somebody else rewrote in that window has other
+    # contents, so the next _load finds the bytes disagree and re-reads too.
+    _remember_locked(_store_identity(path), payload, store)
 
 
 def _save(store: dict[str, Any]) -> None:
@@ -500,6 +548,17 @@ logger = logging.getLogger(__name__)
 _challenges: dict[str, dict[str, Any]] = {}
 _chal_lock = threading.Lock()
 _CHAL_TTL = 300.0
+# : A challenge's age is a DURATION this process decides on its own -- it stamps
+# : the record and it reads it back -- so it is measured on ``time.monotonic()``,
+# : under the ``_mono`` name the safety subsystem uses for the same distinction.
+# : ``time.time()`` is not a clock but the current opinion about the date, and an
+# : NTP correction, a ``date -s`` or a resume from suspend moves it by an
+# : arbitrary amount: backwards, an expired challenge stays replayable for the
+# : size of the step, and the cap's "drop the oldest" drops a newer entry;
+# : forwards, an in-flight ceremony is refused and the next stash sweeps it out.
+# : The absolute stamps in this module -- a session token's ``iat``/``exp``, a
+# : credential's ``created`` -- name a point in time a browser or an operator
+# : correlates with something off this process, and stay on the wall clock.
 
 # : Caps on the challenge table. Both are per-process and generous: a challenge : measures
 # ~0.5KB, so 512 of them is ~256KB.
@@ -511,7 +570,7 @@ _CHAL_MAX_PER_IP = int(os.getenv("STRANDS_DASH_AUTH_CHAL_MAX_PER_IP", "16"))
 
 def _evict_oldest(where: dict[str, dict[str, Any]], keep: int, ip: str | None = None) -> int:
     """Drop the oldest entries (optionally only one ip's) until ``keep`` remain."""
-    pool = [(v["t"], k) for k, v in where.items() if ip is None or v.get("ip") == ip]
+    pool = [(v["t_mono"], k) for k, v in where.items() if ip is None or v.get("ip") == ip]
     dropped = 0
     for _t, k in sorted(pool)[: max(0, len(pool) - keep)]:
         where.pop(k, None)
@@ -526,9 +585,9 @@ def _stash_challenge(
     ip: str | None = None,
 ) -> str:
     cid = secrets.token_urlsafe(16)
-    now = time.time()
+    now = time.monotonic()
     with _chal_lock:
-        for k in [k for k, v in _challenges.items() if now - v["t"] > _CHAL_TTL]:
+        for k in [k for k, v in _challenges.items() if now - v["t_mono"] > _CHAL_TTL]:
             _challenges.pop(k, None)
         # Evict the flooder's OWN oldest entries first, so one noisy client
         # cannot cost anybody else their in-flight ceremony.
@@ -542,7 +601,7 @@ def _stash_challenge(
         _challenges[cid] = {
             "kind": kind,
             "challenge": challenge,
-            "t": now,
+            "t_mono": now,
             "extra": extra or {},
             "ip": ip,
         }
@@ -582,7 +641,7 @@ def _pop_challenge(cid: str, kind: str) -> dict[str, Any]:
         rec = _challenges.pop(cid, None)
     if not rec or rec["kind"] != kind:
         raise HTTPException(400, "invalid or expired challenge")
-    if time.time() - rec["t"] > _CHAL_TTL:
+    if time.monotonic() - rec["t_mono"] > _CHAL_TTL:
         raise HTTPException(400, "challenge expired")
     return rec
 

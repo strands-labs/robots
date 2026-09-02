@@ -15,7 +15,7 @@ Requires **Python >= 3.12**. Examples use [`uv`](https://docs.astral.sh/uv/) (`c
 | `[sim-mujoco]` | `sim` + `mujoco`, `imageio`, `imageio-ffmpeg` | Any `Robot()` with default `mode="sim"` |
 | `[lerobot]` | `lerobot>=0.6.1,<0.7.0` | `LerobotLocalPolicy` + dataset recording |
 | `[groot-service]` | `pyzmq`, `msgpack` | `Gr00tPolicy` (ZMQ to a GR00T container) |
-| `[cosmos3-service]` | `msgpack`, `websockets>=13.0` | `Cosmos3Policy` (WebSocket to Cosmos 3 server) |
+| `[cosmos3-service]` | `msgpack`, `websockets>=17.0` | `Cosmos3Policy` (WebSocket to Cosmos 3 server) |
 | `[mesh]` | `eclipse-zenoh>=1.6.1,<2.0.0`, `json5` | Multi-robot mesh discovery + RPC |
 | `[mesh-iot]` | `mesh` + `awsiotsdk`, `awscrt`, `boto3` | AWS IoT Core transport for mesh |
 | `[all]` | 20 of the 32 extras - **not** a union. `[cosmos3-diffusers]`, `[cosmos3-service]`, `[cosmos3-sim]`, `[crazyflie]` (GPLv3), `[curobo]`, `[microduck]`, `[ros2]`, `[sim-gs]`, `[sim-isaac]`, `[sim-newton]` and `[vera-sim]` stay opt-in | Demos, CI, exploration |
@@ -37,9 +37,16 @@ module to import and no fallback, so `Robot("so101", mode="sim")` cannot resolve
 a model file.
 
 The `websockets` floor in `[inference]` and `[cosmos3-service]` is set the same
-way. `strands_robots/inference/server.py` annotates `PolicyServer._server` with
-`websockets.sync.server.Server`, which first ships in websockets 13.0 - 12.0
-spells that class `WebSocketServer`. Both extras declare `>=13.0`, and they
+way, by what the code needs rather than by preference - and by a *behaviour*
+rather than a name. `PolicyServer.stop()` is documented to stop the server
+serving, not merely listening; through websockets 16.x `Server.shutdown()` closed
+the listening socket alone, so a client that was already connected went on being
+answered with action chunks after the caller was told the server stopped, which on
+a robot is the policy still driving the arm. websockets 17.0 closes the
+connections it accepted and waits for their handlers. Measured against the
+released wheels on unchanged sources: 16.1.1 still serves that client, 17.0 does
+not - so both extras declare `>=17.0`. (13.0 remains the floor of the API *names*
+reached for, `websockets.sync.server.Server`; the higher of the two wins.) They
 declare the *same* floor on purpose: an environment resolves one `websockets`, so
 two different floors would leave the lower one describing an install nobody gets.
 

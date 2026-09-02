@@ -38,7 +38,9 @@ def _drive_fallback(entry: str, monkeypatch: pytest.MonkeyPatch) -> dict[str, st
     Returns:
         The ``insert_json5`` key -> value mapping the builder produced.
     """
-    for var in ("ZENOH_LISTEN", "ZENOH_CONNECT", "STRANDS_MESH_BACKEND"):
+    # STRANDS_MESH joins the list because the acquire doors ask the kill switch before
+    # building anything, and this driver needs them to build a config.
+    for var in ("ZENOH_LISTEN", "ZENOH_CONNECT", "STRANDS_MESH_BACKEND", "STRANDS_MESH"):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setattr(mod, "_SESSION", None)
     monkeypatch.setattr(mod, "_SESSION_REFS", 0)

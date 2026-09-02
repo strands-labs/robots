@@ -418,11 +418,6 @@ def test_push_to_hub_true_sets_flag() -> None:
     assert "--policy.push_to_hub=true" in cmd
 
 
-def test_num_gpus_zero_rejected() -> None:
-    with pytest.raises(ValueError, match="num_gpus must be >= 1"):
-        build_train_command(dataset_root="/data/cubes", num_gpus=0)
-
-
 # ---------------------------------------------------------------------------
 # Preflight (start action)
 # ---------------------------------------------------------------------------

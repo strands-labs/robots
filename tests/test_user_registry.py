@@ -339,7 +339,7 @@ class TestLoaderMerge:
 
         data = {"robots": {"fake": {"description": "test"}}}
         with mock.patch.dict("sys.modules", {"strands_robots.registry.user_registry": None}):
-            result = _merge_user_robots(data)
+            result = _merge_user_robots(data, None)
         assert "fake" in result["robots"]
 
 

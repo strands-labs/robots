@@ -19,6 +19,11 @@ per process, so the bound is one entry -- and these cells grade both halves of
 that: the entry is replaced rather than accumulated, and two different store
 paths never answer for each other.
 
+What the identity cannot decide is graded here too: it names a file, not a
+version of it. `st_mtime_ns` comes from a coarse kernel clock and a rewrite of
+the same byte count keeps `st_size`, so two contents share one tuple -- which is
+why a hit is checked against the bytes the cached store was parsed from.
+
 The re-read-on-change and read-from-memory-on-hit behaviours are graded by
 `test_dashboard_auth_module.py::test_store_hot_reloads_on_file_change` and
 `test_dashboard_auth_store_write_is_atomic.py::TestWhatTheAtomicWriteDoesNotChange`
@@ -26,6 +31,7 @@ and are deliberately not repeated here.
 """
 
 import json
+import os
 
 import pytest
 
@@ -71,6 +77,37 @@ class TestTheCacheIsBounded:
             assert auth._load()["note"] == f"outside-{i}", "an outside change is re-read"
 
         assert len(auth._cache) == 1, f"8 outside changes left {len(auth._cache)} cached entries, want 1"
+
+
+class TestAHitIsTheBytesOnDisk:
+    """The tuple says which file; only the bytes say what is in it."""
+
+    def test_a_same_size_rewrite_under_an_unchanged_stat_tuple_is_re_read(self, tmp_path):
+        """Two contents can share one identity tuple, so the tuple cannot license a hit.
+
+        ``os.utime`` only makes the collision deterministic on every filesystem; it
+        arrives on its own, because the kernel stamps ``st_mtime_ns`` from a coarse
+        clock and a rewrite of the same byte count leaves ``st_size`` alone -- eight
+        successive same-size rewrites of a store on ext4 share one tuple.
+
+        What rides on it is a revocation. The operator rewrites the store to retire a
+        passkey record, and under a stat-only hit the process goes on honouring the
+        retired one -- not until the next write, but for good, because the identity it
+        is cached under never changes again.
+        """
+        path = tmp_path / "auth.json"
+        auth._save({"credentials": [{"id": "keyAAAA"}], "jwt_secret": "s"})
+        assert auth._load()["credentials"] == [{"id": "keyAAAA"}]
+        before = path.stat()
+
+        # Same length by construction, so st_size cannot betray the rewrite either.
+        path.write_text(path.read_text().replace("keyAAAA", "keyBBBB"))
+        os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+        assert path.stat().st_size == before.st_size, "the rewrite kept the byte count"
+        assert path.stat().st_mtime_ns == before.st_mtime_ns, "and the mtime"
+
+        assert auth._load()["credentials"] == [{"id": "keyBBBB"}], "the file on disk is what is served"
+        assert len(auth._cache) == 1, "the entry is replaced, not given up on"
 
 
 class TestOneStoreNeverAnswersForAnother:

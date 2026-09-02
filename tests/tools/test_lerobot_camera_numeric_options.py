@@ -14,6 +14,10 @@ was checked. The consequences differed per option and none of them was reportabl
   still left that stub file behind.
 * ``capture_duration=True`` silently recorded one second, since ``True`` is an
   ``int`` worth 1.
+* A ``capture_duration`` that is positive and finite but shorter than one frame
+  period - every span below ``0.0333`` at the default ``fps=30`` - made that same
+  bound zero, so refusing only the non-positive spans left the reported-complete
+  empty recording reachable through the other factor.
 * ``width=640.0`` reached ``cv2.VideoWriter`` and died in a raw OpenCV overload
   resolution dump, even though the sibling plain-MP4 recorders honor an integral
   float for exactly this parameter.
@@ -107,8 +111,23 @@ def _call(**kwargs: Any) -> dict[str, Any]:
     return cam_mod.lerobot_camera(**kwargs)
 
 
+#: ``(fps, capture_duration)`` pairs where each value is individually usable but
+#: ``int(fps * capture_duration)`` is zero, so the loop body never runs.
+EMPTY_RECORDINGS = ((30, 0.02), (30, 1.0 / 60), (10, 0.09), (60, 0.016), (1, 0.9))
+
+#: The same product at its boundary: the shortest span each rate can honor, which
+#: must still record. These are what keep the pairing from over-refusing.
+ONE_FRAME_RECORDINGS = ((10, 0.1), (2, 0.5), (30, 1.0 / 30), (1, 1.0))
+
+
 class TestARecordingThatCannotHappenIsRefused:
-    """The headline: a non-positive span reported a complete recording."""
+    """The headline: a span that captures no frame reported a complete recording.
+
+    The span's own sign is only half of it. The loop bound is the product
+    ``int(fps * capture_duration)``, so which side of the line a span falls on is
+    not a property of the span - a positive, finite span below one frame period
+    produces the identical empty recording, and the pair has to be judged together.
+    """
 
     @pytest.mark.parametrize("duration", BAD_SPANS)
     def test_a_capture_duration_that_records_no_frame_is_refused(
@@ -148,6 +167,69 @@ class TestARecordingThatCannotHappenIsRefused:
 
         assert result["status"] == "success"
         assert "Frames: 1" in _text(result)
+
+    @pytest.mark.parametrize(("fps", "duration"), EMPTY_RECORDINGS)
+    def test_a_span_shorter_than_one_frame_period_is_refused(
+        self, recorder: _Recorder, tmp_path: Any, fps: int, duration: float
+    ) -> None:
+        """Each value is in its own domain, so only the product can refuse this."""
+        assert positive_whole_number_error(fps, "fps", "record") is None
+        assert positive_finite_number_error(duration, "capture_duration", "record") is None
+
+        result = _call(action="record", camera_id=0, save_path=str(tmp_path), fps=fps, capture_duration=duration)
+
+        assert result["status"] == "error"
+        # The refusal precedes the device, so - the point of the fix - no MP4 stub
+        # is left for the summary to call "Saved".
+        assert recorder.opened == []
+        assert list(tmp_path.iterdir()) == []
+
+    @pytest.mark.parametrize(("fps", "duration"), ONE_FRAME_RECORDINGS)
+    def test_the_shortest_span_a_rate_can_honor_still_records(
+        self, recorder: _Recorder, tmp_path: Any, monkeypatch: pytest.MonkeyPatch, fps: int, duration: float
+    ) -> None:
+        """A frame count of exactly one is honored, not rounded away."""
+        writer = type("_W", (), {"write": lambda self, f: None, "release": lambda self: None})()
+        monkeypatch.setattr(cam_mod.cv2, "VideoWriter", lambda *a, **k: writer)
+        monkeypatch.setattr(cam_mod.cv2, "VideoWriter_fourcc", lambda *a, **k: 0, raising=False)
+        monkeypatch.setattr(cam_mod.os.path, "getsize", lambda p: 1234)
+
+        result = _call(action="record", camera_id=0, save_path=str(tmp_path), fps=fps, capture_duration=duration)
+
+        assert result["status"] == "success"
+        assert "Frames: 1" in _text(result)
+
+    def test_the_refusal_names_both_factors_and_the_span_that_would_work(
+        self, recorder: _Recorder, tmp_path: Any
+    ) -> None:
+        text = _text(_call(action="record", camera_id=0, save_path=str(tmp_path), fps=30, capture_duration=0.02))
+
+        assert text.startswith("record:")
+        assert "capture_duration=0.02" in text
+        assert "fps=30" in text
+        # A refusal an agent can act on has to quote the span that would work.
+        assert "0.0333333" in text
+        assert all(ord(c) < 128 for c in text), text
+
+    def test_a_preview_shorter_than_one_frame_period_is_not_refused(
+        self, recorder: _Recorder, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``preview_duration`` is a deadline, not a factor of a frame count.
+
+        The preview loop is bounded by ``time.monotonic() - start < duration``, so
+        its first iteration always runs and a short preview displays a frame rather
+        than none. Pairing it with ``fps`` the way ``capture_duration`` is paired
+        would refuse a preview that works, so the scoping is pinned here.
+        """
+        monkeypatch.setattr(cam_mod.cv2, "cvtColor", lambda frame, code: frame, raising=False)
+        for name in ("putText", "imshow", "destroyAllWindows"):
+            monkeypatch.setattr(cam_mod.cv2, name, lambda *a, **k: None, raising=False)
+        monkeypatch.setattr(cam_mod.cv2, "waitKey", lambda delay: 0, raising=False)
+
+        result = _call(action="preview", camera_id=0, fps=30, preview_duration=0.001)
+
+        assert result["status"] == "success", _text(result)
+        assert recorder.opened == [(640, 480, 30)]
 
 
 class TestGeometryIsValidatedOnEveryCameraAction:
@@ -266,6 +348,28 @@ class TestTheDomainCannotDriftFromTheSharedHelpers:
         )
 
         assert tool_refuses == (positive_finite_number_error(value, "capture_duration", "record") is not None)
+
+    def test_the_span_parity_is_over_the_value_domain_alone(self) -> None:
+        """The row above is a claim about one value, not about the whole request.
+
+        Membership in the shared span domain is necessary but not sufficient: the
+        loop bound is a product, so a span in the domain is still refused when the
+        rate makes it capture no frame. Every value the parity row probes is many
+        frames at its ``fps=10``, which is what keeps the two claims compatible -
+        pinned here so a later widening of that row cannot quietly assert that the
+        shared domain is the whole guard.
+        """
+        assert all(10 * float(value) >= 1.0 for value in (0.5, 2.5, 30, np.float32(1.5)))
+        assert cam_mod._numeric_option_error(
+            "record",
+            width=640,
+            height=480,
+            fps=10,
+            capture_duration=0.05,
+            preview_duration=10.0,
+            timeout_ms=1000,
+            async_mode=False,
+        )
 
     def test_every_camera_opening_handler_has_a_table_row(self) -> None:
         """A new action configured with the caller's geometry must be validated too."""

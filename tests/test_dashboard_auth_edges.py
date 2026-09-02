@@ -44,8 +44,11 @@ def isolated_store(tmp_path, monkeypatch):
 
 
 def test_expired_challenge_refused_at_pop():
+    # Age is faked by rewriting the stamp, so this cell says nothing about which
+    # clock measures it; that is graded by moving the clock instead, in
+    # tests/test_dashboard_challenge_expiry_survives_a_clock_step.py.
     cid = auth._stash_challenge("auth", b"chal", ip="1.2.3.4")
-    auth._challenges[cid]["t"] = time.time() - auth._CHAL_TTL - 1
+    auth._challenges[cid]["t_mono"] = time.monotonic() - auth._CHAL_TTL - 1
     with pytest.raises(HTTPException) as e:
         auth._pop_challenge(cid, "auth")
     assert e.value.status_code == 400

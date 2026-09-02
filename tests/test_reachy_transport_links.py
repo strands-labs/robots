@@ -173,6 +173,11 @@ class _FakeWS:
         return _gen()
 
     async def send(self, data):
+        # Shaped like the real socket: websockets raises ConnectionClosed on a
+        # send after close rather than accepting it, so a link that offers a
+        # closed socket as connected fails here instead of looking healthy.
+        if self.closed:
+            raise ConnectionError("cannot send on a closed WebSocket")
         self.sent.append(data)
 
     async def close(self):
@@ -351,6 +356,50 @@ class TestWebSocketLink(unittest.TestCase):
         link = WebSocketLink("h", 1)
         # _ws is None -> must return silently, not raise.
         _run(link.send_cmd({"body_yaw": 0.1}))
+
+    def test_send_cmd_after_stop_is_the_documented_noop(self):
+        """A stopped link refuses the send instead of using the closed socket.
+
+        ``send_cmd`` reads ``_ws`` as its "is the socket connected?" test, so a
+        stop that closes the socket but leaves the handle in place keeps that
+        guard unreachable: the send goes out on a closed connection.
+        """
+        link = WebSocketLink("h", 1)
+        fake_ws = _FakeWS()
+        link._ws = fake_ws
+
+        async def scenario():
+            link._read_task = asyncio.create_task(asyncio.sleep(60))
+            await asyncio.sleep(0)
+            await link.stop()
+            await link.send_cmd({"body_yaw": 0.1})  # documented no-op
+
+        _run(scenario())
+        self.assertEqual(fake_ws.sent, [])
+
+    def test_a_stop_whose_close_fails_still_leaves_the_link_disconnected(self):
+        """The socket is gone whether or not its close succeeded.
+
+        The handle is therefore dropped before the close is awaited, so a
+        failing close cannot leave the link still offering a dead socket.
+        """
+        link = WebSocketLink("h", 1)
+        fake_ws = _FakeWS()
+
+        async def _boom():
+            fake_ws.closed = True
+            raise ConnectionError("socket teardown raced with close")
+
+        fake_ws.close = _boom
+        link._ws = fake_ws
+
+        async def scenario():
+            with self.assertRaises(ConnectionError):
+                await link.stop()
+            await link.send_cmd({"body_yaw": 0.1})  # documented no-op
+
+        _run(scenario())
+        self.assertEqual(fake_ws.sent, [])
 
     def test_stop_cancels_read_task_and_closes_socket(self):
         link = WebSocketLink("h", 1)

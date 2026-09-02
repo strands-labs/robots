@@ -539,6 +539,16 @@ _NOT_AN_INPUT_DOMAIN = {
     # tests/simulation/test_ik_bridge_numeric_parameter_domains.py fails when
     # the delegation is dropped or the shared domain stops refusing a boolean.
     "_damping_error": "coerces only a value finite_number_error accepted",
+    # Both float() calls here read a factor its OWN domain has already accepted:
+    # ``duration`` by the positive_finite_number_error immediately above (which
+    # refuses bool and numpy.bool_ by name), and ``control_frequency`` by
+    # _validate_positive_frequency, which every call site runs first and which
+    # this guard's Args entry requires. So a boolean is answered with its own
+    # reason and never reaches the product. Pinned behaviourally rather than only
+    # claimed here:
+    # tests/simulation/test_rollout_duration_must_produce_a_control_step.py fails
+    # when either delegation is dropped.
+    "_validate_duration": "coerces only factors their own domains accepted",
 }
 
 _GUARDED_VALIDATORS = {
