@@ -49,6 +49,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
+from strands_robots._mesh_switch import MESH_ENV_VAR
 from strands_robots.mesh._backend_select import select_backend
 from strands_robots.utils import partial_construction_repr
 
@@ -872,14 +873,20 @@ def get_session() -> Any | None:
     # about Zenoh: an IoT/bridge transport publishes this robot to the fleet
     # just as a Zenoh session does, and one gate covers every backend.
     #
-    # Imported here rather than at module scope because mesh/__init__ imports
-    # this module while loading core, so a top-level import would be a cycle.
+    # Imported inside the function, not at module scope: core imports this
+    # module (twice) while mesh/__init__ loads it, so a top-level import would
+    # be a genuine cycle. Reaching the mesh package lazily from inside the
+    # function that needs it is the technique _mesh_switch's docstring already
+    # describes for the same reason -- strands_robots.robot does it so that
+    # importing Robot does not eagerly pull in the Zenoh-backed session. The
+    # constant above comes from _mesh_switch instead, which imports nothing
+    # from the package and so is reachable at module scope.
     from strands_robots.mesh.core import mesh_disabled_by_env
 
     if mesh_disabled_by_env():
         logger.debug(
             "Mesh transport not acquired: STRANDS_MESH=%r is a hard kill switch",
-            os.getenv("STRANDS_MESH", ""),
+            os.getenv(MESH_ENV_VAR, ""),
         )
         return None
 
@@ -1057,7 +1064,7 @@ def _get_zenoh_session_directly() -> Any | None:
     if mesh_disabled_by_env():
         logger.debug(
             "Zenoh session not opened: STRANDS_MESH=%r is a hard kill switch",
-            os.getenv("STRANDS_MESH", ""),
+            os.getenv(MESH_ENV_VAR, ""),
         )
         return None
 
