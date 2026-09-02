@@ -13,6 +13,16 @@ protocol, capability-based dispatch, and the signed audit log. Tracked by epic
 | 04 | [`04_emergency_evacuation.py`](04_emergency_evacuation.py) - three-phase evacuate protocol, benchmark-scored | here |
 | 05 | [`05_work_order_dispatch.py`](05_work_order_dispatch.py) - structured task ingress mapped onto per-site capability manifests | here |
 
+![Emergency evacuation demo - the fleet clears the corridor while the personnel proxy walks to the exit](assets/evacuation.gif)
+
+*The suite in one clip - example 04's three-phase evacuation on a MuJoCo
+corridor world: fleet-wide abort, deterministic retreat by corridor-distance
+priority (the LeKiwi base first, then the Go2 quadruped, then the SO-101 arm
+overhanging the corridor), and mesh lockout only after the path is asserted
+clear. Recorded straight from the example's own `--gif` flag; the personnel
+proxy (dark cylinder) reaches the green exit unimpeded, which is what the
+benchmark scores.*
+
 Shared across the suite:
 
 - [`capabilities.py`](capabilities.py) - the per-robot, per-site capability
@@ -40,6 +50,12 @@ branches on an embodiment. Matching runs through the shared `capabilities.py`
 filter: a task no robot can serve is rejected with a per-robot,
 machine-readable reason - never silently dropped. Every dispatch passes a
 human-in-the-loop gate first.
+
+![One MuJoCo world, three vendors - LeKiwi wheeled base, SO-101 arm, Unitree Go2 quadruped](assets/multi_vendor_world.png)
+
+*The world example 01 dispatches into: LeKiwi wheeled base, SO-101 arm and
+Unitree Go2 quadruped side by side in one MuJoCo scene, each known to the
+dispatcher only through its registry metadata.*
 
 Execution on MuJoCo is a `move_to` motion primitive for the staging skill
 plus ONE synchronized `run_multi_policy` loop for every policy-bound skill.
@@ -175,6 +191,14 @@ every command-capable method on the peer (`send` / `tell` / `broadcast` /
 to the peer's own presence namespace, so the dashboard cannot publish a
 command, an estop, or a resume. HITL approvals stay in the operator terminal;
 a write-capable UI is an explicit epic non-goal.
+
+![The dashboard attached to a live example 02 run - fleet table plus signed-audit timeline](assets/dashboard_fleet_table.png)
+
+*The terminal renderer attached to a live `02_cross_zone_transport.py` run
+over the multicast mesh: the coordinator and both zone orchestrators appear
+via presence, and the X-01 transport chain - dispatch, zone-a leg, custody
+handoff at dock-ab, zone-b leg, complete - streams in from the audit tail,
+ending with the unroutable X-03's `handoff_refused`.*
 
 ```bash
 # Terminal 1 - the dashboard (Rerun viewer when available). Two processes
