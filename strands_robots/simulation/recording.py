@@ -226,7 +226,15 @@ def recorder_dataset_fps(recorder: Any) -> int | None:
     """
     dataset = getattr(recorder, "dataset", None)
     for value in (getattr(dataset, "fps", None), getattr(getattr(dataset, "meta", None), "fps", None)):
-        if isinstance(value, bool) or not isinstance(value, int | float):
+        # Classified on ``numbers.Real``, not ``int | float``: ``numpy.int64`` and
+        # ``numpy.float32`` are neither ``int`` nor ``float`` subclasses, so the
+        # narrower spelling read a whole rate this function calls "usable" as an
+        # unreadable layout and returned ``None`` - which the one caller treats as
+        # "do not judge", skipping the refusal. ``numpy.float64`` IS a ``float``
+        # subclass, so the narrowing failed for some numpy spellings and not
+        # others. The boolean question goes to the shared predicate, which also
+        # catches ``numpy.bool_`` (not a ``bool`` subclass).
+        if is_boolean(value) or not isinstance(value, numbers.Real):
             continue
         if value > 0 and float(value).is_integer():
             return int(value)
@@ -376,7 +384,10 @@ def rollout_rate_mismatch_reason(method: str, fps: Any, rates: Mapping[str, floa
         fps: Caller-supplied dataset frame rate. Validate it with
             :func:`dataset_recording_option_error` first; a value outside that
             domain returns ``None`` here so it is reported as the parameter
-            error it is rather than as a rate disagreement.
+            error it is rather than as a rate disagreement. Classified on
+            ``numbers.Real``, the predicate that domain uses, so every spelling
+            it accepts - a ``numpy.int64`` rate read out of a config included -
+            is judged here rather than silently passed through.
         rates: Capture rate in Hz per robot with a rollout in flight, as
             reported by
             :meth:`~strands_robots.simulation.base.SimEngine._active_rollout_rates`.
@@ -388,8 +399,19 @@ def rollout_rate_mismatch_reason(method: str, fps: Any, rates: Mapping[str, floa
     """
     if not rates:
         return None
-    if isinstance(fps, bool) or not isinstance(fps, int | float):
+    # ``numbers.Real``, the predicate ``positive_whole_number_error`` classifies
+    # this same ``fps`` with, so every spelling that domain accepts is judged
+    # here. The narrower ``int | float`` declined to judge ``numpy.int64(30)`` -
+    # a value that domain accepts, and is test-pinned as accepting - so the
+    # disagreement this function exists to refuse was skipped and the episode was
+    # written on a timebase that mislabels it. See the identical reasoning in
+    # :func:`requested_rate_mismatch_reason`.
+    if is_boolean(fps) or not isinstance(fps, numbers.Real):
         return None
+    # ``float()`` cannot overflow here: this guard is asked only after
+    # ``dataset_recording_option_error``, whose domain refuses an ``fps`` beyond
+    # the float64 range with a reason of its own. That is why it needs no
+    # ``try`` - unlike ``requested_rate_mismatch_reason``, which is asked first.
     declared = float(fps)
     if declared <= 0 or not declared.is_integer():
         return None
