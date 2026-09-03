@@ -107,11 +107,29 @@ from dataclasses import dataclass, field
 # because the same text is read both from the raw file this script is pointed at
 # and, when a reader pastes one, from a job log whose lines carry a timestamp
 # prefix added by the Actions log service.
-_COLLECTED = re.compile(
-    r"collected (?P<collected>\d+) items?"
-    r"(?: / (?P<deselected>\d+) deselected)?"
-    r"(?: / (?P<selected>\d+) selected)?"
-)
+#
+# The tallies after the item count are read as a set rather than as a fixed
+# sequence. ``TerminalReporter.report_collect`` appends up to four of them --
+# ``error``, ``deselected``, ``skipped``, ``selected`` -- each only when its
+# count is nonzero, so ``selected`` is preceded by a different prefix in each
+# combination. A pattern that expected ``deselected`` immediately before
+# ``selected`` matched neither group on a real line pytest 9.1.1 emits::
+#
+#     collected 5 items / 2 deselected / 1 skipped / 3 selected
+#
+# and fell back to ``selected = collected``, which reports a *complete* run as
+# truncated: that session executed 4 of its 3 selected items (a collect-time
+# skip is counted in the summary line but is not one of the 5 collected), so the
+# subtraction against 5 claimed one item never ran. Order-independence is what
+# keeps this agreeing with tests/session_truncation.py, which states the same
+# extent from inside the session and always uses the post-deselection count
+# (#3169).
+_COLLECTED = re.compile(r"collected (?P<collected>\d+) items?(?P<tallies>(?: / \d+ [a-z]+)*)")
+
+# One ``/ 2 deselected`` tally from the collection line's tail. Read for the
+# label rather than the position, so a tally added between two others -- or a
+# new one this script has never seen -- cannot hide the ones it needs.
+_COLLECT_TALLY = re.compile(r"/ (?P<count>\d+) (?P<label>[a-z]+)")
 
 # The banner ``-x`` / ``--maxfail`` prints when it ends the session early.
 _STOPPING = re.compile(r"!+\s*stopping after (?P<failures>\d+) failures?\s*!+")
@@ -186,6 +204,28 @@ class RunReport:
         return f"the run's extent could not be read: {self.detail}"
 
 
+def _selected_count(collected: int, tallies: str) -> int:
+    """Read how many collected items the session was going to run.
+
+    Args:
+        collected: The item count the collection line opens with, before
+            deselection.
+        tallies: The ``/ N label`` tail of that same line, in whatever order
+            pytest wrote it.
+
+    Returns:
+        The number pytest selected. ``selected`` is taken from the line when it
+        is there, and derived as ``collected - deselected`` when it is not --
+        which is the count tests/session_truncation.py reports from inside the
+        session, so the two surfaces cannot state two different extents for one
+        run.
+    """
+    counts = {match.group("label"): int(match.group("count")) for match in _COLLECT_TALLY.finditer(tallies)}
+    if "selected" in counts:
+        return counts["selected"]
+    return max(collected - counts.get("deselected", 0), 0)
+
+
 def parse_run(text: str) -> RunReport:
     """Read a pytest log and report whether the session covered every selected item.
 
@@ -209,8 +249,7 @@ def parse_run(text: str) -> RunReport:
             found = _COLLECTED.search(line)
             if found:
                 collected = int(found.group("collected"))
-                explicit = found.group("selected")
-                selected = int(explicit) if explicit else collected
+                selected = _selected_count(collected, found.group("tallies"))
         stopping = _STOPPING.search(line)
         if stopping:
             stopped_after = int(stopping.group("failures"))

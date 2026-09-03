@@ -28,11 +28,18 @@ bound.
 from __future__ import annotations
 
 import importlib.util
+import inspect
+import itertools
+import os
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
 
 import pytest
+from _pytest.terminal import TerminalReporter
+
+from tests.session_truncation import truncation_summary
 
 yaml = pytest.importorskip("yaml", reason="pyyaml is an optional dev dependency")
 
@@ -282,3 +289,243 @@ class TestTheReportIsWiredIntoTheRequiredCheck:
         # mismatch would be silent.
         assert "${RUNNER_TEMP}/pytest.log" in producer
         assert "${RUNNER_TEMP}/pytest.log" in consumer
+
+
+# Collection lines emitted verbatim by pytest 9.1.1, paired with the summary line
+# the same session wrote. Produced by running a nested pytest over five tests in
+# one module plus a second module whose ``pytest.importorskip`` cannot resolve,
+# under ``-k fast`` -- so two items are deselected, one module is skipped during
+# collection, and three items are selected. ``TestTheCollectionLineIsReadAsATallySet``
+# re-derives them from a live pytest rather than trusting these strings.
+DESELECTED_ONLY = """\
+collected 5 items / 2 deselected / 3 selected
+======================= 3 passed, 2 deselected in 0.00s ========================
+"""
+
+DESELECTED_BESIDE_A_COLLECT_SKIP = """\
+collected 5 items / 2 deselected / 1 skipped / 3 selected
+================== 3 passed, 1 skipped, 2 deselected in 0.00s ==================
+"""
+
+DESELECTED_BESIDE_A_COLLECT_ERROR = """\
+collected 5 items / 1 error / 2 deselected / 1 skipped / 3 selected
+============= 3 passed, 1 skipped, 2 deselected, 1 error in 0.01s ==============
+"""
+
+# A run that really was cut short, with a deselection: 4 of 10 items deselected,
+# so 6 were selected, and the session stopped with 3 of those 6 executed. Every
+# count on the summary line is an item that was entered, so the arithmetic here
+# is exact on both surfaces -- which is what makes it usable as the one-owner
+# contract below. Deliberately not carrying an ``error`` or ``skipped`` tally:
+# those appear on the summary line too, where nothing distinguishes a module
+# skipped during collection from a test that ran and skipped itself, so they
+# would move the *numerator* and this pair of cells is about the denominator.
+TRUNCATED_WITH_A_DESELECTION = """\
+collected 10 items / 4 deselected / 6 selected
+!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!
+==================== 1 failed, 2 passed, 4 deselected in 3.00s =================
+"""
+
+
+class TestASelectionIsNotReadAsAnAbort:
+    """A run that skipped nothing must not be reported as one that skipped items.
+
+    ``report_collect`` appends up to four tallies after the item count -- ``error``,
+    ``deselected``, ``skipped``, ``selected`` -- each only when its own count is
+    nonzero. So ``selected`` is preceded by a different prefix in every
+    combination, and a pattern that expected ``deselected`` immediately before it
+    read neither: it fell back to ``selected = collected``, which is the
+    *pre*-deselection number.
+
+    That is the surface #3169 recorded as a divergence between this script and
+    tests/session_truncation.py, which always states the post-deselection count.
+    The consequence is worse than a disagreement in one direction: on
+    ``DESELECTED_BESIDE_A_COLLECT_SKIP`` -- a completely successful run -- the
+    subtraction against 5 rather than 3 reported ``truncated``, one item never
+    ran, and raised the warning annotation this module's negative control exists
+    to keep off green runs.
+
+    Both halves of that combination are supported invocations of this suite
+    rather than hypotheticals: ``pyproject.toml`` documents ``pytest -m 'not
+    slow'`` and ``-m 'not integration'`` in the markers' own help text, and 496
+    test modules open with a module-level ``pytest.importorskip``, so any
+    environment missing one optional extra reports a collect-time skip beside it.
+    """
+
+    def test_a_tally_between_deselected_and_selected_does_not_hide_the_count(self) -> None:
+        report = parse_run(DESELECTED_BESIDE_A_COLLECT_SKIP)
+
+        # 3 selected, not the 5 collected: the 2 deselected were never going to run.
+        assert report.selected == 3
+        assert report.outcome == "complete"
+        assert report.never_ran == 0
+
+    def test_a_collect_error_tally_does_not_hide_it_either(self) -> None:
+        # Two tallies ahead of ``deselected`` this time, so the fixed-order
+        # pattern matched neither optional group rather than just the second.
+        report = parse_run(DESELECTED_BESIDE_A_COLLECT_ERROR)
+
+        assert report.selected == 3
+        assert report.outcome == "complete"
+        assert report.never_ran == 0
+
+    def test_the_plain_deselection_line_still_reads_the_same_way(self) -> None:
+        # The one arrangement the fixed-order pattern did handle. It has its own
+        # cell in TestACompleteRunIsNotReportedAsTruncated; repeated here against
+        # the measured line so a regression cannot pass by handling only the
+        # interleaved forms.
+        report = parse_run(DESELECTED_ONLY)
+
+        assert report.selected == 3
+        assert report.outcome == "complete"
+
+    def test_a_deselection_with_no_selected_tally_is_read_as_the_remainder(self) -> None:
+        # pytest 9.1.1 always writes ``selected`` when anything was deselected
+        # (``if self._numcollected > selected``), so this is the defensive branch.
+        # It exists so the fallback is the post-deselection count -- the number
+        # tests/session_truncation.py reports -- rather than the collected count,
+        # which is what #3169 asked for whichever way the line is spelled.
+        report = parse_run("collected 900 items / 400 deselected\n===== 500 passed in 12.00s =====\n")
+
+        assert report.selected == 500
+        assert report.outcome == "complete"
+        assert report.never_ran == 0
+
+
+class TestATruncatedRunCountsOnlyWhatWasSelected:
+    """The headline number is what never ran, so its denominator has to be right."""
+
+    def test_deselected_items_are_not_added_to_the_never_ran_count(self) -> None:
+        # This arrangement -- ``deselected`` directly before ``selected`` -- is the
+        # one the fixed-order pattern already read correctly, so this cell is a
+        # contract rather than the regression. It is here because it is the log on
+        # which the two surfaces' arithmetic can be compared exactly, which is the
+        # cell below. The regression is on the interleaved lines above, where the
+        # same subtraction ran against the pre-deselection count.
+        report = parse_run(TRUNCATED_WITH_A_DESELECTION)
+
+        assert report.outcome == "truncated"
+        # 1 failed + 2 passed of the 6 selected. ``4 deselected`` is on the summary
+        # line and is not an executed item: those were never going to run.
+        assert report.selected == 6
+        assert report.executed == 3
+        assert report.never_ran == 3
+        assert "3 never ran" in report.summary
+
+    def test_the_share_is_taken_against_the_selection_not_the_collection(self) -> None:
+        share = parse_run(TRUNCATED_WITH_A_DESELECTION).share_skipped
+
+        assert share is not None
+        assert round(share * 100, 1) == 50.0
+
+    def test_both_surfaces_state_one_never_ran_count(self) -> None:
+        # The one-owner property #3169 asks for, graded across both surfaces
+        # rather than asserted in prose. tests/session_truncation.py states the
+        # extent from inside the session, using len(session.items) -- which is
+        # the post-deselection count, 6 -- and this script re-derives it from the
+        # log. Neither reads the other's wording, so this cell is what stops the
+        # two from stating different numbers for one run.
+        from_inside = truncation_summary(collected=6, started=3)
+        assert from_inside is not None
+        heading, detail = from_inside
+        assert "3 of 6 collected tests ran" in heading
+        assert detail.startswith("3 collected tests never started")
+
+        from_the_log = parse_run(TRUNCATED_WITH_A_DESELECTION)
+
+        assert (from_the_log.executed, from_the_log.selected) == (3, 6)
+        assert from_the_log.never_ran == 3
+
+
+class TestTheCollectionLineIsReadAsATallySet:
+    """Order-independence is the fix, so it is graded rather than remembered."""
+
+    @pytest.mark.parametrize(
+        "order",
+        list(itertools.permutations(["1 error", "2 deselected", "1 skipped", "3 selected"])),
+        ids=lambda order: "-".join(tally.split()[1][:3] for tally in order),
+    )
+    def test_selected_is_read_whatever_precedes_it(self, order: tuple[str, ...]) -> None:
+        # pytest writes one order; this asserts the parser depends on none of
+        # them, so a future pytest that inserts a tally cannot reintroduce the
+        # silent fallback. All 24 arrangements, one behavioural assertion each.
+        log = (
+            "collected 5 items " + " ".join(f"/ {tally}" for tally in order) + "\n"
+            "===== 3 passed, 1 skipped, 2 deselected, 1 error in 0.01s =====\n"
+        )
+
+        assert parse_run(log).selected == 3
+
+    def test_the_parametrisation_covers_every_tally_pytest_can_append(self) -> None:
+        """The oracle for the list above: pytest's own collection-line source.
+
+        Read from a private pytest module deliberately. The alternative is a
+        remembered list, and the failure mode of a remembered list is that a
+        fifth tally appears, sits between ``deselected`` and ``selected``, and
+        nothing here notices -- which is the exact shape of the defect these
+        cells were added for. A failure of this cell means re-derive the
+        parametrisation above, not that the parser is wrong: it is order-
+        independent either way.
+        """
+        try:
+            source = inspect.getsource(TerminalReporter.report_collect)
+        except OSError as exc:  # pragma: no cover - only if pytest ships without source
+            pytest.fail(f"pytest's collection line could not be read, so the tally set cannot be re-derived: {exc}")
+
+        appended = {
+            line.split('f" / {', 1)[1].split("}", 1)[1].strip().strip('"').split("{")[0].strip()
+            for line in source.splitlines()
+            if 'line += f" / {' in line
+        }
+        # ``error`` carries a pluralising suffix in the f-string, so it arrives
+        # here as the bare stem; the others are literal words.
+        assert appended == {"error", "deselected", "skipped", "selected"}, appended
+
+
+class TestTheTallySetIsWhatALivePytestWrites:
+    """The recorded lines above are re-derived from a real run, not trusted."""
+
+    def test_a_real_deselecting_run_with_a_collect_skip_is_reported_complete(self, tmp_path: Path) -> None:
+        # The strings at the top of this module are the measurement; this cell is
+        # the measurement's own repeat, so a pytest upgrade that changes the line
+        # is reported here rather than quietly leaving the pins testing a format
+        # nothing emits. One nested run, five trivial tests -- the suite is at its
+        # timeout bound (#3143), so this is the only subprocess cell added here.
+        (tmp_path / "test_ok.py").write_text(
+            "def test_slow_one(): pass\ndef test_slow_two(): pass\n"
+            "def test_fast_one(): pass\ndef test_fast_two(): pass\ndef test_fast_three(): pass\n",
+            encoding="utf-8",
+        )
+        (tmp_path / "test_skipped_module.py").write_text(
+            'import pytest\n\npytest.importorskip("a_module_no_environment_has")\n\ndef test_never(): pass\n',
+            encoding="utf-8",
+        )
+        env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
+        env.pop("PYTEST_ADDOPTS", None)
+
+        # Run from tmp_path so the nested session takes its rootdir from there
+        # and inherits none of this repository's addopts.
+        completed = subprocess.run(
+            [sys.executable, "-m", "pytest", "-p", "no:cacheprovider", "-k", "fast", str(tmp_path)],
+            capture_output=True,
+            text=True,
+            cwd=tmp_path,
+            env=env,
+            timeout=120,
+            check=False,
+        )
+
+        collection_line = next(
+            (line for line in completed.stdout.splitlines() if line.startswith("collected ")),
+            None,
+        )
+        assert collection_line is not None, completed.stdout
+        # Vacuity guard: if this pytest stops interleaving a tally between the
+        # two the old pattern paired, the cell would pass while testing the one
+        # arrangement that never broke.
+        assert collection_line == "collected 5 items / 2 deselected / 1 skipped / 3 selected", collection_line
+
+        report = parse_run(completed.stdout)
+
+        assert report.outcome == "complete"
+        assert (report.collected, report.selected, report.never_ran) == (5, 3, 0)
