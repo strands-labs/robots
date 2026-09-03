@@ -64,6 +64,14 @@ _LIST_KEYS = {
     ("security", "cors_origins"),
 }
 
+#: Keys whose value is a boolean. One owner, because the strict path and the
+#: lenient degrade below both have to agree about which keys these are: a key
+#: the strict path validates as a boolean and the lenient path degrades as a
+#: string is the disagreement this set exists to make impossible.
+_BOOL_KEYS: set[tuple[str, str]] = {
+    ("runtime", "trust_remote_code"),
+}
+
 _lock = threading.RLock()
 # The resolved tree, cached under the path it was resolved from. A `dict | None`
 # rebound through `global` -- and at two of the four write sites through
@@ -136,6 +144,16 @@ def _coerce(section: str, key: str, value: Any, strict: bool = False) -> Any:
         # default.
         if (section, key) in _LIST_KEYS:
             return []
+        # A boolean key degrades to False, not to the value that failed to be
+        # one. Returning the raw value left a non-boolean in a boolean slot, and
+        # `apply_mesh_env` publishes such a key by TRUTHINESS - so an
+        # unparseable spelling was published as the literal "1", the exact
+        # spelling `policies.factory._check_trust_remote_code` accepts, while
+        # the same spelling reaching that gate directly is refused. A gate that
+        # cannot read its own setting must stay shut, so the degrade is
+        # fail-closed rather than a passthrough.
+        if (section, key) in _BOOL_KEYS:
+            return False
         return None if key in ("temperature", "camera_hz", "max_tokens", "port") else value
 
 
@@ -149,7 +167,7 @@ def _coerce_strict(section: str, key: str, value: Any) -> Any:
         if value is not None and not isinstance(value, (str, list, tuple)):
             raise CoercionError(f"{key}: expected a list or comma-separated string, got {type(value).__name__}")
         return _as_list(value)
-    if key in ("trust_remote_code",):
+    if (section, key) in _BOOL_KEYS:
         if not isinstance(value, bool):
             spelled = str(value).strip().lower()
             if spelled not in _TRUTHY and spelled not in _FALSY:

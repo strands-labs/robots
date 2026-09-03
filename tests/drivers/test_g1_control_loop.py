@@ -659,33 +659,73 @@ class TestCleanupJoinsLoopBeforeClosingPubs:
 # ---------------------------------------------------------------------------
 
 
+def _admission_driver() -> Any:
+    """Return a real ``G1Driver`` whose cached FSM reading is fresh.
+
+    :class:`TestRunPolicyAdmissionLock` grades ``run_policy``'s own admission,
+    so it needs the real driver rather than :func:`_fake_driver`.  It still
+    needs ``_fake_driver``'s healthy-wire shape, and one attribute of it is
+    load-bearing here: the loop's per-step re-gate refuses on ``age is None``
+    (:meth:`G1Driver._check_motion_gates`, ``refresh=False``), while the
+    entry-point path tolerates it.  So a driver that assigns ``_fsm_id``
+    without stamping ``_fsm_read_at`` is admitted by ``run_policy`` and then
+    exits its rollout at step 0 with ``exit_reason="gate"``.  ``g1.py`` names
+    that asymmetry and names this fixture shape as what keeps the branch
+    reachable.
+
+    A rollout that is already over cannot refuse a second admission, so
+    without the stamp these two tests observe a *sequence* of admissions and
+    report it as a concurrent one.  Measured before the stamp on two CPUs:
+    the burst below reported 2 or 3 successes on three of five 50-thread
+    attempts, and failed one whole-directory run in six - while the greatest
+    number of loop threads alive at any one instant was 1 on every attempt.
+    So the message it printed named the one thing that had not happened.
+    """
+    from strands_robots.drivers.g1 import G1Driver
+
+    driver = G1Driver(port="127.0.0.1", network_interface="lo")
+    driver._pubs = _RecordingPublisher()  # type: ignore[assignment]
+    driver._connected = True
+    driver._mode_machine = 9
+    driver._fsm_id = 500
+    driver._battery = {"pct": 80.0}
+    driver._imu = {"rpy": [0.0, 0.0, 0.0]}
+    # Mirrors _fake_driver: a live stamp plus a refresher that keeps stamping
+    # is the healthy wire, which is the case an admission test is about.
+    driver._refresh_fsm_id = MagicMock(  # type: ignore[method-assign]
+        side_effect=lambda: setattr(driver, "_fsm_read_at", time.monotonic())
+    )
+    driver._fsm_read_at = time.monotonic()
+    return driver
+
+
+def _reports_running(driver: Any) -> bool:
+    """Whether ``get_task_status`` reports a live rollout on this driver."""
+    return bool(driver.get_task_status()["content"][0]["json"]["running"])
+
+
 class TestRunPolicyAdmissionLock:
     """Two concurrent ``run_policy`` calls never both start."""
 
     def test_second_run_policy_refuses_when_first_is_running(self) -> None:
-        from strands_robots.drivers.g1 import G1Driver
-
-        driver = G1Driver(port="127.0.0.1", network_interface="lo")
-        driver._pubs = _RecordingPublisher()  # type: ignore[assignment]
-        driver._connected = True
-        driver._mode_machine = 9
-        driver._fsm_id = 500
-        driver._battery = {"pct": 80.0}
-        driver._imu = {"rpy": [0.0, 0.0, 0.0]}
+        driver = _admission_driver()
 
         def policy(_obs: Any) -> dict[str, float]:
             return {"left_knee": 0.0}
 
-        first = driver.run_policy(policy, duration=60.0)
-        assert first["status"] == "success"
+        try:
+            first = driver.run_policy(policy, duration=60.0)
+            assert first["status"] == "success"
+            # The refusal below is about admission only if the first rollout is
+            # still running when the second call asks for one.
+            assert _reports_running(driver), "the first rollout ended before the second call was made"
 
-        second = driver.run_policy(policy, duration=60.0)
-        assert second["status"] == "error"
-        text = second["content"][0]["text"]
-        assert "already running" in text
-
-        # Clean up.
-        driver.cleanup()
+            second = driver.run_policy(policy, duration=60.0)
+            assert second["status"] == "error"
+            text = second["content"][0]["text"]
+            assert "already running" in text
+        finally:
+            driver.cleanup()
 
     def test_concurrent_run_policy_only_one_wins(self) -> None:
         """Fifty threads calling ``run_policy`` at once produce one loop.
@@ -696,42 +736,64 @@ class TestRunPolicyAdmissionLock:
         """
         import threading as _threading
 
-        from strands_robots.drivers.g1 import G1Driver
-
-        driver = G1Driver(port="127.0.0.1", network_interface="lo")
-        driver._pubs = _RecordingPublisher()  # type: ignore[assignment]
-        driver._connected = True
-        driver._mode_machine = 9
-        driver._fsm_id = 500
-        driver._battery = {"pct": 80.0}
-        driver._imu = {"rpy": [0.0, 0.0, 0.0]}
+        driver = _admission_driver()
 
         def policy(_obs: Any) -> dict[str, float]:
             return {"left_knee": 0.0}
 
         started = _threading.Barrier(50)
         results: list[dict[str, Any]] = []
-        results_lock = _threading.Lock()
+        admitted: list[Any] = []
+        overlaps: list[str] = []
+        bookkeeping = _threading.Lock()
 
         def caller() -> None:
             started.wait()
             r = driver.run_policy(policy, duration=60.0)
-            with results_lock:
+            with bookkeeping:
                 results.append(r)
+                if r["status"] != "success":
+                    return
+                loop = driver._loop
+                # Recorded by the admitting thread itself, because it is the
+                # only place the question can be asked: an earlier rollout
+                # still alive at this instant is two loops publishing on
+                # ``rt/lowcmd`` at once, which is the state the lock exists to
+                # prevent.  Counting successes cannot tell that apart from a
+                # rollout that ended and a later admission (see
+                # _admission_driver).
+                overlaps.extend(
+                    f"{id(earlier):x} was alive when {id(loop):x} was admitted"
+                    for earlier in admitted
+                    if earlier is not None and earlier is not loop and earlier.is_running
+                )
+                admitted.append(loop)
 
         threads = [_threading.Thread(target=caller) for _ in range(50)]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join()
+        try:
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
 
-        # Exactly one succeeded; the rest carried the refusal.
-        successes = [r for r in results if r["status"] == "success"]
-        errors = [r for r in results if r["status"] == "error"]
-        assert len(successes) == 1, f"admission lock leaked: {len(successes)} rollouts started concurrently"
-        assert len(errors) == 49
+            # The safety property, asserted from the observation above rather
+            # than inferred from the count.
+            assert overlaps == [], f"two rollouts were alive at once: {overlaps}"
 
-        driver.cleanup()
+            # And with a healthy wire the burst admits exactly one: the
+            # winner holds its rollout for the whole ``duration``, so every
+            # other thread meets a running loop.  Stated separately from the
+            # overlap check because a second *sequential* admission is a
+            # fixture that let the first rollout die, not a leaked lock.
+            assert _reports_running(driver), "the winning rollout ended before the burst was counted"
+            successes = [r for r in results if r["status"] == "success"]
+            errors = [r for r in results if r["status"] == "error"]
+            assert len(successes) == 1, f"the burst admitted {len(successes)} rollouts, not one"
+            assert len(errors) == 49
+        finally:
+            # In a ``finally`` so a failed assertion cannot leave a 500 Hz
+            # daemon thread spinning for the rest of the session.
+            driver.cleanup()
 
 
 # ---------------------------------------------------------------------------

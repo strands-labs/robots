@@ -87,6 +87,30 @@ def _stored(mgr: Any) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# A record damaged outside its PID keeps its PID.
+# ---------------------------------------------------------------------------
+def test_a_store_byte_that_is_not_utf8_still_yields_the_pid_it_names() -> None:
+    """A strict read makes an undecodable byte cost the whole store.
+
+    ``UnicodeDecodeError`` is a ``ValueError``, so it is neither of the failures
+    ``except (OSError, json.JSONDecodeError)`` answers, and the prune below it
+    never runs: the action that asked fails instead, and by this module's own
+    reasoning the PID it would have reported is the only handle on a process
+    still driving the arm. The 0xE9 sits in the session *name*; the PID is ASCII.
+    """
+    mgr = SessionManager()
+    pid = _live_pid()
+    raw = json.dumps({"arm-cafe": {"pid": pid, "action": "teleoperate", "start_time": 0.0}}, indent=2)
+    mgr.sessions_file.write_bytes(raw.encode("utf-8").replace(b"cafe", b"caf\xe9"))
+
+    loaded = mgr.list_sessions()
+
+    assert [info["pid"] for info in loaded.values()] == [pid], (
+        f"a byte outside the PID's field must not cost the PID: {loaded}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # A process that exists but cannot be inspected keeps its record.
 # ---------------------------------------------------------------------------
 def test_an_uninspectable_live_session_survives_on_disk(monkeypatch: pytest.MonkeyPatch) -> None:

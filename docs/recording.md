@@ -455,19 +455,30 @@ then only a lower bound, reported in the `unreadable_files` diagnostics.
 | `save_episode` | `[lerobot]` | Close current rollout as one episode (call once per `run_policy` for N episodes) |
 | `start_cameras_recording` / `stop_cameras_recording` | `[sim-mujoco]` alone | Plain MP4, no parquet |
 
-`stop_cameras_recording` returns a verdict, not just a report. The daemon
-recorder runs in its own thread, so the stop asks that loop to exit and waits
-5 s for it; if the loop is still inside `render` when the budget expires -- a
-wedged GL context, an EGL device that stopped answering -- the call is a
-structured **error** carrying `stopped: False` and the per-camera buffered frame
-counts, and no MP4 is written:
+`stop_cameras_recording` returns a verdict, not just a report. Two things stop
+it finishing, and both answer the same way: a structured **error** carrying
+`stopped: False` and the per-camera buffered frame counts, no MP4 written, and
+the recording left registered so a later call can still encode it.
+
+The first is a join that expires. The daemon recorder runs in its own thread, so
+the stop asks that loop to exit and waits 5 s for it; if the loop is still inside
+`render` when the budget runs out -- a wedged GL context, an EGL device that
+stopped answering -- reading a buffer it may still append to is refused rather
+than encoded.
+
+The second is a flush with no encoder to call. `imageio` comes with
+`[sim-mujoco]`, but `[sim-newton]` and `[cosmos3-sim]` bring `mujoco` without
+it, and neither start verb probes the encoder, so the flush is the first call
+that needs one. It reports before opening any writer, so every buffer is intact
+and installing the encoder and calling again writes them.
 
 ```python
 result = sim.stop_cameras_recording()
 if result["status"] == "error":
-    # The loop is still capturing. Nothing was encoded (an MP4 read from a
-    # buffer that is still growing would not describe either frame list), and
-    # the recording is still registered -- call stop again to re-join it.
+    # Nothing was encoded -- either the loop is still capturing (an MP4 read
+    # from a buffer that is still growing would not describe either frame list)
+    # or there is no encoder installed. Either way the frames are still there
+    # and the recording is still registered, so calling again flushes them.
     result = sim.stop_cameras_recording()
 ```
 

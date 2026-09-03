@@ -356,7 +356,7 @@ class TestModuleImportsWithoutTheSDK:
     is safe without the SDK by re-importing the module in isolation.
     """
 
-    def test_module_can_be_imported_without_the_sdk(self) -> None:
+    def test_module_can_be_imported_without_the_sdk(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Importing :mod:`._motion_switcher` never touches the SDK.
 
         If the module imported the SDK at load, this test would either
@@ -365,6 +365,14 @@ class TestModuleImportsWithoutTheSDK:
         which are louder failure modes than the check here. The cell
         re-imports the module through :mod:`importlib` and asserts no
         ``unitree_sdk2py`` submodule was pulled in as a side effect.
+
+        The registry entry is dropped through ``monkeypatch`` so it is put
+        back afterwards. Removing it and leaving it removed does not undo an
+        import, it orphans every reference already bound to this module -
+        ``tests/drivers/test_motion_switcher_open_is_under_the_shared_dds_lock``
+        binds it at module level and patches
+        :func:`_load_motion_switcher_client` on it, and against an orphan that
+        patch is invisible to the driver's own lazy import.
         """
         import importlib
         import sys
@@ -373,7 +381,7 @@ class TestModuleImportsWithoutTheSDK:
         before = {k for k in sys.modules if k.startswith("unitree_sdk2py")}
 
         # Force a fresh import so the module's top-level runs again.
-        sys.modules.pop("strands_robots.tools.g1._motion_switcher", None)
+        monkeypatch.delitem(sys.modules, "strands_robots.tools.g1._motion_switcher", raising=False)
         importlib.import_module("strands_robots.tools.g1._motion_switcher")
 
         after = {k for k in sys.modules if k.startswith("unitree_sdk2py")}

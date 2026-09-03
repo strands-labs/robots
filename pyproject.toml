@@ -945,3 +945,31 @@ markers = [
     "molmoact2: requires lerobot >= 0.5.2 (from source) + the [molmoact2] extra (transformers, peft, scipy). Run with: pytest -m molmoact2",
     "rtps: requires cyclonedds ([ros2] extra) + a live ROS 2 peer (e.g. turtlesim) on the DDS domain. Run with: RTPS_LIVE=1 pytest -m rtps",
 ]
+
+[tool.coverage.run]
+# Collect line coverage through PEP 669 (`sys.monitoring`) instead of the
+# default C trace function. The two report the same measurement; what differs is
+# what it costs. Measured over 17,102 tests
+# (tests/{drivers,mesh,policies,training,rendering}), same selection, same
+# reports, one machine, only the core varying:
+#
+#     core                  wall clock   cost of measuring
+#     none (no --cov)          321.19 s   -
+#     ctrace (the default)     567.36 s   +76.6%
+#     sysmon                   347.47 s    +8.2%
+#
+# So the tracer, not the tests, was the larger half of the growth in an
+# instrumented run: sysmon returns 219.89 s of the 246.17 s the default core
+# spends. All three runs agreed on the verdict (4 failed, 17102 passed, 36
+# skipped) and the two instrumented runs agreed on the measurement - the same
+# 303 files, the same 51,904 statements, the same 605 exclusions, 56% either
+# way. Exactly one line differed, and it is one that also differs between two
+# runs of the *same* core: the FSM-refresher join-timeout branch in
+# `strands_robots/drivers/g1.py`, whose execution depends on thread scheduling.
+#
+# `branch` is deliberately absent. The equivalence above was measured for
+# statements, which is what `--cov-fail-under` in `[tool.pytest.ini_options]`
+# grades; turning branch coverage on means re-measuring before trusting this
+# core for it. `tests/test_coverage_runs_on_the_sysmon_core.py` pins both the
+# setting and that boundary.
+core = "sysmon"

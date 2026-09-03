@@ -32,6 +32,20 @@ record (strands-robots)  ->  transform (this page)  ->  train (create_trainer)
    which way it went would depend only on the order the features were declared
    in. Such a source is refused, naming each camera and the dtype it declared;
    re-record or convert it so every camera stream shares one dtype.
+
+   The same promise decides how the state and action columns are read. Their
+   width in the output is the number of names the source declares for them, so
+   those names have to describe the vector they annotate. LeRobot writes them
+   either as a flat list (`["shoulder_pan", ...]`) or as a mapping that groups
+   the components (`{"motors": [...]}` from `teleop_keyboard`, `{"left": [...],
+   "right": [...]}` for a bimanual arm, `{"delta_x": 0, ...}` from
+   `teleop_gamepad`); all of those are read, so a dataset recorded through any
+   LeRobot teleoperator passes through whole. A declaration whose count still
+   disagrees with the column's width is refused rather than applied, naming both
+   counts: names short of the width would drop the trailing components, and
+   names past it would declare a column no frame supplies - written as `0.0`,
+   which is itself a travel-to-zero command for an absolute-position actuator.
+   Both are silent, and neither output would be the source rendered differently.
 2. **Provenance is mandatory.** Every generated episode is recorded in the
    output dataset's `meta/provenance.json` with `synthetic=true`, the source
    episode index, and the transform's name and version. Training filters and

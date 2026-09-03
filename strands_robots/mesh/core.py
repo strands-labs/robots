@@ -3755,6 +3755,10 @@ class Mesh(SensorLoopsMixin):
 
         Structured detail is preserved in the local
         ``publish_safety_event`` audit record where forensics can use it.
+        ``lockout_elapsed_s`` is measured in the monotonic domain (from
+        ``_last_estop_mono``, stamped with ``_last_estop_ts`` at engage time),
+        so a wall-clock adjustment while the fleet was held cannot distort the
+        one field that answers how long it was held.
         Local callers (e.g. operator tooling that wants to show "already
         unlocked" UI) can still distinguish via the local audit log.
             {"status": "error", "error": "<reason>"}  # rejected
@@ -3907,7 +3911,21 @@ class Mesh(SensorLoopsMixin):
             _emit_resume_denied("bad override code", "warning")
             return _generic_error
 
-        elapsed = time.time() - self._last_estop_ts
+        # ``lockout_elapsed_s`` is a DURATION, so it is measured in the
+        # monotonic domain every other piece of local safety bookkeeping
+        # uses -- the pair ``_last_estop_ts``/``_last_estop_mono`` is
+        # stamped together at engage time precisely so a duration never has
+        # to be reconstructed from two wall-clock reads. A wall-clock
+        # adjustment between the engage and this resume (chrony stepping an
+        # RTC-less robot at its first NTP sync, a VM resumed from suspend, an
+        # operator correcting the clock) moves ``time.time()`` without any
+        # time being held, so the wall-clock difference reports a lockout
+        # that did not happen -- inflated by a forward step, and NEGATIVE by
+        # a backward one, in the one field the audit trail keeps to answer
+        # how long the fleet was halted. ``_last_estop_ts`` stays the source
+        # of the envelope's ``t``: that is an absolute instant, and the wall
+        # clock is the only domain a remote peer can interpret.
+        elapsed = time.monotonic() - self._last_estop_mono
         self._estop_lockout.clear()
         # M-1: a correct code clears the brute-force counter + any cooldown.
         with self._resume_bruteforce_lock:

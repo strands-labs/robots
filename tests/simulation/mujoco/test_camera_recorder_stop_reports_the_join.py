@@ -22,6 +22,15 @@ defect: the state decays -- the slow ``render`` returns, the loop exits -- into
 one that no liveness read can see but that still holds those frames, so a guard
 keyed on liveness would let a `start` drop them under ``status="success"``.
 
+A stop has a second way to not finish, and it reaches the same three answers:
+the flush itself cannot encode. ``_flush_cameras_recording_state`` folds a
+per-camera encode failure into its success envelope, so it has exactly one hard
+failure - no ``imageio`` - and reports it before opening any writer, with every
+buffer intact. ``sim-newton`` and ``cosmos3-sim`` both declare ``mujoco``
+without ``imageio`` and neither start verb probes the encoder, so that flush is
+the first call which needs one. Its message asks the caller to install the
+encoder and call again, which only a still-registered recording can honour.
+
 Each cell drives a real daemon thread and wedges it inside ``render``, mirroring
 ``test_daemon_camera_recording.py``'s fake-render harness so no GL context is
 needed. The join budget is monkeypatched down so a cell costs a fraction of a
@@ -31,8 +40,10 @@ second rather than the production wait.
 from __future__ import annotations
 
 import io
+import sys
 import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -42,6 +53,7 @@ import pytest
 mujoco = pytest.importorskip("mujoco", reason="mujoco not installed - pip install strands-robots[sim-mujoco]")
 imageio = pytest.importorskip("imageio", reason="imageio not installed - pip install imageio imageio-ffmpeg")
 
+from strands_robots import utils  # noqa: E402
 from strands_robots.simulation import Simulation  # noqa: E402
 from strands_robots.simulation.mujoco import rendering  # noqa: E402
 
@@ -102,12 +114,21 @@ class _WedgeableRecorder:
         state = self.sim._cams_rec_state
         return 0 if state is None else len(state["buffers"][camera])
 
+    def buffer_a_few(self, n: int = 3) -> int:
+        """Wait until the capture loop has appended real frames.
+
+        The flush skips a camera whose buffer is empty, so "some frames landed"
+        is the premise of every cell about what a flush does with them.
+        """
+        deadline = time.monotonic() + 30.0
+        while self.buffered() < n and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert self.buffered() >= n, "premise: the recorder buffers frames"
+        return self.buffered()
+
     def wedge(self) -> threading.Thread:
         """Buffer a few real frames, then park the loop inside ``render``."""
-        deadline = time.monotonic() + 30.0
-        while self.buffered() < 3 and time.monotonic() < deadline:
-            time.sleep(0.02)
-        assert self.buffered() >= 3, "premise: the recorder buffers frames before it is wedged"
+        self.buffer_a_few()
         thread = self.sim._cams_rec_state["thread"]
         self._armed.set()
         assert self.wedged.wait(timeout=30), "premise: the recorder thread reaches the blocking render"
@@ -149,6 +170,32 @@ def recorder(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         thread = (rec.sim._cams_rec_state or {}).get("thread")
         if thread is not None:
             thread.join(timeout=10)
+
+
+@contextmanager
+def _blocked_encoder():
+    """An install that has ``mujoco`` but not ``imageio``, for one block.
+
+    Two steps, because :func:`~strands_robots.utils.require_optional` memoises a
+    module it has already imported: the ``sys.modules`` entry is what makes the
+    import fail, and dropping the cache entry is what stops an earlier import in
+    the same session from answering instead.
+    """
+    cached = utils._lazy_modules.pop("imageio", None)
+    sys.modules["imageio"] = None  # type: ignore[assignment]
+    try:
+        yield
+    finally:
+        del sys.modules["imageio"]
+        if cached is not None:
+            utils._lazy_modules["imageio"] = cached
+
+
+@pytest.fixture
+def no_encoder():
+    """:func:`_blocked_encoder` for a whole cell."""
+    with _blocked_encoder():
+        yield
 
 
 def _json_block(envelope: dict) -> dict:
@@ -324,6 +371,124 @@ class TestASettledRecordingIsNotDroppable:
         with imageio.v2.get_reader(str(artifact["path"])) as reader:
             assert sum(1 for _ in reader) == buffered
         assert recorder.sim._cams_rec_state is None
+
+
+class TestAStopWhoseFlushCannotEncode:
+    """The other way a stop cannot finish, and the same three answers.
+
+    Nothing is encoded, so the buffers are exactly as the capture loop left
+    them - which makes them recoverable in the sense the expired-join refusal
+    already uses, and makes the registration the only route back to them.
+    """
+
+    def test_the_stop_refuses_and_says_what_it_kept(self, recorder, no_encoder) -> None:
+        """The verdict, and the counts that make the advice followable."""
+        buffered = recorder.buffer_a_few()
+
+        result = recorder.sim.stop_cameras_recording()
+
+        assert result["status"] == "error", result
+        text = result["content"][0]["text"]
+        assert "pip install imageio" in text, text
+        assert "stop_cameras_recording()" in text, text
+        payload = _json_block(result)
+        assert payload["stopped"] is False
+        assert payload["recording"] == "wedge"
+        assert payload["buffered_frames"]["cam_a"] >= buffered
+
+    def test_the_recording_stays_registered_so_a_later_call_encodes_it(self, recorder, tmp_path) -> None:
+        """Following the message's own advice recovers every frame."""
+        with _blocked_encoder():
+            buffered = recorder.buffer_a_few()
+            first = recorder.sim.stop_cameras_recording()
+            assert first["status"] == "error", first
+            assert list(tmp_path.glob("*.mp4")) == [], "nothing is encoded without an encoder"
+            assert recorder.sim._cams_rec_state is not None, "the registration is the only route back"
+
+        second = recorder.sim.stop_cameras_recording()
+
+        assert second["status"] == "success", second
+        artifacts = _json_block(second)["artifacts"]
+        assert artifacts[0]["frames"] >= buffered, artifacts
+        assert list(tmp_path.glob("*.mp4")) != []
+
+    def test_the_status_verb_does_not_call_the_unencoded_buffer_idle(self, recorder, no_encoder) -> None:
+        """``[idle]`` promises there is no buffer left to encode."""
+        recorder.buffer_a_few()
+        recorder.sim.stop_cameras_recording()
+
+        status = recorder.sim.get_cameras_recording_status()
+
+        text = status["content"][0]["text"]
+        assert "[idle]" not in text, text
+        assert "[unflushed]" in text, text
+        assert _json_block(status)["phase"] == "unflushed"
+
+    def test_a_start_cannot_discard_the_frames_the_refusal_promised(self, recorder, tmp_path, no_encoder) -> None:
+        """A start reads the registration, so it refuses instead of replacing."""
+        buffered = recorder.buffer_a_few()
+        recorder.sim.stop_cameras_recording()
+
+        again = recorder.sim.start_cameras_recording(cameras=["cam_a"], output_dir=str(tmp_path), fps=30, name="second")
+
+        assert again["status"] == "error", again
+        assert "stop_cameras_recording() first" in again["content"][0]["text"]
+        assert recorder.sim._cams_rec_state["name"] == "wedge"
+        assert recorder.buffered() >= buffered
+
+    def test_the_synchronous_finalize_keeps_them_too(self, tmp_path) -> None:
+        """``finalize`` shares the rule: it retries rather than reporting idle."""
+        rec = _WedgeableRecorder()
+        started = rec.sim.start_cameras_recording_synchronous(
+            cameras=["cam_a"], output_dir=str(tmp_path), fps=30, name="sync"
+        )
+        assert started["status"] == "success", started
+        block = _json_block(started)
+        on_frame, finalize = block["on_frame"], block["finalize"]
+        for step in range(3):
+            on_frame(step, {}, {})
+        assert rec.buffered() == 3, "premise: the synchronous recorder buffered frames"
+
+        with _blocked_encoder():
+            first = finalize()
+            assert first["status"] == "error", first
+            assert rec.sim._cams_rec_state is not None
+
+        second = finalize()
+
+        assert second["status"] == "success", second
+        assert _json_block(second)["artifacts"][0]["frames"] == 3
+        assert list(tmp_path.glob("*.mp4")) != []
+
+
+class TestAFlushThatEncodesStillDeregisters:
+    """The over-reach control: keeping a buffer is about a flush that failed."""
+
+    def test_a_stop_that_encodes_deregisters_and_the_next_call_is_the_no_op(self, recorder) -> None:
+        recorder.buffer_a_few()
+
+        first = recorder.sim.stop_cameras_recording()
+
+        assert first["status"] == "success", first
+        assert recorder.sim._cams_rec_state is None
+        again = recorder.sim.stop_cameras_recording()
+        assert again["status"] == "success"
+        assert "Was not recording cameras." in again["content"][0]["text"]
+
+    def test_a_synchronous_finalize_that_encodes_is_the_no_op_on_the_second_call(self, tmp_path) -> None:
+        rec = _WedgeableRecorder()
+        started = rec.sim.start_cameras_recording_synchronous(
+            cameras=["cam_a"], output_dir=str(tmp_path), fps=30, name="sync_ok"
+        )
+        block = _json_block(started)
+        block["on_frame"](0, {}, {})
+
+        first = block["finalize"]()
+
+        assert first["status"] == "success", first
+        assert rec.sim._cams_rec_state is None
+        again = block["finalize"]()
+        assert "Was not recording cameras." in again["content"][0]["text"]
 
 
 class TestARecorderThatExitsIsUnaffected:

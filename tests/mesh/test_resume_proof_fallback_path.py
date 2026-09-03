@@ -52,6 +52,7 @@ def test_resume_proof_verifies_when_published_on_fallback_path(monkeypatch):
     # Engage the local lockout, then resume with the correct override code.
     issuer._estop_lockout.set()
     issuer._last_estop_ts = core.time.time()
+    issuer._last_estop_mono = core.time.monotonic()
     result = issuer._resume_lockout("operator-secret")
     assert result == {"status": "ok"}
 

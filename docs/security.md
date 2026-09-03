@@ -187,6 +187,7 @@ Because this is code execution, not just data loading, Strands Robots forces an 
 - The providers `lerobot_local` (`LerobotLocalPolicy`) and `kimodo` (`KimodoPolicy`) are on the remote-code list. Any provider that loads models with `trust_remote_code=True` must be listed in `_HF_REMOTE_CODE_PROVIDERS` so the opt-in is enforced.
 - Loading is blocked by default. Attempting to create a gated provider without opting in raises `UntrustedRemoteCodeError` with an explanation, rather than silently executing remote code.
 - To opt in, set `STRANDS_TRUST_REMOTE_CODE=1` (`1` / `true` / `yes` are accepted). The example CLI enforces the same gate before it will run `--policy lerobot_local`.
+- The dashboard writes that variable too. `runtime.trust_remote_code` in `settings.json` is published to `STRANDS_TRUST_REMOTE_CODE` by `dashboard.settings.apply_mesh_env`, so a value in that file is an opt-in for the dashboard process just as the environment variable is. A value that is not a boolean is read as `false` rather than as the value that failed to be one - the gate cannot be opened by a setting it could not read.
 
 Operator guidance:
 
@@ -256,6 +257,11 @@ that hides.  The variables:
   and the check step trusts the file: an attacker with write access to
   `STRANDS_MESH_AUDIT_DIR` could edit a record and leave no HMAC to fail
   against.  Set the PSK on every peer that writes to the same directory.
+  A record whose bytes are damaged - a torn write, failing media, or forged
+  content in a rotated copy - is read with the undecodable bytes replaced, so
+  it fails its HMAC and is reported as `bad_signature`; the walker never
+  raises on a damaged log, because one undecodable byte must not be able to
+  silence the whole report.
 - **`STRANDS_MESH_AUDIT_MAX_BYTES`** *(optional; default: 100 MiB per file;
   hard upper cap: 10 GiB)*.  Rotates the JSONL file when the active file
   crosses the cap.  Values above the hard cap are clamped and logged;

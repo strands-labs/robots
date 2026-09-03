@@ -2448,6 +2448,11 @@ class RenderingMixin:
         on a wedged GL context is the ordinary case. That outcome decides all
         three of what happens next:
 
+        A flush that cannot encode at all - no encoder installed - keeps the
+        registration for the same reason, so both of this method's failure paths
+        leave a buffer that a later call can still write. See
+        :meth:`_flush_and_deregister_cameras_recording`.
+
         * ``status="error"`` with ``stopped=False``, so a caller cannot read
           "success" while frames are still being captured.
         * **Nothing is encoded.** The flush walks each buffer twice (once to
@@ -2500,7 +2505,31 @@ class RenderingMixin:
                 ],
             }
 
+        return self._flush_and_deregister_cameras_recording(state)
+
+    def _flush_and_deregister_cameras_recording(self, state: dict) -> dict:
+        """Flush ``state``, and deregister it only if the flush encoded.
+
+        The one place the "only a successful flush deregisters" rule lives, for
+        the same reason :meth:`_refuse_replacing_cams_recording` is the one
+        place the start verbs ask their question: both flush paths - the daemon
+        :meth:`stop_cameras_recording` and the synchronous ``finalize`` - had
+        the same hole, so both ask through here.
+
+        :meth:`_flush_cameras_recording_state` is best-effort and folds a
+        per-camera encode failure into its success envelope, so its
+        ``status="error"`` is the one case where no camera was written at all:
+        the encoder is missing, and it reports that before opening a writer.
+        Every buffer is therefore intact, and the remedy its message names -
+        install the encoder, call again - is only followable while the
+        recording is still registered. Deregistering there discarded exactly
+        the frames that message promised were still available, and left
+        :meth:`get_cameras_recording_status` answering ``[idle]`` about them,
+        which is the one reading that verb documents it must never give.
+        """
         result = self._flush_cameras_recording_state(state)
+        if result.get("status") == "error":
+            return result
         self._cams_rec_state = None
         return result
 
@@ -2564,9 +2593,34 @@ class RenderingMixin:
                     encode_clip(to_encode, path, fps=state["fps"])
                     frames_written = len(to_encode)
                 except ImportError:
+                    # Fires on the first camera holding frames, before any
+                    # writer is opened, so nothing is encoded and no buffer is
+                    # touched. Report it the way the expired-join refusal
+                    # reports its own recoverable state - counts included, and
+                    # naming the verb that encodes them - because the caller
+                    # here can follow that advice for the same reason: the
+                    # recording is left registered. See
+                    # :meth:`_flush_and_deregister_cameras_recording`.
+                    buffered = {_c: len(state["buffers"][_c]) for _c in state["cameras"]}
                     return {
                         "status": "error",
-                        "content": [{"text": "imageio not installed. pip install imageio imageio-ffmpeg"}],
+                        "content": [
+                            {
+                                "text": (
+                                    "imageio not installed. pip install imageio imageio-ffmpeg\n"
+                                    f"Nothing was encoded and nothing was dropped: camera recording "
+                                    f"{state['name']!r} is left registered holding {buffered}. Install "
+                                    f"the encoder and call stop_cameras_recording() again to flush it."
+                                )
+                            },
+                            {
+                                "json": {
+                                    "stopped": False,
+                                    "recording": state["name"],
+                                    "buffered_frames": buffered,
+                                }
+                            },
+                        ],
                     }
                 except Exception as e:  # noqa: BLE001 - best-effort flush must never raise
                     flush_error = f"{type(e).__name__}: {e}"
@@ -2842,17 +2896,24 @@ class RenderingMixin:
 
             Returns the same standard result dict as
             :meth:`stop_cameras_recording` so callers can log artifacts
-            uniformly. Calling ``finalize()`` after the first call is a
+            uniformly. Calling ``finalize()`` after a call that *encoded* is a
             no-op success ("Was not recording cameras.") - matching the
-            ``stop_cameras_recording`` idempotency contract.
+            ``stop_cameras_recording`` idempotency contract. After one that
+            could not encode anything it retries the flush instead, because
+            that state still holds the frames.
             """
             current = getattr(self, "_cams_rec_state", None)
-            if current is not state or not state.get("running"):
+            # Registration, not ``running``: this method clears the flag before
+            # it flushes, so reading the flag would answer "was not recording"
+            # about the state a failed flush leaves behind - registered, frames
+            # unencoded - which is the false idle report the whole registration
+            # rule exists to prevent. A flush that encoded deregisters, so the
+            # identity check alone still makes a second call the no-op its
+            # contract promises.
+            if current is not state:
                 return {"status": "success", "content": [{"text": "Was not recording cameras."}]}
             state["running"] = False
-            result = self._flush_cameras_recording_state(state)
-            self._cams_rec_state = None
-            return result
+            return self._flush_and_deregister_cameras_recording(state)
 
         msg = (
             f"Recording {len(names)} camera(s) @ {fps} FPS -> {out_dir} (synchronous mode)\n"

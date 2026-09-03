@@ -879,7 +879,6 @@ class DatasetRecordingMixin:
 
     def stop_recording(
         self,
-        output_path: str | None = None,
         *,
         push_to_hub: bool = False,
         bucket: str | None = None,
@@ -904,8 +903,15 @@ class DatasetRecordingMixin:
         ``replay_episode`` and bare ``step`` loops do not, so recording around
         those produces zero frames and is reported as an error.
 
+        Takes no destination. The dataset root is chosen once, at
+        ``start_recording(root=...)``, and the recorder has been writing there
+        for the whole episode, so nothing is left here to redirect - an
+        ``output_path`` could only be discarded. Both entry points refuse one:
+        the agent dispatcher by name (``output_path`` is a published schema
+        field, so it used to bind here and be dropped), python with a
+        ``TypeError``.
+
         Args:
-            output_path: Unused legacy arg (kept for back-compat).
             push_to_hub: Publish to a versioned HF *dataset* repo (the finished
                 artifact). Overrides the ``push_to_hub`` set at start_recording.
                 Requires an open recording session; on the idle path this

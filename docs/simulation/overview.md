@@ -338,7 +338,7 @@ returns the spec dicts to copy/fork as a starting point for your own task.
 |--------|-------|
 | `start_recording(repo_id, task="", fps=30, ...)` | LeRobot v3 (parquet+MP4); requires `[lerobot]` extra |
 | `save_episode()` | Flush the current rollout as one episode; call once per `run_policy` to record N episodes instead of one merged episode |
-| `stop_recording(output_path=None)` | Finalise dataset (flushes any trailing rollout) |
+| `stop_recording(push_to_hub=False, bucket=None, run_id=None)` | Finalise dataset (flushes any trailing rollout) |
 | `get_recording_status` | Episode, frame count, output dir |
 | `start_cameras_recording(...)` | Plain MP4 via imageio-ffmpeg; `[sim-mujoco]` only, no lerobot |
 | `stop_cameras_recording` / `get_cameras_recording_status` | - |

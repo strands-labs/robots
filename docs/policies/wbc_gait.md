@@ -14,7 +14,12 @@ NVIDIA's reference repo ships **two** MuJoCo G1 controllers. The non-gait pair
   Frequency precedence is per-call kwarg > constructor default > `config.freq_cmd`,
   and every source in that chain must be a finite number `> 0`: the gait clock
   advances the phase by `dt * freq` and warms up over `0.5 / freq`, so a
-  non-positive step frequency cannot be honored. That is stricter than the
+  non-positive step frequency cannot be honored. `dt` is the period the
+  executing loop queries the policy at - taken from the `control_frequency` the
+  runtime states via `Policy.set_control_frequency`, which `PolicyRunner` calls
+  before the rollout - so `gait_frequency` is steps per second at any control
+  rate. Driving `get_actions` yourself without stating a rate warns and falls
+  back to the upstream 50 Hz reference period. That is stricter than the
   `finite`-only domain `WBCConfig` applies to `freq_cmd`, which the non-gait
   7-wide command block ignores entirely.
 - A 2-dim **bipedal phase clock** (`[clock_FL, clock_FR]`) appended to each

@@ -284,3 +284,61 @@ def test_a_corrupt_store_still_degrades_to_empty() -> None:
     mgr.sessions_file.write_text("{not json")
 
     assert mgr.list_sessions() == {}
+
+
+def _store_one_record_with_an_undecodable_byte(mgr: Any, pid: int) -> None:
+    """Write a store whose JSON is well-formed but whose bytes are not UTF-8.
+
+    The 0xE9 sits inside a session *name*, which is the field a hand-edit or a
+    latin-1 writer touches; every other field, the pid included, stays ASCII.
+    """
+    mgr.sessions_file.parent.mkdir(parents=True, exist_ok=True)
+    raw = json.dumps({"run-cafe": {"pid": pid, "action": "train", "start_time": 0.0}}, indent=2)
+    mgr.sessions_file.write_bytes(raw.encode("utf-8").replace(b"cafe", b"caf\xe9"))
+
+
+def test_a_store_byte_that_is_not_utf8_still_yields_the_pid_it_names() -> None:
+    """The one damage shape the handler cannot answer, so the read must not raise.
+
+    ``UnicodeDecodeError`` is a ``ValueError``, so it is neither of the two
+    failures ``except (OSError, JSONDecodeError)`` above was written for - the
+    store is gone, or it is not JSON. A strict read therefore aborts whichever
+    action consulted the store, and by the module docstring that includes
+    ``stop``, which is the only supported way to end a detached run. Damage
+    stays in the field that carries it instead: a pid is ASCII either way.
+    """
+    mgr = SessionManager()
+    pid = _live_pid()
+    _store_one_record_with_an_undecodable_byte(mgr, pid)
+
+    loaded = mgr.list_sessions()
+
+    assert [info["pid"] for info in loaded.values()] == [pid], (
+        f"a byte outside the pid's field must not cost the pid: {loaded}"
+    )
+
+
+def test_stop_reaches_a_session_whose_record_carries_an_undecodable_byte(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The operator-visible point, driven through the tool rather than the store.
+
+    The name to pass is the one ``list`` reports, since that is the only
+    spelling of it the operator can see; what is pinned is that the signals
+    still reach the recorded pid.
+    """
+    mgr = SessionManager()
+    pid = _live_pid()
+    _store_one_record_with_an_undecodable_byte(mgr, pid)
+    signalled: list[tuple[int, int]] = []
+    monkeypatch.setattr(train_mod.os, "kill", lambda p, sig: signalled.append((p, sig)))
+
+    listed = lerobot_train(dataset_root=UNUSED_DATASET, action="list")
+    assert listed["status"] == "success", f"list must report the store it can read: {listed}"
+    name = next(iter(next(block["json"] for block in listed["content"] if "json" in block)["sessions"]))
+
+    lerobot_train(dataset_root=UNUSED_DATASET, action="stop", session_name=name)
+
+    # psutil.pid_exists probes with signal 0, so only a real signal counts as a stop.
+    sent = [entry for entry in signalled if entry[1] != 0]
+    assert sent and sent[0] == (pid, signal.SIGTERM), f"stop must signal the recorded pid, sent {sent}"

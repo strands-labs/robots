@@ -22,6 +22,12 @@ That dual role makes its file-handling discipline security-relevant:
   the skipped line is invisible to the ``_load_seq_counters`` seq-seed
   walk, so the breadcrumb is the operator's only signal the seed may be
   incomplete.
+* Bytes that are not valid UTF-8 must cost their own line and nothing
+  more. ``UnicodeDecodeError`` is a ``ValueError``, so a strict decode
+  escapes the walker's ``except OSError``, aborts the read, discards the
+  records already collected from earlier rotated copies, and takes
+  ``verify_audit_integrity`` down with it -- one undecodable byte would
+  silence the tamper report it is evidence for.
 
 These behaviors had no direct regression coverage; this file pins them.
 """
@@ -207,4 +213,118 @@ def test_read_audit_log_skips_blank_lines_without_a_corruption_breadcrumb(tmp_pa
     assert events == ["before", "after"], f"blank lines must be skipped while valid records are kept, got {events}"
     assert not any("skipping malformed line" in m for m in caplog.messages), (
         f"a blank line is not corruption; it must not emit a malformed-line breadcrumb, got {caplog.messages}"
+    )
+
+
+@pytest.mark.parametrize(
+    ("damaged_line", "expected_events"),
+    [
+        # Damage inside a JSON string value: the line still parses after the
+        # bytes are replaced, so the record is returned (with the damage
+        # visible in it) rather than dropped.
+        (b'{"event": "damaged", "payload": {"note": "\xff\xfe"}}', ["before", "damaged", "after"]),
+        # Damage that breaks the structure: the replaced line is no longer
+        # valid JSON, so it lands on the malformed-line skip.
+        (b'{"event": "damaged", "payload\xff', ["before", "after"]),
+    ],
+    ids=["damage_inside_a_string", "damage_breaks_the_json"],
+)
+def test_read_audit_log_keeps_records_around_undecodable_bytes(damaged_line, expected_events, caplog):
+    """Bytes that are not UTF-8 cost their own line, not the whole read.
+
+    A torn write, failing media, or forged content in a rotated copy can
+    leave bytes the UTF-8 codec cannot decode. Decoding strictly raises
+    ``UnicodeDecodeError`` -- a ``ValueError``, not an ``OSError`` -- which
+    escapes the walker's ``except OSError`` and aborts the entire read, so
+    every record in the file (and every record already collected from an
+    earlier rotated copy) is lost to one bad byte. The walker replaces
+    undecodable bytes instead, which confines the damage to the line that
+    holds it: the surrounding records survive, and the damaged line either
+    still parses or falls to the malformed-JSON skip. Either way a DEBUG
+    breadcrumb reports it, so the substitution is never silent.
+    """
+    active = audit.audit_log_path()
+    active.parent.mkdir(parents=True, exist_ok=True)
+    active.write_bytes(
+        b'{"event": "before", "payload": {"i": 1}}\n' + damaged_line + b'\n{"event": "after", "payload": {"i": 2}}\n'
+    )
+
+    with caplog.at_level("DEBUG", logger="strands_robots.mesh.audit"):
+        records = audit.read_audit_log()
+
+    assert [r.get("event") for r in records] == expected_events
+    assert any("undecodable bytes" in m for m in caplog.messages), (
+        f"expected a DEBUG breadcrumb naming the undecodable bytes, got {caplog.messages}"
+    )
+
+
+def test_read_audit_log_reaches_the_active_log_past_a_damaged_rotated_copy():
+    """Damage in an older rotated copy must not hide the newer records.
+
+    The walker reads rotated copies before the active log so verification
+    spans the whole retained window. An abort on the first file therefore
+    costs more than that file: the records already appended from it are
+    discarded with the exception, and every later file is never opened. The
+    active log's records must survive damage in a copy that precedes them.
+    """
+    active = audit.audit_log_path()
+    active.parent.mkdir(parents=True, exist_ok=True)
+    rotated = active.with_suffix(active.suffix + ".1")
+    rotated.write_bytes(b'{"event": "rotated", "payload": {}}\n\xff\xfe not utf-8\n')
+    active.write_bytes(b'{"event": "active", "payload": {}}\n')
+
+    events = [r.get("event") for r in audit.read_audit_log()]
+    assert events == ["rotated", "active"], (
+        f"damage in a rotated copy must not stop the walk reaching the active log, got {events}"
+    )
+
+
+def test_verify_audit_integrity_reports_damaged_bytes_instead_of_raising(monkeypatch):
+    """A damaged record is tamper evidence the walker reports, not a crash.
+
+    ``verify_audit_integrity`` exists to attest the trail, so the one thing
+    it must not do on a damaged log is raise: an attacker who cannot forge
+    an HMAC could otherwise silence the whole report by writing a single
+    undecodable byte. With a PSK configured the damaged record's bytes no
+    longer match its signature, which is exactly the verdict wanted --
+    counted as ``bad_signature`` with ``ok`` False, while the intact
+    records around it still verify.
+    """
+    monkeypatch.setenv("STRANDS_MESH_AUDIT_PSK", "unit-test-psk")
+    audit._AUDIT_STATE.psk_fingerprint = None
+    for index in range(3):
+        audit.log_safety_event("emergency_stop", "peer-a", {"index": index})
+
+    active = audit.audit_log_path()
+    lines = active.read_bytes().splitlines()
+    assert len(lines) == 3, f"expected three signed records, got {len(lines)}"
+    # Corrupt one byte of the middle record in place: same length, so the
+    # damage is a decode failure and nothing else.
+    middle = bytearray(lines[1])
+    middle[middle.index(b"emergency_stop")] = 0xFF
+    active.write_bytes(b"\n".join([lines[0], bytes(middle), lines[2]]) + b"\n")
+
+    report = audit.verify_audit_integrity()
+
+    assert report["total"] == 3, f"every record must still be examined, got {report}"
+    assert report["verified"] == 2, f"the intact records must still verify, got {report}"
+    assert report["bad_signature"] == 1, f"the damaged record must be reported, got {report}"
+    assert report["ok"] is False
+
+
+def test_read_audit_log_leaves_an_undamaged_log_without_a_damage_breadcrumb(caplog):
+    """The damage breadcrumb fires on damage only.
+
+    Every record this module writes is ASCII, so a healthy log can never
+    contain the replacement character. A breadcrumb on an intact read would
+    make the signal useless for the forensic question it answers.
+    """
+    audit.log_safety_event("emergency_stop", "peer-a", {"index": 1})
+
+    with caplog.at_level("DEBUG", logger="strands_robots.mesh.audit"):
+        records = audit.read_audit_log()
+
+    assert len(records) == 1
+    assert not any("undecodable bytes" in m for m in caplog.messages), (
+        f"an intact log must not report damage, got {caplog.messages}"
     )

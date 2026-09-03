@@ -1491,11 +1491,15 @@ class TestServiceUnpackWithMapping:
 class TestUnpackMalformedActionChunk:
     """Both unpack paths must survive degenerate server/model action chunks.
 
-    A well-formed chunk carries a leading time axis on every value, so the
-    unpackers read ``.shape[0]`` for the horizon. An empty chunk yields no
-    actions; a scalar (0-D) value has no time axis and must raise an actionable
-    ``ValueError`` rather than the opaque ``IndexError: tuple index out of
-    range`` that ``.shape[0]`` on a 0-D array would otherwise surface.
+    A well-formed chunk carries a leading time axis on every value AND the same
+    horizon on every value, because each unpacked step indexes every value at
+    the same position. An empty chunk yields no actions; a scalar (0-D) value
+    has no time axis and must raise an actionable ``ValueError`` rather than the
+    opaque ``IndexError: tuple index out of range`` that ``.shape[0]`` on a 0-D
+    array would otherwise surface; and values whose horizons disagree must be
+    refused the same way in either key order, since reading the horizon from one
+    value alone lets the producer's serialization order decide between an opaque
+    ``IndexError`` and a silently truncated chunk returned as a success.
     """
 
     def test_service_empty_chunk_returns_no_actions(self):
@@ -1532,6 +1536,61 @@ class TestUnpackMalformedActionChunk:
         p._action_mapping = None
         result = p._unpack_service_actions({"action.single_arm": np.ones(3)})
         assert result == [{"single_arm": 1.0}, {"single_arm": 1.0}, {"single_arm": 1.0}]
+
+    # A chunk whose values cover different horizons cannot be unpacked: every
+    # step reads every value at the same index. Reading the horizon from one
+    # value leaves the outcome to the order the producer serialized its keys.
+    _MISMATCHED_CHUNKS = [
+        pytest.param(
+            {"action.single_arm": np.ones((1, 16, 7)), "action.gripper": np.ones((1, 8, 1))},
+            {"single_arm": 16, "gripper": 8},
+            id="longest-value-first",
+        ),
+        pytest.param(
+            {"action.gripper": np.ones((1, 8, 1)), "action.single_arm": np.ones((1, 16, 7))},
+            {"gripper": 8, "single_arm": 16},
+            id="shortest-value-first",
+        ),
+        pytest.param(
+            {"action.single_arm": np.ones((1, 16, 7)), "action.gripper": np.ones((1, 1, 16))},
+            {"single_arm": 16, "gripper": 1},
+            id="extra-leading-axis-leaves-a-horizon-of-one",
+        ),
+    ]
+
+    @pytest.mark.parametrize("unpack", ["_unpack_actions", "_unpack_service_actions"])
+    @pytest.mark.parametrize(("chunk", "horizons"), _MISMATCHED_CHUNKS)
+    def test_disagreeing_horizons_are_refused_in_either_key_order(self, unpack, chunk, horizons):
+        """Values covering different horizons are refused, whatever their order.
+
+        Both outcomes of reading the horizon from a single value are wrong, and
+        which one occurs is decided by the producer: listing the longest value
+        first indexes past the end of every shorter one, and listing the
+        shortest first drops the trailing steps of every longer one and returns
+        the truncated chunk as a success.
+        """
+        p = Gr00tPolicy(data_config="so100", host="localhost", port=19999)
+        p._action_mapping = ActionMapping(actions={"single_arm": "arm", "gripper": "grip"})
+        with pytest.raises(ValueError, match="time axes disagree") as excinfo:
+            getattr(p, unpack)(chunk)
+        # The report must name every key and the horizon it actually carries, so
+        # an operator can tell which head is short without re-running inference.
+        message = str(excinfo.value)
+        for key, horizon in horizons.items():
+            assert key in message
+            assert str(horizon) in message
+
+    @pytest.mark.parametrize("unpack", ["_unpack_actions", "_unpack_service_actions"])
+    @pytest.mark.parametrize("reverse", [False, True], ids=["declared-order", "reversed-order"])
+    def test_agreeing_horizons_unpack_the_whole_chunk(self, unpack, reverse):
+        """The well-formed case is unchanged: key order does not affect the result."""
+        items = [("action.single_arm", np.ones((1, 16, 7))), ("action.gripper", np.ones((1, 16, 1)))]
+        chunk = dict(reversed(items) if reverse else items)
+        p = Gr00tPolicy(data_config="so100", host="localhost", port=19999)
+        p._action_mapping = ActionMapping(actions={"single_arm": "arm", "gripper": "grip"})
+        actions = getattr(p, unpack)(chunk)
+        assert len(actions) == 16
+        assert actions[0] == {"arm": [1.0] * 7, "grip": [1.0]}
 
 
 # (section)

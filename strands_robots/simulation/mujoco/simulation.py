@@ -65,7 +65,6 @@ import json
 import logging
 import numbers
 import os
-import re
 import threading
 import time
 from collections.abc import AsyncGenerator, Callable, Mapping, Sequence
@@ -1307,51 +1306,22 @@ class MuJoCoSimEngine(
         ``force=True`` re-download on every ``add_robot`` and refuses the robot
         outright when that download cannot run.
         """
-        # One owner for the resolution rule: the download path applies the same
-        # rule to decide whether a robot's assets need fetching, so a second
-        # copy here could disagree with it about the same model.
-        from strands_robots.assets.download import _mjcf_mesh_candidates, _mjcf_mesh_subdir
+        # One owner for the resolution rule AND for the scan that applies it:
+        # the download path decides the same question when it works out whether
+        # a robot's assets need fetching, so a second copy here could disagree
+        # with it about the same model.
+        from strands_robots.assets.download import _mjcf_missing_meshes
 
-        model_dir = os.path.dirname(os.path.abspath(model_path))
-
-        files_to_check = [model_path]
         try:
-            with open(model_path) as _f:
-                top_content = _f.read()
-            for inc in re.findall(r'<include\s+file="([^"]+)"', top_content):
-                inc_path = os.path.join(model_dir, inc)
-                if os.path.exists(inc_path):
-                    files_to_check.append(inc_path)
+            missing = bool(_mjcf_missing_meshes(model_path))
         except (OSError, UnicodeDecodeError):
-            # An unreadable top-level model contributes no includes to scan.
-            # MuJoCo names the unreadable file itself on the load that follows,
-            # which is a better report than anything this check could invent.
-            pass
-
-        # (fragment directory relative to model_dir, fragment text)
-        fragments: list[tuple[str, str]] = []
-        for xml_path in files_to_check:
-            try:
-                with open(xml_path) as _f:
-                    content = _f.read()
-            except (OSError, UnicodeDecodeError):
-                # Same reasoning: a fragment we cannot read declares no mesh
-                # references, and MuJoCo reports it on load.
-                continue
-            frag_dir = os.path.dirname(os.path.abspath(xml_path))
-            rel_dir = os.path.relpath(frag_dir, model_dir)
-            fragments.append(("" if rel_dir == os.curdir else rel_dir, content))
-
-        mesh_subdir = _mjcf_mesh_subdir(*(text for _rel, text in fragments))
-
-        missing = False
-        for rel_dir, content in fragments:
-            for mf in re.findall(r'file="([^"]+\.(?:stl|STL|obj))"', content):
-                if not any(os.path.exists(p) for p in _mjcf_mesh_candidates(mf, model_dir, mesh_subdir, rel_dir)):
-                    missing = True
-                    break
-            if missing:
-                break
+            # An unreadable model contributes no reference this check can
+            # resolve. MuJoCo names the unreadable file itself on the load that
+            # follows, which is a better report than anything invented here -
+            # so proceed rather than spend a download on a guess. The download
+            # path takes the opposite reading of the same failure, because a
+            # fetch is what replaces a file it cannot read.
+            missing = False
 
         if not missing:
             return None

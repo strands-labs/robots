@@ -468,11 +468,22 @@ def _action_chunk_horizon(chunk: dict[str, np.ndarray]) -> int:
     """Return the shared time-axis length of a normalized action chunk.
 
     Both unpack paths reduce each action value to ``(horizon,)`` or
-    ``(horizon, action_dim)`` and then iterate ``range(horizon)``. Every value
-    must therefore carry a leading time axis. A 0-D / scalar value has no time
-    axis, so a server or model that emits one is malformed; surface it as an
-    actionable error instead of the opaque ``IndexError: tuple index out of
-    range`` that a ``.shape[0]`` read on a 0-D array would otherwise raise.
+    ``(horizon, action_dim)`` and then iterate ``range(horizon)``, indexing
+    EVERY value at each step. Two properties must therefore hold across the
+    whole chunk, and both are checked here so the horizon returned is one every
+    value can actually answer for:
+
+    * **Every value carries a leading time axis.** A 0-D / scalar value has
+      none, so a server or model that emits one is malformed; surface it as an
+      actionable error instead of the opaque ``IndexError: tuple index out of
+      range`` that a ``.shape[0]`` read on a 0-D array would otherwise raise.
+    * **Every value covers the same horizon.** Reading the length from one
+      value alone makes the outcome depend on which key the producer happened
+      to serialize first: with the longest value first the loop indexes past
+      the end of every shorter one (an opaque ``IndexError`` naming no key),
+      and with the shortest first the trailing steps of every longer value are
+      dropped and the truncated chunk is returned as a success. A chunk whose
+      values disagree cannot be unpacked either way, so refuse it here.
 
     Args:
         chunk: Normalized ``{bare_key: np.ndarray}`` action mapping (non-empty).
@@ -481,7 +492,8 @@ def _action_chunk_horizon(chunk: dict[str, np.ndarray]) -> int:
         The leading-axis length shared by the chunk's values.
 
     Raises:
-        ValueError: If any value is 0-D (has no leading time axis).
+        ValueError: If any value is 0-D (has no leading time axis), or if the
+            values do not all share one leading-axis length.
     """
     scalar_keys = [k for k, v in chunk.items() if v.ndim == 0]
     if scalar_keys:
@@ -491,7 +503,16 @@ def _action_chunk_horizon(chunk: dict[str, np.ndarray]) -> int:
             f"(shapes {shapes}); expected a leading time axis of shape (horizon,) "
             "or (horizon, action_dim). The action chunk is malformed."
         )
-    return next(iter(chunk.values())).shape[0]
+    horizons = {k: int(v.shape[0]) for k, v in chunk.items()}
+    if len(set(horizons.values())) > 1:
+        shapes = {k: tuple(v.shape) for k, v in chunk.items()}
+        raise ValueError(
+            f"GR00T returned action values whose time axes disagree: horizons "
+            f"{horizons} (shapes {shapes}). Every value in one chunk must cover "
+            "the same horizon, because each unpacked step reads every value at "
+            "the same index. The action chunk is malformed."
+        )
+    return next(iter(horizons.values()))
 
 
 # Gr00tPolicy

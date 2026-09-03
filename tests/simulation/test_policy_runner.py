@@ -13,6 +13,7 @@ pure-Python ``FakeSim`` stub, plus the real-backend behaviours:
 from __future__ import annotations
 
 import base64
+import importlib
 import inspect
 import io
 import os
@@ -135,16 +136,31 @@ def test_policy_runner_only_touches_public_api():
         assert call[0] in allowed, f"PolicyRunner touched private API: {call}. Only {allowed} are allowed."
 
 
-def test_policy_runner_import_does_not_pull_in_mujoco():
-    """Importing policy_runner must not drag in mujoco."""
+def test_policy_runner_import_does_not_pull_in_mujoco(monkeypatch):
+    """Importing policy_runner must not drag in mujoco.
 
-    # Wipe any existing mujoco imports
+    The import is what is measured, so the cell has to perform it: clearing
+    ``mujoco`` and then reading ``sys.modules`` without importing the runner
+    asserts only that the entries just deleted are gone, which is true whatever
+    the runner's top level does.
+
+    Both removals go through ``monkeypatch`` so the entries are put back.
+    Leaving the runner out of ``sys.modules`` does not undo its import, it
+    orphans the references siblings already hold -
+    ``test_rollout_video_realtime_fps`` and
+    ``test_rollout_durations_survive_a_clock_step`` bind the module and patch
+    attributes on it, and ``test_recording_frame_loss_is_not_tolerated`` reads
+    its entry directly.
+    """
+    runner = "strands_robots.simulation.policy_runner"
+
+    # Wipe any existing mujoco imports, so an import below is attributable.
     for mod in [m for m in list(sys.modules) if m.startswith("mujoco")]:
-        del sys.modules[mod]
+        monkeypatch.delitem(sys.modules, mod)
 
-    # Force a fresh import of the runner module
-    if "strands_robots.simulation.policy_runner" in sys.modules:
-        del sys.modules["strands_robots.simulation.policy_runner"]
+    # Force a fresh import of the runner module, and perform it.
+    monkeypatch.delitem(sys.modules, runner, raising=False)
+    importlib.import_module(runner)
 
     leaked = [m for m in sys.modules if m.startswith("mujoco")]
     assert not leaked, (

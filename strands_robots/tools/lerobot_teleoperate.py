@@ -301,7 +301,12 @@ class SessionManager:
             return {}
 
         try:
-            with open(self.sessions_file) as f:
+            # Read with a decode policy that cannot raise, for the reason the
+            # training store carries: the handler below answers "gone" and "not
+            # JSON", and an undecodable byte is a ``ValueError`` that is neither,
+            # so it would abort the action instead of degrading. U+FFFD keeps a
+            # damaged record's ASCII pid readable, and a pid is what stops it.
+            with open(self.sessions_file, encoding="utf-8", errors="replace") as f:
                 sessions = json.load(f)
 
             # Check if processes are still running and clean up dead sessions
@@ -339,9 +344,9 @@ class SessionManager:
             return {}
 
     def _save_sessions(self, sessions: dict[str, Any]):
-        """Save sessions to disk."""
+        """Save sessions to disk, in the encoding the load path reads."""
         try:
-            with open(self.sessions_file, "w") as f:
+            with open(self.sessions_file, "w", encoding="utf-8") as f:
                 json.dump(sessions, f, indent=2)
         except OSError as e:
             logger.error(f"Error saving sessions: {e}")
@@ -1290,7 +1295,12 @@ def lerobot_teleoperate(
                 content_lines.append(f"Log file: `{log_file_path}`")
 
                 try:
-                    with open(str(log_file_path)) as f:
+                    # The log is the detached child's byte stream, not this
+                    # process's text, so a byte that is not UTF-8 is expected.
+                    # The handler below keeps the report either way; reading
+                    # with substitution keeps the tail itself, which is the part
+                    # an operator asked for.
+                    with open(str(log_file_path), encoding="utf-8", errors="replace") as f:
                         lines = f.readlines()
                         if lines:
                             tail_lines = lines[-10:]  # Last 10 lines

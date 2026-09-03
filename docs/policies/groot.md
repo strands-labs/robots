@@ -66,6 +66,24 @@ is parsed and honoured in **either** mode. What service mode cannot do is
 cross-check it: a mapping naming a key the server does not have surfaces as a
 server-side error rather than a constructor refusal.
 
+## Action chunk shape
+
+Both unpack paths turn the model's / server's `{action.<key>: array}` chunk into
+one dict per timestep, reading every value at the same index. Two properties are
+therefore required of the chunk and refused with a `ValueError` naming the
+offending keys and their shapes:
+
+| Chunk | Result |
+|-------|--------|
+| every value `(horizon,)` or `(horizon, action_dim)`, same `horizon` | unpacked into `horizon` per-step dicts |
+| a 0-D / scalar value (no time axis) | refused - `scalar (0-D) action value(s)` |
+| values whose leading axes disagree (e.g. `(16, 7)` and `(8, 1)`) | refused - `time axes disagree` |
+
+A disagreeing chunk is refused rather than truncated to the shortest value: the
+steps a longer value carries are commands the model produced, so dropping them
+would execute part of a trajectory and re-query as if the whole chunk had run.
+The refusal is the same whichever key the producer serialized first.
+
 ## Versions
 
 | Version | Transport | Notes |

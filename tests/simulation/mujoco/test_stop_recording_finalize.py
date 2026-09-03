@@ -524,3 +524,56 @@ class TestStopRecordingParquetTruthGate:
         assert payload["episode_count"] == 0
         assert payload["episode_count_mismatch"] is True
         assert "parquet has 0" in result["content"][0]["text"]
+
+
+class TestStopRecordingNamesNoDestination:
+    """``stop_recording`` accepts no destination, because it writes to none.
+
+    The dataset root is chosen once, at ``start_recording(root=...)``, and the
+    recorder has been writing there for the whole episode - by the time this
+    call runs there is nothing left to redirect. An ``output_path`` was accepted
+    anyway, in the first positional slot, and discarded. That mattered on the
+    agent path: ``output_path`` is a PUBLISHED field of the simulation tool
+    schema, so ``_dispatch_action`` bound it by name (its unknown-parameter
+    refusal reads the method signature) and the call finalized the dataset at
+    the recorder's own root while reporting ``status="success"`` about a path
+    that stayed empty. Nothing else in the tree wanted the parameter:
+    ``describe()`` already advertised ``stop_recording`` as
+    ``(push_to_hub=..., bucket=..., run_id=...)``, and the schema field's own
+    list of sinks names ``render`` / ``export_xml`` / the rollout drivers and
+    not this one.
+    """
+
+    def test_the_agent_dispatcher_refuses_a_destination_by_name(self, recording_sim, tmp_path):
+        rec = _FakeRecorder()
+        _arm(recording_sim, rec)
+        asked = tmp_path / "somewhere" / "dataset"
+
+        result = recording_sim(action="stop_recording", output_path=str(asked))
+
+        assert result["status"] == "error"
+        assert "output_path" in result["content"][0]["text"]
+        assert not asked.exists()
+        # The refusal precedes dispatch, so the open recording is untouched -
+        # rather than finalized at another root under a success the caller reads
+        # as "written where I asked".
+        assert rec.calls == []
+        assert recording_sim._world._backend_state["recording"] is True
+
+    def test_the_python_path_names_no_positional_parameter(self, recording_sim):
+        # The first positional slot was the dead one, so any positional call -
+        # `stop_recording(repo_id)` mirroring start_recording, say - was
+        # swallowed and answered "Was not recording."
+        with pytest.raises(TypeError):
+            recording_sim.stop_recording("/tmp/a-destination-nothing-writes-to")
+
+    def test_the_advertised_bookkeeping_kwargs_still_reach_the_recorder(self, recording_sim):
+        # Control: the three surviving keyword arguments are unaffected, so the
+        # refusals above are about a destination and not about the call shape.
+        rec = _FakeRecorder(sync_result={"status": "success", "bucket_uri": "hf://org/buck/run1"})
+        _arm(recording_sim, rec)
+
+        result = recording_sim(action="stop_recording", bucket="org/buck", run_id="run1")
+
+        assert result["status"] == "success"
+        assert rec.sync_args == ("org/buck", "run1")

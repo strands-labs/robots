@@ -261,12 +261,21 @@ class SessionManager:
 
         Returns:
             Every stored session record, keyed by session name. A store that
-            cannot be read degrades to empty rather than raising.
+            cannot be read degrades to empty rather than raising - including one
+            carrying bytes this store's encoding does not describe, which is
+            read as U+FFFD so a record damaged outside its pid still stops.
         """
         if not self.sessions_file.exists():
             return {}
         try:
-            with open(self.sessions_file) as f:
+            # Read with a decode policy that cannot raise. The handler below
+            # names the two failures this store was expected to have - it is
+            # gone, or it is not JSON - and an undecodable byte is neither:
+            # ``UnicodeDecodeError`` is a ``ValueError``, so it passes both
+            # clauses and aborts the tool action that asked. Substituting
+            # U+FFFD keeps the damage local to the field that carries it, and
+            # a pid is ASCII, so the record still names the process it named.
+            with open(self.sessions_file, encoding="utf-8", errors="replace") as f:
                 sessions: dict[str, Any] = json.load(f)
         except (OSError, json.JSONDecodeError) as e:
             logger.error(f"Error loading sessions: {e}")
@@ -317,7 +326,9 @@ class SessionManager:
 
     def _save_sessions(self, sessions: dict[str, Any]) -> None:
         try:
-            with open(self.sessions_file, "w") as f:
+            # Name the encoding the reader names, so the store's spelling is a
+            # property of the file rather than of the locale that wrote it.
+            with open(self.sessions_file, "w", encoding="utf-8") as f:
                 json.dump(sessions, f, indent=2)
         except OSError as e:
             logger.error(f"Error saving sessions: {e}")
@@ -1126,7 +1137,13 @@ def lerobot_train(
             if log_file_path and Path(str(log_file_path)).exists():
                 lines.append(f"Log file: `{log_file_path}`")
                 try:
-                    with open(str(log_file_path)) as f:
+                    # The log holds whatever the detached child wrote to the fd
+                    # it inherited, so its bytes are not this process's text and
+                    # need not be UTF-8. Reading it strictly makes one such byte
+                    # raise past the handler below - which exists to keep the
+                    # rest of this report - and lose the pid, uptime and
+                    # running verdict already computed above.
+                    with open(str(log_file_path), encoding="utf-8", errors="replace") as f:
                         tail = f.readlines()[-15:]
                     if tail:
                         lines.extend(["", "**Recent Log Output:**", "```", "".join(tail).strip(), "```"])

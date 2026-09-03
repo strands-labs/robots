@@ -55,7 +55,7 @@ def plot_clock(out_path: str, freq: float = 1.0, duration_s: float = 6.0) -> Non
         # static for the first and last third, walk forward in the middle.
         vx = 0.5 if (n // 3) <= i < (2 * n // 3) else 0.0
         scaled = np.array([vx, 0.0, 0.0]) * cmd_scale
-        c = clk.update(scaled, freq=freq)
+        c = clk.update(scaled, freq=freq, dt=dt)
         fl.append(c[0])
         fr.append(c[1])
         walking.append(clk.walking_mask)

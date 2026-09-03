@@ -66,6 +66,7 @@ def _mint_resume(*, issuer_clock_offset_s: float = 0.0) -> dict[str, Any]:
     operator._publish_safety_envelope = lambda key, env: captured.update(env)
     operator._estop_lockout.set()
     operator._last_estop_ts = time.time() - 3.0
+    operator._last_estop_mono = time.monotonic() - 3.0
     real_time = time.time
     with patch.object(core.time, "time", lambda: real_time() + issuer_clock_offset_s):
         result = operator._resume_lockout(_CODE)

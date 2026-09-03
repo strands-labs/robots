@@ -425,11 +425,16 @@ local copy of the dataset, or pass lerobot's own knobs directly with
 `extra={"dataset.eval_split": 0.1, "eval_steps": 1000}`.
 
 `streaming` and `val_episodes` cannot both be honored, so `validate()` refuses
-the pair. A non-zero `eval_split` routes lerobot into `make_train_eval_datasets`,
-which rebuilds BOTH splits as map-style `LeRobotDataset` objects without
-consulting `dataset.streaming` - the streaming dataset it opened first is
-discarded. The run therefore materializes the whole dataset, which is exactly
-what `streaming` exists to avoid, and nothing reports it: an annulled stream is
+the pair. lerobot holds out a validation split only on a **map-style** dataset:
+`make_train_eval_datasets` rebuilds both halves as `LeRobotDataset` objects,
+which is what makes the split addressable by episode index. A streamed dataset
+is not one, and lerobot answers that contradiction differently across the
+supported range - from lerobot 0.6.2 `DatasetConfig` refuses the combination
+outright (`eval_split requires map-style datasets`), and before that it
+constructed and the factory discarded the streaming dataset it had opened first.
+Either way the pair delivers at most one of the two fields: it fails inside a
+launched run, or it materializes the whole dataset - exactly what `streaming`
+exists to avoid - while reporting nothing, because an annulled stream is
 indistinguishable from `streaming=False`. Set `streaming=False` to keep the
 validation split, or `val_episodes=None` to keep the stream.
 

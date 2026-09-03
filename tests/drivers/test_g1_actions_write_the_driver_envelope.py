@@ -12,7 +12,7 @@ refusal alike - the verbs do not reshape).
 
 from __future__ import annotations
 
-import importlib
+import subprocess
 import sys
 from typing import Any
 
@@ -119,10 +119,32 @@ def _text(envelope: dict[str, Any]) -> str:
 
 
 def test_the_import_pulls_no_sdk_module() -> None:
-    """SDK-load hygiene: importing the verbs must not import unitree_sdk2py."""
-    importlib.import_module("strands_robots.tools.g1.g1_actions")
-    pulled = [name for name in sys.modules if name.startswith("unitree_sdk2py")]
-    assert not pulled, f"strands_robots.tools.g1.g1_actions imports pulled SDK submodules: {pulled}"
+    """SDK-load hygiene: importing the verbs must not import unitree_sdk2py.
+
+    Measured in a clean interpreter, for the reason
+    ``test_g1_driver.test_g1_driver_module_does_not_import_unitree_sdk2py_at_load_time``
+    states: this session's ``sys.modules`` already holds whatever every other
+    collected module imported, so reading it here answers "has anything in this
+    process imported the SDK" - which is neither what this test claims nor
+    anything ``g1_actions`` controls. A neighbouring file decides at module scope
+    whether to install an SDK stub by importing the real one, and collection runs
+    that before the first test, so on a host that has the SDK installed the
+    process-wide read is non-empty from the start and reports it as an eager
+    import by this module.
+
+    A subprocess asks the question the name asks, and it is the only spelling
+    that can answer it: an eager import is observable only where the SDK is
+    installed, which is exactly the host the process-wide read cannot be used on.
+    """
+    probe = (
+        "import importlib, sys; importlib.import_module('strands_robots.tools.g1.g1_actions'); "
+        "print(sorted(n for n in sys.modules if n.startswith('unitree_sdk2py')))"
+    )
+    completed = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, check=False)
+    assert completed.returncode == 0, f"importing the verb module failed: {completed.stderr}"
+    assert completed.stdout.strip() == "[]", (
+        f"importing strands_robots.tools.g1.g1_actions pulled SDK submodules: {completed.stdout.strip()}"
+    )
 
 
 def test_every_verb_has_an_actions_table_row() -> None:

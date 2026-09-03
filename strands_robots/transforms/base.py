@@ -47,7 +47,7 @@ from __future__ import annotations
 import logging
 import os
 from abc import ABC, abstractmethod
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -710,6 +710,72 @@ def _image_to_hwc_uint8(value: Any) -> np.ndarray:
     return arr
 
 
+def _column_names(feature: Any) -> list[str]:
+    """Return every component name a state/action feature declares, in order.
+
+    LeRobot writes a vector column's ``names`` either as a flat list
+    (``["shoulder_pan", ...]``) or as a mapping that groups the components -
+    ``{"motors": [...]}`` from ``teleop_keyboard``, ``{"left": [...], "right":
+    [...]}`` for a bimanual arm, ``{"delta_x": 0, ...}`` from
+    ``teleop_gamepad``. All three describe the same thing: one name per column,
+    in column order.
+
+    The two mapping spellings mean different things and are read differently:
+    values that are lists are the components (the key is a group label, not a
+    column name), and values that are integers are the components' indices (the
+    KEYS are the column names, ordered by that index rather than by insertion
+    order). LeRobot's own flattening helper renders the second shape's indices
+    as the names, which is why that distinction is drawn here.
+
+    Reading a mapping as a plain list yields its keys, which is one name per
+    GROUP - ``["motors"]`` for a six-motor arm. That is a narrower vector than
+    the one the dataset holds, and the output schema is derived from these
+    names, so the columns past the first of each group would be dropped from the
+    output without any error. A declaration that still cannot describe the
+    vector is refused by :meth:`_SourceDataset.open`.
+
+    Args:
+        feature: The column's ``meta/info.json`` entry, or anything else when
+            the dataset declares no such column.
+
+    Returns:
+        The declared component names, or an empty list when the column declares
+        none (``names: null``, which the pass-through leaves alone).
+    """
+    raw = feature.get("names") if isinstance(feature, dict) else None
+    if isinstance(raw, Mapping):
+        values = list(raw.values())
+        # ``{"motors": [...]}`` / ``{"left": [...], "right": [...]}``: a GROUP
+        # name mapped to its members, so the members are the column names and
+        # the group name is not one.
+        if values and all(isinstance(value, (list, tuple)) for value in values):
+            return [str(item) for value in values for item in value]
+        # ``{"delta_x": 0, "delta_y": 1, ...}``: a COLUMN name mapped to its
+        # index, so the keys are the names and the values order them. Sorting on
+        # the index rather than trusting insertion order is what makes a
+        # declaration written out of order still name the right column.
+        if values and all(isinstance(value, int) and not isinstance(value, bool) for value in values):
+            return [str(key) for key, _ in sorted(raw.items(), key=lambda item: int(item[1]))]
+        return [str(key) for key in raw]
+    if isinstance(raw, (list, tuple)):
+        return [str(item) for item in raw]
+    return []
+
+
+def _column_width(feature: Any) -> int | None:
+    """Return the number of columns a vector feature declares, or ``None``.
+
+    Args:
+        feature: The column's ``meta/info.json`` entry.
+
+    Returns:
+        The single dimension of a 1-D ``shape``. ``None`` for an absent or
+        multi-dimensional shape, which this reader does not name per component.
+    """
+    shape = tuple(feature.get("shape", ())) if isinstance(feature, dict) else ()
+    return int(shape[0]) if len(shape) == 1 else None
+
+
 class _SourceDataset:
     """Read side of the orchestration: one opened source LeRobotDataset.
 
@@ -745,8 +811,11 @@ class _SourceDataset:
         self.use_videos = all(dtype == "video" for dtype in self.camera_dtypes.values())
         state_feat = features.get("observation.state", {})
         action_feat = features.get("action", {})
-        self.state_names: list[str] = list(state_feat.get("names") or [])
-        self.action_names: list[str] = list(action_feat.get("names") or [])
+        # One name per column, whichever of LeRobot's two ``names`` spellings the
+        # source used - the output schema is built from these, so a grouped
+        # declaration read as its keys would narrow the output silently.
+        self.state_names: list[str] = _column_names(state_feat)
+        self.action_names: list[str] = _column_names(action_feat)
         self.fps = int(ds.meta.fps)
         self.robot_type = str(getattr(ds.meta, "robot_type", None) or "unknown")
         self.total_episodes = int(ds.meta.total_episodes)
@@ -758,10 +827,12 @@ class _SourceDataset:
 
         A string return keeps :meth:`DatasetTransform.transform`'s error
         channel uniform (a ``TransformResult`` with ``status="error"``) for
-        every source-side refusal. Three sources are refused, all for the same
+        every source-side refusal. Four sources are refused, all for the same
         reason - the output could not be the source rendered differently: one
         declaring a feature the pass-through cannot preserve, one declaring no
-        camera stream at all, and one whose cameras disagree about their dtype.
+        camera stream at all, one whose cameras disagree about their dtype, and
+        one whose ``observation.state`` / ``action`` names do not describe the
+        vector they annotate.
         """
         from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
@@ -806,6 +877,27 @@ class _SourceDataset:
                 "promoted to video - which the schema-parity half of the pass-through contract forbids. "
                 "Re-record or convert the source so every observation.images.* stream shares one dtype."
             )
+        for key, names in (("observation.state", reader.state_names), ("action", reader.action_names)):
+            # Same reason as the three refusals above. The output schema declares
+            # exactly these names, and the pass-through fills them by pairing them
+            # with the source row, so a count that disagrees with the column width
+            # writes a DIFFERENT trajectory: names short of the width drop the
+            # trailing components, and names past it fabricate a command for a
+            # column no frame supplies (recorded as 0.0, which is itself a
+            # travel-to-zero command for an absolute-position actuator). Both are
+            # silent, so the source is refused instead.
+            width = _column_width(features.get(key))
+            if names and width is not None and len(names) != width:
+                return (
+                    f"source dataset declares {len(names)} name(s) for its {width}-column {key} "
+                    f"vector: {names}. The output dataset declares the source's names, and the "
+                    "pass-through pairs them with the source row, so a count that disagrees would "
+                    f"silently write a {min(len(names), width)}-column {key} - dropping the "
+                    "components past the shorter of the two, or fabricating a value for a column no "
+                    "frame supplies. Correct the source's names to one entry per column (LeRobot "
+                    "writes them either as a flat list or as a mapping grouping them, and both are "
+                    "read here) so the output can be the source rendered differently."
+                )
         return reader
 
     def selected_episodes(self, episodes: list[int] | None) -> list[int] | str:
@@ -894,20 +986,27 @@ class _SourceDataset:
 
 
 def _write_episode(recorder: Any, reader: _SourceDataset, episode: dict[str, Any]) -> None:
-    """Write one generated episode through the recorder, columns pass-through."""
+    """Write one generated episode through the recorder, columns pass-through.
+
+    The state and action pairings are ``strict``: every declared name takes a
+    value from the row and every value in the row has a name.
+    :meth:`_SourceDataset.open` has already refused a source where those counts
+    disagree, so this is the assertion that the refusal covered every path to
+    here rather than a second, quieter place to truncate a trajectory.
+    """
     tasks: list[str] = episode["task"]
     frame_count = len(tasks)
     for t in range(frame_count):
         observation: dict[str, Any] = {}
         if reader.state_names and "observation.state" in episode:
             state_row = episode["observation.state"][t]
-            observation.update(zip(reader.state_names, (float(v) for v in state_row)))
+            observation.update(zip(reader.state_names, (float(v) for v in state_row), strict=True))
         for cam in reader.camera_keys:
             observation[cam] = episode[f"{_IMAGE_PREFIX}{cam}"][t]
         action: dict[str, Any] = {}
         if reader.action_names and "action" in episode:
             action_row = episode["action"][t]
-            action.update(zip(reader.action_names, (float(v) for v in action_row)))
+            action.update(zip(reader.action_names, (float(v) for v in action_row), strict=True))
         recorder.add_frame(
             observation,
             action,

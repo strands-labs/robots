@@ -165,8 +165,83 @@ def _mjcf_mesh_candidates(mesh_ref: str, model_dir: str, mesh_subdir: str, inclu
     return candidates
 
 
+#: Mesh file extensions an MJCF ``file=`` reference may name. MuJoCo loads
+#: ``.stl``, ``.obj`` and ``.msh``; the case variants appear in shipped assets.
+_MESH_REF_RE = re.compile(r'file="([^"]+\.(?:stl|STL|obj|OBJ|msh))"')
+
+#: ``<include file="...">`` - the fragments that make up one model.
+_INCLUDE_RE = re.compile(r'<include\s+file="([^"]+)"')
+
+
+def _mjcf_missing_meshes(model_path: str | os.PathLike[str]) -> list[str]:
+    """Return the mesh references a model declares that are absent on disk.
+
+    This is the single owner of "are this model's meshes on disk?". Two callers
+    ask it - :func:`_needs_download` (should the assets be fetched?) and
+    :meth:`~strands_robots.simulation.mujoco.simulation.MuJoCoSimEngine._ensure_meshes`
+    (may ``add_robot`` proceed?) - and one owner is what keeps them from judging
+    the same model present and absent.
+
+    A model is its main file plus every ``<include>``d fragment, because both
+    halves of the rule span fragments:
+
+    * ``<compiler meshdir|assetdir>`` is model-global (see
+      :func:`_mjcf_mesh_subdir`), so the fragment declaring the directory need
+      not be the one declaring the mesh;
+    * a fragment may declare meshes the main file never mentions - shipped
+      Menagerie assets do exactly this (``ability_hand``'s scene declares none
+      of its 13 meshes; its included hand fragment declares all of them plus
+      the ``meshdir``). Reading the main file alone reports such a model as
+      declaring no meshes at all, which is indistinguishable from a model whose
+      meshes are all present.
+
+    Each reference is resolved the way MuJoCo resolves it, via
+    :func:`_mjcf_mesh_candidates`.
+
+    Args:
+        model_path: Path to the model's MAIN file (the one the registry names).
+
+    Returns:
+        The absent references, as authored. Empty when the model declares no
+        meshes or every one of them resolves - the two cases callers may treat
+        alike, since neither has anything to fetch.
+
+    Raises:
+        OSError: The main file cannot be read.
+        UnicodeDecodeError: The main file is not decodable text. An unreadable
+            *fragment* is not an error: it declares no reference this scan can
+            check, and MuJoCo names it on the load that follows.
+    """
+    model_dir = os.path.dirname(os.path.abspath(os.fspath(model_path)))
+    main = Path(model_path).read_text()
+
+    # (fragment directory relative to model_dir, fragment text)
+    fragments: list[tuple[str, str]] = [("", main)]
+    for inc in _INCLUDE_RE.findall(main):
+        inc_path = os.path.join(model_dir, inc)
+        try:
+            text = Path(inc_path).read_text()
+        except (OSError, UnicodeDecodeError):
+            continue
+        rel = os.path.relpath(os.path.dirname(os.path.abspath(inc_path)), model_dir)
+        fragments.append(("" if rel == os.curdir else rel, text))
+
+    mesh_subdir = _mjcf_mesh_subdir(*(text for _rel, text in fragments))
+    missing: list[str] = []
+    for rel_dir, text in fragments:
+        for ref in _MESH_REF_RE.findall(text):
+            if not any(os.path.exists(c) for c in _mjcf_mesh_candidates(ref, model_dir, mesh_subdir, rel_dir)):
+                missing.append(ref)
+    return missing
+
+
 def _needs_download(name: str, info: dict[str, Any] | None, force: bool = False) -> bool:
-    """Return *True* if a robot's mesh files are missing."""
+    """Return *True* if a robot's mesh files are missing.
+
+    ``force`` re-fetches a model whose meshes are all present. A model with
+    nothing missing is the only case ``force`` decides: a missing reference is
+    fetched either way.
+    """
     if info is None:
         return False
     asset = info.get("asset", {})
@@ -180,19 +255,15 @@ def _needs_download(name: str, info: dict[str, Any] | None, force: bool = False)
         if not model_path.exists():
             continue
         try:
-            content = model_path.read_text()
-            mesh_files = re.findall(r'file="([^"]+\.(?:stl|STL|obj|OBJ|msh))"', content)
-            if not mesh_files:
-                return False
-            meshdir = _mjcf_mesh_subdir(content)
-            for mesh in mesh_files:
-                # The model file declares these itself, so there is no
-                # include-relative candidate to consider.
-                if not any(os.path.exists(p) for p in _mjcf_mesh_candidates(mesh, str(model_path.parent), meshdir)):
-                    return True
-            return force
+            missing = _mjcf_missing_meshes(model_path)
         except Exception:
+            # An unreadable model tells us nothing about its meshes, so fetch
+            # the assets rather than declare them present.
             return True
+        if missing:
+            logger.debug("assets: %s declares %d mesh reference(s) not on disk: %s", name, len(missing), missing)
+            return True
+        return force
 
     return True
 

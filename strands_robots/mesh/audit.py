@@ -172,6 +172,13 @@ _MAX_SEED_SEQ: int = 100_000_000
 #: for an unbounded exception message to grow the audit log.
 _MAX_POISON_REASON_CHARS: int = 500
 
+# What ``errors="replace"`` substitutes for a byte the UTF-8 codec cannot
+# decode. Every record this module writes is ASCII (``json.dumps`` defaults
+# to ``ensure_ascii=True``, so even a non-ASCII payload is escaped), so this
+# character appearing in a line read back means the bytes on disk were not
+# written by this module.
+_REPLACEMENT_CHAR: str = "\ufffd"
+
 # the PSK fingerprint snapshot at
 # ``_AUDIT_STATE.psk_fingerprint`` is read+modified+compared on every
 # call to :func:`_sign_record`. Without a dedicated lock, two threads
@@ -1268,7 +1275,11 @@ def read_audit_log(since: float | None = None) -> list[dict[str, Any]]:
 
     Returns:
         List of event dicts in chronological order. Returns an empty
-        list if no audit file exists.
+        list if no audit file exists. A damaged file is read as far as it
+        can be: a line that is not valid JSON is skipped, and bytes that
+        are not valid UTF-8 are replaced rather than raised, so records
+        before and after the damage -- and in the other rotated copies --
+        are still returned. Both shapes leave a DEBUG breadcrumb.
     """
     # every other open in this module
     # carefully refuses symlinks via static is_symlink() + O_NOFOLLOW
@@ -1292,11 +1303,23 @@ def read_audit_log(since: float | None = None) -> list[dict[str, Any]]:
                 )
                 continue
             fd = os.open(str(path), os.O_RDONLY | nofollow)
-            with os.fdopen(fd, encoding="utf-8") as fh:
+            with os.fdopen(fd, encoding="utf-8", errors="replace") as fh:
                 for raw in fh:
                     raw = raw.strip()
                     if not raw:
                         continue
+                    if _REPLACEMENT_CHAR in raw:
+                        # Undecodable bytes are damage, and damage is what
+                        # this walker exists to surface. Report it at DEBUG
+                        # -- the same forensic breadcrumb the malformed-line
+                        # skip below emits -- so the substitution is never
+                        # silent: a damaged line that still parses is
+                        # returned, and without a PSK to fail its HMAC the
+                        # breadcrumb is the only signal its bytes changed.
+                        logger.debug(
+                            "[audit] undecodable bytes in %s: a line held bytes that are not UTF-8",
+                            path,
+                        )
                     try:
                         record = json.loads(raw)
                     except json.JSONDecodeError as parse_exc:
@@ -1325,13 +1348,20 @@ def read_audit_log(since: float | None = None) -> list[dict[str, Any]]:
                         if not isinstance(ts, (int, float)) or ts < since:
                             continue
                     out.append(record)
-            # OSError / UnicodeDecodeError raised inside the with-block
-            # propagate to the outer ``except OSError`` below. The
-            # context manager already closed ``fd`` via ``fh.close``,
-            # so no inner cleanup wrapper is needed here -- the
-            # previous inner ``try / except (OSError, UnicodeDecodeError):
-            # raise`` was a no-op (caught and re-raised with no extra
-            # work) and obscured the real flow.
+            # Decoding is lenient above for a reason:
+            # ``UnicodeDecodeError`` is a ``ValueError``, NOT an
+            # ``OSError``, so a strict decode escapes the ``except
+            # OSError`` below and aborts the whole walk -- discarding the
+            # records already collected from earlier rotated files and
+            # taking ``verify_audit_integrity`` down with it. One
+            # undecodable byte would then be enough to silence the tamper
+            # report that byte is evidence for. ``surrogateescape`` is not
+            # the alternative: it round-trips the bytes but yields lone
+            # surrogates that ``_canonical_bytes`` cannot encode, which
+            # moves the failure into the verifier.
+            # OSError raised inside the with-block propagates to the outer
+            # handler below; the context manager already closed ``fd`` via
+            # ``fh.close``, so no inner cleanup wrapper is needed here.
         except OSError as exc:  # pragma: no cover -- best-effort read
             # ELOOP under O_NOFOLLOW is the symlink-raced-after-static-
             # check path; treated as silent skip same as a missing file.

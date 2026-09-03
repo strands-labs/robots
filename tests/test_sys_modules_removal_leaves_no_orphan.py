@@ -23,12 +23,29 @@ on the line above already makes the function-scope ``import boto3`` raise
 
 The rule graded here is derived from the tree rather than listed:
 
-* **Protected** is every module a test file binds with a module-level ``import``
-  *and* then patches an attribute on (``monkeypatch.setattr(<binding>, ...)``).
-  Those are exactly the references a removal can orphan - a file that only
-  *reads* ``mod.attr`` is unaffected by getting a fresh copy.
+* **Protected** is every module a test file binds with a module-level import -
+  ``import a.b`` *or* ``from a import b`` - *and* then patches an attribute on
+  (``monkeypatch.setattr(<binding>, ...)``). Those are exactly the references a
+  removal can orphan; a file that only *reads* ``mod.attr`` is unaffected by
+  getting a fresh copy.
 * **Reported** is a removal of a protected module with no restoration in the
   same function.
+
+Both import statements have to be read, because ``from a import b`` is how this
+tree binds nearly every submodule - a submodule is what a test wants to patch
+attributes on. Reading ``import`` alone left the protected set at 43 modules of
+95, and the 52 it could not see included two removals with live symptoms:
+``tests/tools/g1/test_motion_switcher_decoder.py`` dropped
+``strands_robots.tools.g1._motion_switcher``, orphaning the reference
+``tests/drivers/test_motion_switcher_open_is_under_the_shared_dds_lock.py``
+patches ``_load_motion_switcher_client`` on, so the driver's lazy import reached
+the real loader and the open returned ``None`` - that file's cells grade whether
+an RPC client is constructed under the shared DDS lock, and they reported "the
+open returned None instead of the recorder, so this cell graded nothing";
+``tests/simulation/test_policy_runner.py`` dropped
+``strands_robots.simulation.policy_runner``, and four cells in
+``tests/simulation/test_recording_frame_loss_is_not_tolerated.py`` then failed
+with ``KeyError`` on that entry. Both pass in isolation.
 
 It is deliberately one-directional and under-reports rather than over-reports:
 
@@ -42,9 +59,10 @@ It is deliberately one-directional and under-reports rather than over-reports:
   same key.
 * Purging a module **no test patches** stays legal. That is a deliberate
   cache-invalidation idiom here - ``tests/policies/lerobot_local/
-  test_resolution.py`` drops ``lerobot.*`` to force re-registration, and
-  ``tests/simulation/test_policy_runner.py`` drops the runner to measure its
-  import graph - and neither can orphan a patched reference.
+  test_resolution.py`` drops ``lerobot.*`` to force re-registration, and it
+  cannot orphan a patched reference. ``tests/simulation/test_policy_runner.py``
+  used to be described as the same idiom; it is not, because two sibling
+  modules patch the runner through a ``from`` import, so it is graded.
 
 ``monkeypatch.setitem(sys.modules, name, None)`` is the idiom for "make
 ``import name`` raise ``ImportError``": it has the same effect and it restores.
@@ -70,12 +88,36 @@ _MINIMUM_PROTECTED = 10
 
 
 def _module_level_bindings(tree: ast.Module) -> dict[str, str]:
-    """Map each name bound by a module-level ``import X`` to its dotted path."""
+    """Map each name a module-level import binds to the dotted path it names.
+
+    Both import statements bind a module object a removal can orphan:
+
+    * ``import a.b`` binds ``a`` to ``a``, and ``import a.b as c`` binds ``c``
+      to ``a.b``.
+    * ``from a import b`` binds ``b`` to ``a.b`` - the spelling this tree uses
+      for almost every submodule, because a submodule is what a test wants to
+      patch attributes on (``from strands_robots.simulation import
+      policy_runner``).
+
+    A ``from`` import can also name something that is not a module
+    (``from a import SomeClass`` records ``a.SomeClass``). Recording it is
+    harmless rather than a source of false reports: the rule only ever
+    intersects these names with the literal keys a test removes from
+    ``sys.modules``, and a class is not registered there under that spelling,
+    so an entry that is not a module can never be matched by a removal.
+
+    Star imports bind no inspectable name and relative imports cannot be
+    resolved to a dotted path from the file alone, so neither is claimed.
+    """
     bindings: dict[str, str] = {}
     for node in tree.body:
         if isinstance(node, ast.Import):
             for alias in node.names:
                 bindings[alias.asname or alias.name.split(".")[0]] = alias.name
+        elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
+            for alias in node.names:
+                if alias.name != "*":
+                    bindings[alias.asname or alias.name] = f"{node.module}.{alias.name}"
     return bindings
 
 
@@ -236,14 +278,29 @@ class TestNoRemovalOrphansAPatchedModule:
     def test_purging_a_module_no_test_patches_stays_legal(self) -> None:
         """The cache-invalidation idiom is not reported - it cannot orphan a patch."""
         protected = protected_modules()
-        purges = [
-            "lerobot.policies.vla_jepa.processor_vla_jepa",
-            "strands_robots.simulation.policy_runner",
-        ]
+        purges = ["lerobot.policies.vla_jepa.processor_vla_jepa"]
         assert [key for key in purges if key in protected] == [], (
             "these are deliberately dropped to force a re-import; if a test starts "
             "patching one through a module-level binding the rule reaches it, but "
             f"today it must not: {sorted(protected)}"
+        )
+
+    def test_a_module_patched_through_a_from_import_is_protected(self) -> None:
+        """The binding this tree uses for a submodule is the one to reach.
+
+        Both of these are bound with ``from <package> import <module>`` and
+        attribute-patched, so a removal of either orphans a double. They are
+        named rather than derived because a rule that lost this statement would
+        empty the population it grades and still report a clean tree.
+        """
+        protected = protected_modules()
+        expected = {
+            "strands_robots.simulation.policy_runner",
+            "strands_robots.tools.g1._motion_switcher",
+        }
+        assert expected <= set(protected), (
+            "a module bound by `from package import module` and then attribute-"
+            f"patched must be protected; missing {sorted(expected - set(protected))}"
         )
 
 
@@ -308,6 +365,60 @@ class TestTheScanIsSpecific:
             ]
         )
         assert unrestored_removals(ast.parse(source)) == []
+
+    def test_a_from_import_binding_is_followed(self) -> None:
+        """``from a import b`` binds the module ``a.b``, under either spelling."""
+        plain = "\n".join(
+            [
+                "from pkg import mod",
+                "def test_x(monkeypatch):",
+                "    monkeypatch.setattr(mod, 'attr', None)",
+            ]
+        )
+        aliased = "\n".join(
+            [
+                "from pkg import mod as aliased",
+                "def test_x(monkeypatch):",
+                "    monkeypatch.setattr(aliased, 'attr', None)",
+            ]
+        )
+        assert _patched_module_level_imports(ast.parse(plain)) == {"pkg.mod"}
+        assert _patched_module_level_imports(ast.parse(aliased)) == {"pkg.mod"}
+
+    def test_a_star_or_relative_from_import_is_not_claimed(self) -> None:
+        """Neither resolves to a dotted path from the file alone."""
+        star = "\n".join(
+            ["from pkg import *", "def test_x(monkeypatch):", "    monkeypatch.setattr(mod, 'attr', None)"]
+        )
+        relative = "\n".join(
+            ["from . import mod", "def test_x(monkeypatch):", "    monkeypatch.setattr(mod, 'attr', None)"]
+        )
+        assert _patched_module_level_imports(ast.parse(star)) == set()
+        assert _patched_module_level_imports(ast.parse(relative)) == set()
+
+    def test_a_from_imported_non_module_is_recorded_but_matches_no_removal(self) -> None:
+        """Why recording ``pkg.SomeClass`` costs nothing.
+
+        The rule intersects the protected names with the literal keys a test
+        removes from ``sys.modules``. A class is not registered there under that
+        spelling, so the entry can never be matched - which is what lets the
+        binding collector stay a static read with no import side effects.
+        """
+        source = "\n".join(
+            [
+                "import sys",
+                "from pkg import SomeClass",
+                "def test_x(monkeypatch):",
+                "    monkeypatch.setattr(SomeClass, 'attr', None)",
+                "def test_y():",
+                "    sys.modules.pop('pkg', None)",
+            ]
+        )
+        tree = ast.parse(source)
+        assert _patched_module_level_imports(tree) == {"pkg.SomeClass"}
+        removed = {key for _, _, key in unrestored_removals(tree)}
+        assert removed == {"pkg"}, removed
+        assert removed & _patched_module_level_imports(tree) == set()
 
     def test_a_module_only_read_is_not_protected(self) -> None:
         """Reading ``mod.attr`` survives a fresh import; patching it does not."""

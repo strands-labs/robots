@@ -5,9 +5,10 @@ end-to-end sim->train->load is exercised separately.
 """
 
 import ast
+import dataclasses
+import importlib
 import inspect
 import json
-import pathlib
 import sys
 from types import SimpleNamespace
 
@@ -414,15 +415,88 @@ class TestCheckpointResolution:
         # latest_checkpoint returns the loadable DIRECTORY (parent of the file)
         assert LerobotTrainer().latest_checkpoint(str(out)) == str(last)
 
-    def test_falls_back_to_highest_numbered_step(self, tmp_path):
-        out = tmp_path / "out"
-        for step in ("000100", "000200"):
-            pm = out / "checkpoints" / step / "pretrained_model"
+    @staticmethod
+    def _tree(out, names):
+        """Write a checkpoints/ tree holding one config per given step name."""
+        for name in names:
+            pm = out / "checkpoints" / name / "pretrained_model"
             pm.mkdir(parents=True)
             (pm / "train_config.json").write_text("{}")
-        # No "last" dir -> newest by sorted name wins (000200).
-        cfg_file = LerobotTrainer()._resume_config_path(str(out))
-        assert cfg_file.endswith("000200/pretrained_model/train_config.json")
+
+    # lerobot names a checkpoint directory f"{step:0{max(6, len(str(steps)))}d}",
+    # so the padding width belongs to the RUN that wrote the name, not to the
+    # tree: resuming with a larger steps budget widens it, and from then on text
+    # order reads the narrower name as the later one. The newest checkpoint is
+    # the highest step, whatever budget each run was given.
+    @pytest.mark.parametrize(
+        ("case", "names", "newest"),
+        [
+            ("one run, 100k budget", ["020000", "100000"], "100000"),
+            ("one run, 1M budget", ["0200000", "0900000"], "0900000"),
+            ("100k run continued to 1M", ["100000", "0900000"], "0900000"),
+            ("100k run continued to 10M", ["100000", "09000000"], "09000000"),
+            # The same tree once the continued run reaches its budget: text order
+            # agrees again, so the wrong answer is intermittent rather than final.
+            ("...once it reaches 1M", ["100000", "1000000"], "1000000"),
+        ],
+    )
+    def test_falls_back_to_highest_numbered_step(self, tmp_path, case, names, newest):
+        out = tmp_path / "out"
+        self._tree(out, names)
+        assert LerobotTrainer()._resume_config_path(str(out)) == str(
+            out / "checkpoints" / newest / "pretrained_model" / "train_config.json"
+        ), case
+
+    def test_export_reads_the_highest_step_across_two_budgets(self, tmp_path):
+        """latest_checkpoint feeds export/create_policy, so it answers the same."""
+        out = tmp_path / "out"
+        self._tree(out, ["100000", "0900000"])
+        assert LerobotTrainer().latest_checkpoint(str(out)) == str(out / "checkpoints" / "0900000" / "pretrained_model")
+
+    def test_a_dangling_last_link_falls_back_to_the_highest_step(self, tmp_path):
+        """The route by which the fallback answers at all: `last` carries no config.
+
+        lerobot keeps a `last` symlink and it is preferred, so the step
+        directories are read when it is absent or its target has been pruned -
+        which is when the ordering has to be right.
+        """
+        out = tmp_path / "out"
+        self._tree(out, ["100000", "0900000"])
+        (out / "checkpoints" / "last").symlink_to("0950000")  # target pruned
+        assert not (out / "checkpoints" / "last").exists()
+        assert LerobotTrainer()._resume_config_path(str(out)) == str(
+            out / "checkpoints" / "0900000" / "pretrained_model" / "train_config.json"
+        )
+
+    def test_an_unnumbered_directory_does_not_outrank_a_checkpoint(self, tmp_path):
+        """A name lerobot did not number is ordered, not preferred or fatal."""
+        out = tmp_path / "out"
+        self._tree(out, ["000100", "handpicked"])
+        assert LerobotTrainer()._resume_config_path(str(out)) == str(
+            out / "checkpoints" / "000100" / "pretrained_model" / "train_config.json"
+        )
+        # ...and it is still the answer when it is the only one on disk.
+        only = tmp_path / "only"
+        self._tree(only, ["handpicked"])
+        assert LerobotTrainer()._resume_config_path(str(only)) == str(
+            only / "checkpoints" / "handpicked" / "pretrained_model" / "train_config.json"
+        )
+
+    def test_the_widths_are_lerobots_own(self):
+        """The fixture names above are what lerobot writes for those budgets."""
+        pytest.importorskip("lerobot")
+        get_step_identifier = None
+        for mod in ("lerobot.utils.train_utils", "lerobot.common.train_utils"):
+            try:  # the module moved between lerobot 0.5 and 0.6
+                get_step_identifier = importlib.import_module(mod).get_step_identifier
+                break
+            except ModuleNotFoundError:
+                continue
+        if get_step_identifier is None:
+            pytest.skip("lerobot exposes no get_step_identifier")
+        assert get_step_identifier(100_000, 100_000) == "100000"
+        assert get_step_identifier(900_000, 1_000_000) == "0900000"
+        assert get_step_identifier(9_000_000, 10_000_000) == "09000000"
 
     def test_checkpoints_dir_without_configs_returns_none(self, tmp_path):
         out = tmp_path / "out"
@@ -1809,14 +1883,16 @@ class TestInProcessTrainerCorrectness:
 class TestStreamingAndValidationSplitAreMutuallyExclusive:
     """``streaming`` and ``val_episodes`` cannot both be honored by lerobot.
 
-    ``val_episodes`` becomes lerobot's ``dataset.eval_split``, and any non-zero
-    ``eval_split`` routes lerobot into ``make_train_eval_datasets``, which
-    rebuilds both splits as map-style ``LeRobotDataset`` objects without
-    consulting ``dataset.streaming``. The whole dataset is materialized - the
-    outcome ``streaming`` exists to avoid - and nothing reports it, because an
-    annulled stream looks exactly like ``streaming=False``. Preflight refuses
-    the pair instead, the same way an unreadable episode count is refused rather
-    than allowed to drop a requested split.
+    ``val_episodes`` becomes lerobot's ``dataset.eval_split``, and lerobot holds
+    out a split only on a MAP-STYLE dataset: ``make_train_eval_datasets``
+    rebuilds both halves as ``LeRobotDataset`` objects, which is what makes the
+    split addressable by episode. A streamed dataset is not one, and lerobot
+    answers that contradiction differently across the version range this backend
+    supports - ``DatasetConfig`` refuses the pair from lerobot 0.6.2, and before
+    that it constructed and the factory discarded the stream it had built first,
+    materializing the whole dataset while reporting nothing. Preflight refuses
+    the pair either way, the same way an unreadable episode count is refused
+    rather than allowed to drop a requested split.
     """
 
     def _spec(self, dataset_root, tmp_path, **kw):
@@ -1835,12 +1911,14 @@ class TestStreamingAndValidationSplitAreMutuallyExclusive:
         assert problems, "streaming + val_episodes delivers neither field, so it is not launchable"
         assert any("streaming=True cannot be combined with val_episodes=2" in p for p in problems)
 
-    def test_the_refusal_names_the_cost_of_the_silent_outcome(self, dataset_root, tmp_path):
+    def test_the_refusal_names_why_lerobot_cannot_deliver_both(self, dataset_root, tmp_path):
         spec = self._spec(dataset_root, tmp_path, streaming=True, val_episodes=2)
         (message,) = [p for p in LerobotTrainer().validate(spec) if "streaming=True" in p]
         # A caller who reads only the message must learn WHY the pair is refused:
-        # not a policy choice, but that the stream is dropped and the dataset lands
-        # on disk/in RAM in full.
+        # not a policy choice, but that a held-out split needs a map-style dataset,
+        # so the pair either fails in the launched run or lands the whole dataset
+        # on disk/in RAM with the stream annulled.
+        assert "map-style" in message
         assert "materialized" in message
         assert "stream is dropped" in message
 
@@ -1888,18 +1966,36 @@ class TestStreamingAndValidationSplitAreMutuallyExclusive:
         assert any("episode count is unavailable" in p for p in problems)
         assert not any("cannot be combined with" in p for p in problems)
 
-    def test_lerobot_split_path_still_drops_the_stream(self, monkeypatch):
-        """The measured constraint the refusal stands on, pinned against lerobot.
+    # ------------------------------------------------------------------ #
+    # The constraint the refusal stands on, pinned against lerobot itself.
+    #
+    # These drive lerobot through its OWN ``DatasetConfig`` rather than a
+    # hand-built namespace. A stand-in has to mirror every field the factory
+    # reads, so it goes stale the moment lerobot's factory reads one more
+    # (``depth_output_unit`` arrived with depth maps, ``repo_type`` with HF
+    # Storage Buckets) and the split assertion appears to break; worse, it
+    # bypasses ``DatasetConfig.__post_init__``, so a constraint lerobot starts
+    # DECLARING there is invisible here. lerobot's own config carries the fields
+    # and runs the invariants.
+    # ------------------------------------------------------------------ #
 
-        Asserts the property that makes the pair unsatisfiable: lerobot's
-        eval-split path constructs a map-style dataset even when
-        ``dataset.streaming`` is set. If lerobot starts honoring the stream
-        there, this fails and the refusal above should be lifted rather than
-        left to reject a combination that has become supportable.
+    @staticmethod
+    def _dataset_config(**overrides):
+        """lerobot's own ``DatasetConfig``, defaults intact but for overrides."""
+        default = pytest.importorskip("lerobot.configs.default")
+        return default.DatasetConfig(repo_id="local", use_imagenet_stats=False, **overrides)
+
+    @staticmethod
+    def _split_path_build_order(monkeypatch, dataset_cfg):
+        """Dataset kinds ``make_train_eval_datasets`` builds for one config.
+
+        Returns ``(built, train_type, eval_type)`` where ``built`` names each
+        dataset class the factory constructed, in order. The doubles honor
+        ``dataset.streaming`` the way lerobot's own ``make_dataset`` does, so the
+        order records which kind the factory chose rather than which kind the
+        double happens to be.
         """
-        pytest.importorskip("lerobot")
-        import lerobot.datasets.factory as factory
-
+        factory = pytest.importorskip("lerobot.datasets.factory")
         built: list[str] = []
 
         class _StubDataset:
@@ -1922,51 +2018,80 @@ class TestStreamingAndValidationSplitAreMutuallyExclusive:
 
         monkeypatch.setattr(factory, "LeRobotDataset", _StubMapStyle)
         monkeypatch.setattr(factory, "StreamingLeRobotDataset", _StubStreaming)
-        monkeypatch.setattr(factory, "make_dataset", lambda cfg: _StubStreaming())
+        monkeypatch.setattr(
+            factory,
+            "make_dataset",
+            lambda cfg: _StubStreaming() if cfg.dataset.streaming else _StubMapStyle(),
+        )
         monkeypatch.setattr(factory, "resolve_delta_timestamps", lambda *a, **k: None)
 
         cfg = SimpleNamespace(
-            dataset=SimpleNamespace(
-                repo_id="local",
-                root=None,
-                revision=None,
-                streaming=True,
-                eval_split=0.25,
-                video_backend=None,
-                # lerobot's factory reads this on all three of its dataset
-                # constructions (stream, train split, eval split). Mirror its
-                # own default so the stand-in config carries the surface the
-                # real DatasetConfig does.
-                depth_output_unit="mm",
-                image_transforms=SimpleNamespace(enable=False),
-                use_imagenet_stats=False,
-            ),
+            dataset=dataset_cfg,
             trainable_config=None,
             rename_map=None,
             tolerance_s=1e-4,
             num_workers=1,
         )
         train_dataset, eval_dataset = factory.make_train_eval_datasets(cfg)
-        assert built.count("_StubStreaming") == 1, "the stream is built once, to read metadata"
-        assert type(train_dataset) is _StubMapStyle, "lerobot rebuilds the TRAIN split map-style, discarding the stream"
-        assert type(eval_dataset) is _StubMapStyle
+        return built, type(train_dataset), type(eval_dataset)
+
+    def test_lerobot_does_not_deliver_a_held_out_split_on_a_stream(self, monkeypatch):
+        """The measured constraint the refusal stands on, pinned against lerobot.
+
+        Asserts the property that makes the pair unsatisfiable, in whichever form
+        this lerobot expresses it. From lerobot 0.6.2 ``DatasetConfig`` refuses
+        the combination when it is constructed; before that it constructed and
+        the eval-split path rebuilt the TRAIN half map-style, discarding the
+        stream. If lerobot starts honoring the stream there, neither arm holds
+        and the refusal above should be lifted rather than left to reject a
+        combination that has become supportable.
+        """
+        try:
+            streamed_with_split = self._dataset_config(streaming=True, eval_split=0.25)
+        except ValueError as refusal:
+            assert "map-style" in str(refusal), (
+                "lerobot refuses streaming with a held-out split, but not on the map-style "
+                f"grounds this backend's refusal quotes: {refusal}"
+            )
+            return
+        _, train_type, _ = self._split_path_build_order(monkeypatch, streamed_with_split)
+        assert train_type.__name__ == "_StubMapStyle", (
+            "lerobot neither refuses streaming with a held-out split nor rebuilds the split "
+            "map-style, so it may now honor the stream and the preflight refusal above should "
+            "be lifted"
+        )
+
+    def test_a_held_out_split_alone_rebuilds_both_halves_map_style(self, monkeypatch):
+        """Why a split needs a map-style dataset, on a config lerobot accepts.
+
+        This is the half of the mechanism that holds in every supported lerobot
+        version and is what the refusal's wording rests on: the split is carved
+        by episode index, so both halves come back as ``LeRobotDataset``.
+        """
+        built, train_type, eval_type = self._split_path_build_order(monkeypatch, self._dataset_config(eval_split=0.25))
+        assert train_type.__name__ == "_StubMapStyle"
+        assert eval_type.__name__ == "_StubMapStyle"
+        assert built.count("_StubStreaming") == 0, "nothing is streamed for a map-style request"
+
+    def test_the_split_path_is_a_no_op_without_a_split(self, monkeypatch):
+        """The control: eval_split=0.0 leaves the requested dataset alone."""
+        built, train_type, eval_type = self._split_path_build_order(monkeypatch, self._dataset_config(streaming=True))
+        assert built == ["_StubStreaming"], "a stream with no split is built once and kept"
+        assert train_type.__name__ == "_StubStreaming"
+        assert eval_type is type(None), "no held-out half is asked for, so none is built"
 
 
-class TestTheStandInConfigTracksLerobotsOwnFactory:
-    """A field lerobot's factory starts reading fails here, not inside lerobot.
+class TestTheConfigTheSplitPinDrivesIsLerobotsOwn:
+    """The split pin above cannot go stale on a field lerobot's factory adds.
 
     ``make_train_eval_datasets`` reads ``cfg.dataset.<field>`` straight off the
-    config it is handed, so a stand-in missing one raises ``AttributeError``
-    from inside lerobot rather than failing an assertion in this suite. lerobot
-    is tracked from source, so that field set grows: ``depth_output_unit``
-    arrived with its depth-map support and the stand-in did not carry it, which
-    surfaced as this file's own split assertion appearing to break.
-
-    The expectation is derived from the function the split test actually calls,
-    not from the module. ``make_dataset`` also reads ``episodes``,
-    ``exclude_episodes`` and ``repo_type`` on paths the split test never
-    reaches, so a module-wide rule would demand three fields the stand-in has
-    no reason to carry.
+    config it is handed, so a hand-built stand-in raises ``AttributeError`` from
+    inside lerobot rather than failing an assertion in this suite - and lerobot
+    is tracked from source, so that field set grows (``depth_output_unit``
+    arrived with depth-map support, ``repo_type`` with HF Storage Buckets).
+    Driving lerobot's own ``DatasetConfig`` removes the mirroring entirely; these
+    cells pin that it really is lerobot's config being driven, and that the
+    config covers what the factory reads.
     """
 
     @staticmethod
@@ -1990,42 +2115,43 @@ class TestTheStandInConfigTracksLerobotsOwnFactory:
         }
 
     @staticmethod
-    def _stand_in_dataset_fields() -> set[str]:
-        """The keys this file's own stand-in ``cfg.dataset`` namespace carries."""
-        tree = ast.parse(pathlib.Path(__file__).read_text(encoding="utf-8"))
-        namespaces = [
-            node
-            for node in ast.walk(tree)
-            if isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Name)
-            and node.func.id == "SimpleNamespace"
-            and any(keyword.arg == "repo_id" for keyword in node.keywords)
-        ]
-        assert len(namespaces) == 1, f"expected one stand-in dataset namespace, found {len(namespaces)}"
-        return {keyword.arg for keyword in namespaces[0].keywords if keyword.arg}
+    def _dataset_config_fields() -> set[str]:
+        """The field names lerobot's own ``DatasetConfig`` declares."""
+        default = pytest.importorskip("lerobot.configs.default")
+        return {field.name for field in dataclasses.fields(default.DatasetConfig)}
 
-    def test_the_stand_in_carries_every_field_the_split_path_reads(self) -> None:
+    def test_lerobots_config_carries_every_field_its_split_path_reads(self) -> None:
         needed = self._factory_dataset_fields("make_train_eval_datasets")
-        carried = self._stand_in_dataset_fields()
+        carried = self._dataset_config_fields()
         missing = sorted(needed - carried)
         assert not missing, (
-            f"lerobot's make_train_eval_datasets reads cfg.dataset.{missing} and the stand-in "
-            "config does not carry it, so the split test raises AttributeError from inside "
-            "lerobot instead of grading the split. Add the field to the stand-in, mirroring "
-            "lerobot's own default for it."
+            f"lerobot's make_train_eval_datasets reads cfg.dataset.{missing}, which its own "
+            "DatasetConfig does not declare, so the split pin above raises AttributeError from "
+            "inside lerobot however the config is built"
         )
 
     def test_both_derived_sets_are_populated(self) -> None:
         needed = self._factory_dataset_fields("make_train_eval_datasets")
-        carried = self._stand_in_dataset_fields()
+        carried = self._dataset_config_fields()
         assert len(needed) >= 5, f"only {len(needed)} fields derived - the scan is looking in the wrong place"
-        assert len(carried) >= 5, f"only {len(carried)} stand-in keys derived - the scan is looking in the wrong place"
+        assert len(carried) >= 5, f"only {len(carried)} config fields derived - the scan is looking in the wrong place"
 
-    def test_the_module_wide_set_is_wider_than_the_path_the_split_test_drives(self) -> None:
-        """Why the expectation is function-scoped and not module-scoped."""
-        split_path = self._factory_dataset_fields("make_train_eval_datasets")
-        other_path = self._factory_dataset_fields("make_dataset")
-        assert other_path - split_path, (
-            "make_dataset no longer reads any field make_train_eval_datasets does not, so the "
-            "function scoping above no longer buys anything and could be widened to the module"
+    def test_the_split_pin_drives_lerobots_own_config(self) -> None:
+        """It is lerobot's ``DatasetConfig``, not a namespace shaped like one.
+
+        A stand-in has to be told each field, so it lags by exactly the field
+        lerobot's factory read most recently - and it silently skips
+        ``__post_init__``, so a constraint lerobot starts DECLARING there is
+        invisible. Both are pinned here: the object is lerobot's config, and its
+        validation runs.
+        """
+        default = pytest.importorskip("lerobot.configs.default")
+        driven = TestStreamingAndValidationSplitAreMutuallyExclusive._dataset_config(eval_split=0.25)
+        assert isinstance(driven, default.DatasetConfig), (
+            "the split pin drives a stand-in cfg.dataset; build lerobot's own DatasetConfig so "
+            "the field set and its invariants come from lerobot"
         )
+        with pytest.raises(ValueError):
+            # A value lerobot's own __post_init__ refuses. A namespace stand-in
+            # accepts it, which is why a declared constraint can go unnoticed.
+            TestStreamingAndValidationSplitAreMutuallyExclusive._dataset_config(eval_split=1.5)

@@ -65,9 +65,12 @@ logger = logging.getLogger(__name__)
 GAIT_SINGLE_OBS_DIM = 95
 GAIT_COMMAND_DIM = 8
 
-# Control period used by the upstream gait runner: simulation_dt (0.005) x
+# Control period of the upstream gait runner: simulation_dt (0.005) x
 # control_decimation (4) = 0.02 s. The clock advances by ``dt * freq`` each
-# control tick and ``just_started`` accumulates by ``dt``.
+# control tick and ``just_started`` accumulates by ``dt``, so this is the
+# reference period only - a rollout integrates at the rate the runtime states
+# (:meth:`WBCGaitPolicy._control_dt`), because a period that is not the loop's
+# own scales the realised step frequency by ``control_frequency / 50``.
 _GAIT_CONTROL_DT = 0.02
 
 
@@ -336,6 +339,9 @@ class WBCGaitPolicy(WBCPolicy):
         **kwargs: Any,
     ) -> None:
         self._gait_clock = GaitClock()
+        # Latch for the missing-rate warning below, so an unset control frequency
+        # is reported once per policy rather than on every tick of the rollout.
+        self._warned_missing_control_frequency = False
         # Before ``super().__init__`` - which loads the ONNX session(s) - so a
         # frequency the gait clock cannot honor is reported here rather than on
         # the first ``get_actions`` tick of a started rollout. Mirrors the
@@ -471,6 +477,45 @@ class WBCGaitPolicy(WBCPolicy):
 
         return command, raw_velocity
 
+    def _control_dt(self) -> float:
+        """Control period the gait phase is integrated over, in seconds.
+
+        The clock advances by ``dt * freq`` per tick, so ``dt`` has to be the
+        period the executing loop actually queries this policy at - otherwise
+        the commanded ``gait_frequency`` is not in steps per second. The runtime
+        states that rate via
+        :meth:`~strands_robots.policies.base.Policy.set_control_frequency`
+        before the rollout loop starts, and this reads it there.
+
+        Returns:
+            ``1 / control_frequency`` when the runtime has stated a rate,
+            otherwise the upstream reference period
+            (:data:`_GAIT_CONTROL_DT`), which is what a caller driving
+            ``get_actions`` directly gets.
+
+        Notes:
+            An unstated rate warns rather than assuming one silently, per the
+            :attr:`~strands_robots.policies.base.Policy.control_frequency`
+            contract: a wrong assumed period scales the realised step frequency
+            by ``control_frequency / 50`` at every rate except the assumed one,
+            which is a robot walking at a cadence nobody commanded. Warned once
+            per policy - the condition cannot change mid-rollout, and a per-tick
+            line at control rate is a flood.
+        """
+        if self.control_frequency is None:
+            if not self._warned_missing_control_frequency:
+                self._warned_missing_control_frequency = True
+                logger.warning(
+                    "WBCGaitPolicy: no control frequency stated, integrating the gait phase at the "
+                    "upstream reference period (%.3f s / %.1f Hz). Call set_control_frequency(hz) - "
+                    "PolicyRunner does - or the commanded gait_frequency is only in steps/s at %.1f Hz.",
+                    _GAIT_CONTROL_DT,
+                    1.0 / _GAIT_CONTROL_DT,
+                    1.0 / _GAIT_CONTROL_DT,
+                )
+            return _GAIT_CONTROL_DT
+        return 1.0 / self.control_frequency
+
     @staticmethod
     def _validate_gait_frequency(freq: Any) -> float:
         """Validate a step-frequency command (the ``freq_cmd`` override).
@@ -512,7 +557,10 @@ class WBCGaitPolicy(WBCPolicy):
 
         Reads the locomotion command from the well-known kwargs
         (``target_velocity``, ``gait_frequency``, optional ``target_orientation``
-        / ``height``); ``instruction`` is ignored. Advances the :class:`GaitClock`,
+        / ``height``); ``instruction`` is ignored. Advances the :class:`GaitClock`
+        by the period the executing loop queries this policy at
+        (:meth:`_control_dt`), so ``gait_frequency`` is steps per second at any
+        control rate rather than only at the upstream reference 50 Hz,
         builds the 95-dim stacked observation, runs the single ONNX policy, and
         returns one per-step action dict keyed by leg+waist actuator name.
         """
@@ -521,7 +569,7 @@ class WBCGaitPolicy(WBCPolicy):
         qj, dqj, base_ang_vel, quat = self._extract_state(observation_dict)
         proj_grav = projected_gravity(quat)
 
-        clock = self._gait_clock.update(command[:3], float(command[4]))
+        clock = self._gait_clock.update(command[:3], float(command[4]), dt=self._control_dt())
 
         frame = build_gait_frame(
             self._config,

@@ -389,6 +389,32 @@ def _dataset_codebase_version(dataset_root: str) -> str | None:
     return declared if isinstance(declared, str) else None
 
 
+def _checkpoint_step(name: str) -> tuple[int, str]:
+    """Order a lerobot checkpoint directory by its step number, not by its text.
+
+    lerobot names a checkpoint directory
+    ``f"{step:0{max(6, len(str(total_steps)))}d}"``
+    (lerobot's ``get_step_identifier``), so the zero-padding
+    width is a property of the run that wrote the directory rather than of the
+    checkpoints tree. A run resumed with a larger ``steps`` widens it -- and text
+    order then reads the narrower name as the later one, because ``"100000"``
+    sorts above ``"0900000"``. Reading the step keeps the newest checkpoint
+    newest whatever budget each run was given.
+
+    Args:
+        name: A checkpoints/ entry name, e.g. ``"0900000"``.
+
+    Returns:
+        ``(step, name)``. A name lerobot did not number carries a step of ``-1``,
+        so it sorts below every numbered checkpoint, and the name breaks ties so
+        the ordering is total.
+    """
+    try:
+        return (int(name, 10), name)
+    except ValueError:
+        return (-1, name)
+
+
 def _reward_registry() -> dict[str, type] | None:
     """Live ``RewardModelConfig`` ChoiceRegistry, or ``None`` when unavailable.
 
@@ -535,6 +561,12 @@ class LerobotTrainer(Trainer):
         derives policy_dir/checkpoint_path from it). This is the resume-wiring
         counterpart of the public :meth:`latest_checkpoint` (which returns the
         loadable DIRECTORY for ``export``/``create_policy``).
+
+        The ``last`` link lerobot maintains answers when it carries a config.
+        When it does not -- an absent link, or one left dangling by pruning the
+        checkpoint it pointed at -- the step directories are read instead, and
+        the newest is the highest step per :func:`_checkpoint_step`, not the last
+        name in text order.
         """
         ckpts = os.path.join(output_dir, "checkpoints")
         if not os.path.isdir(ckpts):
@@ -542,12 +574,15 @@ class LerobotTrainer(Trainer):
         last = os.path.join(ckpts, "last", "pretrained_model", "train_config.json")
         if os.path.isfile(last):
             return last
-        candidates = []
-        for name in sorted(os.listdir(ckpts)):
-            cfg = os.path.join(ckpts, name, "pretrained_model", "train_config.json")
-            if os.path.isfile(cfg):
-                candidates.append(cfg)
-        return candidates[-1] if candidates else None
+        numbered = [
+            name
+            for name in os.listdir(ckpts)
+            if os.path.isfile(os.path.join(ckpts, name, "pretrained_model", "train_config.json"))
+        ]
+        if not numbered:
+            return None
+        newest = max(numbered, key=_checkpoint_step)
+        return os.path.join(ckpts, newest, "pretrained_model", "train_config.json")
 
     def latest_checkpoint(self, output_dir: str) -> str | None:
         """Return the newest loadable ``pretrained_model`` directory, or None.
@@ -634,13 +669,18 @@ class LerobotTrainer(Trainer):
 
         Each field is honored on its own, and neither survives the pair.
         :meth:`_val_eval_split` turns ``val_episodes`` into lerobot's
-        ``dataset.eval_split``, and a non-zero ``eval_split`` sends lerobot down
-        ``make_train_eval_datasets``, which rebuilds BOTH splits as map-style
-        ``LeRobotDataset`` objects without consulting ``dataset.streaming`` - the
-        ``StreamingLeRobotDataset`` it built first is discarded. So the run
-        materializes the whole dataset, which is the outcome ``streaming``
-        exists to avoid, and it does so while reporting nothing: an annulled
-        stream is indistinguishable from ``streaming=False``.
+        ``dataset.eval_split``, and lerobot holds out a split only on a
+        MAP-STYLE dataset - ``make_train_eval_datasets`` rebuilds both halves as
+        ``LeRobotDataset`` objects, which is what makes the split addressable by
+        episode at all. A streamed dataset is not one, and lerobot answers the
+        contradiction differently across the range this backend supports:
+        ``DatasetConfig`` refuses the pair outright from lerobot 0.6.2
+        ("eval_split requires map-style datasets"), while before that it
+        constructed and the factory silently discarded the
+        ``StreamingLeRobotDataset`` it had built first. So the pair either fails
+        inside a launched run or materializes the whole dataset without
+        reporting it - an annulled stream is indistinguishable from
+        ``streaming=False``.
 
         Refusing here mirrors :meth:`_unreadable_episode_count_problem`, which
         refuses rather than let a requested validation split be silently
@@ -651,9 +691,10 @@ class LerobotTrainer(Trainer):
         """
         return (
             f"{self.provider_name}: streaming=True cannot be combined with "
-            f"val_episodes={spec.val_episodes}. A held-out split makes lerobot rebuild both "
-            "splits as map-style datasets, so the whole dataset is materialized and the stream "
-            "is dropped - the disk/RAM blowup streaming exists to avoid. Either set "
+            f"val_episodes={spec.val_episodes}. lerobot holds out a validation split only on a "
+            "map-style dataset, and a streamed dataset is not one: lerobot 0.6.2 refuses the "
+            "pair outright, and before it the stream is dropped for a map-style rebuild while "
+            "nothing reports that the whole dataset was materialized. Either set "
             "streaming=False to keep the validation split, or val_episodes=None to keep the "
             "stream."
         )

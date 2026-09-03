@@ -49,6 +49,7 @@ class TestResumeLockoutTimingOracleClosed:
         m.peer_id = "test-peer"
         m._estop_lockout = threading.Event()
         m._last_estop_ts = 0.0
+        m._last_estop_mono = 0.0
         m.publish_safety_event = lambda **kw: None
         return m
 

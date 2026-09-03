@@ -181,6 +181,7 @@ class TestRemoteResumeStillVerifiesWhenZenohIsAbsent:
 
         issuer._estop_lockout.set()
         issuer._last_estop_ts = core.time.time()
+        issuer._last_estop_mono = core.time.monotonic()
         assert issuer._resume_lockout("operator-secret") == {"status": "ok"}
 
         assert published["key"] == RESUME_KEY
@@ -215,6 +216,7 @@ class TestRemoteResumeStillVerifiesWhenZenohIsAbsent:
 
         issuer._estop_lockout.set()
         issuer._last_estop_ts = core.time.time()
+        issuer._last_estop_mono = core.time.monotonic()
         issuer._resume_lockout("operator-secret")
 
         envelope = published["payload"]

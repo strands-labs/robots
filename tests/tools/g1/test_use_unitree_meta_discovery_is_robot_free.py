@@ -13,14 +13,29 @@ Also pins the SDK-load-hygiene contract: importing the module pulls no
 
 from __future__ import annotations
 
-import importlib
+import subprocess
 import sys
 
 
 def test_importing_use_unitree_pulls_no_sdk_submodule() -> None:
-    importlib.import_module("strands_robots.tools.g1.use_unitree")
-    leaked = sorted(m for m in sys.modules if m.startswith("unitree_sdk2py"))
-    assert not leaked, f"strands_robots.tools.g1.use_unitree imports pulled SDK submodules: {leaked}"
+    """Measured in a clean interpreter, not against this session's ``sys.modules``.
+
+    A process-wide read answers "has anything here imported the SDK", and the
+    tests that grade the wire formats against the real IDL legitimately import
+    it, so the answer says nothing about this module. A subprocess measures the
+    import that is actually under test - and it is the only spelling that can,
+    because an eager import shows up only on a host where the SDK is installed,
+    which is the host a process-wide read is guaranteed to be wrong on.
+    """
+    probe = (
+        "import importlib, sys; importlib.import_module('strands_robots.tools.g1.use_unitree'); "
+        "print(sorted(n for n in sys.modules if n.startswith('unitree_sdk2py')))"
+    )
+    completed = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, check=False)
+    assert completed.returncode == 0, f"importing use_unitree failed: {completed.stderr}"
+    assert completed.stdout.strip() == "[]", (
+        f"strands_robots.tools.g1.use_unitree imports pulled SDK submodules: {completed.stdout.strip()}"
+    )
 
 
 def test_list_services_names_the_six_sdk_clients() -> None:

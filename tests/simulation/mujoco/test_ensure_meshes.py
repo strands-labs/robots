@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import inspect
 import os
+import struct
 
 import pytest
 
@@ -28,6 +29,23 @@ pytest.importorskip("mujoco")
 from strands_robots.simulation.mujoco.simulation import MuJoCoSimEngine  # noqa: E402
 
 _ensure_meshes = MuJoCoSimEngine._ensure_meshes
+
+
+def _binary_stl(faces=((0, 1, 2), (0, 1, 3), (0, 2, 3), (1, 2, 3))) -> bytes:
+    """A loadable binary STL (a unit tetrahedron by default).
+
+    MuJoCo compiles a mesh it can hull, so a fixture that claims its meshes are
+    present has to hand it real geometry - a stub file is refused for reasons
+    that have nothing to do with where the reference resolved.
+    """
+    vertices = [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)]
+    out = b"\0" * 80 + struct.pack("<I", len(faces))
+    for face in faces:
+        out += struct.pack("<3f", 0.0, 0.0, 0.0)  # normal; MuJoCo recomputes it
+        for index in face:
+            out += struct.pack("<3f", *vertices[index])
+        out += b"\0\0"  # attribute byte count
+    return out
 
 
 def _write(path, content):
@@ -276,12 +294,81 @@ class TestAReferenceIsResolvedTheWayMuJoCoResolvesIt:
 class TestTheDownloadPathUsesTheSameRule:
     """``_needs_download`` decides the same question and must not disagree.
 
-    Both paths ask "are this model's meshes on disk?". They read the rule from
-    one place so a model cannot be judged present by one and absent by the
-    other.
+    Both paths ask "are this model's meshes on disk?". They read the rule - and
+    the scan that applies it - from one place, so a model cannot be judged
+    present by one and absent by the other.
+
+    The shape that separates two owners is a model whose meshes only an
+    ``<include>``d fragment declares. Shipped Menagerie assets are built this
+    way (``ability_hand``'s scene declares none of its 13 meshes; its included
+    hand fragment declares all of them plus the ``meshdir``), and a scan that
+    reads the main file alone finds no reference to check there at all - which
+    is indistinguishable from a model whose meshes are all present.
     """
 
-    def test_needs_download_honors_assetdir(self, tmp_path):
+    @staticmethod
+    def _include_shaped_model(tmp_path, *, meshes_present: bool):
+        """Write a model whose only mesh - and its ``meshdir`` - an include declares.
+
+        Returns the main model path and the registry entry naming it.
+        """
+        root = tmp_path / "robots"
+        (root / "parts").mkdir(parents=True)
+        (root / "assets").mkdir()
+        _write(
+            root / "parts" / "arm.xml",
+            '<mujoco><compiler meshdir="assets"/><asset><mesh file="arm.stl"/></asset>'
+            '<worldbody><body><geom type="mesh" mesh="arm"/></body></worldbody></mujoco>',
+        )
+        model = _write(root / "robot.xml", '<mujoco><include file="parts/arm.xml"/></mujoco>')
+        if meshes_present:
+            (root / "assets" / "arm.stl").write_bytes(_binary_stl())
+        return model, {"asset": {"model_xml": "robot.xml", "dir": "robots"}}
+
+    @pytest.mark.parametrize("meshes_present", [True, False])
+    def test_the_two_owners_agree_about_a_mesh_only_an_include_declares(self, tmp_path, monkeypatch, meshes_present):
+        """Both answers track MuJoCo's own verdict on the same tree.
+
+        MuJoCo is the tie-breaker: it is the reader whose opinion the two
+        owners exist to predict, so the case is not built on either one's
+        reading of the model.
+        """
+        import mujoco
+
+        import strands_robots.assets.download as dl_mod
+
+        model, info = self._include_shaped_model(tmp_path, meshes_present=meshes_present)
+        monkeypatch.setattr(dl_mod, "get_search_paths", lambda: [tmp_path])
+
+        try:
+            mujoco.MjModel.from_xml_path(model)
+            mujoco_loads = True
+        except ValueError:
+            mujoco_loads = False
+        assert mujoco_loads is meshes_present, "the fixture does not pose the case it claims"
+
+        fetches: list[list[str]] = []
+        monkeypatch.setattr("strands_robots.assets.resolve_robot_name", lambda n: n)
+        monkeypatch.setattr(dl_mod, "download_robots", lambda names, force: fetches.append(names))
+        _ensure_meshes(model, "robot")
+
+        assert bool(fetches) is (not meshes_present), "add_robot's check disagreed with MuJoCo"
+        assert dl_mod._needs_download("robot", info) is (not meshes_present), (
+            "the download path disagreed with MuJoCo, so the fetch add_robot asks for is a no-op"
+        )
+
+    def test_force_reaches_a_model_whose_meshes_an_include_declares(self, tmp_path, monkeypatch):
+        """``force`` decides the nothing-missing case, whichever fragment declares it."""
+        import strands_robots.assets.download as dl_mod
+
+        _model, info = self._include_shaped_model(tmp_path, meshes_present=True)
+        monkeypatch.setattr(dl_mod, "get_search_paths", lambda: [tmp_path])
+
+        assert dl_mod._needs_download("robot", info, force=False) is False
+        assert dl_mod._needs_download("robot", info, force=True) is True
+
+    def test_needs_download_honors_assetdir(self, tmp_path, monkeypatch):
+        import strands_robots.assets.download as dl_mod
         from strands_robots.assets.download import _needs_download
 
         (tmp_path / "robots" / "assets").mkdir(parents=True)
@@ -291,27 +378,26 @@ class TestTheDownloadPathUsesTheSameRule:
             encoding="utf-8",
         )
         info = {"asset": {"model_xml": "robot.xml", "dir": "robots"}}
-        import strands_robots.assets.download as dl_mod
+        monkeypatch.setattr(dl_mod, "get_search_paths", lambda: [tmp_path])
+        assert _needs_download("robot", info) is False
 
-        original = dl_mod.get_search_paths
-        try:
-            dl_mod.get_search_paths = lambda: [tmp_path]
-            assert _needs_download("robot", info) is False
-        finally:
-            dl_mod.get_search_paths = original
-
-    def test_both_paths_read_the_subdir_rule_from_one_place(self):
-        """The rule has a single owner, so the two callers cannot drift."""
+    def test_both_paths_read_the_scan_from_one_place(self):
+        """The scan has a single owner, so the two callers cannot drift."""
         import strands_robots.assets.download as dl_mod
         from strands_robots.simulation.mujoco import simulation as sim_mod
 
-        assert callable(dl_mod._mjcf_mesh_subdir)
-        assert callable(dl_mod._mjcf_mesh_candidates)
-        source = inspect.getsource(sim_mod.MuJoCoSimEngine._ensure_meshes)
-        assert "_mjcf_mesh_subdir" in source
-        assert "_mjcf_mesh_candidates" in source
-        # ...and no second copy of the regex it replaces.
-        assert 'meshdir="([^"]*)"' not in source
+        assert callable(dl_mod._mjcf_missing_meshes)
+        for source in (
+            inspect.getsource(sim_mod.MuJoCoSimEngine._ensure_meshes),
+            inspect.getsource(dl_mod._needs_download),
+        ):
+            assert "_mjcf_missing_meshes" in source
+            # ...and no second copy of the rules that owner applies: neither the
+            # subdir attributes, nor which fragments make up the model, nor
+            # which extensions name a mesh.
+            assert 'meshdir="([^"]*)"' not in source
+            assert "<include\\s+file=" not in source
+            assert "(?:stl|STL" not in source
 
 
 class TestTheSubdirRuleItself:

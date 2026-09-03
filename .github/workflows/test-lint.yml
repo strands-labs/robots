@@ -167,7 +167,24 @@ jobs:
           # mock in tests/conftest.py and break torch-dependent tests.
           UV_TORCH_BACKEND: cpu
         run: |
+          # `tee` below keeps a copy of the suite's output for the truncation
+          # report in the next step, which needs the `collected N items` line and
+          # the summary line together -- they sit ~35k lines apart in a 6.4 MB
+          # job log, so nobody subtracts them by hand (#3164).
+          #
+          # pipefail is load-bearing, not tidiness. The default shell for `run:`
+          # is `bash -e`, which does NOT set it, so a pipeline exits with the
+          # status of its LAST command -- `tee`, which always succeeds. Without
+          # this line a failing suite would report SUCCESS on the one required
+          # check, and nothing else in this repository would notice.
+          set -o pipefail
           # Diagnose the torch the hatch test env actually resolved BEFORE
           # running the suite, so a mock fallback is obvious in the log.
           hatch run python -c "import torch, sys; print('TORCH_DIAG file=%s version=%s mock=%s' % (getattr(torch,'__file__','?'), getattr(torch,'__version__','MOCK-NO-VERSION'), not hasattr(torch,'__version__')), file=sys.stderr)" || true
-          hatch run test -x --strict-markers
+          hatch run test -x --strict-markers | tee "${RUNNER_TEMP}/pytest.log"
+
+      # Runs on failure too: a truncated run is the case this exists for, and
+      # the reporter never fails the job (see its module docstring).
+      - name: Report whether the suite ran to completion
+        if: always()
+        run: python3 scripts/report_truncated_test_run.py "${RUNNER_TEMP}/pytest.log"
