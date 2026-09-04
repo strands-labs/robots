@@ -279,7 +279,7 @@ holding height); a standing command (`--vx 0`) holds balance in place.
   commanded at <code>vx = 0.5 m/s</code> — the torque-PD deploy loop in MuJoCo (headless).
   The base advances ~2.3 m over 6 s (~0.38 m/s) while holding pelvis height ~0.75 m and
   staying upright. Produced by <code>examples/wbc/wbc_g1_torque_deploy.py --vx 0.5 --mp4</code>
-  (<a href="../../assets/wbc/g1_walk.mp4">MP4</a>).</figcaption>
+  (<a href="https://github.com/strands-labs/robots/blob/main/docs/assets/wbc/g1_walk.mp4">MP4</a>).</figcaption>
 </figure>
 
 ## Composing an upper body (manipulation on top of WBC)
@@ -352,7 +352,7 @@ python examples/wbc/wbc_g1_composite.py --checkpoint /path/to/grootwbc-g1 \
   drives the legs+waist for a <code>vx = 0.4 m/s</code> walk while the upper-body policy drives the
   arms - the base advances ~1.55 m over 5 s while the arms move, in MuJoCo (headless).
   Produced by <code>examples/wbc/wbc_g1_composite.py --vx 0.4 --mp4</code>
-  (<a href="../../assets/wbc/g1_composite.mp4">MP4</a>).</figcaption>
+  (<a href="https://github.com/strands-labs/robots/blob/main/docs/assets/wbc/g1_composite.mp4">MP4</a>).</figcaption>
 </figure>
 
 ## Gait-clock variant

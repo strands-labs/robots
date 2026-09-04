@@ -40,6 +40,45 @@ Deliberately out of scope, each for a reason:
   and GitHub as repository-root-relative, so they need a policy rather than a
   resolution; the tree ships none today.
 * ``http``/``mailto`` and other schemed targets, which name nothing in the tree.
+
+Markdown is not the only syntax a link is written in. GitHub and MkDocs both
+render raw HTML embedded in a Markdown file, and this tree uses it where
+Markdown has no equivalent - a ``<figure>``/``<figcaption>`` pair, an
+``<img>`` carrying a width. Those targets are links to a reader, and reading
+only Markdown syntax left them graded by nothing: the sweep reported a clean
+tree while ``docs/policies/wbc.md`` carried two ``<a href>`` MP4 links with one
+``../`` too many, five lines below a Markdown image whose target was correct and
+graded.
+
+The two syntaxes are not resolved the same way, which is why the wrong prefix is
+easy to write and hard to notice:
+
+* MkDocs **rewrites** a Markdown target, so it is authored relative to the
+  source file and comes out relative to the rendered page. ``wbc.md`` ships
+  ``../assets/wbc/g1_walk.gif`` and the built site serves
+  ``../../assets/wbc/g1_walk.gif``.
+* MkDocs **passes raw HTML through unchanged**, so whatever prefix is written is
+  what both surfaces get - and the rendered page sits one directory deeper than
+  the source file, so a target cannot be correct on both. An author picks a
+  surface, and nothing records which.
+
+So the rule this module applies to raw HTML is the one surface that is not
+optional: GitHub serves the source file, keeps ``<a>`` and ``<img>``, and
+resolves their targets against the source directory. A relative target in one of
+those elements must resolve there. A target that only ever needs to work on the
+published site belongs in an element GitHub does not render, or in an absolute
+URL - which is what the fix for those two links used, matching the three
+``https://github.com/strands-labs/robots/blob/main/...`` links already in the
+same page.
+
+Deliberately out of scope for the same reason it is in scope elsewhere:
+
+* ``<video>``, ``<source>``, ``<figure>`` and ``<figcaption>``. GitHub's
+  sanitizer drops them, so a target inside one reaches no reader of the source
+  file and the site is its only consumer - where the site-relative spelling this
+  tree uses is correct. ``docs/device-connect.md`` ships one such
+  ``<source src>``, and grading it against the source tree would report a
+  working embed as broken.
 """
 
 from __future__ import annotations
@@ -65,6 +104,18 @@ _INLINE_LINK = re.compile(r"!?\[[^\]]*\]\(\s*<?([^)>\s]+)>?(?:\s+[\"'][^\"']*[\"
 # A reference definition: [label]: target
 _REFERENCE_DEFINITION = re.compile(r"^\s{0,3}\[[^\]]+\]:\s*<?([^>\s]+)>?", re.MULTILINE)
 _SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
+# A link written as raw HTML. Only the elements GitHub renders are read, and
+# only the attribute that carries a target for each: ``<a href>`` and
+# ``<img src>``. The attribute must be preceded by whitespace so ``data-src``
+# is not read as ``src``.
+_HTML_LINK = re.compile(
+    r"<(?P<tag>a|img)\b[^>]*?\s(?P<attr>href|src)\s*=\s*[\"'](?P<target>[^\"']+)[\"']",
+    re.IGNORECASE,
+)
+# The element/attribute pairs that carry a target. Written as a pair rather than
+# two independent lists so ``<img href>`` and ``<a src>`` - neither of which
+# names anything - are not read as links.
+_HTML_TARGET_ATTRIBUTES = frozenset({("a", "href"), ("img", "src")})
 
 
 def _prose(text: str) -> str:
@@ -101,15 +152,25 @@ def _prose(text: str) -> str:
 def _link_targets(text: str) -> list[str]:
     """Return every link target in ``text``, ignoring code.
 
+    Both syntaxes a reader clicks are read: Markdown inline links and reference
+    definitions, and the raw-HTML elements GitHub renders (``<a href>`` and
+    ``<img src>``). Reading only the Markdown half is what let two broken
+    ``<a href>`` targets sit in a page the sweep reported as clean.
+
     Args:
         text: The full contents of a Markdown file.
 
     Returns:
-        Inline-link and reference-definition targets, in the order found.
+        Markdown inline-link, reference-definition and raw-HTML targets.
     """
     prose = _prose(text)
     targets = [match.group(1) for match in _INLINE_LINK.finditer(prose)]
     targets.extend(match.group(1) for match in _REFERENCE_DEFINITION.finditer(prose))
+    targets.extend(
+        match.group("target")
+        for match in _HTML_LINK.finditer(prose)
+        if (match.group("tag").lower(), match.group("attr").lower()) in _HTML_TARGET_ATTRIBUTES
+    )
     return targets
 
 
@@ -206,6 +267,27 @@ class TestEveryRelativeLinkNamesSomethingInTheRepository:
             if not (target.startswith("#") or target.startswith("/") or _SCHEME.match(target))
         ]
         assert len(relative) > 100, f"only {len(relative)} relative targets found; the pattern reads too little"
+
+    def test_the_sweep_reads_raw_html_targets_in_this_tree(self) -> None:
+        """The tree really carries raw-HTML links, so a clean sweep means something.
+
+        The Markdown half is exercised by hundreds of targets, so a raw-HTML
+        pattern that matched nothing at all would leave the count above healthy
+        and the sweep silent on the syntax it was extended for. ``README.md``
+        ships three ``<img src="docs/assets/...svg">`` embeds, and they resolve -
+        so this asserts they are read, not merely that nothing was reported.
+        """
+        read = [
+            (path.relative_to(_REPO_ROOT), match.group("target"))
+            for path in _markdown_files()
+            for match in _HTML_LINK.finditer(_prose(path.read_text(encoding="utf-8")))
+            if (match.group("tag").lower(), match.group("attr").lower()) in _HTML_TARGET_ATTRIBUTES
+            and not (match.group("target").startswith(("#", "/")) or _SCHEME.match(match.group("target")))
+        ]
+        assert read, "the raw-HTML pattern read no relative target in a tree that ships several"
+        assert all((_REPO_ROOT / source).parent.joinpath(target).resolve().exists() for source, target in read), (
+            f"raw-HTML targets that do not resolve: {read}"
+        )
 
 
 class TestTheRuleSeesTheLinksItMustSee:
@@ -337,6 +419,73 @@ class TestTheRuleSeesTheLinksItMustSee:
         root, page = self._tree(tmp_path)
         text = "It raises `NotImplementedError: Contact the maintainer on [Discord](...)` there.\n"
         assert not _unresolved_targets(text, page, root)
+
+    def test_an_html_anchor_target_is_resolved(self, tmp_path: Path) -> None:
+        """``<a href>`` is a link a reader clicks, graded like a Markdown one.
+
+        This is the shape the sweep was blind to: the two MP4 links in
+        ``docs/policies/wbc.md`` were written this way, carried one ``../`` too
+        many, and were reported by nothing.
+        """
+        root, page = self._tree(tmp_path)
+        assert not _unresolved_targets('<a href="../../sibling.md">x</a>', page, root)
+        assert _unresolved_targets('<a href="gone.md">x</a>', page, root) == [("gone.md", "does not exist")]
+
+    def test_an_html_image_target_is_resolved(self, tmp_path: Path) -> None:
+        """``<img src>`` names an asset, and a missing one is reported."""
+        root, page = self._tree(tmp_path)
+        assert not _unresolved_targets('<img src="../../assets/shot.png" width="100%">', page, root)
+        assert _unresolved_targets('<img src="../../assets/gone.png">', page, root) == [
+            ("../../assets/gone.png", "does not exist")
+        ]
+
+    def test_an_html_target_that_climbs_out_is_reported_as_escaping(self, tmp_path: Path) -> None:
+        """The containment half of the rule applies to raw HTML too."""
+        root, page = self._tree(tmp_path)
+        assert _unresolved_targets('<a href="../../../outside.md">x</a>', page, root) == [
+            ("../../../outside.md", "escapes the repository")
+        ]
+
+    @pytest.mark.parametrize(
+        "element",
+        [
+            '<source src="gone.mp4" type="video/mp4">',
+            '<video src="gone.mp4" controls>',
+            '<iframe src="gone.html">',
+        ],
+    )
+    def test_a_target_github_does_not_render_is_not_read(self, tmp_path: Path, element: str) -> None:
+        """An element GitHub's sanitizer drops is graded against the site, not here.
+
+        ``<video>``, ``<source>`` and ``<iframe>`` never reach a reader of the
+        source file, so the published site is their only consumer and the
+        site-relative spelling this tree uses for them is correct.
+        ``docs/device-connect.md`` ships one such ``<source src>``; reading it
+        against the source tree would report a working embed as broken.
+        """
+        root, page = self._tree(tmp_path)
+        assert not _unresolved_targets(element, page, root)
+
+    @pytest.mark.parametrize("element", ['<img href="gone.md">', '<a src="gone.md">x</a>'])
+    def test_an_element_and_attribute_that_do_not_pair_are_not_read(self, tmp_path: Path, element: str) -> None:
+        """``<img href>`` and ``<a src>`` carry no target, so neither is a link."""
+        root, page = self._tree(tmp_path)
+        assert not _unresolved_targets(element, page, root)
+
+    def test_a_single_quoted_html_attribute_is_read(self, tmp_path: Path) -> None:
+        """Both quoting styles are HTML, so both are graded."""
+        root, page = self._tree(tmp_path)
+        assert _unresolved_targets("<a href='gone.md'>x</a>", page, root) == [("gone.md", "does not exist")]
+
+    def test_an_attribute_merely_ending_in_src_is_not_read(self, tmp_path: Path) -> None:
+        """``data-src`` is a different attribute, and names no target to follow."""
+        root, page = self._tree(tmp_path)
+        assert not _unresolved_targets('<img data-src="gone.png" src="../../assets/shot.png">', page, root)
+
+    def test_an_html_link_inside_a_fenced_block_is_not_a_link(self, tmp_path: Path) -> None:
+        """A fenced block quoting HTML quotes a program, not prose to click."""
+        root, page = self._tree(tmp_path)
+        assert not _unresolved_targets('```html\n<a href="gone.md">x</a>\n```\n', page, root)
 
     def test_the_exemplars_reach_both_verdicts(self, tmp_path: Path) -> None:
         """Some exemplar is reported and some accepted, so neither side is vacuous."""
