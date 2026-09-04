@@ -33,7 +33,7 @@ import traceback
 from typing import TYPE_CHECKING, Any
 
 from strands_robots.inference import protocol
-from strands_robots.policies.base import Policy
+from strands_robots.policies.base import Policy, collect_required_bodies
 from strands_robots.utils import tcp_port_error
 
 if TYPE_CHECKING:
@@ -93,6 +93,10 @@ class PolicyServer:
     Raises:
         ValueError: If neither or both of ``policy`` / ``policy_provider`` are
             given, or if ``port`` cannot be bound.
+        TypeError: If the served policy tree declares
+            :attr:`~strands_robots.policies.base.Policy.required_bodies` that is
+            not a sequence of non-empty body names. Refused here rather than per
+            connection, since the declaration cannot be advertised.
     """
 
     def __init__(
@@ -124,6 +128,14 @@ class PolicyServer:
             policy = create_policy(policy_provider, **(policy_config or {}))
 
         self.policy: Policy = policy
+        # The bodies the served TREE declares, read once here for the same
+        # reason ``port`` is checked above rather than at ``serve()``: a
+        # declaration is a property of the policy classes, so a malformed one is
+        # refused at the point the caller named the policy instead of leaving
+        # every client's handshake to fail. Advertised in ``_metadata`` so the
+        # client half declares the same bodies and the robot host's runtime
+        # supplies them - see ``collect_required_bodies``.
+        self._required_bodies: tuple[str, ...] = tuple(collect_required_bodies(policy))
         self.host = host
         self.port = port
         self._server: Server | None = None
@@ -189,6 +201,7 @@ class PolicyServer:
             "actions_per_step": int(getattr(self.policy, "actions_per_step", 1)),
             "supports_rtc": bool(getattr(self.policy, "supports_rtc", False)),
             "execution_horizon": int(self.policy.execution_horizon),
+            "required_bodies": list(self._required_bodies),
         }
 
     def _handle(self, websocket: ServerConnection) -> None:

@@ -280,9 +280,9 @@ class MobileBaseRobot:
     """
 
     #: Pattern a ``node_name`` must match. Overridable per platform.
-    _NAME_RE: re.Pattern[str] = re.compile(r"^[A-Za-z0-9_/~]+$")
+    _NAME_RE: re.Pattern[str] = re.compile(r"^[A-Za-z0-9_/~]+\Z")
     #: Pattern a topic/service name must match. Overridable per platform.
-    _TOPIC_RE: re.Pattern[str] = re.compile(r"^[A-Za-z0-9_/~]+$")
+    _TOPIC_RE: re.Pattern[str] = re.compile(r"^[A-Za-z0-9_/~]+\Z")
     #: Appended to ``node_name`` validation errors to say what a good value
     #: looks like. Overridable per platform alongside :attr:`_NAME_RE`, which
     #: it must describe.

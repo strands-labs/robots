@@ -48,8 +48,8 @@ _TWIST_TYPE = "geometry_msgs/msg/Twist"
 # ``use_rtps`` writes to a DDS topic directly, so a topic must be absolute -
 # a stricter grammar than the ROS 2 bridge's, which also accepts relative and
 # private (``~``) names for rclpy to resolve.
-_RTPS_TOPIC_RE = re.compile(r"^/[A-Za-z0-9_/]*[A-Za-z0-9_]$")
-_RTPS_NAME_RE = re.compile(r"^[A-Za-z0-9_/~]+$")
+_RTPS_TOPIC_RE = re.compile(r"^/[A-Za-z0-9_/]*[A-Za-z0-9_]\Z")
+_RTPS_NAME_RE = re.compile(r"^[A-Za-z0-9_/~]+\Z")
 
 
 class _UseRtpsTransport:

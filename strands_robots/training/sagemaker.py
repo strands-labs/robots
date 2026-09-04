@@ -69,20 +69,20 @@ _PURPOSE = "submitting SageMaker training jobs (strands_robots.training.sagemake
 # The lookahead carries the length half. The base job name keeps 32 chars so
 # the appended UTC stamp + entropy suffix ("-YYYYmmdd-HHMMSS-<8 hex>",
 # 25 chars) always fits under 63.
-_BASE_JOB_NAME_RE = re.compile(r"^(?=.{1,32}$)[a-zA-Z0-9](-*[a-zA-Z0-9]){0,31}$")
+_BASE_JOB_NAME_RE = re.compile(r"^(?=.{1,32}\Z)[a-zA-Z0-9](-*[a-zA-Z0-9]){0,31}\Z")
 
 # SageMaker training instance types are "ml.<family>.<size>", e.g.
 # "ml.g5.12xlarge" / "ml.p4d.24xlarge". Format allowlist only - the live
 # catalog changes too often to enumerate, and a wrong-but-well-formed type is
 # refused by CreateTrainingJob itself.
-_INSTANCE_TYPE_RE = re.compile(r"^ml\.[a-z0-9-]+\.[a-z0-9]+$")
+_INSTANCE_TYPE_RE = re.compile(r"^ml\.[a-z0-9-]+\.[a-z0-9]+\Z")
 
-_ROLE_ARN_RE = re.compile(r"^arn:aws[a-zA-Z-]*:iam::\d{12}:role/.+$")
+_ROLE_ARN_RE = re.compile(r"^arn:aws[a-zA-Z-]*:iam::\d{12}:role/.+\Z")
 
 # An input channel / output path is an S3 URI: bucket (S3 naming rules,
 # loosely) plus optional key prefix. A local path cannot be mounted into a
 # managed job, so it is refused here rather than failing at job start.
-_S3_URI_RE = re.compile(r"^s3://[a-z0-9][a-z0-9.\-]*[a-z0-9](/.*)?$")
+_S3_URI_RE = re.compile(r"^s3://[a-z0-9][a-z0-9.\-]*[a-z0-9](/.*)?\Z")
 
 # CreateTrainingJob limits: at most 100 hyperparameters, each key at most 256
 # characters and each value at most 2500. Checked in validate() so an

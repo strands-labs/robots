@@ -40,7 +40,7 @@ logger = logging.getLogger(__name__)
 # Robot names are interpolated into ``importlib`` module paths, so restrict them
 # to a conservative allowlist before any lookup - no dots, slashes, or
 # whitespace can reach the import machinery.
-_NAME_RE = re.compile(r"^[a-z0-9_]+$")
+_NAME_RE = re.compile(r"^[a-z0-9_]+\Z")
 
 # ``robot_descriptions`` names every MuJoCo (MJCF) description module with this
 # suffix, e.g. ``go2_mj_description`` -> canonical robot name ``go2``.

@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 # Security hardening: recorded-move names are interpolated into a REST URL
 # path, so restrict them to a safe charset to prevent path traversal and
 # query/parameter injection into the daemon API.
-_MOVE_NAME_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
+_MOVE_NAME_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}\Z")
 
 
 def _key_prefix_error(value: Any, param: str, cls_name: str) -> str | None:

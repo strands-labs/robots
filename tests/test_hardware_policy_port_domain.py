@@ -47,6 +47,11 @@ import pytest
 import strands_robots.hardware_robot as hardware_robot
 from strands_robots.hardware_robot import Robot as HwRobot
 from strands_robots.hardware_robot import RobotTaskState, TaskStatus
+from strands_robots.registry.policies import (
+    get_policy_provider,
+    import_policy_class,
+    list_policy_providers,
+)
 from strands_robots.utils import tcp_port_error
 from tests._daemon_executor import DaemonThreadExecutor
 from tests.test_hardware_control_loop_rate_guard import _FakeArm
@@ -235,20 +240,31 @@ class TestAPreBuiltPolicyMakesThePortInert:
 
 
 class TestAUsablePortStillRuns:
-    """The guard refuses exactly the unusable ports and nothing else."""
+    """The guard refuses exactly the unusable ports and nothing else.
+
+    Driven through ``groot`` rather than ``mock``: the subject here is the
+    numeric domain, and a provider that declares no ``port`` keyword refuses
+    every port on separate grounds (see
+    :class:`TestAPortTheProviderDoesNotReadIsRefused`). Asking ``mock`` whether
+    ``5555`` is a usable port conflated the two, so the port that reaches a
+    provider is checked against a provider that reads one, and the rollout is
+    checked on its own below.
+    """
 
     @pytest.mark.parametrize("port", USABLE_PORTS, ids=repr)
-    def test_a_usable_port_reaches_the_policy_build(self, hw: Any, port: Any) -> None:
-        """The port passes the guard, the arm connects, and the rollout runs."""
-        result = hw._execute_task_sync("pick", policy_port=port, policy_provider="mock", duration=0.2)
+    def test_a_usable_port_passes_the_guard(self, port: Any) -> None:
+        assert HwRobot._policy_port_error(port, "start_task", "groot") is None
+
+    def test_a_rollout_still_reaches_the_policy_build_and_the_loop(self, hw: Any) -> None:
+        """The arm connects and the loop runs for a provider that needs no port."""
+        result = hw._execute_task_sync("pick", policy_provider="mock", duration=0.2)
 
         assert "policy_port" not in _text(result)
-        assert hw.connects == [True], "a usable port was refused before connect"
-        assert hw.robot.sent_actions, "a usable port did not reach the control loop"
+        assert hw.connects == [True], "a legal call was refused before connect"
+        assert hw.robot.sent_actions, "the rollout did not reach the control loop"
 
-    @pytest.mark.parametrize("port", USABLE_PORTS, ids=repr)
-    def test_a_usable_port_still_submits(self, hw: Any, port: Any) -> None:
-        result = hw.start_task("pick", policy_port=port, policy_provider="mock", duration=0.2)
+    def test_a_rollout_still_submits(self, hw: Any) -> None:
+        result = hw.start_task("pick", policy_provider="mock", duration=0.2)
 
         assert result["status"] == "success"
         assert "Task started" in _text(result)
@@ -262,10 +278,14 @@ class TestTheDomainMatchesTheProviderThatDialsIt:
     """One rule: what the entry point accepts is what the provider accepts."""
 
     @pytest.mark.parametrize("port", [*UNUSABLE_PORTS, *USABLE_PORTS], ids=repr)
-    def test_entry_point_and_shared_domain_agree(self, hw: Any, port: Any) -> None:
+    def test_entry_point_and_shared_domain_agree(self, port: Any) -> None:
+        """Asked of a provider that dials one, which is what this class claims.
+
+        ``mock`` was the old vehicle, and it cannot answer the question: it
+        declares no ``port`` keyword, so "what the provider accepts" is nothing.
+        """
         shared_refuses = tcp_port_error(port, "policy_port", "start_task") is not None
-        result = hw.start_task("pick", policy_port=port, policy_provider="mock", duration=0.05)
-        entry_refuses = "policy_port" in _text(result)
+        entry_refuses = HwRobot._policy_port_error(port, "start_task", "groot") is not None
 
         assert entry_refuses is shared_refuses, f"verdicts differ for policy_port={port!r}"
 
@@ -346,3 +366,102 @@ class TestEveryPortTakingSurfaceIsAccountedFor:
             "        return self._drive(instruction, policy_port)\n"
         )
         assert _policy_port_surfaces(planted) == {"start_task": (False, True)}
+
+
+# Providers whose registry entry declares a ``port`` keyword, and so read one.
+PORT_READING_PROVIDERS: tuple[str, ...] = ("cosmos3", "groot", "lerobot_async", "moveit2", "remote")
+
+
+class TestAPortTheProviderDoesNotReadIsRefused:
+    """A supplied port is judged against the provider that would receive it.
+
+    The registry answers two different questions about a port from two different
+    fields. ``requires`` lists what a caller must supply, so it judges a
+    *missing* port - and only ``groot`` / ``moveit2`` name it, because
+    ``cosmos3`` dials a server while defaulting its port. ``config_keys`` lists
+    what the provider understands, so it is the only field that can judge a port
+    that *was* supplied.
+
+    Reading ``requires`` for both left the supplied direction unjudged, and
+    ``_get_policy`` forwards ``port``/``host`` to whichever provider was named.
+    Ten of the fifteen registered providers declare no port: six take
+    ``**kwargs`` and swallowed it, so the rollout ran a policy that never dialed
+    the caller's server and still reported success, and four take none and
+    raised ``TypeError`` from inside ``create_policy`` - on the executor thread,
+    after the arm was energized and after ``start_task`` had answered "Task
+    started".
+    """
+
+    @pytest.mark.parametrize("provider", sorted(set(list_policy_providers()) - set(PORT_READING_PROVIDERS)))
+    def test_start_task_refuses_before_the_arm_is_touched(self, hw: Any, provider: str) -> None:
+        result = hw.start_task("pick up the cube", policy_port=5555, policy_provider=provider)
+        assert result["status"] == "error"
+        text = _text(result)
+        assert provider in text and "5555" in text
+        assert hw.connects == [], "the arm was energized for a port the provider cannot read"
+        assert hw.robot.sent_actions == [], "the arm was commanded"
+
+    @pytest.mark.parametrize("provider", sorted(set(list_policy_providers()) - set(PORT_READING_PROVIDERS)))
+    def test_the_refusal_names_a_provider_that_would_read_the_port(self, hw: Any, provider: str) -> None:
+        text = _text(hw.start_task("go", policy_port=5555, policy_provider=provider))
+        assert any(name in text for name in PORT_READING_PROVIDERS), (
+            "the refusal must name an alternative the caller can act on"
+        )
+
+    @pytest.mark.parametrize("provider", PORT_READING_PROVIDERS)
+    def test_a_provider_that_reads_a_port_still_accepts_one(self, provider: str) -> None:
+        """The over-reach control: refusing these would break every server-dialing rollout."""
+        assert HwRobot._policy_port_error(5555, "start_task", provider) is None
+
+    @pytest.mark.parametrize("provider", sorted(list_policy_providers()))
+    def test_a_missing_port_is_judged_exactly_as_before(self, provider: str) -> None:
+        """``requires`` still owns the missing direction, and only it.
+
+        Holds both ways by construction: this change adds no demand for a port,
+        so a provider that legally builds without one must stay buildable.
+        """
+        spec = get_policy_provider(provider) or {}
+        must_supply = "port" in (spec.get("requires") or ())
+        refused = HwRobot._policy_port_error(None, "start_task", provider) is not None
+        assert refused is must_supply
+
+    def test_an_unregistered_provider_is_not_treated_as_port_less(self) -> None:
+        """Unknown is not the same as declares-none, so it is not refused here.
+
+        ``create_policy`` owns the refusal for a provider that does not exist;
+        answering it here would report a port problem for a provider problem.
+        """
+        from strands_robots.registry.policies import provider_reads_a_port
+
+        assert provider_reads_a_port("no_such_provider") is None
+        assert HwRobot._policy_port_error(5555, "start_task", "no_such_provider") is None
+
+
+class TestTheRegistryDeclarationMatchesTheConstructor:
+    """``config_keys`` is only a usable oracle while it matches the code.
+
+    The refusal above trusts the registry to say which providers read a port. If
+    an entry drifts from its policy class, the refusal is wrong in one direction
+    or the other, so the agreement is pinned rather than assumed.
+    """
+
+    def test_every_provider_declaring_a_port_accepts_one(self) -> None:
+        from strands_robots.registry.policies import provider_reads_a_port
+
+        mismatched = {}
+        for name in list_policy_providers():
+            declared = provider_reads_a_port(name)
+            try:
+                params = inspect.signature(import_policy_class(name)).parameters
+            except Exception:  # noqa: BLE001 - an unimportable provider is another test's subject
+                continue
+            accepts = "port" in params
+            if declared is not accepts:
+                mismatched[name] = {"config_keys declares port": declared, "constructor accepts port": accepts}
+        assert mismatched == {}, f"registry and constructor disagree about a port: {mismatched}"
+
+    def test_the_derived_list_is_not_vacuous(self) -> None:
+        """A predicate that matched nothing would make the refusal fire on everything."""
+        from strands_robots.registry.policies import port_reading_providers
+
+        assert set(port_reading_providers()) == set(PORT_READING_PROVIDERS)

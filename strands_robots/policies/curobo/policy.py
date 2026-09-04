@@ -81,7 +81,7 @@ logger = logging.getLogger(__name__)
 # ``mesh.security.validate_command`` and :class:`MoveIt2Policy` for
 # ``target_joints`` keys, so a value the mesh accepts can flow
 # end-to-end without a second allowlist mismatch.
-_JOINT_NAME_PATTERN = r"^[A-Za-z][A-Za-z0-9_-]*$"
+_JOINT_NAME_PATTERN = r"^[A-Za-z][A-Za-z0-9_-]*\Z"
 
 # Cap on how big a trajectory we will keep cached. cuRobo's interpolated
 # plans are typically O(100s) of waypoints; this bound exists to fail

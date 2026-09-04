@@ -140,6 +140,17 @@ running the policy in-process:
 | `execution_horizon`  | size action chunks / re-query interval correctly           |
 | `actions_per_step`   | the remote policy's trained chunk length                   |
 | `supports_rtc`       | whether Real-Time Chunking blending runs server-side       |
+| `required_bodies`    | which named bodies' world pose to merge into every observation, and which names to check against the scene before the rollout |
+
+`required_bodies` is the one entry whose work happens entirely on the robot
+host: the runtime resolves the names once before the rollout, refuses one the
+scene does not contain (naming the bodies it does hold), and merges
+`body.<name>.pos` / `.quat` / `.lin_vel` / `.ang_vel` into every observation it
+sends. The policy that consumes them is on the inference host, so the server
+advertises its whole served tree's declaration - a wrapper does not hide the
+policy inside it - and the client declares the same set. A mimic tracker such as
+[ProtoMotions](../policies/protomotions.md) therefore reads its anchor link over
+the wire exactly as it does in-process.
 
 ## Real-Time Chunking across the wire
 

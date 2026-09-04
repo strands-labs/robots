@@ -84,7 +84,7 @@ MAX_SERVER_ADDRESS_LEN: int = 256
 #: Allowed characters for HF repo ids and local model paths. We reject
 #: ``..`` traversal, shell metacharacters, NUL bytes, whitespace, and any
 #: byte outside the printable ASCII subset below.
-_MODEL_PATH_RE = re.compile(r"^[A-Za-z0-9_./\-]+$")
+_MODEL_PATH_RE = re.compile(r"^[A-Za-z0-9_./\-]+\Z")
 
 #: Maximum length of a mesh ``peer_id`` as carried on wire-side ``cmd``
 #: payloads (e.g. ``teleop_receive.source_peer_id``). The local
@@ -99,7 +99,7 @@ MAX_PEER_ID_LEN: int = 128
 #: shell metacharacters, no whitespace, no NULs, no unicode controls)
 #: but additionally forbids ``/`` because peer_ids are not paths and any
 #: ``/`` in one is a wire-side red flag.
-_PEER_ID_RE = re.compile(r"^[A-Za-z0-9_.\-]+$")
+_PEER_ID_RE = re.compile(r"^[A-Za-z0-9_.\-]+\Z")
 
 #: Charset gate for wire-routing passthrough fields (``turn_id``,
 #: ``sender_id``, ``override_code``) and host/address strings stored in
@@ -108,7 +108,7 @@ _PEER_ID_RE = re.compile(r"^[A-Za-z0-9_.\-]+$")
 #: type-check + length-bound so a malicious payload with embedded control
 #: bytes is rejected cleanly rather than passing through to audit logs or
 #: downstream string ops.
-_SAFE_PASSTHROUGH_RE = re.compile(r"^[\x20-\x7E]+$")
+_SAFE_PASSTHROUGH_RE = re.compile(r"^[\x20-\x7E]+\Z")
 
 #: Control characters refused in a natural-language payload
 #: (``instruction``): C0 (0x00-0x1F, which includes NUL, CR and LF), DEL
@@ -323,7 +323,7 @@ def _resolve_input_value_abs(key: str, value_abs_by_key: Mapping[str, float] | N
 #: Charset for teleop input-frame keys (motor/joint names like
 #: ``"motor.pos"``, ``"shoulder_pan"``, ``"j0"``). Printable, no
 #: whitespace, no shell metacharacters, no path separators.
-_INPUT_KEY_RE = re.compile(r"^[A-Za-z0-9_.\-]+$")
+_INPUT_KEY_RE = re.compile(r"^[A-Za-z0-9_.\-]+\Z")
 
 #: Maximum length of a single input-frame key name.
 MAX_INPUT_KEY_LEN: int = 64
@@ -359,12 +359,12 @@ MAX_WORLD_UPDATE_BYTES: int = 65536
 #: Symmetric with :data:`_POLICY_HOST_ENTRY_RE` so this module presents a
 #: uniform fail-loud-on-misconfig posture across every
 #: operator-extensible env-var allowlist.
-_HF_REPO_ENTRY_RE = re.compile(r"^[A-Za-z0-9_./\-]+$")
+_HF_REPO_ENTRY_RE = re.compile(r"^[A-Za-z0-9_./\-]+\Z")
 
 #: Charset for entries in ``STRANDS_MESH_POLICY_TYPE_ALLOW``. Lowercase
 #: identifier shape -- matches the spirit of the built-in
 #: :data:`_DEFAULT_POLICY_TYPES` set.
-_POLICY_TYPE_ENTRY_RE = re.compile(r"^[a-z][a-z0-9_]*$")
+_POLICY_TYPE_ENTRY_RE = re.compile(r"^[a-z][a-z0-9_]*\Z")
 
 #: LeRobot policy *families* accepted as ``policy_type``. This half of the
 #: allowlist names an external vocabulary (LeRobot's own policy registry), not
@@ -487,7 +487,7 @@ ALLOWED_ACTIONS: frozenset[str] = frozenset(
 #: apply to a device's own advertised function surface. We still bound the
 #: name to a conservative identifier charset so a function name cannot carry
 #: control bytes / shell metacharacters into the device runtime or audit log.
-_DC_RPC_FUNC_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_DC_RPC_FUNC_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\Z")
 
 #: Max length of a Device Connect RPC function name.
 MAX_DC_RPC_FUNC_LEN: int = 64
@@ -557,7 +557,7 @@ class LockoutError(SecurityError):
 #: ``STRANDS_MESH_POLICY_HOST_ALLOW``. Rejects shell metacharacters,
 #: whitespace, NUL bytes, and any byte outside the printable ASCII
 #: subset typical of DNS labels and CIDR ranges.
-_POLICY_HOST_ENTRY_RE = re.compile(r"^[A-Za-z0-9.:/_\-]+$")
+_POLICY_HOST_ENTRY_RE = re.compile(r"^[A-Za-z0-9.:/_\-]+\Z")
 
 
 def _validate_env_allowlist_entries(env_var: str, raw: str, regex: re.Pattern[str]) -> list[str]:

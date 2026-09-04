@@ -91,7 +91,7 @@ _PATH_MOVE_LIST = "/api/move/recorded-move-datasets/list/{dataset}"
 #: A recorded move's name goes into a URL path, so the admitted alphabet is the
 #: same one :mod:`strands_robots.device_connect.reachy_mini_driver` enforces -
 #: anything else is refused before a request is built from it.
-_MOVE_NAME_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
+_MOVE_NAME_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}\Z")
 
 #: The two recorded-move libraries the daemon serves, mapped to their
 #: HuggingFace dataset ids. A dict rather than string surgery so a refusal can

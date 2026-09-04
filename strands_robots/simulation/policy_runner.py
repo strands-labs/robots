@@ -51,7 +51,7 @@ import numpy as np
 
 from strands_robots._async_utils import _resolve_coroutine
 from strands_robots.dataset_recorder import RecordingFrameError
-from strands_robots.policies.base import resolve_chunk_length
+from strands_robots.policies.base import collect_required_bodies, resolve_chunk_length
 from strands_robots.simulation.observers import (
     SCHEMA_VERSION as _OBSERVER_SCHEMA_VERSION,
 )
@@ -1029,53 +1029,70 @@ class PolicyRunner:
     )
 
     def _resolve_required_bodies(self, policy: Policy | None) -> tuple[str, ...]:
-        """Validate a policy's declared ``required_bodies`` once, before the rollout.
+        """Validate the declared ``required_bodies`` of a policy TREE, before the rollout.
 
         Resolving up front is the whole point: a mimic tracker reads its anchor
         link on EVERY tick, so a name the scene does not contain has to fail
         here - with the available body names - rather than 300 steps of a
         silently absent key that the policy reads as a zero pose.
 
+        The declaration is collected over the whole policy tree by
+        :func:`~strands_robots.policies.base.collect_required_bodies`, not off
+        the object this runner was handed. That function owns the walk and the
+        ``TypeError`` refusals documented below, and the remote-inference
+        handshake reads the same owner, so what a tree declares cannot depend on
+        which surface asked. A wrapper is a different object than the
+        policy inside it, so reading the attribute off the wrapper reports a
+        child's declaration as absent - which is the case
+        :attr:`~strands_robots.policies.base.Policy.children` exists to answer,
+        "so one probe walks to the policy that answers, instead of every probe
+        having to learn the name of every wrapper". Both shipped wrappers hand
+        their child the observation this method decides the shape of:
+        :class:`~strands_robots.policies.persistent.PersistentPolicy` forwards it
+        verbatim and
+        :class:`~strands_robots.policies.composite.CompositePolicy` forwards a
+        filtered view, so a declaration lost here is lost for the policy that
+        made it - and both halves of this method go with it, the merge and the
+        scene check, leaving a rollout that reports success having never supplied
+        the key.
+
+        Every message names the DECLARING policy rather than the object handed
+        in, so a refusal through a wrapper points at the class to fix.
+
         Args:
-            policy: The policy about to be rolled out. ``None`` (replay) and a
-                policy that declares nothing both resolve to ``()``.
+            policy: Root of the policy tree about to be rolled out. ``None``
+                (replay) and a tree that declares nothing both resolve to ``()``.
 
         Returns:
             Ordered, de-duplicated body names to merge into each observation.
+            Order follows the tree walk (outermost policy first), so the merge
+            order is stable for a given tree.
 
         Raises:
-            TypeError: If ``required_bodies`` is not a sequence of non-empty
-                strings. A bare ``str`` is refused explicitly rather than
-                iterated into one entry per character.
+            TypeError: If any policy in the tree declares ``required_bodies``
+                that is not a sequence of non-empty strings. A bare ``str`` is
+                refused explicitly rather than iterated into one entry per
+                character.
             RuntimeError: If the backend exposes no ``get_body_state``, or a
                 declared body does not resolve in the current scene. Raised
                 rather than returned for the reason this layer raises
                 everywhere else: ``PolicyRunner`` is drivable directly and a
                 direct caller has no envelope to read a refusal from.
         """
-        declared = getattr(policy, "required_bodies", ()) or ()
-        if not declared:
+        # The walk and its type refusals live in one place shared with the
+        # remote-inference handshake, so what a tree declares cannot depend on
+        # which surface asked. The mapping's value is the declaring class, so a
+        # refusal below names the class to fix rather than an outer wrapper.
+        owner = collect_required_bodies(policy)
+        bodies = list(owner)
+        if not bodies:
             return ()
-        if isinstance(declared, str):
-            raise TypeError(
-                f"{type(policy).__name__}.required_bodies must be a sequence of body names, "
-                f"not a bare str ({declared!r}) - a str iterates into one entry per character. "
-                f"Use a tuple: ('{declared}',)."
-            )
-        bodies: list[str] = []
-        for name in declared:
-            if not isinstance(name, str) or not name.strip():
-                raise TypeError(
-                    f"{type(policy).__name__}.required_bodies entries must be non-empty "
-                    f"body-name strings, got {name!r}."
-                )
-            if name not in bodies:
-                bodies.append(name)
 
         probe = getattr(self.sim, "get_body_state", None)
         if not callable(probe):
+            declarers = " + ".join(dict.fromkeys(owner.values()))
             raise RuntimeError(
-                f"{type(policy).__name__} declares required_bodies={tuple(bodies)}, but backend "
+                f"{declarers} declares required_bodies={tuple(bodies)}, but backend "
                 f"{type(self.sim).__name__} exposes no get_body_state() to read a named body's "
                 f"pose from. Run this policy on a backend that implements it (MuJoCo, Isaac)."
             )
@@ -1088,7 +1105,7 @@ class PolicyRunner:
                         str(block.get("text", "")) for block in result.get("content", []) if isinstance(block, dict)
                     ).strip()
                 raise RuntimeError(
-                    f"{type(policy).__name__} declares required_bodies entry {name!r}, which does "
+                    f"{owner[name]} declares required_bodies entry {name!r}, which does "
                     f"not resolve to a body in the current scene. {detail}".rstrip()
                 )
         return tuple(bodies)

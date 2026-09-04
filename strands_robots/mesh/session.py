@@ -290,7 +290,7 @@ def hz_from_env(name: str) -> tuple[float | None, str | None]:
 def stream_min_period_from_env() -> float:
     """Resolve the minimum period between per-step telemetry publishes.
 
-    Two call sites throttle ``publish_step`` against the wall clock -- the
+    Two call sites throttle ``publish_step`` against a monotonic clock -- the
     hardware control loop (``HardwareRobot.__init__``) and the simulation
     ``run_policy`` hook -- and both did it by dividing
     ``STRANDS_MESH_STREAM_HZ`` straight from the environment. That raises
@@ -303,9 +303,19 @@ def stream_min_period_from_env() -> float:
     bring-up.
 
     A period rather than a rate is returned because that is what both callers
-    hold, and it lets "off" be expressed as ``inf``: no elapsed time ever
-    reaches an infinite period, so the throttle simply never fires and neither
-    caller needs a second flag to test.
+    hold, and it lets "off" be expressed as ``inf``: no *finite* elapsed time
+    reaches an infinite period, so the throttle refuses every step it is asked
+    about.
+
+    That is a property of the elapsed time as much as of the period, so it does
+    not survive every base. A caller starting its throttle base at ``-inf`` --
+    which is what a monotonic base wants to be, a reading being meaningful only
+    relative to another one, so that a rollout's first step is due wherever the
+    platform's epoch sits -- computes an infinite elapsed time on that first
+    step, and ``inf >= inf`` is true. The subtraction alone then lets exactly
+    one publish past the opt-out. Such a caller tests this value for finiteness
+    once, where it resolves it, and gates the publish on that: the returned
+    period alone is not the whole opt-out.
 
     The fallback for an unusable value follows :meth:`Mesh._resolve_camera_hz`,
     the other opt-out publishing loop: warn naming the variable and the

@@ -29,6 +29,7 @@ node ID                    decodes to                       resolves to
 ``R_kgDOD1WOFw``           ``[0, 257265175]``               the #1916 stray
 ``PR_kwDOD1WOF87DdSjQ``    ``[0, 257265175, 3279235280]``   the same stray
 ``PR_kwDORUMiZs7Kw3fA``    ``[0, 1162027622, 3401807808]``  ``uutils/coreutils#11342``
+``PR_kwDORUMiZs7DHqZ3``    ``[0, 1162027622, 3273565815]``  ``gip-inclusion/autometa#8``
 =========================  ===============================  ==========================
 
 That third row is the finding the incident write-up did not have: all three
@@ -49,6 +50,24 @@ while merging #2006 was stopped by permissions rather than by any check. The two
 IDs also share 14 of their 19 characters, so comparing one by eye against a
 known-good ID for the same repository is the same unsound test done less
 precisely. See #2007.
+
+The fifth row is the same failure again, and it is here for what the *refusal*
+turned out to mean. That ID was recalled rather than queried while merging #3175,
+and ``mergePullRequest`` answered ``cagataycali does not have the correct
+permissions to execute MergePullRequest`` - a sentence about the account. Four
+minutes later the same account, token and mutation squashed that same pull
+request as ``c418f74``, using the ID from
+``repository(owner:, name:) { pullRequest(number: 3175) { id } }``. So the
+permission being reported on was a stranger's, and the wording is the one an
+agent has no reason to doubt: taken at face value it says merging is a
+maintainer's job, which is self-consistent, terminal, and leaves an approved
+``CLEAN`` pull request open with every required context ``SUCCESS`` - a third
+cause of the presentation ``tests/test_merge_gate_viewer_scope.py`` was written
+for (#1917, #1905), and the first on the write side, so re-reading the gate with
+``PAT_TOKEN`` does not reach it. Nothing in the response distinguishes the two
+cases either, because permission is evaluated before state: the stray target was
+already ``MERGED``, and a merge that could not have succeeded for anyone was
+still refused for permissions rather than for mergeability.
 
 The exposure is also not symmetric, and that is what the reject direction is
 worth keeping for. A refused ``mergePullRequest`` leaves nothing behind; a
@@ -77,6 +96,13 @@ the object it names belongs to another repository, so a matching middle field
 cannot establish the target. The reject direction is asserted alongside it, so
 the fix is not satisfiable by deleting the decode.
 
+``TestARefusalIsNotAVerdictOnThePermission`` *executes* the fifth row. It holds
+the two IDs against the outcomes they earned, and asserts that the reading the
+refusal invites - this account cannot merge here - contradicts the merge the same
+account performed minutes later, while a reading keyed on the ID does not. The
+recorded ``MERGED`` state of the stray target carries the before-state ordering,
+which is why the response cannot be triaged by its wording.
+
 ``TestTheGuidanceNamesTheDecodableEnvelope`` pins the prose, because the prose
 is the deliverable: an agent reads ``AGENTS.md``, not this module. What is
 asserted is *adjacency* rather than vocabulary - the fail-open property, the
@@ -88,11 +114,11 @@ the same structural reason ``tests/test_merge_gate_viewer_scope.py`` and
 ``tests/test_codeql_query_filters.py`` exist, and these text assertions follow
 the shape those modules established.
 
-Negative control: with ``origin/main``'s ``AGENTS.md`` restored, the five
-qualifiers the correction introduces fail while the four the #1916 write-up
-already carried keep passing, and both executable classes pass unchanged. The
-envelope and the routing field are properties of GitHub's IDs rather than of this
-change; only the guidance is new.
+Negative control: with ``origin/main``'s ``AGENTS.md`` restored, the qualifiers
+each correction introduces fail while the ones the write-up before it already
+carried keep passing, and the executable classes pass unchanged. The envelope,
+the routing field and the recorded outcomes are properties of GitHub's IDs and of
+what already happened rather than of any change here; only the guidance is new.
 """
 
 from __future__ import annotations
@@ -100,6 +126,7 @@ from __future__ import annotations
 import base64
 import struct
 from pathlib import Path
+from typing import NamedTuple
 
 import pytest
 
@@ -142,6 +169,34 @@ _CROSS_REPOSITORY_ACTUAL_DATABASE_ID = 11847500
 _SECOND_STRAY_REPOSITORY_NODE_ID = "R_kgDOPzXPeg"
 _SECOND_STRAY_REPOSITORY_DATABASE_ID = 1060491130
 _SECOND_STRAY_RESOLVES_TO = "Ali111q/todo#1"
+
+# The ID a `mergePullRequest` was aimed at while merging #3175 - recalled from an
+# earlier response rather than resolved in that run. Like the row above it carries
+# this repository's databaseId, so the decode clears it; it names a merged pull
+# request in a third repository. Every value read back from one `node(id:)` query
+# and one `repository(owner: "gip-inclusion", name: "autometa")` query. See #3180.
+_RECALLED_NODE_ID = "PR_kwDORUMiZs7DHqZ3"
+_RECALLED_OWN_DATABASE_ID = 3273565815
+_RECALLED_RESOLVES_TO = "gip-inclusion/autometa#8"
+_RECALLED_ACTUAL_DATABASE_ID = 1127363528
+
+#: The state that target was already in. It matters because it rules out the
+#: hope that an impossible merge announces itself as one: permission is evaluated
+#: first, so this pull request was refused for permissions and not for
+#: mergeability.
+_RECALLED_TARGET_STATE = "MERGED"
+
+#: What the mutation answered, verbatim. Pinned as a string because the reading it
+#: invites - an account without the permission - is the whole defect.
+_REFUSAL = "does not have the correct permissions to execute MergePullRequest"
+
+# The ID that mutation should have carried, resolved from
+# `repository(owner: "strands-labs", name: "robots") { pullRequest(number: 3175) }`
+# four minutes later, and the squash the same account, token and mutation then
+# performed - which is what proves the refusal above was not about its permission.
+_QUERIED_NODE_ID = "PR_kwDORUMiZs8AAAABCBKOHA"
+_QUERIED_OWN_DATABASE_ID = 4430401052
+_QUERIED_MERGE_COMMIT = "c418f74"
 
 #: The ID that mutation should have carried, from
 #: ``repository(owner:, name:) { pullRequest(number: 2006) { id } }``. Kept to
@@ -380,6 +435,144 @@ class TestTheDecodeIsARejectAndNeverAPass:
         assert _decode_node_id(_CROSS_REPOSITORY_NODE_ID)[1][2] != _decode_node_id(_INTENDED_PULL_REQUEST_NODE_ID)[1][2]
 
 
+class _Call(NamedTuple):
+    """One recorded ``mergePullRequest`` call, as issued and as answered.
+
+    Every field except ``node_id`` is identical across the two recorded calls, so
+    the pair isolates the ID as the only input that differed. ``refusal`` and
+    ``merge_commit`` are mutually exclusive by construction: a call either was
+    answered with an error or landed a squash.
+    """
+
+    node_id: str
+    obtained_by: str
+    account: str
+    mutation: str
+    intended_target: int
+    resolves_to: str
+    refusal: str | None
+    merge_commit: str | None
+
+
+#: The pair measured while merging #3175, in the order they were issued. See #3180.
+_RECORDED_CALLS = (
+    _Call(
+        node_id=_RECALLED_NODE_ID,
+        obtained_by="recalled from an earlier response",
+        account="cagataycali",
+        mutation="mergePullRequest",
+        intended_target=3175,
+        resolves_to=_RECALLED_RESOLVES_TO,
+        refusal=f"cagataycali {_REFUSAL}",
+        merge_commit=None,
+    ),
+    _Call(
+        node_id=_QUERIED_NODE_ID,
+        obtained_by="repository(owner:, name:) { pullRequest(number: 3175) { id } }",
+        account="cagataycali",
+        mutation="mergePullRequest",
+        intended_target=3175,
+        resolves_to="strands-labs/robots#3175",
+        refusal=None,
+        merge_commit=_QUERIED_MERGE_COMMIT,
+    ),
+)
+
+
+def _viewer_lacks_the_permission(call: _Call) -> bool:
+    """The verdict the refusal's wording invites: read it as about the account."""
+    return call.refusal is not None
+
+
+def _the_id_named_something_else(call: _Call) -> bool:
+    """The verdict that survives the pair: read it as about the ID."""
+    return call.resolves_to != f"strands-labs/robots#{call.intended_target}"
+
+
+class TestARefusalIsNotAVerdictOnThePermission:
+    """A permissions error reports on the object the ID resolved to."""
+
+    def test_the_recalled_id_clears_the_decode(self) -> None:
+        # The reject direction cannot fire here either: the middle field is this
+        # repository's, exactly as in the `uutils/coreutils` row above.
+        _, values = _decode_node_id(_RECALLED_NODE_ID)
+        assert values == [0, _REPOSITORY_DATABASE_ID, _RECALLED_OWN_DATABASE_ID], (
+            f"{_RECALLED_NODE_ID!r} should decode to [0, this repository, its own "
+            "databaseId]. If it does not, re-read the constants from a node(id:) query "
+            "rather than relaxing this - the decode clearing a wrong ID is the premise "
+            "of the whole class. See #3180."
+        )
+        assert _encoded_repository(_RECALLED_NODE_ID) == _REPOSITORY_DATABASE_ID
+
+    def test_the_object_it_named_belongs_to_another_repository(self) -> None:
+        assert _RECALLED_ACTUAL_DATABASE_ID != _REPOSITORY_DATABASE_ID, (
+            f"{_RECALLED_RESOLVES_TO} must be in a different repository from this one "
+            "for the measurement to mean anything. If these databaseIds ever agree the "
+            "constants have drifted; re-read them from a node(id:) query. See #3180."
+        )
+        assert _encoded_repository(_RECALLED_NODE_ID) != _RECALLED_ACTUAL_DATABASE_ID
+
+    def test_the_two_ids_differ_in_the_routing_field_alone(self) -> None:
+        # Why nothing offline separated them: both name this repository, and the
+        # field GitHub actually routes on is the only one that disagrees.
+        recalled = _decode_node_id(_RECALLED_NODE_ID)[1]
+        queried = _decode_node_id(_QUERIED_NODE_ID)[1]
+        assert queried == [0, _REPOSITORY_DATABASE_ID, _QUERIED_OWN_DATABASE_ID], (
+            f"{_QUERIED_NODE_ID!r} should decode to [0, this repository, pull request "
+            "3175's own databaseId]. Pinned to the recorded value rather than compared "
+            "field-by-field for the same reason as the two rows above: the inequality "
+            "below would still hold if this ID had drifted to name a third object, and "
+            "then the row it stands for would no longer be the one that merged. See #3180."
+        )
+        assert recalled[:2] == queried[:2] == [0, _REPOSITORY_DATABASE_ID]
+        assert recalled[2] != queried[2], (
+            "the recalled and the queried ID must differ in their own-databaseId field. "
+            "That third element is what GitHub routes on, and it is the only difference "
+            "between a refusal and a merge here. See #3180."
+        )
+
+    def test_the_verdict_the_refusal_invites_is_false_of_the_account(self) -> None:
+        # The arithmetic behind the guidance: one verdict keyed on the response,
+        # one keyed on the ID, over the same two observations.
+        refused = [call for call in _RECORDED_CALLS if _viewer_lacks_the_permission(call)]
+        merged = [call for call in _RECORDED_CALLS if call.merge_commit is not None]
+        assert refused and merged, (
+            "the recorded pair must hold one refused call and one that landed a squash; "
+            "without both there is nothing to contradict. See #3180."
+        )
+        assert refused[0].refusal is not None and _REFUSAL in refused[0].refusal
+        assert {call.account for call in _RECORDED_CALLS} == {"cagataycali"}
+        assert {call.mutation for call in _RECORDED_CALLS} == {"mergePullRequest"}
+        assert {call.intended_target for call in _RECORDED_CALLS} == {3175}
+        assert merged[0].merge_commit == _QUERIED_MERGE_COMMIT, (
+            "the second call must record the squash it produced. It is the only thing "
+            "that proves the account held every permission the merge needed, and so "
+            "that the refusal was not about that permission. See #3180."
+        )
+
+    def test_the_verdict_keyed_on_the_id_holds_on_both_rows(self) -> None:
+        # And the reading that survives: it separates the rows the refusal cannot.
+        assert [_the_id_named_something_else(call) for call in _RECORDED_CALLS] == [
+            True,
+            False,
+        ], (
+            "asking which object the ID resolved to must separate the refused call from "
+            "the one that merged. That is the substitute for a verdict the response "
+            "cannot support, and it is what AGENTS.md now tells the reader to reach for."
+        )
+
+    def test_permission_is_evaluated_before_the_pull_requests_state(self) -> None:
+        # Why the response cannot be triaged by its wording: the stray target was
+        # already merged, so no permission on earth could have merged it again -
+        # and the error still spoke of permissions rather than of mergeability.
+        assert _RECALLED_TARGET_STATE == "MERGED"
+        assert "mergeable" not in _REFUSAL.lower(), (
+            "the recorded refusal must not mention mergeability. An already-merged "
+            "target being refused for permissions is what shows the check order, and "
+            "therefore that an impossible merge does not announce itself. See #3180."
+        )
+
+
 def _agents_text() -> str:
     return _AGENTS_PATH.read_text(encoding="utf-8")
 
@@ -533,4 +726,52 @@ class TestTheGuidanceLimitsTheDecodeToAReject:
             "AGENTS.md must name the remedy for a stray write that succeeded, because "
             "the instinct - delete it - is the one thing that does not work: deleteIssue "
             "needs admin on the target. See #2007."
+        )
+
+
+class TestTheGuidanceStatesWhatARefusalDecides:
+    """The correction is only actionable with its four qualifiers beside it."""
+
+    def test_the_guidance_says_a_refusal_is_not_a_verdict_on_the_permission(self) -> None:
+        bullet = _bullet_after(_agents_text(), _SUBJECT_CLAIM)
+        assert bullet is not None and "not a verdict on your own permission" in bullet, (
+            "AGENTS.md must say the refusal is not a verdict on the viewer's own "
+            "permission. Recorded only as 'was stopped by permissions' it reads as a "
+            "safety net, which is the half that is true and the half that costs "
+            "nothing. See #3180."
+        )
+
+    def test_the_guidance_carries_the_pair_that_measures_it(self) -> None:
+        bullet = _bullet_after(_agents_text(), _SUBJECT_CLAIM)
+        assert bullet is not None
+        assert _RECALLED_RESOLVES_TO in bullet and _QUERIED_MERGE_COMMIT in bullet, (
+            f"AGENTS.md must keep both halves of the measurement - {_RECALLED_RESOLVES_TO} "
+            f"and the squash {_QUERIED_MERGE_COMMIT} the same account performed minutes "
+            "later. Either alone is an anecdote; together they are what rules out the "
+            "account genuinely lacking the permission. See #3180."
+        )
+
+    def test_the_guidance_states_that_permission_is_evaluated_before_state(self) -> None:
+        bullet = _bullet_after(_agents_text(), _SUBJECT_CLAIM)
+        assert bullet is not None and "evaluated before" in bullet, (
+            "AGENTS.md must say permission is evaluated before state. Without it a "
+            "reader is left with the hope that an impossible merge would have announced "
+            "itself as unmergeable, and it does not. See #3180."
+        )
+
+    def test_the_guidance_names_the_misreading_it_prevents(self) -> None:
+        bullet = _bullet_after(_agents_text(), _SUBJECT_CLAIM)
+        assert bullet is not None and "merging is a maintainer" in bullet, (
+            "AGENTS.md must name the conclusion the refusal invites. The failure is not "
+            "confusion but a confident wrong belief that ends the work with an approved "
+            "pull request left open, which is the presentation #1905 and #1917 record "
+            "for their own causes. See #3180."
+        )
+
+    def test_the_reversibility_clause_no_longer_says_a_refusal_costs_nothing(self) -> None:
+        bullet = _bullet_after(_agents_text(), _SUBJECT_CLAIM)
+        assert bullet is not None and "behind in the repository" in bullet, (
+            "AGENTS.md's reversibility weighting must scope 'leaves nothing behind' to "
+            "the repository. Unqualified it is the sentence that invites skipping the "
+            "read-back on exactly the mutation measured here. See #3180."
         )

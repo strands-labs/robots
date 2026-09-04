@@ -472,7 +472,7 @@ def _reward_friendly_fields(rtype: str) -> set[str]:
 # Hugging Face Hub dataset id: ``org/name`` (each segment alnum plus ._-). Used
 # to gate the agent-supplied ``dataset_repo_id`` before it becomes lerobot's
 # ``DatasetConfig.repo_id`` (which load_dataset/HfApi feed to a Hub URL).
-_HUB_REPO_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$")
+_HUB_REPO_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*\Z")
 
 
 class LerobotTrainer(Trainer):
@@ -664,7 +664,7 @@ class LerobotTrainer(Trainer):
             "directly with extra={'dataset.eval_split': <fraction>, 'eval_steps': <steps>}."
         )
 
-    def _streaming_validation_split_problem(self, spec: TrainSpec) -> str:
+    def _streaming_validation_split_problem(self, spec: TrainSpec, count_readable: bool) -> str:
         """Refusal text for ``streaming`` and ``val_episodes`` asked for together.
 
         Each field is honored on its own, and neither survives the pair.
@@ -672,15 +672,25 @@ class LerobotTrainer(Trainer):
         ``dataset.eval_split``, and lerobot holds out a split only on a
         MAP-STYLE dataset - ``make_train_eval_datasets`` rebuilds both halves as
         ``LeRobotDataset`` objects, which is what makes the split addressable by
-        episode at all. A streamed dataset is not one, and lerobot answers the
-        contradiction differently across the range this backend supports:
-        ``DatasetConfig`` refuses the pair outright from lerobot 0.6.2
-        ("eval_split requires map-style datasets"), while before that it
-        constructed and the factory silently discarded the
-        ``StreamingLeRobotDataset`` it had built first. So the pair either fails
-        inside a launched run or materializes the whole dataset without
-        reporting it - an annulled stream is indistinguishable from
-        ``streaming=False``.
+        episode at all. A streamed dataset is not one, and which way the pair
+        fails depends on the installed lerobot rather than on anything the
+        caller can see: a ``DatasetConfig`` that guards ``eval_split`` against
+        ``streaming`` refuses the pair when the run starts, and without that
+        guard the factory rebuilds both halves map-style, so the
+        ``StreamingLeRobotDataset`` it opened first is discarded and the whole
+        dataset is materialized while nothing reports it - an annulled stream is
+        indistinguishable from ``streaming=False``.
+
+        The guard is keyed on ``streaming`` only in recent lerobot; 0.6.1 ships a
+        same-worded guard ("eval_split requires map-style datasets") keyed on
+        ``repo_type='bucket'``, which this backend never sets, so on 0.6.1 the
+        pair constructs and the silent materialization is what happens. That is
+        why the refusal names the predicate rather than a release: the quoted
+        sentence is present in a lerobot that does not raise it here, and
+        ``lerobot.__version__`` is ``importlib.metadata.version("lerobot")``, so
+        it reports the installed distribution's number - which for a source
+        install is a development version, not a release the claim could be
+        checked against.
 
         Refusing here mirrors :meth:`_unreadable_episode_count_problem`, which
         refuses rather than let a requested validation split be silently
@@ -688,15 +698,34 @@ class LerobotTrainer(Trainer):
         either field delivers the other one whole, and the raw ``extra``
         passthrough still reaches lerobot's own knobs for a caller who wants the
         combination anyway.
+
+        Args:
+            spec: The spec being validated; read for ``val_episodes``.
+            count_readable: Whether the dataset's episode count is readable from
+                a local ``meta/info.json``. ``streaming=False`` alone delivers
+                the split only when it is, so when it is not the remedy names
+                the local copy that configuration also needs - rather than
+                promising a split the next ``validate()`` would refuse for a
+                different reason. Streaming a Hub dataset is the case where it
+                is unreadable, which is exactly where this refusal fires.
         """
+        keep_the_split = (
+            "set streaming=False to keep the validation split"
+            if count_readable
+            else (
+                "set streaming=False and point dataset_root at a local copy of the dataset to keep "
+                "the validation split - the split is a FRACTION of the episode count, which is only "
+                "readable from a local meta/info.json"
+            )
+        )
         return (
             f"{self.provider_name}: streaming=True cannot be combined with "
             f"val_episodes={spec.val_episodes}. lerobot holds out a validation split only on a "
-            "map-style dataset, and a streamed dataset is not one: lerobot 0.6.2 refuses the "
-            "pair outright, and before it the stream is dropped for a map-style rebuild while "
-            "nothing reports that the whole dataset was materialized. Either set "
-            "streaming=False to keep the validation split, or val_episodes=None to keep the "
-            "stream."
+            "map-style dataset, and a streamed dataset is not one: a lerobot whose DatasetConfig "
+            "guards eval_split against streaming refuses the pair when the run starts, and without "
+            "that guard the stream is dropped for a map-style rebuild while nothing reports that "
+            f"the whole dataset was materialized. Either {keep_the_split}, or val_episodes=None to "
+            "keep the stream."
         )
 
     def _dataset_total_tasks(self, dataset_root: str) -> int:
@@ -903,7 +932,18 @@ class LerobotTrainer(Trainer):
 
         if not val_problems and spec.val_episodes is not None:
             total = self._dataset_total_episodes(spec.dataset_root) if spec.dataset_root else None
-            if total is None:
+            if spec.streaming:
+                # Decided from the two fields alone, ahead of every count-derived
+                # check below, because the pair delivers neither field whatever
+                # the episode count is. That count is only readable from a local
+                # copy, and streaming a Hub dataset is the case with no local
+                # copy - so asking this inside the branch that HAS a count left
+                # the pair unrefused on exactly the configuration `streaming`
+                # exists for, and answered it with the unreadable-count remedy
+                # instead, whose `extra` passthrough puts the pair back on the
+                # command line with nothing left to refuse it.
+                problems.append(self._streaming_validation_split_problem(spec, count_readable=total is not None))
+            elif total is None:
                 # The split is a FRACTION derived from the episode count, so with
                 # no count to divide by there is nothing to emit - and a missing
                 # eval_split is indistinguishable from "no validation asked for".
@@ -921,12 +961,6 @@ class LerobotTrainer(Trainer):
                 )
                 if split_err:
                     problems.append(split_err)
-                if spec.streaming and self._val_eval_split(spec) is not None:
-                    # Both fields were honored in isolation and neither survives
-                    # the pair: lerobot's split path rebuilds the dataset
-                    # map-style, so the stream is dropped. Refuse rather than
-                    # emit a config that silently delivers one of the two.
-                    problems.append(self._streaming_validation_split_problem(spec))
 
         # Shared by BOTH run types: policy and reward-model training load the
         # same dataset, so an unreadable format version refuses either one.

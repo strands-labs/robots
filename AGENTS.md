@@ -772,7 +772,9 @@ hatch run format            # ruff check --fix, ruff format
      **contributor's** branch - that is the `require_last_push_approval` identity
      problem below, which is independent of dismissal and does not care that the
      merge was clean. Ask the contributor to absorb `main` so they stay the last
-     pusher; #1827 was left alone for that reason.
+     pusher; #1827 was left alone for that reason. The **"Update branch" button**
+     is covered too -- it is the same push, and #2907 spent its sole approval on
+     it twice.
    - *And that the mutation named the object you meant.* A mutation
      names its subject by node ID and by nothing else - `createIssue` takes a
      `repositoryId`, not an owner and a name - so a well-formed ID that is wrong
@@ -796,6 +798,7 @@ hatch run format            # ruff check --fix, ruff format
      | `R_kgDOD1WOFw` | `[0, 257265175]` | the #1916 stray |
      | `PR_kwDOD1WOF87DdSjQ` | `[0, 257265175, 3279235280]` | **the same stray** |
      | `PR_kwDORUMiZs7Kw3fA` | `[0, 1162027622, 3401807808]` | **`uutils/coreutils#11342`** |
+     | `PR_kwDORUMiZs7DHqZ3` | `[0, 1162027622, 3273565815]` | **`gip-inclusion/autometa#8`** |
 
      The third row is why #1916's three guessed IDs all failed the same way: one
      stale value contaminated every mutation, and the two that failed did so only
@@ -814,6 +817,25 @@ hatch run format            # ruff check --fix, ruff format
      for the same repository is the same unsound test done less precisely. See
      #2007.
 
+     **The fifth row is why the refusal that stops such a merge is not a verdict
+     on your own permission.** Aimed at that ID while merging #3175,
+     `mergePullRequest` returned `cagataycali does not have the correct
+     permissions to execute MergePullRequest`. The same account, the same
+     mutation and the same token four minutes later - on the ID resolved from
+     `repository(owner:, name:) { pullRequest(number: 3175) { id } }` - squashed
+     that pull request as `c418f74`. So the permission reported on was a
+     stranger's, and every permission the merge needed was held. Nothing in the
+     response separates the two cases, because permission is evaluated before
+     state: even a target that is *already merged*, which
+     `gip-inclusion/autometa#8` is, is refused for permissions rather than for
+     mergeability. Read at face value that sentence says "merging is a maintainer
+     action" - self-consistent, terminal, and leaving an approved `CLEAN` pull
+     request open with every required context `SUCCESS`. That is a third recorded
+     cause of the presentation #1905 and #1917 name, and the first on the write
+     side, so a sweep that has learned to re-read the gate with `PAT_TOKEN` still
+     lands in it. Treat a permissions refusal as being about the ID until a query
+     has ruled the ID out.
+
      So the decode has exactly one sound use: a middle field naming another
      repository is proof of a wrong ID, and a middle field naming this one proves
      nothing at all. **The rule is the one with no decode in it** - resolve every
@@ -829,12 +851,14 @@ hatch run format            # ruff check --fix, ruff format
 
      **Weight it by reversibility rather than by correctness**, because the two
      directions are not symmetric. A refused `mergePullRequest` leaves nothing
-     behind; a `createIssue` against a wrong ID succeeds and cannot be undone by
-     the account that made it, since `deleteIssue` needs admin on the target and a
-     stray write by definition lands where you have none. It has now happened
-     twice: the second was `Ali111q/todo#1` at 16:23 UTC on 2026-08-07, twenty
-     minutes after #2007 was filed, from a `repositoryId` whose repository field
-     reads `1060491130` and not this repository's `1162027622` - the one
+     behind in the repository, though the fifth row is why that is not the same
+     as costing nothing; a `createIssue` against a wrong ID succeeds and cannot
+     be undone by the account that made it, since `deleteIssue` needs admin on
+     the target and a stray write by definition lands where you have none. It has
+     now happened twice: the second was `Ali111q/todo#1` at 16:23 UTC on
+     2026-08-07, twenty minutes after #2007 was filed, from a `repositoryId`
+     whose repository field reads `1060491130` and not this repository's
+     `1162027622` - the one
      direction a decode does catch. So `createIssue`,
      `addComment` and `updateIssue` earn the read-back more than the merge that
      prompted the rule, not less. If one has already landed, the remedy is not
@@ -1582,8 +1606,8 @@ hatch run format            # ruff check --fix, ruff format
    | #1035 at `8d6a4c42` | the maintainer | the maintainer | the maintainer | `REVIEW_REQUIRED` |
    | #1722 | `strands-robots` | the maintainer | the maintainer | `REVIEW_REQUIRED` |
 
-   So **pushing a fix to a contributor's branch consumes the approval of
-   whoever owns the token you push with**, turning a PR one maintainer could
+   So **putting a commit on a contributor's head consumes the approval of
+   whoever that head is attributed to**, turning a PR one maintainer could
    merge into one that needs a second. It compounds with
    `dismiss_stale_reviews_on_push`, which drops the existing approval in the
    same motion that disqualifies that account from re-supplying it. Prefer
@@ -1591,6 +1615,17 @@ hatch run format            # ruff check --fix, ruff format
    pusher; when the agent must push, that PR now requires a second approver,
    and saying so is the difference between a one-line request and a branch that
    never merges.
+
+   **Every spelling counts, including the one that is not a `git` command.** The
+   **"Update branch" button** on the pull request page is this same push. It sits
+   beside the merge button, presents itself as branch maintenance, prompts
+   nothing, needs no local checkout and handles no token the operator holds --
+   and it makes whoever clicked it the last pusher exactly as `git push` does. It
+   is not an exception because it is one click. Measured on #2907, a branch whose
+   author is `logesh4v`: the button produced its head twice, four days apart, and
+   each press spent the pull request's sole approval -- the second time after the
+   mechanism had already been written up in a comment on that same pull request.
+   A base refresh on a contributor's branch is theirs to make.
 
    **#1035 later crossed into the second row, which makes it the whole rule
    observed twice on one pull request.** CI triage on it correctly diagnosed a
@@ -1621,11 +1656,24 @@ hatch run format            # ruff check --fix, ruff format
    state now, and needs an approver who is not the account that pushed
    `8d6a4c42`.
 
-   Do not try to settle this from the commit metadata, which misleads in both
-   directions. #1722's author and committer are `strands-robots`, an identity
-   distinct from the approver, which reads as the rule being satisfied when it is
-   not; #1035's head names the maintainer outright. Same `REVIEW_REQUIRED`,
-   opposite metadata. Only `triggering_actor` is load-bearing.
+   Do not try to settle this from the commit metadata, which misleads in three
+   different directions. All three heads below read `REVIEW_REQUIRED`; only
+   `triggering_actor` is load-bearing.
+
+   | head | git author / committer | metadata reads as |
+   |---|---|---|
+   | #1722 `d938686` | both `strands-robots`, an identity distinct from the approver | rule satisfied |
+   | #1035 `8d6a4c42` | both the maintainer outright | rule unsatisfied |
+   | #2907 `1c66c8f3` | author the maintainer, committer **`web-flow`** | nobody pushed this at all |
+
+   The third row is the most reassuring of the three and so the least likely to
+   prompt a check: a commit whose committer is a GitHub service account reads as
+   GitHub having performed the merge rather than a person. It is what the
+   **"Update branch" button** leaves behind, and the clicker survives only in the
+   git *author* field and in `triggering_actor` -- both `cagataycali` on that
+   head, across all 12 of its workflow runs, on a branch authored by `logesh4v`.
+   A table that stopped two of the three shapes is why this one was read twice as
+   harmless.
 
    All of the above was documented here and enforced by nothing, which is the
    same shape as the changelog rule in step 3 before #1784. It is now surfaced by
@@ -2158,6 +2206,17 @@ Corrections from code review that apply to all future contributions:
 - **Reject shell metacharacters in paths** - `;`, `|`, `$`, backticks, `>`, `<`,
   `\n`, `\r`, `\x00`. Also reject `..` path traversal components. Apply even when
   using argv-style subprocess.
+- **Anchor an allowlist with `\Z`, not `$`** - `$` matches at the end of the string
+  *or immediately before a single trailing newline*, so `re.match(r"^[a-z]+$", "abc\n")`
+  succeeds and the bullet above is not enforced by the pattern that claims to enforce
+  it. Spell the anchor `\Z`, or consult the pattern with `re.fullmatch`, which anchors
+  both ends itself. The difference is invisible in the pattern's rendered text and in
+  any test whose fixtures carry no line break, which is how the patterns in this
+  package came to disagree with the two that had been audited for it. Held for the
+  whole package by
+  `tests/test_allowlist_patterns_anchor_at_the_end_of_the_string.py`, whose population
+  is derived from the source rather than listed, so an allowlist added later is graded
+  on arrival.
 - **Bind to `127.0.0.1` by default**, not `0.0.0.0`. Users explicitly opt into
   network exposure.
 

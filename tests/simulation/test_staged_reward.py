@@ -7,16 +7,26 @@ The task (e.g. pick-and-place) is authored as DATA, never shipped as code, and
 never via ``eval``. These tests drive a fake SimEngine through the phases and
 pin: phase advance, one-time bonus, monotonicity (no regression), reset(), and
 that a full pick-place reward compiles from a spec dict alone.
+
+``staged_reward`` is itself registered, and a stage's ``reward`` is compiled by
+calling back into ``make_predicate``, so a stage may hold another phase machine.
+A nested machine is per-episode state exactly like the outer one, and the outer
+phase resets correctly whether or not the inner one does - so the reset pins
+below drive a nested machine and not only a flat one.
 """
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
+from strands_robots.simulation.benchmark_spec import DeclarativeBenchmark
 from strands_robots.simulation.predicates import (
     PREDICATE_REGISTRY,
     StatefulRewardTerm,
     make_predicate,
+    register_predicate,
 )
 
 
@@ -160,6 +170,7 @@ def test_advances_at_most_one_stage_per_step() -> None:
 
 
 def test_reset_clears_phase() -> None:
+    """The flat case: every sub-predicate is stateless, so the phase IS the state."""
     eng = _ScriptedEngine()
     term = make_predicate("staged_reward", stages=PICK_PLACE_STAGES)
     eng.set("gripper", [1.0, 0.0, 0.0])
@@ -167,6 +178,169 @@ def test_reset_clears_phase() -> None:
     assert term.phase == 1
     term.reset()
     assert term.phase == 0
+
+
+def test_reset_does_not_disturb_the_stages_themselves() -> None:
+    """Control: a machine still advances and still pays its bonus after a reset."""
+    eng = _ScriptedEngine()
+    term = make_predicate("staged_reward", stages=PICK_PLACE_STAGES)
+    term.reset()
+    eng.set("gripper", [1.0, 0.0, 0.0])
+    assert term(eng) == pytest.approx(5.0)
+    assert term.phase == 1
+
+
+# --- a nested machine is per-episode state too ---
+#
+# The inner machine below pays a large one-time bonus on its single transition,
+# so an episode's score says which stage it opened in. The OUTER gate asks for
+# z=5.0, which nothing in these episodes reaches, so the outer machine stays in
+# stage 0 for the whole episode and every step is scored by the inner one.
+
+
+def _nested_machine_call(depth: int) -> dict[str, Any]:
+    """A ``staged_reward`` predicate call holding ``depth`` machines in total."""
+    call: dict[str, Any] = {
+        "predicate": "staged_reward",
+        "stages": [
+            {
+                "reward": {"predicate": "constant", "value": 1.0},
+                "advance_when": {"predicate": "body_above_z", "body": "cube", "z": 0.2},
+                "bonus": 100.0,
+            },
+            {"reward": {"predicate": "constant", "value": 7.0}},
+        ],
+    }
+    for _ in range(depth - 1):
+        call = {
+            "predicate": "staged_reward",
+            "stages": [
+                {"reward": call, "advance_when": {"predicate": "body_above_z", "body": "cube", "z": 5.0}},
+                {"reward": {"predicate": "constant", "value": 0.0}},
+            ],
+        }
+    return call
+
+
+# What one episode scores when the innermost gate fires on its third step: two
+# steps of the inner stage-0 shaping term, the transition paying that term plus
+# the one-time bonus, then the inner terminal stage.
+FIRST_EPISODE = [1.0, 1.0, 101.0, 7.0, 7.0]
+
+
+def _score_episode(term: Any, eng: _ScriptedEngine, *, steps: int = 5) -> list[float]:
+    """Score ``steps`` steps from the pose every episode starts at, lifting on step 2."""
+    eng.set("cube", [1.0, 0.0, 0.0])
+    scores = []
+    for step in range(steps):
+        if step == 2:
+            eng.set("cube", [1.0, 0.0, 0.6])
+        scores.append(round(float(term(eng)), 4))
+    return scores
+
+
+@pytest.mark.parametrize("depth", [2, 3, 4])
+def test_a_second_episode_replays_a_nested_curriculum(depth: int) -> None:
+    """Episodes are independent, however deep the machine holding the state is."""
+    eng = _ScriptedEngine()
+    term = make_predicate("staged_reward", stages=_nested_machine_call(depth)["stages"])
+    assert _score_episode(term, eng) == FIRST_EPISODE
+    term.reset()
+    assert _score_episode(term, eng) == FIRST_EPISODE
+
+
+def test_a_nested_one_time_bonus_is_awarded_once_per_episode() -> None:
+    """Once per episode, not once per process: three episodes pay it three times."""
+    eng = _ScriptedEngine()
+    term = make_predicate("staged_reward", stages=_nested_machine_call(2)["stages"])
+    awarded = 0
+    for _ in range(3):
+        term.reset()
+        awarded += sum(1 for score in _score_episode(term, eng) if score > 50.0)
+    assert awarded == 3
+
+
+def test_a_nested_machine_reports_stage_zero_after_a_reset() -> None:
+    """The inner phase directly, so a failure names the state and not the score."""
+    outer = make_predicate("staged_reward", stages=_nested_machine_call(2)["stages"])
+    inner = outer._stages[0][0]
+    assert isinstance(inner, StatefulRewardTerm)
+    eng = _ScriptedEngine()
+    _score_episode(outer, eng)
+    assert (outer.phase, inner.phase) == (0, 1)
+    outer.reset()
+    assert (outer.phase, inner.phase) == (0, 0)
+
+
+@pytest.mark.parametrize("slot", ["reward", "advance_when"])
+def test_reset_clears_a_stateful_sub_term_in_whichever_slot_holds_it(slot: str) -> None:
+    """The rule is the sub-term's, not the slot's: anything resettable is cleared.
+
+    No shipped predicate reaches ``advance_when`` statefully - the kind guard
+    refuses a reward term there - but one registered through
+    :func:`register_predicate` can, and a latched gate is exactly the "latched
+    successes" the :class:`StatefulRewardTerm` contract names.
+    """
+
+    class _Latch:
+        def __init__(self) -> None:
+            self.resets = 0
+
+        def __call__(self, _sim: Any) -> Any:
+            return True if slot == "advance_when" else 1.0
+
+        def reset(self) -> None:
+            self.resets += 1
+
+    latch = _Latch()
+    name = "test_staged_reward_stateful_sub_term"
+    register_predicate(name, lambda: latch)
+    try:
+        stage: dict[str, Any] = {
+            "reward": {"predicate": "constant", "value": 1.0},
+            "advance_when": {"predicate": "body_above_z", "body": "cube", "z": 0.2},
+        }
+        stage[slot] = {"predicate": name}
+        term = make_predicate(
+            "staged_reward",
+            stages=[stage, {"reward": {"predicate": "constant", "value": 0.0}}],
+        )
+        assert latch.resets == 0
+        term.reset()
+        assert latch.resets == 1
+    finally:
+        PREDICATE_REGISTRY.pop(name, None)
+
+
+def test_a_spec_authored_nested_machine_is_cleared_by_the_consumers_rule() -> None:
+    """The path a real task takes: authored as data, compiled by the spec
+    compiler, and cleared by the duck-typed call both consumers make on the
+    terms they hold (``SimEnv.reset`` / ``on_episode_start``)."""
+    bench = DeclarativeBenchmark.from_dict(
+        {
+            "name": "nested_curriculum",
+            "default_robot": "so101",
+            "supported_robots": ["so101"],
+            "dense_reward": [_nested_machine_call(2)],
+        }
+    )
+    eng = _ScriptedEngine()
+
+    def episode() -> list[float]:
+        eng.set("cube", [1.0, 0.0, 0.0])
+        scores = []
+        for step in range(5):
+            if step == 2:
+                eng.set("cube", [1.0, 0.0, 0.6])
+            scores.append(round(bench.on_step(eng, {}, {}).reward, 4))
+        return scores
+
+    assert episode() == FIRST_EPISODE
+    for term in bench._reward_terms:
+        term_reset = getattr(term, "reset", None)
+        if callable(term_reset):
+            term_reset()
+    assert episode() == FIRST_EPISODE
 
 
 # --- validation / safety ---

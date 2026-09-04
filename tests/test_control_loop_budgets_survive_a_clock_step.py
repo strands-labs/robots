@@ -47,6 +47,13 @@ settled the same boundary three times (``tests/mesh/test_replay_cache_monotonic.
 bookkeeping and belongs on a monotonic clock, while an absolute stamp a reader
 correlates with other logs stays on the wall clock.
 
+The telemetry throttle's *off* switch is pinned here for the same reason: it
+is decided by the same subtraction against the same base, and the base is the
+one this file installs. ``STRANDS_MESH_STREAM_HZ=0`` resolves to an infinite
+period, which no finite elapsed time reaches -- but a ``-inf`` base makes the
+first step's elapsed time infinite too, so the opt-out has to be tested for
+rather than inferred from the arithmetic.
+
 No serial/USB hardware is touched: the driver and the leader are in-memory
 fakes and the policy is a structural stub.
 """
@@ -54,6 +61,7 @@ fakes and the policy is a structural stub.
 from __future__ import annotations
 
 import importlib
+import math
 import threading
 import time as real_time
 from concurrent.futures import ThreadPoolExecutor
@@ -65,6 +73,7 @@ from strands_robots import hardware_robot as hardware_robot_module
 from strands_robots import teleop_mixin as teleop_mixin_module
 from strands_robots.hardware_robot import Robot as HardwareRobot
 from strands_robots.hardware_robot import RobotTaskState, TaskStatus
+from strands_robots.mesh.session import stream_min_period_from_env
 from tests.test_hardware_control_loop_rate_guard import _FakeArm
 from tests.test_teleop import FakeHost, FakeTeleop
 
@@ -195,6 +204,11 @@ def _hardware_robot(mesh: Any = None, stream_min_period: float = 0.05) -> Hardwa
     robot.robot = _RecordingArm()
     robot._last_stream_pub = float("-inf")
     robot._stream_min_period = stream_min_period
+    # Derived here the way ``Robot.__init__`` derives it, because this harness
+    # builds the robot through ``__new__``. That the constructor really does
+    # derive it from the environment is pinned separately, against a real
+    # ``HardwareRobot``, in ``TestAnOperatorsOptOutPublishesNothing``.
+    robot._stream_enabled = math.isfinite(stream_min_period)
 
     async def _connected() -> tuple[bool, str]:
         return (True, "")
@@ -424,3 +438,95 @@ class TestTheThrottleStartsDue:
 
     def test_a_fresh_task_state_has_no_start_reading(self):
         assert RobotTaskState().start_mono == 0.0
+
+
+class TestAnOperatorsOptOutPublishesNothing:
+    """``STRANDS_MESH_STREAM_HZ=0`` means no step telemetry, including the first.
+
+    The variable's documented contract is that a non-positive or unusable value
+    "switches step publishing off rather than changing the rate" (README), and
+    ``stream_min_period_from_env`` spells that off as ``math.inf`` on the
+    reasoning that no elapsed time reaches an infinite period.
+
+    That reasoning holds for a finite base. ``_last_stream_pub`` is not finite:
+    it starts at ``-inf`` so the first step of a rollout is due wherever the
+    platform's monotonic epoch sits, and ``monotonic() - (-inf) >= inf`` is
+    ``inf >= inf``, which is ``True``. So one ``publish_step`` -- a whole
+    observation, action and instruction -- escaped onto the mesh per rollout
+    despite the opt-out, and the publish then wrote a finite base, which is why
+    it was one and not many. Measured on the loop below, before the gate::
+
+        STRANDS_MESH_STREAM_HZ    period  commands  publish_step  reported
+        unset (default)              0.1        74             4   success
+        0                            inf        75             1   success
+        nonsense                     inf        75             1   success
+
+    The two controls are the point alongside the zeroes: an operator who asked
+    for a rate still gets one, and an enabled stream's first step is still due
+    immediately. Together they refuse the two wrong fixes -- gating on
+    something that also silences a configured stream, and moving the base to
+    ``0.0``, which would make the first publish depend on the host's uptime.
+    """
+
+    #: Every spelling of "off" the variable accepts: non-positive, and the
+    #: unusable values the warn-and-leave-off fallback covers.
+    OFF_VALUES = ["0", "0.0", "-1", "nonsense", "inf", "nan"]
+
+    @pytest.mark.parametrize("raw", OFF_VALUES)
+    def test_an_off_value_publishes_no_step_at_all(self, monkeypatch: pytest.MonkeyPatch, raw: str):
+        """A rollout under the opt-out must put nothing on the mesh."""
+        monkeypatch.setenv("STRANDS_MESH_STREAM_HZ", raw)
+        period = stream_min_period_from_env()
+        assert period == math.inf, f"{raw!r} no longer resolves to the off sentinel"
+
+        mesh = _RecordingMesh()
+        run = _run_rollout(monkeypatch, 0.0, mesh=mesh, stream_min_period=period)
+
+        assert run["commands"] > 1, "the rollout did not run, so publishing nothing proves nothing"
+        assert mesh.publish_times == [], (
+            f"STRANDS_MESH_STREAM_HZ={raw!r} still let {len(mesh.publish_times)} publish(es) onto the mesh"
+        )
+
+    def test_a_rate_the_operator_asked_for_is_still_published(self, monkeypatch: pytest.MonkeyPatch):
+        """Control: the gate must not silence a configured stream."""
+        monkeypatch.setenv("STRANDS_MESH_STREAM_HZ", "100")
+        period = stream_min_period_from_env()
+        assert math.isfinite(period)
+
+        mesh = _RecordingMesh()
+        _run_rollout(monkeypatch, 0.0, mesh=mesh, stream_min_period=period)
+
+        assert len(mesh.publish_times) >= 2, "a configured stream published at most once"
+
+    def test_an_enabled_streams_first_step_is_still_due_immediately(self, monkeypatch: pytest.MonkeyPatch):
+        """Control: the ``-inf`` base still owes the first publish.
+
+        Asked for a period far longer than the rollout, an enabled stream
+        publishes exactly once and does it at the start. Moving the base to
+        ``0.0`` to dodge the sentinel would make this depend on the host's
+        monotonic epoch being past the period.
+        """
+        mesh = _RecordingMesh()
+        started = real_time.monotonic()
+        _run_rollout(monkeypatch, 0.0, mesh=mesh, stream_min_period=3600.0)
+
+        assert len(mesh.publish_times) == 1, "an hour-long period published more than the first step"
+        assert mesh.publish_times[0] - started < BUDGET / 2, "the first publish was not due at the start"
+
+    @pytest.mark.parametrize(("raw", "enabled"), [("0", False), ("nonsense", False), ("50", True)])
+    def test_the_constructor_resolves_the_gate_from_the_environment(
+        self, monkeypatch: pytest.MonkeyPatch, raw: str, enabled: bool
+    ):
+        """The flag the loop reads is decided once, in ``__init__``, from the env.
+
+        The harness above builds its robot through ``__new__``, so this is the
+        cell that grades the real constructor.
+        """
+        monkeypatch.setenv("STRANDS_MESH_STREAM_HZ", raw)
+        monkeypatch.setattr(HardwareRobot, "_initialize_robot", lambda self, robot, cameras, **kw: _FakeArm())
+        monkeypatch.setattr(HardwareRobot, "_migrate_legacy_calibration", lambda self: None)
+        robot = HardwareRobot(tool_name="test_arm", robot="fake_arm")
+        try:
+            assert robot._stream_enabled is enabled
+        finally:
+            robot.cleanup()

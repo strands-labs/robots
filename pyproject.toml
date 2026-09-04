@@ -36,17 +36,29 @@ classifiers = [
 dependencies = [
     # CAPABILITY floor, not a nominal lower bound. The package imports
     # ``strands.types.tools.ToolContext`` (first shipped in strands-agents
-    # 1.5.0) and ``strands.types._events.ToolResultEvent`` (first shipped in
-    # 1.7.0), both at module import time. Measured against the released
-    # wheels, every release below 1.7.0 leaves
+    # 1.5.0), ``strands.types._events.ToolResultEvent`` (first shipped in
+    # 1.7.0) and ``strands.hooks.BeforeToolCallEvent`` (usable from 1.13.0,
+    # and what sets this floor), all at module import time. Measured
+    # against the released wheels, every release below 1.7.0 leaves
     # ``strands_robots.simulation.mujoco.simulation`` and
     # ``strands_robots.hardware_robot`` unimportable, so a resolve inside an
     # older-but-declared range yields an install where ``import
     # strands_robots`` succeeds (those are lazy exports) and
-    # ``strands_robots.Simulation`` simply does not exist. See
-    # tests/test_strands_agents_floor_ships_the_imported_api.py, which fails
-    # the moment a newer strands symbol is imported without raising this floor.
-    "strands-agents>=1.7.0,<2.0.0",
+    # ``strands_robots.Simulation`` simply does not exist. Below 1.10.0 the
+    # dashboard's human-in-the-loop motion gate
+    # (``strands_robots.dashboard.agent_hitl``) raises on import instead, since
+    # that package is not lazy.
+    #
+    # The bound is 1.13.0 rather than 1.10.0 because the hook event's name and
+    # the method that gate calls on it ship in different releases: the class
+    # enters ``strands.hooks.__all__`` at 1.10.0, but ``interrupt`` only enters
+    # its MRO at 1.13.0. On 1.10.0-1.12.x the gate therefore imports cleanly and
+    # raises ``AttributeError`` at the moment it should pause a real robot, which
+    # is a worse outcome than refusing the install. See
+    # tests/test_strands_agents_floor_ships_the_imported_api.py, which owns that
+    # measurement, grades the members the gate calls, and fails the moment a
+    # newer strands symbol is imported without raising this floor.
+    "strands-agents>=1.13.0,<2.0.0",
     "numpy>=1.21.0,<3.0.0",
     "opencv-python-headless>=4.5.0,<5.0.0",
     "Pillow>=8.0.0,<13.0.0",
@@ -574,7 +586,7 @@ vera-sim = [
 # Delegate to strands-agents' own [ollama] extra (bounded pin, ollama>=0.4.8,<1.0.0)
 # so the client version stays in sync with the code that imports it.
 ollama = [
-    "strands-agents[ollama]>=1.7.0,<2.0.0",
+    "strands-agents[ollama]>=1.13.0,<2.0.0",
 ]
 # Remote policy inference (client/server split): stream observations from a
 # CPU/edge robot host to a remote GPU PolicyServer and receive action chunks

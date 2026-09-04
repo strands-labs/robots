@@ -104,11 +104,13 @@ takes the default types, so ``reopened`` recomputes with no commit, therefore no
 push, therefore neither ``dismiss_stale_reviews_on_push`` nor a new last pusher.
 
 Do not push the branch, even though "out of date" reads like a request to
-refresh it. On a contributor's branch a push consumes the approval of whoever
-owns the pushing token under ``require_last_push_approval``, converting a pull
-request one maintainer could merge into one that needs a second approver -- the
-state #1035 has been in since 2026-08-01. On #2508 the branch also needed
-nothing: the author had already merged the base cleanly.
+refresh it -- and the ``Update branch`` button beside that label is that push,
+not an alternative to it. On a contributor's branch either spelling consumes the
+approval of the account the new head is attributed to under
+``require_last_push_approval``, converting a pull request one maintainer could
+merge into one that needs a second approver -- the state #1035 has been in since
+2026-08-01. On #2508 the branch also needed nothing: the author had already
+merged the base cleanly.
 
 Read the close/reopen history first, per AGENTS.md step 8, counting ``nodes``
 rather than ``totalCount``. #2508 had zero, so a single flip was safe. An
@@ -179,14 +181,15 @@ WHAT_CLEARS_THIS: tuple[str, ...] = (
     "An alternating run means something is undoing you and a further flip only",
     "lengthens it.",
     "",
-    "Do **not** push the branch to refresh it, however much `Head branch is out",
-    "of date` reads like a request to. There is no staleness gate on this",
-    "repository to satisfy -- the `default` ruleset sets",
+    "Do **not** refresh the branch, however much `Head branch is out of date`",
+    'reads like a request to -- and that includes the **"Update branch" button**',
+    "the label belongs to, which is that push made in one click. There is no",
+    "staleness gate on this repository to satisfy -- the `default` ruleset sets",
     "`strict_required_status_checks_policy: false` and `main` has no classic",
-    "protection -- and on a contributor's branch a push consumes the approval of",
-    "whoever owns the pushing token under `require_last_push_approval`, which",
-    "turns a pull request one maintainer could merge into one needing a second",
-    "approver.",
+    "protection -- and on a contributor's branch either spelling consumes the",
+    "approval of the account the new head is attributed to under",
+    "`require_last_push_approval`, which turns a pull request one maintainer",
+    "could merge into one needing a second approver.",
     "",
     "Expect `reviewDecision` to move to `REVIEW_REQUIRED` once the record",
     "catches up, and read that as bookkeeping rather than lost review: the",

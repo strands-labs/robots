@@ -64,7 +64,13 @@ Every rollout knob is judged before that bring-up window, not inside it.
 `policy_port` a port in `1-65535` - the same domain the policy providers
 themselves apply, so a port the arm accepts is a port the provider can dial.
 `policy_port` is required unless `run_policy` is given a pre-built
-`policy_object`, which is the one case where the port is not read. A value none
+`policy_object`, or the named `policy_provider` builds its policy in process.
+The registry decides that per provider, from two separate fields: `requires`
+lists what a caller must supply, so it is what makes a *missing* port an error
+(`groot` and `moveit2` name it); `config_keys` lists what the provider
+understands, so it is what makes a *supplied* port an error for a provider that
+reads none. Passing a port to `mock` or `lerobot_local` is refused here rather
+than forwarded and dropped. A value none
 of them can honor is reported by name, with the arm still disconnected and the
 command bus still free for a task that could run.
 

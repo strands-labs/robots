@@ -46,15 +46,15 @@ import re
 
 # ROS 2 graph names: leading slash plus alnum/_ segments (tilde/braces are
 # substitution syntax that must already be resolved before mangling).
-_ROS_TOPIC_RE = re.compile(r"^/[A-Za-z0-9_/]*[A-Za-z0-9_]$")
+_ROS_TOPIC_RE = re.compile(r"^/[A-Za-z0-9_/]*[A-Za-z0-9_]\Z")
 
 # Message interfaces only - see the module docstring for why ``srv``/``action``
 # cannot appear here.
-_ROS_TYPE_RE = re.compile(r"^[A-Za-z0-9_]+/msg/[A-Za-z0-9_]+$")
+_ROS_TYPE_RE = re.compile(r"^[A-Za-z0-9_]+/msg/[A-Za-z0-9_]+\Z")
 
 # A well-formed service or action interface. Matched separately so it is refused
 # with the mapping explained instead of being reported as a malformed name.
-_ROS_SERVICE_TYPE_RE = re.compile(r"^[A-Za-z0-9_]+/(srv|action)/[A-Za-z0-9_]+$")
+_ROS_SERVICE_TYPE_RE = re.compile(r"^[A-Za-z0-9_]+/(srv|action)/[A-Za-z0-9_]+\Z")
 
 # DDS topic prefixes per the ROS 2 mapping. Only ``rt`` (topics) is used in v1.
 _TOPIC_PREFIX = "rt"

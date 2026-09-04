@@ -66,6 +66,54 @@ def get_policy_provider(name: str) -> dict[str, Any] | None:
     return reg.get("providers", {}).get(_canonical_provider_name(name))
 
 
+def provider_reads_a_port(name: str | None) -> bool | None:
+    """Report whether *name*'s policy constructor reads a ``port`` keyword.
+
+    Distinct from "requires a port". The registry answers two different
+    questions about a port from two different fields, and conflating them makes
+    one of them unanswerable:
+
+    - ``requires`` lists the keywords a caller MUST supply, so it is the oracle
+      for refusing a *missing* port. Only ``groot`` and ``moveit2`` name it -
+      ``cosmos3`` dials a server too but defaults its port, so a caller may
+      legally omit it.
+    - ``config_keys`` lists the keywords the provider UNDERSTANDS, so it is the
+      oracle for refusing a *supplied* port. A provider outside this set is
+      handed a keyword it never declared.
+
+    Args:
+        name: Provider name or alias, or ``None`` when none was supplied.
+
+    Returns:
+        ``True`` when the provider declares a ``port`` keyword, ``False`` when
+        it declares none, and ``None`` when the answer is unknown - no provider
+        was named, the name is not registered, or the registry could not be
+        read. ``None`` is deliberately distinct from ``False`` so a caller stays
+        conservative about a provider it cannot classify rather than treating it
+        as port-less.
+    """
+    if not name:
+        return None
+    try:
+        spec = get_policy_provider(name)
+    except Exception:  # noqa: BLE001 - a registry read must not decide a port
+        return None
+    if spec is None:
+        return None
+    return "port" in (spec.get("config_keys") or ())
+
+
+def port_reading_providers() -> tuple[str, ...]:
+    """Return the registered providers that declare a ``port`` keyword.
+
+    Derived from the same ``config_keys`` field :func:`provider_reads_a_port`
+    reads, so a provider that gains or loses a port keyword moves in and out of
+    this list with no other edit. Used to name the alternatives when a port is
+    supplied to a provider that declares none.
+    """
+    return tuple(name for name in list_policy_providers() if provider_reads_a_port(name))
+
+
 def list_policy_providers() -> list[str]:
     """List all registered policy provider names (canonical only)."""
     reg = _load("policies")

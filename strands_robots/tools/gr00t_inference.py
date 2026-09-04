@@ -146,7 +146,7 @@ def _image_allowlist() -> tuple[str, ...]:
 # Anything outside that (whitespace, ``;$()`` `\`` etc.) is rejected before
 # the value reaches argv, defence in depth even though the container is
 # started with subprocess in argv-mode (no shell).
-_IMAGE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/@-]*$")
+_IMAGE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/@-]*\Z")
 
 
 def _is_allowed_image(image_name: str) -> bool:
@@ -204,7 +204,7 @@ def _is_allowed_repo_url(repo_url: str) -> bool:
 # git refs may legitimately contain letters, digits, and ``._/-``; anything
 # else (whitespace, shell metacharacters, a leading ``-`` that git would read
 # as an option) is rejected before the value reaches ``git --branch``/checkout.
-_REPO_TAG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]*$")
+_REPO_TAG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]*\Z")
 
 
 def _is_allowed_repo_tag(repo_tag: str) -> bool:
@@ -468,7 +468,7 @@ def _numeric_option_error(
     return None
 
 
-_ENUMERABLE_OPTION_RE = re.compile(r"^[a-z][a-z0-9_]+$")
+_ENUMERABLE_OPTION_RE = re.compile(r"^[a-z][a-z0-9_]+\Z")
 
 #: Per-action set of enumerable string options the action's command line reads.
 #: The keys mirror :data:`_ACTION_NUMERIC_OPTIONS` -- these five options are

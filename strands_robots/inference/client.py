@@ -163,6 +163,7 @@ class RemotePolicy(Policy):
         self._execution_horizon: int = 1
         self.actions_per_step: int = 1
         self.supports_rtc: bool = False
+        self._required_bodies: tuple[str, ...] = ()
 
     # -- connection lifecycle -------------------------------------------------
 
@@ -261,6 +262,14 @@ class RemotePolicy(Policy):
         self.actions_per_step = int(metadata.get("actions_per_step", self.actions_per_step))
         self.supports_rtc = bool(metadata.get("supports_rtc", self.supports_rtc))
         self._execution_horizon = int(metadata.get("execution_horizon", self._execution_horizon))
+        # A JSON array of names. Coerced to the shape the robot host's runtime
+        # validates rather than trusted verbatim, so a peer sending something
+        # else cannot make the local resolver report the proxy as the declaring
+        # class; a server built on this release refuses a malformed declaration
+        # before it advertises one.
+        advertised = metadata.get("required_bodies")
+        if isinstance(advertised, list | tuple):
+            self._required_bodies = tuple(name for name in advertised if isinstance(name, str) and name.strip())
 
     def close(self) -> None:
         """Close the WebSocket connection. Safe to call more than once."""
@@ -363,6 +372,25 @@ class RemotePolicy(Policy):
         """Mirror the server policy's re-query interval so RTC/chunking stays correct."""
         self._ensure_connected()
         return max(1, self._execution_horizon)
+
+    @property
+    def required_bodies(self) -> tuple[str, ...]:
+        """Mirror the served tree's declared bodies so the robot host supplies them.
+
+        ``required_bodies`` is read on the machine driving the rollout, not on
+        the inference host: the simulation runtime resolves the names once
+        before the rollout, refuses one the scene does not contain, and merges
+        each body's pose into every observation it sends. The policy that needs
+        them is behind the wire, so unless this half declares them too both
+        halves of that contract are skipped - the rollout reports success having
+        never supplied the key, and a name the scene lacks is never reported.
+
+        Empty until the ``ready`` handshake has been read, so this connects
+        first, exactly as :attr:`requires_images` and :attr:`execution_horizon`
+        do.
+        """
+        self._ensure_connected()
+        return self._required_bodies
 
     def set_robot_state_keys(self, robot_state_keys: list[str]) -> None:
         """Store the robot state keys and forward them to the server policy.

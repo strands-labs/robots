@@ -1,6 +1,6 @@
 """The operator-response audit row every human-in-the-loop gate owes.
 
-Three tools stop and ask a human before an agent-issued command reaches a robot
+Four gates stop and ask a human before an agent-issued command reaches a robot
 or a training run, and each owes that reply two things that pull in opposite
 directions. It must not reach the model - a flat sentinel goes back instead, so
 an agent that authors the approval reason cannot make the operator's typed answer
@@ -13,8 +13,14 @@ mesh tool wrote it - a ``use_ros`` publish to ``/cmd_vel`` and a ``lerobot_train
 ``output_dir`` override that an operator declined left no audit row, no log record,
 and so no trace that a gate had fired at all. These tests grade the observable (a
 row exists, carrying the reply) rather than which function writes it, and derive
-the set of gates from the ``interrupt()`` call sites so a fourth gate is graded on
-arrival instead of inheriting the silence.
+the set of gates from the ``interrupt()`` call sites so a further gate is graded
+on arrival instead of inheriting the silence.
+
+That derivation has since done its job once: the dashboard's motion gate arrived as
+a fourth site and this file failed until it was graded. It is a ``BeforeToolCallEvent``
+hook rather than a tool body, so it is the first gate whose interrupt lives on a
+METHOD and which signals a decline by setting ``event.cancel_tool`` instead of
+returning a result - see ``_Gate.owner`` and ``_drive_dashboard_agent_hitl``.
 """
 
 from __future__ import annotations
@@ -30,6 +36,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import strands_robots
+import strands_robots.dashboard.agent_hitl as dash_hitl_mod
 import strands_robots.tools._command_gate as gate_mod
 import strands_robots.tools.lerobot_train as train_mod
 import strands_robots.tools.robot_mesh as mesh_mod
@@ -75,8 +82,50 @@ def _drive_robot_mesh(response: object) -> dict[str, Any] | None:
         return fn(action="emergency_stop", tool_context=_ctx(response))
 
 
+def _drive_dashboard_agent_hitl(response: object) -> dict[str, Any] | None:
+    """A fleet ``task`` aimed at a peer that reports real hardware.
+
+    This gate is a ``BeforeToolCallEvent`` hook, not a tool body, so it says "no"
+    by setting ``event.cancel_tool`` rather than by returning a result. The SDK
+    turns exactly that into the result the model sees -- a truthy ``cancel_tool``
+    becomes ``{"status": "error", "content": [{"text": cancel_tool}]}`` in
+    ``strands.tools.executors._executor`` -- so this drive performs the SDK's own
+    translation and the table's shared cells grade one shape across all four gates.
+
+    The peer states ``hw`` rather than relying on ``peer_is_physical``'s
+    fall-through, so the drive keeps reaching the operator even if the default for
+    an unclassified peer ever changes.
+    """
+    tool_input = {"action": "task", "target": "arm-1", "instruction": "wave"}
+    hook = dash_hitl_mod.MotionInterruptHook(lambda: {"arm-1": {"presence": {"hw": "so101"}}})
+
+    event = MagicMock(name="BeforeToolCallEvent")
+    event.tool_use = {"name": "fleet", "input": tool_input}
+    event.interrupt.return_value = response
+    event.cancel_tool = False  # the real event's default, so an approval reads as "not cancelled"
+
+    try:
+        hook._gate(event)
+    finally:
+        # A yes deposits a one-shot grant in process-global state; do not leak it
+        # into another cell (or another file) that reads the same set.
+        dash_hitl_mod.consume_grant("fleet", tool_input)
+
+    if not event.cancel_tool:
+        return None
+    return {"status": "error", "content": [{"text": str(event.cancel_tool)}]}
+
+
 class _Gate:
-    """One HITL gate: how to drive it, and where its interrupt lives."""
+    """One HITL gate: how to drive it, and where its interrupt lives.
+
+    ``module`` and ``function`` are the coordinates the tree scan reports, so they
+    are the pair ``test_the_table_covers_every_interrupt_site`` compares against.
+    ``owner`` is the object that function is reachable on, for the cells that read
+    its source. The two coincide for a module-level gate and default that way; the
+    dashboard's gate is a method, so its function hangs off the class while its
+    module stays the coordinate the scan yields.
+    """
 
     def __init__(
         self,
@@ -87,6 +136,7 @@ class _Gate:
         drive: Callable[[object], dict[str, Any] | None],
         module: Any,
         function: str,
+        owner: Any = None,
     ) -> None:
         self.label = label
         self.source = source
@@ -95,6 +145,7 @@ class _Gate:
         self.drive = drive
         self.module = module
         self.function = function
+        self.owner = module if owner is None else owner
 
 
 # The module/function columns name where the interrupt is raised, which for the
@@ -116,6 +167,16 @@ _GATES: tuple[_Gate, ...] = (
         "_gate_extra_flags",
     ),
     _Gate("robot_mesh", "robot_mesh_tool", "emergency_stop", "", _drive_robot_mesh, mesh_mod, "robot_mesh"),
+    _Gate(
+        "dashboard_agent_hitl",
+        "dashboard_agent_hitl",
+        "task",
+        "arm-1",
+        _drive_dashboard_agent_hitl,
+        dash_hitl_mod,
+        "_gate",
+        owner=dash_hitl_mod.MotionInterruptHook,
+    ),
 )
 
 _GATE_IDS = tuple(gate.label for gate in _GATES)
@@ -124,7 +185,12 @@ _GATE_IDS = tuple(gate.label for gate in _GATES)
 @pytest.fixture(autouse=True)
 def _quiet_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Neither pre-approval nor bypass, so every gate reaches the operator."""
-    for name in ("BYPASS_TOOL_CONSENT", "STRANDS_ROS2_COMMAND_ALLOW", "STRANDS_TRAIN_EXTRA_FLAGS_ALLOW"):
+    for name in (
+        "BYPASS_TOOL_CONSENT",
+        "STRANDS_ROS2_COMMAND_ALLOW",
+        "STRANDS_TRAIN_EXTRA_FLAGS_ALLOW",
+        dash_hitl_mod.MOTION_ENV,
+    ):
         monkeypatch.delenv(name, raising=False)
 
 
@@ -293,7 +359,7 @@ class TestTheGatedSetIsDerivedFromTheInterruptSites:
         A reader greps the audit log for one phrasing; a gate that spelled the row
         itself could drift to another and become invisible to that search.
         """
-        source = textwrap.dedent(inspect.getsource(getattr(gate.module, gate.function)))
+        source = textwrap.dedent(inspect.getsource(getattr(gate.owner, gate.function)))
         calls = [ast.unparse(node.func) for node in ast.walk(ast.parse(source)) if isinstance(node, ast.Call)]
         assert "log_operator_response" in calls, (
             f"{gate.label}'s gate does not record the operator's reply through the shared owner"
@@ -310,7 +376,7 @@ class TestTheGatedSetIsDerivedFromTheInterruptSites:
         gate reaches before it can return again cannot be bypassed that way, and
         it is the shape the other two gates already had.
         """
-        fn_src = textwrap.dedent(inspect.getsource(getattr(gate.module, gate.function)))
+        fn_src = textwrap.dedent(inspect.getsource(getattr(gate.owner, gate.function)))
         fn = next(
             node
             for node in ast.walk(ast.parse(fn_src))

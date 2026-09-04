@@ -22,9 +22,11 @@ policy = create_policy("ws://gpu-box:8765")
 | `request_timeout` | `60.0`        | Seconds to wait for each inference reply         |
 
 The client mirrors the server policy's `requires_images`, `execution_horizon`,
-`actions_per_step` and `supports_rtc`, and forwards the Real-Time Chunking
-observed-delay count on every request, so a remote rollout behaves like a local
-one. Install with `pip install 'strands-robots[inference]'`.
+`actions_per_step`, `supports_rtc` and `required_bodies`, and forwards the
+Real-Time Chunking observed-delay count on every request, so a remote rollout
+behaves like a local one. Mirroring `required_bodies` is what lets the robot
+host supply a body pose the remote policy needs - and refuse a body name its
+scene does not contain - since both of those happen locally. Install with `pip install 'strands-robots[inference]'`.
 
 See **[Remote Policy Inference](../inference/remote.md)** for the full
 two-machine setup, the server CLI, and the wire protocol.

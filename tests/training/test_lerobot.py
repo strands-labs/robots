@@ -7,8 +7,10 @@ end-to-end sim->train->load is exercised separately.
 import ast
 import dataclasses
 import importlib
+import importlib.metadata
 import inspect
 import json
+import re
 import sys
 from types import SimpleNamespace
 
@@ -1886,13 +1888,17 @@ class TestStreamingAndValidationSplitAreMutuallyExclusive:
     ``val_episodes`` becomes lerobot's ``dataset.eval_split``, and lerobot holds
     out a split only on a MAP-STYLE dataset: ``make_train_eval_datasets``
     rebuilds both halves as ``LeRobotDataset`` objects, which is what makes the
-    split addressable by episode. A streamed dataset is not one, and lerobot
-    answers that contradiction differently across the version range this backend
-    supports - ``DatasetConfig`` refuses the pair from lerobot 0.6.2, and before
-    that it constructed and the factory discarded the stream it had built first,
-    materializing the whole dataset while reporting nothing. Preflight refuses
-    the pair either way, the same way an unreadable episode count is refused
-    rather than allowed to drop a requested split.
+    split addressable by episode. A streamed dataset is not one, and which way
+    the pair fails depends on the installed lerobot: a ``DatasetConfig`` that
+    guards ``eval_split`` against ``streaming`` refuses it when the run starts,
+    and without that guard the factory discards the stream it had built first,
+    materializing the whole dataset while reporting nothing. 0.6.1 carries the
+    same-worded guard keyed on ``repo_type='bucket'``, which this backend never
+    sets, so the silent form is what a 0.6.1 caller gets. Preflight refuses the
+    pair either way - decided from the two fields alone, so the refusal does not
+    depend on a local episode count that a streamed Hub dataset does not have -
+    the same way an unreadable episode count is refused rather than allowed to
+    drop a requested split.
     """
 
     def _spec(self, dataset_root, tmp_path, **kw):
@@ -1949,22 +1955,170 @@ class TestStreamingAndValidationSplitAreMutuallyExclusive:
         spec = self._spec(dataset_root, tmp_path, val_episodes=2)
         assert LerobotTrainer().validate(spec) == []
 
-    def test_a_hub_source_with_no_readable_count_keeps_its_own_refusal(self, tmp_path):
-        # With no local meta/info.json no split is emitted at all, so the pair is
-        # not what is wrong here - the episode count is. Reporting both would name
-        # a conflict that this spec does not have.
-        spec = TrainSpec(
-            dataset_root="",
-            dataset_repo_id="lerobot/aloha_sim_transfer_cube_human",
-            base_model="",
-            output_dir=str(tmp_path / "out"),
-            streaming=True,
-            val_episodes=2,
-            extra={"policy_type": "act"},
+    @staticmethod
+    def _pair_refusal(problems):
+        """The pair refusal out of ``problems``, named rather than unpacked."""
+        found = [p for p in problems if "cannot be combined with val_episodes" in p]
+        assert len(found) == 1, f"expected exactly one refusal naming the pair, got {problems}"
+        return found[0]
+
+    @staticmethod
+    def _hub_stream_spec(tmp_path, **kw):
+        """A Hub source streamed with no local copy - what ``streaming`` is for."""
+        fields = {
+            "dataset_root": "",
+            "dataset_repo_id": "lerobot/aloha_sim_transfer_cube_human",
+            "base_model": "",
+            "output_dir": str(tmp_path / "out"),
+            "streaming": True,
+            "val_episodes": 2,
+            "extra": {"policy_type": "act"},
+        }
+        fields.update(kw)
+        return TrainSpec(**fields)
+
+    def test_a_hub_stream_with_no_readable_count_is_refused_for_the_pair(self, tmp_path):
+        """The pair is what is wrong, on the source ``streaming`` exists for.
+
+        This spec emits no ``eval_split``, which is why the count refusal used to
+        be reported here on the grounds that "no split is emitted at all, so the
+        pair is not what is wrong". That reasoning describes the spec as written
+        and stops holding as soon as the caller acts on it: the count refusal's
+        remedy is ``extra={'dataset.eval_split': ...}``, and applying it while
+        ``streaming`` is still set is the combination the sibling refusal exists
+        to prevent - see
+        :meth:`test_the_count_remedy_is_not_offered_to_a_streaming_caller`.
+        The conflict is a property of the two fields on this spec, both of which
+        are set, so it is decidable here and is what a caller needs told.
+        """
+        problems = LerobotTrainer().validate(self._hub_stream_spec(tmp_path))
+        assert any("streaming=True cannot be combined with val_episodes=2" in p for p in problems), (
+            f"the pair is set on this spec and delivers neither field, so it must be refused: {problems}"
         )
-        problems = LerobotTrainer().validate(spec)
-        assert any("episode count is unavailable" in p for p in problems)
-        assert not any("cannot be combined with" in p for p in problems)
+
+    def test_the_count_remedy_is_not_offered_to_a_streaming_caller(self, tmp_path):
+        """The refusal must not prescribe the passthrough that reinstates the pair.
+
+        ``extra`` is a documented raw passthrough and is deliberately not
+        policed - see :meth:`test_the_passthrough_still_reaches_lerobots_own_knobs`.
+        What must not happen is this backend NAMING it as the remedy to a caller
+        who still has ``streaming`` set, because that hands them the silent
+        whole-dataset materialization as the way forward.
+        """
+        problems = LerobotTrainer().validate(self._hub_stream_spec(tmp_path))
+        assert not any("dataset.eval_split" in p for p in problems), (
+            f"a streaming caller must not be told to pass the split through extra: {problems}"
+        )
+        assert not any("episode count is unavailable" in p for p in problems), (
+            "the count is moot once the pair is refused: no split will be emitted for it to size"
+        )
+
+    def test_the_passthrough_still_reaches_lerobots_own_knobs(self, tmp_path):
+        """Premise, not a fix pin: ``extra`` is raw and stays raw.
+
+        Holds both before and after the refusal is made reachable, and is
+        recorded because it is what gives the misdirected remedy its
+        consequence - the pair really does reach the command line unrefused when
+        it arrives through ``extra``, which is the documented contract for that
+        field and the reason the fix is to stop prescribing it rather than to
+        start policing it.
+        """
+        spec = self._hub_stream_spec(
+            tmp_path,
+            val_episodes=None,
+            extra={"policy_type": "act", "dataset.eval_split": 0.1, "eval_steps": 1000},
+        )
+        trainer = LerobotTrainer()
+        assert trainer.validate(spec) == []
+        emitted = trainer.build_command(spec)
+        assert "--dataset.streaming=true" in emitted
+        assert "--dataset.eval_split=0.1" in emitted
+
+    @pytest.mark.parametrize(
+        "source",
+        ["a local root with a readable count", "a Hub id with no local copy", "a local root with no readable meta"],
+    )
+    def test_the_pair_is_refused_whether_or_not_the_count_can_be_read(self, source, dataset_root, tmp_path):
+        """The conflict is decided from the two fields, not from the dataset.
+
+        Whether ``streaming`` and ``val_episodes`` can both be delivered does not
+        depend on the episode count - it is a property of the two fields. Asking
+        it inside the branch that HAS a count made the refusal unreachable on the
+        two sources where the count is unreadable, and streaming a Hub dataset is
+        one of them: the count comes from a local ``meta/info.json``, which is the
+        download ``streaming`` exists to avoid. The readable-count row is the
+        control that held before and must keep holding.
+        """
+        empty = tmp_path / "no-meta"
+        empty.mkdir()
+        roots = {
+            "a local root with a readable count": {"dataset_root": dataset_root},
+            "a Hub id with no local copy": {"dataset_root": "", "dataset_repo_id": "org/big"},
+            "a local root with no readable meta": {"dataset_root": str(empty)},
+        }
+        fields = {
+            "base_model": "",
+            "output_dir": str(tmp_path / "out"),
+            "streaming": True,
+            "val_episodes": 2,
+            "extra": {"policy_type": "act"},
+        }
+        fields.update(roots[source])
+        problems = LerobotTrainer().validate(TrainSpec(**fields))
+        assert any("cannot be combined with val_episodes=2" in p for p in problems), (
+            f"{source}: the pair delivers neither field here either, so it must be refused: {problems}"
+        )
+
+    def test_the_remedy_names_the_local_copy_when_the_count_is_unreadable(self, tmp_path):
+        """Both remedies the refusal offers must be honored where it fires.
+
+        ``streaming=False`` alone delivers the split only when the episode count
+        is readable. On a Hub source with no local copy it is not, so naming that
+        remedy unqualified would promise a split the next ``validate()`` refuses
+        for a different reason - which is what the second assertion measures.
+        """
+        trainer = LerobotTrainer()
+        message = self._pair_refusal(trainer.validate(self._hub_stream_spec(tmp_path)))
+        assert "point dataset_root at a local copy" in message, (
+            f"streaming=False alone cannot deliver the split for this source, so the remedy must say so: {message}"
+        )
+        # The measurement that makes the qualification necessary rather than wordy.
+        dropped_streaming = trainer.validate(self._hub_stream_spec(tmp_path, streaming=False))
+        assert dropped_streaming, "streaming=False alone does not make this source launchable"
+        # And the other remedy is unconditional: dropping the split keeps the stream whole.
+        assert trainer.validate(self._hub_stream_spec(tmp_path, val_episodes=None)) == []
+
+    def test_the_refusal_does_not_key_its_explanation_on_a_lerobot_release(self, dataset_root, tmp_path):
+        """A release number in this refusal is not checkable by the caller.
+
+        ``lerobot.__version__`` is ``importlib.metadata.version("lerobot")``, so
+        it reports the installed DISTRIBUTION's number - a development version
+        for a source install, which is not a release the claim could be checked
+        against. The quoted grounds make it worse: 0.6.1 carries the same
+        sentence keyed on ``repo_type='bucket'``, which this backend never sets,
+        so the sentence is present in a lerobot that does not raise it here. The
+        refusal therefore names the predicate, which is verifiable, and the
+        second assertion keeps this from being read as "delete the digits".
+
+        Driven from a local root, where this refusal fires either way, so it
+        grades the wording rather than the reachability the cells above own.
+        """
+        spec = self._spec(dataset_root, tmp_path, streaming=True, val_episodes=2)
+        message = self._pair_refusal(LerobotTrainer().validate(spec))
+        assert not re.search(r"lerobot\s+\d+\.\d+", message), (
+            f"the refusal attributes behavior to a lerobot release the caller cannot check: {message}"
+        )
+        assert "guards eval_split against streaming" in message, "the predicate is what replaces the release number"
+
+    def test_the_installed_lerobot_reports_its_version_from_distribution_metadata(self):
+        """The premise the rule above stands on, executed against lerobot."""
+        lerobot = pytest.importorskip("lerobot")
+        source = inspect.getsource(importlib.import_module("lerobot.__version__"))
+        assert 'version("lerobot")' in source, (
+            "lerobot no longer derives __version__ from installed metadata; the reason a release "
+            "number in a refusal is uncheckable may no longer hold"
+        )
+        assert lerobot.__version__ == importlib.metadata.version("lerobot")
 
     # ------------------------------------------------------------------ #
     # The constraint the refusal stands on, pinned against lerobot itself.
@@ -2039,12 +2193,14 @@ class TestStreamingAndValidationSplitAreMutuallyExclusive:
         """The measured constraint the refusal stands on, pinned against lerobot.
 
         Asserts the property that makes the pair unsatisfiable, in whichever form
-        this lerobot expresses it. From lerobot 0.6.2 ``DatasetConfig`` refuses
-        the combination when it is constructed; before that it constructed and
-        the eval-split path rebuilt the TRAIN half map-style, discarding the
-        stream. If lerobot starts honoring the stream there, neither arm holds
-        and the refusal above should be lifted rather than left to reject a
-        combination that has become supportable.
+        this lerobot expresses it. A ``DatasetConfig`` that guards ``eval_split``
+        against ``streaming`` refuses the combination when it is constructed;
+        without that guard it constructs and the eval-split path rebuilds the
+        TRAIN half map-style, discarding the stream. Both arms are live in the
+        supported range, so neither is keyed on a release number here. If lerobot
+        starts honoring the stream there, neither arm holds and the refusal above
+        should be lifted rather than left to reject a combination that has become
+        supportable.
         """
         try:
             streamed_with_split = self._dataset_config(streaming=True, eval_split=0.25)

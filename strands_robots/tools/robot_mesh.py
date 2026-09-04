@@ -59,7 +59,7 @@ from strands_robots.utils import finite_number_error, positive_count_error, posi
 # extended ``STRANDS_MESH_SUBSCRIBE_ALLOW`` with a wildcard pattern such as
 # ``strands/*/stream``. Allowed: alphanumerics, ``.``, ``_``, ``-``; first
 # char must be alphanumeric; max 64 chars (Zenoh peer-id practical limit).
-_PEER_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+_PEER_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
 
 logger = logging.getLogger(__name__)
 

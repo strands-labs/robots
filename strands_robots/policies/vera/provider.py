@@ -690,11 +690,32 @@ class VeraPolicy(Policy):
         Robot joints are namespaced in the compiled model (``<ns>/<joint>``);
         ``robot_state_keys`` are unqualified. Match by suffix so the IK seed and
         output read/write the correct qpos slots regardless of other DOFs (free
-        bodies, multiple robots) present in the scene. Cached per model id.
+        bodies, multiple robots) present in the scene.
+
+        Cached against both inputs the mapping is derived from - the model and
+        ``robot_state_keys`` - because they move independently and the model is
+        not the one that moves on a rebind. ``SimEngine`` hands the single
+        compiled world model to whichever robot it binds
+        (``bind_policy_sim_context``), immediately after setting that robot's
+        keys, so a second robot in the same scene arrives with new keys and the
+        *identical* model. A model-only key served it the previous robot's
+        addresses, and neither consumer can report that: both skip a key the
+        mapping does not carry, so the IK seed silently keeps the rest pose
+        (:meth:`_resolve_ik_inputs`) and the decoded targets silently omit every
+        arm joint (:meth:`_ik_chunk_to_action_dicts`). The keys are the whole
+        domain of this mapping, so a stale one is not a near miss.
+
+        The model is held and compared by identity, not by ``id()``: an ``id()``
+        is unique only while its object is alive and an int key keeps nothing
+        alive, so a freed model's address can be reused by the model that
+        replaces it and collide. Holding it pins nothing new - ``self._mj_model``
+        already holds the same object for as long as it is the active model, and
+        this single-slot cache drops a superseded one on the next miss.
         """
+        keys = tuple(self._robot_state_keys)
         cache = getattr(self, "_qpos_addr_cache", None)
-        if cache is not None and cache[0] == id(mj_model):
-            return cache[1]
+        if cache is not None and cache[0] is mj_model and cache[1] == keys:
+            return cache[2]
 
         addr: dict[str, int] = {}
         # Real MjModel: map robot_state_keys -> qpos addresses by (namespaced)
@@ -709,14 +730,14 @@ class VeraPolicy(Policy):
                     continue
                 short = name.split("/")[-1]
                 qadr = int(mj_model.jnt_qposadr[j])
-                for k in self._robot_state_keys:
+                for k in keys:
                     if k in (short, name):
                         addr[k] = qadr
         except (AttributeError, ImportError, TypeError):
             addr = {}
         if not addr:
-            addr = {k: i for i, k in enumerate(self._robot_state_keys)}
-        self._qpos_addr_cache = (id(mj_model), addr)
+            addr = {k: i for i, k in enumerate(keys)}
+        self._qpos_addr_cache = (mj_model, keys, addr)
         return addr
 
     def _ensure_ik_bridge(self, mj_model: Any, ee_frame: str):

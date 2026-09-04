@@ -1,11 +1,22 @@
 """Single owner of the operator-response audit row every HITL gate owes.
 
-Three agent tools stop and ask a human before an agent-issued command reaches a
-robot or a training run: :mod:`~strands_robots.tools.robot_mesh` gates the
-physical-actuation mesh actions, :mod:`~strands_robots.tools.use_ros` gates a
-``publish`` / ``service_call`` / ``action_send_goal`` aimed at a safety-critical
-graph surface, and :mod:`~strands_robots.tools.lerobot_train` gates the
-``extra_flags`` that control output paths, telemetry and code loading.
+Four gates stop and ask a human before an agent-issued command reaches a robot or
+a training run. Three are tool bodies: :mod:`~strands_robots.tools.robot_mesh`
+gates the physical-actuation mesh actions, :mod:`~strands_robots.tools.use_ros`
+gates a ``publish`` / ``service_call`` / ``action_send_goal`` aimed at a
+safety-critical graph surface, and :mod:`~strands_robots.tools.lerobot_train`
+gates the ``extra_flags`` that control output paths, telemetry and code loading.
+The fourth is not a tool at all: the dashboard's motion hook gates any agent tool
+call that would put real hardware in motion, from outside the tool being called.
+
+That fourth caller is why this list is worth keeping current. The audit log is
+read by grepping one phrasing, and a reader who believes only tools ask a human
+has no reason to look for a row from a hook -- so a gate this docstring does not
+name is a gate an incident reader does not know to search for. The graded set is
+derived from the ``interrupt()`` call sites under ``strands_robots`` rather than
+from this paragraph, so a fifth gate fails that grading on arrival instead of
+inheriting the silence -- but the derivation cannot correct the prose, which is
+why the count above is worth reading as a claim rather than as decoration.
 
 Each gate owes the operator's reply two things that pull in opposite directions.
 The reply must NOT reach the model - echoing it turns the human into a

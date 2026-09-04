@@ -21,7 +21,10 @@ Message types (each message is one JSON object with a ``type`` field):
 * ``ready`` (server -> client, once on connect): advertises the wrapped
   policy's introspection metadata so the client can mirror it. Payload key
   ``metadata`` -> ``provider_name``, ``requires_images``, ``actions_per_step``,
-  ``supports_rtc``, ``execution_horizon``.
+  ``supports_rtc``, ``execution_horizon``, ``required_bodies``. The last is the
+  served tree's declaration of the named bodies whose world pose it needs; it is
+  read on the machine driving the rollout, so it has to cross the wire for that
+  runtime to supply the poses and to check the names against its scene.
 * ``set_state_keys`` (client -> server): forwards
   :meth:`Policy.set_robot_state_keys`. Payload key ``keys``.
 * ``set_control_frequency`` (client -> server): forwards

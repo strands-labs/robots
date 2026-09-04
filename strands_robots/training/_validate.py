@@ -147,7 +147,7 @@ if TYPE_CHECKING:
 # no ``=``, no whitespace or shell metacharacters. We deliberately do NOT try to
 # enumerate every valid backend flag - that allowlist is impossible to keep
 # current and would break the documented ``extra`` escape hatch.
-_EXTRA_KEY_RE = re.compile(r"^[a-z][a-z0-9_.]*$")
+_EXTRA_KEY_RE = re.compile(r"^[a-z][a-z0-9_.]*\Z")
 
 # Scalars that are interpolated as the value of a single argv flag
 # (e.g. ``--dataset.root={dataset_root}``). A leading ``-`` is the injection

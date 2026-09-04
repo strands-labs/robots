@@ -70,7 +70,7 @@ logger = logging.getLogger(__name__)
 
 # Task names become file names: strict allowlist, no path separators, no
 # metacharacters. LLM-provided strings are untrusted (see AGENTS.md, PR #92).
-_TASK_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
+_TASK_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]+\Z")
 _MAX_TASK_NAME_LEN = 128
 
 # Global-memory rule kinds map to fixed file names (never user-derived).
@@ -167,7 +167,7 @@ def _validate_task_name(task: str | None) -> str:
     if len(task) > _MAX_TASK_NAME_LEN:
         raise ValueError(f"task name too long ({len(task)} > {_MAX_TASK_NAME_LEN} chars)")
     if not _TASK_NAME_RE.match(task):
-        raise ValueError(f"invalid task name {task!r}: must match ^[a-zA-Z0-9_-]+$ (no paths, no metacharacters)")
+        raise ValueError(f"invalid task name {task!r}: must match ^[a-zA-Z0-9_-]+\\Z (no paths, no metacharacters)")
     return task
 
 
@@ -538,7 +538,7 @@ def harness_memory(
     Args:
         action: Action to perform.
         task: Task key, matched exactly on later runs. Must match
-            ^[a-zA-Z0-9_-]+$ (max 128 chars; no dots, so use "task_v2"
+            ^[a-zA-Z0-9_-]+\\Z (max 128 chars; no dots, so use "task_v2"
             rather than "task.v2").
         trace: Solution skeleton: list of primitive-invocation dicts, one per
             step, e.g. {"action": "run_policy", "instruction": "grasp the

@@ -38,7 +38,7 @@ an actionable message — the app still loads and the loop is still demonstrable
 # Real SO-101 in MuJoCo + the LeRobot dataset writer used by the collector.
 pip install "strands-robots[sim-mujoco,lerobot]"
 # The natural-language agent + interactive UI (app.py) additionally need:
-pip install "strands-agents>=0.1" "gradio>=4,<7" numpy
+pip install "strands-agents>=1.13.0,<2.0.0" "gradio>=4,<7" numpy
 # cuRobo and Isaac Sim are optional, out-of-band installs (see "Flipping to
 # Isaac + cuRobo" below).
 

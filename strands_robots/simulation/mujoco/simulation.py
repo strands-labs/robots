@@ -63,6 +63,7 @@ import contextlib
 import inspect
 import json
 import logging
+import math
 import numbers
 import os
 import threading
@@ -5350,13 +5351,24 @@ class MuJoCoSimEngine(
         # transport caps. Prefer the robot's own child-peer mesh (per-robot
         # topic), fall back to the parent sim's mesh.
         _mesh = getattr(robot, "mesh", None) or getattr(self, "mesh", None)
-        _stream_state = {"last": 0.0}
+        # ``-inf`` rather than ``0.0``: a monotonic reading is only meaningful
+        # relative to another one, so the first step of a rollout is due
+        # wherever this platform's monotonic epoch happens to sit instead of
+        # depending on it being far from zero. It also means the gate's
+        # subtraction is ``inf`` on the first step, which clears any period at
+        # all - see ``_stream_enabled`` below.
+        _stream_state = {"last": float("-inf")}
         from strands_robots.mesh.session import stream_min_period_from_env
 
-        # inf when step telemetry is off / misconfigured, so the throttle below
-        # simply never fires. A bare division here killed run_policy hook setup
-        # on STRANDS_MESH_STREAM_HZ=0.
+        # inf when step telemetry is off / misconfigured. A bare division here
+        # killed run_policy hook setup on STRANDS_MESH_STREAM_HZ=0.
         _stream_min_period = stream_min_period_from_env()
+        # An infinite period is the operator's opt-out, and no finite elapsed
+        # time reaches it - but the sentinel above is below every reading, so
+        # the subtraction alone would read ``inf >= inf`` and let exactly one
+        # publish per rollout past the opt-out. The period is therefore read
+        # directly, once here rather than on every step.
+        _stream_enabled = math.isfinite(_stream_min_period)
 
         def _hook(step: int, observation: dict[str, Any], action: dict[str, Any]) -> None:
             # Cooperative cancellation: stop_policy flips this flag.
@@ -5365,8 +5377,20 @@ class MuJoCoSimEngine(
 
             robot.policy_steps = step + 1
 
-            if _mesh is not None:
-                _now = time.time()
+            if _mesh is not None and _stream_enabled:
+                # ``time.monotonic()``: this is an elapsed interval, and it
+                # carries its own base forward as it goes - each publish
+                # records when it happened and the next is due a period
+                # later. On ``time.time()`` a backward wall-clock step (an
+                # NTP correction, a ``date -s``, a resume from suspend)
+                # landing between two publishes made the difference
+                # negative, so the throttle refused every later step until
+                # the date caught up. The gaps that did land stay correctly
+                # spaced, so the shortfall is indistinguishable afterwards
+                # from a rollout that simply ran for less time. The
+                # hardware control loop throttles the same publish on the
+                # same period and already reads this clock.
+                _now = time.monotonic()
                 if _now - _stream_state["last"] >= _stream_min_period:
                     _stream_state["last"] = _now
                     try:

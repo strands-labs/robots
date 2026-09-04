@@ -58,9 +58,9 @@ from strands_robots.utils import tcp_port_error
 logger = logging.getLogger(__name__)
 
 # Graph names: same allowlist posture as use_ros. Types are ROS1 two-segment.
-_NAME_RE = re.compile(r"^[A-Za-z0-9_/~]+$")
-_TYPE_RE = re.compile(r"^[A-Za-z0-9_]+/[A-Za-z0-9_]+$")
-_HOST_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+_NAME_RE = re.compile(r"^[A-Za-z0-9_/~]+\Z")
+_TYPE_RE = re.compile(r"^[A-Za-z0-9_]+/[A-Za-z0-9_]+\Z")
+_HOST_RE = re.compile(r"^[A-Za-z0-9._-]+\Z")
 
 # The top of the 16-bit port space is a legal TCP port that this transport cannot
 # address. autobahn builds the WebSocket URL behind roslibpy with

@@ -91,7 +91,7 @@ class LeRobotCalibrationManager:
     def get_calibration_path(self, device_type: str, device_model: str, device_id: str) -> Path:
         """Get the full path to a calibration file."""
         # Security hardening: restrict path components to prevent traversal.
-        _SAFE_COMPONENT = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*$")
+        _SAFE_COMPONENT = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*\Z")
         _VALID_DEVICE_TYPES = {"teleoperators", "robots"}
         if device_type not in _VALID_DEVICE_TYPES:
             raise ValueError(f"device_type must be one of {_VALID_DEVICE_TYPES}, got {device_type!r}")

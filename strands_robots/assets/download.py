@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 MENAGERIE_REPO = "https://github.com/google-deepmind/mujoco_menagerie.git"
 
 # Only HTTPS GitHub URLs are allowed for cloning.
-_ALLOWED_CLONE_URL_RE = re.compile(r"^https://github\.com/[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+\.git$")
+_ALLOWED_CLONE_URL_RE = re.compile(r"^https://github\.com/[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+\.git\Z")
 
 
 # robot_descriptions integration
@@ -87,7 +87,7 @@ def _resolve_robot_descriptions_module(name: str, info: dict) -> str | None:
     for candidate in candidates:
         # Allow '+' so robot_descriptions modules like 'tiago++_mj_description'
         # are accepted (still no '/', '.', or whitespace -> no import traversal).
-        if not re.match(r"^[a-z0-9_+]+$", candidate):
+        if not re.match(r"^[a-z0-9_+]+\Z", candidate):
             continue
         try:
             importlib.import_module(f"robot_descriptions.{candidate}")
@@ -361,7 +361,7 @@ def _download_via_robot_descriptions(robots: dict[str, dict], dest_dir: Path) ->
             continue
         # Allow '+' so modules like 'tiago++_mj_description' pass (the upstream
         # robot_descriptions package legitimately uses '++' in some names).
-        if not re.match(r"^[a-z0-9_+]+$", module_name):
+        if not re.match(r"^[a-z0-9_+]+\Z", module_name):
             results[name] = f"skipped: invalid module name: {module_name}"
             continue
 
@@ -453,7 +453,7 @@ def _download_from_github(name: str, info: dict, dest_dir: Path) -> str:
     """Download a robot from a custom GitHub repo (``asset.source``)."""
     source = info["asset"]["source"]
     repo = source["repo"]
-    if not re.match(r"^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+$", repo):
+    if not re.match(r"^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+\Z", repo):
         return f"failed: invalid repo format: {repo}"
 
     subdir = source.get("subdir", "")

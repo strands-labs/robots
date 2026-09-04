@@ -428,15 +428,22 @@ local copy of the dataset, or pass lerobot's own knobs directly with
 the pair. lerobot holds out a validation split only on a **map-style** dataset:
 `make_train_eval_datasets` rebuilds both halves as `LeRobotDataset` objects,
 which is what makes the split addressable by episode index. A streamed dataset
-is not one, and lerobot answers that contradiction differently across the
-supported range - from lerobot 0.6.2 `DatasetConfig` refuses the combination
-outright (`eval_split requires map-style datasets`), and before that it
-constructed and the factory discarded the streaming dataset it had opened first.
-Either way the pair delivers at most one of the two fields: it fails inside a
-launched run, or it materializes the whole dataset - exactly what `streaming`
-exists to avoid - while reporting nothing, because an annulled stream is
-indistinguishable from `streaming=False`. Set `streaming=False` to keep the
-validation split, or `val_episodes=None` to keep the stream.
+is not one, and which way the pair fails depends on the installed lerobot: a
+`DatasetConfig` that guards `eval_split` against `streaming` refuses the
+combination when the run starts, and without that guard it constructs and the
+factory discards the streaming dataset it had opened first. Either way the pair
+delivers at most one of the two fields: it fails inside a launched run, or it
+materializes the whole dataset - exactly what `streaming` exists to avoid -
+while reporting nothing, because an annulled stream is indistinguishable from
+`streaming=False`. Set `streaming=False` to keep the validation split, or
+`val_episodes=None` to keep the stream.
+
+The refusal is decided from the two fields alone, so it does not depend on the
+dataset's episode count. That matters because the count is only readable from a
+local `meta/info.json`, and streaming a Hub dataset is the case with no local
+copy - the download `streaming` exists to avoid. On that source `streaming=False`
+alone is not enough to deliver the split either, so the refusal names the local
+copy that configuration also needs.
 
 ### GR00T (`groot`)
 

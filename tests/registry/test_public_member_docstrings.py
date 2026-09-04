@@ -61,6 +61,8 @@ _EXPECTED_FUNCTIONS = {
     "policies.py::import_policy_class",
     "policies.py::list_policy_aliases",
     "policies.py::list_policy_providers",
+    "policies.py::port_reading_providers",
+    "policies.py::provider_reads_a_port",
     "policies.py::resolve_policy",
     "robots.py::format_robot_table",
     "robots.py::get_driver",

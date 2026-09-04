@@ -357,6 +357,13 @@ class Policy(ABC):
         start of the rollout with the available body names, rather than reading
         a missing key as a zero pose on every tick.
 
+        Every surface that reads this collects it over the whole policy tree
+        through :func:`collect_required_bodies`, so a policy that declares a
+        body is honoured when it is wrapped: a wrapper which does not override
+        this property does not hide its child's declaration. That one owner is
+        shared with the remote-inference handshake, so a policy served over the
+        wire declares the same bodies it does in-process.
+
         Returns:
             Ordered, de-duplicated body names. Empty (the default) means the
             observation is left exactly as the backend produced it.
@@ -685,3 +692,59 @@ def iter_policy_tree(policy: Policy) -> Iterator[Policy]:
         seen.add(id(current))
         yield current
         stack.extend(reversed(tuple(getattr(current, "children", ()))))
+
+
+def collect_required_bodies(policy: Policy | None) -> dict[str, str]:
+    """Body names a policy TREE declares, mapped to the class that declared each.
+
+    Single owner of "what bodies does this tree need, and is the declaration
+    well-formed". Two surfaces ask it and must not disagree: the simulation
+    runtime, which merges each body's pose into every observation and refuses a
+    name the scene does not contain, and
+    :class:`~strands_robots.inference.server.PolicyServer`, which advertises the
+    served tree's declaration in its handshake so a
+    :class:`~strands_robots.inference.client.RemotePolicy` driving the rollout
+    on another host declares the same bodies the policy behind it does. A
+    second copy of the walk on either side could report a different set for one
+    tree, which is the failure both halves of the contract rest on not having.
+
+    The declaration is collected over the tree rather than off the object
+    handed in (:func:`iter_policy_tree`), so a wrapper that does not override
+    :attr:`Policy.required_bodies` does not hide its child's declaration.
+    Insertion order is the walk order - outermost policy first - so the caller's
+    merge order is stable for a given tree.
+
+    Args:
+        policy: Root of the tree. ``None`` (a replay, which drives no policy)
+            and a tree that declares nothing both resolve to an empty mapping.
+
+    Returns:
+        Ordered, de-duplicated body name -> name of the class in this tree that
+        declared it first. The value exists so a caller's refusal names a
+        declaring class rather than whichever wrapper happened to be on the
+        outside. A proxy that mirrors a declaration made on another host - a
+        :class:`~strands_robots.inference.client.RemotePolicy` - is itself the
+        declaring class here, which is what it is from this tree's side.
+
+    Raises:
+        TypeError: If any policy in the tree declares ``required_bodies`` that
+            is not a sequence of non-empty strings. A bare ``str`` is refused
+            explicitly rather than iterated into one entry per character.
+    """
+    owner: dict[str, str] = {}
+    for member in () if policy is None else iter_policy_tree(policy):
+        declared = getattr(member, "required_bodies", ()) or ()
+        if not declared:
+            continue
+        who = type(member).__name__
+        if isinstance(declared, str):
+            raise TypeError(
+                f"{who}.required_bodies must be a sequence of body names, "
+                f"not a bare str ({declared!r}) - a str iterates into one entry per character. "
+                f"Use a tuple: ('{declared}',)."
+            )
+        for name in declared:
+            if not isinstance(name, str) or not name.strip():
+                raise TypeError(f"{who}.required_bodies entries must be non-empty body-name strings, got {name!r}.")
+            owner.setdefault(name, who)
+    return owner

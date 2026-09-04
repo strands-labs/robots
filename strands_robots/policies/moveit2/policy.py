@@ -54,7 +54,7 @@ logger = logging.getLogger(__name__)
 # ``mesh.security.validate_command`` for ``target_joints`` keys, so a
 # value the mesh accepts can flow end-to-end without a second
 # allowlist mismatch.
-_JOINT_NAME_PATTERN = r"^[A-Za-z][A-Za-z0-9_-]*$"
+_JOINT_NAME_PATTERN = r"^[A-Za-z][A-Za-z0-9_-]*\Z"
 
 
 class MoveIt2Policy(Policy):
@@ -417,10 +417,10 @@ class MoveIt2Policy(Policy):
             raise ValueError(f"planning_group must be a str, got {type(planning_group).__name__}")
         # Same charset as joint names - matches the MoveIt2 group naming
         # conventions documented at https://moveit.picknik.ai/.
-        if not re.match(r"^[A-Za-z][A-Za-z0-9_-]{0,63}$", planning_group):
+        if not re.match(r"^[A-Za-z][A-Za-z0-9_-]{0,63}\Z", planning_group):
             raise ValueError(
                 f"planning_group {planning_group!r} must match "
-                "'^[A-Za-z][A-Za-z0-9_-]{0,63}$' (letters, digits, "
+                "'^[A-Za-z][A-Za-z0-9_-]{0,63}\\Z' (letters, digits, "
                 "underscore, hyphen; max 64 chars)"
             )
 

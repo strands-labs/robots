@@ -77,8 +77,8 @@ logger = logging.getLogger(__name__)
 # substitution braces); interface types are pkg/(msg|srv)/Name. Rejecting
 # everything else keeps untrusted, agent-supplied strings from carrying
 # unexpected characters into the rclpy graph API or type-resolution layer.
-_NAME_RE = re.compile(r"^[A-Za-z0-9_/~{}]+$")
-_TYPE_RE = re.compile(r"^[A-Za-z0-9_]+/[A-Za-z0-9_]+/[A-Za-z0-9_]+$")
+_NAME_RE = re.compile(r"^[A-Za-z0-9_/~{}]+\Z")
+_TYPE_RE = re.compile(r"^[A-Za-z0-9_]+/[A-Za-z0-9_]+/[A-Za-z0-9_]+\Z")
 
 
 def _gate_command(kind: str, name: str, tool_context: ToolContext | None) -> dict[str, Any] | None:

@@ -21,6 +21,7 @@ import difflib
 import functools
 import importlib
 import logging
+import math
 import pkgutil
 import shutil
 import threading
@@ -574,6 +575,13 @@ class Robot(TeleopMixin, AgentTool):
         # loop can honor. Never a bare division: this runs in __init__, so a
         # ZeroDivisionError here fails the whole Robot(mode="real") bring-up.
         self._stream_min_period: float = stream_min_period_from_env()
+        # An infinite period is the operator's opt-out, and no finite elapsed
+        # time reaches it -- but ``_last_stream_pub`` starts below every
+        # reading, so the subtraction alone reads ``inf >= inf`` and lets
+        # exactly one publish (a whole observation, action and instruction)
+        # past the opt-out per rollout. The period is therefore tested
+        # directly, once here rather than on every tick of the control loop.
+        self._stream_enabled: bool = math.isfinite(self._stream_min_period)
         # Annotated with the base class rather than the concrete pool: the two
         # uses below are ``submit`` and ``shutdown``, so a caller substituting a
         # different Executor is honouring the contract, not evading it.
@@ -1769,7 +1777,7 @@ class Robot(TeleopMixin, AgentTool):
                     # (robot_mesh watch, dashboards) but no producers. Rate-
                     # limited; failures never touch the control loop.
                     _mesh = getattr(self, "mesh", None)
-                    if _mesh is not None:
+                    if _mesh is not None and self._stream_enabled:
                         _now_stream = time.monotonic()
                         if _now_stream - self._last_stream_pub >= self._stream_min_period:
                             self._last_stream_pub = _now_stream
@@ -1935,6 +1943,15 @@ class Robot(TeleopMixin, AgentTool):
         ``status="success"`` and "Task started" for it, because the failure
         surfaced on the executor thread with nobody left to tell.
 
+        Two different questions are asked about a port, from two different
+        registry fields, because neither field can answer both. ``requires``
+        lists the keywords a caller must supply, so it judges a *missing* port -
+        ``cosmos3`` dials a server yet defaults its port, so it is absent there
+        and a caller may legally omit one. ``config_keys`` lists the keywords the
+        provider understands, so it judges a *supplied* port: a provider outside
+        that set is handed a keyword it never declared, which
+        :func:`~strands_robots.registry.policies.provider_reads_a_port` reports.
+
         ``None`` is the "not supplied" spelling and is refused here for the same
         reason it is refused in :meth:`_get_policy`: without a pre-built
         ``policy_object`` there is nothing to build a policy from. Every other
@@ -1960,6 +1977,8 @@ class Robot(TeleopMixin, AgentTool):
             A tool-shaped error dict naming ``policy_port``, or ``None`` when a
             policy can be built from the value.
         """
+        from strands_robots.registry.policies import port_reading_providers, provider_reads_a_port
+
         if policy_port is None:
             # #13: port-less providers (mock, lerobot_local - registry
             # "requires" without "port") legally build with no port; only
@@ -1987,6 +2006,29 @@ class Robot(TeleopMixin, AgentTool):
             }
         if error := tcp_port_error(policy_port, "policy_port", method):
             return {"status": "error", "content": [{"text": error}]}
+        # A port the named provider never declared. ``requires`` above answers
+        # "must one be supplied"; ``config_keys`` answers "is one understood",
+        # and only the second can judge a port that WAS supplied. Without this,
+        # ``_get_policy`` forwarded ``port``/``host`` to every provider: the six
+        # whose constructor takes ``**kwargs`` swallowed them, so the rollout ran
+        # a policy that never dialed the caller's server and still reported
+        # success, and the four that take no ``**kwargs`` raised ``TypeError``
+        # from inside ``create_policy`` - on the executor thread, after
+        # ``_connect_robot`` had energized the arm and after ``start_task`` had
+        # already answered "Task started".
+        if provider_reads_a_port(policy_provider) is False:
+            return {
+                "status": "error",
+                "content": [
+                    {
+                        "text": (
+                            f"{method}: policy_provider={policy_provider!r} declares no policy_port, "
+                            f"so policy_port={policy_port!r} would not be read. Drop the port, or name "
+                            f"a provider that reads one ({', '.join(port_reading_providers())})."
+                        )
+                    }
+                ],
+            }
         return None
 
     def _shutdown_error(self, method: str) -> dict[str, Any] | None:
@@ -2284,9 +2326,12 @@ class Robot(TeleopMixin, AgentTool):
 
         Args:
             instruction: Natural-language instruction passed to the policy.
-            policy_port: Port of the policy server to query. Required: this
-                entry point takes no pre-built policy, so the port is the only
-                thing a policy can be built from. Validated on the shared
+            policy_port: Port of the policy server to query. Required when
+                ``policy_provider`` dials one: this entry point takes no
+                pre-built policy, so the port is the only thing a policy can be
+                built from. A provider that builds in process declares no port,
+                and supplying one anyway is refused rather than forwarded and
+                dropped. Validated on the shared
                 :func:`~strands_robots.utils.tcp_port_error` domain before the
                 task is submitted, so a port no policy can be built from is
                 reported here instead of as a started task that connects the
@@ -2609,7 +2654,9 @@ class Robot(TeleopMixin, AgentTool):
                         },
                         "policy_provider": {
                             "type": "string",
-                            "description": "Policy provider (groot, openai, etc.)",
+                            "description": (
+                                "Policy provider name (e.g. groot, lerobot_local, mock). See list_providers()."
+                            ),
                             "default": "groot",
                         },
                         "duration": {

@@ -34,6 +34,21 @@ full-frame photoreal backdrops usually want ``create_world(ground_plane=False)``
 (or an example-side floor-hiding shim) so the sim floor doesn't fight the
 background's own floor.
 
+Background caching: the backdrop is rendered once per camera and reused while
+only the robot moves, since ``BackgroundRenderer.render(cam)`` depends on
+nothing but the camera. "Per camera" means per distinct
+:class:`~strands_robots.rendering.camera.CameraParams` -- pose, intrinsics,
+image size **and both clip planes** -- because the backdrop is built from all
+of them: the panorama parks its whole depth buffer at ``cam.zfar`` and the
+gsplat backdrop hands ``cam.znear`` / ``cam.zfar`` to the rasterizer. That
+matters because a backend can move the clip planes on its own: MuJoCo derives
+both from ``model.stat.extent``, which the compiler recomputes from the scene
+bounds, so any scene change (``add_object``, ``attach_bodies``,
+``load_scene``) moves them while a fixed named camera keeps its pose and its
+intrinsics. Callers therefore do not have to invalidate anything after a scene
+change; :meth:`HybridCompositor.clear_caches` remains available to drop the
+entries outright.
+
 Concurrency contract: :meth:`HybridCompositor.render` calls straight into the
 engine's ``get_frame`` on the calling thread -- thread-affinity is the
 *backend's* contract (MuJoCo caches GL renderers per-thread; Isaac renders
@@ -47,7 +62,7 @@ from __future__ import annotations
 import logging
 import math
 import numbers
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from typing import Any, Protocol
 
 import numpy as np
@@ -230,6 +245,53 @@ def plane_depth(cam: CameraParams, plane_z: float) -> np.ndarray:
     return depth.astype(np.float32)
 
 
+# Decimal places each ``CameraParams`` matrix is rounded to before it enters a
+# background cache key, so float jitter in a pose the caller did not move does
+# not bust the cache. Scalars are keyed exactly: they arrive from the backend as
+# a single multiply and reproduce bit-for-bit, and a spurious *miss* only costs
+# one background pass while a spurious *hit* returns a frame rendered for
+# another camera.
+_CACHE_KEY_MATRIX_DECIMALS = {"T_world_cam": 4, "K": 3}
+_CACHE_KEY_DEFAULT_DECIMALS = 6
+
+
+def _background_cache_key(camera_name: str, background_name: str, cam: CameraParams) -> tuple[Any, ...]:
+    """Identify a cached ``BackgroundRenderer.render`` result.
+
+    ``render(cam)`` reads nothing but ``cam``, so the key covers **every**
+    :class:`CameraParams` field rather than a hand-listed subset: the
+    equirectangular backdrop fills its whole depth buffer with ``cam.zfar``
+    and the gsplat backdrop hands ``cam.znear`` / ``cam.zfar`` to the
+    rasterizer as its clip planes, so a camera whose clip planes moved is a
+    different render even when its pose, intrinsics and image size are
+    untouched. Deriving the key from the dataclass rather than listing fields
+    means a field added to :class:`CameraParams` later participates on
+    arrival instead of silently widening what one entry stands for.
+
+    Args:
+        camera_name: the camera as named to the engine. Two cameras can share
+            a pose (a duplicated MJCF camera), so the name is part of the key.
+        background_name: :attr:`BackgroundRenderer.name` of the renderer that
+            produced the entry, so a hot-swapped backdrop cannot be served
+            from the previous one's entry.
+        cam: the parameters ``render`` was, or would be, called with.
+
+    Returns:
+        A hashable key. Matrix fields are rounded (see
+        ``_CACHE_KEY_MATRIX_DECIMALS``) and keyed by bytes; scalar fields are
+        keyed exactly.
+    """
+    parts: list[Any] = [camera_name, background_name]
+    for field in fields(cam):
+        value = getattr(cam, field.name)
+        if isinstance(value, np.ndarray):
+            decimals = _CACHE_KEY_MATRIX_DECIMALS.get(field.name, _CACHE_KEY_DEFAULT_DECIMALS)
+            parts.append(np.round(value, decimals).tobytes())
+        else:
+            parts.append(value)
+    return tuple(parts)
+
+
 class FrameSource(Protocol):
     """The slice of ``SimEngine`` the compositor needs (structural typing)."""
 
@@ -401,11 +463,12 @@ class HybridCompositor:
         self.shadow_plane_tolerance = float(shadow_plane_tolerance)
         self.shadow_min_factor = float(shadow_min_factor)
         self.blend_in_linear = bool(blend_in_linear)
-        # Cache of background renders keyed by (camera_name, W, H, background
-        # name) + a rounded hash of the camera pose/intrinsics. The background
-        # only changes when the *camera* moves, not when the robot does -- so
-        # during a live motion we recompute only the cheap sim foreground, not
-        # the expensive panorama/gsplat pass.
+        # Cache of background renders keyed by the camera name, the background
+        # name and every ``CameraParams`` field (see
+        # :func:`_background_cache_key`). The background only changes when the
+        # *camera* does, not when the robot moves -- so during a live motion we
+        # recompute only the cheap sim foreground, not the expensive
+        # panorama/gsplat pass.
         self._bg_cache: dict[tuple[Any, ...], tuple[np.ndarray, np.ndarray]] = {}
 
     # ----- main API ----- #
@@ -570,17 +633,9 @@ class HybridCompositor:
         )
 
     def _background_for(self, cam: CameraParams, camera_name: str) -> tuple[np.ndarray, np.ndarray]:
-        """Return ``(bg_rgb, bg_depth)`` for ``cam``, cached by camera pose."""
-        pose_key = (
-            camera_name,
-            cam.width,
-            cam.height,
-            self.background.name,
-            # Round the pose so tiny float jitter doesn't bust the cache.
-            np.round(cam.T_world_cam, 4).tobytes(),
-            np.round(cam.K, 3).tobytes(),
-        )
-        cached = self._bg_cache.get(pose_key)
+        """Return ``(bg_rgb, bg_depth)`` for ``cam``, cached by camera."""
+        key = _background_cache_key(camera_name, self.background.name, cam)
+        cached = self._bg_cache.get(key)
         if cached is None:
             bg_rgb, bg_depth = self.background.render(cam)
             bg_rgb = np.asarray(bg_rgb)
@@ -590,7 +645,7 @@ class HybridCompositor:
             # Keep the cache tiny -- only a handful of cameras are ever live.
             if len(self._bg_cache) > 16:
                 self._bg_cache.clear()
-            self._bg_cache[pose_key] = cached
+            self._bg_cache[key] = cached
         return cached
 
     # ----- convenience ----- #
@@ -602,7 +657,16 @@ class HybridCompositor:
         self._bg_cache.clear()
 
     def clear_caches(self) -> None:
-        """Drop cached background renders (call after a scene rebuild)."""
+        """Drop every cached background render.
+
+        Not needed to track the camera: entries are keyed by the full
+        :class:`CameraParams` -- pose, intrinsics, image size and both clip
+        planes -- so a camera that moved, including one whose clip planes a
+        scene recompile moved, is a miss rather than a stale hit. Use this to
+        release the memory, or to force a re-render after mutating a background
+        renderer in place (a swapped renderer is already handled by
+        :meth:`set_background`).
+        """
         self._bg_cache.clear()
 
 

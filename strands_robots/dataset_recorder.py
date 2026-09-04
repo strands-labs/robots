@@ -128,8 +128,8 @@ def _codec_create_kwargs(sig_params: Any, vcodec: str, *, context: str = "create
 # "org/name"; `run_id` is a single path segment. Neither may contain shell
 # metacharacters, path-traversal (".."), or separators beyond the one allowed
 # bucket "org/name" slash.
-_BUCKET_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9][A-Za-z0-9._-]*)?$")
-_RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+_BUCKET_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9][A-Za-z0-9._-]*)?\Z")
+_RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*\Z")
 
 
 def sync_dataset_to_bucket(

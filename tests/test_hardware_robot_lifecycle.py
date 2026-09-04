@@ -1233,7 +1233,12 @@ class TestExecuteTaskSync:
             hw._task_state.step_count = 5
 
         hw._execute_task_async = _ok_async  # type: ignore[assignment]
-        result = hw._execute_task_sync("pick", policy_port=5555, policy_provider="mock", duration=1.0)
+        # No port: ``mock`` builds in process and declares none, so supplying
+        # one is refused before the loop is ever driven. This cell's subject is
+        # the loop-driving path, not the port domain - that refusal is owned by
+        # test_hardware_policy_port_domain.py's
+        # TestAPortTheProviderDoesNotReadIsRefused.
+        result = hw._execute_task_sync("pick", policy_provider="mock", duration=1.0)
         assert result["status"] == "success"
         text = result["content"][0]["text"]
         assert "completed" in text
@@ -1279,7 +1284,9 @@ class TestExecuteTaskSync:
             caller_loop_id = id(asyncio.get_running_loop())
             # Blocking call from within a running loop; exercises the
             # ThreadPoolExecutor branch. Must not raise.
-            result = hw._execute_task_sync("pick", policy_port=5555, policy_provider="mock")
+            # Port-less for the same reason as the sibling above: ``mock``
+            # declares no port, and the subject here is the worker-thread hop.
+            result = hw._execute_task_sync("pick", policy_provider="mock")
             return {"result": result, "caller_loop_id": caller_loop_id}
 
         out = asyncio.run(_driver())

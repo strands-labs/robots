@@ -1750,7 +1750,40 @@ class _StagedReward(StatefulRewardTerm):
         self._phase = 0
 
     def reset(self) -> None:
+        """Clear this machine's phase and every sub-term's per-episode state.
+
+        A stage's ``reward`` is compiled through :func:`make_predicate`, and
+        ``staged_reward`` is itself registered there, so a stage may hold
+        another phase machine. Clearing ``_phase`` alone leaves such a child at
+        whatever stage the previous episode left it in: the next episode opens
+        inside a sub-curriculum it has not earned, never emits that
+        sub-curriculum's earlier shaping signal again, and awards its one-time
+        ``bonus`` once per process rather than once per episode. The outer phase
+        is reset correctly either way, so nothing about the composite's own
+        state reports the leak.
+
+        Sub-terms are cleared by the same duck-typed rule
+        :meth:`~strands_robots.training.rl.env.SimEnv.reset` and
+        ``DeclarativeBenchmark.on_episode_start`` apply to the terms they hold -
+        anything exposing a zero-arg ``reset`` carries per-episode state - so a
+        composite applies to what it holds exactly the rule its own consumers
+        apply to it, and a stateless sub-predicate (which is every shipped one
+        but this) is untouched. A nested machine clears its own children in
+        turn, so depth is not bounded here.
+
+        ``advance_when`` is cleared on the same rule as ``reward``. No shipped
+        predicate can reach that slot statefully - :func:`predicate_kind` reads
+        ``staged_reward`` as float-valued and the gate refuses a reward term -
+        but a bool predicate added through :func:`register_predicate` can, and
+        a latched gate is exactly the "latched successes" the
+        :class:`StatefulRewardTerm` contract names.
+        """
         self._phase = 0
+        for reward_fn, advance_fn, _bonus in self._stages:
+            for sub in (reward_fn, advance_fn):
+                sub_reset = getattr(sub, "reset", None)
+                if callable(sub_reset):
+                    sub_reset()
 
     @property
     def phase(self) -> int:

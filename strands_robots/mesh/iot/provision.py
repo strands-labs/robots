@@ -100,7 +100,7 @@ _CA_ROTATION_RUNBOOK = 'README > "CA Pin Rotation Runbook"'
 
 # Regex: 64 hex chars, lowercase. Matches what hashlib.sha256(...).hexdigest()
 # emits and rejects anything else (operator typos surface immediately).
-_PIN_RE = re.compile(r"^[0-9a-f]{64}$")
+_PIN_RE = re.compile(r"^[0-9a-f]{64}\Z")
 
 # Cap the CA download response to a generous multiple of the real ~1.4 KiB
 # certificate. Defeats body-size DoS attacks (a captive portal returning a
@@ -386,7 +386,7 @@ _OPERATOR_POLICY_DOC: dict[str, Any] = {
 # Operators who use ``:`` in pre-existing AWS IoT Thing names need to
 # rename the Thing or maintain a mapping; we choose the safer subset
 # here over compatibility with every legal AWS Thing name.
-_THING_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]{1,128}$")
+_THING_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]{1,128}\Z")
 
 
 #: Thing attribute the provisioners inject to route fleet safety. The e-stop
@@ -431,7 +431,7 @@ def _validate_thing_name(thing_name: str) -> None:
     """Raise :class:`ValueError` when *thing_name* is unsafe for use as a
     filesystem component AND as an AWS IoT Thing name.
 
-    The accepted pattern is ``^[a-zA-Z0-9_-]{1,128}$``: alphanumerics,
+    The accepted pattern is ``^[a-zA-Z0-9_-]{1,128}\\Z``: alphanumerics,
     dash and underscore, length 1-128.  This is a **strict subset** of
     AWS IoT's accepted Thing-name charset (AWS allows ``:`` server-side;
     we reject it because of NTFS / classic Mac filesystem semantics).
@@ -463,7 +463,7 @@ def provision_robot(
 ) -> ProvisionedThing:
     """Provision a robot Thing and write its credentials to disk.
 
-    Validates *thing_name* against ``^[a-zA-Z0-9_-]{1,128}$`` before any
+    Validates *thing_name* against ``^[a-zA-Z0-9_-]{1,128}\\Z`` before any
     AWS call. The pattern is a **strict subset** of AWS IoT's accepted
     Thing-name charset (AWS server-side accepts ``:`` as well; we reject
     it for filesystem-path safety on NTFS / classic Mac where ``:`` is a

@@ -62,6 +62,39 @@ what costs a round, because each hidden failure costs ~21 minutes of runner time
 plus one review approval, approval being this repository's scarcest resource
 (#1905).
 
+The session states its own extent, and this reading is the fallback
+------------------------------------------------------------------
+
+``tests/session_truncation.py`` states the same subtraction in the terminal
+summary, counted in process -- ``collected`` is ``len(session.items)`` after
+deselection and ``started`` is counted per test entered::
+
+    ===== session truncated: 34547 of 46583 collected tests ran =====
+    12036 collected tests never started, so the counts below are a floor, not a total.
+
+That is the owner of the extent, so this module reads that line when it is
+present and reports its numbers unchanged. Re-deriving them from the text is the
+fallback for a log that does not carry the section -- a run killed before the
+terminal summary, or a log kept from before it existed.
+
+Deriving it has to be pytest's own derivation
+---------------------------------------------
+
+The fallback reads the collection line, whose trailing tokens pytest writes in a
+fixed order and prints only when nonzero, so their positions relative to each
+other are not fixed::
+
+    collected 10 items / 1 error / 4 deselected / 1 skipped / 6 selected
+
+Two rules follow, and both are pytest's rather than this module's. The number
+selected is ``collected - deselected`` (``report_collect`` computes exactly
+that, and prints the token only when it differs from ``collected``), so it is
+read from ``deselected`` rather than from the presence of a ``selected`` token
+that another token can sit in front of. And a module skipped or failing at
+*import* is counted on both lines while being none of the collected items, so
+the counts line's totals exceed the item count by whatever the collection line
+already accounted for.
+
 A run killed mid-suite reports differently again
 -----------------------------------------------
 A job killed while pytest is still running writes no summary line at all, which
@@ -106,12 +139,19 @@ from dataclasses import dataclass, field
 # pytest's collection line. Matched with ``search`` rather than anchored,
 # because the same text is read both from the raw file this script is pointed at
 # and, when a reader pastes one, from a job log whose lines carry a timestamp
-# prefix added by the Actions log service.
-_COLLECTED = re.compile(
-    r"collected (?P<collected>\d+) items?"
-    r"(?: / (?P<deselected>\d+) deselected)?"
-    r"(?: / (?P<selected>\d+) selected)?"
-)
+# prefix added by the Actions log service. The trailing tokens are read as a run
+# of ``/ N label`` pairs rather than as an ordered alternation: pytest emits
+# ``errors``, ``deselected``, ``skipped`` and ``selected`` in that order and only
+# when each is nonzero, so an alternation naming two of them requires them to be
+# adjacent and a third token between them hides both.
+_COLLECTED = re.compile(r"collected (?P<collected>\d+) items?(?P<tokens>(?: / \d+ [a-z]+)*)")
+_COLLECT_TOKEN = re.compile(r"/ (?P<count>\d+) (?P<label>[a-z]+)")
+
+# The section tests/session_truncation.py writes above the counts line. The
+# session counted its own extent, so that is where the subtraction belongs and
+# this module delegates to it rather than keeping a second reading that can
+# report differently.
+_STATED_EXTENT = re.compile(r"session truncated: (?P<executed>\d+) of (?P<selected>\d+) collected tests ran")
 
 # The banner ``-x`` / ``--maxfail`` prints when it ends the session early.
 _STOPPING = re.compile(r"!+\s*stopping after (?P<failures>\d+) failures?\s*!+")
@@ -138,6 +178,17 @@ _LOG_TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z ")
 # attempt at an item already counted under its final outcome.
 _EXECUTED_LABELS = frozenset({"failed", "passed", "skipped", "xfailed", "xpassed", "error", "errors"})
 
+# Outcomes the collection line has already accounted for, which are therefore not
+# among the items. A module skipped or failing at import is counted once there and
+# once on the counts line, so leaving it in the executed total makes the number of
+# items executed exceed the number collected.
+_NON_ITEM_COLLECT_LABELS = frozenset({"skipped", "error", "errors"})
+
+#: Who the reported extent came from, named in the report so a reader knows
+#: whether it was counted or reconstructed.
+_STATED_BY_SESSION = "the session's own count"
+_DERIVED_FROM_LOG = "derived from the log's counts"
+
 _COMPLETE = "complete"
 _TRUNCATED = "truncated"
 _NO_SUMMARY = "incomplete-no-summary"
@@ -155,6 +206,7 @@ class RunReport:
     never_ran: int | None = None
     stopped_after: int | None = None
     counts: dict[str, int] = field(default_factory=dict)
+    extent_source: str = ""
     detail: str = ""
 
     @property
@@ -200,8 +252,10 @@ def parse_run(text: str) -> RunReport:
     """
     collected: int | None = None
     selected: int | None = None
+    non_items = 0
     stopped_after: int | None = None
     summary: str | None = None
+    stated: tuple[int, int] | None = None
 
     for raw in text.splitlines():
         line = _LOG_TIMESTAMP.sub("", raw)
@@ -209,8 +263,17 @@ def parse_run(text: str) -> RunReport:
             found = _COLLECTED.search(line)
             if found:
                 collected = int(found.group("collected"))
-                explicit = found.group("selected")
-                selected = int(explicit) if explicit else collected
+                tokens = {
+                    token.group("label"): int(token.group("count"))
+                    for token in _COLLECT_TOKEN.finditer(found.group("tokens"))
+                }
+                # pytest's own derivation, so a token between ``deselected`` and
+                # ``selected`` cannot change the answer.
+                selected = collected - tokens.get("deselected", 0)
+                non_items = sum(count for label, count in tokens.items() if label in _NON_ITEM_COLLECT_LABELS)
+        told = _STATED_EXTENT.search(line)
+        if told:
+            stated = (int(told.group("executed")), int(told.group("selected")))
         stopping = _STOPPING.search(line)
         if stopping:
             stopped_after = int(stopping.group("failures"))
@@ -239,8 +302,13 @@ def parse_run(text: str) -> RunReport:
         for match in _COUNT.finditer(summary)
         if match.group("label") in _EXECUTED_LABELS
     }
-    executed = sum(counts.values())
     assert selected is not None
+    if stated is None:
+        extent_source = _DERIVED_FROM_LOG
+        executed = max(sum(counts.values()) - non_items, 0)
+    else:
+        extent_source = _STATED_BY_SESSION
+        executed, selected = stated
     never_ran = max(selected - executed, 0)
     truncated = stopped_after is not None or never_ran > 0
 
@@ -252,6 +320,7 @@ def parse_run(text: str) -> RunReport:
         never_ran=never_ran,
         stopped_after=stopped_after,
         counts=counts,
+        extent_source=extent_source,
     )
 
 
@@ -273,6 +342,8 @@ def render(report: RunReport) -> str:
         lines.append(f"| items that never ran | {report.never_ran} |")
     if report.stopped_after is not None:
         lines.append(f"| stopped after | {report.stopped_after} failure(s) |")
+    if report.extent_source:
+        lines.append(f"| extent | {report.extent_source} |")
     for label in sorted(report.counts):
         lines.append(f"| {label} | {report.counts[label]} |")
 

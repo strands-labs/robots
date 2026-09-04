@@ -14,7 +14,9 @@ import pytest
 
 pytest.importorskip("mujoco")
 
+from strands_robots.policies.composite import CompositePolicy
 from strands_robots.policies.mock import MockPolicy
+from strands_robots.policies.persistent import PersistentPolicy
 from strands_robots.simulation.mujoco.simulation import Simulation
 from strands_robots.simulation.policy_runner import PolicyRunner
 
@@ -160,3 +162,93 @@ class TestEvalPathHonoursTheContract:
         assert result["status"] == "success"
         assert policy.seen
         assert f"body.{ARM_BODY}.quat" in policy.seen[0]
+
+
+class TestAWrapperDoesNotHideItsChildsDeclaration:
+    """A policy's declaration survives being wrapped.
+
+    ``PersistentPolicy`` and ``CompositePolicy`` both hand their child the
+    observation the runner assembles - the first verbatim, the second filtered -
+    so a declaration read off the WRAPPER instead of the tree is lost for the
+    policy that made it. Both halves of the contract go with it: the per-tick
+    merge and the up-front scene check, leaving a rollout that reports success
+    having never supplied the key. ``Policy.children`` exists so one probe walks
+    to the policy that answers, and these pin that this probe does.
+    """
+
+    @staticmethod
+    def _wrap(kind, sim, declared):
+        """Build ``(driven, declaring_child)`` for a wrapper ``kind``."""
+        joints = sim.robot_joint_names("alice")
+        child = _BodyReadingPolicy(declared)
+        if kind == "persistent":
+            return PersistentPolicy("mock", policy_object=child), child
+        composite = CompositePolicy(
+            lower=MockPolicy(),
+            upper=child,
+            lower_joints=set(joints[:3]),
+            upper_joints=set(joints[3:]),
+        )
+        if kind == "composite":
+            return composite, child
+        # Depth 2: a wrapper around a wrapper, so a fix that walks only one
+        # level down still fails.
+        return PersistentPolicy("mock", policy_object=composite), child
+
+    WRAPPERS = ("persistent", "composite", "nested")
+
+    @pytest.mark.parametrize("kind", WRAPPERS)
+    def test_the_childs_declared_body_still_reaches_the_child(self, sim_with_robot, kind):
+        """The four pose keys arrive in the observation the child is given."""
+        driven, child = self._wrap(kind, sim_with_robot, (ARM_BODY,))
+        result = _run(sim_with_robot, driven)
+
+        assert result["status"] == "success"
+        assert child.seen, "the declaring child should have been queried"
+        for obs in child.seen:
+            assert [len(obs[f"body.{ARM_BODY}.{s}"]) for s in ("pos", "quat", "lin_vel", "ang_vel")] == [3, 4, 3, 3]
+
+    @pytest.mark.parametrize("kind", WRAPPERS)
+    def test_a_body_the_scene_lacks_is_still_refused_up_front(self, sim_with_robot, kind):
+        """The scene check is the half that fails silently: it must still fire.
+
+        Without it the rollout runs to completion and reports success while the
+        key the child declared never reaches it.
+        """
+        driven, child = self._wrap(kind, sim_with_robot, ("no_such_link",))
+
+        with pytest.raises(RuntimeError, match="no_such_link"):
+            _run(sim_with_robot, driven)
+        assert child.seen == [], "rollout must not start with an unresolvable body"
+
+    def test_the_refusal_names_the_declaring_policy_not_the_wrapper(self, sim_with_robot):
+        """A refusal has to point at the class that has to change."""
+        driven, _child = self._wrap("persistent", sim_with_robot, ("no_such_link",))
+
+        with pytest.raises(RuntimeError) as excinfo:
+            _run(sim_with_robot, driven)
+        assert "_BodyReadingPolicy declares" in str(excinfo.value)
+
+    def test_a_declaration_made_twice_in_one_tree_collapses(self, sim_with_robot):
+        """Two policies naming one body yield one key set, not a duplicate merge."""
+        child = _BodyReadingPolicy((ARM_BODY,))
+        outer = CompositePolicy(
+            lower=_BodyReadingPolicy((ARM_BODY,)),
+            upper=child,
+            lower_joints=set(sim_with_robot.robot_joint_names("alice")[:3]),
+            upper_joints=set(sim_with_robot.robot_joint_names("alice")[3:]),
+        )
+        runner = PolicyRunner(sim_with_robot)
+
+        assert runner._resolve_required_bodies(outer) == (ARM_BODY,)
+
+    @pytest.mark.parametrize("kind", WRAPPERS)
+    def test_a_wrapper_whose_child_declares_nothing_stays_free(self, sim_with_robot, kind):
+        """Control: wrapping does not invent body keys for a policy that asked for none."""
+        driven, child = self._wrap(kind, sim_with_robot, ())
+        result = _run(sim_with_robot, driven)
+
+        assert result["status"] == "success"
+        assert child.seen
+        for obs in child.seen:
+            assert [k for k in obs if k.startswith("body.")] == []

@@ -38,6 +38,13 @@ which states the size of the gap:
 A session that ran every test it collected prints nothing extra, so the section
 appears only where it changes what the counts below it mean.
 
+That section is where the extent is counted -- `len(session.items)` after
+deselection, against one tick per test entered. `scripts/report_truncated_test_run.py`
+puts the same statement on the job summary, where a reviewer reads it without
+downloading the log, and it reports the numbers that line already states rather
+than re-deriving them; reconstructing them from the log's text is its fallback
+for a run that was killed before the terminal summary.
+
 Coverage is collected through PEP 669 (`sys.monitoring`) rather than the default
 C trace function - `core = "sysmon"` in `[tool.coverage.run]`. It reports the
 same line coverage at roughly a tenth of the cost (measured +8.2% against

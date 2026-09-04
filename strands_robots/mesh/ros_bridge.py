@@ -84,7 +84,7 @@ _NAV_ACTION_TYPE = "nav2_msgs/action/NavigateToPose"
 # ROS 2 graph names: leading slash plus alnum / _ / ~ segments. Reject anything
 # else early so a malformed topic fails at construction with a clear message
 # rather than deep inside a forwarded ``use_ros`` call.
-_ROS2_GRAPH_NAME_RE = re.compile(r"^[A-Za-z0-9_/~]+$")
+_ROS2_GRAPH_NAME_RE = re.compile(r"^[A-Za-z0-9_/~]+\Z")
 
 
 def _check_topic(label: str, value: str) -> str:

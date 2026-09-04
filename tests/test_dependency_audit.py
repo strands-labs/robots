@@ -664,6 +664,159 @@ def test_written_install_hints_name_only_declared_extras() -> None:
     )
 
 
+# A written requirement bound: a distribution name followed directly by a lower
+# bound operator, in any file type the extras sweep already reads. The negative
+# lookbehind keeps a longer name from matching on its tail, so ``msgpack-numpy``
+# is not read as a bound on ``numpy``. A ``v`` prefix is tolerated because prose
+# writes one.
+_WRITTEN_BOUND_RE = re.compile(r"(?<![\w.-])([A-Za-z][A-Za-z0-9._-]*)\s*(?:>=|~=|==)\s*v?([0-9][0-9A-Za-z.*]*)")
+
+_WRITTEN_BOUND_ALLOWED = {
+    # The declaration itself. Comparing it against itself grades nothing.
+    "pyproject.toml",
+    # This test states the rule, so it quotes the below-floor spellings the rule
+    # forbids.
+    "tests/test_dependency_audit.py",
+}
+
+
+def _declared_dependency_floors() -> dict[str, str]:
+    """Lower bound each ``[project.dependencies]`` entry declares, by distribution.
+
+    Returns:
+        Mapping of normalized distribution name to the highest lower bound the
+        entry states, as the raw version string the manifest writes.
+
+    Only the unconditional ``[project.dependencies]`` are read.
+    ``[project.optional-dependencies]`` is deliberately outside this: one
+    distribution can be declared by several extras at several floors, so "the
+    floor" is not a single number there, and the surfaces that hand a reader an
+    extra's bound already have owners (``lerobot`` in
+    ``tests/test_lerobot_install_hints_pypi.py``).
+    """
+    data = tomllib.loads(_PYPROJECT.read_text(encoding="utf-8"))
+    floors: dict[str, str] = {}
+    for spec in data["project"]["dependencies"]:
+        name = re.match(r"[A-Za-z0-9._-]+", spec)
+        bounds = re.findall(r">=\s*([0-9][0-9A-Za-z.*]*)", spec)
+        if name and bounds:
+            # _normalize_extra applies the same substitution PEP 503 requires
+            # for a distribution name, which is what makes ``Pillow`` and
+            # ``pillow`` one key.
+            floors[_normalize_extra(name.group())] = max(bounds, key=_version_key)
+    return floors
+
+
+def _version_key(raw: str) -> tuple[int, ...]:
+    """Order a release string by its numeric components.
+
+    ``numpy>=2`` and ``numpy>=1.21.0`` are both written in the tree, so the
+    comparison pads rather than requiring equal arity: ``2`` sorts above
+    ``1.21.0``. A non-numeric component ends the read (``2.*``, ``1.0rc1``),
+    which keeps a pre-release from sorting above the release it precedes.
+    """
+    parts: list[int] = []
+    for component in raw.split("."):
+        digits = re.match(r"[0-9]+", component)
+        if digits is None:
+            break
+        parts.append(int(digits.group()))
+    return tuple(parts)
+
+
+def _below_floor_bounds(text: str, floors: dict[str, str]) -> list[tuple[str, str, str]]:
+    """Return ``(distribution, written bound, declared floor)`` for each stale bound.
+
+    Args:
+        text: One line, or a whole file.
+        floors: Declared floors, keyed as ``_declared_dependency_floors`` returns.
+
+    Returns:
+        One entry per written bound sitting below the declared floor. A bound at
+        or above the floor is not reported: several sites state a stricter
+        requirement of their own on purpose (the VERA websocket client needs
+        ``numpy>=1.24``, the Cosmos 3 wire path ``numpy>=2``), and those are
+        correct rather than drifted.
+    """
+    stale: list[tuple[str, str, str]] = []
+    for name, written in _WRITTEN_BOUND_RE.findall(text):
+        floor = floors.get(_normalize_extra(name))
+        if floor is None:
+            continue
+        if _version_key(written) < _version_key(floor):
+            stale.append((name, written, floor))
+    return stale
+
+
+def test_written_version_bounds_are_not_below_the_declared_floor() -> None:
+    """No written bound on a declared dependency may name a floor below it.
+
+    A bound below the real floor does not make a stale install unsatisfying, so
+    the command a reader runs reports success and upgrades nothing - the failure
+    mode #1507 fixed for the notebook install lines. Measured against an
+    environment holding ``strands-agents`` 1.5.0, with the manifest declaring
+    ``>=1.7.0``::
+
+        $ pip install "strands-agents>=1.0"
+        Requirement already satisfied: strands-agents>=1.0 ... (1.5.0)
+        $ pip install "strands-agents>=1.7.0,<2.0.0"
+        Successfully installed strands-agents-1.54.0
+
+    So the number is load-bearing, and nothing was keeping it in step with the
+    manifest: the two sites this cell first reported both named a pre-1.7 floor,
+    one of them (``>=0.1``) from before the 1.x line existed.
+    """
+    floors = _declared_dependency_floors()
+    assert floors, "no lower bound read from [project.dependencies]; the manifest reader has drifted"
+
+    offenders: list[str] = []
+    swept = 0
+    for path in _iter_scanned_files():
+        rel = path.relative_to(_REPO_ROOT).as_posix()
+        if rel in _WRITTEN_BOUND_ALLOWED:
+            continue
+        for lineno, line in enumerate(path.read_text(encoding="utf-8", errors="ignore").splitlines(), 1):
+            swept += sum(1 for name, _ in _WRITTEN_BOUND_RE.findall(line) if _normalize_extra(name) in floors)
+            for name, stale, floor in _below_floor_bounds(line, floors):
+                offenders.append(
+                    f"{rel}:{lineno} writes {name}>={stale}, declared floor {floor} -- {line.strip()[:90]}"
+                )
+
+    # The sweep is only meaningful if it is actually reading the tree.
+    assert swept >= 12, f"the bound sweep matched only {swept} mentions; the scan roots have drifted"
+    assert not offenders, (
+        "these sites name a version floor below the one pyproject declares, so the install they "
+        "describe leaves an environment this package refuses and still exits 0. Declared floors: "
+        f"{floors}\n" + "\n".join(offenders)
+    )
+
+
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        # Below the floor: reported, with the floor it undercuts.
+        ('pip install "strands-agents>=1.0"', [("strands-agents", "1.0", "1.7.0")]),
+        ('pip install "strands-agents>=0.1"', [("strands-agents", "0.1", "1.7.0")]),
+        # At the floor, and above it: a stricter local requirement is correct.
+        ('pip install "strands-agents>=1.7.0,<2.0.0"', []),
+        ("pip install 'numpy>=1.24'", []),
+        ("composes with numpy>=2", []),
+        # A distribution the manifest does not declare sets no floor to be below.
+        ('pip install "gradio>=4,<7"', []),
+        # A longer name is not read as a bound on its tail.
+        ("pip install msgpack-numpy>=0.4", []),
+    ],
+)
+def test_the_written_bound_rule_can_both_accept_and_reject(line: str, expected: list[tuple[str, str, str]]) -> None:
+    """The comparison must fire on a stale bound and stay silent on a stricter one.
+
+    Both halves are graded here because the sweep above is green on a correct
+    tree, so on its own it cannot show that it would report anything at all.
+    """
+    floors = {"strands-agents": "1.7.0", "numpy": "1.21.0"}
+    assert _below_floor_bounds(line, floors) == expected
+
+
 # Headers that mean "the extra you install". A column merely containing the word
 # is not one: ``Extra outputs`` in the Cosmos 3 page lists result keys, and a
 # header whose prose mentions an extra in passing is prose.

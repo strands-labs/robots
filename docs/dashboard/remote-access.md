@@ -160,7 +160,7 @@ a room nobody is standing in. Two separate switches, deliberately separate:
 | variable | default | what it changes |
 |---|---|---|
 | `STRANDS_DASH_AGENT_PHYSICAL_MOTION` | unset (refuse) | Lets the **agent** start a task on a real robot by itself — from a chat sentence or a voice command. Unset, it refuses and offers you the ▶ button instead. |
-| `STRANDS_DASH_TASK_REQUIRES_CONFIRM` | unset (allow) | Set it, and `POST /api/robots/{peer}/task` refuses a real-motion request that does not carry the browser's confirmation. The ▶ button sends it; `curl` does not. |
+| `STRANDS_DASH_TASK_REQUIRES_CONFIRM` | unset (allow) | Set it, and `POST /api/robots/{peer}/task` refuses a real-motion request that does not carry the browser's confirmation. The ▶ button sends it; `curl` does not. The confirmation is read as a JSON boolean, so `"confirmed": true` carries it and `"confirmed": "true"` does not — a string is refused rather than honoured, because every non-empty one is truthy and `"false"` would otherwise confirm. |
 
 Both are visible on **Settings → permissions**, the second one with a one-tap
 toggle, so neither has to be flipped by hand.

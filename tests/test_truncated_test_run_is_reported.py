@@ -28,6 +28,9 @@ bound.
 from __future__ import annotations
 
 import importlib.util
+import os
+import re
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -282,3 +285,183 @@ class TestTheReportIsWiredIntoTheRequiredCheck:
         # mismatch would be silent.
         assert "${RUNNER_TEMP}/pytest.log" in producer
         assert "${RUNNER_TEMP}/pytest.log" in consumer
+
+
+# One deselecting run of each shape pytest can print, with the collection line
+# exactly as pytest 9.0.3 writes it. The token order is pytest's -- ``errors``,
+# ``deselected``, ``skipped``, ``selected``, each printed only when nonzero -- so
+# which tokens sit between ``deselected`` and ``selected`` is a property of the
+# run, not of the format. TestTheseAreTheLinesPytestWrites grounds them.
+DESELECTING_RUNS = {
+    "deselected alone": (
+        "collected 900 items / 400 deselected / 500 selected\n===== 500 passed, 400 deselected in 12.00s =====\n",
+        500,
+        500,
+    ),
+    "a collection skip between deselected and selected": (
+        "collected 10 items / 4 deselected / 1 skipped / 6 selected\n"
+        "===== 6 passed, 1 skipped, 4 deselected in 0.01s =====\n",
+        6,
+        6,
+    ),
+    "a collection error before deselected": (
+        "collected 10 items / 1 error / 4 deselected / 1 skipped / 6 selected\n"
+        "===== 6 passed, 1 skipped, 4 deselected, 1 error in 0.02s =====\n",
+        6,
+        6,
+    ),
+    "every item deselected": (
+        "collected 10 items / 10 deselected / 1 skipped / 0 selected\n===== 1 skipped, 10 deselected in 0.01s =====\n",
+        0,
+        0,
+    ),
+    "a collection skip and no deselection": (
+        "collected 10 items / 1 skipped\n===== 10 passed, 1 skipped in 0.01s =====\n",
+        10,
+        10,
+    ),
+}
+
+
+class TestADeselectingRunIsNotReportedAsTruncated:
+    """Every one of these ran each item it selected, so none is a truncated run.
+
+    A false truncation is the one direction that costs something: it puts a
+    warning annotation on a green pull request telling the author most of the
+    suite never ran, and there is nothing in the log to contradict it.
+    """
+
+    @pytest.mark.parametrize(("log", "selected", "executed"), DESELECTING_RUNS.values(), ids=DESELECTING_RUNS)
+    def test_a_run_that_reached_every_selected_item_reports_complete(
+        self, log: str, selected: int, executed: int
+    ) -> None:
+        report = parse_run(log)
+
+        assert report.outcome == "complete"
+        assert report.selected == selected
+        assert report.executed == executed
+        assert report.never_ran == 0
+
+    @pytest.mark.parametrize("log", [run[0] for run in DESELECTING_RUNS.values()], ids=DESELECTING_RUNS)
+    def test_more_items_cannot_execute_than_were_collected(self, log: str) -> None:
+        # A module skipped or failing at import is counted on the counts line and
+        # is not one of the items, so leaving it in the total states an extent the
+        # run cannot have had -- "11 of 10 items executed" reads as a typo and is
+        # in fact the number the share of the suite is computed from.
+        report = parse_run(log)
+
+        assert report.executed is not None
+        assert report.collected is not None
+        assert report.executed <= report.collected
+
+
+class TestTheSessionsOwnCountOwnsTheExtent:
+    """The session counted its extent, so this module reports it rather than a second reading.
+
+    tests/session_truncation.py states ``started`` and ``collected`` from
+    ``pytest_runtest_logfinish`` and ``len(session.items)``. Re-deriving the same
+    two numbers from the text gives a second answer with nothing to say which is
+    right, so the derivation is the fallback for a log that carries no section.
+    """
+
+    STATED = (
+        "collected 13 items / 5 deselected / 1 skipped / 8 selected\n"
+        "==== session truncated: 4 of 8 collected tests ran ====\n"
+        "4 collected tests never started, so the counts below are a floor, not a total.\n"
+        "!!!! stopping after 1 failures !!!!\n"
+        "==== 1 failed, 3 passed, 1 skipped, 5 deselected in 22.14s ====\n"
+    )
+
+    def test_the_stated_extent_is_the_reported_extent(self) -> None:
+        report = parse_run(self.STATED)
+
+        assert report.outcome == "truncated"
+        assert report.executed == 4
+        assert report.selected == 8
+        assert report.never_ran == 4
+        assert report.extent_source == "the session's own count"
+
+    def test_the_report_names_which_reading_it_used(self) -> None:
+        # The two readings are not interchangeable -- one was counted and one
+        # reconstructed -- so a reader comparing this table against the terminal
+        # can see which spoke without diffing the numbers.
+        assert "| extent | the session's own count |" in render(parse_run(self.STATED))
+        assert "| extent | derived from the log's counts |" in render(parse_run(TRUNCATED_LOG))
+
+    def test_a_log_carrying_no_section_is_still_read(self) -> None:
+        # The section is written at terminal summary time, so a run killed before
+        # then carries none, as does any log kept from before it existed.
+        report = parse_run(TRUNCATED_LOG)
+
+        assert report.outcome == "truncated"
+        assert report.never_ran == 12036
+        assert report.extent_source == "derived from the log's counts"
+
+    def test_the_section_is_not_mistaken_for_the_collection_or_counts_line(self) -> None:
+        # It carries the words "collected" and "tests ran" and sits between the two
+        # lines this module reads, so a pattern matching it as either would report
+        # the section's own numbers as the whole run's.
+        report = parse_run(self.STATED)
+
+        assert report.collected == 13
+        assert report.counts == {"failed": 1, "passed": 3, "skipped": 1}
+
+
+class TestTheseAreTheLinesPytestWrites:
+    """Grade the fixtures above against pytest itself rather than against this module.
+
+    Every fixture here is a hand-written line, so the pins are only as good as the
+    claim that pytest writes lines of that shape. One nested run settles it, and
+    the same run is the oracle for the extent: the reporter counts it in process,
+    so the derivation has to reproduce the number the session states.
+    """
+
+    @staticmethod
+    def _run(tmp_path: Path, *args: str) -> str:
+        (tmp_path / "test_many.py").write_text(
+            "import pytest\n\n"
+            '@pytest.mark.parametrize("i", range(8))\n'
+            "def test_alpha(i):\n    assert i < 3\n\n"
+            '@pytest.mark.parametrize("i", range(5))\n'
+            "def test_beta(i):\n    assert True\n"
+        )
+        (tmp_path / "test_skipped_module.py").write_text(
+            'import pytest\n\npytest.importorskip("a_module_that_is_not_installed")\n\ndef test_never(): ...\n'
+        )
+        env = {**os.environ, "PYTHONPATH": str(_REPO_ROOT)}
+        env.pop("PYTEST_ADDOPTS", None)
+        # cwd is the tmp tree so the nested run inherits none of this
+        # repository's configuration, and no ``-q``: quiet suppresses the
+        # collection line, which is the line under test.
+        finished = subprocess.run(
+            [sys.executable, "-m", "pytest", ".", "-p", "no:cacheprovider", "-p", "no:randomly", *args],
+            capture_output=True,
+            text=True,
+            cwd=tmp_path,
+            env=env,
+            timeout=300,
+        )
+        return finished.stdout
+
+    def test_a_token_really_does_sit_between_deselected_and_selected(self, tmp_path: Path) -> None:
+        out = self._run(tmp_path, "-k", "alpha")
+
+        assert "collected 13 items / 5 deselected / 1 skipped / 8 selected" in out
+        # And that run reached all 8 of the items it selected.
+        assert parse_run(out).outcome == "complete"
+
+    def test_the_derived_extent_is_the_extent_the_session_counted(self, tmp_path: Path) -> None:
+        out = self._run(tmp_path, "-k", "alpha", "-x", "-p", "tests.session_truncation")
+
+        stated = re.search(r"session truncated: (\d+) of (\d+) collected tests ran", out)
+        assert stated, "the reporter did not state an extent for a truncated run"
+        counted = (int(stated.group(1)), int(stated.group(2)))
+
+        # With the section present the numbers are the session's; with it removed
+        # they are this module's arithmetic. Both must be what the session counted.
+        without = "\n".join(
+            line for line in out.splitlines() if "truncated" not in line and "never started" not in line
+        )
+        for report in (parse_run(out), parse_run(without)):
+            assert report.outcome == "truncated"
+            assert (report.executed, report.selected) == counted

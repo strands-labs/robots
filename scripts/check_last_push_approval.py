@@ -195,9 +195,13 @@ WHAT_CLEARS_THIS: tuple[str, ...] = (
     "   that account pushed defeats the control rather than working around a",
     "   technicality.",
     "",
-    "Avoiding it next time: pushing a fix onto a contributor's branch consumes",
-    "the approval of whoever owns the token it is pushed with. Prefer leaving",
-    "the change as review feedback for the author to push, or land it as a",
+    "Avoiding it next time: whatever puts the head commit there becomes the last",
+    "push, and consumes the approval of the account it is attributed to. That is",
+    '`git push`, and it is equally the **"Update branch" button** on the pull',
+    "request page: one click, no local checkout, no token the operator handles,",
+    "and the same new last pusher. The button is not an exception because it is",
+    "one click. A base refresh on a contributor's branch is theirs to make, so",
+    "prefer leaving the change as review feedback for the author, or land it as a",
     "separate pull request against the base branch.",
 )
 

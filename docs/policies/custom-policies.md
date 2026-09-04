@@ -149,6 +149,11 @@ Notes:
   every observation and being read as a zero pose.
 - Declaring nothing (the default) leaves the observation exactly as the backend
   produced it, so policies that do not need a link pay no extra read.
+- The declaration is collected across the whole policy tree (`children`), so it
+  survives being wrapped: a tracker inside a `CompositePolicy` or a
+  `PersistentPolicy` still receives its links, and a wrapper does not have to
+  re-declare them. A refusal names the policy that declared the body, not the
+  wrapper it was reached through.
 - In a multi-robot scene MuJoCo body names carry the robot's namespace prefix
   (`alice/Lower_Arm`), the same spelling `get_body_state` resolves.
 - Requires a backend that implements `get_body_state` (MuJoCo, Isaac).
