@@ -27,7 +27,6 @@
     ◆ <a href="https://github.com/google-deepmind/mujoco">MuJoCo</a>
     ◆ <a href="https://github.com/NVIDIA/Isaac-GR00T">NVIDIA GR00T</a>
     ◆ <a href="https://github.com/huggingface/lerobot">LeRobot</a>
-    ◆ <a href="https://github.com/strands-labs/robots-sim">Robots Sim</a>
     ◆ <a href="https://github.com/orgs/strands-labs/projects/2">Project Board</a>
   </p>
 </div>
