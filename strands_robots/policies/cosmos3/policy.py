@@ -360,12 +360,10 @@ class Cosmos3Policy(Policy):
             # injected ``client`` owns its own address, so both are validated
             # only when this constructor is the one that builds the endpoint.
             if not client:
-                for _param, _value, _domain in (
-                    ("host", host, dial_host_error),
-                    ("port", port, tcp_port_error),
-                ):
-                    if (error := _domain(_value, _param, type(self).__name__)) is not None:
-                        raise ValueError(error)
+                if (host_error := dial_host_error(host, "host", type(self).__name__)) is not None:
+                    raise ValueError(host_error)
+                if (port_error := tcp_port_error(port, "port", type(self).__name__)) is not None:
+                    raise ValueError(port_error)
             self._client = client or Cosmos3WebsocketClient(host=host, port=port, api_key=api_key, transport=transport)
             logger.info(
                 "Cosmos3Policy ready [embodiment=%s domain=%s action_space=%s chunk=%d backend=service ws://%s:%d]",

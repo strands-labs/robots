@@ -21,3 +21,10 @@ by one client and dialled by the next. A stated `endpoint=` and an injected
 to reach a server bound on every interface. The ZMQ policy clients keep their
 transport's verdict: `tcp://` is not a URI, and zmq refuses each of these
 spellings at `connect` with the whole address in the message.
+
+Reaching that verdict reads the value's own characters, so the read is made
+behind the module's guarded-read layer and an unreadable host is refused rather
+than raised past: a `str` subclass whose `startswith` raises used to escape as a
+`RuntimeError` out of a call documented to report through `ValueError`. The
+refusal text is rendered through the shared renderers, so it cannot itself fail
+on the path that exists to answer an unusable value with text.

@@ -1169,6 +1169,42 @@ def tcp_port_error(value: Any, param: str, context: str) -> str | None:
 _URI_COMPONENT_DELIMITERS = frozenset("/?#@:[]\\")
 
 
+def _read_uri_host(value: str) -> tuple[tuple[str, str, list[str]] | None, str | None]:
+    """The host as a plain string, its body and its delimiters - or why it did not read.
+
+    :func:`dial_host_error`'s verdict is computed from the caller's own string
+    operations - ``startswith``, a slice, and a character scan - and a ``str``
+    subclass owes none of them an answer. That makes this the :func:`_read_name_list`
+    case rather than the :func:`_read_to_quote` one: the read *is* the verdict, so a
+    read that fails becomes one, and the guard refuses a host it could not inspect
+    instead of raising out of the path whose whole purpose is to answer an unusable
+    value with text.
+
+    A bracketed IPv6 literal is unwrapped here because the brackets decide whether
+    ``:`` belongs to the host, which is part of reading it rather than of judging it.
+
+    Args:
+        value: The caller-supplied host, already known to be a ``str``.
+
+    Returns:
+        ``((spelling, body, delimiters), None)`` when the read finished - ``spelling``
+        a plain ``str`` copy the refusal can interpolate, ``body`` unbracketed and
+        ``delimiters`` sorted - or ``(None, description)`` when it did not. Exactly
+        one side is ever populated.
+    """
+    try:
+        spelling = str(value)
+        bracketed = value.startswith("[") and value.endswith("]")
+        body = str(value[1:-1] if bracketed else value)
+        own = frozenset(":") if bracketed else frozenset()
+        bad = sorted(
+            {c for c in body if (c in _URI_COMPONENT_DELIMITERS and c not in own) or not c.isprintable() or c.isspace()}
+        )
+        return (spelling, body, bad), None
+    except Exception as exc:
+        return None, _describe_failed_read(exc)
+
+
 def dial_host_error(value: Any, param: str, context: str) -> str | None:
     """Error text when ``value`` cannot address the host half of a websocket URI.
 
@@ -1220,33 +1256,38 @@ def dial_host_error(value: Any, param: str, context: str) -> str | None:
     Returns:
         An error message, or ``None`` when the value can address a host.
     """
+    shown = _refusal_repr(value)
     if not isinstance(value, str):
         return (
-            f"{context}: {param} must be a string hostname or IP literal, got {value!r} "
+            f"{context}: {param} must be a string hostname or IP literal, got {shown} "
             f"({type(value).__name__}). It is interpolated into the websocket URI the client "
             "dials (ws://<host>:<port>), which carries it verbatim, so the client dials a name "
             "nobody wrote rather than reporting the value."
         )
-    bracketed = value.startswith("[") and value.endswith("]")
-    body = value[1:-1] if bracketed else value
+    read, unreadable = _read_uri_host(value)
+    if read is None:
+        return (
+            f"{context}: {param} could not be read as a host ({unreadable}), got {shown}; "
+            "a value whose own string operations do not answer cannot be checked against the "
+            "host half of the websocket URI it would be interpolated into (ws://<host>:<port>). "
+            "Pass a plain hostname or IP literal, e.g. '127.0.0.1'."
+        )
+    spelling, body, bad = read
+    would_be = _refusal_repr(f"ws://{spelling}:<port>")
     if not body:
         return (
-            f"{context}: {param} must name a host to dial, got {value!r}; "
-            f'ws://{value}:<port> is not a URI (the parse reports "hostname isn\'t provided"). '
+            f"{context}: {param} must name a host to dial, got {shown}; "
+            f'{would_be} is not a URI (the parse reports "hostname isn\'t provided"). '
             "Use '0.0.0.0' to reach a server bound on every interface, or '127.0.0.1' for a local one."
         )
-    own = frozenset(":") if bracketed else frozenset()
-    bad = sorted(
-        {c for c in body if (c in _URI_COMPONENT_DELIMITERS and c not in own) or not c.isprintable() or c.isspace()}
-    )
     if bad:
         hint = " Pass a bracketed literal for IPv6 (e.g. '[::1]')." if ":" in bad else ""
         return (
-            f"{context}: {param} must be a bare hostname or IP literal, got {value!r}; "
-            f"{', '.join(map(repr, bad))} cannot appear in the host half of the websocket URI it is "
-            f"interpolated into (ws://<host>:<port>), so {f'ws://{value}:<port>'!r} names a "
-            "different URI rather than a host - a '/' puts the validated port in the path and the "
-            f"client dials :80 instead.{hint}"
+            f"{context}: {param} must be a bare hostname or IP literal, got {shown}; "
+            f"{_refusal_container_repr(bad)} cannot appear in the host half of the websocket URI it "
+            f"is interpolated into (ws://<host>:<port>), so {would_be} names a different URI rather "
+            "than a host - a '/' puts the validated port in the path and the client dials :80 "
+            f"instead.{hint}"
         )
     return None
 

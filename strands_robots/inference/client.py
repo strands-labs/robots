@@ -198,12 +198,10 @@ class RemotePolicy(Policy):
         # among it, and the parse then dials :80 - which makes the port's own
         # verdict unreadable rather than wrong.
         if not endpoint:
-            for _param, _address, _domain in (
-                ("host", host, dial_host_error),
-                ("port", port, tcp_port_error),
-            ):
-                if (error := _domain(_address, _param, type(self).__name__)) is not None:
-                    raise ValueError(error)
+            if (host_error := dial_host_error(host, "host", type(self).__name__)) is not None:
+                raise ValueError(host_error)
+            if (port_error := tcp_port_error(port, "port", type(self).__name__)) is not None:
+                raise ValueError(port_error)
         # A timeout that names no budget is refused here, while the caller still
         # holds the value, because the transport's own reaction to one is
         # indistinguishable from an absent server: ``0``, a negative and ``True``

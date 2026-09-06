@@ -38,7 +38,9 @@ for an action.
 
 from __future__ import annotations
 
+import ast
 import inspect
+import textwrap
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
@@ -253,5 +255,62 @@ def test_the_domain_has_one_owner_and_no_consumer_restates_it() -> None:
         ("inference.client", inspect.getsource(RemotePolicy.__init__)),
         ("vera.config", inspect.getsource(type(VeraConfig(embodiment="pusht")).__post_init__)),
     ):
-        assert "dial_host_error" in source, module_name
+        called = _domains_called(source)
+        assert "dial_host_error" in called, f"{module_name} does not call dial_host_error: {sorted(called)}"
         assert "isprintable" not in source, f"{module_name} restates the host domain"
+
+
+def _domains_called(source: str) -> set[str]:
+    """Names this source *calls*, so a mere reference does not count as a check.
+
+    Read as a call graph rather than as text because a guard that collapses the
+    two halves into a table - ``for param, value, domain in ((...),)`` - still
+    contains both domain names while calling neither by name. That shape reads as
+    equivalent and is not: the sibling port guard in
+    ``tests/policies/test_service_port_domain.py`` grades provider constructors
+    on an ``ast.Call`` to ``tcp_port_error``, so a table would be reported there
+    as a provider shipping an unvalidated port. Both halves are pinned here on
+    the same terms as that guard uses for the port.
+    """
+    tree = ast.parse(textwrap.dedent(source))
+    return {node.func.id for node in ast.walk(tree) if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)}
+
+
+class RefusesItsOwnRead(str):
+    """A ``str`` subclass that answers no string operation the guard performs.
+
+    Not hypothetical, and not a hostile-input exercise: a host arrives from a
+    config file, an env var or an agent tool, and any of those may hand over a
+    ``str`` subclass carrying provenance. It is a ``str`` by ``isinstance``, so it
+    reaches the character scan that decides the verdict, and the scan is the
+    caller's own code.
+    """
+
+    def startswith(self, *args: Any, **kwargs: Any) -> bool:
+        raise RuntimeError("no read for you")
+
+
+@pytest.mark.parametrize("surface", sorted(WEBSOCKET_SURFACES))
+def test_a_host_that_cannot_be_read_is_refused_rather_than_raised_past(surface: str) -> None:
+    """A host the guard cannot inspect is a refusal, on the channel refusals use.
+
+    The domain reports through a returned message that each constructor turns into
+    a ``ValueError``, so the read it makes to reach that verdict must not raise a
+    different exception out of the same call: a ``RuntimeError`` from a character
+    scan escapes every ``except ValueError`` a caller wrote for this parameter.
+    Unreadable is a refusal because the read *is* the verdict here - a host that
+    cannot be inspected cannot be certified as one a URI can carry.
+    """
+    message = WEBSOCKET_SURFACES[surface](RefusesItsOwnRead("127.0.0.1"))
+    assert message is not None, f"{surface} accepted a host it could not read"
+    assert message.startswith(f"{surface}: host "), message
+    assert "could not be read" in message, message
+    assert "RuntimeError: no read for you" in message, message
+
+
+def test_the_probe_really_refuses_the_read_the_guard_makes() -> None:
+    """Non-vacuity: a probe that had started answering would pass the cell above."""
+    probe = RefusesItsOwnRead("127.0.0.1")
+    assert isinstance(probe, str)
+    with pytest.raises(RuntimeError, match="no read for you"):
+        probe.startswith("[")
