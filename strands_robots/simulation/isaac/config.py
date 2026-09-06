@@ -11,6 +11,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from strands_robots.utils import positive_count_error
+
 # Supported render modes
 RENDER_MODES = ("headless", "rtx_realtime", "rtx_pathtracing")
 
@@ -251,9 +253,15 @@ class IsaacConfig:
         Override Omniverse Nucleus server URL. Default from env var
         ``STRANDS_ISAAC_NUCLEUS_URL`` or None (use Isaac defaults).
     camera_width : int
-        Default camera width in pixels. Default 640.
+        Default camera width in pixels, for every camera and render call that
+        does not state one of its own. Default 640. Must be a positive integer
+        on :func:`strands_robots.utils.positive_count_error` -- the same shared
+        pixel floor ``add_camera`` and the render family already apply to the
+        ``width`` they take instead of this default, so one resolution cannot be
+        refused at the call site and accepted from the config.
     camera_height : int
-        Default camera height in pixels. Default 480.
+        Default camera height in pixels. Default 480. Same domain as
+        ``camera_width``.
     enable_rtx_sensors : bool
         Enable RTX-accelerated sensors (camera, LiDAR). Default True.
     verbose : bool
@@ -300,9 +308,22 @@ class IsaacConfig:
         if self.rendering_dt <= 0:
             raise ValueError(f"rendering_dt must be > 0, got {self.rendering_dt}")
 
-        # Validate camera dimensions
-        if self.camera_width < 1 or self.camera_height < 1:
-            raise ValueError(f"camera dimensions must be >= 1, got {self.camera_width}x{self.camera_height}")
+        # Validate camera dimensions on the shared pixel floor
+        # (:func:`strands_robots.utils.positive_count_error`) that ``add_camera``
+        # and ``_render_frame`` already apply to the ``width`` / ``height``
+        # arguments they take *instead of* these defaults, so the two owners of
+        # one resolution reach one verdict. The hand-rolled ``< 1`` pair this
+        # replaces is the shape that domain's docstring warns about: it tests
+        # only the floor, so it read ``True`` as a width of 1, let ``640.0``,
+        # ``640.5``, ``nan`` and ``inf`` through to ``np.zeros((h, w, 3))`` as
+        # ``TypeError: 'float' object cannot be interpreted as an integer`` --
+        # raised out of ``render``, whose contract is a ``{"status": "error"}``
+        # dict -- and raised ``TypeError`` from the comparison itself for a
+        # ``str`` or ``None``, rather than naming the field. Each field is
+        # graded separately so the message names the one to fix.
+        for param, value in (("camera_width", self.camera_width), ("camera_height", self.camera_height)):
+            if (dim_err := positive_count_error(value, param, type(self).__name__)) is not None:
+                raise ValueError(dim_err)
 
         # Validate stage_path. It is the other half of every prim path this
         # backend interpolates; the name half is already refused on the shared
