@@ -22,8 +22,19 @@ admitted ``inf`` for the Isaac idle live-preview period. This sweep replaces the
 mesh-rooted one and walks the whole package, so its root is the scope of the rule
 it enforces.
 
-The population is derived, never listed: a function that both reads the
-environment and coerces with ``float()``. Only the exemptions are named, each
+A resolver's *position* is the same kind of blind spot as its root. The
+population was every such **function**, and a knob resolved by a module-level
+statement is not a function that failed the scan - it is invisible to it, so the
+sweep read as a clean tree again. That position is the one where an unusable
+value costs the most: the coercion runs while the module body executes, so a
+typo does not degrade one knob but raises ``ValueError`` out of the import, from
+a frame that names ``float`` rather than the variable. Module-level statements
+are therefore classified too, keyed ``module::<module>``, and a knob resolved
+through a resolver leaves that population by construction - it no longer
+coerces in the statement at all.
+
+The population is derived, never listed: a function - or a module-level
+statement - that both reads the environment and coerces with ``float()``. Only the exemptions are named, each
 with the reason it is not a resolver-level domain, and
 :meth:`TestEveryEnvFloatResolverIsFinitenessBounded.test_every_exemption_is_still_discovered`
 fails when one stops matching, so an exemption cannot outlive the code it
@@ -73,8 +84,15 @@ LANDMARK_RESOLVERS = (
 )
 
 #: Non-vacuity floor, well below the count measured on this tree, so a resolver
-#: added or removed does not send a contributor to edit a number.
+#: added or removed does not send a contributor to edit a number. Counted over
+#: the function population alone: a module-level knob resolved correctly leaves
+#: the population entirely, so a floor over the whole classification would be a
+#: floor on how many modules still coerce at import.
 MINIMUM_RESOLVERS = 6
+
+#: Stands in for the function name in a module-level entry's key. Not a legal
+#: Python identifier, so it cannot collide with a function called this.
+MODULE_SCOPE = "<module>"
 
 
 #: The scanned tree, derived from the imported package rather than from a path
@@ -85,9 +103,27 @@ MINIMUM_RESOLVERS = 6
 PACKAGE_ROOT = pathlib.Path(inspect.getfile(strands_robots)).parent
 
 
+#: Node types whose bodies belong to a different member of the population. A
+#: module-level statement must not be credited with a guard - nor charged with a
+#: coercion - that lives inside a function it merely encloses, and a class body
+#: is only ever a container for methods the function scan already classifies.
+_OWN_SCOPE = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)
+
+
+def _within_one_scope(node: ast.AST) -> list[ast.AST]:
+    """*node* and its descendants, stopping at anything that owns its own scope."""
+    seen: list[ast.AST] = []
+    stack: list[ast.AST] = [node]
+    while stack:
+        current = stack.pop()
+        seen.append(current)
+        stack.extend(child for child in ast.iter_child_nodes(current) if not isinstance(child, _OWN_SCOPE))
+    return seen
+
+
 def _reads_the_environment(fn: ast.AST) -> bool:
     """True when *fn* really reads ``os.environ`` / ``os.getenv``."""
-    for node in ast.walk(fn):
+    for node in _within_one_scope(fn):
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
             value = node.func.value
             if node.func.attr == "getenv" and isinstance(value, ast.Name) and value.id == "os":
@@ -101,7 +137,7 @@ def _reads_the_environment(fn: ast.AST) -> bool:
 
 def _calls_any(fn: ast.AST, names: frozenset[str] | set[str]) -> bool:
     """True when *fn* calls any function in *names*, bare or as an attribute."""
-    for node in ast.walk(fn):
+    for node in _within_one_scope(fn):
         if isinstance(node, ast.Call):
             func = node.func
             if isinstance(func, ast.Name) and func.id in names:
@@ -112,15 +148,29 @@ def _calls_any(fn: ast.AST, names: frozenset[str] | set[str]) -> bool:
 
 
 def _classify(paths: list[pathlib.Path], root: pathlib.Path) -> dict[str, bool]:
-    """Map ``module::function`` to whether it tests finiteness."""
+    """Map ``module::function`` - and ``module::<module>`` - to whether it tests finiteness.
+
+    A module contributes at most one ``<module>`` entry however many statements
+    resolve knobs there, and it is bounded only when every one of them is: the
+    import either survives an operator's typo or it does not, so one unguarded
+    statement is the whole module's answer.
+    """
     found: dict[str, bool] = {}
     for path in paths:
         tree = ast.parse(path.read_text(encoding="utf-8"))
+        name = path.relative_to(root).as_posix()
         for node in ast.walk(tree):
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
             if _calls_any(node, {"float"}) and _reads_the_environment(node):
-                found[f"{path.relative_to(root).as_posix()}::{node.name}"] = _calls_any(node, FINITENESS_GUARDS)
+                found[f"{name}::{node.name}"] = _calls_any(node, FINITENESS_GUARDS)
+        for statement in tree.body:
+            if isinstance(statement, _OWN_SCOPE):
+                continue
+            if _calls_any(statement, {"float"}) and _reads_the_environment(statement):
+                bounded = _calls_any(statement, FINITENESS_GUARDS)
+                key = f"{name}::{MODULE_SCOPE}"
+                found[key] = found.get(key, True) and bounded
     return found
 
 
@@ -190,6 +240,65 @@ class TestTheDetectorAnswersOnPlantedSource:
             encoding="utf-8",
         )
         assert _scan(tmp_path) == {"planted.py::_resolve": True}, label
+
+    def test_a_module_level_resolution_is_reported(self, tmp_path: pathlib.Path) -> None:
+        """The position an unusable value raises out of the import from."""
+        (tmp_path / "planted.py").write_text(
+            'import os\n\nTTL = float(os.getenv("TTL", "300"))\n',
+            encoding="utf-8",
+        )
+        assert _scan(tmp_path) == {"planted.py::<module>": False}
+
+    def test_a_module_level_knob_read_through_a_resolver_is_not_in_the_population(self, tmp_path: pathlib.Path) -> None:
+        """Routing the knob is the remedy, and it leaves nothing to grade."""
+        (tmp_path / "planted.py").write_text(
+            "import math\nimport os\n\n\n"
+            "def _env_float(name: str, default: float) -> float:\n"
+            "    value = float(os.getenv(name, str(default)))\n"
+            "    return value if math.isfinite(value) else default\n\n\n"
+            'TTL = _env_float("TTL", 300.0)\n',
+            encoding="utf-8",
+        )
+        assert _scan(tmp_path) == {"planted.py::_env_float": True}
+
+    def test_one_unguarded_statement_answers_for_the_whole_module(self, tmp_path: pathlib.Path) -> None:
+        """A guarded sibling does not vouch for the statement beside it."""
+        (tmp_path / "planted.py").write_text(
+            "import math\nimport os\n\n"
+            'A = float(os.getenv("A", "1")) if math.isfinite(float(os.getenv("A", "1"))) else 1.0\n'
+            'B = float(os.getenv("B", "2"))\n',
+            encoding="utf-8",
+        )
+        assert _scan(tmp_path) == {"planted.py::<module>": False}
+
+    def test_a_statement_is_not_credited_with_a_guard_from_a_scope_it_encloses(self, tmp_path: pathlib.Path) -> None:
+        """A guard inside an enclosed ``def`` belongs to that ``def``, not to its host.
+
+        The coercion here runs at import and is unguarded; the ``isfinite`` sits in
+        a function the block merely contains, and is never applied to it. A walk
+        that descends into the nested scope reads the block as bounded.
+        """
+        (tmp_path / "planted.py").write_text(
+            "import math\nimport os\n\n"
+            "if True:\n"
+            '    TTL = float(os.getenv("TTL", "300"))\n\n'
+            "    def _unrelated(value: float) -> bool:\n"
+            "        return math.isfinite(value)\n",
+            encoding="utf-8",
+        )
+        assert _scan(tmp_path) == {"planted.py::<module>": False}
+
+    def test_a_resolver_is_not_credited_with_a_guard_from_its_own_closure(self, tmp_path: pathlib.Path) -> None:
+        """The same rule one scope down: a helper defined but not applied is not a bound."""
+        (tmp_path / "planted.py").write_text(
+            "import math\nimport os\n\n\n"
+            "def _resolve(name: str) -> float:\n"
+            "    def _ok(value: float) -> bool:\n"
+            "        return math.isfinite(value)\n\n"
+            '    return float(os.getenv(name, "1"))\n',
+            encoding="utf-8",
+        )
+        assert _scan(tmp_path) == {"planted.py::_resolve": False}
 
     def test_a_comment_mentioning_getenv_is_not_a_resolver(self, tmp_path: pathlib.Path) -> None:
         """The detector must not re-acquire the text scan's false positive."""
