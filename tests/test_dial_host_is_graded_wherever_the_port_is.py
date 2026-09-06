@@ -314,3 +314,119 @@ def test_the_probe_really_refuses_the_read_the_guard_makes() -> None:
     assert isinstance(probe, str)
     with pytest.raises(RuntimeError, match="no read for you"):
         probe.startswith("[")
+
+
+class RefusesToBeCopied(str):
+    """A ``str`` subclass whose ``__str__`` raises."""
+
+    def __str__(self) -> str:
+        raise RuntimeError("no read for you")
+
+
+class RefusesToBeSliced(str):
+    """A ``str`` subclass whose ``__getitem__`` raises."""
+
+    def __getitem__(self, index: Any) -> str:
+        raise RuntimeError("no read for you")
+
+
+#: ``(operation, host)`` for the operations the read performs on the caller's own
+#: value, beside the ``startswith`` the cell above covers. The slice is reached
+#: only for a bracketed literal, because that is the only host whose brackets are
+#: stripped - so each row needs the host that reaches it.
+OPERATIONS_THE_READ_MAKES: list[tuple[str, Any]] = [
+    ("__str__", RefusesToBeCopied("127.0.0.1")),
+    ("__getitem__", RefusesToBeSliced("[::1]")),
+]
+
+
+@pytest.mark.parametrize("surface", sorted(WEBSOCKET_SURFACES))
+@pytest.mark.parametrize(
+    ("operation", "host"), OPERATIONS_THE_READ_MAKES, ids=[operation for operation, _ in OPERATIONS_THE_READ_MAKES]
+)
+def test_no_operation_the_read_makes_escapes_the_try(surface: str, operation: str, host: Any) -> None:
+    """Each operation separately, because one probe only reaches the first of them.
+
+    Reading a host is three operations on the caller's object - a copy, a prefix
+    test and a slice - and a subclass may refuse any one of them. Covering only
+    the first leaves the other two: a read moved out of the ``try`` still answers
+    a value that refuses ``startswith`` and raises on one that refuses the
+    operation that moved.
+    """
+    message = WEBSOCKET_SURFACES[surface](host)
+    assert message is not None, f"{surface} accepted a host whose {operation} does not answer"
+    assert "could not be read" in message, message
+    assert "RuntimeError: no read for you" in message, message
+
+
+class RefusesToEndswith(str):
+    def endswith(self, *args: Any, **kwargs: Any) -> bool:
+        raise RuntimeError("never called")
+
+
+class RefusesToBeIterated(str):
+    def __iter__(self) -> Any:
+        raise RuntimeError("never called")
+
+
+class RefusesToBeRepred(str):
+    def __repr__(self) -> str:
+        raise RuntimeError("never called")
+
+
+#: ``(operation, host, why it is never reached)``. These are the string
+#: operations a reader of a host *could* make and this one does not, so a
+#: usable host carrying them is accepted rather than reported unreadable.
+OPERATIONS_THE_READ_AVOIDS: list[tuple[str, Any, str]] = [
+    ("endswith", RefusesToEndswith("127.0.0.1"), "'and' short-circuits when the value does not start with '['"),
+    ("__iter__", RefusesToBeIterated("127.0.0.1"), "the character scan runs over a plain str copy, not the value"),
+    ("__repr__", RefusesToBeRepred("127.0.0.1"), "the value is rendered through the shared guarded renderer"),
+]
+
+
+@pytest.mark.parametrize(
+    ("operation", "host", "why"),
+    OPERATIONS_THE_READ_AVOIDS,
+    ids=[operation for operation, _, _ in OPERATIONS_THE_READ_AVOIDS],
+)
+def test_an_operation_the_read_never_makes_leaves_a_usable_host_usable(operation: str, host: Any, why: str) -> None:
+    """The over-reach control, and the pin on how the read is narrow.
+
+    A refusal for every host that carries an unusual ``str`` subclass would be a
+    domain nobody could pass, so the reader must reach only what it needs. Each
+    row records the reason it does not reach this one; ``__iter__`` is the
+    load-bearing one, since it is unreachable only while the scanned body is a
+    copy the module made rather than the object it was handed.
+    """
+    assert utils_module.dial_host_error(host, "host", "Ctx") is None, (
+        f"a usable host was refused over {operation}, which the read does not make: {why}"
+    )
+
+
+# Each surface with BOTH halves of its address unusable at once. The port keyword
+# differs per surface (``port`` / ``server_port``), so the constructors are
+# written out rather than derived from one signature.
+BOTH_HALVES_UNUSABLE: dict[str, Any] = {
+    "RemotePolicy": lambda host: RemotePolicy(host=host, port=65536),
+    "Cosmos3Policy": lambda host: Cosmos3Policy(embodiment="droid", host=host, port=65536),
+    "VeraConfig": lambda host: VeraConfig(embodiment="pusht", host=host, server_port=65536),
+}
+
+
+@pytest.mark.parametrize("surface", sorted(BOTH_HALVES_UNUSABLE))
+@pytest.mark.parametrize("host", RECUT_THE_URI, ids=repr)
+def test_the_host_is_graded_before_the_port_it_would_have_taken(surface: str, host: str) -> None:
+    """A caller who gets both halves wrong is told about the host.
+
+    The two refusals sit in each constructor as consecutive statements, so which
+    one a caller sees is decided by their order - and it has to be the host: the
+    delimiter in it is what re-cuts the URI and carries the port away, so
+    reporting the port would name the component that was discarded rather than
+    the one that discarded it. Stated independently in all three constructors,
+    so it is pinned per surface rather than once.
+    """
+    with pytest.raises(ValueError) as caught:
+        BOTH_HALVES_UNUSABLE[surface](host)
+    message = str(caught.value)
+    assert "host" in message, f"{surface} refused the port before the host that would have taken it: {message}"
+    assert "65536" not in message, f"{surface} named the discarded port instead of the host: {message}"
