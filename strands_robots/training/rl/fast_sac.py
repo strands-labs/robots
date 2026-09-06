@@ -194,6 +194,13 @@ class FastSacTrainer(BaseRLAlgo):
         # being a function of the observation, and the run reports success while
         # exporting a deployable checkpoint whose actor is one fixed action.
         problems.extend(self._network_width_problems(spec))
+        # device is spent by torch.device itself, which judges nothing: every
+        # network, buffer and rollout tensor is placed on the result. "gpu" and
+        # "cuda:abc" raise out of setup after the preflight passed, and a
+        # non-str ordinal constructs on any host and then dies at the first
+        # .to() with "invalid device ordinal" - the same spec training fine on a
+        # box with more GPUs.
+        problems.extend(self._spec_device_problems(spec))
         # tau is the rate at which the target critics track the online ones,
         # spent as tp.mul_(1.0 - spec.tau).add_(spec.tau * p) per mirrored pair,
         # so it decides whether a separate target network exists at all. A bare

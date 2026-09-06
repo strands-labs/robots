@@ -22,9 +22,12 @@ Two properties are deliberately NOT graded, and both have a control below:
   a queued or containerised run is dispatched from one host and executed on
   another.
 * **the tool surface's own answer** - ``tools.lerobot_train`` holds the same
-  value to the same domain for its own detached argv. The two live in layers that
-  cannot import each other, so the rule is stated twice; the parity test here is
-  what keeps the two admitted sets from drifting, rather than an alias.
+  value to the same domain for its own detached argv, and the from-scratch RL
+  backends hand the same quantity to ``torch.device`` directly. All three ask one
+  owner, :func:`~strands_robots.utils.torch_device_error`, for the reason
+  :func:`~strands_robots.utils.step_cadence_error` gives for the cadence beside
+  ``device`` in that same argv: the callers sit in different layers, so the domain
+  lives with neither of them. The parity test here still pins that they agree.
 """
 
 import json
@@ -142,13 +145,24 @@ class TestTheAdmittedDomainIsTorchsOwn:
         )
 
     def test_the_domain_is_read_from_torch_rather_than_a_copied_list(self) -> None:
-        """No device-type vocabulary is restated here, so a new backend needs no edit."""
+        """No device-type vocabulary is restated, so a new torch backend needs no edit.
+
+        The rule itself lives in :func:`~strands_robots.utils.torch_device_error`,
+        which this trainer asks; what is graded here is that asking it is all this
+        surface does, and that the owner reads the admitted set from torch instead
+        of enumerating it.
+        """
         import inspect
 
         src = inspect.getsource(LerobotTrainer._device_problems)
-        assert "torch.device(device)" in src
+        assert "torch_device_error" in src, "the trainer no longer routes through the shared owner"
+
+        from strands_robots.utils import torch_device_error
+
+        owner = inspect.getsource(torch_device_error)
+        assert "torch.device(value)" in owner
         for copied in ("xpu", "mkldnn", "opengl", "vulkan", "hpu"):
-            assert copied not in src, f"the domain restates a torch device type: {copied}"
+            assert copied not in owner, f"the domain restates a torch device type: {copied}"
 
 
 class TestWhatThisDeliberatelyDoesNotGrade:

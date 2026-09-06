@@ -1319,6 +1319,82 @@ def step_cadence_error(value: Any, param: str, context: str) -> str | None:
     return None
 
 
+def torch_device_error(value: Any, param: str, context: str) -> str | None:
+    """Error text when ``value`` is not a device string torch can parse.
+
+    Shared domain for every caller-supplied torch device this package spends. It
+    reaches torch from three surfaces that cannot be reconciled after the fact:
+    the ``lerobot_train`` tool interpolates it into ``--policy.device=`` in the
+    argv of a DETACHED process; :class:`~strands_robots.training.lerobot.LerobotTrainer`
+    assigns it onto ``policy_cfg.device`` for the same pipeline in-process; and
+    the from-scratch RL backends hand
+    :attr:`~strands_robots.training.rl.base_algo.RLTrainSpec.device` straight to
+    ``torch.device`` in :meth:`setup`. The domain lives here for the reason
+    :func:`step_cadence_error` gives for the cadence beside it in that same argv:
+    those callers sit in different layers, and the same device must not be
+    refused by one and accepted by another that wraps the identical pipeline.
+
+    The admitted set is torch's own, read by handing the value to
+    ``torch.device`` rather than by comparing against a copied list of device
+    types. A torch build that gains a backend is admitted here with no edit, and
+    torch's own exception enumerates the types it accepts, so a refusal names the
+    admitted set without restating it.
+
+    Only the *spelling* is graded, never availability. ``torch.device("cuda")``
+    constructs on a CPU-only box and must stay accepted, because a queued or
+    containerised run legitimately names a device the dispatching machine does
+    not have. That is also why a non-``str`` is refused before torch is
+    consulted at all: ``torch.device(0)`` reads the accelerator inventory, so
+    asking torch about it would make one spec validate on a GPU box and fail on a
+    CPU box - and an ordinal that does resolve is worse than one that does not,
+    because ``torch.device(1)`` constructs on any host and then fails at the
+    first ``.to()`` with ``CUDA error: invalid device ordinal``, from a
+    ``torch/nn/modules/module.py`` frame that names neither the parameter nor the
+    run that supplied it.
+
+    Whether an *unstated* device is refused belongs to the caller, not here: a
+    surface that documents a falsy value as "resolve the default" replaces it
+    before asking, and one that writes the value into an argv verbatim asks about
+    it as given. This function grades the value it is handed.
+
+    When torch is not importable the domain is unknown and the value passes
+    through unguarded, which is the posture every live-sourced domain in this
+    module takes when its source cannot be read.
+
+    The refused value is rendered through :func:`_refusal_repr`, as every scalar
+    guard here is: ``repr`` can itself raise - on an ``int`` wider than
+    :func:`sys.get_int_max_str_digits`, or from any third-party ``__repr__`` - and
+    a guard that raises while building a refusal fails on exactly the path that
+    exists so it does not.
+
+    Args:
+        value: The caller-supplied device.
+        param: Field name, quoted in the message so the refusal names the knob.
+        context: Public surface or provider name, prefixed to the message.
+
+    Returns:
+        An error message naming *context* and *param*, or ``None`` when torch can
+        parse the value.
+    """
+    if not isinstance(value, str):
+        return (
+            f"{context}: {param} must be a torch device string, got {type(value).__name__}. "
+            "Pass a device type, optionally with an index (e.g. 'cuda', 'cuda:0', 'cpu', 'mps')."
+        )
+    try:
+        import torch
+    except Exception:  # noqa: BLE001 - torch missing -> domain unknown, pass through
+        return None
+    try:
+        torch.device(value)
+    except (RuntimeError, ValueError) as e:
+        return (
+            f"{context}: {param}={_refusal_repr(value)} is not a torch device string ({e}). "
+            "Pass a device type, optionally with an index (e.g. 'cuda', 'cuda:0', 'cpu', 'mps')."
+        )
+    return None
+
+
 #: Highest DDS domain id whose RTPS discovery ports fit the 16-bit port space.
 #:
 #: RTPS derives every discovery port from the domain id (RTPS 2.2 sec. 9.6.1.1):
