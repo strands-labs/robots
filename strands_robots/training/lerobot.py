@@ -64,6 +64,7 @@ from strands_robots.utils import (
     declared_count,
     lerobot_version,
     stale_output_dir_is_clearable,
+    torch_device_error,
     validation_split_error,
     validation_split_fraction,
 )
@@ -825,40 +826,17 @@ class LerobotTrainer(Trainer):
         ``dataset_repo_id`` against ``_HUB_REPO_ID_RE``. ``device`` was the one
         knob beside them with none.
 
-        The admitted domain is torch's own, read by handing the value to
-        ``torch.device`` rather than by comparing against a copied list of
-        device types, so a torch build that gains a backend is admitted here
-        with no change and torch's own exception enumerates the types it
-        accepts. Only the spelling is graded, never availability:
-        ``torch.device("cuda")`` constructs on a CPU-only box, and a spec
-        legitimately names a device the machine writing it does not have - a
-        queued or containerised run is dispatched from one host and executed on
-        another. A non-``str`` is refused before torch is consulted for that
-        same reason, because ``torch.device(0)`` reads the accelerator inventory
-        and would make one spec validate on a GPU box and fail on a CPU box.
+        What stays here is the reason the check happens on *this* surface. The
+        domain is :func:`~strands_robots.utils.torch_device_error`, the one owner
+        the ``lerobot_train`` tool and the from-scratch RL preflight also consult,
+        so a device this trainer refuses cannot be accepted by the tool that
+        builds an argv for the same pipeline or by the RL backend beside it.
 
-        When torch is not importable the domain is unknown and the value passes
-        through unguarded, which is the same posture the reward-model field set
-        takes when its registry cannot be read.
+        The falsy case never reaches the domain: ``__init__`` resolves it through
+        :func:`_auto_device` first, which is what the constructor documents, so
+        ``self.device`` is always a stated device by the time it is graded here.
         """
-        device = self.device
-        if not isinstance(device, str):
-            return [
-                f"device must be a torch device string, got {type(device).__name__}; "
-                "pass a device type, optionally with an index (e.g. 'cuda', 'cuda:0', 'cpu', 'mps')."
-            ]
-        try:
-            import torch
-        except Exception:  # noqa: BLE001 - torch missing -> domain unknown, pass through
-            return []
-        try:
-            torch.device(device)
-        except (RuntimeError, ValueError) as e:
-            return [
-                f"device={device!r} is not a torch device string ({e}); "
-                "pass a device type, optionally with an index (e.g. 'cuda', 'cuda:0', 'cpu', 'mps')."
-            ]
-        return []
+        return [p for p in (torch_device_error(self.device, "device", self.provider_name),) if p is not None]
 
     # ---- ABC ---------------------------------------------------------------
 

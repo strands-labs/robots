@@ -172,6 +172,7 @@ from strands_robots.utils import (
     positive_count_error,
     positive_finite_number_error,
     step_cadence_error,
+    torch_device_error,
 )
 
 if TYPE_CHECKING:
@@ -353,6 +354,62 @@ def rl_run_size_problems(spec: TrainSpec, *, context: str) -> list[str]:
         if error is not None:
             problems.append(error)
     return problems
+
+
+def torch_device_problems(spec: TrainSpec, *, context: str) -> list[str]:
+    """Return device problems for a from-scratch RL :class:`RLTrainSpec`.
+
+    All three RL backends resolve the device the same way in :meth:`setup`::
+
+        self.device = torch.device(spec.device or ("cuda" if torch.cuda.is_available() else "cpu"))
+
+    so ``device`` is spent by ``torch.device`` itself, which judges nothing on
+    this spec's behalf, and every network, buffer and rollout tensor the run
+    allocates is placed on the result. ``device`` was the one caller-supplied
+    knob on this spec with no domain - the sentence the sibling supervised
+    preflight already uses about its own surface - while the counts, the
+    interval coefficients, the loss weights, the learning rate, the seed, the
+    launch topology and the network width beside it are all held to one.
+
+    Measured on a 6-DoF SO-101 MuJoCo env with PPO, ``validate()`` returning
+    ``[]`` - which :meth:`~strands_robots.training.base.Trainer.validate`
+    documents as meaning the spec IS launchable - for each of these:
+
+    * ``"gpu"`` (the ordinary mistake: the word the rest of the world uses)
+      and ``"cuda:abc"`` raise ``RuntimeError`` out of ``setup`` from the
+      ``torch.device`` line itself, after the preflight passed.
+    * ``1`` is worse, and is why a non-``str`` is refused before torch is
+      consulted: ``torch.device(1)`` constructs on ANY host, so the run reaches
+      the first ``.to()`` and dies with ``CUDA error: invalid device ordinal``
+      raised from a ``torch/nn/modules/module.py`` frame that names neither the
+      field nor the run - and the same spec would train on a host with more
+      GPUs. One spec, two answers, decided by the machine's inventory.
+
+    The domain is :func:`~strands_robots.utils.torch_device_error`, the one owner
+    the ``lerobot_train`` tool and :class:`~strands_robots.training.lerobot.LerobotTrainer`
+    also consult, so a device the supervised trainer refuses is not accepted by
+    the RL backend beside it.
+
+    A falsy ``device`` is NOT refused: the ``spec.device or ...`` above documents
+    it as "resolve the default", exactly as the supervised trainer's constructor
+    does, so it never reaches ``torch.device`` as written and is not this gate's
+    to judge. Availability is not graded either - ``"cuda"`` on a CPU-only box is
+    a valid spec, because a queued run is written on one host and executed on
+    another.
+
+    Args:
+        spec: The spec to preflight.
+        context: Provider name, prefixed to the message.
+
+    Returns:
+        A single-element list when ``device`` cannot be honored; empty when it
+        can, when it is unstated, or when torch is not importable.
+    """
+    device = getattr(spec, "device", None)
+    if not device:
+        return []
+    problem = torch_device_error(device, "device", context)
+    return [] if problem is None else [problem]
 
 
 def rl_replay_problems(spec: TrainSpec, *, context: str) -> list[str]:

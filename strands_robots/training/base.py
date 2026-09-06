@@ -886,6 +886,31 @@ class Trainer(ABC):
 
         return polyak_coefficient_problems(spec, context=self.provider_name)
 
+    def _spec_device_problems(self, spec: TrainSpec) -> list[str]:
+        """Device preflight for a backend that places its tensors from the spec.
+
+        Returns a problem when :attr:`RLTrainSpec.device` is not a device string
+        torch can parse. Distinct from
+        :meth:`~strands_robots.training.lerobot.LerobotTrainer._device_problems`,
+        which grades that trainer's ``device`` *constructor* knob: this one grades
+        the field on the spec, which is where the from-scratch RL backends carry
+        it. Both consult one domain,
+        :func:`~strands_robots.utils.torch_device_error`.
+
+        Imported lazily for the same reason as :meth:`_security_problems` - to
+        keep the ``base -> _validate`` import one-way at runtime.
+
+        Args:
+            spec: The spec to preflight.
+
+        Returns:
+            A single-element list when ``device`` cannot be honored; empty when
+            it can or when it is unstated.
+        """
+        from strands_robots.training._validate import torch_device_problems
+
+        return torch_device_problems(spec, context=self.provider_name)
+
     def _gradient_clip_problems(self, spec: TrainSpec) -> list[str]:
         """Gradient-clip preflight for a backend that clips before it steps.
 

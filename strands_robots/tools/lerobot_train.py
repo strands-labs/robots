@@ -44,6 +44,7 @@ from strands_robots.utils import (
     positive_count_error,
     stale_output_dir_is_clearable,
     step_cadence_error,
+    torch_device_error,
     validation_split_error,
     validation_split_fraction,
 )
@@ -533,43 +534,17 @@ def _torch_device_error(device: Any) -> str | None:
     the reason the run-size numerics in the same argv are refused up front, and
     ``device`` is the one token beside them that was carried through unchecked.
 
-    The admitted domain is torch's own, read by handing the value to
-    ``torch.device`` rather than by comparing against a copied list of device
-    types - the same "source the domain live" shape as
-    :func:`_expert_only_policy_types` and :func:`_policy_config_field_names`
-    above. A torch build that gains a backend is admitted here with no change,
-    and torch's own exception enumerates the types it accepts, so the refusal
-    names the admitted set without restating it.
-
-    Only the spelling is graded, never availability: ``torch.device("cuda")``
-    constructs on a CPU-only box and must keep building an argv there, because a
-    queued or containerised run legitimately names a device the dispatching
-    machine does not currently have. A non-``str`` is refused before torch is
-    consulted for that reason - ``torch.device(0)`` reads the accelerator
-    inventory (``Cannot access accelerator device when none is available``),
-    which would make the same request build here and refuse there.
-
-    When torch is not importable the domain is unknown and the value passes
-    through unguarded, as :func:`_policy_config_field_names` documents for its
-    own field set.
+    That reason is why the check happens *at this point in this tool*. The domain
+    itself belongs to neither surface - :class:`~strands_robots.training.lerobot.LerobotTrainer`
+    reaches the identical lerobot field in-process, and the from-scratch RL
+    backends hand the same quantity to ``torch.device`` directly - so it
+    delegates to :func:`~strands_robots.utils.torch_device_error`, the one owner
+    all three consult, exactly as :func:`_save_freq_error` below delegates the
+    cadence in this same argv. The value is asked about as given: this argv
+    carries whatever it is handed, so a falsy device is a token that names
+    nothing rather than a request for the default.
     """
-    if not isinstance(device, str):
-        return (
-            f"lerobot_train: device must be a torch device string, got {type(device).__name__}. "
-            "Pass a device type, optionally with an index (e.g. 'cuda', 'cuda:0', 'cpu', 'mps')."
-        )
-    try:
-        import torch
-    except Exception:  # noqa: BLE001 - torch missing -> domain unknown, pass through
-        return None
-    try:
-        torch.device(device)
-    except (RuntimeError, ValueError) as e:
-        return (
-            f"lerobot_train: device={device!r} is not a torch device string ({e}). "
-            "Pass a device type, optionally with an index (e.g. 'cuda', 'cuda:0', 'cpu', 'mps')."
-        )
-    return None
+    return torch_device_error(device, "device", "lerobot_train")
 
 
 def _save_freq_error(value: Any) -> str | None:

@@ -187,6 +187,13 @@ class PpoTrainer(BaseRLAlgo):
         # being a function of the observation, and the run reports success while
         # exporting a deployable checkpoint whose actor is one fixed action.
         problems.extend(self._network_width_problems(spec))
+        # device is spent by torch.device itself, which judges nothing: every
+        # network, buffer and rollout tensor is placed on the result. "gpu" and
+        # "cuda:abc" raise out of setup after the preflight passed, and a
+        # non-str ordinal constructs on any host and then dies at the first
+        # .to() with "invalid device ordinal" - the same spec training fine on a
+        # box with more GPUs.
+        problems.extend(self._spec_device_problems(spec))
         # num_envs is the third factor of that same product. Which *counts* are
         # usable is per-backend - this one parallelizes, so any positive count is,
         # while the single-env FastSAC requires exactly 1 - but that a count is

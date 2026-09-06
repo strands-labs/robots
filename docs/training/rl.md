@@ -136,6 +136,17 @@ device as the network (no cross-device tensor mismatch and no per-step
 host-to-device copies). Pass `device="cpu"` explicitly to keep everything on
 CPU even on a GPU machine.
 
+`validate()` refuses a `device` no torch build can parse, before `setup()` builds
+anything, on the same domain the `lerobot_train` tool and `LerobotTrainer` apply
+to the value they hand to lerobot. Only the *spelling* is graded, never
+availability: `device="cuda"` on a CPU-only host is a valid spec, because a
+queued or containerised run is written on one machine and executed on another. A
+non-string is refused without consulting torch at all -- `torch.device(1)`
+constructs on any host and then fails at the first `.to()` with `CUDA error:
+invalid device ordinal`, so asking torch about an ordinal would make one spec
+launch on a multi-GPU box and abort on a single-GPU one. Leaving `device` unset
+(or falsy) still selects the documented default above.
+
 ## FastSAC
 
 `FastSacTrainer` is the **off-policy** trainer: it keeps a replay buffer of past
