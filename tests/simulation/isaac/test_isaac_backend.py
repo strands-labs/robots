@@ -162,9 +162,11 @@ class TestIsaacConfig:
     def test_rejects_nonpositive_camera_dimensions(self):
         from strands_robots.simulation.isaac.config import IsaacConfig
 
-        with pytest.raises(ValueError, match="camera dimensions"):
+        # Matched on the field name, as the two dt cells above are: the refusal
+        # names the one dimension to fix rather than reporting both together.
+        with pytest.raises(ValueError, match="camera_width"):
             IsaacConfig(camera_width=0)
-        with pytest.raises(ValueError, match="camera dimensions"):
+        with pytest.raises(ValueError, match="camera_height"):
             IsaacConfig(camera_height=-1)
 
     def test_env_headless_override(self, monkeypatch):
