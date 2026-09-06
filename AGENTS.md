@@ -383,7 +383,9 @@ hatch run format            # ruff check --fix, ruff format
    all of those resolve. The one shape that does not is a symbol imported from
    a module that only *re-exports* it: the import does not say which file the
    symbol came from, so it resolves to nothing rather than to a guess. Import
-   from the defining module.
+   from the defining module. A pin screens the whole tree for that shape and
+   names the module to import from, so a site that breaks the rule fails the
+   required check instead of dropping out of the roster unnoticed (#3273).
 3. Record the change as a news fragment: `changelog.d/<pr-number>-<slug>.md`
    (see [`changelog.d/README.md`](changelog.d/README.md)). **Never append to
    `## [Unreleased]` in `CHANGELOG.md` directly** - every branch inserts at the

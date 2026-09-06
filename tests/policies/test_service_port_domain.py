@@ -27,7 +27,7 @@ from typing import Any
 import numpy as np
 import pytest
 
-from strands_robots.policies import create_policy
+from strands_robots.policies.factory import create_policy
 from strands_robots.utils import tcp_port_error
 
 # Ports no TCP transport can address. ``0`` asks the kernel for an ephemeral
@@ -244,6 +244,12 @@ def _policy_module_paths() -> list[Path]:
     resolved elsewhere would make the scan below silently empty, which is what
     the "these four classes were seen" assertion in
     :class:`TestNoProviderShipsAnUnguardedPort` exists to catch.
+
+    ``create_policy`` is imported from ``strands_robots.policies.factory``, the
+    module that defines it, rather than from the package that re-exports it.
+    ``inspect.getfile`` answers the same object either way, so the walk below is
+    unchanged; the import spelling is what lets a static reader see which file
+    the root comes from.
     """
     root = Path(inspect.getfile(create_policy)).parent
     return sorted(root.glob("*/policy.py"))

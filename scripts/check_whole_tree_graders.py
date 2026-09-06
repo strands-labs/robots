@@ -198,7 +198,7 @@ PACKAGE = "strands_robots"
 _WALK_METHODS = frozenset({"rglob", "glob", "iterdir", "walk"})
 
 #: Callables that answer "the file this module was loaded from".
-_MODULE_FILE_FUNCS = frozenset({"getfile", "getsourcefile"})
+MODULE_FILE_FUNCS = frozenset({"getfile", "getsourcefile"})
 
 #: Parsed top-level name sets, keyed by module file. A first-party module is
 #: read at most once per process however many graders import a symbol from it.
@@ -274,7 +274,7 @@ def _top_level_names(path: Path) -> frozenset[str]:
     return found
 
 
-def _module_file(dotted: str, root: Path) -> Path | None:
+def module_file(dotted: str, root: Path) -> Path | None:
     """Return the file a first-party dotted name loads from, if any.
 
     Both a module and a *member* a module defines resolve, because
@@ -300,7 +300,7 @@ def _module_file(dotted: str, root: Path) -> Path | None:
         if candidate.is_file():
             return candidate
     package, _, member = dotted.rpartition(".")
-    defining = _module_file(package, root) if member else None
+    defining = module_file(package, root) if member else None
     if defining is not None and member in _top_level_names(defining):
         return defining
     return None
@@ -321,12 +321,12 @@ def _imported_module_files(tree: ast.Module, root: Path) -> dict[str, Path]:
             for alias in node.names:
                 # ``import a.b`` binds ``a``; ``import a.b as c`` binds ``c``.
                 dotted = alias.name if alias.asname else alias.name.split(".")[0]
-                found = _module_file(dotted, root)
+                found = module_file(dotted, root)
                 if found is not None:
                     bindings[alias.asname or dotted] = found
         elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
             for alias in node.names:
-                found = _module_file(f"{node.module}.{alias.name}", root)
+                found = module_file(f"{node.module}.{alias.name}", root)
                 if found is not None:
                     bindings[alias.asname or alias.name] = found
     return bindings
@@ -408,7 +408,7 @@ def _resolve_module_file(node: ast.AST, module_path: Path, bindings: dict[str, P
     if isinstance(node, ast.Call):
         func = node.func
         name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
-        if name in _MODULE_FILE_FUNCS and len(node.args) == 1 and isinstance(node.args[0], ast.Name):
+        if name in MODULE_FILE_FUNCS and len(node.args) == 1 and isinstance(node.args[0], ast.Name):
             return bindings.get(node.args[0].id)
     resolved = _resolve(node, module_path, bindings, root)
     return resolved if isinstance(resolved, Path) else None
