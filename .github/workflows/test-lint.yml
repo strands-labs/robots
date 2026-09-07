@@ -138,11 +138,24 @@ jobs:
           # UV_OVERRIDE entries with the pyproject [tool.uv] override-dependencies
           # (torch pins), so this redirects ONLY the device-connect packages to
           # source without disturbing anything else.
+          #
+          # Two consequences for whoever reads the log. The `pip install -e
+          # ".[all,dev]"` in the next step reads no UV_OVERRIDE, so it fetches
+          # and prints the PUBLISHED device-connect wheels - into the runner
+          # interpreter, which nothing under test imports from. That line is
+          # expected and is not evidence about the pin (#3222 read it as such).
+          # And hatch creates its env silently, so the log shows nothing about
+          # what the suite's interpreter resolved: the verify step after `Run
+          # lint` is what turns the announcement below into a measurement.
           cat > "${GITHUB_WORKSPACE}/dc-source-override.txt" <<EOF
           device-connect-edge @ git+https://github.com/${DEVICE_CONNECT_REPO}.git@${DEVICE_CONNECT_SOURCE_REF}#subdirectory=packages/device-connect-edge
           device-connect-agent-tools @ git+https://github.com/${DEVICE_CONNECT_REPO}.git@${DEVICE_CONNECT_SOURCE_REF}#subdirectory=packages/device-connect-agent-tools
           EOF
           echo "UV_OVERRIDE=${GITHUB_WORKSPACE}/dc-source-override.txt" >> "$GITHUB_ENV"
+          # Hand the verify step the same repo and ref this step announced, so
+          # it grades the claim actually made rather than a second copy of it.
+          echo "DEVICE_CONNECT_REPO=${DEVICE_CONNECT_REPO}" >> "$GITHUB_ENV"
+          echo "DEVICE_CONNECT_SOURCE_REF=${DEVICE_CONNECT_SOURCE_REF}" >> "$GITHUB_ENV"
           echo "Pinned device-connect packages to ${DEVICE_CONNECT_REPO}@${DEVICE_CONNECT_SOURCE_REF}"
 
       - name: Install dependencies
@@ -156,6 +169,22 @@ jobs:
         env:
           UV_TORCH_BACKEND: cpu
         run: hatch run lint
+
+      # The hatch env exists once `Run lint` has created it, and the suite has
+      # not started yet, so a pin that did not take is reported here, in under a
+      # second, rather than as a green 27-minute suite run against the wrong
+      # distribution. Runs THROUGH `hatch run` on purpose: the runner
+      # interpreter holds the published wheel from `Install dependencies`, so
+      # the same script under a bare `python` measures the wrong environment
+      # and fails for the wrong reason (#3222). Pinned by
+      # tests/test_device_connect_source_pin_is_verified.py.
+      - name: Verify the device-connect source pin reached the test env
+        if: steps.dc_changed.outputs.changed == 'true'
+        env:
+          UV_TORCH_BACKEND: cpu
+        run: |
+          hatch run python scripts/check_device_connect_source_pin.py \
+            --repo "${DEVICE_CONNECT_REPO}" --ref "${DEVICE_CONNECT_SOURCE_REF}"
 
       - name: Run tests
         env:
