@@ -20,6 +20,10 @@ isolation must not run at all, and that applies to anything touching a Mesh.
 
 from __future__ import annotations
 
+import ast
+import inspect
+import re
+import textwrap
 import threading
 import time
 from unittest.mock import MagicMock, patch
@@ -218,6 +222,78 @@ class TestTheStateLoopHitsItsNominalRate:
         )
 
 
+# Every scan below reads the loops for the wait they were converted away from,
+# and every converted loop's docstring EXPLAINS that conversion by quoting the
+# very call being banned. So the scan has to tell code from prose, and doing that
+# textually does not work: these graders used to strip ``__doc__`` out of
+# ``inspect.getsource``, which assumes the two are byte-identical. Python 3.13
+# removes a docstring's common leading indentation at compile time, so ``__doc__``
+# stopped being a substring of the source, the strip removed nothing, and
+# ``_state_loop`` was reported as pacing on a wait it does not contain -- on a
+# supported interpreter, with the loop unchanged, and with a message telling the
+# reader to use the Ticker the loop already uses. The textual form also never
+# covered comments, which ``getsource`` includes and ``__doc__`` never did.
+#
+# ``ast`` draws the line where the compiler draws it: a docstring is a constant
+# expression and a comment is not in the tree at all, so neither can be a hit on
+# any interpreter, and a call split over several lines still is one.
+
+_STOP_FLAG = re.compile(r"^_[a-z_0-9]*(?:stop|shutdown|halt)[a-z_0-9]*$")
+
+
+def _code(source: str) -> ast.Module:
+    """Parse module source, or one function's source (still indented)."""
+    return ast.parse(textwrap.dedent(source))
+
+
+def _pacing_waits(source: str) -> list[int]:
+    """Line numbers of ``.wait(...)`` calls on a stop-flag attribute.
+
+    Matched on the shape rather than one spelling, because a spelling has
+    slipped past a narrower check before: the teleop apply loop was found last
+    of the twelve because its event is named ``_teleop_stop_event``. So any
+    attribute whose name reads as a stop flag counts, in any statement position,
+    with or without ``timeout=``.
+
+    Args:
+        source: Module source, or the source of a single function as
+            ``inspect.getsource`` returns it.
+
+    Returns:
+        The 1-based line of each such call within ``source``, in tree order.
+        Empty when the only mentions are in docstrings or comments.
+    """
+    return [
+        node.lineno
+        for node in ast.walk(_code(source))
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "wait"
+        and isinstance(node.func.value, ast.Attribute)
+        and _STOP_FLAG.match(node.func.value.attr)
+    ]
+
+
+def _calls_named(source: str, name: str) -> list[int]:
+    """Line numbers of calls whose callee ends in ``name``.
+
+    ``Ticker(...)`` and ``pacing.Ticker(...)`` are one construction, so the match
+    is on the last segment of the callee.
+
+    Args:
+        source: Module source, or one function's source.
+        name: The trailing segment to match, e.g. ``"Ticker"`` or ``"_paced"``.
+
+    Returns:
+        The 1-based line of each matching call within ``source``.
+    """
+    return [
+        node.lineno
+        for node in ast.walk(_code(source))
+        if isinstance(node, ast.Call) and ast.unparse(node.func).rsplit(".", 1)[-1] == name
+    ]
+
+
 @pytest.mark.parametrize("attr", ["_state_loop", "_heartbeat_loop", "_camera_loop"])
 def test_the_converted_loop_no_longer_paces_on_the_stop_event(attr: str) -> None:
     """Pin the conversion in source, so a later edit cannot quietly revert it.
@@ -226,22 +302,167 @@ def test_the_converted_loop_no_longer_paces_on_the_stop_event(attr: str) -> None
     heavily loaded machine their floors could in principle be met by luck. This
     one cannot be satisfied by luck.
     """
-    import inspect
-
-    func = getattr(Mesh, attr)
-    source = inspect.getsource(func)
-    # Scan the CODE, not the prose: the docstring of the converted loop explains
-    # what it stopped doing and therefore contains the very string this test
-    # bans. My first version failed on its own explanation - a source-scanning
-    # test that reads comments is a test that punishes documentation.
-    doc = func.__doc__
-    if doc:
-        source = source.replace(doc, "")
-    assert "_stop_event.wait(" not in source, (
-        f"Mesh.{attr} is pacing on _stop_event.wait again - that wait adds the tick's work to "
-        "the period, and is inflated further in a daemon-descended tree; use mesh.pacing.Ticker"
+    source = inspect.getsource(getattr(Mesh, attr))
+    waits = _pacing_waits(source)
+    assert not waits, (
+        f"Mesh.{attr} is pacing on _stop_event.wait again (line {waits[0]} of its definition) - that "
+        "wait adds the tick's work to the period, and is inflated further in a daemon-descended tree; "
+        "use mesh.pacing.Ticker"
     )
-    assert "Ticker(" in source, f"Mesh.{attr} should pace on a Ticker"
+    assert _calls_named(source, "Ticker"), f"Mesh.{attr} should pace on a Ticker"
+
+
+@pytest.mark.parametrize("storage", ["dedented", "absent"])
+def test_the_pacing_scan_reads_the_code_whatever_the_docstring_is(
+    storage: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The verdict cannot depend on how the interpreter stores ``__doc__``.
+
+    The scan above used to separate code from prose by removing ``__doc__`` from
+    ``inspect.getsource`` textually. Python 3.13 dedents docstrings at compile
+    time, so on that interpreter the removal matched nothing, ``_state_loop``'s
+    own explanation of the conversion was read as code, and the grader failed on
+    documentation while the loop it grades was correct. Both storage shapes are
+    reproduced here on whatever interpreter runs the suite, so the environment
+    cannot decide the verdict and a textual strip cannot come back unnoticed.
+    """
+    doc = Mesh._state_loop.__doc__
+    assert doc and "_stop_event.wait(" in doc, (
+        "this pin rests on _state_loop's docstring quoting the banned call, which is the "
+        "documentation the scan must not read. If that prose is gone, so is the hazard."
+    )
+    if storage == "dedented":  # what Python 3.13 stores
+        first, sep, rest = doc.partition("\n")
+        dedented = first + sep + textwrap.dedent(rest)
+        # The precondition is against the SOURCE, not against ``doc``: on 3.13
+        # ``doc`` already is this shape, so comparing the two would refuse the
+        # cell on the one interpreter it was written for. What a textual strip
+        # searched was the source text, and that is indented on every version.
+        assert dedented not in inspect.getsource(Mesh._state_loop), (
+            "the dedented docstring is still a substring of the source, so a textual strip "
+            "would have found it and this shape proves nothing"
+        )
+        stored: str | None = dedented
+    else:
+        stored = None
+
+    monkeypatch.setattr(Mesh._state_loop, "__doc__", stored)
+    test_the_converted_loop_no_longer_paces_on_the_stop_event("_state_loop")
+
+
+@pytest.mark.parametrize(
+    ("label", "planted", "is_a_pacer"),
+    [
+        (
+            "a docstring quoting the call it stopped making",
+            'def loop(self):\n    """Paced by a Ticker now, not by self._stop_event.wait(period)."""\n'
+            "    with Ticker(1.0, self._stop_event) as ticker:\n        ticker.wait()\n",
+            False,
+        ),
+        (
+            "prose on its own line, with no backticks to hide behind",
+            'def loop(self):\n    """Was paced by\n\n    self._stop_event.wait(period), now a Ticker.\n    """\n'
+            "    with Ticker(1.0, self._stop_event) as ticker:\n        ticker.wait()\n",
+            False,
+        ),
+        (
+            "a comment quoting the call",
+            "def loop(self):\n    # was: self._stop_event.wait(period)\n"
+            "    with Ticker(1.0, self._stop_event) as ticker:\n        ticker.wait()\n",
+            False,
+        ),
+        (
+            "the ticker's own wait, which is the cure",
+            "def loop(self):\n    with Ticker(1.0, self._stop_event) as ticker:\n        ticker.wait()\n",
+            False,
+        ),
+        (
+            "the real call on one line",
+            "def loop(self):\n    while not self._stop_event.wait(0.1):\n        pass\n",
+            True,
+        ),
+        (
+            "the real call split over three lines",
+            "def loop(self):\n    while not self._stop_event.wait(\n        period,\n    ):\n        pass\n",
+            True,
+        ),
+        (
+            "the real call under a differently named stop flag",
+            "def loop(self):\n    while not self._teleop_stop_event.wait(timeout=0.1):\n        pass\n",
+            True,
+        ),
+    ],
+)
+def test_only_a_wait_the_interpreter_would_execute_is_a_pacing_hit(label: str, planted: str, is_a_pacer: bool) -> None:
+    """Both halves of the scan's job, on source planted for the purpose.
+
+    The two rows the previous line-by-line reading got wrong are the point: a
+    docstring line with no backticks was flagged as a pacer, and a real call
+    split across lines was not flagged at all. A scan that reports documentation
+    trains its reader to ignore it, and one that misses a wrapped call leaves
+    exactly the loop it exists to find.
+    """
+    hits = _pacing_waits(planted)
+    assert bool(hits) is is_a_pacer, (
+        f"{label}: the scan {'missed' if is_a_pacer else 'flagged'} it (hits at {hits}) in:\n{planted}"
+    )
+
+
+@pytest.mark.parametrize(
+    ("label", "planted", "constructions"),
+    [
+        (
+            "a docstring naming the construction",
+            'def _paced(self, period):\n    """Builds one Ticker(period, self._stop_event) for the caller."""\n'
+            "    yield\n",
+            0,
+        ),
+        (
+            "a comment naming the construction",
+            "def _paced(self, period):\n    # one Ticker(period, self._stop_event) per loop\n    yield\n",
+            0,
+        ),
+        (
+            "the construction on one line",
+            "def loop(self):\n    with Ticker(1.0, self._stop_event) as ticker:\n        ticker.wait()\n",
+            1,
+        ),
+        (
+            "the construction split over four lines",
+            "def loop(self):\n    with Ticker(\n        1.0,\n        self._stop_event,\n    ) as ticker:\n"
+            "        ticker.wait()\n",
+            1,
+        ),
+        (
+            "the construction through its module",
+            "def loop(self):\n    with pacing.Ticker(1.0, self._stop_event) as ticker:\n        ticker.wait()\n",
+            1,
+        ),
+        (
+            "a callee whose name merely ends in the text",
+            "def loop(self):\n    with FakeTicker(1.0, self._stop_event) as ticker:\n        ticker.wait()\n",
+            0,
+        ),
+    ],
+)
+def test_only_a_construction_the_interpreter_would_execute_is_a_ticker(
+    label: str, planted: str, constructions: int
+) -> None:
+    """The required-call half of the scan reads the same tree as the banned half.
+
+    ``_calls_named`` is what says a loop paces on a Ticker and what counts the
+    constructions in the sensors module, and a textual reading of it fails in
+    the same two directions the wait side used to: a docstring inside ``_paced``
+    that says what it builds becomes a second construction, so the exact-count
+    cell below goes red on a documentation edit; and a construction wrapped over
+    several lines is not found at all. The last two rows pin the callee match:
+    ``pacing.Ticker(...)`` is a construction and ``FakeTicker(...)`` is not,
+    where ``"Ticker(" in source`` gets both wrong.
+    """
+    found = _calls_named(planted, "Ticker")
+    assert len(found) == constructions, (
+        f"{label}: expected {constructions} Ticker construction(s), found {len(found)} at {found} in:\n{planted}"
+    )
 
 
 @pytest.mark.parametrize(
@@ -258,31 +479,25 @@ def test_every_sensor_loop_paces_through_the_shared_ticker_generator(loop: str) 
     robot while the other six were fixed, which is harder to notice than all
     seven being slow.
     """
-    import inspect
-
     from strands_robots.mesh import sensors as mesh_sensors
 
-    func = getattr(mesh_sensors.SensorLoopsMixin, loop)
-    source = inspect.getsource(func)
-    assert "self._paced(" in source, f"{loop} does not pace through SensorLoopsMixin._paced"
-    assert "_stop_event.wait(" not in source, f"{loop} paces on the inflated Event.wait again - see mesh.pacing"
+    source = inspect.getsource(getattr(mesh_sensors.SensorLoopsMixin, loop))
+    assert _calls_named(source, "_paced"), f"{loop} does not pace through SensorLoopsMixin._paced"
+    waits = _pacing_waits(source)
+    assert not waits, f"{loop} paces on the inflated Event.wait again (line {waits[0]}) - see mesh.pacing"
 
 
 def test_only_the_shared_generator_owns_a_ticker_in_the_sensors_module() -> None:
-    import inspect
-
+    """One pacer for the whole mixin, and no wait left beside it."""
     from strands_robots.mesh import sensors as mesh_sensors
 
     module_source = inspect.getsource(mesh_sensors)
-    # Strip docstrings' mention of the old call by counting real code lines only.
-    code_hits = [
-        line
-        for line in module_source.splitlines()
-        if "_stop_event.wait(" in line and not line.lstrip().startswith(("#", '"', "`"))
-    ]
-    assert not code_hits, f"pacing waits left in sensors.py: {code_hits}"
-    assert module_source.count("Ticker(") == 1, (
-        "exactly one Ticker construction belongs in this module - the one inside _paced"
+    waits = _pacing_waits(module_source)
+    assert not waits, f"pacing waits left in sensors.py at lines {waits}"
+    tickers = _calls_named(module_source, "Ticker")
+    assert len(tickers) == 1, (
+        "exactly one Ticker construction belongs in this module - the one inside _paced - "
+        f"but {len(tickers)} were built, at lines {tickers}"
     )
 
 
@@ -298,15 +513,15 @@ def test_no_publish_loop_in_the_mesh_still_paces_on_an_inflated_wait() -> None:
     like the one sensor that is genuinely slow.
 
     So the shape is "``.wait(...)`` on an attribute whose name reads as a stop
-    flag", in any statement position, with or without ``timeout=``. The keyword
-    form is included because a walk over the files is not enough on its own - the
-    regex is the part that misses things, not the ``rglob``.
+    flag", in any statement position, with or without ``timeout=``. It is read
+    out of the parsed tree rather than matched per line, because a walk over the
+    files is not the part that misses things: a per-line pattern cannot see a
+    call wrapped across lines, and it has to guess at which mentions are prose.
 
     Waits that are NOT pacing (a shutdown join, a settle window) are allowed:
     they run once, so the cost is paid once rather than on every tick of a
     stream. They are listed explicitly, so adding one is a deliberate act.
     """
-    import re
     from pathlib import Path
 
     root = Path(__file__).resolve().parent.parent / "strands_robots"
@@ -321,24 +536,16 @@ def test_no_publish_loop_in_the_mesh_still_paces_on_an_inflated_wait() -> None:
             "than spin_period is the intent. The happy path has no wait at all"
         ),
     }
-    # Any statement position (`while not ...`, `if ...`, bare), any attribute
-    # whose name reads as a stop flag (_stop_event, _teleop_stop_event,
-    # _stop_evt, _shutdown_event), keyword form included.
-    pattern = re.compile(r"self\._[a-z_0-9]*(?:stop|shutdown|halt)[a-z_0-9]*\.wait\(\s*(?:timeout\s*=\s*)?([^)]*)\)")
     offenders: list[str] = []
     for path in sorted(root.rglob("*.py")):
         if path.name == "pacing.py":
             continue
-        for lineno, line in enumerate(path.read_text().splitlines(), 1):
-            match = pattern.search(line)
-            if not match:
-                continue
-            # Prose is not a pacer. Several modules now DESCRIBE this bug in a
-            # comment or docstring quoting the offending call, and a scanner
-            # that flags its own documentation trains the reader to ignore it.
-            before = line[: match.start()]
-            if before.lstrip().startswith("#") or "``" in before or '"""' in before:
-                continue
+        lines = path.read_text().splitlines()
+        # Prose is not a pacer, and it does not need excluding by hand: several
+        # modules now DESCRIBE this bug in a comment or a docstring quoting the
+        # offending call, and neither is a call in the parsed tree.
+        for lineno in _pacing_waits("\n".join(lines)):
+            line = lines[lineno - 1]
             rel = str(path.relative_to(root))
             if any(rel == f and frag in line for (f, frag) in allowed):
                 continue
