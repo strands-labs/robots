@@ -148,7 +148,7 @@ rejected eagerly. The commonly used fields:
 | `ground_plane` | `bool` | `True` | Add a ground plane on `create_world()`. |
 | `stage_path` | `str` | `"/World"` | USD prim-path prefix every created prim is addressed under. Must be absolute, with at least one component, every component a prim name (`[A-Za-z_][A-Za-z0-9_]*`). |
 | `nucleus_url` | `str \| None` | `None` | Override Omniverse Nucleus URL (env-resolvable). |
-| `camera_width` / `camera_height` | `int` | `640` / `480` | Default camera resolution. |
+| `camera_width` / `camera_height` | `int` | `640` / `480` | Default camera resolution, for every `add_camera` / render call that states none of its own. Positive integers - the same pixel floor those `width` / `height` arguments take. |
 | `enable_rtx_sensors` | `bool` | `True` | Enable RTX-accelerated camera / LiDAR sensors. |
 | `verbose` | `bool` | `False` | Verbose Isaac Sim / Kit logging. |
 
