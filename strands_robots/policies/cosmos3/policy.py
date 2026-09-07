@@ -66,7 +66,7 @@ import numpy as np
 
 from strands_robots.policies._state_keys import drop_velocity_siblings
 from strands_robots.policies.base import Policy
-from strands_robots.utils import name_list_error, tcp_port_error
+from strands_robots.utils import dial_host_error, name_list_error, tcp_port_error
 
 from .client import Cosmos3WebsocketClient
 from .embodiments import (
@@ -111,7 +111,15 @@ class Cosmos3Policy(Policy):
             a checkpoint post-trained on OpenArm episodes (see
             :mod:`strands_robots.policies.cosmos3.embodiments`), not a released
             zero-shot model.
-        host: Policy-server hostname.
+        host: Policy-server hostname or IP literal, and the host half of the
+            ``ws://<host>:<port>`` this client dials. Must be a bare host a URI
+            can carry - no ``/``, ``:``, scheme or credentials, and IPv6
+            bracketed (``"[::1]"``) - because the parse gives a delimiter to a
+            later component and takes the validated ``port`` with it. Read on
+            the same terms as ``port``: only when this constructor builds the
+            client. ``"0.0.0.0"`` reaches a server bound on every interface;
+            whether the host resolves is left to the connect path, which already
+            reports it.
         port: Policy-server WebSocket port, an ``int`` in ``[1, 65535]``.
             Read only when this constructor builds the client; an injected
             ``client`` owns its own address. A value outside the range is
@@ -344,13 +352,18 @@ class Cosmos3Policy(Policy):
                 mode,
             )
         else:
-            # ``port`` addresses the RoboLab policy server this client dials, so
-            # a value that cannot name one is refused before it reaches
-            # ``ws://<host>:<port>``. An injected ``client`` owns its own
-            # address, so the port is validated only when this constructor is
-            # the one that builds the endpoint.
-            if not client and (port_error := tcp_port_error(port, "port", type(self).__name__)) is not None:
-                raise ValueError(port_error)
+            # ``host`` and ``port`` are the two halves of the one address this
+            # client dials, so a value that cannot name one is refused before it
+            # reaches ``ws://<host>:<port>``. The host is graded first: a
+            # delimiter in it re-cuts the URI and the port is the component it
+            # takes, so a bad host makes the port's own verdict unreadable. An
+            # injected ``client`` owns its own address, so both are validated
+            # only when this constructor is the one that builds the endpoint.
+            if not client:
+                if (host_error := dial_host_error(host, "host", type(self).__name__)) is not None:
+                    raise ValueError(host_error)
+                if (port_error := tcp_port_error(port, "port", type(self).__name__)) is not None:
+                    raise ValueError(port_error)
             self._client = client or Cosmos3WebsocketClient(host=host, port=port, api_key=api_key, transport=transport)
             logger.info(
                 "Cosmos3Policy ready [embodiment=%s domain=%s action_space=%s chunk=%d backend=service ws://%s:%d]",

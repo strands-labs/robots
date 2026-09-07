@@ -116,6 +116,15 @@ because a WebSocket target is only resolved on first use - an unusable port is
 not rejected by the transport, it surfaces later as an unreachable server and
 implicates the service you were trying to reach.
 
+`host=` is the other half of that same URI and is held to the same terms: a bare
+hostname or IP literal, IPv6 bracketed (`"[::1]"`), with no `/`, `:`, scheme or
+credentials in it. Pass a full URL as `endpoint=` instead. This is not cosmetic -
+the parse hands a delimiter to a later URI component and takes the port with it,
+so `host="127.0.0.1/foo"` reads as host `127.0.0.1`, path `/foo:8765` and port
+**80**: the validated port ends up in the path and the client dials one nobody
+configured. `host="0.0.0.0"` still reaches a server bound on every interface.
+Whether the host resolves is left to the connect path, which already reports it.
+
 Then drive it exactly like a local policy. In simulation:
 
 ```python

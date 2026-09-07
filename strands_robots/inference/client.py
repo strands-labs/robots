@@ -37,7 +37,12 @@ from typing import TYPE_CHECKING, Any
 
 from strands_robots.inference import protocol
 from strands_robots.policies.base import Policy, chunk_count_error, required_bodies_error
-from strands_robots.utils import name_list_error, positive_finite_number_error, tcp_port_error
+from strands_robots.utils import (
+    dial_host_error,
+    name_list_error,
+    positive_finite_number_error,
+    tcp_port_error,
+)
 
 if TYPE_CHECKING:
     from websockets.sync.client import ClientConnection
@@ -132,7 +137,13 @@ class RemotePolicy(Policy):
     Args:
         endpoint: Full server URL, e.g. ``ws://gpu-box:8765``. When given it
             takes precedence over ``host``/``port``.
-        host: Server host (used when ``endpoint`` is not given).
+        host: Server host (used when ``endpoint`` is not given). Must be a bare
+            hostname or IP literal a URI can carry - no ``/``, ``:``, scheme or
+            credentials, and IPv6 bracketed (``"[::1]"``) - because it is
+            interpolated into ``ws://<host>:<port>`` and the parse gives a
+            delimiter to a later component, taking the validated ``port`` with
+            it. Pass a full URL as ``endpoint`` instead. ``"0.0.0.0"`` reaches a
+            server bound on every interface.
         port: Server port (used when ``endpoint`` is not given). Must be an
             ``int`` in ``[1, 65535]``: this client has to dial the port, so
             unlike :class:`~strands_robots.inference.PolicyServer` - which
@@ -158,7 +169,7 @@ class RemotePolicy(Policy):
     otherwise leave the client silently connected to the default endpoint.
 
     Raises:
-        ValueError: If ``port`` cannot address a server to dial, or if
+        ValueError: If ``host`` or ``port`` cannot address a server to dial, or if
             ``connect_timeout`` / ``request_timeout`` is not a positive finite
             number.
         ConnectionError: On first use, if the server cannot be reached.
@@ -181,8 +192,16 @@ class RemotePolicy(Policy):
         # the caller still holds the value, before ``uri`` exists at all.
         # ``endpoint`` supersedes ``host``/``port``, so the port is validated
         # only when it is the effective spelling.
-        if not endpoint and (port_error := tcp_port_error(port, "port", type(self).__name__)) is not None:
-            raise ValueError(port_error)
+        # ``host`` is the other half of that same URI and is carried into it
+        # verbatim, so it is graded on the same terms and refused first: a
+        # delimiter in the host gives the path everything after it, ``port``
+        # among it, and the parse then dials :80 - which makes the port's own
+        # verdict unreadable rather than wrong.
+        if not endpoint:
+            if (host_error := dial_host_error(host, "host", type(self).__name__)) is not None:
+                raise ValueError(host_error)
+            if (port_error := tcp_port_error(port, "port", type(self).__name__)) is not None:
+                raise ValueError(port_error)
         # A timeout that names no budget is refused here, while the caller still
         # holds the value, because the transport's own reaction to one is
         # indistinguishable from an absent server: ``0``, a negative and ``True``
