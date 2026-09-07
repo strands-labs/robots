@@ -71,6 +71,7 @@ that no longer exists.
 
 from __future__ import annotations
 
+import ast
 import importlib.util
 import tomllib
 from pathlib import Path
@@ -582,6 +583,120 @@ def test_a_symbol_the_named_module_does_not_define_is_not_resolved() -> None:
         "re-exports it. That file is not the one the running grader walks "
         "from, so the path it yields is a guess, and here the guess is a "
         "whole-tree area where the truth is a subpackage."
+    )
+
+
+def _root_symbols_that_resolve_to_nothing(module_path: Path) -> dict[str, str]:
+    """Return the symbols ``module_path`` hands to ``inspect.getfile`` in vain.
+
+    Keys are the local names the import bound, values the dotted spelling it
+    used. A symbol appears only when the import names a first-party module that
+    does not *define* it, which is exactly when
+    :func:`check_whole_tree_graders.module_file` refuses it and any root derived
+    from it resolves to nothing.
+
+    :param module_path: The test module to read.
+    """
+    tree = ast.parse(module_path.read_text(encoding="utf-8"))
+    unresolved: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ImportFrom) or not node.module or node.level:
+            continue
+        if node.module != _cwtg.PACKAGE and not node.module.startswith(f"{_cwtg.PACKAGE}."):
+            continue
+        for alias in node.names:
+            dotted = f"{node.module}.{alias.name}"
+            if _cwtg.module_file(dotted, _REPO_ROOT) is None:
+                unresolved[alias.asname or alias.name] = dotted
+    handed: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+            continue
+        if node.func.attr not in _cwtg.MODULE_FILE_FUNCS or not node.args:
+            continue
+        argument = node.args[0]
+        if isinstance(argument, ast.Name) and argument.id in unresolved:
+            handed[argument.id] = unresolved[argument.id]
+    return handed
+
+
+def _defining_module(dotted: str) -> str | None:
+    """Return the dotted module that defines ``dotted``'s final component.
+
+    Searched with the preflight's own resolver rather than by re-reading the
+    tree, so "defines it" means the same thing in the remedy as in the
+    derivation. Shallower candidates are tried first, so a symbol a package
+    re-exports from a direct sibling resolves to that sibling.
+
+    :param dotted: A ``package.member`` spelling whose package only re-exports.
+    :returns: The importable module, or ``None`` if no module in the package
+        defines the name at its own top level.
+    """
+    package, _, member = dotted.rpartition(".")
+    re_exporter = _cwtg.module_file(package, _REPO_ROOT)
+    if re_exporter is None:
+        return None
+    candidates = sorted(re_exporter.parent.rglob("*.py"), key=lambda path: (len(path.parts), path.parts))
+    for candidate in candidates:
+        relative = candidate.relative_to(_REPO_ROOT).with_suffix("")
+        parts = relative.parts[:-1] if relative.name == "__init__" else relative.parts
+        if _cwtg.module_file(f"{'.'.join(parts)}.{member}", _REPO_ROOT) is not None:
+            return ".".join(parts)
+    return None
+
+
+def test_no_grader_derives_a_walk_root_from_a_re_exported_symbol() -> None:
+    """No module in this tree derives a walk root from a symbol it re-imported.
+
+    The cell above pins the resolver's half: a re-exported symbol resolves to
+    nothing rather than to the file that re-exports it, because that file is
+    not the one the running grader walks from. This cell pins the tree's half,
+    and the two are not the same guarantee - the resolver can be right about a
+    shape no planted source is enough to keep out of the tree. ``AGENTS.md``
+    (*PR Workflow* step 2) already asks for the import that resolves:
+
+        The one shape that does not is a symbol imported from a module that
+        only re-exports it: the import does not say which file the symbol came
+        from, so it resolves to nothing rather than to a guess. Import from the
+        defining module.
+
+    Nothing refused a site that broke it, and the shape is silent in the
+    reassuring direction: the module drops out of the roster entirely, so the
+    preflight reports a clean run over the graders it *can* see while
+    collecting none of that one. That is the presentation issue #2940 exists to
+    prevent, reached through a spelling rather than through a narrow selector.
+
+    Screening the whole tree rather than a named list is deliberate, for the
+    reason this module's docstring gives about #3111: a pin that grades only
+    the graders an issue names cannot see a gap its own named graders survive
+    by accident.
+    """
+    offenders: list[str] = []
+    for path in sorted((_REPO_ROOT / "tests").rglob("test_*.py")):
+        if "__pycache__" in path.parts:
+            continue
+        try:
+            handed = _root_symbols_that_resolve_to_nothing(path)
+        except SyntaxError:
+            # A module pytest cannot collect is reported by the run that
+            # collects it, not here.
+            continue
+        for local, dotted in sorted(handed.items()):
+            remedy = _defining_module(dotted)
+            fix = (
+                f"from {remedy} import {dotted.rpartition('.')[2]}"
+                if remedy
+                else "import it from the module that defines it"
+            )
+            offenders.append(f"  - {path.relative_to(_REPO_ROOT).as_posix()}: {dotted} ({local}) -> {fix}")
+    assert not offenders, (
+        "these modules hand a re-exported symbol to inspect.getfile to derive "
+        "a walk root. The import does not say which file the symbol came from, "
+        "so the root resolves to nothing and the module is invisible to "
+        "scripts/check_whole_tree_graders.py - a green preflight that never "
+        "collected it. Import from the defining module instead; "
+        "inspect.getfile answers the same object either way, so the walk the "
+        "test performs does not change:\n" + "\n".join(offenders)
     )
 
 
