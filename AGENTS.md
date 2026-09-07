@@ -2346,10 +2346,46 @@ Corrections from code review that apply to all future contributions:
   Rewriting the flagged code to satisfy the query is the tempting fourth option
   and the one that costs: #1879 spent a round removing a `__float__` from a test
   fixture for a finding that gated nothing. It can also destroy the measurement
-  the code exists for. On #1890 the query asked for a `LookupError`; the one it
-  names first, `IndexError`, is what CPython's `seqiter` *clears* to terminate
-  legacy-protocol iteration, so taking the suggestion would have left the fixture
-  raising nothing and the test asserting nothing, still green.
+  the code exists for - but *which* rewrite does that is a fact about the probe
+  rather than about the rule, and the short version of this reason has now been
+  read onto a shape it is false of.
+
+  For `__getitem__` the query asks for "`KeyError` or `IndexError`" by name, and
+  those two are not interchangeable. Each row below is constructed and executed by
+  `TestTheGetItemRewriteIsNotOneBehaviour` in
+  `tests/test_codeql_query_filters.py`, which reads this table rather than
+  restating it, so a row that stops being true fails there:
+
+  | probe, `__getitem__` raising | `list(probe)` | the raise is swallowed |
+  |---|---|---|
+  | `_LegacySequence` (`__len__` and `__getitem__`, no `__iter__`), `IndexError` | `[]` | **yes** - `seqiter` clears it to end the protocol |
+  | `_LegacySequence`, `KeyError` | `KeyError` | no - it propagates, as a `RuntimeError` does |
+  | `_HostileStr` (a `str` subclass), `IndexError` | `['[', ':', ':', '1', ']']` | no - `str` supplies `__iter__`, so `seqiter` is never built |
+
+  Row 1 is the #1890 reason: `IndexError` is what CPython's `seqiter` *clears* to
+  terminate the legacy iteration protocol, so the probe is consulted, raises, and
+  the read completes empty - a cell asserting a refusal is no longer measuring the
+  read that failed. Rows 2 and 3 are the two ways that reason does not travel.
+  `KeyError` satisfies the same query and is not cleared, so one spelling of the
+  suggestion keeps the measurement intact. And a `str` subclass supplies its own
+  `__iter__`, so `seqiter` is never constructed and `__getitem__` is not consulted
+  at all - the mechanism is absent rather than adverse. That third row is alert
+  1168 on #3272, where this reason was reached for and measured false (#3276).
+
+  `list(probe)` is the whole discriminator, so run it before citing a mechanism.
+  The 280-character dismissal comment cites this file instead of restating an
+  argument, which is what makes a wrong reason here expensive: it becomes a wrong
+  claim in a dismissal that outlives the branch.
+
+  Refuse the rewrite on the **property** instead, because that holds for every
+  probe shape. The query's own help text gives the harm as a user of the class
+  meeting an exception the protocol did not lead them to expect, and a probe
+  written to be an unconventional class *is* that harm, under test on purpose. A
+  conforming `LookupError` models a value refusing *within* the protocol, which is
+  strictly weaker than what a guarded read documents itself as surviving. Then
+  check the population before calling it convention rather than defect: on #3272
+  the same file raised `RuntimeError` from `__str__`, `__iter__` and `__repr__`
+  and none of the three was flagged.
 - **One alert class clears under none of the three, and the question that settles
   it is which thread you marshal onto.** `py/catch-base-exception` never fires on
   cleanup-and-reraise: the query accepts a handler that re-raises *lexically*, and

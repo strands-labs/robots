@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import ast
 import re
+from collections.abc import Callable
 from functools import lru_cache
 from pathlib import Path
 from typing import NamedTuple
@@ -544,4 +545,253 @@ class TestTheMarshalBoxCensusIsDerivedFromTheTree:
             "column is what tells a contributor whether the handler they are looking at is the "
             "obliged case or the avoidable one, so it cannot be maintained by hand against a "
             "property this file already measures."
+        )
+
+
+#: The header of the ``__getitem__`` rewrite table in ``AGENTS.md``, whose rows are
+#: constructed and executed below rather than transcribed.
+_GETITEM_TABLE_HEADER = "| probe, `__getitem__` raising | `list(probe)` | the raise is swallowed |"
+
+#: The value ``_HostileStr`` carries. A bracketed IPv6 literal, because that is the
+#: shape a dialled-host guard slices - the read that met this rule on #3272.
+_HOSTILE_STR_VALUE = "[::1]"
+
+
+class _LegacySequence:
+    """A sequence by the legacy protocol: ``__len__`` and ``__getitem__``, no ``__iter__``.
+
+    This is the #1890 probe shape. CPython synthesises an iterator for such a value
+    (``seqiter``) and walks it by index, which is the path the passage's mechanism
+    lives on - and the only path it lives on.
+
+    The exception is supplied per instance rather than raised literally, which is
+    the idiom ``tests/training/test_gradient_clip_domain.py`` records for keeping a
+    hostile probe out of a merge gate: the type is not statically visible, so
+    ``py/unexpected-raise-in-special-method`` does not report the method that is
+    here to measure that rule's own advice. A literal ``raise RuntimeError`` would
+    open the alert this module documents how to adjudicate.
+    """
+
+    def __init__(self, error: Exception) -> None:
+        self._error = error
+        self.consulted = 0
+
+    def __len__(self) -> int:
+        return 3
+
+    def __getitem__(self, index: int) -> float:
+        self.consulted += 1
+        raise self._error
+
+
+class _HostileStr(str):
+    """A ``str`` subclass whose indexing refuses.
+
+    The shape alert 1168 on #3272 was opened on. It matters because ``str`` already
+    supplies ``__iter__``, so nothing here is reached through ``seqiter`` and the
+    mechanism row 1 turns on has no purchase - which is the correction #3276 is
+    about.
+
+    ``consulted`` is a list rather than a counter because ``str`` is immutable:
+    ``__new__`` builds the instance, so mutable per-instance state has to be an
+    object the method can mutate in place.
+    """
+
+    _error: Exception
+    consulted: list[None]
+
+    def __new__(cls, value: str, error: Exception) -> _HostileStr:
+        probe = super().__new__(cls, value)
+        probe._error = error
+        probe.consulted = []
+        return probe
+
+    def __getitem__(self, index: object, /) -> str:
+        self.consulted.append(None)
+        raise self._error
+
+
+class _Measured(NamedTuple):
+    """What ``list(probe)`` did, in the three terms the table's columns state."""
+
+    rendered: str
+    consulted: bool
+    swallowed: bool
+
+
+def _measure(probe: _LegacySequence | _HostileStr) -> _Measured:
+    """Run ``list(probe)`` and report it the way the table reads.
+
+    ``swallowed`` is deliberately a conjunction: the read completed *and* the
+    probe's ``__getitem__`` was consulted. Completion alone would report the
+    ``str`` subclass as swallowing its own exception, when in fact its
+    ``__getitem__`` is never reached - a different fact with the opposite
+    consequence for the reason a dismissal cites.
+    """
+    escaped: Exception | None = None
+    produced: list[object] = []
+    try:
+        produced = list(probe)  # type: ignore[arg-type]  # the legacy probe has no __iter__
+    except Exception as exc:  # noqa: BLE001 - the escape under measurement
+        escaped = exc
+
+    consulted = bool(probe.consulted) if isinstance(probe, _HostileStr) else probe.consulted > 0
+    return _Measured(
+        rendered=type(escaped).__name__ if escaped is not None else repr(produced),
+        consulted=consulted,
+        swallowed=escaped is None and consulted,
+    )
+
+
+def _getitem_table_rows() -> list[tuple[str, str, bool]]:
+    """The table's rows as ``(probe cell, expected list(probe), swallowed)``."""
+    text = _AGENTS_PATH.read_text(encoding="utf-8")
+    start = text.index(_GETITEM_TABLE_HEADER)
+    end = text.index("\n\n", start)
+    rows: list[tuple[str, str, bool]] = []
+    for line in text[start:end].splitlines()[2:]:
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        rows.append((cells[0], cells[1].strip("`"), "yes" in cells[-1]))
+    return rows
+
+
+#: The three rows, keyed by the two identifiers a row names. The probe is built per
+#: call because ``consulted`` is per-instance state a measurement consumes.
+_GETITEM_PROBES: tuple[tuple[str, str, Callable[[], _LegacySequence | _HostileStr]], ...] = (
+    ("_LegacySequence", "IndexError", lambda: _LegacySequence(IndexError("backing store unavailable"))),
+    ("_LegacySequence", "KeyError", lambda: _LegacySequence(KeyError("backing store unavailable"))),
+    ("_HostileStr", "IndexError", lambda: _HostileStr(_HOSTILE_STR_VALUE, IndexError("no read for you"))),
+)
+
+
+class TestTheGetItemRewriteIsNotOneBehaviour:
+    """The ``__getitem__`` rewrite table in ``AGENTS.md``, constructed and executed.
+
+    The passage tells a contributor whether the query's suggested rewrite would
+    destroy the measurement a hostile probe exists for. It used to answer that with
+    one mechanism, stated as a general fact about the rule: ``IndexError`` is what
+    ``seqiter`` clears, so taking the suggestion leaves the probe raising nothing.
+    On the #1890 probe that is true. It is false on the other two shapes the same
+    rule keeps arriving on, and #3276 was filed because the reason was reached for
+    on one of them - alert 1168 on #3272, a ``str`` subclass - and published in a
+    dismissal comment that cites this file rather than restating the argument. A
+    dismissal outlives the branch, so a wrong reason here is a durable wrong claim.
+
+    Two properties, and the second is why the table is parsed rather than
+    duplicated:
+
+    - the mechanism holds where the passage says it holds, and not elsewhere. This
+      is a claim about CPython, not about this repository, so it is executed - the
+      same reason :class:`TestTheNarrowingMeasurementStillHolds` executes the
+      ``SystemExit`` claim above;
+    - the table says what the measurement says. A row transcribed by hand is a row
+      that can go stale silently, which is exactly how the handler census below
+      came to count seven against a tree holding sixteen.
+
+    Three rows rather than one is itself the pin: collapsing the passage back to a
+    single unscoped mechanism fails
+    :meth:`test_the_table_names_the_three_probe_shapes` rather than reading
+    plausibly.
+    """
+
+    def test_the_table_names_the_three_probe_shapes(self) -> None:
+        """The scoping *is* the correction, so its absence is a failure, not a rewording."""
+        rows = _getitem_table_rows()
+        assert len(rows) == len(_GETITEM_PROBES), (
+            f"AGENTS.md's __getitem__ table has {len(rows)} rows and this test measures "
+            f"{len(_GETITEM_PROBES)}. The row count is load-bearing: the defect #3276 records is a "
+            "single mechanism stated as a general fact about the rule, so a table that names one "
+            "probe shape again is the same defect with a table around it. Add the row and its "
+            "measurement together, or remove both."
+        )
+        for probe_name, error_name, _ in _GETITEM_PROBES:
+            matches = [cell for cell, _, _ in rows if probe_name in cell and error_name in cell]
+            assert len(matches) == 1, (
+                f"exactly one row must name `{probe_name}` raising `{error_name}`; found "
+                f"{len(matches)}. Each row is matched to its probe by those two identifiers, so a "
+                "row that names neither, or two rows that name the same pair, leave a measurement "
+                "with nothing to grade."
+            )
+
+    def test_every_row_is_measured(self) -> None:
+        """Both stated columns, executed per row."""
+        rows = _getitem_table_rows()
+        for probe_name, error_name, build in _GETITEM_PROBES:
+            cell, expected_rendered, expected_swallowed = next(
+                row for row in rows if probe_name in row[0] and error_name in row[0]
+            )
+            measured = _measure(build())
+            assert measured.rendered == expected_rendered, (
+                f"AGENTS.md says `list(probe)` is `{expected_rendered}` for the row {cell!r}, and "
+                f"it is `{measured.rendered}`. That cell is the one-line discriminator the passage "
+                "tells a contributor to run before citing a mechanism, so it cannot be a "
+                "transcription."
+            )
+            assert measured.swallowed == expected_swallowed, (
+                f"AGENTS.md says the raise is "
+                f"{'swallowed' if expected_swallowed else 'not swallowed'} for the row {cell!r}, "
+                f"and it is {'swallowed' if measured.swallowed else 'not swallowed'} "
+                f"(consulted={measured.consulted}). This column decides whether the query's "
+                "suggested rewrite would destroy the measurement the probe exists for, which is "
+                "the whole question the passage answers."
+            )
+
+    def test_the_mechanism_is_the_legacy_protocol_and_the_exception_together(self) -> None:
+        """Row 1 against row 2, independent of the table's wording.
+
+        The query names ``KeyError`` and ``IndexError`` interchangeably and CPython
+        does not: only the second terminates the legacy protocol. So the reason on
+        file is about one spelling of the suggestion, and the other spelling would
+        have kept #1890's measurement - which is why the refusal has to rest on the
+        property rather than on this mechanism.
+        """
+        cleared = _measure(_LegacySequence(IndexError("backing store unavailable")))
+        assert cleared.consulted and cleared.rendered == "[]", (
+            "a legacy sequence whose __getitem__ raises IndexError must still be consulted and "
+            f"still read empty; measured {cleared}. If CPython stops clearing IndexError here, the "
+            "AGENTS.md row explaining #1890's dismissal has lost its reason and the passage should "
+            "be re-measured rather than kept."
+        )
+        propagated = _measure(_LegacySequence(KeyError("backing store unavailable")))
+        assert propagated.rendered == "KeyError" and not propagated.swallowed, (
+            "KeyError is the other exception py/unexpected-raise-in-special-method names for "
+            f"__getitem__, and it must still propagate; measured {propagated}. This is the row that "
+            "stops the mechanism being a general refusal of the query's advice."
+        )
+
+    def test_a_str_subclass_never_reaches_the_cleared_path(self) -> None:
+        """Row 3: the shape the reason was measured false on (#3276).
+
+        ``str`` supplies ``__iter__``, so iteration never consults ``__getitem__``
+        and there is no ``seqiter`` to clear anything. The characters are the
+        discriminator a contributor can run in one line, and the empty
+        ``consulted`` is why "the read completed" is not the same statement as "the
+        exception was swallowed".
+        """
+        measured = _measure(_HostileStr(_HOSTILE_STR_VALUE, IndexError("no read for you")))
+        assert measured.rendered == repr(list(_HOSTILE_STR_VALUE)), (
+            f"a str subclass must still iterate as its characters; measured {measured}. This is "
+            "the one-line discriminator AGENTS.md names, and it is what makes the #1890 reason "
+            "inapplicable here rather than merely unproven."
+        )
+        assert not measured.consulted, (
+            "iteration must not consult the overridden __getitem__ at all. 'Not consulted' is a "
+            "stronger statement than 'no exception escaped', and it is the one that separates this "
+            "row from row 1: nothing is being cleared, so the query's suggestion does not silence "
+            f"this probe. Measured {measured}."
+        )
+        assert not measured.swallowed, (
+            "so the raise is not swallowed on this shape. If this ever reports swallowed, the "
+            "AGENTS.md row is wrong and a dismissal citing it publishes a false claim - the cost "
+            "#3276 was filed about."
+        )
+
+    def test_the_discriminator_is_named_in_the_passage(self) -> None:
+        """A table without the one-line check is a lookup a contributor cannot extend."""
+        text = _AGENTS_PATH.read_text(encoding="utf-8")
+        assert "`list(probe)` is the whole discriminator" in text, (
+            "AGENTS.md must keep naming list(probe) as the check that separates these shapes. The "
+            "table covers the three probes the rule has arrived on so far; the discriminator is "
+            "what a contributor meeting a fourth can run before choosing a reason, and without it "
+            "the passage answers only the cases already in it."
         )
