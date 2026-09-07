@@ -333,8 +333,16 @@ def test_the_pacing_scan_reads_the_code_whatever_the_docstring_is(
     )
     if storage == "dedented":  # what Python 3.13 stores
         first, sep, rest = doc.partition("\n")
-        stored: str | None = first + sep + textwrap.dedent(rest)
-        assert stored != doc, "the docstring has no indented continuation, so this shape proves nothing"
+        dedented = first + sep + textwrap.dedent(rest)
+        # The precondition is against the SOURCE, not against ``doc``: on 3.13
+        # ``doc`` already is this shape, so comparing the two would refuse the
+        # cell on the one interpreter it was written for. What a textual strip
+        # searched was the source text, and that is indented on every version.
+        assert dedented not in inspect.getsource(Mesh._state_loop), (
+            "the dedented docstring is still a substring of the source, so a textual strip "
+            "would have found it and this shape proves nothing"
+        )
+        stored: str | None = dedented
     else:
         stored = None
 
