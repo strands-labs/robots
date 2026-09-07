@@ -50,12 +50,14 @@ if TYPE_CHECKING:
 # AST). Instead, we reference ``OnFrame`` in the ``evaluate_benchmark``
 # signature as a *string* annotation; ``from __future__ import
 # annotations`` (already in effect) makes that a no-op at runtime.
+from strands_robots.simulation.observers import RunPolicyObserver
 from strands_robots.simulation.policy_runner import PolicyRunner, VideoConfig
 from strands_robots.utils import (
     FREE_CAMERA_TOKENS,
     dds_domain_id_error,
     is_boolean,
     non_negative_count_error,
+    optional_callable_error,
     positive_count_error,
     positive_finite_number_error,
     process_rss_mb,
@@ -2492,6 +2494,7 @@ class SimEngine(ABC):
         rtc_inference_timeout_s: float | None = None,
         wbc_install_torque_control: bool = True,
         stop_when: dict[str, Any] | Callable[[SimEngine], bool] | None = None,
+        observer: RunPolicyObserver | None = None,
     ) -> dict[str, Any]:
         """Run a policy loop in the simulation (blocking).
 
@@ -2704,6 +2707,32 @@ class SimEngine(ABC):
                 dict (the tool surface accepts dicts only). ``None`` (default)
                 keeps the pure step-budget horizon. The result json reports
                 why the rollout ended via ``stopped_reason``.
+            observer: Optional read-only rollout observer, forwarded verbatim to
+                :meth:`PolicyRunner.run`. Receives one
+                :class:`~strands_robots.simulation.observers.RunPolicyStarted`,
+                one :class:`~strands_robots.simulation.observers.RunPolicyStep`
+                per completed ``send_action`` call and one
+                :class:`~strands_robots.simulation.observers.RunPolicyEnded`,
+                carrying the per-key ``send_action`` verdict, authoritative
+                ``observation_age_steps`` (with the narrower
+                ``observation_is_chunk_reused`` chunk-position flag), and what
+                the backend's own ``on_frame`` hook did. Must be ``None`` or
+                callable; another value is refused before policy construction,
+                backend hook creation, or rollout side effects.
+
+                This is a SECOND lane, not the backend's hook: the hook slot is
+                filled from ``_make_run_policy_hook`` (cancellation, trajectory,
+                mesh telemetry, dataset recording) and is not available to
+                callers, which is exactly why a read-only consumer needs this.
+                Installing one changes neither the actions applied nor any
+                existing field of the result json; it adds
+                ``observer_failures``. With ``n_episodes > 1`` each episode is
+                its own lifecycle with its own ``run_id``. Called synchronously,
+                so a blocking observer blocks the rollout, and payloads are
+                borrowed rather than copied - see
+                :mod:`strands_robots.simulation.observers` for the ownership
+                rules. Not yet wired into ``eval_policy``,
+                ``evaluate_benchmark`` or ``run_multi_policy``.
 
         Returns:
             The standard agent-tool envelope
@@ -2728,8 +2757,11 @@ class SimEngine(ABC):
             operational), so ``status`` alone cannot see it: a policy driving 1
             of a Panda's 8 actuators returns ``status="success"`` with
             ``action_errors=0`` and ``partial_action_failure_rate=0.875``. Gate
-            on ``partial_action_failure_rate`` and the binding-degradation
-            flags below to decide whether a rollout is worth anything. A TOTAL
+            on ``action_errors``, ``partial_action_failure_rate`` and the
+            binding-degradation flags below to decide whether a rollout is worth
+            anything. Coarse backend errors remain in ``action_errors`` but are
+            excluded from action-rate denominators rather than fabricated as
+            confirmed misses. A TOTAL
             failure - no emitted key resolving to any actuator - is reported as
             ``status="error"``.
 
@@ -2747,13 +2779,16 @@ class SimEngine(ABC):
             ``stop_policy``; ``"error"`` on error results - so an agent
             deciding whether to retry knows WHY the rollout ended).
 
-            Action health: ``action_errors`` (steps where at least one emitted
-            key did not resolve), ``action_resolution_rate`` (an
-            ``{actuator_name: fraction_of_steps_driven}`` map, so a joint stuck
-            at ``0.0`` names the actuator the policy never drove) and
-            ``partial_action_failure_rate`` (the mean fraction of the robot's
-            DOF never driven; ``0.0`` == every actuator moved every step,
-            ``~0.83`` == only 1 of 6 actuators ever moved).
+            Action health: ``action_errors`` (steps where the backend reported
+            an error), ``action_resolution_rate`` (an
+            ``{actuator_name: fraction_of_resolution-known_steps_driven}`` map,
+            so a joint stuck at ``0.0`` names an actuator not confirmed on any
+            known step) and ``partial_action_failure_rate`` (the mean fraction
+            of the robot's DOF not confirmed driven across those known steps;
+            ``0.0`` == every actuator confirmed every known step, ``~0.83`` ==
+            only 1 of 6). A coarse backend error is excluded from both rate
+            denominators instead of being counted as a physical miss; it remains
+            visible in ``action_errors`` and the human-readable diagnostic.
 
             Video: ``video_path`` (``None`` when no MP4 was written),
             ``video_frames`` and ``video_fps`` (the rate the MP4 plays at -
@@ -2812,6 +2847,11 @@ class SimEngine(ABC):
             surfaced via ``partial_action_failure_rate``.
         """
         from strands_robots.policies import create_policy
+
+        # Refuse a value outside the observer's domain before robot discovery,
+        # policy construction, backend hook creation, clocks, or rollout work.
+        if observer_error := optional_callable_error(observer, "observer", "run_policy"):
+            return {"status": "error", "content": [{"text": observer_error}]}
 
         robot_name = self._resolve_single_robot(robot_name)
 
@@ -2974,6 +3014,7 @@ class SimEngine(ABC):
                     fast_mode=fast_mode,
                     video=VideoConfig.from_dict(video),
                     on_frame=on_frame,
+                    observer=observer,
                     max_onframe_failures=max_onframe_failures,
                     control_substeps=control_substeps,
                     policy_kwargs=policy_kwargs,
@@ -3013,6 +3054,7 @@ class SimEngine(ABC):
                 async_rtc=async_rtc,
                 rtc_inference_timeout_s=rtc_inference_timeout_s,
                 stop_when=stop_when_fn,
+                observer=observer,
             )
         finally:
             if controller_cleanup is not None:
@@ -3319,6 +3361,7 @@ class SimEngine(ABC):
         async_rtc: bool | None = None,
         rtc_inference_timeout_s: float | None = None,
         stop_when: Callable[[SimEngine], bool] | None = None,
+        observer: RunPolicyObserver | None = None,
     ) -> dict[str, Any]:
         """Run ``n_episodes`` sequential rollouts; shared multi-episode driver.
 
@@ -3355,6 +3398,7 @@ class SimEngine(ABC):
                 fast_mode=fast_mode,
                 video=ep_video,
                 on_frame=on_frame,
+                observer=observer,
                 max_onframe_failures=max_onframe_failures,
                 control_substeps=control_substeps,
                 policy_kwargs=policy_kwargs,

@@ -132,6 +132,7 @@ from strands_robots.simulation.mujoco.spec_builder import (
     _validate_size,
     material_spec_error,
 )
+from strands_robots.simulation.observers import RunPolicyObserver
 from strands_robots.simulation.policy_runner import CooperativeStop
 from strands_robots.simulation.recording import undriven_robot_state
 from strands_robots.simulation.terrain import SUPPORTED_TERRAINS, validate_difficulty, validate_terrain
@@ -143,6 +144,7 @@ from strands_robots.utils import (
     entity_name_error,
     finite_vector_error,
     non_negative_whole_number_error,
+    optional_callable_error,
     positive_finite_number_error,
     positive_whole_number_error,
     published_string_error,
@@ -5469,6 +5471,7 @@ class MuJoCoSimEngine(
         rtc_inference_timeout_s: float | None = None,
         wbc_install_torque_control: bool = True,
         stop_when: dict[str, Any] | Callable[[SimEngine], bool] | None = None,
+        observer: RunPolicyObserver | None = None,
     ) -> dict[str, Any]:
         """MuJoCo ``run_policy`` override: pre-flight world check + graceful stop.
 
@@ -5491,6 +5494,13 @@ class MuJoCoSimEngine(
         validates it against the closed predicate registry; see its docstring
         for the schema and the ``stopped_reason`` telemetry contract.
         """
+        # This override claims the robot before delegating to the base facade,
+        # so it must enforce the shared observer domain first. An invalid
+        # callback is configuration, not a rollout, and must not inspect the
+        # world, resolve a robot, or raise ``policy_running``.
+        if observer_error := optional_callable_error(observer, "observer", "run_policy"):
+            return {"status": "error", "content": [{"text": observer_error}]}
+
         if self._world is None or self._world._model is None or self._world._data is None:
             return {"status": "error", "content": [{"text": _NO_WORLD_MSG}]}
 
@@ -5525,6 +5535,7 @@ class MuJoCoSimEngine(
             rtc_inference_timeout_s=rtc_inference_timeout_s,
             wbc_install_torque_control=wbc_install_torque_control,
             stop_when=stop_when,
+            observer=observer,
         )
 
     def run_multi_policy(

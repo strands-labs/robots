@@ -13,7 +13,7 @@ Covers:
   missing-hook, positive (n_contacts / contacts-list) detection, and the
   degradation branches: an unexpected error, a zero-contact negative, and a
   non-dict result all resolve to False without propagating
-* ``_maybe_sim_time`` get_state() fallback (nested ``content[].json.sim_time``)
+* ``_maybe_sim_time`` cached ``_sim_time`` path without backend I/O
 * ``evaluate()`` "never-succeeds" default path (no success_fn)
 """
 
@@ -470,36 +470,67 @@ def test_evaluate_none_success_fn_gives_zero_success_rate():
             break
 
 
-# ── _maybe_sim_time get_state() fallback ─────────────────────────────
+# ── cached per-Step clock / terminal get_state() fallback ─────────────
+
+
+def test_cached_sim_time_reads_engine_clock_without_get_state():
+    """An Isaac-like backend exposes its cheap engine-level ``_sim_time``."""
+
+    class _CachedClockSim(_MinimalSim):
+        _world = None
+        _sim_time = 1.25
+
+        def get_state(self):
+            raise AssertionError("observer telemetry must not call get_state")
+
+    sim = _CachedClockSim(robots=["r0"])
+    sim._world = None
+    sim._sim_time = 1.25
+    assert PolicyRunner(sim)._cached_sim_time() == 1.25
+
+
+def test_cached_sim_time_absent_cache_does_not_probe_get_state():
+    class _NoTimeSim(_MinimalSim):
+        _world = None
+        _sim_time = None
+
+        def get_state(self):
+            raise AssertionError("observer telemetry must not call get_state")
+
+    sim = _NoTimeSim(robots=["r0"])
+    sim._world = None
+    sim._sim_time = None
+    assert PolicyRunner(sim)._cached_sim_time() is None
 
 
 def test_maybe_sim_time_reads_from_get_state_content_json():
-    """Backends with no structured ``_world`` expose sim time via the
-    status-dict ``content[].json.sim_time`` shape. ``_maybe_sim_time`` must
-    dig it out of that nested block.
-    """
+    """Terminal payloads retain the backend status-envelope fallback."""
 
     class _StatusDictSim(_MinimalSim):
-        # No ``_world`` attr → forces the get_state() fallback path.
         _world = None
+        _sim_time = None
 
         def get_state(self):
             return {"content": [{"text": "ok"}, {"json": {"sim_time": 1.25}}]}
 
-    t = PolicyRunner(_StatusDictSim(robots=["r0"]))._maybe_sim_time()
-    assert t == 1.25
+    sim = _StatusDictSim(robots=["r0"])
+    sim._world = None
+    sim._sim_time = None
+    assert PolicyRunner(sim)._maybe_sim_time() == 1.25
 
 
 def test_maybe_sim_time_get_state_without_sim_time_returns_none():
-    """A status dict with no ``sim_time`` anywhere yields None (not a crash)."""
-
     class _NoTimeSim(_MinimalSim):
         _world = None
+        _sim_time = None
 
         def get_state(self):
             return {"content": [{"json": {"step_count": 3}}]}
 
-    assert PolicyRunner(_NoTimeSim(robots=["r0"]))._maybe_sim_time() is None
+    sim = _NoTimeSim(robots=["r0"])
+    sim._world = None
+    sim._sim_time = None
+    assert PolicyRunner(sim)._maybe_sim_time() is None
 
 
 # ── _resolve_success_fn "contact" positive detection ─────────────────

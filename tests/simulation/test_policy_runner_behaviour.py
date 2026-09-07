@@ -258,22 +258,52 @@ class TestPolicyRunnerEvaluate:
 
 
 class TestHelpers:
-    def test_maybe_sim_time_reads_state(self, sim_with_robot):
+    def test_maybe_sim_time_reads_cached_world_clock(self, sim_with_robot):
         runner = PolicyRunner(sim_with_robot)
         t = runner._maybe_sim_time()
         # Empty sim at t=0 should return 0.0.
         assert t == pytest.approx(0.0, abs=1e-9)
 
-    def test_maybe_sim_time_on_broken_sim_returns_none(self):
+    def test_cached_sim_time_never_calls_get_state(self):
         fake = MagicMock()
-        fake.get_state.side_effect = RuntimeError("boom")
-        runner = PolicyRunner(fake)
-        assert runner._maybe_sim_time() is None
+        fake._world = None
+        fake._sim_time = None
+        fake.get_state.side_effect = AssertionError("must not be called")
 
-    def test_maybe_sim_time_no_get_state_returns_none(self):
+        assert PolicyRunner(fake)._cached_sim_time() is None
+        fake.get_state.assert_not_called()
+
+    def test_cached_sim_time_reads_isaac_like_engine_cache(self):
+        fake = MagicMock()
+        fake._world = None
+        fake._sim_time = 1.25
+        fake.get_state.side_effect = AssertionError("must not be called")
+
+        assert PolicyRunner(fake)._cached_sim_time() == 1.25
+        fake.get_state.assert_not_called()
+
+    @pytest.mark.parametrize("value", [True, False, float("nan"), float("inf"), "1.0"])
+    def test_cached_sim_time_rejects_non_finite_or_non_real_cache(self, value):
+        fake = MagicMock()
+        fake._world = None
+        fake._sim_time = value
+        fake.get_state.side_effect = AssertionError("must not be called")
+
+        assert PolicyRunner(fake)._cached_sim_time() is None
+        fake.get_state.assert_not_called()
+
+    def test_cached_sim_time_without_cached_clock_returns_none(self):
         fake = object()
         runner = PolicyRunner(fake)  # type: ignore[arg-type]
-        assert runner._maybe_sim_time() is None
+        assert runner._cached_sim_time() is None
+
+    def test_maybe_sim_time_on_broken_state_fallback_returns_none(self):
+        fake = MagicMock()
+        fake._world = None
+        fake._sim_time = None
+        fake.get_state.side_effect = RuntimeError("boom")
+
+        assert PolicyRunner(fake)._maybe_sim_time() is None
 
     def test_require_default_robot_empty_raises(self):
         fake = MagicMock()

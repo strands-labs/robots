@@ -275,6 +275,43 @@ At `n_episodes > 1` the same call returns an aggregate, and the aggregate keeps 
 
 What the aggregate adds is `total_steps`, `stopped_reasons` (aligned with `episodes`), `video_paths` and the per-episode `episodes` records; `steps_used` equals `total_steps` and `stopped_reason` is the last episode's. Per-episode action health is *not* summarised, because a per-step rate has no single aggregate an N-episode call can report without choosing one - each record in `episodes` carries its own `action_errors`, `action_resolution_rate` and `partial_action_failure_rate`, so the worst episode is `max(e["partial_action_failure_rate"] for e in report["episodes"])`.
 
+### Watching a rollout: the `observer` lane
+
+`run_policy(observer=...)` takes a read-only callable that receives one `RunPolicyStarted`, one `RunPolicyStep` per completed `send_action` call, and one `RunPolicyEnded`. A complete backend breakdown says what physically applied; a coarse error keeps that state explicitly `unknown`. It is a *second* lane beside the backend's `on_frame` hook, not a use of it - that hook is filled from `_make_run_policy_hook` (cooperative cancellation, the trajectory mirror, mesh step telemetry, dataset recording) and is not available to callers, so supplying one would remove all of that rather than add observation.
+
+```python
+from strands_robots.simulation.observers import RunPolicyStep
+
+def watch(event):
+    if isinstance(event, RunPolicyStep) and event.action_resolution != "full":
+        print(event.applied_action_index, event.unresolved_action_keys)
+
+sim.run_policy(robot_name="alice", policy_provider="mock", observer=watch)
+```
+
+The events use observer schema version **2** and report four things `on_frame`'s `(step, obs, action)` signature cannot carry:
+
+| Field | Why it is not derivable from `on_frame` |
+|-------|------------------------------------------|
+| `action_resolution` | The backend's per-key `send_action` verdict, normalised to `full` / `partial` / `none` / `unknown`. `partial` and `none` require a valid, complete per-key breakdown; a coarse backend error is `unknown` with empty explicit key tuples, because input keys are not proof of what reached physical state. Coarse steps remain in `action_errors` and result text but are excluded from aggregate action-rate denominators rather than counted as physical misses. |
+| `observation_is_chunk_reused` | Narrow chunk-position signal: `true` only for a later action using the same chunk-start snapshot. It is not authoritative freshness, because the first action after an async prefetch swap can already use an old snapshot. |
+| `observation_age_steps` | Authoritative nonnegative age in control-step terms: completed rollout action attempts since the snapshot was sampled. Sync chunks report their chunk index. Async chunks carry the prefetch sample's remaining-old-chunk-attempt count across the swap and add the new chunk index. An active recording refreshes every step and reports `0`. On an `unknown` action resolution this field does not claim physical advancement. |
+| `legacy_hook_outcome` | What the backend's hook did - `ok`, `cancelled`, `recording_error`, `error`, or `absent`. |
+
+`applied_action_index == legacy_step_index` for every `RunPolicyStep`, including a cancelled or recording-failed step: both identify the same zero-based action passed to the hook. The abort is identified by `legacy_hook_outcome`, not by an index offset. Terminal counts have a different boundary: the hook runs *after* `send_action` and `step_count` increments *after* the hook, so `RunPolicyEnded.applied_actions` can exceed `legacy_steps_used` by one when that final hook aborts.
+
+Ordering is explicit: `event_seq` is dense and 0-based within one `run_id`, so a gap is observable; `monotonic_ns` orders the stream (no NTP correction or `date -s` can move it) and `utc_ns` is derived from a single rollout anchor so a wall-clock label can never disagree with it. At `n_episodes > 1` each episode is its own lifecycle with its own `run_id`. Once dispatch of `RunPolicyStarted` is attempted, dispatch of exactly one `RunPolicyEnded` is attempted on every Python exit, including process-control/cancellation exceptions and result-assembly failures. Those non-cooperative exceptions retain their identity and traceback and still propagate. If Step or Ended observer dispatch raises a second non-cooperative exception while one is already unwinding from the legacy hook or rollout, the original remains primary and the secondary failure is logged and attached as an exception note. A preflight refusal opens no lifecycle. `sim_time_s` is read only from a cached `_world.sim_time` or engine `_sim_time`; observation telemetry never calls `get_state`.
+
+Five rules the lane holds to, and one it does not:
+
+- **Additive.** Installing an observer changes no action applied, no existing result-json field, and no observation or render call. It adds one key, `observer_failures`.
+- **Contained, for the classes it is an observer's business to raise.** An `Exception` never alters the rollout outcome and never reaches the `max_onframe_failures` watchdog - that exists for a recorder losing dataset frames, not a visualiser that cannot draw. `CooperativeStop` is contained too, and by name: it is a `BaseException` precisely so a hook's broad `except Exception` cannot swallow a cancellation, so without naming it here any observer could cancel a rollout it is only supposed to watch. Every contained failure is counted and reported as `observer_failures`, so a stream with holes says so.
+- **Not contained: the four signals that are nobody's telemetry.** `KeyboardInterrupt`, `SystemExit`, `GeneratorExit` and `asyncio.CancelledError` propagate. None of the four is an `Exception` subclass, so the guard's `(CooperativeStop, Exception)` clause passes them through by construction. A generator closed underneath a visualiser, or a task cancelled while one was drawing, is a real teardown rather than a drawing failure, and reporting it as `observer_failures` on a rollout that then ran to its full budget said the opposite. If Step or Ended dispatch raises one while another exception is already unwinding from the legacy hook or rollout, the original exception remains primary; the secondary observer failure is logged and attached to it as a note.
+- **Borrowed, not copied.** `observation` and `action` are the same objects the hook received. Treat them as read-only and do not retain them past the call; snapshot what you need synchronously.
+- **Not isolated.** Dispatch is synchronous on the rollout thread, so a blocking observer blocks the robot. This is telemetry, not a sandbox. The rollout loop paces on a *deadline* rather than a delay, so a consumer has a budget of one control period (`1 / control_frequency`) that costs the rollout no wall clock at all - work inside it is absorbed by the period instead of added to it. Overrun that budget and the pace is what gives: the loop drops the missed deadline rather than firing a burst of catch-up actions at the arm, so the arm sees a gap. Keep the callback short and hand anything slower to another thread.
+
+Scope: `run_policy` (including its `n_episodes > 1` path) and `PolicyRunner.run`. `eval_policy`, `evaluate_benchmark` and `run_multi_policy` are separate loops with different step semantics and carry no observer yet.
+
 `eval_policy` accepts the same `video={...}` recording config as `run_policy` (`path` enables it, plus `fps` / `camera` / `width` / `height` - an unknown key or a non-positive size is a caller error, never silently ignored), but writes **one MP4 per episode** with `_ep{i}` inserted into the filename (`eval.mp4` -> `eval_ep0.mp4`, `eval_ep1.mp4`, ...), so a multi-episode evaluation can be *watched* to see why episodes fail rather than only read as an aggregate `success_rate`. The written files are listed in the result json `video_paths`; the output path is validated and the camera probed up-front, so a bad camera fails the eval immediately instead of after N episodes of empty MP4s. `evaluate_benchmark` accepts the same `video={...}` config and records one MP4 per episode too, so a benchmark evaluation can be watched to see why episodes fail. Frames are captured synchronously on the eval thread (render is read-only over `mjData`), so recording does not perturb the bit-stable benchmark rollout.
 | `replay_episode` | `repo_id`, `robot_name=None`, `episode=0` |
 

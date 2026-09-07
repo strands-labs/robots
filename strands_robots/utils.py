@@ -2989,6 +2989,28 @@ def validation_split_error(val_episodes: int, total_tasks: Any, context: str, *,
     )
 
 
+def optional_callable_error(value: Any, param: str, context: str) -> str | None:
+    """Return an error message unless ``value`` is callable or ``None``.
+
+    Shared by public facades and their directly-drivable implementation layers
+    for optional callback parameters.  ``callable`` is deliberately the whole
+    domain: signatures are not inspected, because builtins, decorated callables
+    and objects with an opaque ``__call__`` cannot be checked reliably before
+    invocation.
+
+    Args:
+        value: The optional callback supplied by the caller.
+        param: Parameter name, used in the refusal text.
+        context: Calling surface, used as the message prefix.
+
+    Returns:
+        ``None`` for ``None`` or a callable, otherwise the refusal text.
+    """
+    if value is None or callable(value):
+        return None
+    return f"{context}: {param} must be callable or None, got {_refusal_repr(value)}."
+
+
 def boolean_flag_error(value: Any, param: str, context: str) -> str | None:
     """Return an error message unless *value* is a python or numpy boolean.
 
