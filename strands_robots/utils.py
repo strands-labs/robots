@@ -1058,7 +1058,7 @@ def step_aborted_msg(completed: int, requested: int, *, context: str = "step") -
 def positive_count_error(value: Any, param: str, context: str) -> str | None:
     """Error text when ``value`` is not a usable positive integer count.
 
-    Shared domain for three families of discrete quantity:
+    Shared domain for four families of discrete quantity:
 
     * The knobs that count iterations of a control or rollout loop - the
       simulation's ``n_episodes`` / ``max_steps`` / ``control_substeps`` /
@@ -1076,6 +1076,14 @@ def positive_count_error(value: Any, param: str, context: str) -> str | None:
       ``truncation=True``. The tokenizer takes it as a slice bound over the
       encoded instruction, so a count below one silently produces an EMPTY
       prompt rather than an error.
+    * A count of things to be built and run in parallel - the ``num_envs`` of
+      ``RLTrainSpec`` and of every RL backend that acts on it (the from-scratch
+      PPO / FastTD3 / FastSAC trainers, :class:`~strands_robots.training.rl.vec_env.VecSimEnv`,
+      the Isaac backend's ``replicate``), and the ``max_workers`` sizing the one
+      thread pool a vectorized env steps its sub-envs through. Each is spent
+      building live resources - a physics engine per environment, an OS thread
+      per worker - so a count the caller did not mean is not a bad number but
+      the wrong number of engines.
 
     It lives here rather than beside one of its callers because those callers
     sit in different layers (:mod:`strands_robots.hardware_robot` must not

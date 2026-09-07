@@ -138,7 +138,9 @@ def test_num_envs_one_uses_no_executor() -> None:
 
 
 def test_rejects_bad_num_envs() -> None:
-    with pytest.raises(ValueError, match="num_envs must be >= 1"):
+    # Matched on the parameter the refusal names, not on wording, so the shared
+    # count domain can own the message (see test_vec_env_counts_take_the_shared_domain).
+    with pytest.raises(ValueError, match="num_envs"):
         VecSimEnv(_factory(), num_envs=0)
 
 

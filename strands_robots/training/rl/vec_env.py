@@ -29,6 +29,8 @@ from typing import TYPE_CHECKING, Any
 
 import torch
 
+from strands_robots.utils import positive_count_error
+
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from strands_robots.training.rl.env import SimEnv
 
@@ -40,16 +42,22 @@ class VecSimEnv:
         env_factory: Zero-arg callable returning a fresh :class:`SimEnv`. Called
             ``num_envs`` times. (Same contract the trainers already use for the
             single-env path, so existing factories work unchanged.)
-        num_envs: Number of parallel environments. Must be >= 1.
+        num_envs: Number of parallel environments, a positive integer. Held to
+            the shared count domain (:func:`~strands_robots.utils.positive_count_error`),
+            the same one the trainers apply to ``RLTrainSpec.num_envs`` before
+            handing it here - a count refused for a spec cannot be accepted by
+            the class that acts on it.
         device: Torch device for the stacked tensors. ``None`` inherits the
             first sub-env's device.
-        max_workers: Thread-pool size for stepping sub-envs. ``None`` uses
-            ``min(num_envs, 8)`` - MuJoCo releases the GIL during ``mj_step`` so
-            threads give real parallelism on the physics call. One executor is
-            created and reused for the env's lifetime (never per-step).
+        max_workers: Thread-pool size for stepping sub-envs, a positive integer
+            held to the same count domain. ``None`` uses ``min(num_envs, 8)`` -
+            MuJoCo releases the GIL during ``mj_step`` so threads give real
+            parallelism on the physics call. One executor is created and reused
+            for the env's lifetime (never per-step).
 
     Raises:
-        ValueError: ``num_envs < 1`` or the sub-envs disagree on obs/action dims.
+        ValueError: ``num_envs`` or ``max_workers`` is not a positive integer,
+            or the sub-envs disagree on obs/action dims.
     """
 
     def __init__(
@@ -60,9 +68,17 @@ class VecSimEnv:
         device: torch.device | str | None = None,
         max_workers: int | None = None,
     ) -> None:
-        if num_envs < 1:
-            raise ValueError(f"num_envs must be >= 1, got {num_envs}")
-        self.num_envs = int(num_envs)
+        if (error := positive_count_error(num_envs, "num_envs", type(self).__name__)) is not None:
+            raise ValueError(error)
+        if (
+            max_workers is not None
+            and (error := positive_count_error(max_workers, "max_workers", type(self).__name__)) is not None
+        ):
+            raise ValueError(error)
+        # No coercion: the domain above admits only a true ``int``, so an
+        # ``int(num_envs)`` here could only ever restate the value - and while it
+        # was there it was what silently turned a 2.5 into two live engines.
+        self.num_envs = num_envs
         self.envs: list[SimEnv] = [env_factory() for _ in range(self.num_envs)]
 
         first = self.envs[0]
