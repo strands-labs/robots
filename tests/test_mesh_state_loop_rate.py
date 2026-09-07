@@ -20,8 +20,12 @@ isolation must not run at all, and that applies to anything touching a Mesh.
 
 from __future__ import annotations
 
+import ast
+import inspect
+import textwrap
 import threading
 import time
+from collections.abc import Callable
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -218,6 +222,40 @@ class TestTheStateLoopHitsItsNominalRate:
         )
 
 
+def _loop_code(func: Callable[..., object]) -> str:
+    """Return ``func``'s source with its prose removed, structurally.
+
+    The graders below scan a loop's source for a call it must no longer make,
+    and the converted loops DESCRIBE the call they stopped making - so the scan
+    has to read code and not documentation. Subtracting the prose textually does
+    not achieve that:
+
+    * ``inspect.getsource`` includes ``#`` comments, which ``__doc__`` never
+      contained, so removing ``__doc__`` leaves a comment that quotes the banned
+      call behind - on every interpreter, including the one CI runs.
+    * ``source.replace(func.__doc__, "")`` assumes ``__doc__`` is a byte-for-byte
+      substring of the source. Python 3.13 strips the common leading indentation
+      from docstrings at compile time, so an indented docstring is no longer a
+      substring there and the replace removes nothing. The same holds on any
+      interpreter for a docstring written with an escape sequence, which the
+      compiler resolves and the source spells out literally.
+
+    Parsing the definition and unparsing its body without the docstring node
+    drops prose of both kinds under neither assumption: comments are absent from
+    the AST altogether, and the docstring is removed as a node rather than as
+    text. What is left is the code, on any interpreter.
+    """
+    definition = ast.parse(textwrap.dedent(inspect.getsource(func))).body[0]
+    assert isinstance(definition, ast.FunctionDef | ast.AsyncFunctionDef), (
+        f"expected a function definition, parsed {type(definition).__name__}"
+    )
+    body = definition.body
+    first = body[0] if body else None
+    if isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant) and isinstance(first.value.value, str):
+        body = body[1:]
+    return "\n".join(ast.unparse(node) for node in body)
+
+
 @pytest.mark.parametrize("attr", ["_state_loop", "_heartbeat_loop", "_camera_loop"])
 def test_the_converted_loop_no_longer_paces_on_the_stop_event(attr: str) -> None:
     """Pin the conversion in source, so a later edit cannot quietly revert it.
@@ -226,17 +264,12 @@ def test_the_converted_loop_no_longer_paces_on_the_stop_event(attr: str) -> None
     heavily loaded machine their floors could in principle be met by luck. This
     one cannot be satisfied by luck.
     """
-    import inspect
-
-    func = getattr(Mesh, attr)
-    source = inspect.getsource(func)
     # Scan the CODE, not the prose: the docstring of the converted loop explains
     # what it stopped doing and therefore contains the very string this test
     # bans. My first version failed on its own explanation - a source-scanning
-    # test that reads comments is a test that punishes documentation.
-    doc = func.__doc__
-    if doc:
-        source = source.replace(doc, "")
+    # test that reads comments is a test that punishes documentation. _loop_code
+    # removes both kinds of prose structurally, which a text subtraction cannot.
+    source = _loop_code(getattr(Mesh, attr))
     assert "_stop_event.wait(" not in source, (
         f"Mesh.{attr} is pacing on _stop_event.wait again - that wait adds the tick's work to "
         "the period, and is inflated further in a daemon-descended tree; use mesh.pacing.Ticker"
@@ -258,14 +291,139 @@ def test_every_sensor_loop_paces_through_the_shared_ticker_generator(loop: str) 
     robot while the other six were fixed, which is harder to notice than all
     seven being slow.
     """
-    import inspect
-
     from strands_robots.mesh import sensors as mesh_sensors
 
-    func = getattr(mesh_sensors.SensorLoopsMixin, loop)
-    source = inspect.getsource(func)
+    # Prose-free for the same reason as the Mesh loops above: these docstrings
+    # are free to name the call they no longer make.
+    source = _loop_code(getattr(mesh_sensors.SensorLoopsMixin, loop))
     assert "self._paced(" in source, f"{loop} does not pace through SensorLoopsMixin._paced"
     assert "_stop_event.wait(" not in source, f"{loop} paces on the inflated Event.wait again - see mesh.pacing"
+
+
+class _ProseProbes:
+    """Loops whose PROSE names the call the graders ban, in each shape prose takes.
+
+    Real functions, read with the same ``inspect.getsource`` the graders use, so
+    what is measured here is what happens to the mesh loops themselves.
+    """
+
+    def comment(self) -> int:
+        """Paced by a Ticker."""
+        # Converted from self._stop_event.wait(period), which added the tick's
+        # work to the period instead of subtracting it.
+        return 1
+
+    def escaped_docstring(self) -> int:
+        """Paced by a Ticker, no longer by ``self._stop_event.wait(period)``.
+
+        The rate is reported by whatever matches ``\\d+`` in the counter name; the
+        doubled backslash is why the compiler cannot store this docstring as a
+        verbatim slice of the source, on any interpreter.
+        """
+        return 1
+
+    def indented_docstring(self) -> int:
+        """Paced by a Ticker.
+
+        Converted from ``self._stop_event.wait(period)``: this continuation line
+        is indented, which is the shape Python 3.13 dedents at compile time.
+        """
+        return 1
+
+    def genuinely_paces(self) -> int:
+        """A loop that really does pace on the stop event."""
+        while True:
+            if self._stop_event.wait(0.1):  # type: ignore[attr-defined]
+                break
+        return 1
+
+
+class TestTheLoopScanReadsCodeAndNotProse:
+    """The scan must see code only, whatever shape the prose takes.
+
+    Every grader above that reads a loop's source has to ban a call the loop's
+    own documentation is free to NAME - the converted loops explain what they
+    stopped doing. Subtracting ``func.__doc__`` from ``inspect.getsource`` is the
+    obvious way to do that and it is wrong twice: it never removed comments, and
+    it assumes the compiler stored the docstring as a verbatim slice of the
+    source. Where either assumption fails the prose survives and the grader
+    reports it as code - a red cell about the loop, raised by its documentation,
+    telling the reader to adopt the pacer the loop already uses.
+    """
+
+    def test_a_comment_that_quotes_the_banned_call_is_not_read_as_code(self) -> None:
+        """A comment was never part of ``__doc__``, so subtracting it left this behind.
+
+        This holds on every interpreter, CI's included: the loop is correct, the
+        comment merely records what it was converted from.
+        """
+        code = _loop_code(_ProseProbes.comment)
+        assert "_stop_event.wait(" not in code, (
+            "a comment recording the converted-from call is being read as a pacing call - "
+            f"getsource includes comments and __doc__ never did. Code read: {code!r}"
+        )
+
+    def test_a_docstring_the_compiler_did_not_store_verbatim_is_still_removed(self) -> None:
+        """The textual subtraction assumes ``__doc__`` is a slice of the source.
+
+        A docstring documenting a regex breaks that on any interpreter, which is
+        the same assumption Python 3.13 breaks for every indented docstring. That
+        is why this cell is the one that grades the root cause rather than one
+        interpreter's symptom.
+        """
+        func = _ProseProbes.escaped_docstring
+        doc = func.__doc__
+        assert doc is not None and doc not in inspect.getsource(func), (
+            "premise: this probe's docstring must not be a verbatim slice of its source"
+        )
+        assert "_stop_event.wait(" not in _loop_code(func), (
+            "a docstring the compiler rewrote survived the strip, so the prose is being read as code"
+        )
+
+    def test_an_indented_docstring_is_removed_however_the_compiler_stores_it(self) -> None:
+        """The reported shape: an indented continuation line naming the call.
+
+        Python 3.13 strips the common leading indentation from docstrings at
+        compile time, so ``__doc__`` is dedented while ``getsource`` is not and
+        the textual subtraction removes nothing there. Reading the body through
+        the AST does not depend on which of the two the interpreter hands back.
+        """
+        assert "_stop_event.wait(" not in _loop_code(_ProseProbes.indented_docstring), (
+            "an indented docstring survived the strip - the scan is reading documentation as code"
+        )
+
+    def test_a_loop_that_still_paces_on_the_event_is_caught(self) -> None:
+        """The scan must not go blind: dropping prose is not dropping code.
+
+        Removing the prose is only correct if the call is still found where it is
+        real, so this is what separates the fix from disabling the graders.
+        """
+        assert "_stop_event.wait(" in _loop_code(_ProseProbes.genuinely_paces), (
+            "the scan no longer sees a genuine pacing wait - it has been made vacuous"
+        )
+
+    def test_the_pacer_the_loops_must_use_is_still_visible_to_the_scan(self) -> None:
+        """The graders also assert a REQUIRED call, which must survive the read."""
+        assert "Ticker(" in _loop_code(Mesh._state_loop), "the Ticker construction is no longer visible"
+        from strands_robots.mesh import sensors as mesh_sensors
+
+        assert "self._paced(" in _loop_code(mesh_sensors.SensorLoopsMixin._pose_loop), (
+            "the shared pacing generator call is no longer visible"
+        )
+
+    def test_the_state_loop_docstring_still_names_the_call_its_grader_bans(self) -> None:
+        """Non-vacuity: the prose path above is only exercised while this holds.
+
+        ``Mesh._state_loop`` is the one converted loop whose docstring spells the
+        banned call, so it is the only real target that exercises the strip at
+        all. If that sentence is ever reworded the graders stop reading prose,
+        this cell says so, and the probes above become the whole coverage.
+        """
+        doc = Mesh._state_loop.__doc__
+        assert doc is not None and "_stop_event.wait(" in doc, (
+            "Mesh._state_loop no longer documents the call its grader bans, so no real "
+            "target exercises the prose strip - the probes in this class are now its only cover"
+        )
 
 
 def test_only_the_shared_generator_owns_a_ticker_in_the_sensors_module() -> None:
