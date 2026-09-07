@@ -14,7 +14,10 @@ This one hand-rolled ``if num_envs < 1`` and then coerced with ``int()``, and
 * ``float("inf")`` and ``"4"`` left the constructor as ``OverflowError`` and
   ``TypeError``, outside the documented ``Raises: ValueError``, naming neither
   the class nor the parameter.
-* ``max_workers=float("inf")`` reached ``ThreadPoolExecutor`` as its pool size.
+* ``max_workers=float("inf")`` reached ``ThreadPoolExecutor`` as its pool size,
+  and because the pool was built last, a pool size that *was* refused had
+  already built every environment - ``max_workers=0`` raised with two live
+  engines behind it and no handle to close them.
 
 These pin the domain, not the wording: a refusal is identified by the parameter
 it names, and the reference verdict is read from the shared helper itself so the
@@ -163,6 +166,28 @@ def test_a_refused_count_builds_no_environment() -> None:
             VecSimEnv(factory, value)
         assert factory.built == 0, f"{value!r} ({why}) built {factory.built} environment(s) before refusal"
     assert refused >= 8, f"roster no longer exercises the refusal path ({refused} refused)"
+
+
+def test_a_refused_pool_size_builds_no_environment_either() -> None:
+    """The pool size is graded before the environments, not after them.
+
+    ``max_workers`` used to be spent last, on the line constructing the pool -
+    after all N sub-envs had been built. A refused pool size therefore raised
+    out of the constructor with N live engines already built and no handle to
+    close them: ``max_workers=0`` and ``max_workers="4"`` each left two behind.
+    """
+    refused = 0
+    for value, why in _PROBES:
+        if value is _MAX_WORKERS_MEANS_UNSTATED:
+            continue
+        if positive_count_error(value, "max_workers", "VecSimEnv") is None:
+            continue
+        refused += 1
+        factory = _CountingFactory()
+        with pytest.raises(ValueError):
+            VecSimEnv(factory, 2, max_workers=value)
+        assert factory.built == 0, f"max_workers={value!r} ({why}) left {factory.built} environment(s) built"
+    assert refused >= 7, f"roster no longer exercises the refusal path ({refused} refused)"
 
 
 def test_an_admitted_count_is_the_number_of_environments_built() -> None:
