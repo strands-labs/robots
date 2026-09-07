@@ -46,7 +46,9 @@ def _rover(**overrides: Any) -> RosbridgeRobot:
 def test_invalid_names_rejected() -> None:
     with pytest.raises(ValueError, match="invalid cmd_vel_topic"):
         _rover(cmd_vel_topic="/cmd vel")
-    with pytest.raises(ValueError, match="invalid host"):
+    # The host is graded by the shared dial domain ahead of this transport's own
+    # allowlist, so the refusal is pinned on the parameter it names.
+    with pytest.raises(ValueError, match="host"):
         _rover(host="bad host")
     with pytest.raises(ValueError, match="invalid port"):
         _rover(port=0)

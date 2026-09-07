@@ -53,13 +53,33 @@ from strands.types.tools import ToolContext
 
 from strands_robots.tools._command_gate import gate_command
 from strands_robots.tools._numeric_options import numeric_option_error
-from strands_robots.utils import tcp_port_error
+from strands_robots.utils import dial_host_error, tcp_port_error
 
 logger = logging.getLogger(__name__)
 
 # Graph names: same allowlist posture as use_ros. Types are ROS1 two-segment.
 _NAME_RE = re.compile(r"^[A-Za-z0-9_/~]+\Z")
 _TYPE_RE = re.compile(r"^[A-Za-z0-9_]+/[A-Za-z0-9_]+\Z")
+
+# The host allowlist is this transport's own narrowing, applied *after* the
+# shared ``dial_host_error`` domain - the same two stages the port half of the
+# address beside it already has, where ``tcp_port_error`` establishes the 16-bit
+# space and ``_transport_port_error`` places the transport's own ceiling in it.
+#
+# A pattern can only be offered a string. Matched against the caller's value
+# directly this raised ``TypeError`` from ``re`` for every non-string host -
+# ``9090``, ``True``, ``b"localhost"`` - out of a tool whose every other refusal
+# is a result dict, and out of a constructor documented to report a malformed
+# host as ``ValueError``: the same defect the port ceiling below records, with
+# ``re``'s message in place of a bare ``assert``, naming neither the tool nor the
+# parameter. The port half never had it, because a shared domain graded the value
+# before anything spent it.
+#
+# With the shared domain ahead of it the value reaching this pattern is always a
+# string a websocket URI can carry, so what is left here is the narrower question
+# of which of those hostnames this ROS transport admits - a posture that belongs
+# beside the transport, not to the domain every dialled host in the package
+# shares.
 _HOST_RE = re.compile(r"^[A-Za-z0-9._-]+\Z")
 
 # The top of the 16-bit port space is a legal TCP port that this transport cannot
@@ -318,7 +338,9 @@ def use_rosbridge(
     Args:
         action: One of ``status``, ``list_topics``, ``list_services``,
             ``echo``, ``publish``, ``service_call``.
-        host: rosbridge server hostname or IP.
+        host: rosbridge server hostname or IP. Held to the shared domain every
+            dialled host in this package shares, then to this transport's own
+            narrower allowlist.
         port: rosbridge WebSocket port (default 9090).
         topic: Topic name (``echo``, ``publish``). Held to the same name rule
             as ``service``.
@@ -345,7 +367,9 @@ def use_rosbridge(
     """
     fields = fields or {}
 
-    if not host or not _HOST_RE.match(host):
+    if (host_error := dial_host_error(host, "host", action)) is not None:
+        return _err(host_error)
+    if not _HOST_RE.match(host):
         return _err(f"invalid host: {host!r}")
     if (port_error := tcp_port_error(port, "port", action)) is not None:
         return _err(port_error)

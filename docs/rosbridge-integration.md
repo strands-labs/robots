@@ -119,6 +119,19 @@ robot = RosbridgeRobot(
 
 All parameters are optional except `node_name`, `cmd_vel_topic`, and `odom_topic`.
 
+### Address contract
+
+`host` and `port` are the two halves of one websocket address, `ws://<host>:<port>`,
+and each is graded twice: by the domain every dialled address in the package
+shares, then by this transport's own narrower rule. For the port that is the
+16-bit space followed by autobahn's ceiling of 65534; for the host it is "a string
+a websocket URI can carry" followed by the bare-hostname allowlist, which is
+stricter than the shared domain and refuses spellings a URI would accept (a
+bracketed IPv6 literal, for one). Either half being unusable is reported the same
+way whichever it is - `use_rosbridge` returns an error result and `RosbridgeRobot`
+raises `ValueError` - and both are refused before a socket is dialled, so the
+caller learns the same thing whether or not `roslibpy` is installed.
+
 ### Drive contract
 
 `drive()` takes the fleet-standard `(linear, angular, duration, count)` shape,

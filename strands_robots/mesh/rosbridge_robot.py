@@ -38,6 +38,7 @@ from strands_robots.mesh._mobile_base import LATCHED_VELOCITY, failed_halt_error
 from strands_robots.mesh.ros_bridge import _check_topic
 from strands_robots.tools.use_rosbridge import _HOST_RE, _transport_port_error, use_rosbridge
 from strands_robots.utils import (
+    dial_host_error,
     finite_number_error,
     partial_construction_repr,
     positive_finite_number_error,
@@ -96,7 +97,15 @@ class RosbridgeRobot:
         self.cmd_vel_topic = _check_topic("cmd_vel_topic", cmd_vel_topic)
         self.odom_topic = _check_topic("odom_topic", odom_topic)
         self.scan_topic = _check_topic("scan_topic", scan_topic) if scan_topic else None
-        if not host or not _HOST_RE.match(host):
+        # Two stages, the same pair the port below has: the shared domain every
+        # dialled host in this package shares, then the transport's own narrower
+        # allowlist. The allowlist is a pattern, so offering it the caller's
+        # value directly raised ``TypeError`` for a non-string host, out of a
+        # constructor whose contract is to report a malformed host as
+        # ``ValueError``.
+        if (host_error := dial_host_error(host, "host", type(self).__name__)) is not None:
+            raise ValueError(host_error)
+        if not _HOST_RE.match(host):
             raise ValueError(f"invalid host: {host!r}")
         if (port_error := tcp_port_error(port, "port", type(self).__name__)) is not None:
             raise ValueError(port_error)
