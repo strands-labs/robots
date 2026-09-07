@@ -409,6 +409,63 @@ def test_only_a_wait_the_interpreter_would_execute_is_a_pacing_hit(label: str, p
 
 
 @pytest.mark.parametrize(
+    ("label", "planted", "constructions"),
+    [
+        (
+            "a docstring naming the construction",
+            'def _paced(self, period):\n    """Builds one Ticker(period, self._stop_event) for the caller."""\n'
+            "    yield\n",
+            0,
+        ),
+        (
+            "a comment naming the construction",
+            "def _paced(self, period):\n    # one Ticker(period, self._stop_event) per loop\n    yield\n",
+            0,
+        ),
+        (
+            "the construction on one line",
+            "def loop(self):\n    with Ticker(1.0, self._stop_event) as ticker:\n        ticker.wait()\n",
+            1,
+        ),
+        (
+            "the construction split over four lines",
+            "def loop(self):\n    with Ticker(\n        1.0,\n        self._stop_event,\n    ) as ticker:\n"
+            "        ticker.wait()\n",
+            1,
+        ),
+        (
+            "the construction through its module",
+            "def loop(self):\n    with pacing.Ticker(1.0, self._stop_event) as ticker:\n        ticker.wait()\n",
+            1,
+        ),
+        (
+            "a callee whose name merely ends in the text",
+            "def loop(self):\n    with FakeTicker(1.0, self._stop_event) as ticker:\n        ticker.wait()\n",
+            0,
+        ),
+    ],
+)
+def test_only_a_construction_the_interpreter_would_execute_is_a_ticker(
+    label: str, planted: str, constructions: int
+) -> None:
+    """The required-call half of the scan reads the same tree as the banned half.
+
+    ``_calls_named`` is what says a loop paces on a Ticker and what counts the
+    constructions in the sensors module, and a textual reading of it fails in
+    the same two directions the wait side used to: a docstring inside ``_paced``
+    that says what it builds becomes a second construction, so the exact-count
+    cell below goes red on a documentation edit; and a construction wrapped over
+    several lines is not found at all. The last two rows pin the callee match:
+    ``pacing.Ticker(...)`` is a construction and ``FakeTicker(...)`` is not,
+    where ``"Ticker(" in source`` gets both wrong.
+    """
+    found = _calls_named(planted, "Ticker")
+    assert len(found) == constructions, (
+        f"{label}: expected {constructions} Ticker construction(s), found {len(found)} at {found} in:\n{planted}"
+    )
+
+
+@pytest.mark.parametrize(
     "loop",
     ["_pose_loop", "_health_loop", "_imu_loop", "_odom_loop", "_lidar_loop", "_hand_loop", "_map_info_loop"],
 )
