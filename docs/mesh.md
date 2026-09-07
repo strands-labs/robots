@@ -101,10 +101,11 @@ will not make the next heartbeat tick drop every peer it can still hear.
 process's reading of when it last heard from a peer, and the `peer_id` a peer is
 filed under is the one its topic and certificate bind - not a field inside the
 payload. A presence payload is merged into what you read about a peer so you get
-its capabilities (`tool_name`, `connected`, `cameras`, ...), and those four
-locally decided keys - `peer_id`, `type`, `hostname`, `age` - win a name
-collision with it. A peer heartbeating `"age": 0` does not report itself fresh,
-and one naming another peer's id does not answer a lookup for that peer.
+its capabilities (`tool_name`, `connected`, `cameras`, ...), and those five
+locally decided keys - `peer_id`, `type`, `hostname`, `age`, `reachable` - win a
+name collision with it. A peer heartbeating `"age": 0` does not report itself
+fresh, one claiming `"reachable": true` does not report itself in contact, and
+one naming another peer's id does not answer a lookup for that peer.
 
 Repeated wrong codes arm a brute-force cooldown
 (`STRANDS_MESH_RESUME_MAX_FAILS`, `STRANDS_MESH_RESUME_BACKOFF_S`): during the
@@ -228,6 +229,38 @@ identically). `theta` and `quat` are decomposed from the same matrix, so they
 always agree: both describe the full rotation for every orientation, including
 the half of SO(3) past 120 degrees that a robot turning back the way it came
 lands in.
+
+### Out of contact vs gone
+
+A peer that stops heartbeating is *unreachable* after `PEER_TIMEOUT` (10 s)
+and, by default, deleted from the registry at that same moment. For fleets
+whose silence is planned - a rover in an RF shadow, a warehouse robot crossing
+a Wi-Fi dead zone, a satellite between ground-station passes - deletion answers
+"was it ever here?" with "no": a dispatcher reading absence as loss fails work
+over to another robot, and a fleet view renders a planned silence as a
+vanished peer.
+
+Set `STRANDS_MESH_PEER_RETENTION_S` to keep such peers on the books instead.
+The peer stays in `mesh.peers` with `reachable: false` (a locally-derived
+verdict the peer cannot claim about itself - it shares the collision rule
+`age` has) until its silence exceeds `max(PEER_TIMEOUT, retention)`, at which
+point it is gone for real. Retention off (the default) is byte-identical to
+the historic behavior. The `STRANDS_MESH_MAX_PEERS` eviction cap still
+outranks retention: at the cap, the longest-silent peer is evicted first.
+
+Readers that *act* on a peer record can state the freshness their decision
+needs instead of parsing `age` themselves:
+
+```python
+row = robot.mesh.get_peer(peer_id, max_age_s=30.0)
+if row is None:
+    ...  # unknown OR older than 30 s - for this decision, the same thing
+```
+
+`max_age_s=None` (default) accepts any age - right for displays that render
+staleness themselves. The bound must be positive and finite: `nan` would make
+the comparison answer False for every age, a bound failing open on exactly
+the stale record it was written to refuse, so it is refused instead.
 
 ### Rejoining the mesh
 

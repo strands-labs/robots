@@ -3,15 +3,16 @@
 ``PeerInfo.caps`` is the peer's own presence payload, merged into
 :meth:`~strands_robots.mesh.session.PeerInfo.to_dict` so a consumer reads a
 peer's capabilities (``tool_name``, ``connected``, ``cameras``, ...) beside its
-identity. Four of the keys in that dict are not capabilities: ``peer_id`` is the
+identity. Five of the keys in that dict are not capabilities: ``peer_id`` is the
 key the registry files the peer under, ``type`` and ``hostname`` are what
-:func:`~strands_robots.mesh.session.update_peer` derived from the wire, and
+:func:`~strands_robots.mesh.session.update_peer` derived from the wire,
+``reachable`` is the verdict derived from the local heartbeat reading, and
 ``age`` is this process's own reading of when it last heard a heartbeat --
 described on ``last_seen_mono`` as "a local observation, never a stamp the peer
 sent", and named in ``docs/mesh.md`` among the things the mesh decides from a
 duration on ``time.monotonic()`` that no clock correction can move.
 
-Spread last, ``caps`` overrode all four. This pins that the local reading wins a
+Spread last, ``caps`` overrode all five. This pins that the local reading wins a
 name collision, and that every capability key still merges.
 """
 
@@ -29,8 +30,8 @@ import pytest
 
 from strands_robots.mesh import session as mesh_session
 
-# The four names ``to_dict`` decides locally rather than reading off the wire.
-LOCAL_FIELDS = ("peer_id", "type", "hostname", "age")
+# The five names ``to_dict`` decides locally rather than reading off the wire.
+LOCAL_FIELDS = ("peer_id", "type", "hostname", "age", "reachable")
 
 
 def _peer(**caps: Any) -> mesh_session.PeerInfo:
@@ -95,7 +96,7 @@ class TestTheLocalObservationWinsAName:
 
     @pytest.mark.parametrize("field", LOCAL_FIELDS)
     def test_no_locally_decided_field_is_settable_from_the_payload(self, field: str) -> None:
-        """Whatever the payload says, the four fields keep the local answer."""
+        """Whatever the payload says, the five fields keep the local answer."""
         sentinel = "PAYLOAD-WINS" if field != "age" else -999.0
         peer = _peer(robot_id="arm-1", **{field: sentinel})
 

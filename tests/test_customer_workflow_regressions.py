@@ -325,11 +325,22 @@ class TestMeshPeerDictLookup:
         assert by_id["peer-a"]["hostname"] == "a"
 
     def test_get_peer_none_safe(self, monkeypatch):
-        from strands_robots.mesh import core as core_mod
+        """Driven through the real registry rather than a patched reader.
 
-        fake = [{"peer_id": "peer-a", "hostname": "a"}]
-        monkeypatch.setattr(core_mod, "_session_get_peers", lambda: fake)
+        ``peers_by_id`` and ``get_peer`` reach the registry through two
+        different session functions, so a test that stubs one of them grades
+        the stub instead of the lookup a customer performs -- and reports
+        success for a ``get_peer`` that had stopped reading the registry at
+        all. Registering a real peer exercises whichever reader each path
+        uses, and ``PeerInfo.to_dict`` along with it.
+        """
+        from strands_robots.mesh import session as session_mod
+
+        monkeypatch.setattr(session_mod, "_PEERS", {})
+        session_mod.update_peer("peer-a", "robot", "a", {})
 
         m = self._make_mesh()
-        assert m.get_peer("peer-a")["hostname"] == "a"
+        row = m.get_peer("peer-a")
+        assert row is not None, "a registered peer must be findable by id"
+        assert row["hostname"] == "a"
         assert m.get_peer("missing") is None

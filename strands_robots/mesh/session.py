@@ -51,7 +51,7 @@ from typing import Any
 
 from strands_robots._mesh_switch import MESH_ENV_VAR
 from strands_robots.mesh._backend_select import select_backend
-from strands_robots.utils import partial_construction_repr
+from strands_robots.utils import partial_construction_repr, positive_finite_number_error
 
 logger = logging.getLogger(__name__)
 
@@ -106,6 +106,18 @@ PEER_TIMEOUT: float = 10.0
 # A real fleet is tens-to-low-hundreds of robots; 1024 leaves generous
 # headroom while bounding the flood.
 MAX_PEERS_DEFAULT: int = 1024
+
+#: Default extra retention (seconds) for a peer past :data:`PEER_TIMEOUT`.
+#: ``0.0`` keeps the historic behavior: a silent peer is deleted at the
+#: timeout. Operators whose fleets have *planned* silence - a rover in an RF
+#: shadow, a warehouse robot crossing a Wi-Fi dead zone, a satellite between
+#: ground-station passes - raise it via ``STRANDS_MESH_PEER_RETENTION_S`` so
+#: those peers are retained (and reported unreachable) instead of erased.
+#: Deletion answers "was it ever here?" with "no", which is the wrong answer
+#: for a peer that is merely out of contact: a dispatcher that reads absence
+#: as loss fails over work the peer still holds, and a fleet view renders a
+#: planned silence as a vanished robot.
+PEER_RETENTION_DEFAULT: float = 0.0
 
 
 #: Mode used by every session that is NOT the machine's hub (the process that
@@ -214,6 +226,51 @@ def _max_peers() -> int:
     except (TypeError, ValueError):
         return MAX_PEERS_DEFAULT
     return val if val > 0 else MAX_PEERS_DEFAULT
+
+
+_RETENTION_WARNED: set[str] = set()
+
+
+def _peer_retention_s() -> float:
+    """Resolve ``STRANDS_MESH_PEER_RETENTION_S`` (lazy, restart-free).
+
+    The value is a span of seconds compared against peer ages in
+    :func:`prune_peers`, so the finiteness rule the mesh applies to every
+    numeric environment variable applies here with two distinct failure
+    modes. ``inf`` read permissively means no peer is ever pruned - the
+    registry's only bound left standing is the eviction cap, reached
+    silently. ``nan`` (and a negative) read permissively would collapse to
+    "retention off", but only by the accident of ``max()``'s argument order:
+    ``nan`` makes every comparison answer ``False``, so ``max`` keeps
+    whichever operand comes first, and :func:`prune_peers` happens to pass
+    the timeout first. A guard whose outcome depends on which side of a
+    ``max()`` a refactor puts it is no guard, which is why an unusable value
+    is refused here, before it can reach the comparison at all. The fallback
+    is the default (off), said once per offending spelling rather than once
+    per 2 Hz heartbeat tick.
+
+    This deliberately reuses neither :func:`hz_from_env` (that domain is
+    loop *rates*, reasoned through ``1.0 / hz``; retention is a span) nor
+    core's ``_parse_positive_float_env`` (core imports session; the
+    dependency cannot point back).
+    """
+    raw = os.getenv("STRANDS_MESH_PEER_RETENTION_S")
+    if raw is None or raw.strip() == "":
+        return PEER_RETENTION_DEFAULT
+    try:
+        val = float(raw)
+    except ValueError:
+        val = float("nan")
+    if not math.isfinite(val) or val < 0:
+        if raw not in _RETENTION_WARNED:
+            _RETENTION_WARNED.add(raw)
+            logger.warning(
+                "Mesh: STRANDS_MESH_PEER_RETENTION_S=%r is not a usable retention "
+                "(needs a finite number of seconds >= 0); retention stays off",
+                raw,
+            )
+        return PEER_RETENTION_DEFAULT
+    return val
 
 
 #: Pose publishing frequency (Hz).  Publishes SE(3) pose when a pose
@@ -433,27 +490,47 @@ class PeerInfo:
         """Seconds since the last heartbeat."""
         return time.monotonic() - self.last_seen_mono
 
+    @property
+    def reachable(self) -> bool:
+        """Whether a heartbeat arrived within :data:`PEER_TIMEOUT`.
+
+        This is the verdict consumers previously inferred from a peer's
+        *absence*: with retention off the two readings agree, but under
+        ``STRANDS_MESH_PEER_RETENTION_S`` a peer can be present in the
+        registry while out of contact, and presence alone stops meaning
+        "alive". Derived from :attr:`age` on the same monotonic reading, so
+        no clock correction can flip it; a description of what this process
+        observed, never an authorization to command the peer.
+        """
+        return self.age <= PEER_TIMEOUT
+
     def to_dict(self) -> dict[str, Any]:
         """Serialise to a plain dict (JSON-friendly).
 
-        ``caps`` merges *first* so the four locally-decided fields win a name
+        ``caps`` merges *first* so the five locally-decided fields win a name
         collision. ``caps`` is the peer's own presence payload, and every field
         below it is something this process decided about the peer rather than
         something the peer reported about itself: ``age`` is the observation
-        described on :attr:`last_seen_mono`, and ``peer_id`` is the key the
-        registry files it under.
+        described on :attr:`last_seen_mono`, ``reachable`` is the verdict
+        derived from it, and ``peer_id`` is the key the registry files it
+        under.
 
-        Spread last, a payload carrying any of those four names replaced the
+        Spread last, a payload carrying any of those five names replaced the
         local reading. An ``age`` the sender chooses defeats every staleness
-        verdict read from it, and a ``peer_id`` the sender chooses is the key
-        ``Mesh.peers_by_id`` and ``Mesh.get_peer`` look the peer up by.
+        verdict read from it; a ``reachable`` the sender chooses is worse -
+        it is the field a fleet view renders as alive-or-not and the field a
+        dispatcher's failover trigger reads, and a peer must not get to
+        answer that about itself; and a ``peer_id`` the sender chooses is the
+        key ``Mesh.peers_by_id`` and ``Mesh.get_peer`` look the peer up by.
         """
+        age = self.age  # one clock read: the row's age and verdict must agree
         return {
             **self.caps,
             "peer_id": self.peer_id,
             "type": self.peer_type,
             "hostname": self.hostname,
-            "age": round(self.age, 1),
+            "age": round(age, 1),
+            "reachable": age <= PEER_TIMEOUT,
         }
 
     def __repr__(self) -> str:
@@ -567,22 +644,47 @@ def update_peer(peer_id: str, peer_type: str, hostname: str, caps: dict[str, Any
 
 
 def prune_peers(timeout: float = PEER_TIMEOUT) -> list[str]:
-    """Remove peers that have not sent a heartbeat within *timeout* seconds.
+    """Remove peers whose silence has outlived what the fleet tolerates.
+
+    Out of contact is not gone. A peer past *timeout* stops being
+    ``reachable`` (see :attr:`PeerInfo.reachable`) but is deleted only once
+    its silence exceeds ``max(timeout, STRANDS_MESH_PEER_RETENTION_S)``.
+    With retention unset (the default ``0``) that maximum is *timeout* and
+    behavior is unchanged: silent peers are deleted at the timeout, exactly
+    as before. With retention set, a satellite between ground-station passes
+    or a rover in an RF shadow stays in the registry as an unreachable row a
+    fleet view can render and a dispatcher can decline to fail over -
+    deletion would answer "was it ever here?" with "no", which is the wrong
+    answer for a peer the operator expects back.
+
+    Retention is registry policy owned by this process, never something a
+    peer requests about itself, and the :func:`update_peer` eviction cap
+    still bounds the registry: at the cap the oldest peer goes first, which
+    under retention means out-of-contact peers are the first sacrificed to a
+    flood of new ones - the bound outranks the courtesy.
 
     Returns:
         List of pruned peer IDs (may be empty).
     """
     global _PEERS_VERSION  # noqa: PLW0603
+    # Argument order is load-bearing: max() keeps its FIRST operand when a
+    # comparison answers False, so with the timeout first a nan that somehow
+    # reached this line degrades to the timeout instead of to never-pruned.
+    # The resolver refuses non-finite values before this, and a test pins
+    # this order so a refactor that swaps the operands fails loudly.
+    cutoff = max(timeout, _peer_retention_s())
     now = time.monotonic()
     pruned: list[str] = []
     with _PEERS_LOCK:
-        stale = [pid for pid, p in _PEERS.items() if now - p.last_seen_mono > timeout]
+        stale = [pid for pid, p in _PEERS.items() if now - p.last_seen_mono > cutoff]
         for pid in stale:
             del _PEERS[pid]
             _PEERS_VERSION += 1
             pruned.append(pid)
     for pid in pruned:
-        logger.info("Mesh: peer %s timed out", pid)
+        # Under retention this fires at retention expiry, potentially long
+        # after the peer stopped being reachable - say what happened.
+        logger.info("Mesh: peer %s pruned after silence exceeded %.0fs", pid, cutoff)
     return pruned
 
 
@@ -592,15 +694,43 @@ def get_peers() -> list[dict[str, Any]]:
         return [p.to_dict() for p in _PEERS.values()]
 
 
-def get_peer(peer_id: str) -> dict[str, Any] | None:
-    """Return a single peer by *peer_id*, or ``None`` if unknown."""
+def get_peer(peer_id: str, max_age_s: float | None = None) -> dict[str, Any] | None:
+    """Return a single peer by *peer_id*, or ``None`` if unknown.
+
+    Args:
+        peer_id: The peer to look up.
+        max_age_s: Freshness bound the caller's decision needs, in seconds:
+            a record older than this returns ``None`` exactly as if the peer
+            were unknown, because for that caller it is - a dispatcher about
+            to assign work should not act on a forty-minute-old sighting
+            without saying so. ``None`` (the default) accepts any age, which
+            is the historic behavior and remains right for displays that
+            render staleness themselves (the row carries ``age`` and
+            ``reachable``). The bound must be a positive finite number: this
+            is a guard, and ``nan`` makes the comparison below answer
+            ``False`` for every age - a bound that never trips, failing open
+            on exactly the stale record it was written to refuse.
+
+    Raises:
+        ValueError: If *max_age_s* is supplied but not a positive finite
+            number.
+    """
+    if max_age_s is not None:
+        problem = positive_finite_number_error(max_age_s, "max_age_s", "get_peer")
+        if problem:
+            raise ValueError(problem)
     with _PEERS_LOCK:
         p = _PEERS.get(peer_id)
-        return p.to_dict() if p else None
+        if p is None:
+            return None
+        if max_age_s is not None and p.age > max_age_s:
+            return None
+        return p.to_dict()
 
 
 def peer_count() -> int:
-    """Number of currently known (non-stale) peers."""
+    """Number of peers currently in the registry (under retention this
+    includes retained out-of-contact peers)."""
     with _PEERS_LOCK:
         return len(_PEERS)
 

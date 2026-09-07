@@ -42,6 +42,9 @@ from strands_robots.mesh.session import (
     zenoh_error_types,
 )
 from strands_robots.mesh.session import (
+    get_peer as _session_get_peer,
+)
+from strands_robots.mesh.session import (
     get_peers as _session_get_peers,
 )
 from strands_robots.utils import partial_construction_repr, positive_finite_number_error
@@ -1021,13 +1024,24 @@ class Mesh(SensorLoopsMixin):
         """
         return {p["peer_id"]: p for p in self.peers if "peer_id" in p}
 
-    def get_peer(self, peer_id: str) -> dict[str, Any] | None:
+    def get_peer(self, peer_id: str, max_age_s: float | None = None) -> dict[str, Any] | None:
         """Return a single peer's info dict by ``peer_id``, or ``None``.
 
         ``None``-safe counterpart to ``peers_by_id[peer_id]`` -- prefer this
         when the peer may not be present yet (discovery is asynchronous).
+
+        Args:
+            peer_id: The peer to look up. This peer's own id answers ``None``,
+                matching :attr:`peers` (which lists *other* peers).
+            max_age_s: Optional freshness bound in seconds; a record older
+                than this answers ``None`` as if unknown. The domain (positive
+                finite) and the reasoning live on
+                :func:`strands_robots.mesh.session.get_peer`, which this
+                forwards to - two spellings of one bound must not diverge.
         """
-        return self.peers_by_id.get(peer_id)
+        if peer_id == self.peer_id:
+            return None
+        return _session_get_peer(peer_id, max_age_s=max_age_s)
 
     # Presence - outgoing
     def _build_presence(self) -> dict[str, Any]:
