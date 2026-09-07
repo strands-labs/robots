@@ -5837,12 +5837,25 @@ class IsaacSimulation(IsaacMotionPrimitivesMixin, IsaacRecordingMixin, SimEngine
         Parameters
         ----------
         num_envs : int, optional
-            Number of environments. Defaults to config.num_envs.
+            Number of environments, a positive integer on the shared count
+            domain (:func:`strands_robots.utils.positive_count_error`) -- the
+            same domain :class:`~strands_robots.simulation.isaac.IsaacConfig`
+            applies to the ``num_envs`` field this argument is checked
+            *instead of*, so the two owners of one environment count reach one
+            verdict. ``None`` (the default) takes ``config.num_envs``, decided
+            by membership rather than truthiness, so a supplied ``0`` is
+            refused as the count it is instead of read as "not supplied".
 
         Returns
         -------
         dict
-            Status dict with replication info.
+            Status dict with replication info, or ``{"status": "error"}``
+            naming ``num_envs`` when the requested count cannot be honored --
+            the same channel this method's no-world and no-robot refusals use.
+            The resolved count is reported back here, by :meth:`get_state` and
+            by :meth:`destroy` as ``num_envs_released``, and it locks the scene
+            against further ``add_robot`` calls, so a count that is not one
+            cannot be accepted and announced.
         """
         with self._lock:
             if not self._world_created:
@@ -5854,7 +5867,29 @@ class IsaacSimulation(IsaacMotionPrimitivesMixin, IsaacRecordingMixin, SimEngine
                     "content": [{"text": "Add at least one robot first."}],
                 }
 
-            n = num_envs or self._config.num_envs
+            # Read the requested count by membership, not truthiness, and grade
+            # it before spending it. ``num_envs or self._config.num_envs`` read
+            # a supplied ``0`` as "not supplied" and replicated to the
+            # *configured* count instead, announcing that count under
+            # ``status: "success"`` -- the caller's explicit request discarded
+            # with nothing saying so. Every truthy value was stored unchecked
+            # and reported as an environment count three times over: by this
+            # method, by ``get_state``, and by ``destroy``'s
+            # ``num_envs_released``. ``'4'`` was the worst of them, rendering in
+            # the message below exactly as the int ``4`` does, so the text read
+            # as an ordinary success while the payload carried a ``str``. Every
+            # other config-defaulted argument on this backend already resolves
+            # this way -- ``physics_dt``, ``gravity``, and the ``width`` /
+            # ``height`` pair whose own comment states the rule: "``None`` still
+            # means 'take the config default'; membership decides that, not
+            # truthiness".
+            if (
+                num_envs is not None
+                and (envs_err := positive_count_error(num_envs, "num_envs", "replicate")) is not None
+            ):
+                return {"status": "error", "content": [{"text": envs_err}]}
+
+            n = self._config.num_envs if num_envs is None else num_envs
 
             t0 = time.perf_counter()
             # In full implementation: use omni.isaac.cloner.Cloner

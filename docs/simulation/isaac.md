@@ -138,7 +138,7 @@ rejected eagerly. The commonly used fields:
 
 | Kwarg | Type | Default | Description |
 |-------|------|---------|-------------|
-| `num_envs` | `int` | `1` | Parallel environments. Set to `1024`+ for fleet RL. |
+| `num_envs` | `int` | `1` | Parallel environments. Set to `1024`+ for fleet RL. A positive integer - the same domain `replicate(num_envs=...)` takes. |
 | `device` | `str` | `"cuda:0"` | CUDA device (`cuda:N`). Must be a CUDA device. |
 | `headless` | `bool` | `True` | Run without a GUI (required for cloud/CI). |
 | `physics_dt` | `float` | `1/120` | Physics timestep (seconds). |

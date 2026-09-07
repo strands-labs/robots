@@ -296,9 +296,24 @@ class IsaacConfig:
         if not self.device.startswith("cuda"):
             raise ValueError(f"Isaac Sim requires a CUDA device, got {self.device!r}. Use 'cuda:0', 'cuda:1', etc.")
 
-        # Validate num_envs
-        if self.num_envs < 1:
-            raise ValueError(f"num_envs must be >= 1, got {self.num_envs}")
+        # Validate num_envs on the shared count domain
+        # (:func:`strands_robots.utils.positive_count_error`) -- the same domain
+        # ``camera_width`` / ``camera_height`` take a few lines below, and the
+        # same one :meth:`~strands_robots.simulation.isaac.IsaacSimulation.replicate`
+        # applies to the ``num_envs`` *argument* it takes instead of this
+        # default, so the two owners of one environment count reach one verdict.
+        # The hand-rolled ``< 1`` test this replaces is the shape that domain's
+        # docstring warns about, and the shape ``RLTrainSpec.num_envs`` was
+        # moved off for the same reason: it tests only the floor, so it read
+        # ``True`` as a count of 1 while refusing ``False``, and let ``4.0``,
+        # ``2.7``, ``nan`` and ``inf`` through to be stored and reported as an
+        # environment count -- the init log formats this field with ``%d``, so a
+        # stored ``2.7`` was announced as ``num_envs=2`` and a stored ``nan``
+        # made that logging call raise. A ``str``, ``None`` or a list raised
+        # ``TypeError`` from the comparison itself, naming neither the field nor
+        # a remedy.
+        if (envs_err := positive_count_error(self.num_envs, "num_envs", type(self).__name__)) is not None:
+            raise ValueError(envs_err)
 
         # Validate physics_dt
         if self.physics_dt <= 0:
