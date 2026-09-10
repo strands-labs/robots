@@ -3128,6 +3128,14 @@ class Robot(TeleopMixin, AgentTool):
 
     def __del__(self) -> None:
         """Destructor to ensure cleanup."""
+        if not hasattr(self, "_shutdown_event"):
+            # ``__init__`` refused a kwarg (``action_horizon``,
+            # ``control_frequency``) before the executor and this latch were
+            # created, so the instance holds nothing to release. ``cleanup()``
+            # would raise on the first attribute it never reached and log that
+            # name as a cleanup failure beside the ValueError the caller was
+            # owed. A bring-up that fails after this point still cleans up.
+            return
         try:
             self.cleanup()
         except Exception:
