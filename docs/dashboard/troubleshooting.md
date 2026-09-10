@@ -40,6 +40,25 @@ cameras={"wrist": {"index_or_path": 1}, "top": {"index_or_path": 0}}
 An unknown key is refused rather than dropped, deliberately: a silently
 discarded option would report success while the camera streamed at the default.
 
+**The settings panel reports `camera_hz` as 0 after I set a rate**
+
+That is the rate the mesh camera loop resolved, not the string in the settings
+store, and the two are now the same reading. `STRANDS_MESH_CAMERA_HZ` disables
+camera publishing when it is unset, non-positive, or a value no loop can pace
+itself with - `nan`, `inf`, or a typo - because frames are large and falling back
+to a rate you did not ask for is worse than not publishing. A `0` on the panel
+after you typed something else means the peer refused the value, and the server
+log names the variable and what it held. Retype it as a positive number.
+
+**A `STRANDS_DASHBOARD_*_HZ` or `_TTL_S` knob I set has no effect**
+
+Check the log for `is not a number` or `must be a finite number` naming that
+variable: an unusable value falls back to the documented default rather than
+being carried into a comparison it would silently remove. `nan` and `inf` are the
+ones to watch, because both read as "no bound" to every consumer - a `nan`
+`STRANDS_DASHBOARD_PEER_TTL_S` would keep departed peers on the fleet view
+forever rather than ageing them out.
+
 **A tile says `camera busy - another app is holding this device`**
 
 Exactly what it says. On macOS, Photo Booth, QuickTime, Zoom, Chrome's camera
@@ -77,7 +96,7 @@ kill it at 10 seconds and conclude the mesh is broken.
 **A peer's card is greyed as `stale`, then vanishes**
 
 Stale after 15s of silence; aged out after `STRANDS_DASHBOARD_PEER_TTL_S`
-(default 300). A peer with a live managed process is never dropped, so a running
+(default 300, which is also what an unusable value falls back to). A peer with a live managed process is never dropped, so a running
 robot cannot be erased by a state-stream hiccup - if a card disappeared, that
 process really is gone.
 
@@ -163,6 +182,13 @@ browser before the ceremony starts. `/api/auth/status` reports this in
 brute-force throttled; the code itself never crosses the wire. Every peer must
 share the same `STRANDS_MESH_OVERRIDE_CODE`, or each one stays locked until its
 process restarts.
+
+If the answer names `STRANDS_MESH=false` rather than the code, the override is
+not the problem: the kill switch is set, so there is no signed rail to resume
+over and none was opened. Clear the switch to use the signed rail, or clear the
+lockout on each peer directly. Both signed verbs report the switch by name
+rather than as a fault, so "safety mesh unavailable" from either one means the
+rail was allowed and would not start.
 
 ## Tests
 
