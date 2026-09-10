@@ -132,6 +132,7 @@ class _FakeLocoClient:
     def __init__(self) -> None:
         self.calls: list[tuple[str, tuple[Any, ...]]] = []
         self.refuse: set[str] = set()
+        self.mode_code = 0
 
     def _record(self, name: str, *args: Any) -> None:
         if name in self.refuse:
@@ -156,9 +157,12 @@ class _FakeLocoClient:
     def ChangeMode(self, mode: Any) -> None:  # noqa: N802
         self._record("ChangeMode", mode)
 
-    def GetMode(self) -> Any:  # noqa: N802
-        self._record("GetMode")
-        return type("Response", (), {"mode": type("Mode", (), {"name": "kCustom"})()})()
+    def GetMode(self, get_mode_response: Any) -> int:  # noqa: N802
+        """The vendor's signature: fill the out-parameter, return a status code."""
+        self._record("GetMode", get_mode_response)
+        if self.mode_code == 0:
+            get_mode_response.mode = type("Mode", (), {"name": "kCustom"})()
+        return self.mode_code
 
 
 class _FakeChannel:
@@ -201,12 +205,19 @@ class _FakeRobotMode:
     kSoccer = 4
 
 
+class _FakeGetModeResponse:
+    """``GetModeResponse``: an empty out-parameter ``GetMode`` fills in."""
+
+    mode: Any = None
+
+
 class _FakeSdk:
     """The module surface the driver reaches for, and nothing more."""
 
     LowCmd = _FakeLowCmd
     LowCmdType = _FakeLowCmdType
     RobotMode = _FakeRobotMode
+    GetModeResponse = _FakeGetModeResponse
 
     def __init__(self) -> None:
         self.client = _FakeLocoClient()
@@ -577,6 +588,18 @@ class TestTheReadSurface:
         assert payload["upper_body_enabled"] is True
         assert payload["frame_width"] == _WIDTH
         assert payload["mode"] == "kCustom"
+
+    def test_read_mode_passes_the_vendor_out_parameter_and_reads_it_back(self, sdk: _FakeSdk) -> None:
+        """``B1LocoClient.GetMode(get_mode_response) -> int`` fills its argument."""
+        driver = _live_driver(sdk)
+        assert driver.read_mode() == "kCustom"
+        (args,) = [args for name, args in sdk.client.calls if name == "GetMode"]
+        assert isinstance(args[0], _FakeGetModeResponse)
+
+    def test_a_nonzero_get_mode_code_is_no_reading(self, sdk: _FakeSdk) -> None:
+        """The out-parameter is uninitialised when the code is not 0 (vendor docs)."""
+        sdk.client.mode_code = 100
+        assert _live_driver(sdk).read_mode() is None
 
     def test_the_agent_verbs_are_read_only_plus_a_stop(self, sdk: _FakeSdk) -> None:
         """A model must not be able to choose a motion verb on a 1.2 m biped."""
