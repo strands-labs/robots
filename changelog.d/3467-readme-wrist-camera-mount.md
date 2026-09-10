@@ -1,0 +1,3 @@
+### Fixed: the README's wrist-camera example mounts on a body its robot has
+
+The Simulation (MuJoCo) block in the README added an SO-100 as `arm` and then mounted the wrist camera on `arm/gripper`, a body only the SO-101 model carries (the SO-100 names its jaws `Fixed_Jaw` and `Moving_Jaw`), so copying the block returned `status: error` at the `add_camera` line. The example now adds an SO-101, and the wrist-camera bullet tells you to take the mount name from `list_bodies(robot_name=...)`'s `gripper_body` instead of assuming `<robot>/gripper`. A test now reads every README fence that adds a robot and mounts a camera on it and checks the named body against that robot's MJCF.
