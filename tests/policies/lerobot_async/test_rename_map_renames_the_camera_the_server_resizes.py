@@ -14,6 +14,10 @@ matching wire key. Fails on pre-fix code, which declared and sent ``front``.
 
 from __future__ import annotations
 
+import pytest
+
+pytest.importorskip("lerobot")
+
 import numpy as np
 
 from strands_robots.policies.lerobot_async import LerobotAsyncPolicy

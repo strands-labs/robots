@@ -148,13 +148,15 @@ class LerobotAsyncPolicy(Policy):
         request_timeout: Seconds to wait for each observation/action RPC. Same
             domain; it also bounds ``Ready`` on :meth:`reset`, where a failure
             is logged rather than raised.
-        rename_map: Optional ``{robot_obs_key: model_feature_key}`` map forwarded
-            to the server's ``RemotePolicyConfig.rename_map``. The server applies
-            it as a ``RenameObservationsProcessorStep`` (renaming each matching
-            observation key to its mapped name) before the policy sees the
-            observation - the async analog of the ``lerobot_local`` provider's
-            ``obs_rename``. Use it when the checkpoint expects camera/state keys
-            that differ from the ones the robot exposes (e.g.
+        rename_map: Optional ``{robot_obs_key: model_feature_key}`` map.
+            Camera entries (``observation.images.*``) are applied **client-side**:
+            the handshake declares and the raw observation carries the image under
+            the model's feature name, because the server resizes every declared
+            image by ``policy_image_features`` before its
+            ``RenameObservationsProcessorStep`` runs (lerobot >= 0.6.1). State
+            entries are forwarded to the server's ``RemotePolicyConfig.rename_map``
+            and applied there as usual. Use it when the checkpoint expects
+            camera/state keys that differ from the ones the robot exposes (e.g.
             ``{"observation.images.front": "observation.images.laptop"}``); keys
             not present in the map pass through unchanged.
 
