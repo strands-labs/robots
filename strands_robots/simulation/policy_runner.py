@@ -199,6 +199,51 @@ OnFrame = Callable[[int, dict[str, Any], dict[str, Any]], None]
 # success_fn(observation) -> bool
 SuccessFn = Callable[[dict[str, Any]], bool]
 
+#: Largest ``k`` reported by :func:`pass_hat_k`. Beyond a handful of consecutive
+#: attempts the estimate is dominated by its own variance on the episode counts an
+#: evaluation actually runs, and a reader who needs more can compute it from
+#: ``n_success`` and ``episodes_completed``, which are both in the same result.
+_PASS_HAT_K_MAX = 8
+
+
+def pass_hat_k(n_completed: int, n_success: int, k_max: int = _PASS_HAT_K_MAX) -> dict[int, float]:
+    """Probability that ``k`` attempts drawn without replacement all succeed.
+
+    A success rate answers "how often does this work". It does not answer "can I
+    rely on it", and for anything driven repeatedly those are different questions:
+    a policy at 60% has a roughly 8% chance of clearing five consecutive attempts.
+    Reporting only the mean invites a deployment decision the mean does not
+    support.
+
+    Estimated as ``C(c, k) / C(n, k)`` for ``c`` successes out of ``n`` completed
+    attempts, which is the unbiased probability that a uniformly drawn ``k``-subset
+    of the attempts observed is all successes. Deliberately not ``success_rate **
+    k``: that form assumes the attempts are independent, and evaluation attempts on
+    one policy and one scene are correlated by construction (a systematic grasp
+    offset fails every attempt, not a fixed fraction of them), so it reports a
+    reliability the run never demonstrated. The subset form makes no independence
+    claim; it only describes the attempts that were run.
+
+    Args:
+        n_completed: Attempts that ran to a verdict. ``k`` above this is undefined
+            rather than zero - a run of 3 attempts says nothing about 5 in a row -
+            so those keys are absent instead of present and misleading.
+        n_success: Attempts among them that succeeded.
+        k_max: Largest ``k`` to report, clamped to ``n_completed``.
+
+    Returns:
+        ``{k: probability}`` for each ``k`` from 1 up to ``min(k_max,
+        n_completed)``. Empty when no attempt completed, since there is nothing to
+        draw a subset from. ``k=1`` equals the success rate by construction, and is
+        included as the anchor that makes the rest of the row readable.
+    """
+    if n_completed <= 0:
+        return {}
+    upper = min(k_max, n_completed)
+    return {
+        k: (0.0 if n_success < k else math.comb(n_success, k) / math.comb(n_completed, k)) for k in range(1, upper + 1)
+    }
+
 
 def _criterion_verdict(
     check: Callable[[Any], bool],
@@ -3247,7 +3292,24 @@ class PolicyRunner:
             ``rtc_avg_inference_ms``, ``rtc_max_inference_ms``) so inference
             cost and latency masking are provable from the payload. When
             ``spec`` is used, it also contains ``cumulative_reward`` and
-            ``avg_reward`` fields per episode and aggregate.
+            ``avg_reward`` fields per episode and aggregate, plus
+            ``max_step_reward`` per episode and ``avg_max_step_reward`` in the
+            aggregate: the peak single-step reward, kept beside the running total
+            because the total is partly a step count, so on a dense-reward task a
+            long flailing attempt out-totals a short one that nearly finished.
+            ``max_step_reward`` is ``None`` for an attempt that ended before any
+            step was scored, and ``avg_max_step_reward`` averages only the
+            attempts that scored one (``None`` when none did) rather than reading
+            an unscored attempt as a peak of zero.
+
+            ``pass_hat_k`` maps ``k`` (as a string, since the payload is JSON) to
+            the probability that ``k`` attempts drawn from those run are all
+            successes - see :func:`pass_hat_k`. It answers whether a policy can be
+            relied on repeatedly, which ``success_rate`` does not: at a 60% rate,
+            five consecutive attempts succeed about 8% of the time. Keys above
+            ``episodes_completed`` are absent rather than ``0.0``, because a short
+            run has not measured a long streak and a zero would read as though it
+            had.
 
             Every payload carries ``success_measured`` (bool): ``True`` when a
             success criterion was in force (a ``spec`` or a non-``None``
@@ -3922,6 +3984,14 @@ class PolicyRunner:
                 failure = False
                 steps = 0
                 cumulative_reward = 0.0
+                # Peak single-step reward, kept beside the running total because the
+                # two answer different questions on a failed attempt: the total says
+                # how much shaped reward accrued over however many steps ran, so a
+                # long flailing episode can out-total a short one that nearly
+                # finished. The peak says how close the attempt ever came. ``None``
+                # until a step scores, so an attempt that ended before ``on_step``
+                # ran reports "no step was scored" rather than a fabricated 0.0.
+                max_step_reward: float | None = None
                 last_info: dict[str, Any] = {}
 
                 for _ in range(max_steps):
@@ -4026,7 +4096,11 @@ class PolicyRunner:
                                     "status": "error",
                                     "content": [{"text": f"on_step failed in {spec_name}: {e}"}],
                                 }
-                            cumulative_reward += float(info.reward)
+                            step_reward = float(info.reward)
+                            cumulative_reward += step_reward
+                            max_step_reward = (
+                                step_reward if max_step_reward is None else max(max_step_reward, step_reward)
+                            )
                             last_info = dict(info.info) if info.info else {}
                             if info.done:
                                 stop_episode = True
@@ -4059,7 +4133,9 @@ class PolicyRunner:
                                 "status": "error",
                                 "content": [{"text": f"on_step failed in {spec_name}: {e}"}],
                             }
-                        cumulative_reward += float(info.reward)
+                        step_reward = float(info.reward)
+                        cumulative_reward += step_reward
+                        max_step_reward = step_reward if max_step_reward is None else max(max_step_reward, step_reward)
                         last_info = dict(info.info) if info.info else {}
                         if info.done:
                             break
@@ -4081,6 +4157,7 @@ class PolicyRunner:
                         "success": success,
                         "failure": failure,
                         "cumulative_reward": round(cumulative_reward, 4),
+                        "max_step_reward": (None if max_step_reward is None else round(max_step_reward, 4)),
                         "seed": episode_seed,
                         "info": last_info,
                     }
@@ -4124,6 +4201,12 @@ class PolicyRunner:
         success_rate = n_success / max(n_completed, 1)
         avg_steps = sum(r["steps"] for r in results) / max(n_completed, 1)
         avg_reward = sum(r["cumulative_reward"] for r in results) / max(n_completed, 1)
+        # Averaged over the attempts that actually scored a step. An attempt that
+        # ended before ``on_step`` ran carries ``None`` and is excluded rather than
+        # counted as 0.0, which would drag the peak toward zero for a reason that has
+        # nothing to do with how close any attempt came.
+        _peaks = [r["max_step_reward"] for r in results if r["max_step_reward"] is not None]
+        avg_max_step_reward = round(sum(_peaks) / len(_peaks), 4) if _peaks else None
 
         return {
             "status": "error" if recording_save_error is not None else "success",
@@ -4154,6 +4237,8 @@ class PolicyRunner:
                         "n_failure": n_failure,
                         "avg_steps": round(avg_steps, 1),
                         "avg_reward": round(avg_reward, 4),
+                        "avg_max_step_reward": avg_max_step_reward,
+                        "pass_hat_k": {str(k): round(v, 4) for k, v in pass_hat_k(n_completed, n_success).items()},
                         "max_steps": max_steps,
                         "seed": seed,
                         "benchmark_class": spec_name,
