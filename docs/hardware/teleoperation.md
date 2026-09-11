@@ -289,9 +289,8 @@ sim.attach_teleop(
     "so101_leader",
     port="/dev/ttyACM1",
     map_fn=lambda a: {f"sim/{k}": v for k, v in a.items()},
-    robot_name="arm0",
 )
-sim.teleoperate(robot_name="arm0")
+sim.teleoperate(robot_name="arm0")   # the target robot is a teleoperate() kwarg
 ```
 
 ### Teleop + mesh publish (remote followers mirror)
