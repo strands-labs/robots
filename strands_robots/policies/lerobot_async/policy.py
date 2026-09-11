@@ -405,14 +405,25 @@ class LerobotAsyncPolicy(Policy):
     # -- Observation / action wire conversion ---------------------------------
 
     def _camera_items(self, observation_dict: dict[str, Any]) -> list[tuple[str, np.ndarray]]:
-        """Return ``(key, HWC array)`` pairs for RGB/depth camera entries."""
+        """Return ``(wire key, HWC array)`` pairs for RGB/depth camera entries.
+
+        A camera whose ``observation.images.<key>`` feature is renamed by
+        ``rename_map`` is declared and sent under the model's name. The server
+        resizes every declared image by the checkpoint's own image features
+        (``prepare_raw_observation``) BEFORE its rename step runs, so a camera
+        declared under the robot's name is a ``KeyError`` there, not a rename.
+        """
+        from lerobot.utils.constants import OBS_IMAGES
+
         cams: list[tuple[str, np.ndarray]] = []
         for key, value in observation_dict.items():
             if key in self.robot_state_keys or key == "task":
                 continue
             arr = np.asarray(value)
             if arr.ndim == 3 and arr.shape[2] in (1, 3):
-                cams.append((key, arr))
+                target = self.rename_map.get(f"{OBS_IMAGES}.{key}", "")
+                wire_key = target.removeprefix(f"{OBS_IMAGES}.") if target.startswith(f"{OBS_IMAGES}.") else key
+                cams.append((wire_key, arr))
         return cams
 
     def _build_lerobot_features(self, observation_dict: dict[str, Any]) -> dict[str, Any]:
