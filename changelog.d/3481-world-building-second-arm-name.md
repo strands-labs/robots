@@ -1,0 +1,3 @@
+### Fixed: the world-building page's second arm no longer asks for a name the world already holds
+
+The opening example of `docs/simulation/world-building.md` built `Robot("so100")` and then called `sim.add_robot(name="so100", position=[0.0, 0.5, 0.0])` for a second arm. The factory had already registered the first arm under `so100`, so that line was refused with `status=error` ("Robot 'so100' already exists") and the table and camera below it were added to a one-arm world. The second arm is now `sim.add_robot(name="arm2", data_config="so100", position=[0.0, 0.5, 0.0])`, the name the page's camera section already uses for a second arm, and a docs grader refuses any fence whose `add_robot` reuses a name the same engine variable already took.
