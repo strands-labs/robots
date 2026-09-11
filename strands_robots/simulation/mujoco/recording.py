@@ -12,7 +12,7 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from strands_robots.simulation.models import registry_entry
-from strands_robots.simulation.mujoco.backend import _NO_WORLD_MSG, _ensure_mujoco, mj_name_to_id
+from strands_robots.simulation.mujoco.backend import _NO_WORLD_MSG, _can_render, _ensure_mujoco, mj_name_to_id
 from strands_robots.simulation.recording import (
     DatasetRecordingMixin,
     camera_schema_key_collision_error,
@@ -425,6 +425,34 @@ class RecordingMixin(DatasetRecordingMixin):
             # Stash the scoped RAW camera names so the run_policy frame hook drops
             # un-recorded camera arrays before add_frame (None -> record all).
             self._world._backend_state["recording_cameras"] = record_raw_cameras
+
+            # A camera column the schema declares must be one the frames carry.
+            # get_observation skips every camera frame when offscreen rendering
+            # is unavailable (headless Linux without EGL/OSMesa - _get_renderer
+            # returns None), so a schema declared from model.ncam here promised
+            # observation.images.<cam> columns that the first add_frame then
+            # refused as "Missing features" - after this call had reported
+            # success with the camera count. Refuse here instead, before any
+            # dataset is created, resumed or wiped, and name the state-only
+            # path that does record on this box.
+            if camera_keys and not _can_render():
+                self._world._backend_state["recording"] = False
+                return {
+                    "status": "error",
+                    "content": [
+                        {
+                            "text": (
+                                f"start_recording: {len(camera_keys)} camera(s) {camera_keys} would be "
+                                "declared in the dataset schema, but MuJoCo offscreen rendering is "
+                                "unavailable on this machine (headless without libEGL.so.1 / "
+                                "libOSMesa.so), so no frame will carry them and the first add_frame "
+                                "would fail. Pass cameras=[] to record joint state and actions only, "
+                                "or install an offscreen GL library (libegl1 / libosmesa6) and "
+                                "restart to record camera frames."
+                            )
+                        }
+                    ],
+                }
 
             # Doctrine: warn loudly, never silently surprise. On the record-all
             # path (``cameras is None``) the implicit ``default`` overview camera
