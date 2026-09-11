@@ -8,7 +8,7 @@ description: Compose non-trivial scenes - multiple robots, tables, obstacles, cu
 from strands_robots import Robot
 
 sim = Robot("so100")                              # one arm on flat ground plane
-sim.add_robot(name="so100", position=[0.0, 0.5, 0.0])   # second arm
+sim.add_robot(name="arm2", data_config="so100", position=[0.0, 0.5, 0.0])   # second arm
 
 sim.add_object(name="table", shape="box", size=[0.5, 0.5, 0.02],
                position=[0.0, 0.0, 0.0], color=[0.5, 0.3, 0.1, 1.0], mass=20.0)
