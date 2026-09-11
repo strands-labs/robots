@@ -39,8 +39,22 @@ always wins.
 | 4 | [`04_discover_lerobot.ipynb`](04_discover_lerobot.ipynb) | Discover the LeRobot API with `use_lerobot`: list robots, policies, teleoperators, cameras, and inspect any class |
 | 5 | [`05_streaming_data_loop.ipynb`](05_streaming_data_loop.ipynb) | The streaming data loop: record, render, stream back, train, and load, in one notebook (training needs `lerobot[training]`; the optional Storage Bucket sync needs `strands-robots >= 0.5.1` + LeRobot >= 0.6.1; an optional final step reruns the loop on the Isaac backend with `backend="isaac"` when an RTX GPU + `sim-isaac` are present) |
 | 6 | [`06_fleet_orchestration.ipynb`](06_fleet_orchestration.ipynb) | Drive a heterogeneous fleet from one goal: read each robot's capability tags, decompose the goal into per-robot tasks (rule-based, with an optional Strands agent planner), dispatch them together through `run_multi_policy`, and re-plan when a robot drops offline |
+| 7 | [`07_evaluate_a_policy.ipynb`](07_evaluate_a_policy.ipynb) | Score a policy: `list_benchmarks()` to see what tasks exist, `evaluate_benchmark()` to score one, the per-attempt rows behind the average, and authoring a new task as a spec dict compiled against the closed predicate registry (`DeclarativeBenchmark.from_dict`) |
 
 Read them in order; each builds on the previous one. Notebook 3 trains a real
+policy on CPU with a tiny dataset and two steps - raise the step count and run on
+a GPU for a production checkpoint; the code path is identical.
+
+Notebooks 1 to 6 record, train, deploy and orchestrate. Notebook 7 is the one that
+answers whether any of it worked, so it is the last in the series rather than an
+appendix: a checkpoint you cannot score is a checkpoint you cannot compare to the
+next one. It covers **layer one** of evaluation - deterministic conditions over
+simulator state, which are authoritative. The judge-annotation and human-agreement
+layers on top of it ship as a script rather than a notebook, in
+[`examples/17_judge_recorded_episodes.py`](../17_judge_recorded_episodes.py),
+because they read recorded video and the series is CPU-only.
+
+
 policy on CPU with a tiny dataset and two steps - raise the step count and run on
 a GPU for a production checkpoint; the code path is identical.
 
