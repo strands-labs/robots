@@ -44,7 +44,13 @@ import pytest
 
 os.environ.setdefault("MUJOCO_GL", "egl")
 
-import mujoco  # noqa: E402, F401 - imported after the MUJOCO_GL default is set
+# After the MUJOCO_GL default, because MuJoCo locks its GL backend at first import
+# and every import below reaches it. ``importorskip`` rather than a bare ``import``:
+# this module needs MuJoCo present but never names it, so a plain import would be
+# unused, and it turns an absent install into a clean SKIPPED line instead of an
+# ImportError from inside ``Robot(...)`` several frames away - the same reason the
+# Isaac modules in this directory guard their backend this way.
+pytest.importorskip("mujoco")
 
 from strands_robots import Robot  # noqa: E402
 from strands_robots.simulation import register_builtin_benchmarks  # noqa: E402
