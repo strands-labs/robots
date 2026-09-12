@@ -1032,9 +1032,20 @@ class BoosterDriver:
         if self._client is None:
             return None
         try:
-            response = self._client.GetMode()
+            import booster_robotics_sdk_python as sdk
+        except ImportError:  # pragma: no cover - connect_eagerly already needed it
+            return None
+        # The vendor binding is ``GetMode(get_mode_response) -> int``: the mode
+        # lands in the out-parameter and the return value is a status code, 0
+        # on success. Calling it without the parameter raises ``TypeError``.
+        response = sdk.GetModeResponse()
+        try:
+            code = self._client.GetMode(response)
         except (RuntimeError, OSError) as exc:
             logger.debug("%s: GetMode failed: %s", self._tool_name, exc)
+            return None
+        if code != 0:
+            logger.debug("%s: GetMode returned code %s", self._tool_name, code)
             return None
         mode = getattr(response, "mode", None)
         return getattr(mode, "name", None) if mode is not None else None
