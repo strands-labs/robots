@@ -37,12 +37,16 @@ from __future__ import annotations
 import ast
 import json
 import os
+import sys
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-os.environ.setdefault("MUJOCO_GL", "egl")
+# Platform-conditional, because no single backend name works everywhere: ``egl``
+# is not in MuJoCo's valid set on Darwin and ``cgl`` is not on headless Linux, so
+# naming either one alone trades one platform for the other.
+os.environ.setdefault("MUJOCO_GL", "cgl" if sys.platform == "darwin" else "egl")
 
 # After the MUJOCO_GL default, because MuJoCo locks its GL backend at first import
 # and every import below reaches it. ``importorskip`` rather than a bare ``import``:
