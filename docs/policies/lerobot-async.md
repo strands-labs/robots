@@ -87,7 +87,7 @@ sim.run_policy(
 | `actions_per_step`         | `actions_per_chunk` | Actions executed from one chunk before re-querying (the re-query interval). Positive `int`, or `None` for the default |
 | `connect_timeout`          | `10.0`        | Seconds to wait for the gRPC `Ready` handshake              |
 | `request_timeout`          | `60.0`        | Seconds to wait for each observation/action RPC             |
-| `rename_map`               | `{}`          | `{robot_obs_key: model_feature_key}` forwarded to the server; renames observation keys before the policy sees them (async analog of `lerobot_local`'s `obs_rename`) |
+| `rename_map`               | `{}`          | `{robot_obs_key: model_feature_key}` map. Camera entries (`observation.images.*`) are applied client-side (the server resizes images before its rename step); state entries are forwarded to the server. Async analog of `lerobot_local`'s `obs_rename` |
 
 ## Notes
 

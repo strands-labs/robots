@@ -154,13 +154,15 @@ class LerobotAsyncPolicy(Policy):
         request_timeout: Seconds to wait for each observation/action RPC. Same
             domain; it also bounds ``Ready`` on :meth:`reset`, where a failure
             is logged rather than raised.
-        rename_map: Optional ``{robot_obs_key: model_feature_key}`` map forwarded
-            to the server's ``RemotePolicyConfig.rename_map``. The server applies
-            it as a ``RenameObservationsProcessorStep`` (renaming each matching
-            observation key to its mapped name) before the policy sees the
-            observation - the async analog of the ``lerobot_local`` provider's
-            ``obs_rename``. Use it when the checkpoint expects camera/state keys
-            that differ from the ones the robot exposes (e.g.
+        rename_map: Optional ``{robot_obs_key: model_feature_key}`` map.
+            Camera entries (``observation.images.*``) are applied **client-side**:
+            the handshake declares and the raw observation carries the image under
+            the model's feature name, because the server resizes every declared
+            image by ``policy_image_features`` before its
+            ``RenameObservationsProcessorStep`` runs (lerobot >= 0.6.1). State
+            entries are forwarded to the server's ``RemotePolicyConfig.rename_map``
+            and applied there as usual. Use it when the checkpoint expects
+            camera/state keys that differ from the ones the robot exposes (e.g.
             ``{"observation.images.front": "observation.images.laptop"}``); keys
             not present in the map pass through unchanged.
         pad_short_actions: When a server chunk is NARROWER than the robot's
@@ -426,14 +428,25 @@ class LerobotAsyncPolicy(Policy):
     # -- Observation / action wire conversion ---------------------------------
 
     def _camera_items(self, observation_dict: dict[str, Any]) -> list[tuple[str, np.ndarray]]:
-        """Return ``(key, HWC array)`` pairs for RGB/depth camera entries."""
+        """Return ``(wire key, HWC array)`` pairs for RGB/depth camera entries.
+
+        A camera whose ``observation.images.<key>`` feature is renamed by
+        ``rename_map`` is declared and sent under the model's name. The server
+        resizes every declared image by the checkpoint's own image features
+        (``prepare_raw_observation``) BEFORE its rename step runs, so a camera
+        declared under the robot's name is a ``KeyError`` there, not a rename.
+        """
+        from lerobot.utils.constants import OBS_IMAGES
+
         cams: list[tuple[str, np.ndarray]] = []
         for key, value in observation_dict.items():
             if key in self.robot_state_keys or key == "task":
                 continue
             arr = np.asarray(value)
             if arr.ndim == 3 and arr.shape[2] in (1, 3):
-                cams.append((key, arr))
+                target = self.rename_map.get(f"{OBS_IMAGES}.{key}", "")
+                wire_key = target.removeprefix(f"{OBS_IMAGES}.") if target.startswith(f"{OBS_IMAGES}.") else key
+                cams.append((wire_key, arr))
         return cams
 
     def _build_lerobot_features(self, observation_dict: dict[str, Any]) -> dict[str, Any]:
