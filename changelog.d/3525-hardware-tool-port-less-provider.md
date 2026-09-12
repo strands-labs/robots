@@ -1,0 +1,3 @@
+### Fixed: the hardware `Robot` tool can run `mock` and `lerobot_local`
+
+Asking a real arm's agent tool for `execute` or `start` with `policy_provider="mock"` or `"lerobot_local"` was refused every time: the action guard demanded a `policy_port`, and supplying one was then refused because those providers read none. The guard now requires only `instruction`; whether a port is missing, unusable or unread is decided per provider by the same check the Python entry points use, so `groot` without a port is still refused and names the port. The schema text and the robot-control docs table say the same.
