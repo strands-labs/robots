@@ -484,7 +484,11 @@ class LerobotLocalPolicy(Policy):
         # When True, raise instead of routing cameras positionally if their
         # names cannot be matched to the policy's declared image keys (and no
         # camera_key_map covers them). Defaults to False (positional fallback
-        # with a warning), preserving zero-config ergonomics.
+        # with a warning), preserving zero-config ergonomics. Checked like
+        # ``pad_short_actions`` below: it selects a posture, and a truthy
+        # spelling of *off* ("false") would otherwise select the strict one.
+        if error := boolean_flag_error(strict_keys, "strict_keys", "lerobot_local"):
+            raise ValueError(error)
         self.strict_keys = strict_keys
         # When the model emits fewer action values than the robot declares
         # actuator keys, False (the default) omits the unmatched actuators so
@@ -512,7 +516,10 @@ class LerobotLocalPolicy(Policy):
         # process level and shared by later instances with the same load
         # key (see _MODEL_CACHE). Set False to force a private load (e.g.
         # concurrent rollouts of the same checkpoint that must not share
-        # per-episode model state).
+        # per-episode model state). A posture as well, so checked the same way:
+        # "false" would otherwise share the model it asks not to share.
+        if error := boolean_flag_error(cache_model, "cache_model", "lerobot_local"):
+            raise ValueError(error)
         self.cache_model = cache_model
         # MolmoAct2-specific knobs. MolmoAct2 SO-100/101 checkpoints are
         # transformers-native (no lerobot draccus `type`), so they take a

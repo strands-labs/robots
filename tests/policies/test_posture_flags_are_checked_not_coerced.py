@@ -2,7 +2,9 @@
 
 ``pad_short_actions`` (``lerobot_local``, ``lerobot_async``) and ``walk``
 (``wbc``) each select one of two postures rather than scaling a quantity, and
-each constructor stored the caller's value through ``bool(...)``. Every
+each constructor stored the caller's value through ``bool(...)``;
+``lerobot_local``'s ``strict_keys`` and ``cache_model`` were stored as given and
+read by truthiness, which is the same inversion without the call. Every
 non-empty string is truthy, so ``bool("false")`` is ``True``: the spellings a
 caller reaches for to opt OUT selected the posture the word asks to skip, and
 ``None`` / ``0`` took the other branch without ever being a declared spelling of
@@ -53,6 +55,14 @@ def _local(value: Any) -> LerobotLocalPolicy:
     return LerobotLocalPolicy(pad_short_actions=value)
 
 
+def _local_strict(value: Any) -> LerobotLocalPolicy:
+    return LerobotLocalPolicy(strict_keys=value)
+
+
+def _local_cache(value: Any) -> LerobotLocalPolicy:
+    return LerobotLocalPolicy(cache_model=value)
+
+
 def _wbc(value: Any) -> WBCPolicy:
     return WBCPolicy(walk=value, allow_missing_models=True)
 
@@ -63,6 +73,8 @@ def _wbc(value: Any) -> WBCPolicy:
 SITES: list[tuple[str, str, Callable[[Any], Any], str]] = [
     ("lerobot_async", "pad_short_actions", _async, "pad_short_actions"),
     ("lerobot_local", "pad_short_actions", _local, "pad_short_actions"),
+    ("lerobot_local", "strict_keys", _local_strict, "strict_keys"),
+    ("lerobot_local", "cache_model", _local_cache, "cache_model"),
     ("WBCPolicy", "walk", _wbc, "_walk"),
 ]
 
@@ -77,7 +89,7 @@ OTHER_NON_BOOLEAN = ["true", 1.5, [1], None, 0, 0.0, []]
 POLICIES_DIR = pathlib.Path(__file__).resolve().parents[2] / "strands_robots" / "policies"
 
 
-@pytest.mark.parametrize(("context", "param", "factory", "_attr"), SITES, ids=[s[0] for s in SITES])
+@pytest.mark.parametrize(("context", "param", "factory", "_attr"), SITES, ids=[f"{s[0]}-{s[1]}" for s in SITES])
 @pytest.mark.parametrize("spelling", TRUTHY_OFF)
 def test_a_truthy_spelling_of_off_is_refused(
     context: str, param: str, factory: Callable[[Any], Any], _attr: str, spelling: str
@@ -87,7 +99,7 @@ def test_a_truthy_spelling_of_off_is_refused(
         factory(spelling)
 
 
-@pytest.mark.parametrize(("context", "param", "factory", "_attr"), SITES, ids=[s[0] for s in SITES])
+@pytest.mark.parametrize(("context", "param", "factory", "_attr"), SITES, ids=[f"{s[0]}-{s[1]}" for s in SITES])
 @pytest.mark.parametrize("value", OTHER_NON_BOOLEAN, ids=[repr(v) for v in OTHER_NON_BOOLEAN])
 def test_a_value_that_is_not_a_posture_is_refused(
     context: str, param: str, factory: Callable[[Any], Any], _attr: str, value: Any
@@ -97,7 +109,7 @@ def test_a_value_that_is_not_a_posture_is_refused(
         factory(value)
 
 
-@pytest.mark.parametrize(("context", "param", "factory", "_attr"), SITES, ids=[s[0] for s in SITES])
+@pytest.mark.parametrize(("context", "param", "factory", "_attr"), SITES, ids=[f"{s[0]}-{s[1]}" for s in SITES])
 def test_the_refusal_is_the_shared_domain_verbatim(
     context: str, param: str, factory: Callable[[Any], Any], _attr: str
 ) -> None:
@@ -109,7 +121,7 @@ def test_the_refusal_is_the_shared_domain_verbatim(
     assert str(excinfo.value) == expected
 
 
-@pytest.mark.parametrize(("context", "param", "factory", "attr"), SITES, ids=[s[0] for s in SITES])
+@pytest.mark.parametrize(("context", "param", "factory", "attr"), SITES, ids=[f"{s[0]}-{s[1]}" for s in SITES])
 @pytest.mark.parametrize("posture", [True, False])
 def test_both_postures_are_still_accepted_and_stored_as_given(
     context: str, param: str, factory: Callable[[Any], Any], attr: str, posture: bool
@@ -118,7 +130,7 @@ def test_both_postures_are_still_accepted_and_stored_as_given(
     assert getattr(factory(posture), attr) is posture
 
 
-@pytest.mark.parametrize(("context", "param", "factory", "attr"), SITES, ids=[s[0] for s in SITES])
+@pytest.mark.parametrize(("context", "param", "factory", "attr"), SITES, ids=[f"{s[0]}-{s[1]}" for s in SITES])
 def test_a_numpy_boolean_is_a_boolean(context: str, param: str, factory: Callable[[Any], Any], attr: str) -> None:
     """A provider handed a NumPy boolean is not refused - it IS a boolean."""
     assert bool(getattr(factory(np.bool_(True)), attr)) is True
