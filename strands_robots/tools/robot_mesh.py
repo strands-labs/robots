@@ -499,6 +499,58 @@ def _ok(text: str) -> dict[str, Any]:
     return {"status": "success", "content": [{"text": text}]}
 
 
+def _unconfirmed_stop(envelope: Any) -> str | None:
+    """Why a single-target mesh ``stop`` answer is not a confirmed halt, or None.
+
+    :meth:`~strands_robots.mesh.core.Mesh.send` answers a stop with the peer's
+    first response envelope, with ``{"status": "timeout"}`` when none arrived
+    inside the budget, or with one of its own precondition errors -- and only a
+    *raised* ``send`` is a dispatch error, so every one of those otherwise reads
+    as a halt.
+
+    The verdict on a delivered ``result`` is
+    :func:`~strands_robots.mesh.core._reports_failure_to_stop`, the single owner
+    of that rule, reached through the same ``result``-or-envelope unwrap the
+    Device Connect branches use. Two answer kinds that rule deliberately does
+    not read are graded here instead, because they exist only on this path:
+
+    * ``{"type": "error", ...}`` -- the rejection response
+      :meth:`Mesh._exec_cmd` publishes instead of a result. For a ``stop`` the
+      reachable sources are a malformed envelope, a client-side validation
+      failure, a duplicate turn rejected as a replay, and a handler that raised
+      (``"dispatch error"``); the estop lockout is not one, because
+      :meth:`Mesh._dispatch` admits ``stop`` while locked out on purpose. The
+      envelope carries no ``result`` at all, so the shared rule finds neither
+      key.
+    * ``{"status": "timeout"}`` -- no answer inside the budget. For one named
+      target that is a failure to *confirm* the stop. It is graded here rather
+      than in the shared rule because a broadcast reads the same rule and an
+      unreachable peer must stay a gap in
+      :meth:`Mesh.emergency_stop`'s count rather than become a refusal.
+
+    Args:
+        envelope: Whatever ``Mesh.send`` returned for the stop command.
+
+    Returns:
+        A short reason the halt is not confirmed, or ``None`` when the peer
+        answered that it stopped. Conservative in the same direction as the
+        shared rule: an answer that is not an envelope reports nothing either
+        way and is not read as a failure.
+    """
+    if not isinstance(envelope, dict):
+        return None
+    if envelope.get("type") == "error":
+        return f"the peer rejected the stop: {envelope.get('error', '(no reason given)')}"
+    if envelope.get("status") == "timeout":
+        return "no answer within the stop budget -- the halt is UNCONFIRMED"
+    result = envelope.get("result", envelope)
+    if isinstance(result, dict) and _reports_failure_to_stop(result):
+        if result is envelope:
+            return f"the stop was not sent: {envelope.get('error', '(no reason given)')}"
+        return "the peer reports it did NOT stop"
+    return None
+
+
 # ── Numeric-option domain ──────────────────────────────────────────────────
 #
 # Which of the two numeric options each action actually consumes. Scoped per
@@ -1602,6 +1654,15 @@ def robot_mesh(
         except Exception as exc:  # noqa: BLE001
             _audit_tool_action(action, target, False, f"dispatch error: {type(exc).__name__}: {exc}")
             return _err(f"[stop -> {target}] dispatch error: {type(exc).__name__}: {exc}")
+        # Graded by what the peer ANSWERED, not by delivery -- the same
+        # correction #3560 and #3566 made to the two Device Connect stop
+        # branches. See :func:`_unconfirmed_stop` for the two answer kinds this
+        # path carries that the shared rule does not read.
+        problem = _unconfirmed_stop(result)
+        if problem is not None:
+            logger.critical("[safety] stop -> %r not confirmed: %r", target, problem)
+            _audit_tool_action(action, target, False, problem)
+            return _err(f"[stop -> {target}] {problem}; answer: {json.dumps(result, default=str)[:600]}")
         _audit_tool_action(action, target, True, "")
         return _ok(f"[stop -> {target}] {json.dumps(result, default=str)[:600]}")
 

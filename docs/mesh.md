@@ -92,6 +92,29 @@ on no evidence. Bound such a rollout instead of stopping it -
 `run_policy(n_steps=...)` caps its length and `run_policy(stop_when={...})` ends
 it as soon as the world reaches a state.
 
+## Stopping one peer
+
+`robot_mesh(action="stop", target=...)` is graded by what the peer answered, not
+by the fact an answer arrived. `mesh.send` hands back the peer's response
+envelope, `{"status": "timeout"}` when none came inside the budget (capped at 5s
+for a stop), or its own precondition error - and none of those raises, so all
+three would otherwise read alike:
+
+```python
+robot_mesh(action="stop", target="arm-01")
+# status="success"  the peer answered that it stopped
+# status="error"    the peer reports it did NOT stop        (audit ok=False, CRITICAL)
+# status="error"    the peer rejected the stop              (a replay or a handler that raised)
+# status="error"    no answer within the budget             (the halt is UNCONFIRMED)
+# status="error"    the stop was not sent                   (e.g. this mesh is not running)
+```
+
+The delivered result is read with the same rule `emergency_stop()` applies to
+each peer, so both verbs agree about what counts as a halt. A timeout is a
+failure for a single named target - there is no answer to derive a halt from -
+while a broadcast keeps counting an unreachable peer as a gap rather than a
+refusal, because a fleet e-stop must still report the peers it did reach.
+
 ## Recovering from an emergency stop
 
 `emergency_stop()` latches a **lockout** on every peer that receives it. While a
