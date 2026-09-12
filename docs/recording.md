@@ -139,6 +139,19 @@ which swaps the compiled scene but leaves the camera registry untouched) is
 absent from the observation rather than filled in with the
 overview, so a column is never quietly populated from the wrong camera.
 
+Renaming means picking a name `add_camera` accepts, and that alphabet is not
+free: the name is also the key the camera's frames travel under - the mesh
+publishes each frame on `strands/<peer_id>/camera/<name>`, the IoT offload joins
+it into the S3 object key, and a recording writes it as
+`observation.images.<name>`. So a camera name is a bare token of letters, digits,
+`_` or `-` opening on a letter or a digit, optionally scoped to one robot as
+`<robot>/<camera>` - `wrist`, `front_cam`, `cam-2`, `arm0/wrist_cam`. One scope
+level and no more, because that is the namespace `add_robot` gives what it spawns
+and the one the mesh strips before publishing. Anything else (`a b`, `wrist.rgb`,
+`*`, `..`, `sub/../etc`, `a//b`) is refused at `add_camera` rather than
+registered and then misrouted, dropped, or written under a key that addresses
+another camera.
+
 That guarantee needs the scene's cameras to have distinct column names, and the
 `/` -> `__` collapse is not injective: `arm0/wrist` and `arm0__wrist` are two
 cameras and one column. `start_recording` refuses such a scene up front, naming
