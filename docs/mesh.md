@@ -357,6 +357,9 @@ agent("Find every robot on the mesh and ask each one to report its status")
 agent("E-STOP all peers")
 ```
 
+!!! warning "A single-peer stop is graded by the answer, not by delivery"
+    `robot_mesh(action="stop", target=...)` reads the envelope `Mesh.send` returns rather than whether the send raised. A peer whose handler reports it did not stop (the same rule `emergency_stop` grades with), a peer-level `type: error` (a lockout, replay or authorization rejection), a `send` precondition error, or no answer inside the budget (the caller's `timeout`, capped at 5s) each make the result `status="error"` naming the peer and its answer, audit the verdict as a failure, and log at `CRITICAL`. A response that reports no verdict either way is not read as a refusal. The timeout reading is deliberately this action's own: a fleet-wide `emergency_stop` keeps counting a silent peer as a gap in its count rather than a refusal.
+
 ## Mesh teleop
 
 ```python

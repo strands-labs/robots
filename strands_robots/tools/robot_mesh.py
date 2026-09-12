@@ -499,6 +499,55 @@ def _ok(text: str) -> dict[str, Any]:
     return {"status": "success", "content": [{"text": text}]}
 
 
+def _stop_not_confirmed(envelope: Any, budget: float) -> str | None:
+    """Why a single-target ``stop`` envelope does not confirm the stop, or ``None``.
+
+    ``Mesh.send`` answers with one of three shapes, and the ``stop`` branch
+    used to read none of them - only a *raised* ``send`` reached the error
+    path. The peer's ``{"type": "response", "result": ...}`` carries the
+    handler's own return, graded with
+    :func:`~strands_robots.mesh.core._reports_failure_to_stop`, the one owner
+    of the "did it say no" rule. The peer's ``{"type": "error", ...}`` is a
+    lockout, a replay or an authorization rejection and carries no ``result``
+    at all. ``{"status": "timeout"}`` and ``{"status": "error", ...}`` are
+    ``send``'s own verdicts - nothing answered inside *budget*, or a
+    precondition was refused before anything was published. The last three are
+    this branch's own reading because they are ``send``'s envelope contract
+    rather than a handler's return, which the shared rule deliberately does
+    not model.
+
+    A timeout is a failure HERE and stays out of the shared rule on purpose.
+    For one named peer, no answer inside the budget is a stop the caller cannot
+    claim happened, and ``status="success"`` over it is the affirmative lie the
+    stop verb exists to stop telling. ``emergency_stop`` keeps counting a
+    silent peer as a gap rather than a refusal (see
+    :func:`~strands_robots.mesh.core._peers_that_did_not_stop`), so widening
+    the shared rule would change the fleet-wide count on both paths.
+
+    Args:
+        envelope: What ``Mesh.send`` returned.
+        budget: The wait the send was given, so a timeout can name it.
+
+    Returns:
+        A one-line reason carrying the answer, or ``None`` when the envelope
+        does not report a failure. A shape carrying no verdict either way is
+        ``None`` too, for the reason the shared rule gives: a false "did not
+        stop" on the safety path trains operators to ignore the warning.
+    """
+    if not isinstance(envelope, dict):
+        return None
+    if envelope.get("status") == "timeout":
+        return f"no answer within {budget:g}s"
+    # json.dumps escapes a line break inside a peer's error text, so the reason
+    # cannot split the CRITICAL record it is rendered into (py/log-injection).
+    if envelope.get("type") == "error" or _reports_failure_to_stop(envelope):
+        return json.dumps(envelope, default=str)[:600]
+    result = envelope.get("result")
+    if isinstance(result, dict) and _reports_failure_to_stop(result):
+        return json.dumps(result, default=str)[:600]
+    return None
+
+
 # ── Numeric-option domain ──────────────────────────────────────────────────
 #
 # Which of the two numeric options each action actually consumes. Scoped per
@@ -1595,13 +1644,24 @@ def robot_mesh(
         if not target:
             _audit_tool_action(action, target, False, "missing target")
             return _err("stop requires target")
+        # Capped at 5s so a stop cannot hang - a cap over an already-validated
+        # positive finite budget, not a guard (min(nan, 5.0) is nan).
+        budget = min(timeout, 5.0)
         try:
-            # Capped at 5s so a stop cannot hang - a cap over an already-validated
-            # positive finite budget, not a guard (min(nan, 5.0) is nan).
-            result = mesh.send(target, {"action": "stop"}, timeout=min(timeout, 5.0))
+            result = mesh.send(target, {"action": "stop"}, timeout=budget)
         except Exception as exc:  # noqa: BLE001
             _audit_tool_action(action, target, False, f"dispatch error: {type(exc).__name__}: {exc}")
             return _err(f"[stop -> {target}] dispatch error: {type(exc).__name__}: {exc}")
+        # ``send`` returns an envelope for every outcome it does not raise for,
+        # and the receiving peer has already audited a refused stop as
+        # ``command_refused`` on its side. Reading only "did send raise" made
+        # this end of the same turn record ``ok=True`` over a lockout rejection,
+        # a timeout and a handler that said it did not stop.
+        reason = _stop_not_confirmed(result, budget)
+        if reason is not None:
+            logger.critical("[safety] stop -> %r: the peer did NOT confirm the stop: %s", target, reason)
+            _audit_tool_action(action, target, False, f"did not stop: {reason}")
+            return _err(f"[stop -> {target}] did NOT stop: {reason}")
         _audit_tool_action(action, target, True, "")
         return _ok(f"[stop -> {target}] {json.dumps(result, default=str)[:600]}")
 
