@@ -2938,15 +2938,123 @@ def entity_name_error(method: str, param_name: str, name: Any) -> str | None:
     return None
 
 
+#: Characters a camera's frame consumers read as transport structure rather than
+#: as part of the camera's name. ``*`` and ``$`` open a Zenoh wildcard; ``#`` and
+#: ``?`` are forbidden in a Zenoh key expression outright; ``#`` and ``+`` are
+#: MQTT wildcards, which a publish topic may not carry - the same three
+#: characters :func:`~strands_robots.mesh.security.validate_mesh_identifier` keeps out of a
+#: ``peer_id``, for the
+#: same reason. See :func:`camera_frame_key_error`.
+_CAMERA_WIRE_CHARS: Final = ("*", "$", "#", "?", "+")
+
+#: Path segments that do not name a level of the key a frame is written under:
+#: ``..`` walks out of it, ``.`` stays put and an empty one is no level at all,
+#: so none of the three addresses the camera. Matched with a pattern rather than
+#: by splitting the name, because a guard must not run the caller's own code
+#: while judging their value - a ``str`` subclass owes its ``split`` nothing, and
+#: :func:`entity_name_error` accepts one.
+_CAMERA_PARENT_SEGMENT: Final = re.compile(r"(?:\A|/)\.\.(?:/|\Z)")
+_CAMERA_CURRENT_SEGMENT: Final = re.compile(r"(?:\A|/)\.(?:/|\Z)")
+_CAMERA_EMPTY_SEGMENT: Final = re.compile(r"\A/|//|/\Z")
+
+
+def camera_frame_key_error(method: str, param_name: str, name: Any) -> str | None:
+    """Return an error message if ``name`` cannot key the frames it will publish.
+
+    The simulation-side counterpart to :func:`camera_token_error`. Both guard the
+    same fact - a camera's name is the key its frames travel under - but they
+    guard it at doors whose accepted domains genuinely differ. A ``cameras``
+    mapping's key is a label the caller invents, so that door requires a bare
+    token. A simulation camera's name is additionally the backend's own
+    namespaced entity name: a camera belonging to a robot is
+    ``<robot>/<camera>`` (``arm0/wrist_cam``), the form
+    :meth:`~strands_robots.mesh.core.Mesh._publish_sim_cameras` strips the
+    robot prefix from and ``docs/recording.md`` documents recording under, so
+    ``/`` there is structure the backend put in the name and cannot be refused.
+
+    What is refused is the structure no consumer can carry, whatever the name is
+    namespaced by. Measured on this tree (zenoh 1.10.1, one ``create_world`` on
+    the MuJoCo backend, then ``CameraOffloader(bucket="b", prefix="frames")``):
+
+    * **A wildcard.** A camera named ``'**'`` published its frames on
+      ``strands/rover01/camera/**``, a key expression a ``put`` is routed by
+      *intersection*: it matched a peer subscribed to
+      ``strands/rover01/camera/wrist``, so one camera's frames were delivered to
+      every peer asking for a different one.
+    * **A character the transport forbids.** ``'cam#1'``, ``'cam?1'`` and
+      ``'$*'`` each made ``zenoh.KeyExpr`` refuse the topic outright (``'#' and '?'
+      are forbidden characters``), and an empty chunk - ``'a//b'``,
+      ``'/wrist'`` - refused it the same way. The publish loop logs that at debug
+      and moves on, so the camera registers, compiles, renders and simply never
+      reaches the mesh, with nothing reporting a fault.
+    * **A relative segment.** ``s3_key_for('rover01', '..', 123)`` returned
+      ``'frames/rover01/../123.jpg'``, which resolves to ``'frames/123.jpg'`` -
+      outside the peer's own prefix. ``'.'`` and ``'sub/../etc'`` resolve to a
+      key that is not the one requested either, so two distinct cameras can
+      write to one object.
+
+    This is deliberately not the bare-token alphabet. A name carrying a space, a
+    dot inside a segment or a non-ASCII letter addresses its camera and keys its
+    frames intact, and refusing those would be a decision about naming style;
+    :func:`entity_name_error` records the same boundary for the entity names it
+    guards. Every name this refuses is refused by :func:`camera_token_error` too,
+    so the stricter door stays a strict subset of this one.
+
+    Args:
+        method: The calling method, for the message prefix (e.g. ``"add_camera"``).
+        param_name: The parameter being validated, for the message.
+        name: The claimed camera name. Anything at all; a value that cannot be a
+            registry key is refused first by :func:`entity_name_error`.
+
+    Returns:
+        An error message naming the value, the character or segment, and the
+        consumer that reads it as structure, or ``None`` when *name* keys its
+        frames intact.
+    """
+    if (err := entity_name_error(method, param_name, name)) is not None:
+        return err
+    rendered = refusal_repr(name)
+    for char in _CAMERA_WIRE_CHARS:
+        if char in name:
+            return (
+                f"{method}: {param_name}={rendered} must not contain {char!r}; a camera's frames "
+                "are published on 'strands/<peer_id>/camera/<name>', where '*' and '$' open a "
+                "wildcard a put is routed by intersection - so the frames reach peers asking for "
+                "a different camera - and '#', '?' and '+' are characters a Zenoh key expression "
+                "or an MQTT publish topic cannot carry at all, which drops the frames silently."
+            )
+    if _CAMERA_EMPTY_SEGMENT.search(name) is not None:
+        return (
+            f"{method}: {param_name}={rendered} must not contain an empty path segment; a "
+            "camera's frames are published on 'strands/<peer_id>/camera/<name>', and an "
+            "empty topic level is not a key any transport accepts, so the frames are "
+            "dropped silently."
+        )
+    for pattern, segment in ((_CAMERA_PARENT_SEGMENT, ".."), (_CAMERA_CURRENT_SEGMENT, ".")):
+        if pattern.search(name) is not None:
+            return (
+                f"{method}: {param_name}={rendered} must not contain a '{segment}' path segment; "
+                "the frame offload joins the name into the object key "
+                "'<prefix>/<peer_id>/<name>/<ts>.jpg', which '..' walks out of and '.' collapses, "
+                "so the frames land under a key that does not address this camera."
+            )
+    return None
+
+
 def camera_name_error(method: str, param_name: str, name: Any, *, routes_free_camera_tokens: bool) -> str | None:
     """Return an error message if ``name`` cannot address the camera it claims.
 
     The whole name rule for a camera creation site, in one place and in one
     order: :func:`entity_name_error` first (a value that cannot be a registry
-    key at all), then :func:`reserved_camera_name_error` (a ``str`` this
+    key at all), then :func:`camera_frame_key_error` (a name whose frames cannot
+    travel under it), then :func:`reserved_camera_name_error` (a ``str`` this
     backend's own render entry points resolve past). Every ``add_camera``
     reads it, so the order is a property of the rule rather than of whichever
     body a caller reached.
+
+    The three are disjoint on this tree - no value trips more than one - so the
+    order is what a caller reads rather than a precedence between rules, and it
+    runs before every *value* rule for the reason stated below.
 
     That order was the defect this composition removes. The two guards had been
     applied separately at each site, and the sites disagreed about where the
@@ -2989,6 +3097,8 @@ def camera_name_error(method: str, param_name: str, name: Any, *, routes_free_ca
         address a camera on this backend.
     """
     if (err := entity_name_error(method, param_name, name)) is not None:
+        return err
+    if (err := camera_frame_key_error(method, param_name, name)) is not None:
         return err
     if routes_free_camera_tokens:
         return reserved_camera_name_error(method, param_name, name)

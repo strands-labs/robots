@@ -1467,8 +1467,11 @@ class NewtonSimEngine(DomainRandomizationMixin, NewtonRecordingMixin, SimEngine)
         there is no upper cap.
 
         Args:
-            name: Unique camera name; a non-empty ``str`` containing no NUL and
-                not a free-camera routing token, the same rule and the same
+            name: Unique camera name; a non-empty ``str`` containing no NUL, no
+                structure its own frames cannot travel under (no ``*``, ``$``,
+                ``#``, ``?``, ``+`` and no empty, ``.`` or ``..`` path segment -
+                a namespaced ``arm0/wrist_cam`` is accepted) and not a
+                free-camera routing token: the same rule and the same
                 order the MuJoCo backend's ``add_camera`` applies
                 (:func:`~strands_robots.utils.camera_name_error`, judged before
                 any value below). Duplicate
@@ -1496,8 +1499,8 @@ class NewtonSimEngine(DomainRandomizationMixin, NewtonRecordingMixin, SimEngine)
 
         # The whole name rule, in the one order ``camera_name_error`` owns and
         # the MuJoCo backend's ``add_camera`` reads too: a value that cannot be
-        # a registry key, then a ``str`` this backend's render entry points
-        # resolve past. Both guards precede every value rule below, so the two
+        # a registry key, then a name whose frames could not travel under it,
+        # then a ``str`` this backend's render entry points resolve past. Both guards precede every value rule below, so the two
         # backends name the same cause for the same request - the reserved-name
         # test used to sit after the pose, fov and pixel-dimension rules here,
         # and a request with a routing token AND a bad value was refused by both

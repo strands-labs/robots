@@ -139,6 +139,14 @@ which swaps the compiled scene but leaves the camera registry untouched) is
 absent from the observation rather than filled in with the
 overview, so a column is never quietly populated from the wrong camera.
 
+A camera's name is also the key its frames travel under once the world is on
+the mesh: each frame is published on `strands/<peer_id>/camera/<name>` and, with
+the IoT offload enabled, written to `<prefix>/<peer_id>/<name>/<ts>.jpg`. So
+`add_camera` refuses a name carrying structure those consumers read instead of
+the name - `*`, `$`, `#`, `?` or `+` (Zenoh and MQTT wildcards, or characters
+they forbid outright), and an empty, `.` or `..` path segment. The namespaced
+form above is unaffected: `arm0/wrist_cam` is a name, `arm0/../wrist_cam` is not.
+
 That guarantee needs the scene's cameras to have distinct column names, and the
 `/` -> `__` collapse is not injective: `arm0/wrist` and `arm0__wrist` are two
 cameras and one column. `start_recording` refuses such a scene up front, naming

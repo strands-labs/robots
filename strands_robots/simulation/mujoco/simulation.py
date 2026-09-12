@@ -4457,7 +4457,13 @@ class MuJoCoSimEngine(
         mount points before placing a camera; robot bodies are namespaced
         ``<robot>/<body>`` (e.g. ``so101/gripper`` is the SO101 wrist mount).
 
-        Validation: ``name`` must be a non-empty ``str`` containing no NUL, and
+        Validation: ``name`` must be a non-empty ``str`` containing no NUL, must
+        carry no structure its own frames cannot travel under - no ``*``, ``$``,
+        ``#``, ``?`` or ``+``, and no empty, ``.`` or ``..`` path segment, since
+        the mesh publishes each frame on ``strands/<peer_id>/camera/<name>`` and
+        the IoT offload joins the name into the S3 object key
+        (:func:`~strands_robots.utils.camera_frame_key_error`; a namespaced name
+        such as ``arm0/wrist_cam`` is still accepted) - and
         must not be one of the free-camera routing tokens
         (:data:`~strands_robots.utils.FREE_CAMERA_TOKENS` - ``None``, ``""``,
         ``"default"``, ``"free"``). ``render``/``render_depth``/``get_frame``
@@ -4465,10 +4471,10 @@ class MuJoCoSimEngine(
         so a camera created under any of them could never be rendered from even
         though it is registered, compiled into the model and listed by
         ``list_cameras``; a non-string name is additionally not addressable
-        through the agent-tool surface. Both halves of the name rule come from
+        through the agent-tool surface. All three halves of the name rule come from
         the shared :func:`~strands_robots.utils.camera_name_error`, which every
         backend's ``add_camera`` reads, so the rule and its order are stated
-        once: the name is judged BEFORE any value, because a reserved name is
+        once: the name is judged BEFORE any value, because a name fault is
         the one fault no change of value can clear. The Newton backend refuses
         the same set because it routes the same tokens; the Isaac backend does
         not route them - its ``get_frame`` looks the name up directly - so it

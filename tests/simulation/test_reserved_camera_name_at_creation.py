@@ -554,7 +554,7 @@ class TestTheComposedRuleIsTheOnlyNameGuard:
         assert camera_name_error("add_camera", "name", name, routes_free_camera_tokens=True) is not None
 
     def test_every_add_camera_reads_the_composed_rule_and_none_re_spells_it(self) -> None:
-        """Structural pin: the two halves are not applied separately any more.
+        """Structural pin: the halves are not applied separately any more.
 
         Applying them separately is exactly how the order came to differ, so a
         site that calls either half directly is the defect returning, not a style
@@ -575,7 +575,7 @@ class TestTheComposedRuleIsTheOnlyNameGuard:
                 where = f"{path.relative_to(_package_root())}:{node.lineno}"
                 if "camera_name_error" in called:
                     readers.append(where)
-                for half in ("entity_name_error", "reserved_camera_name_error"):
+                for half in ("entity_name_error", "camera_frame_key_error", "reserved_camera_name_error"):
                     if half in called:
                         offenders.append(f"{where} calls {half} directly")
         assert len(readers) >= 3, f"expected every backend add_camera to read the rule, found {readers}"

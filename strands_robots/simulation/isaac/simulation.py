@@ -5318,6 +5318,12 @@ class IsaacSimulation(IsaacMotionPrimitivesMixin, IsaacRecordingMixin, SimEngine
             # prim would land at ``/World/Cameras/``, the container scope shared
             # by every camera on the stage.
             #
+            # The rule also refuses a name carrying structure the camera's own
+            # frames cannot travel under (a Zenoh or MQTT wildcard, a character
+            # either forbids, a relative or empty path segment). That half holds
+            # on every backend, because what reads the name as structure is the
+            # mesh topic and the S3 object key rather than this renderer.
+            #
             # ``routes_free_camera_tokens=False``: unlike the MuJoCo and Newton
             # backends, this one's ``get_frame`` looks a camera up in
             # ``self._cameras`` directly with no token check, so ``"default"``
