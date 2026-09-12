@@ -47,7 +47,7 @@ from strands import tool
 from strands.types.tools import ToolContext
 
 from strands_robots.mesh import security as _security
-from strands_robots.mesh.core import mesh_disabled_by_env
+from strands_robots.mesh.core import _reports_failure_to_stop, mesh_disabled_by_env
 from strands_robots.tools._hitl_audit import log_operator_response
 from strands_robots.utils import finite_number_error, positive_count_error, positive_finite_number_error
 
@@ -1098,15 +1098,39 @@ def _device_connect_dispatch(
 
         if action == "emergency_stop":
             devices = conn.list_devices()
-            stopped = 0
+            stopped: list[str] = []
+            # Graded with the rule Mesh.emergency_stop reads (_reports_failure_to_stop):
+            # a device answers its stop RPC with an envelope, and an authz refusal
+            # or a stop_policy that could not halt a rollout comes back as
+            # status="error" inside a DELIVERED reply, not as a raised invoke.
+            # Counting delivery told the operator every device stopped while the
+            # device itself had just said it did not. An unreachable device stays
+            # a gap in the count rather than a refusal, as on the mesh path.
+            refused: dict[str, Any] = {}
             for d in devices:
+                device_id = str(d.get("device_id", "?"))
                 try:
-                    conn.invoke(d["device_id"], "stop", _with_identity({}), timeout=3.0)
-                    stopped += 1
+                    result = conn.invoke(device_id, "stop", _with_identity({}), timeout=3.0)
                 except Exception:  # noqa: BLE001 - best-effort fan-out
-                    pass
-            _audit_tool_action(action, "*", True, f"stopped={stopped}/{len(devices)}")
-            return _DCResult(_ok(f"E-STOP: {stopped}/{len(devices)} devices stopped"))
+                    continue
+                r = result.get("result", result) if isinstance(result, dict) else result
+                if isinstance(r, dict) and _reports_failure_to_stop(r):
+                    refused[device_id] = r
+                else:
+                    stopped.append(device_id)
+            text = f"E-STOP: {len(stopped)}/{len(devices)} devices stopped"
+            if refused:
+                logger.critical(
+                    "[safety] emergency_stop over Device Connect: %d device(s) reported they did NOT stop: %s",
+                    len(refused),
+                    sorted(refused),
+                )
+                _audit_tool_action(
+                    action, "*", False, f"stopped={len(stopped)}/{len(devices)} refused={sorted(refused)}"
+                )
+                return _DCResult(_err(f"{text}; reported they did NOT stop: {json.dumps(refused, default=str)[:1500]}"))
+            _audit_tool_action(action, "*", True, f"stopped={len(stopped)}/{len(devices)}")
+            return _DCResult(_ok(text))
 
         if action == "broadcast":
             # Security hardening: dispatch the *validated* command that the
