@@ -277,6 +277,154 @@ def close_match_hint(requested: object, known: Sequence[str]) -> str:
     return " Did you mean: " + ", ".join(matches) + "?"
 
 
+#: Discovery advice appended to :func:`unknown_model_msg` when the caller names
+#: no other. The MuJoCo backend's tool surface exposes ``list_urdfs``, and it is
+#: the wording that surface has always given, so it stays the default.
+DEFAULT_MODEL_DISCOVERY_HINT = " Use action='list_urdfs' to see all available robots."
+
+
+def unknown_model_msg(requested: str, *, discovery_hint: str = DEFAULT_MODEL_DISCOVERY_HINT) -> str:
+    """Build the 'model could not be resolved' error for a robot name.
+
+    Shared by every backend that resolves a robot name through
+    :func:`~strands_robots.simulation.model_registry.resolve_model`, because this
+    is the message that explains why that resolver returned ``None`` and the
+    explanation is a property of the registry rather than of any one engine. It
+    lived on the MuJoCo backend until the Isaac backend became a second caller;
+    a second inline copy is what makes two backends diagnose one registry
+    differently, so the wording has one owner.
+
+    Three conditions reach this message and they have different remedies, so it
+    diagnoses which one it is instead of reporting them all as a bad name:
+
+    * The registry does not know ``requested`` - a typo or an unknown robot.
+      Names the closest sim-loadable registry keys via :func:`close_match_hint`
+      so the caller can fix it in place without a discovery round-trip. The pool
+      is deliberately the ``mode="sim"`` listing rather than the whole registry:
+      a suggestion no engine can spawn sends the caller straight back here, and
+      the registry holds hardware-only entries close enough to be suggested (the
+      sole suggestion offered for ``earthrover`` was ``hope_jr``, which is itself
+      hardware-only, so the one remedy on offer reproduced the same refusal).
+      ``close_match_hint`` already drops a suggestion identical to ``requested``
+      for the same reason - it carries no information and displaces a real one
+      out of the three slots.
+    * The registry knows ``requested`` and the entry declares a hardware backend
+      and no simulation asset - a real robot strands drives over LeRobot that has
+      no model to load. The name is already correct, so spelling suggestions are
+      the wrong advice here too; names the hardware entry point instead, the way
+      :func:`~strands_robots.robot.Robot` already answers a leader-arm name with
+      the teleoperator entry point rather than the registry listing.
+    * The registry knows ``requested`` and its model XML is simply not on disk.
+      Here the name is already correct, so spelling suggestions are the wrong
+      advice - ``difflib`` ranks an exact match first, so this was the one case
+      that got told "Did you mean: <the name it just refused>". Names the asset
+      path the resolver looked for and the remedy, split on the entry's own
+      ``auto_download`` posture: an entry with ``auto_download: false`` is never
+      fetched automatically (the asset has to be placed by hand), any other entry
+      had a download attempted by
+      :func:`~strands_robots.assets.manager.resolve_model_path` before it gave
+      up, so retrying it through the ``download_assets`` tool is what surfaces
+      why. Mirrors the registration-time wording in
+      :func:`~strands_robots.registry.user_registry.register_robot`, which
+      already reports a missing asset directory this way.
+
+    Suggestions and the asset probe are both best-effort: a registry that cannot
+    be read degrades to the bare form rather than propagating.
+
+    Args:
+        requested: The name that failed to resolve.
+        discovery_hint: Trailing advice naming the caller's own discovery
+            surface, appended only on the unknown-name branch (the other two
+            name a remedy specific to the diagnosis, so generic advice there
+            would displace it). A backend whose tool surface spells discovery
+            differently passes its own; the default is the MuJoCo wording.
+
+    Returns:
+        The full error text, with no trailing newline.
+    """
+    known: list[str] = []
+    try:
+        from strands_robots.registry import list_robots as _list_robots
+
+        # mode="sim" so a suggestion is a name an engine can actually spawn. A
+        # user model added through ``register_urdf`` is absent from every
+        # ``list_robots`` mode, so narrowing the pool drops nothing that was
+        # suggestable before.
+        known = [r.get("name", "") for r in _list_robots(mode="sim") if r.get("name")]
+    except Exception:  # noqa: BLE001 - suggestions are best-effort
+        known = []
+
+    # Probed independently of the suggestion list so an unreadable registry
+    # listing cannot mask the more specific diagnosis, and vice versa.
+    asset_gap: tuple[str, str, str, bool, list[str]] | None = None
+    hardware_only: tuple[str, str] | None = None
+    try:
+        from strands_robots.assets.manager import get_search_paths, is_robot_asset_present
+        from strands_robots.registry import get_robot as _get_robot
+        from strands_robots.registry import resolve_name as _resolve_name
+
+        # ``requested`` may be an alias; resolve to the canonical key the asset
+        # entry hangs off. No type test on ``requested`` here - a name that
+        # cannot be a registry key raises and is caught, which keeps the
+        # availability listing above ungated on the name's type.
+        canonical = _resolve_name(requested)
+        entry = ((_get_robot(canonical) or {}) if canonical else {}) or {}
+        asset = entry.get("asset") or {}
+        if asset and not is_robot_asset_present(canonical):
+            asset_gap = (
+                canonical,
+                str(asset.get("dir", "")),
+                str(asset.get("model_xml", "")),
+                asset.get("auto_download") is False,
+                [str(path) for path in get_search_paths()],
+            )
+        elif entry and not asset:
+            # Registered, correct, and simply not a simulation robot. The LeRobot
+            # type is what the hardware route is keyed on, so it is quoted when
+            # the entry declares one.
+            hardware_only = (canonical, str((entry.get("hardware") or {}).get("lerobot_type") or ""))
+    except Exception:  # noqa: BLE001 - the diagnosis is best-effort
+        asset_gap = None
+        hardware_only = None
+
+    if asset_gap is not None:
+        canonical, asset_dir, model_xml, never_downloads, search_paths = asset_gap
+        relative = f"{asset_dir}/{model_xml}"
+        searched = ", ".join(f"'{path}'" for path in search_paths)
+        msg = (
+            f"Robot '{requested}' is registered but its model file is not on disk: no '{relative}' under {searched}."
+            if search_paths
+            else (
+                f"Robot '{requested}' is registered but its model file is not on disk "
+                f"(expected '{relative}' on an asset search path)."
+            )
+        )
+        if never_downloads:
+            msg += (
+                f" This entry declares auto_download=false, so its asset is never fetched "
+                f"automatically - create that directory and place '{model_xml}' inside it."
+            )
+        else:
+            msg += f" Fetch it with the download_assets tool (robots='{canonical}')."
+        return msg
+
+    if hardware_only is not None:
+        canonical, lerobot_type = hardware_only
+        typed = f" (LeRobot type '{lerobot_type}')" if lerobot_type else ""
+        return (
+            f"Robot '{requested}' is registered for real hardware only{typed}: its registry "
+            f"entry declares no simulation asset, so there is no model to load. The name is "
+            f"already correct, so there is no spelling to fix - drive it as hardware with "
+            f"Robot('{canonical}', mode='real'), or pass urdf_path= to supply a model of your "
+            f"own. Use list_robots(mode='sim') to see the robots this backend can spawn."
+        )
+
+    msg = f"No model found for '{requested}'."
+    msg += close_match_hint(requested, known)
+    msg += discovery_hint
+    return msg
+
+
 def unknown_kwargs_error(method: str, kwargs: Mapping[str, Any], accepted: Sequence[str]) -> dict[str, Any] | None:
     """Return a tool-envelope error for keyword arguments a method cannot use.
 
@@ -1277,6 +1425,20 @@ class SimEngine(ABC):
               keyed by the *short* joint name (e.g. ``"shoulder_pan"``).
               The schema is stable regardless of multi-robot namespacing
               at the physics-engine level.
+            - ``"<joint_name>.vel"`` (float): The same joint's velocity
+              (rad/s or m/s), one entry per scalar joint, additive beside the
+              position key so position-only consumers are unaffected.
+              Velocity-feedback controllers (WBC's balance loop, the
+              microduck and ProtoMotions observation packers, an RL env with
+              ``.vel`` in its ``actor_obs_keys``) read these to close the
+              loop; a backend that omits them feeds those consumers zeros or
+              a ``KeyError`` while the identical policy works elsewhere,
+              which is exactly the portability break this schema exists to
+              prevent. This entry was previously undocumented here and lived
+              only in the MuJoCo implementation, which is how two backends
+              shipped without it. A free-joint (floating) base is NOT a
+              scalar joint and reports its twist via ``base_lin_vel`` /
+              ``base_ang_vel`` below, never as ``"<name>.vel"``.
             - ``"<camera_name>"`` (np.ndarray): One RGB uint8 frame per
               camera associated with the robot, keyed by camera name.
               Shape ``(H, W, 3)``. A key MUST carry the view of the camera it
@@ -5484,162 +5646,177 @@ class SimEngine(ABC):
         Returns:
             Plain dict with keys: robots, cameras, methods, note.
         """
+        methods: dict[str, str] = {
+            "get_robot_state": "(robot_name: str) -> dict",
+            "get_observation": "(robot_name: str | None = None, *, skip_images: bool = False) -> dict",
+            "send_action": (
+                "(action: dict, robot_name: str | None = None, n_substeps: int = 1) -> dict"
+                "  # n_substeps must be a positive whole number; use step() to advance without commanding"
+            ),
+            "add_robot": (
+                "(name: str, urdf_path=None, data_config=None, position=None, "
+                "orientation=None) -> dict  # add a robot to the scene by "
+                "registry name (or urdf_path); the first scene-construction step. "
+                "position OFFSETS the model's own authored root pose (a locomotion "
+                "model is authored standing), so it is the world position only for "
+                "a model whose root declares pos 0 0 0; the result reports the "
+                "measured placement"
+            ),
+            "add_object": (
+                "(name: str, shape='box', position=None, orientation=None, "
+                "size=None, color=None, mass=0.1, is_static=None, mesh_path=None, "
+                "material=None) -> dict  # add a manipulable object "
+                "(cube/sphere/.../mesh) to the scene. material is an optional "
+                "dict for matte/textured surfaces: keys reflectance|specular|"
+                "shininess (0..1), texture (abs image path) OR builtin "
+                "(checker|gradient|flat) + rgb1/rgb2/texdim, texrepeat [u,v]; "
+                "any other key (or an empty dict) is rejected, never ignored"
+            ),
+            "remove_object": "(name: str) -> dict  # remove a previously added object",
+            "remove_robot": (
+                "(name: str) -> dict  # remove a robot (and every scene "
+                "element it introduced) from the world; the inverse of "
+                "add_robot, completing the add/remove pair alongside "
+                "remove_object"
+            ),
+            "run_policy": (
+                "(robot_name: str, policy_provider='mock', n_episodes=1, "
+                "reset_between=True, stop_when=None, ...) -> dict  # "
+                "stop_when: optional semantic early-return clause in the "
+                "benchmark success: predicate DSL - a single "
+                "{'predicate': <name>, ...} call or an {'all'/'any': "
+                "[...]} group - checked against the sim after every "
+                "applied action so the rollout ends as soon as the world "
+                "reaches the state; the result json reports "
+                "stopped_reason ('predicate'|'budget'|'cancelled'; "
+                "'error' on failures) + steps_used so a caller can decide "
+                "whether to retry"
+            ),
+            "start_policy": (
+                "(robot_name: str, policy_provider='mock', ...) -> dict  # on "
+                "THIS engine it runs the rollout to completion and returns "
+                "its result (synchronous); a backend that runs it in the "
+                "background instead says so here and advertises "
+                "list_policies_running beside it, so this entry is how to "
+                "tell which one you hold"
+            ),
+            "stop_policy": (
+                "(robot_name: str) -> dict  # cooperatively end a rollout "
+                "in flight; the json block reports was_running, and "
+                "robot_name is required (never defaulted to the sole robot)"
+            ),
+            "list_policies_running": LIST_POLICIES_RUNNING_DESCRIBE_ENTRY,
+            "eval_policy": (
+                "(robot_name: str, policy_provider='mock', n_episodes=1, "
+                "max_steps=300, success_fn=None, ...) -> dict  # multi-episode "
+                "success-rate evaluation (the rollout sibling of run_policy)"
+            ),
+            "evaluate_benchmark": (
+                "(benchmark_name: str, robot_name=None, policy_provider='mock', "
+                "n_episodes=1, seed=None, video=None, ...) -> dict  # score a "
+                "registered benchmark's success/failure/dense-reward DSL over a "
+                "rollout (max_steps comes from the benchmark, not a parameter); "
+                "the DSL-scored sibling of eval_policy's success_fn"
+            ),
+            "list_benchmarks": (
+                "() -> dict  # enumerate registered benchmarks (names, "
+                "supported robots, default robot, max_steps) - the source of the "
+                "benchmark_name evaluate_benchmark expects"
+            ),
+            "register_benchmark_from_file": (
+                "(benchmark_name: str, spec_path: str) -> dict  # author a "
+                "declarative benchmark (success/failure/dense_reward predicate "
+                "DSL) as YAML/JSON at runtime and register it under benchmark_name"
+            ),
+            "register_builtin_benchmarks": (
+                "() -> dict  # register the shipped built-in velocity-tracking "
+                "locomotion benchmarks - the go2_walk_forward quadruped task and "
+                "the g1_walk_forward / t1_walk_forward humanoid tasks - so they "
+                "appear in list_benchmarks and can be run via evaluate_benchmark"
+            ),
+            "replay_episode": (
+                "(repo_id: str, robot_name=None, episode=0, root=None, "
+                "speed=1.0, action_key_map=None) -> dict  # replay a recorded "
+                "LeRobotDataset episode through the sim; action_key_map needs "
+                "one unique key per recorded action index (default: "
+                "robot_action_keys) and status='success' means every frame "
+                "reached the actuators"
+            ),
+            "list_robots": "() -> list[str]",
+            "get_features": (
+                "(robot_name: str | None = None) -> dict  # joint / "
+                "actuator / camera / robot names of the scene (scoped to "
+                "one robot when robot_name is given) - the source of truth "
+                "for the action keys a policy must emit; consult it when "
+                "run_policy reports unresolved keys"
+            ),
+            "render": "(camera_name='default', width=None, height=None) -> dict",
+            "create_world": (
+                "(timestep=None, gravity=None, ground_plane=True, terrain=None, "
+                "difficulty=1.0) -> dict  # create a fresh simulation world - the "
+                "world-lifecycle entry point that precedes add_robot / add_object. "
+                "gravity is [gx, gy, gz]; ground_plane lays a floor; terrain lays a "
+                "deterministic locomotion heightfield instead of the flat plane "
+                "('rough' value-noise bumps, 'stairs' step plateaus rising +x, "
+                "'pyramid' concentric steps rising to the centre, 'slope' a "
+                "constant-grade ramp); difficulty (finite, > 0; 1.0 = full height) "
+                "scales the terrain peak elevation for a curriculum without changing "
+                "the terrain kind. Backends without heightfield support reject a "
+                "non-None terrain rather than ignoring it"
+            ),
+            "destroy": (
+                "() -> dict  # tear down the world and release all resources "
+                "(joins any running background policy first); the inverse of "
+                "create_world, called at session end"
+            ),
+            "reset": "() -> dict  # during recording, flushes the buffered rollout as one episode before resetting",
+            "step": "(n_steps: int = 1) -> dict",
+            "get_state": (
+                "() -> dict  # snapshot of the live world: sim time, step "
+                "count, timestep, gravity, and robot / object / camera / "
+                "body / joint / actuator counts (the whole-world sibling of "
+                "get_robot_state / get_observation)"
+            ),
+            "load_scene": (
+                "(scene_path: str) -> dict  # load a complete scene from "
+                "an MJCF/URDF file; the alternative scene-construction "
+                "entry point to building it up with add_robot / add_object"
+            ),
+            "randomize": (
+                "(**kwargs) -> dict  # domain randomization (colors, "
+                "lighting, physics, positions); each backend defines its "
+                "own opt-in axes - see the backend describe() for the "
+                "concrete signature"
+            ),
+            "set_obs_noise": (
+                "(**kwargs) -> dict  # configure additive Gaussian sensor "
+                "noise on joint observations and rendered frames so a "
+                "policy is not evaluated on noise-free observations"
+            ),
+            "get_contacts": (
+                "() -> dict  # active contacts at the current step - the "
+                "physics-grounding read used to verify a grasp or detect "
+                "a collision instead of trusting a rendered caption"
+            ),
+        }
+        # A capability this base class owns only as a raising stub is advertised
+        # only where the subclass actually overrides it. ``describe()`` is the
+        # discovery surface an agent reads to decide what to call, so an entry
+        # for a method whose body is ``raise NotImplementedError`` is a false
+        # advertisement: the Isaac backend re-published all three of these for
+        # months, and the Newton backend only avoided it by building its
+        # ``describe()`` from scratch - a per-backend workaround for a base-class
+        # defect. Gated structurally (is the attribute still the base's?) rather
+        # than by a hand-kept list of which backend has what, so a backend that
+        # gains one of these starts advertising it with no second edit, and a
+        # fourth backend is held to the rule on arrival.
+        for optional in ("load_scene", "randomize", "set_obs_noise", "get_contacts"):
+            if getattr(type(self), optional, None) is getattr(SimEngine, optional):
+                methods.pop(optional, None)
         return {
             "robots": self.list_robots(),
             "cameras": [],  # backends override to list camera names
-            "methods": {
-                "get_robot_state": "(robot_name: str) -> dict",
-                "get_observation": "(robot_name: str | None = None, *, skip_images: bool = False) -> dict",
-                "send_action": (
-                    "(action: dict, robot_name: str | None = None, n_substeps: int = 1) -> dict"
-                    "  # n_substeps must be a positive whole number; use step() to advance without commanding"
-                ),
-                "add_robot": (
-                    "(name: str, urdf_path=None, data_config=None, position=None, "
-                    "orientation=None) -> dict  # add a robot to the scene by "
-                    "registry name (or urdf_path); the first scene-construction step. "
-                    "position OFFSETS the model's own authored root pose (a locomotion "
-                    "model is authored standing), so it is the world position only for "
-                    "a model whose root declares pos 0 0 0; the result reports the "
-                    "measured placement"
-                ),
-                "add_object": (
-                    "(name: str, shape='box', position=None, orientation=None, "
-                    "size=None, color=None, mass=0.1, is_static=None, mesh_path=None, "
-                    "material=None) -> dict  # add a manipulable object "
-                    "(cube/sphere/.../mesh) to the scene. material is an optional "
-                    "dict for matte/textured surfaces: keys reflectance|specular|"
-                    "shininess (0..1), texture (abs image path) OR builtin "
-                    "(checker|gradient|flat) + rgb1/rgb2/texdim, texrepeat [u,v]; "
-                    "any other key (or an empty dict) is rejected, never ignored"
-                ),
-                "remove_object": "(name: str) -> dict  # remove a previously added object",
-                "remove_robot": (
-                    "(name: str) -> dict  # remove a robot (and every scene "
-                    "element it introduced) from the world; the inverse of "
-                    "add_robot, completing the add/remove pair alongside "
-                    "remove_object"
-                ),
-                "run_policy": (
-                    "(robot_name: str, policy_provider='mock', n_episodes=1, "
-                    "reset_between=True, stop_when=None, ...) -> dict  # "
-                    "stop_when: optional semantic early-return clause in the "
-                    "benchmark success: predicate DSL - a single "
-                    "{'predicate': <name>, ...} call or an {'all'/'any': "
-                    "[...]} group - checked against the sim after every "
-                    "applied action so the rollout ends as soon as the world "
-                    "reaches the state; the result json reports "
-                    "stopped_reason ('predicate'|'budget'|'cancelled'; "
-                    "'error' on failures) + steps_used so a caller can decide "
-                    "whether to retry"
-                ),
-                "start_policy": (
-                    "(robot_name: str, policy_provider='mock', ...) -> dict  # on "
-                    "THIS engine it runs the rollout to completion and returns "
-                    "its result (synchronous); a backend that runs it in the "
-                    "background instead says so here and advertises "
-                    "list_policies_running beside it, so this entry is how to "
-                    "tell which one you hold"
-                ),
-                "stop_policy": (
-                    "(robot_name: str) -> dict  # cooperatively end a rollout "
-                    "in flight; the json block reports was_running, and "
-                    "robot_name is required (never defaulted to the sole robot)"
-                ),
-                "list_policies_running": LIST_POLICIES_RUNNING_DESCRIBE_ENTRY,
-                "eval_policy": (
-                    "(robot_name: str, policy_provider='mock', n_episodes=1, "
-                    "max_steps=300, success_fn=None, ...) -> dict  # multi-episode "
-                    "success-rate evaluation (the rollout sibling of run_policy)"
-                ),
-                "evaluate_benchmark": (
-                    "(benchmark_name: str, robot_name=None, policy_provider='mock', "
-                    "n_episodes=1, seed=None, video=None, ...) -> dict  # score a "
-                    "registered benchmark's success/failure/dense-reward DSL over a "
-                    "rollout (max_steps comes from the benchmark, not a parameter); "
-                    "the DSL-scored sibling of eval_policy's success_fn"
-                ),
-                "list_benchmarks": (
-                    "() -> dict  # enumerate registered benchmarks (names, "
-                    "supported robots, default robot, max_steps) - the source of the "
-                    "benchmark_name evaluate_benchmark expects"
-                ),
-                "register_benchmark_from_file": (
-                    "(benchmark_name: str, spec_path: str) -> dict  # author a "
-                    "declarative benchmark (success/failure/dense_reward predicate "
-                    "DSL) as YAML/JSON at runtime and register it under benchmark_name"
-                ),
-                "register_builtin_benchmarks": (
-                    "() -> dict  # register the shipped built-in velocity-tracking "
-                    "locomotion benchmarks - the go2_walk_forward quadruped task and "
-                    "the g1_walk_forward / t1_walk_forward humanoid tasks - so they "
-                    "appear in list_benchmarks and can be run via evaluate_benchmark"
-                ),
-                "replay_episode": (
-                    "(repo_id: str, robot_name=None, episode=0, root=None, "
-                    "speed=1.0, action_key_map=None) -> dict  # replay a recorded "
-                    "LeRobotDataset episode through the sim; action_key_map needs "
-                    "one unique key per recorded action index (default: "
-                    "robot_action_keys) and status='success' means every frame "
-                    "reached the actuators"
-                ),
-                "list_robots": "() -> list[str]",
-                "get_features": (
-                    "(robot_name: str | None = None) -> dict  # joint / "
-                    "actuator / camera / robot names of the scene (scoped to "
-                    "one robot when robot_name is given) - the source of truth "
-                    "for the action keys a policy must emit; consult it when "
-                    "run_policy reports unresolved keys"
-                ),
-                "render": "(camera_name='default', width=None, height=None) -> dict",
-                "create_world": (
-                    "(timestep=None, gravity=None, ground_plane=True, terrain=None, "
-                    "difficulty=1.0) -> dict  # create a fresh simulation world - the "
-                    "world-lifecycle entry point that precedes add_robot / add_object. "
-                    "gravity is [gx, gy, gz]; ground_plane lays a floor; terrain lays a "
-                    "deterministic locomotion heightfield instead of the flat plane "
-                    "('rough' value-noise bumps, 'stairs' step plateaus rising +x, "
-                    "'pyramid' concentric steps rising to the centre, 'slope' a "
-                    "constant-grade ramp); difficulty (finite, > 0; 1.0 = full height) "
-                    "scales the terrain peak elevation for a curriculum without changing "
-                    "the terrain kind. Backends without heightfield support reject a "
-                    "non-None terrain rather than ignoring it"
-                ),
-                "destroy": (
-                    "() -> dict  # tear down the world and release all resources "
-                    "(joins any running background policy first); the inverse of "
-                    "create_world, called at session end"
-                ),
-                "reset": "() -> dict  # during recording, flushes the buffered rollout as one episode before resetting",
-                "step": "(n_steps: int = 1) -> dict",
-                "get_state": (
-                    "() -> dict  # snapshot of the live world: sim time, step "
-                    "count, timestep, gravity, and robot / object / camera / "
-                    "body / joint / actuator counts (the whole-world sibling of "
-                    "get_robot_state / get_observation)"
-                ),
-                "load_scene": (
-                    "(scene_path: str) -> dict  # load a complete scene from "
-                    "an MJCF/URDF file; the alternative scene-construction "
-                    "entry point to building it up with add_robot / add_object"
-                ),
-                "randomize": (
-                    "(**kwargs) -> dict  # domain randomization (colors, "
-                    "lighting, physics, positions); each backend defines its "
-                    "own opt-in axes - see the backend describe() for the "
-                    "concrete signature"
-                ),
-                "set_obs_noise": (
-                    "(**kwargs) -> dict  # configure additive Gaussian sensor "
-                    "noise on joint observations and rendered frames so a "
-                    "policy is not evaluated on noise-free observations"
-                ),
-                "get_contacts": (
-                    "() -> dict  # active contacts at the current step - the "
-                    "physics-grounding read used to verify a grasp or detect "
-                    "a collision instead of trusting a rendered caption"
-                ),
-            },
+            "methods": methods,
             "note": (
                 "robot_name defaults to the sole robot when only one exists "
                 "for get_observation, send_action, get_robot_state, run_policy, "

@@ -76,6 +76,12 @@ def _engine(*, queued: bool = False) -> tuple[IsaacSimulation, FakeArticulation]
     engine._config = IsaacConfig()
     # A worker-thread call takes the queued branch; -1 is never a real thread id.
     engine._main_tid = -1 if queued else threading.get_ident()
+    # Queuing is only a write if something drains the queue, and ``pump`` - run by
+    # ``run_pump_forever`` - is the sole consumer. So the queued cases model the
+    # real deployment shape, worker thread PLUS a running pump; without the pump
+    # the write is refused rather than applied, because it would sit in a queue
+    # nobody reads while the caller was told it succeeded.
+    engine._pump_running = queued
     engine._action_q = queue.Queue()
     articulation = FakeArticulation()
     engine._robots = {

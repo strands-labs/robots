@@ -369,12 +369,17 @@ rollout instead of flushing it on the next `reset()`, call
 `clear_episode_buffer()` first.
 
 Every backend cuts the boundary: `reset()` asks one shared rule, so the loop
-above yields 20 episodes on MuJoCo, Newton and Isaac alike. The one exception is
-a *partial* Isaac reset - `reset(env_ids=[...])` re-initializes only the named
-environments, and whether the recorded robot's rollout ended is not knowable
-from `env_ids`, so no boundary is cut and the buffer stays open. Call
-`save_episode()` yourself if a partial reset does end the episode you are
-recording.
+above yields 20 episodes on MuJoCo, Newton and Isaac alike, with no exception.
+
+Isaac's `reset()` accepts an `env_ids` argument and **refuses** it: that backend
+drives `World.reset()`, which takes no environment selection, so there is no
+per-environment reset for a subset to route to. It used to be accepted and
+ignored - every environment was re-initialized while the result read
+`Partial reset complete for 1 envs.` - and the boundary rule reasoned from that
+ignored argument, skipping the flush on the grounds that a partial reset need
+not end the recorded rollout. True of a partial reset, false of the whole-world
+one that actually ran, so the frames either side of a teleport were concatenated
+into one episode. Pass no argument; the reset you get is a boundary.
 
 ## Verifying episode count
 

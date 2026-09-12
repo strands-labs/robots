@@ -181,13 +181,28 @@ class TestCreateWorldGravity:
 
 
 class TestAddRobotUnsupportedParams:
-    def test_mjcf_path_rejected(self):
+    def test_mjcf_path_is_no_longer_refused_for_being_mjcf(self):
+        """MJCF is a supported input; only a *missing* world stops this call.
+
+        This cell asserted the opposite, on the grounds stated in the source that
+        the Isaac backend "has no MJCF robot importer". That was an assertion the
+        repository made in three places and measured in none: Isaac Sim 6.0.1
+        registers ``isaacsim.asset.importer.mjcf``, and converting a Menagerie
+        description through it yields an articulation whose joint names match the
+        MuJoCo backend's exactly.
+
+        No world exists here, so the call is refused before any asset work - and
+        that is precisely what makes this a usable pin without Isaac installed:
+        the refusal must be about the world, and must no longer mention
+        ``mjcf_path`` as unsupported.
+        """
         sim = IsaacSimulation()
-        # so100 matches the procedural registry: pre-fix this silently spawned
-        # the procedural stub and ignored mjcf_path.
         result = sim.add_robot(name="so100", mjcf_path="/tmp/so100.xml")
         assert result["status"] == "error"
-        assert "mjcf_path" in result["content"][0]["text"]
+        text = result["content"][0]["text"]
+        assert "no MJCF" not in text
+        assert "not supported" not in text
+        assert "world" in text.lower()
 
     def test_non_identity_orientation_rejected(self):
         sim = IsaacSimulation()

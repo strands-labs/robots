@@ -578,6 +578,66 @@ def contact_is_active(record: Mapping[str, Any]) -> bool:
     return bool(flag)
 
 
+#: Backend class names whose missing contact query has already been reported, so
+#: the WARNING below fires once per backend rather than once per polled tick -
+#: a predicate runs every control step, and a per-tick warning would bury the
+#: rollout log under hundreds of copies of one fact.
+_WARNED_NO_CONTACT_QUERY: set[str] = set()
+
+
+def _read_contacts(sim: SimEngine, caller: str) -> dict[str, Any] | None:
+    """Read ``sim.get_contacts()`` into its json payload, or ``None``.
+
+    The one owner of the contact read for every ``contact_*`` predicate, so the
+    verdict on a backend that cannot answer is decided once rather than once
+    per predicate. Three outcomes:
+
+    * a payload dict - the backend answered;
+    * ``None`` after a WARNING (once per backend class) - the backend has no
+      contact query at all: ``get_contacts`` is absent or still the base
+      class's raising stub. This is not a transient failure but a permanent
+      fact about the backend, and the predicate will answer ``False`` on every
+      tick because of it - which, fed into a success criterion, is a 0% success
+      rate shaped like a failing policy. The warning is what keeps that
+      distinguishable from silence; ``evaluate(success_fn="contact")`` refuses
+      such a backend up front, but the predicate DSL is also reachable directly
+      (benchmark specs), where refusing is not this layer's call to make -
+      predicates never raise, by contract.
+    * ``None`` at DEBUG - a transient read failure (world mid-teardown, a
+      backend error envelope), the pre-existing degraded mode.
+    """
+    get_contacts = getattr(sim, "get_contacts", None)
+    if get_contacts is None:
+        _warn_no_contact_query(sim, caller, "it has no get_contacts at all")
+        return None
+    try:
+        result = get_contacts()
+    except NotImplementedError:
+        _warn_no_contact_query(sim, caller, "its get_contacts is the SimEngine stub")
+        return None
+    except Exception as e:  # noqa: BLE001 - defensive: predicates never raise
+        logger.debug("%s: get_contacts() failed: %s", caller, e)
+        return None
+    return _extract_json(result)
+
+
+def _warn_no_contact_query(sim: SimEngine, caller: str, reason: str) -> None:
+    backend = type(sim).__name__
+    if backend in _WARNED_NO_CONTACT_QUERY:
+        return
+    _WARNED_NO_CONTACT_QUERY.add(backend)
+    logger.warning(
+        "%s: backend %s cannot answer a contact query (%s), so every contact_* "
+        "predicate will answer False on every tick. A success criterion built on "
+        "one will report 0%% success regardless of what the policy does. Use an "
+        "observation-based predicate (e.g. body.<name>.pos), or a backend with a "
+        "contact query (MuJoCo).",
+        caller,
+        backend,
+        reason,
+    )
+
+
 def _contact_between(geom_a: str, geom_b: str) -> BoolPredicate:
     """Pairwise contact predicate.
 
@@ -587,15 +647,9 @@ def _contact_between(geom_a: str, geom_b: str) -> BoolPredicate:
     """
 
     def check(sim: SimEngine) -> bool:
-        get_contacts = getattr(sim, "get_contacts", None)
-        if get_contacts is None:
+        payload = _read_contacts(sim, f"contact_between({geom_a!r},{geom_b!r})")
+        if payload is None:
             return False
-        try:
-            result = get_contacts()
-        except Exception as e:  # noqa: BLE001 - defensive
-            logger.debug("contact_between(%r,%r) failed: %s", geom_a, geom_b, e)
-            return False
-        payload = _extract_json(result)
         contacts = payload.get("contacts")
         if not isinstance(contacts, list):
             return False
@@ -615,15 +669,9 @@ def _contact_any() -> BoolPredicate:
     """Sparse "any contact" predicate - matches the legacy ``success_fn='contact'`` path."""
 
     def check(sim: SimEngine) -> bool:
-        get_contacts = getattr(sim, "get_contacts", None)
-        if get_contacts is None:
+        payload = _read_contacts(sim, "contact_any()")
+        if payload is None:
             return False
-        try:
-            result = get_contacts()
-        except Exception as e:  # noqa: BLE001 - defensive
-            logger.debug("contact_any() failed: %s", e)
-            return False
-        payload = _extract_json(result)
         contacts = payload.get("contacts")
         if isinstance(contacts, list):
             # The per-record list wins over a bare count: only a record

@@ -28,8 +28,16 @@ This module pins that whole matrix:
 * :class:`TestRefusalsThatHadNoTest` -- the four refusals the constructor
   already made that nothing exercised (duplicate arm names, a
   non-callable injected read, a non-positive scale, an inverted limit row).
-* :class:`TestToScalarFallback` -- the documented "everything else ->
-  ``default`` after a WARNING log" coercion branch.
+* :class:`TestAnUnreadableChannelIsRefusedByDefault`,
+  :class:`TestTheDegradedPostureIsStillAvailable` and
+  :class:`TestANonFiniteChannelIsRefusedInBothPostures` -- the coercion branch,
+  which used to log a WARNING and substitute a zero unconditionally. The
+  degrade-one-axis posture is preserved under ``strict=False``; a non-finite
+  channel is refused either way, because it solved to ``nan`` targets for every
+  arm joint rather than holding one axis.
+* :class:`TestAnAbsentChannelIsNotAnError` -- absence means "hold this axis" and
+  is the distinction that lets the coercion refuse a value it cannot read.
+* :class:`TestTheStrictFlagIsCheckedNotTruthy` -- the posture flag's domain.
 * :class:`TestARefusedValueNeverBecomesAPerActionEnvelope` -- the engine
   seam, and the reason the constructor is the right place to refuse.
 * :class:`TestEveryNumericKnobIsJudged` -- a drift guard, so a sixth
@@ -258,36 +266,207 @@ class TestRefusalsThatHadNoTest:
             _build(joint_limits=[[0.1, -0.1]] * len(ARM))
 
 
-class TestToScalarFallback:
-    """The documented "everything else -> default after a WARNING" branch."""
+#: The values that cannot be read as a scalar at all.
+_UNREADABLE = [
+    pytest.param(None, id="none"),
+    pytest.param([], id="empty-list"),
+    pytest.param({}, id="dict"),
+    pytest.param("abc", id="non-numeric-string"),
+    pytest.param([None], id="list-of-none"),
+    pytest.param(np.array([]), id="empty-array"),
+]
 
-    @pytest.mark.parametrize(
-        "value",
-        [
-            pytest.param(None, id="none"),
-            pytest.param([], id="empty-list"),
-            pytest.param({}, id="dict"),
-            pytest.param("abc", id="non-numeric-string"),
-            pytest.param([None], id="list-of-none"),
-            pytest.param(np.array([]), id="empty-array"),
-        ],
-    )
-    def test_an_uncoercible_channel_falls_back_to_the_default(self, value: Any) -> None:
-        assert _to_scalar(value, default=0.0) == 0.0
-        assert _to_scalar(value, default=0.25) == 0.25
+
+class TestAnUnreadableChannelIsRefusedByDefault:
+    """This branch used to substitute a zero and log a WARNING, always.
+
+    It replaces ``TestToScalarFallback``, whose reasoning - "a malformed channel
+    degrades that one axis, it does not abort the step" - is a defensible
+    posture and is now what ``strict=False`` selects. What changed is which
+    posture is the *default*, on two grounds: it returned a zero-valued action
+    on failure, and the substitution was not the "degrade one axis" it reads as
+    for the gripper, where ``0.5`` becomes ``-sign(0.0)`` -> ``-0.0`` and is
+    dropped by the ``command != 0.0`` guard, so a grasp silently did nothing.
+    """
+
+    @pytest.mark.parametrize("value", _UNREADABLE)
+    def test_the_coercion_raises(self, value: Any) -> None:
+        with pytest.raises(ValueError, match="cannot be read as a scalar"):
+            _to_scalar(value, "x", strict=True)
+
+    @pytest.mark.parametrize("value", _UNREADABLE)
+    def test_the_controller_refuses_the_action(self, value: Any) -> None:
+        controller = _build()
+
+        with pytest.raises(ValueError, match="cannot be read as a scalar"):
+            controller.compute_joint_targets({"x": 1.0, "y": value})
+
+    def test_the_refusal_names_the_channel(self) -> None:
+        """So the caller fixes the axis rather than searching the action."""
+        with pytest.raises(ValueError, match="'roll'"):
+            _to_scalar("abc", "roll", strict=True)
+
+    def test_the_refusal_names_the_escape_hatch(self) -> None:
+        with pytest.raises(ValueError, match="strict=False"):
+            _to_scalar("abc", "x", strict=True)
+
+    def test_an_unreadable_gripper_is_refused_too(self) -> None:
+        """The case the old substitution handled worst: 0.5 -> -0.0 -> dropped,
+        so a commanded grasp or release silently did not happen."""
+        controller = _build()
+
+        with pytest.raises(ValueError, match="'gripper'"):
+            controller.compute_joint_targets({"gripper": "abc"})
+
+
+class TestTheDegradedPostureIsStillAvailable:
+    """``strict=False`` restores what this controller shipped with."""
+
+    @pytest.mark.parametrize("value", _UNREADABLE)
+    def test_an_unreadable_channel_falls_back_to_the_default(self, value: Any) -> None:
+        assert _to_scalar(value, "x", strict=False, default=0.0) == 0.0
+        assert _to_scalar(value, "x", strict=False, default=0.25) == 0.25
 
     def test_the_fallback_logs_a_warning_naming_the_value(self, caplog: pytest.LogCaptureFixture) -> None:
         with caplog.at_level(logging.WARNING, logger=delta_eef_mod.__name__):
-            assert _to_scalar("abc") == 0.0
+            assert _to_scalar("abc", "x", strict=False) == 0.0
         assert any("could not coerce action value" in r.getMessage() for r in caplog.records)
         assert any("'abc'" in r.getMessage() for r in caplog.records)
 
-    def test_an_uncoercible_channel_is_a_no_op_delta_not_a_raise(self) -> None:
-        """A malformed channel degrades that one axis, it does not abort the step."""
-        controller = _build()
+    def test_an_unreadable_channel_is_a_no_op_delta_not_a_raise(self) -> None:
+        """The original assertion, verbatim in substance, under the flag that
+        now selects it: the rest of the action still applies."""
+        controller = _build(strict=False)
+
         targets = controller.compute_joint_targets({"x": 1.0, "y": None, "roll": "abc"})
+
         assert all(np.isfinite(list(targets.values())))
         assert targets[ARM[0]] == pytest.approx(DEFAULT_POS_SCALE / (1.0 + DAMPING**2), abs=1e-6)
+
+
+class TestNaNIsRefusedInBothPostures:
+    """The case no posture can honour, and the one the old code never caught.
+
+    ``float("nan")`` coerces successfully, so it never reached the fallback at
+    all, and ``_solve_arm_targets``' finiteness guard covers only the injected
+    callables. The solve returned non-finite targets for EVERY arm joint - not a
+    held axis - and those reach PhysX, which reports them from a later step as
+    "Illegal BroadPhaseUpdateData - non-finite bounds", attributed to whatever is
+    running by then. The replaced test asserted ``all(np.isfinite(...))`` of the
+    targets and never passed a ``nan`` in, so its own invariant was the thing this
+    violated.
+    """
+
+    @pytest.mark.parametrize("strict", [True, False])
+    def test_the_coercion_raises(self, strict: bool) -> None:
+        with pytest.raises(ValueError, match="is NaN"):
+            _to_scalar(math.nan, "x", strict=strict)
+
+    @pytest.mark.parametrize("strict", [True, False])
+    @pytest.mark.parametrize("channel", ["x", "y", "z", "roll", "pitch", "yaw", "gripper"])
+    def test_every_channel_refuses_it(self, strict: bool, channel: str) -> None:
+        """Parametrized over the channel, because a guard that covered only the
+        arm axes would leave the gripper coercion free to reintroduce a
+        substitution - and a class that tested one channel could not see it."""
+        controller = _build(strict=strict)
+
+        with pytest.raises(ValueError, match="is NaN"):
+            controller.compute_joint_targets({channel: math.nan})
+
+    def test_the_refusal_says_strict_does_not_relax_it(self) -> None:
+        with pytest.raises(ValueError, match="strict=False does not relax this"):
+            _to_scalar(math.nan, "x", strict=True)
+
+    @pytest.mark.parametrize("strict", [True, False])
+    def test_no_non_finite_target_is_ever_returned(self, strict: bool) -> None:
+        """The invariant the class exists for, stated directly."""
+        controller = _build(strict=strict)
+
+        for channel in ("x", "y", "z", "roll", "pitch", "yaw"):
+            with pytest.raises(ValueError):
+                controller.compute_joint_targets({channel: math.nan})
+
+
+class TestInfinityIsAcceptedAndSaturates:
+    """``+-inf`` is NOT refused, and that is deliberate and measured.
+
+    ``np.clip(+-inf, -1, 1)`` is ``+-1.0``, so an infinite channel saturates to the
+    maximum per-step delta - precisely the clip-then-scale contract this controller
+    documents. Measured against clean main, ``x=+inf`` produced a finite
+    ``{"j1": 0.0499, ...}`` while ``x=nan`` produced ``{"j1": nan, "j2": nan}``.
+
+    An earlier version of this fix refused every non-finite value on the stated
+    grounds that it "solves to non-finite targets for every arm joint". True of
+    ``nan``, false of ``+-inf`` - and refusing inf converts a correct saturation
+    into a hard failure for any policy head that saturates. Adversarial review
+    caught it; this class stops it coming back.
+    """
+
+    @pytest.mark.parametrize("value", [math.inf, -math.inf])
+    @pytest.mark.parametrize("strict", [True, False])
+    def test_the_coercion_accepts_it(self, value: float, strict: bool) -> None:
+        assert _to_scalar(value, "x", strict=strict) == value
+
+    def test_it_saturates_to_the_maximum_positive_delta(self) -> None:
+        targets = _build().compute_joint_targets({"x": math.inf})
+
+        assert targets[ARM[0]] == pytest.approx(DEFAULT_POS_SCALE / (1.0 + DAMPING**2), abs=1e-6)
+        assert all(math.isfinite(v) for v in targets.values())
+
+    def test_it_saturates_to_the_maximum_negative_delta(self) -> None:
+        targets = _build().compute_joint_targets({"x": -math.inf})
+
+        assert targets[ARM[0]] == pytest.approx(-DEFAULT_POS_SCALE / (1.0 + DAMPING**2), abs=1e-6)
+        assert all(math.isfinite(v) for v in targets.values())
+
+    def test_it_matches_a_saturated_finite_input(self) -> None:
+        """The equivalence that makes accepting it correct rather than lenient:
+        inf and +1.0 are the same request after the documented clip."""
+        assert _build().compute_joint_targets({"x": math.inf}) == _build().compute_joint_targets({"x": 1.0})
+
+    @pytest.mark.parametrize("value", [math.inf, -math.inf])
+    def test_an_infinite_gripper_is_well_defined_too(self, value: float) -> None:
+        """``-sign(2*(+-inf) - 1)`` is ``-+1``, so it is a definite open/close
+        rather than the dropped ``-0.0`` an unreadable value used to become."""
+        targets = _build().compute_joint_targets({"gripper": value})
+
+        assert set(GRIP) <= set(targets)
+        assert all(math.isfinite(v) for v in targets.values())
+
+
+class TestAnAbsentChannelIsNotAnError:
+    """Absence means "hold this axis" and is the documented default.
+
+    Keeping this separate from the unreadable case is what lets the coercion
+    refuse: the zero for a missing axis is a documented default, and the zero
+    that used to stand in for an unreadable one was a fabricated command.
+    """
+
+    def test_an_empty_action_yields_no_targets(self) -> None:
+        assert _build().compute_joint_targets({}) == {}
+
+    def test_a_partial_action_moves_only_what_it_names(self) -> None:
+        targets = _build().compute_joint_targets({"x": 1.0})
+
+        assert targets[ARM[0]] == pytest.approx(DEFAULT_POS_SCALE / (1.0 + DAMPING**2), abs=1e-6)
+
+    def test_an_absent_gripper_writes_no_finger_target(self) -> None:
+        assert not set(GRIP) & set(_build().compute_joint_targets({"x": 1.0}))
+
+
+class TestTheStrictFlagIsCheckedNotTruthy:
+    """A posture flag read by truthiness inverts exactly the spellings an
+    operator reaches for: ``strict="no"`` would select the permissive posture
+    while reading as the strict one."""
+
+    @pytest.mark.parametrize("value", ["no", "false", "0", "off", 0, 1, None, "", [], "yes"])
+    def test_a_non_boolean_is_refused(self, value: Any) -> None:
+        with pytest.raises(ValueError, match="strict"):
+            _build(strict=value)
+
+    @pytest.mark.parametrize("value", [True, False])
+    def test_a_boolean_is_accepted(self, value: bool) -> None:
+        assert _build(strict=value) is not None
 
 
 class _NanController:

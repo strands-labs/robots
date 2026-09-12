@@ -85,6 +85,7 @@ from strands_robots.simulation.base import (
     own_keyword_names,
     reject_misspelled_kwargs,
     reject_setup_kwargs,
+    unknown_model_msg,
 )
 from strands_robots.simulation.ik import GRIPPER_BODY_HINTS, discover_ee_frame, hint_matches_name
 from strands_robots.simulation.model_registry import (
@@ -1650,127 +1651,18 @@ class MuJoCoSimEngine(
     def _unknown_model_msg(requested: str) -> str:
         """Build the 'model could not be resolved' error for a robot name.
 
-        Three conditions reach this message and they have different remedies, so
-        it diagnoses which one it is instead of reporting them all as a bad name:
-
-        * The registry does not know ``requested`` - a typo or an unknown robot.
-          Names the closest sim-loadable registry keys via
-          :func:`close_match_hint` so the caller can fix it in place without a
-          discovery round-trip. The pool is deliberately the ``mode="sim"``
-          listing rather than the whole registry: a suggestion this engine
-          cannot spawn sends the caller straight back here, and the registry
-          holds hardware-only entries close enough to be suggested (the sole
-          suggestion offered for ``earthrover`` was ``hope_jr``, which is itself
-          hardware-only, so the one remedy on offer reproduced the same
-          refusal). ``close_match_hint`` already drops a suggestion identical to
-          ``requested`` for the same reason - it carries no information and
-          displaces a real one out of the three slots.
-        * The registry knows ``requested`` and the entry declares a hardware
-          backend and no simulation asset - a real robot strands drives over
-          LeRobot that has no model to load. The name is already correct, so
-          spelling suggestions are the wrong advice here too; names the hardware
-          entry point instead, the way
-          :func:`~strands_robots.robot.Robot` already answers a leader-arm name
-          with the teleoperator entry point rather than the registry listing.
-        * The registry knows ``requested`` and its model XML is simply not on
-          disk. Here the name is already correct, so spelling suggestions are
-          the wrong advice - ``difflib`` ranks an exact match first, so this was
-          the one case that got told "Did you mean: <the name it just
-          refused>". Names the asset path the resolver looked for and the
-          remedy, split on the entry's own ``auto_download`` posture: an entry
-          with ``auto_download: false`` is never fetched automatically (the
-          asset has to be placed by hand), any other entry had a download
-          attempted by :func:`~strands_robots.assets.manager.resolve_model_path`
-          before it gave up, so retrying it through the ``download_assets``
-          tool is what surfaces why. Mirrors the registration-time wording in
-          :func:`~strands_robots.registry.user_registry.register_robot`, which
-          already reports a missing asset directory this way.
-
-        Suggestions and the asset probe are both best-effort: a registry that
-        cannot be read degrades to the bare form rather than propagating.
+        Delegates to :func:`~strands_robots.simulation.base.unknown_model_msg`,
+        which owns the wording. The three-way diagnosis this used to spell out
+        inline moved there unchanged when the Isaac backend became a second
+        caller: the message explains why
+        :func:`~strands_robots.simulation.model_registry.resolve_model` returned
+        ``None``, which is a property of the registry rather than of this engine,
+        and two inline copies is how two backends come to diagnose one registry
+        differently. The default discovery hint is this backend's own
+        ``action='list_urdfs'``, so the text is byte-identical to what this
+        method returned before.
         """
-        known: list[str] = []
-        try:
-            from strands_robots.registry import list_robots as _list_robots
-
-            # mode="sim" so a suggestion is a name this engine can actually
-            # spawn. A user model added through ``register_urdf`` is absent from
-            # every ``list_robots`` mode, so narrowing the pool drops nothing
-            # that was suggestable before.
-            known = [r.get("name", "") for r in _list_robots(mode="sim") if r.get("name")]
-        except Exception:  # noqa: BLE001 - suggestions are best-effort
-            known = []
-
-        # Probed independently of the suggestion list so an unreadable registry
-        # listing cannot mask the more specific diagnosis, and vice versa.
-        asset_gap: tuple[str, str, str, bool, list[str]] | None = None
-        hardware_only: tuple[str, str] | None = None
-        try:
-            from strands_robots.assets.manager import get_search_paths, is_robot_asset_present
-            from strands_robots.registry import get_robot as _get_robot
-            from strands_robots.registry import resolve_name as _resolve_name
-
-            # ``requested`` may be an alias; resolve to the canonical key the
-            # asset entry hangs off. No type test on ``requested`` here - a name
-            # that cannot be a registry key raises and is caught, which keeps
-            # the availability listing above ungated on the name's type.
-            canonical = _resolve_name(requested)
-            entry = ((_get_robot(canonical) or {}) if canonical else {}) or {}
-            asset = entry.get("asset") or {}
-            if asset and not is_robot_asset_present(canonical):
-                asset_gap = (
-                    canonical,
-                    str(asset.get("dir", "")),
-                    str(asset.get("model_xml", "")),
-                    asset.get("auto_download") is False,
-                    [str(path) for path in get_search_paths()],
-                )
-            elif entry and not asset:
-                # Registered, correct, and simply not a simulation robot. The
-                # LeRobot type is what the hardware route is keyed on, so it is
-                # quoted when the entry declares one.
-                hardware_only = (canonical, str((entry.get("hardware") or {}).get("lerobot_type") or ""))
-        except Exception:  # noqa: BLE001 - the diagnosis is best-effort
-            asset_gap = None
-            hardware_only = None
-
-        if asset_gap is not None:
-            canonical, asset_dir, model_xml, never_downloads, search_paths = asset_gap
-            relative = f"{asset_dir}/{model_xml}"
-            searched = ", ".join(f"'{path}'" for path in search_paths)
-            msg = (
-                f"Robot '{requested}' is registered but its model file is not on disk: "
-                f"no '{relative}' under {searched}."
-                if search_paths
-                else (
-                    f"Robot '{requested}' is registered but its model file is not on disk "
-                    f"(expected '{relative}' on an asset search path)."
-                )
-            )
-            if never_downloads:
-                msg += (
-                    f" This entry declares auto_download=false, so its asset is never fetched "
-                    f"automatically - create that directory and place '{model_xml}' inside it."
-                )
-            else:
-                msg += f" Fetch it with the download_assets tool (robots='{canonical}')."
-            return msg
-
-        if hardware_only is not None:
-            canonical, lerobot_type = hardware_only
-            typed = f" (LeRobot type '{lerobot_type}')" if lerobot_type else ""
-            return (
-                f"Robot '{requested}' is registered for real hardware only{typed}: its registry "
-                f"entry declares no simulation asset, so there is no model to load. The name is "
-                f"already correct, so there is no spelling to fix - drive it as hardware with "
-                f"Robot('{canonical}', mode='real'), or pass urdf_path= to supply a model of your "
-                f"own. Use list_robots(mode='sim') to see the robots this backend can spawn."
-            )
-
-        msg = f"No model found for '{requested}'."
-        msg += close_match_hint(requested, known)
-        msg += " Use action='list_urdfs' to see all available robots."
-        return msg
+        return unknown_model_msg(requested)
 
     def _unknown_object_msg(self, requested: object) -> str:
         """Actionable 'object not found' message: name it, offer a close-match,

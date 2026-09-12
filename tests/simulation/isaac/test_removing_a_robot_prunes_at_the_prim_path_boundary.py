@@ -51,6 +51,7 @@ from strands_robots.simulation.isaac.simulation import (
     IsaacSimulation,
     _CameraState,
     _ObjectState,
+    _RobotState,
 )
 
 #: ``(removed, survivor)`` name pairs. The first row is the arrangement where the
@@ -84,12 +85,28 @@ def _stub() -> types.SimpleNamespace:
 
 
 def _with_robots(*names: str) -> types.SimpleNamespace:
-    """Register ``names`` procedurally and assert each one took."""
+    """Register ``names`` in the two registries a prune reads, and nothing else.
+
+    Written directly rather than through ``add_robot``. These cells are about how
+    ``remove_robot`` scopes its ``_prim_registry`` prune, and the only inputs to
+    that are the ``_robots`` keys and the prim paths - so going through
+    ``add_robot`` only coupled them to whatever that method needs to *load* a
+    robot. It did once: the call was ``add_robot(stub, name, data_config="panda")``
+    against a stub whose ``_world`` is ``None``, which succeeded only because the
+    "procedural" branch it reached created nothing at all. Now that the branch
+    resolves and imports a real description, the same call needs an asset, a
+    converter and a live stage, none of which a prune has any opinion about.
+
+    Registering the two facts the prune reads keeps the fixture honest about its
+    own subject, and asserts the arrangement it depends on rather than a status.
+    """
     stub = _stub()
     for name in names:
-        result = IsaacSimulation.add_robot(stub, name, data_config="panda")  # type: ignore[arg-type]
-        assert result["status"] == "success", (name, result)
+        prim_path = f"/World/Robots/{name}"
+        stub._robots[name] = _RobotState(name=name, prim_path=prim_path, joint_names=[])
+        stub._prim_registry.append(prim_path)
     assert stub._prim_registry == [f"/World/Robots/{n}" for n in names]
+    assert sorted(stub._robots) == sorted(names)
     return stub
 
 

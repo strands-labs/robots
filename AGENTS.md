@@ -2482,6 +2482,7 @@ Corrections from code review that apply to all future contributions:
   | `strands_robots/policies/persistent.py::get_actions` | `handoff.abandon()`, bare `raise` | no |
   | `strands_robots/robot.py::Robot` | `sim.destroy()`, bare `raise` | no |
   | `strands_robots/simulation/safe_output.py::atomic_write_bytes` | `os.unlink(tmp)`, bare `raise` | no |
+  | `strands_robots/simulation/isaac/mjcf_assets.py::convert_mjcf_to_usd` | `_remove_tree(staging)`, bare `raise` | no |
   | `strands_robots/simulation/isaac/simulation.py::_job` | `box["exc"] = exc`, no lexical raise | **yes** |
 
   The handlers under `tests/`, `examples/` and `scripts/` re-raise lexically too,

@@ -262,8 +262,6 @@ class IsaacConfig:
     camera_height : int
         Default camera height in pixels. Default 480. Same domain as
         ``camera_width``.
-    enable_rtx_sensors : bool
-        Enable RTX-accelerated sensors (camera, LiDAR). Default True.
     verbose : bool
         Enable verbose logging from Isaac Sim/Kit. Default False.
     extra : dict
@@ -282,7 +280,6 @@ class IsaacConfig:
     nucleus_url: str | None = None
     camera_width: int = 640
     camera_height: int = 480
-    enable_rtx_sensors: bool = True
     verbose: bool = False
     extra: dict[str, Any] = field(default_factory=dict)
 

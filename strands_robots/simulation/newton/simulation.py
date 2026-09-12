@@ -1219,9 +1219,24 @@ class NewtonSimEngine(DomainRandomizationMixin, NewtonRecordingMixin, SimEngine)
                 idx = self._joint_coord_index.get((robot_name, jname))
                 if idx is not None and idx < len(joint_q):
                     obs[jname] = float(joint_q[idx])
-        # Joint-position sensor noise applies only to the float joint entries;
-        # camera frames are added afterwards (and carry their own jitter via the
-        # render path), so the result holds mixed float/ndarray values.
+                # Per-joint velocity, additive (``"<name>.vel"``) - the
+                # ``SimEngine.get_observation`` schema entry MuJoCo has emitted
+                # since #761 and this backend never did, so a WBC/microduck/
+                # ProtoMotions policy that worked on MuJoCo ran open-loop or
+                # raised ``KeyError`` here. Indexed via ``_joint_dof_index``,
+                # NOT ``_joint_coord_index``: a free joint upstream shifts the
+                # two apart (7 position coords vs 6 velocity dofs), which is
+                # the reason the second map exists. The free joint itself is
+                # already skipped above; its twist is ``base_lin_vel`` /
+                # ``base_ang_vel``.
+                dof = self._joint_dof_index.get((robot_name, jname))
+                if dof is not None and dof < len(joint_qd):
+                    obs[f"{jname}.vel"] = float(joint_qd[dof])
+        # Joint sensor noise applies only to the float joint entries -
+        # ``joint_pos_std`` to positions, ``joint_vel_std`` to the ``.vel``
+        # keys, split by suffix inside the helper; camera frames are added
+        # afterwards (and carry their own jitter via the render path), so the
+        # result holds mixed float/ndarray values.
         obs_out: dict[str, Any] = dict(self._apply_joint_pos_noise(obs))
         # Floating-base IMU-style signals for a robot with a free root (a
         # humanoid / mobile base): ``base_quat`` (orientation, w,x,y,z) and

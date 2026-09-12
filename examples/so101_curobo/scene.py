@@ -159,15 +159,30 @@ def _status(result: Any) -> str:
 
 
 def _add_robot_with_fallback(sim, name: str, candidates: list[str]) -> str:
-    errors = []
+    """Load the first candidate that resolves, reporting why the others did not.
+
+    Each refusal is kept and rendered if every candidate fails. It used to record
+    only the config name, which was survivable while the Isaac backend answered
+    this call from a hardcoded table - the first candidate always "succeeded"
+    there, so the failure path was unreachable. Now both backends resolve a real
+    description, so a total failure has a real and per-candidate cause (asset not
+    downloaded, model unknown, MJCF importer unavailable), and the name alone
+    names none of them.
+    """
+    errors: list[str] = []
     for cfg in candidates:
-        if _status(sim.add_robot(name=name, data_config=cfg, position=[0.0, 0.0, 0.0])) == "success":
+        result = sim.add_robot(name=name, data_config=cfg, position=[0.0, 0.0, 0.0])
+        if _status(result) == "success":
             if cfg != candidates[0]:
                 logger.warning("Robot %r unavailable; fell back to %r.", candidates[0], cfg)
             return cfg
-        errors.append(cfg)
+        reason = "unknown"
+        if isinstance(result, dict):
+            reason = " ".join(str(b.get("text", "")) for b in result.get("content", []) if b) or "unknown"
+        errors.append(f"  {cfg}: {reason}")
+    joined = "\n".join(errors)
     raise RuntimeError(
-        f"Could not load any SO-101-class arm. Tried {candidates}. "
+        f"Could not load any SO-101-class arm. Tried {candidates}:\n{joined}\n"
         "Install a MuJoCo Menagerie SO-101/SO-100 model or pass a resolvable config."
     )
 
@@ -699,8 +714,28 @@ def build_pick_place_scene(
         if _status(sim.add_camera(name=name, position=pos, target=tgt, fov=fov, width=cw, height=ch)) == "success":
             cams.append(name)
 
+    # Isaac only: rebuild PhysX's tensor view before stepping. Adding a DYNAMIC
+    # body - the cube above, with ``is_static=False`` - invalidates the view, and
+    # ``step`` refuses on Isaac until a ``reset`` rebuilds it. Without this the
+    # settle below silently does nothing: ``step`` returns an error envelope this
+    # call discards, and the arm never reaches its home pose.
+    #
+    # Placed BEFORE ``_erect_arm``, not after: ``reset`` returns the robot to its
+    # default pose, so resetting after the erect would undo it. Nothing is posed
+    # before this point, so the reset costs nothing here. MuJoCo needs no rebuild
+    # and is left on its original path.
+    if is_isaac:
+        _reset = sim.reset()
+        if _status(_reset) != "success":
+            logger.warning("scene build: reset before the settle step failed: %s", _reset)
+
     _erect_arm(sim, robot_name="arm")
-    sim.step(20)  # settle into the home pose
+    _settle = sim.step(20)  # settle into the home pose
+    if _status(_settle) != "success":
+        # Checked rather than discarded: this step is what brings the arm to its
+        # home pose, and a silent failure here surfaces later as a robot that
+        # never moved.
+        logger.warning("scene build: the settle step did not run: %s", _settle)
 
     # Final enforcement (after ALL recompiles -- robot, pads, cube/bin, cameras):
     # re-apply the strong gripper force + high pad/cube friction directly on the

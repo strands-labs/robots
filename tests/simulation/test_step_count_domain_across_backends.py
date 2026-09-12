@@ -400,6 +400,12 @@ def _isaac_stub() -> tuple[Any, dict[str, int]]:
         _sim_time=0.0,
         _step_count=0,
         _world=types.SimpleNamespace(step=lambda render=False: calls.__setitem__("n", calls["n"] + 1)),
+        # A scene PhysX's tensor view still covers, which is what makes the
+        # count domain the measurement here: ``step`` refuses a stale view
+        # ahead of the domain check, so a stub omitting this would report that
+        # refusal for every count and the parity assertion would pass on the
+        # wrong verdict.
+        _physics_view_stale=False,
         # Main-thread-affinity state (#1896): the stub is "created" on the
         # test's own thread with no pump, so the genuinely-bound marshal
         # helper takes the inline path - the same seam the real engine

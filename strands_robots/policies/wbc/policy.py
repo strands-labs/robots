@@ -611,16 +611,18 @@ class WBCPolicy(Policy):
         (an upright stance cue) rather than fabricating motion.
 
         Velocity availability: WBC is a velocity-feedback balance controller, so
-        ``dqj`` and ``base_ang_vel`` are genuine inputs - not optional. The
-        current MuJoCo backend's unified observation exposes joint *positions*
-        only (no ``<name>.vel`` keys, no ``observation.velocity``), so a plain
-        ``sim.run_policy`` rollout feeds WBC zero joint velocities. We emit a
-        one-time warning when that happens (a dead velocity channel can
-        destabilise the gait) rather than silently pretending the controller is
-        fully observed. To supply real velocities, drive the policy from an
-        observation that includes ``<name>.vel`` per-joint keys (or
-        ``observation.velocity`` + ``base_ang_vel``), e.g. a teleop/IMU bridge
-        or a future backend velocity field.
+        ``dqj`` and ``base_ang_vel`` are genuine inputs - not optional. Every
+        sim backend's unified observation now carries per-joint ``<name>.vel``
+        keys (the ``SimEngine.get_observation`` schema documents them; MuJoCo
+        has emitted them since #761, Isaac and Newton since the change that
+        corrected this paragraph), so a plain ``sim.run_policy`` rollout closes
+        the velocity loop. This docstring used to claim the opposite - that the
+        MuJoCo observation exposes positions only - which sent anyone
+        diagnosing a zero-velocity gait toward the backend that was fine. The
+        one-time warning below still fires when the keys are genuinely absent
+        (a hardware bridge without encoder rates, an old recorded dataset): a
+        dead velocity channel can destabilise the gait, and silence would
+        pretend the controller is fully observed.
         """
         # qj/dqj observe the whole body (n_obs_joints), in WBC_G1_ALL_JOINTS order.
         obs_names = self._obs_joint_names

@@ -460,25 +460,52 @@ class TestIsaacSimulationConstruction:
         assert "keyframe" not in result["content"][0]["text"].lower()
 
 
-class TestProceduralBuilders:
-    def test_list_procedural_robots(self):
-        from strands_robots.simulation.isaac.procedural import list_procedural_robots
+class TestTheProceduralLookupIsGone:
+    """``add_robot`` resolves a real description; it does not fabricate one.
 
-        names = list_procedural_robots()
-        assert {"so100", "panda", "unitree_g1"} <= set(names)
+    These three cells asserted that a ``get_procedural_robot`` /
+    ``list_procedural_robots`` pair answered for ``so100`` / ``panda`` /
+    ``unitree_g1``. That pair fed a branch in ``add_robot`` which reported
+    success while creating no prims at all, and whose joint names disagreed with
+    the MuJoCo backend's for every one of those names, so the lookup is deleted
+    rather than re-pointed. What is pinned now is that it stays deleted: a
+    re-introduced table is how the fiction comes back.
+    """
 
-    def test_get_procedural_robot_so100(self):
-        from strands_robots.simulation.isaac.procedural import get_procedural_robot
+    def test_the_lookup_functions_are_absent(self):
+        import strands_robots.simulation.isaac.procedural as procedural
 
-        robot = get_procedural_robot("so100")
-        assert robot is not None
-        assert robot.num_joints > 0
-        assert len(robot.joint_names) == robot.num_joints
+        for name in ("get_procedural_robot", "list_procedural_robots"):
+            assert not hasattr(procedural, name), (
+                f"{name} is back. add_robot must resolve a real description via "
+                f"resolve_model, not read joint names off a hardcoded table."
+            )
 
-    def test_get_procedural_robot_unknown_is_none(self):
-        from strands_robots.simulation.isaac.procedural import get_procedural_robot
+    def test_the_description_dataclasses_survive(self):
+        """The loaders' return type is not part of the fiction and must stay."""
+        from strands_robots.simulation.isaac.procedural import (
+            BodyDef,
+            JointDef,
+            ProceduralRobot,
+            _validate_kinematic_tree,
+        )
 
-        assert get_procedural_robot("does_not_exist") is None
+        robot = ProceduralRobot(
+            name="probe",
+            bodies=[BodyDef(name="base"), BodyDef(name="link")],
+            joints=[JointDef(name="j0", parent_body=0, child_body=1)],
+        )
+        _validate_kinematic_tree(robot)
+        assert robot.joint_names == ["j0"]
+
+    def test_no_builder_remains_in_the_module(self):
+        """A builder re-added under any name is the same defect."""
+        import strands_robots.simulation.isaac.procedural as procedural
+
+        builders = [
+            name for name in dir(procedural) if name.startswith("_build") and callable(getattr(procedural, name, None))
+        ]
+        assert builders == [], f"hardcoded robot builders are back: {builders}"
 
 
 class TestLoaders:

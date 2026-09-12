@@ -158,7 +158,21 @@ class TestIsaacGPUIntegration:
             sim.destroy()
 
     def test_replicate_fleet_creates_parallel_envs(self):
-        """``replicate()`` must create the requested parallel environments."""
+        """``replicate()`` must create the requested parallel environments.
+
+        This cell stated that contract and graded none of it. It asserted
+        ``status == "success"`` and ``"16" in text``, both of which a complete
+        no-op produces - and produced, for as long as ``replicate`` was a stub
+        whose body was a comment reading "In full implementation: use
+        omni.isaac.cloner.Cloner". Measured on Isaac Sim 6.0.1, that stub
+        reported "Replicated to 64 environments. Build time: 0ms." with the
+        stage's prim count unchanged, and this test was green throughout.
+
+        So the assertions now read the **stage**: the environment prims have to
+        exist, and there have to be one per requested environment beyond the
+        source. A status field cannot substitute for that, because the status
+        field is exactly what the defect got right.
+        """
         from strands_robots.simulation.isaac import IsaacConfig, IsaacSimulation
 
         _skip_if_isaac_unavailable()
@@ -170,9 +184,39 @@ class TestIsaacGPUIntegration:
             r = sim.add_robot("so100")
             assert r["status"] == "success", f"add_robot: {r}"
 
+            import omni.usd  # type: ignore[import-not-found]
+
+            stage = omni.usd.get_context().get_stage()
+            before = sum(1 for _ in stage.Traverse())
+
             r = sim.replicate(16)
             assert r["status"] == "success", f"replicate: {r}"
-            assert "16" in r["content"][0]["text"]
+
+            payload = next(block["json"] for block in r["content"] if "json" in block)
+            assert payload["num_envs"] == 16, payload
+            # 15 clones, because the scene already on the stage is env_0.
+            assert payload["clones_created"] == 15, payload
+
+            # The claim the docstring makes, graded against the stage rather than
+            # the envelope: the prims are really there.
+            after = sum(1 for _ in stage.Traverse())
+            assert after > before, f"replicate() added no prims to the stage ({before} -> {after})"
+            assert payload["prims_created"] == after - before, payload
+
+            env_roots = {
+                prim.GetPath().pathString
+                for prim in stage.Traverse()
+                if prim.GetPath().pathString.startswith("/World/envs/env_")
+            }
+            missing = [
+                f"/World/envs/env_{i}"
+                for i in range(1, 16)
+                if not any(p.startswith(f"/World/envs/env_{i}") for p in env_roots)
+            ]
+            assert not missing, f"environments missing from the stage: {missing}"
+
+            # A real clone takes real time; the stub's "0ms" was two assignments.
+            assert payload["build_time_ms"] > 0.0, payload
         finally:
             sim.destroy()
 

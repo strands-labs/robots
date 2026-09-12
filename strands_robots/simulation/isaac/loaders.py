@@ -1,11 +1,26 @@
 """Robot description file loaders -> :class:`ProceduralRobot`.
 
 Follow-up to the R7 Phase 1 procedural-builder slice (robots-sim#46): instead of
-hardcoding ``_build_so100`` / ``_build_panda`` / ``_build_unitree_g1`` in
+hardcoding one Python builder per robot in
 :mod:`strands_robots.simulation.isaac.procedural`, drive the same
-``ProceduralRobot`` dataclass from existing
-robot description files (URDF, MJCF, USD) so the code path becomes a generic
-loader rather than a per-robot Python builder.
+``ProceduralRobot`` dataclass from existing robot description files (URDF, MJCF,
+USD) so the code path is a generic loader. Those three builders have since been
+deleted outright - they described no real robot and nothing turned them into one
+- so this module is now the only producer of a ``ProceduralRobot``.
+
+Scope - who these three loaders are FOR (adjudicated deliberately, so a
+dead-code audit does not re-litigate it): ``load_urdf`` / ``load_mjcf`` /
+``load_usd`` are the *description-introspection* API - parse a robot file into
+a joints/bodies report - published in ``__all__`` and documented on the Isaac
+docs page for library users, and consumed in-repo by the cross-backend parity
+suites (~17 test modules grade joint vocabulary, axis defaults, free-joint
+spellings and pose conventions against them). They are NOT the load path:
+``IsaacSimulation.add_robot`` builds articulations through Isaac's own
+URDF/MJCF importers and never calls them, which is why a caller-grep of the
+package finds none - the callers are outside the package and inside ``tests/``.
+The rest of this module (``load_mjcf_scene_objects`` / ``SceneObject``) is the
+``load_scene`` path's parser and is called from
+:mod:`strands_robots.simulation.isaac.simulation` directly.
 
 Supported formats:
     * **URDF** - ``load_urdf(path)``. Parsed with stdlib
@@ -63,6 +78,7 @@ if TYPE_CHECKING:
 __all__ = [
     "load_urdf",
     "load_mjcf",
+    "mjcf_declares_floating_base",
     "load_usd",
     "SceneObject",
     "load_mjcf_scene_objects",
@@ -490,6 +506,50 @@ _MJCF_JOINT_TAGS = ("joint", "freejoint")
 # only ``name``, ``group`` and ``align`` - MuJoCo refuses ``type`` on it - and
 # MJCF has no ``<default><freejoint>`` block, so it resolves no default class.
 _MJCF_FREEJOINT_TAG = "freejoint"
+
+
+def mjcf_declares_floating_base(path: str) -> bool:
+    """Whether the MJCF's root body is attached to the world by a FREE joint.
+
+    The question ``add_robot`` has to answer about a converted MJCF and cannot ask
+    the flag it uses for URDF: URDF cannot declare a floating base, so that path
+    takes ``fix_base`` from the caller - but MJCF *can*, with ``<freejoint/>`` or
+    ``<joint type="free">``, and every quadruped and humanoid in the shipped asset
+    corpus uses one. So for an MJCF the answer is in the file, and asking the
+    caller would be asking them to restate it.
+
+    Read from the whole spliced model via :func:`_mjcf_model_worldbody_bodies`,
+    because a root body can live in an ``<include>``d fragment - the same reason
+    that helper exists. Both spellings are read through
+    :data:`_MJCF_JOINT_TAGS` and :data:`_MJCF_FREEJOINT_TAG`, so the vocabulary has
+    one owner and a reader consulting only ``<joint type="free">`` cannot drift
+    back in.
+
+    Only a TOP-LEVEL body counts. A free joint deeper in the tree is a free-flying
+    child (a MuJoCo idiom for a detached payload), not the robot's base, and
+    reporting that as a floating base would put ``base_pos`` on a robot bolted to
+    a table.
+
+    Returns ``False`` for a file that cannot be read or parsed rather than
+    raising: the caller is deciding whether to *report* four observation keys, and
+    a robot that loads with no ``base_*`` is a smaller error than an ``add_robot``
+    that refuses over a file MuJoCo itself may accept. The load path parses the
+    same file immediately afterwards and reports any real problem there.
+    """
+    try:
+        tree = ET.parse(path)
+    except (OSError, ET.ParseError):
+        return False
+    root = tree.getroot()
+    base_dir = os.path.dirname(os.path.abspath(path))
+    _declares, top_bodies = _mjcf_model_worldbody_bodies(root, base_dir)
+    for body_el in top_bodies:
+        for child in body_el:
+            if child.tag == _MJCF_FREEJOINT_TAG:
+                return True
+            if child.tag in _MJCF_JOINT_TAGS and (child.get("type") or "").strip() == "free":
+                return True
+    return False
 
 
 def load_mjcf(path: str) -> ProceduralRobot:

@@ -4416,6 +4416,33 @@ class PolicyRunner:
             return success_fn
         if success_fn == "contact":
             sim = self.sim
+            # Refuse up front on a backend that cannot answer a contact query,
+            # BEFORE any rollout is spent. ``get_contacts`` on the base class is
+            # a raising stub, and the predicate DSL's never-raise contract turns
+            # that raise into ``False`` on every tick - so
+            # ``eval_policy(success_fn="contact")`` on such a backend used to
+            # run the full evaluation (GPU-hours on Isaac) and report
+            # ``success_rate: 0.0`` with ``success_measured: True``: a wrong
+            # answer shaped exactly like a policy that failed every episode,
+            # with nothing anywhere saying success was never measurable. The
+            # ``ValueError`` is returned to the caller as this method's
+            # documented structured-error envelope.
+            #
+            # The test is structural (did the subclass override the stub?)
+            # rather than a probe call, because ``get_contacts`` on a real
+            # backend can fail for world-lifecycle reasons that say nothing
+            # about the capability.
+            from strands_robots.simulation.base import SimEngine
+
+            if type(sim).get_contacts is SimEngine.get_contacts:
+                raise ValueError(
+                    f"success_fn='contact' cannot be measured on this backend: "
+                    f"{type(sim).__name__} does not implement get_contacts, so every "
+                    f"episode would score 0.0 while the payload claimed the rate was "
+                    f"measured. Pass a callable success_fn that reads the observation "
+                    f"(e.g. an object-pose check via body.<name>.pos), or evaluate on "
+                    f"a backend with a contact query (MuJoCo)."
+                )
             # Share the DSL's reader instead of keeping a second one. The
             # inline copy this replaces indexed the engine result as if it
             # were the payload, so it never saw a real backend's envelope and

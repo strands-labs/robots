@@ -49,7 +49,7 @@ from typing import Any
 
 import numpy as np
 
-from strands_robots.utils import finite_number_error, positive_finite_number_error
+from strands_robots.utils import boolean_flag_error, finite_number_error, positive_finite_number_error
 
 logger = logging.getLogger(__name__)
 
@@ -74,30 +74,114 @@ DEFAULT_POS_SCALE = 0.05
 DEFAULT_ROT_SCALE = 0.5
 
 
-def _to_scalar(value: Any, default: float = 0.0) -> float:
-    """Coerce a GR00T action channel to a scalar float.
+def _to_scalar(value: Any, key: str, *, strict: bool, default: float = 0.0) -> float:
+    """Coerce a present GR00T action channel to a finite scalar float.
 
     GR00T-LIBERO packs every action channel list-shaped (2-element list /
-    ndarray) to match the training-data shape -- the same convention
-    ``_LiberoOSCController._to_scalar`` handles on the MuJoCo path (#168).
+    ndarray) to match the training-data shape, so the leading element is the
+    scalar the controller means (#168).
 
     * Scalar input -> ``float(value)``
     * Non-empty list / tuple / ndarray -> ``float(value[0])``
-    * Everything else (None, empty list, dict, ...) -> ``default`` after a
-      WARNING log.
+    * Unreadable: raises under ``strict``, else ``default`` after a WARNING.
+    * ``NaN``: **always** raises, in both modes.
+    * ``+-inf``: accepted; it saturates to the maximum per-step delta, which is
+      this controller's documented clip-then-scale behaviour.
+
+    Only ever called for a channel the action actually carries. An ABSENT
+    channel is a documented default resolved by the caller and never reaches
+    here, which is the distinction this function exists to keep: absence means
+    "hold this axis", and a value that cannot be read means the action is not
+    what the controller believes it is.
+
+    The two failures are separated because only one of them has a coherent
+    degraded reading, which is why ``strict`` governs one and not the other.
+
+    An **unreadable** channel can honestly be treated as "hold this axis", and
+    that was the shipped behaviour - a WARNING plus ``0.0`` (``0.5`` for the
+    gripper), so a partly-malformed action still moved the axes it did specify.
+    That is a defensible posture and it is preserved under ``strict=False``. It
+    is no longer the default, because it returns a zero-valued action on
+    failure, and because the substitution is not always the "degrade one axis"
+    it reads as: an unreadable ``gripper`` resolved to ``0.5`` ->
+    ``-sign(0.0)`` -> ``-0.0``, which the ``command != 0.0`` guard drops
+    entirely, so a grasp or a release silently did nothing and the fingers held
+    their previous target.
+
+    A **NaN** channel has no such reading, so ``strict=False`` does not reach it.
+    ``float("nan")`` coerces successfully, the finiteness guard in
+    ``_solve_arm_targets`` covers only the injected callables, and the solve
+    returned ``{"j1": nan, "j2": nan, ...}`` - non-finite targets for *every* arm
+    joint, not a held axis. Those reach PhysX, which reports them from a LATER
+    step as "Illegal BroadPhaseUpdateData - non-finite bounds", attributed to
+    whatever is running by then rather than to this action. It is also the one
+    case the pre-existing test for this branch could not have caught while
+    asserting what it asserts: it requires ``all(np.isfinite(...))`` of the
+    targets and never passed a ``nan`` in.
+
+    ``+-inf`` is a different matter and is **accepted**. ``np.clip(+-inf, -1, 1)``
+    is ``+-1.0``, so it saturates to the maximum per-step delta - exactly the
+    clip-then-scale contract. Measured against clean main, ``x=+inf`` produced a
+    finite ``{"j1": 0.0499, ...}``. Refusing it would convert a correct saturation
+    into a hard failure for any policy head that saturates.
+
+    Args:
+        value: The channel's value, as the policy delivered it.
+        key: The channel name, so a refusal names the axis rather than the type.
+        strict: Whether an unreadable channel raises rather than degrading.
+        default: The value substituted for an unreadable channel when
+            ``strict`` is false. Unused otherwise.
+
+    Returns:
+        The channel as a finite float.
+
+    Raises:
+        ValueError: If the value is not finite, or - under ``strict`` - cannot
+            be read as a scalar.
     """
     try:
         if isinstance(value, (list, tuple, np.ndarray)) and len(value) > 0:
-            return float(value[0])
-        return float(value)
-    except (TypeError, ValueError, IndexError) as e:
+            scalar = float(value[0])
+        else:
+            scalar = float(value)
+    except (TypeError, ValueError, IndexError) as exc:
+        if strict:
+            raise ValueError(
+                f"IsaacDeltaEEFController: action channel {key!r} = {value!r} cannot be read as "
+                f"a scalar ({exc}). Channels are a scalar or a non-empty list/ndarray whose "
+                f"first element is the value. Omit the channel to hold that axis. Pass "
+                f"strict=False to the controller to degrade an unreadable channel to a neutral "
+                f"value with a warning instead."
+            ) from exc
         logger.warning(
-            "IsaacDeltaEEFController: could not coerce action value %r to float (%s); using %s for this step",
+            "IsaacDeltaEEFController: could not coerce action value %r for channel %r to float "
+            "(%s); using %s for this step (strict=False)",
             value,
-            e,
+            key,
+            exc,
             default,
         )
         return default
+    if np.isnan(scalar):
+        # NaN only, and not governed by strict: there is no degraded reading of it.
+        #
+        # +-inf is deliberately NOT refused here. It is well defined all the way
+        # through: np.clip(+-inf, -1, 1) is +-1.0, so an infinite channel saturates
+        # to the maximum per-step delta, which is precisely the documented
+        # clip-then-scale semantics this controller implements. Measured against
+        # clean main, x=+inf produced {"j1": 0.0499, ...} - a finite, saturated
+        # target - while x=nan produced {"j1": nan, "j2": nan}. Refusing inf would
+        # turn a correct saturation into a hard failure for any policy head that
+        # saturates, so only the value with no coherent reading is refused.
+        raise ValueError(
+            f"IsaacDeltaEEFController: action channel {key!r} = {value!r} is NaN. It solves to "
+            f"non-finite targets for every arm joint, which PhysX reports from a LATER step as "
+            f"'Illegal BroadPhaseUpdateData - non-finite bounds' - attributed to whatever is "
+            f"running by then rather than to this action. Omit the channel to hold that axis. "
+            f"strict=False does not relax this. (+-inf is accepted and saturates to the maximum "
+            f"per-step delta, which is this controller's documented clip-then-scale behaviour.)"
+        )
+    return scalar
 
 
 class IsaacDeltaEEFController:
@@ -139,6 +223,16 @@ class IsaacDeltaEEFController:
         open / close command. Defaults match the Franka USD's 0..0.04 m
         prismatic fingers. Either sign is usable, so only finiteness is
         constrained (:func:`~strands_robots.utils.finite_number_error`).
+    strict : bool
+        Whether an action channel that cannot be read as a scalar raises
+        (default) or degrades to a neutral value with a WARNING, leaving the
+        rest of the action to apply. ``False`` restores the behaviour this
+        controller shipped with. It does **not** relax the finiteness check:
+        a ``nan`` / ``inf`` channel raises either way, because it solves to
+        non-finite targets for every arm joint rather than holding one axis.
+        Checked, not read by truthiness
+        (:func:`~strands_robots.utils.boolean_flag_error`), so ``strict="no"``
+        cannot select the permissive posture while reading as the strict one.
 
     Concurrency: stateless between calls and does not touch the stage;
     safe to call from the thread driving ``send_action`` (which holds the
@@ -158,7 +252,11 @@ class IsaacDeltaEEFController:
         damping: float = 0.05,
         gripper_open: float = 0.04,
         gripper_close: float = 0.0,
+        strict: bool = True,
     ) -> None:
+        if text := boolean_flag_error(strict, "strict", "IsaacDeltaEEFController"):
+            raise ValueError(text)
+        self._strict = strict
         arm = [str(n) for n in arm_joint_names]
         if not arm:
             raise ValueError("arm_joint_names must be a non-empty sequence of joint names.")
@@ -245,6 +343,11 @@ class IsaacDeltaEEFController:
 
         Raises:
             TypeError: If ``action`` is not a mapping.
+            ValueError: If a channel the action carries cannot be read as a
+                scalar, or is not finite. Absent channels hold their axis and
+                are not an error; a present one that cannot be read is, on the
+                same grounds as the ``RuntimeError`` below - see
+                :func:`_to_scalar`.
             RuntimeError: If the injected state callables return
                 unusable data (wrong Jacobian shape, joint-count mismatch,
                 non-finite values) -- a broken solve must surface, never
@@ -255,20 +358,29 @@ class IsaacDeltaEEFController:
 
         targets: dict[str, float] = {k: v for k, v in action.items() if k not in TASK_SPACE_ACTION_KEYS}
 
+        # An ABSENT channel holds its axis and never reaches ``_to_scalar``; a
+        # channel that IS present must be readable. Keeping that split here is
+        # what lets the coercion refuse instead of substituting: the zero for a
+        # missing axis is a documented default, and the zero that used to stand
+        # in for an unreadable one was a fabricated command.
         twist = np.zeros(6, dtype=np.float64)
         for i, key in enumerate(_POS_KEYS):
-            twist[i] = np.clip(_to_scalar(action.get(key, 0.0)), -1.0, 1.0) * self._pos_scale
+            if key in action:
+                twist[i] = np.clip(_to_scalar(action[key], key, strict=self._strict), -1.0, 1.0) * self._pos_scale
         for i, key in enumerate(_ROT_KEYS):
-            twist[3 + i] = np.clip(_to_scalar(action.get(key, 0.0)), -1.0, 1.0) * self._rot_scale
+            if key in action:
+                twist[3 + i] = np.clip(_to_scalar(action[key], key, strict=self._strict), -1.0, 1.0) * self._rot_scale
 
         if np.any(twist != 0.0):
             targets.update(self._solve_arm_targets(twist))
 
         if "gripper" in action:
             # RLDS (0=close, 1=open, 0.5=hold) -> LIBERO sign convention
-            # (+1=close, -1=open, 0=hold); see the MuJoCo controller's
-            # derivation from NVIDIA's normalize/invert_gripper_action pair.
-            command = -float(np.sign(2.0 * _to_scalar(action.get("gripper"), 0.5) - 1.0))
+            # (+1=close, -1=open, 0=hold); see NVIDIA's
+            # normalize/invert_gripper_action pair for the derivation.
+            command = -float(
+                np.sign(2.0 * _to_scalar(action["gripper"], "gripper", strict=self._strict, default=0.5) - 1.0)
+            )
             if command != 0.0:
                 finger_target = self._gripper_close if command > 0.0 else self._gripper_open
                 for name in self.gripper_joint_names:
