@@ -13,6 +13,17 @@ description: Two Robot() instances coordinating over the Zenoh mesh - peer disco
 !!! info "Device Connect is the recommended networking layer"
     What's described here is the built-in **Zenoh mesh** — the automatic fallback. When the [`device-connect`](device-connect.md) extra is installed, `Robot().run()` and `robot_mesh()` use [**Device Connect**](device-connect.md) (structured RPC, presence, registry, safety) and fall back to this mesh only when it's unavailable. Both ride on Zenoh.
 
+On a fresh install the mesh refuses to start until you choose a security
+posture: with no ACL configured, `Robot(..., mesh=True)` logs `Mesh did NOT
+start` and leaves `robot.mesh.alive` as `False`. For localhost experiments set
+the developer preset in every process that joins; the lab and production
+postures (`STRANDS_MESH_ACCEPT_PERMISSIVE_ACL`, `STRANDS_MESH_ACL_FILE`) are on
+the [Security](security.md) page.
+
+```bash
+export STRANDS_MESH_LOCAL_DEV=1   # both processes below; localhost only
+```
+
 ```python
 # process A
 from strands_robots import Robot
