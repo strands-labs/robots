@@ -227,7 +227,27 @@ class _FakeLink:
     every variable up in the downloaded TOC and raises ``KeyError`` for a name it
     has not seen yet. That is what makes "arm and log only after ``connected``"
     a testable ordering rather than a comment.
+
+    It also refuses a block whose fetched bytes exceed ``MAX_LEN`` with the
+    ``AttributeError`` the real one raises: one block is one CRTP packet, and a
+    fake that accepted any size would let the driver subscribe to telemetry no
+    firmware can deliver.
     """
+
+    #: ``cflib.crazyflie.log.LogConfig.MAX_LEN`` and the fetched widths from
+    #: ``LogTocElement.types``, transcribed from cflib rather than read from the
+    #: driver, so the fake grades the driver against the SDK and not itself.
+    MAX_LEN = 26
+    FETCH_BYTES = {
+        "uint8_t": 1,
+        "uint16_t": 2,
+        "uint32_t": 4,
+        "int8_t": 1,
+        "int16_t": 2,
+        "int32_t": 4,
+        "FP16": 2,
+        "float": 4,
+    }
 
     def __init__(self, recorder: _Recorder) -> None:
         self._recorder = recorder
@@ -237,6 +257,8 @@ class _FakeLink:
     def add_config(self, block: _FakeLogConfig) -> None:
         if not self.toc_ready:
             raise KeyError(f"Variable {block.variables[0][0] if block.variables else '?'} not in TOC")
+        if sum(self.FETCH_BYTES[fetch_as] for _, fetch_as in block.variables) > self.MAX_LEN:
+            raise AttributeError("The log configuration is too large or has an invalid parameter")
         self.block = block
         self._recorder.record("log.add_config", (block.name,))
 

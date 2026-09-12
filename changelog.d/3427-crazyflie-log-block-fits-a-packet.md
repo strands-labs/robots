@@ -1,0 +1,3 @@
+### Fixed: the Crazyflie driver now receives telemetry after it connects
+
+The one log block the driver subscribed to fetched eight variables as `float`, 29 bytes, and cflib refuses any block over `LogConfig.MAX_LEN` (26 bytes, one CRTP packet) at `add_config`. So every real connect logged "telemetry unavailable" and `get_status` reported `None` for pose, imu and battery for as long as the aircraft flew. The block now fetches the three attitude angles as `FP16`, the type cflib provides for fitting a block into its packet, and keeps position and battery voltage at full width, 23 bytes in all. The test fake now enforces the same ceiling with sizes transcribed from cflib, so a block that outgrows the packet fails in CI rather than on the radio.
