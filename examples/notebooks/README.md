@@ -54,10 +54,6 @@ layers on top of it ship as a script rather than a notebook, in
 [`examples/17_judge_recorded_episodes.py`](../17_judge_recorded_episodes.py),
 because they read recorded video and the series is CPU-only.
 
-
-policy on CPU with a tiny dataset and two steps - raise the step count and run on
-a GPU for a production checkpoint; the code path is identical.
-
 ## Training needs `lerobot[training]`, on CPU too
 
 Notebooks 3 and 5 both train, and `lerobot`'s `train()` calls
