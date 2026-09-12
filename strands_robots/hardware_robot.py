@@ -2782,7 +2782,7 @@ class Robot(TeleopMixin, AgentTool):
             "name": self.tool_name_str,
             "description": f"Universal robot control with async task execution ({self.robot}). "
             f"Actions: execute (blocking), start (async), status, stop. "
-            f"For execute/start actions: instruction and policy_port are required. "
+            f"For execute/start actions: instruction is required; policy_port when the provider dials a server. "
             f"For status/stop actions: no additional parameters needed.",
             "inputSchema": {
                 "json": {
@@ -2800,7 +2800,7 @@ class Robot(TeleopMixin, AgentTool):
                         },
                         "policy_port": {
                             "type": "integer",
-                            "description": "Policy service port (required for execute/start actions)",
+                            "description": "Policy service port. Required by groot and moveit2, read by the other server-dialing providers, refused for providers that build in process (mock, lerobot_local).",
                         },
                         "policy_host": {
                             "type": "string",
@@ -2925,13 +2925,17 @@ class Robot(TeleopMixin, AgentTool):
                 policy_provider = input_data.get("policy_provider", "groot")
                 duration = input_data.get("duration", 30.0)
 
-                if not instruction or not policy_port:
+                # Only ``instruction`` is judged here. Whether a ``policy_port``
+                # is missing, unusable or unread is the named provider's call
+                # (``mock`` and ``lerobot_local`` build without one), and the
+                # dispatcher below asks :meth:`_policy_port_error` that.
+                if not instruction:
                     yield ToolResultEvent(
                         self._make_tool_result(
                             tool_use_id,
                             {
                                 "status": "error",
-                                "content": [{"text": "instruction and policy_port are required for execute action"}],
+                                "content": [{"text": "instruction is required for execute action"}],
                             },
                         )
                     )
@@ -2965,13 +2969,17 @@ class Robot(TeleopMixin, AgentTool):
                 policy_provider = input_data.get("policy_provider", "groot")
                 duration = input_data.get("duration", 30.0)
 
-                if not instruction or not policy_port:
+                # Only ``instruction`` is judged here. Whether a ``policy_port``
+                # is missing, unusable or unread is the named provider's call
+                # (``mock`` and ``lerobot_local`` build without one), and the
+                # dispatcher below asks :meth:`_policy_port_error` that.
+                if not instruction:
                     yield ToolResultEvent(
                         self._make_tool_result(
                             tool_use_id,
                             {
                                 "status": "error",
-                                "content": [{"text": "instruction and policy_port are required for start action"}],
+                                "content": [{"text": "instruction is required for start action"}],
                             },
                         )
                     )

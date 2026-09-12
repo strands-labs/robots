@@ -112,8 +112,8 @@ have performed. Construct a new `Robot` to run another task.
 
 | Action | Blocking? | Needs |
 |--------|-----------|-------|
-| `execute` | Yes | `instruction` + `policy_port` |
-| `start` | No | `instruction` + `policy_port` |
+| `execute` | Yes | `instruction`; `policy_port` as the provider demands (see above) |
+| `start` | No | `instruction`; `policy_port` as the provider demands (see above) |
 | `status` | - | - |
 | `stop` | - | - |
 
