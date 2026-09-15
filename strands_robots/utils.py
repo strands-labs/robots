@@ -1623,8 +1623,9 @@ def groot_version_error(value: Any, param: str, context: str) -> str | None:
     """Error text when ``value`` names no Isaac-GR00T release with a loader.
 
     ``groot_version=`` overrides Isaac-GR00T auto-detection and is read as a
-    loader selector, so only the spellings in :data:`SUPPORTED_GROOT_VERSIONS`
-    name anything. A value outside that set used to match no dispatch branch and
+    release selector - a loader in local mode, and the observation wire shape in
+    service mode, which loads nothing - so only the spellings in
+    :data:`SUPPORTED_GROOT_VERSIONS` name anything. A value outside that set used to match no dispatch branch and
     fall through to the same ``ImportError`` a missing package raises, reporting
     the environment as lacking Isaac-GR00T even when the release was installed
     and auto-detected - so a misspelling was answered with an install
@@ -1633,9 +1634,9 @@ def groot_version_error(value: Any, param: str, context: str) -> str | None:
 
     ``None`` is the not-supplied sentinel, as it is for every other optional
     parameter on that policy: it means "auto-detect the installed release", and
-    passes. Every other value is a claim about which loader to run, so a blank
-    or mis-cased one (``""``, ``"N1.7"``) is a claim that cannot be honoured
-    rather than an absent one - and ``""`` in particular is what an unset
+    passes. Every other value is a claim about which release the policy is
+    dealing with, so a blank or mis-cased one (``""``, ``"N1.7"``) is a claim
+    that cannot be honoured rather than an absent one - and ``""`` in particular is what an unset
     environment variable interpolates to.
 
     Args:

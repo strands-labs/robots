@@ -566,8 +566,11 @@ class Gr00tPolicy(Policy):
         groot_version: Force one of
             :data:`~strands_robots.utils.SUPPORTED_GROOT_VERSIONS` (``"n1.5"``,
             ``"n1.6"``, ``"n1.7"``) instead of auto-detecting the installed
-            release. Only read in local mode, so it is validated only on the
-            branch that reads it, as ``port`` is. A value naming no release is
+            release. Read in both modes: local mode dispatches a loader on it,
+            and service mode chooses the observation wire shape from it
+            (``"n1.7"`` adds the time axis an N1.7 server requires). It is
+            therefore validated at the door in either mode, unlike ``port``,
+            which only the branch that dials reads. A value naming no release is
             refused by name rather than reported as Isaac-GR00T being absent.
         strict: Strict input validation.
         api_token: ZMQ auth token. Falls back to ``GROOT_API_TOKEN`` env var if not provided.
@@ -636,17 +639,27 @@ class Gr00tPolicy(Policy):
 
         self._local_policy: Any = None
         self._client: Gr00tInferenceClient | None = None
+        # ``groot_version`` is read in BOTH modes: local mode dispatches a loader
+        # on it, and service mode reads it in :meth:`_build_service_observation`
+        # to choose the wire shape (``n1.7`` adds the time axis an N1.7 server
+        # requires). A value naming no release is therefore refused here, ahead
+        # of the mode branch, rather than dispatched: it used to pass in service
+        # mode, so ``groot_version="N1.7"`` against an N1.7 server sent the
+        # legacy ``(B, ...)`` tensors and surfaced as a server-side shape error
+        # instead of a refusal naming the parameter.
+        if (version_error := groot_version_error(groot_version, "groot_version", type(self).__name__)) is not None:
+            raise ValueError(version_error)
         self._groot_version = groot_version or _detect_groot_version()
         # ``strict`` and ``strict_keys`` below each select one of two postures,
         # so both are checked rather than read by truthiness: every non-empty
         # string is truthy, and ``strict_keys="false"`` used to select the
         # strict posture and report it as ``strict_keys=True`` to the caller who
-        # spelled the opposite. Unlike ``groot_version`` and ``port``, which are
-        # consumed inside the mode branch that reads them and are validated
-        # there, these are stored for a reader that runs later - and only in
-        # local mode, which needs NVIDIA's Isaac-GR00T installed. A check scoped
-        # to that branch would therefore never run for the caller who most needs
-        # it, so the domain is applied at the door in both modes.
+        # spelled the opposite. Unlike ``port``, which is consumed inside the
+        # mode branch that reads it and is validated there, these are stored
+        # for a reader that runs later - and only in local mode, which needs
+        # NVIDIA's Isaac-GR00T installed. A check scoped to that branch would
+        # therefore never run for the caller who most needs it, so the domain
+        # is applied at the door in both modes.
         if (strict_error := boolean_flag_error(strict, "strict", type(self).__name__)) is not None:
             raise ValueError(strict_error)
         self._strict = strict
@@ -668,13 +681,6 @@ class Gr00tPolicy(Policy):
 
         if model_path is not None:
             self._mode = "local"
-            # ``groot_version`` selects which loader runs, so a value naming no
-            # release is refused here rather than dispatched. Service mode loads
-            # no checkpoint and never reads it, so it is validated only on the
-            # branch that reads it - the same scoping the ``port`` check below
-            # is given for the mirror-image reason.
-            if (version_error := groot_version_error(groot_version, "groot_version", type(self).__name__)) is not None:
-                raise ValueError(version_error)
             # Detection answers whether ANY loader can succeed, so it gates the
             # load for both spellings of the request. Forcing a release used to
             # skip this: ``groot_version="n1.7"`` with no gr00t installed

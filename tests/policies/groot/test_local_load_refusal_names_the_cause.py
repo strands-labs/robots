@@ -36,6 +36,7 @@ GR00T N1.7 in-process.
 import ast
 import inspect
 
+import numpy as np
 import pytest
 
 msgpack = pytest.importorskip("msgpack", reason="msgpack not installed - pip install 'strands-robots[groot-service]'")
@@ -111,18 +112,50 @@ class TestTheVersionDomainIsGradedNotDispatched:
         assert groot_version_error("N1.7", "groot_version", "Gr00tPolicy") is not None
 
 
-class TestTheVersionIsGradedOnlyWhereItIsRead:
-    """Service mode loads no checkpoint, so it never reads the selector.
+class TestTheVersionIsGradedInBothModes:
+    """Service mode reads the selector too, so it is refused there as well.
 
-    The same scoping ``port`` is given for the mirror-image reason: local mode
-    never dials, so the port is validated only on the branch that dials. A
-    service-mode policy refused for a parameter it does not read would refuse a
-    working deployment.
+    ``_build_service_observation`` chooses the wire shape from it - ``n1.7``
+    adds the time axis an N1.7 server requires - and its docstring tells
+    service callers targeting that server to pass ``groot_version="n1.7"``.
+    The guard used to be scoped to the local branch on the claim that service
+    mode "never reads it", so ``groot_version="N1.7"`` was accepted and sent
+    the legacy ``(B, ...)`` tensors: a server-side shape error for a typo the
+    constructor could have named.
     """
 
     @pytest.mark.parametrize("value", NOT_A_RELEASE)
-    def test_service_mode_accepts_a_value_it_does_not_read(self, value, no_isaac_groot):
-        assert Gr00tPolicy(data_config="so100_dualcam", port=5555, groot_version=value)._mode == "service"
+    def test_service_mode_refuses_a_value_that_names_no_release(self, value, no_isaac_groot):
+        with pytest.raises(ValueError, match="groot_version") as excinfo:
+            Gr00tPolicy(data_config="so100_dualcam", port=5555, groot_version=value)
+        assert str(excinfo.value) == groot_version_error(value, "groot_version", "Gr00tPolicy")
+
+    def test_a_forced_release_selects_the_n17_wire_shape(self, no_isaac_groot):
+        """The value the guard protects: ``n1.7`` is the only spelling that adds the time axis."""
+        obs = {"front": np.zeros((8, 8, 3), np.uint8), "single_arm": np.zeros(5)}
+        wire = Gr00tPolicy(data_config="so100_dualcam", port=5555, groot_version="n1.7")._build_service_observation(
+            obs, "pick"
+        )
+        assert wire["video.front"].shape == (1, 1, 8, 8, 3)
+        assert wire["state.single_arm"].shape == (1, 1, 5)
+
+    def test_the_parameter_entry_names_the_service_reader(self):
+        """The ``Args:`` entry is the surface a caller reads for this parameter.
+
+        It stated the value is "Only read in local mode, so it is validated only
+        on the branch that reads it, as ``port`` is" - the claim that scoped the
+        guard, and the one that told a service caller their spelling would go
+        ungraded. Both halves stopped holding once the wire shape was chosen
+        from it, so the entry names the service reader too. Pinned because
+        nothing else grades the claim: the cell above proves service mode reads
+        the value, and this keeps the documentation of it from drifting back to
+        local-only while the guard stays in both modes.
+        """
+        doc = " ".join((Gr00tPolicy.__doc__ or "").split())
+        start = doc.index("groot_version: Force one of")
+        entry = doc[start : doc.index("strict:", start)]
+        assert "Only read in local mode" not in entry, "the falsified claim is back in the entry a caller reads"
+        assert "service mode" in entry, "the entry must name the reader the local-only claim omitted"
 
 
 class TestAnAbsentPackageIsOneAnswerForEverySpellingOfTheRequest:
