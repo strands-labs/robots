@@ -475,7 +475,7 @@ class LerobotLocalPolicy(Policy):
         pad_short_actions: bool = False,
         cache_model: bool = True,
         revision: str | None = None,
-        **kwargs,
+        **ignored_kwargs: Any,
     ):
         self.pretrained_name_or_path = pretrained_name_or_path
         # Optional Hub revision (branch, tag, or commit SHA) to pin the
@@ -713,6 +713,20 @@ class LerobotLocalPolicy(Policy):
         # (robot "runs the policy" but never moves) instead of swallowing them.
         self._zero_action_monitor = ZeroActionMonitor()
         self._action_dim_warned = False
+
+        # Same contract as LerobotAsyncPolicy: create_policy forwards one shared
+        # kwargs bag to every provider, so a key this provider does not own is
+        # tolerated - but named. Dropped silently, a misspelt option (``rtc=``
+        # for ``rtc_enabled=``) built a policy with the feature off and no line
+        # anywhere saying the request was never read.
+        if ignored_kwargs:
+            logger.warning(
+                "LerobotLocalPolicy ignoring unexpected constructor kwarg(s) %s; "
+                "loading %s. See the LerobotLocalPolicy signature for the "
+                "options this provider reads.",
+                sorted(ignored_kwargs),
+                pretrained_name_or_path or "no checkpoint yet",
+            )
 
         if pretrained_name_or_path:
             self._load_model()
