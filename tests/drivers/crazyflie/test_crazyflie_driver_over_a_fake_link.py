@@ -251,6 +251,21 @@ class TestTelemetryIsCachedForTheMesh:
         assert fake.log.block is not None
         assert tuple(fake.log.block.variables) == module.LOG_VARIABLES
 
+    def test_the_log_block_fits_one_crtp_packet(self, connected) -> None:  # type: ignore[no-untyped-def]
+        """``cflib`` refuses a block over ``LogConfig.MAX_LEN`` (26) fetched bytes.
+
+        The sizes are the fake's transcription of ``LogTocElement.types``, not
+        the driver's own table, so a driver that mis-sized a type is caught too.
+        Eight ``float`` variables were 29 bytes: ``add_config`` raised on every
+        real connect and the pose, imu and battery caches stayed ``None``.
+        """
+        _, fake, _ = connected()
+        size = sum(fake.log.FETCH_BYTES[fetch_as] for _, fetch_as in module.LOG_VARIABLES)
+        assert size <= fake.log.MAX_LEN, (
+            f"telemetry block is {size} bytes; cflib LogConfig.MAX_LEN is {fake.log.MAX_LEN}"
+        )
+        assert fake.log.block is not None, "add_config refused the block, so no telemetry frame can ever arrive"
+
     def test_a_delivered_frame_populates_pose_imu_and_battery(self, connected) -> None:  # type: ignore[no-untyped-def]
         driver, fake, _ = connected()
         assert driver._pose is None, "nothing is cached before a frame arrives"
