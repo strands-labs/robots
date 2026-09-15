@@ -1,9 +1,9 @@
 """A USD/PhysX articulation reaches every body through exactly one joint.
 
-``_validate_kinematic_tree`` is the fail-fast topology guard every procedural
-builder and every URDF / MJCF / USD loader runs before handing a
-``ProceduralRobot`` back. Its stated invariant is that each non-root link has
-exactly one inbound joint, and three shapes violate it:
+``_validate_kinematic_tree`` is the fail-fast topology guard every URDF / MJCF /
+USD loader runs before handing a ``ProceduralRobot`` back. Its stated invariant
+is that each non-root link has exactly one inbound joint, and three shapes
+violate it:
 
   * two joints sharing one ``(parent_body, child_body)`` edge -- an MJCF body
     carrying two ``<joint>`` children, i.e. a 2-DOF compound joint;
@@ -19,24 +19,17 @@ an unknown parent or child link, a missing ``<parent>`` / ``<child>`` and an
 unknown joint type, so the topology guard is the one that should catch it.
 
 What is *not* an error here: several roots. A body with no inbound joint is a
-root, and the shipped ``unitree_g1`` builder has two of them, as does an MJCF
-whose ``<worldbody>`` declares several top-level bodies. Connectivity and
-general acyclicity stay out of scope -- the guard answers how many joints
-reach a body, not whether every body is reached.
+root, and an MJCF whose ``<worldbody>`` declares several top-level bodies has
+several of them. Connectivity and general acyclicity stay out of scope -- the
+guard answers how many joints reach a body, not whether every body is reached.
 """
 
 from __future__ import annotations
 
 import pytest
 
-from strands_robots.simulation.isaac.loaders import load_urdf
-from strands_robots.simulation.isaac.procedural import (
-    BodyDef,
-    JointDef,
-    ProceduralRobot,
-    get_procedural_robot,
-    list_procedural_robots,
-)
+from strands_robots.simulation.isaac.loaders import load_mjcf, load_urdf
+from strands_robots.simulation.isaac.procedural import BodyDef, JointDef, ProceduralRobot
 
 # A joint's remedy depends on which shape it is: a compound joint is split
 # with an intermediate massless link, a two-parent link has one joint too
@@ -213,19 +206,53 @@ class TestTheTreeContractIsNotWidened:
         )
         assert robot.num_joints == 2
 
-    def test_the_shipped_humanoid_builder_has_two_roots_and_still_builds(self):
-        robot = get_procedural_robot("unitree_g1")
-        assert robot is not None
+    def test_a_multi_root_description_has_two_roots_and_still_loads(self, tmp_path):
+        """Several roots is not an error, and a real description is the witness.
+
+        This used to assert the same thing about the shipped ``unitree_g1``
+        procedural builder, which had two roots. That builder is gone - it
+        described no real robot and ``add_robot`` never turned it into one - but
+        the conclusion it supported still holds for the reason this module's
+        docstring already gives: an MJCF whose ``<worldbody>`` declares several
+        top-level bodies produces exactly this topology, and it is a shape
+        MuJoCo itself accepts. So the premise moves from a fabricated robot to a
+        description file, which is the stronger witness anyway.
+        """
+        mjcf = (
+            '<mujoco model="two_roots"><worldbody>'
+            '<body name="arm_base"><joint name="j1" axis="0 0 1"/><geom type="box" size="0.1 0.1 0.1"/>'
+            '<body name="arm_link"><joint name="j2" axis="0 1 0"/><geom type="box" size="0.05 0.05 0.2"/>'
+            "</body></body>"
+            '<body name="fixture"><geom type="box" size="0.2 0.2 0.02"/></body>'
+            "</worldbody></mujoco>"
+        )
+        path = tmp_path / "two_roots.xml"
+        path.write_text(mjcf)
+        robot = load_mjcf(str(path))
+
         reached = {joint.child_body for joint in robot.joints}
         roots = [i for i in range(len(robot.bodies)) if i not in reached]
-        # The premise: enforcing a single root would refuse this shipped robot.
-        assert len(roots) > 1, f"expected several roots, got {roots}"
+        # The premise: enforcing a single root would refuse this description.
+        assert len(roots) > 1, f"expected several roots, got {roots} for bodies {[b.name for b in robot.bodies]}"
 
-    @pytest.mark.parametrize("name", sorted(list_procedural_robots()))
-    def test_every_shipped_procedural_builder_still_builds(self, name):
-        robot = get_procedural_robot(name)
-        assert robot is not None
-        assert robot.num_joints > 0
+    def test_a_well_formed_chain_still_loads(self, tmp_path):
+        """The guard refuses the three bad shapes and nothing else.
+
+        Replaces a sweep over the three deleted procedural builders. Their only
+        contribution was "a real robot is not refused", which any well-formed
+        chain witnesses - and unlike those tables, this one is a description the
+        loader actually parses.
+        """
+        robot = load_urdf(
+            _write(
+                tmp_path,
+                _urdf(
+                    _joint("j1", "base", "shoulder"),
+                    _joint("j2", "shoulder", "forearm"),
+                ),
+            )
+        )
+        assert robot.num_joints == 2
 
     def test_general_acyclicity_stays_out_of_scope(self):
         from strands_robots.simulation.isaac.procedural import _validate_kinematic_tree

@@ -120,11 +120,21 @@ class TestAnAddressablePrefixIsAccepted:
 
     @pytest.mark.parametrize("stage_path", _ACCEPTED)
     def test_the_recorded_prim_path_is_the_prefix_plus_the_name(self, stage_path):
-        """The prefix reaches ``_prim_registry`` unchanged -- nothing is rewritten."""
+        """The prefix reaches ``_prim_registry`` unchanged -- nothing is rewritten.
+
+        Reached through ``usd_path=`` with the USD loader stood in. It used to go
+        through ``data_config="panda"``, which needed no asset files because it
+        resolved a *procedural builder* - a route that has since been deleted for
+        reporting success while creating no prims at all. The prefix contract this
+        grades is unchanged; only the way in is, and an explicit asset path is the
+        more direct way to reach the registry write anyway.
+        """
         stub = _stub(stage_path)
+        stub._load_usd_robot = lambda prim_path, usd_path, position: (["j0"], None)
 
-        assert IsaacSimulation.add_robot(stub, "arm", data_config="panda")["status"] == "success"  # type: ignore[arg-type]
+        result = IsaacSimulation.add_robot(stub, "arm", usd_path="/assets/arm.usda")  # type: ignore[arg-type]
 
+        assert result["status"] == "success", result
         assert stub._prim_registry == [f"{stage_path}/Robots/arm"]
 
 

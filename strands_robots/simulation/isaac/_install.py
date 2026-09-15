@@ -27,7 +27,29 @@ ISAAC_SIM_MIN_VERSION: str = "6.0"
 
 #: Pinned NVIDIA NGC docker image. Bump when CI / docs validate a newer
 #: tag (security patches, kit-sdk minor bumps, etc.).
-ISAAC_SIM_DOCKER_IMAGE: str = "nvcr.io/nvidia/isaac-sim:6.0"
+#:
+#: Must be a tag that EXISTS on NGC, which a ``major.minor`` spelling is not:
+#: NVIDIA publishes only full ``major.minor.patch`` tags for this image, so the
+#: previous ``:6.0`` resolved to nothing. Measured with
+#: ``docker manifest inspect`` against the registry::
+#:
+#:     isaac-sim:6.0     -> no such manifest
+#:     isaac-sim:latest  -> no such manifest
+#:     isaac-sim:6.0.0   -> exists
+#:     isaac-sim:6.0.1   -> exists
+#:     isaac-sim:5.0.0   -> exists
+#:     isaac-sim:4.5.0   -> exists
+#:
+#: That mattered more than a stale docs line, because this constant is what the
+#: RECOVERY instructions are composed from: ``is_available()`` returns it in the
+#: hint it gives when the runtime is absent, and ``create_world`` names it in the
+#: error it returns for the same reason. So the one message a user reads when they
+#: have no Isaac Sim told them to pull an image that cannot be pulled.
+#:
+#: ``6.0.1`` rather than ``6.0.0``: it is the tag this backend is verified against
+#: on an A10G (physics, URDF/MJCF articulations, RTX depth and colour frames,
+#: fleet cloning), and it carries the patch.
+ISAAC_SIM_DOCKER_IMAGE: str = "nvcr.io/nvidia/isaac-sim:6.0.1"
 
 #: One-liner to bootstrap an Isaac Lab checkout. Kept as a single
 #: string so callers don't have to assemble it.

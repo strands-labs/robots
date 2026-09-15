@@ -351,6 +351,7 @@ class IsaacRecordingMixin(DatasetRecordingMixin):
                     camera_dims,
                     robot_type,
                     recording_cameras,
+                    base_state_specs,
                 ) = self._collect_recording_schema(probe_obs)
 
                 # Optional camera scoping (parity with MuJoCo/Newton). Names
@@ -415,7 +416,17 @@ class IsaacRecordingMixin(DatasetRecordingMixin):
                 if resume_existing:
                     logger.info("Resuming existing dataset for append: %s", dataset_dir)
                     resumed = _DatasetRecorder.resume(repo_id=repo_id, root=root, task=task, vcodec=vcodec)
-                    self._verify_resume_schema(resumed, joint_names, camera_keys, camera_dims, action_names, fps=fps)
+                    # The expanded names, not the bare joint list: a resumed
+                    # dataset's on-disk observation.state includes the base columns,
+                    # so validating against joint_names alone would report a
+                    # mismatch on every floating-base append. Same construction as
+                    # the MuJoCo backend's ``state_names_full``.
+                    state_names_full = list(joint_names) + [
+                        f"{src}.{comp}" for src, comps in base_state_specs for comp in comps
+                    ]
+                    self._verify_resume_schema(
+                        resumed, state_names_full, camera_keys, camera_dims, action_names, fps=fps
+                    )
                     state["dataset_recorder"] = resumed
                 else:
                     state["dataset_recorder"] = _DatasetRecorder.create(
@@ -424,6 +435,7 @@ class IsaacRecordingMixin(DatasetRecordingMixin):
                         robot_type=robot_type,
                         joint_names=joint_names,
                         action_names=action_names,
+                        extra_state_specs=base_state_specs,
                         camera_keys=camera_keys,
                         camera_dims=camera_dims,
                         task=task,
@@ -470,7 +482,15 @@ class IsaacRecordingMixin(DatasetRecordingMixin):
 
     def _collect_recording_schema(
         self, probe_obs: dict[str, Any]
-    ) -> tuple[list[str], list[str], list[str], dict[str, tuple[int, int]], str, list[tuple[str, str, int, int]]]:
+    ) -> tuple[
+        list[str],
+        list[str],
+        list[str],
+        dict[str, tuple[int, int]],
+        str,
+        list[tuple[str, str, int, int]],
+        list[tuple[str, list[str]]],
+    ]:
         """Build the dataset schema from the live Isaac scene.
 
         Args:
@@ -490,11 +510,18 @@ class IsaacRecordingMixin(DatasetRecordingMixin):
               * ``recording_cameras``: per-camera ``(source_name, safe_name,
                 width, height)`` tuples the on_frame hook maps observation
                 keys through each step.
+              * ``base_state_specs``: ``(source_key, [components])`` pairs for a
+                floating-base robot's ``base_pos`` / ``base_quat`` /
+                ``base_lin_vel`` / ``base_ang_vel``, appended to the
+                ``observation.state`` schema so a locomotion policy trained on
+                the dataset is not base-blind. Empty for a fixed-base arm, which
+                leaves its schema unchanged.
         """
         joint_names: list[str] = []
         action_names: list[str] = []
         robot_type = "unknown"
         multi_robot = len(self._robots) > 1
+        base_state_specs: list[tuple[str, list[str]]] = []
         for rname, robot in self._robots.items():
             if multi_robot:
                 joint_names.extend(f"{rname}__{jn}" for jn in robot.joint_names)
@@ -503,6 +530,29 @@ class IsaacRecordingMixin(DatasetRecordingMixin):
                 joint_names.extend(robot.joint_names)
                 action_names.extend(self.robot_action_keys(rname))
             robot_type = getattr(robot, "data_config", None) or rname
+            # A floating-base robot exposes its full base kinematics through
+            # get_observation - base_pos (world x,y,z incl. height), base_quat
+            # (w,x,y,z), base_lin_vel (m/s) and base_ang_vel (rad/s, BODY frame) -
+            # but the observation.state schema above is derived from scalar joint
+            # names, so those signals would be DROPPED and a locomotion /
+            # velocity-tracking / whole-body-control policy trained on the dataset
+            # would be base-blind.
+            #
+            # Both sibling backends already pass these (mujoco/recording.py,
+            # newton/recording.py, with this same reasoning); Isaac was the only one
+            # that did not, so adding base_* to get_observation without this left an
+            # Isaac humanoid dataset missing 13 columns a MuJoCo one has.
+            #
+            # Detected from ``fixed_base`` - the field the MJCF free-joint read
+            # records - rather than from a joint id, because this backend has no
+            # compiled model to ask. A fixed-base arm adds no columns, so its schema
+            # is unchanged.
+            if not getattr(robot, "fixed_base", True):
+                prefix = f"{rname}__" if multi_robot else ""
+                base_state_specs.append((f"{prefix}base_pos", ["x", "y", "z"]))
+                base_state_specs.append((f"{prefix}base_quat", ["w", "x", "y", "z"]))
+                base_state_specs.append((f"{prefix}base_lin_vel", ["x", "y", "z"]))
+                base_state_specs.append((f"{prefix}base_ang_vel", ["x", "y", "z"]))
 
         camera_keys: list[str] = []
         camera_dims: dict[str, tuple[int, int]] = {}
@@ -518,7 +568,7 @@ class IsaacRecordingMixin(DatasetRecordingMixin):
                 len(self._cameras),
                 sorted(self._cameras),
             )
-            return joint_names, action_names, camera_keys, camera_dims, robot_type, recording_cameras
+            return joint_names, action_names, camera_keys, camera_dims, robot_type, recording_cameras, base_state_specs
 
         for cam_name, cam in self._cameras.items():
             safe_name = camera_schema_key(cam_name)
@@ -542,7 +592,7 @@ class IsaacRecordingMixin(DatasetRecordingMixin):
             camera_keys.append(safe_name)
             camera_dims[safe_name] = (height, width)
             recording_cameras.append((cam_name, safe_name, width, height))
-        return joint_names, action_names, camera_keys, camera_dims, robot_type, recording_cameras
+        return joint_names, action_names, camera_keys, camera_dims, robot_type, recording_cameras, base_state_specs
 
     def _make_run_policy_hook(self, robot_name: str, instruction: str) -> Any:
         """Build the per-step ``on_frame`` recording hook for Isaac.
