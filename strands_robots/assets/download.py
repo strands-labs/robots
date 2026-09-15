@@ -669,6 +669,10 @@ def download_robots(
     # Resolve requested robots. Read ``is not None``: an empty selection was
     # refused above, so reaching the ``category``/all branches means the caller
     # named no subset at all.
+    # A name the registry does not list is carried in the result as
+    # ``unknown_names``, not only logged: the caller asked for it and got nothing,
+    # and the ``download_assets`` tool grades its verdict on that list.
+    unknown: list[str] = []
     if names is not None:
         robots: dict[str, dict[str, Any]] = {}
         for name in names:
@@ -677,13 +681,20 @@ def download_robots(
                 robots[canonical] = all_sim[canonical]
             else:
                 logger.warning("Unknown robot: %s (resolved: %s)", name, canonical)
+                unknown.append(str(name))
     elif category:
         robots = {n: i for n, i in all_sim.items() if i.get("category") == category}
     else:
         robots = dict(all_sim)
 
     if not robots:
-        return {"downloaded": 0, "skipped": 0, "failed": 0, "message": "No matching robots found."}
+        return {
+            "downloaded": 0,
+            "skipped": 0,
+            "failed": 0,
+            "unknown_names": unknown,
+            "message": "No matching robots found.",
+        }
 
     # Partition: needs download vs already present
     to_download: dict[str, dict[str, Any]] = {}
@@ -700,6 +711,7 @@ def download_robots(
             "skipped": len(skipped),
             "failed": 0,
             "skipped_names": skipped,
+            "unknown_names": unknown,
             "message": f"All {len(robots)} robots already have assets. Use force=True to re-download.",
         }
 
@@ -741,6 +753,7 @@ def download_robots(
         "skipped_names": skipped,
         "failed_names": list(failed),
         "failed_details": failed,
+        "unknown_names": unknown,
         "assets_dir": str(dest_dir),
         "method": method,
         "message": (f"{len(downloaded)} downloaded ({method}), {len(skipped)} already present, {len(failed)} failed."),

@@ -118,8 +118,17 @@ def download_assets(
             ]
             if result.get("failed_details"):
                 parts.extend(f"   {n}: {r}" for n, r in result["failed_details"].items())
+            unknown = result.get("unknown_names") or []
+            if unknown:
+                parts.append(
+                    f"Unknown robots (nothing fetched): {', '.join(unknown)}. "
+                    "Run action='list' for the names the registry knows."
+                )
             parts.append(f"Assets: {result.get('assets_dir', '?')}")
-            return {"status": "success", "content": [{"text": "\n".join(parts)}]}
+            # The verdict follows the delivery: a name that fetched nothing or a
+            # clone that failed is not a success however many others went through.
+            status = "error" if unknown or result.get("failed") else "success"
+            return {"status": status, "content": [{"text": "\n".join(parts)}]}
 
         return {
             "status": "error",
