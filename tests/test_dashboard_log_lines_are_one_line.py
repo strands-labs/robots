@@ -85,6 +85,28 @@ class TestTheDashboardLogsThroughIt:
         assert len(caplog.records) == 1
         assert "\n" not in caplog.records[0].getMessage()
 
+    def test_a_patched_sections_type_name_cannot_forge_a_second_entry(self, caplog, tmp_path, monkeypatch) -> None:
+        """The message above quotes one caller-derived token: `type(values).__name__`.
+
+        The cell above puts the CRLF in the value, which this message never renders, so
+        it passes whether or not the statement goes through the step. The type name is
+        the half that is rendered - and this is the lenient path, whose callers are the
+        settings file, the environment and the CLI, so the object is any Python object
+        the caller hands the store, and a class made by `type()` names itself whatever
+        it likes. Over HTTP the name can only be one the JSON decoder chose.
+        """
+        monkeypatch.setattr(settings, "SETTINGS_FILE", tmp_path / "settings.json")
+        settings.clear_overrides()
+        settings.load(refresh=True)
+        forger = type("str\r\n" + FORGED_SECOND_LINE, (), {})
+        with caplog.at_level(logging.WARNING, logger="strands_robots.dashboard.settings"):
+            changed = settings.update({"agent": forger()})
+        assert changed == []
+        assert len(caplog.records) == 1
+        message = caplog.records[0].getMessage()
+        assert len(message.splitlines()) == 1
+        assert FORGED_SECOND_LINE not in message.splitlines()
+
     def test_a_forwarded_address_cannot_forge_the_challenge_cap_entry(self, caplog, monkeypatch) -> None:
         """X-Forwarded-For is quoted with %s, so its bytes reach the line as they arrived.
 

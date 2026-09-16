@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from strands_robots.dashboard import log_redaction
+from strands_robots.utils import refusal_repr
 
 logger = logging.getLogger(__name__)
 
@@ -113,7 +114,7 @@ def _as_list(value: Any) -> list[str]:
     if isinstance(value, str):
         return [p.strip() for p in value.split(",") if p.strip()]
     if isinstance(value, (list, tuple)):
-        # Entries are strings by the time they reach here: _coerce_strict grades
+        # Entries are strings by the time they reach here: _graded grades
         # each one, so nothing is spelled into a string on its way to the store.
         return [p.strip() for p in value if p.strip()]
     return []
@@ -132,32 +133,27 @@ def as_list(value: Any) -> list[str]:
     return _as_list(value)
 
 
-class CoercionError(ValueError):
-    """A settings value that must be REPORTED, not silently defaulted. Raised only on the strict path
-    (UI/API writes).
-    """
-
-
-def _finite_float(key: str, value: Any) -> float:
+def _finite_float(key: str, value: Any) -> tuple[float | None, str | None]:
+    """A float key's value, or the reason this store refuses it."""
     try:
         out = float(value)
     except (TypeError, ValueError):
-        raise CoercionError(f"{key}: {value!r} is not a number")
+        return None, f"{key}: {refusal_repr(value)} is not a number"
     if not math.isfinite(out):
         # json.dumps would emit bare NaN/Infinity - not JSON (RFC 8259); one
         # such write bricks the config screen for every browser forever.
-        raise CoercionError(f"{key}: {value!r} is not a finite number")
-    return out
+        return None, f"{key}: {refusal_repr(value)} is not a finite number"
+    return out, None
 
 
-def _finite_int(key: str, value: Any) -> int:
+def _finite_int(key: str, value: Any) -> tuple[int | None, str | None]:
     """An integer key's value, refusing the non-finite numbers ``int()`` cannot convert.
 
     ``int(float("inf"))`` raises ``OverflowError``, which is neither of the two
     errors the conversion below catches, so a non-finite value in an integer
-    slot used to escape :class:`CoercionError` altogether: the strict path
-    raised out of :func:`update_strict` instead of reporting the key, and the
-    lenient path raised out of :func:`load` -- where a process-scoped
+    slot used to escape the refusal altogether: the strict path raised out of
+    :func:`update_strict` instead of reporting the key, and the lenient path
+    raised out of :func:`load` -- where a process-scoped
     :func:`override` left every later read of the WHOLE tree raising for as
     long as it was set, since there is no value for the degrade to fall back
     to if the coercion never returns. ``json.loads`` accepts the bare
@@ -172,40 +168,44 @@ def _finite_int(key: str, value: Any) -> int:
     describes how the value was spelled rather than what it is.
     """
     if isinstance(value, float) and not math.isfinite(value):
-        raise CoercionError(f"{key}: {value!r} is not a finite number")
+        return None, f"{key}: {refusal_repr(value)} is not a finite number"
     try:
-        return int(value)
+        return int(value), None
     except OverflowError:
         # A non-finite that is not a ``float`` instance, so the check above does
         # not see it: ``numpy.float32("inf")`` and ``Decimal("Infinity")`` both
         # convert with an OverflowError rather than one of the two below.
-        raise CoercionError(f"{key}: {value!r} is not a finite number")
+        return None, f"{key}: {refusal_repr(value)} is not a finite number"
     except (TypeError, ValueError):
-        raise CoercionError(f"{key}: {value!r} is not an integer")
+        return None, f"{key}: {refusal_repr(value)} is not an integer"
 
 
-def _coerce(section: str, key: str, value: Any, strict: bool = False) -> Any:
-    try:
-        return _coerce_strict(section, key, value)
-    except CoercionError:
-        if strict:
-            raise
-        # Lenient degrade (env/CLI/file paths) must still degrade to the key's own SHAPE: a list key
-        # that fell back to a scalar poisons every comma-split consumer, which is worse than the empty
-        # default.
-        if (section, key) in _LIST_KEYS:
-            return []
-        # A boolean key degrades to False, not to the value that failed to be
-        # one. Returning the raw value left a non-boolean in a boolean slot, and
-        # `apply_mesh_env` publishes such a key by TRUTHINESS - so an
-        # unparseable spelling was published as the literal "1", the exact
-        # spelling `policies.factory._check_trust_remote_code` accepts, while
-        # the same spelling reaching that gate directly is refused. A gate that
-        # cannot read its own setting must stay shut, so the degrade is
-        # fail-closed rather than a passthrough.
-        if (section, key) in _BOOL_KEYS:
-            return False
-        return None if key in _NUMERIC_KEYS else value
+def _coerce(section: str, key: str, value: Any) -> Any:
+    """What a lenient path (env, CLI, file) holds for ``section.key``: the graded value, or the degrade."""
+    graded, reason = _graded(section, key, value)
+    return graded if reason is None else _degraded(section, key, value)
+
+
+def _degraded(section: str, key: str, value: Any) -> Any:
+    """What a lenient path holds for a value this store refuses.
+
+    Lenient degrade (env/CLI/file paths) must still degrade to the key's own SHAPE: a list key
+    that fell back to a scalar poisons every comma-split consumer, which is worse than the empty
+    default.
+    """
+    if (section, key) in _LIST_KEYS:
+        return []
+    # A boolean key degrades to False, not to the value that failed to be
+    # one. Returning the raw value left a non-boolean in a boolean slot, and
+    # `apply_mesh_env` publishes such a key by TRUTHINESS - so an
+    # unparseable spelling was published as the literal "1", the exact
+    # spelling `policies.factory._check_trust_remote_code` accepts, while
+    # the same spelling reaching that gate directly is refused. A gate that
+    # cannot read its own setting must stay shut, so the degrade is
+    # fail-closed rather than a passthrough.
+    if (section, key) in _BOOL_KEYS:
+        return False
+    return None if key in _NUMERIC_KEYS else value
 
 
 # : What "true" and "false" may be spelled like.
@@ -213,10 +213,18 @@ _TRUTHY = ("1", "true", "yes", "on")
 _FALSY = ("0", "false", "no", "off", "")
 
 
-def _coerce_strict(section: str, key: str, value: Any) -> Any:
+def _graded(section: str, key: str, value: Any) -> tuple[Any, str | None]:
+    """The value this store would hold for ``section.key``, or the reason it refuses it.
+
+    ``(value, None)`` when the store accepts *value*; ``(None, reason)`` when it does
+    not. The reason is composed here and RETURNED. :func:`update_strict` hands it to
+    whoever asked for the write - an HTTP client included - so it must name the key and
+    the caller's own value and nothing else; text carried out on an exception is a
+    rendering of an exception, which is not a thing this store puts on a wire.
+    """
     if (section, key) in _LIST_KEYS:
         if value is not None and not isinstance(value, (str, list, tuple)):
-            raise CoercionError(f"{key}: expected a list or comma-separated string, got {type(value).__name__}")
+            return None, f"{key}: expected a list or comma-separated string, got {type(value).__name__}"
         if isinstance(value, (list, tuple)):
             # The container's shape was graded above; the entries' shape was
             # not, and ``str(p)`` spelled whatever arrived: a ``null`` in a
@@ -225,39 +233,43 @@ def _coerce_strict(section: str, key: str, value: Any) -> Any:
             # string or the list is refused, naming the entry and its type.
             for index, entry in enumerate(value):
                 if not isinstance(entry, str):
-                    raise CoercionError(f"{key}: entry {index} expected a string, got {type(entry).__name__}")
-        return _as_list(value)
+                    return None, f"{key}: entry {index} expected a string, got {type(entry).__name__}"
+        return _as_list(value), None
     if (section, key) in _BOOL_KEYS:
         if not isinstance(value, bool):
             spelled = str(value).strip().lower()
             if spelled not in _TRUTHY and spelled not in _FALSY:
-                raise CoercionError(f"{key}: {value!r} is not a boolean (use true/false)")
-        return _as_bool(value)
+                return None, f"{key}: {refusal_repr(value)} is not a boolean (use true/false)"
+        return _as_bool(value), None
     if key in _FLOAT_KEYS:
         if value in (None, ""):
-            return None
-        out = _finite_float(key, value)
+            return None, None
+        out, reason = _finite_float(key, value)
+        if out is None:
+            return None, reason
         if key == "temperature" and not 0.0 <= out <= 2.0:
-            raise CoercionError(f"temperature: {out} is outside 0..2")
+            return None, f"temperature: {refusal_repr(out)} is outside 0..2"
         if key == "camera_hz" and not 0.0 < out <= 240.0:
             # a publisher sleeps 1/hz between frames: 0 divides by zero,
             # negative sleeps never, huge busy-loops the camera thread.
-            raise CoercionError(f"camera_hz: {out} is outside (0, 240]")
-        return out
+            return None, f"camera_hz: {refusal_repr(out)} is outside (0, 240]"
+        return out, None
     if key in _INT_KEYS:
         if value in (None, ""):
-            return None
-        whole = _finite_int(key, value)
+            return None, None
+        whole, reason = _finite_int(key, value)
+        if whole is None:
+            return None, reason
         if key == "port" and not 1 <= whole <= 65535:
-            raise CoercionError(f"port: {whole} is outside 1..65535")
+            return None, f"port: {refusal_repr(whole)} is outside 1..65535"
         if key == "max_tokens" and whole < 1:
-            raise CoercionError(f"max_tokens: {whole} must be at least 1")
-        return whole
+            return None, f"max_tokens: {refusal_repr(whole)} must be at least 1"
+        return whole, None
     if value is None:
-        return None
+        return None, None
     if isinstance(value, (dict, list, tuple, set)):
-        raise CoercionError(f"{key}: expected a string, got {type(value).__name__}")
-    return str(value)
+        return None, f"{key}: expected a string, got {type(value).__name__}"
+    return str(value), None
 
 
 # ----------------------------------------------------------------------
@@ -424,20 +436,21 @@ def _update(patch: dict[str, Any], strict: bool) -> tuple[list[str], list[str]]:
                 # reason: there the report the caller can make IS a success (an
                 # empty changed list), so this log line is the only signal the
                 # patch went nowhere.
-                reason = f"{section}: expected a mapping of {section} keys, got {type(values).__name__}"
+                shape = f"{section}: expected a mapping of {section} keys, got {type(values).__name__}"
                 if strict:
-                    errors.append(reason)
+                    errors.append(shape)
                 else:
-                    logger.warning("ignoring settings patch: %s", log_redaction.one_line(reason))
+                    logger.warning("ignoring settings patch: %s", log_redaction.one_line(shape))
                 continue
             for key, raw in values.items():
                 if key not in _SCHEMA[section]:
                     continue
-                try:
-                    value = _coerce(section, key, raw, strict=strict)
-                except CoercionError as exc:
-                    errors.append(f"{section}.{exc}")
-                    continue
+                value, reason = _graded(section, key, raw)
+                if reason is not None:
+                    if strict:
+                        errors.append(f"{section}.{reason}")
+                        continue
+                    value = _degraded(section, key, raw)
                 if value == current[section].get(key):
                     continue
                 stored.setdefault(section, {})[key] = value

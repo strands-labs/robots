@@ -110,8 +110,8 @@ class TestTheGraderIsLoadBearing:
 
     def test_a_planted_unknown_command_is_reported(self) -> None:
         """The shape the deleted pages used must fail on arrival."""
-        planted = _invocations_in("```bash\npython -m strands_robots dashboard --port 8090\n```", "planted.md")
-        assert [i.command for i in planted] == ["dashboard"]
+        planted = _invocations_in("```bash\npython -m strands_robots cockpit --port 8090\n```", "planted.md")
+        assert [i.command for i in planted] == ["cockpit"]
         assert [i for i in planted if i.command not in _COMMANDS] == planted
 
     def test_a_planted_dispatched_command_is_accepted(self) -> None:

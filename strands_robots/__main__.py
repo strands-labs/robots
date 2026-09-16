@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import sys
 
-_COMMANDS = ("doctor", "verify-dataset")
+_COMMANDS = ("doctor", "verify-dataset", "dashboard")
 
 
 def main() -> None:
     """Dispatch ``python -m strands_robots <command>`` to its subcommand.
 
-    Routes the first argv token to the ``doctor`` or ``verify-dataset`` entry
-    point (stripping it so the subcommand parses clean args) and exits non-zero
+    Routes the first argv token to the ``doctor``, ``verify-dataset`` or
+    ``dashboard`` entry point (stripping it so the subcommand parses clean args) and exits non-zero
     on a missing or unknown command.
     """
     if len(sys.argv) < 2:
@@ -42,6 +42,10 @@ def main() -> None:
         from strands_robots.verify_dataset import main as verify_main
 
         sys.exit(verify_main())
+    elif cmd == "dashboard":
+        from strands_robots.dashboard.cli import main as dashboard_main
+
+        sys.exit(dashboard_main())
     else:
         print(f"Unknown command: {cmd}")
         print(f"Available commands: {', '.join(_COMMANDS)}")
