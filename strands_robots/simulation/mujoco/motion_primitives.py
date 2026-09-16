@@ -897,6 +897,14 @@ class MotionPrimitivesMixin(MotionPrimitivesCore):
                 reached = True
                 break
 
+        # Not reached: read what the engine saw at the final tick so the
+        # refusal can name the contact or the joint that stopped the servo
+        # instead of guessing at "joint limits/contacts".
+        obstruction: dict[str, Any] | None = None
+        if not reached:
+            with self._lock:
+                obstruction = self._servo_obstruction(model, data, robot, arm_jact)
+
         return self._move_to_result(
             robot_name,
             target,
@@ -913,6 +921,7 @@ class MotionPrimitivesMixin(MotionPrimitivesCore):
             orientation_error=orientation_error,
             orientation_tol=orientation_tol,
             ik_orientation_residual=ik_orientation_residual,
+            obstruction=obstruction,
         )
 
     @staticmethod
@@ -989,6 +998,107 @@ class MotionPrimitivesMixin(MotionPrimitivesCore):
                     held[name] = held.get(name, 0) + 1
                     break
         return held
+
+    def _robot_body_ids(self, model: Any, robot: Any) -> set[int]:
+        """Every body in the robot's kinematic subtree, from its first joint's root down.
+
+        The robot's root is the ancestor of its first joint's body that hangs
+        directly off the world body - for a fixed-base arm that is the base
+        link, for a floating robot the free-jointed body. The subtree is every
+        body whose ancestor chain passes through that root, so a self-collision
+        (jaw against base) and a collision with the scene (jaw against a cube)
+        both count as "the robot is in contact", and the cube's own contacts
+        with the floor do not.
+
+        Args:
+            model: The ``mujoco.MjModel`` holding the kinematic tree.
+            robot: The :class:`SimRobot`, read for its ``joint_ids`` and, when it
+                has none, its ``namespace`` (a body name prefix).
+
+        Returns:
+            Body ids in the subtree; empty when neither route resolves.
+        """
+        mj = self._mj
+        joint_ids = [int(j) for j in (robot.joint_ids or [])]
+        if joint_ids:
+            root = self._root_body(model, int(model.jnt_bodyid[joint_ids[0]]))
+            if root > 0:
+                return self._subtree(model, root)
+        prefix = f"{robot.namespace}/" if robot.namespace else ""
+        if not prefix:
+            return set()
+        return {
+            bid
+            for bid in range(1, int(model.nbody))
+            if (mj.mj_id2name(model, mj.mjtObj.mjOBJ_BODY, bid) or "").startswith(prefix)
+        }
+
+    def _servo_obstruction(self, model: Any, data: Any, robot: Any, commanded_jact: dict[int, int]) -> dict[str, Any]:
+        """What stopped a primitive's servo at the final tick: contacts on the robot, joints at a limit.
+
+        Must be called under ``self._lock``. Runs ``mj_forward`` first so the
+        contact list belongs to the final joint configuration, the same way
+        :meth:`get_contacts` does. A contact counts when it is ACTIVE (inside
+        the constraint solver, ``exclude == 0``, i.e. actually pushing back)
+        and at least one of its geoms belongs to the robot's subtree; a joint
+        counts when it is one ``move_to`` commands, has limits, and its
+        position sits at a bound (see :meth:`_joints_at_limit`).
+
+        Args:
+            model: The ``mujoco.MjModel``.
+            data: The ``mujoco.MjData`` after the final servo tick.
+            robot: The :class:`SimRobot` the primitive drove.
+            commanded_jact: ``joint_id -> actuator_id`` for the joints the
+                primitive commanded to a NEW value - the arm half of the pose
+                map for ``move_to``, the wrist joint alone for
+                ``rotate_wrist``, whose other joints are held where they
+                already were, so a bound one of those already sat on is not
+                what stopped this call.
+
+        Returns:
+            ``{"contacts": [...], "contacts_total": n, "joints_at_limit": [...]}``
+            in the shape :meth:`_obstruction_text` reads; contacts capped at
+            :data:`OBSTRUCTION_MAX_CONTACTS`, nearest (most negative
+            distance) first.
+        """
+        from strands_robots.simulation.motion_primitives_base import OBSTRUCTION_MAX_CONTACTS
+
+        mj = self._mj
+        mj.mj_forward(model, data)
+        body_ids = self._robot_body_ids(model, robot)
+
+        def _geom_label(gid: int) -> str:
+            name = mj.mj_id2name(model, mj.mjtObj.mjOBJ_GEOM, gid)
+            if name:
+                return name
+            body = mj.mj_id2name(model, mj.mjtObj.mjOBJ_BODY, int(model.geom_bodyid[gid]))
+            return f"{body}/geom_{gid}" if body else f"geom_{gid}"
+
+        # One entry per geom PAIR, at its deepest point: a box resting on a
+        # plane yields up to four contact points for the same two geoms, and
+        # naming the pair four times tells the caller nothing more.
+        nearest: dict[tuple[int, int], float] = {}
+        for i in range(int(data.ncon)):
+            c = data.contact[i]
+            if int(c.exclude) != 0:
+                continue
+            g1, g2 = int(c.geom1), int(c.geom2)
+            if body_ids and int(model.geom_bodyid[g1]) not in body_ids and int(model.geom_bodyid[g2]) not in body_ids:
+                continue
+            key = (g1, g2)
+            nearest[key] = min(nearest.get(key, math.inf), float(c.dist))
+        contacts: list[dict[str, Any]] = [
+            {"a": _geom_label(g1), "b": _geom_label(g2), "dist_m": dist} for (g1, g2), dist in nearest.items()
+        ]
+        contacts.sort(key=lambda c: c["dist_m"])
+
+        joints_at_limit = self._joints_at_limit(mj, model, data.qpos, commanded_jact)
+
+        return {
+            "contacts": contacts[:OBSTRUCTION_MAX_CONTACTS],
+            "contacts_total": len(contacts),
+            "joints_at_limit": joints_at_limit,
+        }
 
     def set_gripper(
         self,
@@ -1288,6 +1398,14 @@ class MotionPrimitivesMixin(MotionPrimitivesCore):
                 reached = True
                 break
 
+        # Not reached: read what the engine saw at the final tick, the same way
+        # move_to does, so the refusal names the contact or the bound that
+        # stopped the wrist instead of only the residual it fell short by.
+        obstruction: dict[str, Any] | None = None
+        if not reached:
+            with self._lock:
+                obstruction = self._servo_obstruction(model, data, robot, {wrist_jnt: jact[wrist_jnt]})
+
         return self._rotate_wrist_result(
             robot_name,
             float(tol),
@@ -1299,4 +1417,5 @@ class MotionPrimitivesMixin(MotionPrimitivesCore):
             final_yaw=final_yaw,
             yaw_error=yaw_error,
             uncommanded_drives=uncommanded_drives,
+            obstruction=obstruction,
         )
