@@ -27,6 +27,7 @@ class attributes so the error a user sees names the extra they actually need.
 from __future__ import annotations
 
 import logging
+import math
 import re
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, ClassVar
@@ -698,6 +699,39 @@ def _basename(name: str, namespace: str | None) -> str:
     if namespace and name.startswith(namespace):
         return name[len(namespace) :]
     return name
+
+
+REACH_AXIS_MIN_M = 0.02
+"""Horizontal EE offset below which the arm is reported as over its base, not along an axis."""
+
+
+def reach_axis(offset: Sequence[float]) -> str | None:
+    """The horizontal world axis an end-effector offset from the base lies along.
+
+    ``"-Y"`` for an offset whose largest horizontal component is negative Y,
+    and so on; ``None`` when the horizontal offset is under
+    :data:`REACH_AXIS_MIN_M`, so a folded or vertical pose is not assigned an
+    axis it does not have. This reads the CURRENT pose - it is where the arm
+    is, not a fixed property of the model - which is exactly the fact an
+    agent needs to turn "in front of the robot" into a world coordinate on
+    the right side of the base.
+
+    Args:
+        offset: ``ee_pos - base_pos`` in world meters, ``(dx, dy, dz)``.
+    """
+    dx, dy = float(offset[0]), float(offset[1])
+    if math.hypot(dx, dy) < REACH_AXIS_MIN_M:
+        return None
+    if abs(dx) >= abs(dy):
+        return "+X" if dx > 0 else "-X"
+    return "+Y" if dy > 0 else "-Y"
+
+
+def reach_axis_label(axis: str | None) -> str:
+    """One clause for :func:`reach_axis`'s answer, ready to sit in parentheses."""
+    if axis is None:
+        return "the arm is currently over its base"
+    return f"the arm currently extends along {axis}"
 
 
 def discover_ee_frame(model: Any, namespace: str | None = None) -> tuple[str, str] | None:

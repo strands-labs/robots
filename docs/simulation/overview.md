@@ -50,7 +50,7 @@ For walkthroughs see [Simulation overview](../simulation/overview.md).
 | `add_robot` | `robot_name`, `position=[0,0,0]`, `data_config=None`, `urdf_path=None` |
 | `remove_robot` | `name` |
 | `list_robots` | - each robot's asset, joint count, and **live** base position, read from the physics rather than from the `add_robot` request, so a robot that walked (or whose model's root pose offset the request) reports where it is |
-| `get_robot_state` | `name` → joint positions, velocities, torques |
+| `get_robot_state` | `name` → joint positions, velocities, torques; an `end_effector` line naming the frame `move_to` drives, its world position, its offset **from the base** (measured, like `list_robots`' position - not the `add_robot` request, which a model's own authored root pose offsets) and the horizontal axis the arm currently extends along (`the arm currently extends along -Y` for an SO-100/SO-101 at home) - so "in front of the robot" resolves to the same side of the base for the agent and the person. The `json` payload carries `end_effector.base`, `from_base` and `extends_along` (`"+X"`/`"-Y"`/…, `null` when the arm is over its base) |
 
 ## Objects
 
